@@ -2,7 +2,7 @@
 
 > **历史验收账本：** 本文冻结各轮当时的源码、官方版本、binary hash、证据路径、失败和未覆盖结论，不是当前能力矩阵。当前用法与支持范围见 `README.md`；当前 compiled builtin 专项以 release gate 的 `builtin-mods` target 及其本轮 evidence 为准，后续成功不会改写这里的历史结果。
 
-第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；Mods UI/UX 修复与限定验收见第 9 节；可复用测试 Mod 与官方原件调试见第 10 节；输入、Pane reopen 与 builtin 让位修复见第 11 节。历史失败不会由后续成功覆盖。
+第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；Mods UI/UX 修复与限定验收见第 9 节；可复用测试 Mod 与官方原件调试见第 10 节；输入、Pane reopen 与 builtin 让位修复见第 11 节；2.1.287 作者 API 的检查测试方案见第 12 节。历史失败不会由后续成功覆盖。
 
 ## 1. 范围和判定规则
 
@@ -771,3 +771,693 @@ Pane 最小红测为 0 pass / 1 fail；builtin 契约及旧绕过参数红测为
 用户随后明确要求按功能提交并推送。本轮提交只包含 Mods 样例、launcher/README、三项宿主修复与两份报告；不夹带另一 session 尚未提交的 native/TaskV2/Yoga 代码。此前各节“未 commit/push”描述对应验收时点；本次发布代码不等同于全仓通过，也不将既有 Workflow/PTY 和官方能力缺口改判通过。
 
 提交前再次核对16个源码/测试/样例文件与 `F/overlay.json` 全部一致，32份自动化/构建/终端证据哈希无漂移，`git diff --check` 通过。空 HOME/config、security stub与假 key 下重跑 KeyboardEvent、ModsPane、默认键绑定、ui、commands、runtimeHost、testLab、launcher 八文件：**224 pass / 0 fail、1308 assertions**，样例子进程另列；官方原件与完整作者类型显式启用。日志 `F/precommit-tests.log` / `.exit`。此补验运行于当前工作区，含并发公共布局代码，不替代上述冻结制品身份或重新宣称终端通过。
+
+## 12. 2.1.287 Mods 作者 API 验收账本（2026-10-02 起；局部实现与专项已通过，整体 blocked）
+
+### 12.1 范围、契约来源与状态
+
+本节检查工作区中尚未提交的 2.1.287 作者 API 实现，HEAD 基线为 `fea087b`。涉及的文件有：
+
+- 新增：`src/services/mods/{state,toast,declarations,typeContract}.ts` 及各自的测试、`compatibility287.test.ts`、`testing/runner.ts`。
+- 修改：`loader`、`runtime`、`worker`、`environment`、`protocol`、`types`、`ui`。
+- 界面与命令：`src/components/ModsAbovePrompt.tsx`、`src/utils/plugins/{schemas,validatePlugin}.ts`、`src/cli/handlers/plugins.ts`、`src/main.tsx`、`src/screens/REPL.tsx`。
+
+验收契约有三种来源，每条断言都标明出处，不混用：
+
+- **文档**：官方博客 *Getting started with Claude Code mods*（2026-10-01）。原文用 `curl https://claude.dev/blog/getting-started-with-claude-code-mods.md` 取得，存于 `/private/tmp/cc-mods-blog/`，SHA-256 为 `2ea08f4e…`。原文本身不进仓库。
+- **官方**：官方 2.1.287 binary 的实际行为，以及它写出的类型声明（见 12.3）。
+- **实现**：本地实现自己定的、博客没有提到的约束。这类约束只能拿官方行为或内部一致性来判定，不能当成文档要求。
+
+证据根记为 `O=/private/tmp/mods287-official`。
+
+当前进度按证据层次分别记录，后续成功不改写 12.3–12.5 的历史红灯：
+- **实现/源码 tests：** G1–G4、G6–G7、P1、P3、P9 的 runner、声明、validate/schema、state/CAS、targeted invalidation 与 AbovePrompt 焦点/continuation 已有实现和定向回归；P7 的 builtin/ZIP contract-only discovery 已完成限定源码与 native CLI 验证。精确轮次见 12.11 续记。
+- **历史 native binary：** 三个官方原样示例曾取得 validate 全部成功、test 1/4/3 pass，旧声明迁移和 P7 冷入口矩阵也有合格历史制品证据；这些制品早于后续源码/文档变化，不能作为当前工作区产物。
+- **最新 G5 dynamic：** 单一 retained run 中 not-now、enable/clear-cancel、cancel、turn-end-load、same-session-resume、fork-session 六场景均 passed；manifest 仍为 `overall_verdict=blocked`、`matrix_complete=false`。
+- **physical/full gate：** logical/physical frames、独立 child command、其余 M287/S1–S9 和完整 required-target release matrix 未覆盖，整体仍 blocked。
+
+本轮不覆盖：桌面端、远程/SSH 界面、Windows/Linux、与全部官方 API 的完全对等、`claude.ai/directory` 的提交流程。
+
+### 12.2 决定
+
+| # | 结论 |
+| --- | --- |
+| D3 TypeScript | 官方没有把 TypeScript 编译器打进 binary（证据见 12.3）。结论：与官方对齐，本地去掉 `typescript` 这项运行时依赖。契约的语法检查改用 `Bun.Transpiler`，`PluginState` 改用词法扫描提取，记为修复项 F1，由实现作者处理 |
+| D4 下载官方 | 已允许，已完成（见 12.3） |
+| D5 示例位置 | 放在 `examples/mods/`。要求是：符合官方 mods 定义、可以直接运行、可以在官方和本地之间互换，并以官方 2.1.287 的通过结果为准（见 12.4） |
+| D1 冻结时点 | 待定：需要并发修改的作者确认。本节编写期间，`Makefile`、`scripts/build.mjs`、`runner.ts` 等文件仍在变化 |
+| D2 `VERSION` | 待定：是否从 2.1.280 升到 2.1.287。生成的声明会写入这个版本号；博客要求 2.1.287 或更高 |
+| D6 修复范围 | 待定：12.6 列出的 G/F 项是否全部纳入本轮 |
+
+### 12.3 官方 2.1.287 基准（已执行）
+
+**Binary 身份**
+
+- 来源：npm 包 `@anthropic-ai/claude-code-darwin-arm64@2.1.287`（下载时 npm `latest` 指向 2.1.287，`stable` 指向 2.1.285）。
+- 位置与校验：`O/official-claude-2.1.287`，227,827,120 bytes，SHA-256 `6eab8333fe2121553100d8f40bfada384a3e989b94f947e18ba6677a6fcb41ea`。
+- 根目录的 `official-claude`（2.1.272，`195e24e8…`）没有改动。
+
+**TypeScript 是否打包（Binary-observed）**
+
+- 官方 binary 是分块打包的：入口文件只有 23 KB，另有 2400 个模块。我用 `native-extra.mjs` 的一份临时改写（`/tmp/native-extra-all.mjs`，原脚本未动）把所有模块导出到 `O/extract/official-all/all`。
+- 在官方全部 JS 模块里搜索 `createSourceFile`、`versionMajorMinor`、`isInterfaceDeclaration`、`isModuleDeclaration`，命中 0 次。
+- 只有两个内置 skill 附带的资源 `package-validate.mjs` 和 `dts.mjs` 引用了 TypeScript。它们是独立的 Node 脚本，运行时从用户环境 import `typescript` 或 `ts-morph`，不属于 binary 内的编译器。
+- 官方解析类型契约分两步：
+  - 语法检查用 `GSn`，即 `new Bun.Transpiler({loader}).transformSync`（位于 `chunk-sthe7p0e.js`），失败时报 `does not parse as TypeScript`；
+  - `PluginState` 用手写的 token 扫描提取（位于 `chunk-hseyexgv.js`）。
+- 本地 `built-claude` 则打包了完整的 TypeScript 编译器：`createSourceFile` 出现 6 次，`isInterfaceDeclaration` 4 次，`isModuleDeclaration` 3 次。
+
+**声明的写入（Runtime-observed）**
+
+- 只有在会话中加载 mod 时才写；`plugin validate` 和 `plugin test` 不写。本次是用 `-p --plugin-dir` 加载触发的。
+- 官方写出的文件：`.claude-plugin/types/` 下 `claude-code/`、`claude-code-tools/`、`claude-code-mcp/` 三个目录各一个 `index.d.ts`，外加 `.gitignore`（内容为 `*`）和 `tsconfig.json`。
+- `tsconfig.json` 的 `types` 指向上述三个目录，`include` 为 `../../hooks`、`../../types`、`../../tests`。
+- 存档在 `O/official-decl`。
+
+**测试套件**
+
+来源是官方声明，以及 `anthropics/claude-code@52c76441` 的 `mods/README.md`（存于 `O/official-src`）：
+
+- 导出：`describe`、`test(name, [options], ($, on) => …)`、`expect`、`tier`、`mock.env/store/clock`。test 的 options 有 `plugins`、`timeoutMs`、`options`；`mock.clock` 提供 `advance` 和 `settle`。
+- 挂载结果的方法：`drawn`、`find(ElementQuery)`、`findAll`、`press({key})`、`input`、`select`、`redraw(props)`、`unmount`。
+  - `ElementQuery` 为 `{type, key, text: string|RegExp, in}`；
+  - `find` 异步返回元素，找不到时返回 `undefined`。
+- 底层没人应答的调用会直接抛错，并指明事件名。
+- `turn.start` 的桩必须返回 `{ turnId }`。
+- 挂载一个 mod 会让出的组件时，测试必须在底层应答 `ui.render`。
+
+**Pane 的放置规则**
+
+- 用户主动发起的打开（命令、prompt 或按键）在任何宽度下都会放置；
+- 不是用户发起的，终端宽 144 列起才放置，曾经被用户打开过的降到 110 列；
+- `-p` 模式下全部放置；
+- 渲染时用 `{component: "Pane", requestId: id}` 匹配。
+
+**CLI 输出**
+
+- `validate`：输出与博客 Step 5 一致，只多了一行 `declares on $`。
+- 未声明 state 的报错原文：`…is not declared: the manifest's types contract must name it in interface PluginState { token-weather: { readings: ... } }`。
+- `hooks.json` 写两个 module 时，报 `names one hooks module per plugin; a second entry is refused`，退出码 1。
+- `plugin test` 的输出格式类似 bun：`(pass) …`、` N pass`、` M fail`、`Ran …`；帮助文本是 "Exits 1 when a test fails"。
+
+**热重载与编写指南**
+
+官方有热重载确认（"Enable hot reloading for this session?"，对应工具 `mod_hot_reload`）和 `cc-plugin-mods-guide`，分别位于 `chunk-5xa9nbn4.js` 和 `chunk-41nk7e7j.js`。
+
+**官方源码仓库**
+
+官方源码仓库 `mods/` 目录下只有 agents-md、diff、sec-default、telemetry。其中的 `types/claude-code.d.ts` 比 binary 旧，没有 `PluginState`。因此本节以 binary 写出的声明为准。
+
+### 12.4 示例 mods（`examples/mods`，已执行）
+
+三个 mod 都遵循官方定义：
+- `.claude-plugin/plugin.json`，带 `types` 契约；
+- `hooks/hooks.json`，只有一个 module；
+- `hooks/<mod>.mjs`；
+- `types/index.d.ts`；
+- `tests/<mod>.test.ts`，使用 `claude-code/testing`。
+
+| Mod | 来源 | 官方 validate | 官方 test | `tsc -p`（官方声明） | 官方 `-p` 加载 |
+| --- | --- | --- | --- | --- | --- |
+| `token-weather` | 博客原文逐字照搬：模块和测试是从原文 markdown 的代码块中程序化提取的，manifest 按 Step 3 加上了 `types` | 通过，6 条 notes | 1/1 | 0 错误 | 已加载；`session.start` 正常完成 |
+| `blast-radius` | 用了原文的核心片段（挂起循环、`isPlaced` 退回渲染区、按钮快捷键）；`classify`、`measure`、`card` 按官方声明的形状补全 | 通过 | 4/4 | 0 错误 | 已加载 |
+| `replay-theater` | 用了原文的片段；`stepsFor`、`openReplay`、diff 和 `$.state`（`replay`、`step`）按官方声明补全 | 通过 | 3/3 | 0 错误 | 已加载；`session.start` 正常完成 |
+
+**市场分发**：新增 `examples/mods/.claude-plugin/marketplace.json`（名为 `mods-examples`）。在官方上依次执行：
+- `claude plugin marketplace add ./mods`；
+- 对三个 mod 分别执行 `claude plugin install <mod>@mods-examples --scope user`，全部成功；
+- `claude plugin list` 显示三者都是 enabled。
+
+**测试写法要点**：
+- Blast Radius 的 `sleep` 桩由测试控制放行，以免挂起循环在微任务里空转。第一版没有这样做，官方运行 600 秒后超时，失败已保留在证据中。
+- 各测试都在底层补了 `ui.render` 应答，`turn.start` 的桩返回 `{turnId}`。
+
+**仓库改动**：`.gitignore` 新增 `examples/mods/*/.claude-plugin/types/`。官方会自己写 `types/.gitignore`，但本地实现不会。
+
+**证据**：
+- 16 个示例文件的 hash 存于 `O/examples.sha256`；
+- 最终的官方运行结果在 `O/runs/final-official-*`；
+- 加载记录在 `O/runs/load-official-*`；
+- 市场分发记录在 `O/runs/marketplace-official`。
+
+**未覆盖**：没有在官方交互式 TUI 下运行这三个 mod（`not covered`），留到 12.9 的 S1–S3。
+
+### 12.5 本地实现对照（工作区未冻结，结果只作为发现）
+
+**使用的两个 binary**：
+- 共享的 `built-claude`：2.1.280，`aaac92b2…`，11:08 构建，早于 `plugin test` 命令加入的时间。
+- 工作区快照 `O/built-wt/claude`：`a8c94ee1…`，构建时 `git diff` 的 hash 为 `09b6d745…`；用 `bun package:binary` 构建，没有覆盖 `built-claude`。
+
+| 检查 | 结果 |
+| --- | --- |
+| `built-claude` validate / test | validate 只校验 manifest；`plugin test` 报 `unknown command 'test'` |
+| `built-wt` validate（三个 mod） | 只输出 manifest 部分，完全没有进入 `hooks/hooks.json` 的校验，也没有 notes（G3） |
+| `built-wt` plugin test（三个 mod） | 全部报 `unknown option '--child'`，确认 P2 |
+| 绕过 P2，直接调用 runner（`O/run-local-runner.ts`） | 三个 mod 全部失败：<br>• token-weather：用对象调用 `find` 时找不到元素（G1）；<br>• blast-radius：测试注册的 hook 里调用 `$.ui.resolve`，报 `UI resolve requires an admitted terminal hook`；<br>• replay-theater：报 `Unhandled plugin test event: command.run` 和 `Mod UI panes are unavailable without an interactive terminal host`（G7）。<br>注意：运行期间 `runner.ts` 正被并发修改 |
+| `built-wt` `-p` 加载 | 已激活（写出了声明），但只写了 `claude-code/` 和 `tsconfig.json`，没有 tools/mcp 两个目录，也没有 `.gitignore`；debug 日志里没有加载记录 |
+| 用本地声明跑 `tsc -p` | 本地的 `tsconfig.json` 没有 `include`，`tsc -p` 只检查声明文件本身，结果没有意义。改成官方式的 `include` 之后，token-weather 的测试报 7 个错误：缺少 `describe`、`expect`、`test` 的导出（G4） |
+
+### 12.6 不符项与修复项
+
+| # | 内容 | 状态 |
+| --- | --- | --- |
+| G1 | 测试套件的 `find` 接受 `ElementQuery`、异步返回、未命中为 `undefined`，并支持 `press({key})` | 已实现并有 runner integration tests；历史 native 三例通过 |
+| G2 | `plugin test` 使用 bun 风格逐文件/case 与汇总输出 | 已实现并有 reporter tests；历史 native stdout/失败 exit1 已验证 |
+| G3 | `validate` 校验 `hooks/hooks.json` 并报告 types、hooks、calls、state writes/reads | 已实现并有 handler/validator tests；历史 native 三例通过 |
+| G4 | 自动生成 tool/MCP/testing 声明、`.gitignore` 与完整 `tsconfig`，并安全迁移精确旧布局 | 已实现并有 declarations/typeContract tests；历史 native 三例和迁移通过 |
+| G5 | session authoring consent、turn-end load、取消 fencing、same-session resume、clear/fork 不继承及 `/plugin-authoring` 指南 | 源码 tests 通过；最新同轮六场景 passed，但 logical/physical 未覆盖，整体 blocked |
+| G6 | 第二个 module 应当被拒绝；官方会拒绝 | schema 最多一个 module 且有测试；官方拒绝已确认。当前文档修改后未重建复验 |
+| G7 | 未应答底层调用抛错，测试 hook 可用 UI resolve，command/Pane 与 `mock.*` 可用于作者测试 | 已实现并有 runner/runtime tests；历史 native 三例通过 |
+| F1 | 去掉 `typescript` 运行时依赖（D3） | 当前生产 src 无直接 TypeScript import/require，typeContract 使用 Bun.Transpiler；原生契约解析有历史验证。产物依赖全量审计、体积/冷启动对比仍待完成 |
+| P1 | 声明写入内置 Mods 缓存，可能导致每次启动重新解压 | runtime 已让 native/builtin 跳过作者声明安装并有 tier/reconcile 回归；完整 builtin cache 重启 physical 未覆盖 |
+| P2 | 编译后 binary 中 `plugin test` 的子进程参数错误 | 已修复；历史原生三例 test 1/4/3 通过，真实失败 exit1 已验证 |
+| P3 | 渲染区停止绘制或卸载时释放焦点 | `ModsAbovePrompt` focus/unmount 与 continuation 已有源码回归；真实逐帧 physical 未覆盖 |
+| P7 | 独立 validate 的跨插件 state 只读契约发现、完整性与 owner-only write | builtin/ZIP/本地发现已实现；历史原生 cold matched/missing/write-denied/损坏 ZIP 已验证；完整官方差异及 EACCES 矩阵未闭环 |
+| P8 | Node 版 `dist/cli.js` 下 validate 报 `Bun is not defined`（`loader.ts:878`） | Node bundle 不是当前 native 作者 CLI 验收目标；若声明支持仍需单独定义和验证 |
+| P9 | toast 限长、runner 排除目录、声明目录竞态 | 已实现 4096 UTF-16 限长、排除 `node_modules`/`.claude-test-environment`、串行/原子声明写入及 symlink/目录 tests；跨平台文件系统 physical 未覆盖 |
+| P10 | `README.md:612` 的说法已过期；`VERSION` 的问题见 D2 | README 已更新当前作者工具链和边界；版本保持不变 |
+
+### 12.7 验证分层与命令
+
+- **L1**：
+  ```bash
+  bun test src/services/mods/{compatibility287,state,toast,declarations,typeContract,loader,ui,uiEnvironment}.test.ts \
+    src/utils/plugins/validatePlugin.test.ts src/components/ModsAbovePrompt.test.tsx
+  bun test src/services/mods src/components/ModsPane.test.tsx src/components/tasks/BackgroundTasksDialog.test.ts
+  ```
+  完整清单按 4.2 的做法执行。注意：`examples/mods/*/tests/*.test.ts` 依赖 `claude-code/testing`，只能用 `claude plugin test` 运行，不能纳入 bun 的测试清单；裸 `bun test` 的自动发现会把它们也收进来。`CLAUDE_CODE_OFFICIAL_MOD_TYPES` 指向 `O/official-decl`。先为 G1–G7、P1、P2、P3 补失败测试，再处理 REPL 接线和热重载时 `session.start` 的触发次数。
+- **L2**：`make release-check`。
+- **L3**：`make build`。另用 HEAD 镜像构建一份基准，对比体积和冷启动时间，用来量化 F1 的收益。
+- **L4**：执行 `O/check.sh <制品> <标签> examples/mods/token-weather examples/mods/blast-radius examples/mods/replay-theater`。脚本隔离 HOME、配置和 TMP，把 mod 复制出仓库再运行，`plugin test` 带 180 秒超时。
+  - 以官方结果为准：`validate` 退出码为 0 且 notes 一致；`test` 结果为 1/1、4/4、3/3。
+  - 违规夹具：多个 module、未声明的 state（官方的报错原文见 12.3）、写入他人 state、动态 key、`types` 越界、非 `.ts` 文件。
+  - 用 `O/official-decl` 的 tsconfig 写法跑 `tsc -p`。
+- **L5**：按 `claude-agent-workflow-validation` 执行，由专门的 subagent 串行驱动隔离的 tmux。使用本地回环的假 API，不调用真实模型。场景见 12.9。
+- **L6**：官方部分已完成（12.3、12.4）。剩下的是交互式对照：两侧在相同条件下运行 S1–S3，官方开关如果没有自然打开，就记为 `not covered`。
+
+### 12.8 断言
+
+“当前”按证据层次标注：`源码 tests` 只证明当前实现的确定性回归，`历史 native` 只证明对应冻结制品，`最新 G5` 指末尾同轮 retained manifest，`physical 未覆盖` 不得由前三者推定。官方结果写在 `/` 左边，本地结果写在右边。`—` 表示还没有执行。
+
+| ID | 来源 | 断言 | 层级 | 当前 |
+| --- | --- | --- | --- | --- |
+| M287-01 | 文档 | 每次加载都把声明写入 `.claude-plugin/types/`；重复加载内容不变，不触发连续重载；类型目录是符号链接时拒绝写入 | L1+L5 | 源码 tests passed；历史 native 迁移/幂等 passed；会话 physical 未覆盖 |
+| M287-02 | 文档 | 不需要额外步骤，`tsc -p` 就能检查 hooks、types 和 tests，包括 `claude-code/testing` | L1+L4 | 官方通过 / 历史 native 三例通过；当前文档修改后未重建 |
+| M287-03 | 官方 | 本地生成的声明与 `O/official-decl` 在布局、`EngineInterface`、`PluginState`、`StateRef`、`UiOpenResult`、`SessionUsage`、测试套件上一致 | L4+L6 | 声明/typeContract 源码 tests passed；未宣称逐字全面 parity |
+| M287-04 | 风险 | 内置缓存不会因为写入声明而在每次启动时重新解压（P1） | L1+L5 | 源码 tier/reconcile tests passed；完整重启 physical 未覆盖 |
+| M287-05 | 文档 | `$.state.get(ref)` 返回 `{value}`，`$.state.set(ref, value)`；ref 为模块级 const，能通过扫描和 validate | L1+L4 | 官方通过 / 源码 tests 与历史 native validate passed |
+| M287-06 | 文档 | 未声明的 state 会报错，报错原文与官方一致 | L4 | 官方原文已取得 / 历史 native missing case exit1 |
+| M287-07 | 实现 | state 规则：只有所属插件能写、`ifVersion`、只接受 JSON、4Mi 上限、渲染期间禁止写入、中间件不能改写引用字段 | L1（+L6） | state/validator 源码 tests passed；physical 未覆盖 |
+| M287-08 | 文档 | 热重载时 `register` 重新执行，`session.start` 恰好再触发一次，模块变量归零，`$.state` 保留 | L1+L5 | 生命周期源码 tests 部分覆盖；完整 state-preserving physical 未覆盖 |
+| M287-09 | 实现/官方 | 会话结束和 `/clear` 后 state 重置；`--resume` 的行为以官方为准 | L5+L6 | state reset 源码 tests passed；state 的官方 resume 对照未覆盖 |
+| M287-10 | 文档 | 渲染期间的 `$.state.get` 会订阅这次绘制，之后的 `set` 自动重绘，只重绘订阅了的实例 | L1+L5 | 官方示例覆盖 / 本地 targeted invalidation 源码 tests passed；physical 未覆盖 |
+| M287-11 | 文档 | `ui.render` 顶层字段、`e.props`、`hasSurvey` 时让出、`bodyColumns` 受 Pane 停靠影响、没有 hook 绘制时宿主不画任何东西 | L1+L5 | AbovePrompt/UI 源码 tests passed；physical 未覆盖 |
+| M287-12 | 风险 | 渲染区的焦点进入、按键屏蔽、焦点释放（P3） | L1+L5 | 源码 focus/unmount tests passed；逐帧 physical 未覆盖 |
+| M287-13 | 文档/官方 | `$.ui.open` 返回 `isPlaced`；放置规则符合 12.3；`isPlaced: false` 时退回渲染区 | L1+L5+L6 | 官方与作者 runner 有覆盖；完整本地放置 physical 未覆盖 |
+| M287-14 | 文档 | Button 可以通过点击、Tab+Enter、快捷键触发 | L5 | 源码 UI tests 部分覆盖；作者场景逐帧 physical 未覆盖 |
+| M287-15 | 文档/实现 | `$.ui.toast` 显示在通知区；同一插件 2 秒内只显示一条 | L1+L5 | toast 源码 tests passed；physical 未覆盖 |
+| M287-16 | 文档 | 每次 dispatch 的 10 秒时限不计入等待 `$` 调用的时间；挂起循环；按 Esc 使 `next.signal` 中止；Proceed 和 Cancel 的语义 | L1+L5 | runner/runtime 源码 tests 与官方示例覆盖；完整 physical 未覆盖 |
+| M287-17 | 文档 | `$.process.run` 按 argv 执行；挂起期间的轮询不弹权限框 | L1+L5 | 宿主源码 tests 有覆盖；作者 physical 未覆盖 |
+| M287-18 | 文档 | `agentId` 把 subagent 的轮次排除在分组之外；`tool.call` 能看到全部调用；对 Write 而言，`$.fs.read` 读到写入前的旧内容 | L5 | 官方测试已覆盖 / 本地完整动态未覆盖 |
+| M287-19 | 文档 | `/replay` 的注册与执行；按 `r` 打开回放 | L5 | 官方测试与历史 native plugin test 覆盖命令；TUI hotkey physical 未覆盖 |
+| M287-20 | 文档 | `$.session.usage()` 与状态栏一致；不带 `breakdown` 时不发 token 计数请求 | L1+L5 | 源码 tests 部分覆盖；状态栏动态对照未覆盖 |
+| M287-21 | 文档 | `--debug` 下出现"树未通过校验"的日志行，界面不崩溃 | L4/L5 | 未覆盖 |
+| M287-22 | 文档 | 原文 Token Weather 测试在 `plugin test` 下通过，输出与原文一致 | L4 | 官方 1/1 / 历史 native 1/1 passed；当前未重建 |
+| M287-23 | 实现/风险 | 编译后 binary 中 `plugin test` 能起子进程、失败时退出码为 1、遗留定时器或挂载时判失败 | L4+L6 | 源码 safety tests passed；历史 native 子进程与失败 exit1 passed |
+| M287-24 | 文档 | `validate` 输出与原文 Step 5 一致 | L4+L6 | 官方通过 / 历史 native 三例 passed；不宣称逐字全面 parity |
+| M287-25 | 官方 | 第二个 module 被拒绝 | L4+L6 | 官方拒绝；本地 schema/tests 拒绝，当前未重建复验 |
+| M287-26 | 实现 | 违规夹具 validate 报错，退出码与官方一致 | L1+L4+L6 | 多项源码/native 夹具 passed；完整违规矩阵未闭环 |
+| M287-27 | 风险 | 跨插件读取 state 与官方一致（P7） | L6 | 源码 discovery tests 与历史 native cold 四项 passed；官方差异/EACCES 未闭环 |
+| M287-28 | 文档 | 默认开启：全新配置、不做任何设置时 mod 加载 | L5 | 官方 `-p` 已加载 / 本地历史 `-p` 已激活 |
+| M287-29 | 文档 | 市场分发的 CLI 路径和会话内斜杠命令路径都可用，安装副本中生成声明 | L4+L5 | 官方 CLI 路径通过 / 本地会话内完整路径未覆盖 |
+| M287-30 | 文档/官方 | 热重载确认与编写指南（G5） | L0→L5 | `/plugin-authoring` 与 consent 已实现；最新同轮六场景 passed，physical frames 未覆盖 |
+| M287-31 | 实现 | 隔离不退化：`stateMethod` 不可伪造、两侧 JSON 化、`session.authorize` 返回空授权 | L1 | 源码 tests passed；生产授权恒空另有回归 |
+| M287-32 | 官方 | 不打包 TypeScript；编译后的 binary 能解析契约（F1） | L3+L4 | 生产源码使用 Bun.Transpiler；历史 native 解析 passed；完整产物依赖审计未完成 |
+| M287-33 | 回归 | 已有 Mods：`mods-test-lab check/accept-builtin` 通过；`bun test src/services/mods` 通过 | L1+L4+L5 | 有分项历史记录；当前工作区未执行完整回归 |
+| M287-34 | 回归 | 提交 prompt、Agent、Workflow、后台任务通知正常；两次 Escape 不误开 Rewind | L5 | 未执行完整回归 |
+| M287-35 | 文档化 | README、CHANGELOG 和本节同步；`.claude-test-evidence/` 与 `examples/mods/*/.claude-plugin/types/` 被忽略；博客原文不进仓库 | L0 | 文档已同步；需新 build 后按新制品身份验收 |
+
+### 12.9 交互场景
+
+夹具统一使用 `examples/mods`，运行时复制到证据根，不在仓库内运行。
+
+#### G5 专项的含义与覆盖范围
+
+这里的 **G5 是第 5 个兼容性缺口（Gap 5），不是第 5 个发布 gate**。它检查 `/plugin-authoring` 打开插件作者模式后，授权是否严格绑定当前 session，以及延迟加载、取消、恢复和 fork 时是否保持正确的生命周期语义。正式测试使用隔离的 HOME/config/TMP、本地回环假 API、真实编译 binary 和 tmux 键盘输入；它验证终端语义状态，但不等同于逐帧 logical/physical 渲染验收。
+
+| G5 场景 | 核心断言 | 当前同轮结果 |
+| --- | --- | --- |
+| `not-now` | 用户拒绝授权后不创建 authoring root、不写授权记录、不加载开发 mod | passed（4 条断言） |
+| `enable` + `clear-cancel` | 接受后只为当前 session 建立 authoring root；`/clear` 不继承授权，再次询问时取消应保留命令草稿且不产生副作用 | passed（9 条断言） |
+| `cancel` | 首次授权对话框取消后恢复 `/plugin-authoring` 草稿，不创建 root、记录或模型请求 | passed（4 条断言） |
+| `turn-end-load` | 活跃 turn 内接受授权时不提前加载；turn 结束后才加载开发 mod 并出现 marker | passed（7 条断言） |
+| `same-session-resume` | 正常退出后用同一 session ID `--resume`，沿用该 session 的授权和 authoring root，启动即重新加载 marker | passed（12 条断言） |
+| `fork-session` | `--fork-session` 取得新 session ID，不继承原 session 的授权、root 或 marker；重新询问授权，取消仍恢复草稿且无新增副作用 | passed（16 条断言） |
+
+最新同轮证据为 `/private/tmp/g5-release-1d09defdff/evidence/driver-final-manifest.json`，六场景共 52 条断言通过，`first_divergence=null`。该 manifest 同时明确记录 `logical_frames=not covered`、`physical_frames=not covered`、`matrix_complete=false` 和 `overall_verdict=blocked`；因此 G5 的会话语义专项可以判 passed，但不能据此宣称完整 Mods 或发布门禁通过。
+
+| 场景 | 流程 | 断言 |
+| --- | --- | --- |
+| S1 Token Weather | 用全新配置执行 `--plugin-dir`；假模型跑三轮，读数从 Clear 依次变到 Showers、Storm；终端从 120 列缩到 80 列，再停靠 Pane；保存文件触发热重载，计数 `session.start` 的触发次数；最后执行 `/clear` | 01, 08–11, 28 |
+| S2 Blast Radius | 默认权限模式下，假模型发出 `rm -rf build`；先在 144 列以上放置 Pane，再在 120 列下退回渲染区；分别用 `2`、Tab+Enter、`1`、点击操作；挂起超过 10 秒；按 Esc 中止；同时记录 Mod 拒绝与 Bash 删除强制确认谁先触发 | 13, 14, 16, 17 |
+| S3 Replay Theater | 跨三个文件的重命名，中间穿插一次 subagent 轮次；按 `r` 打开，再执行 `/replay`；fullscreen 下停靠，80 列下 inline 显示 | 13, 18, 19 |
+| S4 焦点 | 按 Tab 进入渲染区，然后让渲染区消失，继续输入时文字应进入输入框 | 12 |
+| S5 Toast | 一次连发 3 条，只显示 1 条，之后自动消失 | 15 |
+| S6 非法 UI 树 | 在 `--debug` 下检查日志行，并确认界面可以继续使用 | 21 |
+| S7 重启 | 用同一个 HOME 连续启动两次，比较内置缓存的摘要 | 04 |
+| S8 市场分发 | 在会话内执行 `/plugin marketplace add <本地路径>`、`/plugin install`、`/reload-plugins` | 01, 29 |
+| S9 冒烟与清理 | Agent、Workflow、后台通知；结束后检查进程、socket、端口都已回收，没有多余写入 | 33, 34 |
+
+### 12.10 判定、隔离与执行顺序
+
+**判定**：
+- 只有 L1 和 L5 都通过、每条断言都有证据，整体才算 passed。
+- 来源为"文档"或"官方"的断言如果不满足，一律判 failed，除非你明确接受这个偏差，并在本节记录。
+- G、F 和已确认的 P 项，都按"先写失败测试、再修复、构建新制品后重新验证"处理；历史失败保留，不被后来的成功覆盖。
+
+**隔离**：沿用第 6 节，即独立的 HOME、CLAUDE_CONFIG_DIR、XDG 和 TMP，环境变量走白名单，只用本地回环的假 API，不读取真实凭据，只清理本轮自己创建的东西。
+
+**执行顺序**：
+1. 冻结（D1）；
+2. 补齐失败测试，修复 G、F、P 项，直到 L1 全部通过；
+3. 依次执行 L2、L3、L4（官方结果作为对照基准）；
+4. L5 由 subagent 执行；
+5. L6 交互部分；
+6. 回填 12.11，更新 README 和 CHANGELOG。
+
+### 12.11 执行记录
+
+**本轮已完成（2026-10-02）**：
+- 下载并核对官方 2.1.287（12.3）；
+- 二进制分析：确认官方没有打包 TypeScript，并找到契约的解析方式（12.3）；
+- 采集官方写出的声明和测试套件的约定；
+- 编写三个示例 mod 和 marketplace，并在官方上全部通过 validate、test、`tsc -p`、`-p` 加载和 CLI 市场安装（12.4）；
+- 对本地 binary 做非冻结对照，确认了 G1–G4、G7 和 P2（12.5）。
+
+**尚未执行**：本地实现冻结后的 L1–L5、官方交互对照（S1–S3）、违规夹具的完整矩阵、P1/P3/P7/P8/P9 的验证。
+
+**仓库改动**：`examples/mods/{token-weather,blast-radius,replay-theater}/`、`examples/mods/.claude-plugin/marketplace.json`、`.gitignore` 新增一行，以及本节。没有改动并发作者的实现文件，也没有提交。
+
+#### 本地修复续记（2026-10-02；不覆盖上述历史结果）
+
+按后续授权改为串行、仓库内独立 HOME/config/TMP/XDG，保留全部证据；不执行递归清理、不覆盖旧产物、不 commit/push。第 12.9 的仓库外运行与清理步骤不用于此次执行。
+
+- P2 已在编译制品复现 `unknown option '--child'`：子进程错误携带 Bun 内嵌入口。改用现有 bundled-mode 判断后消除；红证据 `.mods-author-check-0odn1n_c/results.json`。
+- 原样 token-weather 暴露 state invalidation 后查询旧树；新增最小失败回归后，查询等待实际 pending drawing。
+- 原样 blast-radius/replay-theater 暴露测试 host hook 的同步 `ui.resolve` 和 placement stubs 路由缺口；分别补失败回归与最小修复。
+- `drawn()` 只等待首帧不足以推动跨 worker 调用。依据官方 settle 协议补事件驱动进度屏障；不加 sleep、扩大示例循环或强制 redraw。红绿与完整 runner 记录：`.claude-test-evidence/worker-settle-20261002/`。
+- 新隔离 `make build` 成功：`.validation-build-9ef1bh2e/output/built-claude`，SHA-256 `9bd0dc4fa7e2bad68430083ba7a3ac87c032d41491dc5bcc99f3327f059ed3a4`。
+- 该制品中三个示例均原样执行 `plugin validate <dir>` 成功；`plugin test <dir>` 分别为 token-weather **1/1**、blast-radius **4/4**、replay-theater **3/3**。完整命令与输出：`.mods-author-check-24jzqg_x/results.json`。
+- `tsc --noEmit --incremental false` 通过。runner 完整回归有 **49/49**，同时保留一轮 **48/49** 的 late-registration 间歇失败，尚未解释完成；不能用后续成功覆盖。
+- 本记录仅确认上述作者 CLI 子集，不代表 G3 诊断信息、声明类型检查、F1、违规夹具、屏障 abort/dispose/并发 hold 或 L5/L6 TUI 已通过。当前整体仍未闭环。
+
+#### 未等待的 UI invalidation 修复（2026-10-03）
+
+- 保留后续制品的失败记录 `.mods-author-check-7zyjbv77/results.json`：Blast Radius Cancel 用例报告 `async: Module capability failed`。
+- 最小回归连续 8 个正常 command-return/unmount case 均失败；在测试 body 结束加 `runtime.settle()` 仍失败。根因是 `ui.invalidate('ui.render')` 继承 hook invocation signal，hook 正常返回的 abort 取消了尚未完成的刷新。
+- 最小修复仅使该 UI invalidation 不继承 hook invocation signal；不改变其他 capability 的取消行为或 runtime 全局生命周期。原失败回归通过；新增回归确认 `before` 消失且 `after` 真正发布，而非仅消除错误。
+- `bun test src/services/mods/testing/runner.integration.test.ts` 为 **52 pass / 0 fail**；随后新增发布回归，`-t 'fire-and-forget'` 为 **2 pass / 0 fail**。`tsc --noEmit --incremental false --pretty false` 与 `git diff --check` 通过。
+- 新隔离产物 `.validation-build-k0mbovtm/output/built-claude`，SHA-256 `07a7ca112001e98d46eece4f5fec3bfe8038fb4a7f044e4066d7eb2758ad9e71`。构建日志显示 make 完成产物生成，但外层 zsh 记录脚本误用只读变量 `status`，包装命令 exit 1；此异常保留于 `build-result.json`，不将外层命令标为成功。
+- 原样作者文件副本散列一致，三个示例 validate 均 exit 0，test 分别 **1/1、4/4、3/3**，stderr 均空。证据 `.mods-author-check-dfdx84e5/{author-files,results,summary,side-effects}.json`。
+- 根 `built-claude` 散列、mtime、size 未变；全部证据保留，无删除、仓库外配置写入或 commit/push。上述仅为作者 CLI 验证，不代表完整 release gate 或 L5/L6 TUI 通过。
+- 后续撤去无效的 body 尾部 `runtime.settle()` 实验，runner integration+safety **67 pass / 0 fail**。另以先红后绿回归修复 discovery 误收集 `node_modules` 与 `.claude-test-environment` 中测试的问题；safety **15 pass / 0 fail**，TypeScript 和 diff 检查通过。
+- 此阶段重建 `.validation-build-jyc7yyll/output/built-claude`，`make build` exit **0**，SHA-256 `d37dda30e713efcaa9628f22f1706e95429f7e88e55d7a5455bbefb82b131bcf`。`.mods-author-check-7m8fdwsm/results.json` 记录三原样示例 validate 成功及 test **1/1、4/4、3/3**；向新 Token Weather fixture 的两类排除目录放入必抛错的 `foreign.test.ts` 后，真实 CLI 仍为 **1 passed, 0 failed**。根产物保持不变，所有新增证据保留。
+- 随后 P1 新增回归确认 builtin tier 生成声明污染发行树（预期不存在，实际存在）；修复仅让 native/builtin 跳过作者声明安装，保留完整 archive 摘要。重复 reconcile 的 builtin/user/prepend/append 四项回归 **1 pass / 8 assertions**，TypeScript/diff 检查通过。此后源码已变化，上述 binary 不能作为该修复的验收证据。完整 builtin cache 重启验证仍未执行：既有 `builtinMods.test.ts` 和 acceptance harness 含递归清理，与当前约束冲突。
+- G2 已按保存的官方 stdout 实现逐文件标题、逐 case 名称和观测耗时、pass/fail 与 Ran 汇总。单 case 多条失败聚合计数，文件加载错误单列；保留非零 child exit、deadline、隔离环境约束。先红后绿，runner safety/integration 与 reporter **78 pass / 0 fail**；主线程另纠正加载失败文案并验证 reporter **7 pass / 0 fail**。
+- 包含 P1/G2 的隔离构建 `.validation-build-20261002T170808.477475Z/output/built-claude`，make exit **0**，SHA-256 `bfeb38cbd2f5e1a7cc314d5ba6746698e9484de34ca8c745cee39726e7e50acb`。构建与 CLI 均以 `sandbox-exec` 禁止网络，repo-local 独立环境；根 binary 和 tracked Git 状态前后不变。
+- `.mods-author-check-20261002T170808.477475Z/` 保存原样 15 文件散列、逐命令环境及结果：三个 validate 成功，test **1/1、4/4、3/3**，逐 case 名称/耗时及官方风格汇总出现，stderr 空。另在新副本注入 `throw Error('load-probe')`，真实 CLI exit **1**，输出 `(fail) the file did not load`、**0 pass / 1 fail**、`Ran 0 tests`，无假通过。此轮未覆盖真实 builtin 缓存重启或 TUI，不代表总体门禁通过。
+- P9 toast 限长按官方 `text.length > 4096` 拒绝（UTF-16 units、原文计长、不截断），边界/Unicode/节流回归 **3 pass / 22 assertions**。
+- P7 接入现有 cached enabled plugin contracts，保留 unavailable 与完整空集区别；foreign contract 不得补 owner 自身声明，任一读取失败明确 warning + unchecked，不调用会物化缓存的 loader。validator/真实 handler 测试 **29 pass**。独立 CLI 通常无预热 cache，foreign references 仍 unchecked，此限制未解决。
+- G5 `/plugin-authoring` 通过现有 bundled skills 注册，附当前生成声明和本地真实功能说明，不承诺未实现的 session authoring consent。skill/declarations/handler focused **39 pass**，TypeScript/ESLint/diff 通过。官方 consent 是会话专属目录启用授权，不是每次 save 提示，也不能套到所有普通插件。
+- 最新隔离 build `.validation-build-1otk8noh/output/built-claude` exit **0**，SHA-256 `8124f4fd66285959f0be567e0bb34927b6ccaf833ff2113d10ef6adae15c5e17`。`.mods-author-check-u353vikn/results.json` 三例 validate/test **6/6 命令成功、8 pass / 0 fail**；源码副本散列一致，sandbox 禁网，根产物/tracked diff 不变。
+- 保留 `.mods-author-check-grvgjowa` 失败：复制整个示例目录带入旧 `.claude-plugin/types`，因缺 ownership footer 而拒绝更新。新鲜作者文件副本成功不能消除此迁移缺陷，旧声明恢复策略仍待解决。
+- 新 binary 含 plugin-authoring 注册和指南字符串；没有安全非 TUI 的真实 discovery 入口验证，因此 **skill binary discovery: not covered**。真实 builtin 重启、consent、TUI/physical 与完整门禁仍未完成。
+
+#### 当前交接与执行边界（2026-10-03）
+
+本节作为 Mods 实现与验收的持续记录；历史结果不等于当前工作区通过。用户最新授权覆盖上面的临时 repo-local 限制：测试 fixture、隔离 HOME/config、缓存和证据统一在 `/tmp` 新建私有目录（macOS 实路径为 `/private/tmp`）；文档维护在代码目录。只允许清理本轮新建且归属明确的测试目录，不触及旧证据、用户 HOME 或共享配置；不 commit/push/worktree。
+
+- G5 已实现窄 `requestModAuthoringConsent`（不依赖 `HOOK_PROMPTS`）、可取消 prompt queue、session 专属 root、turn-end 延后加载、managed/disabled plugin 合并、dev-mods transcript 及初始/交互 resume；clear/fork 不继承。迟到授权、dispose/session 切换、withdrawn 重问均有 fencing；重问不阻塞 query finally。历史局部证据为 session+REPL **172 pass**、query **120 pass**、邻接 **284 pass / 2 既有 skip**；不代表 L5 已通过。
+- 指南附件仍否认 consent 的冲突已先红后绿修复，skill **7 pass / 24 assertions**。最新隔离 build 曾在 `.validation-build-3z7y9po9` 成功（SHA `ff6e4b1afeb8ce310a2c0c5cb6168315903f369979f1721cdd907b4b81f6673f`），TypeScript/diff 检查通过；后续检查该路径已不存在，原因未确认，不能作为可重用验收制品，须重新构建并捕获身份。
+- 正式 retained driver 已增加真实 builtin archive 与 ripgrep cache 预置，不绕过产品校验。旧 `.r-b75` 真实 readiness 在 ripgrep 临时释放处失败；缓存修复后的真实 readiness 尚未通过。完整目标矩阵不能因 readiness 或 focused 测试成功而省略。
+- 正式 capture/gate 已支持 `/tmp` 私有 root；路径、policy、CLI、readiness contract、builtin/ripgrep cache focused **6/6**，证据 `/private/tmp/retained-checks-8ucmm5aw/{tests.log,results.json}`。这不是 binary 交互证据；该轮因指定 binary 缺失未启动正式 gate。
+- 下一步按产品缺口推进：旧生成声明迁移（不得覆盖作者文件）、P7 独立进程 foreign contracts、G5 真正入口及取消/turn-end/resume，随后按 M287/S 矩阵完成新产物作者 CLI 和 TUI/physical。README/CHANGELOG 与最终状态待同步，整体仍未闭环。
+
+#### 旧生成声明迁移修复（2026-10-03；限定源码验证）
+
+- 根因：`installDeclarations` 只接受目标字节相同或有效 ownership footer。历史 `claude-code/index.d.ts` 和旧 `tsconfig.json` 都没有 footer，且与当前输出不同，因此正常升级被作为 unowned 拒绝；runtime reconcile 捕获为 `stage: types`，并非作者副本本身无效。
+- 证据调查：三个 `examples/mods/{token-weather,blast-radius,replay-theater}/.claude-plugin/types/` 的两文件逐字相同。声明全文 SHA-256 为 `2abb2722d131f2c15736cea8d8403f8446b54c3b5cb11f4cc0137af846dec0b0`（38631 bytes），配置为 `943f1d1ec27a8c6f6be329b460b815da840641bb31fceb15b5b1c86b26ccb33d`（386 bytes）。旧布局只有这两文件，配置 `types: []` 且无 `include`。内容固定保存在 `src/services/mods/fixtures/legacy280-declarations.json`，不依赖被忽略的 example 生成目录参与今后测试。旧生成器当时是未跟踪实现，不能引用不存在的 committed revision；`.mods-author-check-grvgjowa` 原目录现已不可用，仅保留本节历史失败记录，不能声称重新执行过该旧目录。
+- 实现仅增加上述 **相对目标路径 + 完整内容 SHA-256** 白名单；不裁剪版本头、不规范化正文、不凭 generated header 放行。逐文件沿用既有原子替换、目录及 symlink 检查；无需整目录布局匹配，所以中断后已升级声明、尚未升级配置的混合状态可重试。无目录删除、无 TypeScript runtime 依赖，也不读取测试快照作为生产依赖。
+- 测试副作用先审查：`declarations.test.ts` 原 fixture 硬编码仓库 evidence 路径，现改为 `os.tmpdir()` + `mkdtemp`；保留原断言，不增加 cleanup。所有本轮运行目录、HOME/config/XDG/cache/temp 都在 `E=/private/tmp/mods-declaration-migration-hbiu3rm_`，白名单环境启动，不继承凭据变量。只读旧声明来源，未修改旧证据及用户 HOME。新增回归覆盖旧内容升级、附带作者文件不变、声明及配置被修改时拒绝并保留字节、恢复原文后的重试、hash 不得跨目标路径使用、幂等；原 runtime 工具刷新测试及三个示例 `tsc -p` 测试也先安装旧快照再验证，非新鲜副本替代迁移。
+- 精确执行命令（仓库根 cwd；`red` 在生产修复前执行，日志均保留）：
+  ```sh
+  E=/private/tmp/mods-declaration-migration-hbiu3rm_
+  # 下列 bun 命令统一使用此环境前缀
+  env -i PATH=/opt/homebrew/bin:/usr/bin:/bin HOME="$E/home" \
+    CLAUDE_CONFIG_DIR="$E/config" XDG_CONFIG_HOME="$E/xdg-config" \
+    XDG_CACHE_HOME="$E/cache" XDG_DATA_HOME="$E/data" XDG_STATE_HOME="$E/state" \
+    TMPDIR="$E/tmp" BUN_INSTALL_CACHE_DIR="$E/cache/bun" \
+    bun test src/services/mods/declarations.test.ts -t 'legacy declaration migration|runtime tools service'
+  # 同一环境前缀，移除 -t，分别保存 green.log 和 green-final.log
+  bun test src/services/mods/declarations.test.ts
+  # 同一环境前缀；tsc.log
+  bun node_modules/typescript/bin/tsc --noEmit --incremental false --pretty false
+  # lint.log（只使用 PATH/HOME/TMPDIR 的 env -i）
+  env -i PATH=/opt/homebrew/bin:/usr/bin:/bin HOME="$E/home" TMPDIR="$E/tmp" \
+    bun node_modules/eslint/bin/eslint.js src/services/mods/declarations.ts src/services/mods/declarations.test.ts
+  git diff --check
+  ```
+- 红：`red.log` **1 pass / 4 fail / 23 filtered，exit 1**，包括真实 runtime reconcile 的 `types` diagnostic。绿：`green.log` 及最终 `green-final.log` 均 **28 pass / 0 fail / 101 assertions，exit 0**；最终轮包含三个原样示例带旧布局迁移后 `tsc -p`，runtime 测试也覆盖迁移后 MCP 再刷新。`tsc.log`、`lint.log` 空且 exit 0；diff 检查通过。`source-sha256.json` 保存实现、测试和历史快照身份；本轮目录全部保留。
+- 限制：仅白名单中的本地 2.1.280 精确内容获得自动升级。调查还看到 `/private/tmp/mods287-official/runs/{load-wt-token-weather,src-token-weather}/token-weather/.claude-plugin/types/` 的其他旧变体及 `official-decl` 官方 2.1.287 布局；本轮未纳入白名单或宣称这些变体可迁移。未知/作者修改文件仍保留并明确拒绝；恢复需先备份、人工核对差异并将需保留的作者声明移入作者 `types/`，然后只移动确认冲突的文件到备份路径后重试，不删除整个生成目录。当前生成 `tsconfig.json` 仍无 footer，未来配置格式变化需另加已验证的完整内容身份，不自动猜测 ownership。
+- 本轮没有构建或执行 compiled binary，也未运行全量测试、TUI/physical 或正式 release gate；源码 runtime 与 `tsc` 通过不等于真实 binary 验收。历史失败不被抹除，G4 迁移缺陷的上述精确变体已源码修复，其他 M287/G/P 项和总体门禁仍未闭环。无 worktree、commit、push；保留所有先前工作区改动。
+
+#### P7 独立 validate context 只读调查（2026-10-03；设计阻塞，未实现）
+
+- 本轮按“根本需较大架构改动先返回具体只读设计及阻塞”的授权分支停止生产改动；只读检查指定 handler、validator、type contract、加载器及 settings/installed/builtin 读取链。未运行测试、构建、binary 或 TUI，也没有新增红绿通过证据。此前 cached-context 的结果不代表独立进程已修复。
+- 已确认边界：`src/cli/handlers/plugins.ts:137` 仅查 memoize；`pluginLoader.ts:3146` 的 cache-only 函数不是纯只读（SYNC_PLUGIN_INSTALL 可转 full loader，`:2149` 会解压 ZIP，`:3213` 会发布 plugin settings）。不能直接用它替换 memoize lookup。
+- 完整性阻塞：`plugins/builtinPlugins.ts:21` 是进程内 registry；普通会话的 `plugins/bundled/index.ts:38` 初始化经过 `builtinMods.ts:159` 的物化/注册流程。独立 validate 未走该初始化，空 registry 无法证明 builtin 集合为空。`installedPluginsManager.ts:315` 把读取/解析失败降级为成功空集；错误导致丢失 recorded installPath 时，marketplace loader 还可能改读本地 catalog source，不再是已安装版本。不能把这种 partial context 传作严格 `[]`。
+- 建议的共享只读设计（待实施，不新增第二套 policy）：
+  1. 在既有 `loadPluginsFromMarketplaces` 中增加明确的 contract-discovery 读取分支，沿用 settings/add-dir 合并、marketplace policy、catalog lookup 及 recorded installPath 优先级；将路径解析与 ZIP 物化分开。只读分支不调用 download/copy/extract、模块执行、声明安装或 cachePluginSettings，也不受 SYNC_PLUGIN_INSTALL 切换影响。
+  2. 为 installed-state 和 catalog 的底层读取保留“确实不存在”与“损坏/不可读”的状态及来源；运行时原有降级调用者可以继续降级，validation 调用者必须得到完整性诊断。复用 settings 的有效配置合并与错误结果，不自己读取一份 settings 来重新实现 managed precedence。manifest 的 marketplace fallback/strict 合并规则也须保持共用，不能另写简化版本。
+  3. builtin 需要共享的、无需注册/落盘的定义读取能力：从同一 archive 选择与身份/provenance 校验入口读取内存条目及 types contract；复用默认 enabled/availability 规则。磁盘插件与 archive contract 的读取边界要显式区分，不能制造虚假文件路径供现有 realpath loader 使用。Marketplace ZIP 同理；若暂不支持读取，必须返回“context unavailable + 具体 archive/source”，不能跳过并返回完整空集。
+  4. 三类来源完成发现后，复用 `mergePluginSources` 与 `verifyAndDemote`，保留 disabled 项参与遮蔽和 managed 禁止覆盖；最后只读取有效 enabled contracts。不新增 manifest dependency。无法证明完整性的失败返回 `declarations: undefined` 和具体来源诊断，丢弃 partial declarations；仅真正完整时返回数组（包括 `[]`）。owner 自身声明排除及 owner-only write 继续由现有 validator 执行。
+- 下一步先红后绿矩阵：独立无预热进程的合法/缺失 foreign key、完整空集、disabled/session 遮蔽、managed force-enabled/force-disabled、installed recorded version 与 catalog 不同版本、损坏 settings/installed/catalog/manifest/types、中途失败不得泄露 partial context、builtin 未物化、ZIP 未物化、SYNC_PLUGIN_INSTALL 开启仍无下载。必须断言退出码、诊断及目录前后内容不变，并使用禁网/禁止插件执行探针。现有两份目标测试的 fixture root 仍指向仓库 `.claude-test-evidence`，正式执行前须改为本轮 `/tmp` 私有 TMPDIR；本轮未执行它们，未创建 fixture/HOME/cache，未清理任何目录。
+- 结论：P7 独立进程完整 context **仍未实现、未验证**。阻塞不是缺少 manifest dependency，而是现有 discovery 的完整性信息与物化副作用尚未分离；跨 shared loader、installed/catalog reader、builtin archive reader 的改动需作为后续明确范围实施。本轮仅追加本记录，保留用户所有既有改动，无 worktree/commit/push。
+
+#### P7 contract-only discovery 实现续记（2026-10-03；本地基础，非全来源闭环）
+
+- 本轮在原仓库实现 P7，不涉及 TUI、依赖升级、worktree、commit 或 push。保留既有未提交改动；测试 fixture 改用 `os.tmpdir()` + `mkdtemp`，仅使用本轮 `/tmp` 隔离 HOME/config/temp 与白名单环境，不继承用户凭据变量，不读取真实用户凭据，不联网。
+- Handler 新增独立发现入口：没有预热 cache 时调用 `loadPluginsForContractValidation`，而不是运行 full/cache-only runtime loader；必须同时满足 `complete` 且无 loader errors 才解析 foreign declarations。不完整空集、含有效插件的 partial、抛出异常或任何 foreign types 读取失败均保持 `declarations: undefined`，输出具体 warning；完整空集仍严格报 missing foreign key。owner 排除与 owner-only write 沿用原 validator。
+- Handler 先红证据 `/private/tmp/p7-handler-t7vkLf/red-behavior.log`：**11 pass / 6 fail**，六个新增案例均因独立 discovery 调用次数为 0（期望 1）失败。更早 `red.log` 是测试提取 exported function 的语法错误，不作为产品红证据；修正 harness 后才获得上述行为红。Validator 独立回归 `/private/tmp/p7-handler-t7vkLf/validator-green.log`：**17 pass / 0 fail / 38 assertions**，含 foreign-write 拒绝、owner 排除和中途失败丢弃 partial。Handler 测试使用源码函数注入禁止 materializing loader，不能替代真实 loader 或 compiled CLI 验证。
+- Handler + validator 绿：`/private/tmp/p7-handler-t7vkLf/handler-validator-green.log` **36 pass / 0 fail / 122 assertions**；补充完整但 foreign key 不存在、不完整且无 error 的空集分支。`handler-validator-final.log` **37 pass / 0 fail / 128 assertions**，额外运行真实冷 handler + 真实 discovery，确认 builtin incomplete warning、foreign unchecked 及 full/cache-only loader 均未调用。最终 `handler-validator-managed-green.log` **39 pass / 0 fail / 136 assertions**，补测共享 `mergePluginSources` 的 managed force-enabled / force-disabled 均阻止 inline 覆盖（纯合并测试，不冒充真实 managed 配置端到端验证）。构建：审查 Makefile（VERSION=2.1.280）发现当前 `prepareBuildDirectory` 仍仅允许 repo 内路径，为遵守本轮所有产物位于 `/tmp`，直接复用导出的 `buildCli({outputDir: '/tmp/p7-handler-t7vkLf/build'})`，`CLAUDE_CODE_VERSION=2.1.280 bun -e ...` 构建成功，日志 `build.log`。这是 JS bundle + worker 构建，不是 `make build` 原生 binary 打包，也未执行真实 compiled CLI / TUI；没有修改构建脚本或覆盖原有产物。
+- 共享发现实现：`loadPluginsFromMarketplaces` 使用相同 settings/add-dir merge、marketplace policy、catalog lookup、recorded installPath 与 cache-only 路径解析；在 ZIP extraction 与组件读取之前建立 contract-only 边界，复用 `finishLoadingPluginFromPath` 的 manifest fallback/strict conflict，跳过 hooks/MCP/settings 组件、插件执行及物化。聚合仍调用 `mergePluginSources` 和 `verifyAndDemote`，跳过 `cachePluginSettings`。installed strict reader 复用 raw reader/schema/V1 内存转换，绕开错误降级空集缓存；catalog 复用原 `readCachedMarketplace`，settings/add-dir 原 reader 传递损坏及 I/O diagnostics，而不是复制 settings policy。
+- 当前 builtin 无安全纯内存全量发现入口：不调用 registry availability callback，不注册/物化 builtin，明确产生 `source: builtin` 的 incomplete error。因此**当前真实 cold 全局入口总是 incomplete，返回 `enabled: []`，handler 不发布任何 partial foreign declarations**。本地 installed/inline 的路径与 manifest 发现基础可验证，但这不等于独立 validate 已能严格检查全部 foreign key，也不能宣称 P7 完成。ZIP contract 内存读取、builtin archive/availability 的共享纯读取和完整全来源冷进程成功路径仍待后续实现。
+- Loader 先红 `/private/tmp/p7-loader-T8IFdJ/red.log` **0 pass / 5 fail**：新增 discovery/strict reader 尚不存在，且 inline contract 模式仍读出 hookModules（期望 undefined），随后才实现生产边界。此 red 是新增 API/副作用边界红，不冒充完整 cold CLI 的 foreign-key 行为红。
+- 定向真实 loader 复验 `/private/tmp/p7-handler-t7vkLf/loader-green.log`：隔离 child **9 pass / 0 fail / 32 assertions**，外层进程退出断言 **1 pass**。最终 `loader-final.log` **9 pass / 0 fail / 33 assertions**，增加 plugin settings base 引用不变断言，确认不发布插件 settings。含 recorded version 优先于损坏 catalog-source、本地 fallback/strict、disabled inline 遮蔽与 dependency demotion、installed 缺失/损坏/I/O 失败恢复、catalog/settings/add-dir 损坏或不可读、SYNC_PLUGIN_INSTALL=1 下 ZIP 拒绝、inline 执行探针及目录字节快照不变。该证据中的 I/O 失败使用目录代替文件（EISDIR），不等价于操作系统 EACCES 权限矩阵。
+- 静态检查：`/private/tmp/p7-handler-t7vkLf/tsc-final.log` 全仓 `bun node_modules/typescript/bin/tsc --noEmit --incremental false --pretty false` exit 0；`handler-lint.log` 本轮 handler/validator tests 定向 ESLint exit 0，`p7-lint.log` 覆盖本轮全部九个 TS 文件 exit 0；`git diff --check` 通过。最终隔离构建 `build-final.log` exit 0，产物位于 `/private/tmp/p7-handler-t7vkLf/build-final/dist/`；`source-sha256.txt` 记录本轮源码身份，所有证据保留。过程中 `tsc-integration.log` 曾报告正在整合的 fetch 禁网探针类型转换不匹配，最终类型检查已通过，不隐去中间失败记录。
+#### P7 builtin / ZIP 内存发现续记（2026-10-03；CLI 产物验证仍阻塞）
+
+- 本轮由单个 implementation subagent 在原仓库串行修改，主线程等待后复核；无 worktree/commit/push，保留此前改动和证据。新证据根 `/tmp/p7-memory-PfR7Am`，测试子进程另以 mkdtemp 创建本轮 `/tmp/p7-contract-process-*` 与 `/tmp/p7-contract-loader-*`（精确路径见日志）。白名单 HOME/config 环境不继承凭据；loader child 禁止 fetch 和 subprocess。没有新增依赖。
+- 已消除上一节“cold 无条件 builtin incomplete”：直接读取真实 assets ZIP，共享官方 SHA-256 / provenance schema、archive entry/collision 校验及 builtin enabled settings/default 逻辑，不物化或注册 builtin。注册表 availability callback 不能纯读取判定时明确 incomplete，且不执行 callback。ZIP installed path 现在复用 manifest fallback/strict conflict，内存字节传入 foreign contract parser，保留 owner namespace filter、owner 排除、owner-only write 与失败丢弃 partial。runtime extraction 路径不变。
+- 行为红 `red.log`：child **8 pass / 1 fail / 29 assertions**，完整本地+真实builtin context 仍返回空集；改动前获得。绿 `green-final.log`：child **12 pass / 0 fail / 59 assertions**，外层 **1 pass / 1 assertion**。覆盖完整context、ZIP内存types/owner namespace过滤、types越界与缺失、坏/越界ZIP、builtin缺失/损坏/EISDIR、availability callback不执行、settings base不发布及目录快照不变。EISDIR不等于EACCES；未执行操作系统权限矩阵。
+- Handler + validator `focused.log`：**39 pass / 0 fail / 135 assertions**，cold真实handler现在严格报告缺失foreign key而非builtin incomplete；foreign-write拒绝用既有测试验证。`tsc-final.log` 全仓非增量 tsc exit 0；八个修改TS文件 `eslint-final.log` exit 0；diff --check通过。
+- 构建审查发现当前 `prepareBuildDirectory` 仍限制repo内新目录，因此未运行会违背本轮/tmp约束的 `make build`，而复用 `buildCli({outputDir:'/tmp/p7-memory-PfR7Am/build'})`，`build.log` 成功产出JS bundle+worker。**这不是原生binary打包通过。**
+- 实际CLI入口矩阵已尝试，但**不合格，不记为通过**：四个新隔离fixture位于 `cli-{matched,missing,write-denied,bad-archive}`，本地marketplace+foreign types+owner hooks，运行构建的 `dist/cli.js plugin validate <owner>`。Bun因bundle含CommonJS-only features拒绝ESM入口（各output.log）；Node补齐只读node_modules链接、ESM package与experimental-vm-modules后均exit 0且无输出（output-cold.log / output-keepalive.log），不能证明handler执行，不能证明missing/write-denied正确拒绝。中间参数/运行时诊断日志全部保留，没有把空输出exit 0当成功。CLI启动在隔离config产生自身.config/backups文件；loader单测目录快照才是发现不物化的有效证据。
+- 剩余边界：需解决构建CLI运行时入口问题后重做真实cold四项矩阵及原生binary验证；未宣称TUI、全门禁、全来源端到端或P7完整验收通过。ZIP symlink/CRC等超出现有共享unzip校验能力的专门矩阵未新增。本轮没有修改构建脚本以掩盖入口问题。
+
+#### /tmp 正式 native 构建与作者 CLI / P7 / 声明迁移验收（2026-10-03；限定 L1/L3/L4）
+
+- 由单个 subagent 在原仓库串行实施，主线程等待后复核；无 worktree、并行验收、commit/push、normal release gate 或 TUI。仅修改 `scripts/build-isolated.test.mjs`、`scripts/build.mjs` 并追加本记录；原有大量用户 diff 保留。证据根 `E=/tmp/mods-native-lvqehl3p`（实路径 `/private/tmp/mods-native-lvqehl3p`，0700），旧 `/tmp/p7-memory-PfR7Am` 仅读取明确的 owner/foreign 作者文件，不复制 HOME/config/凭据。
+- 构建修复先红：`build-red.{stdout,stderr,json}` exit 1，原实现拒绝 /tmp。最终 `build-green-final.*` exit 0，检查新目录0700、现存目录/有效及悬空symlink拒绝、HOME与非授权路径拒绝、父symlink越界拒绝、macOS canonical /private/tmp 和 repo 新路径兼容。repo兼容用 mkdir double，不在仓库创建fixture。`build-green.*` 保留中间失败：隔离HOME本身在/tmp，最初实现未拒绝其子目录；增加真实HOME边界后通过。实现仅对真实父路径做允许根判断并独占0700创建，不改包装流程。
+- HEAD `b66311c5338ab28871ce122014b2f84d7cff6530`。源码身份算法在 `source-before.json` / `source-after.json`：tracked+untracked 非忽略的 src/scripts/examples/mods/assets/vendor、Makefile/package/lock 按文件内容SHA组成排序JSON再SHA；排除动态证据与本结果文档。前 `40276bce8bfa2ec97fec43c8bd521d26bed5a995b0e8b4e1611a18f49f3973af`，后 `861e7c32fad79ff0588e0536f789d4d82b331d93454fd27fce5970d5a06cffbb`；仅本轮两个构建文件内容变化。另保存完整 tracked diff（排除结果文档）的SHA，前 `13d79ff132c98d8369ea517ac53fc6cdf545366e7b401853c96ed071330093e9`，后 `eeb1274a059b4b7b6fd71cb7db73f9904eff6a0ad3f6b700d0d59eb74080f538`。未发现其他源码漂移。
+- 正式 qualified 构建 `native-build-qualified.*` exit 0，产物 `/tmp/mods-native-lvqehl3p/output-qualified/built-claude`，版本 `2.1.280 (Claude Code)`，101027426 bytes，mtime_ns `1791007554364562538`，SHA-256 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`。Makefile VERSION 未擅自升级。根 built 前后SHA `34adf2f3009c879ff11bf305fc0a90efc9d069cba806bf99c6241ed30d54aa0f`、size及mtime_ns完全相同（`root-before.json` / `root-after.json`）。
+- 中间 `native-build-final` 已输出产物，但外层记录器在 wait 后用 killpg 探测遇到 EPERM，缺完整结果记录，不作为合格构建；修正证据脚本用 ps 查看进程组，在全新 output-qualified 重跑正式 make。qualified 构建刚退出时短暂观察到 esbuild exiting child；最终 `process-final.json` 确认全部记录组及本轮命令均已消失。所有中间产物及日志保留。
+
+**精确环境与命令**（cwd 仓库根；逐命令 JSON 记录完整 argv/env/cwd/timeout/exit/processState；stdout/stderr 分文件）：
+
+```sh
+E=/tmp/mods-native-lvqehl3p
+env -i PATH=/opt/homebrew/bin:/usr/bin:/bin HOME="$E/home" \
+  CLAUDE_CONFIG_DIR="$E/config" XDG_CONFIG_HOME="$E/xdg-config" \
+  XDG_CACHE_HOME="$E/cache" XDG_DATA_HOME="$E/data" XDG_STATE_HOME="$E/state" \
+  TMPDIR="$E/tmp" BUN_INSTALL_CACHE_DIR="$E/cache/bun" \
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH="$E/cache/transpiler" \
+  /usr/bin/sandbox-exec -f "$E/sandbox.sb" \
+  make build CLAUDE_CODE_BUILD_DIR=/tmp/mods-native-lvqehl3p/output-qualified
+# 同一环境及sandbox前缀，先红后绿各执行
+bun scripts/build-isolated.test.mjs
+# 聚焦L1，独立串行进程
+bun test src/cli/handlers/plugins.validate.test.ts src/utils/plugins/validatePlugin.test.ts
+# 此项另加 P7_CONTRACT_TEST_CHILD=1，cwd=$E，直接执行既有child矩阵，
+# 避免其外层driver舍弃TMPDIR后在本轮根外创建fixture；不改变产品路径
+bun test /Users/esonhugh/workspace/projects/WebStormProjects/cc/claude-code/src/utils/plugins/pluginLoader.contract.test.ts
+bun test src/services/mods/declarations.test.ts
+# 全部CLI实际argv/env及cwd见各同名json；HOME/config/cache/tmp为每case新目录
+"$E/output-qualified/built-claude" --version
+"$E/output-qualified/built-claude" plugin validate "$E/author-token-weather/token-weather"
+"$E/output-qualified/built-claude" plugin test "$E/author-token-weather/token-weather"
+"$E/output-qualified/built-claude" plugin validate "$E/author-blast-radius/blast-radius"
+"$E/output-qualified/built-claude" plugin test "$E/author-blast-radius/blast-radius"
+"$E/output-qualified/built-claude" plugin validate "$E/author-replay-theater/replay-theater"
+"$E/output-qualified/built-claude" plugin test "$E/author-replay-theater/replay-theater"
+# case依次matched / missing / write-denied / bad-archive
+"$E/output-qualified/built-claude" plugin validate "$E/p7-$case/owner"
+# name依次token-weather / blast-radius / replay-theater，各运行两次（upgrade/idempotent）
+"$E/output-qualified/built-claude" plugin test "$E/migration-$name/$name"
+```
+
+- `run.py` 仅为日志/超时/环境/sandbox执行器，不是替代build脚本；构建timeout480秒，L1与CLI180秒，路径回归480秒。`cli.py`、`migration.py` 保存fixture重建步骤。sandbox规则为 `(allow default)`、`(deny network*)`、`(deny file-write*)`，仅允许本轮实路径及 `/dev/null` 写入。白名单无真实网络凭据，无产品绕过。审查 embedded sharp/ripgrep 与runner后执行；TMP/HOME/Bun缓存均隔离，runner子进程自身创建的临时HOME位于当前作者fixture内，继承OS sandbox。
+
+| 断言/层级 | 实际结果 | 证据 |
+| --- | --- | --- |
+| L1 handler+validator | 39 pass / 0 fail / 135 assertions | `l1-handler-validator.*` |
+| L1 真实contract loader child | 12 pass / 0 fail / 59 assertions；完整builtin+local、ZIP内存、异常丢弃partial及不物化 | `l1-loader.*` |
+| L1 声明与旧布局迁移 | 28 pass / 0 fail / 101 assertions，含runtime及三个示例tsc | `l1-declarations.*` |
+| L4 三例原样作者 | 每例仅复制5个作者文件，15个SHA一致；validate均exit0，test依次1/4/3 pass，0 fail，逐case与Ran汇总存在 | `author-*-hashes.json`、`*-validate.*`、`*-test.*`、`cli-assertions-final.json` |
+| P7 matched 冷入口 | exit0；reads other.value，无unchecked；builtin内嵌包原样参与完整发现 | `p7-matched.*` |
+| P7 missing 冷入口 | exit1；other.value is not declared in any available plugin types contract | `p7-missing.*` |
+| P7 foreign write 冷入口 | exit1；only a value's owner may write it | `p7-write-denied.*` |
+| P7 bad installed ZIP | exit0且明确warning：incomplete / left unchecked / installed.zip: invalid zip data；不发布partial | `p7-bad-archive.*` |
+| native声明迁移 | 三例分别预置legacy280-declarations.json两文件再plugin test，1/4/3 pass；author sentinel和5个作者文件不变；第二次生成内容SHA不变 | `migration-results.json`及六组`migration-*-upgrade/idempotent.*` |
+
+**判据与副作用边界**：初版harness对Blast Radius误要求state notes，记录为false保留于 `cli-results.json`；该作者文件根本没有state调用，实际输出types/hooks/calls正确，按读取的契约修正判据，最终断言见 `cli-assertions-final.json`，不是放宽产品失败。三例validate notes均检查实际内容，不只看exit。P7四项前后全文件hash快照均无原文件改写，新增仅CLI自身 `config/.claude.json` 与对应backup；无builtin/plugin cache、解压文件、声明生成或模块执行（owner/foreign顶层throw探针均未触发）。正常plugin test和迁移入口会生成声明、`.claude-test-environment`内配置及backup，这是已审查的预期写入，不声称零写入。证据 `*-effects.json`。Bad archive使用本地installed_plugins.json记录的坏ZIP，**没有替换内嵌builtin**；builtin损坏只有L1覆盖，不冒充native损坏builtin覆盖。write-denied是state所有权拒绝，不是OS EACCES矩阵。
+
+**结论**：本轮限定L1/L3/L4上述断言通过，历史失败不被覆盖。迁移native入口是产品 `plugin test` 的真实runtime.reconcile，不是绕开CLI直接调用helper；不代表会话启动/resume/TUI迁移已覆盖。没有验证TUI/physical、完整feature、全部M287、热重载/consent/resume、完整builtin会话重启、全部来源policy或正常release gate，均为 **not covered**。记录器早期异常及修复前产物不能替代最终qualified证据。用户HOME、旧证据、根binary未作为写入目标，原有diff保护；本轮目录不清理。
+
+#### 指定 qualified binary 正式 retained gate（2026-10-03；blocked）
+
+- 原仓库串行执行；没有 worktree、产品修改、产品重建、复制回根 binary、commit/push 或发布。本轮仅修改 `capture-release-baseline.py`、`run-binary-gate.py`、`test-release-driver.py` 三份现有 harness，并追加本文；launcher、Makefile 仅审查，既有 diff 保留。所有新 fixture/HOME/config/证据在私有根 `/private/tmp/mods-retained-l57ie8ki`，旧目录不清理。
+- 指定真实文件 `/private/tmp/mods-native-lvqehl3p/output-qualified/built-claude`：SHA-256 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`，size `101027426`，mtime_ns `1791007554364562538`；与 qualified 记录一致，见 `identity.json` 及每轮 baseline/final manifest。HEAD `b66311c5338ab28871ce122014b2f84d7cff6530`。没有把既有制品冒称本轮 build。
+- 外部 binary 最小回归先红 `path-red.log`（1 fail，`binary.relative_to(repo)` 拒绝真实 /tmp 文件），再支持 /tmp 中现存普通文件，保留 symlink、用户 HOME、run-output 和根 built 保护；身份仍按真实字节/size/mtime 比较。测试 fixture 去掉硬编码 `/tmp`，遵循本轮私有 TMPDIR。`path-green.log` 为 6 pass / 0 fail。
+- 执行预算先审查：legacy workflow 的 1200/1800 秒不适用于 retained 分支；retained 不构造有广泛 cleanup/共享 lease 的 `BinaryGate`。当前只执行 readiness，然后保留完整 required 清单并报告未适配 handler 阻塞。readiness 缓存 30 秒、socket 启动 10 秒、四个状态各 45 秒、tmux 每命令 10 秒和退出清理，使用 600 秒前台工具预算；三轮均 driver 自行退出（exit 2）并产生 final manifest，无后台/提前超时终止。仓库全量哈希扫描没有严格硬 deadline，不能将此预算结论推广到未来完整 handler 矩阵。
+
+**正式 commands**（cwd `/Users/esonhugh/workspace/projects/WebStormProjects/cc/claude-code`）：
+
+```sh
+E=/private/tmp/mods-retained-l57ie8ki
+B=/tmp/mods-native-lvqehl3p/output-qualified/built-claude
+S=.claude/skills/release-validation/scripts
+# n=1,2,3；每次 run$n 原先不存在，由 capture 独占创建0700
+# 以下两命令均加同一白名单前缀
+# env -i PATH=/opt/homebrew/bin:/usr/bin:/bin HOME="$E/home" \
+#   CLAUDE_CONFIG_DIR="$E/config" TMPDIR="$E/tmp" PYTHONDONTWRITEBYTECODE=1 \
+#   GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+python3 "$S/capture-release-baseline.py" --repo "$PWD" --binary "$B" \
+  --run-root "$E/run$n" --retain-artifacts --output "$E/run$n/baseline.json"
+python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
+  --run-root "$E/run$n" --retain-artifacts --baseline "$E/run$n/baseline.json" \
+  --evidence-root "$E/run$n/evidence"
+# 不传 --targets 或 --base-ref，不缩矩阵；日志 capture$n.log、driver$n.{stdout,stderr,exit}
+```
+
+- 首轮另外用 `$E/gate.sb` 包裹上述命令；首错 `run1/evidence/tmux-server.log` 为 `sandbox-exec: sandbox_apply: Operation not permitted`，macOS 拒绝嵌套 sandbox，产品未启动。完整首轮 final：`/private/tmp/mods-retained-l57ie8ki/run1/evidence/driver-final-manifest.json`。第二、三轮使用正式 driver 自带 OS sandbox 隔离 tmux/产品，父 Python 仅本地哈希/缓存及 loopback mock；不叠加第二层 sandbox。launcher env-i 和 dummy credential 不变，无真实 HOME 凭据读取；旧 `.r-a72/.r-a73/.r-a74/.r-b75` auth 只经 baseline 哈希，不输出内容。
+- 第二轮 `run2/evidence/submitted.txt` 已展示 `RELEASE_RETAINED_INPUT` 和 `RELEASE_RETAINED_RESPONSE`，但正式 `submitted` 判据失败；同时 `debug.log` 最先出现 config rename/unlink/rmdir EPERM 与残留 lock。先加真实 OS sandbox 回归 `test_retained_owned_atomic_config`，`atomic-red.log` 1 fail；只放行本轮 `config/.claude.json`、`.claude.json.lock`、精确 `.claude.json.tmp.<digits>.<digits>`，不放行 config 整目录删除。Seatbelt regex 转义中间失败保留 `atomic-green.log`，修正后 `atomic-green-final.log` 1 pass，断言无关 evidence 仍不能删除。
+- 最终回归 `final-tests.log` **7 pass / 0 fail**：external binary、external root、policy、readiness contract、CLI/launcher contract、真实 builtin cache、不扩大删除权限的 atomic/lock OS 测试。六项在 `$E/test.sb` 禁网及仅本轮 root 写入下执行，atomic 测试子进程用正式 sandbox（避免嵌套）；没有执行会编译 probe 的 ripgrep 测试，也没有运行产品测试/build/release-check。测试命令为白名单 Python `runpy.run_path(".claude/skills/release-validation/scripts/test-release-driver.py")[test_name]()`，七项精确名称见日志。`git diff --check` 通过。
+
+**最终正式结果**：`/private/tmp/mods-retained-l57ie8ki/run3/evidence/driver-final-manifest.json`，`overall_verdict=blocked`，`matrix_complete=false`；readiness **failed**，仅 startup/input 两个状态断言通过。`submitted state not observed`，证据 `/private/tmp/mods-retained-l57ie8ki/run3/evidence/submitted.txt`、`mock-openai-requests.json`、`readiness-result.json`、`debug.log`。实际回复已显示，但 `submitted_input_visible` 检查最后输入框内容，完成后清空输入框使判据不成立；本轮未获授权修改该状态观测契约，保留阻塞，不修改产品、不放宽断言、不称 readiness passed。最终日志已无 config atomic/lock errors。
+
+完整默认计划为 **26 项（readiness + 25 required）**；required 均未执行：`agent-fg-bg`, `builtin-mods`, `code-review`, `coordinator-selector`, `deferred-tool-discovery`, `effort-openai-responses-wire`, `fast-openai-responses-wire`, `first-party-bootstrap-picker`, `model-discovery-empty-picker`, `model-discovery-picker`, `nested-agent`, `openai-image-input-wire`, `openai-remote-compaction`, `openai-responses-usage-error`, `openai-stats`, `plugins-reload`, `prompt-modes-cache-prefix`, `ssh-remote-session-lifecycle`, `subagent-stop-failure-lifecycle`, `team-concurrency`, `terminal-interaction`, `transcript-retention`, `workflow`, `workflow-failure-detail`, `workflow-retry-partial-failure`。未适配 handler 的原因原样见 final `blocked_targets`，即使 readiness 修复，也不能宣称完整矩阵可执行/通过。
+
+**副作用和下一入口**：三轮 `repository_state_unchanged=true`（每轮 baseline 至 final）；根 binary SHA `34adf2f3009c879ff11bf305fc0a90efc9d069cba806bf99c6241ed30d54aa0f`、size/mtime 未变。`final-effects.json` 核查 server/pane PID `10411,26807,26811,52091,52094` 及直接子进程均不在，最终 mock port `61104` 不监听，私有 `run3/t` 不存在，server exit0/kill-server exit0。仅 driver 清理本轮 socket 和已允许 owned atomic/lock 临时状态，所有证据目录保留，没有旧目录删除或 legacy lease。G5 真正 consent/cancel/turn-end/resume 入口、Mods feature/physical 仍 **not covered**；下一真实 G5 验收首先需明确授权修 readiness 提交状态观测，并为 retained builtin/相邻 handlers 适配本轮 owned 生命周期与真实 G5 场景，不能用现有普通回复 smoke 替代。
+
+#### Retained submitted 语义观测修复（2026-10-03；readiness passed，整体仍 blocked）
+
+- 读取上轮 run3 的 `readiness-result.json`、`submitted.txt` 和 mock request，确认回复已经完成，旧 `submitted_input_visible` 只检查最后 composer，因此清空后 false。本轮只修改正式 `run-binary-gate.py`、`test-release-driver.py` 与本文，不改产品、launcher、sandbox 权限或 baseline 脚本，不重建、不替换根 binary，无 worktree/commit/push。
+- 新私有证据根 `/private/tmp/mods-submitted-f5_urlzu`；HOME/config/TMPDIR 和测试 fixture 全在该根下。纯测试先红：`submitted-red-final.log` 明确失败于 completed transcript + matching request；更早的 `submitted-red.log` 是测试表达式换行解析错误，不能当作产品/harness 的有效红灯。修复后 `submitted-green.log` **7 pass / 0 fail**，覆盖 submitted 语义、readiness request、完整 target policy、CLI、external binary/root 和真实 OS atomic config 回归。未运行全量产品测试/build/release-check。
+- submitted 断言保留，使用同次 pane 中精确 user transcript → assistant response 顺序、ready composer，以及同次 provider snapshot 的 `POST /v1/responses`、`matches_dummy=true`、`response_kind=retained-readiness`、user input 精确匹配联合判定。request 不再通过 JSON 子串误识别 assistant 文本/错误输入。未提交 draft、只有 response、无 request、错误 method/path/response-kind/auth、缺失或空 input、assistant role 和相似但错误 input 均拒绝。共享 `submitted_input_visible` 不改，避免影响 legacy handlers；没有删除 submitted 断言、增加 sleep 或放宽身份。
+- 正式执行命令与白名单环境见 `capture-command.txt`、`gate-command.txt`；使用新 `run1`，命令结构同上节，不传 `--targets` 或 `--base-ref`。capture exit0；driver 前台执行并自行 exit2，返回前 final manifest 已生成，stdout/stderr/exit 均保留。指定 binary SHA-256 仍为 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`；HEAD `b66311c5338ab28871ce122014b2f84d7cff6530`，不是本轮新 build。
+- 最终证据 `/private/tmp/mods-submitted-f5_urlzu/run1/evidence/driver-final-manifest.json`：readiness **passed**，startup/input/submitted/response 四项通过；`overall_verdict=blocked`、`matrix_complete=false`。仍保留上节完整 **26 planned / 25 required**，只执行 readiness。首个后续阻塞 `agent-fg-bg: runtime cleanup and child environment not adapted`，其余具体阻塞见 `blocked_targets`，不能称完整门禁通过。
+- 精确副作用审计 `/private/tmp/mods-submitted-f5_urlzu/run1/effects.json`：server PID `20384`、pane `$0 @0 %0 20387` 均退出，server/kill-server exit0，本轮 `/run1/t` 已释放，mock port `62788` 不监听，未发现本轮残留进程或打开句柄。repository baseline→final 不变，protected 根 binary SHA `34adf2f3009c879ff11bf305fc0a90efc9d069cba806bf99c6241ed30d54aa0f` 不变。配置路径及权限/stat 清单已保存，不打印配置内容。
+- **真实余项/非零副作用**：`config/history.jsonl.lock`、`config/plugins/marketplaces/Esonhugh-Marketplace/.git/config.lock`、`t.lock` 保留且无打开持有者；debug 审计有25行关键词匹配，包括 sandbox 拒绝外部 `/tmp/cc-socks` listener、concurrent-session atomic rename、marketplace config/clone/清理，以及可选目录缺失。不是25个独立产品bug，也不能称零错误或零残留；本轮没有为此扩大权限、修改产品或清理旧目录。`.claude.json` 精确 atomic/lock OS 回归通过，不等于所有 config atomic 生命周期都已通过。
+- 仅本轮源代码增量 `/private/tmp/mods-submitted-f5_urlzu/source-diffs.patch`，既有 diff 保留；`git diff --check` 通过。新旧证据均保留，无主动目录删除。覆盖结论：submitted **unit covered** 与真实 readiness **binary smoke covered**；完整 retained handlers、G5 consent/cancel/turn-end/resume、Mods feature、fault injection 和 frame/physical 仍 **not covered**。下一入口是 retained handler owned 生命周期/真实 G5 场景适配及上述副作用审查，不再是本次 submitted 假阴性。
+
+#### G5 真实 slash 入口专项（2026-10-03；部分通过，整体 blocked）
+
+- 正式 harness 增加 feature-specific G5 场景；未改产品或重建，使用 SHA `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`。纯回归先红后绿，最终 **5 pass / 0 fail**；首次运行的 consent subtitle 截断假阴性另补回归，改为 dialog ID 与三个选项联合观测，不依赖完整长句。
+- 两轮均前台执行到 final manifest；最终 `/private/tmp/mods-g5-WXL73ru4/run2/evidence/driver-final-manifest.json` 为 **blocked**、`matrix_complete=false`，保留 **26 planned / 25 required / 25 blocked**。readiness passed；terminal-interaction 仅执行 G5 子矩阵，不等于完整 target 通过。
+- `G5-not-now` **passed**：真实 slash/consent/Not now；模型收到未启用说明，无 authoring root、无 consent 记录。`G5-cancel` **passed**：真实 consent/Ctrl-C，无 POST/root/consent 记录。
+- `G5-enable` **failed（部分断言通过）**：创建精确 session root，模型收到同一 root，同 session dev-mods JSONL 已持久化；8 项状态断言通过，后续 clear-cancel 判据失败。`/clear` 后再次调用确实重新询问；Ctrl-C 后 composer 恢复 `/plugin-authoring`，而 harness 要求空 ready prompt。主线程已读取 `run2/g5-enable/evidence/clear-cancel.txt` 确认该画面；尚未判断恢复 draft 是否为预期产品行为，不据此改产品或放宽断言。
+- exact argv/env 见 `/private/tmp/mods-g5-WXL73ru4/commands{,2}.json`；回归日志 `red.log`、`consent-red.log`、`regression2.log`。场景保留 raw input hex、pane、mock requests、debug、语义状态和退出结果。副作用 `effects.json`：四个 server/pane 均退出，四个 socket 释放，仓库及根 binary 不变；仍有 **12 个 lock 路径**保留，不能声称零残留。
+- **未覆盖**：turn-end plugin load、resume、逐帧 logical/physical。持久化落盘不等于 resume，通过普通 smoke 不等于 Mods 验收通过。用户反馈卡顿后暂停追加重型验证；下一步先对照取消时 draft 恢复的真实契约，再决定补回归修 harness 或产品。
+
+#### G5 clear-cancel harness 契约修复（2026-10-03；仅纯测试，binary 未重跑）
+
+- 只读核对源码链：`src/skills/bundled/pluginAuthoring.ts` 等待 `requestModAuthoringConsent`；`src/screens/REPL.tsx` 的 consent dismiss 通过 `ModAuthoringPromptDismissedError` 抛出，而 slash submission 尚未调用 `onPromptAdmitted`，因此 `restoreOnError` 在 draft generation 未变化时恢复原始 `/plugin-authoring`。`src/screens/REPL.submit.test.ts` 已覆盖未 admit error 恢复 snapshot 且不覆盖并发新编辑。故 run2 `clear-cancel.txt` 中恢复该 draft 是产品契约，原先要求空 composer 的 `input_prompt_ready` 是 harness 假阴性；未修改产品。
+- 新增最小纯 harness 测试，先红于缺少 `retained_g5_clear_cancelled`（`AttributeError`），修复后单测 **1 pass**。新判据联合要求 consent dialog 消失、最后 composer 精确恢复 `/plugin-authoring`、最后 prompt 后无 `esc to interrupt`，且相对取消前没有新增 `POST`、authoring root 或 `dev-mods` consent。负例覆盖错误 draft、残留 dialog、仍执行中，以及三类新增副作用；不接受空或任意 draft。
+- 只运行上述 Python 内存单测；未启动 build、tmux、完整 gate 或其他 suite。历史 `/private/tmp/mods-g5-WXL73ru4/run2` 结果仍保持 **failed/blocked**，binary 未重跑，不能把本次 harness unit green 记为真实 G5 passed。
+- 后续轻量核查更新 12.6 的 P2/P7/F1 状态，避免表格继续把已实现项目标为未实现。完整读取纯数据 `typeContract.test.ts` 后，在 `/tmp` 私有 HOME/config/cache 下运行 `bun test src/services/mods/typeContract.test.ts`：**32 pass / 0 fail / 33 assertions**，证据 `/tmp/mods-contract-suite-lf816yny/{result.json,test.log}`。覆盖无运行时 import、三原样契约、词法诱饵、非法引用与 foreign write；不替代 F1 全产物依赖审计或 G5 动态验收。
+- 同轮完整审查 `state.ts/state.test.ts` 的副作用（仅内存与 AsyncLocalStorage）后，在独立 `/tmp` 环境运行 `bun test src/services/mods/state.test.ts`：**15 pass / 0 fail / 40 assertions**，证据 `/tmp/mods-state-light-_hclfdum/{result.json,test.log}`。涵盖 16 写者 CAS、dispatch snapshot、自写可见、冲突单 key 刷新、owner/render purity、reset 后迟到写拒绝、旧 render/forget/reset 订阅 fencing；仍不能替代真实 UI reload/reset 及 physical 验收。
+
+#### G5 续验前置：首个分歧停止边界（2026-10-03；纯 harness，整体 blocked）
+
+- 重新核验指定 `/tmp/mods-native-lvqehl3p/output-qualified/built-claude`，SHA256 为 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`。只读取 binary 做哈希，没有执行或重建。
+- 读取上一轮 `/private/tmp/mods-g5-WXL73ru4/run2/evidence/driver-final-manifest.json`：`overall_verdict=blocked`、`matrix_complete=false`、25 required targets、`repository_state_unchanged=true`；三个 G5 场景 server exit 均为 0、socket 均释放。旧 enable 仍是 clear-cancel harness 失败，不据此认定产品分歧。
+- 审查正式 G5 handler 发现：失败场景后仍会调用下一场景。新增 `test_retained_g5_stops_at_first_divergence`，mock 正式 readiness 调用，分别覆盖三个失败位置并检查落盘结果与 blocked verdict。先红（exit 1，首场失败仍调用 `['not-now', 'enable', 'cancel']`），再为正式 handler 加失败即停止；新测试及既有 G5 semantics、clear-cancel 三项纯测试 **3 pass / 0 fail**（exit 0）。未缩减 target planning，也未改产品代码。
+- 证据 `/tmp/mods-g5-stop-WtuwCCuW/{red.log,red.exit,green.log,green.exit}`；测试通过 `nice -n 10 env -i ... python3 -B -` 导入正式测试文件并逐个调用上述三个测试；HOME/config/cache/TMPDIR 全部指向该根，新增测试只使用其 TMPDIR 内的自有 TemporaryDirectory 并自动清理。无 mock server、tmux、外网请求或真实凭据访问；未生成本轮 binary driver manifest。
+- 本步骤仅完成续验前的停止边界回归。**未实现/未执行**新增 turn-end、same-session resume、fork 不继承场景；clear-cancel 的真实重验仍未执行，逐帧 logical/physical **not covered**。不能将本步骤的 unit green 计为 G5 binary 通过，整体仍 **blocked**。
+- 最终 `git diff --check` 通过；`git status --short` 相比本轮开始新增 `src/hooks/useVirtualScroll.test.tsx` modified，非本轮修改，来源未知，未读取或回退，也未操作其他进程。因此暂停启动真实 gate，等待确认工作区变化来源；不能声称本轮仓库整体无额外变化。
+
+#### G5 turn-end 单场续验（2026-10-03；harness gap，整体 blocked）
+
+- 用户确认 `src/hooks/useVirtualScroll.test.tsx` 为外部既有变化，本轮不读取内容、不修改或回退。正式 retained baseline 新增显式 `CC_VALIDATION_STATE_CONTENT_EXCLUDE`，本轮仅排除此路径的内容摘要；仍记录其 Git 状态且保留 required-target 推导。该排除不等于验证此文件无内容变化，最终 diff 检查也排除此路径。
+- 原仓库仅扩展正式 `run-binary-gate.py`、`test-release-driver.py`、上述 baseline 脚本与本文；无子 agent/worktree/build/full suite/产品修改/commit/push。新增 `--g5-scenario turn-end-load` 只限定 retained 诊断子场景，完整计划仍 **26 planned / 25 required**、整体 blocked。正式 handler 保留首失败停止。
+- 新证据根 `/tmp/mods-g5-turn-0lgbfOs6`。turn-end 最小回归先红：`red.log`/`red.exit` 为不支持场景参数的 `TypeError`、exit1；内容排除回归 `exclusion-red.log`/`.exit` 为缺少排除字段的 `KeyError`、exit1。最小实现后 `green-final.log`/`.exit` **5 pass / 0 fail、exit0**：turn-end 单场路由、held provider 与 active-state 正反例、原停止边界、G5 semantics、clear-cancel，以及内容排除（合计五个测试函数）。命令为 `nice -n 10 env -i PATH=/opt/homebrew/bin:/usr/bin:/bin HOME=$E/home CLAUDE_CONFIG_DIR=$E/config XDG_CACHE_HOME=$E/cache TMPDIR=$E/tmp python3 -B -`，`runpy.run_path` 导入正式测试并仅调用这五项；未运行全 suite。
+- 正式 capture/driver exact argv 与白名单环境在 `commands.json`；driver 参数为 `--repo <repo> --binary /tmp/mods-native-lvqehl3p/output-qualified/built-claude --run-root $E/run1 --retain-artifacts --baseline $E/run1/baseline.json --evidence-root $E/run1/evidence --g5-scenario turn-end-load`，无 `--targets` 缩减。前台等待自然返回：capture exit0、driver exit2，final manifest 已生成。进程继承 nice10；HOME/config/cache/fixture 在新根，dummy loopback，沿用 OS sandbox 禁止外网、keychain 与根外写入。
+- 重新记录 binary SHA256 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`、size101027426、mtime_ns1791007554364562538；不是本轮构建。`run1/evidence/driver-final-manifest.json`：readiness **passed**，`overall_verdict=blocked`、`matrix_complete=false`。只运行 readiness 与 **G5-turn-end-load**，未执行 resume/fork/clear/Not now/cancel。
+- **首个阻塞为 harness gap，不是已证明产品分歧**：真实 `/plugin-authoring` → Enable 后，provider 的 request 已进入 hold、pane 有 `esc to interrupt`，`turn-active-before-write` 通过；精确 authoring root 为 `run1/g5-turn-end-load/config/dev-mods/d60f8a82-2d37-46f7-a7f3-38e83c2b1d1c`，但同刻 snapshot 的 JSONL `dev-mods` entries 为空。handler 报 `harness gap: exact consent session root not observed` 并在创建 child fixture 前停止；没有写 child、没有证明 turn 内不提前加载或 turn 后 UI marker 激活。不能将该 failed execution 计为产品失败或 G5 covered，也未追加重跑。下一步应先补“held request 中精确 root/session identity 与异步持久化”的最小 harness 回归；目前无依据提出或实施产品修复。
+- raw input hex、pane、identity、server/debug/mock request 与语义状态保留于 `run1/g5-turn-end-load/evidence/`，失败结果 `readiness-result.json`；场景 tmux target `readiness:0.0`，identity `$0 @0 %0 4280`、server4277。`effects.json` 核查 readiness server/pane3791/3819 和场景4277/4280 均退出，端口54232/54266不监听，两 socket释放，kill-server/server exit均0。CLI 由 kill-server 清理，未观测独立 CLI 正常退出码，不声称 CLI exit0。
+- `repository_state_unchanged=true` 仅针对明确排除后的内容范围及完整路径状态；binary/root binary 在 baseline→final 未变。保留6个 lock路径，无主动删除旧证据或 user HOME。debug有24行 error相关匹配，含隔离外 `/tmp/cc-socks` listener被拒、concurrent-session rename EPERM、marketplace clone/config/cleanup失败和可选目录不存在；不是24个独立bug，不能称零副作用。外网受sandbox禁止，但存在marketplace外联意图。
+- **覆盖**：spec exists；上述聚焦 harness unit covered；turn-end真实加载、fault injection、逐帧 logical/physical **not covered**。整个 G5 与 release 仍 **blocked**。最终执行排除禁止读取路径的 `git diff --check -- . ':!src/hooks/useVirtualScroll.test.tsx'` 与完整 `git status --short`，证据保留。
+
+#### G5 held identity harness 修复与 turn-end 单场复验（2026-10-03；单场 passed，整体 blocked）
+
+- 仅修改正式 `run-binary-gate.py`、`test-release-driver.py` 和本文；未改产品、未启动 agent/worktree、未 build/全 suite/commit/push。执行均 nice10 串行；readiness 与唯一 turn-end 场景的 terminal 先后启动，未执行 resume/fork/clear。未读取、修改或回退 `src/hooks/useVirtualScroll.test.tsx`；沿用内容摘要排除且保留完整状态与 required targets。
+- 最小回归先红：`/tmp/mods-g5-identity-c0zr9rip/red.log`、`red.exit`，缺少 `retained_g5_held_identity` 的 AttributeError，exit1。最小实现后 `green.log`、`green.exit` 为 **6 pass / 0 fail、exit0**（identity/延迟持久化、turn-end、semantics、失败停止、clear-cancel 纯契约、内容排除）；只通过 runpy 调用六个聚焦测试，不是全 suite。红测试最初在系统临时目录生成，本轮自有证据随后移动至上述 `/tmp` 根；真实运行全部在新 `/tmp` HOME/config/cache/fixtures/evidence 内。
+- held identity 必须由唯一未返回的主 POST、dummy auth、三个一致 session headers、user payload 中完整 authoring root 声明、已存在的同名 root 和隔离 config 路径共同确定；拒绝错误/缺失 headers、非 user 内容、其他路径、重复请求与 symlink。不猜目录，也不以任意 session consent 代替。写 fixture 前保存 `held-identity.json`；release 后在原有 bounded terminal 观测中要求持久化的 `type/sessionId/folder` 精确匹配此 identity。单测覆盖 entries 先空后匹配；本次真实运行 entries 在 hold 时已落盘，**没有真实重现延迟落盘时序**。
+- 使用指定 `/tmp/mods-native-lvqehl3p/output-qualified/built-claude`，执行前 SHA256 核验为 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`；不是本轮构建。`binary.json` 保存 metadata；`commands.json` 保存正式 capture/driver argv 和白名单环境；无临时 driver、无 `--targets` 缩减。审查 retained launcher/sandbox：dummy loopback、根内写入、禁止外网/keychain，正式 cleanup 仅本轮 socket/server。
+- capture exit0、driver exit2，已前台等待 `/tmp/mods-g5-identity-c0zr9rip/run1/evidence/driver-final-manifest.json`。readiness 与 **G5-turn-end-load passed**；`overall_verdict=blocked`、`matrix_complete=false`、25 required targets 保留，`repository_state_unchanged=true` 仅适用于排除后的内容范围及完整状态，binary/root binary 未变。
+- 真实 `/plugin-authoring` → Enable 后，held request sequence2 的 session 为 `893bc1be-aaac-416d-8122-37c90dc6d4a1`，只在其精确 `config/dev-mods/<session>/g5-turn-marker` 写三文件合法最小 child。`turn-observations.json` 的20个 held samples 均显示 waiting=true、released=false、无 types、无 UI marker、仍有 esc to interrupt；release 后 exact dev-mods 持久化匹配，`turn-end-ui-active.txt:18-22` 同屏显示 response、`G5_TURN_END_ACTIVE` 与 ready prompt。debug:240-241、252-253 有 child hook/inline plugin 加载记录。此证据证明采样范围内不提前激活及 release 后 UI 实际激活；未另测 command，未宣称逐帧覆盖。
+- 场景 raw input、identity、pane、mock requests、debug、server log、result 均保留于 `/tmp/mods-g5-identity-c0zr9rip/run1/g5-turn-end-load/evidence/`；target `readiness:0.0`，identity `$0 @0 %0 90890`、server90887。`effects.json` 确认 readiness server/pane90431/90452、场景90887/90890 均退出，端口57624/57645不监听，两 socket释放，kill-server与server exit均0；CLI 由正式 kill-server 清理，**未观测独立 CLI 正常退出码**。
+- 保留14个含 lock 名路径；未删除旧证据或 user HOME。debug仍见 concurrentSessions rename EPERM、可选目录不存在、marketplace clone/config被拒，存在外联意图但 sandbox 不允许外网；不声称零副作用。用户报告卡顿时 driver 已结束，未追加真实运行；正式 baseline/final 的大范围 manifest/hash I/O 是可能原因，未做性能归因测量。
+- 上轮 identity harness gap 已修复，本场未观测新的产品分歧或 harness gap，无产品修复建议。resume/fork/clear、fault injection、逐帧 logical/physical **not covered**；G5/release 整体仍 **blocked**。
+
+#### G5 same-session resume 单场验收（2026-10-03；恢复后 marker 缺失，整体 blocked）
+
+- 唯一 agent、原仓库，无 worktree/build/full suite/并行/产品修改/commit/push；所有执行 nice10。仅扩展正式 retained handler、聚焦测试、正式 launcher 的 retained 参数透传以及本文。未读取、修改或回退 `src/hooks/useVirtualScroll.test.tsx`；baseline 内容排除保留，Git 路径状态与 required targets 未缩减。未重跑 turn-end、fork/clear。
+- 证据根 `/tmp/mods-g5-resume-eqzso9wi`。严格先红：`red.log` / `red.exit` exit1，same-session 路由没有更新 resume verdict，`assert result['resume'] == 'passed'` 失败。最小实现后 `green.log` / `green.exit` **5 pass / 0 fail、exit0**：same-session identity/marker 正反例、原 held identity、首失败停止、semantics、内容排除。通过隔离环境 `python3 -B -c` + runpy 逐一调用正式测试，不是全 suite，也未运行 turn-end/clear 测试。拒绝新 session header、任意 dev-mod entry、无请求、无 marker、非 dummy auth；launcher retained 分支真实透传 `"$@"`。
+- 已读取原 `/tmp/mods-g5-identity-c0zr9rip` 成功证据。指定 binary `/tmp/mods-native-lvqehl3p/output-qualified/built-claude` SHA256 再核验为 `7ce43a3c5662cf8554b17f898ae6539527f6a4bb2343330f5c8bd6920a44a052`，不是本轮构建。`commands.json` 保存正式 capture/driver exact argv、白名单隔离环境及 inherited nice10；`--g5-scenario same-session-resume`，无临时 driver、无 `--targets`。
+- 前台等待 capture exit0、driver exit2 与 `run1/evidence/driver-final-manifest.json`；readiness passed，G5 same-session **failed**，`overall_verdict=blocked`、`matrix_complete=false`、26 planned。`repository_state_unchanged=true` 只针对排除后的内容范围和完整状态；binary/root binary 未变。
+- 原 session 为 `0289a112-124e-497b-91d5-c09386490599`。真实 `/plugin-authoring` → Down → Enter（Enable）后，唯一主 POST 的三个 session headers、user payload 精确 authoring root 与 `dev-mods` entry 一致。`original-identity.json`、`authorization-after-exit.json` 保存关联证据。仅在其 root 写 `g5-resume-marker` 三文件 child，原 CLI `original-ui-active.txt` 真实出现 `G5_SAME_SESSION_ACTIVE`；debug:249-266 有其加载记录。
+- 产品支持的 `/exit` 正常退出，`original-exit.json` 的 tmux `pane_dead/pane_dead_status` 为 `1 0`，没有以 kill-server 代替原 session 退出。随后同一 socket/同一 pane 串行 `respawn-pane`，正式 launcher 启动 binary `--dangerously-skip-permissions --debug --debug-file <evidence>/debug.log --resume 0289a112-124e-497b-91d5-c09386490599`；`resume-launch.json` 保存完整 argv/命令，`input.json` 保存原始输入 hex。
+- **首个可见分歧：原 session identity 已恢复，但 child UI marker 未恢复。** 恢复后的 `G5_RESUME_IDENTITY_PROBE` 得到真实 dummy provider response，sequence4 三个 headers 均仍为原 ID，精确授权持久记录仍存在（`resumed-identity.json`）；`resumed-exact-identity-ui.txt:8-19` 显示恢复的原对话、新 probe/response 和 ready prompt，却没有 marker。45秒 bounded wait 到期后 handler 停止，没有重试、没有进入其他场景，也没有修改产品。不能把 JSON 留存当作进程内授权恢复成功；本场不能判 passed。
+- 最小产品回归建议：覆盖 Enable → child 激活 → 正常退出 → CLI `--resume <same ID>` 的 session authoring root 恢复与 plugin/UI 注册初始化顺序，断言恢复后无需重新 Enable 就出现 child marker。现有证据确定用户可见恢复失败，但尚未定位内部根因；sandbox 的 rename/unlink 限制仍是环境影响边界，不能直接断定某个产品函数有错。本轮未发现可确认的 identity/argv harness 假阳性，也未以改 harness 绕过缺失 marker。
+- 场景全部证据在 `run1/g5-same-session-resume/evidence/`，包含 raw input、original/resumed identity、exit、pane、mock requests、debug、tmux-server.log 与 readiness-result。target `readiness:0.0`，原 pane `$0 @0 %0 42155`、恢复 pane `$0 @0 %0 42773`、server42151。失败后仅正式 cleanup 清理本轮 socket/server；恢复后的 CLI 未执行第二次正常 `/exit`，由 kill-server 停止，不声称其 exit0。
+- `effects.json` 核实 readiness41944/41948、场景42151/42155/42773 均不存活，59801/59810不监听、两 socket 均释放、kill-server/server exit均0。fixture/config/cache/log/lock 保留；未删除旧证据或 user HOME。sandbox 限制根外写入、外网和 keychain，dummy loopback；debug 仍有 concurrentSessions rename EPERM、marketplace clone/config/cleanup失败及可选目录缺失，存在被阻止的外联意图，不声称零副作用。
+- same-session 正向恢复已执行但未通过；child command 未另测。fork/clear 不继承、fault injection、逐帧 logical/physical **not covered**。上一轮 turn-end passed 不变，G5/release 整体仍 **blocked**。最终执行排除禁止路径内容的 `git diff --check` 与完整 `git status --short`，保留证据。
+
+#### G5 same-session resume 产品修复（2026-10-03；源码 focused 红绿，binary 未重跑）
+
+- 先核验上一节原始证据而非盲信 harness：原进程 `/exit` 为 exit0；恢复 argv 确实是 `--resume 0289a112-124e-497b-91d5-c09386490599`；恢复请求三个 session headers 与原 ID 一致；同 ID 的 `dev-mods` transcript 记录仍存在；恢复 UI 有原对话及新 response，但没有 `G5_SAME_SESSION_ACTIVE`。因此 identity、授权持久记录与恢复输入均成立，首个产品分歧是恢复后的 child 未被重新发现。
+- 代码链确认 `processResumedConversation()` 在非 fork 时保留 `devModsFolder`，`main.tsx` 传入 `initialDevModsFolder`，`REPL.tsx` 在首次 host bind 前调用 `restoreAuthoringConsent()`；根因位于已初始化的 `createModsSession`：恢复只在 `bind()` 设置 `authoringEnabled/root`，但原逻辑只有首次初始化或 timer 存在时才 `refresh()`，同 ID 恢复落入单纯 `runtime.bind()`，不会扫描 authoring root。不是 `main` 初始 resume 字段或 `sessionStorage` 丢失。
+- 最小行为红测使用新建 `/tmp` authoring root、真实 child `register.ts` 和真实 Mods runtime：预先初始化 host 后，对同一 session 恢复授权并再次 bind，期望 child `command.run` marker 可用。修复前 `authoringLoads` 为 0，**0 pass / 1 fail**；证据 `/tmp/mods-g5-red-Odqyzn/red.log`（首次记录命令的 shell 状态变量只读导致外围命令也 exit1，但 Bun 失败正文完整）。
+- 最小修复在 `src/services/mods/session.ts` 显式记录一次待消费 restore；下一次 `bind()` 无论同 ID 还是不同 ID 都消费它并走既有 `refresh()`。`refresh()` 继续经过 `deferAuthoringRefresh()`，因此 active public turn 下仍延迟到 `finishTurn()`；session 切换继续执行原 cancellation/generation fencing。恢复 `undefined` 也执行一次 reconcile，确保 clear/fork 移除旧 authoring child；runtime activation 未重建，配置插件的 `session.start` 计数保持 1。
+- 新回归覆盖：已初始化 runtime 的同 ID restore、turn barrier 前不加载/结束后加载、真实 child marker、clear/fork 不继承、配置插件不重复 `session.start`；并将初始 CLI restore 与 fork 测试从仅 source 字符串升级为可执行 AST 提取行为，验证 restore 先于首 bind，且 `processResumedConversation` 仅非 fork 返回 authoring root。focused 结果：`src/services/mods/session.test.ts` **59 pass / 0 fail**；REPL resume 相关 **4 pass / 0 fail**。最终证据 `/tmp/mods-g5-focused-7U1ZYi/`；更小绿测另见 `/tmp/mods-g5-barrier-ZIBIuw/`、`/tmp/mods-g5-repl-mk5j3m/`。
+- 所有本轮 test HOME、`CLAUDE_CONFIG_DIR`、XDG cache 与 TMPDIR 都在各自新建 `/tmp` 根；fixtures 由测试 `mkdtemp` 创建并在 `afterEach` 清理，测试 mock secure storage 并禁止意外写入。未读取/修改用户 HOME，未修改或删除旧 evidence，未使用 agent/worktree，未 build、tmux、全 suite、commit 或 push。
+- **剩余动态步骤：** 当前只证明源码行为红绿，上一节旧 binary 失败事实不变；尚未构建新 binary，也未重跑同 ID `--resume` 真实 marker、fork/clear 动态场景、fault injection 或 logical/physical 帧，因此 G5/release 仍 **blocked**。
+
+#### G5 resume 最终验证尝试（2026-10-03；隔离构建首错停止，未进入 gate）
+
+- 按用户要求仅在原仓库串行执行，未启动 agent/worktree、未跑全 suite、未改产品、未 commit/push，也未删除旧证据。先审查 `session.ts` 最新 `authoringRestorePending` 消费路径、`Makefile`、`build.mjs`、`package-binary.mjs` 与正式 retained capture/driver；确认 retained runtime sandbox 的 unlink 白名单仅包含本轮 tmux socket、`.claude.json`、其 lock 与精确 atomic 临时文件，正式 retained preflight 不构造带旧清理行为的 `BinaryGate`。
+- 新私有根为 `/tmp/mods-g5-final-sCsbO8kl`，权限 0700；HOME/config/cache/tmp/evidence 均位于该根。构建命令使用 `nice -n 10`、`env -i` 与 macOS `sandbox-exec`，禁止外网和用户 keychain/`~/.claude` 读取，目标为新的 `/tmp/mods-g5-final-sCsbO8kl/output`，没有覆盖仓库根 `built-claude`。精确命令、stdout/stderr、exit 与构建前 source identity 分别保存在 `evidence/build-command.txt`、`build.stdout.log`、`build.stderr.log`、`build.exit`、`source-identity-before.json`。
+- **首个错误：隔离构建 exit 2。** `prepareBuildDirectory()` 将 `/tmp` canonicalize 为 `/private/tmp` 后尝试 `mkdir '/private/tmp/mods-g5-final-sCsbO8kl/output'`，但本轮 build sandbox 的写白名单使用了未 canonicalize 的 `/tmp/...` literal/subpath，因而返回 `EPERM: operation not permitted`（`scripts/build.mjs:238`）。这是本轮 sandbox 配置路径别名不一致，不是 G5 resume 产品结果；遵循首错停止，没有放宽 sandbox、没有重试构建，也未启动 capture/retained gate。
+- 失败后副作用记录为 `/tmp/mods-g5-final-sCsbO8kl/evidence/post-failure-effects.json`：output 不存在；HEAD 仍为 `b66311c5338ab28871ce122014b2f84d7cff6530`；排除本文追加前记录的 status/unstaged/staged 身份在失败后均一致；受保护根 binary 仍为 SHA-256 `34adf2f3009c879ff11bf305fc0a90efc9d069cba806bf99c6241ed30d54aa0f`、size `101010914`。本轮没有新 binary SHA，未生成 final manifest。
+- **未覆盖：** same-session resume、真实 fork/clear、既有 turn-end/not-now/cancel 复跑、完整 required targets、fault injection、logical/physical 帧。上一轮 turn-end 与源码 focused 结果不变，但不得据此称本轮 binary 或完整门禁通过；G5/release 仍 **blocked**。
+
+#### 指定新 binary G5 正式复验（2026-10-03；resume 首错停止，整体 blocked）
+
+- 本轮只执行正式新 binary，不 build、不改产品或 harness、不运行源码测试/全 suite、不启动 agent/worktree、不 commit/push。指定产物 `/private/tmp/mods-g5-build-v99qwqx0/output/built-claude` 与 `evidence/build-result.json` 一致：build exit **0**，SHA-256 `3df0e1eb47789ac680296fde3b66d2bcc8a337d95038cb85adaf0e0a5a3dd931`，size `101027426`，mtime_ns `1791017584006968029`；build argv 见同根 `evidence/build-command.json`。HEAD 为 `b66311c5338ab28871ce122014b2f84d7cff6530`。本轮未把该既有产物冒称为本轮构建。
+- 新 canonical 私有根 `/private/tmp/g5v99-rBXZMJ`（0700）；所有正式命令均 `nice -n 10`、`env -i`、dummy loopback，HOME/config/cache/TMPDIR/fixture/evidence 均在该根。正式 capture exit **0**，gate 自行 exit **2** 且已生成 final manifest；exact argv/env 见 `resume-{capture,gate}-command.txt` 及 final manifest。没有 `--targets` 或 `--base-ref`，完整 **26 planned / 25 required / 25 blocked** 清单保留。
+- 正式结果 `/private/tmp/g5v99-rBXZMJ/resume-run/evidence/driver-final-manifest.json`：readiness **passed**，G5 `same-session-resume` **failed**，`overall_verdict=blocked`、`matrix_complete=false`、`repository_state_unchanged=true`。按“首个分歧停止”没有再运行 default G5 矩阵，因此本轮 `turn-end-load`、`not-now`、`enable+clear-cancel`、`cancel` 均 **not covered**；fork 没有正式 handler，保持 **not covered**，不编造覆盖。既有历史通过不算作本轮新 binary 复验结果。
+- 原 session `560c2a53-d915-4909-a6bc-d2bfcce7d277`：真实 `/plugin-authoring` 授权、模型响应、精确 dev-mods entry、child fixture 与 `G5_SAME_SESSION_ACTIVE` 均成功；`original-ui-active.txt:16-24` 显示 marker，随后正式 `/exit` 的 pane dead/status 为 `1 0`。恢复使用同一 socket/pane 串行 `respawn-pane`，argv 为 `--resume 560c2a53-d915-4909-a6bc-d2bfcce7d277`。
+- **首个可见分歧仍是恢复后 marker 缺失。** `resumed-identity.json` 证明恢复请求 sequence4 的 `session-id`、`thread-id`、`x-claude-code-session-id` 均为原 ID，dummy auth 匹配，精确 `dev-mods` entry 仍存在；`resumed-exact-identity-ui.txt:8-19` 显示恢复的原对话、新 probe/response 与 ready prompt，但没有 `G5_SAME_SESSION_ACTIVE`，45 秒 bounded wait 到期。debug `:248-269` 的 marker load 均发生在原进程；恢复启动后 `:309-323` 只发现标准插件并记录 `Registered 0 hooks from 2 plugins`。因此新 binary 未证明 `authoringRestorePending` 在实际 same-session resume 中重新加载 marker；未通过重试或修改判据掩盖失败。
+- 终态 `/private/tmp/g5v99-rBXZMJ/final-effects.json`：readiness/G5 server PID `15777/15960` 均退出，loopback port `62476/62485` 不监听，两条 tmux socket 均释放；binary SHA/size/mtime 与执行前一致，HEAD 未变。证据与 fixture/lock 保留，没有清理旧证据或 user HOME。恢复后的 CLI 由正式 kill-server 停止，不能声称其独立正常 exit0。
+- physical/logical frame、fault injection、完整 required handlers 仍 **not covered**；本轮只记录正式 resume 分歧，不以 readiness 或原进程 marker 成功宣称 G5/release 通过。
+
+#### G5 cold `--resume` 首分歧修复（2026-10-03；真实读取链 focused 红绿，新 binary 待重跑）
+
+- 只读取本节新证据 `/private/tmp/g5v99-rBXZMJ/resume-run/` 与实际源码链；未触碰用户 HOME、旧证据或 retained fixture，未启动 agent/worktree、未 build/tmux/full suite、未 commit/push。所有测试使用新的 canonical `/private/tmp/mods-cold-resume-*` 0700 根，HOME/config/cache/TMP 均隔离，`env -i`、`nice -n 10`。
+- 新 binary SHA-256 `3df0e1eb47789ac680296fde3b66d2bcc8a337d95038cb85adaf0e0a5a3dd931` 的失败事实保持不变：原 session Enable、child marker、`/exit` exit0 均成立；恢复 sequence4 的三个 session headers 与原 ID 相同，精确 `dev-mods` JSONL entry 仍在，但恢复进程 debug 只报 `Registered 0 hooks from 2 plugins`，没有 child marker。未再把 `session.bind` 当作全部根因。
+- **更早的首个字段分歧：** direct UUID `--resume` 在 `main.tsx` 调用 `loadConversationForResume(sessionId)`，其 string 分支调用 `getLastSessionLog()`。`loadSessionFile()`/`loadTranscriptFile()` 已正确解析并返回 `devModsFolders`，`getLastSessionLog()` 也解构了该 map，却遗漏把 `devModsFolders.get(sessionId)` 写入返回 `LogOption.devModsFolder`。所以后续 `loadConversationForResume → processResumedConversation → main initialDevModsFolder → REPL restoreAuthoringConsent → first bind` 接到的是 `undefined`；REPL 的 restore/bind 顺序及 `authoringRestorePending` 修复实际没有得到授权 root。cwd、session ID、transcript adoption 路径未见先于此处的分歧。
+- 新回归不是 source 字符串或单独 slice：独立子进程在隔离 config 下走真实 transcript persistence，写入真实 `dev-mods` entry 后调用实际 `loadConversationForResume(sessionId, undefined)`，再把返回字段交给真实 `createModsSession.restoreAuthoringConsent()` 与首次 `bind()`，断言 authoring root 的真实 child 被扫描。修复前 `/private/tmp/mods-cold-resume-red-yjVojM` 为 **8 pass / 1 fail**，关键断言 expected 精确 session root、received `undefined`。
+- 最小修复仅在 `src/utils/sessionStorage.ts` 的 `getLastSessionLog()` 返回值补上 `devModsFolder: devModsFolders.get(sessionId)`，与同文件 `loadFullLog()`、`loadTranscriptFromFile()` 已有 metadata 映射一致；没有新增 fallback、放宽 root/session 校验，也保留上次 `authoringRestorePending` 修复。两者作用不同：本次修复确保 cold UUID resume 把 persisted root 送达 REPL；上次修复确保送达后即使 Mods host 已初始化，下一次 bind 也会 reconcile/扫描 child。
+- 最终 focused `/private/tmp/mods-cold-resume-bind-green-iYGZwt`：`src/utils/sessionStorage.restart.test.ts` **9 pass / 0 fail / 9 assertions**。仅证明源码真实读取到首次 bind 链路；指定新 binary 尚未包含本次修复且没有重跑，same-session marker、完整 G5/release、fork/clear 动态、fault injection、logical/physical frame 仍 **blocked/not covered**。
+
+#### G5 cold resume 新 binary 复验尝试（2026-10-03；canonical root preflight 首错停止）
+
+- 按要求先读取本节上一记录、正式 `Makefile`、retained `capture-release-baseline.py`、`run-binary-gate.py`、launcher，以及成功构建证据 `/private/tmp/mods-g5-build-v99qwqx0/evidence/{build-command.json,build.sb}`。确认 `make build CLAUDE_CODE_BUILD_DIR=<new output>` 不覆盖根 binary；正式 retained driver 支持先单独执行 `--g5-scenario same-session-resume`，默认余项顺序为 `not-now → enable(clear-cancel) → cancel → turn-end-load`，fork 没有正式 handler。计划保留默认 26 planned / 25 required 与整体 blocked，不运行全 suite、并行或嵌套 agent。
+- 本轮唯一新根最初由 `mktemp -d /tmp/mods-g5-cold-resume-XXXXXXXX` 创建为 `/tmp/mods-g5-cold-resume-MMxz2CgN`，实路径 `/private/tmp/mods-g5-cold-resume-MMxz2CgN`，权限 0700。预定构建命令复用已审查模式：`/usr/bin/nice -n 10 /usr/bin/sandbox-exec -f <canonical-root>/build.sb /usr/bin/env -i ... make -C <repo> build CLAUDE_CODE_BUILD_DIR=<canonical-root>/output`；白名单仅包含隔离 HOME/config/cache/tmp、固定 PATH、禁 telemetry/updater，Seatbelt 禁外网并只允许本轮 canonical root 写入。
+- **首个失败发生在构建启动前的本轮 shell preflight，exit 1。** `mktemp` 返回 `/tmp/...` 字符串，而 guard 使用 `[ "$ROOT" = "$CANON" ]` 要求它与 `realpath` 的 `/private/tmp/...` 字面相等，输出 `non-canonical root: /tmp/mods-g5-cold-resume-MMxz2CgN -> /private/tmp/mods-g5-cold-resume-MMxz2CgN`。这正是路径 alias 检查写反造成的本轮执行环境错误，不是产品、build 或 resume 分歧；遵循“首个失败停止”，没有以 canonical 值重试，没有执行 `make build`、capture、gate 或任何 binary。
+- 终态证据保留于 `/private/tmp/mods-g5-cold-resume-MMxz2CgN/evidence/`：`preflight-failure-final.json`、`failed-command.txt`、`git-status-final.txt`、`git-diff-check-final.txt`、`process-socket-final.json`。没有新 binary 或 SHA；根 `built-claude` 仍为 SHA-256 `34adf2f3009c879ff11bf305fc0a90efc9d069cba806bf99c6241ed30d54aa0f`、size `101010914`、mtime_ns `1790956136193023479`。HEAD `b66311c5338ab28871ce122014b2f84d7cff6530`，branch `feat/mods`；`git diff --check` exit 0，完整 dirty status 已保存。最终无本轮 owned process、无 socket；未创建 tmux server/pane，因此没有 process target 或 final manifest。
+- 本轮仅追加本文记录，不修改产品或 harness，不清理本轮失败证据、旧证据、用户 HOME，不 commit/push/worktree。same-session resume、clear-cancel、turn-end、not-now、cancel、fork、fault injection、logical/physical frame 与完整 required targets全部 **not covered**；整体仍 **blocked**，不得宣称 physical/full gate 通过。
+
+#### G5 cold resume 修复后原生产物重验（2026-10-03）
+
+- 统一使用 canonical `/private/tmp` 后，正式隔离 `make build` exit **0**；产物 `/private/tmp/mods-cold-fixed-3hb46b5r/output/built-claude`，SHA-256 `a36360e4b4ea5a349ada38c9c390c257de306c2d28a51f76b414a5b2e78070b6`。包含 `authoringRestorePending` 与 `getLastSessionLog.devModsFolder` 两处修复；构建 argv/result/log 在同根 `evidence/`，没有覆盖仓库根 binary。
+- 单终端、低优先级正式 retained 重验：`/private/tmp/g5sr-20261003T092215Z-83602/evidence/driver-final-manifest.json`。readiness **passed**，`same-session-resume` **passed**，首分歧为 null；driver exit **2**，完整 required-target 策略继续保持 `overall_verdict=blocked`、`matrix_complete=false`，并非 release 通过。
+- 原 session `f8f124e9-4acf-473b-aa81-8c6cf7281596` 的 authoring root 为该 run 下 `g5-same-session-resume/config/dev-mods/<session-id>`。原进程与真实 `--resume` 新进程均显示 `G5_SAME_SESSION_ACTIVE`；恢复请求的 `session-id`、`thread-id`、`x-claude-code-session-id` 与原 ID 一致，persisted entry/root 一致。两个 CLI 均正常退出，pane dead/status 为 `1/0`。
+- tmux server exit 0，私有 socket 已释放，无本轮残留进程；`repository_state_unchanged=true`。全部证据保留，未清理旧文件、用户 HOME 或共享配置，未 commit/push。
+- 本次仅闭环 cold same-session resume 专项。修复后其余 G5 场景仍需同产物重验；fork、fault injection、逐帧 logical/physical 和完整 required-target 门禁仍未覆盖，不能由该专项通过推定完成。
+
+#### G5 同产物默认场景复验（2026-10-03；非完整门禁）
+
+- 使用上述 SHA-256 `a36360e4b4ea5a349ada38c9c390c257de306c2d28a51f76b414a5b2e78070b6` 原生产物，正式 retained 默认场景，不传 `--g5-scenario`，新根 `/private/tmp/g5r-20261003T093015Z-5667`。`evidence/driver-final-manifest.json` 与 `evidence/g5-result.json` 记录 `not-now`、`enable`（含 `/clear` 后 `clear-cancel`）、`cancel`、`turn-end-load` 全部 **passed**，首分歧 null。turn-end 包含 held 阶段不提前加载与结束后 UI marker 断言。
+- driver exit **2**，`overall_verdict=blocked`、`matrix_complete=false`、`recorded_run_count=2 / expected_run_count=26`；25 required targets 仍 missing，没有缩减矩阵。此 run 的 resume 为 **not covered**；上一独立 run 的 resume 专项通过不得拼接为完整同轮门禁。logical/physical、fork 和独立 child command 仍未验收。
+- readiness 与四个场景的 server 均 exit 0，私有 socket 均释放，无本轮残留进程/socket。binary hash 前后不变，`repository_state_unchanged=true`，Git status/staged/unstaged 前后哈希一致，HEAD `b66311c5338ab28871ce122014b2f84d7cff6530`。全部证据保留，没有删除旧证据、修改共享配置或执行 commit/push。
+
+#### G5 fork 前置发现 AbovePrompt continuation 缺陷（2026-10-03）
+
+- 正式 retained driver 新增 `fork-session`，默认 G5 同轮矩阵纳入 same-session resume 与 fork：验证新 session headers、原授权保留、fork 不继承 marker/root、重新 consent 与取消无新增副作用。harness focused 红绿完成，但真实 fork 尚未执行到，不能计为通过。
+- 第一轮 `/private/tmp/g5f-20261003T095005Z-59179/evidence/driver-final-manifest.json` 在原 session 双 marker 前置失败：两个同级 plugin 各直接返回 Text，使 middleware 首个 handler 短路；仅 CHILD 出现。这是 fixture 错误。保持双 marker 断言，将 fixture 改为 `async next` 后用 Box 保留下游树；实际生成 handler 的可执行回归红绿证据 `/private/tmp/g5-marker-regression-{red,green}/test.log`。
+- 第二轮 `/private/tmp/g5-F4xTu4/evidence/driver-final-manifest.json` 暴露产品缺陷：合法 `await next(e)` 返回嵌套 `{type:'engine', ref}`，`ModsAbovePrompt` 忽略 consumer 的 `resolveEngine`，直接交给不持有 ref 集合的 `ModsPane`，导致 `Unknown Mod UI engine ref`。原 session 已渲染崩溃，fork 尚未执行；没有放宽判据或改回直接 Text 绕开问题。
+- 最小产品修复位于 `src/components/ModsAbovePrompt.tsx`：通过本次 consumer 的 resolver 验证 engine continuation，再在 AbovePrompt 空 host 呈现位置物化为空 Box；递归普通 children、保留 callback/owner/clientBindings，不跨 Client 边界，不放宽共享 renderer 校验。顶层 engine 同样先验证再保持空呈现。
+- 真实 mount/dispatch/Ink 双 middleware 回归与未知 ref 错误路径：`/private/tmp/mods-above-prompt-fix.xTGU5R/red.txt` 为 **7 pass / 1 fail**，稳定复现错误；`green-final.txt` 为 **9 pass / 0 fail / 39 assertions**，scoped lint 与 diff check 通过。未 build 或运行修复后 binary。
+- **产品修复使此前 binary 验收过期。** 需新隔离构建并重放错误序列及 G5 默认同轮矩阵；fork、完整 required targets 与 logical/physical 仍未验收。上述失败 run 的本轮进程/socket 均释放，证据保留，不触及旧文件或共享 HOME，不 commit/push。
+
+#### G5 启动 binding 与取消传播修复（2026-10-03；新产物待验）
+
+- continuation 修复产物 `/private/tmp/tmp84k7ekhx/output/built-claude`，SHA `05e9edf27b4302f977774c07c2521bbd7ac4edd15a68273b4903403e8ff49317` 构建成功。正式默认六场景 `/private/tmp/g5n-dc59fc/evidence/driver-final-manifest.json` 前四通过；same-session 原进程双 marker 正常，恢复启动却缺失。debug `455-458` 证明两个插件已扫描并调用 `ui.render`，但均报 `Module capability ui.resolve was withdrawn`。不是旧字段遗漏、fixture 或 continuation 渲染错误，不放宽启动即 marker 判据。
+- 根因是 `session.ts` 新 runtime 先 publication/reconcile 再 bind terminal。修复为局部创建 runtime、先 bind、确认未 stopped 后再暴露并 reconcile，dispose 期间未发布 runtime 会释放，既有 runtime clear 路径不重放旧 binding。确定性 publication barrier 红 `/private/tmp/mods-cold-resume-red.LwbQ2l/test.log` **0/1**，绿 `/private/tmp/mods-cold-resume-green.KFkPZX/test.log` **1/0**；完整 session 文件 `/private/tmp/mods-session-final.RGXmDP/test.log` **60 pass / 0 fail / 270 assertions**，包括 session.start 恰一次。
+- 一次构建 harness 误预建 exclusive output，`/private/tmp/mods-bind-fixed-antnzg5g` 因 EEXIST 停止，无产物；保留失败。随后新根 `/private/tmp/mods-bind-build-wtnxs1g4` 不预建 output，正式 build exit0，产物 SHA `75633c227a84df3ef78326a2f1e8f938a50de99c2b98a65f6eccd77c56fa5e2e`，根 binary 与 Git 状态不变。
+- 该产物正式同轮默认 G5：`/private/tmp/g5b-185548-36f7/evidence/driver-final-manifest.json` 前五 **passed**，same-session 恢复启动即双 marker、identity、两个正常 exit 都通过。fork 新 ID 与不继承原 root/marker、重新 consent 通过，但 Ctrl-C 后 draft 为空，`fork-consent-cancel` **failed**。无新增 POST/root/entry；未将局部 fork 通过冒称整个场景通过。进程/socket 全部释放，证据保留，整体仍 blocked。
+- 真实取消恢复链断点：`processSlashCommand.tsx` 将 `ModAuthoringPromptDismissedError` 吞为正常 `shouldQuery:false`，REPL 未 admitted 的 `restoreOnError` 得不到 rejection。修复仅对专用 dismissal 异常重新抛出；普通错误 stderr 与 AbortError Interrupted 保持原行为。catch 内动态加载异常类，未引入顶层 session 依赖或普遍恢复所有 local command。
+- 真实 slash-command 到 REPL 恢复回归 `/private/tmp/g5-dismissal-fix-redgreen/logs/red.log` 为 **115 pass / 2 fail**；修复后 `green.log` 两个相关测试文件 **116 pass / 0 fail / 486 assertions**，diff check 通过。**本次产品修复再次使旧 binary 验收过期**，尚未构建或真实重放；G5、fork、logical/physical、完整发布门禁均不可宣称完成。
+
+#### G5 取消根因与同轮六场景通过（2026-10-03；完整发布仍 blocked）
+
+- 单独修复 dismissal 传播及随后 abort-first 语义统一（`requestPrompt` 的 abort listener 优先 `item.dismissError`，普通 prompt 保留 signal.reason）后，真实 fork 取消仍失败。失败记录分别保留 `/private/tmp/g5d-9cb5e22b6ba0`、`/private/tmp/g5a-c35b6a5ac5`。两种取消顺序的真实 requestPrompt/session/slash/submit 组合测试虽通过，不能代替 binary 结果。
+- 临时无内容诊断产物 `9180565db00a75f7733b7686f7b650a3c920f051610f582eded0342a8c1686f9` 的 run `/private/tmp/g5e.NdWmjK` 首次给出决定性观测：debug `514-518` 显示 dialog-dismiss、slashCatch dismissal、restoreOnError 已进入且未 admitted，但 submittedGeneration=22/currentGeneration=23，来源 `set-pasted-contents`，故 canRestore=false。不能再把该现场归因于异常未传播。
+- 真正剩余根因：`PromptInput` orphan-prune effect 在提交清空 input 后调用 paste updater，即使返回同一个 previous 对象，REPL wrapper 仍无条件增加 draft generation。最小修复先计算 next，对 `Object.is(next, previous)` 的 no-op 不增 generation；真实新增/删除/替换仍增加 generation，保持防覆盖。取消两顺序回归红 `/private/tmp/g5-regression-red.kGIgP5/red.log` **2 fail**，绿 `/private/tmp/g5-regression-green.SMEe15/green.log` **3 pass**；文件级 `/private/tmp/g5-regression-suite.8pfMtA/suite.log` **117 pass / 0 fail / 496 assertions**。临时 diagnostic markers 与 generation source 元数据已移除。
+- 正式隔离 build `/private/tmp/mods-draft-build-h0ol8ve1/evidence/build-result.json` exit0；产物 SHA-256 `4157c065c477fe9440e92e8e36612be86ccdea533dde4115ed4331a7fbd3d9ab`。根 binary、Git 状态不变。
+- 随后两处 harness 旧假设已按红绿修正，未放宽产品契约：初次 cancel 原本只接受空 composer，现精确要求恢复 `/plugin-authoring` 且无 busy/dialog/POST/root/entry（旧现场 `/private/tmp/g5-final-14b332afbd`）；fork cancel 验证通过后退出原先 append `/exit` 形成 `/plugin-authoring/exit`（旧现场 `/private/tmp/g5-ok-0d71b64af8`），现先真实 `C-u` hex15、确认空 composer 再 `/exit`。取消恢复断言仍先执行。
+- **同轮正式 G5 六场景全部 passed**：`/private/tmp/g5-complete-fe17e9d0-591d-4a34-ac28-e056d2d8f32c/evidence/driver-final-manifest.json`。not-now、enable/clear-cancel、cancel、turn-end-load、same-session-resume、fork-session 均通过，first_divergence=null。resume 启动双 marker、同 ID、两个 exit=1/0；fork 新 ID、不继承授权/marker、重新 consent、取消精确 draft 与无新增副作用、C-u 清空和最终 exit=1/0 均通过。
+- 本轮 binary 身份前后不变、repository_state_unchanged=true；所有 readiness/G5 server exit0、socket 释放、无本轮残留 runtime。证据全部保留，未 commit/push/worktree，未触及共享 HOME 或根 built。
+- **证据身份边界：** manifest 中的 SHA-256 `4157c065c477fe9440e92e8e36612be86ccdea533dde4115ed4331a7fbd3d9ab` 只标识该轮冻结 binary。CHANGELOG 会内嵌进 binary，本次 README/CHANGELOG/mods-test 更新后必须重新 build 才能验收当前产物；不得沿用 `4157…` 声称当前工作区 binary 已通过。
+- **覆盖边界不变：** 这是 G5 语义与生命周期专项，不是完整 feature/release 门禁。logical/physical frames、独立 child command、其余 M287/S1–S9 与完整 required targets 尚未闭环；driver exit2、overall blocked、required_target_coverage.passed=false。不得跨 run 拼接或将六场景通过扩张为整体通过。当前总判定仍为 **blocked**。
+
+#### 文档同步后当前制品验证（2026-10-03）
+
+- `make -j1 release-check` 首次发现 `scripts/build-isolated.test.mjs` 的六个 URL no-undef；显式从 node:url 导入 URL 后 focused ESLint 通过。全量 release-check 复验 `/private/tmp/claude-release-check.sQ3ej4/release-check.log` exit0：版本 guard、CHANGELOG 5/0、TypeScript、ESLint、missing imports/assets audit、diff check 全通过。此为静态检查，不等于四路完整发布通过。
+- 正式隔离 build `/private/tmp/claude-isolated-build.B4Wd05/evidence/build-result.json` exit0，版本2.1.280，产物 `/private/tmp/claude-isolated-build.B4Wd05/output/built-claude` SHA-256 `294a328ee70d0a68a28d42727f28203fa8d1827aa30281f4ec5d122d3d27db73`，size101027426。根 built 与 repo Git 状态保持不变。
+- 当前产物作者 CLI `/private/tmp/mods-native-author-w6Wu7R/results.json`：三个原样示例逐文件复制哈希一致，validate 3/3、plugin test 1/4/3、生成声明后 tsc 3/3 通过。G6 双 module 的 .ts/.mjs 两个负例均 exit1，明确 at most one module，四个 entry 顶层写探针均未执行。共11/11预期结果，网络禁止、仅本轮root可写；repo/binary前后身份一致，证据保留。
+- 当前产物正式默认 G5 六场景同 run 全通过：`/private/tmp/g5-release-1d09defdff/evidence/driver-final-manifest.json`。assertions 分别4/9/4/7/12/16；same-session启动双marker与identity、两个正常exit；fork新identity、不继承、取消后精确保留draft、随后C-u清空和正常exit。first_divergence=null；repository_state_unchanged=true；readiness+六场景server exit0/socket释放，无本轮残留进程。
+- **仍未完成：** logical/physical、独立child command、其余M287/S1–S9和完整required targets；正式retained overall仍blocked/exit2。上述独立静态、作者CLI与G5运行不拼接成四路同轮release结论。未commit/push/tag/release，保留全部/tmp证据。
+
+#### 功能批次提交与源码复验（2026-10-03；不代表发布通过）
+
+本次以 `b66311c` 为起点，按功能依赖拆分为 17 个本地签名提交。原有暂存的流清理改动纳入对应批次；用独立 index 和累积源码快照验证，每批只更新相关文件的暂存记录。其他 Claude 继续工作，S7 的函数、调用分支、测试和上一节账本记录保留未提交。跨功能的官方兼容性回归在依赖就绪后独立提交。
+
+| 批次 | 提交 | 功能及相关验证 |
+| --- | --- | --- |
+| 1 | `cdf5d2d` | sticky 滚动范围；10 项通过 |
+| 2 | `0e28bfc` | Keychain 预取失败的同步回退；8 个独立子进程场景通过 |
+| 3 | `3a39625` | 宿主/Worker 流取消、异步 finally 和异常传播；122 项通过 |
+| 4 | `d8b7f4d` | 隔离 native 构建输出；脚本断言通过 |
+| 5 | `c338b65` | 三个官方作者示例、marketplace 和生成目录忽略规则 |
+| 6 | `3052707` | 类型契约、静态 hook/call/state 发现与诊断；274 项通过、3 个未提供的官方图夹具跳过 |
+| 7 | `216bae9` | 版本化 state、CAS、JSON 边界和绘制订阅；113 项通过、1 个外部 telemetry 夹具跳过 |
+| 8 | `a572970` | AbovePrompt、Client 交互及焦点；260 项先通过，旧焦点断言修正后该项单独通过 |
+| 9 | `6e14c8b` | ui.toast 的载荷验证与按插件限流；16 项通过 |
+| 10 | `59c6bbb` | 自动作者声明及旧布局安全迁移；118 项通过、1 个外部夹具跳过 |
+| 11 | `d80acea` | 隔离作者 runner、mock、宿主 hook 和 CLI 报告；111 项通过 |
+| 12 | `d076088` | 无 runtime 副作用的冷入口与缓存契约发现；23 项通过 |
+| 13 | `0698071` | session consent、resume/clear/fork、取消草稿恢复及 finishTurn；session 60、restart 9、作者指南 7、REPL 117 与 finalizer 1 项通过，slash-command 断言脚本通过 |
+| 14 | `246ea3d` | 每次实际模型请求、fallback/retry 的 prompt.compose；运行时 5、prompt 7、query 6 与 API 子进程 54 项通过 |
+| 15 | `707391b` | 官方 2.1.287 的跨功能兼容回归；37 项通过 |
+| 16 | `b11ca91` | retained 证据基础设施与 G5 六场景验证器；19 项新增检查、原有 driver 回归及 launcher 语法通过 |
+| 17 | 本节所在提交 | README、CHANGELOG 与验收边界同步 |
+
+- 拆分及测试证据保留在 `/private/tmp/mods-split-nooahjr6`：原始 staged/worktree patch、119 个源码/文档文件快照、各批精确文件版本、提交清单和测试日志。14 个示例测试生成的本地配置文件未纳入提交。测试计数按批次记录，存在交叠，不相加作为总覆盖率。
+- 本轮修正了三个测试问题：隔离构建测试使用真实 `/tmp`，焦点断言同时考虑 AbovePrompt 与 responsive diff dialog，取消测试有截止时间并让出事件循环，避免微任务循环阻塞动态导入。两种取消顺序的 focused 复验均通过。
+- REPL 取消及真实 prompt 生成测试使用无实际用途的 `ANTHROPIC_API_KEY=mods-test-unused` 满足命令目录初始化，不作为真实 provider 验收。19 项 retained 检查中，配置原子写入和 ripgrep 缓存探针因外层沙箱拒绝 `sandbox_apply`，在隔离临时目录重跑后通过；原有 driver 的 loopback mock 回归也通过。
+- **验收边界：** 本次为源码、测试及提交拆分，未推送、发布、改版本或生成新的 native binary。历史 `294a328e…` 的作者 CLI 与 G5 六场景证据仍只属于该冻结产物；文档和 CHANGELOG 改动后必须重新构建。S7、logical/physical、独立 child command 及完整 required targets 继续按各自证据判定，完整发布仍 **blocked**。
+- 最终 `make -j1 release-check` exit 0：版本 guard、CHANGELOG 检查与测试、TypeScript、ESLint、missing imports/assets audit、diff check 全通过，日志为 `/private/tmp/mods-split-nooahjr6/release-check.log`。这是静态门禁，不等于 native 或完整发布验收。

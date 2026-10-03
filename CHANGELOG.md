@@ -12,6 +12,25 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-03 - Mods 请求上下文与独立修复
+
+### 版本状态
+
+- 未发布；本次按功能拆分本地签名提交，保持版本不变。
+
+### 变更内容
+
+- `prompt.compose` 在每次实际模型请求、fallback 和 retry 前使用当次模型与工具目录重组系统 prompt，并保留 shared/session 缓存边界和嵌套调用的 hook snapshot。
+- `ui.toast` 校验通知载荷并按插件限流；terminal AbovePrompt 的绘制和 Client 交互接入 composer 焦点所有权。
+- Mods 流取消等待异步清理，并保留宿主与 Worker teardown 异常。
+- sticky 滚动保留已挂载范围的下界，避免离开底部时出现空白 spacer。
+- Keychain 预取失败保留同步凭据回退；隔离构建测试在真实 `/tmp` 中保留证据。
+
+### 测试覆盖
+
+- 功能批次在独立累积快照中验证；官方 2.1.287 兼容性回归 37 项通过，G5 验证器 19 项新增检查及原有 driver 回归通过。各批测试、提交和未覆盖项见 `mods-test.md`。
+- 此次未发布或推送；S7 并发验收工作保留未提交，完整 logical/physical 与 release 门禁仍 blocked。CHANGELOG 变更需要重新构建，历史 binary 证据不作为当前文档制品的验收。
+
 ## 2026-10-01 - Builtin Mods 启动生效、telemetry 默认关闭与 /diff 外观对齐
 
 ### 版本状态
@@ -19,6 +38,16 @@
 - 未发布；保持版本与依赖不变。
 
 ### 变更内容
+
+#### Mods 作者工具链与状态
+
+- 增加 `claude plugin validate` 的 hook module、类型契约、state 读写和跨插件声明检查，以及 `claude plugin test` 的隔离 runner、`claude-code/testing` UI 查询/交互、mock、超时、子进程和 bun 风格报告；加载非 builtin Mod 时自动维护作者声明、tool/MCP 类型、`tsconfig.json` 与 `.gitignore`，并按完整旧内容身份迁移本地 2.1.280 生成布局，不覆盖未知或作者修改文件。
+- 增加版本化 Mod state、owner-only 写入、JSON/大小边界和 `ifVersion` CAS；按实际读取的 key 记录 UI instance 订阅，state 变化只失效相关绘制，并对 reset、迟到写入和旧 render generation 做 fencing。
+- 增加 `/plugin-authoring` 内置指南与 session consent：为当前 session 创建独立 authoring root，在公开 turn 结束后加载；同 session resume 恢复，`/clear` 和 fork 不继承。取消、迟到授权、session 切换和 withdrawn activation 不发布旧结果。
+- 增加 terminal `AbovePrompt` surface 与焦点/滚动接线；修复嵌套 engine continuation 的解析，使合法 middleware 组合不会把未知 continuation ref 交给普通 Pane renderer。
+- 增加官方 2.1.287 Token Weather、Blast Radius、Replay Theater 作者示例与 marketplace；作者文件保持官方原样并可在官方与本地 CLI 间互换。
+
+#### Builtin Mods 与 diff
 
 - 修复 builtin Mods 启动后需 `/reload-plugins` 才生效：MCP 配置在 builtin 异步注册完成前已 memoize 不含 builtin 的插件列表，注册完成后现在失效该缓存。
 - `telemetry` builtin Mod 默认关闭，仅在 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或 `/plugin` 手动启用时加载。
@@ -28,7 +57,10 @@
 
 ### 测试覆盖
 
+- G1–G4、G6–G7、P1、P3、P9 的 runner、声明、validate、schema、runtime state/CAS、targeted invalidation 与 AbovePrompt 焦点/continuation 行为已有源码级回归；原样三个作者示例曾在隔离 native binary 中取得 validate 全部成功、test 依次 1/4/3 pass，并验证冷入口跨插件 state、旧声明迁移与失败退出。历史命令、制品身份和限制保留在 `mods-test.md`。
+- G5 最新同轮 retained 专项的 not-now、enable/clear-cancel、cancel、turn-end-load、same-session-resume、fork-session 六场景均通过；该 manifest 仍为 `overall_verdict=blocked`，logical/physical frames、独立 child command、其余 M287/S1–S9 与 25 个 required targets 未完成，不宣称完整 feature/release gate 或全面官方 parity。
 - 新增插件缓存失效、telemetry 默认/opt-in、生产授权恒空与 acceptance-only dummy 授权、diff 截断/窄 gutter/外观/空状态的回归测试；`mods-test-lab` 的 builtin telemetry/diff 验收不再先执行 `/reload-plugins`。
+- CHANGELOG 会内嵌进 binary；上述 G5 动态证据使用的 SHA-256 `4157c065c477fe9440e92e8e36612be86ccdea533dde4115ed4331a7fbd3d9ab` 仅标识当轮历史产物。本文修改后必须重新构建并按新制品身份验收，不能沿用该 hash 声称当前产物通过。
 
 ## 2026-09-30 - v2.1.280 - Mods 宿主扩展、OAuth 与 OpenAI Daybreak
 
