@@ -32,6 +32,7 @@ import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
+import { createModToasts } from './toast.js'
 import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
@@ -106,6 +107,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiPresentation?(): ModUiPresentation
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
   uiStatus?(plugin: string, text: string | undefined): void
+  uiToast?(plugin: string, text: string, timeoutMs: number): void
   prompt?(): ModPromptHost | undefined
 }
 export type ModDiagnostic = { plugin: string; stage: string; message: string }
@@ -203,7 +205,7 @@ const coreHost: Nouns = {
   mcp: { call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, resolve: hostIdentity },
+  ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -256,6 +258,13 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
     if (publicationNotifications) publicationNotifications.add(listener)
     else listener()
   }
+  const toast = createModToasts({
+    show: (plugin, text, timeoutMs) => {
+      if (!services.uiToast) throw new Error('UI toast is unavailable on this host')
+      services.uiToast(plugin, text, timeoutMs)
+    },
+    dropped: plugin => logForDebugging(`[Mods:${plugin}] ui.toast throttled`),
+  })
   const agents = createModAgents(owner => (owner as Activation).declaration, notify)
   const config = createModConfig(() => services.configRows?.() ?? [], (event, input, core, options) => dispatch(event, input, core, active, nouns, options), () => nouns)
   const state = createModState({
@@ -763,6 +772,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
         return { text: args[0], to: (options as ModInput).to === undefined ? 'transcript' : (options as ModInput).to }
       }
+      case 'ui.toast': {
+        const options = args[1] as ModInput | undefined
+        return { text: args[0], ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}) }
+      }
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
@@ -900,6 +913,10 @@ export function createModsRuntime({ onDiagnostic, services = {} }: {
         }
         if (input.event !== 'ui.render') throw new Error(`Unsupported UI invalidation ${String(input.event)}`)
         return ui.invalidate(owner, input.event)
+      case 'ui.toast':
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        toast(owner.declaration.name, input)
+        return undefined
       case 'ui.log': case 'ui.status': {
         if (typeof input.text !== 'string' && !(op === 'ui.status' && input.text === undefined)) throw new Error(`${op} requires text`)
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')

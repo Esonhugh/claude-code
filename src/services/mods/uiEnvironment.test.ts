@@ -5,13 +5,13 @@ import type { ModDeclaration } from './types.js'
 const hosts: ReturnType<typeof createModEnvironmentHost>[] = []
 afterEach(async () => { await Promise.all(hosts.splice(0).map(host => host.dispose())) })
 
-async function fixture(source: string) {
+async function fixture(source: string, event = 'ui.render') {
   const host = createModEnvironmentHost()
   hosts.push(host)
   const declaration: ModDeclaration = {
     name: 'ui-owner', storageId: 'ui-owner@test', pluginRoot: '/fixture',
     entrypoints: ['/fixture/main.js'], modules: [{ path: '/fixture/main.js', source }],
-    links: [], events: ['ui.render'], calls: ['ui.resolve', 'ui.status'], nextTiers: [],
+    links: [], events: [event], calls: ['ui.resolve', 'ui.status', 'ui.toast'], nextTiers: [],
     options: {}, tier: 'user', fingerprint: source,
   }
   const environment = await host.load(declaration)
@@ -19,6 +19,20 @@ async function fixture(source: string) {
 }
 
 const event = { surface: 'terminal', component: 'Pane', requestId: 'test' }
+
+test('registers ui.toast middleware and forwards toast arguments through the VM bridge', async () => {
+  const { environment, handle } = await fixture(`export function register(on) {
+    on('ui.toast', async ($, e, next) => {
+      await $.ui.toast('notice', {timeoutMs: 2500});
+      return next(e);
+    });
+  }`, 'ui.toast')
+  const shown: unknown[] = []
+  const ui = createModUiBridge({ toast: (...args) => { shown.push(args) } })
+  const input = { text: 'original' }
+  expect(await environment.invoke(handle, [{ ui }, input, (value: unknown) => value])).toEqual(input)
+  expect(shown).toEqual([['notice', { timeoutMs: 2500 }]])
+})
 
 test('drawing materialization rejects proxies and accessors before they can call host capabilities', async () => {
   for (const tree of [

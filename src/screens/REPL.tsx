@@ -2084,13 +2084,16 @@ export function REPL({
       logForDebugging(`[Mods:${plugin}] ${text}`)
       if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`[${plugin}] ${text}`, 'info')])
     },
+    uiToast: (plugin, text, timeoutMs) => addNotification({
+      key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
+    }),
     uiStatus: (plugin, text) => setModStatuses(previous => {
       const next = { ...previous }
       if (text === undefined) delete next[plugin]
       else next[plugin] = text
       return next
     }),
-  }), [modsSession, setAppState, setMessages])
+  }), [modsSession, setAppState, setMessages, addNotification])
 
   useEffect(() => {
     if (!modsSession) return
