@@ -190,6 +190,11 @@ function parseKey(keypress: ParsedKey): [Key, string] {
 }
 
 export class InputEvent extends Event {
+  private keyboardDispatched = false
+
+  markKeyboardDispatched(): void { this.keyboardDispatched = true }
+  didDispatchKeyboardEvent(): boolean { return this.keyboardDispatched }
+
   readonly keypress: ParsedKey
   readonly key: Key
   readonly input: string

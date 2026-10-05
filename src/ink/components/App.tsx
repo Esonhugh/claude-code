@@ -637,7 +637,7 @@ function processKeysInBatch(
 
     // A legacy handler may already own this key (including Tab's default
     // traversal). Do not activate a second DOM target for the same input.
-    if (!event.didStopImmediatePropagation()) {
+    if (!event.didStopImmediatePropagation() && !event.didDispatchKeyboardEvent()) {
       app.props.dispatchKeyboardEvent(item)
     }
   }
