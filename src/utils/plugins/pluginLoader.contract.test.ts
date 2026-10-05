@@ -20,6 +20,7 @@ if (!process.env.P7_CONTRACT_TEST_CHILD) {
       env: {
         PATH: process.env.PATH,
         HOME: home,
+        TMPDIR: home,
         CLAUDE_CONFIG_DIR: join(home, 'config'),
         P7_CONTRACT_TEST_CHILD: '1',
       },
