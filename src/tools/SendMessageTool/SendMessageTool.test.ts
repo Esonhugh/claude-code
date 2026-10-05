@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, mock, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
@@ -10,31 +10,46 @@ const childFlag = 'CLAUDE_CODE_SEND_MESSAGE_TEST_CHILD'
 
 if (process.env[childFlag] !== '1') {
   test('SendMessage routing (isolated)', async () => {
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        'test',
-        '--feature=UDS_INBOX',
-        '--timeout',
-        '30000',
-        import.meta.path,
-      ],
-      {
-        cwd: import.meta.dir,
-        env: { ...process.env, [childFlag]: '1' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
-    )
-    const [code, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ])
-    if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
+    const fixture = await realpath(await mkdtemp(join(tmpdir(), 'send-message-home-')))
+    let child: ReturnType<typeof Bun.spawn> | undefined
+    try {
+      await Promise.all(['home', 'config', 'cache', 'state', 'tmp'].map(name => mkdir(join(fixture, name))))
+      const runningChild = Bun.spawn(
+        [
+          process.execPath,
+          'test',
+          '--feature=UDS_INBOX',
+          '--timeout',
+          '30000',
+          import.meta.path,
+        ],
+        {
+          cwd: import.meta.dir,
+          env: {
+            PATH: process.env.PATH ?? '', HOME: join(fixture, 'home'), CLAUDE_CONFIG_DIR: join(fixture, 'config'),
+            XDG_CONFIG_HOME: join(fixture, 'config'), XDG_CACHE_HOME: join(fixture, 'cache'), XDG_STATE_HOME: join(fixture, 'state'),
+            TMPDIR: join(fixture, 'tmp'), ANTHROPIC_API_KEY: 'sk-test-placeholder', DISABLE_TELEMETRY: '1',
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', PRIVACY_MODE: '1', [childFlag]: '1',
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: 30_000,
+        },
+      )
+      child = runningChild
+      const [code, stdout, stderr] = await Promise.all([
+        runningChild.exited,
+        new Response(runningChild.stdout).text(),
+        new Response(runningChild.stderr).text(),
+      ])
+      if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
+    } finally {
+      if (child && child.exitCode === null) { child.kill(); await child.exited }
+      await rm(fixture, { recursive: true, force: true })
+    }
   }, 30_000)
 } else {
-  const configDir = await mkdtemp(join(tmpdir(), 'send-message-tool-'))
+  const configDir = await realpath(await mkdtemp(join(tmpdir(), 'send-message-tool-')))
   afterAll(async () => {
     await rm(configDir, { recursive: true, force: true })
   })
