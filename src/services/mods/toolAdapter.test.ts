@@ -11,12 +11,51 @@ import { dispatchModEvent } from './dispatch.js'
 import type { ModDispatchHook } from './types.js'
 import { runModToolCall } from './toolAdapter.js'
 import { createModsRuntime } from './runtime.js'
-import { mkdir, mkdtemp, readFile, readdir, writeFile, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, writeFile, rm, realpath } from 'node:fs/promises'
 import * as fs from 'node:fs/promises'
 import { getProjectDir } from '../../utils/sessionStorage.js'
 import { getToolResultsDir } from '../../utils/toolResultStorage.js'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+  getProjectDir.cache.clear?.()
+})
+
+afterEach(async () => {
+  try {
+    if (testConfigRoot !== undefined) await rm(testConfigRoot, { recursive: true, force: true })
+  } finally {
+    testConfigRoot = undefined
+    resetSettingsCache()
+    getProjectDir.cache.clear?.()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+  }
+})
+
 
 const assistant = createAssistantMessage({ content: 'test' })
 const tool = {
@@ -86,16 +125,11 @@ function resultMessage(value: unknown, isError = false) {
 
 describe('reviewed tool.call context persistence', () => {
   let root: string
-  let configDir: string | undefined
   beforeEach(async () => {
-    root = await mkdtemp(join(tmpdir(), 'mods-context-persistence-'))
-    configDir = process.env.CLAUDE_CONFIG_DIR
-    process.env.CLAUDE_CONFIG_DIR = root
+    root = await realpath(await mkdtemp(join(tmpdir(), 'mods-context-persistence-')))
     getProjectDir.cache.clear?.()
   })
   afterEach(async () => {
-    if (configDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-    else process.env.CLAUDE_CONFIG_DIR = configDir
     getProjectDir.cache.clear?.()
     await rm(root, { recursive: true, force: true })
   })
@@ -719,7 +753,7 @@ describe('ordinary tool.call result adapter', () => {
   )
 
   test('preserves downstream context across the real Worker and runtime snapshot', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-tool-context-'))
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-tool-context-')))
     const entry = join(root, 'register.ts')
     const diagnostics: string[] = []
     const runtime = createModsRuntime({
@@ -734,7 +768,8 @@ describe('ordinary tool.call result adapter', () => {
           const result = await next(e);
           return { ...result, context: [] };
         });
-        on('tool.call', async ($, e, next) => ({
+        // Official 2.1.289 accepts an exact-event sibling matcher; see registrationMultiplicity289.test.ts.
+        on('tool.call', {}, async ($, e, next) => ({
           ...await next(e), context: ['from worker', 'from worker'],
         }));
       }`,

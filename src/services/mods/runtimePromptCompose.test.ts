@@ -1,8 +1,48 @@
-import { expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { createModsRuntime, type ModSnapshot } from './runtime.js'
 import { seatNativeModPlugins } from './native.js'
 import { validateModRegistrations } from './loader.js'
 import type { ModDeclaration, PromptComposeResult } from './types.js'
+
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+
+afterEach(async () => {
+  try {
+    if (testConfigRoot !== undefined) await rm(testConfigRoot, { recursive: true, force: true })
+  } finally {
+    testConfigRoot = undefined
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+  }
+})
+
 
 const facts = { model: 'test-model', promptModel: 'test-model', surfaces: [], tools: [], outputStyle: null, traits: [] }
 const body: PromptComposeResult = { sections: [{ id: 'body', text: 'the body', scope: 'shared' }] }
@@ -34,7 +74,8 @@ test('active compose delegates partial facts to capture binding and skips only c
       if (e.tools.includes('nested')) return next(e);
       return $.prompt.compose({ ...e, tools: ['nested'] });
     });
-    on('prompt.compose', async ($, e, next) => {
+    // Official 2.1.289 accepts an exact-event sibling matcher; see registrationMultiplicity289.test.ts.
+    on('prompt.compose', {}, async ($, e, next) => {
       const result = await next(e);
       return { sections: [...result.sections, {id:'sec-default:tail',text:'tail',scope:'session'}] };
     });
