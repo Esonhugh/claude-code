@@ -227,7 +227,8 @@ export function prepareBuildDirectory(value) {
   const home = fs.realpathSync(os.homedir());
   const insideHome = target === home || target.startsWith(home + path.sep);
   const insideRepository = target.startsWith(repository + path.sep);
-  if ((insideHome && !insideRepository) || !roots.some(root => {
+  if (target === repository || repository.startsWith(target + path.sep) ||
+      (insideHome && !insideRepository) || !roots.some(root => {
     const relative = path.relative(root, target);
     return relative && relative !== '..' &&
       !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);

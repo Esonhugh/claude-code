@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 import * as buildModule from './build.mjs';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
-const evidenceDir = fs.mkdtempSync(path.join(fs.realpathSync('/tmp'), 'isolated-build-test-'));
+const evidenceDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'isolated-build-test-'));
 console.log(`Retained build test evidence: ${evidenceDir}`);
 assert.equal(typeof buildModule.prepareBuildDirectory, 'function');
 const outputDir = path.join(evidenceDir, 'output');
@@ -41,7 +41,7 @@ assert.deepEqual(created, { target: repositoryOutput, mode: 0o700 });
 assert.throws(() => buildModule.prepareBuildDirectory(projectDir), /inside the repository/);
 assert.throws(() => buildModule.prepareBuildDirectory(path.dirname(projectDir)), /inside the repository/);
 const link = path.join(evidenceDir, 'outside-link');
-fs.symlinkSync(path.dirname(projectDir), link);
+fs.symlinkSync('/etc', link);
 assert.throws(() => buildModule.prepareBuildDirectory(path.join(link, 'no-write')), /inside the repository/);
 
 const fixtureDir = path.join(evidenceDir, 'fixture');
