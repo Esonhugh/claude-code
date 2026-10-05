@@ -1446,6 +1446,7 @@ test('prompt.compose uses the real query and final SDK catalog on each request',
   let frozen: import('../../utils/forkedAgent.js').CacheSafeParams | undefined
   const params: QueryParams = {
     messages: [createUserMessage({ content: 'compose question' })],
+    publicTurn: { text: 'compose question' },
     systemPrompt: asSystemPrompt(prompt), userContext: {}, systemContext: {},
     canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext: context,
     querySource: 'repl_main_thread', onCacheSafeParams: value => { frozen = value },
@@ -1461,7 +1462,7 @@ test('prompt.compose uses the real query and final SDK catalog on each request',
     expect(JSON.stringify(requests[1]!.system)).toContain('WIRE_POLICY_2')
     expect([...frozen!.systemPrompt]).toEqual(['WIRE_POLICY_2'])
     expect(frozen!.toolUseContext.renderedSystemPrompt).toEqual(frozen!.systemPrompt)
-    for await (const _ of runQuery({ ...params, ...frozen!, onCacheSafeParams: undefined })) { /* Frozen fork. */ }
+    for await (const _ of runQuery({ ...params, ...frozen!, publicTurn: undefined, onCacheSafeParams: undefined })) { /* Frozen fork. */ }
     expect(seen).toHaveLength(2)
     expect(JSON.stringify(requests[2]!.system)).toBe(JSON.stringify(requests[1]!.system))
   } finally { await runtime.dispose() }

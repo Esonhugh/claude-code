@@ -33,13 +33,14 @@ let root: string
 let runtime: ReturnType<typeof createModsRuntime>
 let diagnostics: unknown[]
 let saved: (string | undefined)[]
-const envKeys = ['HOME', 'CLAUDE_CONFIG_DIR', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT']
+const envKeys = ['HOME', 'CLAUDE_CONFIG_DIR', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT', 'ANTHROPIC_API_KEY']
 const restores: (() => void)[] = []
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), 'mods-compact-'))
   saved = envKeys.map(key => process.env[key])
   process.env.HOME = root
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
   delete process.env.DISABLE_COMPACT
   delete process.env.DISABLE_AUTO_COMPACT
   resetSettingsCache()
@@ -166,7 +167,7 @@ test('auto rewrite reaches the summarizer and cache context, preserves handles a
       const result=await next({trigger:e.trigger,instructions:'outer',messages:[{...e.messages[1],text:'ignored due to handle'}, {role:'user',text:'inserted',toolUses:[]}]});
       return {...result,messages:[...result.messages,{role:'assistant',text:'outer-after',toolUses:[]}]};
     });
-    on('session.compact', async ($,e,next) => {
+    on('session.compact', {}, async ($,e,next) => {
       if(e.agentId!=='fork-one'||e.instructions!=='outer') throw Error('lost pinned context');
       const result=await next({...e,instructions:e.instructions+':inner'});
       return {...result,messages:[...result.messages,{role:'user',text:'inner-after',toolUses:[]}]};
