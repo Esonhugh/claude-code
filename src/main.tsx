@@ -4059,6 +4059,7 @@ async function run(): Promise<CommanderCommand> {
         notifications: {
           current: null,
           queue: initialNotifications,
+          pinned: [],
         },
         elicitation: {
           queue: [],

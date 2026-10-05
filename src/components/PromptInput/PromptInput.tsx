@@ -213,6 +213,7 @@ import { GlobalSearchDialog } from '../GlobalSearchDialog.js'
 import { HistorySearchDialog } from '../HistorySearchDialog.js'
 import { ModelPicker } from '../ModelPicker.js'
 import { QuickOpenDialog } from '../QuickOpenDialog.js'
+import { PinnedNotifications } from './PinnedNotifications.js'
 import TextInput from '../TextInput.js'
 import { ThinkingToggle } from '../ThinkingToggle.js'
 import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js'
@@ -3327,6 +3328,7 @@ function PromptInput({
           </Box>
         </Box>
       )}
+      <PinnedNotifications />
       <PromptInputFooter
         apiKeyStatus={apiKeyStatus}
         debug={debug}

@@ -1946,7 +1946,6 @@ export function REPL({
   useEffect(() => clearPendingModSuggestion, [clearPendingModSuggestion])
   const isExternalLoadingRef = useRef(isExternalLoading)
   isExternalLoadingRef.current = isExternalLoading
-  const [modStatuses, setModStatuses] = useState<Record<string, string>>({})
   const [modAbovePromptFocused, setModAbovePromptFocused] = useState(false)
   const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
@@ -2100,13 +2099,14 @@ export function REPL({
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),
-    uiStatus: (plugin, text) => setModStatuses(previous => {
-      const next = { ...previous }
-      if (text === undefined) delete next[plugin]
-      else next[plugin] = text
-      return next
-    }),
-  }), [modsSession, setAppState, setMessages, addNotification])
+    uiStatus: (plugin, text) => {
+      const key = `plugin-status-${plugin}`
+      removeNotification(key)
+      if (text !== undefined) addNotification({
+        key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
+      })
+    },
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification])
 
   useEffect(() => {
     if (!modsSession) return
@@ -7974,9 +7974,6 @@ export function REPL({
                     }}
                   />
                 )}
-                {Object.entries(modStatuses).map(([plugin, text]) => (
-                  <Text key={plugin} dimColor>{`[${plugin}] ${text}`}</Text>
-                ))}
                 {isAnt() && <DevBar />}
               </Box>
               {feature('BUDDY') &&

@@ -248,6 +248,7 @@ export type AppState = DeepImmutable<{
   notifications: {
     current: Notification | null
     queue: Notification[]
+    pinned: Notification[]
   }
   elicitation: {
     queue: ElicitationRequestEvent[]
@@ -564,6 +565,7 @@ export function getDefaultAppState(): AppState {
     notifications: {
       current: null,
       queue: [],
+      pinned: [],
     },
     elicitation: {
       queue: [],
