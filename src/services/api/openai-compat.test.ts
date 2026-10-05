@@ -1,19 +1,34 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+const originalMacroDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MACRO')
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
 }
 
-const originalHome = process.env.HOME
-const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-const tempHome = mkdtempSync(join(tmpdir(), 'openai-compat-test-'))
+const envKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+const savedEnvironment = envKeys.map(key => process.env[key])
+const tempHome = realpathSync(mkdtempSync(join(tmpdir(), 'openai-compat-test-')))
 process.env.HOME = tempHome
 process.env.CLAUDE_CONFIG_DIR = tempHome
+process.env.XDG_CONFIG_HOME = join(tempHome, 'xdg-config')
+process.env.XDG_CACHE_HOME = join(tempHome, 'xdg-cache')
+process.env.XDG_STATE_HOME = join(tempHome, 'xdg-state')
+process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+resetSettingsCache()
 const originalFetch = globalThis.fetch
 const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
 const originalOpenAISocket = process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
@@ -2333,11 +2348,17 @@ try {
     )
   }
 } finally {
-  if (originalHome === undefined) delete process.env.HOME
-  else process.env.HOME = originalHome
-  if (originalConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
-  else process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-  rmSync(tempHome, { recursive: true, force: true })
+  try {
+    rmSync(tempHome, { recursive: true, force: true })
+  } finally {
+    resetSettingsCache()
+    envKeys.forEach((key, i) => {
+      if (savedEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedEnvironment[i]
+    })
+    if (originalMacroDescriptor) Object.defineProperty(globalThis, 'MACRO', originalMacroDescriptor)
+    else Reflect.deleteProperty(globalThis, 'MACRO')
+  }
   globalThis.fetch = originalFetch
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
   getOpenAIAuthInfo.cache.clear?.()
