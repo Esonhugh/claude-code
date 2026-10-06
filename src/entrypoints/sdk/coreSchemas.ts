@@ -16,15 +16,18 @@ import { lazySchema } from '../../utils/lazySchema.js'
 
 export const ModelUsageSchema = lazySchema(() =>
   z.object({
-    inputTokens: z.number(),
-    outputTokens: z.number(),
-    thinkingTokens: z.number().optional(),
-    cacheReadInputTokens: z.number(),
-    cacheCreationInputTokens: z.number(),
-    webSearchRequests: z.number(),
+    inputTokens: z.number().int(),
+    outputTokens: z.number().int(),
+    thinkingTokens: z.number().int().optional(),
+    cacheReadInputTokens: z.number().int(),
+    cacheCreationInputTokens: z.number().int(),
+    webSearchRequests: z.number().int(),
     costUSD: z.number(),
-    contextWindow: z.number(),
-    maxOutputTokens: z.number(),
+    contextWindow: z.number().int(),
+    maxOutputTokens: z.number().int(),
+    canonicalModel: z.string().optional(),
+    provider: z.string().optional(),
+    costBasis: z.enum(['list', 'managed', 'unknown']).optional(),
   }),
 )
 

@@ -16,6 +16,9 @@ export type ModelUsage = {
   costUSD: number
   contextWindow: number
   maxOutputTokens: number
+  canonicalModel?: string
+  provider?: string
+  costBasis?: 'list' | 'managed' | 'unknown'
 }
 
 // Output Format

@@ -46,8 +46,9 @@ import {
 import { isFastModeEnabled } from './utils/fastMode.js'
 import { formatDuration, formatNumber } from './utils/format.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
-import { getCanonicalName } from './utils/model/model.js'
-import { calculateUSDCost } from './utils/modelCost.js'
+import { getCanonicalName, normalizeModelStringForAPI } from './utils/model/model.js'
+import { getAPIProvider } from './utils/model/providers.js'
+import { calculateUSDCost, MODEL_COSTS } from './utils/modelCost.js'
 import type { LogOption } from './types/logs.js'
 import { captureSessionCostState, parseSessionCostState } from './utils/sessionCostState.js'
 import { recordSessionCostState } from './utils/sessionStorage.js'
@@ -314,6 +315,10 @@ function addToTotalModelUsage(
   modelUsage.costUSD += cost
   modelUsage.contextWindow = getContextWindowForModel(model, getSdkBetas())
   modelUsage.maxOutputTokens = getModelMaxOutputTokens(model).default
+  const canonical = getCanonicalName(normalizeModelStringForAPI(model))
+  modelUsage.canonicalModel = canonical
+  modelUsage.provider = getAPIProvider()
+  modelUsage.costBasis = MODEL_COSTS[canonical] !== undefined ? 'list' : 'unknown'
   // @ts-ignore - recovered code
   return modelUsage
 }

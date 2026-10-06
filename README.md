@@ -886,3 +886,10 @@ API 返回 `output_tokens_details.thinking_tokens` 时，CLI 在用量归一化�
 思考 token 已包含在 API 的 `output_tokens` 中，费用仍根据原输出总量计算，不额外重复扣费。只有 API 提供的实际 token 计数会被累计，不根据正文长度估算。运行 `bun test ./src/services/api/thinkingUsage.test.ts ./src/utils/sessionCostState.test.ts` 验证这条链路；具体终端及官方对照范围见 `mods-test.md`。
 
 Anthropic 对该字段、最终流式事件与费用口径的说明见 [Steering thinking: pricing](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost#pricing)。
+
+
+### SDK 模型用量元数据
+
+SDK result 的 `modelUsage` 按原始模型名索引；新请求会填充 `canonicalModel`（当前价格目录使用的模型名）、`provider`（现有 API 提供方）和 `costBasis`。当前目录计价为 `list`，未知模型使用默认价格估算时为 `unknown`，因此不能把它看作已核实的真实账单。三个字段都是可选字段，旧会话和旧 SDK 数据仍可读取；token 数量、contextWindow 和 maxOutputTokens 按官方 schema 要求整数。
+
+JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不会写入历史快照。恢复会话时重建当前模型限制，新的请求再填充上述元数据。运行 `bun test ./src/services/api/modelUsageMetadata.test.ts` 检查传递与恢复行为。schema 接受官方的 `managed` 标签；组织定价及新增提供方的完整计价和路由仍需后续对齐，不能据此声称这些流程已通过。
