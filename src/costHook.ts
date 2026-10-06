@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { formatTotalCost, saveCurrentSessionCosts } from './cost-tracker.js'
 import { hasConsoleBillingAccess } from './utils/billing.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
+import { isShuttingDown } from './utils/gracefulShutdown.js'
 
 export function useCostSummary(
   getFpsMetrics?: () => FpsMetrics | undefined,
@@ -16,6 +17,10 @@ export function useCostSummary(
     }
     process.on('exit', f)
     return () => {
+      // Graceful shutdown unmounts Ink before process.exit fires.
+      if (isShuttingDown()) {
+        saveCurrentSessionCosts(getFpsMetrics?.())
+      }
       process.off('exit', f)
     }
   }, [])

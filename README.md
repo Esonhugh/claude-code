@@ -861,3 +861,9 @@ bun test ./src/plugins/bundled/shippedDiffStartup.test.ts ./src/services/mods/di
 启动时间随会话 JSONL 元数据持久化，并在压缩后的恢复中保留。还可读取匹配会话的项目 `lastStartTime` 或官方 2.1.291 的完整有效 `cost-state` 记录；本批只使用该快照的启动时间，不能据此认为完整成本账本的恢复已经对齐。直接 JSONL 路径的恢复加载器也传递该字段，但交互式 CLI 的文件启动路径受内部模式限制，普通 `--resume FILE.jsonl` 不能视为直接文件恢复。历史会话没有相关记录时，`startedAt` 沿用既有成本时钟，无法据此还原原始启动时间。禁用会话持久化时不会为恢复文件追加该元数据。
 
 使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[ModsSession]` 恢复日志。日志提供元数据归属会话、当前会话和启动时间，便于核对 diff 的时间边界；不会包含会话正文。CLI 会话参数见 [Anthropic CLI reference](https://code.claude.com/docs/en/cli-reference)。
+
+### 退出时的项目成本保存
+
+交互式 CLI 使用 `/exit` 正常退出时，会在界面卸载期间保存当前会话的成本、运行时长、启动时间、模型用量及 FPS。恢复匹配的最近会话时，现有项目配置恢复路径可以读取这些数据。普通组件卸载不触发这次保存，直接进程退出仍保留原有保存回调。
+
+运行 `bun test ./src/costHook.test.ts` 检查三个真实子进程生命周期和磁盘写入。项目配置只保留最近保存会话的成本；本修复不代表任意历史会话的完整 JSONL 成本账本恢复已经对齐，验收范围见 `mods-test.md`。
