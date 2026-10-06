@@ -309,6 +309,8 @@ function createPluginCommand(
       version,
       model,
       effort,
+      context: frontmatter.context === 'fork' ? 'fork' : undefined,
+      agent: frontmatter.agent != null ? String(frontmatter.agent) : undefined,
       disableModelInvocation,
       userInvocable,
       contentLength: content.length,

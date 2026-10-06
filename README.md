@@ -961,3 +961,17 @@ if ('deny' in result) {
 插件自身额度耗尽仍抛出包含插件名的异常。全局计数、拒绝和释放可在 --debug 的 AgentConcurrency 日志中核对。本轮验证及原生入口限制见 [全局并发记录](docs/research/mods-agent-concurrency-20261007.md)。
 
 同步 fork 技能的进度、查询与启动/完成 debug 使用同一个 agent ID。运行 `bun test --no-env-file ./src/utils/processUserInput/processSlashCommand.concurrency.test.ts` 可验证 slash 与 SkillTool 的计数和身份；实际 CLI 对照见 [fork 技能专项](docs/research/mods-fork-capacity-20261007.md)。官方最新版本默认把 fork 技能作为后台任务启动；本地普通入口仍同步，KAIROS 的旧后台分支仍计数，这两条路由继续独立对齐。技能配置参考 [Anthropic 官方 skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
+
+插件可在 `skills/review/SKILL.md`（或旧 `commands/review.md`）声明 `context: fork` 和 `agent`。加载器保留这两个字段；slash 与模型的 SkillTool 调用进入已有的独立执行上下文。自定义 agent 使用完整名称，例如 `my-plugin:reviewer`，定义放在插件的 `agents/reviewer.md`。
+
+```yaml
+---
+description: Review the supplied changes
+context: fork
+agent: my-plugin:reviewer
+background: false
+---
+Review $ARGUMENTS and report concrete findings.
+```
+
+使用 `--plugin-dir /absolute/path/my-plugin` 加载，再运行 `/my-plugin:review <任务>`。`background: false` 用于官方同步对照；本地尚未实现该开关及官方默认后台路由，本例在当前本地入口同步执行。验收记录见 [插件 fork 入口专项](docs/research/mods-plugin-fork-20261007.md)，配置含义见 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。

@@ -12,6 +12,26 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 保留插件技能的 fork 执行配置
+
+### 版本状态
+
+- 未发布；修复插件技能与旧 commands 目录的 context/agent 加载，默认后台与恢复权限范围继续独立对齐。
+
+### 关联提交
+
+- 本条随插件 fork 配置修复、文件加载回归和真实入口对照共同提交。
+
+### 变更内容
+
+- 插件 SKILL.md、旧 commands 和 manifest 自定义技能路径保留 context: fork 与 agent，使用已有隔离执行入口和指定 agent，避免技能意外展开到主会话。
+- context 仅接受精确的 fork 值；agent 非空值按官方规则转为字符串，空值保持未指定。
+
+### 测试覆盖
+
+- 隔离真实文件加载覆盖默认技能、旧命令、自定义路径、inline/无效 context 和 agent 值，同时检查参数及插件路径替换。
+- 官方、候选与 ROOT 的编译 CLI slash/SkillTool 对照、RED 证据和验收边界见 docs/research/mods-plugin-fork-20261007.md。
+
 ## 2026-10-07 - 修正同步 fork 技能的并发计数与身份
 
 ### 版本状态

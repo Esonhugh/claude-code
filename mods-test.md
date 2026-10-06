@@ -1798,3 +1798,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - slash 进度 ID 显式传入 runAgent，启动/完成 debug 与实际逻辑 turn 对应同一身份。成功、异常、满额保留及 SkillTool 相邻入口由独立进程验证。
 - 官方对照使用 `background: false` 的技能夹具；本地普通技能仍同步，因此本批只验同步执行，不能据此关闭官方默认后台任务路由。KAIROS 旧后台分支、任务命名/恢复与完整 UI 仍待后续批次。
 - RED、最终 Bun/Make/tmux 证据与未覆盖项见 [fork 技能专项](docs/research/mods-fork-capacity-20261007.md)。保留上一场失败和原有 WIP，不推送。
+
+
+## 2026-10-07：插件 fork 配置的真实入口
+
+- 插件工厂此前丢弃 context 和 agent，导致 SKILL.md、旧 commands 与 manifest 自定义路径中的 fork 配置不起作用。本批只保留这两个已有类型字段，其他作者改动独立提交。
+- 官方 2.1.291 的插件工厂只认可精确 context: fork，并把非空 agent 转为字符串；本地按相同规则处理。回归读取真实插件文件与 manifest，没有 mock 文件加载器或 fork 路由。
+- 同步对照显式配置 background: false；slash 与模型实际调用 SkillTool 都必须使用配置的插件 agent 和独立身份。RED、Bun/Make、编译 CLI 与残留进程检查见 [插件 fork 入口专项](docs/research/mods-plugin-fork-20261007.md)。
+- 额外官方默认后台探针证明父任务完成自身流后仍可处于 waiting，收到子任务完成通知后自动继续，再通知主会话；这是下一批的生命周期依据，不能作为本地已实现证据。默认后台、权限范围持久化/恢复、G5、完整 API/UI/diff 和同进程全量门禁仍未关闭。
