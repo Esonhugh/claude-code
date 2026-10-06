@@ -89,7 +89,6 @@ type Props = {
   apiKeyStatus: VerificationStatus
   autoUpdaterResult: AutoUpdaterResult | null
   isAutoUpdating: boolean
-  debug: boolean
   verbose: boolean
   messages: Message[]
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void
@@ -103,7 +102,6 @@ type Props = {
 export function Notifications({
   apiKeyStatus,
   autoUpdaterResult,
-  debug,
   isAutoUpdating,
   verbose,
   messages,
@@ -228,7 +226,6 @@ export function Notifications({
           isInOverageMode={isInOverageMode ?? false}
           isTeamOrEnterprise={isTeamOrEnterprise}
           apiKeyStatus={apiKeyStatus}
-          debug={debug}
           verbose={verbose}
           tokenUsage={tokenUsage}
           mainLoopModel={mainLoopModel}
@@ -251,7 +248,6 @@ function NotificationContent({
   isInOverageMode,
   isTeamOrEnterprise,
   apiKeyStatus,
-  debug,
   verbose,
   tokenUsage,
   mainLoopModel,
@@ -271,7 +267,6 @@ function NotificationContent({
   isInOverageMode: boolean
   isTeamOrEnterprise: boolean
   apiKeyStatus: VerificationStatus
-  debug: boolean
   verbose: boolean
   tokenUsage: number
   mainLoopModel: string
@@ -367,13 +362,6 @@ function NotificationContent({
             {isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
               ? 'Authentication error · Try again'
               : 'Not logged in · Run /login'}
-          </Text>
-        </Box>
-      )}
-      {debug && (
-        <Box>
-          <Text color="warning" wrap="truncate">
-            Debug mode
           </Text>
         </Box>
       )}

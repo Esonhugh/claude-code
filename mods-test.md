@@ -1537,3 +1537,14 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 扩展验收发现未改的 DiffView 测试不在旧169文件清单中：ROOT 的 `background-owned/root-related-3` 内层24/12、3 errors；高亮修复独立基线 `syntax-commit/pre-background-diffview1` 同样24/12、3 errors。失败文本如 `body-0` 被正常语法颜色码隔开，Raw ANSI 的 DOM 文本辅助方法未去除样式，等待随后超时。不是背景修复特有回归。
 - 仅在 `DiffView.test.tsx` 的 Raw ANSI 文本分支调用已有 strip-ansi，原断言与所有预算保留，物理屏幕预览和样式检查没有替换或关闭。工作区 `background-owned/root-diffview-normalized1` 与只含本测试修改的独立副本 `background-owned/normalization-commit/normalized-diffview1` 均 exit0，仍运行原内层36项及外层进程检查。失败日志完整保留。
 - 本节属于验证脚本修复，单独提交，不改变任何生产渲染代码，也不将旧169文件门禁改写为全绿。完整 suite 和 Mods API/UI 目标继续保留。
+
+## 2026-10-06：Debug 状态栏及通知分层
+
+- Source-confirmed：官方2.1.291 `chunk-scapxbwa.js` 的 `LK` 在状态行渲染 warning 色 `Debug`，`Pae` 将通知置于状态行上方。切片、chunk SHA 与验证契约保存于 `/private/tmp/mods-align-m1scugg4/shipped-diff-291-r1/debug-footer-owned`。本地 Notifications 移除 debug 属性；PromptInput 保留向 Footer 传递 debug；状态行保留 Goal、undercover 和 Bridge。
+- 最小失败证据：`root-red1` 复现普通/全屏旧的 `Debug mode`；普通模式真实官方对照补充后，`root-inline-red1` 复现通知与标记并排的两项失败。类型检查中测试夹具的只读状态、Goal 完整字段和渲染器私有属性问题已修正；不扩宽生产类型，不读取私有凭证。
+- 最终 ROOT 核心 SHA `5c11a3d46e447cc91c97207cafad9599eb1982f09d634cd85e9c79bed37fcacc`。`root-final-green2` 4/0，`root-notifications1` 3/0，`root-prompt-edit1` 17/0，`root-prompt-keys1` 4/0；各文件串行、独立配置执行。原50ms Worker 预算和断言未改变；这次17/0不抹去上轮间歇失败。`root-final-check2` release-check 与 `root-final-build1` 构建退出0，源码不变。
+- Runtime-observed：官方及实际 ROOT 的普通/全屏、debug 开/关八场均正常退出；证据 `/private/tmp/mc291-diff-{o,r}-footerflow2/evidence`、`footerinlineon2`、`footerinlineoff2`、`footerfullscreenoff2`。`footer-matrix-final.json` 比较标准宽度的 Debug，文字、5个字符颜色、右侧位置一致。启动日志横幅未当作底栏标记。
+- ROOT 新制品 SHA `c03612339928e430332c8a82716bd3367cd6db2c4990c3ec5d9c7009ceae98e8`；官方仍为233211568字节、SHA `9a1d2ed6bb4421e8fc80c892c0413f293be3ee50ae3d7dda1a7622197a056690`。`footerflow2` 两侧使用相同 literal 输入、鼠标 bytes、160→140→160 resize 和 Git fixture；开/关、ask/取消、重开保持通过，4帧各7行代码单元格相同。
+- 仍 failed：Debug 移动后，第35行是空白，而官方仍有面板边框；`ROOT-final-native-comparison.json` 记录本地35行/官方36行。最初将少一行归因于 Debug 覆盖并不完整，未硬编码增加行数。退出时 ROOT 仍报告 `Module capability failed`。整体画面、窄终端/主题矩阵、最新291包生产迁移及完整 API/UI 兼容未关闭。
+- `/tmp/claude-502/response.md` 重新读取后 SHA仍为 `2ef2250d26c206e40c52bc35a900c0115d9820360b26d0d90fb491d73ff2f001`；报告的146/155及9失败保留为历史结果，不能代替当前源码验收。上轮169文件门禁168通过/1间歇失败/23跳过仍保留；本轮聚焦验证不是新的全部变更或全量 suite 通过。独立提交副本只包含本批 UI/测试/文档，验证结果保存于同目录 `commit`。
+- 最终独立提交副本 `independent-final-test2` 4/0、`independent-final-check2` release-check 和 `independent-final-build1` 构建退出0，核心SHA `1ec51a7713408f49f1d0afa6b2dcb95b7f0bb661bb25f18f27c21879374eb0bd`；普通/全屏两场 `footerindependent{inline,fullscreen}on1` 验证标准状态栏位置及正常退出。这仅验证独立提交的状态栏，不替代实际 ROOT 的官方 Mods diff 流程。新测试移除对尚未提交类型名的引用后，ROOT最终核心SHA `1ae3108d56b8d853cea81b4e8d04d211db8a5f6de846f621dd2031011b1ca402`（2885文件）；生产代码不变。
