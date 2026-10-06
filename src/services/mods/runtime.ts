@@ -1,3 +1,5 @@
+import { isTerminalTaskStatus } from '../../taskStatus.js'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import type { ModModelForkRequest, ModModelForkResult, PromptComposeInput, PromptComposeResult } from './types.js'
 import { createModAgents, listModAgents } from './agents.js'
@@ -80,11 +82,13 @@ export type ModRequestServices = {
     input: ModInput,
     snapshot: ModSnapshot,
     signal: AbortSignal,
+    spawnedBy?: string,
+    leftRunning?: (agentId: string) => void,
   ): Promise<{ model: string; agentId?: string } | { deny: string }>
   tools?(): readonly Tool[]
   toolHost?(): {
     tools?(): readonly Tool[]
-    spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<{ model: string; agentId?: string } | { deny: string }>
+    spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string } | { deny: string }>
     call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<unknown>
     check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }>
   }
@@ -238,6 +242,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return testing && noun !== 'state' && !(noun === 'ui' &&
       ['blit', 'scroll', 'focus', 'invalidate', 'resolve'].includes(method!)) &&
       (noun === 'clock' || Object.hasOwn(coreHost[noun!] ?? {}, method!))
+  }
+  const runningSpawns = new Map<string, number>()
+  async function observeSpawn(agentId: string, plugin: string) {
+    const started = Date.now()
+    let taskId: string | undefined
+    for (;;) {
+      const task = Object.values(services.tasks?.() ?? {}).find(task => task.type === 'local_agent' && task.agentId === agentId)
+      if (task) {
+        taskId = task.id
+        if (isTerminalTaskStatus(task.status)) {
+          logForDebugging(`[ModsAgent] spawn settled plugin=${plugin} agentId=${agentId} taskId=${taskId} status=${task.status}`)
+          return
+        }
+      } else if (taskId !== undefined || Date.now() - started >= 10 * 60 * 1000) {
+        logForDebugging(`[ModsAgent] spawn observer ended plugin=${plugin} agentId=${agentId} taskId=${taskId ?? 'missing'} reason=${taskId === undefined ? 'registration-timeout' : 'evicted'}`)
+        return
+      }
+      // A launched child outlives its caller; only task settlement frees its slot.
+      await delay(150, undefined, { ref: false })
+    }
   }
   const hostHooks = new Set<ModDispatchHook>()
   let active: Activation[] = []
@@ -1434,10 +1458,43 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               },
               release() {},
             }
+            const plugin = owner.declaration.name
+            const rawLimit = process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS?.trim() ?? ''
+            const parsedLimit = Number(rawLimit)
+            const limit = /^[+-]?\d+$/.test(rawLimit) && Number.isFinite(parsedLimit) && parsedLimit >= 1 ? parsedLimit : 20
+            const running = runningSpawns.get(plugin) ?? 0
+            let leftRunning = false
+            let reserved = false
+            const release = () => {
+              if (!reserved) return
+              reserved = false
+              const remaining = (runningSpawns.get(plugin) ?? 1) - 1
+              if (remaining === 0) runningSpawns.delete(plugin)
+              else runningSpawns.set(plugin, remaining)
+              logForDebugging(`[ModsAgent] spawn released plugin=${plugin} running=${remaining}`)
+            }
             try {
               combined.signal.throwIfAborted()
-              return await withReference(owner, () => spawn(input as ModInput, callSnapshot, combined.signal, owner.declaration.name))
-            } finally { open = false; combined.cleanup() }
+              if (running >= limit) {
+                logForDebugging(`$.agent.spawn (${plugin}): ${running} running at once; refused`)
+                throw new Error(`${plugin}: $.agent.spawn refused: ${limit} spawns are running at once`)
+              }
+              runningSpawns.set(plugin, running + 1)
+              reserved = true
+              logForDebugging(`[ModsAgent] spawn reserved plugin=${plugin} running=${running + 1} limit=${limit}`)
+              return await withReference(owner, () => spawn(input as ModInput, callSnapshot, combined.signal, plugin, agentId => {
+                if (leftRunning) return
+                leftRunning = true
+                void observeSpawn(agentId, plugin).then(release, error => {
+                  logForDebugging(`[ModsAgent] spawn observer failed plugin=${plugin} agentId=${agentId}: ${String(error)}`)
+                  release()
+                })
+              }))
+            } finally {
+              if (!leftRunning) release()
+              open = false
+              combined.cleanup()
+            }
           }
           if (fn === hostIdentity && op === 'tool.call') {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()

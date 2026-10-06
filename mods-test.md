@@ -1769,6 +1769,15 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 本批不改生产源码／类型／运行时，新的CLI行为验收为n/a，不用历史binary证据代替本轮。README补充无调用者key的测试命令。其他278个WIP及受保护response／improvment／fix-instructions／289资产保留，未操作其他Claude进程、未push。spawn并发限额与observer生命周期、标题helper路由和其余官方API／UI／diff等未完成项不由本节关闭。
 
 
+## 2026-10-07 - Mod spawn 插件名额与后台观察周期
+
+- Source-confirmed：官方最新 2.1.291 的 `p0o` 对插件名计数，默认 20；启动时预留，`leftRunning` 等待真实任务终态后释放。`wYt` 按 local_agent.agentId 查找记录，每 150ms 观察；仅初次注册等待限制为十分钟，已找到任务不因调用者结束超时。终态为 completed/failed/killed，已找到记录被移除也结束观察。
+- 本批只改变 runtime 的公开作者 spawn 分支及 toolHost 内部启动结果回调；AgentTool 的普通、Workflow 和嵌套执行代码不改。公开作者 d.ts 不增加回调；内部 agentSpawn 与 toolHost.spawn 定义明确插件名和后台通知参数。
+- 回归与真实 binary 验证细节、当前源码/制品身份、全部中间失败及限制见 [并发专项记录](docs/research/mods-spawn-concurrency-20261007.md)。验证目录 `/private/tmp/mods-spawn-bound-20261007-xsy7g593`，两側 Make 输出不覆盖 ROOT 的原 built-claude。
+- 官方 o1/o2 在其他插件启动处返回普通 Agent 全局并发拒绝；未靠增大 timeout、弱化断言或修改官方 binary 通过。缓存旁路 flag 在该夹具中没有生效；最终 o3 使用实际启用限制，将其他插件与普通 Agent 控制组安排在足够全局名额释放后。两层限制分别记录。
+- 本批关闭公开 Mod spawn 的插件计数与任务名额释放缺口，不关闭普通 Agent 的全局并发检查、全部 foreground/remote/teammate/nested/Workflow 原生组合、标题 helper、完整官方 UI/diff 或 G5。其他进程、既有 WIP、受保护输入文件及资产保留，不 push。
+
+
 ## 2026-10-07 - 刷新 trusted callback 用量 mock
 
 - 相邻测试发现旧 HEAD 的 runtimeHostHooks.test.ts 中 session.usage mock 缺少现有必需字段 startedAt，plugin 的结果校验失败后落入 outer bottom；clean HEAD 25／1，ROOT 已含启动时间的 WIP 26／0。

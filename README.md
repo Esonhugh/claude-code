@@ -927,3 +927,12 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 运行 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test --no-env-file ./src/screens/REPL.submit.test.ts`。测试自行创建真实路径的临时 HOME／配置／XDG 目录，使用占位认证，并在结束后恢复环境，不需要调用者的 API key。恢复夹具覆盖所选会话记录传入成本恢复器，以及同 ID 恢复时 diff 和原始上下文的重置。
 
 完整逐文件复验表见 [2026-10-07 验证记录](docs/research/mods-validation-20261007.md)。逐文件通过与同进程全量 suite、官方二进制交互门禁分别验收。
+
+
+### Mod spawn 的并发上限
+
+`$.agent.spawn` 默认允许同一插件同时保有 20 个启动中的或运行中的子任务。通过 `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2 ./built-claude --dangerously-skip-permissions` 可改为两个；变量接受去除首尾空白后的带可选正负号十进制正整数，缺失、非整数、非正数或非有限数回退为 20。
+
+收到启动回执不会释放名额；宿主依据根任务表中的 `agentId` 观察任务，`completed/failed/killed` 或已观察记录被移除后释放。失败、拒绝、前台完成、remote 或 teammate 等没有返回 `async_launched` 的执行不会占用后台名额。任务已启动后，调用者退出及插件重载不会重置其计数。达到上限时抛出 `<plugin>: $.agent.spawn refused: <limit> spawns are running at once`，作者可捕获错误并等待已有任务结束后再尝试。
+
+`--debug --debug-file /absolute/path/debug.log` 输出 `[ModsAgent] spawn reserved/settled/released`，包含插件、agent/task ID、状态及计数，不打印任务正文。运行 `bun test --no-env-file ./src/services/mods/spawnConcurrency.test.ts ./src/services/mods/toolHost.spawnLifetime.test.ts` 验证插件计数与实际 Agent 返回状态。官方普通 Agent 入口还有全局并发检查；该独立差异仍待对齐，不能将本条理解为全部 Agent/Workflow 并发限制已兼容。

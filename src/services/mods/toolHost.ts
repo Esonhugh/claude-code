@@ -22,7 +22,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
   const getTools = () => context.mods?.tools.projection(context.options.tools) ?? context.options.tools
   return {
     tools: getTools,
-    async spawn(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string) {
+    async spawn(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void) {
       const { AgentTool } = await import('../../tools/AgentTool/AgentTool.js')
       const abortController = createAbortController()
       const parents = new Set([signal, context.abortController.signal])
@@ -67,7 +67,12 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           abortController,
         }, canUseTool, parentMessage)
         void completion.catch(started.reject)
-        return await started.promise
+        const launch = await started.promise
+        if (leftRunning) {
+          const { data } = await completion
+          if (data.status === 'async_launched' && typeof data.agentId === 'string') leftRunning(data.agentId)
+        }
+        return launch
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }
