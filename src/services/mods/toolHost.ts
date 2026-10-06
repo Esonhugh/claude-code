@@ -139,7 +139,10 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         result = coreResult?.isError && result?.deny === undefined && !result?.isError
           ? coreResult : result ?? coreResult
         if (!result) throw new Error('tool.call produced no result')
-        return result
+        // The public author operation strips this engine observation. Hooks
+        // beneath it still see the marker on their next(e) receipt.
+        const { isReadOnly: _readOnly, ...authorResult } = result
+        return authorResult
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }

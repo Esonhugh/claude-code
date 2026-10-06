@@ -45,6 +45,7 @@ function fixture(hooks: ModDispatchHook[] = []) {
     outputSchema: z.object({ value: z.string() }),
     maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
+    isReadOnly: () => false,
     checkPermissions: async () => ({ behavior: 'ask', message: 'Confirm fixture' }),
     call: async (input: unknown, context: ToolUseContext) => {
       calls.push({ input, context })

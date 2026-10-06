@@ -89,6 +89,7 @@ function fixture(invoke?: ModDispatchHook['invoke']) {
     name: 'ClassicFixture',
     inputSchema: z.object({ value: z.string() }),
     getToolUseSummary: () => 'fixture summary',
+    isReadOnly: () => false,
   } as unknown as Tool
   const context = {
     options: { tools: [tool], isNonInteractiveSession: true },

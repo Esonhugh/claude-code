@@ -1076,3 +1076,20 @@ Mods 可通过 `$.tool.call({tool: 'SendMessage', to: agentId, message: 'Continu
 报告默认使用官方框架；`CLAUDE_CODE_HANDBACK_PROVENANCE=0` 可使用原始 JSON 报告格式。`/subtask` 是用户手动启动的后台任务入口，这个开关不改变它的初次启动。
 
 调试日志 `[AgentResume]` 记录 Agent ID、模型、交付方式和同步交付终态。恢复用法参考 [Anthropic 官方文档](https://code.claude.com/docs/en/sub-agents#resume-subagents)，实测与剩余差异见 [同步恢复专项](docs/research/mods-inline-resume-20261007.md)。报告内容扫描、web-fetch 特殊恢复入口及完整任务管理 UI 仍在整体对齐范围内。
+
+## Mods 工具执行的只读标记
+
+`tool.call` hook 的 `await next(e)` 回执可能含 `isReadOnly: true`：工具已对本次实际执行参数判定只读。缺省表示不能据此认定只读，参数改写也参与判定。标记只描述当前调用；Agent 的子工具各自触发事件。
+
+```js
+on('tool.call', async ($, e, next) => {
+  const output = await next(e)
+  if (output.deny === undefined && output.isReadOnly !== true) {
+    // 本次执行可能改动文件，可刷新插件维护的 diff。
+    await $.ui.invalidate()
+  }
+  return output
+})
+```
+
+同一插件内的 hook 可看到本插件其他 hook 的未处理回执；离开插件后才核对标记来源。保留 `next(e)` 的原回执，或保留同一个 `ref` 和未改写的 `result`，才能保留标记；自行设置它不能证明只读。按官方 2.1.292 的运行实现，插件主动调用 `$.tool.call()` 的最终回执会移除该标记，观察该执行的其他 hook 仍可读取它。在启用官方 diff mod 的终端会话中，用 `/diff` 切换视图；文件写入后可查看实际变更。事件和方法索引见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)，精确类型以安装版本写出的声明为准。证据与未覆盖项见 [只读标记专项](docs/research/mods-tool-readonly-20261007.md)。

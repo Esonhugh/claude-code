@@ -1440,7 +1440,10 @@ async function checkPermissionsAndCallTool(
     callInput = processedInput
   }
   try {
-    if (executionRecord) executionRecord.input = callInput
+    if (executionRecord) {
+      executionRecord.input = callInput
+      if (tool.isReadOnly(callInput)) executionRecord.isReadOnly = true
+    }
     const result = await tool.call(
       callInput,
       {

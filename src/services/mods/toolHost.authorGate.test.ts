@@ -21,6 +21,7 @@ const childSource = `
     outputSchema: z.object({ value: z.string() }),
     maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
+    isReadOnly: () => false,
     checkPermissions: async () => ({ behavior: 'ask', message: 'Confirm fixture' }),
     call: async input => { observed.calls++; return { data: input } },
     mapToolResultToToolResultBlockParam: (data, id) => ({ type: 'tool_result', tool_use_id: id, content: 'mapped:' + data.value }),

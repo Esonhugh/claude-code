@@ -1,3 +1,4 @@
+import { restoreToolCallReadOnly } from './toolCallReadOnly.js'
 import { isDeepStrictEqual } from 'node:util'
 import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
 import { createAbortController } from '../../utils/abortController.js'
@@ -410,6 +411,7 @@ export async function dispatchModEvent(options: {
     traceChanged: () => void = () => {},
     position = 0,
     directPlugin?: string,
+    parentToolFrame?: { plugin: string; results: unknown[] },
   ): Promise<unknown> {
     parent?.throwIfAborted()
     while (index < hooks.length) {
@@ -442,6 +444,22 @@ export async function dispatchModEvent(options: {
       index++
     }
     const hook = hooks[index]
+    // One plugin's registrations form a single host boundary. Its own hooks
+    // see one another's raw answers; only leaving the plugin derives the fact
+    // from executions outside that plugin, never from its own claimed marker.
+    const toolFrame = options.event === 'tool.call' && hook
+      ? parentToolFrame?.plugin === hook.plugin
+        ? parentToolFrame
+        : { plugin: hook.plugin, results: [] as unknown[] }
+      : undefined
+    function settleToolResult(value: unknown): unknown {
+      if (!toolFrame || toolFrame === parentToolFrame) return value
+      return restoreToolCallReadOnly(value, toolFrame.results)
+    }
+    function publishToolResult(value: unknown): unknown {
+      if (toolFrame && toolFrame !== parentToolFrame) parentToolFrame?.results.push(value)
+      return value
+    }
     const node: TraceNode = { below: [] }
     trace.push(node)
     const enteredAt = performance.now()
@@ -477,6 +495,7 @@ export async function dispatchModEvent(options: {
           abandoned,
         ])
         record('returned', result)
+        parentToolFrame?.results.push(result)
         return result
       } catch (error) {
         record('rejected')
@@ -632,6 +651,7 @@ export async function dispatchModEvent(options: {
         () => { if (node.below === latest) belowChanged() },
         position + 1,
         hook.plugin,
+        toolFrame,
       )
       inFlight = branch
       void branch.then(
@@ -787,12 +807,13 @@ export async function dispatchModEvent(options: {
           )
         const passed = lastResolved && result === lastResult
         result = options.restoreResult?.(result, lastResolved ? lastResult : input, inFlight !== undefined) ?? result
+        result = settleToolResult(result)
         options.validateResult?.(result, nextResults)
         record(
           passed ? 'passed' : 'returned',
           result,
         )
-        return result
+        return publishToolResult(result)
       } catch (error) {
         parent?.throwIfAborted()
         if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
@@ -838,9 +859,10 @@ export async function dispatchModEvent(options: {
             returnedWithoutNext = inFlight === undefined
             if (result !== undefined) {
               result = options.restoreResult?.(result, lastResolved ? lastResult : input, inFlight !== undefined) ?? result
+              result = settleToolResult(result)
               options.validateResult?.(result, nextResults)
               record('caught', result)
-              return result
+              return publishToolResult(result)
             }
           } catch (catchError) {
             parent?.throwIfAborted()
@@ -853,9 +875,9 @@ export async function dispatchModEvent(options: {
           return result
         }
         const outcome = timedOut ? 'expired' : inFlight ? 'kept' : 'skipped'
-        const result = await Promise.race([replay(input), abandoned])
+        const result = settleToolResult(await Promise.race([replay(input), abandoned]))
         record(outcome, result)
-        return result
+        return publishToolResult(result)
       }
     } catch (error) {
       record('rejected')

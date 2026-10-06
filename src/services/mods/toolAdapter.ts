@@ -27,6 +27,8 @@ export type ModToolExecutionRecord = {
   result?: unknown
   error?: unknown
   messages: MessageUpdateLazy[]
+  /** Set immediately before tool.call, using the admitted execution input. */
+  isReadOnly?: true
 }
 
 export type ToolCallResult = {
@@ -35,6 +37,7 @@ export type ToolCallResult = {
   ref?: number
   text?: string
   isError?: true
+  isReadOnly?: true
   context?: readonly string[]
 }
 
@@ -222,6 +225,7 @@ export async function runModToolCall({
             result: valueOf(record),
             text,
             ...(failed(record) ? { isError: true } : {}),
+            ...(record.isReadOnly ? { isReadOnly: true } : {}),
           }
         })()
         pending.push(execution)

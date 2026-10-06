@@ -1855,3 +1855,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 聚焦回归：`bun test --no-env-file ./src/tools/SendMessageTool/SendMessageTool.resume.test.ts ./src/utils/subagentHandback.test.ts`。前者隔离各场景的进程、配置和占位认证；后者核对分段哈希、所有官方换行分隔符、伪造框架和失效分段数据。
 - 相邻回归保留 subtask、fork 模式、fork 技能、owner waiting、共享并发、普通前后台路由和 foreground continuation。Workflow 可用性及全量 G5 保持原验收边界。
 - 源码、RED、Make、真实终端与未覆盖差异见 [同步恢复专项](docs/research/mods-inline-resume-20261007.md)。本项不证明整个 SendMessage 解析、pin、报告扫描及整体 Mods API/UI/diff 已完全一致。
+
+## 2026-10-07 tool.call 只读结果标记
+
+- 新增聚焦回归：`bun test --no-env-file ./src/services/mods/toolReadOnly.test.ts`，另有三项同插件内部观察与边界处理回归，包括真实 runToolUse、权限参数改写、执行失败/拒绝、结果引用和作者调用。
+- 跨插件边界的标记来源必须是该插件的真实下游引用及未改写结果；结果复制允许 JSON 键序不同，循环或不可序列化替换不能证明相等。原回执不得被原地修改。
+- 真实终端对照 Read、Write、Bash、hook 输入/输出改写、拒绝、无 ref 和 $.tool.call 作者调用，并尝试官方 diff mod 的实际展示；Agent/子任务/恢复及相邻流程使用同批新构建回归。
+- 本批关闭标记生产与传递缺口，完整 diff UI、G5、Workflow、远程 MCP 声明真实性和整体 Mods 兼容仍按各专项验收。证据见 [只读标记专项](docs/research/mods-tool-readonly-20261007.md)。
