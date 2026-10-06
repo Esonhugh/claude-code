@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, realpath, rename, unlink } from 'node:fs/promises'
 import type { Tool } from '../../Tool.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 export type ModDeclarationFile = Readonly<{ path: string; text: string }>
 export type ModDeclarationWriteResult = Readonly<{
@@ -13,7 +13,7 @@ export type ModDeclarationWriteResult = Readonly<{
   unchanged: readonly string[]
 }>
 
-const compilerOptions = `${JSON.stringify({
+const authorProject = {
   compilerOptions: {
     target: 'es2023',
     lib: ['es2023'],
@@ -30,7 +30,8 @@ const compilerOptions = `${JSON.stringify({
     types: ['claude-code', 'claude-code-tools', 'claude-code-mcp'],
   },
   include: ['../../hooks', '../../types', '../../tests'],
-}, null, 2)}\n`
+}
+const compilerOptions = `${JSON.stringify(authorProject, null, 2)}\n`
 
 function declaration(version: string): string {
   return `// Written by Claude Code ${version}.\n${officialDeclaration}`
@@ -95,29 +96,39 @@ const additionalLegacyDeclarationHashes: Readonly<Record<string, readonly string
 }
 
 const ownershipPrefix = '// Claude Code owned declaration sha256='
-function owned(text: string): string {
-  return `${text}\n${ownershipPrefix}${createHash('sha256').update(text).digest('hex')}\n`
+function owned(text: string, configuration?: string): string {
+  const project = configuration === undefined ? '' : ` tsconfig-sha256=${createHash('sha256').update(configuration).digest('hex')}`
+  return `${text}\n${ownershipPrefix}${createHash('sha256').update(text + project).digest('hex')}${project}\n`
 }
-function isOwned(text: string): boolean {
+function ownership(text: string): {configurationHash?: string} | undefined {
   const start = text.lastIndexOf(`\n${ownershipPrefix}`)
-  return start >= 0 && owned(text.slice(0, start)) === text
+  if (start < 0) return undefined
+  const footer = text.slice(start + 1 + ownershipPrefix.length)
+  const match = /^([a-f0-9]{64})(?: tsconfig-sha256=([a-f0-9]{64}))?\n$/.exec(footer)
+  if (!match) return undefined
+  const project = match[2] === undefined ? '' : ` tsconfig-sha256=${match[2]}`
+  if (createHash('sha256').update(text.slice(0, start) + project).digest('hex') !== match[1]) return undefined
+  return {configurationHash:match[2]}
 }
+function isOwned(text: string): boolean {return ownership(text) !== undefined}
 
-export function generateModDeclarationFiles(version: string, tools?: readonly Tool[]): readonly ModDeclarationFile[] {
+export function generateModDeclarationFiles(version: string, tools?: readonly Tool[], entrypointIncludes: readonly string[] = []): readonly ModDeclarationFile[] {
   if (typeof version !== 'string' || !version || /[\r\n\0]/.test(version))
     throw new TypeError('version must be a non-empty single-line string')
+  const configuration = entrypointIncludes.length === 0 ? compilerOptions :
+    `${JSON.stringify({...authorProject, include:[...authorProject.include, ...entrypointIncludes]}, null, 2)}\n`
   return Object.freeze([
-    Object.freeze({ path: 'claude-code/index.d.ts', text: owned(declaration(version)) }),
+    Object.freeze({ path: 'claude-code/index.d.ts', text: owned(declaration(version), entrypointIncludes.length ? configuration : undefined) }),
     Object.freeze({ path: 'claude-code-tools/index.d.ts', text: owned(toolDeclarations(tools ?? [], false)) }),
     Object.freeze({ path: 'claude-code-mcp/index.d.ts', text: owned(toolDeclarations(tools ?? [], true)) }),
-    Object.freeze({ path: 'tsconfig.json', text: compilerOptions }),
+    Object.freeze({ path: 'tsconfig.json', text: configuration }),
     Object.freeze({ path: '.gitignore', text: '*\n' }),
   ])
 }
 
 function inside(root: string, target: string): boolean {
   const child = relative(root, target)
-  return child === '' || child !== '..' && !child.startsWith(`..${sep}`)
+  return child === '' || !isAbsolute(child) && child !== '..' && !child.startsWith(`..${sep}`)
 }
 
 async function ensureDirectory(root: string, target: string): Promise<void> {
@@ -138,26 +149,43 @@ async function ensureDirectory(root: string, target: string): Promise<void> {
 }
 
 const installations = new Map<string, Promise<ModDeclarationWriteResult>>()
-export async function ensureModDeclarations(pluginRoot: string, version: string, tools?: readonly Tool[]): Promise<ModDeclarationWriteResult> {
+export async function ensureModDeclarations(pluginRoot: string, version: string, tools?: readonly Tool[], entrypoints: readonly string[] = []): Promise<ModDeclarationWriteResult> {
   const key = resolve(pluginRoot)
   const previous = installations.get(key)
   const pending = (async () => {
     await previous?.catch(() => {})
-    return installDeclarations(pluginRoot, version, tools)
+    return installDeclarations(pluginRoot, version, tools, entrypoints)
   })()
   installations.set(key, pending)
   try { return await pending } finally { if (installations.get(key) === pending) installations.delete(key) }
 }
 
-async function installDeclarations(pluginRoot: string, version: string, tools?: readonly Tool[]): Promise<ModDeclarationWriteResult> {
+async function installDeclarations(pluginRoot: string, version: string, tools: readonly Tool[] | undefined, entrypoints: readonly string[]): Promise<ModDeclarationWriteResult> {
   if (typeof pluginRoot !== 'string' || !pluginRoot || pluginRoot.includes('\0'))
     throw new TypeError('pluginRoot must be a non-empty path without NUL')
   const root = await realpath(resolve(pluginRoot))
   const types = join(root, '.claude-plugin', 'types')
+  const entrypointIncludes = [...new Set(entrypoints.map(entry => {
+    const resolved = resolve(pluginRoot, entry)
+    if (!inside(resolve(pluginRoot), resolved)) throw new Error(`declaration entry escapes plugin root: ${entry}`)
+    return resolve(root, relative(resolve(pluginRoot), resolved))
+  }).filter(entry => !inside(join(root, 'hooks'), entry)).map(entry => relative(types, entry).split(sep).join('/')))]
   await ensureDirectory(root, types)
   const written: string[] = []
   const unchanged: string[] = []
-  for (const file of generateModDeclarationFiles(version, tools)) {
+  let previousConfigurationHash: string | undefined
+  const main = join(types, 'claude-code/index.d.ts')
+  try {
+    const entry = await lstat(main)
+    if (entry.isFile() && !entry.isSymbolicLink())
+      previousConfigurationHash = ownership(await readFile(main, {encoding:'utf8', flag:constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)}))?.configurationHash
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  // Check ownership before changing any file, so an author config conflict leaves
+  // the previous project digest available for a later refresh after restoration.
+  const pending: {file:ModDeclarationFile; target:string; replacing:boolean}[] = []
+  for (const file of generateModDeclarationFiles(version, tools, entrypointIncludes)) {
     const target = resolve(types, file.path)
     if (!inside(types, target)) throw new Error(`declaration path escapes types root: ${file.path}`)
     await ensureDirectory(types, dirname(target))
@@ -172,12 +200,16 @@ async function installDeclarations(pluginRoot: string, version: string, tools?: 
         continue
       }
       const digest = createHash('sha256').update(existing).digest('hex')
-      if (!isOwned(existing) && digest !== legacyDeclarationHashes[file.path] && !additionalLegacyDeclarationHashes[file.path]?.includes(digest))
+      const previousProject = file.path === 'tsconfig.json' && (existing === compilerOptions || digest === previousConfigurationHash)
+      if (!isOwned(existing) && !previousProject && digest !== legacyDeclarationHashes[file.path] && !additionalLegacyDeclarationHashes[file.path]?.includes(digest))
         throw new Error(`refusing to replace unowned declaration; schema not refreshed: ${target}`)
       replacing = true
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
     }
+    pending.push({file,target,replacing})
+  }
+  for (const {file,target,replacing} of pending) {
     const destination = replacing ? `${target}.${randomUUID()}.tmp` : target
     const handle = await open(
       destination,

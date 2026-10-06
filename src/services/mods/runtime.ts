@@ -2457,10 +2457,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const refreshDeclarations = async () => {
           if (declaration.isNative || declaration.tier === 'builtin') return
           try {
-            await ensureModDeclarations(
+            const project = await ensureModDeclarations(
               declaration.pluginRoot, typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
               (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
+              input.entrypoints,
             )
+            if (project.written.length) logForDebugging(`[mods] author-project ${JSON.stringify({plugin:input.name, typeRoot:project.root, entrypoints:input.entrypoints, written:project.written})}`)
           } catch (error) {
             diagnostic(input.name, 'types', error)
           }

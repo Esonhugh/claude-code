@@ -1481,3 +1481,17 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 测试增加加载后的空 diagnostic 断言，保留末尾原检查及六组 Anthropic/OpenAI 请求断言；实际 ROOT 包装器2/0、直接子测试18/0，同一更新 fixture 在私有 clean HEAD 包装器2/0。源码 core 仅该测试从 e2 变化到 `44ef72f7fa21729499b48af4a971cbc31da7680abcb3f68936b75c1419f2f8e4`。
 - 全部166个变更测试文件在同一e3源码上逐个完成、exit0；23个条件用例仍skip。全量及共同失败复验边界见上一节，未宣称全量或完整 Mods parity。
 - 原生旧/新验证与 source diagnostic：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e2-r1/claudemd-registration-probe/`；直接子测试日志：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e3-r1/outside-comparison/016-current-child/log.txt`。原始 response/fix-instructions/improvment 文本未覆盖。
+
+## 2026-10-06 — 官方 291 目录外入口的作者项目
+
+- 官方最新公开 CHANGELOG 为 `2.1.291`；已校验平台包 integrity，原生制品 SHA256 `9a1d2ed6bb4421e8fc80c892c0413f293be3ee50ae3d7dda1a7622197a056690`。完整声明体与 `2.1.290` 字节一致，继续使用已固定的600277字节声明，不重复新增资产或更改本地 `2.1.280` 版本。
+- Source-confirmed：291 的 `DQo` 对 `hooks/` 外的 `modulePath` 追加确切文件的相对路径，默认 hooks/types/tests 三项保留。本地 runtime 将已验证的 entrypoints 交给生成器；多入口按原顺序去重，拒绝逃逸路径，链接形式的插件根使用同一目录边界判定。
+- 新增回归测试初始6/6失败，修复后通过，并追加摘要篡改保护用例。独立 HEAD `fc344fb` 副本仅加入本批代码；原有5个声明文件及新入口文件均通过。生成 JSON 保持原生格式；动态配置摘要绑定到主声明校验页尾，配置冲突先行检查，作者改写保持原样，恢复后可继续更新。
+- Runtime-observed：原生官方与修改前本地产物加载同一可信插件，stdin 执行 `/owned-project outside`、`/reload-plugins`、`/owned-project inside`、`/exit`。官方包含确切 `code/register.ts`；修改前本地遗漏该文件，其 tsc 虽然exit0也未检查入口，因此此断言为failed。双方都正常退出；错误不靠编译exit0掩盖。
+- 当前ROOT隔离构建通过，并在 `/private/tmp/mc291-entry-r-green3` 运行相同流程；两阶段严格项目检查exit0，入口移入hooks后旧include移除，无关 `code/unrelated.ts` 未纳入，根配置字节保持，mtime保持由自动化测试覆盖；完整声明体、内部和根配置已与官方原始快照逐项比对且一致。本轮仅验证作者入口项目，不代表全UI/diff或全部生产API通过。
+- 首轮当前ROOT复验完成167文件，166 exit0，`PromptInput.modsEdit` 出现一次50ms Worker超时；源码和保护文件不变。相同原测试在修改前生产副本及当前ROOT串行重跑均17/0；并发类型/lint负载是待验证解释，不把它写成已确认根因。首轮失败日志保留，最终门禁另列。
+- 证据根：`/private/tmp/mods-align-m1scugg4/author-contract-project-291-r1/`；真实CLI的pane、PTY、debug、驱动和两个独立tsconfig快照保留在各自 `mc291-entry-*/evidence/`。较早驱动把两个tsconfig保存为同名文件，已修正并用新独立session重跑，旧证据保留。
+- 边界：传递依赖类型根、缺失生产方法、远程clipboard、官方完整UI/diff、G5及全量套件仍待处理；历史response/fix-instructions/improvment不覆盖，其他Claude进程不干预。
+- 独立提交批次core SHA256 `d9dc50a78ada722752f15be4dd1b673b17227792d7b2b918809163bd447c37c6`，6个相关声明测试文件合计68 pass、0 fail；`make release-check` 与隔离构建均exit0。批次制品SHA256 `31d1941d0573743030d17042c298398196d988f02a3bbe50bd5c0c2c182afd24`；当前ROOT制品SHA256 `e2cc0c4d351c90fd2b6cf36877a5f792f61d8e3e6d775ef2601c320b8e3fcfde`，源码core `3599279d3873dc8de1ff865bafe1e47627a5569fdc51497a479b40342c4163da`。两制品各自在相同官方驱动下完成两阶段，配置及声明体比较均通过。
+- 最终第二轮在同一ROOT源码上逐文件串行完成167/167、全部exit0；23个条件用例仍skip，未计作官方兼容性通过。本轮不同时运行其他自有build/tsc/lint；首轮失败、修改前/当前的17/0串行对照和未确认的超时归因均保留。原response的9项在第二轮均通过，原文SHA256保持 `2ef2250d26c206e40c52bc35a900c0115d9820360b26d0d90fb491d73ff2f001`。
+- 最终门禁：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e4-r2/summary.json`、`conditional-skips.json`；原生比较：`author-contract-project-291-r1/ROOT-native-project-comparison.json`、`entrypoints-commit/native-comparison.json`；debug关键字段检查为 `ROOT-author-project-debug-validation.json`。最近完整全量运行尚未通过，本轮未重跑全量；此批次不代表完整Mods/UI/diff设计已验收。
