@@ -596,7 +596,11 @@ claude plugin validate /absolute/path/to/my-mod
 claude plugin test /absolute/path/to/my-mod
 ```
 
-作者主声明采用官方 2.1.290 原生制品内的完整声明体，保留全部公开类型、操作映射、testing 和全局定义。首次加载会生成三个类型根；没有 `jsconfig.json` 或自定义 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有作者配置不覆盖；升级时仅移除校验仍匹配的旧生成 `results.d.ts`，作者改写和符号链接保留。
+作者主声明采用官方 2.1.290 原生制品内的完整声明体（与 2.1.291 相同），保留全部公开类型、操作映射、testing 和全局定义。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
+
+依赖插件在自己的 `.claude-plugin/plugin.json` 中设置 `"types": "./types/index.d.ts"`，使用方在 `"dependencies": ["shared-state"]` 中声明它；普通来源的裸名称继承 marketplace，inline 等会话来源按名称查找。同名 inline 插件也可满足带 marketplace 的依赖。生成目录内优先链接依赖的真实契约文件；链接失败时只复制不超过 256 KiB 的普通文件，并去掉 BOM。契约必须留在依赖插件的真实目录内。
+
+`.claude-plugin/types/` 由引擎管理，主声明、内部配置和 ignore 文件在加载或 `/reload-plugins` 时刷新，截断或改写后也会恢复。手写声明请放插件自身的 `types/`，自定义编译选项放根 `tsconfig.json`。移除依赖会删除生成的 `index.d.ts`，保留同目录的作者文件。旧生成 `results.d.ts` 仅在内容校验仍匹配时移除，作者改写和符号链接保留。
 
 在本仓库已安装开发依赖的环境中，加载后可严格检查插件项目：
 

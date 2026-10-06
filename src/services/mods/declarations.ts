@@ -1,14 +1,17 @@
 import officialDeclaration from '../../../assets/mods-2.1.290.d.ts.txt' with {type: 'text'}
 import { constants } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readFile, realpath, rename, unlink } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, readlink, realpath, rename, rm, rmdir, stat, symlink, unlink } from 'node:fs/promises'
 import type { Tool } from '../../Tool.js'
 import { zodToJsonSchema } from '../../utils/zodToJsonSchema.js'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
+export type ModTypeDependency = Readonly<{name: string; pluginRoot: string; path: string}>
+
 export type ModDeclarationFile = Readonly<{ path: string; text: string }>
 export type ModDeclarationWriteResult = Readonly<{
   root: string
+  entries: readonly string[]
   written: readonly string[]
   unchanged: readonly string[]
 }>
@@ -84,17 +87,6 @@ function toolDeclarations(tools: readonly Tool[], mcp: boolean): string {
   return `declare module 'claude-code' {\n  interface ${mcp ? 'McpToolInputs' : 'BuiltinToolInputs'} {\n${fields.join('\n')}\n  }\n${mcp ? '' : `  interface BuiltinToolResults {\n${results.join('\n')}\n  }\n`} }\n`
 }
 
-// Exact pre-footer 2.1.280 outputs retained in fixtures/legacy280-declarations.json.
-// Bind each digest to its destination; a generated header alone proves nothing.
-const legacyDeclarationHashes: Readonly<Record<string, string>> = {
-  'claude-code/index.d.ts': '2abb2722d131f2c15736cea8d8403f8446b54c3b5cb11f4cc0137af846dec0b0',
-  'tsconfig.json': '943f1d1ec27a8c6f6be329b460b815da840641bb31fceb15b5b1c86b26ccb33d',
-}
-const previousCompilerOptionsHash = '8d41a379ff4712e6610d991497a184cda31124344a9d05c930c5938377e64a83'
-const additionalLegacyDeclarationHashes: Readonly<Record<string, readonly string[]>> = {
-  'tsconfig.json': [previousCompilerOptionsHash],
-}
-
 const ownershipPrefix = '// Claude Code owned declaration sha256='
 function owned(text: string, configuration?: string): string {
   const project = configuration === undefined ? '' : ` tsconfig-sha256=${createHash('sha256').update(configuration).digest('hex')}`
@@ -112,11 +104,11 @@ function ownership(text: string): {configurationHash?: string} | undefined {
 }
 function isOwned(text: string): boolean {return ownership(text) !== undefined}
 
-export function generateModDeclarationFiles(version: string, tools?: readonly Tool[], entrypointIncludes: readonly string[] = []): readonly ModDeclarationFile[] {
+export function generateModDeclarationFiles(version: string, tools?: readonly Tool[], entrypointIncludes: readonly string[] = [], dependencyNames: readonly string[] = []): readonly ModDeclarationFile[] {
   if (typeof version !== 'string' || !version || /[\r\n\0]/.test(version))
     throw new TypeError('version must be a non-empty single-line string')
-  const configuration = entrypointIncludes.length === 0 ? compilerOptions :
-    `${JSON.stringify({...authorProject, include:[...authorProject.include, ...entrypointIncludes]}, null, 2)}\n`
+  const configuration = entrypointIncludes.length === 0 && dependencyNames.length === 0 ? compilerOptions :
+    `${JSON.stringify({...authorProject, compilerOptions:{...authorProject.compilerOptions, types:[...authorProject.compilerOptions.types, ...dependencyNames]}, include:[...authorProject.include, ...entrypointIncludes]}, null, 2)}\n`
   return Object.freeze([
     Object.freeze({ path: 'claude-code/index.d.ts', text: owned(declaration(version), entrypointIncludes.length ? configuration : undefined) }),
     Object.freeze({ path: 'claude-code-tools/index.d.ts', text: owned(toolDeclarations(tools ?? [], false)) }),
@@ -148,21 +140,75 @@ async function ensureDirectory(root: string, target: string): Promise<void> {
   }
 }
 
+const contractReadCap = 262144
+const unsafeTypeName = /[@:\s/\\\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Cn}\u2028\u2029\p{Default_Ignorable_Code_Point}\u2800]/u
+function safeTypeName(name: string): boolean {
+  return name !== '' && name !== '.' && name !== '..' &&
+    ![...authorProject.compilerOptions.types, 'tsconfig.json', '.gitignore'].some(reserved => reserved.toLowerCase() === name.toLowerCase()) &&
+    !unsafeTypeName.test(name)
+}
+async function previousTypeNames(path: string): Promise<string[]> {
+  try {
+    const handle = await open(path, constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW))
+    try {
+      const entry = await handle.stat()
+      if (!entry.isFile() || entry.size > contractReadCap) return []
+      const names = JSON.parse(await handle.readFile('utf8')).compilerOptions?.types
+      return Array.isArray(names) && names.every(name => typeof name === 'string') ? names : []
+    } finally {await handle.close()}
+  } catch {return []}
+}
+async function ensureGeneratedFolder(path: string): Promise<void> {
+  try {await mkdir(path)} catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    if (!(await lstat(path)).isDirectory()) {await unlink(path); await mkdir(path)}
+  }
+}
+async function writeGenerated(path: string, text: string, replace = true): Promise<boolean> {
+  const entry = await lstat(path).catch(error => {if (error.code !== 'ENOENT') throw error; return undefined})
+  if (entry?.isFile()) {
+    if (!replace || entry.size === Buffer.byteLength(text) && await readFile(path, {encoding:'utf8', flag:constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)}) === text) return false
+  } else if (entry) await rm(path, {recursive:true, force:true})
+  const temporary = `${path}.${randomUUID()}.tmp`
+  const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW), 0o644)
+  try {
+    try {await handle.writeFile(text, 'utf8')} finally {await handle.close()}
+    await rename(temporary, path)
+  } finally {await unlink(temporary).catch(error => {if (error.code !== 'ENOENT') throw error})}
+  return true
+}
+async function linkContract(path: string, source: string): Promise<boolean> {
+  if (await readlink(path).catch(() => undefined) === source) return false
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {await symlink(source, temporary); await rename(temporary, path); return true}
+  catch {
+    await unlink(temporary).catch(error => {if (error.code !== 'ENOENT') throw error})
+    const handle = await open(source, constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW))
+    let text: string
+    try {
+      const entry = await handle.stat()
+      if (!entry.isFile() || entry.size > contractReadCap) throw new Error('dependency declaration is over the size cap, or not a regular file, and was not read')
+      text = (await handle.readFile('utf8')).replace(/^\uFEFF/, '')
+    } finally {await handle.close()}
+    return writeGenerated(path, text)
+  }
+}
+
 const installations = new Map<string, Promise<ModDeclarationWriteResult>>()
-export async function ensureModDeclarations(pluginRoot: string, version: string, tools?: readonly Tool[], entrypoints: readonly string[] = []): Promise<ModDeclarationWriteResult> {
-  const key = resolve(pluginRoot)
+export async function ensureModDeclarations(pluginRoot: string, version: string, tools?: readonly Tool[], entrypoints: readonly string[] = [], dependencies: readonly ModTypeDependency[] = []): Promise<ModDeclarationWriteResult> {
+  if (typeof pluginRoot !== 'string' || !pluginRoot || pluginRoot.includes('\0'))
+    throw new TypeError('pluginRoot must be a non-empty path without NUL')
+  const key = await realpath(resolve(pluginRoot))
   const previous = installations.get(key)
   const pending = (async () => {
     await previous?.catch(() => {})
-    return installDeclarations(pluginRoot, version, tools, entrypoints)
+    return installDeclarations(pluginRoot, version, tools, entrypoints, dependencies)
   })()
   installations.set(key, pending)
   try { return await pending } finally { if (installations.get(key) === pending) installations.delete(key) }
 }
 
-async function installDeclarations(pluginRoot: string, version: string, tools: readonly Tool[] | undefined, entrypoints: readonly string[]): Promise<ModDeclarationWriteResult> {
-  if (typeof pluginRoot !== 'string' || !pluginRoot || pluginRoot.includes('\0'))
-    throw new TypeError('pluginRoot must be a non-empty path without NUL')
+async function installDeclarations(pluginRoot: string, version: string, tools: readonly Tool[] | undefined, entrypoints: readonly string[], dependencies: readonly ModTypeDependency[]): Promise<ModDeclarationWriteResult> {
   const root = await realpath(resolve(pluginRoot))
   const types = join(root, '.claude-plugin', 'types')
   const entrypointIncludes = [...new Set(entrypoints.map(entry => {
@@ -173,58 +219,48 @@ async function installDeclarations(pluginRoot: string, version: string, tools: r
   await ensureDirectory(root, types)
   const written: string[] = []
   const unchanged: string[] = []
-  let previousConfigurationHash: string | undefined
-  const main = join(types, 'claude-code/index.d.ts')
-  try {
-    const entry = await lstat(main)
-    if (entry.isFile() && !entry.isSymbolicLink())
-      previousConfigurationHash = ownership(await readFile(main, {encoding:'utf8', flag:constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW)}))?.configurationHash
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-  }
-  // Check ownership before changing any file, so an author config conflict leaves
-  // the previous project digest available for a later refresh after restoration.
-  const pending: {file:ModDeclarationFile; target:string; replacing:boolean}[] = []
-  for (const file of generateModDeclarationFiles(version, tools, entrypointIncludes)) {
-    const target = resolve(types, file.path)
-    if (!inside(types, target)) throw new Error(`declaration path escapes types root: ${file.path}`)
-    await ensureDirectory(types, dirname(target))
-    let replacing = false
+  const gitignoreChanged = await writeGenerated(join(types, '.gitignore'), '*\n')
+  const contracts: {name:string; real:string}[] = []
+  const seen = new Set<string>()
+  for (const dependency of dependencies) {
+    if (seen.has(dependency.name)) continue
+    seen.add(dependency.name)
+    if (!safeTypeName(dependency.name)) continue
     try {
-      const entry = await lstat(target)
-      if (entry.isSymbolicLink()) throw new Error(`refusing to write declaration symlink: ${target}`)
-      if (!entry.isFile()) throw new Error(`declaration target is not a file: ${target}`)
-      const existing = await readFile(target, 'utf8')
-      if (existing === file.text) {
-        unchanged.push(file.path)
-        continue
-      }
-      const digest = createHash('sha256').update(existing).digest('hex')
-      const previousProject = file.path === 'tsconfig.json' && (existing === compilerOptions || digest === previousConfigurationHash)
-      if (!isOwned(existing) && !previousProject && digest !== legacyDeclarationHashes[file.path] && !additionalLegacyDeclarationHashes[file.path]?.includes(digest))
-        throw new Error(`refusing to replace unowned declaration; schema not refreshed: ${target}`)
-      replacing = true
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-    }
-    pending.push({file,target,replacing})
+      const plugin = await realpath(resolve(dependency.pluginRoot))
+      const contract = await realpath(resolve(dependency.pluginRoot, dependency.path))
+      if (inside(plugin, contract) && (await stat(contract)).isFile()) contracts.push({name:dependency.name, real:contract})
+    } catch { /* An unavailable dependency contract does not prevent the author's base project. */ }
   }
-  for (const {file,target,replacing} of pending) {
-    const destination = replacing ? `${target}.${randomUUID()}.tmp` : target
-    const handle = await open(
-      destination,
-      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL |
-        (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW),
-      0o644,
-    )
-    try {
-      await handle.writeFile(file.text, 'utf8')
-    } finally {
-      await handle.close()
-    }
-    if (replacing) await rename(destination, target)
-    written.push(file.path)
+  const entries = [...authorProject.compilerOptions.types, ...contracts.map(contract => contract.name)]
+  for (const name of await previousTypeNames(join(types, 'tsconfig.json'))) {
+    if (!safeTypeName(name) || entries.includes(name)) continue
+    const folder = join(types, name), entry = await lstat(folder).catch(() => undefined)
+    if (!entry) continue
+    if (entry.isDirectory()) {
+      await unlink(join(folder, 'index.d.ts')).catch(error => {if (error.code !== 'ENOENT') throw error})
+      await rmdir(folder).catch(() => {}) // Keep any author-owned siblings.
+    } else await unlink(folder)
+    written.push(name)
   }
+  const files = generateModDeclarationFiles(version, tools, entrypointIncludes, contracts.map(contract => contract.name))
+  for (const file of files.slice(0, 3)) {
+    const target = join(types, file.path)
+    await ensureGeneratedFolder(dirname(target))
+    const replace = file.path === 'claude-code/index.d.ts' ||
+      (file.path === 'claude-code-tools/index.d.ts' ? tools !== undefined : tools?.some(tool => tool.isMcp) === true)
+    const changed = await writeGenerated(target, file.text, replace)
+    ;(changed ? written : unchanged).push(file.path)
+  }
+  for (const contract of contracts) {
+    const folder = join(types, contract.name), path = `${contract.name}/index.d.ts`
+    await ensureGeneratedFolder(folder)
+    const changed = await linkContract(join(types, path), contract.real)
+    ;(changed ? written : unchanged).push(path)
+  }
+  const configuration = files.find(file => file.path === 'tsconfig.json')!
+  ;(await writeGenerated(join(types, configuration.path), configuration.text) ? written : unchanged).push(configuration.path)
+  ;(gitignoreChanged ? written : unchanged).push('.gitignore')
   const legacyResults = join(types, 'claude-code', 'results.d.ts')
   try {
     const before = await lstat(legacyResults)
@@ -258,5 +294,5 @@ async function installDeclarations(pluginRoot: string, version: string, tools: r
       finally { await config.close() }
     }
   }
-  return Object.freeze({ root: types, written: Object.freeze(written), unchanged: Object.freeze(unchanged) })
+  return Object.freeze({ root: types, entries:Object.freeze(entries), written: Object.freeze(written), unchanged: Object.freeze(unchanged) })
 }

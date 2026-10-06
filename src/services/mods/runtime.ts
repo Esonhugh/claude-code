@@ -35,7 +35,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
 import { createModToasts } from './toast.js'
-import { ensureModDeclarations } from './declarations.js'
+import { ensureModDeclarations, type ModTypeDependency } from './declarations.js'
 import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
@@ -59,6 +59,8 @@ export type ModPluginInput = {
   isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
+  /** Host-only author project dependencies; not sent to the hook Worker. */
+  authorTypeDependencies?: readonly ModTypeDependency[]
   options?: ModInput
   fingerprintOptions?: ModInput
   tier?: ModTier
@@ -2460,9 +2462,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const project = await ensureModDeclarations(
               declaration.pluginRoot, typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
               (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
-              input.entrypoints,
+              input.entrypoints, input.authorTypeDependencies,
             )
-            if (project.written.length) logForDebugging(`[mods] author-project ${JSON.stringify({plugin:input.name, typeRoot:project.root, entrypoints:input.entrypoints, written:project.written})}`)
+            if (project.written.length) logForDebugging(`[mods] author-project ${JSON.stringify({plugin:input.name, typeRoot:project.root, entries:project.entries, entrypoints:input.entrypoints, written:project.written})}`)
           } catch (error) {
             diagnostic(input.name, 'types', error)
           }

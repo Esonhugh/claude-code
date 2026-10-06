@@ -517,7 +517,7 @@ describe('tool schema declarations', () => {
     } finally { await runtime.dispose() }
   })
 
-  test('refreshes owned schemas but refuses author files', async () => {
+  test('refreshes tool schemas and replaces edited generated declarations', async () => {
     const root = await fixture('schema-update')
     const tools = schemaTools()
     const first = await ensureModDeclarations(root, '1.2.3', tools)
@@ -529,8 +529,9 @@ describe('tool schema declarations', () => {
     const author = await fixture('author-file')
     await mkdir(join(author, '.claude-plugin/types/claude-code'), { recursive: true })
     await writeFile(join(author, '.claude-plugin/types/claude-code/index.d.ts'), '// author owned\n')
-    await expect(ensureModDeclarations(author, '1.2.3', tools)).rejects.toThrow(/unowned/)
-    expect(await readFile(join(author, '.claude-plugin/types/claude-code/index.d.ts'), 'utf8')).toBe('// author owned\n')
+    await ensureModDeclarations(author, '1.2.3', tools)
+    expect(await readFile(join(author, '.claude-plugin/types/claude-code/index.d.ts'), 'utf8')).toBe(generateModDeclarationFiles('1.2.3', tools)[0]!.text)
+    expect((await ensureModDeclarations(author, '1.2.3', tools)).written).toEqual([])
   })
 })
 
@@ -558,27 +559,24 @@ describe('legacy declaration migration', () => {
     expect((await ensureModDeclarations(root, '1.2.3', tools)).written).toEqual([])
   })
 
-  test.each(['claude-code/index.d.ts', 'tsconfig.json'] as const)('preserves modified legacy %s and recovers after restoration', async path => {
+  test.each(['claude-code/index.d.ts', 'tsconfig.json'] as const)('replaces modified generated legacy %s and remains idempotent', async path => {
     const root = await fixture('legacy-edited')
     await installLegacyFixture(root)
     const target = join(root, '.claude-plugin/types', path)
     const edited = legacyDeclarations[path] + '\n// author customization\n'
     await writeFile(target, edited)
-    await expect(ensureModDeclarations(root, '1.2.3', schemaTools())).rejects.toThrow(/unowned/)
-    expect(await readFile(target, 'utf8')).toBe(edited)
-    // The declaration may already have upgraded before a conflicting config was encountered.
-    await writeFile(target, legacyDeclarations[path])
     await ensureModDeclarations(root, '1.2.3', schemaTools())
+    expect(await readFile(target, 'utf8')).toBe(generateModDeclarationFiles('1.2.3', schemaTools()).find(file => file.path === path)!.text)
     expect((await ensureModDeclarations(root, '1.2.3', schemaTools())).written).toEqual([])
   })
 
-  test('does not accept a historical digest at a different target path', async () => {
+  test('replaces misplaced historical bytes in the generated base declaration', async () => {
     const root = await fixture('legacy-wrong-path')
     await mkdir(join(root, '.claude-plugin/types/claude-code'), { recursive: true })
     const target = join(root, '.claude-plugin/types/claude-code/index.d.ts')
     await writeFile(target, legacyDeclarations['tsconfig.json'])
-    await expect(ensureModDeclarations(root, '1.2.3')).rejects.toThrow(/unowned/)
-    expect(await readFile(target, 'utf8')).toBe(legacyDeclarations['tsconfig.json'])
+    await ensureModDeclarations(root, '1.2.3')
+    expect(await readFile(target, 'utf8')).toBe(generateModDeclarationFiles('1.2.3')[0]!.text)
   })
 })
 
@@ -650,14 +648,16 @@ describe('declaration installation', () => {
     expect(await readFile(join(blocked, '.claude-plugin'), 'utf8')).toBe('author file\n')
   })
 
-  test('refuses an escaping symlink without touching its target', async () => {
+  test('replaces a generated index symlink without touching its external target', async () => {
     const root = await fixture('symlink')
     const outside = join(root, 'outside.d.ts')
     await writeFile(outside, 'evidence remains\n')
     await mkdir(join(root, '.claude-plugin', 'types', 'claude-code'), { recursive: true })
     await symlink(outside, join(root, '.claude-plugin', 'types', 'claude-code', 'index.d.ts'))
-    await expect(ensureModDeclarations(root, '1.2.3')).rejects.toThrow(/symlink/)
+    await ensureModDeclarations(root, '1.2.3')
     expect(await readFile(outside, 'utf8')).toBe('evidence remains\n')
-    expect((await lstat(join(root, '.claude-plugin', 'types', 'claude-code', 'index.d.ts'))).isSymbolicLink()).toBe(true)
+    const index = join(root, '.claude-plugin', 'types', 'claude-code', 'index.d.ts')
+    expect((await lstat(index)).isSymbolicLink()).toBe(false)
+    expect(await readFile(index, 'utf8')).toBe(generateModDeclarationFiles('1.2.3')[0]!.text)
   })
 })

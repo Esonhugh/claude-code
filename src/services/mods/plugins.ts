@@ -4,6 +4,8 @@ import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
 import { getPluginStorageId, loadPluginSecrets, resolvePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { ModDiagnostic, ModPluginInput } from './runtime.js'
+import {dependencyMatchesPlugin, qualifyDependency} from '../../utils/plugins/dependencyResolver.js'
+import type {ModTypeDependency} from './declarations.js'
 import type { ModOrigin } from './types.js'
 import { SEC_DEFAULT_ID, shouldSeatSecDefault } from './native.js'
 
@@ -117,6 +119,20 @@ export function getModPluginOrigin(
   return { plugin: storageId, tier }
 }
 
+function authorTypeDependencies(owner: LoadedPlugin, plugins: readonly LoadedPlugin[]): ModTypeDependency[] {
+  const dependencies = new Map<string, LoadedPlugin>(), queue = [owner]
+  for (const current of queue) {
+    for (const candidate of plugins) {
+      if (candidate.enabled === false || candidate.name === owner.name || dependencies.has(candidate.name)) continue
+      if (!(current.manifest.dependencies ?? []).some(dependency => dependencyMatchesPlugin(qualifyDependency(dependency, current.source), candidate.source))) continue
+      dependencies.set(candidate.name, candidate)
+      queue.push(candidate)
+    }
+  }
+  return [...dependencies.values()].flatMap(plugin => plugin.manifest.types === undefined ? [] :
+    [{name:plugin.name, pluginRoot:plugin.path, path:plugin.manifest.types}])
+}
+
 /**
  * Converts already-loaded, trusted plugins into declarations for createModsRuntime.
  * Resolves and validates settings and secure options before module evaluation.
@@ -198,12 +214,14 @@ export function prepareModPlugins(
       continue
     }
 
+    const typeDependencies = authorTypeDependencies(plugin, plugins)
     inputs.push({
       name: plugin.name,
       ...(plugin.manifest.version === undefined ? {} : { version: plugin.manifest.version }),
       storageId,
       pluginRoot: plugin.path,
       entrypoints,
+      ...(typeDependencies.length ? {authorTypeDependencies:typeDependencies} : {}),
       options: prepared.options,
       fingerprintOptions: prepared.fingerprintOptions,
       tier: getModPluginOrigin(plugin, settings).tier,

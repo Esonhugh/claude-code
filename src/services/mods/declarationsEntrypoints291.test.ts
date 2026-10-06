@@ -3,7 +3,7 @@ import {mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile} from '
 import {join} from 'node:path'
 import {tmpdir} from 'node:os'
 import ts from 'typescript'
-import {ensureModDeclarations} from './declarations.js'
+import {ensureModDeclarations, generateModDeclarationFiles} from './declarations.js'
 import {createModsRuntime} from './runtime.js'
 
 const roots: string[] = []
@@ -60,7 +60,7 @@ test('refreshing and moving an entry into hooks retires the old include and pres
   expect(ts.getPreEmitDiagnostics(program(root).program)).toEqual([])
 })
 
-test('an edited generated project is preserved and restoration permits a later refresh', async () => {
+test('an edited generated project is refreshed without requiring restoration', async () => {
   const root = await fixture(), entry = join(root, 'code/register.ts')
   await writeFile(entry, 'export {};\n')
   await ensureModDeclarations(root, '2.1.280', [], [entry])
@@ -68,15 +68,14 @@ test('an edited generated project is preserved and restoration permits a later r
   const main = join(root, '.claude-plugin/types/claude-code/index.d.ts'), before = await readFile(main, 'utf8')
   const edited = owned + '\n// author customization\n'
   await writeFile(file, edited)
-  await expect(ensureModDeclarations(root, '2.1.281', [], [])).rejects.toThrow(/unowned/)
-  expect(await readFile(file, 'utf8')).toBe(edited)
-  expect(await readFile(main, 'utf8')).toBe(before)
-  await writeFile(file, owned)
   await ensureModDeclarations(root, '2.1.281', [], [])
+  expect(await readFile(file, 'utf8')).not.toBe(edited)
+  expect(await readFile(main, 'utf8')).not.toBe(before)
+  expect(await readFile(main, 'utf8')).toBe(generateModDeclarationFiles('2.1.281', [])[0]!.text)
   expect((await config(root)).include).toEqual(['../../hooks', '../../types', '../../tests'])
 })
 
-test('an altered project digest cannot authorize overwriting an author configuration', async () => {
+test('altered metadata in a generated declaration is replaced with the current project', async () => {
   const root = await fixture(), entry = join(root, 'code/register.ts')
   await writeFile(entry, 'export {};\n')
   await ensureModDeclarations(root, '2.1.280', [], [entry])
@@ -86,9 +85,11 @@ test('an altered project digest cannot authorize overwriting an author configura
   const altered = text.replace(/tsconfig-sha256=[a-f0-9]{64}/, 'tsconfig-sha256=' + '0'.repeat(64))
   await writeFile(main, altered)
   const file = join(root, '.claude-plugin/types/tsconfig.json'), before = await readFile(file, 'utf8')
-  await expect(ensureModDeclarations(root, '2.1.281', [], [])).rejects.toThrow(/unowned/)
-  expect(await readFile(main, 'utf8')).toBe(altered)
-  expect(await readFile(file, 'utf8')).toBe(before)
+  await ensureModDeclarations(root, '2.1.281', [], [])
+  expect(await readFile(main, 'utf8')).not.toBe(altered)
+  expect(await readFile(main, 'utf8')).toBe(generateModDeclarationFiles('2.1.281', [])[0]!.text)
+  expect(await readFile(file, 'utf8')).not.toBe(before)
+  expect((await config(root)).include).toEqual(['../../hooks', '../../types', '../../tests'])
 })
 
 test('a linked plugin root uses the same inside test and an escaping entry is rejected', async () => {

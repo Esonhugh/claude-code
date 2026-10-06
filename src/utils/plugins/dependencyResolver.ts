@@ -41,8 +41,15 @@ export function qualifyDependency(
 ): string {
   if (parsePluginIdentifier(dep).marketplace) return dep
   const mkt = parsePluginIdentifier(declaringPluginId).marketplace
-  if (!mkt || mkt === INLINE_MARKETPLACE) return dep
+  if (!mkt || [INLINE_MARKETPLACE, 'skills-dir', 'synced'].includes(mkt)) return dep
   return `${dep}@${mkt}`
+}
+
+/** A session-local inline plugin can satisfy a marketplace-qualified dependency. */
+export function dependencyMatchesPlugin(dependency: string, pluginId: string): boolean {
+  const requested = parsePluginIdentifier(dependency), candidate = parsePluginIdentifier(pluginId)
+  return requested.marketplace ? pluginId === dependency ||
+    candidate.name === requested.name && candidate.marketplace === INLINE_MARKETPLACE : candidate.name === requested.name
 }
 
 /**
@@ -205,7 +212,7 @@ export function verifyAndDemote(plugins: readonly LoadedPlugin[]): {
         const isBare = !parsePluginIdentifier(dep).marketplace
         const satisfied = isBare
           ? (enabledByName.get(dep) ?? 0) > 0
-          : enabled.has(dep)
+          : enabled.has(dep) || enabled.has(`${parsePluginIdentifier(dep).name}@${INLINE_MARKETPLACE}`)
         if (!satisfied) {
           enabled.delete(p.source)
           const count = enabledByName.get(p.name) ?? 0
@@ -216,7 +223,7 @@ export function verifyAndDemote(plugins: readonly LoadedPlugin[]): {
             source: p.source,
             plugin: p.name,
             dependency: dep,
-            reason: (isBare ? knownByName.has(dep) : known.has(dep))
+            reason: (isBare ? knownByName.has(dep) : known.has(dep) || known.has(`${parsePluginIdentifier(dep).name}@${INLINE_MARKETPLACE}`))
               ? 'not-enabled'
               : 'not-found',
           })
@@ -245,7 +252,6 @@ export function findReverseDependents(
   pluginId: PluginId,
   plugins: readonly LoadedPlugin[],
 ): string[] {
-  const { name: targetName } = parsePluginIdentifier(pluginId)
   return plugins
     .filter(
       p =>
@@ -253,10 +259,7 @@ export function findReverseDependents(
         p.source !== pluginId &&
         (p.manifest.dependencies ?? []).some(d => {
           const qualified = qualifyDependency(d, p.source)
-          // Bare dep (from @inline plugin): match by name only
-          return parsePluginIdentifier(qualified).marketplace
-            ? qualified === pluginId
-            : qualified === targetName
+          return dependencyMatchesPlugin(qualified, pluginId)
         }),
     )
     .map(p => p.name)
