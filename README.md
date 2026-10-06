@@ -907,6 +907,14 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 运行 `bun test ./src/services/mods/toolCheckReason.test.ts` 验证公开 host 的决定、规则、原因和安全检查。完整 hook 来源、递归规则及最新事件字段仍按 `mods-test.md` 分批验收。
 
+### Mod 子任务的完成通知
+
+`$.agent.spawn({prompt, ...})` 在任务启动时返回身份回执。宿主从根任务表认领该本地子任务的完成通知，结果通过 `turn.complete` 提供；完成后不会再把同一结果入队为主会话通知并自动发起额外查询。作者可以按返回的 `agentId` 筛选完成事件，并使用 `e.answer` 展示或处理结果。
+
+此认领只用于公开 Mod spawn 对应的本地任务。普通 Agent 工具的后台完成通知继续送达；teammate 和 remote task 使用各自的生命周期。子任务上下文优先使用 `setAppStateForTasks` 写入根任务表，不改变当前权限视图。
+
+使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[ModsAgent] claimed completion notification`，日志包含 task ID、agent ID 和插件名，不包含任务正文。运行 `bun test ./src/services/mods/toolHost.spawnNotifications.test.ts ./src/tasks/LocalAgentTask/LocalAgentTask.progress.test.ts` 检查通知归属、三种终态和普通通知控制组。完整错误／取消／嵌套及 Workflow 矩阵继续按 `mods-test.md` 验收。
+
 ### Mod 主动工具调用的入口
 
 作者使用 `$.tool.call({tool, ...args})` 时，Agent、AskUserQuestion、Workflow 会被 host check 拒绝。使用 `$.agent.spawn({prompt, ...})` 启动子任务，用 `$.ui.ask(...)` 提问；本地 `WorkflowTool` 同样受此限制。Agent 的旧名称 Task 在解析到 Agent 时也会被拒绝。错误包含插件名、工具名称和专用入口，便于定位调用位置。

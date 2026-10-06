@@ -3,6 +3,7 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import { createAssistantMessage, createUserMessage, getLastAssistantMessage } from '../../utils/messages.js'
 import { createAbortController } from '../../utils/abortController.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
@@ -51,7 +52,18 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           toolUseId: randomUUID(),
           modsSnapshot: snapshot,
           modSpawnedBy: spawnedBy,
-          modAgentStarted: started.resolve,
+          modAgentStarted: launch => {
+            let claimedTaskId: string | undefined
+            const setTasks = context.setAppStateForTasks ?? context.setAppState
+            setTasks(prev => {
+              const task = Object.values(prev.tasks).find(task => task.type === 'local_agent' && task.agentId === launch.agentId)
+              if (!task || task.notified) return prev
+              claimedTaskId = task.id
+              return { ...prev, tasks: { ...prev.tasks, [task.id]: { ...task, notified: true } } }
+            })
+            if (claimedTaskId) logForDebugging(`[ModsAgent] claimed completion notification taskId=${claimedTaskId} agentId=${launch.agentId} plugin=${spawnedBy ?? 'unknown'}`)
+            started.resolve(launch)
+          },
           abortController,
         }, canUseTool, parentMessage)
         void completion.catch(started.reject)
