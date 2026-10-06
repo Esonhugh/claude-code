@@ -62,6 +62,7 @@ import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+import { parkAgentForChildren } from './backgroundOwner.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
@@ -610,6 +611,7 @@ export async function runAsyncAgentLifecycle({
   enableSummarization,
   getWorktreeResult,
   onRunSettled,
+  resume,
 }: {
   taskId: string
   abortController: AbortController
@@ -623,6 +625,7 @@ export async function runAsyncAgentLifecycle({
   agentIdForCleanup: string
   enableSummarization: boolean
   onRunSettled?: () => void
+  resume?: (prompt: string) => Promise<unknown>
   getWorktreeResult: () => Promise<{
     worktreePath?: string
     worktreeBranch?: string
@@ -715,6 +718,7 @@ export async function runAsyncAgentLifecycle({
     // not gate the status transition (gh-20236).
     onRunSettled?.()
     completeAsyncAgent(agentResult, rootSetAppState)
+    if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
 

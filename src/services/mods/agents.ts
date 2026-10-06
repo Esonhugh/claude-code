@@ -8,8 +8,10 @@ export function listModAgents(tasks: AppState['tasks'], names: AppState['agentNa
     const id = task.type === 'local_agent' ? task.agentId : task.identity.agentId
     const name = task.type === 'in_process_teammate' ? task.identity.agentName : namesById.get(id)
     const parentId = task.type === 'local_agent' ? task.parentAgentId : undefined
+    const status = task.type === 'local_agent' && task.status === 'completed' &&
+      (task.keepaliveReasons?.size ?? 0) > 0 ? 'waiting' : task.status
     return [{
-      id, description: task.description, type: task.type === 'local_agent' ? task.agentType : 'teammate', status: task.status,
+      id, description: task.description, type: task.type === 'local_agent' ? task.agentType : 'teammate', status,
       ...(parentId === undefined ? {} : {parentId}),
       ...(task.type === 'local_agent' && task.spawnedBy !== undefined ? {spawnedBy: task.spawnedBy} : {}),
       ...(name === undefined ? {} : {name}),

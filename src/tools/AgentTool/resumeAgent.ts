@@ -54,12 +54,16 @@ export async function resumeAgentBackground({
   toolUseContext,
   canUseTool,
   invokingRequestId,
+  promptIsMeta,
+  getWorktreeResult,
 }: {
   agentId: string
   prompt: string
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   invokingRequestId?: string
+  promptIsMeta?: boolean
+  getWorktreeResult?: () => Promise<{worktreePath?: string; worktreeBranch?: string}>
 }): Promise<ResumeAgentResult> {
   const startTime = Date.now()
   const appState = toolUseContext.getAppState()
@@ -180,7 +184,7 @@ export async function resumeAgentBackground({
   const resolvedAgentModel = getAgentModel(
     selectedAgent.model,
     toolUseContext.options.mainLoopModel,
-    undefined,
+    meta?.model,
     permissionMode,
   )
 
@@ -202,7 +206,7 @@ export async function resumeAgentBackground({
     agentDefinition: selectedAgent,
     promptMessages: [
       ...resumedMessages,
-      createUserMessage({ content: prompt }),
+      createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
     ],
     toolUseContext,
     canUseTool,
@@ -217,7 +221,7 @@ export async function resumeAgentBackground({
       selectedAgent.agentType,
       isBuiltInAgent(selectedAgent),
     ),
-    model: undefined,
+    model: meta?.model,
     // Fork resume: pass parent's system prompt (cache-identical prefix).
     // Non-fork: undefined → runAgent recomputes under wrapWithCwd so
     // getCwd() sees resumedWorktreePath.
@@ -248,6 +252,7 @@ export async function resumeAgentBackground({
     setAppState: rootSetAppState,
     toolUseId: toolUseContext.toolUseId,
     parentAgentId: meta?.parentAgentId,
+    ownerAgentId: toolUseContext.agentId,
     spawnDepth: meta?.spawnDepth ?? 1,
   })
 
@@ -300,13 +305,22 @@ export async function resumeAgentBackground({
         toolUseContext,
         rootSetAppState,
         onRunSettled: releaseSlot,
+        resume: nextPrompt => resumeAgentBackground({
+          agentId,
+          prompt: nextPrompt,
+          promptIsMeta: true,
+          toolUseContext,
+          canUseTool,
+          invokingRequestId,
+          getWorktreeResult,
+        }),
         agentIdForCleanup: agentId,
         enableSummarization:
           isCoordinatorMode() ||
           isForkSubagentEnabled() ||
           getSdkAgentProgressSummariesEnabled(),
-        getWorktreeResult: async () =>
-          resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
+        getWorktreeResult: getWorktreeResult ?? (async () =>
+          resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {}),
       }),
     ),
   )

@@ -271,6 +271,8 @@ function getAgentMetadataPath(agentId: AgentId): string {
 
 export type AgentMetadata = {
   agentType: string
+  /** Effective model retained when the same agent resumes a later turn. */
+  model?: string
   /** Worktree path if the agent was spawned with isolation: "worktree" */
   worktreePath?: string
   /** Effective cwd when the agent was spawned with an explicit cwd override. */

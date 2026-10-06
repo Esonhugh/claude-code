@@ -382,6 +382,8 @@ export type QueuedCommand = {
    * unified the queue but lost the isolation the dual-queue accidentally had).
    */
   agentId?: AgentId
+  /** Background task whose notification is delivered to this agent. */
+  taskId?: string
 }
 
 /**

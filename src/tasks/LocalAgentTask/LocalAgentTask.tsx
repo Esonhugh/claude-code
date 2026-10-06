@@ -219,7 +219,12 @@ export type LocalAgentTaskState = TaskStateBase & {
   selectedAgent?: AgentDefinition
   agentType: string
   parentAgentId?: string
+  /** Agent whose turn receives this task's notifications; separate from transcript lineage. */
+  ownerAgentId?: string
+  resuming?: boolean
   spawnedBy?: string
+  finalizing?: boolean
+  keepaliveReasons?: Set<string>
   spawnDepth: number
   model?: string
   abortController?: AbortController
@@ -257,6 +262,19 @@ export function isLocalAgentTask(task: unknown): task is LocalAgentTaskState {
     'type' in task &&
     task.type === 'local_agent'
   )
+}
+
+export function isLiveLocalAgentTask(task: unknown): task is LocalAgentTaskState {
+  return isLocalAgentTask(task) && (task.status === 'running' ||
+    task.status === 'completed' && (task.keepaliveReasons?.size ?? 0) > 0)
+}
+
+function retainAgentForChild(ownerId: string | undefined, childId: string, setAppState: SetAppState): void {
+  if (!ownerId || ownerId === childId) return
+  updateTaskState<LocalAgentTaskState>(ownerId, setAppState, task => {
+    if (!isLiveLocalAgentTask(task)) return task
+    return {...task, keepaliveReasons: new Set(task.keepaliveReasons).add(`agent:${childId}`), evictAfter: undefined}
+  })
 }
 
 /**
@@ -356,10 +374,10 @@ export function enqueueAgentNotification({
     }
 
     shouldEnqueue = true
-    if (task.parentAgentId) {
-      const parentTask = prev.tasks[task.parentAgentId]
-      if (isLocalAgentTask(parentTask) && parentTask.status === 'running') {
-        routedAgentId = asAgentId(task.parentAgentId)
+    if (task.ownerAgentId) {
+      const parentTask = prev.tasks[task.ownerAgentId]
+      if (isLiveLocalAgentTask(parentTask)) {
+        routedAgentId = asAgentId(task.ownerAgentId)
       }
     }
 
@@ -403,6 +421,7 @@ export function enqueueAgentNotification({
     value: message,
     mode: 'task-notification',
     agentId: routedAgentId,
+    taskId,
   })
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
     ...task,
@@ -431,7 +450,7 @@ export const LocalAgentTask: Task = {
 export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
   let killed = false
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.status !== 'running') {
+    if (!isLiveLocalAgentTask(task)) {
       return task
     }
     killed = true
@@ -445,6 +464,7 @@ export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
       abortController: undefined,
       unregisterCleanup: undefined,
       selectedAgent: undefined,
+      keepaliveReasons: new Set(),
     }
   })
   if (killed) {
@@ -461,7 +481,7 @@ export function killAllRunningAgentTasks(
   setAppState: SetAppState,
 ): void {
   for (const [taskId, task] of Object.entries(tasks)) {
-    if (task.type === 'local_agent' && task.status === 'running') {
+    if (isLiveLocalAgentTask(task)) {
       killAsyncAgent(taskId, setAppState)
     }
   }
@@ -591,20 +611,24 @@ export function completeAgentTask(
       return task
     }
 
-    task.unregisterCleanup?.()
+    const waiting = task.isBackgrounded && (task.keepaliveReasons?.size ?? 0) > 0
+    if (!waiting) task.unregisterCleanup?.()
 
     return {
       ...task,
       status: 'completed',
       result,
       endTime: Date.now(),
-      evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
-      abortController: undefined,
-      unregisterCleanup: undefined,
-      selectedAgent: undefined,
+      evictAfter: task.retain || waiting ? undefined : Date.now() + PANEL_GRACE_MS,
+      abortController: waiting ? task.abortController : undefined,
+      unregisterCleanup: waiting ? task.unregisterCleanup : undefined,
+      selectedAgent: waiting ? task.selectedAgent : undefined,
     }
   })
-  void evictTaskOutput(taskId)
+  // Keep the output cache available while owned work can resume this task.
+  let waiting = false
+  setAppState(prev => { waiting = isLiveLocalAgentTask(prev.tasks[taskId]); return prev })
+  if (!waiting) void evictTaskOutput(taskId)
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
 
@@ -641,6 +665,7 @@ export function failAgentTask(
     return {
       ...task,
       status: 'failed',
+      keepaliveReasons: new Set(),
       error,
       endTime: Date.now(),
       evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
@@ -670,6 +695,7 @@ export function registerAsyncAgent({
   parentAbortController,
   toolUseId,
   parentAgentId,
+  ownerAgentId,
   spawnedBy,
   spawnDepth,
 }: {
@@ -681,6 +707,7 @@ export function registerAsyncAgent({
   parentAbortController?: AbortController
   toolUseId?: string
   parentAgentId?: string
+  ownerAgentId?: string
   spawnedBy?: string
   spawnDepth: number
 }): LocalAgentTaskState {
@@ -703,6 +730,7 @@ export function registerAsyncAgent({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     parentAgentId,
+    ownerAgentId,
     spawnedBy,
     spawnDepth,
     abortController,
@@ -713,6 +741,7 @@ export function registerAsyncAgent({
     pendingMessages: [],
     retain: false,
     diskLoaded: false,
+    keepaliveReasons: new Set(),
   }
 
   // Register cleanup handler
@@ -724,6 +753,7 @@ export function registerAsyncAgent({
 
   // Register task in AppState
   registerTask(taskState, setAppState)
+  retainAgentForChild(ownerAgentId, agentId, setAppState)
 
   return taskState
 }
@@ -746,6 +776,7 @@ export function registerAgentForeground({
   autoBackgroundMs,
   toolUseId,
   parentAgentId,
+  ownerAgentId,
   spawnDepth,
 }: {
   agentId: string
@@ -756,6 +787,7 @@ export function registerAgentForeground({
   autoBackgroundMs?: number
   toolUseId?: string
   parentAgentId?: string
+  ownerAgentId?: string
   spawnDepth: number
 }): {
   taskId: string
@@ -782,6 +814,7 @@ export function registerAgentForeground({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     parentAgentId,
+    ownerAgentId,
     spawnDepth,
     abortController,
     unregisterCleanup,
@@ -792,6 +825,7 @@ export function registerAgentForeground({
     pendingMessages: [],
     retain: false,
     diskLoaded: false,
+    keepaliveReasons: new Set(),
   }
 
   // Create background signal promise
@@ -822,6 +856,7 @@ export function registerAgentForeground({
             },
           }
         })
+        retainAgentForChild(ownerAgentId, agentId, setAppState)
         const resolver = backgroundSignalResolvers.get(agentId)
         if (resolver) {
           resolver()
@@ -871,6 +906,8 @@ export function backgroundAgentTask(
       },
     }
   })
+
+  retainAgentForChild(task.ownerAgentId, taskId, setAppState)
 
   // Resolve the background signal to interrupt the agent loop
   const resolver = backgroundSignalResolvers.get(taskId)

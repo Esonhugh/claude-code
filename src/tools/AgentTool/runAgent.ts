@@ -920,7 +920,8 @@ export async function* runAgent({
   )
   void writeAgentMetadata(
     agentId,
-    buildAgentMetadataForTesting({
+    {
+      ...buildAgentMetadataForTesting({
       agentType: agentDefinition.agentType,
       description,
       worktreePath,
@@ -932,7 +933,9 @@ export async function* runAgent({
       parentAgentId,
       spawnDepth:
         spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
-    }),
+      }),
+      model: resolvedAgentModel,
+    },
   ).catch((_err) => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity

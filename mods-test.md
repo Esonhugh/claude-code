@@ -1806,3 +1806,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 官方 2.1.291 的插件工厂只认可精确 context: fork，并把非空 agent 转为字符串；本地按相同规则处理。回归读取真实插件文件与 manifest，没有 mock 文件加载器或 fork 路由。
 - 同步对照显式配置 background: false；slash 与模型实际调用 SkillTool 都必须使用配置的插件 agent 和独立身份。RED、Bun/Make、编译 CLI 与残留进程检查见 [插件 fork 入口专项](docs/research/mods-plugin-fork-20261007.md)。
 - 额外官方默认后台探针证明父任务完成自身流后仍可处于 waiting，收到子任务完成通知后自动继续，再通知主会话；这是下一批的生命周期依据，不能作为本地已实现证据。默认后台、权限范围持久化/恢复、G5、完整 API/UI/diff 和同进程全量门禁仍未关闭。
+
+## 2026-10-07：普通后台 Agent 父子生命周期
+
+- 官方 2.1.291 中 ownerAgentId 是通知归属，与 parentAgentId 的上下文继承分离。父任务本轮完成后状态记录为 completed，但有子任务保活时公开 agent.list 显示 waiting；释放执行名额、延后清理和主会话通知，收到子通知后以同 ID 续跑。
+- 本批落地普通后台 Agent、前台转后台与自动恢复共享路径；保留模型元数据及队列 taskId，TaskStop/SDK 可停止等待中的任务。取消与恢复失败由隔离回归验证结果、用量和清理，不宣称全部故障已由终端触发。
+- RED 为真实终端中的提前父通知及缺失归属/续跑回归。最终 Bun、Make、官方/候选/ROOT 终端证据和相邻入口见 [后台父子任务专项](docs/research/mods-background-owner-20261007.md)。
+- 此提交不关闭技能默认后台路由、独立 fork 权限快照/恢复、同步前台父任务、完整 Workflow/并发消息/故障矩阵、G5、完整 API/类型/上下文/UI/diff 或同进程全量门禁；保留已有报告和其他 Claude 的工作。

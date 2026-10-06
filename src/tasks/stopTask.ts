@@ -6,6 +6,7 @@ import type { TaskStateBase } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
+import { isLiveLocalAgentTask } from './LocalAgentTask/LocalAgentTask.js'
 
 export class StopTaskError extends Error {
   constructor(
@@ -47,7 +48,7 @@ export async function stopTask(
     throw new StopTaskError(`No task found with ID: ${taskId}`, 'not_found')
   }
 
-  if (task.status !== 'running') {
+  if (task.status !== 'running' && !isLiveLocalAgentTask(task)) {
     throw new StopTaskError(
       `Task ${taskId} is not running (status: ${task.status})`,
       'not_running',

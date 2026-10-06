@@ -1,3 +1,4 @@
+import { parkAgentForChildren } from './backgroundOwner.js'
 import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js'
@@ -1253,6 +1254,19 @@ export const AgentTool = buildTool({
       return { worktreePath, worktreeBranch }
     }
 
+    const resumeOwner = async (nextPrompt: string) => {
+      const { resumeAgentBackground } = await import('./resumeAgent.js')
+      return resumeAgentBackground({
+        agentId: earlyAgentId,
+        prompt: nextPrompt,
+        promptIsMeta: true,
+        toolUseContext,
+        canUseTool,
+        invokingRequestId: parentMessage?.requestId,
+        getWorktreeResult: cleanupWorktreeIfNeeded,
+      })
+    }
+
     try {
       assertSubagentCapacity(toolUseContext)
     } catch (error) {
@@ -1275,6 +1289,7 @@ export const AgentTool = buildTool({
         // They are killed explicitly via chat:killAgents.
         toolUseId: toolUseContext.toolUseId,
         parentAgentId,
+        ownerAgentId: toolUseContext.agentId,
         spawnedBy: toolUseContext.modSpawnedBy,
         spawnDepth: childSubagentDepth,
       })
@@ -1335,6 +1350,7 @@ export const AgentTool = buildTool({
               getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,
             onRunSettled: releaseSlot,
+            resume: resumeOwner,
           }),
         ),
       )
@@ -1435,6 +1451,7 @@ export const AgentTool = buildTool({
               setAppState: rootSetAppState,
               toolUseId: toolUseContext.toolUseId,
               parentAgentId,
+              ownerAgentId: toolUseContext.agentId,
               spawnDepth: childSubagentDepth,
               autoBackgroundMs: getAutoBackgroundMs() || undefined,
             })
@@ -1675,6 +1692,12 @@ export const AgentTool = buildTool({
                       // the status transition (gh-20236).
                       releaseSlot()
                       completeAsyncAgent(agentResult, rootSetAppState)
+                      if (parkAgentForChildren({
+                        taskId: backgroundedTaskId,
+                        toolUseContext,
+                        resume: resumeOwner,
+                        getWorktreeResult: cleanupWorktreeIfNeeded,
+                      })) return
                       logForDebugging(
                         `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=completed tool_uses=${agentResult.totalToolUseCount}`,
                       )

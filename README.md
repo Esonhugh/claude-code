@@ -975,3 +975,11 @@ Review $ARGUMENTS and report concrete findings.
 ```
 
 使用 `--plugin-dir /absolute/path/my-plugin` 加载，再运行 `/my-plugin:review <任务>`。`background: false` 用于官方同步对照；本地尚未实现该开关及官方默认后台路由，本例在当前本地入口同步执行。验收记录见 [插件 fork 入口专项](docs/research/mods-plugin-fork-20261007.md)，配置含义见 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
+
+### 后台 Agent 等待子任务与续跑
+
+普通后台 Agent 自己启动后台子任务时，完成当前一轮后会释放执行名额，并保持可接收通知的身份。Mod 使用 `await $.agent.list()` 可看到父任务从 `running` 变为 `waiting`；子任务完成通知会自动触发父任务续跑，保留原 agent ID 与实际模型。所有子任务结束且父任务完成续跑后，主会话收到最终通知。
+
+`parentId` 仍表示上下文继承关系；运行时 `ownerAgentId` 表示通知归属。`TaskStop` 和 SDK `stop_task` 可停止等待中的父任务。`--debug --debug-file /absolute/path/debug.log` 的 `[AgentLifecycle] owner_parked/owner_wake` 日志可核对父任务 ID、待处理数量与续跑；失败会打印关联 ID 和原因。
+
+运行 `bun test --no-env-file ./src/tools/AgentTool/backgroundOwner.test.ts ./src/tasks/LocalAgentTask/LocalAgentTask.progress.test.ts` 验证生命周期。真实终端证据、相邻入口与剩余范围见 [后台父子任务专项](docs/research/mods-background-owner-20261007.md)。技能的默认后台执行、fork 权限范围持久化、所有前台/工作流/故障组合仍继续验收；子代理的通用配置见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents)。
