@@ -12,6 +12,24 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 刷新 session usage 测试 mock 的启动时间
+
+### 版本状态
+
+- 未发布；只修正旧测试夹具。
+
+### 关联提交
+
+- 本条与 session usage mock 的修正共同提交。
+
+### 变更内容
+
+- trusted callback 的精确 session.usage mock 及原完整结果断言同时补齐必需的 startedAt，不弱化对 MCP 和用量的断言。
+
+### 测试覆盖
+
+- 旧 HEAD 的 runtimeHostHooks 单文件 25 通过、1 失败；修正后独立候选和 ROOT 各 26 通过、0 失败。此批不改变生产运行时。
+
 ## 2026-10-07 - 补齐 REPL 提交测试的隔离与恢复依赖
 
 ### 版本状态

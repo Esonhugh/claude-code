@@ -266,7 +266,7 @@ test('testing terminal blocks nested capabilities before host providers', async 
 
 test('testing terminal lets exact mocks handle unavailable capabilities', async () => {
   const value = runtime({ testing: true })
-  for (const [id, event, result] of [[1, 'session.usage', { value: { context: { window: 100 }, rateLimits: [] } }],
+  for (const [id, event, result] of [[1, 'session.usage', { value: { startedAt: 1791080000123, context: { window: 100 }, rateLimits: [] } }],
     [2, 'mcp.call', { value: { content: [] } }]] as const) {
     value.registerHostHook({ ...hook(async () => result), registration: { id, event, hasCatch: false } })
   }
@@ -274,7 +274,7 @@ test('testing terminal lets exact mocks handle unavailable capabilities', async 
     on('classic.probe', async ($) => ({usage: await $.session.usage(), mcp: await $.mcp.call('probe','probe')}));
   }`, ['session.usage', 'mcp.call']))
   expect(await value.dispatch('classic.probe', {}, async () => { throw new Error('outer bottom') }))
-    .toEqual({ usage: { context: { window: 100 }, rateLimits: [] }, mcp: { content: [] } })
+    .toEqual({ usage: { startedAt: 1791080000123, context: { window: 100 }, rateLimits: [] }, mcp: { content: [] } })
 })
 
 test('testing terminal blocks public cores including next and next.to without host effects', async () => {

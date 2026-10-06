@@ -1767,3 +1767,9 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - [完整147文件表、10个skip及12个失败文件对照](docs/research/mods-validation-20261007.md)。证据根 `/private/tmp/mods-gate-recheck-20261007-zfzgjhq1` 保存初次147文件的146成功／REPL夹具3失败、修复后的完整同版本复验、原始日志及保护清单。旧155文件报告属于旧冻结版本，未拼接成当前结果。
 - 同进程全量：clean HEAD和ROOT均已观察到失败，并在既定120秒上限结束（-15）；源码不变、自有进程组已清理，不能当作完整suite通过。ROOT本场观察到失败的12文件单独对照，未出现HEAD通过／ROOT失败，但既有失败仍存在；未触达文件不推断。G5及完整设计目标继续验收。
 - 本批不改生产源码／类型／运行时，新的CLI行为验收为n/a，不用历史binary证据代替本轮。README补充无调用者key的测试命令。其他278个WIP及受保护response／improvment／fix-instructions／289资产保留，未操作其他Claude进程、未push。spawn并发限额与observer生命周期、标题helper路由和其余官方API／UI／diff等未完成项不由本节关闭。
+
+
+## 2026-10-07 - 刷新 trusted callback 用量 mock
+
+- 相邻测试发现旧 HEAD 的 runtimeHostHooks.test.ts 中 session.usage mock 缺少现有必需字段 startedAt，plugin 的结果校验失败后落入 outer bottom；clean HEAD 25／1，ROOT 已含启动时间的 WIP 26／0。
+- 独立测试提交只在 mock 值及原完整结果断言各增加 startedAt：1791080000123，独立候选26／0、ROOT26／0。不折入该文件关于 session.version 的其他 WIP；不新增 skip 或改变生产源码。证据 `/private/tmp/mods-spawn-bound-20261007-xsy7g593/fixture`。
