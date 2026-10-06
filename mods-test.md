@@ -1585,3 +1585,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - Runtime-observed：证据根 `/private/tmp/mods-cache-commit-20261006-mc34adhm`；独立场 `native-candidate-c3/evidence`，ROOT场 `native-workspace-r1/evidence`。通过真实CLI启动入口，外部持有同一归档digest的发布锁；两个CLI均已完成临时树且原损坏目标不变，释放锁后均出现交互prompt。两者各输入草稿/Ctrl+U清空及stdin `/exit`，第三次启动确认归档逐文件字节、completion marker与整个缓存文件mtime/摘要保持不变，全部正常exit0。缓存中无tmp/stale/lock，所有自有进程组已退出。并发场专门共享私有HOME/cache，各CLI配置和证据独立；dummy key、禁止网络及用户凭据访问的sandbox，不复制个人认证。
 - 失败记录保留：`native-candidate-c1` 被外层沙箱禁止sandbox_apply，未启动CLI；`c2` 的缓存锁和两侧readiness通过，但驱动未将prompt的NBSP规范为空格，草稿断言失败。`c3`只修正字符读取和增加进程残留核对，未放宽缓存或交互断言及期限。独立场不是官方binary对照，不推导官方缓存内部实现相同。
 - 边界：只关闭本批缓存修复。E7的174/174是添加本次回归前的历史源码门禁，本轮未重跑完整变更或同进程全量suite，也未重跑G5；完整生产API、最新声明映射、291包迁移、AbovePrompt/grip/inline/建议层和取消流程继续保留。原ROOT制品、fix-instructions、improvment、response、289资产和其他Claude进程未修改。
+
+## 2026-10-06：作者测试的原生 Error 和完整诊断
+
+- Source-confirmed：instanceof 无法识别跨VM原生 Error，而宿主 Error 的 stack 也可能没有具体 message。只为已有 failure formatter 接入 isNativeError：保留原stack，必要时补充name/message。登记、catch、stream、期限和临时目录清理未随本批改动；相对路径修复另行提交。
+- 独立HEAD `86858ce` 加原有诊断回归：`diagnostic-red1` 0/1，具体消息虽在但原frame丢失；GREEN `diagnostic-green1` 1/0、4 expect，ROOT `diagnostic-workspace-test1` 同样1/0。独立 `diagnostic-adjacent1` 为53/0、184 expect；此前路径候选的 `child-root-adjacent1` 为缺少证据父目录的53次ENOENT，补齐环境后的 `adjacent2` 为52/1并定位到缺少错误message。原失败保留，不删断言或提高期限。
+- 独立核心SHA `e069dc72782315aadd7d57d345e4015a1336c17ff3c59b4d9ddd3fddbaf25186`；ROOT核心 `1c8d51992dd5b6a0cee0789548edb7a360ccaaf65d54d2a48951f8d1a17c8e30`。两侧release-check和本轮独立输出make build均exit0且源码保持。独立binary SHA256 `2bf8cac1a95b973c534f796e5080ed7f9c6beec3c7e22bd76221d200acd234e7`，ROOT `70a2088fd09b2982cfbf1fa38a792b18c05e87406174a784398a02dc880057ee`；版本仍为2.1.280。
+- Runtime-observed：证据 `/private/tmp/mods-relative-root-20261006-cuurdfyq/native-diagnostics-d1/evidence` 与 `native-workspace-r1/evidence`。通过真正compiled CLI `plugin test` 执行作者VM，成功用例exit0；带有意保留frame的TypeError失败用例exit1，同时显示 `TypeError: intentional author failure` 和 `at retained-native-author-frame:1:2`。同场相邻interactive启动、草稿输入/Ctrl+U与stdin `/exit 0`通过；无自有进程残留。纯内部formatter没有执行上游解包JS；使用假key、私有配置和禁止网络/凭据访问的sandbox。
+- 边界：本批只关闭诊断问题。独立候选保留旧runner的测试HOME残留，实际scratch清单保留在result.json；目录回收、kit注册/catch/stream语义和路径迁移按独立批次处理。原ROOT制品、289资产、response、improvment和fix-instructions保留；E7/全量suite/G5与完整官方API/UI验收不因该回归通过而更新。

@@ -1,6 +1,6 @@
 import { mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { isRegExp } from 'node:util/types'
+import { isNativeError, isRegExp } from 'node:util/types'
 import { pathToFileURL } from 'node:url'
 import { SourceTextModule, SyntheticModule, createContext, type Module } from 'node:vm'
 import { createPluginFromPath } from '../../../utils/plugins/pluginLoader.js'
@@ -90,7 +90,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function failure(error: unknown): string {
-  return error instanceof Error && error.stack ? error.stack : errorMessage(error)
+  if (!isNativeError(error) || !error.stack) return errorMessage(error)
+  const stack = error.stack
+  return error.message && !stack.includes(error.message)
+    ? `${error.name}: ${error.message}\n${stack}`
+    : stack
 }
 
 async function filesUnder(root: string): Promise<string[]> {
