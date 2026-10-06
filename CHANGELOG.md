@@ -12,6 +12,28 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 后台 fork 技能与权限范围恢复
+
+### 版本状态
+
+- 未发布；对齐官方 2.1.292 的交互 fork 技能后台启动及权限记录恢复。
+
+### 关联提交
+
+- 本条随默认后台路由、权限范围、类型定义、回归及验收记录共同提交。
+
+### 变更内容
+
+- 文件、MCP builder、插件和 bundled 技能保留 background 与 disallowed-tools；background false、非交互和禁用后台任务选择同步执行。
+- slash 与 SkillTool 共享后台启动，保存权限记录后注册命名任务，初始技能不占普通 Agent 容量；使用已有父子生命周期等待通知并以同 ID 续跑。
+- 恢复时重新解析 fork 技能，应用当前 allow/disallowed 规则和冻结 deny，保留 effort、名称及递归调用保护；缺失、损坏、超限或身份不一致时拒绝恢复。
+- SkillTool 后台结果显示 Running in the background，模型回执区分启动和完成；调试日志记录启动身份、权限保存回退及恢复拒绝。
+
+### 测试覆盖
+
+- 隔离 Bun 回归覆盖解析、加载、启动、同步回退、递归、权限恢复、损坏记录、部分写入和 UI；生产修改前保存失败证据。
+- 官方、候选及 ROOT 的本轮构建、scripted tmux、实际 SkillTool/SendMessage 与相邻 Agent 验收详见 docs/research/mods-fork-background-20261007.md；完整 Mods/UI/diff、Workflow 与所有故障组合仍按专项边界验收。
+
 ## 2026-10-07 - 统一 fork 技能的 agent 类型解析
 
 ### 版本状态

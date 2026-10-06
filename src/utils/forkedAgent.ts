@@ -152,8 +152,11 @@ export function createCacheSafeParams(
 export function createGetAppStateWithAllowedTools(
   baseGetAppState: ToolUseContext['getAppState'],
   allowedTools: string[],
+  disallowedTools: string[] = [],
+  options: { replaceCommandRules?: boolean; frozenCommandDenies?: readonly string[] } = {},
 ): ToolUseContext['getAppState'] {
-  if (allowedTools.length === 0) return baseGetAppState
+  if (!options.replaceCommandRules && options.frozenCommandDenies === undefined &&
+      allowedTools.length === 0 && disallowedTools.length === 0) return baseGetAppState
   return () => {
     const appState = baseGetAppState()
     return {
@@ -164,11 +167,19 @@ export function createGetAppStateWithAllowedTools(
           ...appState.toolPermissionContext.alwaysAllowRules,
           command: [
             ...new Set([
-              ...(appState.toolPermissionContext.alwaysAllowRules.command ||
-                []),
+              ...(options.replaceCommandRules ? [] :
+                appState.toolPermissionContext.alwaysAllowRules.command ?? []),
               ...allowedTools,
             ]),
           ],
+        },
+        alwaysDenyRules: {
+          ...appState.toolPermissionContext.alwaysDenyRules,
+          command: [...new Set([
+            ...(options.frozenCommandDenies ?? []),
+            ...(appState.toolPermissionContext.alwaysDenyRules?.command ?? []),
+            ...disallowedTools,
+          ])],
         },
       },
     }
@@ -181,6 +192,9 @@ export function createGetAppStateWithAllowedTools(
 export type PreparedForkedContext = {
   /** Skill content with args replaced */
   skillContent: string
+  /** Launch-time command denies must survive later parent permission changes. */
+  frozenCommandDenies?: string[]
+  readFileState?: ToolUseContext['readFileState']
   /** Modified getAppState with allowed tools */
   modifiedGetAppState: ToolUseContext['getAppState']
   /** The general-purpose agent to use */
@@ -198,9 +212,25 @@ export async function prepareForkedCommandContext(
   args: string,
   context: ToolUseContext,
   canUseTool: CanUseToolFn,
+  options: { background?: boolean } = {},
 ): Promise<PreparedForkedContext> {
+  const frozenCommandDenies = options.background
+    ? [...(context.getAppState().toolPermissionContext.alwaysDenyRules?.command ?? [])]
+    : undefined
+  const readFileState = context.readFileState ? cloneFileStateCache(context.readFileState) : undefined
+  // Parse and prepare allowed tools
+  const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
+
+  // Create modified context with allowed tools
+  const modifiedGetAppState = createGetAppStateWithAllowedTools(
+    context.getAppState,
+    allowedTools,
+    parseToolListFromCLI(command.disallowedTools ?? []),
+    { replaceCommandRules: options.background, frozenCommandDenies },
+  )
+
   // Get skill content with $ARGUMENTS replaced
-  const skillPrompt = await command.getPromptForCommand(args, context)
+  const skillPrompt = await command.getPromptForCommand(args, { ...context, getAppState: modifiedGetAppState })
   const coreSkillContent = skillPrompt
     .filter(block => block.type === 'text')
     .map(block => block.text)
@@ -223,15 +253,6 @@ export async function prepareForkedCommandContext(
     ownedSnapshot?.release()
   }
 
-  // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
-
-  // Create modified context with allowed tools
-  const modifiedGetAppState = createGetAppStateWithAllowedTools(
-    context.getAppState,
-    allowedTools,
-  )
-
   // Use command.agent if specified, otherwise 'general-purpose'
   const agentTypeName = command.agent ?? 'general-purpose'
   const agents = context.options.agentDefinitions.activeAgents
@@ -252,6 +273,8 @@ export async function prepareForkedCommandContext(
     modifiedGetAppState,
     baseAgent,
     promptMessages,
+    frozenCommandDenies,
+    readFileState,
   }
 }
 

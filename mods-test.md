@@ -1820,3 +1820,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 项目、用户、旧命令文件与 MCP builder 的四项真实加载回归完成 RED→GREEN；两侧相关 6 文件均 61 pass / 0 fail，Make build/release-check exit 0，最终源码身份一致且无自有进程残留。早期 HOME=cwd 的夹具失败保留并单独说明。
 - 官方、候选和 ROOT 的五个 slash 加两个实际 SkillTool 场景逐项匹配代理/模型，每场七个独立 ID 与已保存 meta/transcript 正确；同步 fork 不产生后台通知。相邻普通/nested/前后台移交/SendMessage 通过，本地真实工具目录缺少 Workflow，仍 not covered。
 - [完整源码/制品身份、终端对照、失败与验收边界](docs/research/mods-fork-agent-types-20261007.md)，证据根 `/private/tmp/mods-fork-routing-20261007-2afwted_`。默认后台及权限恢复、G5、全量门禁和完整 API/上下文/UI/diff 目标继续；已有 278 项 WIP、受保护文件与其他 Claude 工作保留，不 push。
+
+
+## 2026-10-07：后台 fork 技能与权限范围
+
+- 交互 slash/SkillTool 默认后台启动，background false、非交互、后台禁用及安全启动失败保持同步；后台任务使用稳定名称/ID，初始技能不占普通 Agent 容量，子任务完成后可自动续跑。
+- 权限 marker 先于 scope 持久化；恢复校验当前 fork 技能与 live/cold 身份，恢复 effort/名称并合并当前规则与冻结 deny。实际 SendMessage 拒绝缺失、损坏及超限记录；UI 区分后台启动和完成。
+- [专项报告](docs/research/mods-fork-background-20261007.md) 保存 RED、类型修正、测试、Make 与隔离官方/候选/ROOT 终端证据。官方 fork feature gate 与本地默认编译开关的差异、冷恢复终端故障矩阵、Workflow、G5、全量门禁及完整 API/上下文/UI/diff 继续，不以此批宣称全部兼容。

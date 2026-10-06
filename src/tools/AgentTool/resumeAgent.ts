@@ -1,5 +1,12 @@
 import { promises as fsp } from 'fs'
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
+import { getCommands } from '../../commands.js'
+import { getProjectRoot } from '../../bootstrap/state.js'
+import { isLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { readForkedSkillScope, readForkedSkillWitness } from '../../utils/forkedSkillScope.js'
+import { createGetAppStateWithAllowedTools } from '../../utils/forkedAgent.js'
+import { getSkillAttributionName } from '../../utils/forkedSkill.js'
+import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -76,6 +83,41 @@ export async function resumeAgentBackground({
     getAgentTranscript(asAgentId(agentId)),
     readAgentMetadata(asAgentId(agentId)),
   ])
+  const savedScope = await readForkedSkillScope(asAgentId(agentId))
+  const liveTask = appState.tasks[agentId]
+  const isLiveTask = isLocalAgentTask(liveTask)
+  const refuse = (message: string): never => {
+    logForDebugging(`Forked skill resume refused (agent ${agentId}): ${message}`, { level: 'warn' })
+    throw new Error(message)
+  }
+  if (savedScope.status === 'malformed') refuse(`Agent ${agentId} has a malformed forked-skill scoping record; refusing to resume it without the skill's permission scoping.`)
+  if (savedScope.status === 'absent-but-marked' || (savedScope.status === 'absent' && isLiveTask && liveTask.forkedSkillName !== undefined)) {
+    refuse(`Agent ${agentId} ran as a forked skill but its scoping record is missing; refusing to resume it without the skill's permission scoping.`)
+  }
+  const scope = savedScope.status === 'valid' ? savedScope.scoping : undefined
+  if (scope) {
+    if (isLiveTask ? liveTask.forkedSkillName !== scope.skillName : await readForkedSkillWitness(asAgentId(agentId)) !== scope.skillName) {
+      refuse(`Agent ${agentId} has no matching forked-skill provenance witness; refusing to resume it.`)
+    }
+  }
+  let workerContext = toolUseContext
+  let skillAttribution: string | undefined
+  if (scope) {
+    const commands = [...await getCommands(getProjectRoot()), ...toolUseContext.getAppState().mcp.commands]
+    const command = commands.find(c => c.name === scope.skillName && c.type === 'prompt')
+    if (command?.type !== 'prompt' || command.context !== 'fork') {
+      refuse(`Agent ${agentId} ran as forked skill ${scope.skillName}, which no longer resolves to a fork-capable skill; refusing to resume it without its permission scoping.`)
+    }
+    // Resolve today's skill grants; retain launch-time denies and all current denies.
+    if (command?.type === 'prompt') {
+      workerContext = { ...toolUseContext, getAppState: createGetAppStateWithAllowedTools(
+        toolUseContext.getAppState, parseToolListFromCLI(command.allowedTools ?? []),
+        parseToolListFromCLI(command.disallowedTools ?? []),
+        { replaceCommandRules: true, frozenCommandDenies: scope.frozenCommandDenies ?? appState.toolPermissionContext.alwaysDenyRules.command ?? [] },
+      ) }
+      skillAttribution = getSkillAttributionName(command)
+    }
+  }
   if (!transcript) {
     throw new Error(`No transcript found for agent ID: ${agentId}`)
   }
@@ -123,6 +165,7 @@ export async function resumeAgentBackground({
     selectedAgent = GENERAL_PURPOSE_AGENT
   }
 
+  if (scope?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: scope.effort }
   const uiDescription = meta?.description ?? '(resumed)'
 
   let forkParentSystemPrompt: SystemPrompt | undefined
@@ -208,9 +251,11 @@ export async function resumeAgentBackground({
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
     ],
-    toolUseContext,
+    toolUseContext: workerContext,
     canUseTool,
     isAsync: true,
+    spawnedBySkill: skillAttribution,
+    spawnedByForkedSkill: scope ? true : undefined,
     canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
       selectedAgent.permissionMode,
       permissionMode,
@@ -238,12 +283,22 @@ export async function resumeAgentBackground({
     // Re-persist so metadata survives runAgent's writeAgentMetadata overwrite
     worktreePath: resumedWorktreePath,
     description: meta?.description,
+    name: meta?.name,
     contentReplacementState: resumedReplacementState,
     parentAgentId: meta?.parentAgentId,
     spawnDepth: meta?.spawnDepth ?? 1,
   }
 
-  // Skip name-registry write — original entry persists from the initial spawn
+  // Cold skill resumes recover their routing name without replacing a live owner.
+  if (scope && meta?.name) {
+    const name = meta.name
+    rootSetAppState(prev => {
+      if (prev.agentNameRegistry.has(name)) return prev
+      const registry = new Map(prev.agentNameRegistry)
+      registry.set(name, asAgentId(agentId))
+      return { ...prev, agentNameRegistry: registry }
+    })
+  }
   const agentBackgroundTask = registerAsyncAgent({
     agentId,
     description: uiDescription,
@@ -253,6 +308,7 @@ export async function resumeAgentBackground({
     toolUseId: toolUseContext.toolUseId,
     parentAgentId: meta?.parentAgentId,
     ownerAgentId: toolUseContext.agentId,
+    forkedSkillName: scope?.skillName,
     spawnDepth: meta?.spawnDepth ?? 1,
   })
 

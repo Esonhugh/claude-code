@@ -15,6 +15,7 @@ import {
   coerceDescriptionToString,
   type FrontmatterData,
   parseBooleanFrontmatter,
+  parseOptionalBooleanFrontmatter,
   parseFrontmatter,
   parseShellFrontmatter,
 } from '../frontmatterParser.js'
@@ -303,6 +304,10 @@ function createPluginCommand(
       description,
       hasUserSpecifiedDescription: validatedDescription !== null,
       allowedTools,
+      disallowedTools: parseSlashCommandToolsFromFrontmatter(
+        frontmatter['disallowed-tools'] ?? frontmatter.disallowedTools,
+      ),
+      background: parseOptionalBooleanFrontmatter(frontmatter.background),
       argumentHint,
       argNames: argumentNames.length > 0 ? argumentNames : undefined,
       whenToUse,

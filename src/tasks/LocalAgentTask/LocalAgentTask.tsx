@@ -221,6 +221,8 @@ export type LocalAgentTaskState = TaskStateBase & {
   parentAgentId?: string
   /** Agent whose turn receives this task's notifications; separate from transcript lineage. */
   ownerAgentId?: string
+  /** Saved fork skill identity corroborates permission scoping on resume. */
+  forkedSkillName?: string
   resuming?: boolean
   spawnedBy?: string
   finalizing?: boolean
@@ -697,6 +699,7 @@ export function registerAsyncAgent({
   parentAgentId,
   ownerAgentId,
   spawnedBy,
+  forkedSkillName,
   spawnDepth,
 }: {
   agentId: string
@@ -709,6 +712,7 @@ export function registerAsyncAgent({
   parentAgentId?: string
   ownerAgentId?: string
   spawnedBy?: string
+  forkedSkillName?: string
   spawnDepth: number
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(
@@ -732,6 +736,7 @@ export function registerAsyncAgent({
     parentAgentId,
     ownerAgentId,
     spawnedBy,
+    forkedSkillName,
     spawnDepth,
     abortController,
     retrieved: false,

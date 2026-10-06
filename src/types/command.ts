@@ -29,6 +29,11 @@ export type PromptCommand = {
   contentLength: number // Length of command content in characters (used for token estimation)
   argNames?: string[]
   allowedTools?: string[]
+  disallowedTools?: string[]
+  /** Fork skills run in background by default in interactive sessions. */
+  background?: boolean
+  /** Skill identity used for attribution when the catalog supplies one. */
+  unqualifiedName?: string
   model?: string
   source: SettingSource | 'builtin' | 'mcp' | 'plugin' | 'bundled'
   pluginInfo?: {

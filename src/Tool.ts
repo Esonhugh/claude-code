@@ -214,6 +214,9 @@ export type ToolUseContext = {
     subagentDepth?: number
     /** Stable AgentTool spawn depth persisted across nested agent contexts. */
     spawnDepth?: number
+    /** Attribution retained for fork skill recursion checks across turns. */
+    spawnedBySkill?: string
+    spawnedByForkedSkill?: boolean
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
     /** Prevent workflow worker agents from recursively spawning agents/workflows. */

@@ -271,6 +271,8 @@ function getAgentMetadataPath(agentId: AgentId): string {
 
 export type AgentMetadata = {
   agentType: string
+  /** Name retained for SendMessage routing when a background skill resumes. */
+  name?: string
   /** Effective model retained when the same agent resumes a later turn. */
   model?: string
   /** Worktree path if the agent was spawned with isolation: "worktree" */

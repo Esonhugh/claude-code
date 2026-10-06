@@ -360,6 +360,8 @@ export async function* runAgent({
   toolUseId,
   parentAgentId,
   spawnDepth,
+  spawnedBySkill,
+  spawnedByForkedSkill,
   onMcpServersBlocked,
   transcriptSubdir,
   onQueryProgress,
@@ -382,6 +384,7 @@ export async function* runAgent({
     systemPrompt?: SystemPrompt
     abortController?: AbortController
     agentId?: AgentId
+    readFileState?: ToolUseContext['readFileState']
   }
   model?: string
   /** Internal spawn snapshot. Already resolved; do not read env/config again. */
@@ -432,7 +435,8 @@ export async function* runAgent({
   /** Stable recursive spawn depth. */
   spawnDepth?: number
   /** Whether this agent was spawned by a skill-triggered flow. */
-  spawnedBySkill?: boolean
+  spawnedBySkill?: string
+  spawnedByForkedSkill?: boolean
   /** Non-fatal notification hook for blocked/unavailable MCP servers. */
   onMcpServersBlocked?: (
     serverNames: string[],
@@ -497,10 +501,10 @@ export async function* runAgent({
     : []
   const initialMessages: Message[] = [...contextMessages, ...promptMessages]
 
-  const agentReadFileState =
+  const agentReadFileState = override?.readFileState ?? (
     forkContextMessages !== undefined
       ? cloneFileStateCache(toolUseContext.readFileState)
-      : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
+      : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE))
 
   const [baseUserContext, baseSystemContext] = await Promise.all([
     override?.userContext ?? getUserContext(),
@@ -585,8 +589,11 @@ export async function* runAgent({
           cliArg: state.toolPermissionContext.alwaysAllowRules.cliArg,
           // Use the provided allowedTools as session-level permissions
           session: [...allowedTools],
-          ...(preloadedSkillAllowedTools.length > 0
-            ? { command: preloadedSkillAllowedTools }
+          ...((spawnedByForkedSkill || preloadedSkillAllowedTools.length > 0)
+            ? { command: [...new Set([
+                ...(spawnedByForkedSkill ? state.toolPermissionContext.alwaysAllowRules.command ?? [] : []),
+                ...preloadedSkillAllowedTools,
+              ])] }
             : {}),
         },
       }
@@ -865,6 +872,8 @@ export async function* runAgent({
     appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
     tools: allTools,
     commands: [],
+    spawnedBySkill,
+    spawnedByForkedSkill,
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
     mainLoopModel: resolvedAgentModel,

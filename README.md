@@ -559,7 +559,7 @@ background: false
 Review $ARGUMENTS.
 ```
 
-`agent` 的非空 YAML 值转换为字符串；例如 `agent: 42` 可以选择名称为 `"42"` 的代理。`agent: null` 或不写该字段使用已有默认代理选择。编写技能时建议显式使用字符串名称。`background: false` 是官方同步对照的设置；本地默认后台路由及该开关仍在独立对齐。
+`agent` 的非空 YAML 值转换为字符串；例如 `agent: 42` 可以选择名称为 `"42"` 的代理。`agent: null` 或不写该字段使用已有默认代理选择。编写技能时建议显式使用字符串名称。`background: false` 明确选择同步执行；交互模式省略该字段或设为 `true` 时，fork 技能默认后台启动。
 
 本专项以 2026-10-07 获取的官方 2.1.292 为基准，验证七个真实 slash/SkillTool 场景；不代表全部 Mods 声明与 UI 已迁移到该版本。回归命令为 `bun test --no-env-file ./src/skills/loadSkillsDir.forkAgent.test.ts`，终端证据及边界见 [fork agent 类型专项](docs/research/mods-fork-agent-types-20261007.md)。技能配置参考 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
 
@@ -978,7 +978,7 @@ if ('deny' in result) {
 
 插件自身额度耗尽仍抛出包含插件名的异常。全局计数、拒绝和释放可在 --debug 的 AgentConcurrency 日志中核对。本轮验证及原生入口限制见 [全局并发记录](docs/research/mods-agent-concurrency-20261007.md)。
 
-同步 fork 技能的进度、查询与启动/完成 debug 使用同一个 agent ID。运行 `bun test --no-env-file ./src/utils/processUserInput/processSlashCommand.concurrency.test.ts` 可验证 slash 与 SkillTool 的计数和身份；实际 CLI 对照见 [fork 技能专项](docs/research/mods-fork-capacity-20261007.md)。官方最新版本默认把 fork 技能作为后台任务启动；本地普通入口仍同步，KAIROS 的旧后台分支仍计数，这两条路由继续独立对齐。技能配置参考 [Anthropic 官方 skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
+同步 fork 技能的进度、查询与启动/完成 debug 使用同一个 agent ID。运行 `bun test --no-env-file ./src/utils/processUserInput/processSlashCommand.concurrency.test.ts` 可验证 slash 与 SkillTool 的计数和身份；实际 CLI 对照见 [fork 技能专项](docs/research/mods-fork-capacity-20261007.md)。交互入口默认后台启动 fork 技能，初始技能工作者不占普通 Agent 名额；技能内实际 Agent 和恢复执行仍计数。`background: false`、非交互模式或禁用后台任务时使用同步执行。技能配置参考 [Anthropic 官方 skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
 
 插件可在 `skills/review/SKILL.md`（或旧 `commands/review.md`）声明 `context: fork` 和 `agent`。加载器保留这两个字段；slash 与模型的 SkillTool 调用进入已有的独立执行上下文。自定义 agent 使用完整名称，例如 `my-plugin:reviewer`，定义放在插件的 `agents/reviewer.md`。
 
@@ -992,7 +992,7 @@ background: false
 Review $ARGUMENTS and report concrete findings.
 ```
 
-使用 `--plugin-dir /absolute/path/my-plugin` 加载，再运行 `/my-plugin:review <任务>`。`background: false` 用于官方同步对照；本地尚未实现该开关及官方默认后台路由，本例在当前本地入口同步执行。验收记录见 [插件 fork 入口专项](docs/research/mods-plugin-fork-20261007.md)，配置含义见 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
+使用 `--plugin-dir /absolute/path/my-plugin` 加载，再运行 `/my-plugin:review <任务>`。`background: false` 使本例同步执行；省略该字段时交互入口默认后台运行。验收记录见 [插件 fork 入口专项](docs/research/mods-plugin-fork-20261007.md)，配置含义见 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
 
 ### 后台 Agent 等待子任务与续跑
 
@@ -1000,4 +1000,27 @@ Review $ARGUMENTS and report concrete findings.
 
 `parentId` 仍表示上下文继承关系；运行时 `ownerAgentId` 表示通知归属。`TaskStop` 和 SDK `stop_task` 可停止等待中的父任务。`--debug --debug-file /absolute/path/debug.log` 的 `[AgentLifecycle] owner_parked/owner_wake` 日志可核对父任务 ID、待处理数量与续跑；失败会打印关联 ID 和原因。
 
-运行 `bun test --no-env-file ./src/tools/AgentTool/backgroundOwner.test.ts ./src/tasks/LocalAgentTask/LocalAgentTask.progress.test.ts` 验证生命周期。真实终端证据、相邻入口与剩余范围见 [后台父子任务专项](docs/research/mods-background-owner-20261007.md)。技能的默认后台执行、fork 权限范围持久化、所有前台/工作流/故障组合仍继续验收；子代理的通用配置见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents)。
+运行 `bun test --no-env-file ./src/tools/AgentTool/backgroundOwner.test.ts ./src/tasks/LocalAgentTask/LocalAgentTask.progress.test.ts` 验证生命周期。真实终端证据、相邻入口与剩余范围见 [后台父子任务专项](docs/research/mods-background-owner-20261007.md)。fork 技能后台启动和权限记录恢复见下一节；所有前台/工作流/故障组合仍继续验收；子代理的通用配置见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents)。
+
+
+### fork 技能后台启动与权限恢复
+
+交互模式调用 `context: fork` 技能时，slash 和 SkillTool 默认返回后台启动回执，父会话可以继续输入。`background: false` 使用同步执行；`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 或非交互会话也保持同步。存在同名未结束任务、达到嵌套深度限制或无法保存权限记录时，回退到同步路径。
+
+```yaml
+---
+name: review
+description: Review the requested code
+context: fork
+agent: general-purpose
+allowed-tools: Read, Grep, Glob
+disallowed-tools: Bash, Write, Edit
+---
+Review $ARGUMENTS and report findings.
+```
+
+后台任务使用独立名称和 agent ID。任务的子任务未结束时，公开 `$.agent.list()` 显示 `waiting`，子任务通知可触发原 ID 续跑。名称可用于 `SendMessage`；fork 技能不能在自己的上下文中再次调用同一技能。
+
+启动前先保存 `.forked-skill.marker.json` 和 `.forked-skill.json` 到该 agent 的 transcript 目录，记录技能身份、effort 和启动时的 command deny 规则。恢复时重新解析当前技能，替换 command allow 规则，合并保存的 deny、当前 deny 和技能 `disallowed-tools`。权限记录缺失、损坏、超限、身份不匹配或技能不再支持 fork 时拒绝恢复。
+
+运行 `bun test --no-env-file ./src/utils/forkedSkill.test.ts ./src/tools/SkillTool/UI.test.tsx` 检查启动、权限和 UI 状态。[专项验收与剩余差异](docs/research/mods-fork-background-20261007.md) 区分自动化、真实终端和未覆盖结果；此批不代表所有 Mods API、Workflow 与 diff/UI 已完成对齐。配置参考 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
