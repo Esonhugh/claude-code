@@ -853,3 +853,11 @@ bun test ./src/plugins/bundled/shippedDiffStartup.test.ts ./src/services/mods/di
 ```
 
 接管测试直接使用仓库内的真实官方归档，无须外部 diff fixture。原始 scan 的 hooks、calls、环境名称和静态命令名称逐项核对；保留 `runCommands` 元数据不代表 `$.command.run` 已完成实现。这里完成的是加载和接管链路，完整官方API及UI兼容范围仍见 `mods-test.md`。官方背景资料见 [Anthropic plugins文档](https://code.claude.com/docs/en/plugins) 和 [官方变更日志](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)。
+
+### Mods 会话启动时间与恢复
+
+官方 diff 使用 `$.session.usage({}).startedAt` 区分本会话的修改。新建会话、`/clear` 和新分支会取得新的启动时间；`--continue`、`--resume SESSION_ID` 和交互式 `/resume` 通过原有恢复路径保留已记录的时间。`--fork-session` 保留源会话的启动时间并取得新会话 ID；`/branch [name]` 使用新分支的启动时间，与官方 2.1.291 的不同入口语义一致。
+
+启动时间随会话 JSONL 元数据持久化，并在压缩后的恢复中保留。还可读取匹配会话的项目 `lastStartTime` 或官方 2.1.291 的完整有效 `cost-state` 记录；本批只使用该快照的启动时间，不能据此认为完整成本账本的恢复已经对齐。直接 JSONL 路径的恢复加载器也传递该字段，但交互式 CLI 的文件启动路径受内部模式限制，普通 `--resume FILE.jsonl` 不能视为直接文件恢复。历史会话没有相关记录时，`startedAt` 沿用既有成本时钟，无法据此还原原始启动时间。禁用会话持久化时不会为恢复文件追加该元数据。
+
+使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[ModsSession]` 恢复日志。日志提供元数据归属会话、当前会话和启动时间，便于核对 diff 的时间边界；不会包含会话正文。CLI 会话参数见 [Anthropic CLI reference](https://code.claude.com/docs/en/cli-reference)。

@@ -61,6 +61,8 @@ type State = {
   turnHookCount: number
   turnClassifierCount: number
   startTime: number
+  // First launch epoch, independent of the accumulated cost-duration clock.
+  sessionStartedAt: number | undefined
   lastInteractionTime: number
   totalLinesAdded: number
   totalLinesRemoved: number
@@ -276,6 +278,7 @@ function getInitialState(): State {
       resolvedCwd = rawCwd.normalize('NFC')
     }
   }
+  const startedAt = Date.now()
   const state: State = {
     originalCwd: resolvedCwd,
     projectRoot: resolvedCwd,
@@ -289,7 +292,8 @@ function getInitialState(): State {
     turnToolCount: 0,
     turnHookCount: 0,
     turnClassifierCount: 0,
-    startTime: Date.now(),
+    startTime: startedAt,
+    sessionStartedAt: startedAt,
     lastInteractionTime: Date.now(),
     totalLinesAdded: 0,
     totalLinesRemoved: 0,
@@ -430,8 +434,25 @@ function getInitialState(): State {
 // AND ESPECIALLY HERE
 const STATE: State = getInitialState()
 
+export function getSessionStartedAt(): number | undefined {
+  return STATE.sessionStartedAt
+}
+
 export function getSessionStartTime(): number {
-  return STATE.startTime
+  return STATE.sessionStartedAt ?? STATE.startTime
+}
+
+export function isSessionStartEpoch(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/** Restore only metadata belonging to the active session; legacy absence stays unknown. */
+export function restoreSessionStartedAt(sessionId: string, startedAt: unknown): void {
+  if (sessionId === STATE.sessionId) {
+    STATE.sessionStartedAt = isSessionStartEpoch(startedAt)
+      ? Math.min(startedAt, STATE.startTime)
+      : undefined
+  }
 }
 
 export function getSessionId(): SessionId {
@@ -451,6 +472,7 @@ export function regenerateSessionId(
   // Regenerated sessions live in the current project: reset projectDir to
   // null so getTranscriptPath() derives from originalCwd.
   STATE.sessionId = randomUUID() as SessionId
+  STATE.sessionStartedAt = Date.now()
   STATE.sessionProjectDir = null
   return STATE.sessionId
 }
@@ -474,11 +496,15 @@ export function getParentSessionId(): SessionId | undefined {
 export function switchSession(
   sessionId: SessionId,
   projectDir: string | null = null,
+  startedAt?: number,
 ): void {
   // Drop the outgoing session's plan-slug entry so the Map stays bounded
   // across repeated /resume. Only the current session's slug is ever read
   // (plans.ts getPlanSlug defaults to getSessionId()).
   STATE.planSlugCache.delete(STATE.sessionId)
+  if (sessionId !== STATE.sessionId) {
+    STATE.sessionStartedAt = isSessionStartEpoch(startedAt) ? startedAt : undefined
+  }
   STATE.sessionId = sessionId
   STATE.sessionProjectDir = projectDir
   sessionSwitched.emit(sessionId)
@@ -892,6 +918,7 @@ export function setCostStateForRestore({
   totalLinesAdded,
   totalLinesRemoved,
   lastDuration,
+  startTime,
   modelUsage,
 }: {
   totalCostUSD: number
@@ -901,6 +928,7 @@ export function setCostStateForRestore({
   totalLinesAdded: number
   totalLinesRemoved: number
   lastDuration: number | undefined
+  startTime?: number
   modelUsage: { [modelName: string]: ModelUsage } | undefined
 }): void {
   STATE.totalCostUSD = totalCostUSD
@@ -914,8 +942,11 @@ export function setCostStateForRestore({
   STATE.modelUsage = modelUsage ?? {}
 
   // Adjust startTime to make wall duration accumulate
-  if (lastDuration) {
+  if (lastDuration !== undefined) {
     STATE.startTime = Date.now() - lastDuration
+  }
+  if (isSessionStartEpoch(startTime)) {
+    STATE.sessionStartedAt = Math.min(startTime, STATE.startTime)
   }
 }
 
@@ -1763,4 +1794,3 @@ export function setPromptId(id: string | null): void {
 export function isReplBridgeActive(): boolean {
   return false
 }
-

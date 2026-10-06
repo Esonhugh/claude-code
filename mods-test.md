@@ -1625,3 +1625,16 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 官方对照：已核验官方291binary SHA256 `9a1d2ed6bb4421e8fc80c892c0413f293be3ee50ae3d7dda1a7622197a056690` 的独立o3场通过相同diff操作流程、终端尺寸、显示夹具及退出；此处对照行为流程，不新增字符/样式完全一致结论。o1暴露作者夹具缺少官方必需hooks module，修正两侧夹具后o2的作者错误栈诊断断言失败（官方没有输出要求的完整消息）；两次证据保留，作者诊断不计为官方parity通过，o3明确只验diff流程。
 - 边界：关闭生产加载与接管缺口，不宣称完整API/UI/diff兼容已完成。逻辑会话启动时间的持久化/恢复、完整G5、同进程全量suite、最新全部变更门禁、取消诊断时机和完整交互矩阵仍待独立验收。ROOT现有逻辑启动时间WIP没有折入本批bootstrap；独立提交的读取器采样既有CLI成本启动时钟，历史恢复等价性未覆盖。
 - 证据根：`/private/tmp/mods-diff-runtime-291-20261006-bt_p4ef_`。原ROOT二进制、289归档和response/improvment/fix-instructions的bytes及mtime保持；未push，未操作其他Claude进程。
+
+## 2026-10-06 Mods 会话启动时间保存与恢复独立提交
+
+- 范围：基于 HEAD `404ebdf1cc9d0a162881cf2491d238b782a43d03` 的独立候选，提交逻辑启动时间、JSONL 元数据保存/加载、匹配项目 lastStartTime、完整有效 cost-state 的启动时间读取，以及 branch/fork/clear/恢复入口的必要调用链。其余工作区 WIP 保留。
+- Source-confirmed：官方 2.1.291 的 costLedger 区分活动时钟与逻辑启动时间；restore/anchor 将后者限制到活动时钟。原始 h7 schema 检查完整 cost-state、有限非负数、1e15 上限、1e9 成本上限、模型名称及四类 token 总量；有效 cost-state 使用最后一条记录。提取 JS 仅静态读取。
+- RED：`candidate-red1` 3pass/10fail，复现成本时钟改变启动时间、clear 及持久化缺失；`candidate-cost-red1` 6pass/1fail，复现首条 cost-state 取代最后有效记录；`candidate-zero-red1` 7pass/1fail，复现零时长未重置时钟；`candidate-metadata-red1` 9pass/1fail，复现未来启动时间未受活动时钟约束；`candidate-fork-red1` 3pass/1fail，复现官方 --fork-session 的原始时间未保留。修复后原身份、时长、边界及无效记录断言保留；旧 fork 预期依据官方实测改为保留源时间，新 ID 的断言仍保留。
+- 最终独立 `candidate-final-tests2` 与实际 ROOT `workspace-final-tests2` 均为98pass、0fail、0skip，10个文件/336expect。包含生产写入器、两个独立 Bun 进程之间的恢复、continue、JSONL 路径加载器、fork，以及 branch、压缩前扫描、持久化禁用和真实官方 diff Worker 相邻回归。
+- 两侧 `*-check4` 的 release-check 与 `*-build2` 的本轮 make build 均 exit0，源码未被命令改写且自有进程组无残留。独立源码清单（含CHANGELOG）SHA256 `faf87f2f2adb2411edce63a5e1b19f981c30a2ea94b785fe044436fd98eff874`，ROOT `a02bb821e11da4e9c0a42696eb90e7d641d675d29dc56ee2463f1e2c6b6748f6`。独立binary `61aef7a099ec196d1d97e6222fcf1f4b6edfd2ce9b4fd0a14ad875b5d7895f14`，ROOT `1d7ed4f14bf7e28480bf2f55c7c2711f0b13a28d419da1d159af181f19c511ae`，本地版本仍2.1.280。
+- Runtime-observed：最终候选 `native-candidate-c5`、ROOT `native-workspace-r1` 和官方 `native-official-o3` 使用独立私有 tmux/config、相同160×40终端与本地确定性响应夹具串行验证。生产 JSONL 保存源时间；continue、ID 恢复和交互式 /resume 保留它；--fork-session 保留源时间但生成新ID；/branch、/clear 生成新ID和新时间。退出均exit0，冷复制binary未改变，无自有进程组残留。实际模型网络兼容性不在此夹具证据范围内。
+- diff 时间边界：在源会话退出后、恢复进程启动前修改 alpha.ts；恢复后显示1 file changed +2 -1、两处补丁，且没有 edited before this session 折叠，关闭后正文消失。此处证明 epoch/ID/时间分类及操作流程，不能据此声称完整字符、样式、焦点或 inline/narrow 矩阵已对齐。
+- 失败与准备记录保留：首次schema类型检查因UUID transform推断可选字段失败，改为先校验wire string再返回UUID；两次错误测试路径准备在严格文件存在检查处停止，未计为测试通过。c1的驱动误将项目成本保存当作会话ID来源，改用公共 $.session.id()，原失败保留。c2/o1要求默认diff打印 this session 标签失败；原始un()和同场官方画面证实普通session模式不打印该标签，最终改用准确文件/行数/补丁且保留禁止会话前折叠的断言。c3的JSONL-path CLI进入搜索选择器；o2暴露 --fork-session 时间语义错误，真实实现及回归均已修正。期限保持90秒，未跳过生产回归。
+- 未关闭：普通交互CLI的直接JSONL文件启动受内部模式限制；文件加载器由自动化测试覆盖，未声称该CLI路径恢复通过。在线远程会话ID分配仅完成必要参数传递和状态单测，未在线验收。此次实测本地CLI退出没有像官方一样保存项目成本记录，已列入成本账本/退出保存后续对齐；JSONL时间保存与恢复独立通过。完整cost-state成本恢复、G5、最新全部变更门禁、全量同进程suite及完整API/UI/diff矩阵仍需后续工作，不宣称完整兼容完成。
+- 证据根：`/private/tmp/mods-session-epoch-20261006-5fm7g4br`，具体输入、pane、ANSI、原始PTY、API夹具请求、调试日志、源码清单、binary hash、session/PGID和失败原因保存在各场目录。原ROOT二进制、289归档及response/improvment/fix-instructions的bytes与mtime保持；未push，未操作其他Claude进程。

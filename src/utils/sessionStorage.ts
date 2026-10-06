@@ -26,6 +26,9 @@ import {
   getPlanSlugCache,
   getPromptId,
   getSessionId,
+  getSessionStartedAt,
+  isSessionStartEpoch,
+  restoreSessionStartedAt,
   getSessionProjectDir,
   isSessionPersistenceDisabled,
   switchSession,
@@ -78,6 +81,7 @@ import { getFsImplementation } from './fsOperations.js'
 import { getWorktreePaths } from './getWorktreePaths.js'
 import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
+import { parseSessionCostState } from './sessionCostState.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
@@ -730,9 +734,13 @@ class Project {
    * external-writer concern — their caches are authoritative.
    */
   reAppendSessionMetadata(skipTitleRefresh = false): void {
-    if (!this.sessionFile) return
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
     const sessionId = getSessionId() as UUID
     if (!sessionId) return
+    const startedAt = getSessionStartedAt()
+    if (startedAt !== undefined) {
+      appendEntryToFile(this.sessionFile, { type: 'session-started-at', sessionId, startedAt })
+    }
 
     // One sync tail read to refresh SDK-mutable fields. Same
     // LITE_READ_BUF_SIZE window readLiteMetadata uses. Empty string on
@@ -1217,6 +1225,8 @@ class Project {
       // Mode entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'worktree-state') {
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'session-started-at' || entry.type === 'cost-state') {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'dev-mods') {
       void this.enqueueWrite(sessionFile, entry)
@@ -2350,6 +2360,7 @@ export async function loadTranscriptFromFile(
       contentReplacements,
       worktreeStates,
       devModsFolders,
+      sessionStartedAts,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -2396,6 +2407,7 @@ export async function loadTranscriptFromFile(
         ? worktreeStates.get(sessionId)
         : undefined,
       devModsFolder: devModsFolders.get(sessionId),
+      startedAt: sessionStartedAts.get(sessionId),
     }
   }
 
@@ -2544,6 +2556,7 @@ function convertToLogOption(
 
   return {
     date: lastMessage.timestamp,
+    sessionId: lastMessage.sessionId,
     messages: removeExtraFields(transcript),
     fullPath,
     value,
@@ -2800,6 +2813,8 @@ export function getCurrentSessionAgentColor(): string | undefined {
  * agent banner) and re-appended on session exit via reAppendSessionMetadata.
  */
 export function restoreSessionMetadata(meta: {
+  sessionId?: string
+  startedAt?: number
   customTitle?: string
   tag?: string
   agentName?: string
@@ -2812,6 +2827,10 @@ export function restoreSessionMetadata(meta: {
   prRepository?: string
 }): void {
   const project = getProject()
+  if (meta.sessionId && isSessionStartEpoch(meta.startedAt)) {
+    restoreSessionStartedAt(meta.sessionId, meta.startedAt)
+    logForDebugging(`[ModsSession] ${JSON.stringify({ event: 'restore-metadata', sourceSessionId: meta.sessionId, activeSessionId: getSessionId(), startedAt: getSessionStartedAt() })}`)
+  }
   // ??= so --name (cacheSessionTitle) wins over the resumed
   // session's title. REPL.tsx clears before calling, so /resume is unaffected.
   if (meta.customTitle) project.currentSessionTitle ??= meta.customTitle
@@ -3017,6 +3036,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       modes,
       worktreeStates,
       devModsFolders,
+      sessionStartedAts,
       fileHistorySnapshots,
       attributionSnapshots,
       contentReplacements,
@@ -3063,6 +3083,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
           : log.worktreeSession,
+      startedAt: sessionId ? sessionStartedAts.get(sessionId) : undefined,
       devModsFolder: sessionId
         ? devModsFolders.get(sessionId)
         : log.devModsFolder,
@@ -3168,11 +3189,13 @@ const METADATA_TYPE_MARKERS = [
   '"type":"mode"',
   '"type":"worktree-state"',
   '"type":"dev-mods"',
+  '"type":"session-started-at"',
+  '"type":"cost-state"',
   '"type":"pr-link"',
 ]
 const METADATA_MARKER_BUFS = METADATA_TYPE_MARKERS.map(m => Buffer.from(m))
-// Longest marker is 22 bytes; +1 for leading `{` = 23.
-const METADATA_PREFIX_BOUND = 25
+// Include the leading `{` when deciding whether a split line can be metadata.
+const METADATA_PREFIX_BOUND = Math.max(...METADATA_MARKER_BUFS.map(marker => marker.length)) + 1
 
 // null = carry spans whole chunk. Skips concat when carry provably isn't
 // a metadata line (markers sit at byte 1 after `{`).
@@ -3535,6 +3558,7 @@ export async function loadTranscriptFile(
   modes: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
+  sessionStartedAts: Map<UUID, number>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3556,6 +3580,19 @@ export async function loadTranscriptFile(
   const modes = new Map<UUID, string>()
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
   const devModsFolders = new Map<UUID, string>()
+  const sessionStartedAts = new Map<UUID, number>()
+  const costStateStarts = new Map<UUID, number>()
+  const keepStartedAt = (sessionId: UUID, startedAt: unknown) => {
+    if (!sessionStartedAts.has(sessionId) && isSessionStartEpoch(startedAt)) {
+      sessionStartedAts.set(sessionId, startedAt)
+    }
+  }
+  const keepCostStateStart = (entry: unknown) => {
+    const state = parseSessionCostState(entry)
+    if (state && isSessionStartEpoch(state.startTime)) {
+      costStateStarts.set(state.sessionId, state.startTime)
+    }
+  }
   const fileHistorySnapshots = new Map<UUID, FileHistorySnapshotMessage>()
   const attributionSnapshots = new Map<UUID, AttributionSnapshotMessage>()
   const contentReplacements = new Map<UUID, ContentReplacementRecord[]>()
@@ -3654,6 +3691,10 @@ export async function loadTranscriptFile(
           modes.set(entry.sessionId, entry.mode)
         } else if (entry.type === 'worktree-state' && entry.sessionId) {
           worktreeStates.set(entry.sessionId, entry.worktreeSession)
+        } else if (entry.type === 'session-started-at' && entry.sessionId) {
+          keepStartedAt(entry.sessionId, entry.startedAt)
+        } else if (entry.type === 'cost-state' && entry.sessionId) {
+          keepCostStateStart(entry)
         } else if (entry.type === 'dev-mods' && entry.sessionId) {
           devModsFolders.set(entry.sessionId, entry.folder)
         } else if (entry.type === 'pr-link' && entry.sessionId) {
@@ -3724,6 +3765,10 @@ export async function loadTranscriptFile(
         modes.set(entry.sessionId, entry.mode)
       } else if (entry.type === 'worktree-state' && entry.sessionId) {
         worktreeStates.set(entry.sessionId, entry.worktreeSession)
+      } else if (entry.type === 'session-started-at' && entry.sessionId) {
+        keepStartedAt(entry.sessionId, entry.startedAt)
+      } else if (entry.type === 'cost-state' && entry.sessionId) {
+        keepCostStateStart(entry)
       } else if (entry.type === 'dev-mods' && entry.sessionId) {
         devModsFolders.set(entry.sessionId, entry.folder)
       } else if (entry.type === 'pr-link' && entry.sessionId) {
@@ -3858,6 +3903,7 @@ export async function loadTranscriptFile(
     modes,
     worktreeStates,
     devModsFolders,
+    sessionStartedAts: new Map([...costStateStarts, ...sessionStartedAts]),
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3880,6 +3926,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   agentSettings: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
+  sessionStartedAts: Map<UUID, number>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3937,6 +3984,7 @@ export async function getLastSessionLog(
     agentSettings,
     worktreeStates,
     devModsFolders,
+    sessionStartedAts,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3983,6 +4031,7 @@ export async function getLastSessionLog(
     agentName: agentNames.get(sessionId) ?? transcript[0]?.agentName,
     worktreeSession: worktreeStates.get(sessionId),
     devModsFolder: devModsFolders.get(sessionId),
+    startedAt: sessionStartedAts.get(sessionId),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),
@@ -4684,6 +4733,7 @@ export async function loadAllLogsFromSessionFile(
     attributionSnapshots,
     contentReplacements,
     leafUuids,
+    sessionStartedAts,
   } = await loadTranscriptFile(sessionFile, { keepAllLeaves: true })
 
   if (messages.size === 0) return []
@@ -4734,6 +4784,7 @@ export async function loadAllLogsFromSessionFile(
       messageCount: countVisibleMessages(chain),
       isSidechain: firstMessage.isSidechain ?? false,
       sessionId,
+      startedAt: sessionStartedAts.get(sessionId),
       leafUuid: leafMessage.uuid,
       summary: summaries.get(leafMessage.uuid),
       customTitle: customTitles.get(sessionId),

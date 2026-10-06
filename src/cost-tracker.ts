@@ -1,5 +1,6 @@
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import chalk from 'chalk'
+import { logForDebugging } from './utils/debug.js'
 import {
   addToTotalCostState,
   addToTotalLinesChanged,
@@ -7,6 +8,7 @@ import {
   getModelUsage,
   getSdkBetas,
   getSessionId,
+  getSessionStartTime,
   getTokenCounter,
   getTotalAPIDuration,
   getTotalAPIDurationWithoutRetries,
@@ -76,6 +78,7 @@ type StoredCostState = {
   totalLinesAdded: number
   totalLinesRemoved: number
   lastDuration: number | undefined
+  startTime?: number
   modelUsage: { [modelName: string]: ModelUsage } | undefined
 }
 
@@ -119,6 +122,7 @@ export function getStoredSessionCosts(
     totalLinesAdded: projectConfig.lastLinesAdded ?? 0,
     totalLinesRemoved: projectConfig.lastLinesRemoved ?? 0,
     lastDuration: projectConfig.lastDuration,
+    startTime: projectConfig.lastStartTime,
     modelUsage,
   }
 }
@@ -130,6 +134,7 @@ export function getStoredSessionCosts(
  */
 export function restoreCostStateForSession(sessionId: string): boolean {
   const data = getStoredSessionCosts(sessionId)
+  logForDebugging(`[ModsSession] ${JSON.stringify({ event: 'restore-cost', sessionId, matched: data !== undefined, startTime: data?.startTime, lastDuration: data?.lastDuration })}`)
   if (!data) {
     return false
   }
@@ -149,6 +154,7 @@ export function saveCurrentSessionCosts(fpsMetrics?: FpsMetrics): void {
     lastAPIDurationWithoutRetries: getTotalAPIDurationWithoutRetries(),
     lastToolDuration: getTotalToolDuration(),
     lastDuration: getTotalDuration(),
+    lastStartTime: getSessionStartTime(),
     lastLinesAdded: getTotalLinesAdded(),
     lastLinesRemoved: getTotalLinesRemoved(),
     lastTotalInputTokens: getTotalInputTokens(),

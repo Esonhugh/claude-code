@@ -82,6 +82,7 @@ export type ProjectConfig = {
   lastToolDuration?: number
   lastCost?: number
   lastDuration?: number
+  lastStartTime?: number
   lastLinesAdded?: number
   lastLinesRemoved?: number
   lastTotalInputTokens?: number

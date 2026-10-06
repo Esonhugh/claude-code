@@ -323,6 +323,7 @@ type ResumeLoadResult = {
   contextCollapseCommits?: ContextCollapseCommitEntry[]
   contextCollapseSnapshot?: ContextCollapseSnapshotEntry
   sessionId: UUID | undefined
+  startedAt?: number
   agentName?: string
   agentColor?: string
   agentSetting?: string
@@ -490,7 +491,9 @@ export async function processResumedConversation(
   // would delete a worktree the original session still references — so
   // strip worktreeSession from the fork path so the cache stays unset.
   restoreSessionMetadata(
-    opts.forkSession ? { ...result, worktreeSession: undefined } : result,
+    opts.forkSession
+      ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
+      : result,
   )
 
   if (!opts.forkSession) {

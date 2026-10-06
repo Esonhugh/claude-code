@@ -60,12 +60,14 @@ export function deriveFirstPrompt(
  */
 async function createFork(customTitle?: string): Promise<{
   sessionId: UUID
+  startedAt: number
   title: string | undefined
   forkPath: string
   serializedMessages: SerializedMessage[]
   contentReplacementRecords: ContentReplacementEntry['replacements']
 }> {
   const forkSessionId = randomUUID() as UUID
+  const startedAt = Date.now()
   const originalSessionId = getSessionId()
   const projectDir = getProjectDir(getOriginalCwd())
   const forkSessionPath = getTranscriptPathForSession(forkSessionId)
@@ -116,7 +118,9 @@ async function createFork(customTitle?: string): Promise<{
 
   // Build forked entries with new sessionId and preserved metadata
   let parentUuid: UUID | null = null
-  const lines: string[] = []
+  const lines: string[] = [
+    jsonStringify({ type: 'session-started-at', sessionId: forkSessionId, startedAt }),
+  ]
   const serializedMessages: SerializedMessage[] = []
 
   for (const entry of mainConversationEntries) {
@@ -165,6 +169,7 @@ async function createFork(customTitle?: string): Promise<{
 
   return {
     sessionId: forkSessionId,
+    startedAt,
     title: customTitle,
     forkPath: forkSessionPath,
     serializedMessages,
@@ -235,6 +240,7 @@ export async function call(
       forkPath,
       serializedMessages,
       contentReplacementRecords,
+      startedAt,
     } = await createFork(customTitle)
 
     // Build LogOption for resume
@@ -267,6 +273,7 @@ export async function call(
       messageCount: serializedMessages.length,
       isSidechain: false,
       sessionId,
+      startedAt,
       customTitle: effectiveTitle,
       contentReplacements: contentReplacementRecords,
     }

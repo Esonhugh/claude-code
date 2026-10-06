@@ -51,6 +51,36 @@ export type LogOption = {
   worktreeSession?: PersistedWorktreeSession | null // Worktree state at session end (null = exited, undefined = never entered)
   contentReplacements?: ContentReplacementRecord[] // Replacement decisions for resume reconstruction
   devModsFolder?: string // Positive session-scoped Mods authoring consent
+  startedAt?: number // Exact launch epoch; older transcripts may not have it.
+}
+
+export type SessionCostStateEntry = {
+  type: 'cost-state'
+  sessionId: UUID
+  totalCostUSD: number
+  totalAPIDuration: number
+  totalAPIDurationWithoutRetries: number
+  totalToolDuration: number
+  totalLinesAdded: number
+  totalLinesRemoved: number
+  totalDuration: number
+  startTime: number
+  modelUsage: Record<string, {
+    inputTokens: number
+    outputTokens: number
+    thinkingTokens?: number
+    cacheReadInputTokens: number
+    cacheCreationInputTokens: number
+    webSearchRequests: number
+    costUSD: number
+  }>
+  hasUnknownModelCost?: boolean
+}
+
+export type SessionStartedAtEntry = {
+  type: 'session-started-at'
+  sessionId: UUID
+  startedAt: number
 }
 
 export type DevModsMessage = {
@@ -320,6 +350,8 @@ export type Entry =
   | ModeEntry
   | WorktreeStateEntry
   | DevModsMessage
+  | SessionStartedAtEntry
+  | SessionCostStateEntry
   | ContentReplacementEntry
   | ContextCollapseCommitEntry
   | ContextCollapseSnapshotEntry

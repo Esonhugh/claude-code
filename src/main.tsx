@@ -398,6 +398,7 @@ import {
   setSessionSource,
   setUserMsgOptIn,
   switchSession,
+  getSessionStartedAt,
 } from './bootstrap/state.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -4675,7 +4676,7 @@ async function run(): Promise<CommanderCommand> {
           // New behavior: start local TUI with CCR engine
           // Mark that we're in remote mode for command visibility
           setIsRemoteMode(true)
-          switchSession(asSessionId(createdSession.id))
+          switchSession(asSessionId(createdSession.id), null, getSessionStartedAt())
 
           // Get OAuth credentials for remote session
           let apiCreds: { accessToken: string; orgUUID: string }
