@@ -96,10 +96,8 @@ export async function checkModToolPermission(
 export function modToolCheckResult(decision: PermissionDecision): ModToolCheckResult {
   const why = decision.decisionReason
   const rule = why?.type === 'rule' ? permissionRuleValueToString(why.rule.ruleValue) : undefined
-  const reason = 'message' in decision ? decision.message :
-    why && 'reason' in why ? why.reason :
-    why?.type === 'mode' ? `Permission mode: ${why.mode}` : rule
-  return { decision: decision.behavior, ...(reason !== undefined ? { reason } : {}), ...(rule !== undefined ? { rule } : {}) }
+  const reason = decision.behavior === 'allow' ? why && 'reason' in why ? why.reason : undefined : decision.message
+  return { decision: decision.behavior, ...(reason ? { reason } : {}), ...(rule !== undefined ? { rule } : {}) }
 }
 
 type ClassicToolEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'

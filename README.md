@@ -901,6 +901,12 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 运行 `bun test ./src/services/api/rootLedger.test.ts` 检查两个并发子任务的上下文隔离、共享累计及根会话快照。本用法针对普通子任务；其他独立根会话的账本归属与异常恢复须按各自入口验证。真实 CLI 的 Agent 调用、保存和恢复对照范围见 `mods-test.md`。
 
+### Mod 工具权限查询的原因
+
+公开 `$.tool.check({tool, input})` 返回权限决定；`reason` 只在底层决定提供实际原因时出现。bypass 模式的允许结果是 `{decision:"allow"}`；匹配规则通过 `rule` 提供，不重复生成原因文字。空原因省略，ask／deny 保留实际审批或拒绝原因，权限查询仍不会执行工具或弹出审批。
+
+运行 `bun test ./src/services/mods/toolCheckReason.test.ts` 验证公开 host 的决定、规则、原因和安全检查。完整 hook 来源、递归规则及最新事件字段仍按 `mods-test.md` 分批验收。
+
 ### Mod 主动工具调用的入口
 
 作者使用 `$.tool.call({tool, ...args})` 时，Agent、AskUserQuestion、Workflow 会被 host check 拒绝。使用 `$.agent.spawn({prompt, ...})` 启动子任务，用 `$.ui.ask(...)` 提问；本地 `WorkflowTool` 同样受此限制。Agent 的旧名称 Task 在解析到 Agent 时也会被拒绝。错误包含插件名、工具名称和专用入口，便于定位调用位置。
