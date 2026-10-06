@@ -1576,3 +1576,12 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 完整证据根 `/private/tmp/mods-align-m1scugg4/changed-test-gate-e7-r1/`：`inventory.json`、逐文件start/result/log、`results.json`、`summary.json`、`counts.json`、`conditional-skips.json`。23个条件skip不计为对应官方分支已通过，其中13个原样diff接管用例仍缺外部夹具；私有291候选的测试通过不替代当前门禁中的skip。
 - dock tail 的独立签名提交含9个代码/测试文件和3份文档，提交blob与独立候选一致，301个不相关文件字节未变；其余310项WIP保留。原ROOT binary、fix-instructions、improvment、response与289资产的字节/mtime保持；暂存区已清空，无push，其他Claude进程未干预。
 - 边界：本轮没有重跑同进程全量套件，也没有重跑G5。G5是 `/plugin-authoring` 会话授权及生命周期的六场景，上一场2026-10-04的52断言通过、logical/physical帧和完整矩阵仍未覆盖。完整生产API、最新版声明映射、AbovePrompt/grip/inline/建议层、291包迁移、取消流程及全部官方UI/diff效果继续处理；174个文件通过不代表总体兼容目标完成。
+
+## 2026-10-06：内置 Mods 缓存的进程间发布锁
+
+- Source-confirmed：两个发布者可同时搬走损坏目标并替换它，原实现没有进程间锁。本批只为内容寻址缓存的发布/恢复段接入既有 lockfile helper，取得锁后再次检查完整树；保持校验、回滚和finally清理。opaque插件身份、官方291加载及UI改动不包含在该代码提交中。
+- RED：干净HEAD `85b7b9d` 加持锁回归，`cache-red2` 为26 pass/1 fail：另一发布者持锁时 operation 已提前完成。原十二进程测试的 `cache-red1` 为26/0，不将未复现写成RED。GREEN：独立副本 `cache-green1` 与实际ROOT `cache-workspace-test1` 均为27/0、56 expect；默认测试期限未增加，未删改断言或加入production测试分支。
+- 两侧 `make release-check` 与本轮独立输出 `make build` 均exit0、源码不变；独立core `8cf70cdbfe4ca05ebe490de01384a4cd7934216e498e156e6623e4e1c9b7aa2a`，ROOT core `9972162689dc18324ce73ddef5a30ace7c66b1f40ec817e93bb23e7046eaac1e`。独立binary SHA256 `8845729a67156048c75087136cb9510628a8910fa1e8cfcb411aa836e0c0ee8f`，ROOT binary `ba396853aa11c91b2b977d2c829051450ffefae9c5cb7a8db37c254e9d3ace04`，版本仍为Makefile指定的2.1.280。
+- Runtime-observed：证据根 `/private/tmp/mods-cache-commit-20261006-mc34adhm`；独立场 `native-candidate-c3/evidence`，ROOT场 `native-workspace-r1/evidence`。通过真实CLI启动入口，外部持有同一归档digest的发布锁；两个CLI均已完成临时树且原损坏目标不变，释放锁后均出现交互prompt。两者各输入草稿/Ctrl+U清空及stdin `/exit`，第三次启动确认归档逐文件字节、completion marker与整个缓存文件mtime/摘要保持不变，全部正常exit0。缓存中无tmp/stale/lock，所有自有进程组已退出。并发场专门共享私有HOME/cache，各CLI配置和证据独立；dummy key、禁止网络及用户凭据访问的sandbox，不复制个人认证。
+- 失败记录保留：`native-candidate-c1` 被外层沙箱禁止sandbox_apply，未启动CLI；`c2` 的缓存锁和两侧readiness通过，但驱动未将prompt的NBSP规范为空格，草稿断言失败。`c3`只修正字符读取和增加进程残留核对，未放宽缓存或交互断言及期限。独立场不是官方binary对照，不推导官方缓存内部实现相同。
+- 边界：只关闭本批缓存修复。E7的174/174是添加本次回归前的历史源码门禁，本轮未重跑完整变更或同进程全量suite，也未重跑G5；完整生产API、最新声明映射、291包迁移、AbovePrompt/grip/inline/建议层和取消流程继续保留。原ROOT制品、fix-instructions、improvment、response、289资产和其他Claude进程未修改。

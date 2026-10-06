@@ -17,6 +17,7 @@ import {
   getBuiltinPlugins,
 } from './builtinPlugins.js'
 import { loadAllPluginsCacheOnly } from '../utils/plugins/pluginLoader.js'
+import { lock } from '../utils/lockfile.js'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -284,7 +285,38 @@ describe('built-in Mods archive', () => {
     expect(await readFile(join(target, 'agents-md/hooks/register.ts'), 'utf8')).toBe('official source')
     expect(await readFile(join(target, '.complete'), 'utf8')).toMatch(new RegExp(`^${digest}\\n[a-f0-9]{64}$`))
     await expect(readFile(join(target, 'damaged'), 'utf8')).rejects.toThrow()
-    expect((await readdir(fixture.cache)).filter(name => name.includes('.stale.'))).toEqual([])
+    expect(await readdir(fixture.cache)).toEqual([digest])
+  })
+
+  test('waits for the active publisher before replacing a damaged tree', async () => {
+    const fixture = await archive({ 'agents-md/hooks/register.ts': 'official source' })
+    const digest = createHash('sha256').update(await readFile(fixture.file)).digest('hex')
+    const target = join(fixture.cache, digest)
+    await mkdir(target, { recursive: true })
+    await writeFile(join(target, 'damaged'), 'previous tree')
+    const release = await lock(target, { realpath: false })
+    let markPrepared!: () => void
+    const prepared = new Promise<void>(resolve => { markPrepared = resolve })
+    let finished = false
+    const operation = materializeBuiltinModsArchive(fixture.file, fixture.cache, {
+      validate: async root => { if (root.includes('.tmp.')) markPrepared() },
+    })
+    const settled = operation.then(() => { finished = true })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await prepared
+      await Promise.race([settled, new Promise<void>(resolve => {
+        timer = setTimeout(resolve, 100)
+      })])
+      expect(finished).toBe(false)
+      expect(await readFile(join(target, 'damaged'), 'utf8')).toBe('previous tree')
+    } finally {
+      clearTimeout(timer)
+      await release()
+      await operation
+    }
+    expect(await readFile(join(target, 'agents-md/hooks/register.ts'), 'utf8')).toBe('official source')
+    expect(await readdir(fixture.cache)).toEqual([digest])
   })
 
   test('independent processes replace a damaged non-directory target', async () => {

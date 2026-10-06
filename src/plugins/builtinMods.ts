@@ -10,6 +10,7 @@ import {
 } from '../utils/plugins/schemas.js'
 import { isAnthropicTelemetryEnabled } from '../services/analytics/config.js'
 import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
+import { lock } from '../utils/lockfile.js'
 import { registerBuiltinPlugin } from './builtinPlugins.js'
 
 function validateEntry(name: string): string {
@@ -232,54 +233,66 @@ export async function materializeBuiltinModsArchive(
     await options.validate?.(temporary)
     await writeFile(join(temporary, '.complete'), `${digest}\n${await treeDigest(temporary)}`)
     await mkdir(cacheRoot, { recursive: true })
-    while (true) {
-      try {
-        await rename(temporary, target)
+    const release = await lock(target, {
+      realpath: false,
+      retries: { retries: 100, minTimeout: 10, maxTimeout: 50 },
+    })
+    try {
+      // Check again under the publication lock: another process may have replaced
+      // the damaged target while this process prepared its candidate.
+      if (await completeTree(target, digest)) {
+        await options.validate?.(target)
         return target
-      } catch (error) {
-        if (await completeTree(target, digest)) {
-          await options.validate?.(target)
+      }
+      while (true) {
+        try {
+          await rename(temporary, target)
           return target
-        }
-        const code = (error as NodeJS.ErrnoException).code
-        if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'ENOTDIR') throw error
-      }
-
-      const stale = `${target}.stale.${process.pid}.${randomUUID()}`
-      try {
-        await rename(target, stale)
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-        throw error
-      }
-      try {
-        await rename(temporary, target)
-      } catch (error) {
-        if (await completeTree(target, digest)) {
-          try {
+        } catch (error) {
+          if (await completeTree(target, digest)) {
             await options.validate?.(target)
-          } catch (validationError) {
-            await rm(target, { recursive: true, force: true })
-            try {
-              await rename(stale, target)
-            } catch (restoreError) {
-              throw new AggregateError([validationError, restoreError], 'Built-in Mods validation failed and the previous cache tree could not be restored')
-            }
-            throw validationError
+            return target
           }
-          await rm(stale, { recursive: true, force: true })
-          return target
+          const code = (error as NodeJS.ErrnoException).code
+          if (code !== 'EEXIST' && code !== 'ENOTEMPTY' && code !== 'ENOTDIR') throw error
+        }
+
+        const stale = `${target}.stale.${process.pid}.${randomUUID()}`
+        try {
+          await rename(target, stale)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+          throw error
         }
         try {
-          await rename(stale, target)
-        } catch (restoreError) {
-          throw new AggregateError([error, restoreError], 'Built-in Mods publication failed and the previous cache tree could not be restored')
+          await rename(temporary, target)
+        } catch (error) {
+          if (await completeTree(target, digest)) {
+            try {
+              await options.validate?.(target)
+            } catch (validationError) {
+              await rm(target, { recursive: true, force: true })
+              try {
+                await rename(stale, target)
+              } catch (restoreError) {
+                throw new AggregateError([validationError, restoreError], 'Built-in Mods validation failed and the previous cache tree could not be restored')
+              }
+              throw validationError
+            }
+            await rm(stale, { recursive: true, force: true })
+            return target
+          }
+          try {
+            await rename(stale, target)
+          } catch (restoreError) {
+            throw new AggregateError([error, restoreError], 'Built-in Mods publication failed and the previous cache tree could not be restored')
+          }
+          throw error
         }
-        throw error
+        await rm(stale, { recursive: true, force: true })
+        return target
       }
-      await rm(stale, { recursive: true, force: true })
-      return target
-    }
+    } finally { await release() }
   } finally {
     await rm(temporary, { recursive: true, force: true })
   }
