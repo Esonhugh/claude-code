@@ -893,3 +893,10 @@ Anthropic 对该字段、最终流式事件与费用口径的说明见 [Steering
 SDK result 的 `modelUsage` 按原始模型名索引；新请求会填充 `canonicalModel`（当前价格目录使用的模型名）、`provider`（现有 API 提供方）和 `costBasis`。当前目录计价为 `list`，未知模型使用默认价格估算时为 `unknown`，因此不能把它看作已核实的真实账单。三个字段都是可选字段，旧会话和旧 SDK 数据仍可读取；token 数量、contextWindow 和 maxOutputTokens 按官方 schema 要求整数。
 
 JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不会写入历史快照。恢复会话时重建当前模型限制，新的请求再填充上述元数据。运行 `bun test ./src/services/api/modelUsageMetadata.test.ts` 检查传递与恢复行为。schema 接受官方的 `managed` 标签；组织定价及新增提供方的完整计价和路由仍需后续对齐，不能据此声称这些流程已通过。
+
+
+### 子任务与根会话用量
+
+普通子任务拥有各自的 agent ID 和执行上下文，成本与模型用量汇入所属根会话账本。`$.session.id()` 与 `(await $.session.usage({})).cost.usd` 读取当前根会话身份和累计成本，不能把根会话总额当作某一个 agent 的独立费用。保存及恢复根会话时应保留已累计的子任务用量。
+
+运行 `bun test ./src/services/api/rootLedger.test.ts` 检查两个并发子任务的上下文隔离、共享累计及根会话快照。本用法针对普通子任务；其他独立根会话的账本归属与异常恢复须按各自入口验证。真实 CLI 的 Agent 调用、保存和恢复对照范围见 `mods-test.md`。

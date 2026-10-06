@@ -1699,3 +1699,18 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 相邻官方diff：每场源会话退出后改alpha.ts，再continue后显示1 file changed +2 -1及两处补丁，没有edited before this session折叠，关闭后内容消失。原始官方291 Worker沿既有生产加载路径运行，覆盖这些操作及时间分类；完整样式、字符、焦点、narrow/inline和取消诊断矩阵仍待验收。
 - 仍未关闭：官方受信任modelPricing覆盖/倍数、促销价格、附加价格目录及application-inference-profile价格身份，Mantle/Anthropic AWS/Anthropic Google Cloud/gateway等新增提供方和按模型回退路由；本批只补齐现有目录和未知估价的运行时标签及完整可选SDK字段schema。每个agent/context账本归属、其余API用量字段、全部模型运行时限制、完整存储/artifact故障矩阵、G5/最新所有变更门禁、同进程全量suite及完整Mods API/UI/diff目标继续验收，不将这个子集替代总体成功条件。
 - 文档与证据：README说明SDK字段、历史可选性及估价边界，CHANGELOG记录本批。证据根 `/private/tmp/mods-model-metadata-20261006-9i5x5rc1` 保存所有RED/GREEN、清单、hash、driver、字面输入、pane/ANSI/PTY、debug、请求、SDK结果、snapshot及PGID清理。原ROOT制品、289资产、response/improvment/fix-instructions的bytes/mtime保持；其他Claude进程不操作。仅提交本批，未push。
+
+
+## 2026-10-06：并发子任务共享根会话账本的独立验证提交
+
+- 基线与范围：HEAD `93c27fea4c3080bf95e401d916e65a86e5697f50`，独立候选只新增 `src/services/api/rootLedger.test.ts` 和三份文档。本批4文件，不修改 Agent、状态、计价或存储实现，不依赖ROOT其他278个WIP。这是既有行为的验证，不声称修复了一个新账本 bug。
+- Source-confirmed：固定官方2.1.291原始 `chunk-96kd8z4r.js` SHA256 `e8abb5e343034d00b961bade2c59132cad1e69ec4b674e4cabd15dde2d64abff`。n/Ph从当前session读取账本，Ihr创建独立根，dn的withProject fork共享根id及costLedger。这种内部project fork不等于用户的 `--fork-session`。原始JS仅静态阅读，片段保存在 official-root-ledger-source.json；未用提取模块代替CLI。
+- 归属澄清：普通子任务各有agent ID和AsyncLocalStorage执行上下文，但累计至同一根会话。先前待办“每个agent/context账本归属”不能解读为每个agent都应有独立成本账本。本节关闭普通并发子任务的共享累计、公共读取与根会话保存/继续恢复验证；其他独立根、异常回滚、teammate/nested/Workflow等完整矩阵仍需按真实入口审查。
+- 自动化：独立生产Bun子进程使用两个上下文和到达屏障，检查await前后各自agent ID、共享根ID、总成本3、input30/output3/thinking3，以及离开子任务后上下文恢复和根快照归属。没有新生产ForTesting分支、mock成本模块、依赖升级或期限增加。最终候选与ROOT各147pass/0fail/0skip、19文件/491expect；goal和effort既有assert脚本分别打印passed。测试验证上下文/累计，真实Agent由下述CLI场覆盖。
+- 检查与构建：两侧本轮 release-check 和 make build均exit0、源文件不变、自有进程组无残留；本地版本仍2.1.280。候选源码（含CHANGELOG）SHA256 `0233addec195efb9ce48ab297a70e65427add6f47c60d1bb2e94256c380b0595`，ROOT `0c23b742f4087d38018ca901f3005c5ad6d0e5a14ff10e4b7ae13d3a047975a2`；对应binary `f90e2dcc1bf587e558423f9ca5f15d702b89c48da6ef6abe02c0e22ff0c5e90e` 与 `e2831acc9e549a3f922e5ae593357028ebe7a18de9f7fc4380cbf80ff64243cb`。本节和README不内嵌到制品，最终记录没有修改已构建的CHANGELOG。
+- Runtime-observed：`native-official-o4`、`native-candidate-c1`、`native-workspace-r1` 串行采用同一160×40私有tmux、隔离HOME/config、dummy key、本地确定性API。CLI stdin `/agentledger` 的真实Mod通过 `$.agent.spawn` 并发启动两个不同ID的general-purpose Agent，响应屏障要求A/B均到达；每个子任务只发一次模型请求、只完成一次。A的Haiku输入100/输出7/思考3，B的Sonnet4.6输入200/输出11/思考4；spawn ID与各自turn.complete、模型、答案和终态关联，子任务中 `$.session.id()` 仍是根ID。
+- 费用与恢复：两个子任务本身的费用三侧均为0.000135+0.000765=0.0009 USD；按实际API请求的模型逐项核对累计。Mods公共成本、项目lastCost/lastModelUsage与JSONL cost-state一致，普通交互退出exit0。新进程 `--continue` 恢复同一根ID、启动时间、全部模型分项及成本，再次退出保存一致。每场保留字面输入、pane/ANSI/PTY、debug、API请求、快照和owned PGID清理；无个人凭据、外部网络或仓库写入。
+- 尚有流程差异：官方本场4个API请求、总成本0.00111；两份本地制品各6个、总成本约0.00118。除既有辅助模型路由差异，本地将完成通知送入主会话后另发Haiku辅助及Sonnet主请求，官方本场没有；请求包含task-notification，证据在requests.json。本节证明实际请求未丢计或重复计费，不声称调用次数、通知流程或总成本与官方完整一致，此差异留待独立修复。
+- 探针失败保留：官方o1拒绝通过 `$.tool.call` 调用Agent，提示使用 `$.agent.spawn`；这同时暴露本地host静态代码尚无同样限制，需后续对齐。o2拒绝将$传给register内局部helper，按官方诊断移至模块顶层。o3两个子任务已完成，但官方日志将token字段替换成未加引号的 `[REDACTED]`，JSON解析失败；o4只记录精选身份/终态和改名后的计数，并新增逐子任务计数断言。前三场均未算通过，保留各自原driver及失败输出；最终三侧用同一driver完整复跑，没有拼接成功片段、放宽谓词或增加期限。
+- 验收边界：当前只验证普通并发agent.spawn、turn.complete、根账本公共读取和continue保存/恢复。完整root/context所有权、所有Agent入口、artifact/backend故障矩阵、模型组织/促销定价、新增提供方、其余API字段与限制、G5/最新全部变更门禁、同进程全量suite及完整Mods API/UI/diff仍未完成。旧response/fix-instructions的全量复验失败不能由本节147项定向成功覆盖。
+- 文档与保护：README说明共享根账本、agent费用边界和复测命令，CHANGELOG记录验证范围。证据根 `/private/tmp/mods-root-ledger-20261006-cdmptcka`；原ROOT制品、289资产及response/improvment/fix-instructions的bytes/mtime保持，其他Claude进程未操作。只提交本批，未push。
