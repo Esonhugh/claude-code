@@ -1521,3 +1521,9 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 最终冻结 ROOT 门禁 `changed-test-gate-e6-r2`：169 个文件串行完成，168 通过、1 失败、23 个条件跳过；核心源码 SHA-256 `2bbbbe2848cab398adf5f059fb12398f9a339cf2f0abe50213f129267ed25e76`。唯一失败为 `PromptInput.modsEdit.test.tsx` 的六调色板 Worker 回归，16/1，诊断 `Mod paint-probe timed out for prompt.edit`（50ms）。旧 e4 门禁也记录过相同失败。保留其日志和原预算，尚未证明超时根因，不能称整轮全绿。
 - 同一失败文件的受控 A/B 复验：修改前 e5 冻结核心 `b7e6060ab277338265115e980128b53ed189382b01f46c4e7f93d89ea7532118` 与当前 e6 核心分别独立运行，均17/0；复验不计入原门禁结果。历史 `response.md` 的九项中，本轮8个文件通过，剩余该文件有间歇超时；报告原文未改。
 - 独立提交副本（仅 clean HEAD 加本功能）再次构建后运行真实 `/diff` 并正常 `/exit 0`，证据 `/private/tmp/mc291-diff-i-syntax1/evidence/result.json`，制品 SHA-256 `c3bc2bf6d13f3205a376e416cfc722510d8a26b693d749ef2f6f24c225e481ab`。这证明本功能可以独立提交；该副本使用已有 diff 入口，不作为完整 Mods 接管或291兼容证明。
+
+## 2026-10-06：高亮恢复后 DiffView 测试的文本读取
+
+- 扩展验收发现未改的 DiffView 测试不在旧169文件清单中：ROOT 的 `background-owned/root-related-3` 内层24/12、3 errors；高亮修复独立基线 `syntax-commit/pre-background-diffview1` 同样24/12、3 errors。失败文本如 `body-0` 被正常语法颜色码隔开，Raw ANSI 的 DOM 文本辅助方法未去除样式，等待随后超时。不是背景修复特有回归。
+- 仅在 `DiffView.test.tsx` 的 Raw ANSI 文本分支调用已有 strip-ansi，原断言与所有预算保留，物理屏幕预览和样式检查没有替换或关闭。工作区 `background-owned/root-diffview-normalized1` 与只含本测试修改的独立副本 `background-owned/normalization-commit/normalized-diffview1` 均 exit0，仍运行原内层36项及外层进程检查。失败日志完整保留。
+- 本节属于验证脚本修复，单独提交，不改变任何生产渲染代码，也不将旧169文件门禁改写为全绿。完整 suite 和 Mods API/UI 目标继续保留。

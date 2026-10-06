@@ -37,6 +37,7 @@ if (!process.env[childKey]) {
     }
   }, 90000)
 } else {
+  const { default: stripAnsi } = await import('strip-ansi')
   const React = await import('react')
   const { Readable, Writable } = await import('node:stream')
   const { Box, Text, ThemeProvider, render, useInput } =
@@ -243,7 +244,7 @@ if (!process.env[childKey]) {
     node.nodeName === '#text'
       ? node.nodeValue
       : node.nodeName === 'ink-raw-ansi'
-        ? String(node.attributes.rawText ?? '')
+        ? stripAnsi(String(node.attributes.rawText ?? ''))
         : node.childNodes.map(textContent).join('')
   async function mount(
     controller: import('../../services/diff/controller.js').DiffController,
