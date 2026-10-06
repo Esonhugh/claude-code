@@ -803,10 +803,6 @@ setCostStateForRestore({
       costUSD: 0,
       contextWindow: 0,
       maxOutputTokens: 0,
-      input_tokens: 1,
-      output_tokens: 41,
-      cache_read_input_tokens: 0,
-      cache_creation_input_tokens: 0,
     },
   },
 })

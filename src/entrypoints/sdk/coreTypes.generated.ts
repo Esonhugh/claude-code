@@ -9,17 +9,13 @@ import type { MessageParam as APIUserMessage } from '@anthropic-ai/sdk/resources
 export type ModelUsage = {
   inputTokens: number
   outputTokens: number
+  thinkingTokens?: number
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
   webSearchRequests: number
   costUSD: number
   contextWindow: number
   maxOutputTokens: number
-  // snake_case aliases used in recovered code
-  input_tokens: number
-  output_tokens: number
-  cache_read_input_tokens: number
-  cache_creation_input_tokens: number
 }
 
 // Output Format

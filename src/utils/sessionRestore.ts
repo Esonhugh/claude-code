@@ -13,7 +13,7 @@ import {
 import { restoreGoalStopHook } from '../commands/goal/hooks.js'
 import { restoreGoalFromTranscript } from '../commands/goal/restore.js'
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
-import { restoreCostStateForSession } from '../cost-tracker.js'
+import { restoreSessionCosts } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import {
@@ -29,6 +29,7 @@ import type {
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
   PersistedWorktreeSession,
+  SessionCostStateEntry,
 } from '../types/logs.js'
 import type { Message } from '../types/message.js'
 import { renameRecordingForSession } from './asciicast.js'
@@ -324,6 +325,7 @@ type ResumeLoadResult = {
   contextCollapseSnapshot?: ContextCollapseSnapshotEntry
   sessionId: UUID | undefined
   startedAt?: number
+  costState?: SessionCostStateEntry
   agentName?: string
   agentColor?: string
   agentSetting?: string
@@ -470,7 +472,6 @@ export async function processResumedConversation(
       // getSessionRecordingPaths() can discover it during /share
       await renameRecordingForSession()
       await resetSessionFilePointer()
-      restoreCostStateForSession(sid)
     }
   } else if (result.contentReplacements?.length) {
     // --fork-session keeps the fresh startup session ID. useLogMessages will
@@ -495,6 +496,8 @@ export async function processResumedConversation(
       ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
       : result,
   )
+
+  restoreSessionCosts(result, { forkSession: opts.forkSession })
 
   if (!opts.forkSession) {
     // Cd back into the worktree the session was in when it last exited.

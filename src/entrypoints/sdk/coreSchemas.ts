@@ -18,6 +18,7 @@ export const ModelUsageSchema = lazySchema(() =>
   z.object({
     inputTokens: z.number(),
     outputTokens: z.number(),
+    thinkingTokens: z.number().optional(),
     cacheReadInputTokens: z.number(),
     cacheCreationInputTokens: z.number(),
     webSearchRequests: z.number(),

@@ -858,12 +858,22 @@ bun test ./src/plugins/bundled/shippedDiffStartup.test.ts ./src/services/mods/di
 
 官方 diff 使用 `$.session.usage({}).startedAt` 区分本会话的修改。新建会话、`/clear` 和新分支会取得新的启动时间；`--continue`、`--resume SESSION_ID` 和交互式 `/resume` 通过原有恢复路径保留已记录的时间。`--fork-session` 保留源会话的启动时间并取得新会话 ID；`/branch [name]` 使用新分支的启动时间，与官方 2.1.291 的不同入口语义一致。
 
-启动时间随会话 JSONL 元数据持久化，并在压缩后的恢复中保留。还可读取匹配会话的项目 `lastStartTime` 或官方 2.1.291 的完整有效 `cost-state` 记录；本批只使用该快照的启动时间，不能据此认为完整成本账本的恢复已经对齐。直接 JSONL 路径的恢复加载器也传递该字段，但交互式 CLI 的文件启动路径受内部模式限制，普通 `--resume FILE.jsonl` 不能视为直接文件恢复。历史会话没有相关记录时，`startedAt` 沿用既有成本时钟，无法据此还原原始启动时间。禁用会话持久化时不会为恢复文件追加该元数据。
+启动时间随会话 JSONL 元数据持久化，并在压缩后的恢复中保留。还可读取官方 2.1.291 的完整有效 `cost-state` 记录；成本快照的恢复方式见下方“JSONL 成本快照与历史会话”。直接 JSONL 路径的恢复加载器也传递该字段，但交互式 CLI 的文件启动路径受内部模式限制，普通 `--resume FILE.jsonl` 不能视为直接文件恢复。历史会话没有相关记录时，`startedAt` 沿用既有成本时钟，无法据此还原原始启动时间。禁用会话持久化时不会为恢复文件追加该元数据。
 
 使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[ModsSession]` 恢复日志。日志提供元数据归属会话、当前会话和启动时间，便于核对 diff 的时间边界；不会包含会话正文。CLI 会话参数见 [Anthropic CLI reference](https://code.claude.com/docs/en/cli-reference)。
 
 ### 退出时的项目成本保存
 
-交互式 CLI 使用 `/exit` 正常退出时，会在界面卸载期间保存当前会话的成本、运行时长、启动时间、模型用量及 FPS。恢复匹配的最近会话时，现有项目配置恢复路径可以读取这些数据。普通组件卸载不触发这次保存，直接进程退出仍保留原有保存回调。
+交互式 CLI 使用 `/exit` 正常退出时，会在界面卸载期间保存当前会话的成本、运行时长、启动时间、模型用量及 FPS。这些项目汇总记录可供查看最近会话；会话恢复使用下方说明的 JSONL 快照。普通组件卸载不触发这次保存，直接进程退出仍保留原有保存回调。
 
 运行 `bun test ./src/costHook.test.ts` 检查三个真实子进程生命周期和磁盘写入。项目配置只保留最近保存会话的成本；本修复不代表任意历史会话的完整 JSONL 成本账本恢复已经对齐，验收范围见 `mods-test.md`。
+
+### JSONL 成本快照与历史会话
+
+会话日志中的 `cost-state` 保存累计成本、API 和工具时长、修改行数、累计运行时长、启动时间、各模型用量及未知价格标志。恢复会话使用该会话最后一条完整有效的快照；最近项目配置中的 `lastCost` 不再作为历史账本的恢复来源。旧日志没有有效快照时，启动恢复采用新账本，无法还原原始成本。
+
+`--continue`、`--resume SESSION_ID` 和交互式 `/resume` 恢复原有账本；`--fork-session` 使用新会话 ID 并继承源快照；`/branch` 和 `/clear` 开始新账本。非交互模式通过相同快照恢复，例如 `./built-claude --print --resume SESSION_ID "继续任务"`。启动时间的文件加载器边界仍按上一节说明。
+
+快照在现有会话的切换、元数据重写和退出时写入。禁用持久化时不写入，未创建会话文件时也不会只为成本创建文件。用 `--debug --debug-file /absolute/path/debug.log` 的 `[ModsSession]` / `restore-cost-state` 记录核对源和当前 ID、匹配结果及成本时间；日志不含会话正文。
+
+运行 `bun test ./src/utils/sessionCostState.test.ts ./src/utils/sessionStartedAt.restart.test.ts ./src/costHook.test.ts` 检查完整记录、跨进程恢复和退出保存。真实终端的 fork、分支后恢复、非交互恢复及相邻官方 diff 行为见 `mods-test.md`。

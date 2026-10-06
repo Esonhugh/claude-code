@@ -48,6 +48,9 @@ import { formatDuration, formatNumber } from './utils/format.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
 import { getCanonicalName } from './utils/model/model.js'
 import { calculateUSDCost } from './utils/modelCost.js'
+import type { LogOption } from './types/logs.js'
+import { captureSessionCostState, parseSessionCostState } from './utils/sessionCostState.js'
+import { recordSessionCostState } from './utils/sessionStorage.js'
 export {
   getTotalCostUSD as getTotalCost,
   getTotalDuration,
@@ -142,11 +145,40 @@ export function restoreCostStateForSession(sessionId: string): boolean {
   return data.modelUsage !== undefined
 }
 
+/** Restore the selected transcript snapshot, including explicit source inheritance for a fork. */
+export function restoreSessionCosts(
+  log: Pick<LogOption, 'sessionId' | 'costState'>,
+  options: { forkSession?: boolean } = {},
+): boolean {
+  const snapshot = parseSessionCostState(log.costState)
+  const matches = snapshot !== undefined && snapshot.sessionId === log.sessionId &&
+    (options.forkSession || log.sessionId === getSessionId())
+  logForDebugging(`[ModsSession] ${JSON.stringify({
+    event: 'restore-cost-state', sourceSessionId: log.sessionId, sessionId: getSessionId(),
+    matched: Boolean(matches), forkSession: Boolean(options.forkSession),
+    totalCostUSD: matches ? snapshot.totalCostUSD : undefined,
+    totalDuration: matches ? snapshot.totalDuration : undefined,
+    startTime: matches ? snapshot.startTime : undefined,
+  })}`)
+  if (!matches) return false
+  setCostStateForRestore({
+    ...snapshot,
+    lastDuration: snapshot.totalDuration,
+    modelUsage: Object.fromEntries(Object.entries(snapshot.modelUsage).map(([model, usage]) => [model, {
+      ...usage,
+      contextWindow: getContextWindowForModel(model, getSdkBetas()),
+      maxOutputTokens: getModelMaxOutputTokens(model).default,
+    }])),
+  })
+  return true
+}
+
 /**
  * Saves the current session's costs to project config.
  * Call this before switching sessions to avoid losing accumulated costs.
  */
 export function saveCurrentSessionCosts(fpsMetrics?: FpsMetrics): void {
+  void recordSessionCostState(captureSessionCostState())
   saveCurrentProjectConfig(current => ({
     ...current,
     lastCost: getTotalCostUSD(),
@@ -170,6 +202,7 @@ export function saveCurrentSessionCosts(fpsMetrics?: FpsMetrics): void {
         {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+          thinkingTokens: usage.thinkingTokens,
           cacheReadInputTokens: usage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
           webSearchRequests: usage.webSearchRequests,

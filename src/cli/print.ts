@@ -9,7 +9,7 @@ import {
 import { waitForRemoteManagedSettingsToLoad } from 'src/services/remoteManagedSettings/index.js'
 import { StructuredIO } from 'src/cli/structuredIO.js'
 import { RemoteIO } from 'src/cli/remoteIO.js'
-import { restoreCostStateForSession } from 'src/cost-tracker.js'
+import { restoreSessionCosts } from 'src/cost-tracker.js'
 import {
   type Command,
   formatDescriptionWithSource,
@@ -5485,18 +5485,18 @@ async function loadInitialMessages(
             if (persistSession) {
               await resetSessionFilePointer()
             }
-            restoreCostStateForSession(result.sessionId)
           }
         }
         restoreSessionStateFromLog(result, setAppState)
-        restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
         restoreSessionMetadata(
           options.forkSession
-            ? { ...result, worktreeSession: undefined }
+            ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
             : result,
         )
+        restoreSessionCosts(result, { forkSession: options.forkSession })
+        restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Write mode entry for the resumed session
         if (feature('COORDINATOR_MODE') && coordinatorModeModule) {
@@ -5688,17 +5688,17 @@ async function loadInitialMessages(
         if (persistSession) {
           await resetSessionFilePointer()
         }
-        restoreCostStateForSession(result.sessionId)
       }
       restoreSessionStateFromLog(result, setAppState)
-      restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
       restoreSessionMetadata(
         options.forkSession
-          ? { ...result, worktreeSession: undefined }
+          ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
           : result,
       )
+      restoreSessionCosts(result, { forkSession: options.forkSession })
+      restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Write mode entry for the resumed session
       if (feature('COORDINATOR_MODE') && coordinatorModeModule) {

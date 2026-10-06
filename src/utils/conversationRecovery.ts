@@ -10,6 +10,7 @@ import type {
   ContextCollapseSnapshotEntry,
   LogOption,
   PersistedWorktreeSession,
+  SessionCostStateEntry,
   SerializedMessage,
 } from '../types/logs.js'
 import type {
@@ -440,8 +441,9 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
   messages: SerializedMessage[]
   sessionId: UUID | undefined
   startedAt?: number
+  costState?: SessionCostStateEntry
 }> {
-  const { messages: byUuid, leafUuids, sessionStartedAts } = await loadTranscriptFile(path)
+  const { messages: byUuid, leafUuids, sessionStartedAts, costStates } = await loadTranscriptFile(path)
   let tip: (typeof byUuid extends Map<UUID, infer T> ? T : never) | null = null
   let tipTs = 0
   for (const m of byUuid.values()) {
@@ -461,6 +463,7 @@ export async function loadMessagesFromJsonlPath(path: string): Promise<{
     // loadFullLog's mostRecentLeaf.sessionId.
     sessionId: tip.sessionId as UUID | undefined,
     startedAt: sessionStartedAts.get(tip.sessionId as UUID),
+    costState: costStates.get(tip.sessionId as UUID),
   }
 }
 
@@ -491,6 +494,7 @@ export async function loadConversationForResume(
   contextCollapseSnapshot?: ContextCollapseSnapshotEntry
   sessionId: UUID | undefined
   startedAt?: number
+  costState?: SessionCostStateEntry
   // Session metadata for restoring agent context
   agentName?: string
   agentColor?: string
@@ -511,6 +515,7 @@ export async function loadConversationForResume(
     let messages: Message[] | null = null
     let sessionId: UUID | undefined
     let startedAt: number | undefined
+    let costState: SessionCostStateEntry | undefined
 
     if (source === undefined) {
       // --continue: most recent session, skipping live --bg/daemon sessions
@@ -546,6 +551,7 @@ export async function loadConversationForResume(
       messages = loaded.messages
       sessionId = loaded.sessionId
       startedAt = loaded.startedAt
+      costState = loaded.costState
     } else if (typeof source === 'string') {
       // Load specific session by ID
       log = await getLastSessionLog(source as UUID)
@@ -606,6 +612,7 @@ export async function loadConversationForResume(
       contextCollapseSnapshot: log?.contextCollapseSnapshot,
       sessionId,
       startedAt: log?.startedAt ?? startedAt,
+      costState: log?.costState ?? costState,
       // Include session metadata for restoring agent context on resume
       agentName: log?.agentName,
       agentColor: log?.agentColor,

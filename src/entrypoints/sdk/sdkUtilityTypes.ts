@@ -1,8 +1,5 @@
-import type { ModelUsage } from './coreTypes.generated.js'
+import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 
 export type NonNullableUsage = {
-  [K in keyof ModelUsage]: NonNullable<ModelUsage[K]>
-} & {
-  // Allow additional snake_case properties from API response
-  [key: string]: unknown
+  [K in keyof BetaUsage]: NonNullable<BetaUsage[K]>
 }

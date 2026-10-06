@@ -66,7 +66,6 @@ import {
   getProjectRoot,
   getSessionId,
   switchSession,
-  setCostStateForRestore,
   getTurnHookDurationMs,
   getTurnHookCount,
   resetTurnHookDuration,
@@ -176,7 +175,7 @@ import {
   getTotalCost,
   saveCurrentSessionCosts,
   resetCostState,
-  getStoredSessionCosts,
+  restoreSessionCosts,
 } from '../cost-tracker.js'
 import { useCostSummary } from '../costHook.js'
 import { useFpsMetrics } from '../context/fpsMetrics.js'
@@ -2891,10 +2890,6 @@ export function REPL({
 
         setConversationId(sessionId)
 
-        // Get target session's costs BEFORE saving current session
-        // (saveCurrentSessionCosts overwrites the config, so we need to read first)
-        const targetSessionCosts = getStoredSessionCosts(sessionId)
-
         // Save current session's costs before switching to avoid losing accumulated costs
         saveCurrentSessionCosts()
 
@@ -2922,6 +2917,7 @@ export function REPL({
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
         restoreSessionMetadata(log)
+        restoreSessionCosts(log)
         modsSession?.restoreAuthoringConsent?.(log.devModsFolder)
         // Resumed sessions shouldn't re-title from mid-conversation context
         // (same reasoning as the useRef seed), and the previous session's
@@ -2975,10 +2971,6 @@ export function REPL({
           saveMode(isCoordinatorMode() ? 'coordinator' : 'normal')
         }
 
-        // Restore target session's costs from the data we read earlier
-        if (targetSessionCosts) {
-          setCostStateForRestore(targetSessionCosts)
-        }
         restoreGoalSessionFromLog(messages, setAppState)
 
         // Reconstruct replacement state for the resumed session. Runs after

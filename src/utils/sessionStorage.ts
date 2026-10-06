@@ -55,6 +55,7 @@ import {
   type LogOption,
   type PersistedWorktreeSession,
   type SerializedMessage,
+  type SessionCostStateEntry,
   sortLogs,
   type TranscriptMessage,
 } from '../types/logs.js'
@@ -81,7 +82,7 @@ import { getFsImplementation } from './fsOperations.js'
 import { getWorktreePaths } from './getWorktreePaths.js'
 import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
-import { parseSessionCostState } from './sessionCostState.js'
+import { captureSessionCostState, parseSessionCostState } from './sessionCostState.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
@@ -475,6 +476,13 @@ function getProject(): Project {
           // Best-effort — don't let metadata re-append crash the cleanup
         }
       })
+      process.on('exit', () => {
+        try {
+          project?.appendSessionCostState(captureSessionCostState())
+        } catch (error) {
+          logForDebugging(`[ModsSession] cost snapshot exit write failed: ${error}`, { level: 'error' })
+        }
+      })
       cleanupRegistered = true
     }
   }
@@ -705,6 +713,12 @@ class Project {
     this.pendingEntries = []
   }
 
+  appendSessionCostState(entry: SessionCostStateEntry): void {
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
+    if (entry.sessionId !== getSessionId() || this.sessionFile !== getTranscriptPath()) return
+    appendEntryToFile(this.sessionFile, entry)
+  }
+
   /**
    * Re-append cached session metadata to the end of the transcript file.
    * This ensures metadata stays within the tail window that readLiteMetadata
@@ -737,6 +751,7 @@ class Project {
     if (!this.sessionFile || this.shouldSkipPersistence()) return
     const sessionId = getSessionId() as UUID
     if (!sessionId) return
+    this.appendSessionCostState(captureSessionCostState())
     const startedAt = getSessionStartedAt()
     if (startedAt !== undefined) {
       appendEntryToFile(this.sessionFile, { type: 'session-started-at', sessionId, startedAt })
@@ -2361,6 +2376,7 @@ export async function loadTranscriptFromFile(
       worktreeStates,
       devModsFolders,
       sessionStartedAts,
+      costStates,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -2408,6 +2424,7 @@ export async function loadTranscriptFromFile(
         : undefined,
       devModsFolder: devModsFolders.get(sessionId),
       startedAt: sessionStartedAts.get(sessionId),
+      costState: costStates.get(sessionId),
     }
   }
 
@@ -2867,6 +2884,16 @@ export function clearSessionMetadata(): void {
   project.currentSessionPrRepository = undefined
 }
 
+export async function recordSessionCostState(entry: SessionCostStateEntry): Promise<void> {
+  const project = getProject()
+  if (!project.sessionFile || project.sessionFile !== getTranscriptPath() || entry.sessionId !== getSessionId()) return
+  try {
+    await project.appendEntry(entry, entry.sessionId)
+  } catch (error) {
+    logForDebugging(`[ModsSession] cost snapshot write failed: ${error}`, { level: 'error' })
+  }
+}
+
 /**
  * Re-append cached session metadata (custom title, tag) to the end of the
  * transcript file. Call this after compaction so the metadata stays within
@@ -3037,6 +3064,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       worktreeStates,
       devModsFolders,
       sessionStartedAts,
+      costStates,
       fileHistorySnapshots,
       attributionSnapshots,
       contentReplacements,
@@ -3084,6 +3112,7 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
           ? worktreeStates.get(sessionId)
           : log.worktreeSession,
       startedAt: sessionId ? sessionStartedAts.get(sessionId) : undefined,
+      costState: sessionId ? costStates.get(sessionId) : undefined,
       devModsFolder: sessionId
         ? devModsFolders.get(sessionId)
         : log.devModsFolder,
@@ -3559,6 +3588,7 @@ export async function loadTranscriptFile(
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
   sessionStartedAts: Map<UUID, number>
+  costStates: Map<UUID, SessionCostStateEntry>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3581,7 +3611,7 @@ export async function loadTranscriptFile(
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
   const devModsFolders = new Map<UUID, string>()
   const sessionStartedAts = new Map<UUID, number>()
-  const costStateStarts = new Map<UUID, number>()
+  const costStates = new Map<UUID, SessionCostStateEntry>()
   const keepStartedAt = (sessionId: UUID, startedAt: unknown) => {
     if (!sessionStartedAts.has(sessionId) && isSessionStartEpoch(startedAt)) {
       sessionStartedAts.set(sessionId, startedAt)
@@ -3589,8 +3619,8 @@ export async function loadTranscriptFile(
   }
   const keepCostStateStart = (entry: unknown) => {
     const state = parseSessionCostState(entry)
-    if (state && isSessionStartEpoch(state.startTime)) {
-      costStateStarts.set(state.sessionId, state.startTime)
+    if (state) {
+      costStates.set(state.sessionId, state)
     }
   }
   const fileHistorySnapshots = new Map<UUID, FileHistorySnapshotMessage>()
@@ -3903,7 +3933,8 @@ export async function loadTranscriptFile(
     modes,
     worktreeStates,
     devModsFolders,
-    sessionStartedAts: new Map([...costStateStarts, ...sessionStartedAts]),
+    sessionStartedAts: new Map([...Array.from(costStates, ([id, state]) => [id, state.startTime] as const), ...sessionStartedAts]),
+    costStates,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3927,6 +3958,7 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
   devModsFolders: Map<UUID, string>
   sessionStartedAts: Map<UUID, number>
+  costStates: Map<UUID, SessionCostStateEntry>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3985,6 +4017,7 @@ export async function getLastSessionLog(
     worktreeStates,
     devModsFolders,
     sessionStartedAts,
+    costStates,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -4032,6 +4065,7 @@ export async function getLastSessionLog(
     worktreeSession: worktreeStates.get(sessionId),
     devModsFolder: devModsFolders.get(sessionId),
     startedAt: sessionStartedAts.get(sessionId),
+    costState: costStates.get(lastMessage.sessionId as UUID),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),
@@ -4734,6 +4768,7 @@ export async function loadAllLogsFromSessionFile(
     contentReplacements,
     leafUuids,
     sessionStartedAts,
+    costStates,
   } = await loadTranscriptFile(sessionFile, { keepAllLeaves: true })
 
   if (messages.size === 0) return []
@@ -4785,6 +4820,7 @@ export async function loadAllLogsFromSessionFile(
       isSidechain: firstMessage.isSidechain ?? false,
       sessionId,
       startedAt: sessionStartedAts.get(sessionId),
+      costState: costStates.get(sessionId),
       leafUuid: leafMessage.uuid,
       summary: summaries.get(leafMessage.uuid),
       customTitle: customTitles.get(sessionId),

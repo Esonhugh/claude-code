@@ -1,5 +1,18 @@
 import type { UUID } from 'crypto'
 import { z } from 'zod'
+import {
+  getModelUsage,
+  getSessionId,
+  getSessionStartTime,
+  getTotalAPIDuration,
+  getTotalAPIDurationWithoutRetries,
+  getTotalCostUSD,
+  getTotalDuration,
+  getTotalLinesAdded,
+  getTotalLinesRemoved,
+  getTotalToolDuration,
+  hasUnknownModelCost,
+} from '../bootstrap/state.js'
 import type { SessionCostStateEntry } from '../types/logs.js'
 
 // The 2.1.291 transcript reader admits only complete, bounded cost snapshots.
@@ -51,4 +64,30 @@ export function parseSessionCostState(
 ): SessionCostStateEntry | undefined {
   const result = costStateSchema.safeParse(value)
   return result.success ? { ...result.data, sessionId: result.data.sessionId as UUID } : undefined
+}
+
+/** Capture wire fields only; runtime model limits are rebuilt during restore. */
+export function captureSessionCostState(): SessionCostStateEntry {
+  return {
+    type: 'cost-state',
+    sessionId: getSessionId() as UUID,
+    totalCostUSD: getTotalCostUSD(),
+    totalAPIDuration: getTotalAPIDuration(),
+    totalAPIDurationWithoutRetries: getTotalAPIDurationWithoutRetries(),
+    totalToolDuration: getTotalToolDuration(),
+    totalLinesAdded: getTotalLinesAdded(),
+    totalLinesRemoved: getTotalLinesRemoved(),
+    totalDuration: getTotalDuration(),
+    startTime: getSessionStartTime(),
+    modelUsage: Object.fromEntries(Object.entries(getModelUsage()).map(([model, usage]) => [model, {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      thinkingTokens: usage.thinkingTokens,
+      cacheReadInputTokens: usage.cacheReadInputTokens,
+      cacheCreationInputTokens: usage.cacheCreationInputTokens,
+      webSearchRequests: usage.webSearchRequests,
+      costUSD: usage.costUSD,
+    }])),
+    hasUnknownModelCost: hasUnknownModelCost(),
+  }
 }

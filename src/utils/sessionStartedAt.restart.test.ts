@@ -57,6 +57,17 @@ if (!phase) {
     if (phase === 'write') {
       const startedAt = state.getSessionStartedAt()
       expect(startedAt).toBeNumber()
+      state.setCostStateForRestore({
+        totalCostUSD: 1.25, totalAPIDuration: 300, totalAPIDurationWithoutRetries: 200,
+        totalToolDuration: 100, totalLinesAdded: 3, totalLinesRemoved: 2,
+        lastDuration: 0, startTime: startedAt,
+        modelUsage: { 'claude-sonnet-4-6': {
+          inputTokens: 20, outputTokens: 10, thinkingTokens: 6,
+          cacheReadInputTokens: 4, cacheCreationInputTokens: 5, webSearchRequests: 1,
+          costUSD: 1.25, contextWindow: 200000, maxOutputTokens: 64000,
+        } },
+      })
+      state.setHasUnknownModelCost()
       const { createUserMessage } = await import('./messages.js')
       await storage.recordTranscript([
         createUserMessage({ content: 'independent epoch restore' }),
@@ -88,6 +99,9 @@ if (!phase) {
     )
     expect(result?.sessionId).toBe(saved.id)
     expect(result?.startedAt).toBe(saved.startedAt)
+    expect(result?.costState?.totalCostUSD).toBe(1.25)
+    const { saveCurrentProjectConfig } = await import('./config.js')
+    saveCurrentProjectConfig(project => ({ ...project, lastSessionId: saved.id, lastCost: 99 }))
     const { getDefaultAppState } = await import('../state/AppStateStore.js')
     const initialState = getDefaultAppState()
     const { processResumedConversation } = await import('./sessionRestore.js')
@@ -112,6 +126,14 @@ if (!phase) {
     expect(state.getSessionStartedAt()).toBe(
       saved.startedAt,
     )
+    expect(state.getTotalCostUSD()).toBe(1.25)
+    expect(state.getTotalAPIDuration()).toBe(300)
+    expect(state.getTotalAPIDurationWithoutRetries()).toBe(200)
+    expect(state.getTotalToolDuration()).toBe(100)
+    expect(state.getTotalLinesAdded()).toBe(3)
+    expect(state.getTotalLinesRemoved()).toBe(2)
+    expect(state.hasUnknownModelCost()).toBe(true)
+    expect(state.getModelUsage()['claude-sonnet-4-6']?.thinkingTokens).toBe(6)
     await storage.flushSessionStorage()
   })
 }

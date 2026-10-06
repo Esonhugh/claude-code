@@ -98,6 +98,7 @@ export type ProjectConfig = {
     {
       inputTokens: number
       outputTokens: number
+      thinkingTokens?: number
       cacheReadInputTokens: number
       cacheCreationInputTokens: number
       webSearchRequests: number

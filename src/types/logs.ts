@@ -52,6 +52,7 @@ export type LogOption = {
   contentReplacements?: ContentReplacementRecord[] // Replacement decisions for resume reconstruction
   devModsFolder?: string // Positive session-scoped Mods authoring consent
   startedAt?: number // Exact launch epoch; older transcripts may not have it.
+  costState?: SessionCostStateEntry // Last valid snapshot for the selected session.
 }
 
 export type SessionCostStateEntry = {

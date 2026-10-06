@@ -604,7 +604,7 @@ export function getTotalAPIDuration(): number {
 }
 
 export function getTotalDuration(): number {
-  return Date.now() - STATE.startTime
+  return Math.max(0, Date.now() - STATE.startTime)
 }
 
 export function getTotalAPIDurationWithoutRetries(): number {
@@ -920,6 +920,7 @@ export function setCostStateForRestore({
   lastDuration,
   startTime,
   modelUsage,
+  hasUnknownModelCost: restoredUnknownModelCost,
 }: {
   totalCostUSD: number
   totalAPIDuration: number
@@ -930,6 +931,7 @@ export function setCostStateForRestore({
   lastDuration: number | undefined
   startTime?: number
   modelUsage: { [modelName: string]: ModelUsage } | undefined
+  hasUnknownModelCost?: boolean
 }): void {
   STATE.totalCostUSD = totalCostUSD
   STATE.totalAPIDuration = totalAPIDuration
@@ -940,12 +942,13 @@ export function setCostStateForRestore({
 
   // Restore per-model usage breakdown, clearing stale usage for legacy records.
   STATE.modelUsage = modelUsage ?? {}
+  STATE.hasUnknownModelCost = restoredUnknownModelCost ?? false
 
   // Adjust startTime to make wall duration accumulate
   if (lastDuration !== undefined) {
     STATE.startTime = Date.now() - lastDuration
   }
-  if (isSessionStartEpoch(startTime)) {
+  if (typeof startTime === 'number' && Number.isFinite(startTime) && startTime >= 0) {
     STATE.sessionStartedAt = Math.min(startTime, STATE.startTime)
   }
 }
