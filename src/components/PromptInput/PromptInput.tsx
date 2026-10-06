@@ -43,7 +43,7 @@ import { isUltrareviewEnabled } from '../../commands/review/ultrareviewEnabled.j
 import { getNativeCSIuTerminalDisplayName } from '../../commands/terminalSetup/terminalSetup.js'
 import { type Command, hasCommand } from '../../commands.js'
 import { useIsModalOverlayActive } from '../../context/overlayContext.js'
-import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js'
+import { PromptDockColumnsContext, usePromptOverlayAnchor, useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js'
 import {
   formatImageRef,
   formatPastedTextRef,
@@ -385,6 +385,8 @@ function PromptInput({
   typeaheadActiveRef,
   voiceInterimRange,
 }: Props): React.ReactNode {
+  const promptAnchor = usePromptOverlayAnchor()
+  const dockColumns = React.useContext(PromptDockColumnsContext)
   const mainLoopModel = useMainLoopModel()
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
@@ -3259,7 +3261,7 @@ function PromptInput({
   )
 
   return (
-    <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
+    <Box ref={promptAnchor} flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && (
         <Box marginTop={1} marginLeft={2}>
@@ -3386,7 +3388,7 @@ function PromptInput({
           position="absolute"
           marginTop={briefOwnsGap ? -2 : -1}
           height={suggestions.length === 0 && !showAutoModeOptIn ? 1 : 0}
-          width="100%"
+          width={columns - dockColumns}
           paddingLeft={2}
           paddingRight={1}
           flexDirection="column"

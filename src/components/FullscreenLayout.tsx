@@ -15,13 +15,16 @@ import { fileURLToPath } from 'url'
 import { ModalContext } from '../context/modalContext.js'
 import {
   PromptOverlayProvider,
+  PromptDockColumnsContext,
   usePromptOverlay,
   usePromptOverlayDialog,
+  usePromptOverlayGap,
 } from '../context/promptOverlayContext.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import instances from '../ink/instances.js'
+import type { DOMElement } from '../ink/dom.js'
 import { Box, Text } from '../ink.js'
 import type { Message } from '../types/message.js'
 import { openBrowser, openPath } from '../utils/browser.js'
@@ -349,6 +352,7 @@ export function FullscreenLayout({
     () => ({ columns: Math.max(0, dockColumns - 1), rows: terminalRows }),
     [dockColumns, terminalRows],
   )
+  const bottomRef = useRef<DOMElement>(null)
   const paneLayout = `${hasSidebar}:${sidebarColumns}:${hasDock}:${dockColumns}`
   const previousPaneLayout = useRef(paneLayout)
   useLayoutEffect(() => {
@@ -434,17 +438,19 @@ export function FullscreenLayout({
         <SuggestionsOverlay />
         <DialogOverlay />
         <Box
+          ref={bottomRef}
           flexDirection="column"
           width="100%"
           flexGrow={1}
           overflowY="hidden"
         >
-          {bottom}
+          <PromptDockColumnsContext value={dockColumns}>{bottom}</PromptDockColumnsContext>
+          {hasDock && <DockTail width={dockColumns} />}
         </Box>
       </Box>
     )
     return (
-      <PromptOverlayProvider>
+      <PromptOverlayProvider container={bottomRef}>
         <Box flexGrow={1} flexDirection="column" overflow="hidden">
           <Box flexGrow={1} flexDirection="row" overflow="hidden">
             <TerminalSizeContext value={conversationSize}>
@@ -482,7 +488,6 @@ export function FullscreenLayout({
                     {inlinePane}
                   </Box>
                 )}
-                {hasDock && bottomContent}
               </Box>
             </TerminalSizeContext>
             {hasSidebar && (
@@ -498,6 +503,8 @@ export function FullscreenLayout({
                   flexDirection="column"
                   flexShrink={0}
                   width={dockColumns}
+                  backgroundColor="composerSidebarBackground"
+                  borderLeftDimColor
                   overflow="hidden"
                   borderStyle="single"
                   borderLeft
@@ -510,7 +517,7 @@ export function FullscreenLayout({
               </TerminalSizeContext>
             )}
           </Box>
-          {!hasDock && bottomContent}
+          {bottomContent}
         </Box>
         {modal != null && (
           <ModalContext
@@ -578,6 +585,15 @@ export function FullscreenLayout({
       {modal}
     </>
   )
+}
+
+function DockTail({ width }: { width: number }): React.ReactNode {
+  const rows = usePromptOverlayGap()
+  return rows > 0 ? (
+    <Box position="absolute" top={0} right={0} width={width} height={rows}
+      backgroundColor="composerSidebarBackground" borderStyle="single" borderLeft
+      borderRight={false} borderTop={false} borderBottom={false} borderLeftDimColor />
+  ) : null
 }
 
 // Slack-style pill. Absolute overlay at bottom={0} of the scrollwrap — floats

@@ -129,6 +129,10 @@ export class YogaLayoutNode implements LayoutNode {
     return this.yoga.getComputedPadding(EDGE_MAP[edge]!)
   }
 
+  getComputedMargin(edge: LayoutEdge): number {
+    return this.yoga.getComputedMargin(EDGE_MAP[edge]!)
+  }
+
   // Style setters
 
   setWidth(value: number): void {

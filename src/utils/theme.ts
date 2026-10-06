@@ -22,6 +22,7 @@ export type Theme = {
   suggestion: string
   remember: string
   background: string
+  composerSidebarBackground: string
   // Semantic colors
   success: string
   error: string
@@ -113,6 +114,7 @@ export type ThemeSetting = (typeof THEME_SETTINGS)[number]
  * from users' custom terminal ANSI color definitions
  */
 const lightTheme: Theme = {
+  composerSidebarBackground: 'rgb(245,245,245)',
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(255,0,135)', // Vibrant pink
   claude: 'rgb(215,119,87)', // Claude orange
@@ -195,6 +197,7 @@ const lightTheme: Theme = {
  * for terminals without true color support
  */
 const lightAnsiTheme: Theme = {
+  composerSidebarBackground: 'ansi:white',
   autoAccept: 'ansi:magenta',
   bashBorder: 'ansi:magenta',
   claude: 'ansi:redBright',
@@ -276,6 +279,7 @@ const lightAnsiTheme: Theme = {
  * for terminals without true color support
  */
 const darkAnsiTheme: Theme = {
+  composerSidebarBackground: 'ansi:blackBright',
   autoAccept: 'ansi:magentaBright',
   bashBorder: 'ansi:magentaBright',
   claude: 'ansi:redBright',
@@ -357,6 +361,7 @@ const darkAnsiTheme: Theme = {
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const lightDaltonizedTheme: Theme = {
+  composerSidebarBackground: 'rgb(235,235,235)',
   autoAccept: 'rgb(135,0,255)', // Electric violet
   bashBorder: 'rgb(0,102,204)', // Blue instead of pink
   claude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
@@ -438,6 +443,7 @@ const lightDaltonizedTheme: Theme = {
  * from users' custom terminal ANSI color definitions
  */
 const darkTheme: Theme = {
+  composerSidebarBackground: 'rgb(38,38,38)',
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(253,93,177)', // Bright pink
   claude: 'rgb(215,119,87)', // Claude orange
@@ -519,6 +525,7 @@ const darkTheme: Theme = {
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const darkDaltonizedTheme: Theme = {
+  composerSidebarBackground: 'rgb(38,38,38)',
   autoAccept: 'rgb(175,135,255)', // Electric violet
   bashBorder: 'rgb(51,153,255)', // Bright blue
   claude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia

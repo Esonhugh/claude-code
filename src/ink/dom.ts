@@ -51,6 +51,7 @@ export type DOMElement = {
 
   // Internal properties
   onComputeLayout?: () => void
+  layoutListeners?: Set<() => void>
   onRender?: () => void
   onImmediateRender?: () => void
   // Used to skip empty renders during React 19's effect double-invoke in test mode
@@ -285,6 +286,12 @@ export const setStyle = (node: DOMNode, style: Styles): void => {
   if (stylesEqual(node.style, style)) {
     return
   }
+  if (node.nodeName !== '#text' && node.parentNode &&
+    (node.style.position === 'absolute' || style.position === 'absolute')) {
+    const cached = nodeCache.get(node)
+    // Previous pixels may overlap clean siblings when the absolute region changes.
+    if (cached) addPendingClear(node.parentNode, cached, true)
+  }
   node.style = style
   markDirty(node)
 }
@@ -426,6 +433,15 @@ export const markDirty = (node?: DOMNode): void => {
     }
     current = current.parentNode
   }
+}
+
+// Observe completed layout, including commits made by ancestors or client leaves.
+export const subscribeLayout = (node: DOMElement, listener: () => void): (() => void) => {
+  let root = node
+  while (root.parentNode) root = root.parentNode
+  const listeners = root.layoutListeners ??= new Set()
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
 }
 
 // Walk to root and call its onRender (the throttled scheduleRender). Use for

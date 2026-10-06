@@ -110,6 +110,7 @@ export type LayoutNode = {
   getComputedHeight(): number
   getComputedBorder(edge: LayoutEdge): number
   getComputedPadding(edge: LayoutEdge): number
+  getComputedMargin(edge: LayoutEdge): number
 
   // Style setters
   setWidth(value: number): void
