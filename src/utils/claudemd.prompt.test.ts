@@ -193,7 +193,7 @@ if (!process.env[childFlag]) {
           {...e.instructionFiles[1], content:'second imported replacement marker'},
         ] });
       });
-      on('prompt.context', ($, e, next) => {
+      on('prompt.context', {}, ($, e, next) => {
         const scenario = e.blocks.find(b => b.name === 'scenario').text;
         if (scenario === 'unknown' && e.instructionFiles !== undefined) throw new Error('opaque text retained false provenance');
         if (scenario === 'empty' && e.blocks.some(b => b.name === 'claudeMd')) throw new Error('deleted files retained text');
@@ -225,6 +225,7 @@ if (!process.env[childFlag]) {
     getUserContext.cache.clear?.()
     try {
       await runtime.reconcile([{ name: 'instructions-wire', storageId: 'instructions-wire@inline', pluginRoot: project, entrypoints: [entry] }])
+      expect(diagnostics).toEqual([])
       const base = await getUserContext()
       const sourceFiles = getUserContextInstructionFiles(base)!
       for (const provider of ['anthropic', 'openai'] as const) {

@@ -1473,3 +1473,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 14个共同失败文件在隔离外层环境中再次成对复跑：9个双方通过；另5个（query、REPL.retainedTeammates.render、workflowScriptRuntime、systemPrompt.customPrompt、systemPromptType）仍是双方同样失败。bootstrap 只移除阻断其 mock Axios 调用的外加环境 flag；socket、watcher及自有 sandbox 测试在允许实际验证设施的环境中执行。没有新增当前单文件回归；这不等于全量测试或完整 Mods/UI/diff 已通过。
 - 证据：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e2-r1/isolated-summary.md`、`summary-with-retry.json`、`canonical-batch/native-pair.json`；原生原始 pane、PTY、debug 和驱动分别在 `/private/tmp/mc290-o-batch1/evidence`、`/private/tmp/mc290-l-batch1/evidence`。
 - 当前门禁：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e3-r1/isolated-summary.md`、`conditional-skips.json`、`outside-comparison/summary.json`；全量原始对比表为 `/private/tmp/mods-align-m1scugg4/changed-test-gate-e2-r1/full-isolated-comparison/report.md`。缺失生产方法、传递依赖和目录外入口项目、完整官方 UI/diff 与 release 目标继续开放。
+
+## 2026-10-06 — claudeMd Worker 夹具独立修正
+
+- 旧 fixture 在 clean HEAD 包装器2/0、当前 e2 下1/1；捕获实际加载诊断为第二个无 matcher 的 `prompt.context` 重复注册。没有修改 query/runtime 的生产行为。
+- 使用原 fixture 逐字生成旧/新插件，仅给第二个 hook 加 `{}`；原生官方 `2.1.290` 与已验证 ROOT 本地制品均旧 exit1、新 exit0，公开 hook 输出包含 `prompt.context, prompt.context{}`。本地 source reconcile 的旧 load diagnostic、新空 diagnostic 同时保留。
+- 测试增加加载后的空 diagnostic 断言，保留末尾原检查及六组 Anthropic/OpenAI 请求断言；实际 ROOT 包装器2/0、直接子测试18/0，同一更新 fixture 在私有 clean HEAD 包装器2/0。源码 core 仅该测试从 e2 变化到 `44ef72f7fa21729499b48af4a971cbc31da7680abcb3f68936b75c1419f2f8e4`。
+- 全部166个变更测试文件在同一e3源码上逐个完成、exit0；23个条件用例仍skip。全量及共同失败复验边界见上一节，未宣称全量或完整 Mods parity。
+- 原生旧/新验证与 source diagnostic：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e2-r1/claudemd-registration-probe/`；直接子测试日志：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e3-r1/outside-comparison/016-current-child/log.txt`。原始 response/fix-instructions/improvment 文本未覆盖。
