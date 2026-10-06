@@ -1461,3 +1461,15 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - REPL 取消及真实 prompt 生成测试使用无实际用途的 `ANTHROPIC_API_KEY=mods-test-unused` 满足命令目录初始化，不作为真实 provider 验收。19 项 retained 检查中，配置原子写入和 ripgrep 缓存探针因外层沙箱拒绝 `sandbox_apply`，在隔离临时目录重跑后通过；原有 driver 的 loopback mock 回归也通过。
 - **验收边界：** 本次为源码、测试及提交拆分，未推送、发布、改版本或生成新的 native binary。历史 `294a328e…` 的作者 CLI 与 G5 六场景证据仍只属于该冻结产物；文档和 CHANGELOG 改动后必须重新构建。S7、logical/physical、独立 child command 及完整 required targets 继续按各自证据判定，完整发布仍 **blocked**。
 - 最终 `make -j1 release-check` exit 0：版本 guard、CHANGELOG 检查与测试、TypeScript、ESLint、missing imports/assets audit、diff check 全通过，日志为 `/private/tmp/mods-split-nooahjr6/release-check.log`。这是静态门禁，不等于 native 或完整发布验收。
+
+
+## 2026-10-06 — 官方 290 完整作者声明的独立提交批次
+
+- 对照原生官方 `2.1.290`，binary SHA256 `b8412a3826b2dc8ecb1c0605970c28dea28355de5faa740407dd881acdd40237`；完整声明 600277 bytes，SHA256 `55d3a5dd98072b125135fae6fdc037f781b3ed9ad007dcd3ea4d657404d0b11f`。固定声明体包含 560 个公开名称及完整事件、操作、testing 和全局定义；引擎版本保持 `2.1.280`。
+- 从 clean HEAD `d03d3be` 准备独立提交副本，只加入声明、tool 结果生成、旧生成布局迁移、默认作者项目、必要测试和说明；原有21个声明测试保留，工作区额外的类型覆盖继续留在后续批次。副本 core SHA256 `5fee685a6fd1a2556abe3f2e3d62df853b636f8fbbe0f883d1ee0382671a7165`；5文件 `61 pass / 0 fail`，`make release-check` 和隔离构建均 exit 0。
+- 精确批次新制品 SHA256 `1209eaf6118ef2caab47134acff1888e01922b315cf07e1e87408e021d8a3f43`，101935586 bytes；官方与本地在自有 tmux、相同 160×40 终端、隔离 HOME 和无 TCP/Keychain 沙箱中加载相同两个作者插件，运行相同作者命令并正常 `/exit`。命令回执、完整声明体与默认根/内部 tsconfig 字节一致；同一 authored fixture 的默认根项目 `--skipLibCheck false --incremental false` 在双方均 exit 0。此项不验证复制、diff 或全 UI 帧。
+- 实际 ROOT 在 e2 core 上完整运行 `bun test src scripts`：4052 pass、25 skip、241 fail、58 errors，483文件；全量没有全绿。对101个失败/error文件逐个与 clean HEAD `d03d3be` 的同一 authored test 比较：86个当前独立通过，14个两侧非零，1个 claudeMd 旧夹具回归。官方290和本地原生都拒绝两个无 matcher 的 `prompt.context`，都接受第二个注册加 `{}`；工作区已修正并增加加载诊断断言，原六组 provider/request 断言保留，该测试修正在后续测试批次提交。
+- 修正后实际 ROOT core SHA256 `44ef72f7fa21729499b48af4a971cbc31da7680abcb3f68936b75c1419f2f8e4`，生产源码与 e2 相同，仅该夹具变化；166个变更文件在同一冻结源码上逐个独立完成，全部 exit 0。23个条件用例仍 skip，未计入官方兼容性通过。claudeMd 原始18个子测试直接复跑18/0，固定夹具在 HEAD 包装器2/0；原 `/tmp/claude-502/response.md` 保留，其9项已有当前源码成功证据。
+- 14个共同失败文件在隔离外层环境中再次成对复跑：9个双方通过；另5个（query、REPL.retainedTeammates.render、workflowScriptRuntime、systemPrompt.customPrompt、systemPromptType）仍是双方同样失败。bootstrap 只移除阻断其 mock Axios 调用的外加环境 flag；socket、watcher及自有 sandbox 测试在允许实际验证设施的环境中执行。没有新增当前单文件回归；这不等于全量测试或完整 Mods/UI/diff 已通过。
+- 证据：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e2-r1/isolated-summary.md`、`summary-with-retry.json`、`canonical-batch/native-pair.json`；原生原始 pane、PTY、debug 和驱动分别在 `/private/tmp/mc290-o-batch1/evidence`、`/private/tmp/mc290-l-batch1/evidence`。
+- 当前门禁：`/private/tmp/mods-align-m1scugg4/changed-test-gate-e3-r1/isolated-summary.md`、`conditional-skips.json`、`outside-comparison/summary.json`；全量原始对比表为 `/private/tmp/mods-align-m1scugg4/changed-test-gate-e2-r1/full-isolated-comparison/report.md`。缺失生产方法、传递依赖和目录外入口项目、完整官方 UI/diff 与 release 目标继续开放。

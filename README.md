@@ -596,6 +596,18 @@ claude plugin validate /absolute/path/to/my-mod
 claude plugin test /absolute/path/to/my-mod
 ```
 
+作者主声明采用官方 2.1.290 原生制品内的完整声明体，保留全部公开类型、操作映射、testing 和全局定义。首次加载会生成三个类型根；没有 `jsconfig.json` 或自定义 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有作者配置不覆盖；升级时仅移除校验仍匹配的旧生成 `results.d.ts`，作者改写和符号链接保留。
+
+在本仓库已安装开发依赖的环境中，加载后可严格检查插件项目：
+
+```bash
+bun ./node_modules/typescript/bin/tsc -p /absolute/path/to/my-mod/tsconfig.json --skipLibCheck false --incremental false
+```
+
+旧本地别名 `CAS`、`HookEvent`、`EventPattern`、`Surface` 分别改用官方的 `StateSetOptions`、`EventName`、`Pattern`、`RenderSurface`；`!*` 不属于官方 pattern。testing 挂载使用对象参数，显式给出 `plugin`、`surface`、`component` 和该组件的完整 `props`。
+
+完整声明不代表所有运行时能力已经接入。当前仍缺 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`、`telemetry.log/mark` 和 `process.spawn` 的生产方法；新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需要继续对齐。依赖契约的传递类型根和 hooks 目录外入口的项目 include 仍待实现。官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 与实际运行时支持范围应一起核对。
+
 `plugin validate` 校验 manifest、hook module、依赖、类型契约和 state 读写；`plugin test` 运行 `tests/` 中导入 `claude-code/testing` 的隔离作者测试。会话内可用 `/plugin-authoring` 请求当前 session 的作者目录并打开内置指南，也可显式刷新或启停（`my-mod` 为 manifest 名称）：
 
 ```text
