@@ -1,3 +1,4 @@
+import { takeSubagentConcurrencySlot } from '../subagentConcurrency.js'
 import { feature } from 'bun:bundle'
 import type {
   ContentBlockParam,
@@ -230,22 +231,27 @@ async function executeForkedSlashCommand(
         context.options.refreshTools?.() ?? context.options.tools
 
       const agentMessages: Message[] = []
-      for await (const message of runAgent({
-        agentDefinition,
-        promptMessages,
-        toolUseContext: {
-          ...context,
-          getAppState: modifiedGetAppState,
-          abortController: bgAbortController,
-        },
-        canUseTool,
-        isAsync: true,
-        querySource: 'agent:custom',
-        model: command.model as ModelAlias | undefined,
-        availableTools: freshTools,
-        override: { agentId },
-      })) {
-        agentMessages.push(message)
+      const releaseSlot = takeSubagentConcurrencySlot(context)
+      try {
+        for await (const message of runAgent({
+          agentDefinition,
+          promptMessages,
+          toolUseContext: {
+            ...context,
+            getAppState: modifiedGetAppState,
+            abortController: bgAbortController,
+          },
+          canUseTool,
+          isAsync: true,
+          querySource: 'agent:custom',
+          model: command.model as ModelAlias | undefined,
+          availableTools: freshTools,
+          override: { agentId },
+        })) {
+          agentMessages.push(message)
+        }
+      } finally {
+        releaseSlot()
       }
       const resultText = extractResultText(agentMessages, 'Command completed')
       logForDebugging(
@@ -311,6 +317,7 @@ async function executeForkedSlashCommand(
   updateProgress()
 
   // Run the sub-agent
+  const releaseSlot = takeSubagentConcurrencySlot(context)
   try {
     for await (const message of runAgent({
       agentDefinition,
@@ -353,6 +360,7 @@ async function executeForkedSlashCommand(
       }
     }
   } finally {
+    releaseSlot()
     // Clear the progress display
     setToolJSX(null)
   }

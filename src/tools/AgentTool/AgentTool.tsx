@@ -53,6 +53,7 @@ import {
 import { assembleToolPool } from '../../tools.js'
 import { asAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
+import { assertSubagentCapacity, takeSubagentConcurrencySlot } from '../../utils/subagentConcurrency.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -746,6 +747,8 @@ export const AgentTool = buildTool({
       throw new Error('cwd is mutually exclusive with isolation: "worktree"')
     }
 
+    if (effectiveIsolation !== 'remote') assertSubagentCapacity(toolUseContext)
+
     // Capture for type narrowing — `let selectedAgent` prevents TS from
     // narrowing property types across the if-else assignment above.
     const requiredMcpServers = selectedAgent.requiredMcpServers
@@ -1250,6 +1253,15 @@ export const AgentTool = buildTool({
       return { worktreePath, worktreeBranch }
     }
 
+    try {
+      assertSubagentCapacity(toolUseContext)
+    } catch (error) {
+      await cleanupWorktreeIfNeeded()
+      throw error
+    }
+    const releaseSlot = takeSubagentConcurrencySlot(toolUseContext)
+    let ownsSlot = true
+    try {
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId
       const agentBackgroundTask = registerAsyncAgent({
@@ -1322,10 +1334,12 @@ export const AgentTool = buildTool({
               isForkSubagentEnabled() ||
               getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,
+            onRunSettled: releaseSlot,
           }),
         ),
       )
 
+      ownsSlot = false
       const launch = { model: resolvedAgentModel, agentId: agentBackgroundTask.agentId }
       notifyStarted(launch)
       const canReadOutputFile = toolUseContext.options.tools.some(
@@ -1365,7 +1379,7 @@ export const AgentTool = buildTool({
 
       // Wrap entire sync agent execution in context for analytics attribution
       // and optionally in a worktree cwd override for filesystem isolation
-      return runWithAgentContext(syncAgentContext, () =>
+      return await runWithAgentContext(syncAgentContext, () =>
         wrapWithCwd(async () => {
           const agentMessages: MessageType[] = []
           const agentStartTime = Date.now()
@@ -1659,6 +1673,7 @@ export const AgentTool = buildTool({
                       // unblocks immediately. classifyHandoffIfNeeded and
                       // cleanupWorktreeIfNeeded can hang — they must not gate
                       // the status transition (gh-20236).
+                      releaseSlot()
                       completeAsyncAgent(agentResult, rootSetAppState)
                       logForDebugging(
                         `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=completed tool_uses=${agentResult.totalToolUseCount}`,
@@ -1736,6 +1751,7 @@ export const AgentTool = buildTool({
                         ...worktreeResult,
                       })
                     } catch (error) {
+                      releaseSlot()
                       if (error instanceof AbortError) {
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
@@ -1820,6 +1836,7 @@ export const AgentTool = buildTool({
                         ...worktreeResult,
                       })
                     } finally {
+                      releaseSlot()
                       if (stopForegroundSummarization) {
                         stopForegroundSummarization()
                         logForDebugging(
@@ -1833,6 +1850,7 @@ export const AgentTool = buildTool({
                     }
                   })
 
+                  ownsSlot = false
                   // Return async_launched result immediately
                   const canReadOutputFile = toolUseContext.options.tools.some(
                     t =>
@@ -1984,6 +2002,7 @@ export const AgentTool = buildTool({
             // Store the error to handle after cleanup
             syncAgentError = toError(error)
           } finally {
+            if (!wasBackgrounded) releaseSlot()
             removeParentAbortForwarder?.()
 
             // Clear the background hint UI
@@ -2140,6 +2159,9 @@ export const AgentTool = buildTool({
           }
         }),
       )
+    }
+    } finally {
+      if (ownsSlot) releaseSlot()
     }
     }
 

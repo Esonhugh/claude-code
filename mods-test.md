@@ -1782,3 +1782,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 
 - 相邻测试发现旧 HEAD 的 runtimeHostHooks.test.ts 中 session.usage mock 缺少现有必需字段 startedAt，plugin 的结果校验失败后落入 outer bottom；clean HEAD 25／1，ROOT 已含启动时间的 WIP 26／0。
 - 独立测试提交只在 mock 值及原完整结果断言各增加 startedAt：1791080000123，独立候选26／0、ROOT26／0。不折入该文件关于 session.version 的其他 WIP；不新增 skip 或改变生产源码。证据 `/private/tmp/mods-spawn-bound-20261007-xsy7g593/fixture`。
+
+## 2026-10-07：普通 Agent 全局并发的独立提交
+
+- 官方依据：最新 npm 元数据仍为 2.1.291；task registry 使用 runningSubagents 独立计数，AgentTool 在新建前两次检查，恢复和 fork 只预留。实际运行结束先释放，再发布终态和执行清理。公开 Mod 全局拒绝是 deny 对象，插件额度拒绝是异常。
+- 实现：根 AppState 计数与默认值、嵌套根 reader/writer、前台/后台名额移交、生命周期释放回调、resume/fork 预留、共享环境解析器及关键计数 debug。真实 teammate/remote 启动保留独立路径。只选取本批必要修改，既有 WIP 保留。
+- RED：旧 HEAD 的新增 Agent 回归 0 pass / 10 fail，无额外 error；本轮 ROOT 旧行为 Make binary 在全局满额时实际接受其他插件 spawn，真实 tmux 断言失败。官方同场返回精确 deny，普通 Agent 工具错误且零子 API。
+- 完整结果、当前源码/制品身份与失败诊断见 [全局并发记录](docs/research/mods-agent-concurrency-20261007.md)，证据根 /private/tmp/mods-agent-cap-20261007-tfmvh1z2。
+- 边界：官方组织与模型能力控制下的 ultracode 旁路、所有原生错误/取消/恢复/Workflow/remote/teammate 组合、同进程全量 suite、G5、标题 helper 与完整 API/UI/diff 目标继续验收。相关回归成功不代替整体完成；原报告/资产与其他 Claude 进程保留，不 push。

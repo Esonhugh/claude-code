@@ -37,6 +37,7 @@ import { createModSessionMeasure } from './sessionMeasure.js'
 import { validateModCompactInput, validateModCompactResult } from './compactAdapter.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { getMaxConcurrentSubagents } from '../../utils/subagentConcurrency.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
 import { createModToasts } from './toast.js'
@@ -1459,9 +1460,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               release() {},
             }
             const plugin = owner.declaration.name
-            const rawLimit = process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS?.trim() ?? ''
-            const parsedLimit = Number(rawLimit)
-            const limit = /^[+-]?\d+$/.test(rawLimit) && Number.isFinite(parsedLimit) && parsedLimit >= 1 ? parsedLimit : 20
+            const limit = getMaxConcurrentSubagents()
             const running = runningSpawns.get(plugin) ?? 0
             let leftRunning = false
             let reserved = false

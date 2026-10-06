@@ -935,4 +935,27 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 收到启动回执不会释放名额；宿主依据根任务表中的 `agentId` 观察任务，`completed/failed/killed` 或已观察记录被移除后释放。失败、拒绝、前台完成、remote 或 teammate 等没有返回 `async_launched` 的执行不会占用后台名额。任务已启动后，调用者退出及插件重载不会重置其计数。达到上限时抛出 `<plugin>: $.agent.spawn refused: <limit> spawns are running at once`，作者可捕获错误并等待已有任务结束后再尝试。
 
-`--debug --debug-file /absolute/path/debug.log` 输出 `[ModsAgent] spawn reserved/settled/released`，包含插件、agent/task ID、状态及计数，不打印任务正文。运行 `bun test --no-env-file ./src/services/mods/spawnConcurrency.test.ts ./src/services/mods/toolHost.spawnLifetime.test.ts` 验证插件计数与实际 Agent 返回状态。官方普通 Agent 入口还有全局并发检查；该独立差异仍待对齐，不能将本条理解为全部 Agent/Workflow 并发限制已兼容。
+`--debug --debug-file /absolute/path/debug.log` 输出 `[ModsAgent] spawn reserved/settled/released`，包含插件、agent/task ID、状态及计数，不打印任务正文。运行 `bun test --no-env-file ./src/services/mods/spawnConcurrency.test.ts ./src/services/mods/toolHost.spawnLifetime.test.ts` 验证插件计数与实际 Agent 返回状态。普通 Agent 入口还有独立的全局并发检查；两类拒绝的处理方法见下节，完整原生入口矩阵继续验收。
+
+### Agent 并发限制
+
+普通本地 Agent 与 Mod 插件各自检查同时运行数，默认上限为 20。启动 CLI 前可配置：
+
+```sh
+export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2
+```
+
+变量支持 trim 后带可选符号的正十进制整数，无效值回退到 20。启动回执返回后，后台任务继续占用名额；前台转后台保留同一名额。恢复任务和 context: fork 命令参与全局计数，沿用官方的恢复/命令启动规则。
+
+作者应处理全局额度不足的返回值：
+
+```js
+const result = await $.agent.spawn({ prompt: 'Review the change', subagentType: 'general-purpose' })
+if ('deny' in result) {
+  await $.ui.log(result.deny)
+} else {
+  await $.ui.log(`Started ${result.agentId}`)
+}
+```
+
+插件自身额度耗尽仍抛出包含插件名的异常。全局计数、拒绝和释放可在 --debug 的 AgentConcurrency 日志中核对。本轮验证及原生入口限制见 [全局并发记录](docs/research/mods-agent-concurrency-20261007.md)。

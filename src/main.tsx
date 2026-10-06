@@ -3997,6 +3997,7 @@ async function run(): Promise<CommanderCommand> {
       const initialState: AppState = {
         settings: getInitialSettings(),
         tasks: {},
+        runningSubagents: 0,
         agentNameRegistry: new Map(),
         verbose: verbose ?? getGlobalConfig().verbose ?? false,
         diffSidebarVisible: false,

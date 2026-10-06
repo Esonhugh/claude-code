@@ -609,6 +609,7 @@ export async function runAsyncAgentLifecycle({
   agentIdForCleanup,
   enableSummarization,
   getWorktreeResult,
+  onRunSettled,
 }: {
   taskId: string
   abortController: AbortController
@@ -621,6 +622,7 @@ export async function runAsyncAgentLifecycle({
   rootSetAppState: SetAppState
   agentIdForCleanup: string
   enableSummarization: boolean
+  onRunSettled?: () => void
   getWorktreeResult: () => Promise<{
     worktreePath?: string
     worktreeBranch?: string
@@ -711,6 +713,7 @@ export async function runAsyncAgentLifecycle({
     // immediately. classifyHandoffIfNeeded (API call) and getWorktreeResult
     // (git exec) are notification embellishments that can hang — they must
     // not gate the status transition (gh-20236).
+    onRunSettled?.()
     completeAsyncAgent(agentResult, rootSetAppState)
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
@@ -766,6 +769,7 @@ export async function runAsyncAgentLifecycle({
       ...worktreeResult,
     })
   } catch (error) {
+    onRunSettled?.()
     stopSummarization?.()
     const currentTask = toolUseContext.getAppState().tasks[taskId]
     if (isLocalAgentTask(currentTask) && currentTask.status === 'completed') {
@@ -869,6 +873,7 @@ export async function runAsyncAgentLifecycle({
       ...worktreeResult,
     })
   } finally {
+    onRunSettled?.()
     clearInvokedSkillsForAgent(agentIdForCleanup)
     clearDumpState(agentIdForCleanup)
   }

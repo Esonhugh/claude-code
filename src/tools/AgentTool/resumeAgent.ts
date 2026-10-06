@@ -8,6 +8,7 @@ import { registerAsyncAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js
 import { assembleToolPool } from '../../tools.js'
 import { asAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
+import { takeSubagentConcurrencySlot } from '../../utils/subagentConcurrency.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -250,6 +251,8 @@ export async function resumeAgentBackground({
     spawnDepth: meta?.spawnDepth ?? 1,
   })
 
+  const releaseSlot = takeSubagentConcurrencySlot(toolUseContext)
+
   const metadata = {
     prompt,
     resolvedAgentModel,
@@ -296,6 +299,7 @@ export async function resumeAgentBackground({
         description: uiDescription,
         toolUseContext,
         rootSetAppState,
+        onRunSettled: releaseSlot,
         agentIdForCleanup: agentId,
         enableSummarization:
           isCoordinatorMode() ||

@@ -4,6 +4,7 @@ import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import { createAssistantMessage, createUserMessage, getLastAssistantMessage } from '../../utils/messages.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { AgentPreconditionError } from '../../utils/subagentConcurrency.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
 import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
@@ -73,6 +74,9 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           if (data.status === 'async_launched' && typeof data.agentId === 'string') leftRunning(data.agentId)
         }
         return launch
+      } catch (error) {
+        if (error instanceof AgentPreconditionError) return { deny: error.message }
+        throw error
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }

@@ -244,6 +244,8 @@ export type ToolUseContext = {
    * fall back to setAppState.
    */
   setAppStateForTasks?: (f: (prev: AppState) => AppState) => void
+  /** Live root-store reader paired with setAppStateForTasks. */
+  getAppStateForTasks?: () => AppState
   /**
    * Optional handler for URL elicitations triggered by tool call errors (-32042).
    * In print/SDK mode, this delegates to structuredIO.handleElicitation.

@@ -62,10 +62,12 @@ const originalSettings = getSessionSettingsCache()
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalTestPersistence = process.env.TEST_ENABLE_SESSION_PERSISTENCE
 const originalApiKey = process.env.ANTHROPIC_API_KEY
+const originalConcurrencyLimit = process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS
 const configDir = mkdtempSync(join(tmpdir(), 'resume-agent-permission-test-'))
 process.env.CLAUDE_CONFIG_DIR = configDir
 process.env.TEST_ENABLE_SESSION_PERSISTENCE = '1'
 process.env.ANTHROPIC_API_KEY = 'test-resume-agent-permission-key'
+process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = '1'
 
 const { resumeAgentBackground } = await import('./resumeAgent.js')
 
@@ -104,6 +106,7 @@ async function runCase({
   }
   let state = {
     ...getDefaultAppState(),
+    runningSubagents: 1,
     toolPermissionContext: {
       ...getEmptyToolPermissionContext(),
       mode: parentMode,
@@ -120,10 +123,12 @@ async function runCase({
   const completion = new Promise<void>(resolve => {
     resolveCompletion = resolve
   })
+  const concurrencyCounts: number[] = []
   const setAppState = (
     updater: (prev: typeof state) => typeof state,
   ) => {
     state = updater(state)
+    concurrencyCounts.push(state.runningSubagents)
     if (
       Object.values(state.tasks).some(
         task =>
@@ -167,6 +172,8 @@ async function runCase({
     canUseTool: async () => ({ behavior: 'allow' }),
   })
   await completion
+  assert.ok(concurrencyCounts.includes(2), 'resumption must reserve a slot even at the new-launch limit')
+  assert.equal(state.runningSubagents, 1)
 
   return {
     permissionMode: controlledPermissionMode,
@@ -267,6 +274,8 @@ try {
   } else {
     process.env.ANTHROPIC_API_KEY = originalApiKey
   }
+  if (originalConcurrencyLimit === undefined) delete process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS
+  else process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = originalConcurrencyLimit
   rmSync(configDir, { recursive: true, force: true })
 }
 

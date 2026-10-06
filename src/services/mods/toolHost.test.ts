@@ -227,6 +227,7 @@ describe('author tool host through the real executor', () => {
       state = typeof updater === 'function' ? updater(state as never) as never : updater as never
     }
     const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+    if ('deny' in result) throw new Error(result.deny)
     expect(state.tasks[result.agentId!]).toMatchObject({ agentType: 'fork', spawnedBy: 'author' })
   })
 
@@ -251,6 +252,7 @@ describe('author tool host through the real executor', () => {
     }
     const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
     expect(result).toEqual({ model: expect.any(String), agentId: expect.any(String) })
+    if ('deny' in result) throw new Error(result.deny)
     if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
       expect(state.tasks[result.agentId!]).toMatchObject({
         type: 'local_agent', status: 'running', prompt: 'Review changes', agentType: 'general-purpose', spawnedBy: 'author', isBackgrounded: true,
@@ -261,6 +263,7 @@ describe('author tool host through the real executor', () => {
     f.context.agentId = 'nested-parent' as ToolUseContext['agentId']
     f.context.options.subagentDepth = 1
     const nested = await f.host.spawn({ prompt: 'Nested review', subagentType: 'general-purpose' }, f.snapshot, new AbortController().signal, 'nested-author')
+    if ('deny' in nested) throw new Error(nested.deny)
     if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
       expect(state.tasks[nested.agentId!]).toMatchObject({
         parentAgentId: 'nested-parent', spawnedBy: 'nested-author', spawnDepth: 2,
