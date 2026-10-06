@@ -180,6 +180,8 @@ export type ManagedSSHRemotePermissions = {
 }
 
 export type ToolUseContext = {
+  /** Host script invocation; distinct from a model tool call in a headless child. */
+  innerCall?: boolean
   diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
   modsSession?: import('./services/mods/session.js').ModsSession

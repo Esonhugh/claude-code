@@ -1027,8 +1027,28 @@ Review $ARGUMENTS and report findings.
 
 ### 普通 Agent 的前后台执行
 
-普通 Agent 调用省略 `run_in_background` 时，默认返回后台启动回执。需要等待结果再继续时，显式传 `run_in_background: false`；若 agent 定义声明 `background: true`，仍会后台运行。进程内 teammate 的默认子任务保持同步；`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 禁用后台执行。
+普通 Agent 调用省略 `run_in_background` 时，默认返回后台启动回执。关闭 fork 模式后，需要等待结果再继续时，显式传 `run_in_background: false`；若 agent 定义声明 `background: true`，仍会后台运行。进程内 teammate 的默认子任务保持同步；`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 禁用后台执行。
 
 对于普通 Agent，Mods 的 `agent.spawn` 事件中，`background` 表示已经解析的执行模式。回调可以将其改为 `false` 以请求前台执行；实际模式仍受后台禁用和已有强制路由规则约束。初始注册、执行和元数据使用相同计算，后台通知、并发计数与 `SendMessage` 恢复沿用现有生命周期。
 
-运行 `bun test --no-env-file ./src/tools/AgentTool/backgroundRouting.test.ts` 检查默认路由及边界。真实官方/本地终端证据与剩余范围见 [专项验收](docs/research/mods-agent-background-default-20261007.md)，背景概念见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents#run-subagents-in-foreground-or-background)。本批没有开启完整的官方默认 fork 模式。
+运行 `bun test --no-env-file ./src/tools/AgentTool/backgroundRouting.test.ts` 检查默认路由及边界。真实官方/本地终端证据与剩余范围见 [专项验收](docs/research/mods-agent-background-default-20261007.md)，背景概念见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents#run-subagents-in-foreground-or-background)。显式 fork 模式及默认开启方式见下一节；命令与 UI 仍分别验收。
+
+### 显式 fork 模式
+
+交互会话默认启用 fork 模式。模型调用 Agent 时，省略 `subagent_type` 使用独立上下文的 `general-purpose`；显式 `subagent_type: "fork"` 才继承当前对话、系统提示、工具定义及父模型。fork 忽略 `model` 参数和 `CLAUDE_CODE_SUBAGENT_MODEL`，以保留父模型与缓存前缀。
+
+```json
+{"description":"核对映射","prompt":"核对 provider effort 映射并报告证据。","subagent_type":"fork","name":"effort-review"}
+```
+
+fork 模式强制普通 Agent 后台执行，schema 不暴露 `run_in_background`。需要普通 Agent 支持显式前台执行时，可在启动前设置：
+
+```bash
+CLAUDE_CODE_FORK_SUBAGENT=0 claude
+```
+
+`CLAUDE_CODE_FORK_SUBAGENT=1` 可为非交互会话启用该模式。模式开启的 headless 子 Agent 默认同步启动自己的子任务；Mods 的 `$.agent.spawn({subagentType: "fork", prompt: "..."})` 属于脚本入口，可在非交互会话显式 fork，但仍尊重显式关闭、协调模式、允许类型与 deny。脚本标记不会继承到子会话的模型工具调用。
+
+自定义同名 agent 遮蔽合成 fork；`Agent(fork)` deny 阻止合成 fork，普通 Agent 的后台规则继续有效。合成 fork 拒绝再次 fork 和 remote 隔离。调试日志的 `[ForkMode]` 记录开启来源与会话 ID，Agent 启动日志记录类型、模型、后台模式和 ID。
+
+运行 `bun test --no-env-file ./src/tools/AgentTool/forkMode.test.ts ./src/tools/AgentTool/backgroundRouting.test.ts` 检查路由。对照依据见 [Anthropic fork 模式说明](https://code.claude.com/docs/en/sub-agents#turn-fork-mode-on-or-off)，实际证据与剩余范围见 [专项验收](docs/research/mods-fork-mode-20261007.md)。本批完成模型 Agent 和 Mods spawn 的门禁迁移；内置 `/fork` 命令与 fork 指令折叠 UI 仍待独立实现和验收。

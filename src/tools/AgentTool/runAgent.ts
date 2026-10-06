@@ -411,10 +411,10 @@ export async function* runAgent({
    * the same tool results are re-replaced (prompt cache stability). When
    * omitted, createSubagentContext clones the parent's state. */
   contentReplacementState?: ContentReplacementState
-  /** When true, inherit the parent's tools except main-thread-only tools,
+  /** When true, inherit every parent tool definition,
    * without filtering through resolveAgentTools(). Also inherits the parent's
    * thinkingConfig and isNonInteractiveSession. Used by the fork subagent path
-   * to preserve the API request prefix until the first main-thread-only tool. */
+   * to preserve the API request prefix. Main-thread-only calls retain runtime guards. */
   useExactTools?: boolean
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */

@@ -1,7 +1,11 @@
-import { feature } from 'bun:bundle'
 import type { BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { randomUUID } from 'crypto'
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { getIsNonInteractiveSession, getSessionId } from '../../bootstrap/state.js'
+import type { ToolPermissionContext } from '../../Tool.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
+import { getDenyRuleForAgent } from '../../utils/permissions/permissions.js'
+import { normalizeAgentType } from './agentTypeResolver.js'
+import { AGENT_TOOL_NAME } from './constants.js'
 import {
   FORK_BOILERPLATE_TAG,
   FORK_DIRECTIVE_PREFIX,
@@ -15,27 +19,49 @@ import { logForDebugging } from '../../utils/debug.js'
 import { createUserMessage } from '../../utils/messages.js'
 import type { BuiltInAgentDefinition } from './loadAgentsDir.js'
 
-/**
- * Fork subagent feature gate.
- *
- * When enabled:
- * - `subagent_type` becomes optional on the Agent tool schema
- * - Omitting `subagent_type` triggers an implicit fork: the child inherits
- *   the parent's full conversation context and system prompt
- * - All agent spawns run in the background (async) for a unified
- *   `<task-notification>` interaction model
- * - `/fork <directive>` slash command is available
- *
- * Mutually exclusive with coordinator mode — coordinator already owns the
- * orchestration role and has its own delegation model.
- */
+// Remember an enabled mode for the active session so schema/prompt defaults do
+// not change after interactive startup. Explicit opt-out and coordinator mode
+// always win; a new conversation gets a fresh decision.
+let enabledSessionId: string | undefined
+let enabledSource: 'env' | 'default' | undefined
+
 export function isForkSubagentEnabled(): boolean {
-  if (feature('FORK_SUBAGENT')) {
-    if (isCoordinatorMode()) return false
-    if (getIsNonInteractiveSession()) return false
-    return true
+  const sessionId = getSessionId()
+  if (sessionId !== enabledSessionId) {
+    enabledSessionId = sessionId
+    enabledSource = undefined
   }
-  return false
+  if (!canUseScriptFork()) return false
+  if (enabledSource === undefined) {
+    enabledSource = isEnvTruthy(process.env.CLAUDE_CODE_FORK_SUBAGENT)
+      ? 'env'
+      : getIsNonInteractiveSession()
+        ? undefined
+        : 'default'
+    if (enabledSource !== undefined) {
+      logForDebugging(`[ForkMode] enabled source=${enabledSource} sessionId=${sessionId}`)
+    }
+  }
+  return enabledSource !== undefined
+}
+
+function canUseScriptFork(): boolean {
+  return !isCoordinatorMode() && !isEnvDefinedFalsy(process.env.CLAUDE_CODE_FORK_SUBAGENT)
+}
+
+export function getForkAgentAvailability({ activeAgents, allowedAgentTypes, permissionContext, innerCall }: {
+  activeAgents: readonly import('./loadAgentsDir.js').AgentDefinition[]
+  allowedAgentTypes?: string[]
+  permissionContext: ToolPermissionContext
+  innerCall?: boolean
+}) {
+  if (!(isForkSubagentEnabled() || innerCall === true && canUseScriptFork()) ||
+      activeAgents.some(agent => normalizeAgentType(agent.agentType) === FORK_SUBAGENT_TYPE) ||
+      !(allowedAgentTypes?.includes(FORK_SUBAGENT_TYPE) ?? true)) {
+    return { available: false, denyRule: null }
+  }
+  const denyRule = getDenyRuleForAgent(permissionContext, AGENT_TOOL_NAME, FORK_SUBAGENT_TYPE)
+  return { available: denyRule === null, denyRule }
 }
 
 /** Synthetic agent type name used for analytics when the fork path fires. */
@@ -44,9 +70,10 @@ export const FORK_SUBAGENT_TYPE = 'fork'
 /**
  * Synthetic agent definition for the fork path.
  *
- * Not registered in builtInAgents — used only when `!subagent_type` and the
- * experiment is active. `tools: ['*']` with `useExactTools` means the fork
- * child inherits the parent's tool pool except main-thread-only tools.
+ * Not registered in builtInAgents — selected explicitly via `subagent_type:
+ * "fork"` when available. `tools: ['*']` with `useExactTools` means the fork
+ * child inherits the parent's tool definitions. Main-thread-only calls still
+ * enforce their own validation.
  * `permissionMode: 'bubble'` surfaces permission prompts to the
  * parent terminal. `model: 'inherit'` keeps the parent's model for context
  * length parity.
@@ -60,7 +87,7 @@ export const FORK_SUBAGENT_TYPE = 'fork'
 export const FORK_AGENT = {
   agentType: FORK_SUBAGENT_TYPE,
   whenToUse:
-    'Implicit fork — inherits full conversation context. Not selectable via subagent_type; triggered by omitting subagent_type when the fork experiment is active.',
+    'Fork — inherits full conversation context. Selected explicitly via subagent_type: "fork" when the fork gate is on; never the default.',
   tools: ['*'],
   maxTurns: 200,
   model: 'inherit',

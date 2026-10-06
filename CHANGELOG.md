@@ -12,6 +12,29 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 显式 fork 模式与 Agent 类型选择
+
+### 版本状态
+
+- 未发布；对齐官方 2.1.292 的 Agent fork 门禁与类型选择。
+
+### 关联提交
+
+- 本条随独立路由修改、回归及验收记录共同提交。
+
+### 变更内容
+
+- 交互会话默认启用 fork 模式；环境变量可显式开启或关闭，协调模式保持独立路由。
+- 省略 subagent_type 始终选择 general-purpose；显式 fork 继承父历史、工具和系统提示，忽略工具参数及全局子 Agent 模型覆盖。
+- 校验自定义 fork 遮蔽、允许类型、权限拒绝、递归及 remote 隔离；缺少 general-purpose 时要求明确选择类型。
+- Mods spawn 标记脚本入口，非交互脚本可显式 fork；普通 headless 子 Agent 保留同步默认例外。
+- 缓存 schema 变体而非启动前的门禁判定；fork 模式隐藏后台参数，Agent 无须 ToolSearch 即可调用，事件与日志使用实际后台判定。
+
+### 测试覆盖
+
+- 新增六种隔离环境下的真实 AgentTool 生命周期回归，并检查会话 latch、模型覆盖、脚本入口和 schema 初始化。
+- RED、Make、相关 Bun 回归及官方/候选/工作区终端证据见 docs/research/mods-fork-mode-20261007.md；Workflow、/fork 命令、折叠 UI、G5 与整体 Mods/diff 验收仍分别记录边界。
+
 ## 2026-10-07 - 普通 Agent 默认后台路由
 
 ### 版本状态

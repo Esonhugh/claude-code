@@ -50,6 +50,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           run_in_background: true,
         }, {
           ...context,
+          innerCall: true,
           toolUseId: randomUUID(),
           modsSnapshot: snapshot,
           modSpawnedBy: spawnedBy,

@@ -12,6 +12,7 @@ import { z } from 'zod/v4'
 import {
   clearInvokedSkillsForAgent,
   getSdkAgentProgressSummariesEnabled,
+  getIsNonInteractiveSession,
 } from '../../bootstrap/state.js'
 import {
   enhanceSystemPromptWithEnvDetails,
@@ -69,6 +70,8 @@ import {
   normalizeMessages,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
+import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
+import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js'
 import {
   isPlanModeAvailable,
@@ -111,7 +114,7 @@ import {
   runAsyncAgentLifecycle,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { resolveAgentType } from './agentTypeResolver.js'
+import { normalizeAgentType, resolveAgentType } from './agentTypeResolver.js'
 import {
   getAvailableMcpServerNames,
   getMissingRequiredMcpServers,
@@ -125,6 +128,7 @@ import {
   buildForkedMessages,
   buildWorktreeNotice,
   FORK_AGENT,
+  getForkAgentAvailability,
   isForkSubagentEnabled,
   isInForkChild,
 } from './forkSubagent.js'
@@ -273,32 +277,29 @@ const fullInputSchema = lazySchema(() => {
 // (field type collapses to `unknown`). The ternary return produces a union
 // type, but call() destructures via the explicit AgentToolInput type below
 // which always includes all optional fields.
-const planEnabledInputSchema = lazySchema(() => {
-  const schema = feature('KAIROS')
-    ? fullInputSchema()
-    : fullInputSchema().omit({ cwd: true })
-
-  // GrowthBook-in-lazySchema is acceptable here (unlike subagent_type, which
-  // was removed in 906da6c723): the divergence window is one-session-per-
-  // gate-flip via _CACHED_MAY_BE_STALE disk read, and worst case is either
-  // "schema shows a no-op param" (gate flips on mid-session: param ignored
-  // by forceAsync) or "schema hides a param that would've worked" (gate
-  // flips off mid-session: everything still runs async via memoized
-  // forceAsync). No Zod rejection, no crash — unlike required→optional.
+const planEnabledSchema = lazySchema(() => feature('KAIROS')
+  ? fullInputSchema()
+  : fullInputSchema().omit({ cwd: true }))
+const backgroundDisabledInputSchema = lazySchema(() => planEnabledSchema().omit({ run_in_background: true }))
+const planDisabledSchema = lazySchema(() => planEnabledSchema().extend({
+  mode: permissionModeSchema()
+    .exclude(['plan'])
+    .optional()
+    .describe('Permission mode for spawned teammate. Omit to inherit the caller mode. A bypassPermissions caller always remains bypassPermissions.'),
+}))
+const planAndBackgroundDisabledInputSchema = lazySchema(() => planDisabledSchema().omit({ run_in_background: true }))
+// Cache schema variants, not the startup decision: imports can request the
+// schema before CLI bootstrap sets the session's interactive mode.
+function planEnabledInputSchema() {
   return isBackgroundTasksDisabled || isForkSubagentEnabled()
-    ? schema.omit({ run_in_background: true })
-    : schema
-})
-const planDisabledInputSchema = lazySchema(() =>
-  planEnabledInputSchema().extend({
-    mode: permissionModeSchema()
-      .exclude(['plan'])
-      .optional()
-      .describe(
-        'Permission mode for spawned teammate. Omit to inherit the caller mode. A bypassPermissions caller always remains bypassPermissions.',
-      ),
-  }),
-)
+    ? backgroundDisabledInputSchema()
+    : planEnabledSchema()
+}
+function planDisabledInputSchema() {
+  return isBackgroundTasksDisabled || isForkSubagentEnabled()
+    ? planAndBackgroundDisabledInputSchema()
+    : planDisabledSchema()
+}
 
 export function inputSchema() {
   return isPlanModeAvailable()
@@ -309,8 +310,8 @@ type InputSchema = ReturnType<typeof inputSchema>
 
 // Explicit type widens the schema inference to always include all optional
 // fields even when .omit() strips them for gating (cwd, run_in_background).
-// subagent_type is optional; call() defaults it to general-purpose when the
-// fork gate is off, or routes to the fork path when the gate is on.
+// subagent_type is optional and defaults to general-purpose in every mode.
+// The synthetic fork is always selected explicitly.
 type AgentToolInput = z.infer<ReturnType<typeof baseInputSchema>> & {
   name?: string
   team_name?: string
@@ -584,14 +585,19 @@ export const AgentTool = buildTool({
       )
     }
 
-    // Fork subagent experiment routing:
-    // - subagent_type set: use it (explicit wins)
-    // - subagent_type omitted, gate on: fork path (undefined)
-    // - subagent_type omitted, gate off: default general-purpose
-    const effectiveType =
-      subagent_type ??
-      (isForkSubagentEnabled() ? undefined : GENERAL_PURPOSE_AGENT.agentType)
-    const isForkPath = effectiveType === undefined
+    const allAgents = toolUseContext.options.agentDefinitions.activeAgents
+    const { allowedAgentTypes } = toolUseContext.options.agentDefinitions
+    const effectiveType = subagent_type ?? GENERAL_PURPOSE_AGENT.agentType
+    const requestedFork = normalizeAgentType(effectiveType) === FORK_AGENT.agentType
+    const forkAvailability = getForkAgentAvailability({
+      activeAgents: allAgents, allowedAgentTypes,
+      permissionContext: appState.toolPermissionContext,
+      innerCall: toolUseContext.innerCall,
+    })
+    if (requestedFork && forkAvailability.denyRule) {
+      throw new Error(`Agent type 'fork' has been denied by permission rule 'Agent(fork)' from ${forkAvailability.denyRule.source}.`)
+    }
+    const isForkPath = requestedFork && forkAvailability.available
 
     if (!isForkPath) {
       assertCanSpawnNestedSubagent(toolUseContext.options)
@@ -600,6 +606,9 @@ export const AgentTool = buildTool({
     let selectedAgent: AgentDefinition
     let selectedAgentMatchKind: 'fork' | 'exact' | 'normalized'
     if (isForkPath) {
+      if (isolation === 'remote') {
+        throw new Error('Fork cannot use isolation: "remote" — a remote session cannot inherit the conversation context. Omit isolation (or use "worktree"), or spawn a named agent type for remote work.')
+      }
       // Recursive fork guard: fork children keep the Agent tool in their
       // pool for cache-identical tool defs, so reject fork attempts at call
       // time. Primary check is querySource (compaction-resistant — set on
@@ -618,8 +627,18 @@ export const AgentTool = buildTool({
       selectedAgent = FORK_AGENT
       selectedAgentMatchKind = 'fork'
     } else {
-      const allAgents = toolUseContext.options.agentDefinitions.activeAgents
-      const { allowedAgentTypes } = toolUseContext.options.agentDefinitions
+      if (subagent_type === undefined) {
+        const matches = allAgents.filter(agent => normalizeAgentType(agent.agentType) === normalizeAgentType(GENERAL_PURPOSE_AGENT.agentType))
+        const exact = matches.find(agent => agent.agentType === GENERAL_PURPOSE_AGENT.agentType)
+        const defaultAgent = exact ?? (matches.length === 1 ? matches[0] : undefined)
+        if (!defaultAgent || !(allowedAgentTypes?.includes(defaultAgent.agentType) ?? true)) {
+          const offered = filterDeniedAgents(allowedAgentTypes ? allAgents.filter(agent => allowedAgentTypes.includes(agent.agentType)) : allAgents, appState.toolPermissionContext, AGENT_TOOL_NAME)
+          const available = await Promise.all(offered.map(async agent => await isAgentOffered(agent, { snapshot: toolUseContext.modsSnapshot, signal: toolUseContext.abortController.signal }) ? agent.agentType : undefined))
+          const names = available.filter((name): name is string => name !== undefined)
+          if (forkAvailability.available && isolation !== 'remote' && toolUseContext.options.querySource !== 'agent:builtin:fork' && !isInForkChild(toolUseContext.messages)) names.unshift(FORK_AGENT.agentType)
+          throw new Error(`subagent_type is required: the general-purpose agent is not available in this session. Available agents: ${names.join(', ') || 'none'}`)
+        }
+      }
       const resolution = resolveAgentType({
         requestedType: effectiveType,
         activeAgents: allAgents,
@@ -671,13 +690,15 @@ export const AgentTool = buildTool({
     // teammates retain synchronous children because they share the leader's
     // lifecycle. The built-in web-fetch helper ignores implicit async routing.
     const shouldRunInBackground = () => {
+      const forkMode = isForkSubagentEnabled()
+      const callerIsHeadlessSubagent = forkMode && toolUseContext.agentId !== undefined && toolUseContext.innerCall !== true && !isCurrentInProcessTeammate && getIsNonInteractiveSession()
+      const forceAsync = forkMode && !isCurrentInProcessTeammate && !callerIsHeadlessSubagent
       const implicitAsync =
-        !isCurrentInProcessTeammate &&
-        (run_in_background !== false ||
-          isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
-          (feature('KAIROS') ? appState.kairosEnabled : false) ||
-          (proactiveModule?.isProactiveActive() ?? false))
+        isCoordinatorMode() && !isCurrentInProcessTeammate ||
+        forceAsync ||
+        !isCurrentInProcessTeammate && !callerIsHeadlessSubagent && run_in_background !== false ||
+        (feature('KAIROS') ? appState.kairosEnabled : false) ||
+        (proactiveModule?.isProactiveActive() ?? false)
       const isWebFetchHelper =
         selectedAgent.source === 'built-in' &&
         selectedAgent.agentType === 'web-fetch'
@@ -847,12 +868,13 @@ export const AgentTool = buildTool({
     }
 
     // Snapshot once for logging, task metadata, and execution.
-    const resolvedAgentModel = getAgentModel(
-      selectedAgent.model,
-      toolUseContext.options.mainLoopModel,
-      isForkPath ? undefined : model,
-      permissionMode,
-    )
+    const resolvedAgentModel = isForkPath
+      ? getRuntimeMainLoopModel({
+          permissionMode: appState.toolPermissionContext.mode,
+          mainLoopModel: toolUseContext.options.mainLoopModel,
+          exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' && doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
+        })
+      : getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode)
 
     const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
     const parentAgentId =
@@ -880,9 +902,7 @@ export const AgentTool = buildTool({
         selectedAgent.color as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       is_built_in_agent: isBuiltInAgent(selectedAgent),
       is_resume: false,
-      is_async:
-        (run_in_background === true || selectedAgent.background === true) &&
-        !isBackgroundTasksDisabled,
+      is_async: shouldRunInBackground(),
       is_fork: isForkPath,
       agent_depth: childSubagentDepth,
       agent_system_prompt_chars: agentSystemPromptChars,
@@ -986,7 +1006,7 @@ export const AgentTool = buildTool({
         })
       }
       if (!parentMessage)
-        throw new Error('Implicit fork requires a parent assistant message')
+        throw new Error('Fork requires a parent assistant message')
       promptMessages = buildForkedMessages(prompt, parentMessage)
     } else {
       try {
@@ -1166,7 +1186,7 @@ export const AgentTool = buildTool({
         ),
       resolvedModel: resolvedAgentModel,
       // Fork path: pass the parent's system prompt and tool array. runAgent
-      // removes main-thread-only tools before building the child request.
+      // preserves every parent tool definition before building the child request.
       // workerTools is rebuilt under permissionMode 'bubble', so its tool-def
       // serialization would diverge earlier. useExactTools also inherits the
       // parent's thinkingConfig and isNonInteractiveSession (see runAgent.ts).

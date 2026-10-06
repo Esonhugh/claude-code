@@ -6,7 +6,6 @@ import {
   ASYNC_AGENT_ALLOWED_TOOLS,
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
-  MAIN_THREAD_ONLY_TOOLS,
 } from '../../constants/tools.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import {
@@ -72,7 +71,9 @@ export type ResolvedAgentTools = {
 }
 
 export function filterToolsForExactAgent(tools: Tools): Tools {
-  return tools.filter(tool => !MAIN_THREAD_ONLY_TOOLS.has(tool.name))
+  // Cache-sharing forks preserve the complete parent tool definitions. Tools
+  // restricted to the main thread still reject child calls in validateInput/call.
+  return tools
 }
 
 export function filterToolsForAgent({

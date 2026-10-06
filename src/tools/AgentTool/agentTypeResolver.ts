@@ -12,7 +12,7 @@ export type AgentTypeResolution = {
   requestedType: string
 }
 
-function normalizeAgentType(value: string): string {
+export function normalizeAgentType(value: string): string {
   return value
     .normalize('NFKC')
     .toLowerCase()

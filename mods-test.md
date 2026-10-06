@@ -1834,3 +1834,9 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 回归：显式 `false`、定义 `background:true`、Mods 改写、后台禁用、进程内 teammate 和内置/用户 web-fetch 身份；前台转后台夹具保留原断言并明确请求前台。
 - 真实入口：同一隔离 tmux 内以实际 Agent 调用省略后台参数，API 响应保持未放行，必须先观察启动回执和 `background:true` 回调，再放行并检查唯一通知及原 ID 恢复。相邻流程包括并发容量、nested Agent、同步 fork slash/SkillTool、Ctrl+B、SendMessage 和 Workflow 尝试。
 - 官方版本、RED/最终结果、证据目录和未覆盖边界见 [专项验收](docs/research/mods-agent-background-default-20261007.md)。完整默认 fork 门禁、冷恢复、Workflow 以及整体 Mods/UI/diff 对齐不能由本项推导为已完成。
+
+## 2026-10-07 显式 fork 模式与类型选择
+
+- 交互默认开启；省略类型使用 general-purpose，显式 fork 继承上下文。环境 opt-in/opt-out、六种 caller/后台组合、初始化 schema、脚本入口、缺失默认类型、遮蔽/allow/deny/递归/remote、模型继承和会话 latch 由独立回归验证。
+- 真实终端对照核对 Agent 普通默认、显式 fork、Mods script spawn、父历史与工具、父模型（含全局 Haiku 覆盖）、唯一通知及费用。相邻普通/nested/前后台切换/恢复/Workflow 入口继续使用本轮制品验收，不能借用上一批制品。
+- 证据、失败诊断与逐项结论见 [专项报告](docs/research/mods-fork-mode-20261007.md)。/fork 命令、折叠 UI、Workflow 缺失、G5、全量 suite 与整体 API/UI/diff 不由本批推导为已完成。
