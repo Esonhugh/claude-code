@@ -900,3 +900,9 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 普通子任务拥有各自的 agent ID 和执行上下文，成本与模型用量汇入所属根会话账本。`$.session.id()` 与 `(await $.session.usage({})).cost.usd` 读取当前根会话身份和累计成本，不能把根会话总额当作某一个 agent 的独立费用。保存及恢复根会话时应保留已累计的子任务用量。
 
 运行 `bun test ./src/services/api/rootLedger.test.ts` 检查两个并发子任务的上下文隔离、共享累计及根会话快照。本用法针对普通子任务；其他独立根会话的账本归属与异常恢复须按各自入口验证。真实 CLI 的 Agent 调用、保存和恢复对照范围见 `mods-test.md`。
+
+### Mod 主动工具调用的入口
+
+作者使用 `$.tool.call({tool, ...args})` 时，Agent、AskUserQuestion、Workflow 会被 host check 拒绝。使用 `$.agent.spawn({prompt, ...})` 启动子任务，用 `$.ui.ask(...)` 提问；本地 `WorkflowTool` 同样受此限制。Agent 的旧名称 Task 在解析到 Agent 时也会被拒绝。错误包含插件名、工具名称和专用入口，便于定位调用位置。
+
+这个限制作用于作者主动调用。模型正常执行工具产生的 `tool.call` 事件仍可由 Mods 观察及改写，`$.tool.check({tool, input})` 仍可查询权限，不启动工具。普通工具继续经现有权限、hooks 和执行链运行。运行 `bun test ./src/services/mods/toolHost.authorGate.test.ts` 验证这组边界；真实 CLI 对照及未完成项见 `mods-test.md`。

@@ -3,9 +3,19 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import { createAssistantMessage, createUserMessage, getLastAssistantMessage } from '../../utils/messages.js'
 import { createAbortController } from '../../utils/abortController.js'
+import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
+import { WORKFLOW_TOOL_NAME } from '../../tools/WorkflowTool/constants.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ToolCallResult } from './toolAdapter.js'
 import type { ModInput } from './types.js'
+
+const authorCallRefusals = new Map([
+  [AGENT_TOOL_NAME, 'runs the Agent tool: that is $.agent.spawn'],
+  [ASK_USER_QUESTION_TOOL_NAME, 'runs the AskUserQuestion tool: that is $.ui.ask'],
+  ['Workflow', 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
+  [WORKFLOW_TOOL_NAME, 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
+])
 
 export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToolFn) {
   const getTools = () => context.mods?.tools.projection(context.options.tools) ?? context.options.tools
@@ -58,6 +68,8 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       const { tool: name, tool_use_id: _id, agentId: _agent, consent, ...args } = input
       const tools = getTools()
       const tool = findToolByName(tools, name)
+      const refusal = authorCallRefusals.get(tool?.name ?? name)
+      if (refusal) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
       if (!tool) throw new Error(`No such tool available: ${name}`)
       const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: randomUUID(), name: tool.name, input: args }
       const assistant = createAssistantMessage({ content: [block] })
