@@ -1,4 +1,8 @@
-import { expect, spyOn, test } from 'bun:test'
+import { resetSettingsCache } from '../utils/settings/settingsCache.js'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { beforeEach, afterEach, expect, spyOn, test } from 'bun:test'
 import memoize from 'lodash-es/memoize.js'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
@@ -21,6 +25,39 @@ import {
   getUserContextInstructionFiles,
   withUserContextInstructionFiles,
 } from '../context.js'
+
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+afterEach(async () => {
+  resetSettingsCache()
+  testEnvKeys.forEach((key, i) => {
+    if (savedTestEnvironment[i] === undefined) delete process.env[key]
+    else process.env[key] = savedTestEnvironment[i]
+  })
+  if (testConfigRoot !== undefined) {
+    await rm(testConfigRoot, { recursive: true, force: true })
+    testConfigRoot = undefined
+  }
+})
 
 // Execute the actual callbacks without importing REPL's startup/services graph.
 function extract(path: string, name: string, kind: 'callback' | 'function' | 'effect' | 'block' = 'callback') {
@@ -428,6 +465,7 @@ test('successful edits reach the transcript and auto-open diff without a Mods ru
   const onEvent = extract('./REPL.tsx', 'onQueryEvent')({
     handleMessageFromStream: (event: any, append: any) => append(event),
     diffController: diff, store: { getState: () => state },
+    getDiffOwnership: () => false,
     modsSession: { runtime: undefined, ui: { getSnapshot: () => [] } },
     getSessionId: () => 'synthetic-session', process: { stdout: { columns: 144 } },
     isFullscreenEnvEnabled: () => true, fileHistoryEnabled: () => true,
@@ -463,6 +501,7 @@ test('diff open preference is global while base stays repository scoped', async 
   let cwd = '/repo-a'
   const makeDiff = extract('./REPL.tsx', '[diffController]')({
     isRemoteExecutionSession: false, DiffController, initialMessages: [],
+    diffOwnershipRef: { current: () => false },
     getCwd: () => cwd, addNotification: noop,
     getGlobalConfig: () => config,
     saveGlobalConfig: (fn: any) => { config = fn(config) },
@@ -492,6 +531,7 @@ test('startup resume dates the diff baseline from activation, not historical mes
   const before = Date.now()
   const diff = extract('./REPL.tsx', '[diffController]')({
     isRemoteExecutionSession: false, DiffController: ObservedController,
+    diffOwnershipRef: { current: () => false },
     initialMessages: [{ timestamp: '2020-01-01T00:00:00Z' }],
     getCwd: () => '/repo', addNotification: noop, getGlobalConfig: () => ({}), saveGlobalConfig: noop,
   })() as DiffController
@@ -511,6 +551,7 @@ test('diff hands an open sidebar to a dialog when layout narrows and respects an
       const name = node.name.getText(file)
       if (
         name === 'otherModalOverlayActive' ||
+        name === 'nativeDiffVisible' ||
         name === 'canShowDiffSidebar' ||
         name === 'showResponsiveDiffDialog'
       ) {
@@ -527,6 +568,7 @@ test('diff hands an open sidebar to a dialog when layout narrows and respects an
   }
   visit(file)
   expect(declarations.has('otherModalOverlayActive')).toBe(true)
+  expect(declarations.has('nativeDiffVisible')).toBe(true)
   expect(declarations.has('canShowDiffSidebar')).toBe(true)
   expect(declarations.has('showResponsiveDiffDialog')).toBe(true)
   expect(sidebarVisible).not.toBe('')
@@ -534,6 +576,7 @@ test('diff hands an open sidebar to a dialog when layout narrows and respects an
 
   const evaluate = new Function('scope', `with (scope) {
     const otherModalOverlayActive = ${declarations.get('otherModalOverlayActive')};
+    const nativeDiffVisible = ${declarations.get('nativeDiffVisible')};
     const canShowDiffSidebar = ${declarations.get('canShowDiffSidebar')};
     const showResponsiveDiffDialog = ${declarations.get('showResponsiveDiffDialog')};
     return { sidebar: ${sidebarVisible}, dialog: showResponsiveDiffDialog };
@@ -544,6 +587,7 @@ test('diff hands an open sidebar to a dialog when layout narrows and respects an
   }
   const scope = {
     get diffSidebarVisible() { return state.diffSidebarVisible },
+    diffOwned: false,
     useAppState: (select: (value: typeof state) => unknown) => select(state),
     screen: 'prompt',
     modTerminalSize: { columns: 144 }, modDock: [] as unknown[],
@@ -713,6 +757,8 @@ test('successful same-ID resume resets diff without waiting for identity change'
   let state: any = { diffSidebarVisible: true }
   let replaced = false
   const diffSession = { current: 'same-id' }
+  const restoredCosts: unknown[] = []
+  const log = { sessionId: 'same-id', messages: [] }
   const resume = extract('./REPL.tsx', 'resume')({
     deserializeMessages: (messages: any) => [...messages], feature: () => false,
     getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
@@ -724,7 +770,8 @@ test('successful same-ID resume resets diff without waiting for identity change'
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
     getCwd: () => '/repo', getUserContext: Object.assign(async () => ({}), { cache: { clear: noop } }),
     resetLoadingState: noop, setAbortController: noop,
-    setConversationId: noop, getStoredSessionCosts: noop, saveCurrentSessionCosts: noop,
+    setConversationId: noop, saveCurrentSessionCosts: noop,
+    restoreSessionCosts: (log: unknown) => { restoredCosts.push(log); return false },
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
     resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
@@ -736,7 +783,9 @@ test('successful same-ID resume resets diff without waiting for identity change'
     setToolJSX: noop, setInputValue: noop, logEvent: noop, diffSession,
     getSessionId: () => 'same-id', diffController: { reset: () => { resets++ } },
   })
-  await resume('same-id', { messages: [] }, 'command')
+  await resume('same-id', log, 'command')
+  expect(restoredCosts).toHaveLength(1)
+  expect(restoredCosts[0]).toBe(log)
   expect(replaced).toBe(true)
   expect(resets).toBe(1)
   expect(state.diffSidebarVisible).toBe(false)
@@ -2196,6 +2245,8 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     clearCache()
   })
   const diffSession = { current: 'same-id' }
+  const restoredCosts: unknown[] = []
+  const log = { sessionId: 'same-id', messages: [] }
   const resume = extract('./REPL.tsx', 'resume')({
     deserializeMessages: (messages: any) => [...messages], feature: () => false,
     getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
@@ -2206,7 +2257,8 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
     updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
     getCwd: () => cwd, getUserContext, resetLoadingState: noop, setAbortController: noop,
-    setConversationId: noop, getStoredSessionCosts: noop, saveCurrentSessionCosts: noop,
+    setConversationId: noop, saveCurrentSessionCosts: noop,
+    restoreSessionCosts: (log: unknown) => { restoredCosts.push(log); return false },
     resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
     importModule: async () => ({ renameRecordingForSession: async () => {} }),
     resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
@@ -2226,12 +2278,14 @@ test.each([false, true])('same-ID resume clears raw context after cwd/transcript
     getSessionId: () => 'same-id', diffController: { reset: () => { resets++ } },
   })
   try {
-    await resume('same-id', { messages: [] }, 'command')
+    await resume('same-id', log, 'command')
     expect(await getUserContext()).toEqual({ claudeMd: '/target-repo:target-transcript' })
     expect(events).toEqual([
       'clear:/target-repo:target-transcript:true', ...(withMods ? ['invalidate', 'bind'] : []),
     ])
     expect(clear).toHaveBeenCalledTimes(1)
+    expect(restoredCosts).toHaveLength(1)
+    expect(restoredCosts[0]).toBe(log)
     expect(replaced).toBe(true)
     expect(resets).toBe(1)
     expect(state.diffSidebarVisible).toBe(false)

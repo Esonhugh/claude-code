@@ -1757,3 +1757,13 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 相邻差异：本批关闭 Mod 结果重入父查询缺陷，未关闭全部模型查询／费用 parity。官方本场 9 个请求／0.0015650000000000004，本地各 10 个／约 0.0014600000000000006；API 记录显示标题 helper 的模型与正文不同，本地还为普通自动完成通知生成一次标题 helper。Read text 的额外 system-reminder 仍未修复，纯 producer／routing 来源继续追踪，完整API行为仍 incomplete。
 - 未覆盖：真实 provider 网络、实际 failed／killed／取消／reload 故障制品矩阵、完整 Workflow／嵌套／前后台转移矩阵、spawn 并发限额与 observer 生命周期、独立根账本和异常恢复、最新全部变更与 G5／同进程全量门禁、其余函数／类型／上下文／UI／官方 diff viewer 及 backend／计价矩阵。当前定向成功不覆盖旧 response／fix-instructions 的失败。
 - 文档与保护：证据根 `/private/tmp/mods-spawn-notice-20261006-nmq4iexw` 保存所有失败／成功、脚本、stdout、原始 pane／ANSI／PTY、debug、API、JSONL、身份和保护审计；README／CHANGELOG 同步通知用法。只迁入本批 callback／debug import／新测试及说明，原 host 的 description／teammate WIP 不混入提交；278 个原 WIP、response／improvment／fix-instructions／289 资产／原制品 bytes／mtime 保留，其他 Claude 进程不操作，不 push。
+
+
+## 2026-10-07：REPL 提交测试夹具及最新逐文件门禁复验
+
+- 本批只改测试及文档。独立 HEAD 的 REPL.submit 108／9；补齐封闭环境、既有 native diff closure 依赖和 restoreSessionCosts 后117／0。保留中间遗漏 diffOwned 的116／1记录。ROOT 原122／3，修复后125／0；三条恢复case新增所选log只传递一次的断言，恢复器返回false时原diff／上下文断言仍执行。ROOT 另八条WIP case未折入提交。
+- 三份相邻回归：独立候选152／0、ROOT160／0；本轮两侧release-check及私有输出make build均exit0，源码不变、owned PGID无遗留。ROOT源码SHA256 `0003eff731d21c8df15f4991240a07ee81411151137babc6f348f2af9572ae04`，候选 `3d4dcb0b7647f267f535c6f43c585809bc71f9c189a3de3bd621d1630f32e276`；制品身份见 `/private/tmp/mods-gate-recheck-20261007-zfzgjhq1/built-binaries.json`，原ROOT制品保留。
+- 原response.md的9项在ROOT无继承凭据、真实TMPDIR下全部重新复跑并退出0。最终147个Git未提交测试文件全部exit0、绑定同一ROOT源码清单；保留10个既有skip，未新增skip／删除／弱化测试。模块级node:assert脚本注册0个Bun case但实际执行并打印成功标记，不能虚报新增pass。
+- [完整147文件表、10个skip及12个失败文件对照](docs/research/mods-validation-20261007.md)。证据根 `/private/tmp/mods-gate-recheck-20261007-zfzgjhq1` 保存初次147文件的146成功／REPL夹具3失败、修复后的完整同版本复验、原始日志及保护清单。旧155文件报告属于旧冻结版本，未拼接成当前结果。
+- 同进程全量：clean HEAD和ROOT均已观察到失败，并在既定120秒上限结束（-15）；源码不变、自有进程组已清理，不能当作完整suite通过。ROOT本场观察到失败的12文件单独对照，未出现HEAD通过／ROOT失败，但既有失败仍存在；未触达文件不推断。G5及完整设计目标继续验收。
+- 本批不改生产源码／类型／运行时，新的CLI行为验收为n/a，不用历史binary证据代替本轮。README补充无调用者key的测试命令。其他278个WIP及受保护response／improvment／fix-instructions／289资产保留，未操作其他Claude进程、未push。spawn并发限额与observer生命周期、标题helper路由和其余官方API／UI／diff等未完成项不由本节关闭。

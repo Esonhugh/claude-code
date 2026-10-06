@@ -920,3 +920,10 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 作者使用 `$.tool.call({tool, ...args})` 时，Agent、AskUserQuestion、Workflow 会被 host check 拒绝。使用 `$.agent.spawn({prompt, ...})` 启动子任务，用 `$.ui.ask(...)` 提问；本地 `WorkflowTool` 同样受此限制。Agent 的旧名称 Task 在解析到 Agent 时也会被拒绝。错误包含插件名、工具名称和专用入口，便于定位调用位置。
 
 这个限制作用于作者主动调用。模型正常执行工具产生的 `tool.call` 事件仍可由 Mods 观察及改写，`$.tool.check({tool, input})` 仍可查询权限，不启动工具。普通工具继续经现有权限、hooks 和执行链运行。运行 `bun test ./src/services/mods/toolHost.authorGate.test.ts` 验证这组边界；真实 CLI 对照及未完成项见 `mods-test.md`。
+
+
+### REPL 提交测试的封闭环境
+
+运行 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test --no-env-file ./src/screens/REPL.submit.test.ts`。测试自行创建真实路径的临时 HOME／配置／XDG 目录，使用占位认证，并在结束后恢复环境，不需要调用者的 API key。恢复夹具覆盖所选会话记录传入成本恢复器，以及同 ID 恢复时 diff 和原始上下文的重置。
+
+完整逐文件复验表见 [2026-10-07 验证记录](docs/research/mods-validation-20261007.md)。逐文件通过与同进程全量 suite、官方二进制交互门禁分别验收。
