@@ -545,6 +545,24 @@ Agent 还支持前台执行、后台执行、命名续跑和可选隔离。模�
 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 ```
 
+### fork 技能的代理名称
+
+在 `.claude/skills/review/SKILL.md` 中指定 `context: fork` 和 `agent`，再输入 `/review <任务>`；模型的 SkillTool 调用也使用同一配置。用户技能目录和旧 `.claude/commands/review.md` 使用同一解析器。代理定义放在 `.claude/agents/<名称>.md`，配置方法见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents)。
+
+```yaml
+---
+description: Run the review in a separate agent
+context: fork
+agent: reviewer
+background: false
+---
+Review $ARGUMENTS.
+```
+
+`agent` 的非空 YAML 值转换为字符串；例如 `agent: 42` 可以选择名称为 `"42"` 的代理。`agent: null` 或不写该字段使用已有默认代理选择。编写技能时建议显式使用字符串名称。`background: false` 是官方同步对照的设置；本地默认后台路由及该开关仍在独立对齐。
+
+本专项以 2026-10-07 获取的官方 2.1.292 为基准，验证七个真实 slash/SkillTool 场景；不代表全部 Mods 声明与 UI 已迁移到该版本。回归命令为 `bun test --no-env-file ./src/skills/loadSkillsDir.forkAgent.test.ts`，终端证据及边界见 [fork agent 类型专项](docs/research/mods-fork-agent-types-20261007.md)。技能配置参考 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
+
 ### 会话命令
 
 ```text

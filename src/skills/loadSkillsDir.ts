@@ -272,7 +272,7 @@ export function parseSkillFrontmatterFields(
     userInvocable,
     hooks: parseHooksFromFrontmatter(frontmatter, resolvedName),
     executionContext: frontmatter.context === 'fork' ? 'fork' : undefined,
-    agent: frontmatter.agent as string | undefined,
+    agent: frontmatter.agent != null ? String(frontmatter.agent) : undefined,
     effort,
     shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
   }

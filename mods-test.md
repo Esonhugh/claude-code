@@ -1813,3 +1813,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 本批落地普通后台 Agent、前台转后台与自动恢复共享路径；保留模型元数据及队列 taskId，TaskStop/SDK 可停止等待中的任务。取消与恢复失败由隔离回归验证结果、用量和清理，不宣称全部故障已由终端触发。
 - RED 为真实终端中的提前父通知及缺失归属/续跑回归。最终 Bun、Make、官方/候选/ROOT 终端证据和相邻入口见 [后台父子任务专项](docs/research/mods-background-owner-20261007.md)。
 - 此提交不关闭技能默认后台路由、独立 fork 权限快照/恢复、同步前台父任务、完整 Workflow/并发消息/故障矩阵、G5、完整 API/类型/上下文/UI/diff 或同进程全量门禁；保留已有报告和其他 Claude 的工作。
+
+## 2026-10-07：共享 fork agent 名称类型
+
+- 共享技能加载器按官方 2.1.292 将非 null/undefined 的 agent 转为 string；修复数字/布尔名称无法匹配代理的问题，null/缺失保留默认选择。生产只改一行，插件解析沿用此前规则。
+- 项目、用户、旧命令文件与 MCP builder 的四项真实加载回归完成 RED→GREEN；两侧相关 6 文件均 61 pass / 0 fail，Make build/release-check exit 0，最终源码身份一致且无自有进程残留。早期 HOME=cwd 的夹具失败保留并单独说明。
+- 官方、候选和 ROOT 的五个 slash 加两个实际 SkillTool 场景逐项匹配代理/模型，每场七个独立 ID 与已保存 meta/transcript 正确；同步 fork 不产生后台通知。相邻普通/nested/前后台移交/SendMessage 通过，本地真实工具目录缺少 Workflow，仍 not covered。
+- [完整源码/制品身份、终端对照、失败与验收边界](docs/research/mods-fork-agent-types-20261007.md)，证据根 `/private/tmp/mods-fork-routing-20261007-2afwted_`。默认后台及权限恢复、G5、全量门禁和完整 API/上下文/UI/diff 目标继续；已有 278 项 WIP、受保护文件与其他 Claude 工作保留，不 push。
