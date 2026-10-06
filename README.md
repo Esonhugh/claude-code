@@ -792,3 +792,9 @@ $.ui.status(undefined)
 运行 `./built-claude --debug --debug-file /tmp/claude-debug.log` 开启调试日志。标准全屏终端在底部右侧显示黄色 `Debug`；普通终端将状态标记放在通知内容下方。状态标记不再进入全屏提示框上方的通知覆盖层。
 
 运行 `bun test ./src/components/PromptInput/PromptInput.debugFooter.test.tsx` 检查两种模式、调试开关及 Goal 状态共存。2026-10-06 的官方 2.1.291 对照已验证该标记的文字、颜色、右侧位置和通知分层；diff 面板仍有底部空白行和退出诊断差异，完整进度见 mods-test。
+
+## Mods 的原生错误信息
+
+使用 `--debug --debug-file /tmp/claude-debug.log` 查看 Mods 错误。跨 Worker 的 capability 失败保留普通 Error 及原生 DOMException 的消息；不会为读取消息而执行错误对象自定义的 getter 或 Proxy trap。
+
+运行 `bun test ./src/services/mods/environmentNativeError.test.ts` 检查原生消息、原错误对象传播和不可执行的访问器。退出时出现 `The operation was aborted.` 说明等待被取消；本次只修复消息丢失，取消的诊断时机与官方兼容性仍需单独验证，不能据此认为生命周期已完全对齐。

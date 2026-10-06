@@ -83,10 +83,17 @@ export type ModEnvironment = {
   dispose(): Promise<void>
 }
 
+const domExceptionMessage = Object.getOwnPropertyDescriptor(DOMException.prototype, 'message')?.get
+
 function errorMessage(error: unknown, fallback: string): string {
   if (!error || (typeof error !== 'object' && typeof error !== 'function') || isProxy(error)) return fallback
   const message = Object.getOwnPropertyDescriptor(error, 'message')?.value
-  return typeof message === 'string' ? message : fallback
+  if (typeof message === 'string') return message
+  // Use the native brand check; arbitrary accessors and prototypes stay inert.
+  try {
+    const nativeMessage = domExceptionMessage?.call(error)
+    return typeof nativeMessage === 'string' ? nativeMessage : fallback
+  } catch { return fallback }
 }
 
 export function createModEnvironmentHost({
