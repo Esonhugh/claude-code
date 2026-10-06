@@ -1522,6 +1522,16 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 同一失败文件的受控 A/B 复验：修改前 e5 冻结核心 `b7e6060ab277338265115e980128b53ed189382b01f46c4e7f93d89ea7532118` 与当前 e6 核心分别独立运行，均17/0；复验不计入原门禁结果。历史 `response.md` 的九项中，本轮8个文件通过，剩余该文件有间歇超时；报告原文未改。
 - 独立提交副本（仅 clean HEAD 加本功能）再次构建后运行真实 `/diff` 并正常 `/exit 0`，证据 `/private/tmp/mc291-diff-i-syntax1/evidence/result.json`，制品 SHA-256 `c3bc2bf6d13f3205a376e416cfc722510d8a26b693d749ef2f6f24c225e481ab`。这证明本功能可以独立提交；该副本使用已有 diff 入口，不作为完整 Mods 接管或291兼容证明。
 
+## 2026-10-06：diff 正文背景、边框和缓存的回归
+
+- 官方291源码：`chunk-047zrb4c.js` 的 `Is` 在 Raw ANSI 分支调用 `MC`，背景参与 blit 条件及节点缓存，边框接收继承背景；`chunk-4hd2jsyd.js` 的 `V3o` 在完整重置、默认背景重置和换行后恢复容器背景（该 chunk SHA-256 `3556a024c1878010e5d4317f617ceeeeadd3e4a0068c09f2dab35efd91d38631`）。这解释了上轮样例的上下文/空白/分隔线颜色差异。
+- 本地沿用 Output 的 tokenizer、结构化颜色及屏幕单元格路径合成默认背景，不手写新的 ANSI 样式；显式背景和前景保持，字符缓存键及节点 blit 条件包含背景。实现方式与官方字符串重写不同，本节只报告实际验证的行为。
+- 失败回归 `background-owned/background-red1/log.txt`：1通过/4失败。第一次修复后4/1，移除背景时仍复用旧节点缓存；补齐背景缓存条件后5/0。没有跳过或放宽断言。当前 ROOT 与 clean HEAD `6bea3a1` 加本批补丁的独立副本均5/0；独立副本 `make release-check`、构建均 exit0。
+- Runtime-observed：候选 `/private/tmp/mc291-diff-b-bgflow1/evidence`、实际 ROOT `/private/tmp/mc291-diff-r-bgflow1/evidence` 对照官方 `/private/tmp/mc291-diff-o-flow1/evidence`，literal 输入、鼠标 bytes、resize、fixture相同，均正常退出。四个稳定画面各7行代码的文字及所有颜色/样式单元格一致；共同35行右侧内容一致，官方另有第36行。完整面板并未标为一致。比较脚本及结果在 `shipped-diff-291-r1/background-owned/ROOT-native-comparison.json`。
+- 背景真实终端验收时 ROOT 核心 SHA-256 `047aa893c424fbe72946ff42c8a637d7ed2c828293ef6fecc97eaafc3f5d2605`，隔离新制品 `141d8abf2823ba058db880a05d084cf28e10b247f6cdf8f4a7f4ad94ea0524b6`。独立提交制品另在 `/private/tmp/mc291-diff-i-bg1/evidence` 打开实际 `/diff` 并正常退出；该独立副本使用已有入口，不充当完整 Mods 接管证明。原 binary、历史报告和289归档未改。
+- 未关闭：面板底部少一行、正常退出的 `Module capability failed`、完整 ANSI/主题/交互矩阵与生产 API/UI 兼容。291包仍只在私有候选，ROOT仍289。上轮169文件门禁168通过/1间歇 Worker 超时/23跳过的结果保持；本批相关验证不构成新的全部变更门禁或全量 suite 通过。
+- 追加相关回归：log-update、selectionFollow289 通过；DiffView 最初失败完整保留并由独立测试辅助方法提交修复，修复后通过；最终 ROOT ModsPane 180/0。当前含辅助方法的核心为 `db1c902db97aed828bc7f152ec54e5fde6154e7a6ff1505236ec7307a8c2556d`；相关文件验证仍与旧全变更门禁分开记录。
+
 ## 2026-10-06：高亮恢复后 DiffView 测试的文本读取
 
 - 扩展验收发现未改的 DiffView 测试不在旧169文件清单中：ROOT 的 `background-owned/root-related-3` 内层24/12、3 errors；高亮修复独立基线 `syntax-commit/pre-background-diffview1` 同样24/12、3 errors。失败文本如 `body-0` 被正常语法颜色码隔开，Raw ANSI 的 DOM 文本辅助方法未去除样式，等待随后超时。不是背景修复特有回归。

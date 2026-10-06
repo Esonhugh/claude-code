@@ -461,6 +461,7 @@ function renderNodeToOutput(
       cached.y === y &&
       cached.width === width &&
       cached.height === height &&
+      cached.background === inheritedBackgroundColor &&
       prevScreen &&
       !subtreeHasTerminalImage(node)
     ) {
@@ -534,7 +535,10 @@ function renderNodeToOutput(
     // y+1, not y). HelpV2's third shortcuts column hits this — skipping
     // unconditionally drops "ctrl + z to suspend" from /help output.
     if (height === 0 && siblingSharesY(node, yogaNode)) {
-      nodeCache.set(node, { x, y, width, height, top: yogaTop })
+      nodeCache.set(node, {
+        x, y, width, height, top: yogaTop,
+        background: inheritedBackgroundColor,
+      })
       node.dirty = false
       return
     }
@@ -545,11 +549,11 @@ function renderNodeToOutput(
 
     if (node.nodeName === 'ink-raw-ansi') {
       // Pre-rendered ANSI content. The producer already wrapped to width and
-      // emitted terminal-ready escape codes. Skip squash, measure, wrap, and
-      // style re-application — output.write() parses ANSI directly into cells.
+      // emitted terminal-ready escape codes. Keep explicit diff backgrounds;
+      // default/reset styles inherit the containing Box's background in cells.
       const text = node.attributes['rawText'] as string
       if (text) {
-        output.write(x, y, text)
+        output.write(x, y, text, undefined, inheritedBackgroundColor)
       }
     } else if (node.nodeName === 'ink-text') {
       const segments = squashTextNodesToSegments(
@@ -1167,6 +1171,7 @@ function renderNodeToOutput(
             y: contentY,
             width: contentYoga.getComputedWidth(),
             height: contentYoga.getComputedHeight(),
+            background: boxBackgroundColor,
           })
           content.dirty = false
         }
@@ -1221,7 +1226,7 @@ function renderNodeToOutput(
       // Render border AFTER children to ensure it's not overwritten by child
       // clearing operations. When a child shrinks, it clears its old area,
       // which may overlap with where the parent's border now is.
-      renderBorder(x, y, node, output)
+      renderBorder(x, y, node, output, inheritedBackgroundColor)
     } else if (node.nodeName === 'ink-root') {
       renderChildren(
         node,
@@ -1235,7 +1240,10 @@ function renderNodeToOutput(
     }
 
     // Cache layout bounds for dirty tracking
-    const rect = { x, y, width, height, top: yogaTop }
+    const rect = {
+      x, y, width, height, top: yogaTop,
+      background: inheritedBackgroundColor,
+    }
     nodeCache.set(node, rect)
     if (node.style.position === 'absolute') {
       absoluteRectsCur.push(rect)

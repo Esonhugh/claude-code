@@ -8,6 +8,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 import { reorderBidi } from './bidi.js'
+import { applyTextStyles } from './colorize.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
 import type { PlacedTerminalImage } from './frame.js'
 import type { TerminalImage } from './dom.js'
@@ -25,6 +26,7 @@ import {
   shiftRows,
 } from './screen.js'
 import { stringWidth } from './stringWidth.js'
+import type { Color } from './styles.js'
 import { widestLine } from './widest-line.js'
 
 /**
@@ -75,6 +77,8 @@ type WriteOperation = {
   x: number
   y: number
   text: string
+  /** Background inherited by raw content when its ANSI styles reset. */
+  backgroundStyle?: AnsiCode
   /**
    * Per-line soft-wrap flags, parallel to text.split('\n'). softWrap[i]=true
    * means line i is a continuation of line i-1 (the `\n` before it was
@@ -242,17 +246,29 @@ export default class Output {
     this.operations.push({ type: 'noSelect', region })
   }
 
-  write(x: number, y: number, text: string, softWrap?: boolean[]): void {
+  write(
+    x: number,
+    y: number,
+    text: string,
+    softWrap?: boolean[],
+    backgroundColor?: Color,
+  ): void {
     if (!text) {
       return
     }
 
+    const backgroundStyle = backgroundColor
+      ? styledCharsFromTokens(
+          tokenize(applyTextStyles(' ', { backgroundColor })),
+        )[0]?.styles[0]
+      : undefined
     this.operations.push({
       type: 'write',
       x,
       y,
       text,
       softWrap,
+      backgroundStyle,
     })
   }
 
@@ -432,7 +448,7 @@ export default class Output {
         }
 
         case 'write': {
-          const { text, softWrap } = operation
+          const { text, softWrap, backgroundStyle } = operation
           let { x, y } = operation
           let lines = text.split('\n')
           let swFrom = 0
@@ -527,6 +543,7 @@ export default class Output {
               screenWidth,
               this.stylePool,
               this.charCache,
+              backgroundStyle,
             )
             writeCells += contentEnd - x
             // See Screen.softWrap docstring for the encoding. contentEnd
@@ -590,6 +607,7 @@ function stylesEqual(a: AnsiCode[], b: AnsiCode[]): boolean {
 function styledCharsWithGraphemeClustering(
   chars: StyledChar[],
   stylePool: StylePool,
+  backgroundStyle?: AnsiCode,
 ): ClusteredChar[] {
   const charCount = chars.length
   if (charCount === 0) return []
@@ -600,7 +618,11 @@ function styledCharsWithGraphemeClustering(
 
   for (let i = 0; i < charCount; i++) {
     const char = chars[i]!
-    const styles = char.styles
+    const styles =
+      backgroundStyle &&
+      !char.styles.some(style => style.endCode === backgroundStyle.endCode)
+        ? [...char.styles, backgroundStyle]
+        : char.styles
 
     // Different styles means we need to flush and start new buffer
     if (bufferChars.length > 0 && !stylesEqual(styles, bufferStyles)) {
@@ -675,16 +697,19 @@ function writeLineToScreen(
   screenWidth: number,
   stylePool: StylePool,
   charCache: Map<string, ClusteredChar[]>,
+  backgroundStyle?: AnsiCode,
 ): number {
-  let characters = charCache.get(line)
+  const cacheKey = JSON.stringify([line, backgroundStyle?.code])
+  let characters = charCache.get(cacheKey)
   if (!characters) {
     characters = reorderBidi(
       styledCharsWithGraphemeClustering(
         styledCharsFromTokens(tokenize(line)),
         stylePool,
+        backgroundStyle,
       ),
     )
-    charCache.set(line, characters)
+    charCache.set(cacheKey, characters)
   }
 
   let offsetX = x

@@ -1,5 +1,6 @@
 import type { DOMElement } from './dom.js'
 import type { Rectangle } from './layout/geometry.js'
+import type { Color } from './styles.js'
 
 /**
  * Cached layout bounds for each rendered node (used for blit + clearing).
@@ -13,6 +14,7 @@ export type CachedLayout = {
   width: number
   height: number
   top?: number
+  background?: Color
 }
 
 export const nodeCache = new WeakMap<DOMElement, CachedLayout>()
