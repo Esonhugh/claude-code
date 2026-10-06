@@ -25,6 +25,8 @@ import {
   filterWhitespaceOnlyAssistantMessages,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
+import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
+import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
   isPlanModeAvailable,
@@ -224,7 +226,12 @@ export async function resumeAgentBackground({
       : { ...appState.toolPermissionContext, mode: permissionMode }
 
   // Resolve model for analytics metadata (runAgent resolves its own internally)
-  const resolvedAgentModel = getAgentModel(
+  const resolvedAgentModel = isResumedFork ? getRuntimeMainLoopModel({
+    permissionMode: appState.toolPermissionContext.mode,
+    mainLoopModel: toolUseContext.options.mainLoopModel,
+    exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' &&
+      doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
+  }) : getAgentModel(
     selectedAgent.model,
     toolUseContext.options.mainLoopModel,
     meta?.model,
@@ -267,6 +274,7 @@ export async function resumeAgentBackground({
       isBuiltInAgent(selectedAgent),
     ),
     model: meta?.model,
+    ...(isResumedFork && { resolvedModel: resolvedAgentModel }),
     // Fork resume: pass parent's system prompt (cache-identical prefix).
     // Non-fork: undefined → runAgent recomputes under wrapWithCwd so
     // getCwd() sees resumedWorktreePath.

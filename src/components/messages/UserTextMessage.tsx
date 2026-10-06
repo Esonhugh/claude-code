@@ -10,6 +10,7 @@ import {
   TICK_TAG,
 } from '../../constants/xml.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
+import { extractForkDirective } from '../../utils/forkBoilerplate.js'
 import {
   extractTag,
   INTERRUPT_MESSAGE,
@@ -21,6 +22,7 @@ import { UserAgentNotificationMessage } from './UserAgentNotificationMessage.js'
 import { UserBashInputMessage } from './UserBashInputMessage.js'
 import { UserBashOutputMessage } from './UserBashOutputMessage.js'
 import { UserCommandMessage } from './UserCommandMessage.js'
+import { UserForkBoilerplateMessage } from './UserForkBoilerplateMessage.js'
 import { UserLocalCommandOutputMessage } from './UserLocalCommandOutputMessage.js'
 import { UserMemoryInputMessage } from './UserMemoryInputMessage.js'
 import { UserPlanMessage } from './UserPlanMessage.js'
@@ -159,17 +161,10 @@ export function UserTextMessage({
     return <UserResourceUpdateMessage addMargin={addMargin} param={param} />
   }
 
-  // Fork child's first message: collapse the rules/format boilerplate, show
-  // only the directive. FORK_BOILERPLATE_TAG is inlined so the import doesn't
-  // ship in external builds where feature('FORK_SUBAGENT') is false.
-  if (feature('FORK_SUBAGENT')) {
-    if (param.text.includes('<fork-boilerplate>')) {
-      /* eslint-disable @typescript-eslint/no-require-imports */
-      const { UserForkBoilerplateMessage } =
-        require('./UserForkBoilerplateMessage.js') as typeof import('./UserForkBoilerplateMessage.js')
-      /* eslint-enable @typescript-eslint/no-require-imports */
-      return <UserForkBoilerplateMessage addMargin={addMargin} param={param} />
-    }
+  if (param.text.includes('<fork-boilerplate>')) {
+    const directive = extractForkDirective(param.text)
+    if (directive !== undefined)
+      return <UserForkBoilerplateMessage addMargin={addMargin} directive={directive} />
   }
 
   // Inbound channel message (MCP server push).

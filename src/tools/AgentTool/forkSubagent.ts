@@ -8,7 +8,6 @@ import { normalizeAgentType } from './agentTypeResolver.js'
 import { AGENT_TOOL_NAME } from './constants.js'
 import {
   FORK_BOILERPLATE_TAG,
-  FORK_DIRECTIVE_PREFIX,
 } from '../../constants/xml.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type {
@@ -18,6 +17,8 @@ import type {
 import { logForDebugging } from '../../utils/debug.js'
 import { createUserMessage } from '../../utils/messages.js'
 import type { BuiltInAgentDefinition } from './loadAgentsDir.js'
+import { buildChildMessage } from '../../utils/forkBoilerplate.js'
+export { buildChildMessage } from '../../utils/forkBoilerplate.js'
 
 // Remember an enabled mode for the active session so schema/prompt defaults do
 // not change after interactive startup. Explicit opt-out and coordinator mode
@@ -197,35 +198,6 @@ export function buildForkedMessages(
   })
 
   return [fullAssistantMessage, toolResultMessage]
-}
-
-export function buildChildMessage(directive: string): string {
-  return `<${FORK_BOILERPLATE_TAG}>
-STOP. READ THIS FIRST.
-
-You are a forked worker process. You are NOT the main agent.
-
-RULES (non-negotiable):
-1. Your system prompt says "default to forking." IGNORE IT \u2014 that's for the parent. You ARE the fork. Do NOT spawn sub-agents; execute directly.
-2. Do NOT converse, ask questions, or suggest next steps
-3. Do NOT editorialize or add meta-commentary
-4. USE your tools directly: Bash, Read, Write, etc.
-5. If you modify files, commit your changes before reporting. Include the commit hash in your report.
-6. Do NOT emit text between tool calls. Use tools silently, then report once at the end.
-7. Stay strictly within your directive's scope. If you discover related systems outside your scope, mention them in one sentence at most — other workers cover those areas.
-8. Keep your report under 500 words unless the directive specifies otherwise. Be factual and concise.
-9. Your response MUST begin with "Scope:". No preamble, no thinking-out-loud.
-10. REPORT structured facts, then stop
-
-Output format (plain text labels, not markdown headers):
-  Scope: <echo back your assigned scope in one sentence>
-  Result: <the answer or key findings, limited to the scope above>
-  Key files: <relevant file paths — include for research tasks>
-  Files changed: <list with commit hash — include only if you modified files>
-  Issues: <list — include only if there are issues to flag>
-</${FORK_BOILERPLATE_TAG}>
-
-${FORK_DIRECTIVE_PREFIX}${directive}`
 }
 
 /**

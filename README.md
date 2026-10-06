@@ -1052,3 +1052,17 @@ CLAUDE_CODE_FORK_SUBAGENT=0 claude
 自定义同名 agent 遮蔽合成 fork；`Agent(fork)` deny 阻止合成 fork，普通 Agent 的后台规则继续有效。合成 fork 拒绝再次 fork 和 remote 隔离。调试日志的 `[ForkMode]` 记录开启来源与会话 ID，Agent 启动日志记录类型、模型、后台模式和 ID。
 
 运行 `bun test --no-env-file ./src/tools/AgentTool/forkMode.test.ts ./src/tools/AgentTool/backgroundRouting.test.ts` 检查路由。对照依据见 [Anthropic fork 模式说明](https://code.claude.com/docs/en/sub-agents#turn-fork-mode-on-or-off)，实际证据与剩余范围见 [专项验收](docs/research/mods-fork-mode-20261007.md)。本批完成模型 Agent 和 Mods spawn 的门禁迁移；内置 `/fork` 命令与 fork 指令折叠 UI 仍待独立实现和验收。
+
+## 手动启动继承对话的子任务（官方 2.1.292）
+
+在交互会话中输入 `/subtask <task>`，将当前对话交给后台 fork，同时继续使用主会话，例如：
+
+```text
+/subtask review the parser changes and report the missing test cases
+```
+
+子任务继承主对话的模型、工具定义、系统提示和历史。`CLAUDE_CODE_FORK_SUBAGENT=0` 控制模型的自动 fork 选择，不禁用用户手动的 `/subtask`。命令回执包含名称和 agent ID 后四位；`[ConversationFork]` 调试日志打印完整 ID、模型、深度和 owner。具名 fork 的结果返回后可以通过 `SendMessage` 恢复同一 ID，继续继承主对话模型。Mods 的 `$.agent.list()` 对已结束且可恢复的具名 fork 返回 `idle`；这与内部任务的 `completed` 状态不同。
+
+fork 首条消息按官方格式显示为 `⑂ <directive>`，隐藏固定 worker 说明。只有完整匹配当前模板的消息才折叠，包含同名标签的普通文本、旧模板及被改写的说明仍正常显示。
+
+[Anthropic 官方文档](https://code.claude.com/docs/en/sub-agents#fork-the-current-conversation) 说明：新版本默认使用 `/subtask` 启动子任务，`/fork` 则复制整个后台会话；关闭官方 agent view 时命令映射还会变化。本批实现 `/subtask` 与指令显示；`/fork` 的独立后台会话、agent view 映射和完整交互仍待后续迁移。不要把本批理解为这几项已经兼容。验证与源码依据见 [子任务专项](docs/research/mods-subtask-20261007.md)。

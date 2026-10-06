@@ -1840,3 +1840,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 交互默认开启；省略类型使用 general-purpose，显式 fork 继承上下文。环境 opt-in/opt-out、六种 caller/后台组合、初始化 schema、脚本入口、缺失默认类型、遮蔽/allow/deny/递归/remote、模型继承和会话 latch 由独立回归验证。
 - 真实终端对照核对 Agent 普通默认、显式 fork、Mods script spawn、父历史与工具、父模型（含全局 Haiku 覆盖）、唯一通知及费用。相邻普通/nested/前后台切换/恢复/Workflow 入口继续使用本轮制品验收，不能借用上一批制品。
 - 证据、失败诊断与逐项结论见 [专项报告](docs/research/mods-fork-mode-20261007.md)。/fork 命令、折叠 UI、Workflow 缺失、G5、全量 suite 与整体 API/UI/diff 不由本批推导为已完成。
+
+## 2026-10-07 手动子任务与 fork 指令显示
+
+- 官方 2.1.292 的默认 worker 入口为 `/subtask`。源码同时包含旧 `/fork` worker 和新的 `/fork` 后台会话命令，必须按实际运行入口区分；只找到函数不算入口验收。
+- 聚焦回归：`bun test --no-env-file ./src/commands/subtask/subtask.test.ts ./src/components/messages/UserForkBoilerplateMessage.test.tsx ./src/tools/AgentTool/forkMode.test.ts ./src/utils/forkedSkill.test.ts ./src/tools/AgentTool/backgroundOwner.test.ts ./src/utils/subagentConcurrency.test.ts`。
+- 真实 tmux 断言：空参数用法、父上下文和模型/工具继承、保持 API 响应时的后台回执及 Mods 状态、容量计数、唯一结果通知、SendMessage 同 ID 恢复；完整官方模板折叠与被改写模板保留原文均通过实际 stdin 触发。环境关闭自动 fork 的配置单独对照。
+- 调试记录与逐项结果见 [子任务专项](docs/research/mods-subtask-20261007.md)。`/fork` 的独立后台会话、agent view 映射、Workflow、全量 G5、整体 Mods API/UI/diff 对齐仍不能据此标记完成。
