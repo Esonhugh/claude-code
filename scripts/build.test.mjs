@@ -111,6 +111,7 @@ assert.match(
   /assets[\s\S]*builtin-mods-2\.1\.277\.zip/,
 );
 assert.match(packageBinarySource, /__CLAUDE_CODE_BUILTIN_MODS_ARCHIVE__/);
+assert.match(packageBinarySource, /__CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__/);
 assert.doesNotMatch(packageBinarySource, /\/private\/tmp/);
 assert.match(packageBinarySource, /readdirSync\(libraryDirectory\)/);
 assert.doesNotMatch(packageBinarySource, /libvips-cpp\.8\.17\.3/);
@@ -125,6 +126,7 @@ assert.match(
 );
 assert.match(buildSource, /embedSharpNative &&\s+args\.path === '\.\/sharp'/);
 assert.match(buildSource, /builtin-mods-2\.1\.277\.zip/);
+assert.match(buildSource, /builtin-diff-2\.1\.291\.zip/);
 assert.doesNotMatch(buildSource, /\/private\/tmp/);
 
 const embeddedRipgrepSource = readFileSync(
@@ -139,6 +141,9 @@ assert.match(
   embeddedRipgrepSource,
   /process\.env\.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = builtinModsArchivePath/,
 );
+
+assert.match(embeddedRipgrepSource,/import builtinDiffArchivePath from __CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__ with \{ type: 'file' \}/);
+assert.match(embeddedRipgrepSource,/process\.env\.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE = builtinDiffArchivePath/);
 
 const embeddedSharpSource = readFileSync(
   new URL('./shims/embedded-sharp.js', import.meta.url),
@@ -169,6 +174,8 @@ try {
     join(runtimeAssetsProjectDir, 'assets', 'builtin-mods-2.1.277.zip'),
     'deterministic archive fixture',
   );
+  await assert.rejects(copyRuntimeAssets({projectDir:runtimeAssetsProjectDir,nodeModulesDir:runtimeAssetsNodeModulesDir}),/Missing builtin Mods archive.*builtin-diff/);
+  writeFileSync(join(runtimeAssetsProjectDir,'assets','builtin-diff-2.1.291.zip'),'deterministic latest diff fixture');
   await copyRuntimeAssets({
     projectDir: runtimeAssetsProjectDir,
     nodeModulesDir: runtimeAssetsNodeModulesDir,
@@ -185,6 +192,7 @@ try {
     ),
     'deterministic archive fixture',
   );
+  assert.equal(readFileSync(join(runtimeAssetsProjectDir,'dist','assets','builtin-diff-2.1.291.zip'),'utf8'),'deterministic latest diff fixture');
 } finally {
   rmSync(runtimeAssetsProjectDir, { recursive: true, force: true });
 }

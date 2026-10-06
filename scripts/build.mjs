@@ -34,7 +34,10 @@ const sharpNativePath = path.join(
   projectDir,
   'scripts/shims/sharp-native.cjs',
 );
-const builtinModsArchiveName = 'builtin-mods-2.1.277.zip';
+const builtinModsArchiveNames = [
+  'builtin-mods-2.1.277.zip',
+  'builtin-diff-2.1.291.zip',
+];
 const defaultVersion = '0.0.0-dev';
 const buildVersion = String(
   process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
@@ -322,21 +325,15 @@ export async function copyRuntimeAssets({ projectDir, nodeModulesDir, distDir = 
     });
   }
 
-  const builtinModsArchive = path.join(
-    projectDir,
-    'assets',
-    builtinModsArchiveName,
-  );
-  if (!fs.existsSync(builtinModsArchive)) {
-    throw new Error(`Missing builtin Mods archive: ${builtinModsArchive}`);
+  for (const archiveName of builtinModsArchiveNames) {
+    const archive = path.join(projectDir, 'assets', archiveName);
+    if (!fs.existsSync(archive)) {
+      throw new Error(`Missing builtin Mods archive: ${archive}`);
+    }
+    const target = path.join(distDir, 'assets', archiveName);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.copyFile(archive, target);
   }
-  const builtinModsTarget = path.join(
-    distDir,
-    'assets',
-    builtinModsArchiveName,
-  );
-  await fs.promises.mkdir(path.dirname(builtinModsTarget), { recursive: true });
-  await fs.promises.copyFile(builtinModsArchive, builtinModsTarget);
 
   const ripgrepTargetDir = path.join(
     distDir,

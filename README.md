@@ -822,3 +822,16 @@ CLI 启动时校验并自动恢复损坏的内置 Mods 缓存。多个 CLI 同�
 可从当前目录运行 `./built-claude plugin test ./my-mod`，也可传入绝对路径或符号链接。带空格的路径使用引号，例如 `./built-claude plugin test "./my mod"`。子进程在真实插件根目录中运行，不会重复拼接相对路径。
 
 运行 `bun test ./src/services/mods/testing/runner.childRoot.test.ts` 检查三种路径及真实作者子进程加载。
+
+
+### 官方 diff 2.1.291 的离线归档与构建
+
+`scripts/package-official-diff.mjs` 从已核验的官方完整模块生成 `assets/builtin-diff-2.1.291.zip`。它在写入前校验完整模块、身份模块、原始注册闭包和 compiled scan；输出使用固定 ZIP 时间，只创建新文件，拒绝覆盖或接受损坏输入。提取出的官方 JavaScript 不会由打包脚本执行。
+
+```bash
+bun scripts/package-official-diff.mjs /path/to/verified-modules /tmp/new-official-diff-291.zip
+bun test ./scripts/shipped-diff-production.test.mjs ./scripts/build.test.mjs ./scripts/build-isolated.test.mjs
+make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
+```
+
+构建会把该归档同时复制到 `dist/assets` 并嵌入 standalone 二进制，保留已有 `builtin-mods-2.1.277.zip`。这一提交只完成归档和构建链路；可信身份、运行时接管及完整 diff UI 对齐仍需后续提交和验收。官方版本参考 [Anthropic changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)。

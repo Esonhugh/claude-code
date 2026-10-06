@@ -19,6 +19,11 @@ const builtinModsArchivePath = path.join(
   'assets',
   'builtin-mods-2.1.277.zip',
 );
+const builtinDiffArchivePath = path.join(
+  projectDir,
+  'assets',
+  'builtin-diff-2.1.291.zip',
+);
 const embeddedEntrypoint = path.join(
   projectDir,
   'scripts',
@@ -148,6 +153,10 @@ if (!fs.existsSync(builtinModsArchivePath)) {
   throw new Error(`Missing builtin Mods archive: ${builtinModsArchivePath}`);
 }
 
+if (!fs.existsSync(builtinDiffArchivePath)) {
+  throw new Error(`Missing builtin diff archive: ${builtinDiffArchivePath}`);
+}
+
 const ripgrepPackageJson = JSON.parse(
   await fs.promises.readFile(
     path.join(nodeModulesDir, '@vscode', 'ripgrep', 'package.json'),
@@ -194,6 +203,10 @@ const generatedEntrypointContents = embeddedEntrypointContents
   .replace(
     '__CLAUDE_CODE_BUILTIN_MODS_ARCHIVE__',
     JSON.stringify(builtinModsArchivePath),
+  )
+  .replace(
+    '__CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__',
+    JSON.stringify(builtinDiffArchivePath),
   )
   .replace(
     '__CLAUDE_CODE_EMBEDDED_SHARP__',
