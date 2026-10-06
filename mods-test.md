@@ -1862,3 +1862,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 跨插件边界的标记来源必须是该插件的真实下游引用及未改写结果；结果复制允许 JSON 键序不同，循环或不可序列化替换不能证明相等。原回执不得被原地修改。
 - 真实终端对照 Read、Write、Bash、hook 输入/输出改写、拒绝、无 ref 和 $.tool.call 作者调用，并尝试官方 diff mod 的实际展示；Agent/子任务/恢复及相邻流程使用同批新构建回归。
 - 本批关闭标记生产与传递缺口，完整 diff UI、G5、Workflow、远程 MCP 声明真实性和整体 Mods 兼容仍按各专项验收。证据见 [只读标记专项](docs/research/mods-tool-readonly-20261007.md)。
+
+## 2026-10-07 用户停止后的 SendMessage 恢复拒绝
+
+- 聚焦回归：`bun test --no-env-file ./src/tools/SendMessageTool/SendMessageTool.cancel.test.ts ./src/tools/SendMessageTool/SendMessageTool.resume.test.ts`。新用例分别隔离进程、HOME、配置、临时目录和占位 key，保留原正常恢复断言。
+- 实际终端入口：普通 Agent 的后台流保持未放行，用两次 `ctrl+x ctrl+k` 确认用户停止；检查原元数据标记，再实际调用 SendMessage，退出并 `--continue` 后再次调用。两种拒绝都不得产生新的 worker 模型请求，公开 tool.call 回执保留只读标记。
+- 原会话与冷恢复回执按官方 2.1.292 各自的措辞对照。恢复准备期间的取消竞态由受控生产模块回归覆盖，不能当成终端竞态实测。
+- 本批用新构建回归普通同步恢复、子任务、fork 技能、nested Agent、前后台移交及 Workflow 尝试；逐项证据见 [用户取消专项](docs/research/mods-user-cancellation-20261007.md)。完整用户停止 UI 矩阵、observer/teammate/Workflow、pin 与目标重绑定、G5、全部变更门禁及整体 Mods API/UI/diff 仍待验收。

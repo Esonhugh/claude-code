@@ -5,6 +5,7 @@ import { getProjectRoot } from '../../bootstrap/state.js'
 import { isLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { markAgentsNotified } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { AgentStoppedByUserError } from '../../utils/agentCancellation.js'
 import { hashSubagentHandbackSections, type SubagentHandback } from '../../utils/subagentHandback.js'
 import { readForkedSkillScope, readForkedSkillWitness } from '../../utils/forkedSkillScope.js'
 import { createGetAppStateWithAllowedTools } from '../../utils/forkedAgent.js'
@@ -80,6 +81,14 @@ export async function resumeAgentBackground({
   getWorktreeResult?: () => Promise<{worktreePath?: string; worktreeBranch?: string}>
   delivery?: 'notification' | 'reply'
 }): Promise<ResumeAgentResult> {
+  const refuseUserStop = () => {
+    const task = toolUseContext.getAppState().tasks[agentId]
+    if (isLocalAgentTask(task) && task.stoppedByUser) {
+      logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=live`, { level: 'warn' })
+      throw new AgentStoppedByUserError(agentId)
+    }
+  }
+  refuseUserStop()
   const startTime = Date.now()
   const inline = delivery === 'reply' && isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
   const appState = toolUseContext.getAppState()
@@ -92,6 +101,10 @@ export async function resumeAgentBackground({
     getAgentTranscript(asAgentId(agentId)),
     readAgentMetadata(asAgentId(agentId)),
   ])
+  if (meta?.stoppedByUser) {
+    logForDebugging(`[AgentCancellation] resume_refused agent_id=${agentId} source=metadata`, { level: 'warn' })
+    throw new AgentStoppedByUserError(agentId)
+  }
   const savedScope = await readForkedSkillScope(asAgentId(agentId))
   const liveTask = appState.tasks[agentId]
   const isLiveTask = isLocalAgentTask(liveTask)
@@ -314,6 +327,9 @@ export async function resumeAgentBackground({
       return { ...prev, agentNameRegistry: registry }
     })
   }
+  // Permission, transcript and scope reads can yield while the user stops it.
+  // Recheck the current store immediately before replacing the stopped task.
+  refuseUserStop()
   const agentBackgroundTask = registerAsyncAgent({
     agentId,
     description: uiDescription,

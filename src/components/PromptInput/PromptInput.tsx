@@ -2643,7 +2643,7 @@ function PromptInput({
         }
         if (task.status === 'running') {
           if (task.type === 'local_agent') {
-            killAsyncAgent(task.id, setAppState)
+            killAsyncAgent(task.id, setAppState, 'user')
           } else if (task.type === 'in_process_teammate') {
             void InProcessTeammateTask.kill(task.id, setAppState)
           }

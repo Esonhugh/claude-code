@@ -6,7 +6,9 @@ import type { TaskStateBase } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
-import { isLiveLocalAgentTask } from './LocalAgentTask/LocalAgentTask.js'
+import { isLiveLocalAgentTask, isLocalAgentTask, killAsyncAgent } from './LocalAgentTask/LocalAgentTask.js'
+import { readAgentMetadata } from '../utils/sessionStorage.js'
+import { asAgentId } from '../types/ids.js'
 
 export class StopTaskError extends Error {
   constructor(
@@ -19,6 +21,7 @@ export class StopTaskError extends Error {
 }
 
 type StopTaskContext = {
+  source?: 'model' | 'user'
   getAppState: () => AppState
   setAppState: (f: (prev: AppState) => AppState) => void
 }
@@ -63,7 +66,13 @@ export async function stopTask(
     )
   }
 
-  await taskImpl.kill(taskId, setAppState)
+  if (context.source === 'user' && isLocalAgentTask(task)) {
+    killAsyncAgent(taskId, setAppState, 'user')
+    // Ensure the SDK acknowledgment follows durable cancellation.
+    await readAgentMetadata(asAgentId(taskId))
+  } else {
+    await taskImpl.kill(taskId, setAppState)
+  }
 
   // Bash: suppress the "exit code 137" notification (noise). Agent tasks: don't
   // suppress — the AbortError catch sends a notification carrying

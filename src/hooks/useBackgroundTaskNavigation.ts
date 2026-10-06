@@ -161,7 +161,7 @@ export function useBackgroundTaskNavigation(options?: {
       if (taskId) {
         const task = tasks[taskId]
         if (isLocalAgentTask(task) && task.status === 'running') {
-          killAsyncAgent(taskId, setAppState)
+          killAsyncAgent(taskId, setAppState, 'user')
           return
         }
         if (isInProcessTeammateTask(task) && task.status === 'running') {

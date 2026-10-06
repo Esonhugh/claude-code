@@ -4246,6 +4246,7 @@ function runHeadlessStreaming(
           try {
             // @ts-ignore - recovered code
             await stopTask(taskId, {
+              source: 'user',
               getAppState,
               setAppState,
             })

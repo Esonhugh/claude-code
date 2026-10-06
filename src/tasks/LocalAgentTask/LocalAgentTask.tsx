@@ -28,7 +28,8 @@ import {
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { getToolSearchOrReadInfo } from '../../utils/collapseReadSearch.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
-import { getAgentTranscriptPath } from '../../utils/sessionStorage.js'
+import { getAgentTranscriptPath, markAgentMetadataStoppedByUser } from '../../utils/sessionStorage.js'
+import { logForDebugging } from '../../utils/debug.js'
 import {
   evictTaskOutput,
   getTaskOutputPath,
@@ -214,6 +215,8 @@ export function createActivityDescriptionResolver(
 
 export type LocalAgentTaskState = TaskStateBase & {
   type: 'local_agent'
+  /** Set only by an explicit user stop, never by a model/system abort. */
+  stoppedByUser?: boolean
   agentId: string
   prompt: string
   selectedAgent?: AgentDefinition
@@ -449,18 +452,29 @@ export const LocalAgentTask: Task = {
 /**
  * Kill an agent task. No-op if already killed/completed.
  */
-export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
+export function killAsyncAgent(
+  taskId: string,
+  setAppState: SetAppState,
+  source: 'system' | 'user' = 'system',
+): void {
   let killed = false
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
     if (!isLiveLocalAgentTask(task)) {
       return task
     }
     killed = true
+    if (source === 'user') {
+      void markAgentMetadataStoppedByUser(asAgentId(taskId), task.agentType).catch(error => {
+        logForDebugging(`[AgentCancellation] failed to persist user stop agent_id=${taskId}: ${error}`, { level: 'warn' })
+      })
+      logForDebugging(`[AgentCancellation] user_stopped agent_id=${taskId}`)
+    }
     task.abortController?.abort()
     task.unregisterCleanup?.()
     return {
       ...task,
       status: 'killed',
+      ...(source === 'user' && { stoppedByUser: true }),
       endTime: Date.now(),
       evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
       abortController: undefined,
@@ -484,7 +498,7 @@ export function killAllRunningAgentTasks(
 ): void {
   for (const [taskId, task] of Object.entries(tasks)) {
     if (isLiveLocalAgentTask(task)) {
-      killAsyncAgent(taskId, setAppState)
+      killAsyncAgent(taskId, setAppState, 'user')
     }
   }
 }

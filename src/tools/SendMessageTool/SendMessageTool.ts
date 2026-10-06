@@ -42,6 +42,7 @@ import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
 import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
 import { frameSubagentHandback, displaySubagentHandback, RESUMED_AGENT_MESSAGE, RESUMED_AGENT_FRAMED_MESSAGE, type SubagentHandback } from '../../utils/subagentHandback.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { AgentStoppedByUserError, cancelledAgentMessage } from '../../utils/agentCancellation.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
@@ -823,7 +824,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         const registered = appState.agentNameRegistry.get(input.to)
         const agentId = registered ?? toAgentId(input.to)
         if (agentId) {
-          const task = appState.tasks[agentId]
+          const task = context.getAppState().tasks[agentId]
           if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
             if (task.status === 'running') {
               queuePendingMessage(
@@ -838,7 +839,11 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 },
               }
             }
-            // task exists but stopped — auto-resume
+            if (task.stoppedByUser) {
+              logForDebugging(`[AgentCancellation] message_refused agent_id=${agentId} source=live`, { level: 'warn' })
+              return { data: { success: false, message: cancelledAgentMessage(input.to) } }
+            }
+            // Completed, failed and system-interrupted tasks remain resumable.
             try {
               const result = await resumeAgentBackground({
                 agentId,
@@ -859,7 +864,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               return {
                 data: {
                   success: false,
-                  message: `Agent "${input.to}" is stopped (${task.status}) and could not be resumed: ${errorMessage(e)}`,
+                  message: e instanceof AgentStoppedByUserError ? e.message : `Agent "${input.to}" is stopped (${task.status}) and could not be resumed: ${errorMessage(e)}`,
                 },
               }
             }
@@ -888,7 +893,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               return {
                 data: {
                   success: false,
-                  message: `Agent "${input.to}" is registered but has no transcript to resume. It may have been cleaned up. (${errorMessage(e)})`,
+                  message: e instanceof AgentStoppedByUserError ? e.message : `Agent "${input.to}" is registered but has no transcript to resume. It may have been cleaned up. (${errorMessage(e)})`,
                 },
               }
             }

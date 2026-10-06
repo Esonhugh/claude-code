@@ -1093,3 +1093,11 @@ on('tool.call', async ($, e, next) => {
 ```
 
 同一插件内的 hook 可看到本插件其他 hook 的未处理回执；离开插件后才核对标记来源。保留 `next(e)` 的原回执，或保留同一个 `ref` 和未改写的 `result`，才能保留标记；自行设置它不能证明只读。按官方 2.1.292 的运行实现，插件主动调用 `$.tool.call()` 的最终回执会移除该标记，观察该执行的其他 hook 仍可读取它。在启用官方 diff mod 的终端会话中，用 `/diff` 切换视图；文件写入后可查看实际变更。事件和方法索引见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)，精确类型以安装版本写出的声明为准。证据与未覆盖项见 [只读标记专项](docs/research/mods-tool-readonly-20261007.md)。
+
+## 停止与恢复子 Agent
+
+按两次 `ctrl+x ctrl+k` 可确认停止后台 Agent；在 Agent 视图按 Escape、关闭运行中的任务或通过 SDK `stop_task` 停止，也属于用户取消。此时原 Agent 的 `stoppedByUser` 标记保存到元数据，`SendMessage` 会拒绝自动恢复，重启会话后仍有效。只有用户明确要求重新开始时，才应创建新的 Agent 任务。
+
+模型调用 `TaskStop` 或系统中断不会设置用户取消标记；这些任务与已完成、失败的任务仍可通过 `SendMessage` 正常恢复。标记表示停止来源，不能只凭内部 `killed` 状态判断。`[AgentCancellation]` 日志记录停止/拒绝的完整 ID 及 live/metadata 来源，不打印消息内容。
+
+回执沿官方分支保留措辞：内存中已取消的任务返回 `was stopped by the user and was not resumed`；从磁盘恢复被拒绝时返回 `was stopped by the user and won't be resumed`。两者都返回 `success: false`，不会启动新的模型请求。源码和测试证据见 [用户取消专项](docs/research/mods-user-cancellation-20261007.md)。该项不代表完整任务 UI、观察者、teammate、Workflow 或跨会话目标解析已完成兼容。

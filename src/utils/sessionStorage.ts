@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import type { UUID } from 'crypto'
+import { randomUUID, type UUID } from 'crypto'
 import type { Dirent } from 'fs'
 // Sync fs primitives for readFileTailSync — separate from fs/promises
 // imports above. Named (not wildcard) per CLAUDE.md style; no collisions
@@ -10,6 +10,7 @@ import {
   open as fsOpen,
   mkdir,
   readdir,
+  rename,
   readFile,
   stat,
   unlink,
@@ -271,6 +272,8 @@ function getAgentMetadataPath(agentId: AgentId): string {
 
 export type AgentMetadata = {
   agentType: string
+  /** Durable user cancellation; absent on older metadata. */
+  stoppedByUser?: boolean
   /** Name retained for SendMessage routing when a background skill resumes. */
   name?: string
   /** Effective model retained when the same agent resumes a later turn. */
@@ -300,26 +303,64 @@ export type AgentMetadata = {
  * Also stores the worktreePath when the agent was spawned with worktree
  * isolation, enabling resume to restore the correct cwd.
  */
-export async function writeAgentMetadata(
-  agentId: AgentId,
-  metadata: AgentMetadata,
-): Promise<void> {
-  const path = getAgentMetadataPath(agentId)
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(metadata))
+const agentMetadataWrites = new Map<string, Promise<void>>()
+
+async function readAgentMetadataFile(path: string): Promise<AgentMetadata | null> {
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as AgentMetadata
+  } catch (error) {
+    if (isFsInaccessible(error)) return null
+    throw error
+  }
 }
 
-export async function readAgentMetadata(
+async function mutateAgentMetadata(
   agentId: AgentId,
-): Promise<AgentMetadata | null> {
+  update: (current: AgentMetadata | null) => AgentMetadata,
+): Promise<void> {
   const path = getAgentMetadataPath(agentId)
+  const previous = agentMetadataWrites.get(path)
+  // A failed earlier write must not prevent a later retry; this write's error
+  // remains observable to its caller and to readers waiting for it.
+  const write = (previous?.catch(() => {}) ?? Promise.resolve()).then(async () => {
+    const metadata = update(await readAgentMetadataFile(path))
+    await mkdir(dirname(path), { recursive: true })
+    const mode = await stat(path).then(info => info.mode & 0o777, error => {
+      if (isFsInaccessible(error)) return 0o666 & ~process.umask()
+      throw error
+    })
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify(metadata), { flag: 'wx', mode })
+      await rename(temporary, path)
+    } finally {
+      await unlink(temporary).catch(error => {
+        if (!isFsInaccessible(error)) logForDebugging(`Failed to clean metadata staging file: ${error}`)
+      })
+    }
+  })
+  agentMetadataWrites.set(path, write)
   try {
-    const raw = await readFile(path, 'utf-8')
-    return JSON.parse(raw) as AgentMetadata
-  } catch (e) {
-    if (isFsInaccessible(e)) return null
-    throw e
+    await write
+  } finally {
+    if (agentMetadataWrites.get(path) === write) agentMetadataWrites.delete(path)
   }
+}
+
+export async function writeAgentMetadata(agentId: AgentId, metadata: AgentMetadata): Promise<void> {
+  await mutateAgentMetadata(agentId, current => current?.stoppedByUser
+    ? { ...metadata, stoppedByUser: true }
+    : metadata)
+}
+
+export async function markAgentMetadataStoppedByUser(agentId: AgentId, agentType: string): Promise<void> {
+  await mutateAgentMetadata(agentId, current => ({ ...current ?? { agentType }, stoppedByUser: true }))
+}
+
+export async function readAgentMetadata(agentId: AgentId): Promise<AgentMetadata | null> {
+  const path = getAgentMetadataPath(agentId)
+  await agentMetadataWrites.get(path)
+  return readAgentMetadataFile(path)
 }
 
 export type RemoteAgentMetadata = {
