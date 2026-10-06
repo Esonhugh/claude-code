@@ -681,7 +681,7 @@ export async function runPluginTestChild(pluginRoot: string, file: string): Prom
 
 export async function runPluginTests(
   pluginRoot: string,
-  options: { childCommand?: (file: string) => string[]; fileTimeoutMs?: number } = {},
+  options: { childCommand?: (file: string, root: string) => string[]; fileTimeoutMs?: number } = {},
 ): Promise<PluginTestResult> {
   const fileTimeoutMs = options.fileTimeoutMs ?? 60_000
   if (!Number.isFinite(fileTimeoutMs) || fileTimeoutMs <= 0)
@@ -692,7 +692,7 @@ export async function runPluginTests(
   if (!files.length) throw new Error(`No plugin test files found under ${root}`)
   const results: PluginTestFileResult[] = []
   for (const file of files) {
-    const command = options.childCommand?.(file) ?? [process.execPath, import.meta.path, '--child', root, file]
+    const command = options.childCommand?.(file, root) ?? [process.execPath, import.meta.path, '--child', root, file]
     // Do not inherit credentials, runtime preload flags, or arbitrary plugin environment.
     const isolationRoot = join(root, '.claude-test-environment')
     await mkdir(isolationRoot, { recursive: true })

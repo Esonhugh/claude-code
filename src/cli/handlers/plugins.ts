@@ -246,12 +246,12 @@ export async function pluginTestHandler(
     )
     if (options.child) process.exit(await runPluginTestChild(directory, options.child))
     const result = await runPluginTests(directory, {
-      childCommand: file => [
+      childCommand: (file, root) => [
         process.execPath,
         ...(isInBundledMode() ? [] : [process.argv[1]!]),
         'plugin',
         'test',
-        directory,
+        root,
         '--child',
         file,
       ],

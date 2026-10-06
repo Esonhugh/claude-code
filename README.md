@@ -816,3 +816,9 @@ CLI 启动时校验并自动恢复损坏的内置 Mods 缓存。多个 CLI 同�
 使用 `./built-claude plugin test /absolute/path/to/my-mod` 运行作者测试。失败结果保留 VM 原生 Error 的具体消息和调用栈；调用栈没有消息时补充错误名称和消息。测试失败仍返回非零退出码。
 
 运行 `bun test ./src/services/mods/testing/runner.diagnostics.test.ts` 检查消息与原始 frame 的保留。
+
+## 作者测试的插件路径
+
+可从当前目录运行 `./built-claude plugin test ./my-mod`，也可传入绝对路径或符号链接。带空格的路径使用引号，例如 `./built-claude plugin test "./my mod"`。子进程在真实插件根目录中运行，不会重复拼接相对路径。
+
+运行 `bun test ./src/services/mods/testing/runner.childRoot.test.ts` 检查三种路径及真实作者子进程加载。
