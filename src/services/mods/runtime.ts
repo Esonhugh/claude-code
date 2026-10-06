@@ -25,7 +25,7 @@ import { createModTools, type ModToolSpec } from './tools.js'
 import { describeModCommand, runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
-import { createModHookStream, dispatchModEvent, dispatchModStream, pauseModBudget } from './dispatch.js'
+import { createModHookStream, dispatchModEvent, dispatchModStream, getModCapabilitySignal, pauseModBudget } from './dispatch.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
 import { createModSessionMeasure } from './sessionMeasure.js'
@@ -810,7 +810,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
-        return { text: args[0], to: (options as ModInput).to === undefined ? 'transcript' : (options as ModInput).to }
+        const to = (options as ModInput).to === undefined ? 'transcript' : (options as ModInput).to
+        if (to !== 'transcript' && to !== 'debug') throw new TypeError('ui.log to must be transcript or debug')
+        return { text: args[0], to }
       }
       case 'ui.toast': {
         const options = args[1] as ModInput | undefined
@@ -1229,7 +1231,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const context = capabilityContext.getStore()
         const caller = context?.active ? context.hook : undefined
         const invocation = invocationSignal.getStore()
-        const signal = context?.active && !invocation?.aborted ? invocation : undefined
+        const signal = context?.active && context.next
+          ? getModCapabilitySignal(context.next)
+          : context?.active && !invocation?.aborted ? invocation : undefined
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
         try {
           // State and drawing belong to this runtime, not to production host providers.

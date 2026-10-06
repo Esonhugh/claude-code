@@ -562,11 +562,14 @@ test('invalid toast payload does not consume the plugin throttle window', async 
     });
   }`)
   const shown: unknown[] = []
-  const runtime = createModsRuntime({services:{uiToast:(...args) => { shown.push(args) }}})
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({services:{uiToast:(...args) => { shown.push(args) }},onDiagnostic:event => {diagnostics.push(event)}})
   try {
     await runtime.reconcile([input])
-    expect(await runtime.dispatch('command.run', {}, async () => ({}))).toEqual({denied:true})
+    expect(await runtime.dispatch('command.run', {}, async () => ({}))).toEqual({denied:false})
+    await runtime.settle()
     expect(shown).toEqual([['fixture', 'good', 4000]])
+    expect(diagnostics).toEqual([expect.objectContaining({plugin:'fixture',stage:'async',message:expect.stringContaining('$.ui.toast dropped:')})])
   } finally {
     await runtime.dispose()
   }
@@ -621,6 +624,7 @@ test('routes toast through scan, VM, middleware and the host with per-plugin thr
     await runtime.bind({ cwd:input.pluginRoot, surface:'terminal', isInteractive:true, sessionId:'compatibility' })
     await runtime.reconcile([input])
     await runtime.dispatch('command.run', {}, async () => ({}))
+    await runtime.settle()
     expect(diagnostics).toEqual([])
     expect(shown).toEqual([['fixture', 'rewritten:first', 2500]])
   } finally {

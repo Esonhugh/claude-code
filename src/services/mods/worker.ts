@@ -67,10 +67,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     streamHandles.delete(request.id);
     streams.delete(request.id);
   };
-  const report = error => {
+  const report = (error, operation) => {
     const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined;
-    bridge(JSON.stringify({ type: 'async-error', error: typeof message === 'string' ? message : 'Module asynchronous callback failed' }));
+    const reason = typeof message === 'string' ? message : 'Module asynchronous callback failed';
+    bridge(JSON.stringify({ type: 'async-error', error: operation ? '$.' + operation + ' dropped: ' + reason : reason }));
   };
   let nextHandle = 0, nextCall = 0, nextTimer = 0, registering = true, disposed = false;
   const encode = (value, seen = new Set()) => {
@@ -183,6 +184,18 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       const scroll = methods.scroll;
       const focus = methods.focus;
       const blit = methods.blit;
+      const log = methods.log;
+      const status = methods.status;
+      const toast = methods.toast;
+      if (log) methods.log = Object.freeze((text, options = {}) => {
+        log(String(text), {to: options?.to ?? 'transcript'}).catch(error => report(error, 'ui.log'));
+      });
+      if (status) methods.status = Object.freeze(text => {
+        status(text === undefined || text === null ? undefined : String(text)).catch(error => report(error, 'ui.status'));
+      });
+      if (toast) methods.toast = Object.freeze((text, options = {}) => {
+        toast(String(text), {...typeof options.timeoutMs === 'number' && {timeoutMs: options.timeoutMs}}).catch(error => report(error, 'ui.toast'));
+      });
       if (scroll) methods.scroll = input => scroll({
         to: input?.to,
         ...(input?.in !== undefined && {in:input.in}),

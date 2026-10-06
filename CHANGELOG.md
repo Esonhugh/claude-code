@@ -12,6 +12,29 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-06 - Mods 通知便利调用契约
+
+### 版本状态
+
+- 未发布，版本和依赖保持不变。
+
+### 关联提交
+
+- 本条随通知便利调用、声明和生命周期回归测试一起提交。
+
+### 变更内容
+
+- `$.ui.log/status/toast` 同步返回 `void`；异步拒绝记录所属插件、操作名和原因，插件继续运行，`await` 不提供完成屏障。
+- 文本在作者调用边界转换为字符串，status 的 `null`/`undefined` 清除；log 默认 transcript，toast 只传递数值 timeout，getter 和文本转换错误同步抛出。
+- 导出可变的 `UiLogOptions`、`ToastOptions` 及 `UiLogSink`；status 作者参数要求显式传入 `string` 或 `undefined`。
+- 无效的原始 `ui.log` sink 在进入 middleware 前拒绝，保留有效输入的下游改写。
+- 已经开始的 capability 调用在作者 hook 正常返回后继续执行，保留原始所属插件；真实父调用取消、hook 失败和超时仍取消工作，恢复 catch 使用独立生命周期。
+
+### 测试覆盖
+
+- 实际 Worker 7案、严格作者类型2案、生命周期与现有 dispatch 回归、相邻UI回归，以及完整类型、lint、release-check和新构建验证；官方2.1.289及准确提交副本的新制品使用相同tmux输入和隔离环境对照返回值、转换、后台警告及继续执行。
+- `toast(..., null)` 的跨realm `instanceof TypeError` 仍与官方不同；完整操作类型映射、API、UI帧及既有diff验收继续开放。
+
 ## 2026-10-06 - Mods 持久状态通知
 
 ### 版本状态

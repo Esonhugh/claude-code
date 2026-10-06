@@ -749,4 +749,6 @@ $.ui.status('diff 已就绪')
 $.ui.status(undefined)
 ```
 
-官方2.1.289的这些便利调用同步返回 `void`；本地的通知位置、更新和清除已对照验证，返回值和异步错误报告仍在对齐。
+`$.ui.log(text, { to: 'debug' })`、`$.ui.status(text)` 和 `$.ui.toast(text, { timeoutMs: 4000 })` 按官方2.1.289同步返回 `void`。`await` 这些便利调用不会等待 middleware 或 UI 完成；异步拒绝会记录所属插件、操作名和原因，插件仍可继续执行。文本转换与 options getter 的错误同步抛出。已经进入 middleware 的通知可以在作者 hook 正常返回后完成；调用者取消、hook 失败或超时仍会取消相应工作。
+
+作者声明导出 `UiLogSink`、`UiLogOptions`、`ToastOptions`；清除 status 要显式传入 `undefined`。可运行 `bun test ./src/services/mods/uiVoid289.test.ts ./src/services/mods/uiNotifications.types.test.ts ./src/services/mods/uiNotifications.lifetime.test.ts` 检查真实 Worker、严格作者类型及取消/失败恢复。`toast(..., null)` 的跨 realm `instanceof TypeError` 仍与官方不同；完整操作类型映射和全部 UI 行为继续对齐。

@@ -374,6 +374,10 @@ declare module 'claude-code' {
     Svg?: ElementConstructor<Readonly<{ source: string; alt: string; width?: number; height?: number; isInteractive?: boolean }>>
   }>
 
+  export type UiLogSink = 'transcript' | 'debug'
+  export type UiLogOptions = { to?: UiLogSink }
+  export type ToastOptions = { timeoutMs?: number }
+
   export interface CoreEngineInterface {
     plugin: { name(): Promise<string>; root(): Promise<string> }
     clock: { now(): Promise<number>; sleep(ms: number): Promise<void>; after(ms: number, callback: () => unknown): Promise<unknown>; every(ms: number, callback: () => unknown): Promise<unknown> }
@@ -393,7 +397,7 @@ declare module 'claude-code' {
     mcp: { call(server: string, tool: string, args?: Readonly<Record<string, unknown>>): Promise<unknown> }
     turn: { step(input: Readonly<Record<string, unknown>>): AsyncGenerator<unknown, unknown>; abort(input: Readonly<{ turnId: string }>): Promise<void> }
     tool: { list(): Promise<readonly unknown[]>; check(input: Readonly<{ tool: string; input: unknown }>): Promise<unknown>; call(input: ToolCallArgs): Promise<unknown>; register(input: Readonly<Record<string, unknown>>): Promise<unknown> }
-    ui: { open(input: Readonly<{ id: string; title?: string; focus?: true; closeOnEscape?: true; holdToasts?: true; rows?: number; columns?: number }>): Promise<PlacementResult>; close(input: Readonly<{ id: string }>): Promise<unknown>; blit(input: Readonly<{ requestId: string; key: string; cells?: string; source?: unknown; columns?: number; rows?: number }>): Promise<unknown>; scroll(input: Readonly<{ to: 'start' | 'end' | Readonly<{ requestId: string }> | Readonly<{ key: string }>; in?: string; block?: 'start' | 'center' | 'end' | 'nearest' }>): Promise<unknown>; focus(input: Readonly<{ requestId: string; key: string }>): Promise<unknown>; invalidate(event: string): Promise<void>; log(text: string, options?: Readonly<{ to?: 'transcript' | 'debug' }>): Promise<void>; status(text?: string): Promise<void>; toast(text: string, options?: Readonly<{ timeoutMs?: number }>): Promise<void>; resolve(input: Readonly<{ surface: Surface; component: RenderComponent }>): Elements }
+    ui: { open(input: Readonly<{ id: string; title?: string; focus?: true; closeOnEscape?: true; holdToasts?: true; rows?: number; columns?: number }>): Promise<PlacementResult>; close(input: Readonly<{ id: string }>): Promise<unknown>; blit(input: Readonly<{ requestId: string; key: string; cells?: string; source?: unknown; columns?: number; rows?: number }>): Promise<unknown>; scroll(input: Readonly<{ to: 'start' | 'end' | Readonly<{ requestId: string }> | Readonly<{ key: string }>; in?: string; block?: 'start' | 'center' | 'end' | 'nearest' }>): Promise<unknown>; focus(input: Readonly<{ requestId: string; key: string }>): Promise<unknown>; invalidate(event: string): Promise<void>; log(text: string, options?: UiLogOptions): void; status(text: string | undefined): void; toast(text: string, options?: ToastOptions): void; resolve(input: Readonly<{ surface: Surface; component: RenderComponent }>): Elements }
   }
 
 }

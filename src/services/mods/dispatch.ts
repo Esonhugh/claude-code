@@ -14,6 +14,11 @@ import type {
 
 type TraceNode = { entry?: ModTraceEntry; below: TraceNode[] }
 const traces = new WeakMap<ModNext, Set<() => void>>()
+// A frame's continuation ends on return; calls it already started follow cancellation.
+const capabilitySignals = new WeakMap<AbortSignal, AbortSignal>()
+export function getModCapabilitySignal(next: Pick<ModNext, 'signal'>): AbortSignal {
+  return capabilitySignals.get(next.signal) ?? next.signal
+}
 export function subscribeModTrace(next: ModNext, changed: () => void): () => void {
   const listeners = traces.get(next)
   listeners?.add(changed)
@@ -490,6 +495,8 @@ export async function dispatchModEvent(options: {
     }
     const lifetime = createAbortController()
     let controller = createAbortController()
+    const inheritedCapabilitySignal = parent && (capabilitySignals.get(parent) ?? parent)
+    capabilitySignals.set(lifetime.signal, inheritedCapabilitySignal ?? createAbortController().signal)
     let phase: 'active' | 'recovering' | 'catch' | 'done' = 'active'
     let inFlight: Promise<unknown> | undefined
     const nextResults: unknown[] = []
@@ -659,6 +666,11 @@ export async function dispatchModEvent(options: {
       phase = catching ? 'catch' : 'active'
       controller = createAbortController()
       const ownController = controller
+      const operationController = createAbortController()
+      const operationSignal = inheritedCapabilitySignal
+        ? AbortSignal.any([inheritedCapabilitySignal, operationController.signal])
+        : operationController.signal
+      capabilitySignals.set(ownController.signal, operationSignal)
       let settledRemaining: number | undefined
       allowance = catching ? catchGraceMs : budgetMs
       remaining = allowance
@@ -738,6 +750,7 @@ export async function dispatchModEvent(options: {
           timedOut = true
           phase = 'recovering'
           reject(error)
+          operationController.abort(error)
           ownController.abort(error)
         }
       })
@@ -751,6 +764,9 @@ export async function dispatchModEvent(options: {
           timeout,
           abandoned,
         ])
+      } catch (error) {
+        operationController.abort(error)
+        throw error
       } finally {
         stopTimer()
         settledRemaining = Math.max(0, remaining)

@@ -526,10 +526,11 @@ test('ui.log preserves default, debug and rewritten sinks across activation buff
   const {value,diagnostics}=fixture({uiLog:(plugin,text,to)=>logs.push([plugin,text,to])})
   await value.bind(binding(root)); await value.reconcile([policy,owner])
   expect(logs).toEqual([['logger','default','transcript'],['logger','debug','debug'],['logger','rewrite','debug']])
-  expect(await value.dispatch('tool.call',{tool:'Probe'},async()=>({result:'core'}))).toEqual({result:true})
+  expect(await value.dispatch('tool.call',{tool:'Probe'},async()=>({result:'core'}))).toEqual({result:false})
+  await value.settle()
   expect(logs.at(-1)).toEqual(['logger','live','debug'])
   expect(logs).toHaveLength(4)
-  expect(diagnostics).toEqual([])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'logger',stage:'async',message:'$.ui.log dropped: ui.log to must be transcript or debug'})])
   const failed=await plugin('failed-logger',`export function register(on) {
     on('session.start',async($)=>{await $.ui.log('completed before failure',{to:'debug'});throw Error('failed start');});
   }`)
