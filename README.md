@@ -945,7 +945,7 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 export CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS=2
 ```
 
-变量支持 trim 后带可选符号的正十进制整数，无效值回退到 20。启动回执返回后，后台任务继续占用名额；前台转后台保留同一名额。恢复任务和 context: fork 命令参与全局计数，沿用官方的恢复/命令启动规则。
+变量支持 trim 后带可选符号的正十进制整数，无效值回退到 20。启动回执返回后，后台任务继续占用名额；前台转后台保留同一名额，恢复普通 Agent 时重新预留。同步 `context: fork` 技能本身不占普通 Agent 名额，技能内实际调用的 Agent 仍受同一全局限制。
 
 作者应处理全局额度不足的返回值：
 
@@ -959,3 +959,5 @@ if ('deny' in result) {
 ```
 
 插件自身额度耗尽仍抛出包含插件名的异常。全局计数、拒绝和释放可在 --debug 的 AgentConcurrency 日志中核对。本轮验证及原生入口限制见 [全局并发记录](docs/research/mods-agent-concurrency-20261007.md)。
+
+同步 fork 技能的进度、查询与启动/完成 debug 使用同一个 agent ID。运行 `bun test --no-env-file ./src/utils/processUserInput/processSlashCommand.concurrency.test.ts` 可验证 slash 与 SkillTool 的计数和身份；实际 CLI 对照见 [fork 技能专项](docs/research/mods-fork-capacity-20261007.md)。官方最新版本默认把 fork 技能作为后台任务启动；本地普通入口仍同步，KAIROS 的旧后台分支仍计数，这两条路由继续独立对齐。技能配置参考 [Anthropic 官方 skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。

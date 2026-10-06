@@ -1790,3 +1790,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - RED：旧 HEAD 的新增 Agent 回归 0 pass / 10 fail，无额外 error；本轮 ROOT 旧行为 Make binary 在全局满额时实际接受其他插件 spawn，真实 tmux 断言失败。官方同场返回精确 deny，普通 Agent 工具错误且零子 API。
 - 完整结果、当前源码/制品身份与失败诊断见 [全局并发记录](docs/research/mods-agent-concurrency-20261007.md)，证据根 /private/tmp/mods-agent-cap-20261007-tfmvh1z2。
 - 边界：官方组织与模型能力控制下的 ultracode 旁路、所有原生错误/取消/恢复/Workflow/remote/teammate 组合、同进程全量 suite、G5、标题 helper 与完整 API/UI/diff 目标继续验收。相关回归成功不代替整体完成；原报告/资产与其他 Claude 进程保留，不 push。
+
+
+## 2026-10-07：同步 fork 技能计数与身份的更正
+
+- 上一批 fork 预留的静态依据来自缓存共享 fork worker，不是 `context: fork` 技能入口。官方 2.1.291 的同步技能 worker 本身不预留普通 Agent 名额，内部 Agent 调用才预留；本批按实际入口更正实现与说明。
+- slash 进度 ID 显式传入 runAgent，启动/完成 debug 与实际逻辑 turn 对应同一身份。成功、异常、满额保留及 SkillTool 相邻入口由独立进程验证。
+- 官方对照使用 `background: false` 的技能夹具；本地普通技能仍同步，因此本批只验同步执行，不能据此关闭官方默认后台任务路由。KAIROS 旧后台分支、任务命名/恢复与完整 UI 仍待后续批次。
+- RED、最终 Bun/Make/tmux 证据与未覆盖项见 [fork 技能专项](docs/research/mods-fork-capacity-20261007.md)。保留上一场失败和原有 WIP，不推送。

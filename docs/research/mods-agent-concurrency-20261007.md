@@ -1,5 +1,7 @@
 # Agent 全局并发专项：2026-10-07
 
+更正：本报告中的 fork 预留静态依据属于缓存共享 fork worker，不是 `context: fork` 技能。同步技能入口后续已单独分析、修正和验收，见 [fork 技能专项](mods-fork-capacity-20261007.md)；本报告的历史测试及失败证据仍保留。
+
 本批对齐默认普通本地 Agent 的全局执行额度、公开 Mod 全局拒绝结果和名额生命周期。基线 HEAD 为 168210a02ee42074445ea6e52c99db18e783d781；独立候选不包含另外 278 个 WIP。证据根为 /private/tmp/mods-agent-cap-20261007-tfmvh1z2。
 
 ## 官方依据与实现边界

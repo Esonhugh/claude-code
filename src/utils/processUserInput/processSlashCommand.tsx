@@ -164,7 +164,7 @@ async function executeForkedSlashCommand(
       : baseAgent
 
   logForDebugging(
-    `Executing forked slash command /${command.name} with agent ${agentDefinition.agentType}`,
+    `Executing forked slash command /${command.name} with agent ${agentDefinition.agentType} (agent ${agentId})`,
   )
 
   // Assistant mode: fire-and-forget. Launch subagent in background, return
@@ -317,7 +317,7 @@ async function executeForkedSlashCommand(
   updateProgress()
 
   // Run the sub-agent
-  const releaseSlot = takeSubagentConcurrencySlot(context)
+  // Do not reserve ordinary Agent capacity for the skill worker itself.
   try {
     for await (const message of runAgent({
       agentDefinition,
@@ -331,6 +331,7 @@ async function executeForkedSlashCommand(
       querySource: 'agent:custom',
       model: command.model as ModelAlias | undefined,
       availableTools: context.options.tools,
+      override: { agentId },
     })) {
       agentMessages.push(message)
       const normalizedNew = normalizeMessages([message])
@@ -360,7 +361,6 @@ async function executeForkedSlashCommand(
       }
     }
   } finally {
-    releaseSlot()
     // Clear the progress display
     setToolJSX(null)
   }
