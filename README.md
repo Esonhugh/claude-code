@@ -770,3 +770,9 @@ $.ui.status(undefined)
 `$.ui.log(text, { to: 'debug' })`、`$.ui.status(text)` 和 `$.ui.toast(text, { timeoutMs: 4000 })` 按官方2.1.289同步返回 `void`。`await` 这些便利调用不会等待 middleware 或 UI 完成；异步拒绝会记录所属插件、操作名和原因，插件仍可继续执行。文本转换与 options getter 的错误同步抛出。已经进入 middleware 的通知可以在作者 hook 正常返回后完成；调用者取消、hook 失败或超时仍会取消相应工作。
 
 作者声明导出 `UiLogSink`、`UiLogOptions`、`ToastOptions`；清除 status 要显式传入 `undefined`。可运行 `bun test ./src/services/mods/uiVoid289.test.ts ./src/services/mods/uiNotifications.types.test.ts ./src/services/mods/uiNotifications.lifetime.test.ts` 检查真实 Worker、严格作者类型及取消/失败恢复。`toast(..., null)` 的跨 realm `instanceof TypeError` 仍与官方不同；完整操作类型映射和全部 UI 行为继续对齐。
+
+## Diff 的语法颜色
+
+构建后在 Git 仓库中运行 `/diff` 查看变更。默认语法高亮保留新增代码的关键词、字符串和数字颜色，同时显示新增/删除行和词级差异背景；删除代码保持普通前景色。设置 `syntaxHighlightingDisabled: true` 或 `CLAUDE_CODE_SYNTAX_HIGHLIGHT=0` 可关闭语法高亮。
+
+可用 `bun test ./src/native-ts/color-diff/index.test.ts` 检查实际安装的高亮依赖、代码文本、行号和颜色。2026-10-06 对照[官方 2.1.291](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)，已验证样例在真实 `/diff`、resize、ask/取消和重开后的代码前景色；上下文与容器背景、退出日志及完整 diff/API/UI 对齐仍有独立待办，不能将此修复理解为完整兼容已完成。

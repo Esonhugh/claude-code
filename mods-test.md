@@ -1509,3 +1509,15 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 独立提交副本：clean HEAD `595ba69` 加本批精确差异，core `22f073f36d6153e4da30480a4ffbc1bce29bf40ba7e773da3f8ade1de2b3bbed`；119/0，检查与构建 exit 0，制品 `ff1c3d698bf70bc547af495260e524a80747f89c0bc74a39823bcf525c9074c4`。同一真实 tmux 流程 `/private/tmp/mc291-deps-c-commitgreen1/evidence` 通过，比较 `/private/tmp/mods-align-m1scugg4/author-dependencies-project-291-r1/dependencies-commit/native-comparison.json`；不依赖其他未提交的 runtime/UI 差异。
 - 关键 debug：`/private/tmp/mods-align-m1scugg4/author-dependencies-project-291-r1/ROOT-debug-projection.json` 的 owner 初次加载包含基础3根和 bridge/leaf，reload 仅基础3根，并正确记录退役索引、主声明和配置；不序列化契约正文。
 - 未关闭：native held-directory/tree-anchor 文件系统实现、完整生产 API/UI/diff 和跨平台验收。本轮没有重新宣称全量 suite 通过，前述全量失败及基线对照仍保留；不能把独立文件门禁当作全量 suite 通过。已静态定位291 diff 原始模块 `chunk-fbpekckc.js`（SHA-256 `05350cb490432c50c1e4227a6097112c4063d710385c937e29a73cf79adddba8`），尚未证明其与仓库289归档完整行为一致。README/CHANGELOG 已更新作者项目规则；本批验证不代表总体目标完成。
+
+## 2026-10-06：官方 diff 高亮依赖的实际回归
+
+- Source-confirmed：已安装的 highlight.js 11.11.1 的 `HighlightResult` 和实际返回值使用 `_emitter`。旧代码读取 `emitter`，首次颜色绘制在 `Object.keys(undefined)` 抛错，此后可静默产生普通代码颜色；修复后对未知 token tree 形状安全记录结果字段并保留文本。没有修改官方 diff 注册闭包。
+- RED：`shipped-diff-291-r1/syntax-red1/log.txt` 保存真实 TypeScript diff 抛错；首轮 GREEN 的空白行补齐预期错误和 lint 的控制字符正则错误也保留，分别修正测试预期和表达方式，没有关闭 lint 规则。三项最终回归覆盖准确文本、行号、语法/词级颜色、暗色和浅色代码以及未知语言。完整当前 ROOT Pane 测试180/0。
+- Runtime-observed：官方 `/private/tmp/mc291-diff-o-flow1/evidence`、候选 `/private/tmp/mc291-diff-c-flow1/evidence` 和本轮实际 ROOT `/private/tmp/mc291-diff-r-syntaxflow1/evidence` 均运行独立160×40 tmux，以同一 Git 样例执行 `/diff`、160→140→160 resize、鼠标 ask/取消、关闭重开及正常 `/exit 0`；literal 输入、mouse bytes、resize、fixture 和观察步骤相同。断网及钥匙串隔离，仅清理自有进程。
+- 精确比较 `shipped-diff-291-r1/ROOT-syntax-native-comparison.json`：四个稳定画面各7行代码的前景色逐字符一致，其中6行变更代码的 ANSI 完全相同；未改行/空白行和分隔线背景仍有差异，本地退出时还有 `Module capability failed` 诊断。没有把整个画面标为相同。
+- ROOT 隔离新制品 SHA-256 `27707e4378e33ec3baf522349cf675c8b3d1f2e28557402ade8e4ac27dc6e26c`，原根目录 binary 未替换。本批先只迁入高亮源码和测试；ROOT 仍使用289 diff归档。291 原始包已在私有候选校验并通过启动与接管测试，包升级尚未迁入或提交。
+- 独立提交副本为 clean HEAD `3c70417` 仅加高亮源码、测试及本节文档，TypeScript/lint/仓库检查通过；不依赖其他未提交的 runtime/UI 工作。证据根 `/private/tmp/mods-align-m1scugg4/shipped-diff-291-r1/`。历史 response/fix-instructions/improvment 和旧官方资产保留。完整生产 API、UI、diff 与全量 suite 仍未关闭。
+- 最终冻结 ROOT 门禁 `changed-test-gate-e6-r2`：169 个文件串行完成，168 通过、1 失败、23 个条件跳过；核心源码 SHA-256 `2bbbbe2848cab398adf5f059fb12398f9a339cf2f0abe50213f129267ed25e76`。唯一失败为 `PromptInput.modsEdit.test.tsx` 的六调色板 Worker 回归，16/1，诊断 `Mod paint-probe timed out for prompt.edit`（50ms）。旧 e4 门禁也记录过相同失败。保留其日志和原预算，尚未证明超时根因，不能称整轮全绿。
+- 同一失败文件的受控 A/B 复验：修改前 e5 冻结核心 `b7e6060ab277338265115e980128b53ed189382b01f46c4e7f93d89ea7532118` 与当前 e6 核心分别独立运行，均17/0；复验不计入原门禁结果。历史 `response.md` 的九项中，本轮8个文件通过，剩余该文件有间歇超时；报告原文未改。
+- 独立提交副本（仅 clean HEAD 加本功能）再次构建后运行真实 `/diff` 并正常 `/exit 0`，证据 `/private/tmp/mc291-diff-i-syntax1/evidence/result.json`，制品 SHA-256 `c3bc2bf6d13f3205a376e416cfc722510d8a26b693d749ef2f6f24c225e481ab`。这证明本功能可以独立提交；该副本使用已有 diff 入口，不作为完整 Mods 接管或291兼容证明。
