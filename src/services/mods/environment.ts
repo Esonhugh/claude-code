@@ -46,6 +46,7 @@ export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: Hos
   storeMethods.set(call, method)
   return call
 }
+const timerWaits = new WeakSet<HostFunction>()
 const streamBridges = new WeakSet<HostFunction>()
 export function createModStreamBridge<T extends HostFunction>(call: T): T {
   streamBridges.add(call)
@@ -124,7 +125,7 @@ export function createModEnvironmentHost({
   let epoch = 0
   const barriers = new Map<number, { resolve(): void; reject(error: Error): void }>()
   const progress = new Set<() => void>()
-  const activeCalls = new Map<number, { environment: number; invocation: number }>()
+  const activeCalls = new Map<number, { environment: number; invocation: number; idle?: boolean }>()
   function changed() {
     epoch++
     for (const resolve of progress) resolve()
@@ -142,7 +143,8 @@ export function createModEnvironmentHost({
         catch (error) { barriers.delete(barrier); reject(error) }
       })
       if (before !== epoch || holding !== held()) continue
-      if (requests.size === 0 && activeCalls.size === 0 || activeCalls.size > 0 && activeCalls.size <= held()) return
+      const running = [...activeCalls.values()].filter(call => !call.idle).length
+      if (requests.size === 0 && running === 0 || running > 0 && running <= held()) return
       await new Promise<void>(resolve => { progress.add(resolve) })
     }
   }
@@ -273,14 +275,16 @@ export function createModEnvironmentHost({
           try { cancel(id) } catch (error) { report(error, environment) }
         }
       })
+      const wait: HostFunction = async (kind, ms, id) => {
+        if (!['sleep', 'after', 'every'].includes(kind as string) || typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0 || typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || active.has(id)) throw new Error('Invalid clock wait')
+        const canceled = new Promise<void>((_resolve, reject) => { active.set(id, () => reject(new Error('Clock wait canceled'))) })
+        try { await Promise.race([clock.wait(kind as Parameters<ClockCallbacks['wait']>[0], ms, id), canceled]) }
+        finally { active.delete(id) }
+      }
+      timerWaits.add(wait)
       const wire: ModWireValue = {
         type: 'clock', now: hostHandle(environment, () => clock.now()),
-        wait: hostHandle(environment, async (kind, ms, id) => {
-          if (!['sleep', 'after', 'every'].includes(kind as string) || typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0 || typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0 || active.has(id)) throw new Error('Invalid clock wait')
-          const canceled = new Promise<void>((_resolve, reject) => { active.set(id, () => reject(new Error('Clock wait canceled'))) })
-          try { await Promise.race([clock.wait(kind as Parameters<ClockCallbacks['wait']>[0], ms, id), canceled]) }
-          finally { active.delete(id) }
-        }),
+        wait: hostHandle(environment, wait),
         cancel: hostHandle(environment, id => cancel(id as number)),
         run: hostHandle(environment, (callback, kind) => {
           if (typeof callback !== 'function') throw new Error('Clock callback must be callable')
@@ -477,8 +481,10 @@ export function createModEnvironmentHost({
       if (!dead && environments.has(message.environment)) worker.postMessage(response)
       return
     }
-    activeCalls.set(message.call, { environment: message.environment, invocation: message.invocation })
     const fn = functions.get(message.handle)
+    const kind = message.args[0]
+    const idle = fn && timerWaits.has(fn.call) && kind?.type === 'value' && (kind.value === 'after' || kind.value === 'every')
+    activeCalls.set(message.call, { environment: message.environment, invocation: message.invocation, idle })
     const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call }
     try {
       stateFor(message.environment)
@@ -544,7 +550,6 @@ export function createModEnvironmentHost({
     const unloaded = () => streamAbort.abort(new Error('Module environment unloaded'))
     const cleanup = () => {
       retained = false
-      for (const [call, owner] of activeCalls) if (owner.invocation === id) activeCalls.delete(call)
       changed()
       unsubscribeTrace?.()
       frames.delete(id)

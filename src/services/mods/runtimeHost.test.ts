@@ -986,14 +986,14 @@ test('Worker session.usage captures request data before hooks and consumes rewri
       const tokens = live
       return async args => {
         inputs.push(args)
-        return {context:{tokens,window:200000,percent:0},rateLimits:[],cost:{usd:0}}
+        return {startedAt:0,context:{tokens,window:200000,percent:0},rateLimits:[],cost:{usd:0}}
       }
     },
     toolCatalog: () => {live=99;return createToolCatalog([],async () => '')},
   })
   try {
     expect(await snapshot.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({
-      result:{context:{tokens:17,window:200000,percent:0},rateLimits:[],cost:{usd:0}},
+      result:{startedAt:0,context:{tokens:17,window:200000,percent:0},rateLimits:[],cost:{usd:0}},
     })
     expect(captures).toBe(1)
     expect(inputs).toEqual([{columns:79}])
@@ -1015,7 +1015,7 @@ test('Worker session.usage validates caller arguments and malformed results at t
   }`)
   const inputs: unknown[] = []
   const diagnostics: unknown[] = []
-  const expected = {context:{window:200000},rateLimits:[],cost:{usd:0}}
+  const expected = {startedAt:0,context:{window:200000},rateLimits:[],cost:{usd:0}}
   const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
     captureUsage: () => async args => {inputs.push(args);return expected},
   }})
@@ -1103,7 +1103,7 @@ test('Worker usage denial never invokes its reader and invalid rewrites recover 
     }).catch(($,e,next) => next(e));
   }`)
   const inputs: unknown[] = [], diagnostics: unknown[] = []
-  const expected = {context:{window:200000},rateLimits:[]}
+  const expected = {startedAt:0,context:{window:200000},rateLimits:[]}
   const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
     captureUsage: () => async args => {inputs.push(args);return expected},
   }})
@@ -1126,7 +1126,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
     ${mode === 'branch' ? `on('session.usage', async ($,e,next) => {
       const pending=next(e); pending.catch(() => {});
       await $.tool.list();
-      return {value:{context:{window:200000},rateLimits:[]}};
+      return {value:{startedAt:0,context:{window:200000},rateLimits:[]}};
     });` : ''}
   }`)
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
@@ -1142,7 +1142,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
       try {
         await release.promise
         signal?.throwIfAborted()
-        return {context:{window:200000},rateLimits:[]}
+        return {startedAt:0,context:{window:200000},rateLimits:[]}
       } finally {signal?.removeEventListener('abort',cancelled)}
     },
     toolCatalog: () => ({...createToolCatalog([],async () => ''),list:async () => {await entered.promise;return []}}),
@@ -1159,7 +1159,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
     if (mode === 'parent') controller.abort(reason)
     const result = await pending
     if (mode === 'parent') expect(result).toMatchObject({name:'AbortError'})
-    else expect(result).toEqual({result:{context:{window:200000},rateLimits:[]}})
+    else expect(result).toEqual({result:{startedAt:0,context:{window:200000},rateLimits:[]}})
     expect(readerSignal!.aborted).toBe(true)
     expect(stopped).toBe(true)
     expect(diagnostics).toEqual([])
@@ -2311,7 +2311,7 @@ test.skipIf(!officialTypes)('an author plugin compiles against the complete targ
   const value = createModsRuntime({services:{
     uiPresentation:() => ({columns:160,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false}),
     uiLog:(plugin,text,to)=>logs.push([plugin,text,to]),
-    captureUsage:() => async () => ({context:{window:200000},rateLimits:[],cost:{usd:0}}),
+    captureUsage:() => async () => ({startedAt:0,context:{window:200000},rateLimits:[],cost:{usd:0}}),
   }, onDiagnostic:event => diagnostics.push(event)})
   runtimes.push(value)
   await value.bind(binding(root))

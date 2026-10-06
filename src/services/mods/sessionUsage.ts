@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { getSessionStartTime } from '../../bootstrap/state.js'
 import { collectContextData } from '../../commands/context/context-noninteractive.js'
 import { getTotalCost } from '../../cost-tracker.js'
 import { getRawUtilization } from '../claudeAiLimits.js'
@@ -43,6 +44,7 @@ const breakdown = z.object({
   apiUsage:apiUsage.nullable(),
 })
 const usage = z.object({
+  startedAt: number.int().nonnegative().max(Number.MAX_SAFE_INTEGER),
   context:z.object({window:tokens,tokens:tokens.optional(),percent:number.min(0).max(100).optional(),breakdown:breakdown.optional()}),
   rateLimits:z.array(z.object({kind:z.string(),percentUsed:tokens,resetsAt:z.string().datetime().optional()})),
   cost:z.object({usd:number}).optional(),
@@ -82,7 +84,9 @@ export function captureModSessionUsage(context: Parameters<typeof collectContext
   }
   const window = getContextWindowForModel(model)
   const current = getCurrentUsage(getMessagesAfterCompactBoundary(messages))
+  const startedAt = getSessionStartTime()
   const value: ModSessionUsage = {
+    startedAt,
     context:{window,...(current ? {
       tokens:current.input_tokens + current.cache_creation_input_tokens + current.cache_read_input_tokens,
       percent:calculateContextPercentages(current,window).used!,

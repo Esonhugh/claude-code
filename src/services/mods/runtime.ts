@@ -18,6 +18,9 @@ import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
 import { getNativeModDeclaration } from './native.js'
+import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
+import { getOfficialShippedPaneRequests, updateOfficialShippedPaneRequest } from '../../plugins/builtinShippedMods.js'
+import builtinDiff from '../../commands/diff/index.js'
 import { matchesModEventPattern } from './matcher.js'
 import { createModHostOperations, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
@@ -152,6 +155,7 @@ type InterfaceState = {
 }
 type CapabilityLease = { entries: number; building?: boolean }
 type Activation = {
+  builtinInput?: ModPluginInput
   declaration: ModDeclaration
   environment: ModEnvironment
   state: 'candidate' | 'active' | 'retiring' | 'disposed'
@@ -327,6 +331,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     },
   })
   const ui = createModUi({
+    asked: getOfficialShippedPaneRequests(),
+    onAskedChange: updateOfficialShippedPaneRequest,
     notify,
     clients,
     validateTree: (tree, input, refs) => { validateModRenderTree(tree, input?.surface, refs) },
@@ -408,6 +414,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   })
   const commands = createModCommands({
     notify,
+    isEnabled: command => command !== builtinDiff || !isDiffOwned(),
+    canReplaceBuiltin: (registeredOwner, spec, command) => {
+      const owner = registeredOwner as Activation
+      return command === builtinDiff && spec.name === builtinDiff.name && owner.state === 'active' &&
+        owner.engineScope?.snapshot.includes(owner) === true && owner.builtinInput !== undefined && isCanonicalDiffMod(owner.builtinInput)
+    },
     getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
       command.type === 'prompt'
         ? command.source === 'builtin' || command.source === 'bundled'
@@ -454,6 +466,19 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       } finally { snapshot.release() }
     },
   })
+
+  function isDiffOwned(): boolean {
+    return !stopped && !hostDead && active.some(owner =>
+      owner.state === 'active' && owner.builtinInput !== undefined && isCanonicalDiffMod(owner.builtinInput))
+  }
+  let publishedDiffOwnership = false
+  function publishDiffOwnership() {
+    const owned = isDiffOwned()
+    if (owned === publishedDiffOwnership) return
+    publishedDiffOwnership = owned
+    commands.invalidateDescriptions()
+    logForDebugging(`[Mods:diff] ownership=${owned ? 'plugin' : 'native'} workerGeneration=${hostEpoch}`)
+  }
 
   function enqueue<T>(work: () => Promise<T>): Promise<T> {
     const pending = queue.then(() => {
@@ -575,6 +600,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     owner.state = 'retiring'
     void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
     commands.release(owner)
+    publishDiffOwnership()
     tools.release(owner)
     agents.release(owner)
     retired.add(owner)
@@ -2365,6 +2391,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (!owners.size) crashedWithholders.delete(noun)
       }
       for (const owner of replaced) retire(owner)
+      publishDiffOwnership()
       if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
     } finally { publicationNotifications = undefined }
     for (const listener of notifications) listener()
@@ -2424,7 +2451,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (cold) {
       for (const input of inputs) {
         try {
-          scanned.set(input, getNativeModDeclaration(input) ?? await loadModDeclaration(input))
+          scanned.set(input, getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input))
         } catch (error) {
           ensureLive()
           failGuard(input)
@@ -2455,7 +2482,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       let suggestionSuspended = false
       try {
-        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? await loadModDeclaration(input)
+        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
         const refreshDeclarations = async () => {
           if (declaration.isNative || declaration.tier === 'builtin') return
           try {
@@ -2504,6 +2531,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const activationController = new AbortController()
         const candidate: Activation = {
           declaration, environment, state: 'active', references: 0, started: false,
+          ...(isCanonicalDiffMod(input) ? { builtinInput: input } : {}),
           waits: new Map(), methods: new WeakMap(), controller: activationController,
           suggestionOwner: `${declaration.storageId}:${++activationId}`,
           suggestionEligible: true,
@@ -2566,6 +2594,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     active = []
     nouns = {}
+    publishDiffOwnership()
     retired.clear()
     activations.clear()
     if (stopped || recovering) return
@@ -2746,6 +2775,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     agents,
     commands,
     config,
+    isDiffOwned,
     ui,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
     beginPublicTurn(turnId: string, abort?: () => void): () => void {
@@ -2786,6 +2816,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true
+      for (const owner of activations) commands.release(owner)
+      publishDiffOwnership()
       hostHooks.clear()
       publicTurn = undefined
       forkSnapshot = null

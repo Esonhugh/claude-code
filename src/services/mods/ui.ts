@@ -286,6 +286,8 @@ function validateCallback(callback: ModUiCallback): void {
 }
 
 export function createModUi({
+  asked = [],
+  onAskedChange,
   notify = listener => listener(),
   pluginOf,
   dispatch,
@@ -297,6 +299,8 @@ export function createModUi({
   detach,
   clients,
 }: {
+  asked?: readonly { plugin: string; id: string }[]
+  onAskedChange?(plugin: string, id: string, asked: boolean): void
   notify?: (listener: () => void) => void
   pluginOf(owner: ModUiOwner): string
   dispatch: ModUiDispatch
@@ -317,7 +321,7 @@ export function createModUi({
   const active = new Map<string, PaneState>()
   const activeOwners = new Set<ModUiOwner>()
   const listeners = new Set<() => void>()
-  const personRequested = new Set<string>()
+  const personRequested = new Set(asked.map(pane => `${pane.plugin}\0${pane.id}`))
   const openGenerations = new Map<string, number>()
   const pendingDraws = new WeakMap<PaneState, Promise<void>>()
   const paneRedraws = new WeakMap<PaneState, RedrawSchedule>()
@@ -1147,8 +1151,10 @@ export function createModUi({
         requested as ModInput,
         async rewritten => {
           const spec = copyOpen(rewritten as ModUiOpenArgs, requested.id)
-          if (origin.kind === 'person')
+          if (origin.kind === 'person') {
             personRequested.add(askedKey(owner, spec.id))
+            onAskedChange?.(pluginOf(owner), spec.id, true)
+          }
           const committed = activeOwners.has(owner)
           const store = committed
             ? active
@@ -1242,6 +1248,10 @@ export function createModUi({
           if (origin.kind === 'unload') return undefined
           if (store?.get(id) !== pane) return undefined
           store.delete(id)
+          if (origin.kind === 'person') {
+            personRequested.delete(askedKey(pane.owner, id))
+            onAskedChange?.(pane.plugin, id, false)
+          }
           pane.drawGeneration++
           if (committed) publish()
           await releaseLease(pane).catch(() => {})

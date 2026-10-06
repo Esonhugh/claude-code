@@ -1613,3 +1613,15 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - Runtime-observed：最终独立 `native-candidate-c2/evidence` 与实际ROOT `native-workspace-r2/evidence`，只复制二进制到私有cold目录，三种作者路径成功exit0、故意的TypeError失败exit1，interactive草稿/Ctrl+U及stdin `/exit 0`通过，无自有进程组残留。ROOT同场debug打印正确version/archive/module SHA；真正Worker的 `/diff` 打开显示会话内alpha.ts修改并关闭。该ROOT消费者含四个同步版本依赖WIP，不能据此把运行时实现计入本次提交。
 - 失败证据保留：ROOT首次 `native-workspace-r1` 的 `/diff` 已打开，但author夹具留下的未跟踪符号链接抢占列表且预先编辑的alpha折叠于before-session，导致原断言失败；新r2忽略author目录并在ready后编辑alpha，原显示/关闭断言和90秒期限保持。第一次最终static输出因既有证据目录EEXIST停止，新建final目录后完成，旧证据未覆盖。
 - 边界：这一独立批次关闭归档及打包缺口；G5、最新完整变更门禁、同进程全量suite、取消诊断时机及完整官方API/UI/diff矩阵仍未关闭。原ROOT制品、289归档和原response/improvment/fix-instructions的bytes与mtime保持；未push，未操作其他Claude进程。
+
+## 2026-10-06 官方 diff 2.1.291 生产加载与接管独立提交
+
+- 范围：从 HEAD `90c0a41d29d9c66ac6600e9262c87dfb476d6cfc` 的独立副本准备官方包加载、可信身份传递、命令接管、原生控制器暂停及偏好迁移；除完成本批所需的宿主后台等待和新会话 `session.usage.startedAt` 依赖，其余工作区WIP保留。基线完整hash以证据 `ROOT-before.json` 为准。
+- Source-confirmed：原始291模块、身份模块、register闭包与compiled scan分别校验；扫描hooks、calls、env、runCommands逐项核对。提取JS仅静态读取；原始注册闭包由真实Worker运行。只读发现、复制对象、伪造字段或损坏模块不能获得运行时身份。`runCommands`为保留的静态元数据，不能据此声称 `$.command.run` 已实现。
+- RED与修复：版本回归复现未加载291；后台等待回归复现hook返回后宿主过早移除尚未完成的调用；时间回归复现 `startedAt` 缺失及校验缺失。未来after/every等待独立于当前工作，已启动调用仍等其结果；失败、取消、卸载和退出的断言保留。所有早期失败与错误准备记录均保留，未提高超时限制。
+- 最终独立 `candidate-final-tests2`：665pass、0fail、5skip，22个文件/3082expect；实际ROOT `workspace-final-tests1`：701pass、0fail、5skip，22个文件/3207expect。5skip来自原有外部fixture用例，不计为通过；本批14个diff接管用例直接读取仓库内的官方291归档，无条件运行。
+- 两侧本轮release-check及make build均exit0。独立源清单（含CHANGELOG）SHA256 `3890c572b010293a9724382b89de6c4df8f80c3e4c5c989af57dc9f3c771a6fd`，ROOT `d15100ec3c5d7d19b1d96a2d3383d80db14e8054754ee3ba8aea0f0657349b69`；独立binary `1d368453b23ccc54c97f7a7a287aad70175c3485bb12a18eeca870b1c6643549`，ROOT `6d7c50a8884f3e40aa7aeacb10c642a06e2ec7ce48c281ef2d930e1e721d0068`，本地版本仍2.1.280。
+- Runtime-observed：独立c2及ROOT r1的私有tmux在冷复制standalone后，经stdin `/diff`显示readiness之后的alpha.ts变更，160→140→160列缩放、关闭、草稿/Ctrl+U和 `/exit` exit0通过。正确291包来源与 `ownership=plugin` 已打印，期间无原生diff抓取；独立c3及ROOT r2禁用 `cc-plugin-diff@builtin` 后同场显示/缩放/关闭通过，原生抓取恢复且未取得插件接管。各场作者绝对/相对/带空格符号链接成功exit0，故意错误exit1；自有进程组清理后无残留。
+- 官方对照：已核验官方291binary SHA256 `9a1d2ed6bb4421e8fc80c892c0413f293be3ee50ae3d7dda1a7622197a056690` 的独立o3场通过相同diff操作流程、终端尺寸、显示夹具及退出；此处对照行为流程，不新增字符/样式完全一致结论。o1暴露作者夹具缺少官方必需hooks module，修正两侧夹具后o2的作者错误栈诊断断言失败（官方没有输出要求的完整消息）；两次证据保留，作者诊断不计为官方parity通过，o3明确只验diff流程。
+- 边界：关闭生产加载与接管缺口，不宣称完整API/UI/diff兼容已完成。逻辑会话启动时间的持久化/恢复、完整G5、同进程全量suite、最新全部变更门禁、取消诊断时机和完整交互矩阵仍待独立验收。ROOT现有逻辑启动时间WIP没有折入本批bootstrap；独立提交的读取器采样既有CLI成本启动时钟，历史恢复等价性未覆盖。
+- 证据根：`/private/tmp/mods-diff-runtime-291-20261006-bt_p4ef_`。原ROOT二进制、289归档和response/improvment/fix-instructions的bytes及mtime保持；未push，未操作其他Claude进程。

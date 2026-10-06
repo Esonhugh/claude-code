@@ -128,16 +128,20 @@ if (!process.env.P7_CONTRACT_TEST_CHILD) {
 
   test('contract-only discovery preserves recorded paths and never publishes partial context', async () => {
     record(recorded)
+    const interactive=state.getIsInteractive()
+    state.setIsInteractive(true)
+    try {
     configure({ 'example@test': true })
     const before = snapshot(root)
     const settingsBase = settingsCache.getPluginSettingsBase()
     const result = await loader.loadPluginsForContractValidation()
     expect(result.enabled.map(p => p.source)).toContain('example@test')
-    expect(result.enabled.map(p => p.source)).toContain('diff@builtin')
+    expect(result.enabled.map(p => p.source)).toContain('cc-plugin-diff@builtin')
     expect(result.complete).toBe(true)
     expect(result.errors).toEqual([])
     expect(settingsCache.getPluginSettingsBase()).toBe(settingsBase)
     expect(snapshot(root)).toEqual(before)
+    } finally {state.setIsInteractive(interactive)}
   })
 
   test('installed reader distinguishes absence, corruption and unreadable state without migration', () => {

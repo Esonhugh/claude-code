@@ -1,6 +1,33 @@
 import { describe, expect, jest, test } from 'bun:test'
 import { DiffController } from './controller.js'
 
+test('ownership suspension fences a pending auto-open without resetting the session or armed ask', async () => {
+  const entered=Promise.withResolvers<void>(), finished=Promise.withResolvers<import('../../utils/gitDiff.js').DiffFetchOutcome>()
+  const starts:number[]=[], preferences:unknown[]=[]
+  const diff=new DiffController({cwd:'/synthetic',sessionStartMs:123,
+    savePreferences:(_root,value)=>preferences.push(value),
+    createBackend:async options=>{starts.push(options.sessionStartMs);return {
+      root:'/synthetic',headKey:async()=> 'head',fetchBody:async()=>({status:'no-body',hunks:[]}),
+      fetch:()=>{entered.resolve();return finished.promise},
+    }},
+  })
+  diff.toggleAsk('sample.ts',[{oldStart:1,oldLines:1,newStart:1,newLines:1,lines:['-old','+new']}],'Session')
+  const opening=diff.autoOpen({columns:144,isFullscreen:true,hasDock:false,checkpointing:true})
+  await entered.promise
+  diff.setEnabled(false)
+  expect(diff.beginAsk([])).toBeUndefined()
+  expect(diff.getSnapshot().armedPath).toBe('sample.ts')
+  finished.resolve({kind:'data',data:{root:'/synthetic',mode:'session',stats:{filesCount:0,linesAdded:0,linesRemoved:0},files:[],source:{kind:'working-tree',base:'HEAD'},baseRef:'HEAD',isUnborn:false,stalePaths:[],isUntrackedWithheld:false,detailsOmitted:false}})
+  expect(await opening).toBe(false)
+  diff.setOpenPreference(false)
+  expect(preferences).toEqual([])
+  diff.setEnabled(true)
+  await diff.refresh()
+  expect(starts).toEqual([123,123])
+  expect(diff.beginAsk([])).toBeDefined()
+  diff.dispose()
+})
+
 test('pane actions normalize selection when switching source and reset session-only state', () => {
   const diff = new DiffController({ cwd: '/synthetic' })
   diff.selectFile('sample.ts')

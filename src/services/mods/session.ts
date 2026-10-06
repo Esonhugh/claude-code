@@ -153,8 +153,8 @@ export function createModsSession(options: ModsSessionOptions) {
       commandListeners.add(listener)
       return () => { commandListeners.delete(listener) }
     },
-    projection: (existing: Command[]) => runtime?.commands.projection(existing) ?? existing,
-    describe: (existing: Command[]) => runtime?.commands.describe(existing) ?? Promise.resolve(existing),
+    projection: (existing: Command[]) => stopped ? existing : runtime?.commands.projection(existing) ?? existing,
+    describe: (existing: Command[]) => stopped ? Promise.resolve(existing) : runtime?.commands.describe(existing) ?? Promise.resolve(existing),
   }
 
   const toolListeners = new Set<() => void>()
@@ -803,6 +803,7 @@ export function createModsSession(options: ModsSessionOptions) {
   function dispose(): Promise<void> {
     if (disposal) return disposal
     stopped = true
+    for (const listener of commandListeners) listener()
     authoringGeneration++
     authoringConsent = undefined
     authoringPrompt = undefined
@@ -847,6 +848,7 @@ export function createModsSession(options: ModsSessionOptions) {
 
   return {
     commands,
+    isDiffOwned: () => !stopped && (runtime?.isDiffOwned() ?? false),
     tools,
     ui,
     get runtime() {

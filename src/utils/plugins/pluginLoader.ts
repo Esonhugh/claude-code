@@ -47,11 +47,13 @@ import {
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
 import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
-import { builtinModsArchive } from '../../plugins/bundled/index.js'
+import { readOfficialShippedDiffContract, isOfficialShippedDiffCatalogAllowed } from '../../plugins/builtinShippedMods.js'
+import { builtinModsArchive, builtinDiffArchive } from '../../plugins/bundled/index.js'
 import { getInlinePlugins } from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
   getBuiltinPlugins,
+  isCanonicalDiffPlugin,
 } from '../../plugins/builtinPlugins.js'
 import type {
   LoadedPlugin,
@@ -60,6 +62,14 @@ import type {
   PluginLoadResult,
   PluginManifest,
 } from '../../types/plugin.js'
+const sessionOnlyPluginIdentities = new WeakMap<LoadedPlugin, string>()
+function sessionOnlyCoordinates(plugin:LoadedPlugin): string {
+  return JSON.stringify({name:plugin.name,source:plugin.source,path:plugin.path,hookModules:plugin.hookModules})
+}
+/** Query only: only the actual session loader issues the opaque object identity. */
+export function isLoadedSessionOnlyPlugin(plugin:LoadedPlugin): boolean {
+  return sessionOnlyPluginIdentities.get(plugin) === sessionOnlyCoordinates(plugin)
+}
 import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import {
@@ -3094,6 +3104,7 @@ export async function loadSessionOnlyPlugins(
       plugin.source = `${plugin.name}@inline`
       plugin.repository = `${plugin.name}@inline`
       plugin.enabled = enabledPlugins?.[plugin.source] !== false
+      if (!contractOnly) sessionOnlyPluginIdentities.set(plugin, sessionOnlyCoordinates(plugin))
 
       plugins.push(plugin)
       errors.push(...pluginErrors)
@@ -3175,6 +3186,7 @@ export function mergePluginSources(sources: {
   })
 
   const sessionNames = new Set(sessionPlugins.map(p => p.name))
+  const inlineDiff = sessionPlugins.some(plugin => isCanonicalDiffPlugin(plugin) && plugin.source.endsWith('@inline'))
   const marketplacePlugins = sources.marketplace.filter(p => {
     if (sessionNames.has(p.name)) {
       logForDebugging(
@@ -3188,7 +3200,7 @@ export function mergePluginSources(sources: {
   // Downstream first-match consumers see session plugins before
   // installed ones for any that slipped past the name filter.
   return {
-    plugins: [...sessionPlugins, ...marketplacePlugins, ...sources.builtin],
+    plugins: [...sessionPlugins, ...marketplacePlugins, ...sources.builtin.filter(plugin => !inlineDiff || !isCanonicalDiffPlugin(plugin))],
     errors,
   }
 }
@@ -3339,10 +3351,20 @@ async function assemblePluginLoadResult(
     try {
       const archive = builtinModsArchive()
       if (!archive) throw new Error('Built-in Mods archive is missing')
-      const { definitions, files } = await readOfficialBuiltinModDefinitions(archive)
+      const { definitions:legacy, files } = await readOfficialBuiltinModDefinitions(archive)
+      const definitions=legacy.filter(definition=>definition.name!=='diff')
+      let diffFiles:Record<string,Uint8Array>|undefined
+      if(isOfficialShippedDiffCatalogAllowed()){
+        const diff=builtinDiffArchive()
+        if(!diff)throw new Error('Built-in diff archive is missing')
+        const contract=await readOfficialShippedDiffContract(diff)
+        definitions.push(contract.definition)
+        diffFiles=contract.files
+      }
       builtinResult = getBuiltinPlugins(definitions)
       for (const plugin of [...builtinResult.enabled, ...builtinResult.disabled]) {
         if (!definitions.some(definition => definition.path === plugin.path)) continue
+        if (plugin.name === 'cc-plugin-diff') { plugin.contractFiles = diffFiles; continue }
         const prefix = `${plugin.name}/`
         plugin.contractFiles = Object.fromEntries(Object.entries(files)
           .filter(([name]) => name.startsWith(prefix))

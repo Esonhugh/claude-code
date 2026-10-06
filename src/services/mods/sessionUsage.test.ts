@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { captureModSessionUsage, validateModSessionUsageArgs, validateModSessionUsage } from './sessionUsage.js'
 import { createAssistantMessage, createCompactBoundaryMessage } from '../../utils/messages.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import { resetStateForTests } from '../../bootstrap/state.js'
+import { getSessionStartTime, resetStateForTests } from '../../bootstrap/state.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import * as limits from '../claudeAiLimits.js'
 import * as cost from '../../cost-tracker.js'
@@ -52,7 +52,7 @@ test('plain usage omits unknown readings, reports the CLI zero ledger and never 
   const ledger = spyOn(cost, 'getTotalCost').mockReturnValue(0)
   restore.push(() => count.mockRestore(), () => rate.mockRestore(), () => ledger.mockRestore())
   const captured = captureModSessionUsage(context())
-  expect(await captured({columns:12})).toEqual({context:{window:200000},rateLimits:[],cost:{usd:0}})
+  expect(await captured({columns:12})).toEqual({startedAt:getSessionStartTime(),context:{window:200000},rateLimits:[],cost:{usd:0}})
   expect(count).not.toHaveBeenCalled()
 })
 
@@ -93,6 +93,7 @@ test('usage captures last-response input, model, rate windows and ledger before 
   rate.mockReturnValue({})
   ledger.mockReturnValue(9)
   expect(await captured({})).toEqual({
+    startedAt:getSessionStartTime(),
     context:{tokens:10000,window:200000,percent:5},
     rateLimits:[{kind:'five_hour',percentUsed:23.5,resetsAt:'1970-01-01T00:02:03.000Z'}],
     cost:{usd:1.25},
@@ -126,7 +127,7 @@ test('a compact boundary without a new response hides the old live-window token 
   const rate = spyOn(limits, 'getRawUtilization').mockReturnValue({})
   const ledger = spyOn(cost, 'getTotalCost').mockReturnValue(2)
   restore.push(() => rate.mockRestore(), () => ledger.mockRestore())
-  expect(await captureModSessionUsage(input)({})).toEqual({context:{window:200000},rateLimits:[],cost:{usd:2}})
+  expect(await captureModSessionUsage(input)({})).toEqual({startedAt:getSessionStartTime(),context:{window:200000},rateLimits:[],cost:{usd:2}})
 })
 
 test('usage validates finite arguments and structured results without requiring unavailable figures', () => {
@@ -134,7 +135,9 @@ test('usage validates finite arguments and structured results without requiring 
     expect(() => validateModSessionUsageArgs(value)).not.toThrow()
   for (const value of [null, [], {breakdown:'none'}, {columns:Infinity}, {columns:'80'}])
     expect(() => validateModSessionUsageArgs(value)).toThrow('session.usage')
-  expect(() => validateModSessionUsage({context:{window:200000},rateLimits:[]})).not.toThrow()
-  for (const value of [{context:{window:'200000'},rateLimits:[]}, {context:{window:200000}}, {context:{window:200000},rateLimits:[{kind:'five_hour',percentUsed:NaN}]}])
+  expect(() => validateModSessionUsage({startedAt:1791080000123,context:{window:200000},rateLimits:[]})).not.toThrow()
+  for (const startedAt of [-1, 1.5, Infinity, NaN, '123', Number.MAX_SAFE_INTEGER+1])
+    expect(() => validateModSessionUsage({startedAt,context:{window:200000},rateLimits:[]})).toThrow('session.usage')
+  for (const value of [{startedAt:1791080000123,context:{window:'200000'},rateLimits:[]}, {startedAt:1791080000123,context:{window:200000}}, {startedAt:1791080000123,context:{window:200000},rateLimits:[{kind:'five_hour',percentUsed:NaN}]}])
     expect(() => validateModSessionUsage(value)).toThrow('session.usage')
 })

@@ -1,5 +1,6 @@
 import { dirname, resolve } from 'node:path'
 import type { LoadedPlugin } from '../../types/plugin.js'
+import { markBuiltinModInput } from '../../plugins/builtinPlugins.js'
 import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
 import { getPluginStorageId, loadPluginSecrets, resolvePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
@@ -215,7 +216,7 @@ export function prepareModPlugins(
     }
 
     const typeDependencies = authorTypeDependencies(plugin, plugins)
-    inputs.push({
+    const input: ModPluginInput = {
       name: plugin.name,
       ...(plugin.manifest.version === undefined ? {} : { version: plugin.manifest.version }),
       storageId,
@@ -225,7 +226,9 @@ export function prepareModPlugins(
       options: prepared.options,
       fingerprintOptions: prepared.fingerprintOptions,
       tier: getModPluginOrigin(plugin, settings).tier,
-    })
+    }
+    markBuiltinModInput(plugin, input)
+    inputs.push(input)
   }
 
   const eligible = (input: ModPluginInput) => input.tier !== 'builtin' &&

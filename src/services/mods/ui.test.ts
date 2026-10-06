@@ -670,7 +670,7 @@ describe('mod UI ownership and pane policy', () => {
     await ui.open(owner, { id: 'asked' }, { kind: 'plugin' }, narrow)
     expect(ui.getSnapshot().find(pane => pane.id === 'asked')).toMatchObject({ visible: false })
     await ui.render({ ...wide, columns: 112 })
-    expect(ui.getSnapshot().find(pane => pane.id === 'asked')).toMatchObject({ visible: true, placement: 'dock' })
+    expect(ui.getSnapshot().find(pane => pane.id === 'asked')).toMatchObject({ visible: false, placement: 'dock' })
     expect(ui.getSnapshot().find(pane => pane.id === 'auto')).toMatchObject({ visible: false })
     await ui.render({ ...wide, columns: 150 })
     expect(ui.getSnapshot().every(pane => pane.visible)).toBe(true)

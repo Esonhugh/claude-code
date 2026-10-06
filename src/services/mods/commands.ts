@@ -43,6 +43,7 @@ export function createModCommands({
   run,
   describe,
   canReplaceBuiltin,
+  isEnabled = () => true,
 }: {
   notify?: (listener: () => void) => void
   getBuiltinCommands: () => readonly Command[]
@@ -52,6 +53,7 @@ export function createModCommands({
     spec: Readonly<ModCommandSpec>,
     command: Command,
   ) => boolean
+  isEnabled?: (command: Command) => boolean
   run: (
     command: string,
     args: string,
@@ -68,7 +70,7 @@ export function createModCommands({
   const originals = new WeakMap<Command, Command>()
 
   function merge(existing: Command[]): Command[] {
-    const base = existing.map(command => originals.get(command) ?? command).filter(command => !isModCommand(command))
+    const base = existing.map(command => originals.get(command) ?? command).filter(command => !isModCommand(command) && isEnabled(command))
     if (snapshot.length === 0) return base
     const external = base.filter(command =>
       command.isMcp ||
@@ -97,7 +99,7 @@ export function createModCommands({
   }
 
   function projection(existing: Command[]): Command[] {
-    if (!describe && snapshot.length === 0 && !existing.some(isModCommand)) return existing
+    if (!describe && snapshot.length === 0 && !existing.some(isModCommand) && existing.every(isEnabled)) return existing
     return merge(existing).map(command => descriptions.get(command)?.command ?? command)
   }
 

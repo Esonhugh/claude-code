@@ -17,8 +17,87 @@ import type { Command } from '../commands.js'
 import type { BundledSkillDefinition } from '../skills/bundledSkills.js'
 import type { BuiltinPluginDefinition, LoadedPlugin } from '../types/plugin.js'
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js'
+import type { ModPluginInput } from '../services/mods/runtime.js'
+import type { ModDeclaration } from '../services/mods/types.js'
+import { createHash } from 'node:crypto'
+import {dirname, resolve} from 'node:path'
+import {isVerifiedOfficialBuiltinModDefinition} from './builtinMods.js'
+import {getVerifiedOfficialShippedModDeclaration, getVerifiedShippedModAvailability, clearOfficialShippedPaneRequests, isVerifiedOfficialShippedModDefinition} from './builtinShippedMods.js'
+import {isLoadedSessionOnlyPlugin} from '../utils/plugins/pluginLoader.js'
 
 const BUILTIN_PLUGINS: Map<string, BuiltinPluginDefinition> = new Map()
+type BuiltinModIdentity = { canonicalName: 'cc-plugin-diff'; definition: BuiltinPluginDefinition }
+const builtinModPlugins = new WeakMap<LoadedPlugin, BuiltinModIdentity & {
+  name:string; source:string; path:string; entrypoints:readonly string[]
+}>()
+const builtinModInputs = new WeakMap<ModPluginInput, BuiltinModIdentity & {
+  name:string; storageId:string; pluginRoot:string; entrypoints:readonly string[]
+}>()
+
+function validBuiltinModDefinition(definition:BuiltinPluginDefinition): boolean {
+  return ['diff','cc-plugin-diff'].includes(definition.name) &&
+    (isVerifiedOfficialBuiltinModDefinition(definition) || isVerifiedOfficialShippedModDefinition(definition))
+}
+
+function diffDefinition(): BuiltinPluginDefinition | undefined {
+  const definition = BUILTIN_PLUGINS.get('cc-plugin-diff') ?? BUILTIN_PLUGINS.get('diff')
+  return definition && validBuiltinModDefinition(definition) ? definition : undefined
+}
+
+function builtinModEnabled(definition: BuiltinPluginDefinition): boolean {
+  const settings = getSettings_DEPRECATED()
+  const value = settings?.enabledPlugins?.['cc-plugin-diff@builtin'] ?? settings?.enabledPlugins?.['diff@builtin']
+  return (definition.isAvailable?.() ?? true) &&
+    (value === undefined ? definition.defaultEnabled ?? true : value === true || Array.isArray(value))
+}
+
+function rememberBuiltinModPlugin(plugin:LoadedPlugin, definition:BuiltinPluginDefinition): void {
+  builtinModPlugins.set(plugin,{canonicalName:'cc-plugin-diff',definition,
+    name:plugin.name,source:plugin.source,path:plugin.path,
+    entrypoints:[...new Set((plugin.hookModules ?? []).flatMap(group => group.paths.map(path => resolve(dirname(group.configPath),path))))],
+  })
+}
+
+export function isCanonicalDiffPlugin(plugin: LoadedPlugin): boolean {
+  const definition=diffDefinition()
+  if (definition && !builtinModPlugins.has(plugin) && isLoadedSessionOnlyPlugin(plugin) &&
+      ['diff','cc-plugin-diff'].includes(plugin.name) && plugin.source === `${plugin.name}@inline`)
+    rememberBuiltinModPlugin(plugin, definition)
+  const identity=builtinModPlugins.get(plugin)
+  return Boolean(identity && definition && validBuiltinModDefinition(identity.definition) && builtinModEnabled(definition) &&
+    plugin.enabled !== false && plugin.name === identity.name && plugin.source === identity.source && plugin.path === identity.path)
+}
+
+export function markBuiltinModInput(plugin: LoadedPlugin, input: ModPluginInput): void {
+  if (!isCanonicalDiffPlugin(plugin)) return
+  const identity = builtinModPlugins.get(plugin)
+  if (identity && isCanonicalDiffPlugin(plugin) && input.name === identity.name && input.storageId === identity.source && input.pluginRoot === identity.path &&
+      input.entrypoints.length === identity.entrypoints.length && input.entrypoints.every((path,index) => path === identity.entrypoints[index]))
+    builtinModInputs.set(input, {...identity,name:input.name,storageId:input.storageId,
+      pluginRoot:input.pluginRoot,entrypoints:[...input.entrypoints]})
+}
+
+export function isCanonicalDiffMod(input: ModPluginInput): boolean {
+  const identity = builtinModInputs.get(input)
+  const definition = diffDefinition()
+  return Boolean(identity && definition && validBuiltinModDefinition(identity.definition) && builtinModEnabled(definition) &&
+    input.isNative !== true &&
+    input.name === identity.name && input.storageId === identity.storageId && input.pluginRoot === identity.pluginRoot &&
+    input.entrypoints.length === identity.entrypoints.length && input.entrypoints.every((path,index) => path === identity.entrypoints[index]))
+}
+
+/** An immutable shipped graph never gains the sec-default native-seat privilege. */
+export function getShippedBuiltinModDeclaration(input: ModPluginInput): ModDeclaration | undefined {
+  if (!isCanonicalDiffMod(input)) return undefined
+  const identity = builtinModInputs.get(input)!
+  const shipped = getVerifiedOfficialShippedModDeclaration(identity.definition)
+  if (!shipped || input.storageId.endsWith('@inline')) return undefined
+  const declaration = structuredClone(shipped)
+  const options = structuredClone(input.options ?? {})
+  const tier = input.tier ?? 'builtin'
+  return {...declaration,name:input.name,storageId:input.storageId,options,tier,
+    fingerprint:createHash('sha256').update(JSON.stringify({source:declaration.fingerprint,options:input.fingerprintOptions ?? options,tier})).digest('hex')}
+}
 
 export const BUILTIN_MARKETPLACE_NAME = 'builtin'
 
@@ -64,7 +143,7 @@ export function getBuiltinPlugins(contractDefinitions?: BuiltinPluginDefinition[
 
   if (contractDefinitions) {
     for (const definition of BUILTIN_PLUGINS.values()) {
-      if (definition.isAvailable)
+      if (definition.isAvailable && getVerifiedShippedModAvailability(definition) === undefined)
         throw new Error(`Built-in ${definition.name} availability cannot be determined without executing its callback`)
     }
   }
@@ -72,14 +151,17 @@ export function getBuiltinPlugins(contractDefinitions?: BuiltinPluginDefinition[
     ? new Map([...BUILTIN_PLUGINS, ...contractDefinitions.map(definition => [definition.name, definition] as const)])
     : BUILTIN_PLUGINS
   for (const [name, definition] of definitions) {
-    if (contractDefinitions && definition.isAvailable)
+    if (contractDefinitions && definition.isAvailable && getVerifiedShippedModAvailability(definition) === undefined)
       throw new Error(`Built-in ${name} availability cannot be determined without executing its callback`)
-    if (definition.isAvailable && !definition.isAvailable()) {
+    if (definition.isAvailable && !(contractDefinitions ? getVerifiedShippedModAvailability(definition) : definition.isAvailable())) {
       continue
     }
 
     const pluginId = `${name}@${BUILTIN_MARKETPLACE_NAME}`
-    const userSetting = settings?.enabledPlugins?.[pluginId]
+    const userSetting = validBuiltinModDefinition(definition) ||
+      (contractDefinitions && name==='cc-plugin-diff' && getVerifiedShippedModAvailability(definition)!==undefined)
+      ? settings?.enabledPlugins?.['cc-plugin-diff@builtin'] ?? settings?.enabledPlugins?.['diff@builtin']
+      : settings?.enabledPlugins?.[pluginId]
     // Enabled state: user preference > plugin default > true
     const isEnabled =
       userSetting !== undefined
@@ -102,6 +184,8 @@ export function getBuiltinPlugins(contractDefinitions?: BuiltinPluginDefinition[
       hookModules: definition.hookModules,
       mcpServers: definition.mcpServers,
     }
+    if (!contractDefinitions && validBuiltinModDefinition(definition))
+      rememberBuiltinModPlugin(plugin, definition)
 
     if (isEnabled) {
       enabled.push(plugin)
@@ -137,6 +221,7 @@ export function getBuiltinPluginSkillCommands(): Command[] {
  */
 export function clearBuiltinPlugins(): void {
   BUILTIN_PLUGINS.clear()
+  clearOfficialShippedPaneRequests()
 }
 
 // --

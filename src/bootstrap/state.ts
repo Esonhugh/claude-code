@@ -430,6 +430,10 @@ function getInitialState(): State {
 // AND ESPECIALLY HERE
 const STATE: State = getInitialState()
 
+export function getSessionStartTime(): number {
+  return STATE.startTime
+}
+
 export function getSessionId(): SessionId {
   return STATE.sessionId
 }

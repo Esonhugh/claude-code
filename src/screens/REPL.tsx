@@ -1951,6 +1951,11 @@ export function REPL({
   const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
   const getModUiSnapshot = useCallback(() => modsSession?.ui.getSnapshot() ?? emptyModPanes, [modsSession, emptyModPanes])
   const modPanes = React.useSyncExternalStore(subscribeModUi, getModUiSnapshot)
+  const subscribeDiffOwnership = useCallback((listener: () => void) => modsSession?.commands.subscribe(listener) ?? (() => {}), [modsSession])
+  const getDiffOwnership = useCallback(() => modsSession?.isDiffOwned() ?? false, [modsSession])
+  const diffOwned = React.useSyncExternalStore(subscribeDiffOwnership, getDiffOwnership)
+  const diffOwnershipRef = useRef(getDiffOwnership)
+  diffOwnershipRef.current = getDiffOwnership
   const awaitMods = useCallback(() => modsSession?.bind({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
@@ -2411,6 +2416,7 @@ export function REPL({
   const [showCostDialog, setShowCostDialog] = useState(false)
   const [conversationId, setConversationId] = useState(randomUUID())
   const [diffController] = useState(() => isRemoteExecutionSession ? undefined : new DiffController({
+    isEnabled: () => !diffOwnershipRef.current(),
     cwd: getCwd(),
     notify: text => addNotification({ key: 'diff', text, priority: 'medium' }),
     loadPreferences: root => {
@@ -2426,6 +2432,7 @@ export function REPL({
     })),
   }))
   useEffect(() => () => diffController?.dispose(), [diffController])
+  useEffect(() => { diffController?.setEnabled(!diffOwned) }, [diffController, diffOwned])
   const diffSessionId = getSessionId()
   const diffSession = useRef(diffSessionId)
   const diffCwd = getCwd()
@@ -3207,11 +3214,12 @@ export function REPL({
   const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
   const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
   const shownModDock = modDock.find(pane => pane.shown !== false)
+  const nativeDiffVisible = diffSidebarVisible && !diffOwned
   const canShowDiffSidebar =
     modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
   const showResponsiveDiffDialog =
     screen === 'prompt' &&
-    diffSidebarVisible &&
+    nativeDiffVisible &&
     !canShowDiffSidebar &&
     !otherModalOverlayActive &&
     !toolJSX?.jsx &&
@@ -4162,7 +4170,7 @@ export function REPL({
       handleMessageFromStream(
         event,
         newMessage => {
-          const landed = diffController?.observeMessage(newMessage)
+          const landed = getDiffOwnership() ? undefined : diffController?.observeMessage(newMessage)
           if (landed) {
             diffController?.scheduleRefresh()
             if (landed.edited && !store.getState().diffSidebarVisible) {
@@ -4174,7 +4182,7 @@ export function REPL({
                 checkpointing: fileHistoryEnabled(),
               }).then(open => {
                 const hasDock = modsSession?.ui.getSnapshot().some(pane => pane.visible && pane.placement === 'dock')
-                if (open && session === getSessionId() && !hasDock &&
+                if (open && !getDiffOwnership() && session === getSessionId() && !hasDock &&
                     (process.stdout.columns ?? 80) >= MIN_DIFF_SIDEBAR_COLUMNS) {
                   setAppState(state => ({ ...state, diffSidebarVisible: true }))
                 }
@@ -4288,6 +4296,7 @@ export function REPL({
       setStreamingThinking,
       onStreamingText,
       diffController,
+      getDiffOwnership,
       modsSession,
       store,
       setAppState,
@@ -7044,7 +7053,7 @@ export function REPL({
           dockWidth={shownModDock?.columns === undefined ? undefined : shownModDock.bodyColumns + 2}
           inlinePane={modInline.map(renderModPane)}
           sidebarWidth={Math.min(Math.floor(modTerminalSize.columns * 0.45), 90, modTerminalSize.columns - 70)}
-          sidebarPane={diffSidebarVisible && canShowDiffSidebar ? (
+          sidebarPane={nativeDiffVisible && canShowDiffSidebar ? (
             <DiffSidebar
               key={conversationId}
               messages={messages}
@@ -7989,7 +7998,7 @@ export function REPL({
   )
   if (
     isFullscreenEnvEnabled() ||
-    (diffSidebarVisible && canShowDiffSidebar)
+    (nativeDiffVisible && canShowDiffSidebar)
   ) {
     return (
       <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>

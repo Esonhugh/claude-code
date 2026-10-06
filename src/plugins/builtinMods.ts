@@ -13,6 +13,15 @@ import { clearPluginCache } from '../utils/plugins/pluginLoader.js'
 import { lock } from '../utils/lockfile.js'
 import { registerBuiltinPlugin } from './builtinPlugins.js'
 
+const verifiedDefinitions = new WeakMap<BuiltinPluginDefinition, string>()
+function definitionCoordinates(definition: BuiltinPluginDefinition): string {
+  return JSON.stringify({name:definition.name,path:definition.path,version:definition.version,hookModules:definition.hookModules})
+}
+/** Query only: identity is issued privately after the verified archive is materialized. */
+export function isVerifiedOfficialBuiltinModDefinition(definition: BuiltinPluginDefinition): boolean {
+  return verifiedDefinitions.get(definition) === definitionCoordinates(definition)
+}
+
 function validateEntry(name: string): string {
   if (
     name.length === 0 ||
@@ -143,7 +152,7 @@ export async function loadBuiltinModDefinitions(
     ))
     if (!hooks.modules?.length)
       throw new Error(`Built-in Mod ${name} has no hook modules`)
-    return {
+    const definition: BuiltinPluginDefinition = {
       name,
       description: manifest.description ?? name,
       version: manifest.version,
@@ -154,6 +163,7 @@ export async function loadBuiltinModDefinitions(
       // Plugin analytics posts first-party rows; follow this fork's opt-in.
       defaultEnabled: name !== 'telemetry' || isAnthropicTelemetryEnabled(),
     }
+    return definition
   }))
 }
 
@@ -187,6 +197,7 @@ export async function readOfficialBuiltinModDefinitions(
 export async function initializeOfficialBuiltinMods(
   archivePath: string,
   cacheRoot: string,
+  options: {excludeDiff?:boolean} = {},
 ): Promise<void> {
   const bytes = await readFile(archivePath)
   const digest = createHash('sha256').update(bytes).digest('hex')
@@ -196,8 +207,11 @@ export async function initializeOfficialBuiltinMods(
     bytes,
     validate: validateOfficialBuiltinModsProvenance,
   })
-  for (const definition of await loadBuiltinModDefinitions(root))
+  for (const definition of await loadBuiltinModDefinitions(root)) {
+    if(options.excludeDiff && definition.name === 'diff')continue
+    verifiedDefinitions.set(definition, definitionCoordinates(definition))
     registerBuiltinPlugin(definition)
+  }
   // Startup consumers (MCP config) may have memoized a load before this
   // asynchronous registration finished.
   clearPluginCache('built-in Mods registered')

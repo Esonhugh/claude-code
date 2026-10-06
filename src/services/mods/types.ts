@@ -66,6 +66,8 @@ export type ModDeclaration = {
   clients?: { path: string; module: string }[]
   events: string[]
   calls: string[]
+  /** Static command names carried by an original shipped module scan. */
+  runCommands?: string[]
   env?: { reads: string[]; writes: string[] }
   state?: { reads: ModStateReference[]; writes: ModStateReference[] }
   nextTiers: ModTier[]

@@ -131,7 +131,7 @@ test('compaction retains the calling snapshot generation and request services', 
   await register(`export function register(on) {
     on('session.compact', async ($,e) => ({messages:[{role:'user',text:'captured window '+(await $.session.usage()).context.window,toolUses:[]}]}));
   }`)
-  const snapshot = runtime.capture({captureUsage: () => async () => ({context:{window:123456},rateLimits:[]})})
+  const snapshot = runtime.capture({captureUsage: () => async () => ({startedAt:0,context:{window:123456},rateLimits:[]})})
   try {
     await runtime.reconcile([])
     const ctx = context()

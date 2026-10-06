@@ -14,6 +14,7 @@ import {
 export type DiffPreferences = { mode?: DiffBaseMode; open?: boolean }
 
 type Options = {
+  isEnabled?: () => boolean
   cwd: string
   notify?: (message: string) => void
   record?: (event: string) => void
@@ -50,6 +51,7 @@ function initialState(): DiffViewState {
 type ArmedAsk = { path: string; text: string }
 
 export class DiffController {
+  private enabled = true
   private state: DiffViewState = initialState()
   private listeners = new Set<() => void>()
   private armed: ArmedAsk | null = null
@@ -94,6 +96,32 @@ export class DiffController {
     this.sessionStartMs = options.sessionStartMs ?? Date.now()
   }
 
+  private isEnabled(): boolean {
+    return this.enabled && this.options.isEnabled?.() !== false
+  }
+
+  setEnabled(enabled: boolean): void {
+    if (enabled === this.enabled) return
+    this.enabled = enabled
+    this.watchRevision++
+    clearTimeout(this.poll)
+    clearTimeout(this.debounce)
+    if (this.redraw !== undefined) (this.options.cancelRedraw ?? clearTimeout)(this.redraw)
+    this.redraw = undefined
+    if (!enabled) {
+      this.epoch++
+      this.abortController.abort()
+      this.abortController = new AbortController()
+      this.refreshInFlight = undefined
+      this.refreshQueued = false
+      this.backend = undefined
+      this.current = undefined
+      this.bodiesInFlight = undefined
+      this.opening = false
+      this.toolCalls.clear()
+    } else if (this.watchers > 0 && this.isEnabled()) void this.tick()
+  }
+
   get cwd(): string {
     return this.options.cwd
   }
@@ -113,7 +141,7 @@ export class DiffController {
   watch(): () => void {
     if (++this.watchers === 1) {
       this.watchRevision++
-      void this.tick()
+      if (this.isEnabled()) void this.tick()
     }
     return () => {
       if (--this.watchers === 0) {
@@ -125,11 +153,13 @@ export class DiffController {
   }
 
   private async tick(): Promise<void> {
+    if (!this.isEnabled()) return
     const epoch = this.epoch
     const watchRevision = this.watchRevision
     await (this.refreshInFlight ?? this.refresh())
     if (
       this.watchers > 0 &&
+      this.isEnabled() &&
       epoch === this.epoch &&
       watchRevision === this.watchRevision
     ) {
@@ -138,12 +168,13 @@ export class DiffController {
   }
 
   scheduleRefresh(): void {
-    if (!this.watchers) return
+    if (!this.watchers || !this.isEnabled()) return
     clearTimeout(this.debounce)
     this.debounce = setTimeout(() => void this.refresh(), 150)
   }
 
   refresh(): Promise<void> {
+    if (!this.isEnabled()) return Promise.resolve()
     if (this.refreshInFlight) {
       this.refreshQueued = true
       return this.refreshInFlight
@@ -153,7 +184,7 @@ export class DiffController {
       do {
         this.refreshQueued = false
         await this.fetch()
-      } while (epoch === this.epoch && this.refreshQueued)
+      } while (epoch === this.epoch && this.isEnabled() && this.refreshQueued)
     }
     const request = run().finally(() => {
       if (this.refreshInFlight === request) this.refreshInFlight = undefined
@@ -163,6 +194,7 @@ export class DiffController {
   }
 
   private async fetch(): Promise<void> {
+    if (!this.isEnabled()) return
     const epoch = this.epoch
     const signal = this.abortController.signal
     this.update({
@@ -175,7 +207,7 @@ export class DiffController {
         signal,
       })
       const backend = await this.backend
-      if (epoch !== this.epoch) return
+      if (epoch !== this.epoch || !this.isEnabled()) return
       if (!backend) {
         if (this.lastFetchRecord !== 'no-repository')
           this.record('fetch no-repository')
@@ -199,7 +231,7 @@ export class DiffController {
       }
       const baseRevision = this.baseRevision
       const result = await backend.fetch(this.state.mode, signal)
-      if (epoch !== this.epoch || baseRevision !== this.baseRevision) return
+      if (epoch !== this.epoch || baseRevision !== this.baseRevision || !this.isEnabled()) return
       const fetchRecord =
         `${result.kind} mode=${this.state.mode}` +
         (result.kind === 'data'
@@ -238,7 +270,7 @@ export class DiffController {
       this.publishBodies()
       await this.loadBodies()
     } catch (error) {
-      if (epoch !== this.epoch) return
+      if (epoch !== this.epoch || !this.isEnabled()) return
       if (this.lastFetchRecord !== 'exception') this.record('fetch exception')
       this.lastFetchRecord = 'exception'
       this.backend = undefined
@@ -304,6 +336,7 @@ export class DiffController {
   }
 
   private loadBodies(): Promise<void> {
+    if (!this.isEnabled()) return Promise.resolve()
     if (this.bodiesInFlight)
       return this.bodiesInFlight.then(() => this.loadBodies())
     const current = this.current
@@ -325,6 +358,7 @@ export class DiffController {
       Array.from({ length: Math.min(6, files.length) }, async () => {
         while (
           next < files.length &&
+          this.isEnabled() &&
           epoch === this.epoch &&
           this.current === current
         ) {
@@ -339,7 +373,7 @@ export class DiffController {
                   error instanceof Error ? error.message : String(error),
               }),
             )
-          if (epoch !== this.epoch || this.current !== current) return
+          if (epoch !== this.epoch || this.current !== current || !this.isEnabled()) return
           if (body.status !== current.bodies.get(file.path)?.status)
             this.record(`body ${body.status}`)
           current.bodies.set(
@@ -354,14 +388,14 @@ export class DiffController {
             (callback => setTimeout(callback, 100))
           )(() => {
             this.redraw = undefined
-            if (epoch === this.epoch && this.current === current)
+            if (epoch === this.epoch && this.current === current && this.isEnabled())
               this.publishBodies()
           })
         }
       }),
     )
       .then(() => {
-        if (epoch === this.epoch && this.current === current)
+        if (epoch === this.epoch && this.current === current && this.isEnabled())
           this.publishBodies()
       })
       .finally(() => {
@@ -372,6 +406,7 @@ export class DiffController {
   }
 
   setOpenPreference(open: boolean): void {
+    if (!this.isEnabled()) return
     this.record(open ? 'open user' : 'close user')
     this.autoOpened = true
     this.options.savePreferences?.(this.root ?? this.options.cwd, { open })
@@ -387,6 +422,7 @@ export class DiffController {
       this.root ?? this.options.cwd,
     ).open
     if (
+      !this.isEnabled() ||
       this.autoOpened ||
       this.opening ||
       preference === false ||
@@ -401,6 +437,7 @@ export class DiffController {
       await this.refresh()
       if (
         epoch !== this.epoch ||
+        !this.isEnabled() ||
         this.autoOpened ||
         this.state.data.outcome !== 'data'
       )
@@ -422,6 +459,7 @@ export class DiffController {
   }
 
   observeMessage(message: Message): { edited: boolean } | undefined {
+    if (!this.isEnabled()) return
     if (message.type === 'assistant') {
       for (const block of message.message.content) {
         if (
@@ -454,10 +492,12 @@ export class DiffController {
   }
 
   selectFile(path: string | null): void {
+    if (!this.isEnabled()) return
     this.update({ selectedPath: path })
   }
 
   async cycleBase(): Promise<void> {
+    if (!this.isEnabled()) return
     const modes: DiffBaseMode[] = ['session', 'uncommitted', 'branch']
     const mode = modes[(modes.indexOf(this.state.mode) + 1) % modes.length]!
     this.record(`base ${mode}`)
@@ -474,15 +514,18 @@ export class DiffController {
   }
 
   chooseSource(source: number | null): void {
+    if (!this.isEnabled()) return
     this.update({ source, selectedPath: null })
   }
 
   async toggleNoise(): Promise<void> {
+    if (!this.isEnabled()) return
     this.update({ showNoise: !this.state.showNoise })
     if (this.state.showNoise) await this.loadBodies()
   }
 
   async togglePreSession(): Promise<void> {
+    if (!this.isEnabled()) return
     this.update({ showPreSession: !this.state.showPreSession })
     if (this.state.showPreSession) await this.loadBodies()
   }
@@ -523,6 +566,7 @@ export class DiffController {
     hunks: readonly StructuredPatchHunk[],
     basis: string,
   ): void {
+    if (!this.isEnabled()) return
     if (this.armed?.path === path) {
       this.armed = null
       this.update({ armedPath: null })
@@ -546,6 +590,7 @@ export class DiffController {
   beginAsk(
     context: readonly string[],
   ): { text: string; finish: (accepted: boolean) => void } | undefined {
+    if (!this.isEnabled()) return undefined
     const asked = this.armed
     if (!asked || this.carrying === asked) return undefined
     const room =
