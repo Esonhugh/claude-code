@@ -204,7 +204,7 @@ Usage notes:
     !isInProcessTeammate() &&
     !forkEnabled
       ? `
-- Use foreground when blocked on the result; use run_in_background only for independent work. Completion is announced automatically—do not poll, sleep, or check proactively.`
+- Agents run in the background by default. Set run_in_background: false when blocked on the result. Completion is announced automatically—do not poll, sleep, or check proactively.`
       : ''
   }
 - Resume an existing agent with ${SEND_MESSAGE_TOOL_NAME} using its ID or name as \`to\`; it retains context. ${forkEnabled ? 'A fresh Agent call with subagent_type has no context.' : 'A fresh Agent call has no context.'}

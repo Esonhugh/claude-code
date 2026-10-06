@@ -50,6 +50,8 @@ describe('AgentTool prompt', () => {
     expect(prompt).toContain('Prefer resuming an existing agent')
     expect(prompt).toContain('what you expect it to return')
     expect(prompt).toContain('run_in_background')
+    expect(prompt).toContain('Agents run in the background by default')
+    expect(prompt).toContain('run_in_background: false')
     expect(prompt).toContain('do not poll')
     expect(prompt).toContain('single message with multiple Agent tool calls')
     expect(prompt).toContain('result is not visible to the user')

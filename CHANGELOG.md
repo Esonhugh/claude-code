@@ -12,6 +12,28 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 普通 Agent 默认后台路由
+
+### 版本状态
+
+- 未发布；对齐官方 2.1.292 在未指定后台参数时的普通 Agent 路由。
+
+### 关联提交
+
+- 本条随共享路由计算、提示、回归和验收记录共同提交。
+
+### 变更内容
+
+- 普通调用省略 `run_in_background` 时默认后台启动；显式 `false` 保持前台，agent 定义的 `background: true` 仍可要求后台执行。
+- 执行、任务元数据和 Mods `agent.spawn` 事件使用相同的后台模式；回调改写后台参数后重新计算执行模式。
+- 进程内 teammate 的默认子任务保持同步；禁用后台任务时使用前台执行，内置 web-fetch helper 不受隐式后台默认值影响。
+- 更新 Agent schema 和模型提示，说明默认后台及如何请求前台执行。
+
+### 测试覆盖
+
+- 新增隔离进程回归，覆盖省略/显式参数、定义默认值、Mods 改写、禁用后台、teammate 和 web-fetch 身份；前台续跑夹具明确传 `false`，保留原断言。
+- 候选及工作区的 Bun、Make 与真实终端对照记录见 [专项验收](docs/research/mods-agent-background-default-20261007.md)；完整 fork 门禁迁移和本地 Workflow 可用性仍是独立缺口。
+
 ## 2026-10-07 - 后台 fork 技能与权限范围恢复
 
 ### 版本状态

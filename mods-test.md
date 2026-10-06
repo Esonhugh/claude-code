@@ -1827,3 +1827,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 交互 slash/SkillTool 默认后台启动，background false、非交互、后台禁用及安全启动失败保持同步；后台任务使用稳定名称/ID，初始技能不占普通 Agent 容量，子任务完成后可自动续跑。
 - 权限 marker 先于 scope 持久化；恢复校验当前 fork 技能与 live/cold 身份，恢复 effort/名称并合并当前规则与冻结 deny。实际 SendMessage 拒绝缺失、损坏及超限记录；UI 区分后台启动和完成。
 - [专项报告](docs/research/mods-fork-background-20261007.md) 保存 RED、类型修正、测试、Make 与隔离官方/候选/ROOT 终端证据。官方 fork feature gate 与本地默认编译开关的差异、冷恢复终端故障矩阵、Workflow、G5、全量门禁及完整 API/上下文/UI/diff 继续，不以此批宣称全部兼容。
+
+## 2026-10-07 普通 Agent 默认后台路由
+
+- 范围：省略 `run_in_background` 的普通 Agent 默认后台启动；执行、任务元数据和 Mods `agent.spawn.background` 一致。
+- 回归：显式 `false`、定义 `background:true`、Mods 改写、后台禁用、进程内 teammate 和内置/用户 web-fetch 身份；前台转后台夹具保留原断言并明确请求前台。
+- 真实入口：同一隔离 tmux 内以实际 Agent 调用省略后台参数，API 响应保持未放行，必须先观察启动回执和 `background:true` 回调，再放行并检查唯一通知及原 ID 恢复。相邻流程包括并发容量、nested Agent、同步 fork slash/SkillTool、Ctrl+B、SendMessage 和 Workflow 尝试。
+- 官方版本、RED/最终结果、证据目录和未覆盖边界见 [专项验收](docs/research/mods-agent-background-default-20261007.md)。完整默认 fork 门禁、冷恢复、Workflow 以及整体 Mods/UI/diff 对齐不能由本项推导为已完成。

@@ -172,6 +172,9 @@ async function runBackgroundContinuation(mode: 'completed' | 'failed') {
       description: `background continuation ${mode}`,
       prompt: 'run one side effect then finish',
       subagent_type: 'general-purpose',
+      // Official 2.1.292 defaults omitted background to async; this fixture
+      // exercises foreground-to-background continuation without a restart.
+      run_in_background: false,
     },
     context,
     async () => ({ behavior: 'allow' }),

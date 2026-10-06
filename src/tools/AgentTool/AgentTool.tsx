@@ -219,7 +219,7 @@ const baseInputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'Set to true to run this agent in the background. You will be notified when it completes.',
+        'Agents run in the background by default. Set to false to wait in the foreground. You will be notified when a background agent completes.',
       ),
   }),
 )
@@ -666,6 +666,29 @@ export const AgentTool = buildTool({
     ) {
       throw new Error(PLAN_MODE_DISABLED_MESSAGE)
     }
+    // Resolve the same mode for execution, telemetry and the agent.spawn hook.
+    // Omitted background defaults to async for ordinary callers. In-process
+    // teammates retain synchronous children because they share the leader's
+    // lifecycle. The built-in web-fetch helper ignores implicit async routing.
+    const shouldRunInBackground = () => {
+      const implicitAsync =
+        !isCurrentInProcessTeammate &&
+        (run_in_background !== false ||
+          isCoordinatorMode() ||
+          isForkSubagentEnabled() ||
+          (feature('KAIROS') ? appState.kairosEnabled : false) ||
+          (proactiveModule?.isProactiveActive() ?? false))
+      const isWebFetchHelper =
+        selectedAgent.source === 'built-in' &&
+        selectedAgent.agentType === 'web-fetch'
+      return (
+        !isBackgroundTasksDisabled &&
+        (run_in_background === true ||
+          selectedAgent.background === true ||
+          (!isWebFetchHelper && implicitAsync))
+      )
+    }
+
     const started = Promise.withResolvers<{ model: string; agentId: string }>()
     let launchNotified = false
     const notifyStarted = (launch: { model: string; agentId: string }) => {
@@ -1007,46 +1030,17 @@ export const AgentTool = buildTool({
       promptMessages = [createUserMessage({ content: prompt })]
     }
 
+    const shouldRunAsync = shouldRunInBackground()
     const metadata = {
       prompt,
       resolvedAgentModel,
       isBuiltInAgent: isBuiltInAgent(selectedAgent),
       startTime,
       agentType: selectedAgent.agentType,
-      isAsync:
-        (run_in_background === true || selectedAgent.background === true) &&
-        !isBackgroundTasksDisabled,
+      isAsync: shouldRunAsync,
     }
+    const isCoordinator = isCoordinatorMode()
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature('COORDINATOR_MODE')
-      ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
-      : false
-
-    // Fork subagent experiment: force ALL spawns async for a unified
-    // <task-notification> interaction model (not just fork spawns — all of them).
-    const forceAsync = isForkSubagentEnabled()
-
-    // Assistant mode: force all agents async. Synchronous subagents hold the
-    // main loop's turn open until they complete — the daemon's inputQueue
-    // backs up, and the first overdue cron catch-up on spawn becomes N
-    // serial subagent turns blocking all user input. Same gate as
-    // executeForkedSlashCommand's fire-and-forget path; the
-    // <task-notification> re-entry there is handled by the else branch
-    // below (registerAsyncAgentTask + notifyOnCompletion).
-    const assistantForceAsync = feature('KAIROS')
-      ? appState.kairosEnabled
-      : false
-
-    const shouldRunAsync =
-      (run_in_background === true ||
-        selectedAgent.background === true ||
-        isCoordinator ||
-        forceAsync ||
-        assistantForceAsync ||
-        (proactiveModule?.isProactiveActive() ?? false)) &&
-      !isBackgroundTasksDisabled
     // Assemble the worker's tool pool independently of the parent's.
     // Workers always get their tools from assembleToolPool with their own
     // permission mode, so they aren't affected by the parent's tool
@@ -2198,7 +2192,7 @@ export const AgentTool = buildTool({
       provider: providerForAgent(selectedAgent, snapshot),
       parentModel: toolUseContext.options.mainLoopModel,
       permissionMode,
-      background: run_in_background === true || selectedAgent.background === true,
+      background: shouldRunInBackground(),
       fork: isForkPath,
       ...(name !== undefined && { name }),
       ...(model !== undefined && { model }),

@@ -70,3 +70,7 @@ Runtime-observed: adjacent runs attempt per-plugin/global capacity, ordinary and
 - Parent `aa2e3071c1549521bc9d4f9b204cf47d8e24f768`, branch `feat/mods`. Original 278 visible WIP rows and SHA/mtime baselines are in `baseline.json`; original overlapping files in `baseline-files`.
 - Candidate clone stages only this feature. ROOT merge preserves its existing Mod hooks and unrelated edits; its pre-existing metadata name declaration is retained. ROOT index was empty before staging. Signed commit stages candidate blobs without staging other Claude edits.
 - Protected old built-claude, fix-instructions.md, improvment.md, response.md and old assets keep bytes and mtime. No shared auth/config was copied, other Claude processes stopped, push or publish performed. Post-commit hashes/signature and staged artifacts are recorded beside the batch evidence.
+
+### 后续门禁核对（2026-10-07）
+
+官方 2.1.292 的 `MZ` 经 `XLo/YLo` 读取会话状态：交互会话默认启用，显式 false 和 coordinator 禁用，显式 true 可以在非交互会话选择启用，并保存启用来源。它不是单纯的编译开关。因此前述 `run_in_background:false` 差异的本地编译门禁描述只解释当时本地路径，不是对官方开关来源的完整描述。后续先独立修复普通 Agent 省略后台参数的路由，见 [默认后台专项](mods-agent-background-default-20261007.md)；完整 fork 默认值、headless/innerCall 分类及相关入口仍待单独迁移。

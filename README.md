@@ -1024,3 +1024,11 @@ Review $ARGUMENTS and report findings.
 启动前先保存 `.forked-skill.marker.json` 和 `.forked-skill.json` 到该 agent 的 transcript 目录，记录技能身份、effort 和启动时的 command deny 规则。恢复时重新解析当前技能，替换 command allow 规则，合并保存的 deny、当前 deny 和技能 `disallowed-tools`。权限记录缺失、损坏、超限、身份不匹配或技能不再支持 fork 时拒绝恢复。
 
 运行 `bun test --no-env-file ./src/utils/forkedSkill.test.ts ./src/tools/SkillTool/UI.test.tsx` 检查启动、权限和 UI 状态。[专项验收与剩余差异](docs/research/mods-fork-background-20261007.md) 区分自动化、真实终端和未覆盖结果；此批不代表所有 Mods API、Workflow 与 diff/UI 已完成对齐。配置参考 [Anthropic skills 文档](https://code.claude.com/docs/en/skills#run-skills-in-a-subagent)。
+
+### 普通 Agent 的前后台执行
+
+普通 Agent 调用省略 `run_in_background` 时，默认返回后台启动回执。需要等待结果再继续时，显式传 `run_in_background: false`；若 agent 定义声明 `background: true`，仍会后台运行。进程内 teammate 的默认子任务保持同步；`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` 禁用后台执行。
+
+对于普通 Agent，Mods 的 `agent.spawn` 事件中，`background` 表示已经解析的执行模式。回调可以将其改为 `false` 以请求前台执行；实际模式仍受后台禁用和已有强制路由规则约束。初始注册、执行和元数据使用相同计算，后台通知、并发计数与 `SendMessage` 恢复沿用现有生命周期。
+
+运行 `bun test --no-env-file ./src/tools/AgentTool/backgroundRouting.test.ts` 检查默认路由及边界。真实官方/本地终端证据与剩余范围见 [专项验收](docs/research/mods-agent-background-default-20261007.md)，背景概念见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents#run-subagents-in-foreground-or-background)。本批没有开启完整的官方默认 fork 模式。
