@@ -1,4 +1,4 @@
-import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type { UsageWithOutputTokenDetails as Usage } from './entrypoints/sdk/sdkUtilityTypes.js'
 import chalk from 'chalk'
 import { logForDebugging } from './utils/debug.js'
 import {
@@ -306,6 +306,7 @@ function addToTotalModelUsage(
 
   modelUsage.inputTokens += usage.input_tokens
   modelUsage.outputTokens += usage.output_tokens
+  modelUsage.thinkingTokens = (modelUsage.thinkingTokens ?? 0) + (usage.output_tokens_details?.thinking_tokens ?? 0)
   modelUsage.cacheReadInputTokens += usage.cache_read_input_tokens ?? 0
   modelUsage.cacheCreationInputTokens += usage.cache_creation_input_tokens ?? 0
   modelUsage.webSearchRequests +=

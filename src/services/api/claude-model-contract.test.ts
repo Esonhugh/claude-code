@@ -89,6 +89,7 @@ const requestBetaHeaders: string[] = []
 const tokenRequests: Record<string, unknown>[] = []
 let rejectIncompatibleEffort = false
 let streamNotFound = false
+let nonStreamingThinkingTokens: number | undefined
 let streamInterrupted = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
@@ -175,6 +176,12 @@ const client = new Anthropic({
         ...message,
         content: [{ type: 'text', text: 'OK' }],
         stop_reason: 'end_turn',
+        usage: {
+          ...message.usage,
+          ...(nonStreamingThinkingTokens !== undefined && {
+            output_tokens_details: { thinking_tokens: nonStreamingThinkingTokens },
+          }),
+        },
       })
     }
     const events = [
@@ -346,6 +353,7 @@ afterEach(() => {
   tokenRequests.length = 0
   rejectIncompatibleEffort = false
   streamNotFound = false
+  nonStreamingThinkingTokens = undefined
   streamInterrupted = false
   overflowRequest = 0
   overloadedModel = undefined
@@ -1850,6 +1858,9 @@ test.each(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5'])(
 )
 
 test('non-streaming fallback retains adaptive parameters and model identity', async () => {
+  const { getUsageForModel } = await import('../../bootstrap/state.js')
+  const priorThinking = getUsageForModel('claude-sonnet-5')?.thinkingTokens ?? 0
+  nonStreamingThinkingTokens = 1
   streamNotFound = true
   await query('claude-sonnet-5', { type: 'adaptive' })
   const request = requests[1]!
@@ -1858,6 +1869,7 @@ test('non-streaming fallback retains adaptive parameters and model identity', as
   expect(request.thinking).toEqual({ type: 'adaptive' })
   expect(request.temperature).toBeUndefined()
   expect(request.max_tokens).toBe(32_000)
+  expect(getUsageForModel('claude-sonnet-5')?.thinkingTokens).toBe(priorThinking + 1)
 })
 
 test('explicit output budget overrides the new model default', async () => {

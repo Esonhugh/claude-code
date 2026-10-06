@@ -877,3 +877,12 @@ bun test ./src/plugins/bundled/shippedDiffStartup.test.ts ./src/services/mods/di
 快照在现有会话的切换、元数据重写和退出时写入。禁用持久化时不写入，未创建会话文件时也不会只为成本创建文件。用 `--debug --debug-file /absolute/path/debug.log` 的 `[ModsSession]` / `restore-cost-state` 记录核对源和当前 ID、匹配结果及成本时间；日志不含会话正文。
 
 运行 `bun test ./src/utils/sessionCostState.test.ts ./src/utils/sessionStartedAt.restart.test.ts ./src/costHook.test.ts` 检查完整记录、跨进程恢复和退出保存。真实终端的 fork、分支后恢复、非交互恢复及相邻官方 diff 行为见 `mods-test.md`。
+
+
+### 思考 token 用量
+
+API 返回 `output_tokens_details.thinking_tokens` 时，CLI 在用量归一化、跨消息汇总和模型 `thinkingTokens` 中保留该分项，并通过既有项目汇总及 JSONL `cost-state` 保存。恢复会话后，新请求继续在历史分项上累计；旧日志没有该分项时按零开始累计。SDK `usage.output_tokens_details` 也提供该字段，模型汇总使用 `thinkingTokens`。
+
+思考 token 已包含在 API 的 `output_tokens` 中，费用仍根据原输出总量计算，不额外重复扣费。只有 API 提供的实际 token 计数会被累计，不根据正文长度估算。运行 `bun test ./src/services/api/thinkingUsage.test.ts ./src/utils/sessionCostState.test.ts` 验证这条链路；具体终端及官方对照范围见 `mods-test.md`。
+
+Anthropic 对该字段、最终流式事件与费用口径的说明见 [Steering thinking: pricing](https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost#pricing)。

@@ -19,6 +19,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
+import type { UsageWithOutputTokenDetails } from '../../entrypoints/sdk/sdkUtilityTypes.js'
 import { renderModPromptAttachments } from '../mods/promptAttachments.js'
 import { randomUUID } from 'crypto'
 import {
@@ -3191,7 +3192,7 @@ export function cleanupStream(
  */
 export function updateUsage(
   usage: Readonly<NonNullableUsage>,
-  partUsage: BetaMessageDeltaUsage | undefined,
+  partUsage: (BetaMessageDeltaUsage & Pick<UsageWithOutputTokenDetails, 'output_tokens_details'>) | undefined,
 ): NonNullableUsage {
   if (!partUsage) {
     return { ...usage }
@@ -3213,6 +3214,9 @@ export function updateUsage(
         ? partUsage.cache_read_input_tokens
         : usage.cache_read_input_tokens,
     output_tokens: partUsage.output_tokens ?? usage.output_tokens,
+    output_tokens_details: {
+      thinking_tokens: partUsage.output_tokens_details?.thinking_tokens ?? usage.output_tokens_details.thinking_tokens,
+    },
     server_tool_use: {
       web_search_requests:
         partUsage.server_tool_use?.web_search_requests ??
@@ -3276,6 +3280,9 @@ export function accumulateUsage(
     cache_read_input_tokens:
       totalUsage.cache_read_input_tokens + messageUsage.cache_read_input_tokens,
     output_tokens: totalUsage.output_tokens + messageUsage.output_tokens,
+    output_tokens_details: {
+      thinking_tokens: totalUsage.output_tokens_details.thinking_tokens + messageUsage.output_tokens_details.thinking_tokens,
+    },
     server_tool_use: {
       web_search_requests:
         // @ts-ignore - recovered code
