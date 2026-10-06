@@ -1568,3 +1568,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 独立提交native：`/private/tmp/mc291-dock-tail-i-docktail3/evidence` 通过真实注册的 `/owned-dock` 命令打开 pane，完成两次resize、草稿输入/Ctrl+U清空、全终端宽度composer边框及5个margin尾部检查，正常exit0。先前 `docktail1` 用自动打开的pane在140列不满足144列可见条件；`docktail2` 驱动误将历史命令行当作当前composer。两次失败及exit0保留；第三次改用真实用户命令和最后一个prompt定位，仍要求边框精确等于终端列数。
 - 边界：官方 AbovePrompt 位于 dock 旁的左列，ROOT对应布局仍待处理；尾部/主grip的焦点和hover样式、窄屏inline、建议层偏移和完整交互矩阵尚未关闭。退出仍出现 `[Mods] cc-plugin-diff (async): The operation was aborted.`，原生消息已正确保留，诊断时机/取消流程不因本批画面一致而计为对齐。官方291 builtin资产仍为私有候选，ROOT保留289原资产，不能以本批代替迁移和生产API验收。
 - 门禁边界：历史 `response.md` 仍为146/155及9失败的原报告，原文SHA256保持 `2ef2250d26c206e40c52bc35a900c0115d9820360b26d0d90fb491d73ff2f001`。最新完整变更门禁G6为168/169文件通过、23条件skip、prompt.edit一次50ms超时；本轮17/0相邻结果不抹掉该失败。当前本批完成后需要新完整门禁，全量套件也未确认通过。原 binary、fix-instructions、improvment、response和其他Claude进程均保留。
+
+## 2026-10-06：当前 ROOT 完整变更门禁 E7 与旧 response 复核
+
+- 门禁在签名提交 `048faeb6231d432b5db4baa07196061eb191fdea` 后，以实际ROOT路径、每文件独立无凭据 HOME/config/XDG、原120秒期限逐文件串行执行；未同时运行其他自有 build/tsc/lint。覆盖169个历史文件及新增的dock tail、Debug/footer、DiffView、Raw背景和原生错误回归，共 **174/174文件 passed，0 failed，0 needs-evidence**；Bun各文件外层footer合计2616 pass、0 fail，另有23条件skip（8文件）和独立脚本回执。逐文件进程组回收通过，源码core `a7bed54dda3d15a7375b83cffd05e9633009f88627583c1951f28a984425712b`（2887文件）全过程保持一致。
+- 历史 `response.md` 的9个失败文件本轮全部通过：prompt.edit、openai兼容、同批Worker按键、teammateResume、toolAdapter、自动压缩、模型契约、隔离构建和SendMessage。原报告仍为146/155、9失败，未覆盖原文；本轮逐项回执和源码/测试哈希为 `/private/tmp/mods-align-m1scugg4/changed-test-gate-e7-r1/response-report-recheck.json`。G6的一次50ms prompt.edit失败仍保留，不将这次成功写作超时根因已修复。
+- 完整证据根 `/private/tmp/mods-align-m1scugg4/changed-test-gate-e7-r1/`：`inventory.json`、逐文件start/result/log、`results.json`、`summary.json`、`counts.json`、`conditional-skips.json`。23个条件skip不计为对应官方分支已通过，其中13个原样diff接管用例仍缺外部夹具；私有291候选的测试通过不替代当前门禁中的skip。
+- dock tail 的独立签名提交含9个代码/测试文件和3份文档，提交blob与独立候选一致，301个不相关文件字节未变；其余310项WIP保留。原ROOT binary、fix-instructions、improvment、response与289资产的字节/mtime保持；暂存区已清空，无push，其他Claude进程未干预。
+- 边界：本轮没有重跑同进程全量套件，也没有重跑G5。G5是 `/plugin-authoring` 会话授权及生命周期的六场景，上一场2026-10-04的52断言通过、logical/physical帧和完整矩阵仍未覆盖。完整生产API、最新版声明映射、AbovePrompt/grip/inline/建议层、291包迁移、取消流程及全部官方UI/diff效果继续处理；174个文件通过不代表总体兼容目标完成。
