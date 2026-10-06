@@ -1066,3 +1066,13 @@ CLAUDE_CODE_FORK_SUBAGENT=0 claude
 fork 首条消息按官方格式显示为 `⑂ <directive>`，隐藏固定 worker 说明。只有完整匹配当前模板的消息才折叠，包含同名标签的普通文本、旧模板及被改写的说明仍正常显示。
 
 [Anthropic 官方文档](https://code.claude.com/docs/en/sub-agents#fork-the-current-conversation) 说明：新版本默认使用 `/subtask` 启动子任务，`/fork` 则复制整个后台会话；关闭官方 agent view 时命令映射还会变化。本批实现 `/subtask` 与指令显示；`/fork` 的独立后台会话、agent view 映射和完整交互仍待后续迁移。不要把本批理解为这几项已经兼容。验证与源码依据见 [子任务专项](docs/research/mods-subtask-20261007.md)。
+
+## 禁用后台任务时恢复子 Agent
+
+以 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude` 启动交互会话后，向已结束的子 Agent 调用 `SendMessage` 会等待恢复执行完成，再把最终报告返回给调用者。恢复沿用原 Agent ID 和已保存的历史；fork 继承主模型，普通 Agent 保留自己的模型。恢复期间可中断父查询，子执行随之停止。
+
+Mods 可通过 `$.tool.call({tool: 'SendMessage', to: agentId, message: 'Continue the review'})` 触发同一工具路径。结果的 `inlineHandback` 包含 `displayName`、`content`、`harnessNoteCount`、`harnessTailCount` 和 `harnessSectionHash`；这些显示与分段字段由工具格式化器处理。模型收到带来源说明的缩进报告，终端显示 `Resumed agent <name>. Result:`；原始 ID 显示前七位。该次报告不会额外产生后台完成通知。未禁用后台任务时，恢复仍返回后台回执并由完成通知交付结果。
+
+报告默认使用官方框架；`CLAUDE_CODE_HANDBACK_PROVENANCE=0` 可使用原始 JSON 报告格式。`/subtask` 是用户手动启动的后台任务入口，这个开关不改变它的初次启动。
+
+调试日志 `[AgentResume]` 记录 Agent ID、模型、交付方式和同步交付终态。恢复用法参考 [Anthropic 官方文档](https://code.claude.com/docs/en/sub-agents#resume-subagents)，实测与剩余差异见 [同步恢复专项](docs/research/mods-inline-resume-20261007.md)。报告内容扫描、web-fetch 特殊恢复入口及完整任务管理 UI 仍在整体对齐范围内。

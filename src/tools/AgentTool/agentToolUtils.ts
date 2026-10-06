@@ -613,6 +613,7 @@ export async function runAsyncAgentLifecycle({
   getWorktreeResult,
   onRunSettled,
   resume,
+  shouldNotifyOwner,
 }: {
   taskId: string
   abortController: AbortController
@@ -627,6 +628,7 @@ export async function runAsyncAgentLifecycle({
   enableSummarization: boolean
   onRunSettled?: () => void
   resume?: (prompt: string) => Promise<unknown>
+  shouldNotifyOwner?: () => boolean
   getWorktreeResult: () => Promise<{
     worktreePath?: string
     worktreeBranch?: string
@@ -759,7 +761,7 @@ export async function runAsyncAgentLifecycle({
       finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
     }
 
-    enqueueAgentNotification({
+    if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
       taskId,
       description,
       status: 'completed',
@@ -783,7 +785,7 @@ export async function runAsyncAgentLifecycle({
         { level: 'warn' },
       )
       addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
-      enqueueAgentNotification({
+      if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
         taskId,
         description,
         status: 'completed',
@@ -828,7 +830,7 @@ export async function runAsyncAgentLifecycle({
         addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
       }
       const partialResult = extractPartialResult(agentMessages)
-      enqueueAgentNotification({
+      if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
         taskId,
         description,
         status: 'killed',
@@ -863,7 +865,7 @@ export async function runAsyncAgentLifecycle({
       )
       addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
     }
-    enqueueAgentNotification({
+    if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
       taskId,
       description,
       status: 'failed',

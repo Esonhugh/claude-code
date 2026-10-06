@@ -1847,3 +1847,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 聚焦回归：`bun test --no-env-file ./src/commands/subtask/subtask.test.ts ./src/components/messages/UserForkBoilerplateMessage.test.tsx ./src/tools/AgentTool/forkMode.test.ts ./src/utils/forkedSkill.test.ts ./src/tools/AgentTool/backgroundOwner.test.ts ./src/utils/subagentConcurrency.test.ts`。
 - 真实 tmux 断言：空参数用法、父上下文和模型/工具继承、保持 API 响应时的后台回执及 Mods 状态、容量计数、唯一结果通知、SendMessage 同 ID 恢复；完整官方模板折叠与被改写模板保留原文均通过实际 stdin 触发。环境关闭自动 fork 的配置单独对照。
 - 调试记录与逐项结果见 [子任务专项](docs/research/mods-subtask-20261007.md)。`/fork` 的独立后台会话、agent view 映射、Workflow、全量 G5、整体 Mods API/UI/diff 对齐仍不能据此标记完成。
+
+## 2026-10-07 禁用后台任务时同步恢复
+
+- 真实入口：实际 Agent 或 `/subtask` 先完成，再让模型调用 `SendMessage` 恢复；恢复 API 响应保持未放行时，工具不得提前返回。放行后须检查同一 ID、模型与历史、公开 `inlineHandback` 字段、终端报告和零重复通知。
+- 默认后台恢复另行回归：工具先返回回执，完成后恰好一条通知；不能把同步结果误判为后台通知缺失。
+- 聚焦回归：`bun test --no-env-file ./src/tools/SendMessageTool/SendMessageTool.resume.test.ts ./src/utils/subagentHandback.test.ts`。前者隔离各场景的进程、配置和占位认证；后者核对分段哈希、所有官方换行分隔符、伪造框架和失效分段数据。
+- 相邻回归保留 subtask、fork 模式、fork 技能、owner waiting、共享并发、普通前后台路由和 foreground continuation。Workflow 可用性及全量 G5 保持原验收边界。
+- 源码、RED、Make、真实终端与未覆盖差异见 [同步恢复专项](docs/research/mods-inline-resume-20261007.md)。本项不证明整个 SendMessage 解析、pin、报告扫描及整体 Mods API/UI/diff 已完全一致。

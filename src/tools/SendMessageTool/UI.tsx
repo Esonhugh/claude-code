@@ -3,6 +3,7 @@ import { MessageResponse } from '../../components/MessageResponse.js'
 import { Text } from '../../ink.js'
 import { jsonParse } from '../../utils/slowOperations.js'
 import type { Input, SendMessageToolOutput } from './SendMessageTool.js'
+import { displaySubagentHandback } from '../../utils/subagentHandback.js'
 
 export function renderToolUseMessage(input: Partial<Input>): React.ReactNode {
   if (typeof input.message !== 'object' || input.message === null) {
@@ -34,7 +35,7 @@ export function renderToolResultMessage(
 
   return (
     <MessageResponse>
-      <Text dimColor>{result.message}</Text>
+      <Text dimColor>{'inlineHandback' in result && result.inlineHandback ? displaySubagentHandback(result.inlineHandback.displayName, result.inlineHandback.content) : result.message}</Text>
     </MessageResponse>
   )
 }

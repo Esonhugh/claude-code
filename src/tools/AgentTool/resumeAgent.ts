@@ -3,6 +3,9 @@ import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js'
 import { getCommands } from '../../commands.js'
 import { getProjectRoot } from '../../bootstrap/state.js'
 import { isLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { markAgentsNotified } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { hashSubagentHandbackSections, type SubagentHandback } from '../../utils/subagentHandback.js'
 import { readForkedSkillScope, readForkedSkillWitness } from '../../utils/forkedSkillScope.js'
 import { createGetAppStateWithAllowedTools } from '../../utils/forkedAgent.js'
 import { getSkillAttributionName } from '../../utils/forkedSkill.js'
@@ -56,6 +59,7 @@ export type ResumeAgentResult = {
   agentId: string
   description: string
   outputFile: string
+  inlineHandback?: SubagentHandback
 }
 export async function resumeAgentBackground({
   agentId,
@@ -65,6 +69,7 @@ export async function resumeAgentBackground({
   invokingRequestId,
   promptIsMeta,
   getWorktreeResult,
+  delivery = 'notification',
 }: {
   agentId: string
   prompt: string
@@ -73,8 +78,10 @@ export async function resumeAgentBackground({
   invokingRequestId?: string
   promptIsMeta?: boolean
   getWorktreeResult?: () => Promise<{worktreePath?: string; worktreeBranch?: string}>
+  delivery?: 'notification' | 'reply'
 }): Promise<ResumeAgentResult> {
   const startTime = Date.now()
+  const inline = delivery === 'reply' && isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
   const appState = toolUseContext.getAppState()
   // In-process teammates get a no-op setAppState; setAppStateForTasks
   // reaches the root store so task registration/progress/kill stay visible.
@@ -349,7 +356,13 @@ export async function resumeAgentBackground({
   // lifetime. Running agents keep their pinned generation until this boundary.
   toolUseContext.mods?.invalidatePromptContext(agentId)
 
-  void runWithAgentContext(asyncAgentContext, () =>
+  const abortInline = () => agentBackgroundTask.abortController!.abort(toolUseContext.abortController.signal.reason)
+  if (inline) {
+    if (toolUseContext.abortController.signal.aborted) abortInline()
+    else toolUseContext.abortController.signal.addEventListener('abort', abortInline, {once:true})
+  }
+  logForDebugging(`[AgentResume] started agent=${agentId} delivery=${inline ? 'inline' : 'notification'} model=${resolvedAgentModel}`)
+  const execution = runWithAgentContext(asyncAgentContext, () =>
     wrapWithCwd(() =>
       runAsyncAgentLifecycle({
         taskId: agentBackgroundTask.agentId,
@@ -368,6 +381,7 @@ export async function resumeAgentBackground({
         description: uiDescription,
         toolUseContext,
         rootSetAppState,
+        shouldNotifyOwner: inline ? () => false : undefined,
         onRunSettled: releaseSlot,
         resume: nextPrompt => resumeAgentBackground({
           agentId,
@@ -388,6 +402,24 @@ export async function resumeAgentBackground({
       }),
     ),
   )
+
+  if (inline) {
+    try {
+      await execution
+      const task = toolUseContext.getAppState().tasks[agentId]
+      if (!isLocalAgentTask(task) || task.status !== 'completed' || !task.result) {
+        throw new Error(isLocalAgentTask(task) ? task.error ?? `Agent ${agentId} ${task.status}` : `Agent ${agentId} disappeared while resuming`)
+      }
+      logForDebugging(`[AgentResume] handed back agent=${agentId} delivery=inline status=${task.status}`)
+      return { agentId, description: uiDescription, outputFile: getTaskOutputPath(agentId), inlineHandback: {
+        content: task.result.content, harnessNoteCount: 0, harnessTailCount: 0,
+        harnessSectionHash: hashSubagentHandbackSections(task.result.content),
+      } }
+    } finally {
+      toolUseContext.abortController.signal.removeEventListener('abort', abortInline)
+      markAgentsNotified(agentId, rootSetAppState)
+    }
+  }
 
   return {
     agentId,

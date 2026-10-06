@@ -40,6 +40,8 @@ import {
 } from '../../utils/teammateMailbox.js'
 import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
 import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
+import { frameSubagentHandback, displaySubagentHandback, RESUMED_AGENT_MESSAGE, RESUMED_AGENT_FRAMED_MESSAGE, type SubagentHandback } from '../../utils/subagentHandback.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
@@ -105,6 +107,7 @@ export type MessageOutput = {
   success: boolean
   message: string
   routing?: MessageRouting
+  inlineHandback?: SubagentHandback & { displayName: string }
 }
 
 export type BroadcastOutput = {
@@ -715,6 +718,17 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     mapToolResultToToolResultBlockParam(data, toolUseID) {
+      if ('inlineHandback' in data && data.inlineHandback) {
+        const { inlineHandback, ...rest } = data
+        const framed = process.env.CLAUDE_CODE_HANDBACK_PROVENANCE === undefined || isEnvTruthy(process.env.CLAUDE_CODE_HANDBACK_PROVENANCE)
+        return {
+          tool_use_id: toolUseID,
+          type: 'tool_result' as const,
+          content: [{ type: 'text' as const, text: framed
+            ? jsonStringify({success:true,message:RESUMED_AGENT_FRAMED_MESSAGE}) + '\n' + frameSubagentHandback(inlineHandback.content, inlineHandback)
+            : jsonStringify({...rest,message:displaySubagentHandback(inlineHandback.displayName,inlineHandback.content)}) }],
+        }
+      }
       return {
         tool_use_id: toolUseID,
         type: 'tool_result' as const,
@@ -832,11 +846,13 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 toolUseContext: context,
                 canUseTool,
                 invokingRequestId: assistantMessage?.requestId,
+                delivery: 'reply',
               })
               return {
                 data: {
                   success: true,
-                  message: `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
                 },
               }
             } catch (e) {
@@ -859,11 +875,13 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 toolUseContext: context,
                 canUseTool,
                 invokingRequestId: assistantMessage?.requestId,
+                delivery: 'reply',
               })
               return {
                 data: {
                   success: true,
-                  message: `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
                 },
               }
             } catch (e) {
