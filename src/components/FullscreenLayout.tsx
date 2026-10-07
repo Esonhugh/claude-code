@@ -24,7 +24,8 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import instances from '../ink/instances.js'
-import type { DOMElement } from '../ink/dom.js'
+import { subscribeLayout, type DOMElement } from '../ink/dom.js'
+import { ModsPaneHostRowsContext } from '../context/modsPaneHostContext.js'
 import { Box, Text } from '../ink.js'
 import type { Message } from '../types/message.js'
 import { openBrowser, openPath } from '../utils/browser.js'
@@ -58,10 +59,12 @@ type Props = {
    *  region (not the bottom slot) so the overflowY:hidden cap doesn't clip
    *  it. Fullscreen only — used for the companion speech bubble. */
   bottomFloat?: ReactNode
-  /** Mods pane content beside the conversation and composer in fullscreen dock mode. */
+  /** Mods pane content beside the conversation and above the full-width composer. */
   dockPane?: ReactNode
-  /** Width of the Mods dock in terminal columns. Defaults to half the terminal. */
+  /** Width of the Mods dock in terminal columns. Defaults to 45% of the terminal, capped at 90 columns with 70 for the conversation. */
   dockWidth?: number
+  /** Whether the visible Mods dock currently owns focus. */
+  dockFocused?: boolean
   /** Native sidebar content beside the transcript and above the full-width composer. */
   sidebarPane?: ReactNode
   /** Width of the native sidebar in terminal columns. */
@@ -318,6 +321,7 @@ export function FullscreenLayout({
   bottomFloat,
   dockPane,
   dockWidth,
+  dockFocused = false,
   sidebarPane,
   sidebarWidth,
   inlinePane,
@@ -332,11 +336,14 @@ export function FullscreenLayout({
 }: Props): React.ReactNode {
   const { rows: terminalRows, columns } = useTerminalSize()
   const hasDock = React.Children.toArray(dockPane).length > 0
+  const [dockHovered, setDockHovered] = useState(false)
+  const dockLit = dockFocused || dockHovered
+  useEffect(() => { if (!hasDock) setDockHovered(false) }, [hasDock])
   const hasSidebar = React.Children.toArray(sidebarPane).length > 0
   const sidebarColumns = hasSidebar ? (sidebarWidth ?? 0) : 0
   const dockColumns = hasDock
     ? Math.min(
-        Math.max(0, dockWidth ?? Math.floor(columns / 2)),
+        Math.max(0, dockWidth ?? Math.min(Math.floor(columns * 0.45), 90, columns - 70)),
         Math.max(0, columns - sidebarColumns - 1),
       )
     : 0
@@ -353,6 +360,24 @@ export function FullscreenLayout({
     [dockColumns, terminalRows],
   )
   const bottomRef = useRef<DOMElement>(null)
+  const mainRowRef = useRef<DOMElement>(null)
+  const subscribeMainLayout = useCallback((listener: () => void) => {
+    if (!mainRowRef.current) return () => {}
+    let active = true
+    let pending = false
+    const unsubscribe = subscribeLayout(mainRowRef.current, () => {
+      if (pending) return
+      pending = true
+      queueMicrotask(() => {
+        pending = false
+        if (active) listener()
+      })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [hasDock, hasSidebar])
+  const mainRowRows = useSyncExternalStore(subscribeMainLayout, () =>
+    Math.max(0, Math.floor(mainRowRef.current?.yogaNode?.getComputedHeight() ?? 0)),
+  )
   const paneLayout = `${hasSidebar}:${sidebarColumns}:${hasDock}:${dockColumns}`
   const previousPaneLayout = useRef(paneLayout)
   useLayoutEffect(() => {
@@ -445,16 +470,16 @@ export function FullscreenLayout({
           overflowY="hidden"
         >
           <PromptDockColumnsContext value={dockColumns}>{bottom}</PromptDockColumnsContext>
-          {hasDock && <DockTail width={dockColumns} />}
+          {hasDock && <DockTail width={dockColumns} isLit={dockLit} />}
         </Box>
       </Box>
     )
     return (
       <PromptOverlayProvider container={bottomRef}>
         <Box flexGrow={1} flexDirection="column" overflow="hidden">
-          <Box flexGrow={1} flexDirection="row" overflow="hidden">
+          <Box ref={mainRowRef} flexGrow={1} flexDirection="row" overflow="hidden">
             <TerminalSizeContext value={conversationSize}>
-              <Box width={conversationSize.columns} flexShrink={0} flexDirection="column">
+              <Box width={conversationSize.columns} height={mainRowRows} flexShrink={0} flexDirection="column">
                 <Box flexGrow={1} flexDirection="column" overflow="hidden">
                   {headerPrompt && (
                     <StickyPromptHeader
@@ -499,20 +524,15 @@ export function FullscreenLayout({
             )}
             {hasDock && (
               <TerminalSizeContext value={dockSize}>
-                <Box
-                  flexDirection="column"
-                  flexShrink={0}
-                  width={dockColumns}
-                  backgroundColor="composerSidebarBackground"
-                  borderLeftDimColor
-                  overflow="hidden"
-                  borderStyle="single"
-                  borderLeft
-                  borderRight={false}
-                  borderTop={false}
-                  borderBottom={false}
-                >
-                  {dockPane}
+                <Box flexDirection="row" flexShrink={0} width={dockColumns}
+                  backgroundColor="composerSidebarBackground" overflow="hidden">
+                  <Box flexShrink={0} width={1} borderStyle="single" borderLeft
+                    borderRight={false} borderTop={false} borderBottom={false}
+                    borderLeftDimColor={!dockLit} borderLeftColor={dockLit ? 'suggestion' : undefined}
+                    onMouseEnter={() => setDockHovered(true)} onMouseLeave={() => setDockHovered(false)} />
+                  <Box flexDirection="column" flexGrow={1} width={dockSize.columns} overflow="hidden">
+                    <ModsPaneHostRowsContext value={mainRowRows}>{dockPane}</ModsPaneHostRowsContext>
+                  </Box>
                 </Box>
               </TerminalSizeContext>
             )}
@@ -587,12 +607,13 @@ export function FullscreenLayout({
   )
 }
 
-function DockTail({ width }: { width: number }): React.ReactNode {
+function DockTail({ width, isLit }: { width: number; isLit: boolean }): React.ReactNode {
   const rows = usePromptOverlayGap()
   return rows > 0 ? (
     <Box position="absolute" top={0} right={0} width={width} height={rows}
       backgroundColor="composerSidebarBackground" borderStyle="single" borderLeft
-      borderRight={false} borderTop={false} borderBottom={false} borderLeftDimColor />
+      borderRight={false} borderTop={false} borderBottom={false}
+      borderLeftDimColor={!isLit} borderLeftColor={isLit ? 'suggestion' : undefined} />
   ) : null
 }
 

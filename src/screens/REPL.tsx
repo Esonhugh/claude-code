@@ -7050,7 +7050,8 @@ export function REPL({
           }
           modal={centeredModal}
           dockPane={modDock.map(renderModPane)}
-          dockWidth={shownModDock?.columns === undefined ? undefined : shownModDock.bodyColumns + 2}
+          dockWidth={shownModDock ? shownModDock.bodyColumns + 1 : undefined}
+          dockFocused={Boolean(shownModDock?.focused)}
           inlinePane={modInline.map(renderModPane)}
           sidebarWidth={Math.min(Math.floor(modTerminalSize.columns * 0.45), 90, modTerminalSize.columns - 70)}
           sidebarPane={nativeDiffVisible && canShowDiffSidebar ? (

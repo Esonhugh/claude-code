@@ -14,6 +14,7 @@ import { parseBindings } from '../keybindings/parser.js'
 import type { KeybindingContextName, ParsedKeystroke } from '../keybindings/types.js'
 import { appendChildNode, createNode, markDirty, type DOMElement, type DOMNode } from '../ink/dom.js'
 import { getFocusManager } from '../ink/focus.js'
+import { getTheme } from '../utils/theme.js'
 import instances from '../ink/instances.js'
 import { nodeCache } from '../ink/node-cache.js'
 import { dispatchClick } from '../ink/hit-test.js'
@@ -29,7 +30,7 @@ import { join } from 'node:path'
 import { createModsRuntime } from '../services/mods/runtime.js'
 import type { ModClientHandle, ModClients, ModClientSite } from '../services/mods/client.js'
 import createRenderer from '../ink/renderer.js'
-import { CharPool, createScreen, HyperlinkPool, StylePool } from '../ink/screen.js'
+import { CharPool, charInCellAt, createScreen, HyperlinkPool, StylePool } from '../ink/screen.js'
 import type { Frame } from '../ink/frame.js'
 
 class Output extends Writable {
@@ -119,6 +120,19 @@ function elements(stdout: Output, renderedOnly: boolean): RenderedElement[] {
   }
   visit(ink.rootNode)
   return result
+}
+
+/** Read painted body cells, excluding engine border/padding and repeated writes. */
+function paneBodyText(stdout: Output): string {
+  const ink = instances.get(stdout as never) as unknown as { frontFrame: Frame }
+  const viewport = elements(stdout, true).find(({ node }) => node.style.overflowY === 'scroll')!.node
+  const rect = nodeCache.get(viewport)!
+  const screen = ink.frontFrame.screen
+  return Array.from({ length: Math.floor(rect.height) }, (_, row) =>
+    Array.from({ length: Math.floor(rect.width) }, (_, column) =>
+      charInCellAt(screen, rect.x + column, rect.y + row) ?? ' ',
+    ).join('').trimEnd(),
+  ).join('\n')
 }
 
 function deepestElement(stdout: Output, text: string, nodeName: DOMElement['nodeName'], renderedOnly = true): DOMElement {
@@ -272,7 +286,7 @@ describe('ModsPane Markdown link presses', () => {
       const control = handled
       expect(control.attributes.tabIndex).toBe(0)
       expect(elements(stdout, false).filter(({node}) => typeof node.attributes.tabIndex === 'number'))
-        .toHaveLength(2) // pane root and the selected link
+        .toHaveLength(3) // pane root, selected link and engine close mark
       expect(elements(stdout, false).filter(({node}) => node.nodeName === 'ink-link' && node.attributes.href !== undefined).map(({node}) => node.attributes.href))
         .toEqual(['https://example.com/ordinary'])
 
@@ -637,7 +651,7 @@ describe.serial('ModsPane terminal Image consumer', () => {
     }, stdout)
     try {
       await settle()
-      expect(stdout.output).toContain('\u001b[3;4H\u001b_Ga=T,')
+      expect(stdout.output).toContain('\u001b[4;6H\u001b_Ga=T,')
     } finally { instance.unmount() }
   })
 
@@ -1470,10 +1484,10 @@ describe('ModsPane terminal hover', () => {
     try {
       await settle()
       expect(stripAnsi(stdout.output)).not.toContain('hidden')
-      expect(stripAnsi(stdout.output)).toContain('23span')
-      expect(nodeCache.get(renderedElement(stdout, 'END', 'ink-text'))).toMatchObject({ x: 8, y: 3 })
+      expect(paneBodyText(stdout)).toContain('2345\n  span')
+      expect(nodeCache.get(renderedElement(stdout, 'END', 'ink-text'))).toMatchObject({ x: 10, y: 4 })
       const span = renderedElement(stdout, 'span', 'ink-text').parentNode!
-      expect(nodeCache.get(span)).toMatchObject({ x: 2, y: 1, width: 8, height: 2 })
+      expect(nodeCache.get(span)).toMatchObject({ x: 4, y: 2, width: 8, height: 2 })
     } finally { instance.unmount() }
   })
 
@@ -1488,9 +1502,9 @@ describe('ModsPane terminal hover', () => {
     const instance = await modsPane(tree, stdout)
     try {
       await settle()
-      expect(stripAnsi(stdout.output)).toContain('abcCARDhijklmnop\nfollowing row')
-      expect(nodeCache.get(renderedElement(stdout, 'CARD', 'ink-text'))).toMatchObject({ x: 3, y: 0 })
-      expect(nodeCache.get(renderedElement(stdout, 'following row', 'ink-text'))).toMatchObject({ y: 1 })
+      expect(paneBodyText(stdout)).toContain('abcCARDhijklmnop\nfollowing row')
+      expect(nodeCache.get(renderedElement(stdout, 'CARD', 'ink-text'))).toMatchObject({ x: 5, y: 1 })
+      expect(nodeCache.get(renderedElement(stdout, 'following row', 'ink-text'))).toMatchObject({ y: 2 })
     } finally { instance.unmount() }
   })
 
@@ -2349,10 +2363,221 @@ describe('ModsPane input repair', () => {
         expect(leaves.length).toBeGreaterThan(0)
         expect(leaves.reduce((sum, { node }) => sum + node.yogaNode!.getComputedWidth(), 0)).toBe(width - 4)
         const viewport = elements(stdout, false).find(({ node }) => node.style.overflowY === 'scroll')!.node
-        const content = viewport.childNodes[0] as DOMElement
+        const content = (viewport.childNodes[0] as DOMElement).childNodes[0] as DOMElement
         expect(reports.at(-1)).toBe(Math.ceil(content.yogaNode!.getComputedHeight()))
       }
     } finally { instance.unmount() }
+  })
+
+  test.each([
+    ['light', 'rgb(245,245,245)'], ['light-ansi', 'ansi:white'],
+    ['dark-ansi', 'ansi:blackBright'], ['light-daltonized', 'rgb(235,235,235)'],
+    ['dark', 'rgb(38,38,38)'], ['dark-daltonized', 'rgb(38,38,38)'],
+  ] as const)('official pane theme background for %s', (theme, expected) => {
+    expect(getTheme(theme)).toHaveProperty('composerSidebarBackground', expected)
+  })
+
+  test.each(['inline', 'dock'] as const)('official pane %s close mark ignores closeOnEscape and consumes the click', async placement => {
+    const stdout = new Output()
+    const closes: string[] = []
+    const instance = await render(<Box height={30} flexDirection="column" onClick={() => closes.push('outside')}><ModsPane
+      pane={pane({ type: 'Text', children: ['real body'] }, { placement, closeOnEscape: false })}
+      onClose={async current => { closes.push(current.id) }}
+      onFocus={async () => ({})} onInteract={async () => {}} onScroll={async () => {}}
+    /></Box>, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const close = nodeCache.get(renderedElement(stdout, '✕', 'ink-text'))!
+      const ink = instances.get(stdout as never)! as unknown as { rootNode: DOMElement }
+      expect(close.y).toBe(0)
+      expect(dispatchClick(ink.rootNode, close.x, close.y)).toBe(true)
+      await settle()
+      expect(closes).toEqual(['test'])
+      expect(getFocusManager(ink.rootNode).activeElement).toBeNull()
+      expect(stripAnsi(stdout.output)).not.toContain('↑/↓ scroll')
+    } finally { instance.unmount() }
+  })
+
+  test.each(['inline', 'dock'] as const)('official 289 %s chrome paints the close mark outside the body', async placement => {
+    const stdout = new Output()
+    const closes: string[] = []
+    const reports: {bodyRows: number; contentRows: number}[] = []
+    const instance = await render(<Box width={80} height={30} flexDirection="column"><ModsPane
+      pane={pane({type: 'Box', props: {flexDirection: 'column'}, children: [
+        {type: 'Box', props: {justifyContent: 'flex-end'}, children: [{type: 'Text', children: ['BODY_END']}]},
+        {type: 'Text', children: ['SECOND_ROW']},
+      ]}, {placement, closeOnEscape: false})}
+      onClose={async current => { closes.push(current.id) }}
+      onReportMetrics={(_pane, metrics) => {reports.push(metrics)}}
+      onFocus={async () => ({})} onInteract={async () => {}} onScroll={async () => {}}
+    /></Box>, {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
+    try {
+      await settle()
+      const ink = instances.get(stdout as never)! as unknown as {rootNode: DOMElement; frontFrame: Frame}
+      const close = nodeCache.get(renderedElement(stdout, '✕', 'ink-text'))!
+      const body = nodeCache.get(renderedElement(stdout, 'BODY_END', 'ink-text'))!
+      const viewport = nodeCache.get(elements(stdout, true).find(({node}) => node.style.overflowY === 'scroll')!.node)!
+      const width = placement === 'inline' ? 80 : 76
+      const inset = placement === 'inline' ? 2 : 1
+      expect(close).toMatchObject({x: width - inset - 1, y: 0, width: 1, height: 1})
+      expect(charInCellAt(ink.frontFrame.screen, close.x, close.y)).toBe('✕')
+      expect(charInCellAt(ink.frontFrame.screen, width - 1, 0)).not.toBe('✕')
+      expect(body.y).toBe(1)
+      expect(viewport).toMatchObject({x: placement === 'inline' ? 2 : 0, y: 1, width: 76, height: placement === 'inline' ? 2 : 10})
+      expect(paneBodyText(stdout)).toStartWith(' '.repeat(68) + 'BODY_END\nSECOND_ROW')
+      expect(reports.at(-1)).toMatchObject({bodyRows: placement === 'inline' ? 2 : 10, contentRows: 2})
+      expect(dispatchClick(ink.rootNode, close.x, close.y)).toBe(true)
+      await settle()
+      expect(closes).toEqual(['test'])
+    } finally {instance.unmount()}
+  })
+
+  test.each([
+    { count: 0, requested: undefined, fullscreen: true, expected: 0 },
+    { count: 1, requested: undefined, fullscreen: true, expected: 1 },
+    { count: 30, requested: undefined, fullscreen: true, expected: 11 },
+    { count: 30, requested: 1, fullscreen: true, expected: 3 },
+    { count: 30, requested: 5, fullscreen: true, expected: 5 },
+    { count: 30, requested: 30, fullscreen: true, expected: 11 },
+    { count: 30, requested: 30, fullscreen: false, expected: 27 },
+  ])('official inline budget and empty body $count/$requested/$fullscreen', async ({count, requested, fullscreen, expected}) => {
+    const stdout = new Output()
+    stdout.columns = 109
+    stdout.rows = 40
+    const owner = {}
+    let contentCount = count
+    const presentation = { columns: 109, rows: 40, isFullscreen: fullscreen, composerEmpty: true, hasDialog: false, keyboardOwned: false }
+    const ui = createModUi({ pluginOf: () => 'fixture', dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async () => ({type: 'Box', props: {flexDirection: 'column'}, children: Array.from({length: contentCount}, (_, i) => ({type: 'Text', children: [`row-${i}`]}))}),
+      invokeDrawing: async () => {}, releaseDrawing: async () => {},
+    })
+    await ui.open(owner, {id: 'budget', ...(requested === undefined ? {} : {rows: requested})}, {kind: 'person'}, presentation)
+    await ui.commit(owner)
+    function Host() {
+      const current = React.useSyncExternalStore(ui.subscribe, ui.getSnapshot)[0]!
+      return <Box width={109} height={40} flexDirection="column"><ModsPane pane={current}
+        onReportMetrics={(pane, metrics) => ui.reportMetrics(pane.id, metrics)}
+        onFocus={async () => ({})} onClose={async () => {}} onInteract={async () => {}} onScroll={async () => {}}
+      /></Box>
+    }
+    const instance = await render(<Host />, {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
+    try {
+      await settle()
+      expect(ui.getSnapshot()[0]).toMatchObject({bodyRows: expected, contentRows: count})
+      expect(elements(stdout, false).find(({node}) => node.style.overflowY === 'scroll')!.node.yogaNode!.getComputedWidth()).toBe(105)
+      if (requested === undefined) {
+        contentCount = 30
+        await ui.render(presentation)
+        await settle()
+        expect(ui.getSnapshot()[0]).toMatchObject({bodyRows: 11, contentRows: 30})
+      }
+    } finally {instance.unmount(); await ui.release(owner)}
+  })
+
+  test('hidden pane preserves its measured content and scroll across sibling layout commits', async () => {
+    const stdout = new Output()
+    stdout.columns = 109
+    stdout.rows = 40
+    const owner = {}
+    const presentation = {columns: 109, rows: 40, isFullscreen: true, composerEmpty: true, hasDialog: false, keyboardOwned: false}
+    const ui = createModUi({pluginOf: () => 'fixture', dispatch: async (_owner, _event, input, core) => core(input),
+      draw: async (_owner, input) => ({type: 'Box', props: {flexDirection: 'column'}, children: Array.from({length: input.requestId === 'first' ? 30 : 1}, (_, i) => ({type: 'Text', children: [`${input.requestId}-${i}`]}))}),
+      invokeDrawing: async () => {}, releaseDrawing: async () => {},
+    })
+    await ui.open(owner, {id: 'first'}, {kind: 'person'}, presentation)
+    await ui.open(owner, {id: 'second'}, {kind: 'person'}, presentation)
+    await ui.commit(owner)
+    await ui.focus(owner, {requestId: 'first', origin: {kind: 'person'}}, presentation)
+    function Host({sibling = 1}: {sibling?: number}) {
+      const current = React.useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+      return <Box width={109} height={40} flexDirection="column"><Box height={sibling}><Text>composer</Text></Box>
+        {current.map(pane => <ModsPane key={pane.id} pane={pane}
+          onReportMetrics={(pane, metrics) => ui.reportMetrics(pane.id, metrics)}
+          onFocus={async current => ui.focus(owner, {requestId: current.id, origin: {kind: 'person'}}, presentation)}
+          onClose={async () => {}} onInteract={async () => {}} onScroll={async () => {}}
+        />)}
+      </Box>
+    }
+    const instance = await render(<Host />, {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
+    try {
+      await settle()
+      await ui.scroll(owner, {requestId: 'first', by: 5, origin: {kind: 'person'}})
+      await settle()
+      expect(ui.getSnapshot().find(pane => pane.id === 'first')).toMatchObject({bodyRows: 10, contentRows: 30, scrollOffset: 5})
+      await ui.focus(owner, {requestId: 'second', origin: {kind: 'person'}}, presentation)
+      await settle()
+      instance.rerender(<ThemeProvider><Host sibling={9} /></ThemeProvider>)
+      await settle()
+      expect(ui.getSnapshot().find(pane => pane.id === 'first')).toMatchObject({shown: false, bodyRows: 10, contentRows: 30, scrollOffset: 5})
+      await ui.focus(owner, {requestId: 'first', origin: {kind: 'person'}}, presentation)
+      await settle()
+      expect(ui.getSnapshot().find(pane => pane.id === 'first')).toMatchObject({shown: true, bodyRows: 10, contentRows: 30, scrollOffset: 5})
+    } finally {instance.unmount(); await ui.release(owner)}
+  })
+
+  test.each([3,8])('official inline body follows natural content rows=%s', async count => {
+    const stdout = new Output()
+    stdout.columns = 109
+    stdout.rows = 40
+    const owner = {}
+    const ui = createModUi({pluginOf:()=> 'fixture',dispatch:async (_owner,_event,input,core)=>core(input),
+      draw:async()=>({type:'Box',props:{flexDirection:'column'},children:Array.from({length:count},(_,i)=>({type:'Text',children:[`natural-${i}`]}))}),
+      invokeDrawing:async()=>{},releaseDrawing:async()=>{},
+    })
+    await ui.open(owner,{id:'natural',title:''},{kind:'person'},{columns:109,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false})
+    await ui.commit(owner)
+    function Host() {
+      const current = React.useSyncExternalStore(ui.subscribe,ui.getSnapshot)[0]!
+      return <Box width={109} height={40} flexDirection="column"><ModsPane pane={current}
+        onReportMetrics={(pane,metrics)=>ui.reportMetrics(pane.id,metrics)}
+        onFocus={async()=>({})} onInteract={async()=>{}} onClose={async()=>{}} onScroll={async()=>{}}
+      /></Box>
+    }
+    const instance = await render(<Host/>,{stdout:stdout as never,stdin:new Input() as never,patchConsole:false,exitOnCtrlC:false})
+    try {
+      await settle()
+      expect(ui.getSnapshot()[0]).toMatchObject({bodyRows:count,contentRows:count,placement:'inline'})
+      const before=ui.getSnapshot()[0]!.revision
+      await settle()
+      expect(ui.getSnapshot()[0]!.revision).toBe(before)
+    } finally {instance.unmount();await ui.release(owner)}
+  })
+
+  test('official dock occupies the actual row above a full-width composer', async () => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER='1'
+    const stdout = new Output()
+    stdout.columns=120;stdout.rows=40;stdout.isTTY=true
+    const owner={}
+    const ui=createModUi({pluginOf:()=> 'fixture',dispatch:async (_owner,_event,input,core)=>core(input),
+      draw:async()=>({type:'Text',children:['DOCK_NATURAL']}),invokeDrawing:async()=>{},releaseDrawing:async()=>{},
+    })
+    await ui.open(owner,{id:'natural',title:''},{kind:'person'},{columns:120,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false})
+    await ui.commit(owner)
+    function Host({bottom}:{bottom:number}) {
+      const current=React.useSyncExternalStore(ui.subscribe,ui.getSnapshot)[0]!
+      return <Box width={120} height={40} flexDirection="column"><FullscreenLayout
+        scrollable={<Text>BODY_TRANSCRIPT</Text>}
+        bottom={<Box height={bottom} flexShrink={0}><Text>FULL_WIDTH_COMPOSER</Text></Box>}
+        dockWidth={current.bodyColumns+1}
+        dockPane={<ModsPane pane={current} onReportMetrics={(pane,metrics)=>ui.reportMetrics(pane.id,metrics)}
+          onFocus={async()=>({})} onInteract={async()=>{}} onClose={async()=>{}} onScroll={async()=>{}}/>}
+      /></Box>
+    }
+    const instance=await render(<Host bottom={5}/>,{stdout:stdout as never,stdin:new Input() as never,patchConsole:false,exitOnCtrlC:false})
+    try {
+      for (const bottom of [5,9,3]) {
+        instance.rerender(<ThemeProvider><Host bottom={bottom}/></ThemeProvider>)
+        await settle()
+        expect(ui.getSnapshot()[0]!.bodyRows).toBe(40-bottom-1)
+        expect(elements(stdout, false).find(({node,text}) => node.style.overflowY === 'scroll' && text === 'BODY_TRANSCRIPT')!.node.yogaNode!.getComputedHeight()).toBe(40-bottom)
+        expect(domElement(stdout,'FULL_WIDTH_COMPOSER','ink-box').yogaNode!.getComputedWidth()).toBe(120)
+      }
+    } finally {
+      instance.unmount();await ui.release(owner)
+      if(previous===undefined)delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER=previous
+    }
   })
 
   test('multiple diff blocks settle metrics through the live host subscription', async () => {
@@ -2393,13 +2618,15 @@ describe('ModsPane input repair', () => {
       await settle()
       expect(reports.length).toBe(count)
       const viewport = elements(stdout, false).find(({ node }) => node.style.overflowY === 'scroll')!.node
-      const content = viewport.childNodes[0] as DOMElement
+      const content = (viewport.childNodes[0] as DOMElement).childNodes[0] as DOMElement
       expect(ui.getSnapshot()[0]!.contentRows).toBe(Math.ceil(content.yogaNode!.getComputedHeight()))
       expect(elements(stdout, false).filter(({ node }) => node.nodeName === 'ink-raw-ansi').length).toBeGreaterThan(0)
     } finally { instance.unmount() }
   })
 
   test.each(['Diff', ''])('dock drawing uses the actual body height as the composer grows and shrinks (title=%s)', async title => {
+    const previous = process.env.CLAUDE_CODE_NO_FLICKER
+    process.env.CLAUDE_CODE_NO_FLICKER = '1'
     const stdout = new Output()
     stdout.columns = 160
     stdout.rows = 50
@@ -2420,25 +2647,23 @@ describe('ModsPane input repair', () => {
     await ui.commit(owner)
     function Host({ bottom }: { bottom: number }) {
       const current = React.useSyncExternalStore(ui.subscribe, ui.getSnapshot)[0]!
-      return <Box width={160} height={50} flexDirection="column">
-        <Box flexGrow={1} flexDirection="row" overflow="hidden">
-          <Box flexDirection="column" flexShrink={0} width="50%" overflow="hidden">
-            <ModsPane pane={current}
-              onReportMetrics={(pane, metrics) => { reports.push(metrics.bodyRows); return ui.reportMetrics(pane.id, metrics) }}
-              onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
-            />
-          </Box>
-        </Box>
-        <Box height={bottom} flexShrink={0}><Text>Composer</Text></Box>
-      </Box>
+      return <Box width={160} height={50} flexDirection="column"><FullscreenLayout
+        scrollable={<Text>Transcript</Text>}
+        bottom={<Box height={bottom} flexShrink={0}><Text>Composer</Text></Box>}
+        dockWidth={current.bodyColumns + 1}
+        dockPane={<ModsPane pane={current}
+          onReportMetrics={(pane, metrics) => { reports.push(metrics.bodyRows); return ui.reportMetrics(pane.id, metrics) }}
+          onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+        />}
+      /></Box>
     }
     const instance = await render(<Host bottom={5} />, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
     try {
       for (const bottom of [5, 12, 3, 5, 25, 3]) {
-        const bodyRows = 50 - bottom
+        const bodyRows = 50 - bottom - 1
         instance.rerender(<ThemeProvider><Host bottom={bottom} /></ThemeProvider>)
         await settle()
-        const viewport = elements(stdout, false).find(({ node }) => node.style.overflowY === 'scroll')!.node
+        const viewport = elements(stdout, false).find(({ node, text }) => node.style.overflowY === 'scroll' && text.includes('body 0'))!.node
         expect(viewport.yogaNode!.getComputedHeight()).toBe(bodyRows)
         expect(ui.getSnapshot()[0]!.bodyRows).toBe(bodyRows)
         expect(budgets.at(-1)).toBe(bodyRows)
@@ -2448,7 +2673,11 @@ describe('ModsPane input repair', () => {
         await ui.focus(owner, { requestId: 'diff', origin: { kind: 'person' } }, presentation)
         expect(ui.getSnapshot()[0]!.bodyRows).toBe(bodyRows)
       }
-    } finally { instance.unmount(); await ui.release(owner) }
+    } finally {
+      instance.unmount(); await ui.release(owner)
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }
   })
 
   test('Input paints a dim placeholder and shows submitLabel only under actual focus', async () => {
@@ -3377,7 +3606,7 @@ describe('ModsPane input repair', () => {
       await settle()
       wheel(list.y - 1)
       await settle()
-      expect(wheels).toEqual([{ by: 1, pointer: { column: 2, row: 0 } }, { by: -1, pointer: { column: 2, row: 1 } }])
+      expect(wheels).toEqual([{ by: 1, pointer: { column: 0, row: 0 } }, { by: -1, pointer: { column: 0, row: 1 } }])
       covered = true
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await settle()
@@ -3459,7 +3688,7 @@ describe('ModsPane host layout', () => {
         <FullscreenLayout
           scrollable={<Content label="REQUESTED_TRANSCRIPT" />}
           bottom={<Content label="REQUESTED_COMPOSER" />}
-          dockWidth={dock ? dock.bodyColumns + 2 : undefined}
+          dockWidth={dock ? dock.bodyColumns + 1 : undefined}
           dockPane={dock ? <ModsPane pane={dock}
             onReportMetrics={(pane, metrics) => ui.reportMetrics(pane.id, metrics)}
             onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
@@ -3478,8 +3707,8 @@ describe('ModsPane host layout', () => {
         stdout.columns = columns
         stdout.emit('resize')
         await settle()
-        const bodyColumns = Math.min(requested, Math.floor(columns / 2) - 2)
-        const conversationColumns = columns - bodyColumns - 2
+        const bodyColumns = Math.min(columns - 24, Math.max(24, requested + 1)) - 1
+        const conversationColumns = columns - bodyColumns - 1
         expect(domElement(stdout, 'REQUESTED_TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
         expect(domElement(stdout, 'REQUESTED_COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(columns)
         expect(nodeCache.get(renderedElement(stdout, 'REQUESTED_BODY', 'ink-text'))!.x).toBe(conversationColumns + 1)
@@ -3545,7 +3774,7 @@ describe('ModsPane host layout', () => {
         const transcript = nodeCache.get(renderedElement(stdout, 'TRANSCRIPT', 'ink-text'))!
         const composer = nodeCache.get(renderedElement(stdout, 'COMPOSER', 'ink-text'))!
         const diff = nodeCache.get(renderedElement(stdout, 'DIFF_BODY', 'ink-text'))!
-        const width = columns >= 110 ? Math.ceil(columns / 2) : columns
+        const width = columns >= 110 ? columns - Math.min(Math.floor(columns * 0.45), 90, columns - 70) : columns
         expect(domElement(stdout, 'TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(width)
         expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(columns)
         expect(transcript.x).toBe(0)
@@ -3555,7 +3784,7 @@ describe('ModsPane host layout', () => {
           expect(diff.x).toBe(width + 1)
           expect(diff.y).toBeLessThan(composer.y)
         } else {
-          expect(diff.x).toBe(0)
+          expect(diff.x).toBe(2)
           expect(diff.y).toBeGreaterThan(transcript.y)
           expect(diff.y).toBeLessThan(composer.y)
         }
@@ -3563,7 +3792,7 @@ describe('ModsPane host layout', () => {
       for (const composerRows of [8, 25, 1]) {
         instance.rerender(<ThemeProvider><Host composerRows={composerRows} /></ThemeProvider>)
         await settle()
-        expect(ui.getSnapshot()[0]!.bodyRows).toBe(50 - composerRows)
+        expect(ui.getSnapshot()[0]!.bodyRows).toBe(50 - composerRows - 1)
         expect(nodeCache.get(renderedElement(stdout, 'COMPOSER', 'ink-text'))!.y).toBe(50 - composerRows)
         expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(180)
       }
@@ -3732,7 +3961,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await modsPane({ type: 'Code', props: { path, source } }, stdout)
     try {
       await new Promise(resolve => setTimeout(resolve, 400))
-      expect(stripAnsi(stdout.output)).toContain(source)
+      expect(paneBodyText(stdout)).toContain(source)
       expect(elements(stdout, false).some(({ node, text }) => text === token && node.textStyles?.color !== undefined)).toBe(true)
     } finally { instance.unmount(); chalk.level = level }
   })
@@ -3744,7 +3973,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await modsPane({ type: 'Code', props: { source: '/* first\nsecond\n*/', language: 'ts', startLine: 20 } }, stdout)
     try {
       await new Promise(resolve => setTimeout(resolve, 400))
-      expect(stripAnsi(stdout.output)).toContain('20 /* first\n21 second\n22 */')
+      expect(paneBodyText(stdout)).toContain('20 /* first\n21 second\n22 */')
       const coloured = (text: string) => elements(stdout, false).find(({ node, text: content }) => content === text && node.textStyles?.color !== undefined)?.node.textStyles?.color
       expect(coloured('/* first')).toBeDefined()
       expect(coloured('second')).toEqual(coloured('/* first'))
@@ -3783,7 +4012,7 @@ describe('ModsPane Ink interaction', () => {
     /></AppStoreContext.Provider>, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      expect(stripAnsi(stdout.output)).toContain('  9 -abcdef…\n 20 +ABCDEF…\n 21  same')
+      expect(paneBodyText(stdout)).toContain('  9 -abcdef…\n 20 +ABCDEF…\n 21  same')
       expect(stripAnsi(stdout.output)).not.toContain('300')
     } finally {
       instance.unmount()
@@ -3799,7 +4028,7 @@ describe('ModsPane Ink interaction', () => {
     ] }, stdout)
     try {
       await settle()
-      expect(stripAnsi(stdout.output)).toContain(wrap === 'wrap'
+      expect(paneBodyText(stdout)).toContain(wrap === 'wrap'
         ? ' 9 abcde\n   fghij\n10 尾部'
         : ' 9 abcd…\n10 尾部')
     } finally { instance.unmount() }
@@ -3812,7 +4041,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await modsPane({ type: 'Code', props: { source: '**plain**\nlast' } }, stdout)
     try {
       await new Promise(resolve => setTimeout(resolve, 400))
-      expect(stripAnsi(stdout.output)).toContain('**plain**\nlast')
+      expect(paneBodyText(stdout)).toContain('**plain**\nlast')
       expect(elements(stdout, false).some(({ node }) => node.nodeName === 'ink-virtual-text' && (node.textStyles?.bold || node.textStyles?.color))).toBe(false)
     } finally { instance.unmount(); chalk.level = level }
   })
@@ -3822,7 +4051,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await modsPane({ type: 'Code', props: { source: 'alpha\n\nomega', startLine: 9 } }, stdout)
     try {
       await settle()
-      expect(stripAnsi(stdout.output)).toContain(' 9 alpha\n10\n11 omega')
+      expect(paneBodyText(stdout)).toContain(' 9 alpha\n10\n11 omega')
       const nine = renderedElement(stdout, '9', 'ink-text')
       const eleven = renderedElement(stdout, '11', 'ink-text')
       expect(nodeCache.get(nine)!.x + nodeCache.get(nine)!.width).toBe(nodeCache.get(eleven)!.x + nodeCache.get(eleven)!.width)
@@ -3830,7 +4059,7 @@ describe('ModsPane Ink interaction', () => {
     } finally { instance.unmount() }
   })
 
-  test('omits the title for one pane and gives the full height to its body', async () => {
+  test('omits the title for one pane and reserves its engine chrome row', async () => {
     const stdout = new Output()
     const tree = {
       type: 'Box', props: { flexDirection: 'column' }, children: [
@@ -3853,8 +4082,8 @@ describe('ModsPane Ink interaction', () => {
         body: body.y,
         viewport: { y: viewport.y, height: viewport.height },
       }).toEqual({
-        body: 0,
-        viewport: { y: 0, height: 10 },
+        body: 1,
+        viewport: { y: 1, height: 10 },
       })
     } finally {
       instance.unmount()

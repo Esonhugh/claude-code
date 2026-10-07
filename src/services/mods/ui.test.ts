@@ -580,8 +580,8 @@ describe('mod UI ownership and pane policy', () => {
     expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 70 })
     expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 70 })
     await ui.render({ ...wide, columns: 110 })
-    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 53 })
-    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 53 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ columns: 70, bodyColumns: 70 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 70 })
 
     const inline = { ...wide, isFullscreen: false, columns: 90 }
     await ui.open(owner, { id: 'pane', columns: 33 }, { kind: 'plugin' }, inline)
@@ -590,8 +590,8 @@ describe('mod UI ownership and pane policy', () => {
 
     await ui.open(owner, { id: 'pane' }, { kind: 'plugin' }, wide)
     expect(ui.getSnapshot()[0]).not.toHaveProperty('columns')
-    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyColumns: 78 })
-    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 78 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyColumns: 71 })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns: 71 })
   })
 
   test('keeps open panes as tabs while exposing one shown pane selected through person focus', async () => {
@@ -625,6 +625,16 @@ describe('mod UI ownership and pane policy', () => {
     ])
   })
 
+  test.each([[1,23],[70,70],[1000,85]])('requested %s dock body columns clamp to %s at 110 terminal columns', async (requested, bodyColumns) => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    await ui.open(owner, { id: 'requested', columns: requested }, { kind: 'person' }, { ...wide, columns: 110 })
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ bodyColumns })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns })
+    await ui.release(owner)
+  })
+
   test.each([true, false])('terminal viewport explicitly reports isFullscreen=%s to the plugin', async isFullscreen => {
     const owner = { plugin: 'fixture' }
     const { ui, draws } = fixture()
@@ -648,7 +658,9 @@ describe('mod UI ownership and pane policy', () => {
     await ui.focus(owner, { requestId: 'diff', element: 'run', origin: { kind: 'person' } })
     for (const columns of [160, 110, 109, 80, 160]) {
       await ui.render({ ...wide, columns, rows: 12 })
-      const bodyColumns = columns >= 110 ? Math.floor(columns / 2) - 2 : columns - 4
+      const bodyColumns = columns >= 110
+        ? Math.min(Math.floor(columns * 0.45), 90, columns - 70) - 1
+        : columns - 4
       expect(ui.getSnapshot()[0]).toMatchObject({ bodyColumns, focusedElement: 'run', focused: true })
       expect(draws.at(-1)?.input.props).toMatchObject({ bodyColumns })
     }
@@ -1700,7 +1712,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     await ui.render({ ...wide, columns: 109 })
     expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'inline', bodyRows: 7 })
     await ui.render(wide)
-    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyRows: 36 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ placement: 'dock', bodyRows: 39 })
     await ui.reportMetrics('pane', { bodyRows: 33, contentRows: 60 })
     expect(draws.at(-1)!.input.props).toMatchObject({ scroll: { bodyRows: 33 } })
     await ui.release(owner)

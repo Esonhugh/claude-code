@@ -1905,3 +1905,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 普通插件的 closeOnEscape 只接受 true 或省略；省略时 Esc 交还焦点而不关闭。鼠标点击官方 diff 按钮不会主动取得键盘焦点。错误 fixture、裸 Esc 编码及自动/主动焦点竞态的失败保留，不用它们证明产品修复必要性。候选 c8 未观察到自动焦点 hook 日志，自动焦点完整契约仍待专项验证。
 - 独立候选四个稳定阶段完整右侧单元格仍与官方不等：160 列 border 80 vs 88，140 列 70 vs 77。工作区四帧相等依赖其他未提交 UI 改动，本批不计作完整 UI 对齐。
 - 证据与限制：`docs/research/mods-pane-keyboard-20261007.md`。最新公共类型、完整 UI/G5 和全部变更门禁仍待验收。
+
+
+## 2026-10-07：Mods 面板尺寸、框架与 grip
+
+- 独立候选 HEAD f287fe4 加本批 geometry/控件/颜色增量，**364 pass / 0 fail / 8 files**；保留其他 WIP 的工作区 **385 pass / 0 fail / 8 files**。两者最终完整 release-check、私有 Makefile build 均 exit0，CHANGELOG 已在最后构建前回填。
+- 固定官方 2.1.292、候选新制品与工作区新制品，同脚本同输入同 fixture 串行完成 native 流程并正常 exit0。两个本地侧分别与官方的 **19 个完整面板矩形**字符/样式/绝对位置相同，包含 90–240 列、inline 提示、关闭重开、grip focus/hover、真实长内容翻页和单次 callback；不是全终端帧。
+- baseline geometry、旧布局断言、初次 lint、官方 o1/candidate c2 barrier、颜色关闭的误通过及 grip 关闭重开 RED 均保留。旧 o3/c3/r3 的 4 个持焦点阶段仍记录 36 个 grip 颜色差异，最终新制品另有通过证据。
+- 首次自动焦点、全部 API/2.1.292 作者声明、所有 UI/多主题/drag resize/全帧和 G5 全量仍未完成。本批新增内部 bodyRowLimit 不等同于更新公开作者类型。日志字段、检查命令、source/binary SHA 和精确边界见 [本批报告](docs/research/mods-pane-geometry-20261007.md)；原 response/fix-instructions/improvment 保留。

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util'
+import { logForDebugging } from '../../utils/debug.js'
 import type { ModInput } from './types.js'
 import type { ModClients, ModClientHandle, ModClientSite } from './client.js'
 
@@ -92,6 +93,8 @@ export type ModUiPane = {
   scrollOffset: number
   bodyRows: number
   bodyColumns: number
+  /** Inline viewport cap, independent of the last measured content height. */
+  bodyRowLimit?: number
   revision: number
   contentRows: number
   focusedElement?: string
@@ -353,18 +356,24 @@ export function createModUi({
     pane: Pick<PaneState, 'rows' | 'presentation' | 'placement'>,
     placement: ModUiPlacement = pane.placement,
   ): number {
-    const available = Math.max(1, pane.presentation.rows - 4)
-    if (placement === 'dock') return available
-    return Math.min(available, pane.rows ?? Math.max(1, Math.floor(available / 3)))
+    if (placement === 'dock') return Math.max(0, pane.presentation.rows - 1)
+    const tabs = [...active.values()].filter(other => other.visible && other.placement === 'inline').length > 1
+    const chrome = (tabs ? 1 : 0) + 2
+    const defaultBudget = Math.floor(pane.presentation.rows / 3)
+    const maxBudget = pane.presentation.isFullscreen ? defaultBudget
+      : Math.max(defaultBudget, pane.presentation.rows - 3 - 8)
+    const outerBudget = pane.rows === undefined ? defaultBudget
+      : Math.min(maxBudget, Math.max(Math.min(5, maxBudget), pane.rows + chrome))
+    return Math.max(0, outerBudget - chrome)
   }
 
   function bodyColumnsOf(pane: PaneState): number {
-    const available = pane.placement === 'dock'
-      ? Math.max(1, Math.floor(pane.presentation.columns / 2) - 2)
-      : Math.max(1, pane.presentation.columns - 4)
-    return pane.placement === 'dock' && pane.columns !== undefined
-      ? Math.min(available, pane.columns)
-      : available
+    const columns = pane.presentation.columns
+    if (pane.placement !== 'dock') return Math.max(1, columns - 4)
+    const dockColumns = pane.columns === undefined
+      ? Math.min(Math.floor(columns * 0.45), 90, columns - 70)
+      : Math.min(columns - 24, Math.max(24, pane.columns + 1))
+    return Math.max(1, dockColumns - 1)
   }
 
   function visibleOf(pane: PaneState): boolean {
@@ -402,6 +411,7 @@ export function createModUi({
       scrollOffset: pane.scrollOffset,
       bodyRows: pane.bodyRows,
       bodyColumns: bodyColumnsOf(pane),
+      ...(pane.placement === 'inline' ? { bodyRowLimit: bodyRowsOf(pane) } : {}),
       revision,
       contentRows: pane.contentRows,
       ...(pane.focusedElement === undefined ? {} : { focusedElement: pane.focusedElement }),
@@ -1651,7 +1661,7 @@ export function createModUi({
       const pane = active.get(id)
       if (!pane) return
       if (
-        !Number.isInteger(metrics.bodyRows) || metrics.bodyRows < 1 ||
+        !Number.isInteger(metrics.bodyRows) || metrics.bodyRows < 0 ||
         !Number.isInteger(metrics.contentRows) || metrics.contentRows < 0
       ) throw new TypeError('Mod UI pane metrics must be non-negative whole rows')
       const keyRows = Object.freeze((metrics.keyRows ?? []).map(row => {
@@ -1681,6 +1691,7 @@ export function createModUi({
         pane.scrollOffset === scrollOffset &&
         sameKeyRows
       ) return
+      logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'metrics', plugin: pane.plugin, id, drawing: pane.drawing, placement: pane.placement, bodyRows: metrics.bodyRows, contentRows: metrics.contentRows, scrollOffset })}`)
       pane.bodyRows = metrics.bodyRows
       pane.contentRows = metrics.contentRows
       pane.scrollOffset = scrollOffset

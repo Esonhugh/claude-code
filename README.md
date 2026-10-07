@@ -1148,3 +1148,14 @@ make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
 持有焦点的 Mods 面板先处理 Enter、方向键和 Esc；面板未处理的按键仍交给输入框。在面板持有键盘焦点时，可用 Esc 返回输入框，再输入 `/diff` 关闭或重开面板。快捷键和 chord 保留原有拦截流程，同一按键不会重复派发 DOM 事件。
 
 运行 `bun test ./src/components/ModsPane.keyboardCapture.test.tsx` 验证这一处理顺序。此修复只覆盖键盘派发，其他面板布局与完整官方 UI 对齐的验收边界见 `mods-test.md`。
+
+
+### Mods 面板的尺寸与关闭
+
+全屏模式下，默认 dock 宽度为终端列数的 45%，最多 90 列，并为对话预留 70 列；面板 body 再扣除 1 列 grip。`$.ui.open({id, columns})` 的 columns 是 body 宽度请求，实际 outer 宽度会夹在最少 24 列与剩余至少 24 列对话区之间。小于 110 列的全屏终端使用 inline 布局。官方 diff 模块在该宽度下保留面板，并显示扩大终端到至少 110 列的提示。
+
+dock 的 grip 列在面板持有焦点或鼠标直接悬停时高亮；仅悬停在 body 不会点亮 grip。
+
+inline 面板绘制圆角边框和关闭标记，内容按自然高度显示。默认总高度预算为终端行数的三分之一；显式 rows 请求还需预留边框和多面板 tab 行。面板 body 可以是零行。点击右上角关闭标记会产生 `ui.close` 的 person 来源；Esc 是否关闭由 closeOnEscape 决定。
+
+`--debug --debug-file /tmp/claude-pane-debug.log` 中的 `[ModsUI]` metrics 可核对 bodyRows、contentRows、placement、drawing 和 scrollOffset。运行 `bun test ./src/components/ModsPane.hostGeometry.test.tsx` 检查尺寸；实际官方对照与完整验收边界见 `mods-test.md`。

@@ -14,7 +14,7 @@ import { KeyboardEvent } from '../ink/events/keyboard-event.js'
 import { dispatcher } from '../ink/reconciler.js'
 import { getFocusManager, getRootNode } from '../ink/focus.js'
 import { hitTest } from '../ink/hit-test.js'
-import { markDirty, scheduleRenderFrom, type TerminalImagePlacement } from '../ink/dom.js'
+import { markDirty, scheduleRenderFrom, subscribeLayout, type TerminalImagePlacement } from '../ink/dom.js'
 import { nodeCache } from '../ink/node-cache.js'
 import type { InputEvent } from '../ink/events/input-event.js'
 import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js'
@@ -33,6 +33,7 @@ import { useSettings } from '../hooks/useSettings.js'
 import { Markdown } from './Markdown.js'
 import { TerminalWriteContext } from '../ink/useTerminalNotification.js'
 import { wrapForMultiplexer } from '../ink/termio/osc.js'
+import { ModsPaneHostRowsContext } from '../context/modsPaneHostContext.js'
 
 const MAX_TREE_DEPTH = 100
 const MAX_TREE_NODES = 2_000
@@ -988,6 +989,9 @@ export function ModsPane({
 }: Props): React.ReactNode {
   const rootRef = React.useRef<DOMElement>(null)
   const scrollRef = React.useRef<ScrollBoxHandle>(null)
+  const contentRef = React.useRef<DOMElement>(null)
+  const hostRows = React.useContext(ModsPaneHostRowsContext)
+  const [closeHovered, setCloseHovered] = useState(false)
   const focusElements = React.useRef(new Map<string, Set<DOMElement>>())
   const keyElements = React.useRef(new Map<string, {
     plugin: string
@@ -999,10 +1003,10 @@ export function ModsPane({
   const reportMetrics = React.useCallback(() => {
     const scroll = scrollRef.current
     const bodyRows = scroll?.getElement()?.yogaNode?.getComputedHeight()
-    if (!scroll || !onReportMetrics || bodyRows === undefined || bodyRows < 1) return
+    if (!pane.visible || rootRef.current?.style.display === 'none' || !rootRef.current || !scroll || !onReportMetrics || bodyRows === undefined || bodyRows < 0 || !contentRef.current) return
     void Promise.resolve(onReportMetrics(pane, {
       bodyRows: Math.floor(bodyRows),
-      contentRows: Math.max(0, Math.ceil(scroll.getFreshScrollHeight())),
+      contentRows: Math.max(0, Math.ceil(contentRef.current.yogaNode?.getComputedHeight() ?? 0)),
       keyRows: keyRowsOf(keyElements, scroll.getElement()),
     })).catch(error => onError?.(error))
   }, [onReportMetrics, onError, pane])
@@ -1010,6 +1014,20 @@ export function ModsPane({
     scrollRef.current?.scrollTo(pane.scrollOffset)
     reportMetrics()
   }, [reportMetrics, pane.scrollOffset, validated.tree])
+  React.useLayoutEffect(() => {
+    if (!rootRef.current) return
+    let active = true
+    let pending = false
+    const unsubscribe = subscribeLayout(rootRef.current, () => {
+      if (pending) return
+      pending = true
+      queueMicrotask(() => {
+        pending = false
+        if (active) reportMetrics()
+      })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [reportMetrics])
 
   const latest = React.useRef({ pane, onFocus, onScroll, onInteract, onError, canFocus })
   latest.current = { pane, onFocus, onScroll, onInteract, onError, canFocus }
@@ -1068,6 +1086,7 @@ export function ModsPane({
   const selectedTab = selectedPaneTab(tabs)
   const showTabs = tabs.length > 1
   const shown = !showTabs || selectedTab?.pane.owner === pane.owner && selectedTab.pane.id === pane.id
+  const dockHostRows = hostRows ?? pane.bodyRows + 1
   const selectTab = (entry: PaneTabEntry | undefined) => {
     if (!entry || entry.pane.owner === selectedTab?.pane.owner && entry.pane.id === selectedTab.pane.id) return
     void entry.onFocus(entry.pane).catch(error => entry.onError?.(error))
@@ -1369,9 +1388,9 @@ export function ModsPane({
     <Box
       ref={rootRef}
       flexDirection="column"
-      width="100%"
-      height={shown ? pane.bodyRows + (showTabs ? 1 : 0) : 0}
-      flexGrow={shown && pane.placement === 'dock' ? 1 : 0}
+      width={pane.placement === 'dock' ? pane.bodyColumns : '100%'}
+      height={!shown ? 0 : undefined}
+      flexShrink={0}
       overflow="hidden"
       display={shown ? 'flex' : 'none'}
       tabIndex={shown && pane.focused ? 0 : undefined}
@@ -1388,20 +1407,30 @@ export function ModsPane({
       }}
       onKeyDown={handleKeyDown}
     >
-      {showTabs && <Box flexShrink={0} gap={1}>
+      <Box flexDirection="column" flexShrink={0}
+        height={pane.placement === 'dock' ? dockHostRows : undefined}
+        borderStyle={pane.placement === 'inline' ? 'round' : undefined}
+        borderDimColor={!pane.focused}
+        paddingX={pane.placement === 'inline' ? 1 : 0}>
+      {showTabs ? <Box flexShrink={0} height={1} gap={1} overflow="hidden"
+        width={pane.placement === 'dock' ? Math.max(0, pane.bodyColumns - 3) : pane.bodyColumns}>
         {tabs.map((entry, index) => {
           const selected = entry.pane.owner === selectedTab?.pane.owner && entry.pane.id === selectedTab.pane.id
           return <Box key={`${entry.pane.plugin}:${entry.pane.id}:${index}`} onClick={() => selectTab(entry)}>
             <Text bold={selected} inverse={selected}> {entry.pane.title} </Text>
           </Box>
         })}
-      </Box>}
+      </Box> : pane.placement === 'dock' && <Box flexShrink={0} height={1} />}
       <ScrollBox
         ref={scrollRef}
-        flexGrow={1}
+        flexGrow={0}
+        flexShrink={0}
+        height={pane.placement === 'dock' ? Math.max(0, dockHostRows - 1) : undefined}
+        maxHeight={pane.placement === 'dock' ? Math.max(0, dockHostRows - 1) : pane.bodyRowLimit ?? pane.rows ?? pane.bodyRows}
         flexDirection="column"
-        width="100%"
+        width={pane.bodyColumns}
       >
+        <Box ref={contentRef} flexDirection="column" flexShrink={0} width="100%">
         <PersonInputContext.Provider value={shown && pane.visible && (pane.focused || canFocus)}>
           <PaneLayoutContext.Provider value={reportMetrics}>
             <RenderElementNode
@@ -1418,14 +1447,18 @@ export function ModsPane({
             />
           </PaneLayoutContext.Provider>
         </PersonInputContext.Provider>
-      </ScrollBox>
-      {pane.placement === 'dock' && pane.focused && (
-        <Box position="absolute" bottom={0} left={0} right={0} opaque>
-          <Text dimColor wrap="truncate-end">
-            ↑/↓ scroll · PgUp/PgDn · Esc {pane.closeOnEscape ? 'close' : 'return'}
-          </Text>
         </Box>
-      )}
+      </ScrollBox>
+      </Box>
+      {<Box position="absolute" top={0} right={pane.placement === 'inline' ? 2 : 1}
+        tabIndex={-1} onMouseEnter={() => setCloseHovered(true)} onMouseLeave={() => setCloseHovered(false)}
+        onClick={event => {
+          event.stopImmediatePropagation()
+          if (rootRef.current) getFocusManager(rootRef.current).blur()
+          void onClose(pane).catch(error => onError?.(error))
+        }}>
+        <Text inverse={closeHovered} dimColor={!closeHovered}>✕</Text>
+      </Box>}
     </Box>
   )
 }
