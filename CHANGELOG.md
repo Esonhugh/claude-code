@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 模型文本块与完成回执
+
+### 变更内容
+
+- model.complete 在作者端将文本块规范化为 Hook 可读的 prompt/system 字符串，并保留原始块；只有仍匹配改写文本的前缀块保留缓存标记，追加文本不自动缓存。关闭模型缓存时移除请求标记，发送前修复未配对的 UTF-16 字符。
+- 核心返回结构化完成、空回复、API 错误或取消回执及四项用量，文本块直接拼接；支持 effort 与正整数 timeoutMs，并限制实际计时上限。JavaScript Hook 的 value 保持官方运行时的不透明语义，公开 TypeScript 类型继续严格约束。
+- 完成调用跳过通用 CLI system 前缀并保留实际 attribution；debug 记录模型、长度、块数、结果、HTTP 分类与用量，不新增作者正文。
+
+### 测试覆盖
+
+- 新增前缀改写、空块、Unicode、真实 Worker 和严格 Hook 输入回归，保留相邻 classify/fork 测试意图；候选及工作区检查、新制品本机 HTTP/tmux 对照和剩余范围见 docs/research/mods-model-complete-292-20261007.md。完整模型能力表、取消、fork/classify 以及 API/UI/diff/G5 继续验收。
+
 ## 2026-10-07 - Mods 剪贴板函数暴露
 
 ### 变更内容

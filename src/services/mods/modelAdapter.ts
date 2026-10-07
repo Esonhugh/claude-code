@@ -1,16 +1,37 @@
+import {projectModModelText, validateModModelCompleteInput, type ModModelTextBlock} from './modelTextBlocks.js'
+import {logForDebugging} from '../../utils/debug.js'
+import {requiresAlwaysOnAdaptiveThinking} from '../../utils/thinking.js'
+import {getAssistantMessageFromError} from '../api/errors.js'
+import { APIConnectionError, APIError } from '@anthropic-ai/sdk'
 import { runForkedAgent, extractResultText, type CacheSafeParams } from '../../utils/forkedAgent.js'
 import { createUserMessage } from '../../utils/messages.js'
-import type { ModModelForkRequest, ModModelForkResult } from './types.js'
+import type { ModModelApiError, ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, ModModelUsage } from './types.js'
 import { getModelMaxOutputTokens } from '../../utils/context.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
 import { sideQuery, type SideQueryOptions } from '../../utils/sideQuery.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { modelSupportsEffort } from '../../utils/effort.js'
+import { HttpResponseError } from '../../utils/errors.js'
+
+export type ModModelEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
 export type ModModelCompleteRequest = {
   model: string
   prompt: string
   system?: string
+  promptBlocks?: readonly ModModelTextBlock[]
+  systemBlocks?: readonly ModModelTextBlock[]
   maxTokens?: number
+  effort?: ModModelEffort
+  timeoutMs?: number
+}
+
+export function validateModModelRequestOptions(request: ModModelCompleteRequest): void {
+  if (request.effort !== undefined && !['low','medium','high','xhigh','max'].includes(request.effort))
+    throw new TypeError('effort must be low, medium, high, xhigh or max')
+  if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs <= 0))
+    throw new TypeError('timeoutMs must be a positive integer')
 }
 
 type ClassifyOptions = {
@@ -20,10 +41,11 @@ type ClassifyOptions = {
 type ModModelComplete = (
   request: ModModelCompleteRequest,
   signal?: AbortSignal,
-) => Promise<string>
+) => Promise<ModModelCompleteResult>
 
 type CompletionResponse = {
   content: readonly { type: string; text?: string }[]
+  usage?: Partial<ModModelUsage>
 }
 
 type CompleteTransport = (
@@ -35,11 +57,32 @@ function abortError(signal: AbortSignal): unknown {
   return Object.assign(new Error('Model request aborted'), { name: 'AbortError' })
 }
 
+function modelUsage(usage?: Partial<ModModelUsage>): ModModelUsage {
+  return {
+    input_tokens: usage?.input_tokens ?? 0,
+    output_tokens: usage?.output_tokens ?? 0,
+    cache_read_input_tokens: usage?.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens: usage?.cache_creation_input_tokens ?? 0,
+  }
+}
+
+function completeApiFailure(error: unknown, usage: ModModelUsage, model: string): ModModelCompleteResult {
+  const failure = getAssistantMessageFromError(error, model)
+  const status = error instanceof APIError || error instanceof HttpResponseError ? error.status ?? null : null
+  let kind = (failure.error ?? 'unknown') as ModModelApiError
+  if (error instanceof APIConnectionError) kind = 'server_error'
+  else if (status === 404 && ['unknown','invalid_request'].includes(kind)) kind = 'model_not_found'
+  else if (status === 429 && kind === 'unknown') kind = 'rate_limit'
+  else if (status !== null && status >= 500 && ['unknown','overloaded'].includes(kind)) kind = 'server_error'
+  logForDebugging(`[Mods] model.complete: ${model}; api-error ${kind}, HTTP ${status ?? 'no status'}`)
+  return {isAnswered:false,reason:'api-error',status,error:kind,usage}
+}
+
 async function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return promise
   signal.throwIfAborted()
   return await new Promise<T>((resolve, reject) => {
-    const abort = () => reject(abortError(signal))
+    const abort = () => { signal.removeEventListener('abort', abort); reject(abortError(signal)) }
     signal.addEventListener('abort', abort, { once: true })
     promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
   })
@@ -54,17 +97,18 @@ export function createModModelComplete(
   return async (
     request: ModModelCompleteRequest,
     signal?: AbortSignal,
-  ): Promise<string> => {
+  ): Promise<ModModelCompleteResult> => {
     if (!request || typeof request !== 'object' || Array.isArray(request)) {
       throw new TypeError('model.complete takes a request object')
     }
+    validateModModelRequestOptions(request)
     if (typeof request.model !== 'string' || request.model.length === 0) {
       throw new TypeError('model must be a nonempty string')
     }
     if (typeof request.prompt !== 'string') {
       throw new TypeError('prompt must be a string')
     }
-    if (request.system !== undefined && typeof request.system !== 'string') {
+    if (request.system && typeof request.system !== 'string') {
       throw new TypeError('system must be a string')
     }
     if (
@@ -73,6 +117,7 @@ export function createModModelComplete(
     ) {
       throw new TypeError('maxTokens must be a positive integer')
     }
+    validateModModelCompleteInput(request)
     const model = resolveModel(request.model)
     if (!isModelAllowed(model)) {
       throw new Error(`Model ${request.model} is not allowed`)
@@ -81,23 +126,49 @@ export function createModModelComplete(
     if (request.maxTokens !== undefined && request.maxTokens > maxTokens) {
       throw new RangeError(`maxTokens cannot exceed ${maxTokens}`)
     }
-    const response = await withAbort(transport({
-      querySource: 'mods_model_complete',
-      model,
-      ...(request.system === undefined ? {} : { system: request.system }),
-      messages: [{ role: 'user', content: request.prompt }],
-      max_tokens: request.maxTokens ?? 1024,
-      signal,
-    }), signal)
-    const text = response.content.flatMap(block =>
-      block.type === 'text' && typeof block.text === 'string'
-        ? [block.text]
-        : [],
-    ).join('\n')
-    if (text.length === 0) {
-      throw new Error('Model completion returned no text')
-    }
-    return text
+    const combined = request.timeoutMs === undefined
+      ? { signal, cleanup: () => {} }
+      : createCombinedAbortSignal(signal, {timeoutMs:Math.min(request.timeoutMs,2147483647)})
+    signal = combined.signal
+    try {
+      if (signal?.aborted) return { isAnswered: false, reason: 'aborted', usage: modelUsage() }
+      const user = projectModModelText(request.prompt, request.promptBlocks)
+      const rules = projectModModelText(typeof request.system === 'string' ? request.system : '', request.systemBlocks)
+      const wellFormed = (text: string) => text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\ufffd')
+      const safeUser = typeof user === 'string' ? wellFormed(user) : user.map(block => ({...block,text:wellFormed(block.text)}))
+      const safeRules = typeof rules === 'string' ? wellFormed(rules) : rules.map(block => ({...block,text:wellFormed(block.text)}))
+      const thinkingRequired = requiresAlwaysOnAdaptiveThinking(model)
+      logForDebugging(`[Mods] model.complete: ${model}; prompt ${request.prompt.length} chars / ${request.promptBlocks?.length ?? 0} blocks, system ${typeof request.system === 'string' ? request.system.length : 0} chars / ${request.systemBlocks?.length ?? 0} blocks`)
+      let response: CompletionResponse
+      try {
+        response = await withAbort(transport({
+          querySource: 'hook_prompt',
+          model,
+          ...(safeRules.length > 0 ? {system: safeRules} : {}),
+          messages: [{ role: 'user', content: safeUser }],
+          max_tokens: Math.min((request.maxTokens ?? 1024) + (thinkingRequired ? 2048 : 0), maxTokens),
+          ...(thinkingRequired ? {} : {thinking: false}),
+          skipSystemPromptPrefix: true,
+          dropCacheControlWhenCachingDisabled: true,
+          ...(request.effort !== undefined && modelSupportsEffort(model) ? {effort:request.effort} : {}),
+          signal,
+        }), signal)
+      } catch (error) {
+        if (signal?.aborted) return { isAnswered: false, reason: 'aborted', usage: modelUsage() }
+        return completeApiFailure(error, modelUsage(), model)
+      }
+      if (signal?.aborted) return { isAnswered: false, reason: 'aborted', usage: modelUsage() }
+      const text = response.content.flatMap(block =>
+        block.type === 'text' && typeof block.text === 'string'
+          ? [block.text]
+          : [],
+      ).join('')
+      logForDebugging(`[Mods] model.complete: ${model}; ${text.length === 0 ? 'empty-reply' : 'answered'}, ${text.length} chars; usage ${Object.values(modelUsage(response.usage)).join('/')} `)
+      if (text.length === 0) {
+        return { isAnswered: false, reason: 'empty-reply', usage: modelUsage(response.usage) }
+      }
+      return { isAnswered: true, text, usage: modelUsage(response.usage) }
+    } finally { combined.cleanup() }
   }
 }
 
@@ -148,7 +219,10 @@ export function createModModelClassify(
       system: CLASSIFIER_SYSTEM,
       maxTokens: 1024,
     }, signal)
-    return labels.includes(answer) ? answer : undefined
+    if (answer.isAnswered === false) {
+      throw new Error(`model.classify failed: ${answer.reason}${answer.reason === 'api-error' ? ` (${answer.error}, status ${answer.status})` : ''}`)
+    }
+    return labels.includes(answer.text) ? answer.text : undefined
   }
 }
 

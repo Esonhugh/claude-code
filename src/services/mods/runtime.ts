@@ -1,8 +1,9 @@
+import {validateModModelCompleteInput} from './modelTextBlocks.js'
 import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import type { ModModelForkRequest, ModModelForkResult, PromptComposeInput, PromptComposeResult } from './types.js'
+import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, PromptComposeInput, PromptComposeResult } from './types.js'
 import { createModAgents, listModAgents } from './agents.js'
 import type { AppState } from '../../state/AppState.js'
 import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
@@ -16,7 +17,7 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
+import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModModelBridge, createModStateBridge, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
@@ -98,7 +99,7 @@ export type ModRequestServices = {
   composePrompt?(input: Partial<PromptComposeInput>, snapshot: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult>
   captureUsage?(): ModUsageReader
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
-  modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<string>
+  modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<ModModelCompleteResult>
   mcpCall?(server: string, tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   submitPrompt?(input: {
     text: string
@@ -693,7 +694,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
-  function hostInput(op: string, args: unknown[]): ModInput {
+  function hostInput(op: string, args: unknown[], plugin?: string): ModInput {
     switch (op) {
       case 'agent.spawn': {
         const input = args[0]
@@ -863,7 +864,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           throw new TypeError('ui.blit takes exactly one cells or source payload and optional integer dimensions')
         return input as ModInput
       }
-      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.complete': case 'model.fork': return args[0] as ModInput
+      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.fork': return args[0] as ModInput
+      case 'model.complete': {
+        validateModModelCompleteInput(args[0], plugin)
+        return args[0] as ModInput
+      }
       case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
@@ -1294,7 +1299,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const op = `${noun}.${method}`
         checkCall(owner, op, table, lease)
         const fn=dynamic ? table[noun]![method]! : bound
-        const input = fn === hostIdentity ? hostInput(op, args) : args[0] ?? {}
+        const input = fn === hostIdentity ? hostInput(op, args, owner.declaration.name) : args[0] ?? {}
         if (op === 'env.get' || op === 'env.set') {
           const name = (input as ModInput).name
           const allowed = owner.declaration.env?.[op === 'env.get' ? 'reads' : 'writes']
@@ -1637,7 +1642,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   caller,
                 }) as { value?: unknown; deny?: string }
                 if (typeof completed.deny === 'string') throw new Error(completed.deny)
-                return completed.value as string
+                return completed.value as ModModelCompleteResult
               }, getSmallFastModel)
               return { value: await classify(
                 rewritten.text as string,
@@ -1664,6 +1669,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { resumeBudget?.() }
       }
       if (step) wrapped.step = step
+      if (noun === 'model' && methods.complete === hostIdentity && wrapped.complete) createModModelBridge(wrapped.complete, 'complete')
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {
           if (methods[method] === hostIdentity && wrapped[method])
@@ -1945,13 +1951,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         throw new TypeError('model.fork must return text and four usage fields, or null')
       return
     }
-    if (event === 'model.complete' || event === 'model.classify') {
+    if (event === 'model.complete') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) || !('value' in result) && !('deny' in result && typeof result.deny === 'string')) throw new TypeError('model.complete must return value or deny')
+      return
+    }
+    if (event === 'model.classify') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
       if ('deny' in result && typeof result.deny === 'string') return
-      if (!('value' in result) || (event === 'model.complete'
-        ? typeof result.value !== 'string'
-        : result.value !== undefined && typeof result.value !== 'string')) {
-        throw new Error(`${event} must return ${event === 'model.complete' ? 'a string' : 'a string, undefined'} or deny`)
+      if (!('value' in result) || (result.value !== undefined && typeof result.value !== 'string')) {
+        throw new Error('model.classify must return a string, undefined or deny')
       }
       return
     }

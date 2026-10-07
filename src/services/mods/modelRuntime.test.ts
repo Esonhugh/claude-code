@@ -31,6 +31,9 @@ async function plugin(name: string, source: string) {
   }
 }
 
+const zeroUsage = {input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}
+const answered = (text: string) => ({isAnswered:true as const,text,usage:{...zeroUsage}})
+
 const binding = (cwd: string) => ({
   cwd,
   sessionId: 'test',
@@ -52,7 +55,7 @@ test('model operations cross loader, Worker and hookable runtime into the comple
     on('model.classify', ($, e, next) => next({...e,text:e.text+' as data'}));
     on('model.complete', ($, e, next) => {
       if(next.origin.plugin!=='consumer') return {deny:'bad origin'};
-      if(e.prompt.includes('classify me')) return {value:'bug'};
+      if(e.prompt.includes('classify me')) return {value:{isAnswered:true,text:'bug',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}};
       return next({...e,prompt:e.prompt+' rewritten'});
     });
   }`)
@@ -66,7 +69,7 @@ test('model operations cross loader, Worker and hookable runtime into the comple
     modelComplete: async (request, signal) => {
       requests.push({ request, signal })
       await delay(80, undefined, { signal })
-      return `reply:${request.prompt}`
+      return answered(`reply:${request.prompt}`)
     },
   } })
   runtimes.push(value)
@@ -75,7 +78,7 @@ test('model operations cross loader, Worker and hookable runtime into the comple
 
   const result = await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
   expect(result).toEqual({ result: {
-    complete: 'reply:direct rewritten',
+    complete: answered('reply:direct rewritten'),
     classify: 'bug',
     budgetSpent: expect.any(Number),
   } })
@@ -100,7 +103,7 @@ test('model operations reject deny envelopes without reaching completion', async
   const diagnostics: unknown[] = []
   const value = createModsRuntime({
     onDiagnostic: event => diagnostics.push(event),
-    services: { modelComplete: async () => { completions++; return 'unused' } },
+    services: { modelComplete: async () => { completions++; return answered('unused') } },
   })
   runtimes.push(value)
   await value.bind(binding(root))
@@ -129,7 +132,7 @@ test('a reloaded caller uses the new Worker while an in-flight model request dra
         started.resolve()
         await release.promise
       }
-      return request.prompt.trim()
+      return answered(request.prompt.trim())
     },
   } })
   runtimes.push(value)
@@ -141,10 +144,10 @@ test('a reloaded caller uses the new Worker while an in-flight model request dra
   await writeFile(consumer.entrypoints[0]!, source('new'))
   await value.reconcile([consumer])
   expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
-    .toEqual({result:'new'})
+    .toEqual({result:answered('new')})
   expect(signals[0]!.aborted).toBe(false)
   release.resolve()
-  expect(await pending).toEqual({result:'old'})
+  expect(await pending).toEqual({result:answered('old')})
   expect(calls).toBe(2)
 })
 
@@ -159,7 +162,7 @@ test('aborting the parent request rejects the model operation and aborts the com
       boundarySignal = signal
       entered.resolve()
       await delay(10_000, undefined, { signal })
-      return 'unexpected'
+      return answered('unexpected')
     },
   } })
   runtimes.push(value)

@@ -1958,3 +1958,8 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 官方/候选/ROOT同driver/fixture/input串行final2：旧290生成体被真实加载更新，两插件各自严格tsc skipLibCheck=false通过，六个项目完整官方体及默认配置一致；本地header保留实际2.1.280、既有owned footer哈希明确核对，不能声称全文件头尾字节相同。8回执/6事件/origin、两个OSC原始内容/自有buffer一致，正常exit0及binary/cleanup通过。
 - [来源、精确类型差异、命令/日志/源码/制品身份与限制](docs/research/mods-declarations-292-20261007.md)，证据根 `/private/tmp/mods-declarations-292-tawjepgs`。保留之前ui.copy缺失导致的native失败及比较器头尾错误证据，最终只用重建后的完整cohort。
 - 类型同步不能代表运行时新增功能：autocomplete生产管线、model缓存块、re-entry/cause和workflow身份仍需专项处理；完整API/上下文/UI/diff/G5及全部WIP门禁继续。只选十二路径签名提交，其他Claude/WIP、原用户文件与共享binaries保留，不push，目标未完成。
+
+
+## 2026-10-07：model.complete 文本块与结构化回执
+
+独立候选从 1dbb238 构造。候选相关 362/0/5 既有 skip，ROOT 390/0/5 既有 skip；十一场逐文件隔离均 exit0，双方 release-check 和新隔离 make build 通过。九个 Hook 场景三侧回执/事件一致；缓存开启和关闭的本机 HTTP/tmux 两轮，每侧 20 个 complete 回执及含重试 26 个请求，逐项比较模型、文本/缓存前缀、system、输出选项、用量、错误和超时流程。相邻 classify 输出一致但 prompt/system、max_tokens 20/1024 和额外 model.complete Hook 事件仍不同，单列开放。ROOT 取消 WIP 的提前 middleware deadline 已修正，其完整取消批次未纳入候选。完整目标保持开放，详情及原失败证据见 [model.complete 专项](docs/research/mods-model-complete-292-20261007.md)。

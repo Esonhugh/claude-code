@@ -1230,3 +1230,29 @@ return Select({
 使用 `await $.ui.copy({text: '需要复制的文本'})` 复制原文；省略 `surface` 时选择首个附着界面，也可指定 `terminal`、`desktop`、`mobile` 或 `vscode`。`ui.copy` hook 通过 `next({...e,text})` 改写复制内容，或返回 `{value:{isCopied:false,reason:'refused'}}`；`{deny:'原因'}` 会拒绝调用。
 
 成功回执为 `{isCopied:true}`；失败原因包括 `no-surface`、`no-clipboard` 和 `refused`。终端复用既有剪贴板路径；OSC 52 输出上限为 1 MiB，远程目标文本上限为一百万个 UTF-16 code units。远程界面还需要自己的 responder。本轮原生流程和精确范围见 [剪贴板专项](docs/research/mods-ui-copy-20261007.md)。
+
+
+### Mod 模型文本块与完成回执
+
+在命令或其他可调用 Hook 中使用 `$.model.complete`：
+
+```ts
+const reply = await $.model.complete({
+  model: 'sonnet',
+  system: [{ text: 'Summarize the supplied data briefly.', cache: true }],
+  prompt: [{ text: 'Shared context\n', cache: true }, { text: event.args }],
+  maxTokens: 1024,
+  effort: 'low',
+  timeoutMs: 10_000,
+})
+if (reply.isAnswered) $.ui.log(reply.text)
+else $.ui.log(reply.reason)
+```
+
+成功回执为 `{ isAnswered: true, text, usage }`；核心失败以 `isAnswered: false` 返回 `empty-reply`、`aborted` 或 `api-error`。四项 usage 保留实际计数，未提供的计数为零；API 错误只提供 `status` 和分类，不返回错误正文或 headers。非法参数、模型准入拒绝和 Hook 的 `{deny}` 仍拒绝调用。JavaScript Hook 可覆盖 `{value}`，作者不能假设它一定来自核心；生成 TypeScript 声明仍使用精确的官方结果类型。
+
+作者的 prompt/system 接受字符串或 `{text, cache?: true}[]`。Hook 收到合并的字符串及对应的 promptBlocks/systemBlocks，可以改写字符串；请求只为仍匹配的新文本前缀保留原缓存标记，剩余文本不加标记。空列表合并为空字符串，未配对 UTF-16 在发送前修复。`DISABLE_PROMPT_CACHING=1` 或现有模型缓存开关生效时，请求中的缓存标记会被移除；这不改变 Hook 看到的块。JavaScript 的 cache:false 也作为无标记处理，公开声明的 cache 仍只允许 true。
+
+`timeoutMs` 接受正整数，实际计时最大为 2147483647 毫秒；从核心请求开始计时，Hook 执行使用自己的预算。超时返回 aborted。effort 使用官方五个名称，按现有模型能力选择是否发送。已取消的作者 signal 可以在调用前阻止请求；完整在途取消、其他 provider 能力和 fork/classify 最新行为仍按专项验收范围检查。
+
+使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[Mods] model.complete`：包含模型、字符长度、块数、结果、HTTP 分类和用量。运行 `bun test --no-env-file ./src/services/mods/modelTextBlocks.test.ts ./src/services/mods/modelResults.test.ts ./src/services/mods/modelOptions.test.ts` 检查相关契约；[专项对照](docs/research/mods-model-complete-292-20261007.md) 列出实际覆盖与剩余差异。接口背景见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。

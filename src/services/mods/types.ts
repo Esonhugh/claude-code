@@ -14,6 +14,16 @@ export type PromptComposeInput = {
 export type PromptComposeResult = { sections: readonly PromptComposeSection[] }
 
 export type ModModelForkRequest = { prompt: string }
+export type ModModelUsage = Omit<ModTurnUsage, 'model'>
+export type ModModelApiError =
+  | 'authentication_failed' | 'oauth_org_not_allowed' | 'account_on_hold'
+  | 'verification_required' | 'billing_error' | 'rate_limit' | 'overloaded'
+  | 'invalid_request' | 'model_not_found' | 'server_error' | 'unknown'
+  | 'max_output_tokens' | 'cloud_credential_error'
+export type ModModelCompleteResult =
+  | { isAnswered: true; text: string; usage: ModModelUsage }
+  | { isAnswered: false; reason: 'api-error'; status: number | null; error: ModModelApiError; usage: ModModelUsage }
+  | { isAnswered: false; reason: 'empty-reply' | 'aborted'; usage: ModModelUsage }
 export type ModModelForkResult = { text: string; usage: Omit<ModTurnUsage, 'model'> } | null
 
 export type ModTier = 'prepend' | 'user' | 'append' | 'builtin' | 'core'

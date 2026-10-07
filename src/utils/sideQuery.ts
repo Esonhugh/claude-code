@@ -19,6 +19,8 @@ import {
   getAPIMetadata,
   getExtendedCacheTtlEnabled,
   hasExtendedCacheTtlMarker,
+  getPromptCachingEnabled,
+  configureEffortParams,
 } from '../services/api/claude.js'
 import { getAnthropicClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
@@ -54,12 +56,15 @@ export type SideQueryOptions = {
   output_format?: BetaJSONOutputFormat
   /** Max tokens (default: 1024) */
   max_tokens?: number
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Max retries (default: 2) */
   maxRetries?: number
   /** Abort signal */
   signal?: AbortSignal
   /** Skip CLI system prompt prefix (keeps attribution header for OAuth). For internal classifiers that provide their own prompt. */
   skipSystemPromptPrefix?: boolean
+  /** Honor provider/model cache settings for explicitly marked author blocks. */
+  dropCacheControlWhenCachingDisabled?: boolean
   /** Temperature override */
   temperature?: number
   /** Thinking budget (enables thinking), or `false` to send `{ type: 'disabled' }`. */
@@ -126,6 +131,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     temperature,
     thinking,
     stop_sequences,
+    effort,
   } = opts
 
   const client = await getAnthropicClient({
@@ -133,6 +139,14 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     model,
     source: 'side_query',
   })
+  const dropMarks = opts.dropCacheControlWhenCachingDisabled === true && !getPromptCachingEnabled(model)
+  const stripMark = <T extends object>(block: T): T => {
+    if (!('cache_control' in block)) return block
+    const {cache_control: _mark, ...plain} = block
+    return plain as T
+  }
+  const requestMessages = dropMarks ? messages.map(message => typeof message.content === 'string' ? message : ({...message, content: message.content.map(stripMark)})) : messages
+  const requestSystem = dropMarks && Array.isArray(system) ? system.map(stripMark) : system
   const betas = [...getModelBetas(model)]
   // Add structured-outputs beta if using output_format and provider supports it
   if (
@@ -166,10 +180,10 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
             }),
           },
         ]),
-    ...(Array.isArray(system)
-      ? system
-      : system
-        ? [{ type: 'text' as const, text: system }]
+    ...(Array.isArray(requestSystem)
+      ? requestSystem
+      : requestSystem
+        ? [{ type: 'text' as const, text: requestSystem }]
         : []),
   ].filter((block): block is TextBlockParam => block !== null)
 
@@ -177,7 +191,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     getExtendedCacheTtlEnabled(opts.querySource) &&
     hasExtendedCacheTtlMarker({
       system: systemBlocks,
-      messages,
+      messages: requestMessages,
       tools,
     }) &&
     !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
@@ -196,6 +210,8 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   }
 
   const normalizedModel = normalizeModelStringForAPI(model)
+  const outputConfig: Parameters<typeof configureEffortParams>[1] = output_format ? {format:output_format} : {}
+  configureEffortParams(effort, outputConfig, {}, betas)
   const start = Date.now()
   // biome-ignore lint/plugin: this IS the wrapper that handles OAuth attribution
   const response = await client.beta.messages.create(
@@ -203,10 +219,10 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
       model: normalizedModel,
       max_tokens,
       system: systemBlocks,
-      messages,
+      messages: requestMessages,
       ...(tools && { tools }),
       ...(tool_choice && { tool_choice }),
-      ...(output_format && { output_config: { format: output_format } }),
+      ...(Object.keys(outputConfig).length > 0 && { output_config: outputConfig }),
       ...(temperature !== undefined && { temperature }),
       ...(stop_sequences && { stop_sequences }),
       ...(thinkingConfig && { thinking: thinkingConfig }),

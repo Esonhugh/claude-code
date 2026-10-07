@@ -69,7 +69,7 @@ export type ModWireValue =
   | { type: 'object'; entries: [string, ModWireValue][] }
   | { type: 'engine'; id: number; value: ModWireValue }
   | { type: 'function'; id: number }
-  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean }
+  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; modelMethod?: 'complete' }
   | { type: 'host-stream'; id: number }
   | { type: 'stream'; invocation: number }
   | { type: 'clock'; now: number; wait: number; cancel: number; run: number }
@@ -142,6 +142,7 @@ export type ModWorkerRequest =
       trace?: ModWireValue
       value?: ModWireValue
       error?: string
+      errorName?: 'HooksError'
       errorRef?: number
     }
 

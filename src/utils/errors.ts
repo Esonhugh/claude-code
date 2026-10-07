@@ -9,6 +9,12 @@ export class ClaudeError extends Error {
 
 export class MalformedCommandError extends Error {}
 
+export class HttpResponseError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message)
+  }
+}
+
 export class AbortError extends Error {
   constructor(message?: string) {
     super(message)

@@ -47,6 +47,11 @@ export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: Hos
   return call
 }
 const timerWaits = new WeakSet<HostFunction>()
+const modelMethods = new WeakMap<HostFunction, 'complete'>()
+export function createModModelBridge<T extends HostFunction>(call: T, method: 'complete'): T {
+  modelMethods.set(call, method)
+  return call
+}
 const streamBridges = new WeakSet<HostFunction>()
 export function createModStreamBridge<T extends HostFunction>(call: T): T {
   streamBridges.add(call)
@@ -251,7 +256,8 @@ export function createModEnvironmentHost({
       }
       const storeMethod = storeMethods.get(value as HostFunction)
       const stateMethod = stateMethods.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}) }
+      const modelMethod = modelMethods.get(value as HostFunction)
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(modelMethod ? {modelMethod} : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)
@@ -514,6 +520,7 @@ export function createModEnvironmentHost({
       } else response.value = encode(message.environment, isPromise(value) && !isProxy(value) ? await value : value)
     } catch (error) {
       response.error = errorMessage(error, 'Module capability failed')
+      if (error instanceof Error && error.name === 'HooksError') response.errorName = 'HooksError'
       const errors = invocationErrors.get(message.invocation)
       if (errors && fn?.environment === message.environment) {
         response.errorRef = message.call

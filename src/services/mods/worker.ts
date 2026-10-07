@@ -1,3 +1,4 @@
+import {normalizeModModelCompleteRequest} from './modelTextBlocks.js'
 import * as vm from 'node:vm'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { atob as hostAtob, btoa as hostBtoa } from 'node:buffer'
@@ -56,6 +57,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const timers = new Map();
   const streams = new Map();
   const streamHandles = new Map();
+  const normalizeModelComplete = (${normalizeModModelCompleteRequest.toString()});
   const createStream = (${createModHookStream.toString()});
   const settle = request => {
     signals.delete(request.id);
@@ -333,6 +335,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           result,
           [Symbol.asyncIterator]() { return this; },
         };
+      } : wire.modelMethod === 'complete' ? async (request, ...options) => {
+        if (options[0]?.signal?.aborted === true) return Object.freeze({isAnswered:false,reason:'aborted',usage:Object.freeze({input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0})});
+        return invokeHost(normalizeModelComplete(request), ...options);
       } : invokeHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
       return Object.freeze(proxy);
@@ -544,6 +549,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         if (frame && result.trace) frame.trace = decode(result.trace, result.invocation);
         if (result.error !== undefined) {
           const error = Error(result.error);
+          if (result.errorName === 'HooksError') error.name = 'HooksError';
           if (result.errorRef !== undefined) hostErrors.set(error, result.errorRef);
           item.reject(error);
         } else item.resolve(decode(result.value, item.invocation));
