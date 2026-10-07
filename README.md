@@ -1256,3 +1256,21 @@ else $.ui.log(reply.reason)
 `timeoutMs` 接受正整数，实际计时最大为 2147483647 毫秒；从核心请求开始计时，Hook 执行使用自己的预算。超时返回 aborted。effort 使用官方五个名称，按现有模型能力选择是否发送。已取消的作者 signal 可以在调用前阻止请求；完整在途取消、其他 provider 能力和 fork/classify 最新行为仍按专项验收范围检查。
 
 使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[Mods] model.complete`：包含模型、字符长度、块数、结果、HTTP 分类和用量。运行 `bun test --no-env-file ./src/services/mods/modelTextBlocks.test.ts ./src/services/mods/modelResults.test.ts ./src/services/mods/modelOptions.test.ts` 检查相关契约；[专项对照](docs/research/mods-model-complete-292-20261007.md) 列出实际覆盖与剩余差异。接口背景见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
+
+### Mod 分类器与分类 Hook
+
+```js
+on('prompt.submit', async ($, e, next) => {
+  const kind = await $.model.classify(e.text, ['bug', 'feature'])
+  if (kind === undefined) return next(e)
+  $.ui.log(`分类：${kind}`)
+  return next(e)
+})
+```
+
+`classify(text, labels, { model })` 要求至少两个非空字符串标签，默认使用引擎的小型快速模型，也可指定别名或模型 ID。公开 `model.classify` Hook 可以改写文本、标签和模型，或返回 `{value}` / `{deny}`；底层分类推理直接调用核心服务，每次分类不会再派发公开 `model.complete` 事件。直接调用 `$.model.complete` 仍走它自己的 Hook。
+
+按官方 2.1.292，分类提示词把每一行文本标成数据，使用 20 个基础输出 token。回复去掉首尾空白、引号和尾部句点，先进行大小写无关的完整匹配，再按标签长度选择有边界的命中，返回标签原来的拼写；重复标签允许，长度相同时保持输入顺序。未命中返回 `undefined`；空回复、请求错误、取消和策略拒绝抛出 `HooksError` 并指出原因。初始文本与标签列表形状在 Hook 前检查，标签内容在核心检查，Hook 可以修复标签。最终交给核心的数据仍检查文本和标签列表的形状；JavaScript Hook 的 `{value}` 保持不透明，公开 TypeScript 类型仍限定分类结果为标签或 `undefined`。
+
+`--debug --debug-file /absolute/path/debug.log` 中的 `[Mods] model.classify` 记录插件、模型、文本长度、标签数量、命中索引或失败原因，不新增正文日志。运行 `bun test --no-env-file ./src/services/mods/modelClassify.test.ts ./src/services/mods/modelRuntime.test.ts` 检查分类和真实 Worker 路径。原生对照范围与剩余限制见 [分类器专项](docs/research/mods-classify-292-20261007.md)；公开类型以本版本生成的声明为准，参考 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。

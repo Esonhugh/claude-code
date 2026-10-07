@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 分类器核心调用与标签匹配
+
+### 变更内容
+
+- model.classify 保留公开分类 Hook，核心直接使用模型完成服务；分类推理不额外触发公开 model.complete Hook，避免策略重复运行和改写分类提示词。
+- 使用官方逐行引用的数据提示词及 20 个基础输出 token；回复先去掉空白、引号和句点，再按大小写无关的完整标签或最长边界匹配返回原标签。允许重复标签，未命中返回 undefined。
+- 初始文本/标签形状在 Hook 前检查，标签内容在核心检查，允许中间件修复或回答；最终改写形状在核心再次检查；JavaScript Hook value 保持不透明，公开 TypeScript 类型仍严格。失败、空回复及 deny 保留插件名称和 HooksError。debug 只增加长度、标签数量/索引与失败分类。
+
+### 测试覆盖
+
+- 新增标签、Unicode、正则特殊字符、原标签保持、错误原因和真实 Worker 的检查/修复/回答/拒绝回归；本轮官方/候选/工作区的本机 HTTP 与 scripted tmux 验证记录见 docs/research/mods-classify-292-20261007.md。完整模型能力、取消链、fork、其他 API/UI/diff/G5 继续验收。
+
 ## 2026-10-07 - Mods 模型文本块与完成回执
 
 ### 变更内容

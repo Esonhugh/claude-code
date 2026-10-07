@@ -1963,3 +1963,8 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 ## 2026-10-07：model.complete 文本块与结构化回执
 
 独立候选从 1dbb238 构造。候选相关 362/0/5 既有 skip，ROOT 390/0/5 既有 skip；十一场逐文件隔离均 exit0，双方 release-check 和新隔离 make build 通过。九个 Hook 场景三侧回执/事件一致；缓存开启和关闭的本机 HTTP/tmux 两轮，每侧 20 个 complete 回执及含重试 26 个请求，逐项比较模型、文本/缓存前缀、system、输出选项、用量、错误和超时流程。相邻 classify 输出一致但 prompt/system、max_tokens 20/1024 和额外 model.complete Hook 事件仍不同，单列开放。ROOT 取消 WIP 的提前 middleware deadline 已修正，其完整取消批次未纳入候选。完整目标保持开放，详情及原失败证据见 [model.complete 专项](docs/research/mods-model-complete-292-20261007.md)。
+
+
+## 2026-10-07 — model.classify 核心与官方标签匹配
+
+独立候选基于1f29ebf，关闭上一批记录的分类提示词/20-token/额外 model.complete Hook 差异。候选396/0/5既有skip，工作区424/0/5；八场逐文件隔离无认证通过，双方 release-check 与新隔离 make build 通过。九场官方/候选/工作区 tmux：主分类38回执/35分类Hook/1相邻完成Hook/34含重试HTTP，缓存关闭同矩阵；附加7回执验证不透明 value、修复标签及最终shape。全部输入/回执/Hook和投影请求一致，正常exit0并关闭自有server/HTTP；类型正反例使用三侧实际生成声明严格编译。初始extra的真实差异和原RED保留，不回写为绿。父取消/调用链、fork、完整模型/其他provider/API/UI/diff/G5及全量/HEAD仍开放，详见[分类器专项](docs/research/mods-classify-292-20261007.md)。

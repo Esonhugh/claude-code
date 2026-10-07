@@ -44,7 +44,7 @@ import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from 
 import { createModState } from './state.js'
 import { createModToasts } from './toast.js'
 import { ensureModDeclarations, type ModTypeDependency } from './declarations.js'
-import { createModModelFork, createModModelClassify, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
+import { createModModelFork, createModModelClassify, validateModModelClassifyInput, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
 import { getSmallFastModel } from '../../utils/model/model.js'
 import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
 import {
@@ -869,7 +869,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateModModelCompleteInput(args[0], plugin)
         return args[0] as ModInput
       }
-      case 'model.classify': return { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
+      case 'model.classify': {
+        const input = { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
+        validateModModelClassifyInput(input, plugin ?? 'mod')
+        return input
+      }
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
@@ -1633,17 +1637,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               return { value: await completion(rewritten as ModModelCompleteRequest, signal) }
             }
             if (op === 'model.classify') {
-              const classify = createModModelClassify(async (request, completionSignal) => {
-                const completed = await dispatch('model.complete', request, async (received, nestedSignal) => ({
-                  value: await completion(received as ModModelCompleteRequest, nestedSignal),
-                }), snapshot, table, {
-                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-                  signal: completionSignal,
-                  caller,
-                }) as { value?: unknown; deny?: string }
-                if (typeof completed.deny === 'string') throw new Error(completed.deny)
-                return completed.value as ModModelCompleteResult
-              }, getSmallFastModel)
+              validateModModelClassifyInput(rewritten)
+              // Classifiers call core completion, without firing an author model.complete event.
+              const classify = createModModelClassify(completion, getSmallFastModel, owner.declaration.name)
               return { value: await classify(
                 rewritten.text as string,
                 rewritten.labels as string[],
@@ -1664,7 +1660,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }
-          if (typeof result.deny === 'string') throw new Error(result.deny)
+          if (typeof result.deny === 'string') {
+            if (fn === hostIdentity && op === 'model.classify')
+              throw Object.assign(new Error(`${owner.declaration.name}: $.model.classify: ${result.deny}`), {name:'HooksError'})
+            throw new Error(result.deny)
+          }
           return result.value
         } finally { resumeBudget?.() }
       }
@@ -1956,11 +1956,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return
     }
     if (event === 'model.classify') {
-      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
-      if ('deny' in result && typeof result.deny === 'string') return
-      if (!('value' in result) || (result.value !== undefined && typeof result.value !== 'string')) {
-        throw new Error('model.classify must return a string, undefined or deny')
-      }
+      if (!result || typeof result !== 'object' || Array.isArray(result) || !('value' in result) && !('deny' in result && typeof result.deny === 'string')) throw new TypeError('model.classify must return value or deny')
       return
     }
     if (event === 'state.get' || event === 'state.set') {

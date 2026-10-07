@@ -67,7 +67,7 @@ test('classifier rejects each structured failure and reserves undefined for answ
     {isAnswered:false,reason:'aborted',usage:zero},
   ] as const) {
     const classify = createModModelClassify(async () => failure, () => 'test')
-    await expect(classify('hello',['one','two'])).rejects.toThrow(failure.reason)
+    await expect(classify('hello',['one','two'])).rejects.toThrow(failure.reason === 'api-error' ? 'the request failed (HTTP 429, rate_limit)' : failure.reason === 'aborted' ? 'the request was aborted' : 'the model answered with no text')
   }
   const classify = createModModelClassify(async () => ({isAnswered:true,text:'other',usage}), () => 'test')
   expect(await classify('hello',['one','two'])).toBeUndefined()
