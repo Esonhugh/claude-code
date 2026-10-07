@@ -47,7 +47,7 @@ assert.throws(() => buildModule.prepareBuildDirectory(path.join(link, 'no-write'
 const fixtureDir = path.join(evidenceDir, 'fixture');
 fs.mkdirSync(path.join(fixtureDir, 'assets'), { recursive: true });
 fs.writeFileSync(path.join(fixtureDir, 'assets', 'builtin-mods-2.1.277.zip'), 'archive fixture');
-fs.writeFileSync(path.join(fixtureDir, 'assets', 'builtin-diff-2.1.291.zip'), 'latest diff fixture');
+fs.writeFileSync(path.join(fixtureDir, 'assets', 'builtin-diff-2.1.292.zip'), 'latest diff fixture');
 fs.mkdirSync(path.join(fixtureDir, 'dist', 'prebuilds'), { recursive: true });
 fs.writeFileSync(path.join(fixtureDir, 'dist', 'prebuilds', 'keep'), 'old asset');
 const originalRm = fs.promises.rm;
@@ -63,7 +63,7 @@ try {
   fs.promises.rm = originalRm;
 }
 assert.equal(fs.readFileSync(path.join(outputDir, 'dist', 'assets', 'builtin-mods-2.1.277.zip'), 'utf8'), 'archive fixture');
-assert.equal(fs.readFileSync(path.join(outputDir, 'dist', 'assets', 'builtin-diff-2.1.291.zip'), 'utf8'), 'latest diff fixture');
+assert.equal(fs.readFileSync(path.join(outputDir, 'dist', 'assets', 'builtin-diff-2.1.292.zip'), 'utf8'), 'latest diff fixture');
 assert.equal(fs.readFileSync(path.join(fixtureDir, 'dist', 'prebuilds', 'keep'), 'utf8'), 'old asset');
 
 // Execute the packaging control flow with filesystem/subprocess doubles: no binary build.
@@ -104,7 +104,7 @@ for (const { file } of writes) assert.ok(file.startsWith(outputDir + path.sep), 
 for (const directory of directories) assert.ok(directory.startsWith(outputDir + path.sep), directory);
 const entry = writes.find(({ file }) => file.endsWith('embedded-cli.js'));
 assert.ok(entry.contents.includes(JSON.stringify(path.join(outputDir, 'dist', 'cli.js'))));
-assert.ok(entry.contents.includes(JSON.stringify(path.join(projectDir,'assets','builtin-diff-2.1.291.zip'))));
+assert.ok(entry.contents.includes(JSON.stringify(path.join(projectDir,'assets','builtin-diff-2.1.292.zip'))));
 assert.doesNotMatch(entry.contents,/__CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__/);
 const compile = subprocesses.find(({ args }) => args.includes('--compile'));
 assert.ok(compile);

@@ -1884,3 +1884,14 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 交互 transcript 使用 notice 级别，默认可见、dim、无圆点；debug 内容不绘制。公开便利调用仍同步返回 void，不能用 await 当投递屏障。
 - 三侧新 native driver 覆盖三种 print、真实 Read/tool.call、turn hooks、字面 /logprobe 和正常退出；另用本批本地构建重跑 SendMessage 历史和 print。此前 printHookObserved:false 来自日志 sink 缺失，不能推断 hook 没有执行。
 - 类型、RED、完整证据与剩余验收边界见 [日志专项](docs/research/mods-print-log-20261007.md)；完整 diff、G5、remote UI 和全量门禁仍需继续。
+
+
+## 2026-10-07：固定官方 diff 2.1.292 来源
+
+- scope：只更新官方 diff 完整模块、身份模块、原始注册闭包、scan 和生产/构建归档路径，保留旧归档；不把本批记为完整 API 或 UI 对齐。
+- RED：实际生产初始化仍返回 2.1.291；更新后同一测试返回 2.1.292。真实 Worker、接管、静态发现、过期/损坏拒绝及构建相关测试在独立候选和工作区各 114 pass / 0 fail。
+- 两侧 make release-check 与私有 make build 通过；升级候选不含本轮新增键盘修复，其源码 manifest 与被测构建完全一致。
+- 官方 o2、独立升级候选 c2、工作区 r2 的真实 tmux 流程见 `/private/tmp/mods-diff-292-yah16a95`：打开、160→140→160 缩放、鼠标 ask/取消、Esc、关闭重开、正常退出。Esc 使用明确的 CSI-u 编码；先前裸 Esc 紧接文本被解析成 Alt 的失败证据保留，未延长 deadline。
+- 字节校验与绑定变量归一化后的 AST 确认 diff 注册闭包语义相同；官方公共声明整体已有新接口，不能宣称类型与 2.1.291 相同。
+- 独立升级候选的右侧面板边界在 160 列为第 80 列，官方为第 88 列，四个稳定阶段的完整单元格比较不相等（failed）；行为流程通过不能替代完整视觉对齐。
+- 详细来源、命令、证据与限制：`docs/research/mods-shipped-diff-292-20261007.md`。整体目标保持未完成。

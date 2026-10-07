@@ -22,7 +22,7 @@ const builtinModsArchivePath = path.join(
 const builtinDiffArchivePath = path.join(
   projectDir,
   'assets',
-  'builtin-diff-2.1.291.zip',
+  'builtin-diff-2.1.292.zip',
 );
 const embeddedEntrypoint = path.join(
   projectDir,

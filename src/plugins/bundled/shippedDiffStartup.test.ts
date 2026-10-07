@@ -18,7 +18,7 @@ let root:string
 const previous=new Map<string,string|undefined>()
 const runtimes:ReturnType<typeof createModsRuntime>[]=[]
 beforeEach(async()=>{
- root=await mkdtemp(join(tmpdir(),'mods-startup-291-'))
+ root=await mkdtemp(join(tmpdir(),'mods-startup-292-'))
  for(const key of ['HOME','CLAUDE_CONFIG_DIR','CLAUDE_CODE_PLUGIN_CACHE_DIR','CLAUDE_CODE_ENTRYPOINT','CLAUDE_CODE_CHILD_SESSION','CLAUDECODE','CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE'])previous.set(key,process.env[key])
  for(const key of ['HOME','CLAUDE_CONFIG_DIR','CLAUDE_CODE_PLUGIN_CACHE_DIR'])process.env[key]=root
  for(const key of ['CLAUDE_CODE_ENTRYPOINT','CLAUDE_CODE_CHILD_SESSION','CLAUDECODE'])delete process.env[key]
@@ -32,15 +32,15 @@ afterEach(async()=>{
  for(const [key,value]of previous)if(value===undefined)delete process.env[key];else process.env[key]=value
  previous.clear();await rm(root,{recursive:true,force:true})
 })
-test('production startup exposes exactly the genuine shipped291 diff and actual loader admits its original Worker',async()=>{
+test('production startup exposes exactly the genuine shipped292 diff and actual loader admits its original Worker',async()=>{
  await initBuiltinPlugins()
  expect(getBuiltinPluginDefinition('diff')).toBeUndefined()
- expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.291')
+ expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.292')
  const loaded=getBuiltinPlugins().enabled.find(p=>p.name==='cc-plugin-diff')!
  expect(loaded).toBeDefined()
  const input=prepareModPlugins([loaded],{userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}).inputs[0]!
- const files=unzipArchive(await readFile(new URL('../../../assets/builtin-diff-2.1.291.zip',import.meta.url)))
- const metadata=new TextDecoder().decode(files['official/chunk-fbpekckc.js'].subarray(shippedDiffProvenance.metadataStart,shippedDiffProvenance.metadataEnd))
+ const files=unzipArchive(await readFile(new URL('../../../assets/builtin-diff-2.1.292.zip',import.meta.url)))
+ const metadata=new TextDecoder().decode(files['official/chunk-01whafa0.js'].subarray(shippedDiffProvenance.metadataStart,shippedDiffProvenance.metadataEnd))
  const array=(key:string)=>JSON.parse(metadata.match(new RegExp(key+':(\\[[^\\]]*\\])'))![1]!)
  const declaration=getShippedBuiltinModDeclaration(input)!
  expect(declaration.events).toEqual(array('hooks'))
@@ -49,7 +49,7 @@ test('production startup exposes exactly the genuine shipped291 diff and actual 
  expect(declaration.env).toEqual({reads:array('reads'),writes:array('writes')})
  const diagnostics:unknown[]=[]
  const runtime=createModsRuntime({services:{builtinCommands:()=>[builtinDiff],commands:()=>[builtinDiff]},onDiagnostic:e=>diagnostics.push(e)})
- runtimes.push(runtime);await runtime.bind({cwd:root,sessionId:'startup-291',surface:'terminal',isInteractive:true});await runtime.reconcile([input])
+ runtimes.push(runtime);await runtime.bind({cwd:root,sessionId:'startup-292',surface:'terminal',isInteractive:true});await runtime.reconcile([input])
  expect(diagnostics).toEqual([]);expect(runtime.isDiffOwned()).toBe(true)
  expect(runtime.commands.list().map(c=>c.name)).toEqual(['diff'])
  expect(runtime.commands.projection([builtinDiff])).not.toContain(builtinDiff)
@@ -100,7 +100,7 @@ async function live(columns=120){
  const input=prepareModPlugins([loaded],{userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}).inputs[0]!
  const diagnostics:unknown[]=[]
  const runtime=createModsRuntime({services:{builtinCommands:()=>[builtinDiff],commands:()=>[builtinDiff],uiPresentation:()=>({columns,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false}),messages:()=>[],captureUsage:()=>async()=>({startedAt:Date.now()-1000,context:{window:200000},rateLimits:[]})},onDiagnostic:e=>diagnostics.push(e)})
- runtimes.push(runtime);await runtime.bind({cwd:root,sessionId:'carry-291',surface:'terminal',isInteractive:true});await runtime.reconcile([input])
+ runtimes.push(runtime);await runtime.bind({cwd:root,sessionId:'carry-292',surface:'terminal',isInteractive:true});await runtime.reconcile([input])
  await runtime.dispatch('ui.render',{surface:'terminal',component:'PromptHint',requestId:'hint',props:{},viewport:{columns,rows:40,isFullscreen:true}},async()=>({type:'Box',children:[]}))
  return {runtime,input,diagnostics}
 }
@@ -119,10 +119,11 @@ test('production original first Write uses restored asked eligibility and accept
  expect(next.runtime.ui.getSnapshot()).toEqual([])
 })
 
-test.each(['missing','tampered'])('latest package %s leaves startup alive and native available without legacy diff fallback',async kind=>{
+test.each(['missing','tampered','outdated'])('latest package %s leaves startup alive and native available without legacy diff fallback',async kind=>{
  const archive=join(root,'candidate.zip')
+ if(kind==='outdated')await writeFile(archive,await readFile(new URL('../../../assets/builtin-diff-2.1.291.zip',import.meta.url)))
  if(kind==='tampered'){
-  const bytes=await readFile(new URL('../../../assets/builtin-diff-2.1.291.zip',import.meta.url));bytes[bytes.length-1]^=1;await writeFile(archive,bytes)
+  const bytes=await readFile(new URL('../../../assets/builtin-diff-2.1.292.zip',import.meta.url));bytes[bytes.length-1]^=1;await writeFile(archive,bytes)
  }
  process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE=archive;await initBuiltinPlugins()
  expect(getBuiltinPluginDefinition('cc-plugin-diff')).toBeUndefined();expect(getBuiltinPluginDefinition('diff')).toBeUndefined()
@@ -157,7 +158,7 @@ test('read-only production discovery projects latest archived source without min
  expect(result.enabled.map(p=>p.name)).toContain('cc-plugin-diff');expect(result.enabled.map(p=>p.name)).not.toContain('diff')
  expect(getBuiltinPluginDefinition('cc-plugin-diff')).toBeUndefined()
  const plugin=result.enabled.find(p=>p.name==='cc-plugin-diff')!
- expect(plugin.manifest.version).toBe('2.1.291');expect(plugin.contractFiles?.['hooks/register.js']).toBeDefined()
+ expect(plugin.manifest.version).toBe('2.1.292');expect(plugin.contractFiles?.['hooks/register.js']).toBeDefined()
  const input=prepareModPlugins([plugin],{userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}).inputs[0]!
  expect(getShippedBuiltinModDeclaration(input)).toBeUndefined()
 })
@@ -170,7 +171,7 @@ test('read-only discovery keeps the actual pinned availability and legacy settin
  expect((await loadPluginsForContractValidation()).enabled.some(p=>p.name==='cc-plugin-diff')).toBe(false)
 })
 test('known host availability facet is not copied onto spread definitions or arbitrary callbacks',async()=>{
- await initBuiltinPlugins();const contract=await readOfficialShippedDiffContract(new URL('../../../assets/builtin-diff-2.1.291.zip',import.meta.url).pathname)
+ await initBuiltinPlugins();const contract=await readOfficialShippedDiffContract(new URL('../../../assets/builtin-diff-2.1.292.zip',import.meta.url).pathname)
  expect(()=>getBuiltinPlugins([contract.definition])).not.toThrow()
  expect(()=>getBuiltinPlugins([{...contract.definition}])).toThrow('without executing its callback')
  let called=0;registerBuiltinPlugin({name:'fixture',description:'fixture',isAvailable:()=>{called++;return true}})

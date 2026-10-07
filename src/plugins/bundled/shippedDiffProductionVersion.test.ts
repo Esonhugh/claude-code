@@ -8,7 +8,7 @@ import {clearBuiltinPlugins,getBuiltinPluginDefinition} from '../builtinPlugins.
 import {initBuiltinPlugins} from './index.js'
 
 test('production initializer registers the pinned latest diff instead of the legacy diff',async()=>{
- const root=await realpath(await mkdtemp(join(tmpdir(),'mods-version-291-')))
+ const root=await realpath(await mkdtemp(join(tmpdir(),'mods-version-292-')))
  const keys=['HOME','CLAUDE_CONFIG_DIR','CLAUDE_CODE_PLUGIN_CACHE_DIR','CLAUDE_CODE_ENTRYPOINT','CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE'] as const
  const previous=new Map(keys.map(key=>[key,process.env[key]]))
  try{
@@ -16,7 +16,7 @@ test('production initializer registers the pinned latest diff instead of the leg
   delete process.env.CLAUDE_CODE_ENTRYPOINT;delete process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE
   enableConfigs();setIsInteractive(true);clearBuiltinPlugins()
   await initBuiltinPlugins()
-  expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.291')
+  expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.292')
   expect(getBuiltinPluginDefinition('diff')).toBeUndefined()
  }finally{
   clearBuiltinPlugins();setIsInteractive(false)

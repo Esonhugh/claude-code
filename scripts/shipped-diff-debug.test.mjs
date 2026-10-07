@@ -18,8 +18,8 @@ for(const mode of ['registered','failed'])test('actual private debug log reports
  expect(code).toBe(0);expect(stderr).toBe('');const {path}=JSON.parse(stdout);console.log(JSON.stringify({retainedDebugLog:path,mode}));
  const log=await readFile(path,'utf8');const line=log.split('\n').find(line=>line.includes('[ModsBuiltin]'));
  const event=JSON.parse(line.slice(line.indexOf('[ModsBuiltin]')+'[ModsBuiltin] '.length));
- expect(event.plugin).toBe('cc-plugin-diff');expect(event.version).toBe('2.1.291');
+ expect(event.plugin).toBe('cc-plugin-diff');expect(event.version).toBe('2.1.292');
  if(mode==='registered'){
-  expect(event.event).toBe('package-registered');expect(event.storageId).toBe('cc-plugin-diff@builtin');expect(event.archiveSha256).toBe('a055c383e182c50f5cd804a25e6587871cad065804d35082292fe9acb2d6d424');expect(event.moduleSha256).toBe('05350cb490432c50c1e4227a6097112c4063d710385c937e29a73cf79adddba8');
+  expect(event.event).toBe('package-registered');expect(event.storageId).toBe('cc-plugin-diff@builtin');expect(event.archiveSha256).toBe('745c46dae5714492d5fe0351df623579f82000d132db8df365bf690031d1cc65');expect(event.moduleSha256).toBe('6cd79b0d5118de9485b1268d64238019e3a41510c943eb17832b128fd976afd3');
  }else{expect(event.event).toBe('package-load-failed');expect(event.phase).toBe('package');expect(event.error).toContain('SHA-256 mismatch');expect(event.archive).toBe(archive)}
 });

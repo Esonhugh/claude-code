@@ -23,7 +23,7 @@ import { initializeOfficialBuiltinMods } from '../builtinMods.js'
 import {initializeOfficialShippedDiff,isOfficialShippedDiffCatalogAllowed} from '../builtinShippedMods.js'
 
 const archiveName = 'builtin-mods-2.1.277.zip'
-const diffArchiveName='builtin-diff-2.1.291.zip'
+const diffArchiveName='builtin-diff-2.1.292.zip'
 
 export function builtinModsArchive(): string | undefined {
   if (process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE)
@@ -54,6 +54,6 @@ export async function initBuiltinPlugins(): Promise<void> {
     try{
       if(!diff)throw new Error(`Built-in diff archive is missing: ${diffArchiveName}`)
       await initializeOfficialShippedDiff(diff,CACHE_PATHS.builtinMods())
-    }catch(error){logForDebugging(`[ModsBuiltin] ${JSON.stringify({event:'package-load-failed',plugin:'cc-plugin-diff',version:'2.1.291',archive:diff??diffArchiveName,phase:'package',error:error instanceof Error?error.message:String(error)})}`,{level:'error'})}
+    }catch(error){logForDebugging(`[ModsBuiltin] ${JSON.stringify({event:'package-load-failed',plugin:'cc-plugin-diff',version:'2.1.292',archive:diff??diffArchiveName,phase:'package',error:error instanceof Error?error.message:String(error)})}`,{level:'error'})}
   }
 }

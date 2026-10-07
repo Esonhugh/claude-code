@@ -5,30 +5,30 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { zipSync, strToU8 } from "fflate";
 
-// Byte ranges are from the verified 2.1.291 darwin-arm64 release, without executing it.
+// Byte ranges are from the verified 2.1.292 darwin-arm64 release, without executing it.
 export const officialDiffPackageProvenance = Object.freeze({
-  version: "2.1.291",
+  version: "2.1.292",
   name: "cc-plugin-diff",
   binarySha256:
-    "9a1d2ed6bb4421e8fc80c892c0413f293be3ee50ae3d7dda1a7622197a056690",
+    "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
   moduleSha256:
-    "05350cb490432c50c1e4227a6097112c4063d710385c937e29a73cf79adddba8",
-  identityModule: "chunk-apw5me5f.js",
+    "6cd79b0d5118de9485b1268d64238019e3a41510c943eb17832b128fd976afd3",
+  identityModule: "chunk-cnv756hy.js",
   identityModuleSha256:
-    "2400a87c0ea3f28b88133436e8816c76a183460eced1ff8accd5d2bd5ad555c6",
-  sourceStart: 12069,
-  sourceEnd: 62474,
+    "86406ab18044de34edba1f7247b591268b86b1cff7522aaf07f1d67725f915c7",
+  sourceStart: 12068,
+  sourceEnd: 62473,
   sourceSha256:
-    "f1f839f6e013fd87d429f1aff688b05d4b721ad0c5666fbe94267c4541dbc70f",
-  metadataStart: 5667,
-  metadataEnd: 6251,
+    "ccafc3393958bc6e428f8909030d06af0e50e6db73f7308ec26ac286f27e97a4",
+  metadataStart: 5666,
+  metadataEnd: 6250,
   metadataSha256:
-    "3a7bf890043d50f4b01dc3a29e67be83e88ebc85ed82ca905596a2bfb267613f",
+    "41ada677ee5d534b88f953e89e0b8261a7cc567d538b21678f41f7d3e45319ca",
 });
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 export async function packageOfficialDiff({ modulesDir, output }) {
   const p = officialDiffPackageProvenance;
-  const module = await readFile(join(modulesDir, "chunk-fbpekckc.js"));
+  const module = await readFile(join(modulesDir, "chunk-01whafa0.js"));
   const identity = await readFile(join(modulesDir, p.identityModule));
   const source = module.subarray(p.sourceStart, p.sourceEnd);
   const scan = module.subarray(p.metadataStart, p.metadataEnd);
@@ -44,7 +44,7 @@ export async function packageOfficialDiff({ modulesDir, output }) {
     "The diff panel as a plugin pane: /diff, the changed files and their hunks beside the transcript, refreshed as Claude edits";
   const entries = {
     "provenance.json": strToU8(JSON.stringify(p, null, 2) + "\n"),
-    "official/chunk-fbpekckc.js": module,
+    "official/chunk-01whafa0.js": module,
     ["official/" + p.identityModule]: identity,
     "cc-plugin-diff/.claude-plugin/plugin.json": strToU8(
       JSON.stringify(

@@ -24,18 +24,18 @@ export function getVerifiedOfficialShippedModDeclaration(definition:BuiltinPlugi
   return isVerifiedOfficialShippedModDefinition(definition) ? structuredClone(verifiedDefinitions.get(definition)!.declaration) : undefined
 }
 
-// Exact decoded module from the verified 2.1.291 darwin-arm64 release artifact.
+// Exact decoded module from the verified 2.1.292 darwin-arm64 release artifact.
 export const shippedDiffProvenance = Object.freeze({
-  version:'2.1.291',
+  version:'2.1.292',
   name:'cc-plugin-diff',
-  binarySha256:'9a1d2ed6bb4421e8fc80c892c0413f293be3ee50ae3d7dda1a7622197a056690',
-  moduleSha256:'05350cb490432c50c1e4227a6097112c4063d710385c937e29a73cf79adddba8',
-  identityModule:'chunk-apw5me5f.js',
-  identityModuleSha256:'2400a87c0ea3f28b88133436e8816c76a183460eced1ff8accd5d2bd5ad555c6',
-  sourceStart:12069, sourceEnd:62474,
-  sourceSha256:'f1f839f6e013fd87d429f1aff688b05d4b721ad0c5666fbe94267c4541dbc70f',
-  metadataStart:5667,metadataEnd:6251,
-  metadataSha256:'3a7bf890043d50f4b01dc3a29e67be83e88ebc85ed82ca905596a2bfb267613f',
+  binarySha256:'97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f',
+  moduleSha256:'6cd79b0d5118de9485b1268d64238019e3a41510c943eb17832b128fd976afd3',
+  identityModule:'chunk-cnv756hy.js',
+  identityModuleSha256:'86406ab18044de34edba1f7247b591268b86b1cff7522aaf07f1d67725f915c7',
+  sourceStart:12068, sourceEnd:62473,
+  sourceSha256:'ccafc3393958bc6e428f8909030d06af0e50e6db73f7308ec26ac286f27e97a4',
+  metadataStart:5666,metadataEnd:6250,
+  metadataSha256:'41ada677ee5d534b88f953e89e0b8261a7cc567d538b21678f41f7d3e45319ca',
 })
 
 /** Host package initialization only; a manifest or caller-provided scan cannot issue a declaration. */
@@ -57,7 +57,7 @@ export async function loadOfficialShippedDiffDefinition(modulePath:string, root:
   }
   const declaration:ModDeclaration = {name:shippedDiffProvenance.name,storageId:`${shippedDiffProvenance.name}@builtin`,version:shippedDiffProvenance.version,pluginRoot:root,
     entrypoints:[entry],modules:[{path:entry,source:`${new TextDecoder('utf-8',{fatal:true}).decode(source)}\nexport {ym as register};\n`}],links:[],
-    // The module's original $n scan (bytes5667..6251), independently pinned above.
+    // The module's original $n scan (bytes5666..6250), independently pinned above.
     events:['session.start','ui.render','command.run','ui.close','ui.focus','ui.scroll','tool.call','prompt.submit'],
     calls:['clock.after','clock.every','clock.now','command.register','env.get','fs.list','fs.read','fs.stat','process.run',
       'session.id','session.messages','session.usage','settings.read','store.get','store.set','telemetry.log','telemetry.mark',
@@ -69,7 +69,7 @@ export async function loadOfficialShippedDiffDefinition(modulePath:string, root:
   return definition
 }
 
-export const shippedDiffArchiveSha256='a055c383e182c50f5cd804a25e6587871cad065804d35082292fe9acb2d6d424'
+export const shippedDiffArchiveSha256='745c46dae5714492d5fe0351df623579f82000d132db8df365bf690031d1cc65'
 const paneRequests=new Set<string>()
 const availabilityFacets=new WeakMap<BuiltinPluginDefinition,{callback:()=>boolean;read:()=>boolean}>()
 const contractFacets=new WeakMap<BuiltinPluginDefinition,{coordinates:string;callback:()=>boolean;read:()=>boolean}>()
@@ -126,7 +126,7 @@ export async function readOfficialShippedDiffContract(archivePath:string):Promis
 export async function initializeOfficialShippedDiff(archivePath:string,cacheRoot:string):Promise<void> {
  const {bytes}=await readShippedArchive(archivePath)
  const root=await materializeBuiltinModsArchive(archivePath,cacheRoot,{bytes})
- const definition=await loadOfficialShippedDiffDefinition(join(root,'official','chunk-fbpekckc.js'),join(root,'cc-plugin-diff'))
+ const definition=await loadOfficialShippedDiffDefinition(join(root,'official','chunk-01whafa0.js'),join(root,'cc-plugin-diff'))
  let pinned:boolean|undefined
  const available=()=>paneDrawable() && (pinned ??= offeredNow())
  definition.isAvailable=available

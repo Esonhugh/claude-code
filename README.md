@@ -853,21 +853,21 @@ CLI 启动时校验并自动恢复损坏的内置 Mods 缓存。多个 CLI 同�
 运行 `bun test ./src/services/mods/testing/runner.childRoot.test.ts` 检查三种路径及真实作者子进程加载。
 
 
-### 官方 diff 2.1.291 的离线归档与构建
+### 官方 diff 2.1.292 的离线归档与构建
 
-`scripts/package-official-diff.mjs` 从已核验的官方完整模块生成 `assets/builtin-diff-2.1.291.zip`。它在写入前校验完整模块、身份模块、原始注册闭包和 compiled scan；输出使用固定 ZIP 时间，只创建新文件，拒绝覆盖或接受损坏输入。提取出的官方 JavaScript 不会由打包脚本执行。
+`scripts/package-official-diff.mjs` 从已核验的官方完整模块生成 `assets/builtin-diff-2.1.292.zip`。它在写入前校验完整模块、身份模块、原始注册闭包和 compiled scan；输出使用固定 ZIP 时间，只创建新文件，拒绝覆盖或接受损坏输入。提取出的官方 JavaScript 不会由打包脚本执行。
 
 ```bash
-bun scripts/package-official-diff.mjs /path/to/verified-modules /tmp/new-official-diff-291.zip
+bun scripts/package-official-diff.mjs /path/to/verified-modules /tmp/new-official-diff-292.zip
 bun test ./scripts/shipped-diff-production.test.mjs ./scripts/build.test.mjs ./scripts/build-isolated.test.mjs
 make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
 ```
 
-构建会把该归档同时复制到 `dist/assets` 并嵌入 standalone 二进制，保留已有 `builtin-mods-2.1.277.zip`。这一提交只完成归档和构建链路；可信身份、运行时接管及完整 diff UI 对齐仍需后续提交和验收。官方版本参考 [Anthropic changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)。
+构建会把该归档同时复制到 `dist/assets` 并嵌入 standalone 二进制，保留已有 `builtin-mods-2.1.277.zip`。归档、构建和运行时接管分别验收；完整 diff UI 对齐仍按 `mods-test.md` 的范围记录。官方版本参考 [Anthropic changelog](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)。
 
 ## 官方 Mods 接管 diff
 
-生产启动从内嵌的 `builtin-diff-2.1.291.zip` 校验并加载原始 `cc-plugin-diff` Worker。在全屏 Git 工作区输入 `/diff` 打开或关闭面板。原生 diff 的已保存打开偏好只迁移一次；用户明确关闭后清除请求状态。活跃官方插件接管时，原生 diff 面板与后台刷新暂停；禁用、拒绝或卸载后恢复原生命令。
+生产启动从内嵌的 `builtin-diff-2.1.292.zip` 校验并加载原始 `cc-plugin-diff` Worker。在全屏 Git 工作区输入 `/diff` 打开或关闭面板。原生 diff 的已保存打开偏好只迁移一次；用户明确关闭后清除请求状态。活跃官方插件接管时，原生 diff 面板与后台刷新暂停；禁用、拒绝或卸载后恢复原生命令。
 
 可以在 settings 中禁用官方插件：
 
@@ -1126,3 +1126,18 @@ await $.tool.call({tool: 'SendMessage', to: 'reviewer [a1b2c3]', message: 'Revie
 同步 Agent 完成后也保留名称寻址。注册名称支持官方的 Unicode 规范化规则和至少三字符的唯一前缀；前缀歧义需要完整名称和准确 ref。历史恢复只接受匹配的 SendMessage 工具调用及成功、非错误结果的 `toolUseResult` 元数据。`/clear` 清空身份绑定，恢复/分支/回退按保留的历史重建；运行中的 Agent 名称仍可使用。
 
 公开工具回执保留 pin；模型结果省略终端专用的 `display`，默认同步恢复报告框架仍采用官方的精简 JSON 头。`[SendMessage]` 日志记录绑定名称、Agent ID 和 ref，不打印消息内容。范围与证据见 [SendMessage 身份绑定专项](docs/research/mods-sendmessage-pin-20261007.md)，相关接口见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。跨会话/云目标的统一解析与完整 Mods API、UI、diff 验收继续进行。
+
+
+### 官方 diff 2.1.292 的当前固定来源
+
+当前生产归档为 `assets/builtin-diff-2.1.292.zip`，包含官方完整模块、身份模块、编译扫描元数据及原始注册闭包。加载和离线打包均核对固定字节范围与 SHA-256；过期或损坏归档会记录 `[ModsBuiltin]` 错误并保留原生 diff。旧归档仅用于历史来源核对。
+
+```bash
+bun scripts/package-official-diff.mjs /path/to/verified-2.1.292-modules /tmp/new-official-diff-292.zip
+bun test ./scripts/shipped-diff-production.test.mjs ./src/plugins/bundled/shippedDiffStartup.test.ts ./src/services/mods/diffTakeover.test.ts
+make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
+```
+
+在全屏 Git 工作区输入 `/diff` 打开或关闭官方模块的面板；settings 的 `cc-plugin-diff@builtin` 开关及 `diff@builtin` 别名沿用原契约。使用 `--debug --debug-file /tmp/claude-diff-debug.log` 可核对加载版本、来源哈希与接管状态。
+
+官方最新来源核对见 [Anthropic package metadata](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)，使用背景见 [Anthropic plugins 文档](https://code.claude.com/docs/en/plugins)。此升级只更新 diff 的固定官方来源；2.1.292 公共声明的新接口和完整 API/UI 对齐仍须独立验收，详见 `mods-test.md` 和 `docs/research/mods-shipped-diff-292-20261007.md`。

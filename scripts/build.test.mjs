@@ -126,7 +126,7 @@ assert.match(
 );
 assert.match(buildSource, /embedSharpNative &&\s+args\.path === '\.\/sharp'/);
 assert.match(buildSource, /builtin-mods-2\.1\.277\.zip/);
-assert.match(buildSource, /builtin-diff-2\.1\.291\.zip/);
+assert.match(buildSource, /builtin-diff-2\.1\.292\.zip/);
 assert.doesNotMatch(buildSource, /\/private\/tmp/);
 
 const embeddedRipgrepSource = readFileSync(
@@ -175,7 +175,7 @@ try {
     'deterministic archive fixture',
   );
   await assert.rejects(copyRuntimeAssets({projectDir:runtimeAssetsProjectDir,nodeModulesDir:runtimeAssetsNodeModulesDir}),/Missing builtin Mods archive.*builtin-diff/);
-  writeFileSync(join(runtimeAssetsProjectDir,'assets','builtin-diff-2.1.291.zip'),'deterministic latest diff fixture');
+  writeFileSync(join(runtimeAssetsProjectDir,'assets','builtin-diff-2.1.292.zip'),'deterministic latest diff fixture');
   await copyRuntimeAssets({
     projectDir: runtimeAssetsProjectDir,
     nodeModulesDir: runtimeAssetsNodeModulesDir,
@@ -192,7 +192,7 @@ try {
     ),
     'deterministic archive fixture',
   );
-  assert.equal(readFileSync(join(runtimeAssetsProjectDir,'dist','assets','builtin-diff-2.1.291.zip'),'utf8'),'deterministic latest diff fixture');
+  assert.equal(readFileSync(join(runtimeAssetsProjectDir,'dist','assets','builtin-diff-2.1.292.zip'),'utf8'),'deterministic latest diff fixture');
 } finally {
   rmSync(runtimeAssetsProjectDir, { recursive: true, force: true });
 }
