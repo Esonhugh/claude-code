@@ -75,13 +75,18 @@ async function fixture() {
     if(mode==='button')return ui.Button({key:'button',label:'Run',onPress:event=>$.ui.log(JSON.stringify({phase:'press',event}))});
     if(mode==='input')return ui.Input({key:'input',value:'',onInput:(value,event)=>$.ui.log(JSON.stringify({phase:'change',value,event})),onSubmit:(value,event)=>$.ui.log(JSON.stringify({phase:'submit',value,event}))});
     if(mode==='select')return ui.Select({key:'select',options:[{value:'a'}],onSelect:(value,event)=>$.ui.log(JSON.stringify({phase:'select',value,event}))});
-    if(mode==='client')return ui.Client({key:'client',module:'./surface.ts',props:{label:'remote'}});
+    if(mode==='slowclient')await $.clock.sleep(60);
+    if(mode==='client'||mode==='slowclient')return ui.Client({key:'client',module:'./surface.ts',props:{label:'remote'}});
     if(mode==='wait'){await $.clock.sleep(40);$.ui.log(JSON.stringify({phase:'settled'}));}
     return ui.Text({children:'remote'});
   }
   export function register(on) {
     on('ui.render',{component:'ToolUse',surface:'desktop'},draw);
     on('ui.render',{component:'Pane',surface:'desktop'},draw);
+    on('ui.press',async($,e,next)=>{if(e.element==='hold')return {element:e.element};if(e.element==='bad')return {};return next(e.element==='inside'?{...e,element:'rewritten-'+e.element}:e)});
+    on('ui.input',async($,e,next)=>{if(e.element==='hold')return {element:e.element,value:e.value};return next(e.element==='inside'?{...e,element:'rewritten-'+e.element,value:'rewritten-'+e.value}:e)});
+    on('ui.select',async($,e,next)=>next(e.element==='inside'?{...e,element:'rewritten-'+e.element,value:'rewritten-'+e.value}:e));
+    on('ui.message',async($,e,next)=>{$.ui.log(JSON.stringify({phase:'message',e,origin:next.origin}));if(e.data?.spoof)return next({...e,module:'spoofed'});if(e.data?.wait){await $.clock.sleep(40);$.ui.log(JSON.stringify({phase:'message-exit',seq:e.data.seq}))}return {props:e.data}});
   }`,
   )
   await writeFile(
@@ -368,4 +373,195 @@ test('SDK render validation and client module errors match the official control 
     error:
       'ui_client_module: plugin missing is not loaded or its hooks module names no surface module',
   })
+})
+
+function address(
+  result: Awaited<
+    ReturnType<ReturnType<typeof createModRemoteRenderer>['render']>
+  >,
+  instance_id = 'client',
+) {
+  if (result.tree.type !== 'Client')
+    throw new Error('Expected a Client drawing')
+  return {
+    plugin: result.tree.client.plugin,
+    component: 'Pane' as const,
+    instance_id,
+    client: result.tree.props.key,
+    module: result.tree.props.module,
+  }
+}
+
+test('external Client callbacks run the Worker hook chain and return reached input without mounting source', async () => {
+  const { renderer } = await fixture()
+  const target = address(
+    await renderer.render(request('client', { component: 'Pane' })),
+  )
+  for (const event of [
+    { type: 'press' } as const,
+    { type: 'input', kind: 'change', value: 'draft' } as const,
+    { type: 'input', kind: 'submit', value: 'draft' } as const,
+    { type: 'select', value: 'choice' } as const,
+  ]) {
+    const result = await renderer.clientPress({
+      subtype: 'ui_client_press',
+      ...target,
+      element: 'inside',
+      event,
+    })
+    expect(result).toEqual({
+      handled: true,
+      reached: {
+        plugin: target.plugin,
+        element: 'rewritten-inside',
+        surface: 'desktop',
+        component: 'Pane',
+        requestId: 'client',
+        ...(event.type === 'input'
+          ? { kind: event.kind, value: 'rewritten-draft' }
+          : event.type === 'select'
+            ? { value: 'rewritten-choice' }
+            : {}),
+      },
+    })
+  }
+  expect(
+    await renderer.clientPress({
+      subtype: 'ui_client_press',
+      ...target,
+      element: 'hold',
+      event: { type: 'press' },
+    }),
+  ).toEqual({ handled: true })
+  expect(
+    await renderer.clientPress({
+      subtype: 'ui_client_press',
+      ...target,
+      element: 'bad',
+      event: { type: 'press' },
+    }),
+  ).toEqual({
+    handled: true,
+    reached: {
+      plugin: target.plugin,
+      element: 'bad',
+      component: 'Pane',
+      requestId: 'client',
+      surface: 'desktop',
+    },
+  })
+  await renderer.render(
+    request('text', { component: 'Pane', instance_id: 'client' }),
+  )
+  expect(
+    await renderer.clientPress({
+      subtype: 'ui_client_press',
+      ...target,
+      element: 'inside',
+      event: { type: 'press' },
+    }),
+  ).toEqual({ handled: false })
+})
+
+test('external Client messages are owner-only, serialized, pinned and bounded before dispatch', async () => {
+  const { renderer, runtime, logs } = await fixture()
+  const target = address(
+    await renderer.render(request('client', { component: 'Pane' })),
+  )
+  let spy = 0
+  runtime.registerHostHook({
+    plugin: 'unrelated-message-observer',
+    tier: 'user',
+    registration: { id: 42, event: 'ui.message', hasCatch: false },
+    invoke: async (e, next) => {
+      spy++
+      return next(e)
+    },
+  })
+  const message = (data: unknown, change = {}) =>
+    renderer.clientMessage({
+      subtype: 'ui_message',
+      ...target,
+      ...change,
+      data,
+    })
+  expect(await message({ nested: ['owned', null] })).toEqual({
+    handled: true,
+    props: { nested: ['owned', null] },
+  })
+  expect(await message(null)).toEqual({ handled: true, props: null })
+  expect(await message({ spoof: true })).toEqual({ handled: true })
+  expect(spy).toBe(0)
+  expect(logs).toContainEqual({
+    phase: 'message',
+    e: {
+      surface: 'desktop',
+      component: 'Pane',
+      requestId: 'client',
+      element: 'client',
+      module: target.module,
+      data: null,
+    },
+    origin: { plugin: 'client', tier: 'user' },
+  })
+  const pair = await Promise.all([
+    message({ wait: true, seq: 1 }),
+    message({ wait: true, seq: 2 }),
+  ])
+  expect(pair).toHaveLength(2)
+  expect(logs.filter((e: any) => e.phase === 'message-exit')).toEqual([
+    { phase: 'message-exit', seq: 1 },
+    { phase: 'message-exit', seq: 2 },
+  ])
+  await expect(message('x'.repeat(100001))).rejects.toThrow(
+    'post: the data serializes to more than 100000 characters; not sent',
+  )
+  await expect(message(Array(20000).fill(0))).rejects.toThrow(
+    'holds more than 20000 values',
+  )
+  let deep: unknown = null
+  for (let i = 0; i < 32; i++) deep = [deep]
+  expect(await message(deep)).toEqual({ handled: true, props: deep })
+  await expect(message([deep])).rejects.toThrow('nests deeper than 32')
+  for (const change of [
+    { plugin: 'other' },
+    { component: 'ToolUse' },
+    { instance_id: 'missing' },
+    { client: 'missing' },
+    { module: 'missing' },
+  ])
+    expect(await message(null, change)).toEqual({ handled: false })
+  await renderer.render(
+    request('text', { component: 'Pane', instance_id: 'client' }),
+  )
+  expect(await message('x'.repeat(100001))).toEqual({ handled: false })
+})
+
+test('newer desktop Client generations retain pending keys and prevent old draws from reviving nodes', async () => {
+  const { renderer } = await fixture()
+  const target = address(
+    await renderer.render(request('client', { component: 'Pane' })),
+  )
+  const pending = renderer.render(
+    request('slowclient', { component: 'Pane', instance_id: 'client' }),
+  )
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  expect(
+    await renderer.clientMessage({
+      subtype: 'ui_message',
+      ...target,
+      data: 'pending',
+    }),
+  ).toEqual({ handled: true, props: 'pending' })
+  await renderer.render(
+    request('text', { component: 'Pane', instance_id: 'client' }),
+  )
+  await pending
+  expect(
+    await renderer.clientMessage({
+      subtype: 'ui_message',
+      ...target,
+      data: null,
+    }),
+  ).toEqual({ handled: false })
 })

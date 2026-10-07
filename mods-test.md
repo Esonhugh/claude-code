@@ -2083,3 +2083,10 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 接通 ui_render / ui_press / ui_input / ui_select / ui_client_module，补齐顶层命名 hook、无终端的远程 ui.resolve 和 desktop Client 校验。对照官方真实回执保留 next(e) 的非零 engine ref、组件级 hooked、非法树与普通异常的不同回退、on_screen 所有权、UTF-16 截断及取消只抑制回包。模块包从准入快照生成，附固定官方 runtime/types 数据；服务端不挂载 Client。
 
 原失败、完整检查、候选/ROOT 新制品和串行原生回执比较见 [本批验收](docs/research/mods-render-bridge-292-20261007.md)。通过范围按该报告的精确结果记录；剩余 11 类远程控制、5 类 responder、system 推送、外部浏览器 Client 行为、完整 UI/diff/G5 和旧 WIP 全量门禁仍开放。
+
+
+## 2026-10-07 — 外部 Client 交互与消息
+
+本批将 ui_client_press / ui_message 接进 stream-json：使用真实 Client 绘制回包的规范地址，交互经过 Mods 钩子并返回最终 reached 输入；消息只交给所属插件并保留 client 来源。测试覆盖有效拦截、重写、消息 props、null、只读地址、失效地址优先于数据校验、JSON 限额、串行消息和绘制代次。
+
+结果、制品与隔离原生控制证据见 [Client 交互专项](docs/research/mods-client-events-292-20261007.md)。本批范围为这两类控制；ui_client_fault、剩余控制、5 类 responder、system 推送、完整终端 UI、官方 diff、G5 和旧 response 的全量 WIP 门禁不在完成范围内。

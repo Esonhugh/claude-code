@@ -1,3 +1,4 @@
+import { modClientDataProblem } from './remoteUiClient.js'
 import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './matcher.js'
 import { combineModModelSignals } from './modelAbort.js'
 import {validateModModelCompleteInput} from './modelTextBlocks.js'
@@ -2092,7 +2093,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     if (event === 'ui.message') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.message must return an object')
-      if (Object.hasOwn(result, 'props')) copyModClientData((result as { props?: unknown }).props)
+      if (Object.hasOwn(result, 'props') && (result as { props?: unknown }).props !== undefined) {
+        const problem = modClientDataProblem((result as { props?: unknown }).props)
+        if (problem) throw new TypeError(`ui.message props ${problem}`)
+      }
       return
     }
     if (event === 'ui.render') {
@@ -2264,7 +2268,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (testTerminal(event))
         core = async () => { throw new Error(`Unhandled plugin test event: ${event}`) }
       const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
-        event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner), core,
+        event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner)
+          .filter(hook => event !== 'ui.message' || !options.only || hook.plugin === options.only.declaration.name), core,
         signal: combined.signal, origin: options.origin,
         reportDirectCoreFailure: options.reportDirectCoreFailure,
         // Only the calling frame is recursive; sibling policy hooks still run.
@@ -3003,6 +3008,35 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     /** Trusted SDK transport roster; not an author capability. */
     remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces,
       has: (clientId: string) => attachedClients.has(clientId),
+    },
+
+    async remoteClientPress(input: ModInput, type: 'press' | 'input' | 'select'): Promise<{ reached?: ModInput }> {
+      let reached: ModInput | undefined
+      await dispatch(`ui.${type}`, input, async rewritten => {
+        reached = structuredClone(rewritten)
+        return { element: rewritten.element, ...(type === 'press' ? {} : { value: rewritten.value }) }
+      }, active, nouns, {
+        validateResult: result => {
+          const value = result as ModInput
+          if (typeof value.element !== 'string' || type !== 'press' && typeof value.value !== 'string')
+            throw new TypeError(type === 'press' ? 'ui.press requires { element }' : `ui.${type} requires { element, value }`)
+        },
+        validateInput: value => {
+          if (value.plugin !== input.plugin || value.requestId !== input.requestId ||
+            typeof value.element !== 'string' || typeof value.component !== 'string' ||
+            !['terminal', 'desktop', 'mobile', 'vscode'].includes(String(value.surface)) ||
+            type !== 'press' && typeof value.value !== 'string' || type === 'input' && value.kind !== input.kind)
+            throw new TypeError(`ui.${type} cannot change the owning plugin, requestId or input kind`)
+        },
+      })
+      return reached === undefined ? {} : { reached }
+    },
+    async remoteClientMessage(plugin: string, input: ModInput): Promise<{ props?: unknown } | undefined> {
+      const owner = active.find(owner => owner.declaration.name === plugin)
+      if (!owner) return
+      return dispatch('ui.message', input, async () => ({}), active, nouns, {
+        only: owner, origin: { plugin: 'client', tier: owner.declaration.tier },
+      }) as Promise<{ props?: unknown }>
     },
     clientModule(plugin: string) {
       const owner = active.find(owner => owner.declaration.name === plugin)

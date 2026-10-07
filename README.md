@@ -1524,7 +1524,7 @@ type RenderResponse = SDKControlUIResponseFor<typeof request>
 bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/entrypoints/sdk/controlSchemas.ssh.test.ts ./src/services/mods/remoteUiControl.test.ts
 ```
 
-协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module`；其余控制器、system 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
+协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message`；其余控制器、system 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 
 ### SDK 远程绘制与 Client 模块
@@ -1542,3 +1542,24 @@ Button / Input / Select 回执的 press 含 plugin 和 opaque handle。将它们
 桌面 Client 节点通过 client.plugin 标识所有者，client_modules 给出插件到模块包 hash 的映射。用 ui_client_module 查询 {plugin,hash,modules,runtime,limits,files}。宿主从已准入的源快照编译和重写 import，模块由外部 surface 执行；不得将包中的源代码当成宿主 hook 运行。随包返回官方 2.1.292 的固定 surface runtime/types 数据，hash 包含文件、模块清单和 limits。
 
 调试日志 `[ModsUIRemote]` 记录 surface/component/instance/drawing、hooked 和 rewritten，不新增 props 正文日志。实际三方回执、来源和边界见 [远程绘制专项](docs/research/mods-render-bridge-292-20261007.md)。客户端浏览器挂载、client_press/message/fault、pane/scroll/focus、system 推送及五类 responder 仍需独立完成和验收。
+
+
+### 外部 Client 的交互与消息
+
+拿到 desktop `ui_render` 的 Client 树后，使用回包中 `client.plugin`、`props.key` 和 `props.module`，加上渲染的 `component` / `instance_id` 构造地址；模块名已规范化，不要使用作者传给 `ui.Client` 的相对拼写。
+
+```json
+{"type":"control_request","request_id":"client-click-1","request":{"subtype":"ui_client_press","plugin":"example","component":"Pane","instance_id":"pane-1","client":"view","module":"hooks/view.ts","element":"save","event":{"type":"press"}}}
+```
+
+`event` 还可为 `{"type":"input","kind":"change","value":"draft"}`、submit 或 select。`handled:true` 表示地址可达；只有回包含 `reached` 时，外部 Client 才对该最终输入调用自己的回调，Mods 可以重写或拦截。服务端不执行 Client 源码。
+
+将同一地址放进 `ui_message`，附 `data`（必填，允许 null），会只触发所属插件的 `ui.message`。`next.origin` 为 client；回包可带替换 `props`。消息有 100000 字符、20000 值和 32 层深度限制；过期地址返回 `handled:false`。input、select、message 各自按插件排队，press 独立执行。
+
+运行专项回归：
+
+```bash
+bun test --no-env-file ./src/services/mods/remoteUiClient.test.ts ./src/services/mods/remoteUiRender.test.ts
+```
+
+真实官方/候选/完整工作区的验证和未完成范围见 [Client 交互验收](docs/research/mods-client-events-292-20261007.md)。当前接通 9 类客户端控制；ui_client_fault 等剩余 9 类、5 类 responder、system 推送及完整官方 diff viewer 流程继续对齐。

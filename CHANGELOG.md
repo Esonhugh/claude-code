@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 外部 Client 交互与消息控制
+
+### Fixed
+
+- 接通 ui_client_press 与 ui_message：校验 desktop 当前节点地址，经过 Worker 钩子返回 reached 或 props，消息仅交给所属插件并保留 client 来源。
+- Client 地址使用独立 1024 实例 LRU 和绘制代次；绘制等待期间保留旧节点，新树发布后失效，迟到的旧绘制不能恢复已替换节点。
+- input、select 与 message 按操作和插件串行；消息检查 JSON 字符、值和深度限制，失效地址先返回未处理，不执行外部 Client 模块。
+
+### Validation
+
+- 新增真实 Worker 交互、消息、来源、所有权、拦截及并发回归；与官方 2.1.292 的隔离原生控制回执和事件分别比较。
+- 验收记录见 docs/research/mods-client-events-292-20261007.md；ui_client_fault、其余控制、responder、完整 UI/diff 和全量 Mods 对齐继续处理。
+
 ## 2026-10-07 - SDK 远程绘制、回调与 Client 模块数据
 
 ### Added

@@ -1,4 +1,8 @@
 import { isDeepStrictEqual } from 'node:util'
+import {
+  createModRemoteClientRegistry,
+  modClientDataProblem,
+} from './remoteUiClient.js'
 import type {
   SDKControlUIRenderRequest,
   SDKControlUIRenderResponse,
@@ -6,6 +10,10 @@ import type {
   SDKControlUIInputRequest,
   SDKControlUISelectRequest,
   SDKControlUIInputResponse,
+  SDKControlUIClientPressRequest,
+  SDKControlUIClientPressResponse,
+  SDKControlUIMessageRequest,
+  SDKControlUIMessageResponse,
   SDKUIRenderElement,
 } from '../../entrypoints/sdk/modsControlTypes.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -98,6 +106,23 @@ type Drawing = {
 export function createModRemoteRenderer(runtime: ModsRuntime) {
   const sites = new Map<string, Drawing>()
   const retiring = new Set<Promise<void>>()
+  const clients = createModRemoteClientRegistry()
+  const queues = new Map<string, Promise<unknown>>()
+  const serial = <T>(
+    kind: string,
+    plugin: string,
+    work: () => Promise<T>,
+  ): Promise<T> => {
+    const key = `${kind}\0${plugin}`
+    const result = (queues.get(key) ?? Promise.resolve()).then(work, work)
+    queues.set(key, result)
+    void result
+      .finally(() => {
+        if (queues.get(key) === result) queues.delete(key)
+      })
+      .catch(() => {})
+    return result
+  }
   let disposed = false
   const remove = async (key: string, entry: Drawing) => {
     if (sites.get(key) === entry) sites.delete(key)
@@ -119,6 +144,10 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
     ): Promise<SDKControlUIRenderResponse> {
       if (disposed) throw new Error('Remote UI renderer is disposed')
       const input = normalizeModRemoteRender(request)
+      const clientGeneration =
+        input.surface === 'desktop'
+          ? clients.begin(input.component, input.requestId)
+          : undefined
       runtime.remoteClients.attach({
         surface: request.surface,
         clientId: request.client_id ?? `${request.surface}:default`,
@@ -131,6 +160,8 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
       const hooked = runtime.renderHooks.matchesComponent(input.component)
       if (!runtime.renderHooks.matches(input)) {
         if (entry) await remove(key, entry)
+        if (clientGeneration)
+          clients.record(clientGeneration, { type: 'engine', ref: 0 })
         return {
           tree: { type: 'engine', ref: 0 },
           props: input.props,
@@ -190,6 +221,7 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
         }
       }
       const tree = wireTree(entry!.tree) as SDKUIRenderElement
+      if (clientGeneration) clients.record(clientGeneration, tree)
       const props = structuredClone(entry!.selectedProps!)
       const rewritten = entry!.rewritten === true
       const modules: Record<string, string> = {}
@@ -291,8 +323,78 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
       }
       return { handled: false }
     },
+    async clientPress(
+      request: SDKControlUIClientPressRequest,
+    ): Promise<SDKControlUIClientPressResponse> {
+      if (!clients.has(request)) {
+        logForDebugging(
+          `[ModsUIRemote] ui.${request.event.type}: no desktop Client ${request.plugin}/${request.client} (${request.module}) in ${request.component} ${JSON.stringify(request.instance_id)}`,
+        )
+        return { handled: false }
+      }
+      const input: ModInput = {
+        plugin: request.plugin,
+        element: request.element,
+        component: request.component,
+        requestId: request.instance_id,
+        surface: 'desktop',
+        ...(request.event.type === 'input'
+          ? { kind: request.event.kind, value: request.event.value }
+          : request.event.type === 'select'
+            ? { value: request.event.value }
+            : {}),
+      }
+      const run = async () => {
+        const started = performance.now()
+        const result = await runtime.remoteClientPress(
+          input,
+          request.event.type,
+        )
+        logForDebugging(
+          `[ModsUIRemote] ui.${request.event.type} ${request.plugin}/${request.element} in Client ${request.client} (${request.module}) of ${request.component}: settledMs=${(performance.now() - started).toFixed(1)} ${result.reached ? 'reached' : 'withheld'}`,
+        )
+        return { handled: true, ...result }
+      }
+      return request.event.type === 'press'
+        ? run()
+        : serial(request.event.type, request.plugin, run)
+    },
+    async clientMessage(
+      request: SDKControlUIMessageRequest,
+    ): Promise<SDKControlUIMessageResponse> {
+      if (!clients.has(request)) {
+        logForDebugging(
+          `[ModsUIRemote] ui.message: no desktop Client ${request.plugin}/${request.client} (${request.module}) in ${request.component} ${JSON.stringify(request.instance_id)}`,
+        )
+        return { handled: false }
+      }
+      const problem = modClientDataProblem(request.data)
+      if (problem)
+        throw new Error(
+          `${request.plugin}: Client ${request.module}: post: the data ${problem}; not sent`,
+        )
+      return serial('message', request.plugin, async () => {
+        const started = performance.now()
+        const result = await runtime.remoteClientMessage(request.plugin, {
+          surface: 'desktop',
+          component: request.component,
+          requestId: request.instance_id,
+          element: request.client,
+          module: request.module,
+          data: structuredClone(request.data),
+        })
+        logForDebugging(
+          `[ModsUIRemote] ui.message ${request.plugin}/${request.client} (${request.module}) in ${request.component}: settledMs=${(performance.now() - started).toFixed(1)}`,
+        )
+        return {
+          handled: true,
+          ...(result?.props === undefined ? {} : { props: result.props }),
+        }
+      })
+    },
     async dispose() {
       disposed = true
+      clients.clear()
       await Promise.all([...sites].map(([key, entry]) => remove(key, entry)))
       await Promise.all([...retiring])
     },

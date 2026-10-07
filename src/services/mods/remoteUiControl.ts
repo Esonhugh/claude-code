@@ -12,6 +12,9 @@ const errors: Record<string, string> = {
   ui_input: 'ui_input: plugin must be a string, handle an integer, kind "change" or "submit", value a string of at most 16384 characters, key (when given) a string, component (when given) a render site name, instance_id (when given) a string and surface (when given) "desktop", "mobile" or "vscode"',
   ui_select: 'ui_select: plugin must be a string, handle an integer, value a string of at most 16384 characters, key (when given) a string, component (when given) a render site name, instance_id (when given) a string and surface (when given) "desktop", "mobile" or "vscode"',
   ui_client_module: 'ui_client_module: plugin must be a string',
+  ui_client_press: 'ui_client_press: plugin, instance_id, client, module and element must be strings, component a render site name, and event {type: "press"} | {type: "input", kind, value} | {type: "select", value}',
+  ui_message: 'ui_message: plugin, instance_id, client and module must be strings, component a render site name, and data present (plain JSON)',
+
 }
 
 /** These controls describe an SDK connection, independently of individual drawings. */
@@ -75,6 +78,10 @@ export function createModRemoteUIControl(options: {
             const bundle = runtime.clientModule(request.plugin)
             if (bundle) success({ ...bundle })
             else failure(`ui_client_module: plugin ${request.plugin} is not loaded or its hooks module names no surface module`)
+          } else if (request.subtype === 'ui_client_press') {
+            return rendererFor(runtime).clientPress({ ...request, event: request.event! }).then(success, failure)
+          } else if (request.subtype === 'ui_message') {
+            return rendererFor(runtime).clientMessage(request).then(success, failure)
           } else if (request.subtype === 'ui_render') {
             return rendererFor(runtime).render(request).then(result => {
               if (runtime.remoteClients.has(request.client_id ?? `${request.surface}:default`)) success({ ...result })
