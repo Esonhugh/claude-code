@@ -712,7 +712,7 @@ describe('mod UI ownership and pane policy', () => {
   })
 
   for (const end of ['close', 'unload', 'reload', 'candidate-release'] as const) {
-    test(`does not inherit person-opened visibility or focus after ${end}`, async () => {
+    test(`${end === 'reload' ? 'preserves' : 'does not inherit'} person-opened visibility or focus after ${end}`, async () => {
       const owner = { plugin: 'fixture' }
       const { ui } = fixture()
       const narrow = { ...wide, columns: 96 }
@@ -729,7 +729,7 @@ describe('mod UI ownership and pane policy', () => {
       await ui.open(nextOwner, { id: 'asked' }, { kind: 'plugin' }, narrow)
       if (end !== 'close') await ui.commit(nextOwner, end === 'reload' ? owner : undefined)
       expect(ui.getSnapshot()).toHaveLength(1)
-      expect(ui.getSnapshot()[0]).toMatchObject({ owner: nextOwner, visible: false, focused: false })
+      expect(ui.getSnapshot()[0]).toMatchObject({ owner: nextOwner, visible: end === 'reload', focused: end === 'reload' })
       expect(ui.getSnapshot()[0]!.focusedElement).toBeUndefined()
     })
   }

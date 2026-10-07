@@ -236,7 +236,7 @@ const coreHost: Nouns = {
   mcp: { call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -991,6 +991,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
+      case 'ui.panes': return {}
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
       case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'session.messages': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
@@ -1168,6 +1169,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           return await services.uiCopy({text, surface}, plugin, combined.signal)
         } finally { combined.cleanup() }
       }
+      case 'ui.panes': return ui.panes(owner)
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
         return listModAgents(services.tasks(), services.agentNames?.())

@@ -12,6 +12,22 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 自有 pane 查询与重载
+
+### Added
+
+- 接通作者方法 $.ui.panes() 与 ui.panes hook，返回插件自己的 id、title、isShown、isFocused、isPlaced；列表按打开顺序排列，已放置 pane 在前。
+- 插件重载可发现并继承引擎已有 pane；准备阶段的打开和关闭隔离于旧画面，发布后保留全局顺序并撤销旧绘制回调。
+
+### Fixed
+
+- Worker 返回独立的可修改查询副本；忽略 JavaScript 额外便捷调用参数，公共 TypeScript 签名仍无参数并返回 readonly 列表。
+- 等待绘制期间的旧焦点请求不把新激活代次的焦点报告成自己的成功。
+
+### Tests
+
+- 覆盖真实 Worker、拦截与拒绝、所有权、排序、重载、旧回调及严格官方作者类型；验收结果与剩余远程控制范围见 docs/research/mods-pane-list-292-20261007.md。
+
 ## 2026-10-07 - 外部 Client 故障与恢复通知
 
 ### Fixed

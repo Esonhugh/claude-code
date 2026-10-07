@@ -1636,3 +1636,22 @@ make check-mods-control-types
 原生回执、故障文本、恢复次数与取消顺序的证据见 [Client 故障验收](docs/research/mods-client-fault-292-20261007.md)。此项不替代完整浏览器 Client、终端内部故障、官方 diff viewer 或全部 Mods 兼容验收。
 
 官方作者说明见 [Anthropic Mods 概览](https://code.claude.com/docs/en/plugins/mods/overview) 与 [Mods 接口参考](https://code.claude.com/docs/en/plugins/mods/reference)。接口参考将 ui.fault 定义为 Client 加载、绘制或运行失败的观察事件；本项目的具体类型与传输行为以固定官方版本的声明和专项验收为依据。
+
+
+### 查询 Mods 自己的 pane
+
+`await $.ui.panes()` 返回本插件登记在引擎中的 pane，包括暂未放置的记录。每项只有 `id`、`title`、`isShown`、`isFocused` 和 `isPlaced`。列表按打开顺序排列，已放置的记录在前；`isShown` 表示当前显示，`isFocused` 表示持有键盘，两者分别读取。
+
+```js
+on('session.start', async ($, e, next) => {
+  const panes = await $.ui.panes()
+  if (!panes.some(pane => pane.id === 'clock')) {
+    await $.ui.open({id: 'clock', title: 'Clock'})
+  }
+  return next(e)
+})
+```
+
+重载后的模块能查询仍在引擎中的自有 pane。准备阶段的开关操作在新代次发布时生效，旧绘制回调随后失效。`ui.panes` hook 收到冻结的空参数，可返回 `{value: panes}` 或 `{deny: 'reason'}`。TypeScript 方法无参数，返回 `Promise<readonly UiPane[]>`；Worker 中的结果是独立副本，修改它不会改变引擎状态。JavaScript 的额外便捷调用参数会被忽略。
+
+本方法当前沿已有交互终端的 pane 宿主运行。无终端 SDK 的 pane 登记、远程 show/focus/close 控制和 system/ui_panes 推送继续单独接通；公开协议类型不代表这些入口已实现。作者接口见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)，精确验证结果见[自有 pane 查询专项](docs/research/mods-pane-list-292-20261007.md)。

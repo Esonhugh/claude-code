@@ -89,6 +89,13 @@ export type ModUiInteraction =
   | 'input.submit'
   | 'select'
 export type ModUiPlacement = 'dock' | 'inline'
+export type ModUiPaneInfo = {
+  id: string
+  title: string
+  isShown: boolean
+  isFocused: boolean
+  isPlaced: boolean
+}
 export type ModUiKeyRow = {
   plugin: string
   key: string
@@ -214,6 +221,7 @@ export type ModUi = {
   release(owner: ModUiOwner): Promise<void>
   getClientSite(owner: ModUiOwner, id: string): ModClientSite | undefined
   getSnapshot(): readonly ModUiPane[]
+  panes(owner: ModUiOwner): readonly ModUiPaneInfo[]
   subscribe(listener: () => void): () => void
 }
 
@@ -762,6 +770,25 @@ export function createModUi({
     return pane.owner === owner || pluginOf(pane.owner) === pluginOf(owner)
   }
 
+  function candidatePanes(owner: ModUiOwner): Map<string, PaneState> {
+    let panes = candidates.get(owner)
+    if (!panes) {
+      panes = new Map()
+      for (const [id, pane] of active) {
+        if (!ownsPane(owner, pane)) continue
+        const inherited: PaneState = {
+          ...pane,
+          owner,
+          tree: undefined,
+          drawing: undefined,
+        }
+        panes.set(id, inherited)
+      }
+      candidates.set(owner, panes)
+    }
+    return panes
+  }
+
   function focusableNode(
     value: unknown,
     element: string,
@@ -1302,10 +1329,7 @@ export function createModUi({
             onAskedChange?.(pluginOf(owner), spec.id, true)
           }
           const committed = activeOwners.has(owner)
-          const store = committed
-            ? active
-            : (candidates.get(owner) ?? new Map<string, PaneState>())
-          if (!committed && !candidates.has(owner)) candidates.set(owner, store)
+          const store = committed ? active : candidatePanes(owner)
           const existing = store.get(spec.id)
           if (committed && existing && !ownsPane(owner, existing))
             throw new Error(`Mod UI pane ${spec.id} is already owned by another activation`)
@@ -1373,7 +1397,7 @@ export function createModUi({
       if (typeof id !== 'string' || !idPattern.test(id))
         throw new TypeError('Mod UI pane id is invalid')
       const committed = activeOwners.has(owner)
-      const store = committed ? active : candidates.get(owner)
+      const store = committed ? active : candidatePanes(owner)
       const pane = store?.get(id)
       if (!pane) return undefined
       if (origin.kind === 'plugin' && !ownsPane(owner, pane))
@@ -1727,7 +1751,7 @@ export function createModUi({
         }
       }
       const landing = active.get(request.requestId)
-      const focused = Boolean(landing?.visible && landing.tree !== undefined && landing.focused)
+      const focused = Boolean(landing === pane && landing.visible && landing.tree !== undefined && landing.focused)
       // Middleware can withhold core, redirect it or move focus again after next().
       const reported: Record<string, unknown> = { ...(result as Record<string, unknown>), focused }
       delete reported.element
@@ -1883,7 +1907,8 @@ export function createModUi({
     async prepareCommit(owner, replacedOwner, preparedOwners = []) {
       validateOwner(owner)
       if (replacedOwner !== undefined) validateOwner(replacedOwner)
-      const next = candidates.get(owner) ?? new Map<string, PaneState>()
+      const next = candidates.get(owner) ??
+        (replacedOwner === undefined ? new Map<string, PaneState>() : candidatePanes(owner))
       for (const [id] of next) {
         const current = active.get(id)
         if ((current && current.owner !== owner && current.owner !== replacedOwner) ||
@@ -1902,9 +1927,12 @@ export function createModUi({
       }
       return () => {
         const removed: PaneState[] = []
+        const replacements = new Map(prepared.map(pane => [pane.id, pane]))
         for (const [id, pane] of [...active]) {
           if (pane.owner === owner || pane.owner === replacedOwner) {
-            active.delete(id)
+            const replacement = replacements.get(id)
+            if (replacement) active.set(id, replacement)
+            else active.delete(id)
             pane.drawGeneration++
             removed.push(pane)
           }
@@ -1950,6 +1978,22 @@ export function createModUi({
     },
 
     getSnapshot: () => snapshot,
+
+    panes(owner) {
+      validateOwner(owner)
+      const records = activeOwners.has(owner)
+        ? new Map([...active].filter(([, pane]) => ownsPane(owner, pane)))
+        : candidatePanes(owner)
+      return Object.freeze([...records.values()]
+        .sort((a, b) => Number(b.visible) - Number(a.visible))
+        .map(pane => Object.freeze({
+          id: pane.id,
+          title: pane.title,
+          isShown: pane.visible && pane.shown === true,
+          isFocused: pane.visible && pane.focused,
+          isPlaced: pane.visible,
+        })))
+    },
 
     subscribe(listener) {
       listeners.add(listener)

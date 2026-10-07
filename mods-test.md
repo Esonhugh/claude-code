@@ -2099,3 +2099,10 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 恢复发送 system/ui_invalidate，外部 surface 重新请求 ui_render；故障控制不登记可取消任务，control_cancel_request 不影响 hook、通知和故障回包。严格作者类型保持 observe-only，不公开 $.ui.fault。SDK schema/type 双向检查覆盖有限 ui_invalidate 消息。
 
 准确结果、官方源证据、制品与隔离原生控制见 [Client 故障专项](docs/research/mods-client-fault-292-20261007.md)。本批不代表终端内部故障、完整浏览器 Client、剩余 8 类控制、5 类 responder、pane/scroll/focus 推送、全部 UI/diff/G5 或旧 response 全量 WIP 门禁通过。
+
+
+## 2026-10-07：自有 pane 查询与重载切片
+
+接通 $.ui.panes() / ui.panes，按插件过滤引擎记录，以打开顺序返回已放置项和未放置项；五个公开字段与官方作者声明匹配。真实 Worker 检查拒绝和替换回执、额外 JavaScript 参数忽略、结果副本可修改、旧代次回调撤销以及跨插件顺序。重载继承引擎已有 pane，并隔离准备阶段的关闭。
+
+结果、官方 2.1.292 对照、新制品与真实终端流程见 [pane 查询专项](docs/research/mods-pane-list-292-20261007.md)。本批未接通无终端 pane.open、ui_panes/show/focus/close 控制和 system/ui_panes 推送，也不代表剩余远程控制、5 类 responder、完整 UI/diff/G5 与旧 response 全量 WIP 门禁通过。
