@@ -1,7 +1,7 @@
 import { marked, type Token, type Tokens } from 'marked'
 import React, { Suspense, use, useMemo, useRef } from 'react'
 import { useSettings } from '../hooks/useSettings.js'
-import { Ansi, Box, type DOMElement, useTheme } from '../ink.js'
+import { Ansi, Box, Text, type DOMElement, useTheme } from '../ink.js'
 import {
   type CliHighlight,
   getCliHighlightPromise,
@@ -15,6 +15,10 @@ type Props = {
   children: string
   /** When true, render all text content as dim */
   dimColor?: boolean
+  hint?: string
+  capProseWidth?: boolean
+  /** False when the native caller has already projected display tags and whitespace. */
+  stripPromptTags?: boolean
   /** Other link schemes remain text, including links inside tables. */
   allowedLinkProtocols?: readonly string[]
   onLinkPress?: (href: string) => void
@@ -105,16 +109,21 @@ function MarkdownBody({
   children,
   dimColor,
   highlight,
+  hint,
+  capProseWidth,
+  stripPromptTags,
   allowedLinkProtocols,
   onLinkPress,
   pressableLinks,
   registerPressableLink,
 }: Props & { highlight: CliHighlight | null }): React.ReactNode {
   const [theme] = useTheme()
+  const settings = useSettings()
+  const maxProseWidth = capProseWidth ? settings.maxProseWidth : undefined
   configureMarked()
 
   const elements = useMemo(() => {
-    const cached = cachedLexer(stripPromptXMLTags(children))
+    const cached = cachedLexer(stripPromptTags === false ? children : stripPromptXMLTags(children))
     const tokens = allowedLinkProtocols ? structuredClone(cached) : cached
     if (allowedLinkProtocols) marked.walkTokens(tokens, token => {
       if (token.type !== 'link') return
@@ -131,19 +140,24 @@ function MarkdownBody({
     const elements: React.ReactNode[] = []
     let nonTableContent = ''
 
-    function flushNonTableContent(): void {
+    let hinted = false
+
+    function flushNonTableContent(last = false, fullWidth = false): void {
       if (nonTableContent) {
-        elements.push(
-          <Ansi
+        const tail = last && hint ? <Text color="subtle">{' ·\u00a0' + hint}</Text> : null
+        if (tail) hinted = true
+        const content = <Ansi
             key={elements.length}
             dimColor={dimColor}
             onLinkPress={onLinkPress}
             isLinkPressable={pressableLinks === undefined ? undefined : href => pressableLinks.includes(href)}
             registerPressableLink={registerPressableLink}
           >
-            {nonTableContent.trim()}
-          </Ansi>,
-        )
+            {stripPromptTags === false ? nonTableContent.replace(/^\n+/, '').trimEnd() : nonTableContent.trim()}
+          </Ansi>
+        const decorated = tail ? <Text>{content}{tail}</Text> : content
+        elements.push(capProseWidth ? <Box key={elements.length} maxWidth={fullWidth ? undefined : maxProseWidth}>{decorated}</Box> :
+          <React.Fragment key={elements.length}>{decorated}</React.Fragment>)
         nonTableContent = ''
       }
     }
@@ -159,14 +173,22 @@ function MarkdownBody({
             dimColor={dimColor}
           />,
         )
+      } else if (maxProseWidth !== undefined && token.type === 'code') {
+        flushNonTableContent()
+        nonTableContent = formatToken(token, theme, 0, null, null, highlight)
+        flushNonTableContent(token === tokens.at(-1), true)
       } else {
         nonTableContent += formatToken(token, theme, 0, null, null, highlight)
       }
     }
 
-    flushNonTableContent()
+    flushNonTableContent(true)
+    if (hint && !hinted) {
+      const last = elements.pop()
+      elements.push(<Box key={elements.length} flexDirection="column">{last}<Text color="subtle">{'·\u00a0' + hint}</Text></Box>)
+    }
     return elements
-  }, [children, dimColor, highlight, theme, allowedLinkProtocols, onLinkPress, pressableLinks, registerPressableLink])
+  }, [children, dimColor, highlight, theme, hint, capProseWidth, maxProseWidth, stripPromptTags, allowedLinkProtocols, onLinkPress, pressableLinks, registerPressableLink])
 
   return (
     <Box flexDirection="column" gap={1}>

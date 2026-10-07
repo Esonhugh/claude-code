@@ -1408,4 +1408,20 @@ on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
 
 `next(e)` 保留原生 Markdown 和错误消息处理；可多次调用以绘制不同文本，也可直接返回自己的树。这些改写只影响显示，原始会话正文仍保存。`isSummary`、`onScreen` 和消息身份由宿主确定；不得在普通行中添加 `isSummary: true`。非法续绘或自定义树失败时回退原生回复。
 
-[本批验收](docs/research/mods-assistant-text-292-20261007.md)记录准确提交候选、工作区和官方制品的独立证据。narration 摘要、其模型相关显示规则、其他原生消息站点及完整 diff viewer 继续对齐。
+[本批验收](docs/research/mods-assistant-text-292-20261007.md)记录准确提交候选、工作区和官方制品的独立证据。narration 摘要见下节；其他原生消息站点、完整模型显示适配及 diff viewer 继续对齐。
+
+
+## Mods narration 摘要
+
+非空 narration thinking 块在普通及展开视图中均触发 `AssistantMessage`，并带宿主确定的 `e.props.isSummary === true`。签名分类只用于显示；插件收到清理后的正文，不修改原始 thinking 或 signature。普通私有 thinking 保持其展开规则。
+
+```js
+on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+  if (!e.props.isSummary) return next(e)
+  return next({ ...e, props: { ...e.props, text: '**摘要显示正文**' } })
+})
+```
+
+`isSummary` 保留为只读字段，不能删除、设置 false 或加入普通行。`next(e)` 使用原生摘要 Markdown 和模型相关的 “· summary” 标记；直接返回插件树时，其内容由插件绘制。`isFirstOfReply` 可改写以控制首行标记，空显示文本可隐藏该次原生续绘。
+
+`maxProseWidth` 是可选的终端列数设置，整数且至少 40。摘要 prose 按该宽度换行，顶层代码和表格保留终端宽度；不在保存正文中增加换行。当前已接线的消费者与尚未验证的复杂 Markdown、模型缓存和动态桌面路径见[本批验收](docs/research/mods-assistant-summary-292-20261007.md)。

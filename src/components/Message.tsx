@@ -29,6 +29,8 @@ import { CompactSummary } from './CompactSummary.js'
 import { AdvisorMessage } from './messages/AdvisorMessage.js'
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage.js'
 import { AssistantTextMessage } from './messages/AssistantTextMessage.js'
+import { AssistantSummaryMessage } from './messages/AssistantSummaryMessage.js'
+import { isAssistantNarrationSummary } from '../utils/assistantNarration.js'
 import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js'
 import { AssistantToolUseMessage } from './messages/AssistantToolUseMessage.js'
 import { AttachmentMessage } from './messages/AttachmentMessage.js'
@@ -120,6 +122,7 @@ function MessageImpl({
               isTranscriptMode={isTranscriptMode}
               lookups={lookups}
               onOpenRateLimitOptions={onOpenRateLimitOptions}
+              model={message.message.model}
               messageId={message.uuid}
               thinkingBlockId={`${message.uuid}:${index}`}
               lastThinkingBlockId={lastThinkingBlockId}
@@ -358,6 +361,7 @@ function AssistantMessageBlock({
   lookups,
   onOpenRateLimitOptions,
   messageId,
+  model,
   thinkingBlockId,
   lastThinkingBlockId,
   advisorModel,
@@ -385,6 +389,7 @@ function AssistantMessageBlock({
   lookups: ReturnType<typeof buildMessageLookups>
   onOpenRateLimitOptions?: () => void
   messageId: string
+  model: string
   /** ID of this content block's message:index for thinking block comparison */
   thinkingBlockId: string
   /** ID of the last thinking block to show, null means show all */
@@ -442,6 +447,10 @@ function AssistantMessageBlock({
       }
       return <AssistantRedactedThinkingMessage addMargin={addMargin} />
     case 'thinking': {
+      if (isAssistantNarrationSummary(param)) {
+        return <AssistantSummaryMessage param={param} model={model} messageId={messageId}
+          addMargin={addMargin} shouldShowDot={shouldShowDot} />
+      }
       if (!isTranscriptMode && !verbose) {
         return null
       }

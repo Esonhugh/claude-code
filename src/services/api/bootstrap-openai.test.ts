@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import axios from 'axios'
 
+const originalNonessentialTraffic = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 const originalAxiosGet = axios.get
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalNodeEnv = process.env.NODE_ENV
@@ -17,6 +18,8 @@ let restoreGlobalConfig: (() => void) | undefined
 }
 
 try {
+  // Network requests below are replaced with axios fixtures; exercise the bootstrap gate itself.
+  delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.NODE_ENV = 'test'
 
@@ -302,6 +305,8 @@ try {
   assert.equal(getGlobalConfig().additionalModelOptionsCache, undefined)
   assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
 } finally {
+  if (originalNonessentialTraffic === undefined) delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  else process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = originalNonessentialTraffic
   restoreGlobalConfig?.()
   axios.get = originalAxiosGet
   const authModule = await import('../../utils/auth.js')

@@ -12,6 +12,21 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - narration 摘要的原生 Mods 绘制
+
+### Changed
+
+- 按官方签名的 protobuf 2/1/8 元数据识别非空 narration，将真实摘要在普通及展开视图中接入 AssistantMessage，传递消息 UUID、显示文本、首行状态与只读 isSummary。
+- 摘要保留原生 Markdown 续绘、前导显示空格和单次尾部 summary 标记，对齐有限列宽下的标记换行；插件自定义树不自动附加标记。保留原始 thinking 正文与 signature，普通私有 thinking 不进入摘要钩子。
+- 对齐已知模型默认和 capability override 的摘要标记规则，读取匹配 provider/账户的现有 bootstrap 缓存，并在原生行挂载时固定显示决定。
+- 增加官方 maxProseWidth 设置解析与摘要 prose 宽度上限，保留表格及顶层代码的终端宽度；空值、非法设置和损坏签名按原生规则处理。
+
+### Tests
+
+- 新增生产 Message/Worker/Ink、protobuf 损坏及重复字段、模型能力/缓存、设置和 Markdown 尾部布局回归；相关 gate 和官方/候选/工作区的私有 tmux 证据、边界见 docs/research/mods-assistant-summary-292-20261007.md。
+- 修复既有 bootstrap mock 测试与隔离环境的非必要流量开关冲突，只在 mock 范围内临时解除该测试的开关并恢复原值；生产 Privacy Mode 不变。
+- 官方每模型 client-data slots、served capability、动态桌面 attach、嵌套复杂 Markdown 与其他原生 UI/diff 流程继续核对；本批不声明整体 Mods 对齐完成。
+
 ## 2026-10-07 - 助手文本行接入 Mods render
 
 ### Changed

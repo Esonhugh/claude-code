@@ -763,6 +763,9 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Override spinner tips. tips: array of tip strings. excludeDefault: if true, only show custom tips (default: false).',
         ),
+      maxProseWidth: z.number().int().min(40).optional().catch(undefined).describe(
+        'Maximum terminal width of response prose. Minimum 40; tables and code keep the full width. Unset uses the full terminal width.',
+      ),
       syntaxHighlightingDisabled: z
         .boolean()
         .optional()

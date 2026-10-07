@@ -2024,3 +2024,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 生产 Message 路由传递真实消息 UUID，在原生空文本、错误和 API 标记判断前进入 ui.render。真实 Worker/Ink 回归覆盖替换、原生 Markdown 续绘、多次 next、显示输入更新、隐藏、非法树和字段类型、只读 isSummary、无匹配及错误标记保留；显示清理向量区分分析正文删除、memory 正文保留、大小写、标签属性边界和 Unicode。
 
 候选仅包含本功能，现有其他 WIP 保持原样；两侧测试、release-check 和私有新构建分别记录。官方与两份新制品串行接受真实 stdin，保存 pane/PTY、debug 和原始 transcript，核对改写未改变已保存文本。精确结果、原始红回归与边界见[验收记录](docs/research/mods-assistant-text-292-20261007.md)。本批不关闭 narration 摘要、全部原生 UI、diff viewer、G5 或旧 response 全量门禁。
+
+
+## 2026-10-07 — narration 摘要与原生 AssistantMessage
+
+基于 protobuf 2/1/8 路径识别真实 thinking 块的 narration 显示分类，实际 Message 路由在私有 thinking 可见性判断之前分流摘要。验证普通/展开视图、past-thinking 隐藏、只读 isSummary、原文/signature 保留、多次 next、原生提示与自定义树、损坏签名、重复字段、未知 wire 字段、模型默认/capability/缓存和 prose/code/table 宽度。
+
+独立 HEAD 候选和包含既有 WIP 的工作区分别执行相关 L1、release-check 与私有构建；官方与两份新制品串行执行实际 stdin、模式切换、SSE thinking/signature_delta、普通相邻回复及 transcript 切换。原始 RED 和修复阶段保留，准确统计及未关闭的每模型缓存、served flags、动态 attach、复杂 Markdown和完整 UI/diff/G5 边界见[验收记录](docs/research/mods-assistant-summary-292-20261007.md)。
