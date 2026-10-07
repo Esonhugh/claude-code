@@ -2038,3 +2038,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 真实 stream consumer 在已落地的非空 narration 处清空短时 thinking 预览，随后保存原始消息；完整 Message/Mods 摘要行仍负责显示。测试覆盖事件顺序、相邻 text、无 stream 的完成消息、旧预览、空白/损坏签名及混合块，并核对 signed 正文不受改写。真实终端检查普通视图及 Ctrl+O 后摘要仅出现一次，私有 thinking 邻接路径单独记录。
 
 准确候选、完整工作区、固定官方制品的证据和剩余 live delta/指标、私有 thinking 布局、Cowork/fullscreen、UI/API/context/diff/G5 与全量门禁边界见[本批验收](docs/research/mods-summary-handoff-292-20261007.md)。
+
+
+## 2026-10-07 — Mods 执行型 Tool fixture 与主动 abort 差异
+
+query 的四类执行工具定义、toolExecution 的共享 fixture 改用 buildTool 并补齐必需方法及类型，生产代码和原断言不变。query 原候选 113/7/580expect、工作区 118/7/621expect，修正后 119/1/624expect、124/1/665expect。相邻 executor RED 候选 173pass/15fail/2skip/678expect、工作区 191pass/15fail/2skip/705expect；最终 7 文件组候选 307pass/1fail/2skip/1386expect、工作区 330pass/1fail/2skip/1454expect，均 exit1。既有 2 项 skip 保留，未增加跳过或削弱断言。
+
+唯一 query 失败仍为 stream hook 自取消：期望 aborted_streaming，实际 model_error。三份新隔离终端的 normal/self/normal-after 流程均可恢复并正常退出；自取消主模型调用为 0，但官方继续接收 AFTER 文本并报告无 return，候选/工作区最终显示 API error interrupt。不能把 completion.reason=aborted 当成最终 UI、历史和取消完全匹配。原先驱动失败、完整 raw 证据与后续合法返回/信号调查范围见[本批验收](docs/research/mods-query-tool-fixtures-20261007.md)。旧 response 的 155 文件全量门禁、完整 UI/diff/G5 总目标仍开放。

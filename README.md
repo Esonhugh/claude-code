@@ -1427,3 +1427,28 @@ on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
 已签名的非空 narration 消息完成时，宿主清空其短时 thinking 预览，再交给原生消息行和 Mods 绘制，避免摘要在普通视图或 transcript 中出现两份。普通私有 thinking 的预览保留规则沿用现有路径；本批完成交接与剩余流式差异见[验收记录](docs/research/mods-summary-handoff-292-20261007.md)。
 
 `maxProseWidth` 是可选的终端列数设置，整数且至少 40。摘要 prose 按该宽度换行，顶层代码和表格保留终端宽度；不在保存正文中增加换行。当前已接线的消费者与尚未验证的复杂 Markdown、模型缓存和动态桌面路径见[本批验收](docs/research/mods-assistant-summary-292-20261007.md)。
+
+
+## Mods 执行型工具测试
+
+在仓库内编写会经过真实 executor 的 Mods 测试时，用 `buildTool` 创建 Tool，补齐 schema、描述、prompt、调用、结果映射和渲染方法。不要用 `as unknown as Tool` 把不完整对象送入执行器；只读分类、权限和取消等默认方法由生产构造函数补齐。
+
+```ts
+import { buildTool } from './src/Tool.js'
+import { z } from 'zod/v4'
+
+const fixtureTool = buildTool({
+  name: 'FixtureTool',
+  inputSchema: z.object({ value: z.string() }),
+  maxResultSizeChars: Infinity,
+  description: async () => '测试工具',
+  prompt: async () => '测试工具',
+  renderToolUseMessage: () => null,
+  call: async (input: { value: string }) => ({ data: input }),
+  mapToolResultToToolResultBlockParam: (data: { value: string }, id: string) => ({
+    type: 'tool_result', tool_use_id: id, content: data.value,
+  }),
+})
+```
+
+需要在测试中替换 `call` 以观察取消或进度时，显式标注 `Tool<typeof inputSchema, Output>`，保留 executor 的完整回调签名。这是仓库测试的内部构造方式；插件作者的公开工具接口仍见前面的 Mods API 用法。当前 query/tool 测试定义修正、保留的主动 abort 失败和官方真实终端差异见[验收记录](docs/research/mods-query-tool-fixtures-20261007.md)。

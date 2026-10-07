@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import ts from 'typescript'
 import { query, type QueryParams } from './query.js'
-import type { Tool, ToolUseContext } from './Tool.js'
+import { buildTool, type Tool, type ToolUseContext } from './Tool.js'
 import { asAgentId } from './types/ids.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { createModsRuntime, type ModSnapshot } from './services/mods/runtime.js'
@@ -361,9 +361,12 @@ test('turn.abort cancels a running tool and leaves the next public turn usable',
     const entered = Promise.withResolvers<void>()
     let toolClosed = false
     let toolSignal: AbortSignal | undefined
-    const tool = {
+    const tool = buildTool({
       name:'WaitForAbort', inputSchema:z.object({}), maxResultSizeChars:Infinity,
       isConcurrencySafe:() => false,
+      description:async () => 'WaitForAbort fixture',
+      prompt:async () => 'WaitForAbort fixture',
+      renderToolUseMessage:() => null,
       call:async (_input: unknown, context: ToolUseContext) => {
         toolSignal = context.abortController.signal
         entered.resolve()
@@ -376,7 +379,7 @@ test('turn.abort cancels a running tool and leaves the next public turn usable',
         } finally { toolClosed=true }
       },
       mapToolResultToToolResultBlockParam:(data:unknown,id:string) => ({type:'tool_result',tool_use_id:id,content:String(data)}),
-    } as unknown as Tool
+    })
     let requests = 0
     const h = harness(async function* () {
       requests++
@@ -760,10 +763,13 @@ for (const inputJSON of ['{"value":"REWRITTEN"}', '{broken']) test.each([false, 
     await runtime.reconcile([{name:'step-tools',storageId:'step-tools@inline',pluginRoot:root,entrypoints:[entry]}])
     const {z} = await import('zod/v4')
     const calls: unknown[] = [], requests: any[] = []
-    const tool = {name:'HarmlessStep',inputSchema:z.object({value:z.string()}),maxResultSizeChars:Infinity,isConcurrencySafe:()=>true,
+    const tool = buildTool({name:'HarmlessStep',inputSchema:z.object({value:z.string()}),maxResultSizeChars:Infinity,isConcurrencySafe:()=>true,
+      description:async () => 'HarmlessStep fixture',
+      prompt:async () => 'HarmlessStep fixture',
+      renderToolUseMessage:() => null,
       call:async (input: unknown)=>{calls.push(input);return {data:input}},
       mapToolResultToToolResultBlockParam:(data: unknown,id:string)=>({type:'tool_result',tool_use_id:id,content:JSON.stringify(data)}),
-    } as unknown as Tool
+    })
     const originalThinking = {type:'thinking' as const,thinking:'SIGNED_ORIGINAL',signature:'signed-fixture'}
     type StreamBlock =
       | typeof originalThinking
@@ -2073,10 +2079,12 @@ test.each([false,true])('%s executor author host follows context modifiers and t
   const seen: string[] = [], permissionTools: string[] = []
   const snapshot: ModSnapshot = {hasHooks:() => false,dispatch:async (_event,input,core) => core(input),release() {}}
   const h = harness(async function* () {yield response('unused','done')})
-  const makeTool = (name:string,call:any) => ({
+  // Use the production Tool constructor so execution receives its required methods.
+  const makeTool = (name:string,call:Tool['call']) => buildTool({
     name,inputSchema:z.object({}),maxResultSizeChars:Infinity,isConcurrencySafe:() => false,call,
+    description:async () => name, prompt:async () => name, renderToolUseMessage:() => null,
     mapToolResultToToolResultBlockParam:(_data:unknown,id:string) => ({type:'tool_result',tool_use_id:id,content:name}),
-  }) as unknown as Tool
+  })
   const author = makeTool('CurrentAuthor',async (_input:unknown,context:ToolUseContext) => {
     seen.push(context.options.mainLoopModel)
     return {data:'author'}
@@ -2124,12 +2132,15 @@ test('Worker author calls inside query use the current request tools and permiss
     await runtime.reconcile([{name:'author',storageId:'author@inline',pluginRoot:root,entrypoints:[entry]}])
     const { z } = await import('zod/v4')
     const calls: unknown[] = [], permissions: ToolUseContext[] = [], contexts: Record<string,string>[] = []
-    const tool = {
+    const tool = buildTool({
       name:'AuthorQueryFixture',inputSchema:z.object({value:z.string()}),maxResultSizeChars:Infinity,
       isConcurrencySafe:() => true,
-      call:async (input:unknown) => {calls.push(input);return {data:input}},
+      description:async () => 'AuthorQueryFixture fixture',
+      prompt:async () => 'AuthorQueryFixture fixture',
+      renderToolUseMessage:() => null,
+      call:async (input:{value:string}) => {calls.push(input);return {data:input}},
       mapToolResultToToolResultBlockParam:(data:{value:string},id:string) => ({type:'tool_result',tool_use_id:id,content:'mapped:'+data.value}),
-    } as unknown as Tool
+    })
     const h = harness(async function* () {yield response('author-query','done')})
     h.context.mods = runtime
     h.context.options.tools = [tool]

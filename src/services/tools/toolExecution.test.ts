@@ -1,7 +1,7 @@
 import { afterAll, describe, expect, test } from 'bun:test'
 import { z } from 'zod/v4'
 import type { Tool, ToolUseContext } from '../../Tool.js'
-import { getEmptyToolPermissionContext } from '../../Tool.js'
+import { buildTool, getEmptyToolPermissionContext } from '../../Tool.js'
 import { createAssistantMessage } from '../../utils/messages.js'
 import {
   getSessionSettingsCache,
@@ -73,17 +73,21 @@ function fixture(
   const validation: unknown[] = []
   let releases = 0
   const hooks = new Map()
-  const tool = {
+  const inputSchema = z.object({ value: z.string() })
+  const tool: Tool<typeof inputSchema, {value: string}> = buildTool({
     name: toolName,
-    inputSchema: z.object({ value: z.string() }),
+    inputSchema,
     outputSchema: z.object({ value: z.string() }),
     maxResultSizeChars: Infinity,
     isConcurrencySafe: () => true,
+    description: async () => toolName,
+    prompt: async () => toolName,
+    renderToolUseMessage: () => null,
     validateInput: async (input: unknown) => {
       validation.push(input)
       return { result: true }
     },
-    call: async (input: unknown) => {
+    call: async (input: {value: string}) => {
       calls.push(input)
       return { data: input }
     },
@@ -91,7 +95,7 @@ function fixture(
       data: { value: string },
       id: string,
     ) => ({ type: 'tool_result', tool_use_id: id, content: data.value }),
-  } as unknown as Tool
+  })
   const snapshot = {
     hasHooks: (event: string) => event === 'tool.call',
     release: () => {

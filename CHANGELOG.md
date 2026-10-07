@@ -12,6 +12,14 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 查询与工具执行测试定义
+
+### Tests
+
+- 将 query 和共享 executor 的执行型 fixture 改用生产 buildTool，补齐必需方法和具体输入/回调类型，移除不完整对象强转；保留原断言、取消时限、权限与生产行为。
+- 消除 query 中 6 项和相邻 executor 中 15 项 fixture 失败；完整相关组仍有 1 项主动 abort 失败，2 项既有 native policy skip 未更改。
+- README 补充仓库执行型工具测试写法；双端真实终端的取消差异、精确候选和工作区证据见 docs/research/mods-query-tool-fixtures-20261007.md。本批不声明全量门禁或整体 Mods 对齐完成。
+
 ## 2026-10-07 - narration 完成后清理 thinking 预览
 
 ### Fixed
