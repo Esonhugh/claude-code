@@ -9,7 +9,7 @@ CLAUDE_PLATFORM_PACKAGE ?= auto
 CLAUDE_BINARY_OUT ?= official-claude
 CLAUDE_KEEP_PACK ?= 0
 
-.PHONY: build linux-baseline test release-check download-claude clean-download-claude
+.PHONY: build linux-baseline test release-check check-mods-control-types download-claude clean-download-claude
 
 build:
 ifneq ($(strip $(CLAUDE_CODE_BUILD_DIR)),)
@@ -30,9 +30,13 @@ release-check:
 	bun run check:changelog $(VERSION)
 	bun run test:changelog
 	bunx tsc --noEmit --pretty false
+	$(MAKE) check-mods-control-types
 	bun run lint
 	bun run audit:missing
 	git diff --check
+
+check-mods-control-types:
+	bun ./scripts/check-mods-control-types.mjs
 
 download-claude:
 	mkdir -p $(CLAUDE_PACK_DIR)

@@ -1495,4 +1495,33 @@ cat requests.jsonl | claude -p --input-format stream-json --output-format stream
 
 `session.attach` 和 `session.detach` 是观察事件：调用 `$.session.surfaces()` 已能看到更新后的 roster，`next(e)` 不负责提交连接，返回伪造 clientId、抛错或取消通知也不会回滚传输状态。终端 binding 不发 attach；session.end 的 detach 使用 `reason:'end'`。调试日志可查找 `[ModsUIClient]`。
 
-本批提供连接控制及类型；`ui_render`、交互控制、client modules、远程 responders 和完整 UI/diff 仍待接通与验收。`answers` 目前只接受官方声明的五类 responder 名称，不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+本批提供连接控制及类型；`ui_render`、交互控制、client modules、远程 responders 和完整 UI/diff 仍待接通与验收。`answers` 只接受官方声明的五类 responder 名称，数组最多 5 项（重复值仍合法），不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
+
+### SDK 远程 UI 协议类型与校验
+
+开发客户端协议时，从 `src/entrypoints/sdk/controlTypes.ts` 使用有限的 `SDKControlUIRequest`，并用 `SDKControlUIResponseFor<Request>` 关联回执。18 类客户端请求与 5 类引擎发给客户端的 responder 请求分别为 `SDKControlUIClientRequest` / `SDKControlUILoopRequest`。同名 Zod schema 从 `controlSchemas.ts` 导出；这些是仓库内部协议定义，不是额外的作者 `$` capability。
+
+下面的代码只构造并校验协议数据：
+
+```ts
+import type { SDKControlUIRenderRequest, SDKControlUIResponseFor } from './src/entrypoints/sdk/controlTypes.js'
+import { SDKControlUIRenderRequestSchema } from './src/entrypoints/sdk/controlSchemas.js'
+
+const request: SDKControlUIRenderRequest = {
+  subtype: 'ui_render', surface: 'desktop', component: 'ToolUse',
+  instance_id: 'tool-1', props: { input: { command: 'pwd' } }, on_screen: null,
+}
+const parsed = SDKControlUIRenderRequestSchema().parse(request)
+type RenderResponse = SDKControlUIResponseFor<typeof request>
+```
+
+绘制回执含 `tree`、`props`、`rewritten` 和 `hooked`，可带插件到 hash 的 `client_modules` 及 `bench`；客户端模块回执另含 entry、runtime、limits 和 files。树通过 handle 传递回调，通过路径传递 Client 模块。pane roster 的三个 nullable ID 和 focus 的 nullable element 都是必填字段；`ui_message.data` 必须存在，`null` 合法。输入校验与绘制、客户端资源及 hook 的运行时语义分别验收。
+
+执行 `make check-mods-control-types` 做独立严格类型检查；`make release-check` 已包含此项。协议回归：
+
+```bash
+bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/entrypoints/sdk/controlSchemas.ssh.test.ts ./src/services/mods/remoteUiControl.test.ts
+```
+
+协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，但当前 CLI 仍只接通 `ui_attach` / `ui_detach`；它们之外的控制器、system 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。

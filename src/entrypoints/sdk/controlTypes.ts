@@ -283,21 +283,10 @@ export type SDKControlElicitationResponse = {
   success: boolean
 }
 
-export type SDKUIRemoteSurface = 'desktop' | 'mobile' | 'vscode'
-export type SDKUIViewport = { columns: number; rows: number; isFullscreen?: boolean }
-export type SDKUIAnswer = 'ui_copy' | 'ui_prompt_read' | 'ui_prompt_fill' | 'ui_prompt_suggest' | 'ui_read_selection'
-export type SDKControlUIAttachRequest = {
-  subtype: 'ui_attach'
-  surface: SDKUIRemoteSurface
-  client_id: string
-  viewport?: SDKUIViewport
-  answers?: SDKUIAnswer[]
-}
-export type SDKControlUIDetachRequest = { subtype: 'ui_detach'; client_id: string }
-export type SDKControlUIAttachResponse = { surfaces: ('terminal' | SDKUIRemoteSurface)[] }
-export type SDKControlUIDetachResponse = SDKControlUIAttachResponse & { detached: boolean }
+export type * from './modsControlTypes.js'
 
-// Union of all control request inner types
+// Legacy envelope remains open for recovered non-UI controls.
+// Mods consumers use the finite SDKControlUIRequest family and typed response map.
 export type SDKControlRequestInner = {
   subtype: string
   [key: string]: unknown

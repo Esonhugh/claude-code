@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods SDK UI 协议类型与输入边界
+
+### Added
+
+- 补齐 18 类客户端 UI 控制与 5 类引擎 responder 的有限请求/回执定义、组件与 wire tree、客户端模块数据及 system pane/scroll/focus schema；按请求 subtype 关联回执，并保持两个请求方向独立。
+- release-check 增加独立 strict 类型门禁，校验 schema 与协议定义双向兼容，保证必填 nullable 字段不会因恢复项目的宽松配置而变成可选。
+
+### Fixed
+
+- ui_attach.answers 最多允许 5 项，合法重复值继续接受；第 6 项在 roster 变更之前拒绝，与官方原生回执一致。
+- 保留官方客户端/pane ID 区别、默认 surface/origin、UTF-16 字符上限与整数/可见窗口边界；ui_message 必须携带 data，null 合法，弥补本地 Zod unknown() 缺字段校验差异。
+
+### Tests
+
+- 固化官方 2.1.292 的 17 条原生 UI 回执，并覆盖协议请求/回执、方向、默认值、长度、nullable、绘制树及真实 runtime 的 answers 拒绝行为；原失败与最终源码/新制品对照见 docs/research/mods-sdk-ui-protocol-292-20261007.md。
+- 生产入口仍仅接通 attach/detach；其余绘制/交互/client/responder 控制器、system 推送、完整官方 UI/diff/G5 和全量 WIP 继续分批实现及验收。
+
 ## 2026-10-07 - Mods 远程客户端连接生命周期
 
 ### Fixed

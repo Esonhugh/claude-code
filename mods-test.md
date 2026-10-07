@@ -2067,3 +2067,12 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 本批接通 `ui_attach` / `ui_detach`，检查回执早于 hook 结束、重复连接、不合法输入、异常不回滚、显式连接独立于绘制站点和 session.end 的移除顺序。原始官方、修复前候选/工作区与最终新制品的身份、命令、回执、事件、正常退出和清理记录见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)。
 
 `ui_render` 与其余远程 UI 控制、responder、全量终端 UI/diff/G5 及旧 WIP 全量门禁继续验证。未显式连接的旧内部 remote consumer 仍采用绘制站点引用计数；它与官方传输生命周期的统一将随绘制桥单独处理。这里的有限专项结果不代表完整官方 Mods 兼容。
+
+
+## 2026-10-07 — SDK UI 协议类型与 answers 上限
+
+单独提交 18 类客户端控制、5 类 loop responder 的请求/回执类型及 schema；有限组件枚举、plain-data wire tree、客户端模块清单和 system pane/scroll/focus 消息有独立定义。请求方向、字段默认值、长度/整数/nullable/可见窗口、响应对应关系有回归；严格类型门禁校验 schema 与手写定义双向兼容，并保留必填 nullable 字段。
+
+官方原生证据确认 answers 最多 5 项，允许重复；修复前候选错误接纳 6 项并把 mobile 加入 roster，最终两侧须用新制品复验拒绝且不变更 roster。17 条官方原生 UI 回执作为固化回归夹具，包括缺少 data 的 ui_message 错误和 data:null 成功。详见 [SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
+
+类型/schema 与控制器实现分别计数；当前生产入口仅接通 attach/detach。这批不关闭 ui_render、客户端资源/交互、responder、system 推送、完整终端 UI/diff/G5 或旧 WIP 的全量验证。
