@@ -2146,3 +2146,10 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 验收驱动校验所有计划目标的所属运行、断言和真实证据；缺失或未声明路径、仅空文件/目录不能通过。builtin 追加保留默认必验范围和独立 readiness，本地 readiness、goal、SSH 生命周期使用 dummy 认证。测试入口执行全部 retained 回归，并验证每项恰好执行一次、失败会传播。干净提交候选的原有断言和 25 项 retained 回归通过；完整工作区的后续真实制品矩阵为 28 项完成、25 通过、3 失败，整体未通过。
 
 原始 PTY/实际 resize/EOF/逐帧回放与归档重验仅证明各自范围；同步 ACK 影响时序，完整 terminal/diff 和 code-review 身份验收仍需处理。详细边界与命令见[验收有效性记录](docs/research/release-acceptance-validity-20261008.md)。
+
+
+## 2026-10-08 — Scope 原生身份与最终证据封存
+
+补齐本案 start metadata、真实 provider 的最终全量 wire、父子 UUID/sidechain/回执及完成通知核对。输入第一次读取即保存专属快照；Scope assertion 和最终汇总核对全部快照及证明 JSON 哈希，七种篡改/缺失哈希、联动删减、归属前读取及删除/改名必需断言的 RED 修复后拒绝。provider 关闭后仍核对同案请求，等待实际 handler 收尾；快速 child 的合法异步次序不会误拒绝。
+
+干净候选33项、共享工作区提交后像40项、完整私有工作区41项 retained 及原有断言通过。修复后新构建的第十轮矩阵28/28，26通过、2失败；code-review 空变更 Scope通过，整体未通过，失败 `builtin-mods, terminal-interaction` 保留。没有用逻辑身份代替 PTY、完整 code-review 或 UI/diff。准确命令、SHA、真实ID、历史失败和剩余实现见[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)。继续分批签名提交，不push。

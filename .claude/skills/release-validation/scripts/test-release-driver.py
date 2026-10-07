@@ -2374,7 +2374,7 @@ def assert_driver_behavior(module, baseline_module):
             'process_remaining': False,
             'remaining_processes': [],
             'forced_termination': [],
-            'mock_server': {'stopped': True, 'thread_alive': False},
+            'mock_server': {'stopped': True, 'thread_alive': False, 'active_handlers': []},
         }]
         assert gate.mock_servers == {}
 
@@ -2994,6 +2994,7 @@ def assert_driver_behavior(module, baseline_module):
                 assert empty_server.stop() == {
                     'stopped': True,
                     'thread_alive': False,
+                    'active_handlers': [],
                 }
 
             def post_response(server_url, *, instructions, input_items=None):
@@ -3105,6 +3106,7 @@ def assert_driver_behavior(module, baseline_module):
                 assert image_server.stop() == {
                     'stopped': True,
                     'thread_alive': False,
+                    'active_handlers': [],
                 }
 
             compaction_run_dir = run_dir / 'compaction'
@@ -3163,6 +3165,7 @@ def assert_driver_behavior(module, baseline_module):
                 assert compaction_server.stop() == {
                     'stopped': True,
                     'thread_alive': False,
+                    'active_handlers': [],
                 }
 
             subagent_run_dir = run_dir / 'subagent-stop'
@@ -3201,10 +3204,11 @@ def assert_driver_behavior(module, baseline_module):
                 assert subagent_server.stop() == {
                     'stopped': True,
                     'thread_alive': False,
+                    'active_handlers': [],
                 }
         finally:
             cleanup = server.stop()
-        assert cleanup == {'stopped': True, 'thread_alive': False}
+        assert cleanup == {'stopped': True, 'thread_alive': False, 'active_handlers': []}
 
     framed_custom_instructions = (
         'fixed release framing\n'
@@ -6086,6 +6090,7 @@ def assert_deterministic_lifecycle_protocol(module):
                 base = server.start()
                 gate = object.__new__(module.BinaryGate)
                 gate.mock_servers = {root.name: server}
+                gate.code_review_mock_servers = {root.name: server} if label == 'code-review' else {}
 
                 def post(items, expected, tool=None):
                     request = Request(base + '/v1/responses',
@@ -6396,6 +6401,444 @@ def test_retained_default_entrypoint_contract():
             assert error is failure
         else:
             raise AssertionError('default entrypoint ignored a retained test failure')
+
+
+def _code_review_scope_fixture(module):
+    import copy
+    args = module.code_review_prompt('a' * 40).removeprefix('/code-review ')
+    diff = 'git diff ' + 'a' * 40 + '..HEAD -- src/tools/WorkflowTool/bundled/index.ts src/tools/WorkflowTool/bundled/index.test.ts'
+    output = {'diffCommand': diff, 'files': [], 'summary': 'Deterministic empty-scope release fixture.'}
+    schema = {'type': 'object', 'required': ['diffCommand', 'files', 'summary'],
+              'properties': {'diffCommand': {'type': 'string'}, 'files': {'type': 'array', 'items': {'type': 'string'}},
+                             'summary': {'type': 'string'}, 'conventions': {'type': 'string'}}}
+    prompt = 'Establish the scope of a code review.\nExact bounded instructions.'
+    child_prompt = prompt + ('\n\nYou MUST call the `StructuredOutput` tool exactly once to return your answer.\n'
+        'The tool input must match this JSON Schema:\n```json\n' + json.dumps(schema, indent=2) + '\n```\n'
+        'Do NOT put your answer in a text response. The script reads ONLY the tool call.\n'
+        'If schema validation fails, read the error and call the tool again with corrected input.')
+    def entry(kind, stamp, content, **extra):
+        return {'type': kind, 'sessionId': 'session-one', 'timestamp': '2026-10-07T20:41:01.' + stamp + 'Z',
+                'uuid': kind + '-' + stamp, 'isSidechain': False,
+                'message': {'role': kind, 'content': content}, **extra}
+    report = {'level': 'high', 'target': args.removeprefix('high '),
+              'summary': 'No changes found to review.', 'findings': [],
+              'stats': {'finders': 0, 'candidates': 0, 'verified': 0}}
+    notification = ('<task-notification>\n<task-id>task-one</task-id>\n'
+        '<tool-use-id>launch-one</tool-use-id>\n<status>completed</status>\n'
+        '<result>' + json.dumps(report) + '</result>\n'
+        '<usage><total_tokens>2</total_tokens><tool_uses>1</tool_uses>'
+        '<duration_ms>236</duration_ms></usage>\n</task-notification>')
+    parents = [{'session_id': 'session-one', 'entries': [
+        entry('assistant', '230', [{'type': 'tool_use', 'id': 'launch-one', 'name': 'WorkflowTool',
+            'input': {'action': 'run', 'selector': 'code-review', 'runArgs': args}}]),
+        entry('user', '259', [{'type': 'tool_result', 'tool_use_id': 'launch-one',
+            'content': 'Workflow launched in background. Task ID: task-one\nRun ID: wf_one\n'}],
+            parentUuid='assistant-230', sourceToolAssistantUUID='assistant-230'),
+        entry('user', '513', notification, origin={'kind': 'task-notification'}),
+    ]}]
+    artifact = {'taskId': 'task-one', 'workflowRunId': 'wf_one', 'workflowName': 'code-review',
+        'status': 'completed', 'scriptPath': 'bundled:code-review', 'runArgs': args,
+        'startedAt': 1791405661256, 'updatedAt': 1791405661492, 'tokenCount': 2, 'toolUseCount': 1,
+        'results': [{'phaseId': 'Scope', 'agentId': 'scope', 'index': 0, 'status': 'completed',
+                     'prompt': prompt, 'output': json.dumps(output)}],
+        'resumeCacheEntries': [{'phase': 'Scope', 'label': 'scope', 'index': 0,
+                              'result': output, 'completedAt': 1791405661484}]}
+    children = [{'session_id': 'session-one', 'agent_id': 'agent-one',
+        'meta': {'agentType': 'general-purpose', 'description': 'code-review: scope',
+                 'toolUseId': 'launch-one', 'permissionMode': 'plan', 'spawnDepth': 1, 'model': 'test-model'},
+        'entries': [entry('user', '435', child_prompt, agentId='agent-one', isSidechain=True),
+            entry('assistant', '463', [{'type': 'tool_use', 'id': 'scope-output', 'name': 'StructuredOutput', 'input': output}], agentId='agent-one', parentUuid='user-435', isSidechain=True),
+            entry('user', '464', [{'type': 'tool_result', 'tool_use_id': 'scope-output', 'content': 'Structured output provided successfully'}], agentId='agent-one', parentUuid='assistant-463', sourceToolAssistantUUID='assistant-463', isSidechain=True)]}]
+    params = {'selectedAgentType': 'general-purpose', 'permissionMode': 'plan', 'toolUseId': 'launch-one', 'spawnDepth': 1, 'isAsync': True, 'model': 'test-model'}
+    log = ('2026-10-07T20:41:01.415Z [DEBUG] workflow_worker_start task=task-one run=wf_one phase=Scope logical=scope agent=scope attempt=0 worker=0\n'
+        '2026-10-07T20:41:01.436Z [DEBUG] AgentTool launch params ' + json.dumps(params) + '\n'
+        '2026-10-07T20:41:01.439Z [DEBUG] [runAgent] agentId=agent-one, agentType=general-purpose, model=test-model, tools=StructuredOutput\n'
+        '2026-10-07T20:41:01.483Z [DEBUG] workflow_worker_terminal task=task-one run=wf_one phase=Scope logical=scope agent=scope attempt=0 worker=0 status=completed\n')
+    wire_input = [
+        {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'deferred tool names'}]},
+        {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': 'bounded context'}, {'type': 'input_text', 'text': child_prompt}]},
+    ]
+    wire = [{'sequence': index + 3, 'method': 'POST', 'path': '/v1/responses',
+        'authorization': {'present': True, 'matches_dummy': True},
+        'headers': {'session-id': 'session-one', 'x-claude-code-session-id': 'session-one', 'thread-id': 'agent-one'},
+        'response_kind': kind,
+        'body': {'input': copy.deepcopy(wire_input), 'tools': [{'type': 'function', 'name': 'StructuredOutput', 'parameters': schema, 'strict': False}]}}
+        for index, kind in enumerate(('code-review-scope-output', 'code-review-scope-completed'))]
+    wire[1]['body']['input'].extend([
+        {'type': 'function_call', 'name': 'StructuredOutput', 'id': 'scope-output', 'call_id': 'scope-output', 'arguments': json.dumps(output)},
+        {'type': 'function_call_output', 'call_id': 'scope-output', 'output': 'Structured output provided successfully'},
+    ])
+    parent_input = [
+        {'type': 'function_call', 'name': 'WorkflowTool', 'id': 'launch-one',
+         'call_id': 'launch-one', 'arguments': json.dumps({'action': 'run', 'selector': 'code-review', 'runArgs': args})},
+        {'type': 'function_call_output', 'call_id': 'launch-one',
+         'output': parents[0]['entries'][1]['message']['content'][0]['content']},
+    ]
+    for sequence, kind, items in ((1, 'code-review-launch', []),
+                                  (2, 'code-review-parent-completed', parent_input),
+                                  (5, 'code-review-notification-completed', [*parent_input,
+                                      {'type': 'message', 'role': 'user', 'content': [{'type': 'input_text', 'text': notification}]}])):
+        wire.append({'sequence': sequence, 'method': 'POST', 'path': '/v1/responses',
+            'authorization': {'present': True, 'matches_dummy': True},
+            'headers': {'session-id': 'session-one', 'x-claude-code-session-id': 'session-one', 'thread-id': 'session-one'},
+            'response_kind': kind, 'body': {'input': copy.deepcopy(items)}})
+    inputs = {'run_args': args, 'task_id': 'task-one', 'run_id': 'wf_one', 'artifact': artifact,
+              'parents': parents, 'children': children, 'log': log, 'wire': wire}
+    return inputs
+
+
+def _materialize_code_review_scope(module, inputs, root):
+    run, runtime = root / 'code-review-case', root / 'workflow-runs'
+    run.mkdir()
+    (runtime / 'wf_one').mkdir(parents=True)
+    artifact = json.dumps(inputs['artifact']).encode()
+    (runtime / 'wf_one/session.json').write_bytes(artifact)
+    (runtime / 'task-one.json').write_bytes(artifact)
+    (run / 'run-metadata.json').write_text(json.dumps({'driver_run': 'unit-1', 'source_run': run.name, 'label': 'code-review', 'binary_sha256': 'a' * 64, 'target': 'owned-session:0.0', 'evidence_dir': str(run.resolve())}))
+    (run / 'pane-target.txt').write_text('owned-session:0.0\n')
+    prompt = '/code-review ' + inputs['run_args']
+    (run / 'input-code-review.txt').write_bytes(b'\x1b[200~' + prompt.encode() + b'\x1b[201~')
+    (run / 'debug.log').write_text(inputs['log'])
+    (run / 'mock-openai-requests.json').write_text(json.dumps(inputs['wire']))
+    project = run / 'config/projects/owned-project'
+    child_dir = project / 'session-one/subagents'
+    child_dir.mkdir(parents=True)
+    (project / 'session-one.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in inputs['parents'][0]['entries']))
+    meta = child_dir / 'agent-agent-one.meta.json'
+    meta.write_text(json.dumps(inputs['children'][0]['meta']))
+    transcript = child_dir / 'agent-agent-one.jsonl'
+    transcript.write_text(''.join(json.dumps(entry) + '\n' for entry in inputs['children'][0]['entries']))
+    gate = object.__new__(module.BinaryGate)
+    gate.stamp, gate.pid, gate.manifest = 'unit', 1, {'binary_sha256': 'a' * 64}
+    gate.workflow_runs, gate.workflow_task_ids, gate.workflow_run_ids = runtime, {'task-one'}, {'wf_one'}
+    gate.registered_runs = {str(run.resolve()): (run / 'run-metadata.json').read_text()}
+    server = module.MockOpenAIServer(run, 'code-review')
+    server.requests = json.loads(json.dumps(inputs['wire']))
+    server.stop()
+    gate.code_review_mock_servers = {run.name: server}
+    return gate, run, runtime, prompt, meta, transcript
+
+
+def test_retained_code_review_scope_uses_same_run_native_identity():
+    import copy
+    module = load_driver()
+    inputs = _code_review_scope_fixture(module)
+    log = inputs['log']
+    child_prompt = inputs['children'][0]['entries'][0]['message']['content']
+    gate = object.__new__(module.BinaryGate)
+    assert gate.agent_ids(log) == []
+    proof = module.code_review_scope_identity(**inputs)
+    assert proof['complete'] and proof['agent_ids'] == ['agent-one'], proof
+    mutations = [
+        lambda x: x['wire'][1]['headers'].update({'session-id': 'foreign-session'}),
+        lambda x: x['wire'][1]['headers'].update({'thread-id': 'foreign-agent'}),
+        lambda x: x['wire'][1]['authorization'].update(matches_dummy=False),
+        lambda x: x['wire'][1]['body']['input'][1]['content'][1].update(text='foreign prompt'),
+        lambda x: x['wire'][1]['body']['tools'][0].update(parameters={}),
+        lambda x: x['wire'][1]['body']['input'][2].update(arguments='{"files":[]}'),
+        lambda x: x['wire'][1]['body']['input'][3].update(call_id='foreign-output'),
+        lambda x: x['wire'][1]['body']['input'][3].update(output='Structured output failed'),
+        lambda x: x['wire'].append(copy.deepcopy(x['wire'][1])),
+        lambda x: x.update(task_id='foreign-task'),
+        lambda x: x.update(run_id='wf_foreign'),
+        lambda x: x['parents'][0].update(session_id='foreign-session'),
+        lambda x: x['parents'][0]['entries'][1]['message']['content'][0].update(is_error=True),
+        lambda x: x['children'][0].update(session_id='foreign-session'),
+        lambda x: x['children'][0]['meta'].update(toolUseId='foreign-launch'),
+        lambda x: x['children'][0]['meta'].update(description='unrelated worker'),
+        lambda x: x['children'][0]['entries'][0]['message'].update(content=child_prompt + 'unrequested instructions'),
+        lambda x: x['children'][0]['entries'][1].update(agentId='foreign-agent'),
+        lambda x: x['children'][0]['entries'][2]['message']['content'][0].update(is_error=True),
+        lambda x: x['children'][0]['entries'].pop(),
+        lambda x: x['children'][0]['entries'][1].update(timestamp='2026-10-07T20:41:02.463Z'),
+        lambda x: x['artifact']['resumeCacheEntries'][0].update(result={'files': []}),
+        lambda x: x['artifact']['results'][0].update(status='failed'),
+        lambda x: x['artifact']['results'].append(copy.deepcopy(x['artifact']['results'][0])),
+        lambda x: x['children'].append(copy.deepcopy(x['children'][0])),
+        lambda x: x.update(log=log.replace('attempt=0', 'attempt=1')),
+        lambda x: x.update(log=log.replace('status=completed', 'status=failed')),
+        lambda x: x.update(log=log.replace('agentId=agent-one', 'agentId=unrelated-agent')),
+        lambda x: x['parents'][0]['entries'].append(copy.deepcopy(x['parents'][0]['entries'][2])),
+    ]
+    for index, mutate in enumerate(mutations):
+        changed = copy.deepcopy(inputs)
+        mutate(changed)
+        rejected = module.code_review_scope_identity(**changed)
+        assert not rejected['complete'], (index, rejected)
+    foreign_foreground = {**inputs, 'log': log + '[AgentLifecycle] foreground_registered agent_id=foreign-agent task_id=foreign-task\n'}
+    assert module.code_review_scope_identity(**foreign_foreground)['agent_ids'] == ['agent-one']
+
+
+def test_retained_code_review_scope_evidence_is_owned_and_registered():
+    module = load_driver()
+    inputs = _code_review_scope_fixture(module)
+    with tempfile.TemporaryDirectory(prefix='owned-workflow-proof-') as directory:
+        gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
+        proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
+        assert proof['complete'] and proof['agent_ids'] == ['agent-one'], proof
+        assert all(module.is_relative_to(path.resolve(), run.resolve()) for path in proof['evidence_paths'])
+        assert proof['evidence_sha256'] == {
+            str(path.resolve()): module.hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in proof['evidence_paths']}
+        assertion = gate.required_assertion(run, 'code-review-native-scope-identity', 'Scope', 'strict native identity',
+            proof['evidence_paths'], passed=proof['complete'], evidence_sha256=proof['evidence_sha256'])
+        assert module.assertion_is_valid(assertion, {run.name: run.resolve()})
+    for scenario in ('foreign-binary', 'foreign-pane', 'foreign-input', 'unregistered', 'different-mirror', 'symlink-meta', 'malformed-child', 'missing-child',
+                     'changed-metadata', 'whole-old-wire-replay', 'different-live-parent-receipt', 'unregistered-live-server',
+                     'provider-stop-incomplete', 'provider-handler-active'):
+        with tempfile.TemporaryDirectory(prefix='invalid-workflow-proof-') as directory:
+            gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
+            if scenario == 'foreign-binary':
+                data = json.loads((run / 'run-metadata.json').read_text()); data['binary_sha256'] = 'b' * 64
+                (run / 'run-metadata.json').write_text(json.dumps(data))
+            elif scenario == 'foreign-pane':
+                (run / 'pane-target.txt').write_text('foreign-session:0.0\n')
+            elif scenario == 'foreign-input':
+                (run / 'input-code-review.txt').write_bytes(b'\x1b[200~unrequested input\x1b[201~')
+            elif scenario == 'unregistered':
+                gate.workflow_run_ids.clear()
+            elif scenario == 'different-mirror':
+                (runtime / 'task-one.json').write_text('{}')
+            elif scenario == 'symlink-meta':
+                outside = Path(directory) / 'foreign-meta.json'; outside.write_bytes(meta.read_bytes())
+                meta.unlink(); meta.symlink_to(outside)
+            elif scenario == 'malformed-child':
+                transcript.write_text('{not-json}\n')
+            elif scenario == 'missing-child':
+                transcript.unlink()
+            elif scenario == 'changed-metadata':
+                data = json.loads((run / 'run-metadata.json').read_text()); data['config'] = 'foreign-config'
+                (run / 'run-metadata.json').write_text(json.dumps(data))
+            elif scenario == 'whole-old-wire-replay':
+                for request in gate.code_review_mock_servers[run.name].requests:
+                    request['headers']['session-id'] = request['headers']['x-claude-code-session-id'] = 'current-live-session'
+            elif scenario == 'different-live-parent-receipt':
+                request = next(x for x in gate.code_review_mock_servers[run.name].requests if x['response_kind'] == 'code-review-parent-completed')
+                request['body']['input'][1]['output'] = 'Workflow launched in background. Task ID: new-live-task\nRun ID: wf_new\n'
+                (run / 'mock-openai-requests.json').write_text(json.dumps(gate.code_review_mock_servers[run.name].snapshot()))
+            elif scenario == 'unregistered-live-server':
+                gate.code_review_mock_servers.clear()
+            elif scenario == 'provider-stop-incomplete':
+                gate.code_review_mock_servers[run.name].stop_result['stopped'] = False
+            elif scenario == 'provider-handler-active':
+                gate.code_review_mock_servers[run.name].stop_result['active_handlers'] = ['owned-handler']
+            proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
+            assert proof['complete'] is False and proof['agent_ids'] == [], (scenario, proof)
+            assert (run / 'workflow-agent-identity-proof.json').is_file()
+
+
+def test_retained_code_review_scope_rejects_missing_uuid_and_forged_notification():
+    import copy
+    module = load_driver()
+    inputs = _code_review_scope_fixture(module)
+    def missing_chain(value):
+        for entry in value['children'][0]['entries']:
+            entry.pop('uuid', None); entry.pop('parentUuid', None)
+    def note(value, change):
+        entry = value['parents'][0]['entries'][2]
+        entry['message']['content'] = change(entry['message']['content'])
+        request = next(x for x in value['wire'] if x['response_kind'] == 'code-review-notification-completed')
+        request['body']['input'][-1]['content'][0]['text'] = entry['message']['content']
+    mutations = [
+        ('missing child UUID chain', missing_chain),
+        ('missing parent UUID', lambda x: x['parents'][0]['entries'][1].pop('uuid')),
+        ('child is not sidechain', lambda x: x['children'][0]['entries'][1].update(isSidechain=False)),
+        ('foreign source assistant UUID', lambda x: x['children'][0]['entries'][2].update(sourceToolAssistantUUID='foreign-assistant')),
+        ('duplicate core tag', lambda x: note(x, lambda s: s.replace('<status>completed</status>', '<status>failed</status><status>completed</status>'))),
+        ('correct task hidden in result', lambda x: note(x, lambda s: s.replace('<task-id>task-one</task-id>', '<task-id>foreign-task</task-id>').replace('<result>', '<result><task-id>task-one</task-id>'))),
+        ('unclosed notification', lambda x: note(x, lambda s: s.removesuffix('</task-notification>'))),
+        ('wrong final result', lambda x: note(x, lambda s: s.replace('No changes found to review.', 'Different run final output'))),
+        ('wrong usage', lambda x: note(x, lambda s: s.replace('<total_tokens>2</total_tokens>', '<total_tokens>200</total_tokens>'))),
+        ('missing usage', lambda x: note(x, lambda s: s.replace('<usage><total_tokens>2</total_tokens><tool_uses>1</tool_uses><duration_ms>236</duration_ms></usage>', ''))),
+        ('live parent receipt belongs to another task', lambda x: next(q for q in x['wire'] if q['response_kind'] == 'code-review-parent-completed')['body']['input'][1].update(output='Workflow launched in background. Task ID: foreign-task\nRun ID: wf_other\n')),
+    ]
+    accepted = []
+    for name, mutate in mutations:
+        value = copy.deepcopy(inputs); mutate(value)
+        proof = module.code_review_scope_identity(**value)
+        if proof['complete']:
+            accepted.append(name)
+    assert not accepted, accepted
+
+
+def test_retained_code_review_scope_snapshot_hashes_survive_source_append():
+    import hashlib
+    module = load_driver()
+    inputs = _code_review_scope_fixture(module)
+    with tempfile.TemporaryDirectory(prefix='workflow-immutable-proof-') as directory:
+        gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
+        proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
+        assert proof['complete'], proof
+        with (run / 'debug.log').open('a') as stream:
+            stream.write('Final native process cleanup\n')
+        parent = run / 'config/projects/owned-project/session-one.jsonl'
+        with parent.open('a') as stream:
+            stream.write(json.dumps({'type': 'system', 'subtype': 'turn_duration'}) + '\n')
+        mismatched = [path for path, digest in proof['source_hashes'].items()
+                      if hashlib.sha256(Path(path).read_bytes()).hexdigest() != digest]
+        assert not mismatched, mismatched
+        assert all(module.is_relative_to(Path(path).resolve(), (run / 'workflow-identity-inputs').resolve())
+                   for path in proof['source_hashes'])
+
+
+def test_retained_code_review_scope_wire_survives_provider_shutdown():
+    module = load_driver()
+    inputs = _code_review_scope_fixture(module)
+    with tempfile.TemporaryDirectory(prefix='workflow-closed-wire-') as directory:
+        gate, run, runtime, prompt, meta, transcript = _materialize_code_review_scope(module, inputs, Path(directory))
+        gate.mock_servers = {}
+        assertion = gate.workflow_mock_wire(run, 'code-review')
+        assert assertion['validation_verdict'] == 'passed', json.loads((run / 'workflow-mock-wire.json').read_text())
+        gate.code_review_mock_servers.clear()
+        assert gate.workflow_mock_wire(run, 'code-review')['validation_verdict'] == 'failed'
+
+def test_retained_code_review_scope_accepts_fast_child_before_parent_receipt():
+    module = load_driver()
+    inputs = _code_review_scope_fixture(module)
+    inputs['parents'][0]['entries'][1]['timestamp'] = '2026-10-07T20:41:01.495Z'
+    for request in inputs['wire']:
+        request['sequence'] = {'code-review-launch': 1, 'code-review-scope-output': 2,
+            'code-review-scope-completed': 3, 'code-review-parent-completed': 4,
+            'code-review-notification-completed': 5}[request['response_kind']]
+    proof = module.code_review_scope_identity(**inputs)
+    assert proof['complete'], proof
+
+def test_retained_mock_provider_stop_waits_for_owned_request_handler():
+    module = load_driver()
+    with tempfile.TemporaryDirectory(prefix='provider-handler-stop-') as directory:
+        server = module.MockOpenAIServer(Path(directory), 'code-review')
+        entered, release, listener_closed, stopped = (threading.Event() for _ in range(4))
+        observed = {}
+        def response(_body):
+            entered.set()
+            if not release.wait(5):
+                raise RuntimeError('owned handler release deadline')
+            return 'completed', module.sse_completed('OWNED_REQUEST_COMPLETE')
+        server.response_for = response
+        base = server.start()
+        original_close = server.server.server_close
+        def close_listener():
+            original_close()
+            listener_closed.set()
+        server.server.server_close = close_listener
+        def request():
+            try:
+                with urlopen(Request(base + '/v1/responses', data=b'{}',
+                        headers={'Authorization': 'Bearer ' + module.DUMMY_OPENAI_API_KEY,
+                                 'Content-Type': 'application/json'}), timeout=10) as reply:
+                    observed['body'] = reply.read().decode()
+            except Exception as error:
+                observed['request_error'] = repr(error)
+        def stop():
+            try:
+                observed['cleanup'] = server.stop()
+            finally:
+                stopped.set()
+        caller, stopper = threading.Thread(target=request), threading.Thread(target=stop)
+        caller.start()
+        try:
+            assert entered.wait(2), observed
+            stopper.start()
+            assert listener_closed.wait(2), observed
+            # A negative deadline detects premature success while this handler is
+            # demonstrably held; it is never a success synchronization barrier.
+            assert not stopped.wait(0.1), observed
+        finally:
+            release.set()
+            if stopper.ident is None:
+                server.stop()
+            else:
+                stopper.join(6)
+            caller.join(6)
+        assert not caller.is_alive() and not stopper.is_alive(), observed
+        assert 'request_error' not in observed and 'OWNED_REQUEST_COMPLETE' in observed['body'], observed
+        assert observed['cleanup']['stopped'] is True and observed['cleanup']['active_handlers'] == [], observed
+
+def test_retained_scope_snapshot_hashes_rechecked_at_final_coverage():
+    module = load_driver()
+    failures = []
+    for scenario in ('valid', 'snapshot-append', 'snapshot-replace', 'proof-change',
+                     'missing-hashes', 'incomplete-hashes', 'wrong-hash', 'snapshot-symlink',
+                     'coupled-snapshot-omission', 'missing-proof', 'foreign-path-read',
+                     'missing-scope-assertion', 'renamed-scope-assertion', 'duplicate-scope-assertion',
+                     'missing-wire-assertion', 'missing-lifecycle-assertion'):
+        with tempfile.TemporaryDirectory(prefix='scope-final-seal-') as directory:
+            gate, run, _, prompt, _, _ = _materialize_code_review_scope(
+                module, _code_review_scope_fixture(module), Path(directory))
+            proof = gate.code_review_scope_identity_proof(run, 'task-one', 'wf_one', prompt)
+            assert proof['complete'], proof
+            paths = proof['evidence_paths']
+            assertion = gate.required_assertion(run, 'code-review-native-scope-identity',
+                'Scope', 'native identity remains sealed at final coverage', paths, passed=True)
+            # Declare original bytes explicitly so the RED exercises final aggregation,
+            # rather than merely failing because an old helper lacks a new field.
+            assertion['evidence_sha256'] = {
+                str(path.resolve()): module.hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in paths}
+            gate.mock_servers = {}
+            wire_assertion = gate.workflow_mock_wire(run, 'code-review')
+            assert wire_assertion['validation_verdict'] == 'passed'
+            lifecycle_assertion = gate.required_assertion(run, 'code-review-workflow-lifecycle',
+                'Scope fixture lifecycle', 'unit fixture retains the independent lifecycle assertion',
+                [run / 'debug.log'], passed=True)
+            row = {'label': 'code-review', 'evidence_dir': str(run),
+                   'driver_run': f'{gate.stamp}-{gate.pid}', 'validation_verdict': 'passed',
+                   'assertions': [assertion, wire_assertion, lifecycle_assertion]}
+            snapshot = next(Path(path) for path in proof['source_hashes'])
+            if scenario == 'snapshot-append':
+                with snapshot.open('ab') as stream:
+                    stream.write(b'\nchanged after proof\n')
+            elif scenario == 'snapshot-replace':
+                snapshot.write_bytes(b'nonempty replacement')
+            elif scenario == 'proof-change':
+                paths[0].write_text('{"complete":true,"foreign":true}\n')
+            elif scenario == 'missing-hashes':
+                assertion.pop('evidence_sha256')
+            elif scenario == 'incomplete-hashes':
+                assertion['evidence_sha256'].pop(str(snapshot.resolve()))
+            elif scenario == 'wrong-hash':
+                assertion['evidence_sha256'][str(snapshot.resolve())] = '0' * 64
+            elif scenario == 'snapshot-symlink':
+                replacement = run / 'replacement.json'
+                replacement.write_bytes(snapshot.read_bytes())
+                snapshot.unlink(); snapshot.symlink_to(replacement)
+            elif scenario in ('coupled-snapshot-omission', 'missing-proof'):
+                omitted = snapshot if scenario == 'coupled-snapshot-omission' else paths[0]
+                assertion['required_evidence'].remove(str(omitted))
+                assertion['observed_evidence_paths'].remove(str(omitted.resolve()))
+                assertion['evidence_sha256'].pop(str(omitted.resolve()))
+                if scenario == 'coupled-snapshot-omission':
+                    snapshot.write_bytes(b'changed and omitted from the caller assertion')
+            elif scenario == 'foreign-path-read':
+                outside = Path(directory) / 'sibling.json'
+                outside.write_bytes(b'owned test sibling outside this registered case')
+                assertion['required_evidence'].append(str(outside))
+                assertion['observed_evidence_paths'].append(str(outside.resolve()))
+                assertion['evidence_sha256'][str(outside.resolve())] = module.hashlib.sha256(outside.read_bytes()).hexdigest()
+            elif scenario == 'missing-scope-assertion':
+                row['assertions'].remove(assertion)
+            elif scenario == 'renamed-scope-assertion':
+                assertion['assertion_id'] = 'unrequested-proof'
+            elif scenario == 'duplicate-scope-assertion':
+                row['assertions'].append(dict(assertion))
+            elif scenario == 'missing-wire-assertion':
+                row['assertions'].remove(wire_assertion)
+            elif scenario == 'missing-lifecycle-assertion':
+                row['assertions'].remove(lifecycle_assertion)
+            reads = []
+            original_read = module.Path.read_bytes
+            def checked_read(path):
+                if scenario == 'foreign-path-read' and path.resolve() == outside.resolve():
+                    reads.append(str(path))
+                return original_read(path)
+            with patch.object(module.Path, 'read_bytes', checked_read):
+                coverage = module.validate_required_target_results(
+                    {'code-review'}, [row], gate.registered_runs)
+            if coverage['passed'] != (scenario == 'valid'):
+                failures.append({'scenario': scenario, 'coverage': coverage})
+            if reads:
+                failures.append({'scenario': scenario, 'read_before_ownership_check': reads})
+    assert not failures, failures
 
 
 if __name__ == '__main__':

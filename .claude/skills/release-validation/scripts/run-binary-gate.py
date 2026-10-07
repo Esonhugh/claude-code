@@ -346,6 +346,226 @@ def code_review_prompt(release_base):
     )
 
 
+def code_review_scope_identity(*, run_args, task_id, run_id, artifact, parents, children, log, wire=None):
+    """Bind the bounded empty-Scope fixture to its actual native child, including Fork."""
+    from datetime import datetime
+    from xml.etree import ElementTree
+    checks = []
+
+    def require(value, reason):
+        if not value:
+            raise ValueError(reason)
+        checks.append(reason)
+
+    def milliseconds(value):
+        return round(datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp() * 1000)
+
+    def blocks(entry, kind):
+        content = entry.get('message', {}).get('content')
+        return [block for block in content if isinstance(block, dict) and block.get('type') == kind] if isinstance(content, list) else []
+
+    try:
+        require(bool(task_id) and bool(run_id), 'owned Workflow IDs')
+        require(all(artifact.get(key) == value for key, value in {
+            'taskId': task_id, 'workflowRunId': run_id, 'workflowName': 'code-review',
+            'scriptPath': 'bundled:code-review', 'status': 'completed', 'runArgs': run_args,
+        }.items()), 'same completed bundled Workflow artifact')
+        start, finish = artifact['startedAt'], artifact['updatedAt']
+        require(isinstance(start, int) and isinstance(finish, int) and start <= finish, 'artifact execution interval')
+        workers, cached = artifact['results'], artifact['resumeCacheEntries']
+        require(len(workers) == len(cached) == 1, 'one Scope worker and one cached result')
+        worker, cache = workers[0], cached[0]
+        require(all(worker.get(key) == value for key, value in {
+            'phaseId': 'Scope', 'agentId': 'scope', 'index': 0, 'status': 'completed',
+        }.items()), 'Scope worker completed without retry')
+        output = json.loads(worker['output'])
+        diff = re.search(r'using exactly: (git diff [^\n]+?)\. Do not widen', run_args)
+        require(diff and output.get('diffCommand') == diff.group(1) and output.get('files') == []
+                and isinstance(output.get('summary'), str) and bool(output['summary']), 'exact bounded empty-scope output')
+        require(all(cache.get(key) == value for key, value in {
+            'phase': 'Scope', 'label': 'scope', 'index': 0, 'result': output,
+        }.items()) and start <= cache['completedAt'] <= finish, 'cache matches actual worker output')
+        launches = [(parent, entry, block) for parent in parents for entry in parent['entries']
+                    if entry.get('type') == 'assistant' for block in blocks(entry, 'tool_use')
+                    if block.get('name') == 'WorkflowTool' and block.get('input') == {
+                        'action': 'run', 'selector': 'code-review', 'runArgs': run_args}]
+        require(len(launches) == 1, 'one exact parent WorkflowTool launch')
+        parent, launch, call = launches[0]
+        cli_session, tool_id = parent['session_id'], call['id']
+        parent_messages = [entry for entry in parent['entries'] if entry.get('type') in ('assistant', 'user')]
+        parent_uuids = [entry.get('uuid') for entry in parent_messages]
+        require(all(isinstance(value, str) and bool(value) for value in parent_uuids)
+                and len(parent_uuids) == len(set(parent_uuids))
+                and all(entry.get('isSidechain') is False for entry in parent_messages), 'unique native parent UUIDs')
+        require(bool(cli_session) and bool(tool_id) and bool(launch.get('uuid')) and all(
+            entry.get('sessionId') == cli_session for entry in parent['entries']
+            if entry.get('type') in ('assistant', 'user')), 'one parent CLI session')
+        replies = [(entry, block) for entry in parent['entries'] for block in blocks(entry, 'tool_result')
+                   if entry.get('type') == 'user' and block.get('tool_use_id') == tool_id]
+        require(len(replies) == 1, 'one native Workflow launch receipt')
+        reply_entry, reply = replies[0]
+        require(reply.get('is_error') is not True and reply_entry.get('parentUuid') == launch['uuid']
+                and reply_entry.get('sourceToolAssistantUUID') == launch['uuid']
+                and isinstance(reply.get('content'), str)
+                and f'Workflow launched in background. Task ID: {task_id}\n' in reply['content']
+                and re.search(rf'(?m)^Run ID: {re.escape(run_id)}$', reply['content']), 'launch receipt links task/run and parent tool')
+        notes = [entry for entry in parent['entries'] if entry.get('type') == 'user'
+                 and entry.get('origin', {}).get('kind') == 'task-notification']
+        require(len(notes) == 1 and isinstance(notes[0]['message']['content'], str), 'one native completion notification')
+        notification_text = notes[0]['message']['content']
+        require(notification_text.startswith('<task-notification>')
+                and notification_text.endswith('</task-notification>')
+                and '<!DOCTYPE' not in notification_text and '<!ENTITY' not in notification_text, 'bounded notification document')
+        notification = ElementTree.fromstring(notification_text)
+        require(notification.tag == 'task-notification' and not notification.attrib
+                and len(list(notification.iter('task-notification'))) == 1, 'one notification root')
+        for tag, expected in (('task-id', task_id), ('tool-use-id', tool_id), ('status', 'completed')):
+            nodes = notification.findall(tag)
+            require(len(nodes) == 1 and not list(nodes[0]) and not nodes[0].attrib
+                    and nodes[0].text == expected, 'exact direct notification ' + tag)
+        result_nodes, usage_nodes = notification.findall('result'), notification.findall('usage')
+        require(len(result_nodes) == len(usage_nodes) == 1 and not list(result_nodes[0]), 'one final result and usage')
+        require(json.loads(result_nodes[0].text) == {
+            'level': 'high', 'target': run_args.removeprefix('high '),
+            'summary': 'No changes found to review.', 'findings': [],
+            'stats': {'finders': 0, 'candidates': 0, 'verified': 0},
+        }, 'bounded empty-scope final report')
+        for tag, expected in (('total_tokens', artifact['tokenCount']), ('tool_uses', artifact['toolUseCount'])):
+            nodes = usage_nodes[0].findall(tag)
+            require(len(nodes) == 1 and not list(nodes[0]) and isinstance(expected, int)
+                    and expected >= 0 and nodes[0].text == str(expected), 'notification matches artifact ' + tag)
+        duration = usage_nodes[0].findall('duration_ms')
+        require(len(duration) == 1 and not list(duration[0]) and re.fullmatch(r'[0-9]+', duration[0].text or ''), 'native notification duration')
+        require(milliseconds(launch['timestamp']) <= start <= milliseconds(reply_entry['timestamp'])
+                and finish <= milliseconds(notes[0]['timestamp'])
+                and milliseconds(reply_entry['timestamp']) <= milliseconds(notes[0]['timestamp']),
+                'parent launch and completion notification bind this execution')
+        scope = f'task={task_id} run={run_id} '
+        lines = log.splitlines()
+        starts = [index for index, line in enumerate(lines) if 'workflow_worker_start ' + scope in line]
+        ends = [index for index, line in enumerate(lines) if 'workflow_worker_terminal ' + scope in line]
+        require(len(starts) == len(ends) == 1 and starts[0] < ends[0], 'one same-run worker interval')
+        exact = 'phase=Scope logical=scope agent=scope attempt=0 worker=0'
+        require(lines[starts[0]].endswith(exact) and lines[ends[0]].endswith(exact + ' status=completed'), 'exact Scope attempt terminal')
+        begin_ms, end_ms = (milliseconds(lines[index].split(' ', 1)[0]) for index in (starts[0], ends[0]))
+        require(start <= begin_ms <= end_ms <= finish, 'worker belongs to artifact interval')
+        window = lines[starts[0] + 1:ends[0]]
+        require(not any('workflow_worker_start ' in line for line in window), 'no competing worker in identity interval')
+        actual = [match for line in window if (match := re.search(
+            r'\[runAgent\] agentId=([^, ]+), agentType=general-purpose, model=([^, ]+),', line))]
+        params = [json.loads(line.split('AgentTool launch params ', 1)[1])
+                  for line in window if 'AgentTool launch params ' in line]
+        require(len(actual) == len(params) == 1, 'one actual native child execution')
+        agent_id, model = actual[0].groups()
+        require(all(params[0].get(key) == value for key, value in {
+            'selectedAgentType': 'general-purpose', 'permissionMode': 'plan', 'toolUseId': tool_id,
+            'spawnDepth': 1, 'model': model,
+        }.items()) and isinstance(params[0].get('isAsync'), bool), 'Agent launch metadata links parent tool')
+        candidates = [child for child in children if child.get('session_id') == cli_session
+                      and child.get('agent_id') == agent_id]
+        require(len(candidates) == 1, 'one child transcript in same CLI session')
+        child = candidates[0]
+        require(all(child['meta'].get(key) == value for key, value in {
+            'agentType': 'general-purpose', 'description': 'code-review: scope', 'toolUseId': tool_id,
+            'permissionMode': 'plan', 'spawnDepth': 1, 'model': model,
+        }.items()), 'native child meta links Scope and parent')
+        entries = [entry for entry in child['entries'] if entry.get('type') in ('user', 'assistant')]
+        child_uuids = [entry.get('uuid') for entry in entries]
+        require(all(isinstance(value, str) and bool(value) for value in child_uuids)
+                and len(child_uuids) == len(set(child_uuids)) and not set(child_uuids).intersection(parent_uuids)
+                and all(entry.get('isSidechain') is True for entry in entries), 'unique native sidechain UUIDs')
+        require(len(entries) == 3 and all(entry.get('agentId') == agent_id
+                and entry.get('sessionId') == cli_session
+                and begin_ms <= milliseconds(entry['timestamp']) <= end_ms for entry in entries), 'child messages belong to this native execution')
+        schema = {'type': 'object', 'required': ['diffCommand', 'files', 'summary'],
+                  'properties': {'diffCommand': {'type': 'string'}, 'files': {'type': 'array', 'items': {'type': 'string'}},
+                                 'summary': {'type': 'string'}, 'conventions': {'type': 'string'}}}
+        suffix = ('\n\nYou MUST call the `StructuredOutput` tool exactly once to return your answer.\n'
+                  'The tool input must match this JSON Schema:\n```json\n' + json.dumps(schema, indent=2) + '\n```\n'
+                  'Do NOT put your answer in a text response. The script reads ONLY the tool call.\n'
+                  'If schema validation fails, read the error and call the tool again with corrected input.')
+        require(entries[0].get('type') == 'user' and isinstance(worker.get('prompt'), str) and bool(worker['prompt'])
+                and entries[0]['message']['content'] == worker['prompt'] + suffix, 'exact actual worker prompt and schema')
+        structured = blocks(entries[1], 'tool_use')
+        require(entries[1].get('type') == 'assistant' and len(structured) == 1
+                and structured[0].get('name') == 'StructuredOutput' and structured[0].get('input') == output
+                and entries[1].get('parentUuid') == entries[0].get('uuid'), 'actual StructuredOutput matches artifact/cache')
+        receipts = blocks(entries[2], 'tool_result')
+        require(entries[2].get('type') == 'user' and len(receipts) == 1
+                and receipts[0].get('tool_use_id') == structured[0].get('id') and bool(structured[0].get('id'))
+                and receipts[0].get('is_error') is not True
+                and receipts[0].get('content') == 'Structured output provided successfully'
+                and entries[2].get('sourceToolAssistantUUID') == entries[1]['uuid']
+                and entries[2].get('parentUuid') == entries[1].get('uuid'), 'native successful StructuredOutput receipt')
+        parent_wire = []
+        for kind in ('code-review-launch', 'code-review-parent-completed', 'code-review-notification-completed'):
+            matches = [request for request in wire if request.get('response_kind') == kind]
+            require(len(matches) == 1, 'one transported parent ' + kind)
+            request = matches[0]
+            require(request.get('method') == 'POST' and request.get('path') == '/v1/responses'
+                    and request.get('authorization', {}).get('matches_dummy') is True
+                    and all(request.get('headers', {}).get(key) == cli_session for key in (
+                        'session-id', 'x-claude-code-session-id', 'thread-id')), 'transported native parent CLI identity')
+            if kind != 'code-review-launch':
+                items = request['body']['input']
+                calls = [item for item in items if item.get('type') == 'function_call' and item.get('name') == 'WorkflowTool']
+                returns = [item for item in items if item.get('type') == 'function_call_output' and item.get('call_id') == tool_id]
+                require(len(calls) == len(returns) == 1 and calls[0].get('id') == calls[0].get('call_id') == tool_id
+                        and json.loads(calls[0]['arguments']) == call['input']
+                        and returns[0].get('output') == reply['content'], 'transported parent call and exact task/run receipt')
+            if kind == 'code-review-notification-completed':
+                messages = [block.get('text') for item in request['body']['input'] if item.get('role') == 'user'
+                            for block in item.get('content', []) if isinstance(block, dict) and block.get('type') == 'input_text']
+                require(messages.count(notification_text) == 1, 'transported exact native completion notification')
+            parent_wire.append(request)
+        wire_sides = []
+        for kind in ('code-review-scope-output', 'code-review-scope-completed'):
+            matches = [request for request in wire if request.get('response_kind') == kind]
+            require(len(matches) == 1, 'one transported ' + kind)
+            request = matches[0]
+            require(request.get('method') == 'POST' and request.get('path') == '/v1/responses'
+                    and request.get('authorization', {}).get('matches_dummy') is True
+                    and all(request.get('headers', {}).get(key) == value for key, value in {
+                        'session-id': cli_session, 'x-claude-code-session-id': cli_session,
+                        'thread-id': agent_id,
+                    }.items()), 'transport belongs to same native CLI/child with dummy auth')
+            body = request['body']
+            require(body['input'][1].get('role') == 'user'
+                    and body['input'][1]['content'][1] == {'type': 'input_text', 'text': worker['prompt'] + suffix},
+                    'transported actual worker prompt')
+            tools = [tool for tool in body['tools'] if tool.get('name') == 'StructuredOutput']
+            require(len(tools) == 1 and tools[0].get('type') == 'function'
+                    and tools[0].get('parameters') == schema, 'transported exact StructuredOutput schema')
+            wire_sides.append(request)
+        require(isinstance(wire_sides[0]['sequence'], int) and wire_sides[0]['sequence'] < wire_sides[1]['sequence'],
+                'native child transport order')
+        require(parent_wire[0]['sequence'] < parent_wire[1]['sequence'] < parent_wire[2]['sequence']
+                and parent_wire[0]['sequence'] < wire_sides[0]['sequence']
+                < wire_sides[1]['sequence'] < parent_wire[2]['sequence'],
+                'each native parent/child stream precedes the completion notification')
+        wire_items = wire_sides[1]['body']['input']
+        calls = [item for item in wire_items if item.get('type') == 'function_call']
+        returns = [item for item in wire_items if item.get('type') == 'function_call_output']
+        require(len(calls) == len(returns) == 1 and calls[0].get('name') == 'StructuredOutput'
+                and calls[0].get('call_id') == calls[0].get('id') == structured[0]['id']
+                and json.loads(calls[0]['arguments']) == output
+                and returns[0].get('call_id') == structured[0]['id'], 'transported call/result IDs and exact arguments')
+        # The native side transcript above remains the authoritative unwrapped
+        # receipt. Wire may append complete system-reminder blocks, never arbitrary
+        # text or a second result. Reminder contents are data, not identity evidence.
+        transported = returns[0].get('output')
+        require(isinstance(transported, str) and re.fullmatch(
+            re.escape(receipts[0]['content']) + r'(?:\n\n<system-reminder>\n(?:(?!</?system-reminder>)[\s\S])+\n</system-reminder>)*',
+            transported), 'transported successful receipt with bounded reminder wrappers')
+        return {'complete': True, 'agent_ids': [agent_id], 'cli_session': cli_session,
+                'task_id': task_id, 'run_id': run_id, 'parent_tool_use_id': tool_id,
+                'structured_tool_use_id': structured[0]['id'], 'checks': checks,
+                'scope': 'bounded empty Scope; same CLI/task/run identity; actual pane/TTY and later review phases require separate evidence'}
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError, ElementTree.ParseError) as error:
+        return {'complete': False, 'agent_ids': [], 'checks': checks, 'reason': str(error)}
+
+
+
 def submitted_input_pending(pane):
     plain = strip_ansi(pane).replace('\u00a0', ' ')
     lines = plain.splitlines()
@@ -653,6 +873,44 @@ def assertion_is_valid(assertion, source_runs):
             return False
         if absolute_path.is_file() and absolute_path.stat().st_size > 0:
             nonempty_proof = True
+    expected_hashes = assertion.get('evidence_sha256')
+    if expected_hashes is not None or assertion_id == 'code-review-native-scope-identity':
+        if (not isinstance(expected_hashes, dict) or not expected_hashes
+                or any(not isinstance(path, str) or not Path(path).is_absolute()
+                       or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                       for path, digest in expected_hashes.items())):
+            return False
+        try:
+            if set(expected_hashes) != {str(Path(path).resolve()) for path in evidence_paths}:
+                return False
+            verified_bytes = {}
+            for path in evidence_paths:
+                file = Path(path)
+                if file.is_symlink() or not file.is_file():
+                    return False
+                data = file.read_bytes()
+                key = str(file.resolve())
+                if hashlib.sha256(data).hexdigest() != expected_hashes[key]:
+                    return False
+                verified_bytes[key] = data
+            if assertion_id == 'code-review-native-scope-identity':
+                proof_path = str((source_root / 'workflow-agent-identity-proof.json').resolve())
+                if proof_path not in verified_bytes:
+                    return False
+                proof = json.loads(verified_bytes[proof_path])
+                if not isinstance(proof, dict):
+                    return False
+                snapshots = proof.get('source_hashes')
+                if (proof.get('complete') is not True or not isinstance(snapshots, dict) or not snapshots
+                        or any(not isinstance(path, str) or not Path(path).is_absolute()
+                               or not is_relative_to(Path(path).resolve(), source_root / 'workflow-identity-inputs')
+                               or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                               for path, digest in snapshots.items())
+                        or set(expected_hashes) != {*snapshots, proof_path}
+                        or any(expected_hashes.get(path) != digest for path, digest in snapshots.items())):
+                    return False
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False
     return nonempty_proof
 
 
@@ -673,6 +931,13 @@ def validate_required_target_results(required_targets, runs, registered_runs=Non
             and bool(assertions)
             and all(assertion_is_valid(assertion, own_sources) for assertion in assertions)
         )
+        if valid and target == 'code-review':
+            for assertion_id in ('code-review-native-scope-identity', 'code-review-mock-wire',
+                                 'code-review-workflow-lifecycle'):
+                matching = [item for item in assertions if item.get('assertion_id') == assertion_id]
+                if len(matching) != 1 or matching[0].get('source_run') != Path(run['evidence_dir']).name:
+                    valid = False
+                    break
         if not valid:
             invalid.append(target)
     return {
@@ -1151,6 +1416,8 @@ class MockOpenAIServer:
         self.requests = []
         self.server = None
         self.thread = None
+        self.request_handlers = set()
+        self.stop_result = None
         self.lifecycle_responses = set()
         if label == 'retained-turn-end-load':
             self.turn_waiting = threading.Event()
@@ -1253,8 +1520,28 @@ class MockOpenAIServer:
                 self.end_headers()
                 self.wfile.write(encoded)
 
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        self.server.daemon_threads = True
+        class OwnedServer(ThreadingHTTPServer):
+            def process_request(self, request, client_address):
+                thread = threading.Thread(target=self.process_request_thread,
+                    args=(request, client_address), name=f'release-mock-handler-{owner.label}', daemon=True)
+                with owner.lock:
+                    owner.request_handlers.add(thread)
+                try:
+                    thread.start()
+                except BaseException:
+                    with owner.lock:
+                        owner.request_handlers.discard(thread)
+                    self.shutdown_request(request)
+                    raise
+
+            def process_request_thread(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    with owner.lock:
+                        owner.request_handlers.discard(threading.current_thread())
+
+        self.server = OwnedServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             name=f'release-mock-openai-{self.label}',
@@ -1835,14 +2122,24 @@ class MockOpenAIServer:
         if self.label == 'agent-fg-bg':
             self.agent_fgbg_release.set()
         if self.server is None:
-            return {'stopped': True, 'thread_alive': False}
+            self.stop_result = {'stopped': True, 'thread_alive': False, 'active_handlers': []}
+            return self.stop_result
         self.server.shutdown()
         self.server.server_close()
         if self.thread is not None:
             self.thread.join(timeout=5)
         alive = bool(self.thread and self.thread.is_alive())
+        deadline = time.monotonic() + 5
+        with self.lock:
+            handlers = list(self.request_handlers)
+        for handler in handlers:
+            handler.join(timeout=max(0, deadline - time.monotonic()))
+        with self.lock:
+            active_handlers = [handler.name for handler in self.request_handlers if handler.is_alive()]
         self.flush()
-        return {'stopped': not alive, 'thread_alive': alive}
+        self.stop_result = {'stopped': not alive and not active_handlers,
+                            'thread_alive': alive, 'active_handlers': active_handlers}
+        return self.stop_result
 
 
 def custom_prompt_instructions_stable(bodies):
@@ -2161,6 +2458,7 @@ class BinaryGate:
         self.pid = os.getpid()
         self.session_index = 0
         self.active_runs = {}
+        self.code_review_mock_servers = {}
         self.registered_runs = {}
         self.auth_homes = set()
         self.mock_servers = {}
@@ -3041,6 +3339,8 @@ else:
         }, indent=2) + '\n')
         self.registered_runs[str(run_dir.resolve())] = (
             run_dir / 'run-metadata.json').read_text()
+        if label == 'code-review':
+            self.code_review_mock_servers[run_dir.name] = mock_server
         if result.returncode == 0:
             self.active_runs[session] = (run_dir, target)
         ready = result.returncode == 0 and self.wait_ready(target, run_dir)
@@ -4976,6 +5276,102 @@ else:
         })
         self.record(result)
 
+    def code_review_scope_identity_proof(self, run_dir, task_id, run_id, expected_prompt):
+        proof_path = run_dir / 'workflow-agent-identity-proof.json'
+        evidence = [proof_path]
+        hashes = {}
+        snapshots = {}
+        snapshot_root = run_dir / 'workflow-identity-inputs'
+
+        def read_owned(path, root):
+            if path.is_symlink() or not path.is_file() or not is_relative_to(path.resolve(), root.resolve()):
+                raise ValueError(f'not a regular file in the registered run: {path}')
+            key = str(path.resolve())
+            if key in snapshots:
+                return snapshots[key]['bytes']
+            data = path.read_bytes()
+            relative = path.relative_to(root)
+            copy = snapshot_root / ('workflow-runs' if root == self.workflow_runs else 'case') / relative
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            with copy.open('xb') as stream:
+                stream.write(data)
+            copy.chmod(0o600)
+            digest = hashlib.sha256(data).hexdigest()
+            hashes[str(copy.resolve())] = digest
+            snapshots[key] = {'bytes': data, 'snapshot': str(copy.resolve()), 'sha256': digest}
+            evidence.append(copy)
+            return data
+
+        def json_file(path):
+            return json.loads(read_owned(path, run_dir))
+
+        try:
+            snapshot_root.mkdir()
+            if (task_id not in self.workflow_task_ids or run_id not in self.workflow_run_ids
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+', task_id)
+                    or not re.fullmatch(r'wf_[A-Za-z0-9_-]+', run_id)):
+                raise ValueError('Workflow IDs were not registered by this target')
+            metadata_bytes = read_owned(run_dir / 'run-metadata.json', run_dir)
+            if metadata_bytes.decode() != self.registered_runs.get(str(run_dir.resolve())):
+                raise ValueError('native metadata differs from the immutable start registration')
+            metadata = json.loads(metadata_bytes)
+            if any(metadata.get(key) != value for key, value in {
+                'driver_run': f'{self.stamp}-{self.pid}', 'source_run': run_dir.name,
+                'label': 'code-review', 'binary_sha256': self.manifest['binary_sha256'],
+            }.items()):
+                raise ValueError('native metadata belongs to a different driver/run/binary')
+            server = self.code_review_mock_servers.get(run_dir.name)
+            if (not isinstance(server, MockOpenAIServer) or server.run_dir.resolve() != run_dir.resolve()
+                    or server.label != 'code-review' or not server.stop_result
+                    or server.stop_result.get('stopped') is not True
+                    or server.stop_result.get('active_handlers') != []):
+                raise ValueError('this target has no stopped, registered native provider')
+            live_wire = server.snapshot()
+            wire = json_file(run_dir / 'mock-openai-requests.json')
+            if wire != live_wire or not live_wire or any(request.get('response_kind') is None for request in live_wire):
+                raise ValueError('archived requests differ from this case live provider snapshot')
+            target = read_owned(run_dir / 'pane-target.txt', run_dir).decode().rstrip('\n')
+            if target != metadata.get('target'):
+                raise ValueError('pane target differs from registered case')
+            pasted = read_owned(run_dir / 'input-code-review.txt', run_dir)
+            if pasted != b'\x1b[200~' + expected_prompt.encode() + b'\x1b[201~':
+                raise ValueError('native pasted input differs from caller expectation')
+            artifact_path = self.workflow_runs / run_id / 'session.json'
+            task_path = self.workflow_runs / f'{task_id}.json'
+            artifact_bytes = read_owned(artifact_path, self.workflow_runs)
+            if artifact_bytes != read_owned(task_path, self.workflow_runs):
+                raise ValueError('Workflow task and run mirrors differ')
+            parents, children = [], []
+            for path in sorted((run_dir / 'config/projects').glob('**/*.jsonl')):
+                if 'subagents' in path.parts:
+                    continue
+                parents.append({'session_id': path.stem,
+                                'entries': [json.loads(line) for line in read_owned(path, run_dir).decode().splitlines()]})
+            for meta in sorted((run_dir / 'config/projects').glob('**/subagents/agent-*.meta.json')):
+                child_path = meta.with_name(meta.name.replace('.meta.json', '.jsonl'))
+                children.append({'session_id': meta.parent.parent.name,
+                                 'agent_id': meta.name.removeprefix('agent-').removesuffix('.meta.json'),
+                                 'meta': json_file(meta),
+                                 'entries': [json.loads(line) for line in read_owned(child_path, run_dir).decode().splitlines()]})
+            proof = code_review_scope_identity(
+                run_args=expected_prompt.removeprefix('/code-review '), task_id=task_id, run_id=run_id,
+                artifact=json.loads(artifact_bytes), parents=parents, children=children,
+                log=read_owned(run_dir / 'debug.log', run_dir).decode(),
+                wire=live_wire)
+            proof['native_window_target'] = target
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            proof = {'complete': False, 'agent_ids': [], 'reason': str(error)}
+        proof.update(source_run=run_dir.name, source_hashes=hashes,
+                     immutable_inputs={source: {key: value for key, value in snapshot.items() if key != 'bytes'}
+                                       for source, snapshot in snapshots.items()},
+                     pane_tty_scope='session:window.pane target only; actual %pane_id/TTY requires separate collection')
+        proof_bytes = (json.dumps(proof, indent=2) + '\n').encode()
+        proof_path.write_bytes(proof_bytes)
+        proof['evidence_paths'] = list(dict.fromkeys(evidence))
+        proof['evidence_sha256'] = {**hashes, str(proof_path.resolve()): hashlib.sha256(proof_bytes).hexdigest()}
+        return proof
+
+
     def slash_workflow(self, kind):
         run_dir, session, target, ready = self.start(kind)
         result = {'label': kind, 'evidence_dir': str(run_dir)}
@@ -5087,8 +5483,11 @@ else:
         (run_dir / 'workflow-completion-proof.json').write_text(
             json.dumps(workflow_complete, indent=2) + '\n'
         )
-        wire_assertion = self.workflow_mock_wire(run_dir, kind) if kind == 'code-review' else None
         cleanup = self.close(run_dir, session, target)
+        identity_proof = self.code_review_scope_identity_proof(run_dir, task_id, run_id, prompt) if kind == 'code-review' else None
+        if identity_proof is not None:
+            ids = identity_proof['agent_ids']
+        wire_assertion = self.workflow_mock_wire(run_dir, kind) if kind == 'code-review' else None
         passed = (
             ready
             and launched
@@ -5098,6 +5497,7 @@ else:
             and notifications == 1
             and '❯' in strip_ansi(terminal)
             and fetch_ok
+            and (identity_proof is None or identity_proof['complete'])
             and (wire_assertion is None or (
                 wire_assertion['validation_verdict'] == 'passed'
                 and 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir)
@@ -5128,6 +5528,7 @@ else:
             'task_id': task_id,
             'run_id': run_id,
             'agent_ids': ids,
+            'workflow_agent_identity': {key: value for key, value in identity_proof.items() if key != 'evidence_paths'} if identity_proof is not None else None,
             'notification_count': notifications,
             'permission_approvals': approvals,
             'parent_prompt_restored': '❯' in strip_ansi(terminal),
@@ -5135,6 +5536,13 @@ else:
             'deep_research_phase_evidence': phase_evidence,
             'marker_counts': markers,
             'assertions': [
+                *([self.required_assertion(
+                    run_dir, 'code-review-native-scope-identity', 'code-review native Scope identity',
+                    'The same task/run, parent tool, CLI session, exact prompt/schema and StructuredOutput receipt resolve one actual native child.',
+                    identity_proof['evidence_paths'], passed=identity_proof['complete'],
+                    evidence_sha256=identity_proof['evidence_sha256'],
+                    reason=identity_proof.get('reason') or 'Native Scope identity was incomplete',
+                )] if identity_proof is not None else []),
                 *([wire_assertion] if wire_assertion else []),
                 self.required_assertion(
                     run_dir,
@@ -5157,7 +5565,7 @@ else:
 
     def required_assertion(self, run_dir, assertion_id, subject, predicate,
                            paths, *, runtime_state='done', passed=False,
-                           reason=None):
+                           reason=None, evidence_sha256=None):
         missing = [str(path.resolve()) for path in paths if not path.exists()]
         passed = passed and not missing
         if missing:
@@ -5173,6 +5581,7 @@ else:
             'runtime_state': runtime_state,
             'validation_verdict': 'passed' if passed else 'failed',
             'reason_if_not_passed': None if passed else reason,
+            **({'evidence_sha256': dict(evidence_sha256)} if evidence_sha256 is not None else {}),
         }
 
     def mock_response_requests(self, run_dir):
@@ -7338,6 +7747,8 @@ else:
 
     def workflow_mock_wire(self, run_dir, label):
         server = self.mock_servers.get(run_dir.name)
+        if label == 'code-review':
+            server = getattr(self, 'code_review_mock_servers', {}).get(run_dir.name)
         requests = server.snapshot() if server else []
         responses = [request for request in requests if is_main_response_request(request)]
         kinds = [request.get('response_kind') for request in responses]
