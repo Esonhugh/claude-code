@@ -43,6 +43,9 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
     'official-claude',
 )
 MOCK_OPENAI_TARGETS = frozenset({
+    'readiness-smoke',
+    'goal-lifecycle',
+    'ssh-remote-session-lifecycle',
     'plugins-reload',
     'deferred-tool-discovery',
     'deferred-tool-discovery-off',
@@ -562,8 +565,6 @@ def required_targets_for_paths(paths):
 
 
 def plan_targets(extra_targets, required_targets, *, retain_artifacts=False):
-    if extra_targets == ['builtin-mods'] and not retain_artifacts:
-        return ['builtin-mods']
     duplicate_defaults = sorted(set(DEFAULT_TARGETS) & set(extra_targets))
     if duplicate_defaults:
         raise ValueError(
@@ -629,7 +630,19 @@ def assertion_is_valid(assertion, source_runs):
         return False
     if not isinstance(evidence_paths, list) or not evidence_paths:
         return False
+    required_paths = assertion.get('required_evidence')
+    if not isinstance(required_paths, list) or not required_paths or any(
+        not isinstance(path, str) or not Path(path).is_absolute()
+        for path in required_paths
+    ):
+        return False
+    if {str(Path(path).resolve()) for path in required_paths} != {
+        str(Path(path).resolve()) for path in evidence_paths
+        if isinstance(path, str)
+    }:
+        return False
     source_root = source_runs[source_run]
+    nonempty_proof = False
     for evidence_path in evidence_paths:
         if not isinstance(evidence_path, str) or not evidence_path.strip():
             return False
@@ -638,7 +651,9 @@ def assertion_is_valid(assertion, source_runs):
             return False
         if not is_relative_to(absolute_path.resolve(strict=False), source_root):
             return False
-    return True
+        if absolute_path.is_file() and absolute_path.stat().st_size > 0:
+            nonempty_proof = True
+    return nonempty_proof
 
 
 
@@ -3194,6 +3209,13 @@ else:
         raise SystemExit(128 + signum)
 
     def record(self, result):
+        assertions = result.get('assertions')
+        if result.get('validation_verdict') == 'passed' and isinstance(assertions, list) and any(
+            assertion.get('validation_verdict') != 'passed'
+            for assertion in assertions
+        ):
+            result['validation_verdict'] = 'failed'
+            result['reason'] = 'one or more target assertions failed'
         result['driver_run'] = f'{self.stamp}-{self.pid}'
         self.manifest['runs'].append(result)
         (self.evidence_root / 'driver-progress.json').write_text(
@@ -3527,7 +3549,7 @@ else:
 
         expected_assertions = {
             'completeness', 'cleanup', 'agents', 'diff', 'security', 'ui',
-            'dynamicTools', 'suggestionReload', 'telemetry',
+            'dynamicTools', 'suggestionReload', 'telemetry', 'terminalEvidence',
         }
         checks = {
             'subprocess': completed.returncode == 0,
@@ -3607,8 +3629,6 @@ else:
             )],
         }
         self.record(result)
-        if not passed:
-            raise RuntimeError(f'builtin Mods acceptance failed: {run_dir}')
 
     def paste_bytes(self, target, run_dir, data, filename):
         input_path = run_dir / filename
@@ -5138,13 +5158,18 @@ else:
     def required_assertion(self, run_dir, assertion_id, subject, predicate,
                            paths, *, runtime_state='done', passed=False,
                            reason=None):
+        missing = [str(path.resolve()) for path in paths if not path.exists()]
+        passed = passed and not missing
+        if missing:
+            reason = 'missing required evidence: ' + ', '.join(missing)
         return {
             'assertion_id': assertion_id,
             'source_run': run_dir.name,
             'subject': subject,
             'predicate': predicate,
             'required_evidence': [str(path) for path in paths],
-            'observed_evidence_paths': [str(path.resolve()) for path in paths],
+            'observed_evidence_paths': [str(path.resolve()) for path in paths if path.exists()],
+            'missing_evidence_paths': missing,
             'runtime_state': runtime_state,
             'validation_verdict': 'passed' if passed else 'failed',
             'reason_if_not_passed': None if passed else reason,
@@ -8680,8 +8705,7 @@ else:
         except Exception:
             self.release_lease()
             raise
-        builtin_mods_only = targets == ['builtin-mods']
-        planned_targets = list(targets) if builtin_mods_only else ['readiness-smoke', *targets]
+        planned_targets = ['readiness-smoke', *targets]
         self.manifest.update({
             'completion_state': 'running',
             'normal_exit': False,
@@ -8689,11 +8713,8 @@ else:
             'recorded_run_count': 0,
             'planned_targets': planned_targets,
             'readiness_smoke': {
-                'status': 'skipped' if builtin_mods_only else 'planned',
-                'reason': (
-                    'builtin-mods supplies target-specific isolated readiness and must not access an auth source'
-                    if builtin_mods_only else None
-                ),
+                'status': 'planned',
+                'reason': None,
             },
             'matrix_complete': False,
             'completion_reason': None,
@@ -8732,13 +8753,12 @@ else:
             'builtin-mods': self.builtin_mods,
         }
         try:
-            if not builtin_mods_only:
-                self.run_target('readiness-smoke', self.readiness_smoke)
-                readiness_result = self.manifest['runs'][-1]
-                self.manifest['readiness_smoke'] = {
-                    'status': readiness_result['validation_verdict'],
-                    'evidence_dir': readiness_result['evidence_dir'],
-                }
+            self.run_target('readiness-smoke', self.readiness_smoke)
+            readiness_result = self.manifest['runs'][-1]
+            self.manifest['readiness_smoke'] = {
+                'status': readiness_result['validation_verdict'],
+                'evidence_dir': readiness_result['evidence_dir'],
+            }
             for target in targets:
                 self.run_target(target, actions[target])
         except Exception as error:
@@ -8783,11 +8803,15 @@ else:
             )
             expected_runs = len(planned_targets)
             required_coverage = validate_required_target_results(
-                set(targets) if builtin_mods_only else set(self.manifest['required_targets']),
+                set(self.manifest['required_targets']),
                 self.manifest['runs'],
                 self.registered_runs,
             )
             self.manifest['required_target_coverage'] = required_coverage
+            planned_coverage = validate_required_target_results(
+                set(targets), self.manifest['runs'], self.registered_runs,
+            )
+            self.manifest['planned_target_coverage'] = planned_coverage
             self.manifest['overall_verdict'] = (
                 'passed'
                 if (
@@ -8796,6 +8820,7 @@ else:
                     and 'driver_error' not in self.manifest
                     and len(self.manifest['runs']) == expected_runs
                     and required_coverage['passed']
+                    and planned_coverage['passed']
                     and all(
                         run['validation_verdict'] == 'passed'
                         for run in self.manifest['runs']

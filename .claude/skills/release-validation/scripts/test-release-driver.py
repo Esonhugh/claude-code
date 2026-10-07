@@ -1029,6 +1029,7 @@ def make_required_assertion(source_dir, *, assertion_id='assertion-1',
         evidence_path.write_text('evidence\n')
     assertion = {
         'validation_verdict': validation_verdict,
+        'required_evidence': [str(evidence_path if evidence_absolute else Path(evidence_name))],
         'observed_evidence_paths': [
             str(evidence_path if evidence_absolute else Path(evidence_name))
         ],
@@ -2861,6 +2862,7 @@ def assert_driver_behavior(module, baseline_module):
                  'response_kind': kind, 'authorization': {'matches_dummy': True}}
                 for kind in kinds
             ]
+            server.flush()
             assert gate.workflow_mock_wire(Path(directory), label)['validation_verdict'] == 'passed'
             server.requests.append(server.requests[1])
             assert gate.workflow_mock_wire(Path(directory), label)['validation_verdict'] == 'failed'
@@ -3512,7 +3514,7 @@ def assert_driver_behavior(module, baseline_module):
 
     planned = module.plan_targets(['team-concurrency'], {'workflow-failure-detail'})
     assert planned == ['workflow-failure-detail', 'team-concurrency']
-    assert module.plan_targets(['builtin-mods'], {'agent-fg-bg'}) == ['builtin-mods']
+    assert module.plan_targets(['builtin-mods'], {'agent-fg-bg'}) == ['agent-fg-bg', 'builtin-mods']
     for path in (
         'src/tasks/InProcessTeammateTask/types.ts',
         'src/hooks/useBackgroundTaskNavigation.ts',
@@ -4126,6 +4128,9 @@ def assert_driver_behavior(module, baseline_module):
         def send_effort(*args):
             nonlocal visible_requests
             prompt = str(args[2])
+            (run_dir / args[3]).write_text(prompt)
+            (run_dir / 'mock-openai-requests.json').write_text(json.dumps(requests[:visible_requests + int(prompt.startswith('Reply with'))]))
+            (run_dir / 'debug.log').touch()
             if prompt.startswith('Reply with'):
                 visible_requests += 1
             elif prompt == '/effort ultracode':
@@ -6202,6 +6207,10 @@ def assert_deterministic_lifecycle_protocol(module):
 
 
 def main():
+    for name, test in sorted(globals().items()):
+        if name.startswith('test_retained_') and callable(test):
+            test()
+            print(f'{name} passed', flush=True)
     assert_deterministic_lifecycle_protocol(load_driver())
     assert_fixture_materializes_builtin_marketplace(load_driver())
     assert_send_uses_atomic_bracketed_paste(load_driver())
@@ -6221,6 +6230,172 @@ def main():
     assert_deferred_tool_discovery(module)
     assert_driver_behavior(module, baseline_module)
     print('test-release-driver.py passed')
+
+
+
+def test_retained_readiness_and_local_lifecycles_never_read_account_auth():
+    module = load_driver()
+    for label in ('readiness-smoke', 'goal-lifecycle', 'ssh-remote-session-lifecycle'):
+        assert label in module.MOCK_OPENAI_TARGETS
+        with tempfile.TemporaryDirectory(prefix='release-local-readiness-') as directory:
+            root = Path(directory)
+            gate = object.__new__(module.BinaryGate)
+            gate.repo = root / 'repo'
+            gate.evidence_root = root / 'evidence'
+            gate.auth_source = root / 'unavailable-auth-source'
+            gate.auth_homes = set()
+            run = gate.evidence_root / label
+            run.mkdir(parents=True)
+            try:
+                _, home = gate.make_fixture(run, label)
+                assert json.loads((home / '.codex/auth.json').read_text()) == {'OPENAI_API_KEY': module.DUMMY_OPENAI_API_KEY}
+                metadata = json.loads((run / 'auth-source-metadata.json').read_text())
+                assert metadata['source'] is None
+                assert metadata['uses_dummy_credential'] is True
+                assert metadata['target_outside_evidence'] is True
+                assert metadata['target_outside_repository'] is True
+                assert not gate.auth_source.exists()
+            finally:
+                for home in gate.auth_homes:
+                    shutil.rmtree(home)
+
+def test_retained_missing_assertion_evidence_fails_closed():
+    driver = load_driver()
+    gate = object.__new__(driver.BinaryGate)
+    with tempfile.TemporaryDirectory(prefix='missing-proof-') as directory:
+        run = Path(directory)
+        good = run / 'real.txt'
+        good.write_text('owned proof')
+        missing = run / 'not-reached.txt'
+        result = gate.required_assertion(run, 'missing-proof', 'proof', 'required proof exists', [good, missing], passed=True)
+        assert result['validation_verdict'] == 'failed'
+        assert result['observed_evidence_paths'] == [str(good.resolve())]
+        assert result['missing_evidence_paths'] == [str(missing.resolve())]
+
+def test_retained_additional_target_assertion_failure_is_not_a_pass():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='planned-proof-') as directory:
+        gate = object.__new__(driver.BinaryGate)
+        gate.stamp, gate.pid = 'unit', 1
+        gate.evidence_root = Path(directory) / 'evidence'
+        gate.cleanup_started = False
+        gate.registered_runs = {}
+        gate.manifest = {'runs': [], 'required_targets': []}
+        gate.baseline = {key: None for key in ('head', 'branch', 'status_porcelain', 'unstaged_diff_sha256', 'staged_diff_sha256', 'untracked_files_sha256', 'ignored_files_excluded_roots', 'ignored_files_sha256', 'binary')}
+        gate.baseline['status_porcelain'] = ''
+        gate.acquire_lease = lambda: None
+        gate.release_lease = lambda: {'released': True}
+        gate.repository_state = lambda: dict(gate.baseline)
+        gate.close_active_runs = lambda: []
+        gate.remove_auth_homes = lambda: {'errors': []}
+        gate.archive_and_remove_workflow_runs = lambda: {'passed': True}
+        gate.run_target = lambda _label, action: action()
+        gate.readiness_smoke = lambda: gate.record({'label': 'readiness-smoke', 'validation_verdict': 'passed', 'evidence_dir': str(gate.evidence_root)})
+        for name in ('openai_stats', 'goal_lifecycle', 'direct_agent', 'subagent_stop_failure_lifecycle', 'nested_agent', 'effort_openai_responses_wire', 'plugins_reload', 'deferred_tool_discovery', 'fast_openai_responses_wire', 'openai_image_input_wire', 'openai_remote_compaction', 'openai_responses_usage_error', 'model_discovery_picker', 'model_discovery_empty_picker', 'first_party_bootstrap_picker', 'model_internal_update_config_skill', 'prompt_modes_cache_prefix', 'team_concurrency', 'workflow_retry_partial_failure', 'workflow_failure_detail', 'coordinator_selector', 'transcript_retention', 'ssh_remote_session_lifecycle', 'terminal_interaction', 'builtin_mods'):
+            setattr(gate, name, lambda: None)
+        def workflow():
+            run = gate.evidence_root / 'workflow'
+            run.mkdir()
+            proof = gate.required_assertion(run, 'missing', 'workflow', 'proof exists', [run / 'not-reached.json'], passed=True)
+            gate.record({'label': 'workflow', 'validation_verdict': 'passed', 'evidence_dir': str(run), 'assertions': [proof]})
+        gate.workflow = workflow
+        with patch('builtins.print'):
+            assert gate.run(['workflow']) is False
+        assert gate.manifest['normal_exit'] is True
+        assert gate.manifest['matrix_complete'] is True
+        assert gate.manifest['runs'][-1]['validation_verdict'] == 'failed'
+        assert gate.manifest['planned_target_coverage']['invalid_targets'] == ['workflow']
+
+def test_retained_required_proof_cannot_be_dropped_or_empty():
+    driver = load_driver()
+    with tempfile.TemporaryDirectory(prefix='proof-shape-') as directory:
+        root = Path(directory).resolve()
+        good = make_required_assertion(root)
+        sources = {root.name: root}
+        assert driver.assertion_is_valid(good, sources)
+        dropped = {**good, 'required_evidence': [*good['required_evidence'], str(root / 'missing.txt')]}
+        assert not driver.assertion_is_valid(dropped, sources)
+        for evidence in (root / 'empty.txt', root / 'empty-directory'):
+            if evidence.suffix:
+                evidence.touch()
+            else:
+                evidence.mkdir()
+            empty = {**good, 'required_evidence': [str(evidence)], 'observed_evidence_paths': [str(evidence)]}
+            assert not driver.assertion_is_valid(empty, sources)
+        # Empty stderr is useful ancillary evidence alongside an actual proof file.
+        mixed = {**good, 'required_evidence': [*good['required_evidence'], str(root / 'empty.txt')], 'observed_evidence_paths': [*good['observed_evidence_paths'], str(root / 'empty.txt')]}
+        assert driver.assertion_is_valid(mixed, sources)
+
+
+
+def test_retained_builtin_business_verdicts_cannot_replace_terminal_proof():
+    module = load_driver()
+    with tempfile.TemporaryDirectory(prefix='builtin-proof-') as directory:
+        root = Path(directory)
+        gate = object.__new__(module.BinaryGate)
+        gate.evidence_root = root / 'evidence'
+        gate.evidence_root.mkdir()
+        gate.repo, gate.binary = root / 'repo', root / 'binary'
+        gate.manifest = {'binary_sha256': 'a' * 64}
+        gate.stamp, gate.pid, gate.registered_runs = 'unit', 1, {}
+        recorded = []
+        gate.record = recorded.append
+        def producer(command, **_kwargs):
+            cache = Path(command[command.index('--cache') + 1])
+            report_root = cache / 'runs' / 'r-acceptance'
+            report_root.mkdir(parents=True)
+            pair = {}
+            for name in ('privacyOff', 'privacyOn', 'enabled', 'disabled',
+                         'securityOrdinary', 'securityTeam', 'securityEnterprise'):
+                run = cache / 'runs' / ('r-' + name)
+                run.mkdir()
+                pair[name] = {'run': str(run), 'socket': str(run / 'tmux.sock'),
+                              'binarySha256': 'a' * 64, 'captures': {}}
+            report = {'evidence': str(report_root), 'pair': pair,
+                      'assertions': {name: {'verdict': 'passed'} for name in (
+                          'completeness', 'cleanup', 'agents', 'diff', 'security',
+                          'ui', 'dynamicTools', 'suggestionReload', 'telemetry')}}
+            (report_root / 'acceptance.json').write_text(json.dumps(report))
+            return subprocess.CompletedProcess(command, 0, json.dumps(report), '')
+        with patch.object(module.subprocess, 'run', producer):
+            gate.builtin_mods()
+        assert len(recorded) == 1
+        assert recorded[0]['validation_verdict'] == 'failed'
+        assert recorded[0]['checks']['binary'] is True
+        assert recorded[0]['checks']['evidence_ownership'] is True
+        assert recorded[0]['checks']['assertions'] is False
+        assert recorded[0]['checks']['cache_cleanup'] is True
+
+
+def test_retained_default_entrypoint_contract():
+    from contextlib import redirect_stdout
+    from io import StringIO
+
+    retained = {name for name, test in globals().items()
+                if name.startswith('test_retained_') and callable(test)}
+    calls = []
+    replacements = {
+        name: (lambda name=name: calls.append(name)) for name in retained
+    }
+    replacements.update({name: (lambda *args: None)
+                         for name in globals() if name.startswith('assert_')})
+    replacements.update(load_driver=lambda: None, load_baseline=lambda: None)
+    with patch.dict(globals(), replacements), redirect_stdout(StringIO()):
+        main()
+    assert set(calls) == retained and len(calls) == len(retained), \
+        f'default entrypoint skipped retained tests: {sorted(retained - set(calls))}'
+
+    failure = RuntimeError('retained regression failed')
+    def fail():
+        raise failure
+    replacements[sorted(retained)[0]] = fail
+    with patch.dict(globals(), replacements), redirect_stdout(StringIO()):
+        try:
+            main()
+        except RuntimeError as error:
+            assert error is failure
+        else:
+            raise AssertionError('default entrypoint ignored a retained test failure')
 
 
 if __name__ == '__main__':

@@ -24,6 +24,7 @@
 
 ### 变更内容
 
+- 收紧发布验收：追加目标也必须有同次运行的有效断言；缺失或未声明的证据、仅空文件或目录不能通过。`--targets builtin-mods` 保留其他必验目标及独立 readiness，readiness 和本地生命周期使用隔离 dummy 认证。测试入口执行全部已定义的 retained 回归。
 - 接通远程 prompt 编辑、补全及元素焦点，18 类客户端控制均有运行入口；对齐只读事实、UTF-16、Unicode 候选、排队/撤销、渲染焦点、控件归属、迟到 deny 和 system/ui_focus。使用方法见 README，固定官方 2.1.292 对跑与完整验收边界见[编辑与焦点专项](docs/research/mods-remote-composer-292-20261008.md)。
 - 修复 Mods capability 异常 catch 对 Proxy 原型和 name getter 的执行风险，保留安全消息和原始错误身份；真实 Worker、编译故障注入与其范围见[异常边界专项](docs/research/mods-capability-error-audit-20261008.md)。
 - 修复 Mods 宿主与嵌套回调的取消原因丢失：保留原始错误对象、预先取消和局部 clock 信号，继续执行撤销、进程回收及有界 stream 收尾。详见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
@@ -36,6 +37,7 @@
 
 ### 测试覆盖
 
+- 验收器六个缺口均有干净 HEAD 的失败对照，修复候选的原有断言和 25 个 retained 回归通过。完整工作区的新制品矩阵仍为 28 项执行、25 通过、3 失败，整体未通过；帧诊断不能代替完整终端验收。详见[验收有效性记录](docs/research/release-acceptance-validity-20261008.md)。
 - 已完成分项回归、类型与构建检查；18 类远程控制已接通，完整 UI/diff、浏览器 Client 与发布矩阵仍须闭合；已修复此前 host callback 取消回归，验证范围见[取消专项](docs/research/mods-cancellation-audit-292-20261008.md)。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
 
 - SDK Pane 的真实 Worker、协议类型与官方 2.1.292 / 新候选 / 完整工作区控制验收见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)；未覆盖的完整 UI/diff 和其他远程控制继续分别验收。

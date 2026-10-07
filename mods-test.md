@@ -2139,3 +2139,10 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 验收有效性已发现的缺口不算“测试通过”：full-gate2计划readiness+27目标，仅三项实际执行，builtin因禁用侧native ownership提取缺口失败；其余25项未启动。同步前台夹具须明确模式，Workflow保持默认路线验实际产品 caller；逐帧结果须来自从启动捕获的独立PTY字节。历史几何9/7失败原件保留，人为chalk扰动不是根因证明。Proxy catch的真实Worker及编译注入修复见[异常专项](docs/research/mods-capability-error-audit-20261008.md)，不冒称公共CLI。
 
 2026-10-08 npm latest已为2.1.293，本批运行证据固定2.1.292。五类responder、浏览器Client、完整terminal/diff/G5和全量WIP仍是必须闭合的后续目标。继续按功能签名提交，不push或宣布发布。
+
+
+## 2026-10-08 — 验收有效性修复
+
+验收驱动校验所有计划目标的所属运行、断言和真实证据；缺失或未声明路径、仅空文件/目录不能通过。builtin 追加保留默认必验范围和独立 readiness，本地 readiness、goal、SSH 生命周期使用 dummy 认证。测试入口执行全部 retained 回归，并验证每项恰好执行一次、失败会传播。干净提交候选的原有断言和 25 项 retained 回归通过；完整工作区的后续真实制品矩阵为 28 项完成、25 通过、3 失败，整体未通过。
+
+原始 PTY/实际 resize/EOF/逐帧回放与归档重验仅证明各自范围；同步 ACK 影响时序，完整 terminal/diff 和 code-review 身份验收仍需处理。详细边界与命令见[验收有效性记录](docs/research/release-acceptance-validity-20261008.md)。
