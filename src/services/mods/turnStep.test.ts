@@ -62,7 +62,7 @@ test.each([
 test('generator short circuit makes no model call and yield delegation returns the result', async () => {
   const { value, events } = await fixture(`export function register(on) {
     on('turn.step', async function* ($, e, next) {
-      if (e.model === 'alone') { yield {kind:'text',index:0,text:'local'}; return; }
+      if (e.model === 'alone') { yield {kind:'text',index:0,text:'local'}; return {...e,answer:'local',toolUses:[],stopReason:'end_turn',usage:null}; }
       const first = yield* next(e);
       const second = yield* next(e);
       return { ...second, answer: first.answer + second.answer };
@@ -72,7 +72,7 @@ test('generator short circuit makes no model call and yield delegation returns t
   const core = async function* () { calls++; yield { kind: 'text', index: 0, text: 'hello' }; return result }
   const alone = value.stream('turn.step', { ...input, model: 'alone' }, core)
   expect((await Array.fromAsync(alone))).toEqual([{ kind: 'text', index: 0, text: 'local' }])
-  expect(await alone.result).toMatchObject({ answer: '', stopReason: null })
+  expect(await alone.result).toMatchObject({ answer: 'local', stopReason: 'end_turn' })
   expect(calls).toBe(0)
   const twice = value.stream('turn.step', input, core)
   expect((await Array.fromAsync(twice))).toHaveLength(2)
@@ -353,7 +353,11 @@ test('abort interrupts a pending Worker pull and closes the model iterator', asy
   const pending = source.next()
   await ready
   abort.abort(new Error('test interrupted'))
-  await expect(pending).rejects.toThrow('test interrupted')
+  // Bun's rejection matcher blocks Worker message delivery while pending.
+  // Await the actual RPC before checking both identity and the original message.
+  const failure = await pending.then(() => undefined, error => error)
+  expect(failure).toBe(abort.signal.reason)
+  expect(failure).toMatchObject({message:'test interrupted'})
   await expect(source.result).rejects.toThrow('test interrupted')
   await source.return(undefined)
   expect(closed).toBe(true)

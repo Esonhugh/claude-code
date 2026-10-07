@@ -12,6 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods stream 主动取消和资源收尾
+
+### Fixed
+
+- 公开 turn.step 区分取消信号与 stream delivery，允许 hook 在有限时间内完成取消收尾；turn.abort 正常返回，next.signal 同步取消原因 turn-abort，取消本轮模型和工具且不添加用户中断提示。
+- 取消期间仍接收实际输出并保留模型/Worker 原始取消身份；真实 hook 错误和缺少合法结果继续诊断，不将所有取消后的异常当作取消或把返回 answer 当作输出。
+- 适配器在所有退出路径等待 Worker/model iterator 与快照清理；retained stream watchdog 覆盖初始化 RPC 之后的永不返回 pull，并打印不含正文的 turn/step/块数和 overrun plugin/invocation 调试信息。
+
+### Tests
+
+- 增加合法、协作、缺少返回、真实 hook/模型异常及永不返回的取消回归；原清理断言和时限保留，待完成 Worker RPC 先普通 await 再严格检查取消身份，避免 Bun rejection matcher 阻塞消息投递。
+- 12 文件隔离回归：候选 507 pass / 1 fail / 3 skip，工作区 535 pass / 1 fail / 3 skip；唯一失败为原 HEAD 与原工作区均复现的远程 attach/detach 取消。既有 skip 保留，不声明全量门禁或整体 Mods 对齐完成。
+- README 补充主动取消用法；最新官方 2.1.292、源/制品身份、失败和精确验证边界见 docs/research/mods-stream-abort-parity-292-20261007.md。
+
 ## 2026-10-07 - Mods 查询与工具执行测试定义
 
 ### Tests

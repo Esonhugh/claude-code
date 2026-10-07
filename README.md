@@ -1452,3 +1452,24 @@ const fixtureTool = buildTool({
 ```
 
 需要在测试中替换 `call` 以观察取消或进度时，显式标注 `Tool<typeof inputSchema, Output>`，保留 executor 的完整回调签名。这是仓库测试的内部构造方式；插件作者的公开工具接口仍见前面的 Mods API 用法。当前 query/tool 测试定义修正、保留的主动 abort 失败和官方真实终端差异见[验收记录](docs/research/mods-query-tool-fixtures-20261007.md)。
+
+
+### turn.step 主动取消与收尾
+
+`$.turn.abort({turnId:e.turnId})` 取消当前 turn 的模型和工具，不添加用户中断提示。调用成功后 hook 仍应处理 `next.signal` 并返回合法结果；取消期间输出的 text chunk 可以进入显示、历史和 `turn.complete.answer`，返回结果的 `answer` 不会替代实际输出。
+
+```js
+on('turn.step', async function* ($, e, next) {
+  yield {kind: 'text', index: 0, text: '本轮已停止。'}
+  await $.turn.abort({turnId: e.turnId})
+  // next.signal.aborted 为 true；reason.message 为 turn-abort。
+  return {
+    turnId: e.turnId, index: e.index, answer: '',
+    toolUses: [], stopReason: 'end_turn', usage: null,
+  }
+})
+```
+
+公开 stream 有有限的取消收尾时间，应及时结束并清理资源；显式 iterator `return()` 和 runtime disposal 会立即开始取消并等待清理。没有完整消费 `next(e)` 的 hook 必须返回合法 `TurnStepResult`，省略返回会诊断并回退，取消后不会因此再发主模型请求。真实 hook/模型错误仍保留错误信息，不因为 signal 已取消就全部吞掉。
+
+合法返回、协作取消、缺少返回、真实异常与模型清理的测试、官方源码依据和终端对照见[主动取消专项](docs/research/mods-stream-abort-parity-292-20261007.md)。前一批记录的 self-abort 缺口由此专项继续验收；远程 attach/detach、完整 UI/diff/G5 和全量 WIP 的结果另行记录。

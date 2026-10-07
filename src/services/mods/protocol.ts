@@ -133,7 +133,7 @@ export type ModWorkerRequest =
         tables: [string, ModWireValue][]
       }[]
     }
-  | { type: 'abort'; environment: number; invocation: number; reason?: {name:string;message:string} }
+  | { type: 'abort'; environment: number; invocation: number; reason?: {name:string;message:string}; cooperative?: true }
   | { type: 'trace'; environment: number; invocation: number; trace: ModWireValue }
   | {
       type: 'host-result'

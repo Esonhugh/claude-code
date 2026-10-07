@@ -2045,3 +2045,16 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 query 的四类执行工具定义、toolExecution 的共享 fixture 改用 buildTool 并补齐必需方法及类型，生产代码和原断言不变。query 原候选 113/7/580expect、工作区 118/7/621expect，修正后 119/1/624expect、124/1/665expect。相邻 executor RED 候选 173pass/15fail/2skip/678expect、工作区 191pass/15fail/2skip/705expect；最终 7 文件组候选 307pass/1fail/2skip/1386expect、工作区 330pass/1fail/2skip/1454expect，均 exit1。既有 2 项 skip 保留，未增加跳过或削弱断言。
 
 唯一 query 失败仍为 stream hook 自取消：期望 aborted_streaming，实际 model_error。三份新隔离终端的 normal/self/normal-after 流程均可恢复并正常退出；自取消主模型调用为 0，但官方继续接收 AFTER 文本并报告无 return，候选/工作区最终显示 API error interrupt。不能把 completion.reason=aborted 当成最终 UI、历史和取消完全匹配。原先驱动失败、完整 raw 证据与后续合法返回/信号调查范围见[本批验收](docs/research/mods-query-tool-fixtures-20261007.md)。旧 response 的 155 文件全量门禁、完整 UI/diff/G5 总目标仍开放。
+
+
+## 2026-10-07 — turn.step 主动取消、合法结果和 teardown
+
+基于 `5a61fb6635c6a6030a05a6ee8e73fbbbc0aaf4b7` 独立候选，与保留原 WIP 的完整工作区分开验证。公开 stream 的取消信号提前到达作者，但 delivery 可以在有限时间内收尾；成功的 turn.abort 调用不再被自身取消拒绝。取消原因为 turn-abort，保留真实错误和原始取消身份，无主模型的已取消回退不会增加请求；缺少结果与真实 hook 错误仍诊断。
+
+adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理，retained stream watchdog 不再只查看已经结束的初始化 RPC。新增永不返回测试：候选原逻辑 1/0、原工作区 0/1 timeout；本批监控路径纳入最终回归。Bun 待完成 rejects matcher 的阻塞现象由私有探针证实，改为普通 await 后严格核对同一错误身份及原错误信息，未修改原测试时限或削弱清理断言。
+
+最终 12 文件组候选 507pass/1fail/3skip/2426expect、工作区 535pass/1fail/3skip/2521expect，均 exit1，唯一失败为 `aborted attach and detach do not commit partial roster transitions`。干净原 HEAD 的完整 runtime 文件 89pass/1fail/1skip，原工作区副本 91pass/1fail/1skip，均复现同一失败，原断言保留。不能把这批专项称为旧 response 的 155 文件全量通过。
+
+最新官方的合法/协作/缺少返回/真实异常自取消场景、实际 stdin/普通视图/Ctrl-O transcript、主请求与标题旁路分离和后续恢复的证据，以及完整 API/上下文/UI/diff/G5、动态预算暂停与真实错误竞态等未关闭项，见[专项验收](docs/research/mods-stream-abort-parity-292-20261007.md)。
+
+最终两侧 release-check/build exit0，原生官方/候选/ROOT 同 driver/fixture/input 串行取得32/32/32回执并正常exit0，清理通过。六场 completion、取消信号、普通/展开 pane 与保存文本一致；主模型1/0/0/0/0/1，6个旁路请求另计。不是全帧/全部上下文字段或远程 attach/detach 通过；制品 SHA 与比较器见本批报告。

@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { createModHookStream, type ModWireValue, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
 import type { ModDeclaration, ModHookStream, ModInput, ModNext, ModRegistration } from './types.js'
 import { matchesModEventPattern, normalizeModMatcher } from './matcher.js'
-import { getModBudgetClock, subscribeModTrace } from './dispatch.js'
+import { canSettleModStreamAfterAbort, getModBudgetClock, subscribeModTrace } from './dispatch.js'
 import type { ModClientFrame, ModClientRequest } from './client.js'
 
 type ClockCallbacks = {
@@ -469,7 +469,9 @@ export function createModEnvironmentHost({
         const errors = invocationErrors.get(message.invocation ?? message.id)
         if (message.errorRef !== undefined && errors?.has(message.errorRef)) pending.reject(errors.get(message.errorRef) as Error)
         else {
-          const error = new Error(message.error)
+          const signal = message.invocation === undefined ? undefined : frames.get(message.invocation)?.next.signal
+          const error = message.aborted && signal?.aborted && signal.reason instanceof Error
+            ? signal.reason : new Error(message.error)
           if (message.aborted) streamAbortErrors.add(error)
           pending.reject(error)
         }
@@ -595,10 +597,20 @@ export function createModEnvironmentHost({
     }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
-      worker.postMessage({ type: 'abort', environment, invocation: id, ...(['turn.step','model.complete','model.classify','model.fork','ui.render'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
+      worker.postMessage({ type: 'abort', environment, invocation: id, ...(streaming && next && canSettleModStreamAfterAbort(next) ? {cooperative:true as const} : {}), ...(['turn.step','model.complete','model.classify','model.fork','ui.render'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
+      if (streaming && retained) {
+        // The opening RPC is already settled; the watchdog must cover the
+        // retained stream's pulls as well, including a guest-only pending wait.
+        overrun ??= setTimeout(() => {
+          logForDebugging(`[Mods:turn.step] abort overrun plugin=${state.declaration.name} invocation=${id}`)
+          fail(new Error('Mods Worker did not settle an aborted invocation'))
+        }, 5000)
+        overrun.unref?.()
+      }
       overrun ??= setTimeout(() => fail(new Error('Mods Worker did not settle an aborted invocation')), 5000)
       overrun.unref?.()
-      if (streaming) streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))
+      if (streaming && (!next || !canSettleModStreamAfterAbort(next)))
+        streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))
     }
     try {
       const argsWire = args.map((value, index) => {

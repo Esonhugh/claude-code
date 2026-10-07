@@ -332,7 +332,7 @@ test.each([false, true])('turn.abort from a Worker cancels the current model wit
     const aborted = await runtime.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
     expect(diagnostics).toEqual([])
     expect(aborted).toEqual({result:'aborted'})
-    expect(h.context.abortController.signal.reason).toBe('interrupt')
+    expect(h.context.abortController.signal.reason).toBe('turn-abort')
     const run = await pending
     expect(closed).toBe(true)
     expect(JSON.stringify(run.messages)).not.toContain('interrupted')
@@ -437,13 +437,13 @@ test('a turn.start Worker can abort its own turn before any model request', asyn
     h.params.publicTurn = {text:'stop before model'}
     const run = await drain(query(h.params))
     expect(calls).toBe(0)
-    expect(h.context.abortController.signal.reason).toBe('interrupt')
+    expect(h.context.abortController.signal.reason).toBe('turn-abort')
     expect(JSON.stringify(run.messages)).not.toContain('interrupted')
     expect(diagnostics).toEqual([])
   } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
 })
 
-test('a turn.step Worker can abort its own stream without a model call or plugin failure', async () => {
+test('a turn.step Worker can settle its aborted stream without a model call or plugin failure', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mods-step-self-abort-'))
   const diagnostics: unknown[] = []
   const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
@@ -454,6 +454,7 @@ test('a turn.step Worker can abort its own stream without a model call or plugin
         yield {kind:'text',index:0,text:'before abort'};
         await $.turn.abort({turnId:e.turnId});
         yield {kind:'text',index:0,text:'AFTER_ABORT'};
+        return {turnId:e.turnId,index:e.index,answer:'result-only',toolUses:[],stopReason:'end_turn',usage:null};
       });
     }`)
     await runtime.reconcile([{name:'step-abort',storageId:'step-abort@inline',pluginRoot:root,entrypoints:[entry]}])
@@ -463,16 +464,93 @@ test('a turn.step Worker can abort its own stream without a model call or plugin
     h.params.publicTurn = {text:'end from step'}
     const run = await drain(query(h.params))
     expect(requests).toBe(0)
-    expect(h.context.abortController.signal.reason).toBe('interrupt')
+    expect(h.context.abortController.signal.reason).toBe('turn-abort')
     expect(run.terminal.reason).toBe('aborted_streaming')
     expect(JSON.stringify(run.messages)).toContain('before abort')
     expect(run.messages.filter(message => message.type==='assistant').flatMap(message => message.message.content))
-      .toContainEqual({type:'text',text:'before abort'})
-    expect(JSON.stringify(run.messages)).not.toContain('AFTER_ABORT')
+      .toContainEqual({type:'text',text:'before abortAFTER_ABORT'})
+    expect(JSON.stringify(run.messages)).toContain('AFTER_ABORT')
+    expect(run.messages.some(message => message.type==='assistant' && message.isApiErrorMessage)).toBe(false)
+    expect(JSON.stringify(run.messages)).not.toContain('result-only')
     expect(JSON.stringify(run.messages)).not.toContain('interrupted')
     expect(diagnostics).toEqual([])
     expect(runtime.activePublicTurnId).toBeUndefined()
   } finally { await runtime.dispose(); await rm(root,{recursive:true,force:true}) }
+})
+
+test.each(['cooperative', 'missing-result', 'real-error'] as const)(
+  'turn.step self-abort settles %s and diagnoses only a real hook failure', async mode => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-step-abort-matrix-'))
+    const diagnostics: {plugin:string; stage:string; message:string}[] = []
+    const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+    try {
+      const entry = join(root, 'register.ts')
+      await writeFile(entry, `export function register(on) {
+        on('turn.step', async function* ($, e, next) {
+          yield {kind:'text',index:0,text:'before abort'};
+          await $.turn.abort({turnId:e.turnId});
+          if (!next.signal.aborted || next.signal.reason.message !== 'turn-abort') throw Error('signal was not delivered');
+          if (${JSON.stringify(mode)} === 'real-error') throw Error('OWNED_REAL_ERROR');
+          if (${JSON.stringify(mode)} !== 'cooperative') yield {kind:'text',index:0,text:'AFTER_ABORT'};
+          if (${JSON.stringify(mode)} === 'missing-result') return;
+          return {turnId:e.turnId,index:e.index,answer:'result-only',toolUses:[],stopReason:'end_turn',usage:null};
+        });
+      }`)
+      await runtime.reconcile([{name:'abort-matrix',storageId:'abort-matrix@inline',pluginRoot:root,entrypoints:[entry]}])
+      let requests = 0
+      const h = harness(async function* () {requests++; yield response('unexpected','MODEL_CALLED')})
+      h.context.mods = runtime
+      h.params.publicTurn = {text:'end from step'}
+      const run = await drain(query({...h.params,publicTurn:h.params.publicTurn ?? {text:'fixture admitted main turn'}}))
+      expect(requests).toBe(0)
+      expect(h.context.abortController.signal.reason).toBe('turn-abort')
+      expect(run.terminal.reason).toBe('aborted_streaming')
+      expect(run.messages.filter(message => message.type==='assistant').flatMap(message => message.message.content))
+        .toContainEqual({type:'text',text:mode==='missing-result' ? 'before abortAFTER_ABORT' : 'before abort'})
+      expect(run.messages.some(message => message.type==='assistant' && message.isApiErrorMessage)).toBe(false)
+      expect(JSON.stringify(run.messages)).not.toContain('result-only')
+      expect(JSON.stringify(run.messages)).not.toContain('interrupted')
+      expect(runtime.activePublicTurnId).toBeUndefined()
+      if (mode === 'cooperative') expect(diagnostics).toEqual([])
+      else {
+        expect(diagnostics).toHaveLength(1)
+        expect(diagnostics[0]).toMatchObject({plugin:'abort-matrix',stage:'turn.step'})
+        expect(diagnostics[0]!.message).toContain(mode==='real-error' ? 'OWNED_REAL_ERROR' : 'no result')
+      }
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  },
+)
+
+test('a real model failure stays primary when the model turn is also canceled', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'mods-step-model-abort-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('turn.step', async function* ($, e, next) {return yield* next(e)});
+    }`)
+    await runtime.reconcile([{name:'model-abort',storageId:'model-abort@inline',pluginRoot:root,entrypoints:[entry]}])
+    let closed = false, requests = 0
+    const h = harness(async function* () {
+      try {
+        requests++
+        yield* streamedResponse('real-failure', 'partial')
+        h.context.abortController.abort(new Error('cancellation cause'))
+        throw new Error('OWNED_MODEL_ERROR')
+      } finally {closed=true}
+    })
+    h.context.mods = runtime
+    const run = await drain(query({...h.params,publicTurn:h.params.publicTurn ?? {text:'fixture admitted main turn'}}))
+    expect(requests).toBe(1)
+    expect(closed).toBe(true)
+    expect(run.terminal.reason).toBe('model_error')
+    expect(run.messages.filter(message => message.type==='assistant' && message.isApiErrorMessage)
+      .flatMap(message => message.message.content)).toContainEqual({type:'text',text:'OWNED_MODEL_ERROR'})
+    expect(JSON.stringify(run.messages)).not.toContain('cancellation cause')
+    expect(diagnostics).toEqual([])
+    expect(runtime.activePublicTurnId).toBeUndefined()
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
 })
 
 test('turn.step preserves model fallback errors and increments the retry step', async () => {

@@ -17,6 +17,20 @@ type TraceNode = { entry?: ModTraceEntry; below: TraceNode[] }
 const traces = new WeakMap<ModNext, Set<() => void>>()
 // A frame's continuation ends on return; calls it already started follow cancellation.
 const capabilitySignals = new WeakMap<AbortSignal, AbortSignal>()
+// Public streaming hooks receive cancellation before their bounded settlement
+// completes. Explicit iterator close remains immediate.
+const settlingStreams = new WeakSet<Pick<ModNext, 'signal'>>()
+export function canSettleModStreamAfterAbort(next: Pick<ModNext, 'signal'>): boolean {
+  return settlingStreams.has(next)
+}
+export function isModStreamCancellation(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false
+  if (error === signal.reason) return true
+  if (!(error instanceof Error)) return false
+  if (error.name === 'AbortError' || error.name === 'APIUserAbortError') return true
+  return error.name === 'HooksError' && error.message ===
+    (signal.reason instanceof Error ? signal.reason.message : String(signal.reason))
+}
 export function getModCapabilitySignal(next: Pick<ModNext, 'signal'>): AbortSignal {
   return capabilitySignals.get(next.signal) ?? next.signal
 }
@@ -75,6 +89,7 @@ export function createModHookStream<C, R>(iterator: AsyncGenerator<C, R>, close?
 
 export function dispatchModStream(options: {
   event: 'turn.step'
+  settleAfterAbort?: boolean
   input: ModInput
   hooks: readonly ModDispatchHook[]
   core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>
@@ -96,6 +111,10 @@ export function dispatchModStream(options: {
     const abort = () => lifetime.abort(parent?.reason)
     parent?.addEventListener('abort', abort, { once: true })
     if (parent?.aborted) abort()
+    let explicitlyClosed = false
+    let rejectAbort: ((error: unknown) => void) | undefined
+    let abortGrace: ReturnType<typeof setTimeout> | undefined
+    const clearAbortGrace = () => { if (abortGrace !== undefined) clearTimeout(abortGrace); abortGrace = undefined }
     const body = (async function* () {
       let index = start
       while (index < hooks.length) {
@@ -160,7 +179,13 @@ export function dispatchModStream(options: {
         return () => { if (active && clock === metered) { active = false; pauses--; resume() } }
       }
       const abandon = new Promise<never>((_resolve, reject) => {
-        const fail = () => { controller.abort(lifetime.signal.reason); reject(lifetime.signal.reason) }
+        rejectAbort = reject
+        const fail = () => {
+          controller.abort(lifetime.signal.reason)
+          if (!options.settleAfterAbort) return reject(lifetime.signal.reason)
+          abortGrace ??= setTimeout(() => reject(lifetime.signal.reason), 5000)
+          abortGrace.unref?.()
+        }
         lifetime.signal.addEventListener('abort', fail, { once: true })
         if (lifetime.signal.aborted) fail()
       })
@@ -216,7 +241,8 @@ export function dispatchModStream(options: {
             }
           })())
           const pull = async (method: 'next' | 'return' | 'throw', value?: unknown) => {
-            own.signal.throwIfAborted()
+            // A canceled continuation still owns its iterator cleanup.
+            if (method !== 'return') own.signal.throwIfAborted()
             const unpause = pause()
             try {
               // Closing a hook's view must not destroy the branch needed by failure recovery.
@@ -233,6 +259,7 @@ export function dispatchModStream(options: {
           budget: { value: Object.freeze({ ms: allowance, get remainingMs() { return Math.max(0, remaining - (timer === undefined ? 0 : performance.now() - started)) } }) },
           ...(catching ? { error: { value: failure }, called: { value: last !== undefined } } : {}),
         }) as unknown as ModNext
+        if (options.settleAfterAbort) settlingStreams.add(next)
         budgets.set(next, { clock: clock!, pause })
         traces.set(next, listeners)
         return Object.freeze(next)
@@ -260,7 +287,9 @@ export function dispatchModStream(options: {
             finally { working = false; stop() }
             thrown = undefined
             if (item.done) {
-              const result = item.value === undefined ? lastResolved ? lastResult : { turnId: input.turnId, index: input.index, answer: '', toolUses: [], stopReason: null, usage: null } : item.value
+              if (item.value === undefined && !lastResolved)
+                throw new Error('turn.step returned no result (and read no next() stream to its end)')
+              const result = item.value === undefined ? lastResult : item.value
               options.validateResult?.(result, results)
               return result
             }
@@ -303,14 +332,14 @@ export function dispatchModStream(options: {
         }
         try { const result = yield* invoke(false); record('returned', result); return result }
         catch (error) {
-          if (lifetime.signal.aborted) throw error
+          if (lifetime.signal.aborted && (!options.settleAfterAbort || explicitlyClosed || isModStreamCancellation(error, lifetime.signal))) throw error
           if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
           if (hook.registration.hasCatch) {
             try {
               const result = yield* invoke(true, { kind: timedOut ? 'timeout' : 'throw', ...(timedOut ? {} : { message: error instanceof Error ? error.message : String(error) }), budget: options.catchGraceMs ?? 1000 })
               record('caught', result); return result
             } catch (error) {
-              lifetime.signal.throwIfAborted()
+              if (isModStreamCancellation(error, lifetime.signal)) throw error
               if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
             }
           }
@@ -320,7 +349,7 @@ export function dispatchModStream(options: {
           return result
         }
       } finally {
-        stop()
+        stop(); clearAbortGrace(); rejectAbort = undefined
         parent?.removeEventListener('abort', abort)
         lifetime.abort(new Error('Module stream finished'))
         controller.abort(lifetime.signal.reason)
@@ -337,7 +366,11 @@ export function dispatchModStream(options: {
         if (failures.length > 1) throw new AggregateError(failures.map(item => item.reason), 'Module stream teardown failed')
       }
     })()
-    return createModHookStream(body, error => { parent?.removeEventListener('abort', abort); lifetime.abort(error) }, parent)
+    return createModHookStream(body, error => {
+      explicitlyClosed = true
+      clearAbortGrace(); rejectAbort?.(error)
+      parent?.removeEventListener('abort', abort); lifetime.abort(error)
+    }, options.settleAfterAbort ? undefined : parent)
   }
   return run(0, options.input, options.signal)
 }

@@ -583,9 +583,12 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       const update = JSON.parse(text), frame = frames.get(update.invocation);
       if (frame) frame.trace = decode(update.trace, update.invocation);
     },
-    abort(invocation, reason) {
+    abort(invocation, reason, cooperative) {
       signals.get(invocation)?.(reason);
-      if (streams.has(invocation)) for (const [call, item] of pending) {
+      // Public streams follow their host operation's cancellation rather than
+      // rejecting the successful turn.abort acknowledgement. Explicit close
+      // still abandons pending calls so it can interrupt an uncooperative hook.
+      if (!cooperative && streams.has(invocation)) for (const [call, item] of pending) {
         if (item.invocation !== invocation || item.modelMethod) continue;
         pending.delete(call);
         const error = Object.assign(Error('Module invocation aborted'), {name:'AbortError'});
@@ -633,7 +636,7 @@ type Environment = {
     hasStream(invocation: number): boolean
     result(text: string): void
     trace(text: string): void
-    abort(invocation: number, reason?: {name:string;message:string}): void
+    abort(invocation: number, reason?: {name:string;message:string}, cooperative?: boolean): void
     setUiAccess(allowed: boolean): void
     getUiTables(): string
     setUiTables(text: string): void
@@ -769,7 +772,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     return
   }
   if (request.type === 'abort') {
-    environments.get(request.environment)?.api.abort(request.invocation, request.reason)
+    environments.get(request.environment)?.api.abort(request.invocation, request.reason, request.cooperative)
     return
   }
   if (request.type === 'trace') {

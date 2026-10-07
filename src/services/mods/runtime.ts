@@ -1347,8 +1347,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const context = capabilityContext.getStore()
         const caller = context?.active ? context.hook : undefined
         const invocation = invocationSignal.getStore()
-        // Debug/transcript logging can finish while a model hook handles cancellation.
-        const signal = op === 'ui.log' && fn === hostIdentity ? undefined : context?.active && context.next
+        // Logging and the operation that cancels the turn must acknowledge
+        // completion even after that turn's cancellation reaches this frame.
+        const signal = ['ui.log', 'turn.abort'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
           ? getModCapabilitySignal(context.next)
           : context?.active && !invocation?.aborted ? invocation : undefined
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
@@ -2089,10 +2090,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       // eslint-disable-next-line require-yield -- A rejecting terminal emits no chunks.
       core = async function* () { throw new Error(`Unhandled plugin test event: ${event}`) }
     const cancellation = new AbortController()
+    const delivery = new AbortController()
+    let activePulls = 0
+    let source: ModHookStream | undefined
+    let abortDelivery: ReturnType<typeof setTimeout> | undefined
+    const clearAbortDelivery = () => { if (abortDelivery !== undefined) clearTimeout(abortDelivery); abortDelivery = undefined }
     const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
     const abort = () => {
       const reason = options.signal?.aborted ? options.signal.reason : controller.signal.reason
       cancellation.abort(typeof reason === 'string' ? Object.assign(new Error(reason), {name:'HooksError'}) : reason)
+      if (activePulls === 0 || controller.signal.aborted) delivery.abort(cancellation.signal.reason)
+      else {
+        abortDelivery ??= setTimeout(() => delivery.abort(cancellation.signal.reason), 5000)
+        abortDelivery.unref?.()
+      }
     }
     combined.signal.addEventListener('abort', abort, { once: true })
     if (combined.signal.aborted) abort()
@@ -2109,9 +2120,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     })()
     const output = createModHookStream((async function* () {
       entered = true
-      let source: ModHookStream | undefined
       try {
-        source = dispatchModStream({ event, input, core, hooks: hooksFor(snapshot, table), signal: cancellation.signal, origin: options.origin,
+        source = dispatchModStream({ event, input, core, settleAfterAbort: true, hooks: hooksFor(snapshot, table), signal: cancellation.signal, origin: options.origin,
           ...(options.origin ? { skip: { plugin: options.origin.plugin, registrationId: caller?.plugin === options.origin.plugin ? caller.registrationId : -1 } } : {}),
           validateInput: (value, received) => { validateTurnStepInput(value); options.validateInput?.(value, received) },
           validateChunk: validateTurnStepChunk,
@@ -2128,19 +2138,36 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       } finally {
         try { if (source) await source.return(undefined) }
         finally {
-          combined.signal.removeEventListener('abort', abort); combined.cleanup()
+          clearAbortDelivery(); combined.signal.removeEventListener('abort', abort); combined.cleanup()
           await release()
         }
       }
     })(), error => {
-      cancellation.abort(error)
+      clearAbortDelivery(); cancellation.abort(error)
+      // Explicit close cancels the pending chain immediately; signal-driven
+      // cancellation of an active pull instead lets the hook settle first.
+      void source?.return(undefined).catch(() => {})
       combined.signal.removeEventListener('abort', abort)
       combined.cleanup()
-    }, cancellation.signal)
+    }, delivery.signal)
     void output.result.then(undefined, () => {
       if (!entered) return release()
     }).catch(error => diagnostic('engine', event, error))
-    return output
+    const pull = async (method: 'next' | 'throw', value: unknown) => {
+      activePulls++
+      try { return await output[method](value) }
+      finally { activePulls-- }
+    }
+    return {
+      next: value => pull('next', value),
+      throw: error => pull('throw', error),
+      return: value => {
+        if (combined.signal.aborted) delivery.abort(cancellation.signal.reason)
+        return output.return(value)
+      },
+      result: output.result,
+      [Symbol.asyncIterator]() { return this },
+    }
   }
 
   async function dispatch(

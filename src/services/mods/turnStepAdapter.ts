@@ -1,3 +1,5 @@
+import { isModStreamCancellation } from './dispatch.js'
+import { logForDebugging } from '../../utils/debug.js'
 import { randomUUID } from 'node:crypto'
 import type {
   AssistantMessage,
@@ -69,6 +71,10 @@ export async function* streamModTurnStep(
     value: ModInput,
     signal?: AbortSignal,
   ): AsyncGenerator<ModTurnStepChunk, ModTurnStepResult> {
+    if (signal?.aborted) return {
+      turnId: value.turnId as string, index: value.index as number,
+      answer: '', toolUses: [], stopReason: null, usage: null,
+    }
     let envelope: AssistantMessage['message'] | undefined
     let completed: AssistantMessage[] = []
     let nextIndex = 0
@@ -445,9 +451,13 @@ export async function* streamModTurnStep(
         }
     }
   } catch (error) {
-    if (!signal.aborted || (error !== signal.reason &&
-      !(error instanceof Error && error.name === 'AbortError'))) throw error
-    aborted = { error }
+    if (!isModStreamCancellation(error, signal)) throw error
+    aborted = { error: signal.reason }
+    logForDebugging(`[Mods:turn.step] cancellation settled turn=${String(input.turnId)} step=${String(input.index)} blocks=${blocks.size}`)
+  } finally {
+    // A signal can close delivery while this adapter is suspended at a yield.
+    // The next pull then reports done; it must still await owned teardown.
+    await stream.return(undefined)
   }
   // A hook can omit all engine chunks, or supply an entirely new response.
   // Its return value is deliberately not consumed as output or history.

@@ -407,7 +407,7 @@ export async function* query(
   let endPublicTurn: (() => void) | undefined
   try {
     if (isPublicTurn) endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(
-      turnId, () => params.toolUseContext.abortController.abort('interrupt'),
+      turnId, () => params.toolUseContext.abortController.abort('turn-abort'),
     )
     if (handlesStart) {
       try {
@@ -425,7 +425,7 @@ export async function* query(
           },
         )
       } catch (error) {
-        if (!toolUseContext.abortController.signal.aborted || toolUseContext.abortController.signal.reason !== 'interrupt') throw error
+        if (!toolUseContext.abortController.signal.aborted || !['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) throw error
         returned = true
         return {reason:'aborted_streaming'}
       }
@@ -1532,7 +1532,7 @@ async function* queryLoop(
 
       // Skip the interruption message for submit-interrupts — the queued
       // user message that follows provides sufficient context.
-      if (toolUseContext.abortController.signal.reason !== 'interrupt') {
+      if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
         yield createUserInterruptionMessage({
           toolUse: false,
         })
@@ -2055,7 +2055,7 @@ async function* queryLoop(
       }
       // Skip the interruption message for submit-interrupts — the queued
       // user message that follows provides sufficient context.
-      if (toolUseContext.abortController.signal.reason !== 'interrupt') {
+      if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
         yield createUserInterruptionMessage({
           toolUse: true,
         })
