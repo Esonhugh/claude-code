@@ -1922,3 +1922,12 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 官方 2.1.292、候选 c7、工作区 r7 同 driver/fixture/输入/resize 的九种真实终端场景通过，作者事件参数相同并正常退出。官方隐藏控件保留注册；跨插件重名键的终端首槽行为也明确保留，事件参数属于实际激活插件。
 - 两个本地侧各 35 个完整面板矩形有 31 个完全相同；Input/Select 四帧共 103 个字符/样式差异，comparator exit1，作为下一控件 UI 批次处理。不得用动作通过宣称全部 UI 相同。
 - [完整证据、源码/制品身份与失败记录](docs/research/mods-automatic-focus-20261007.md)，证据根 `/private/tmp/mods-autofocus-1zfoa9oa`。Band/Client、最新作者声明、动态 matcher 扫描、完整 API/上下文/UI/diff、G5 和全部 WIP 全量门禁继续；原用户文件与其他 Claude 工作保留，不 push。
+
+
+## 2026-10-07 — Input 光标与提交生命周期（独立提交批次）
+
+- 依据官方 2.1.292 Kt/jV：持焦点 label 加粗、实际字符簇 caret、占位和 ⏎ hint；等值 redraw 保留编辑，新绘制值才覆盖。成功 UiInputResult 必须含 element/value；pending submit 去重，回执后无新编辑才清空，不产生额外 onInput。仓库作者声明仍是 2.1.290，本批不宣称最新类型同步完成。
+- 最终候选相邻 11 文件 **392/0/2213 expect**；ROOT **414/0/2303 expect**。新增 Input 文件独立双方 **10/0/58**；原 ModsPane 独立候选 **176/0/1078**、ROOT **180/0/1098**。双方最终 make release-check/build exit 0、sourceUnchanged=true，均隔离 HOME/config 且无开发者凭据。保留原测试意图，不删案或放宽断言。
+- 最终官方 o2/候选 c2/ROOT r2 同一 driver 九流程作者参数与动作一致。两个 Input 画面字符/样式/矩形/位置严格相同；全 35 帧 **33 一致 / 50 cells 差异，comparator exit 1**，剩余仅 Select 的 held/action。Input 专项 checker exit 0，整体 UI 仍未通过；稳定帧不是全 output transaction physical replay。
+- 空对象/缺 value 回执误清空的 RED **8/2** 与夹具诊断日志保留，修复后最终 10/0。旧 c1 与 sourceUnchanged=false 的旧独立结果不作为本轮制品证明。
+- [源码/制品身份、命令、原始证据与验收边界](docs/research/mods-input-presentation-20261007.md)，证据根 `/private/tmp/mods-controls-0qncgv34`。只暂存七路径的候选 patch；其他 Claude/WIP 与原用户文件、共享 binary 保留。Select、Band/Client、最新作者声明、完整 API/上下文/UI/diff、G5 和全部 WIP 门禁继续，不 push。

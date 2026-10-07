@@ -151,6 +151,20 @@ function domElement(stdout: Output, text: string, nodeName: DOMElement['nodeName
   return deepestElement(stdout, text, nodeName, false)
 }
 
+// Official Input paints a separate caret, including a trailing blank at end.
+function inputText(stdout: Output, text: string): DOMElement {
+  const match = elements(stdout, true).find(item => item.node.nodeName === 'ink-text' && item.text.trimEnd() === text)
+  assert.ok(match, `Expected painted Input text ${JSON.stringify(text)}`)
+  return match.node
+}
+
+function inputElement(stdout: Output, text: string): DOMElement {
+  let current: DOMElement | undefined = inputText(stdout, text)
+  while (current && typeof current.attributes.tabIndex !== 'number') current = current.parentNode
+  assert.ok(current, 'Expected the drawn Input focus registration')
+  return current
+}
+
 function moveMouseTo(stdout: Output, node: DOMElement): void {
   const rect = nodeCache.get(node)
   assert.ok(rect, 'Expected target to have a rendered rect')
@@ -2681,6 +2695,8 @@ describe('ModsPane input repair', () => {
   })
 
   test('Input paints a dim placeholder and shows submitLabel only under actual focus', async () => {
+    const colorLevel = chalk.level
+    chalk.level = 3
     const stdout = new Output()
     const stdin = new Input()
     const calls: (string | undefined)[] = []
@@ -2699,21 +2715,25 @@ describe('ModsPane input repair', () => {
       expect(placeholderColor).toBeDefined()
       stdin.push('\t')
       await settle()
-      expect(stripAnsi(stdout.output)).toContain('Reply: Question send')
-      expect(renderedElement(stdout, 'Question', 'ink-text').textStyles).toMatchObject({ color: placeholderColor, inverse: true })
+      expect(stripAnsi(stdout.output)).toContain('Reply: Question ⏎ send')
+      // Official focused placeholder inverts the caret only and dims the remaining span.
+      expect(domElement(stdout, 'Q', 'ink-virtual-text').textStyles?.inverse).toBe(true)
+      expect(domElement(stdout, 'uestion', 'ink-virtual-text').textStyles?.dim).toBe(true)
       stdin.push('answer\r')
       await settle()
       expect(calls).toEqual(['answer', 'answer'])
-      expect(renderedElement(stdout, 'answer', 'ink-text').textStyles?.color).not.toBe(placeholderColor)
+      expect(inputText(stdout, 'answer').textStyles?.color).not.toBe(placeholderColor)
       stdout.output = ''
       stdin.push('\u001b[Z')
       await settle()
       expect(stripAnsi(stdout.output)).toContain('Reply: answer')
       expect(stripAnsi(stdout.output)).not.toContain('send')
-    } finally { instance.unmount() }
+    } finally { instance.unmount(); chalk.level = colorLevel }
   })
 
   test('Select and Input chrome follows actual Tab, BackTab and mouse focus', async () => {
+    const colorLevel = chalk.level
+    chalk.level = 3
     const stdout = new Output()
     const stdin = new Input()
     const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [
@@ -2734,20 +2754,20 @@ describe('ModsPane input repair', () => {
       stdin.push('\t')
       await settle()
       expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).not.toBe(true)
-      expect(latestStyles(stdout, ['Question']).get('Question')?.inverse).toBe(true)
+      expect(domElement(stdout, 'Q', 'ink-virtual-text').textStyles?.inverse).toBe(true)
       stdin.push('\u001b[Z')
       await settle()
       expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).toBe(true)
       expect(latestStyles(stdout, ['Question']).get('Question')?.inverse).not.toBe(true)
-      const input = renderedElement(stdout, 'Question', 'ink-text')
+      const input = inputElement(stdout, 'Question')
       const rect = nodeCache.get(input)!
       const ink = instances.get(stdout as never) as unknown as InkInstance
       dispatchClick(ink.rootNode, rect.x, rect.y)
       await settle()
-      expect(getFocusManager(input).activeElement).toBe(input.parentNode!)
+      expect(getFocusManager(input).activeElement).toBe(input)
       expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).not.toBe(true)
-      expect(latestStyles(stdout, ['Question']).get('Question')?.inverse).toBe(true)
-    } finally { instance.unmount() }
+      expect(domElement(stdout, 'Q', 'ink-virtual-text').textStyles?.inverse).toBe(true)
+    } finally { instance.unmount(); chalk.level = colorLevel }
   })
 
   test('host snapshot focus does not feed back as person input or blur another owner', async () => {
@@ -4375,7 +4395,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      const input = renderedElement(stdout, 'seed', 'ink-text').parentNode!
+      const input = inputElement(stdout, 'seed')
       stdin.push('-edited')
       await settle()
 
@@ -4383,7 +4403,7 @@ describe('ModsPane Ink interaction', () => {
       drawing++
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await settle()
-      expect(renderedElement(stdout, 'seed-edited', 'ink-text').parentNode).toBe(input)
+      expect(inputElement(stdout, 'seed-edited')).toBe(input)
       expect(getFocusManager(input).activeElement).toBe(input)
       stdin.push('\r')
       await settle()
@@ -4393,7 +4413,7 @@ describe('ModsPane Ink interaction', () => {
       drawing++
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await settle()
-      expect(renderedElement(stdout, 'replacement', 'ink-text').parentNode).toBe(input)
+      expect(inputElement(stdout, 'replacement')).toBe(input)
       expect(getFocusManager(input).activeElement).toBe(input)
       stdin.push('\r')
       await settle()
@@ -4403,7 +4423,7 @@ describe('ModsPane Ink interaction', () => {
       drawing++
       instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
       await settle()
-      expect(renderedElement(stdout, 'Empty', 'ink-text').parentNode).toBe(input)
+      expect(inputElement(stdout, 'Empty')).toBe(input)
       stdin.push('\r')
       await settle()
       expect(interactions.at(-1)).toEqual({ drawing, kind: 'input.submit', value: '' })
@@ -4442,7 +4462,7 @@ describe('ModsPane Ink interaction', () => {
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      const input = renderedElement(stdout, 'abcd', 'ink-text').parentNode!
+      const input = inputElement(stdout, 'abcd')
       expect(getFocusManager(input).activeElement).toBe(input)
       for (const chunk of ['\u001b[D', '\u001b[D', 'X', '\u001b[H', '\u001b[3~', '\u001b[F', '\u007f', '\r']) {
         stdin.push(chunk)
@@ -4454,7 +4474,7 @@ describe('ModsPane Ink interaction', () => {
         { kind: 'input.change', value: 'bXc' },
         { kind: 'input.submit', value: 'bXc' },
       ])
-      expect(renderedElement(stdout, 'bXc', 'ink-text').parentNode).toBe(input)
+      expect(inputElement(stdout, 'bXc')).toBe(input)
       expect(getFocusManager(input).activeElement).toBe(input)
     } finally { instance.unmount() }
   })
@@ -4495,7 +4515,7 @@ describe('ModsPane Ink interaction', () => {
       focused.length = 0
       instance.rerender(renderPane('reply'))
       await settle()
-      const input = renderedElement(stdout, 'a', 'ink-text').parentNode!
+      const input = inputElement(stdout, 'a')
       expect(getFocusManager(input).activeElement).toBe(input)
       stdin.push('b')
       await settle()

@@ -1,11 +1,14 @@
 import { parsePatch } from 'diff'
 import figures from 'figures'
+import chalk from 'chalk'
+import { Cursor } from '../utils/Cursor.js'
+import { renderPlaceholder } from '../hooks/renderPlaceholder.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import React, { useMemo, useState } from 'react'
 import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions } from '../services/mods/ui.js'
 import type { ModClientHandle } from '../services/mods/client.js'
 import { copyModClientData } from '../services/mods/client.js'
-import { BaseText, Box, Button, type DOMElement, Link, Text, useInput, useStdin, useTheme } from '../ink.js'
+import { BaseText, Box, Button, type DOMElement, Link, Text, useInput, useStdin, useTheme, useTerminalFocus } from '../ink.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import type { FocusEvent } from '../ink/events/focus-event.js'
 import type { ClickEvent } from '../ink/events/click-event.js'
@@ -2458,12 +2461,20 @@ function ModInput({
   const [value, setValue] = useState(controlledValue ?? '')
   const valueRef = React.useRef(value)
   const cursorRef = React.useRef(value.length)
+  const [cursor, setCursor] = useState(value.length)
+  const terminalFocused = useTerminalFocus()
+  const mounted = React.useRef(true)
+  React.useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const drawnValueRef = React.useRef(controlledValue)
   if (controlledValue !== drawnValueRef.current) {
     drawnValueRef.current = controlledValue
     const next = controlledValue ?? ''
     valueRef.current = next
     cursorRef.current = next.length
+    setCursor(next.length)
     setValue(next)
   }
   const [focused, setFocused] = useState(false)
@@ -2473,10 +2484,25 @@ function ModInput({
   const drawing = pane.drawing
   const pending = React.useRef<PendingInputInteraction[]>([])
   const running = React.useRef(false)
+  const submitting = React.useRef(false)
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
+  const clearSubmitted = (submitted: string, result: unknown) => {
+    if (!mounted.current || currentPane().owner !== owner || result === null || typeof result !== 'object') return
+    const receipt = result as { element?: unknown; value?: unknown; deny?: unknown }
+    if (typeof receipt.element !== 'string' || typeof receipt.value !== 'string' || receipt.deny !== undefined ||
+        valueRef.current !== submitted) return
+    valueRef.current = ''
+    cursorRef.current = 0
+    setCursor(0)
+    setValue('')
+  }
   const send = (kind: 'change' | 'submit', value: string) => {
+    if (kind === 'submit') {
+      if (submitting.current) return
+      submitting.current = true
+    }
     if (client) {
-      if (!inputAllowed || drawing === undefined) return
+      if (!inputAllowed || drawing === undefined) { submitting.current = false; return }
       void onInteract(
         pane,
         drawing,
@@ -2484,7 +2510,9 @@ function ModInput({
         kind === 'change' ? 'input.change' : 'input.submit',
         key,
         value,
-      ).catch(error => onError?.(error))
+      ).then(result => { if (kind === 'submit') clearSubmitted(value, result) })
+        .catch(error => onError?.(error))
+        .finally(() => { if (kind === 'submit') submitting.current = false })
       return
     }
     pending.current.push({ owner, plugin: press.plugin, key, kind, value })
@@ -2504,7 +2532,7 @@ function ModInput({
           }
           visit(validateModRenderTree(current.tree).tree)
           if (!callback) continue
-          await onInteract(
+          const result = await onInteract(
             current,
             current.drawing,
             callback,
@@ -2512,18 +2540,24 @@ function ModInput({
             interaction.key,
             interaction.value,
           )
+          if (interaction.kind === 'submit') {
+            submitting.current = false
+            clearSubmitted(interaction.value, result)
+          }
         }
       } catch (error) {
         pending.current = []
         onError?.(error)
       } finally {
         running.current = false
+        submitting.current = false
       }
     })()
   }
   const replace = (next: string, cursor: number) => {
     valueRef.current = next
     cursorRef.current = cursor
+    setCursor(cursor)
     setValue(next)
     send('change', next)
   }
@@ -2560,6 +2594,7 @@ function ModInput({
       else if (event.key === 'right') cursorRef.current = nextBoundary(cursorRef.current)
       else if (event.key === 'home') cursorRef.current = 0
       else if (event.key === 'end') cursorRef.current = valueRef.current.length
+      setCursor(cursorRef.current)
       return
     }
     if (event.key !== 'backspace' && event.key !== 'delete') return
@@ -2575,6 +2610,17 @@ function ModInput({
       replace(valueRef.current.slice(0, cursor) + valueRef.current.slice(nextBoundary(cursor)), cursor)
     }
   }
+  const label = props.label === undefined ? '' : `${String(props.label)}: `
+  const hint = ` ⏎ ${String(props.submitLabel ?? 'submit')}`
+  const columns = Math.max(12, pane.bodyColumns - stringWidth(label) - stringWidth(hint))
+  const { renderedPlaceholder, showPlaceholder } = renderPlaceholder({
+    value, placeholder: String(props.placeholder ?? ''), showCursor: focused,
+    focus: focused, terminalFocus: terminalFocused,
+  })
+  const drawnCursor = Cursor.fromText(value, columns, cursor)
+  const text = focused
+    ? showPlaceholder ? renderedPlaceholder ?? '' : drawnCursor.render(' ', '', terminalFocused ? chalk.inverse : text => text)
+    : value || String(props.placeholder ?? '')
   return (
     <Box
       ref={elementRef}
@@ -2582,14 +2628,16 @@ function ModInput({
       autoFocus={false}
       onFocus={event => {
         setFocused(true)
+        cursorRef.current = valueRef.current.length
+        setCursor(cursorRef.current)
         if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)
       }}
       onBlur={() => setFocused(false)}
       onKeyDown={handle}
     >
-      {props.label ? <Text>{String(props.label)}: </Text> : null}
-      <Text inverse={focused} dimColor={!value}>{value || String(props.placeholder ?? '')}</Text>
-      {focused && <Text dimColor> {String(props.submitLabel ?? 'submit')}</Text>}
+      {label !== '' && <Text bold={focused}>{label}</Text>}
+      {focused ? <Ansi>{text}</Ansi> : <Text dimColor={!value} wrap="truncate-end">{text}</Text>}
+      {focused && <Text dimColor>{hint}</Text>}
     </Box>
   )
 }

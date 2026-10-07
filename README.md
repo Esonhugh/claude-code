@@ -1178,3 +1178,26 @@ return Box({ children: [Button({
 运行 `bun test --no-env-file ./src/components/ModsPane.automaticFocus.test.tsx ./src/services/mods/uiRealm.test.ts` 检查真实 Worker 和输入。官方源码及终端对照、候选与工作区结果见 [自动聚焦验收](docs/research/mods-automatic-focus-20261007.md)。本批只验证 Pane；Band、Client 和完整 UI 对齐继续单独验收。
 
 当前对照的 35 个完整面板矩形中有 31 个字符、样式及位置相同；Input/Select 的四个状态帧仍有差异，展开列表、光标及重绘状态需继续对齐。焦点与回调行为通过不代表所有控件 UI 已匹配。
+
+
+### Mods Input 的光标与提交
+
+Input 取得焦点后显示加粗 label、实际字符簇光标与 `⏎ submit` 提示；`submitLabel` 可改提示文字。光标、占位及终端焦点沿用主输入组件的绘制规则。
+
+```ts
+const { Input } = $.ui.resolve(e)
+return Input({
+  key: 'reply', label: 'Reply', placeholder: 'Type a reply', autoFocus: true,
+  onInput: (value, input) => $.ui.log(`change: ${input.element} (${value.length})`),
+  onSubmit: async (value, input) => {
+    $.ui.log(`submit: ${input.plugin}:${input.element}:${input.surface}`)
+    // 在这里处理 value；不要将实际输入内容写入 debug 日志。
+  },
+})
+```
+
+成功提交后，host 在没有后续编辑时清空该输入，清空不会再发 `onInput`。回执等待期间重复 Enter 不会重复提交；拒绝或未送达保留文本。显式 value 的新值覆盖缓存，值相同的重绘保留当前编辑。
+
+运行 `bun test --no-env-file ./src/components/ModsPane.inputPresentation.test.tsx` 检查这些状态。官方源码、三侧终端对照与精确验收边界见 [Input 专项](docs/research/mods-input-presentation-20261007.md)；Select 展开列表和完整 UI 仍须继续验收。
+
+本轮最终制品的两个 Input 状态帧与官方 2.1.292 完全相同；整体 35 帧中 **33 帧相同**，其余两个 Select 帧共 50 个差异单元格。完整画面对照仍未通过，详细结果以上述 Input 专项为准。
