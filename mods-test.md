@@ -1876,3 +1876,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 两个同名、不同 ID 的真实 Agent：首次 pin、裸名换绑拒绝、明确 ref 更新、确认后裸名稳定、原始 ID 继续旧目标。两个 worker 流保持未放行，结果必须来自实际 Mods/tool.call 入口。
 - 模型工具调用的成功 pin 元数据需要经退出/恢复后继续阻止裸名换绑；明确 ref 后的模型回执、终端提示、`/clear` 后重新绑定、分支及 print 消费者分别记录证据，不以作者调用替代历史恢复。
 - 保留实现前0pass/3fail及官方24项oracle；新版候选和工作区的测试、构建、终端结果见 [身份绑定专项](docs/research/mods-sendmessage-pin-20261007.md)。`observed` 只表示观察完毕，验收须以逐项断言为准；全文所列未覆盖项不计作通过。
+
+## 2026-10-07 Mods 日志的 print 接收与默认显示
+
+- 聚焦回归：`bun test --no-env-file ./src/cli/print.modsLog.test.ts ./src/cli/print.modsLog.types.test.ts ./src/components/messages/SystemTextMessage.modsLog.test.tsx`。覆盖真实 Worker 和 print 绑定、启动缓冲、目标改写、非法目标诊断、Unicode 边界、SDK schema/union/export 与实际 Ink notice/info/warning。
+- 官方 2.1.292 的 text/json 日志只进入 debug；stream-json 的 transcript 目标产生带 plugin/text/uuid/session_id 的 system/ui_log。debug 目标不发事件；各格式均不得把日志发往模型或保存为会话 transcript。
+- 交互 transcript 使用 notice 级别，默认可见、dim、无圆点；debug 内容不绘制。公开便利调用仍同步返回 void，不能用 await 当投递屏障。
+- 三侧新 native driver 覆盖三种 print、真实 Read/tool.call、turn hooks、字面 /logprobe 和正常退出；另用本批本地构建重跑 SendMessage 历史和 print。此前 printHookObserved:false 来自日志 sink 缺失，不能推断 hook 没有执行。
+- 类型、RED、完整证据与剩余验收边界见 [日志专项](docs/research/mods-print-log-20261007.md)；完整 diff、G5、remote UI 和全量门禁仍需继续。

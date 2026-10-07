@@ -2099,7 +2099,7 @@ export function REPL({
     uiPresentation: () => modUiPresentationRef.current,
     uiLog: (plugin, text, to) => {
       logForDebugging(`[Mods:${plugin}] ${text}`)
-      if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`[${plugin}] ${text}`, 'info')])
+      if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
     },
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',

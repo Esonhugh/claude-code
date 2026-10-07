@@ -301,6 +301,14 @@ export type SDKSystemMessage = {
   uuid: string
   session_id: string
 }
+export type SDKUILogMessage = {
+  type: 'system'
+  subtype: 'ui_log'
+  plugin: string
+  text: string
+  uuid: string
+  session_id: string
+}
 export type SDKPartialAssistantMessage = {
   type: 'stream_event'
   event: unknown
@@ -549,6 +557,7 @@ export type SDKMessage =
   | SDKUserMessageReplay
   | SDKResultMessage
   | SDKSystemMessage
+  | SDKUILogMessage
   | SDKPartialAssistantMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage

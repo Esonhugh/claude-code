@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - print 模式的 Mods 日志
+
+### 变更内容
+
+- print 主机提供 ui.log 接收端；默认 transcript 和 debug 日志保留插件身份与目标信息，避免被误报为 hook 未执行。
+- 日志按官方 2.1.292 的 10000 UTF-16 单元上限截断并保护代理对；不进入模型输入或保存的会话历史；stream-json 的 transcript 目标输出带 plugin/text/uuid/session_id 的 system/ui_log 事件，text/json 保持仅模型输出。
+- 公开 ui.log 继续同步返回 void，改写目标和非法目标的诊断保持原契约。
+- 交互 transcript 日志使用 notice 级别，默认界面显示为无圆点的暗色提示，修复原 info 级别被隐藏的问题；debug 目标不进入界面。
+
+### 测试覆盖
+
+- 新增隔离的真实 Worker/print 绑定回归，覆盖启动缓冲、默认与 debug 目标、middleware 改写、非法目标、Unicode 边界和三种输出格式；补齐旧 headless 回归中已提交生产代码的 session scope 预期。官方对照与真实终端证据见 docs/research/mods-print-log-20261007.md。
+
 ## 2026-10-07 - SendMessage 会话身份绑定
 
 ### 变更内容

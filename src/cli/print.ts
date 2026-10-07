@@ -966,6 +966,7 @@ export async function runHeadless(
       !(
         message.type === 'system' &&
         (message.subtype === 'session_state_changed' ||
+          message.subtype === 'ui_log' ||
           message.subtype === 'task_notification' ||
           message.subtype === 'task_started' ||
           message.subtype === 'task_progress' ||
@@ -1064,6 +1065,7 @@ function runHeadlessStreaming(
   agents: AgentDefinition[],
   options: {
     modsSession?: ModsSession
+    outputFormat?: string
     verbose: boolean | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
@@ -2871,6 +2873,17 @@ function runHeadlessStreaming(
     commands: () => currentCommands,
     tasks: () => getAppState().tasks,
     agentNames: () => getAppState().agentNameRegistry,
+    uiLog: (plugin, text, to) => {
+      if (text.length > 10000) {
+        const end = text.charCodeAt(9999)
+        text = Buffer.from(text.slice(0, end >= 0xd800 && end <= 0xdbff ? 9999 : 10000), 'utf16le').toString('utf16le') + '…'
+      }
+      logForDebugging(`[${plugin}] $.ui.log${to === 'debug' ? ' (to debug)' : ''}: ${text}`)
+      if (to === 'transcript' && options.outputFormat === 'stream-json') output.enqueue({
+        type: 'system', subtype: 'ui_log', plugin, text,
+        uuid: randomUUID(), session_id: getSessionId(),
+      })
+    },
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
     toolHost: () => createModToolHost(getModToolContext(), canUseTool),

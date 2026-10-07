@@ -1522,6 +1522,17 @@ export const SDKSystemMessageSchema = lazySchema(() =>
   }),
 )
 
+export const SDKUILogMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('ui_log'),
+    plugin: z.string(),
+    text: z.string(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
 export const SDKPartialAssistantMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('stream_event'),
@@ -1923,6 +1934,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUserMessageReplaySchema(),
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
+    SDKUILogMessageSchema(),
     SDKPartialAssistantMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),

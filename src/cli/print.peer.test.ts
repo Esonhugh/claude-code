@@ -414,7 +414,7 @@ if (process.env[childFlag] !== '1') {
       expect(getSystemPromptSections(captured!)).toEqual([
         { name: 'identity', text: 'CORE_IDENTITY' },
         { name: 'language', text: null },
-        { text: 'APPEND_LITERAL' },
+        { text: 'APPEND_LITERAL', scope: 'session' },
       ])
       expect([...source]).toEqual(['CORE_IDENTITY'])
     } finally {

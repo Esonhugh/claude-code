@@ -18,7 +18,7 @@ export type MessageOrigin =
       fromMode?: 'bypass' | 'prompting'
     }
 
-export type SystemMessageLevel = 'info' | 'warning' | 'error' | 'suggestion'
+export type SystemMessageLevel = 'info' | 'notice' | 'warning' | 'error' | 'suggestion'
 
 // ---------------------------------------------------------------------------
 // Content block placeholders (re-exported Anthropic SDK shapes are complex;
