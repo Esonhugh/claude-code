@@ -243,7 +243,8 @@ export function createModEnvironmentHost({
   function encode(environment: number, value: unknown, seen = new Set<object>()): ModWireValue {
     if (value === undefined) return { type: 'undefined' }
     if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
-      if (typeof value === 'number' && !Number.isFinite(value)) throw new Error('Non-finite module value')
+      if (typeof value === 'number' && !Number.isFinite(value))
+        return {type:'non-finite',value:Number.isNaN(value) ? 'NaN' : value > 0 ? 'Infinity' : '-Infinity'}
       return { type: 'value', value: value as null | string | boolean | number }
     }
     if ((typeof value !== 'object' && typeof value !== 'function') || isProxy(value)) throw new Error('Unsupported module value (proxies are not allowed)')
@@ -322,6 +323,7 @@ export function createModEnvironmentHost({
     switch (value.type) {
       case 'undefined': return undefined
       case 'value': return value.value
+      case 'non-finite': return Number(value.value)
       case 'regexp': return new RegExp(value.source, value.flags)
       case 'array': return value.values.map(item => decode(environment, item))
       case 'object': return Object.fromEntries(value.entries.map(([key, item]) => [key, decode(environment, item)]))

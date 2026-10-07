@@ -1,4 +1,4 @@
-import {projectModModelText, validateModModelCompleteInput, type ModModelTextBlock} from './modelTextBlocks.js'
+import {projectModModelText, modModelCompleteInputProblem, type ModModelTextBlock} from './modelTextBlocks.js'
 import {logForDebugging} from '../../utils/debug.js'
 import {requiresAlwaysOnAdaptiveThinking} from '../../utils/thinking.js'
 import {getAssistantMessageFromError} from '../api/errors.js'
@@ -8,7 +8,8 @@ import { createUserMessage } from '../../utils/messages.js'
 import type { ModModelApiError, ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, ModModelUsage } from './types.js'
 import { getModelMaxOutputTokens } from '../../utils/context.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
-import { parseUserSpecifiedModel } from '../../utils/model/model.js'
+import { getCanonicalName, parseUserSpecifiedModel } from '../../utils/model/model.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { sideQuery, type SideQueryOptions } from '../../utils/sideQuery.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { modelSupportsEffort } from '../../utils/effort.js'
@@ -27,11 +28,17 @@ export type ModModelCompleteRequest = {
   timeoutMs?: number
 }
 
-export function validateModModelRequestOptions(request: ModModelCompleteRequest): void {
-  if (request.effort !== undefined && !['low','medium','high','xhigh','max'].includes(request.effort))
-    throw new TypeError('effort must be low, medium, high, xhigh or max')
-  if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs <= 0))
-    throw new TypeError('timeoutMs must be a positive integer')
+function completeInputError(pluginName: string, reason: string): Error {
+  return Object.assign(new Error(`${pluginName}: $.model.complete: ${reason}`), {name:'HooksError'})
+}
+
+export function validateModModelRequestOptions(request: ModModelCompleteRequest, pluginName = 'mod'): void {
+  if (request.maxTokens !== undefined && (!Number.isInteger(request.maxTokens) || request.maxTokens < 1))
+    throw completeInputError(pluginName, `maxTokens must be a positive integer (got ${String(request.maxTokens)})`)
+  if (request.timeoutMs !== undefined && (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1))
+    throw completeInputError(pluginName, `timeoutMs must be a positive integer of milliseconds (got ${String(request.timeoutMs)})`)
+  if (request.effort !== undefined && (typeof request.effort !== 'string' || !['low','medium','high','xhigh','max'].includes(request.effort)))
+    throw completeInputError(pluginName, `effort must be one of low, medium, high, xhigh, max (got ${String(request.effort)})`)
 }
 
 type ClassifyOptions = {
@@ -88,43 +95,55 @@ async function withAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<
   })
 }
 
+const modelsWithDisabledThinking = new Set([
+  'claude-opus-4-0','claude-opus-4-1','claude-opus-4-5','claude-opus-4-6',
+  'claude-opus-4-7','claude-opus-4-8','claude-opus-5',
+  'claude-sonnet-4-0','claude-sonnet-4-5','claude-sonnet-4-6','claude-sonnet-5','claude-haiku-4-5',
+])
+
+/** The native Mods side query leaves thinking unspecified when disabling it is unsupported. */
+function completeThinkingRequired(model: string): boolean {
+  const canonical = getCanonicalName(model).replace(/\[1m\]/gi, '')
+  if (canonical.includes('claude-3-') || modelsWithDisabledThinking.has(canonical)) return false
+  let override: boolean | undefined
+  for (const clause of process.env.CLAUDE_CODE_MODEL_CAPABILITIES?.split(';') ?? []) {
+    const separator = clause.indexOf('=')
+    if (separator !== -1) {
+      const key = clause.slice(0, separator).trim()
+      if (key === '' || !(key.endsWith('*') ? canonical.startsWith(key.slice(0,-1)) : canonical === key)) continue
+    }
+    for (const entry of (separator === -1 ? clause : clause.slice(separator+1)).split(',')) {
+      const capability = entry.trim()
+      if (capability === 'rejects_disabled_thinking') override = true
+      if (capability === '-rejects_disabled_thinking') override = false
+    }
+  }
+  if (override !== undefined) return override
+  const provider = getAPIProvider()
+  return requiresAlwaysOnAdaptiveThinking(model) || provider === 'firstParty' || provider === 'foundry'
+}
+
 export function createModModelComplete(
   transport: CompleteTransport = sideQuery,
   resolveModel: (model: string) => string = parseUserSpecifiedModel,
   outputLimit: (model: string) => number = model =>
     getModelMaxOutputTokens(model).upperLimit,
+  pluginName = 'mod',
 ) {
   return async (
     request: ModModelCompleteRequest,
     signal?: AbortSignal,
   ): Promise<ModModelCompleteResult> => {
-    if (!request || typeof request !== 'object' || Array.isArray(request)) {
-      throw new TypeError('model.complete takes a request object')
-    }
-    validateModModelRequestOptions(request)
-    if (typeof request.model !== 'string' || request.model.length === 0) {
-      throw new TypeError('model must be a nonempty string')
-    }
-    if (typeof request.prompt !== 'string') {
-      throw new TypeError('prompt must be a string')
-    }
-    if (request.system && typeof request.system !== 'string') {
-      throw new TypeError('system must be a string')
-    }
-    if (
-      request.maxTokens !== undefined &&
-      (!Number.isSafeInteger(request.maxTokens) || request.maxTokens <= 0)
-    ) {
-      throw new TypeError('maxTokens must be a positive integer')
-    }
-    validateModModelCompleteInput(request)
+    const shapeProblem = modModelCompleteInputProblem(request)
+    if (shapeProblem) throw completeInputError(pluginName, shapeProblem)
+    validateModModelRequestOptions(request, pluginName)
     const model = resolveModel(request.model)
-    if (!isModelAllowed(model)) {
-      throw new Error(`Model ${request.model} is not allowed`)
+    if (!isModelAllowed(model.replace(/\[1m\]/gi, ''))) {
+      throw completeInputError(pluginName, `model "${request.model}" is not in this organization's allowlist`)
     }
     const maxTokens = Math.min(outputLimit(model), 64_000)
     if (request.maxTokens !== undefined && request.maxTokens > maxTokens) {
-      throw new RangeError(`maxTokens cannot exceed ${maxTokens}`)
+      throw completeInputError(pluginName, `maxTokens ${request.maxTokens} is past what ${model} can produce in one reply (${maxTokens})`)
     }
     const combined = request.timeoutMs === undefined
       ? { signal, cleanup: () => {} }
@@ -137,8 +156,8 @@ export function createModModelComplete(
       const wellFormed = (text: string) => text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\ufffd')
       const safeUser = typeof user === 'string' ? wellFormed(user) : user.map(block => ({...block,text:wellFormed(block.text)}))
       const safeRules = typeof rules === 'string' ? wellFormed(rules) : rules.map(block => ({...block,text:wellFormed(block.text)}))
-      const thinkingRequired = requiresAlwaysOnAdaptiveThinking(model)
-      logForDebugging(`[Mods] model.complete: ${model}; prompt ${request.prompt.length} chars / ${request.promptBlocks?.length ?? 0} blocks, system ${typeof request.system === 'string' ? request.system.length : 0} chars / ${request.systemBlocks?.length ?? 0} blocks`)
+      const thinkingRequired = completeThinkingRequired(model)
+      logForDebugging(`[Mods] model.complete (${pluginName}): ${model}; maxTokens ${request.maxTokens ?? 1024}, cap ${maxTokens}, thinking allowance ${thinkingRequired ? 2048 : 0}, timeoutMs ${request.timeoutMs === undefined ? 'none' : Math.min(request.timeoutMs,2147483647)}; prompt ${request.prompt.length} chars / ${request.promptBlocks?.length ?? 0} blocks, system ${typeof request.system === 'string' ? request.system.length : 0} chars / ${request.systemBlocks?.length ?? 0} blocks`)
       let response: CompletionResponse
       try {
         response = await withAbort(transport({

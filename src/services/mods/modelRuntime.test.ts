@@ -113,7 +113,7 @@ test('model operations reject deny envelopes without reaching completion', async
   await value.reconcile([policy, consumer])
 
   const denied = await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
-  expect(denied).toEqual({result:'completion denied'})
+  expect(denied).toEqual({result:'consumer-deny: $.model.complete: completion denied'})
   expect(diagnostics).toEqual([])
   expect(completions).toBe(0)
 })

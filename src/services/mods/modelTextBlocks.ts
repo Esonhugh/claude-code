@@ -21,7 +21,7 @@ export function normalizeModModelCompleteRequest(request: unknown): Record<strin
   return {...rest, ...user, ...Boolean(system) && rules}
 }
 
-export function validateModModelCompleteInput(input: unknown, plugin?: string): void {
+export function modModelCompleteInputProblem(input: unknown): string | undefined {
   const value = input as Record<string, unknown> | undefined
   let reason: string | undefined
   if (!(typeof value?.model === 'string' && typeof value.prompt === 'string'))
@@ -30,7 +30,12 @@ export function validateModModelCompleteInput(input: unknown, plugin?: string): 
     reason = 'takes a system that is a string or a list of blocks, each { text } and at most `cache: true`'
   else if (![value.promptBlocks, value.systemBlocks].every(blocks => blocks === undefined || isModModelTextBlocks(blocks)))
     reason = 'takes promptBlocks and systemBlocks that are lists of blocks, each { text } and at most `cache: true`'
-  if (reason) throw Object.assign(new Error(plugin ? `${plugin}: model.complete: ${reason} (host check)` : reason), {name: 'HooksError'})
+  return reason
+}
+
+export function validateModModelCompleteInput(input: unknown, plugin?: string): void {
+  const reason = modModelCompleteInputProblem(input)
+  if (reason) throw Object.assign(new Error(`${plugin ? `${plugin}: ` : ''}model.complete: ${reason} (host check)`), {name: 'HooksError'})
 }
 
 /** Only leading blocks that still match the edited text retain their marks. */

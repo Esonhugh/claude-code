@@ -1968,3 +1968,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 ## 2026-10-07 — model.classify 核心与官方标签匹配
 
 独立候选基于1f29ebf，关闭上一批记录的分类提示词/20-token/额外 model.complete Hook 差异。候选396/0/5既有skip，工作区424/0/5；八场逐文件隔离无认证通过，双方 release-check 与新隔离 make build 通过。九场官方/候选/工作区 tmux：主分类38回执/35分类Hook/1相邻完成Hook/34含重试HTTP，缓存关闭同矩阵；附加7回执验证不透明 value、修复标签及最终shape。全部输入/回执/Hook和投影请求一致，正常exit0并关闭自有server/HTTP；类型正反例使用三侧实际生成声明严格编译。初始extra的真实差异和原RED保留，不回写为绿。父取消/调用链、fork、完整模型/其他provider/API/UI/diff/G5及全量/HEAD仍开放，详见[分类器专项](docs/research/mods-classify-292-20261007.md)。
+
+
+## 2026-10-07：model.complete 参数、数值传递与模型允许列表
+
+本批从 194d243 构造干净候选。官方 2.1.292 实测后对齐 shape/maxTokens/timeoutMs/effort/允许列表/cap 的顺序、精确 HooksError 和插件名，保留空/空白模型的解析入口；允许列表忽略 [1m]，未知第一方模型保留 thinking 余量。通用 Worker 保留 NaN/Infinity/-Infinity，模型 Hook 可修复，最终非法参数由核心拒绝；typed 作者值仍严格。
+
+候选 462 pass/0 fail/5 既有 skip，ROOT 495/0/5；八场逐文件新配置测试、双方 release-check 与新隔离构建通过。官方/候选/工作区 × 普通/能力开关/允许列表九场 tmux，每侧每场 50 回执、42 complete Hook、2 classify Hook，全部输入/Hook/回执和投影请求一致；每场正常 exit0、自有 server/HTTP 清理、原 fixture/binary 保持不变。三侧实际生成声明的严格正反例编译通过。首轮四个数值传递和 [1m] 允许列表差异、RED 及类型夹具失败完整保留。仍不宣称全局模型/所有 provider/取消/fork/其他 API/UI/diff/G5 完成，详见 [模型参数专项](docs/research/mods-model-params-292-20261007.md)。

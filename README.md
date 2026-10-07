@@ -1274,3 +1274,23 @@ on('prompt.submit', async ($, e, next) => {
 按官方 2.1.292，分类提示词把每一行文本标成数据，使用 20 个基础输出 token。回复去掉首尾空白、引号和尾部句点，先进行大小写无关的完整匹配，再按标签长度选择有边界的命中，返回标签原来的拼写；重复标签允许，长度相同时保持输入顺序。未命中返回 `undefined`；空回复、请求错误、取消和策略拒绝抛出 `HooksError` 并指出原因。初始文本与标签列表形状在 Hook 前检查，标签内容在核心检查，Hook 可以修复标签。最终交给核心的数据仍检查文本和标签列表的形状；JavaScript Hook 的 `{value}` 保持不透明，公开 TypeScript 类型仍限定分类结果为标签或 `undefined`。
 
 `--debug --debug-file /absolute/path/debug.log` 中的 `[Mods] model.classify` 记录插件、模型、文本长度、标签数量、命中索引或失败原因，不新增正文日志。运行 `bun test --no-env-file ./src/services/mods/modelClassify.test.ts ./src/services/mods/modelRuntime.test.ts` 检查分类和真实 Worker 路径。原生对照范围与剩余限制见 [分类器专项](docs/research/mods-classify-292-20261007.md)；公开类型以本版本生成的声明为准，参考 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
+
+### Mod 模型完成参数与错误
+
+`$.model.complete` 的 `maxTokens`、`timeoutMs` 必须为正整数；`effort` 支持 `low | medium | high | xhigh | max`。输出上限取解析后模型的单次回复限制与 64000 中较小者。超长 deadline 的实际 timer 钳制到 2147483647 毫秒，完成后清理。Hook 可以先改写参数，最终请求仍按输入形状、输出整数、deadline、effort、允许列表、输出上限的顺序检查。
+
+```ts
+on('command.run', { command: 'summarize' }, async ($, event) => {
+  const answer = await $.model.complete({
+    model: 'sonnet', prompt: event.args, maxTokens: 128,
+    effort: 'low', timeoutMs: 2000,
+  })
+  if (answer.isAnswered) $.ui.log(answer.text, { to: 'debug' })
+  return {}
+})
+```
+
+参数错误和策略 `deny` 抛出 `HooksError`，包含调用插件名；API、空回复和请求取消继续使用此前定义的结构化回执。模型允许列表忽略解析名称中的 `[1m]` 上下文标记。JavaScript 的非有限数值可以进入 Hook 修复；最终模型参数仍按正整数规则拒绝。模型字符串交给已有解析器，包括空字符串；这表示 Mods 不提前拒绝，不保证真实服务会接受空模型名。未知第一方模型在完成请求中留出 2048 个 thinking token；`CLAUDE_CODE_MODEL_CAPABILITIES` 的 `rejects_disabled_thinking` / `-rejects_disabled_thinking` 控制该决定，已知允许关闭 thinking 的旧模型保留官方优先规则。
+
+调试日志记录模型、请求输出、实际 cap、thinking 余量和钳制后的 deadline。运行 `bun test --no-env-file ./src/services/mods/modelValidation.test.ts ./src/services/mods/modelOptions.test.ts ./src/services/mods/modelRuntime.test.ts` 检查参数和 Worker 路径。精确原生验收与限制见 [模型参数专项](docs/research/mods-model-params-292-20261007.md)，作者类型参考 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 及安装版本生成的声明。

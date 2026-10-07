@@ -58,7 +58,7 @@ test('model completion resolves aliases and refuses models outside availableMode
   await expect(complete({
     model: 'claude-opus-4-6',
     prompt: 'blocked',
-  })).rejects.toThrow('Model claude-opus-4-6 is not allowed')
+  })).rejects.toThrow('model "claude-opus-4-6" is not in this organization\'s allowlist')
   expect(calls).toHaveLength(1)
   expect(calls[0]).toMatchObject({ model: 'claude-3-5-haiku-20241022' })
 })
@@ -95,12 +95,11 @@ test('model completion validates inputs and caps maxTokens to the model reply li
   ])
 
   for (const [request, message] of [
-    [{ model: '', prompt: 'x' }, 'model must be a nonempty string'],
-    [{ model: 'small-output', prompt: 1 }, 'prompt must be a string'],
-    [{ model: 'small-output', prompt: 'x', system: 1 }, 'system must be a string'],
+    [{ model: 'small-output', prompt: 1 }, 'takes { model, prompt }'],
+    [{ model: 'small-output', prompt: 'x', system: 1 }, 'takes a system that is a string or a list of blocks'],
     [{ model: 'small-output', prompt: 'x', maxTokens: 0 }, 'maxTokens must be a positive integer'],
-    [{ model: 'small-output', prompt: 'x', maxTokens: 4097 }, 'maxTokens cannot exceed 4096'],
-    [{ model: 'large-output', prompt: 'x', maxTokens: 64001 }, 'maxTokens cannot exceed 64000'],
+    [{ model: 'small-output', prompt: 'x', maxTokens: 4097 }, 'maxTokens 4097 is past what small-output can produce in one reply (4096)'],
+    [{ model: 'large-output', prompt: 'x', maxTokens: 64001 }, 'maxTokens 64001 is past what large-output can produce in one reply (64000)'],
   ] as const) {
     await expect(complete(request as never)).rejects.toThrow(message as string)
   }
@@ -160,8 +159,10 @@ test('model classification rejects fewer than two or empty/non-string labels', a
 })
 
 test('model classification delegates empty model validation to core completion',async()=>{
-  const classify=createModModelClassify(createModModelComplete(async()=>({content:[]})),()=> 'small-fast-model')
-  await expect(classify('x',['a','b'],{model:''})).rejects.toThrow('model must be a nonempty string')
+  const models:string[]=[]
+  const classify=createModModelClassify(createModModelComplete(async request=>{models.push(request.model);return {content:[{type:'text',text:'a'}]}}),()=> 'small-fast-model')
+  await expect(classify('x',['a','b'],{model:''})).resolves.toBe('a')
+  expect(models).toEqual([''])
 })
 
 test('model classification frames text and labels as data', async () => {

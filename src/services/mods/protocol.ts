@@ -64,6 +64,7 @@ export function createModHookStream(
 export type ModWireValue =
   | { type: 'undefined' }
   | { type: 'value'; value: null | boolean | number | string }
+  | { type: 'non-finite'; value: 'NaN' | 'Infinity' | '-Infinity' }
   | { type: 'array'; values: ModWireValue[] }
   | { type: 'regexp'; source: string; flags: string }
   | { type: 'object'; entries: [string, ModWireValue][] }

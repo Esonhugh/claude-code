@@ -79,7 +79,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const encode = (value, seen = new Set()) => {
     if (value === undefined) return { type: 'undefined' };
     if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
-      if (typeof value === 'number' && !Number.isFinite(value)) throw Error('Non-finite module value');
+      if (typeof value === 'number' && !Number.isFinite(value)) return {type:'non-finite',value:Number.isNaN(value) ? 'NaN' : value > 0 ? 'Infinity' : '-Infinity'};
       return { type: 'value', value };
     }
     if ((typeof value !== 'object' && typeof value !== 'function') || isProxy(value)) throw Error('Unsupported module value (proxies are not allowed)');
@@ -145,6 +145,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const decode = (wire, invocation) => {
     if (wire.type === 'undefined') return undefined;
     if (wire.type === 'value') return wire.value;
+    if (wire.type === 'non-finite') return Number(wire.value);
     if (wire.type === 'array') return Object.freeze(wire.values.map(v => decode(v, invocation)));
     if (wire.type === 'object') return Object.freeze(Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation)])));
     if (wire.type === 'engine') {

@@ -297,7 +297,6 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let forkSnapshot: CacheSafeParams | null = null
   let forkGeneration = 0
   const productionModelFork = createModModelFork(() => forkSnapshot)
-  const productionModelComplete = createModModelComplete()
   const uiContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; person: boolean; active?: boolean }>()
   const drawingCallbackPlugin = new AsyncLocalStorage<string>()
   let publicationNotifications: Set<() => void> | undefined
@@ -1628,12 +1627,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               validateModSessionUsageArgs(rewritten)
               return { value: await usage(rewritten, signal) }
             }
-            const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? productionModelComplete
+            const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? createModModelComplete(undefined, undefined, undefined, owner.declaration.name)
             if (op === 'model.fork') {
               const fork = requestServices.getStore()?.modelFork ?? services.modelFork ?? productionModelFork
               return { value: fork ? await fork(rewritten as ModModelForkRequest, signal) : null }
             }
             if (op === 'model.complete') {
+              validateModModelCompleteInput(rewritten)
               return { value: await completion(rewritten as ModModelCompleteRequest, signal) }
             }
             if (op === 'model.classify') {
@@ -1661,8 +1661,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }
           if (typeof result.deny === 'string') {
-            if (fn === hostIdentity && op === 'model.classify')
-              throw Object.assign(new Error(`${owner.declaration.name}: $.model.classify: ${result.deny}`), {name:'HooksError'})
+            if (fn === hostIdentity && (op === 'model.classify' || op === 'model.complete'))
+              throw Object.assign(new Error(`${owner.declaration.name}: $.${op}: ${result.deny}`), {name:'HooksError'})
             throw new Error(result.deny)
           }
           return result.value
