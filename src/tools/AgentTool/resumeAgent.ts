@@ -188,6 +188,7 @@ export async function resumeAgentBackground({
   }
 
   if (scope?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: scope.effort }
+  else if (meta?.effort !== undefined) selectedAgent = { ...selectedAgent, effort: meta.effort }
   const uiDescription = meta?.description ?? '(resumed)'
 
   let forkParentSystemPrompt: SystemPrompt | undefined

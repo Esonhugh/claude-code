@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - SubAgent effort 参数与继承
+
+### Added
+
+- Agent 工具支持按次指定 effort，优先于 agent 定义；未配置时继承调用方当前 effort，并保留父 agent 状态隔离与现有 API 环境覆盖。
+- 将 effort 传递到进程内及 tmux teammate，持久化后台 agent 的选择，并在续跑时恢复。
+
+### Tests
+
+- 覆盖参数校验、显式覆盖、定义默认、父 agent 继承、整数零值、各 teammate 后端、Mods runtime 传递与恢复；类型、lint、构建和真实二进制 tmux 请求验收见 docs/research/agent-effort-20261007.md。
+
+
 ## 2026-10-07 - 开放 Channels 与新版协议兼容
 
 ### Added

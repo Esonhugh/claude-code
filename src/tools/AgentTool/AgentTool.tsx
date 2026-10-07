@@ -60,6 +60,7 @@ import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { EFFORT_LEVELS, getDefaultEffortForModel, isEffortLevel, type EffortValue } from '../../utils/effort.js'
 import { AbortError, errorMessage, toError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -219,6 +220,12 @@ const baseInputSchema = lazySchema(() =>
       .describe(
         "Optional model override: an alias (sonnet, opus, haiku), a full model ID, or inherit. Takes precedence over the agent definition's model frontmatter. CLAUDE_CODE_SUBAGENT_MODEL takes precedence over this override. If omitted, uses the agent definition's model or the default agent/teammate selection.",
       ),
+    effort: z
+      .union([z.enum(EFFORT_LEVELS), z.number().int()])
+      .optional()
+      .describe(
+        "Optional reasoning effort override. Takes precedence over the agent definition's effort. If omitted, uses the agent definition's effort or inherits the caller's effort. The session effort environment override still applies.",
+      ),
     run_in_background: z
       .boolean()
       .optional()
@@ -356,6 +363,7 @@ export function buildAgentLaunchDebugParams({
   description,
   name,
   model,
+  effort,
   permissionMode,
   runInBackground,
   selectedAgentBackground,
@@ -378,6 +386,7 @@ export function buildAgentLaunchDebugParams({
   description: string
   name?: string
   model: string
+  effort?: EffortValue
   permissionMode?: string
   runInBackground: boolean
   selectedAgentBackground: boolean
@@ -403,6 +412,7 @@ export function buildAgentLaunchDebugParams({
     hasName: name !== undefined,
     nameLength: name?.length,
     model,
+    ...(effort !== undefined && { effort }),
     permissionMode,
     runInBackground,
     selectedAgentBackground,
@@ -526,6 +536,7 @@ export const AgentTool = buildTool({
       subagent_type,
       description,
       model: modelParam,
+      effort,
       run_in_background,
       name,
       team_name,
@@ -720,6 +731,9 @@ export const AgentTool = buildTool({
     }
     // Completion remains owned by AgentTool; middleware observes launch only.
     const execute = async () => {
+    const resolvedEffort = effort ?? selectedAgent.effort ?? appState.effortValue ??
+      getDefaultEffortForModel(toolUseContext.options.mainLoopModel)
+    if (resolvedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: resolvedEffort }
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode
@@ -768,6 +782,7 @@ export const AgentTool = buildTool({
           permissionMode,
           permissions,
           model,
+          effort: selectedAgent.effort,
           agent_type: selectedAgent.agentType,
           invokingRequestId: parentMessage?.requestId,
         },
@@ -1133,6 +1148,7 @@ export const AgentTool = buildTool({
           description,
           name,
           model: resolvedAgentModel,
+          effort: selectedAgent.effort,
           permissionMode,
           runInBackground: run_in_background === true,
           selectedAgentBackground: selectedAgent.background === true,
@@ -1258,6 +1274,7 @@ export const AgentTool = buildTool({
           void writeAgentMetadata(asAgentId(earlyAgentId), {
             agentType: selectedAgent.agentType,
             description,
+            effort: selectedAgent.effort,
           }).catch(_err =>
             logForDebugging(`Failed to clear worktree metadata: ${_err}`),
           )
@@ -2225,6 +2242,7 @@ export const AgentTool = buildTool({
       fork: isForkPath,
       ...(name !== undefined && { name }),
       ...(model !== undefined && { model }),
+      ...(effort !== undefined && { effort }),
       ...(cwd !== undefined && { cwd }),
       ...(toolUseContext.agentId !== undefined && { parentAgentId: toolUseContext.agentId }),
     }
@@ -2242,6 +2260,9 @@ export const AgentTool = buildTool({
           throw new Error(`agent.spawn invalid ${key}`)
         }
       }
+      if (value.effort !== undefined && !(typeof value.effort === 'string' && isEffortLevel(value.effort) || typeof value.effort === 'number' && Number.isInteger(value.effort))) {
+        throw new Error('agent.spawn invalid effort')
+      }
       if (typeof value.background !== 'boolean') throw new Error('agent.spawn invalid background')
     }
     let completion: ReturnType<typeof execute> | undefined
@@ -2251,6 +2272,7 @@ export const AgentTool = buildTool({
       prompt = value.prompt as string
       description = normalizeAgentDescription(value.description as string)
       model = value.model as string | undefined
+      effort = value.effort as EffortValue | undefined
       cwd = value.cwd as string | undefined
       run_in_background = value.background as boolean
       if (!isForkPath && value.subagentType !== selectedAgent.agentType) {

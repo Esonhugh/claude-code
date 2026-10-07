@@ -17,6 +17,7 @@ import { isInBundledMode } from '../../utils/bundledMode.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
+import { getDefaultEffortForModel, type EffortValue } from '../../utils/effort.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { getDefaultMainLoopModel } from '../../utils/model/model.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
@@ -95,6 +96,7 @@ export type SpawnTeammateConfig = {
   permissions?: string[]
   model?: string
   agent_type?: string
+  effort?: EffortValue
   description?: string
   /** request_id of the API call whose response contained the tool_use that
    *  spawned this teammate. Threaded through to TeammateAgentContext for
@@ -114,6 +116,7 @@ type SpawnInput = {
   permissions?: string[]
   model: string
   agent_type?: string
+  effort?: EffortValue
   description?: string
   invokingRequestId?: string
 }
@@ -370,6 +373,7 @@ async function handleSpawnSplitPane(
     permissionMode: effectivePermissionMode,
     allowedTools: permissions,
     model,
+    effort: input.effort,
   })
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
@@ -577,6 +581,7 @@ async function handleSpawnSeparateWindow(
     permissionMode: effectivePermissionMode,
     allowedTools: permissions,
     model,
+    effort: input.effort,
   })
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
@@ -877,6 +882,7 @@ async function handleSpawnInProcess(
       prompt,
       description: input.description,
       model,
+      effort: input.effort,
       agentDefinition,
       teammateContext: result.teammateContext,
       // Strip messages: the teammate never reads toolUseContext.messages
@@ -1046,6 +1052,8 @@ export async function spawnTeammate(
   )
   const input: SpawnInput = {
     ...config,
+    effort: config.effort ?? definition?.effort ?? appState.effortValue ??
+      getDefaultEffortForModel(context.options.mainLoopModel ?? appState.mainLoopModel ?? getDefaultMainLoopModel()),
     model: resolveTeammateModel(
       config.model,
       context.options.mainLoopModel ??

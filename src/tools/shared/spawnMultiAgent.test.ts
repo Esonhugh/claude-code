@@ -357,6 +357,7 @@ assert.deepEqual(
 )
 
 setMainLoopModelOverride('gpt-5.6-sol')
+concurrentSpawnState.effortValue = 'xhigh'
 const inheritedParentResult = await spawnTeammate(
   { name: 'parent-model-worker', prompt: 'inspect', team_name: 'concurrent-spawn-team' },
   {
@@ -366,6 +367,8 @@ const inheritedParentResult = await spawnTeammate(
 )
 assert.equal(inheritedParentResult.data.model, 'gpt-5.6-sol')
 assert.equal(startedInProcessConfigs.at(-1)?.model, 'gpt-5.6-sol')
+assert.equal(startedInProcessConfigs.at(-1)?.effort, 'xhigh')
+concurrentSpawnState.effortValue = undefined
 assert.equal(
   (await readTeamFileAsync('concurrent-spawn-team'))?.members.find(member => member.name === 'parent-model-worker')?.model,
   'gpt-5.6-sol',
@@ -391,6 +394,7 @@ const specializedDefinitions: AgentDefinition[] = [
   {
     agentType: 'custom-restricted-agent',
     model: 'Definition/Custom-ID',
+      effort: 'medium',
     whenToUse: 'Test custom definition propagation',
     tools: ['Read(custom.txt)'],
     disallowedTools: ['Write'],
@@ -449,6 +453,7 @@ for (const definition of specializedDefinitions) {
   )
   const startedConfig = startedInProcessConfigs.at(-1)
   assert.equal(startedConfig?.agentDefinition, definition)
+    assert.equal(startedConfig?.effort, definition.effort)
   assert.deepEqual(startedConfig?.agentDefinition?.tools, definition.tools)
   assert.deepEqual(
     startedConfig?.agentDefinition?.disallowedTools,
@@ -501,6 +506,7 @@ useInProcessBackend = true
 
 const modelEnvKeys = [
   'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_OPENAI', 'OPENAI_BASE_URL',
+  'CLAUDE_CODE_EFFORT_LEVEL',
   'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
 ] as const
 const savedModelEnv = Object.fromEntries(modelEnvKeys.map(key => [key, process.env[key]]))
@@ -508,6 +514,7 @@ try {
   setMainLoopModelOverride('parent model with spaces')
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.OPENAI_BASE_URL = 'https://example.invalid/v1'
+  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'high'
   process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'Gateway/Opus'
   process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'Gateway/Sonnet'
   process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'Gateway/Haiku'
@@ -526,6 +533,7 @@ try {
     const result = await spawnTeammate({
       name: `model-${backend}`, prompt: 'inspect', team_name: 'definition-team',
       model: 'tool-model', agent_type: 'custom-restricted-agent',
+        effort: 'low',
       use_splitpane: backend !== 'separate-window',
     }, definitionContext)
     assert.equal(result.data.model, 'Gateway/Snapshot')
@@ -536,9 +544,12 @@ try {
     assert.equal((await readTeamFileAsync('definition-team'))?.members.find(member => member.agentId === result.data.agent_id)?.model, 'Gateway/Snapshot')
     if (backend === 'in-process') {
       assert.equal(startedInProcessConfigs.at(-1)?.model, 'Gateway/Snapshot')
+        assert.equal(startedInProcessConfigs.at(-1)?.effort, 'low')
     } else {
       assert.ok(spawnedPaneCommand)
       assert.equal(spawnedPaneCommand.match(/--model\b/g)?.length, 1)
+        assert.equal(spawnedPaneCommand.match(/--effort\b/g)?.length, 1)
+        assert.match(spawnedPaneCommand, /--effort low(?:\s|$)/)
       assert.match(spawnedPaneCommand, /--model Gateway\/Snapshot(?:\s|$)/)
       assert.doesNotMatch(spawnedPaneCommand, /model with spaces|env-changed-after-selection/)
       for (const key of modelEnvKeys.filter(key => key !== 'CLAUDE_CODE_SUBAGENT_MODEL')) {
@@ -569,6 +580,8 @@ const extractPermissionFlags = (flags: string) =>
     )
 
 setSessionBypassPermissionsMode(false)
+assert.match(buildInheritedCliFlags({ effort: 0 }), /--effort 0(?:\s|$)/)
+assert.doesNotMatch(buildInheritedCliFlags(), /--effort/)
 assert.deepEqual(
   extractPermissionFlags(
     buildInheritedCliFlags({ permissionMode: 'bypassPermissions' }),

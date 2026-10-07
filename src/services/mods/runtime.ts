@@ -3,6 +3,7 @@ import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './ma
 import { combineModModelSignals } from './modelAbort.js'
 import {validateModModelCompleteInput} from './modelTextBlocks.js'
 import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
+import { isEffortLevel } from '../../utils/effort.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
@@ -798,10 +799,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             ((input as ModInput).description !== undefined && typeof (input as ModInput).description !== 'string') ||
             ((input as ModInput).subagentType !== undefined && typeof (input as ModInput).subagentType !== 'string') ||
             ((input as ModInput).model !== undefined && typeof (input as ModInput).model !== 'string') ||
+            ((input as ModInput).effort !== undefined && !(typeof (input as ModInput).effort === 'string' && isEffortLevel((input as ModInput).effort as string) || typeof (input as ModInput).effort === 'number' && Number.isInteger((input as ModInput).effort))) ||
             ((input as ModInput).name !== undefined && typeof (input as ModInput).name !== 'string') ||
             ((input as ModInput).cwd !== undefined && typeof (input as ModInput).cwd !== 'string') ||
-            Object.keys(input).some(key => !['prompt', 'description', 'subagentType', 'model', 'name', 'cwd'].includes(key)))
-          throw new TypeError('agent.spawn takes a prompt and optional description, subagentType, model, name and cwd')
+            Object.keys(input).some(key => !['prompt', 'description', 'subagentType', 'model', 'effort', 'name', 'cwd'].includes(key)))
+          throw new TypeError('agent.spawn takes a prompt and optional description, subagentType, model, effort, name and cwd')
         return input as ModInput
       }
       case 'agent.register': {

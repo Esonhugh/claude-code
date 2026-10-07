@@ -4,6 +4,7 @@ import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import { createAssistantMessage, createUserMessage, getLastAssistantMessage } from '../../utils/messages.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { logForDebugging } from '../../utils/debug.js'
+import type { EffortValue } from '../../utils/effort.js'
 import { AgentPreconditionError } from '../../utils/subagentConcurrency.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../../tools/AskUserQuestionTool/prompt.js'
@@ -45,6 +46,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
             : prompt.replace(/\s+/g, ' ').trim().slice(0, 80),
           ...(input.subagentType === undefined ? {} : { subagent_type: input.subagentType as string }),
           ...(input.model === undefined ? {} : { model: input.model as string }),
+          ...(input.effort === undefined ? {} : { effort: input.effort as EffortValue }),
           ...(input.name === undefined ? {} : { name: input.name as string }),
           ...(input.cwd === undefined ? {} : { cwd: input.cwd as string }),
           run_in_background: true,

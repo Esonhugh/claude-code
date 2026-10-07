@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { afterAll, mock } from 'bun:test'
+import { afterAll, expect, mock, test } from 'bun:test'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -35,7 +35,11 @@ import {
 } from '../../utils/settings/settingsCache.js'
 
 const originalSettings = getSessionSettingsCache()
+const originalApiKey = process.env.ANTHROPIC_API_KEY
+process.env.ANTHROPIC_API_KEY ??= 'test-agent-effort-key'
 afterAll(() => {
+  if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+  else process.env.ANTHROPIC_API_KEY = originalApiKey
   if (originalSettings) setSessionSettingsCache(originalSettings)
   else resetSettingsCache()
 })
@@ -490,6 +494,43 @@ for (const model of ['gpt-5.6-sol', 'Gateway/Custom-ID', 'inherit', 'opus']) {
 for (const model of ['', null]) {
   assert.equal(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'model test', model }).success, false)
 }
+
+test('Agent effort accepts configured levels and integer overrides', () => {
+  for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode', 0, 42]) {
+    const parsed = AgentTool.inputSchema.parse({ prompt: 'inspect', description: 'effort test', effort })
+    expect(parsed).toHaveProperty('effort', effort)
+  }
+  for (const effort of ['', 'inherit', 'invalid', null, 1.5, Infinity]) {
+    expect(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'effort test', effort }).success).toBe(false)
+  }
+})
+
+test('Agent effort override, definition and parent are isolated launch snapshots', async () => {
+  const previous = controlledSpawnParams
+  try {
+  for (const [effort, definedEffort, parentEffort, expected] of [
+    ['low', 'medium', 'xhigh', 'low'],
+    [undefined, 'medium', 'xhigh', 'medium'],
+    [undefined, undefined, 'ultra', 'ultra'],
+    [0, 'medium', 'xhigh', 0],
+    [undefined, undefined, 0, 0],
+    [undefined, undefined, undefined, 'high'],
+  ] as const) {
+    const context = createContext(0)
+    if (expected === 'high') context.options.mainLoopModel = 'claude-fable-5'
+    const definition = { ...GENERAL_PURPOSE_AGENT, effort: definedEffort }
+    ;(context.options as unknown as { agentDefinitions: { activeAgents: unknown[] } }).agentDefinitions.activeAgents = [definition]
+    context.setAppState((state: ReturnType<typeof getDefaultAppState>) => ({ ...state, effortValue: parentEffort }))
+    await AgentTool.call({
+      prompt: 'inspect', description: 'effort worker', run_in_background: false,
+      ...(effort === undefined ? {} : { effort }),
+    }, context as never, async () => ({ behavior: 'allow' }), createTestAssistantMessage('effort'))
+    expect(controlledSpawnParams?.agentDefinition).toHaveProperty('effort', expected)
+    expect(context.getAppState().effortValue).toBe(parentEffort)
+    expect(definition.effort).toBe(definedEffort)
+  }
+  } finally { controlledSpawnParams = previous }
+})
 
 setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
 const disabledPlanContext = createContext(0)

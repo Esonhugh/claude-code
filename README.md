@@ -72,7 +72,7 @@ bun ./dist/cli.js --help
 | --- | --- |
 | OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；启用 server-side `WebSearch`，将 Anthropic web-search schema、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为 Anthropic-compatible stream 事件；OpenAI 模式自动从 ChatGPT Codex 或 OpenAI-compatible `/v1/models` 发现模型，Anthropic API billing gateway 可通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 启用同类发现，并统一进入 Model Picker 缓存；`/fast` 映射到 OpenAI priority service tier，手动和重复 remote compaction 会保持稳定 turn scope 与 opaque compaction history。 |
 | Effort | CLI 可配置 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，Model Picker/SDK capability 列表仍按 provider 与模型声明可选档位；configured effort 不按 capability 重写并原样传入所选 API，仅本地编排模式 `ultracode` 展开为 API `xhigh`。 |
-| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；默认提供只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
+| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；支持按次指定 `model` 和 `effort`，未配置 effort 时继承调用方；默认提供只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。 |
 | 独立会话通信 | 同机独立 CLI session 可通过 official-compatible `msgV: 1` JSON-lines 协议发现和发送纯文本；提供 deferred `ListAgents` / `SendMessage` tools 以及 `/list-agents`（别名 `/peers`），支持 name、`name [ref]`、session UUID 和来信中的精确 `uds:` 地址。该能力使用 macOS/Linux UDS 或 Windows named pipe，不是 Remote Control 或跨机器 transport。 |
 | Prompt context | System prompt 按稳定核心、能力和任务动态层组织 cache boundary；Plan + Auto mode 保持只读权限边界；Agent listing 使用增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留权限与动态工具发现。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
@@ -95,6 +95,24 @@ bun ./dist/cli.js --help
 ## 配置与使用示例
 
 设置可以写入 Claude Code 用户级或项目级 `settings.json`。以下片段只展示本项目相关字段，使用时应与现有 JSON 合并，不要覆盖其他设置。
+
+### SubAgent effort
+
+`Agent` 工具支持可选的 `effort`，与 `model` 一起按次指定：
+
+```json
+{
+  "description": "检查相关实现",
+  "prompt": "检查此次改动的调用链和边界条件",
+  "subagent_type": "general-purpose",
+  "model": "inherit",
+  "effort": "low"
+}
+```
+
+选择优先级为：本次 `effort` 参数 → agent 定义中的 `effort` → 调用方当前 effort → 已知的调用方模型默认 effort。未设置参数和 agent 定义时，子 agent 默认继承主 agent；嵌套调用继承直接父 agent。单独设置子 agent 不会修改主 agent 或共享 agent 定义。已有的 `CLAUDE_CODE_EFFORT_LEVEL` 环境覆盖在 API 请求层继续具有最高优先级。
+
+支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并保留 agent 定义已有的整数 effort 兼容性；省略字段即使用上述默认规则。具体 API 支持由 provider 决定，沿用现有 effort 转换规则。前台、后台、进程内 teammate 和 tmux teammate 均传递所选值；后台 agent 续跑时保留启动时的 effort。验证范围见 [SubAgent effort 检查记录](docs/research/agent-effort-20261007.md)。
 
 ### Channels
 

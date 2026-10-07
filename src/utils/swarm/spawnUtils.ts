@@ -10,6 +10,7 @@ import {
   getSessionBypassPermissionsMode,
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
+import type { EffortValue } from '../effort.js'
 import { isInBundledMode } from '../bundledMode.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getTeammateModeFromSnapshot } from './backends/teammateModeSnapshot.js'
@@ -40,6 +41,7 @@ export function buildInheritedCliFlags(options?: {
   permissionMode?: PermissionMode
   allowedTools?: string[]
   model?: string
+  effort?: EffortValue
 }): string {
   const flags: string[] = []
   const { planModeRequired, permissionMode, allowedTools } = options || {}
@@ -64,6 +66,9 @@ export function buildInheritedCliFlags(options?: {
   const modelOverride = options?.model ?? getMainLoopModelOverride()
   if (modelOverride) {
     flags.push(`--model ${quote([modelOverride])}`)
+  }
+  if (options?.effort !== undefined) {
+    flags.push(`--effort ${quote([String(options.effort)])}`)
   }
 
   // Propagate --settings if set via CLI
@@ -105,6 +110,7 @@ const TEAMMATE_ENV_VARS = [
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_EFFORT_LEVEL',
   // Custom API endpoints (credentials are never forwarded in shell commands)
   'ANTHROPIC_BASE_URL',
   'OPENAI_BASE_URL',

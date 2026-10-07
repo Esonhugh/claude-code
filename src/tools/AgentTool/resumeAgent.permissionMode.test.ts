@@ -8,6 +8,7 @@ import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { asAgentId } from '../../types/ids.js'
 import { resetGitFileWatcher } from '../../utils/git/gitFilesystem.js'
 import { createUserMessage } from '../../utils/messages.js'
+import type { EffortValue } from '../../utils/effort.js'
 import {
   flushSessionStorage,
   recordSidechainTranscript,
@@ -23,15 +24,18 @@ import {
 
 let controlledPermissionMode: string | undefined
 let controlledAllowedTools: string[] | undefined
+let controlledEffort: EffortValue | undefined
 let invalidatedAgentId: string | undefined
 
 mock.module('./runAgent.js', () => ({
   async *runAgent(params: {
     permissionMode?: string
     allowedTools?: string[]
+    agentDefinition: { effort?: EffortValue }
   }) {
     controlledPermissionMode = params.permissionMode
     controlledAllowedTools = params.allowedTools
+    controlledEffort = params.agentDefinition.effort
     yield {
       type: 'assistant',
       uuid: crypto.randomUUID(),
@@ -77,12 +81,18 @@ async function runCase({
   metadataMode,
   definitionMode,
   definitionTools,
+  metadataEffort,
+  definitionEffort,
+  parentEffort,
 }: {
   agentId: string
   parentMode: 'default' | 'bypassPermissions' | 'plan'
   metadataMode?: 'default' | 'acceptEdits' | 'plan'
   definitionMode?: 'acceptEdits' | 'plan'
   definitionTools?: string[]
+  metadataEffort?: EffortValue
+  definitionEffort?: EffortValue
+  parentEffort?: EffortValue
 }) {
   const typedAgentId = asAgentId(agentId)
   await recordSidechainTranscript(
@@ -90,12 +100,13 @@ async function runCase({
     agentId,
   )
   await flushSessionStorage()
-  const usesDefinitionAgent = definitionMode !== undefined || definitionTools !== undefined
+  const usesDefinitionAgent = definitionMode !== undefined || definitionTools !== undefined || definitionEffort !== undefined
   await writeAgentMetadata(typedAgentId, {
     agentType: usesDefinitionAgent
       ? 'resume-definition-agent'
       : 'general-purpose',
     ...(metadataMode ? { permissionMode: metadataMode } : {}),
+    ...(metadataEffort !== undefined ? { effort: metadataEffort } : {}),
   })
 
   const definitionAgent = {
@@ -103,10 +114,12 @@ async function runCase({
     agentType: 'resume-definition-agent',
     permissionMode: definitionMode,
     tools: definitionTools,
+    effort: definitionEffort,
   }
   let state = {
     ...getDefaultAppState(),
     runningSubagents: 1,
+    effortValue: parentEffort,
     toolPermissionContext: {
       ...getEmptyToolPermissionContext(),
       mode: parentMode,
@@ -143,6 +156,7 @@ async function runCase({
   }
   controlledPermissionMode = undefined
   controlledAllowedTools = undefined
+  controlledEffort = undefined
   invalidatedAgentId = undefined
 
   await resumeAgentBackground({
@@ -174,11 +188,14 @@ async function runCase({
   await completion
   assert.ok(concurrencyCounts.includes(2), 'resumption must reserve a slot even at the new-launch limit')
   assert.equal(state.runningSubagents, 1)
+  assert.equal(state.effortValue, parentEffort, 'resumption must not change the caller effort')
+  assert.equal(definitionAgent.effort, definitionEffort, 'resumption must not mutate the shared agent definition')
 
   return {
     permissionMode: controlledPermissionMode,
     allowedTools: controlledAllowedTools,
     invalidatedAgentId,
+    effort: controlledEffort,
   }
 }
 
@@ -255,6 +272,18 @@ try {
   })
   assert.deepEqual(definitionTools.allowedTools, ['Read(example.txt)'])
   assert.equal(definitionTools.invalidatedAgentId, 'resume-definition-tools')
+  for (const metadataEffort of ['low', 0] as const) {
+    assert.equal(
+      (await runCase({
+        agentId: `resume-effort-${metadataEffort}`,
+        parentMode: 'default',
+        metadataEffort,
+        definitionEffort: 'medium',
+        parentEffort: 'xhigh',
+      })).effort,
+      metadataEffort,
+    )
+  }
 } finally {
   if (originalSettings) setSessionSettingsCache(originalSettings)
   else resetSettingsCache()

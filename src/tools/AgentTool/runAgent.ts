@@ -272,6 +272,7 @@ export function buildAgentMetadataForTesting({
   permissionMode,
   parentAgentId,
   spawnDepth,
+  effort,
 }: {
   agentType: string
   description?: string
@@ -283,6 +284,7 @@ export function buildAgentMetadataForTesting({
   permissionMode?: PermissionMode
   parentAgentId?: string
   spawnDepth?: number
+  effort?: import('../../utils/effort.js').EffortValue
 }) {
   return {
     agentType,
@@ -295,6 +297,7 @@ export function buildAgentMetadataForTesting({
     ...(permissionMode && { permissionMode }),
     ...(parentAgentId && { parentAgentId }),
     ...(spawnDepth !== undefined && { spawnDepth }),
+    ...(effort !== undefined && { effort }),
   }
 }
 
@@ -940,6 +943,7 @@ export async function* runAgent({
       toolUseId,
       permissionMode,
       parentAgentId,
+        effort: agentGetAppState().effortValue,
       spawnDepth:
         spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
       }),

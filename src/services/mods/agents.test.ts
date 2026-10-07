@@ -175,7 +175,7 @@ test('production Worker agent.spawn skips only its calling hook and starts throu
   const caller = await plugin('caller', `export function register(on) {
     on('*', async ($,e,next) => {
       if (next.event === 'agent.spawn') return {deny:'caller recursed'};
-      if (next.event === 'command.run') return {text:JSON.stringify(await $.agent.spawn({prompt:'review',description:'Review',subagentType:'reviewer',model:'haiku',name:'worker',cwd:'/tmp/work'}))};
+      if (next.event === 'command.run') return {text:JSON.stringify(await $.agent.spawn({prompt:'review',description:'Review',subagentType:'reviewer',model:'haiku',effort:'low',name:'worker',cwd:'/tmp/work'}))};
       return next(e);
     });
   }`)
@@ -205,7 +205,7 @@ test('production Worker agent.spawn skips only its calling hook and starts throu
   try {
     expect(await snapshot.dispatch('command.run',{},async()=>({}))).toEqual({text:'{"model":"claude-haiku","agentId":"agent-child"}'})
     expect(calls).toHaveLength(1)
-    expect(calls[0]).toMatchObject({request:{prompt:'review rewritten',description:'Review',subagentType:'reviewer',model:'haiku',name:'worker',cwd:'/tmp/work'}})
+    expect(calls[0]).toMatchObject({request:{prompt:'review rewritten',description:'Review',subagentType:'reviewer',model:'haiku',effort:'low',name:'worker',cwd:'/tmp/work'}})
   } finally { snapshot.release() }
 })
 
