@@ -2465,7 +2465,7 @@ async function run(): Promise<CommanderCommand> {
         const rawChannels = channelOpts.channels
         const rawDev = channelOpts.dangerouslyLoadDevelopmentChannels
         // Always parse + set. ChannelsNotice reads getAllowedChannels() and
-        // renders the appropriate branch (disabled/noAuth/policyBlocked/
+        // renders the appropriate branch (disabled/policyBlocked/
         // listening) in the startup screen. gateChannelServer() enforces.
         // --channels works in both interactive and print/SDK modes; dev-channels
         // stays interactive-only (requires a confirmation dialog).
@@ -5274,14 +5274,14 @@ async function run(): Promise<CommanderCommand> {
     program.addOption(
       new Option(
         '--channels <servers...>',
-        'MCP servers whose channel notifications (inbound push) should register this session. Space-separated server names.',
-      ).hideHelp(),
+        'Enable inbound notifications from approved channel plugins for this session: plugin:<name>@<marketplace> (space-separated).',
+      ),
     )
     program.addOption(
       new Option(
         '--dangerously-load-development-channels <servers...>',
-        'Load channel servers not on the approved allowlist. For local channel development only. Shows a confirmation dialog at startup.',
-      ).hideHelp(),
+        'Load development channels: plugin:<name>@<marketplace> or server:<name>. Interactive only; requires startup confirmation; organization policy still applies.',
+      ),
     )
   }
 

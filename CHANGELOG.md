@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 开放 Channels 与新版协议兼容
+
+### Added
+
+- 默认构建开放 `--channels`、交互式开发频道和 SDK `channel_enable`，支持当前配置的 API Key / OpenAI 兼容 provider；保留 managed settings、会话授权、插件来源和白名单检查。
+- 公开 CLI help、批准插件默认名单与本地关闭开关；README 增加使用方式、权限边界及本项目扩展说明。
+
+### Fixed
+
+- 远程审批使用完整频道准入检查，遵守 `claude/channel/permission: false`，兼容现有 MCP SDK 的握手校验；清理审批预览的 Unicode、可识别凭据和长字段，隔离无法序列化的字段。
+- 禁止元数据伪造消息来源，修复 SDK 空闲消息不触发处理及 `--channels` 启动后首条消息没有监听的问题，并释放队列订阅。
+
+### Tests
+
+- 增加准入、组织策略、来源验证、审批能力和预览、真实 MCP SDK 握手及 headless 首条频道消息回归；二进制 tmux / stream-json 场景与验证边界见 docs/research/channels-20261007.md。
+
+
 ## 2026-10-07 - 外部 Client 交互与消息控制
 
 ### Fixed

@@ -24,17 +24,18 @@
  */
 
 import { jsonStringify } from '../../utils/slowOperations.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isChannelsEnabled } from './channelAllowlist.js'
 
 /**
- * GrowthBook runtime gate — separate from the channels gate (tengu_harbor)
- * so channels can ship without permission-relay riding along (Kenneth: "no
- * bake time if it goes out tomorrow"). Default false; flip without a release.
- * Checked once at useManageMCPConnections mount — mid-session flag changes
- * don't apply until restart.
+ * Local opt-out, checked at session startup. Every recipient still needs
+ * full channel admission and the explicit permission capability.
  */
 export function isChannelPermissionRelayEnabled(): boolean {
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_harbor_permissions', false)
+  return (
+    isChannelsEnabled() &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CHANNEL_PERMISSION_RELAY)
+  )
 }
 
 export type ChannelPermissionResponse = {
@@ -151,25 +152,86 @@ export function shortRequestId(toolUseID: string): string {
   return candidate
 }
 
-/**
- * Truncate tool input to a phone-sized JSON preview. 200 chars is
- * roughly 3 lines on a narrow phone screen. Full input is in the local
- * terminal dialog; the channel gets a summary so Write(5KB-file) doesn't
- * flood your texts. Server decides whether/how to show it.
- */
+const PREVIEW_CODE_POINTS = 3500
+const CREDENTIAL_TOKEN =
+  /(?:sk-ant-[A-Za-z0-9_-]{20,}|sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[A-Z0-9]{16})/g
+
+export function sanitizePermissionText(text: string): string {
+  const sanitized = text
+    .normalize('NFKC')
+    .replace(/[\p{Cf}\p{Cc}\p{Default_Ignorable_Code_Point}]/gu, char =>
+      /\s/u.test(char) ? ' ' : '',
+    )
+    .replace(/[“”„‟«»]/g, '"')
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[〈⟨〈‹]/g, '<')
+    .replace(/[〉⟩〉›]/g, '>')
+    .replace(/\s+/gu, ' ')
+    // Never mask an atom containing shell, path, or URL syntax: hiding a
+    // command/destination would prevent the recipient making an informed choice.
+    .replace(/\S+/gu, atom =>
+      /[/\\.:?=&|;$<>()[\]{}%@+`]/u.test(atom)
+        ? atom
+        : atom.replace(CREDENTIAL_TOKEN, '[REDACTED]'),
+    )
+  const chars = Array.from(sanitized)
+  if (chars.length <= PREVIEW_CODE_POINTS) return sanitized
+  const half = (PREVIEW_CODE_POINTS - 64) / 2
+  return `${chars.slice(0, half).join('')} ⋯ ${chars.length - half * 2} code points elided ⋯ ${chars.slice(-half).join('')}`
+}
+
+/** Each field is independent: a circular value cannot hide the command/path. */
 export function truncateForPreview(input: unknown): string {
-  try {
-    const s = jsonStringify(input)
-    return s.length > 200 ? s.slice(0, 200) + '…' : s
-  } catch {
-    return '(unserializable)'
+  function previewValue(value: unknown): string {
+    try {
+      let visited = 0
+      const encoded = jsonStringify(value, (_key, part) => {
+        if (++visited > 10000) throw new Error('Preview serialization limit')
+        if (typeof part === 'string') return sanitizePermissionText(part)
+        if (part && typeof part === 'object' && !Array.isArray(part)) {
+          const keys = Object.keys(part)
+          if (keys.length > 10000)
+            throw new Error('Preview serialization limit')
+          if (keys.some(key => sanitizePermissionText(key) !== key)) {
+            return Object.fromEntries(
+              keys.map(key => [sanitizePermissionText(key), part[key]]),
+            )
+          }
+        }
+        return part
+      })
+      if (encoded === undefined) return jsonStringify('(value unserializable)')
+      // Preserve JSON structure for short values; large objects become a
+      // display string so elision never produces invalid JSON.
+      return typeof value === 'string' ||
+        Array.from(encoded).length <= PREVIEW_CODE_POINTS
+        ? encoded
+        : jsonStringify(sanitizePermissionText(encoded))
+    } catch {
+      return jsonStringify('(value unserializable)')
+    }
   }
+
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) {
+    return previewValue(input)
+  }
+  return `{${Object.keys(input)
+    .map(key => {
+      let value: string
+      try {
+        value = previewValue((input as Record<string, unknown>)[key])
+      } catch {
+        value = jsonStringify('(value unserializable)')
+      }
+      return `${jsonStringify(sanitizePermissionText(key))}:${value}`
+    })
+    .join(',')}}`
 }
 
 /**
  * Filter MCP clients down to those that can relay permission prompts.
- * Three conditions, ALL required: connected + in the session's --channels
- * allowlist + declares BOTH capabilities. The second capability is the
+ * Three conditions, ALL required: connected + full channel admission +
+ * declares BOTH capabilities. The second capability is the
  * server's explicit opt-in — a relay-only channel never becomes a
  * permission surface by accident (Kenneth's "users may be unpleasantly
  * surprised"). Centralized here so a future fourth condition lands once.
@@ -182,14 +244,14 @@ export function filterPermissionRelayClients<
   },
 >(
   clients: readonly T[],
-  isInAllowlist: (name: string) => boolean,
+  isAdmitted: (client: T) => boolean,
 ): (T & { type: 'connected' })[] {
   return clients.filter(
     (c): c is T & { type: 'connected' } =>
       c.type === 'connected' &&
-      isInAllowlist(c.name) &&
-      c.capabilities?.experimental?.['claude/channel'] !== undefined &&
-      c.capabilities?.experimental?.['claude/channel/permission'] !== undefined,
+      isAdmitted(c) &&
+      Boolean(c.capabilities?.experimental?.['claude/channel']) &&
+      Boolean(c.capabilities?.experimental?.['claude/channel/permission']),
   )
 }
 

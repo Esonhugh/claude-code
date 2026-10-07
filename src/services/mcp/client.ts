@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { prepareChannelTransport } from './channelCapabilities.js'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -1088,6 +1089,9 @@ export const connectToServer = memoize(
         }
       }
 
+      if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+        prepareChannelTransport(transport)
+      }
       const connectPromise = client.connect(transport)
       const timeoutPromise = new Promise<never>((_, reject) => {
         const timeoutId = setTimeout(() => {
@@ -3498,6 +3502,9 @@ export async function setupSdkMcpClients(
 
       try {
         // Connect the client
+        if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+          prepareChannelTransport(transport)
+        }
         await client.connect(transport)
 
         // Get capabilities from the server

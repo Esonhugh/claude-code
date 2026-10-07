@@ -2,17 +2,17 @@ import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAllowedChannels } from '../../../bootstrap/state.js'
 import type { BridgePermissionCallbacks } from '../../../bridge/bridgePermissionCallbacks.js'
 import { getTerminalFocused } from '../../../ink/terminal-focus-state.js'
 import {
   CHANNEL_PERMISSION_REQUEST_METHOD,
   type ChannelPermissionRequestParams,
-  findChannelEntry,
+  gateChannelServer,
 } from '../../../services/mcp/channelNotification.js'
 import type { ChannelPermissionCallbacks } from '../../../services/mcp/channelPermissions.js'
 import {
   filterPermissionRelayClients,
+  sanitizePermissionText,
   shortRequestId,
   truncateForPreview,
 } from '../../../services/mcp/channelPermissions.js'
@@ -301,11 +301,8 @@ function handleInteractivePermission(
   }
 
   // Channel permission relay — races alongside the bridge block above. Send a
-  // permission prompt to every active channel (Telegram, iMessage, etc.) via
-  // its MCP send_message tool, then race the reply against local/bridge/hook/
-  // classifier. The inbound "yes abc123" is intercepted in the notification
-  // handler (useManageMCPConnections.ts) BEFORE enqueue, so it never reaches
-  // Claude as a conversation turn.
+  // permission request notification to admitted channels, then race their
+  // structured verdict against local/bridge/hook/classifier responses.
   //
   // Unlike the bridge block, this still guards on `requiresUserInteraction` —
   // channel replies are pure yes/no with no `updatedInput` path. In practice
@@ -313,7 +310,7 @@ function handleInteractivePermission(
   // (ExitPlanMode, AskUserQuestion, ReviewArtifact) return `isEnabled()===false`
   // when channels are configured, so they never reach this handler.
   //
-  // Fire-and-forget send: if callTool fails (channel down, tool missing),
+  // Fire-and-forget send: if notification fails (channel down),
   // the subscription never fires and another racer wins. Graceful degradation
   // — the local dialog is always there as the floor.
   if (
@@ -322,22 +319,27 @@ function handleInteractivePermission(
     !ctx.tool.requiresUserInteraction?.()
   ) {
     const channelRequestId = shortRequestId(ctx.toolUseID)
-    const allowedChannels = getAllowedChannels()
     const channelClients = filterPermissionRelayClients(
       ctx.toolUseContext.getAppState().mcp.clients,
-      name => findChannelEntry(name, allowedChannels) !== undefined,
+      client =>
+        client.type === 'connected' &&
+        gateChannelServer(
+          client.name,
+          client.capabilities,
+          client.config.pluginSource,
+        ).action === 'register',
     )
 
     if (channelClients.length > 0) {
       // Outbound is structured too (Kenneth's symmetry ask) — server owns
       // message formatting for its platform (Telegram markdown, iMessage
-      // rich text, Discord embed). CC sends the RAW parts; server composes.
+      // rich text, Discord embed). CC sends sanitized fields; server composes.
       // The old callTool('send_message', {text,content,message}) triple-key
       // hack is gone — no more guessing which arg name each plugin takes.
       const params: ChannelPermissionRequestParams = {
         request_id: channelRequestId,
         tool_name: ctx.tool.name,
-        description,
+        description: sanitizePermissionText(description),
         input_preview: truncateForPreview(displayInput),
       }
 

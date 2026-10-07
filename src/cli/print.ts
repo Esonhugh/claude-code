@@ -1959,11 +1959,21 @@ function runHeadlessStreaming(
         }
       : undefined
 
-  // Abort the current operation when a 'now' priority message arrives.
-  subscribeToCommandQueue(() => {
+  // Interrupt urgent input and wake idle SDK sessions for channel messages.
+  const unsubscribeCommandQueue = subscribeToCommandQueue(() => {
     if (abortController && getCommandsByMaxPriority('now').length > 0) {
       abortController.abort('interrupt')
     }
+    if (
+      (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+      !inputClosed &&
+      peek(cmd => cmd.agentId === undefined && cmd.origin?.kind === 'channel')
+    ) {
+      void run()
+    }
+  })
+  const unregisterCommandQueueCleanup = registerCleanup(async () => {
+    unsubscribeCommandQueue()
   })
 
   const run = async () => {
@@ -2798,6 +2808,8 @@ function runHeadlessStreaming(
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
+        unsubscribeCommandQueue()
+        unregisterCommandQueueCleanup()
         statusListeners.delete(rateLimitListener)
         output.done()
       }
@@ -2933,6 +2945,11 @@ function runHeadlessStreaming(
   })
   void inboundBinding?.catch(logError)
   registerCleanup(async () => { inboundController.abort() })
+
+  // --channels must receive the first event while idle, before any user turn.
+  for (const client of getAppState().mcp.clients) {
+    reregisterChannelHandlerAfterReconnect(client)
+  }
 
   // Set up UDS inbox callback so the query loop is kicked off
   // when a message arrives via the UDS socket in headless mode.
@@ -4667,6 +4684,8 @@ function runHeadlessStreaming(
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
+      unsubscribeCommandQueue()
+      unregisterCommandQueueCleanup()
       statusListeners.delete(rateLimitListener)
       output.done()
     }
@@ -5217,8 +5236,7 @@ function handleSetPermissionMode(
  * goes to the consumer's canUseTool callback over stdio; there is no CLI-side
  * dialog for a remote "yes tbxkq" to resolve. If an IDE wants channel-relayed
  * tool approval, that's IDE-side plumbing against its own pending-map. (Also
- * gated separately by tengu_harbor_permissions — not yet shipping on
- * interactive either.)
+ * interactive relay can be disabled with the local opt-out.)
  */
 function handleChannelEnable(
   requestId: string,

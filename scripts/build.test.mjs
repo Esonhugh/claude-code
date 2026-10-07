@@ -44,6 +44,10 @@ assert.equal(feature('SSH_REMOTE'), true);
 assert.equal(getEnabledFeatures('').has('UDS_INBOX'), true);
 assert.equal(getEnabledFeatures(undefined).has('UDS_INBOX'), true);
 assert.equal(feature('UDS_INBOX'), true);
+assert.equal(getEnabledFeatures('').has('KAIROS_CHANNELS'), true);
+assert.equal(getEnabledFeatures('WORKFLOW_SCRIPTS').has('KAIROS_CHANNELS'), true);
+assert.equal(feature('KAIROS_CHANNELS'), true);
+assert.equal(getEnabledFeatures('').has('KAIROS'), false);
 assert.equal(getNativeModule(), null);
 assert.equal(sharp, imageProcessor);
 assert.throws(

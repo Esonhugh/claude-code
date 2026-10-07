@@ -10,27 +10,21 @@
  * The model sees where the message came from and decides which tool to reply
  * with (the channel's MCP tool, SendUserMessage, or both).
  *
- * feature('KAIROS') || feature('KAIROS_CHANNELS'). Runtime gate tengu_harbor.
- * Requires claude.ai OAuth auth — API key users are blocked until
- * console gets a channelsEnabled admin surface. Teams/Enterprise orgs
- * must explicitly opt in via channelsEnabled: true in managed settings.
+ * feature('KAIROS') || feature('KAIROS_CHANNELS'). Available across providers.
+ * Managed installations must opt in via channelsEnabled: true.
  */
 
 import type { ServerCapabilities } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod/v4'
 import { type ChannelEntry, getAllowedChannels } from '../../bootstrap/state.js'
 import { CHANNEL_TAG } from '../../constants/xml.js'
-import {
-  getClaudeAIOAuthTokens,
-  getSubscriptionType,
-} from '../../utils/auth.js'
+import { getSubscriptionType } from '../../utils/auth.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
 import { escapeXmlAttr } from '../../utils/xml.js'
 import {
-  type ChannelAllowlistEntry,
-  getChannelAllowlist,
+  getEffectiveChannelAllowlist,
   isChannelsEnabled,
 } from './channelAllowlist.js'
 
@@ -88,9 +82,8 @@ export type ChannelPermissionRequestParams = {
   request_id: string
   tool_name: string
   description: string
-  /** JSON-stringified tool input, truncated to 200 chars with …. Full
-   *  input is in the local terminal dialog; this is a phone-sized
-   *  preview. Server decides whether/how to show it. */
+  /** Sanitized tool arguments; each top-level field keeps its start and end
+   *  when it exceeds 3,500 code points. */
   input_preview: string
 }
 
@@ -109,32 +102,24 @@ export function wrapChannelMessage(
   meta?: Record<string, string>,
 ): string {
   const attrs = Object.entries(meta ?? {})
-    .filter(([k]) => SAFE_META_KEY.test(k))
+    .filter(([k]) => k !== 'source' && SAFE_META_KEY.test(k))
     .map(([k, v]) => ` ${k}="${escapeXmlAttr(v)}"`)
     .join('')
   return `<${CHANNEL_TAG} source="${escapeXmlAttr(serverName)}"${attrs}>\n${content}\n</${CHANNEL_TAG}>`
 }
 
 /**
- * Effective allowlist for the current session. Team/enterprise orgs can set
- * allowedChannelPlugins in managed settings — when set, it REPLACES the
- * GrowthBook ledger (admin owns the trust decision). Undefined falls back
- * to the ledger. Unmanaged users always get the ledger.
- *
- * Callers already read sub/policy for the policy gate — pass them in to
- * avoid double-reading getSettingsForSource (uncached).
+ * Managed installations require explicit opt-in for every provider. Team and
+ * Enterprise subscriptions also require opt-in when policy is absent.
  */
-export function getEffectiveChannelAllowlist(
+export function isChannelPolicyBlocked(
+  policy: { channelsEnabled?: boolean } | null | undefined,
   sub: ReturnType<typeof getSubscriptionType>,
-  orgList: ChannelAllowlistEntry[] | undefined,
-): {
-  entries: ChannelAllowlistEntry[]
-  source: 'org' | 'ledger'
-} {
-  if ((sub === 'team' || sub === 'enterprise') && orgList) {
-    return { entries: orgList, source: 'org' }
-  }
-  return { entries: getChannelAllowlist(), source: 'ledger' }
+): boolean {
+  return (
+    (policy != null || sub === 'team' || sub === 'enterprise') &&
+    policy?.channelsEnabled !== true
+  )
 }
 
 export type ChannelGateResult =
@@ -144,7 +129,6 @@ export type ChannelGateResult =
       kind:
         | 'capability'
         | 'disabled'
-        | 'auth'
         | 'policy'
         | 'session'
         | 'marketplace'
@@ -175,10 +159,8 @@ export function findChannelEntry(
 /**
  * Gate an MCP server's channel-notification path. Caller checks
  * feature('KAIROS') || feature('KAIROS_CHANNELS') first (build-time
- * elimination). Gate order: capability → runtime gate (tengu_harbor) →
- * auth (OAuth only) → org policy → session --channels → allowlist.
- * API key users are blocked at the auth layer — channels requires
- * claude.ai auth; console orgs have no admin opt-in surface yet.
+ * elimination). Gate order: capability → local opt-out → org policy →
+ * session --channels → marketplace provenance → allowlist.
  *
  *   skip      Not a channel server, or managed org hasn't opted in, or
  *             not in session --channels. Connection stays up; handler
@@ -205,37 +187,19 @@ export function gateChannelServer(
     }
   }
 
-  // Overall runtime gate. After capability so normal MCP servers never hit
-  // this path. Before auth/policy so the killswitch works regardless of
-  // session state.
+  // A local disable applies to development channels too.
   if (!isChannelsEnabled()) {
     return {
       action: 'skip',
       kind: 'disabled',
-      reason: 'channels feature is not currently available',
+      reason: 'channels disabled by CLAUDE_CODE_DISABLE_CHANNELS',
     }
   }
 
-  // OAuth-only. API key users (console) are blocked — there's no
-  // channelsEnabled admin surface in console yet, so the policy opt-in
-  // flow doesn't exist for them. Drop this when console parity lands.
-  if (!getClaudeAIOAuthTokens()?.accessToken) {
-    return {
-      action: 'skip',
-      kind: 'auth',
-      reason: 'channels requires claude.ai authentication (run /login)',
-    }
-  }
-
-  // Teams/Enterprise opt-in. Managed orgs must explicitly enable channels.
-  // Default OFF — absent or false blocks. Keyed off subscription tier, not
-  // "policy settings exist" — a team org with zero configured policy keys
-  // (remote endpoint returns 404) is still a managed org and must not fall
-  // through to the unmanaged path.
+  // Team subscriptions and installations with managed settings need opt-in.
   const sub = getSubscriptionType()
-  const managed = sub === 'team' || sub === 'enterprise'
-  const policy = managed ? getSettingsForSource('policySettings') : undefined
-  if (managed && policy?.channelsEnabled !== true) {
+  const policy = getSettingsForSource('policySettings')
+  if (isChannelPolicyBlocked(policy, sub)) {
     return {
       action: 'skip',
       kind: 'policy',
@@ -281,7 +245,6 @@ export function gateChannelServer(
     // one entry doesn't leak allowlist-bypass to --channels entries.
     if (!entry.dev) {
       const { entries, source } = getEffectiveChannelAllowlist(
-        sub,
         policy?.allowedChannelPlugins,
       )
       if (

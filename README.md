@@ -88,12 +88,39 @@ bun ./dist/cli.js --help
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
+| Channels | 默认开放 `--channels`、交互式开发频道和 IDE/SDK `channel_enable`；支持 Anthropic API Key、OpenAI 兼容接口等已配置 provider，保留组织策略、插件来源验证和逐项授权；支持独立能力声明的远程工具审批。 |
 | Mods / Function Hooks | 可信插件可通过 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令和 terminal Pane；提供 scoped host capabilities、热重载、在途 generation 保留、取消与卸载。支持范围与官方运行时兼容性边界见下方 Mods 章节。 |
 | 调试与构建 | 提供 Bun 构建、binary-only npm 发布、source map/Ink/代理调试、CCH attestation、官方 CLI 对照和 tmux/PTY 验收资料；平台 binary 会内嵌并在运行时提取 ripgrep，避免依赖系统安装。 |
 
 ## 配置与使用示例
 
 设置可以写入 Claude Code 用户级或项目级 `settings.json`。以下片段只展示本项目相关字段，使用时应与现有 JSON 合并，不要覆盖其他设置。
+
+### Channels
+
+默认构建包含 Channels，两个参数均可通过 `--help` 查看，不需要额外设置 `CLAUDE_CODE_RECOVER_FEATURES`，也不依赖 Anthropic OAuth 或远程灰度资格。模型调用仍使用当前 provider 的正常认证配置。
+
+```bash
+# 已安装的批准插件；可以空格分隔多个 plugin:<name>@<marketplace>
+claude --channels plugin:telegram@claude-plugins-official
+
+# 本地 .mcp.json 中的自定义频道；启动时须在终端确认
+claude --dangerously-load-development-channels server:webhook
+```
+
+`--channels` 只允许有效白名单中的插件，并核对已安装插件的 marketplace 来源；仅配置 MCP server 不会开启消息注入。远程白名单不可用时默认批准 `claude-plugins-official` 的 `telegram`、`discord`、`imessage`、`fakechat`。远程返回的有效空名单仍然生效，非法名单不会扩大权限。
+
+自定义 MCP server 使用 `server:<name>`，自定义插件使用 `plugin:<name>@<marketplace>`，均通过开发参数逐项确认；开发豁免只跳过对应条目的插件白名单，不跳过来源检查或组织策略。开发参数只支持交互模式，在 `-p` / Agent SDK 中不会授权；普通 `--channels` 和 SDK `channel_enable` 支持非交互模式。
+
+存在 managed settings 或使用 Anthropic Team/Enterprise 时，管理员须设置 `channelsEnabled: true`。managed settings 中的 `allowedChannelPlugins` 替换默认名单，包括 API Key / 兼容 provider；空数组阻止普通插件，关闭 `channelsEnabled` 同时阻止开发频道。项目和用户 settings 不能覆盖管理员设置。
+
+协议沿用 [Channels reference](https://code.claude.com/docs/en/channels-reference)：服务器声明 `experimental['claude/channel']: {}`，发送 `notifications/claude/channel`，参数为字符串 `content` 和可选字符串字典 `meta`。消息通过队列进入下一轮，SDK 空闲时也会开始处理；启动参数选择的已连接频道无需首条用户输入即可监听。`source` 由实际连接名决定，非法元数据键和伪造 `source` 被忽略。双向频道通过标准 MCP reply tool 回发；发送方身份认证与配对名单由频道服务器实现。
+
+远程工具审批只发给通过完整频道准入检查且声明 `experimental['claude/channel/permission']: {}` 的服务器；缺失或 `false` 均不启用。审批使用独立的 `permission_request` / `permission` 通知和待审批 ID，普通聊天文本不能授权；本地与远程首先完成的答复生效。发送前清理 Unicode、遮罩可识别凭据，并按顶层参数分别保留最多 3,500 个码点的预览，长值保留首尾，无法序列化的字段单独标记。SDK/print 的权限审批仍由消费者的 `canUseTool` 处理。
+
+现有 MCP SDK 要求实验能力为对象；本项目在握手前将审批能力的显式 `false` 转为缺失，保留普通频道和其他能力，使选择退出审批的服务器仍可连接。实现核对、回归和二进制验收见 [Channels 检查记录](docs/research/channels-20261007.md)。
+
+可通过 `CLAUDE_CODE_DISABLE_CHANNELS=1` 关闭全部频道，或通过 `CLAUDE_CODE_DISABLE_CHANNEL_PERMISSION_RELAY=1` 单独关闭远程审批。第三方 provider 支持和可见 CLI help 属于本项目扩展，不表示官方产品提供相同行为。
 
 ### OpenAI provider 与登录
 

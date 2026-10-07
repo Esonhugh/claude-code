@@ -1003,8 +1003,8 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe(
-          'Teams/Enterprise opt-in for channel notifications (MCP servers with the ' +
-            'claude/channel capability pushing inbound messages). Default off. ' +
+          'Managed-installation opt-in for channel notifications (MCP servers with the ' +
+            'claude/channel capability pushing inbound messages). Required when managed settings exist or on Team/Enterprise. ' +
             'Set true to allow; users then select servers via --channels.',
         ),
       // Org-level channel plugin allowlist. When set, REPLACES the
@@ -1020,7 +1020,7 @@ export const SettingsSchema = lazySchema(() =>
         )
         .optional()
         .describe(
-          'Teams/Enterprise allowlist of channel plugins. When set, ' +
+          'Managed allowlist of channel plugins. When set, ' +
             'replaces the default Anthropic allowlist — admins decide which ' +
             'plugins may push inbound messages. Undefined falls back to the default. ' +
             'Requires channelsEnabled: true.',

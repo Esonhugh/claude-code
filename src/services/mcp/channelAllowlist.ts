@@ -17,13 +17,23 @@
 
 import { z } from 'zod/v4'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
+import { getSettingsForSource } from '../../utils/settings/settings.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 
 export type ChannelAllowlistEntry = {
   marketplace: string
   plugin: string
 }
+
+// Public preview plugins remain usable without a GrowthBook account/cache.
+const DEFAULT_CHANNEL_ALLOWLIST: ChannelAllowlistEntry[] = [
+  'telegram',
+  'discord',
+  'imessage',
+  'fakechat',
+].map(plugin => ({ marketplace: 'claude-plugins-official', plugin }))
 
 const ChannelAllowlistSchema = lazySchema(() =>
   z.array(
@@ -37,7 +47,7 @@ const ChannelAllowlistSchema = lazySchema(() =>
 export function getChannelAllowlist(): ChannelAllowlistEntry[] {
   const raw = getFeatureValue_CACHED_MAY_BE_STALE<unknown>(
     'tengu_harbor_ledger',
-    [],
+    DEFAULT_CHANNEL_ALLOWLIST,
   )
   const parsed = ChannelAllowlistSchema().safeParse(raw)
   return parsed.success ? parsed.data : []
@@ -46,10 +56,17 @@ export function getChannelAllowlist(): ChannelAllowlistEntry[] {
 /**
  * Overall channels on/off. Checked before any per-server gating —
  * when false, --channels is a no-op and no handlers register.
- * Default false; GrowthBook 5-min refresh.
+ * Local opt-out; availability does not depend on Anthropic rollout entitlements.
  */
 export function isChannelsEnabled(): boolean {
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_harbor', false)
+  return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CHANNELS)
+}
+
+export function getEffectiveChannelAllowlist(
+  orgList: ChannelAllowlistEntry[] | undefined,
+): { entries: ChannelAllowlistEntry[]; source: 'org' | 'ledger' } {
+  if (orgList !== undefined) return { entries: orgList, source: 'org' }
+  return { entries: getChannelAllowlist(), source: 'ledger' }
 }
 
 /**
@@ -70,7 +87,8 @@ export function isChannelAllowlisted(
   if (!pluginSource) return false
   const { name, marketplace } = parsePluginIdentifier(pluginSource)
   if (!marketplace) return false
-  return getChannelAllowlist().some(
-    e => e.plugin === name && e.marketplace === marketplace,
+  const { entries } = getEffectiveChannelAllowlist(
+    getSettingsForSource('policySettings')?.allowedChannelPlugins,
   )
+  return entries.some(e => e.plugin === name && e.marketplace === marketplace)
 }

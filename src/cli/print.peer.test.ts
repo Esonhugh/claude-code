@@ -23,7 +23,7 @@ if (process.env[childFlag] !== '1') {
     )
     try {
       const child = Bun.spawn(
-        [process.execPath, 'test', '--feature=UDS_INBOX', import.meta.path],
+        [process.execPath, 'test', '--feature=UDS_INBOX', '--feature=KAIROS_CHANNELS', import.meta.path],
         {
           cwd: join(import.meta.dir, '../..'),
           env: {
@@ -124,8 +124,8 @@ if (process.env[childFlag] !== '1') {
     expect(joinPromptValues(['first', 'second'])).toBe('first\nsecond')
   })
 
-  test.each(['incoming', 'held-at-start'] as const)(
-    'headless preserves %s peer input, live permissions, and EOF cleanup',
+  test.each(['incoming', 'held-at-start', 'channel'] as const)(
+    'headless preserves %s input, live permissions, and EOF cleanup',
     async arrival => {
       const { runHeadless } = await import('./print.js')
       const engineModule = await import('../QueryEngine.js')
@@ -143,6 +143,13 @@ if (process.env[childFlag] !== '1') {
       const toolPool = await import('../tools.js')
       const { SandboxManager } =
         await import('../utils/sandbox/sandbox-adapter.js')
+      const bootstrap = await import('../bootstrap/state.js')
+      const { wrapChannelMessage } =
+        await import('../services/mcp/channelNotification.js')
+      const priorChannels = bootstrap.getAllowedChannels()
+      let channelNotification:
+        | ((notification: { params: { content: string } }) => Promise<void>)
+        | undefined
       const settingsChanges =
         await import('../utils/settings/changeDetector.js')
       const settingsApplication =
@@ -229,10 +236,12 @@ if (process.env[childFlag] !== '1') {
           } as import('../entrypoints/agentSdkTypes.js').SDKMessage
         }),
       ]
+      const expectedOrigin: MessageOrigin = arrival === 'channel'
+        ? { kind: 'channel', server: 'fixture' } : origin
       const command: QueuedCommand = {
         mode: 'prompt',
         value: '/peer-input @private-file',
-        origin,
+        origin: expectedOrigin,
         skipSlashCommands: true,
         skipAttachments: true,
         isMeta: true,
@@ -240,6 +249,25 @@ if (process.env[childFlag] !== '1') {
         promptSubmitMetadata: { origin: { kind: 'peer' }, wait: false, turnId: 'receiving-turn' },
       }
       let state = getDefaultAppState()
+      if (arrival === 'channel') {
+        bootstrap.setAllowedChannels([
+          { kind: 'server', name: 'fixture', dev: true },
+        ])
+        state.mcp.clients = [
+          {
+            name: 'fixture',
+            type: 'connected',
+            capabilities: { experimental: { 'claude/channel': {} } },
+            config: { type: 'stdio', command: 'fixture', args: [], scope: 'user' },
+            client: {
+              setNotificationHandler: (
+                _schema: unknown,
+                handler: typeof channelNotification,
+              ) => { channelNotification = handler },
+            },
+          } as unknown as import('../services/mcp/types.js').MCPServerConnection,
+        ]
+      }
       if (arrival === 'held-at-start') {
         heldCommand = command
         releaseOnRefresh = true
@@ -276,7 +304,12 @@ if (process.env[childFlag] !== '1') {
           request: { subtype: 'set_permission_mode', mode: 'default' },
         }) + '\n'
         permissionClasses.push(peers.getPeerPermissionClass())
-        if (arrival === 'incoming') {
+        if (arrival === 'channel') {
+          expect(channelNotification).toBeDefined()
+          await channelNotification!({
+            params: { content: command.value as string },
+          })
+        } else if (arrival === 'incoming') {
           enqueue(command)
           peers.notifyEnqueued()
         }
@@ -315,12 +348,17 @@ if (process.env[childFlag] !== '1') {
           } as Parameters<typeof runHeadless>[7],
         )
         expect(received).toHaveLength(2)
-        expect(received[1]?.origin).toEqual(origin)
-        expect(received[0]).toMatchObject({
+        expect(received[1]?.origin).toEqual(expectedOrigin)
+        expect(received[0]).toMatchObject(arrival === 'channel' ? {
+          prompt: wrapChannelMessage('fixture', command.value as string),
+          origin: expectedOrigin,
+          isMeta: true,
+          skipSlashCommands: true,
+        } : {
           prompt: command.value,
           promptUuid: command.uuid,
           promptSubmitMetadata: command.promptSubmitMetadata,
-          origin,
+          origin: expectedOrigin,
           isMeta: true,
           skipSlashCommands: true,
           skipAttachments: true,
@@ -348,6 +386,7 @@ if (process.env[childFlag] !== '1') {
       } finally {
         releaseTurn.resolve()
         peers.setOnEnqueue(null)
+        bootstrap.setAllowedChannels(priorChannels)
         dequeueAllMatching(() => true)
         for (const mock of mocks) mock.mockRestore()
       }
