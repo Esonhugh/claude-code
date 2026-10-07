@@ -23,6 +23,7 @@ import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, 
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
+import { buildModClientBundle } from './clientBundle.js'
 import { getNativeModDeclaration } from './native.js'
 import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
 import { getOfficialShippedPaneRequests, updateOfficialShippedPaneRequest } from '../../plugins/builtinShippedMods.js'
@@ -326,6 +327,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       renderHooksListeners.add(listener)
       return () => { renderHooksListeners.delete(listener) }
     },
+    matchesComponent(component: ModRenderComponent): boolean {
+      if (stopped) return false
+      const matches = (registration: { event: string; matcher?: { readonly [key: string]: ModMatcher } }) => {
+        if (!matchesModEventPattern(registration.event, 'ui.render')) return false
+        const criterion = registration.matcher?.component
+        return criterion === undefined || matchesRenderMatcher({ component: criterion }, { component })
+      }
+      return [...hostHooks].some(hook => matches(hook.registration)) || active.some(owner =>
+        owner.environment.registrations.some(matches))
+    },
     matches(input: ModInput): boolean {
       if (stopped) return false
       const matches = (registration: { event: string; matcher?: {readonly [key: string]: ModMatcher} }) => {
@@ -438,7 +449,22 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const instance = `${input.surface}\0${input.component}\0${input.requestId}`
       const lease: DrawingLease = { instance, owner, snapshot: entered?.snapshot ?? active, table: entered?.table ?? nouns, participants: new Set() }
       drawings.set(drawing, lease)
-      return dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, { drawing, validateRenderTree, signal })
+      let invalidTree = false
+      const validatedTrees = new WeakSet<object>()
+      const result = await dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, {
+        drawing, signal,
+        validateRenderTree: tree => {
+          try {
+            if (validateRenderTree) validateRenderTree(tree)
+            else validateModRenderTree(tree, input.surface)
+            if (tree && typeof tree === 'object') validatedTrees.add(tree)
+          }
+          catch (error) { invalidTree = true; throw error }
+        },
+      })
+      // Invalid trees use the original engine row; thrown hooks still descend through next().
+      return input.surface !== 'terminal' && invalidTree && !validatedTrees.has(result as object)
+        ? { type: 'engine', ref: 0 } : result
     },
     invokeDrawing: async (owner, drawing, handle, args) => {
       const lease = drawings.get(drawing)
@@ -1856,7 +1882,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
 
   function uiAllowed(owner: Activation, table: Nouns): boolean {
     const current = owner.uiPublished ? nouns : table
-    return binding?.surface != null && owner.state === 'active' && owner.declaration.calls.includes('ui.resolve') &&
+    return (binding?.surface != null || attachedClients.size > 0) && owner.state === 'active' && owner.declaration.calls.includes('ui.resolve') &&
       Boolean(table.ui?.resolve && current.ui?.resolve) &&
       ![...(interfaceStates.get(table)?.withheld.get('ui') ?? []), ...(interfaceStates.get(current)?.withheld.get('ui') ?? [])]
         .some(name => name !== owner.declaration.name)
@@ -2975,7 +3001,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     config,
     isDiffOwned,
     /** Trusted SDK transport roster; not an author capability. */
-    remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces },
+    remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces,
+      has: (clientId: string) => attachedClients.has(clientId),
+    },
+    clientModule(plugin: string) {
+      const owner = active.find(owner => owner.declaration.name === plugin)
+      return owner ? buildModClientBundle(owner.declaration) : undefined
+    },
     ui,
     renderHooks,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },

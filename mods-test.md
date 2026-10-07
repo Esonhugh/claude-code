@@ -2076,3 +2076,10 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 官方原生证据确认 answers 最多 5 项，允许重复；修复前候选错误接纳 6 项并把 mobile 加入 roster，最终两侧须用新制品复验拒绝且不变更 roster。17 条官方原生 UI 回执作为固化回归夹具，包括缺少 data 的 ui_message 错误和 data:null 成功。详见 [SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 类型/schema 与控制器实现分别计数；当前生产入口仅接通 attach/detach。这批不关闭 ui_render、客户端资源/交互、responder、system 推送、完整终端 UI/diff/G5 或旧 WIP 的全量验证。
+
+
+## 2026-10-07 — SDK 远程绘制、回调与模块包
+
+接通 ui_render / ui_press / ui_input / ui_select / ui_client_module，补齐顶层命名 hook、无终端的远程 ui.resolve 和 desktop Client 校验。对照官方真实回执保留 next(e) 的非零 engine ref、组件级 hooked、非法树与普通异常的不同回退、on_screen 所有权、UTF-16 截断及取消只抑制回包。模块包从准入快照生成，附固定官方 runtime/types 数据；服务端不挂载 Client。
+
+原失败、完整检查、候选/ROOT 新制品和串行原生回执比较见 [本批验收](docs/research/mods-render-bridge-292-20261007.md)。通过范围按该报告的精确结果记录；剩余 11 类远程控制、5 类 responder、system 推送、外部浏览器 Client 行为、完整 UI/diff/G5 和旧 WIP 全量门禁仍开放。

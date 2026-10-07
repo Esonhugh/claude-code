@@ -1495,7 +1495,7 @@ cat requests.jsonl | claude -p --input-format stream-json --output-format stream
 
 `session.attach` 和 `session.detach` 是观察事件：调用 `$.session.surfaces()` 已能看到更新后的 roster，`next(e)` 不负责提交连接，返回伪造 clientId、抛错或取消通知也不会回滚传输状态。终端 binding 不发 attach；session.end 的 detach 使用 `reason:'end'`。调试日志可查找 `[ModsUIClient]`。
 
-本批提供连接控制及类型；`ui_render`、交互控制、client modules、远程 responders 和完整 UI/diff 仍待接通与验收。`answers` 只接受官方声明的五类 responder 名称，数组最多 5 项（重复值仍合法），不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+当前入口接通连接、远程绘制、基础回调和 Client 模块查询；远程 responders、pane 控制和完整 UI/diff 仍在实现与验收。`answers` 只接受官方声明的五类 responder 名称，数组最多 5 项（重复值仍合法），不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 
 ### SDK 远程 UI 协议类型与校验
@@ -1524,4 +1524,21 @@ type RenderResponse = SDKControlUIResponseFor<typeof request>
 bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/entrypoints/sdk/controlSchemas.ssh.test.ts ./src/services/mods/remoteUiControl.test.ts
 ```
 
-协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，但当前 CLI 仍只接通 `ui_attach` / `ui_detach`；它们之外的控制器、system 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
+协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module`；其余控制器、system 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
+
+
+### SDK 远程绘制与 Client 模块
+
+在已初始化的 stream-json 会话中发送绘制请求，读取对应 request_id 的 control_response：
+
+```jsonl
+{"type":"control_request","request_id":"draw-1","request":{"subtype":"ui_render","surface":"desktop","component":"ToolUse","instance_id":"tool-1","props":{"input":{"command":"pwd"}},"on_screen":null}}
+```
+
+`props.tool_use_id` 缺失或不是字符串时由 instance_id 补齐；transcript 组件的 onScreen 只来自 on_screen。output 超过 65536 个 UTF-16 单元时截断，避免切开代理对。`hooked` 表示该组件存在 hook，surface 没命中仍可为 true。`rewritten` 来自返回树选中的第一个非零 engine ref，因此 `next(e)` 也返回 true。
+
+Button / Input / Select 回执的 press 含 plugin 和 opaque handle。将它们原样用于 ui_press，或带 kind/value 的 ui_input、带 value 的 ui_select；key 可选。替换绘制树后旧 handle 返回 handled:false。control_cancel_request 只抑制同 request_id 的绘制回包，不终止 hook；EOF 等待运行收尾并释放绘制 lease。
+
+桌面 Client 节点通过 client.plugin 标识所有者，client_modules 给出插件到模块包 hash 的映射。用 ui_client_module 查询 {plugin,hash,modules,runtime,limits,files}。宿主从已准入的源快照编译和重写 import，模块由外部 surface 执行；不得将包中的源代码当成宿主 hook 运行。随包返回官方 2.1.292 的固定 surface runtime/types 数据，hash 包含文件、模块清单和 limits。
+
+调试日志 `[ModsUIRemote]` 记录 surface/component/instance/drawing、hooked 和 rewritten，不新增 props 正文日志。实际三方回执、来源和边界见 [远程绘制专项](docs/research/mods-render-bridge-292-20261007.md)。客户端浏览器挂载、client_press/message/fault、pane/scroll/focus、system 推送及五类 responder 仍需独立完成和验收。

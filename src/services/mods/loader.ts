@@ -482,9 +482,17 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     const event = eventName(node.arguments[0])
     if (node.arguments.length === 3) matcher(node.arguments[1], scope)
     const handler = node.arguments.at(-1) as Node
-    if (!isFunction(handler)) fail(path, 'on handler must be an inline function; imported/aliased handlers are unsupported')
+    const resolved = isFunction(handler) ? undefined : resolveValue(handler, scope)
+    const helper = resolved && !resolved.members.length && resolved.binding.fn
+    if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
+      fail(path, 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
     events.add(event)
-    visitFunction(handler, scope, [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], event, true)
+    const callerPath = path
+    try {
+      if (helper) path = helper.path
+      visitFunction(helper?.node ?? handler, helper?.scope ?? scope,
+        [{ role: 'engine', members: [] }, undefined, { role: 'next', members: [] }], event, true)
+    } finally { path = callerPath }
     return event
   }
 

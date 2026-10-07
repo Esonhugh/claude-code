@@ -12,6 +12,24 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - SDK 远程绘制、回调与 Client 模块数据
+
+### Added
+
+- stream-json 接通 ui_render、ui_press、ui_input、ui_select 和 ui_client_module；绘制 lease 保存引擎引用、回调与 Client 归属，替换树后释放旧句柄。
+- desktop Client 以外部执行节点和准入源快照模块包返回，保留官方 2.1.292 runtime/types 数据、导入路径改写、限制及 hash；服务端不执行 surface 组件。
+
+### Fixed
+
+- transcript onScreen 由 surface 提供，补齐 tool_use_id，按 65536 UTF-16 单元安全截断 output；hooked 按组件判断，rewritten 按首个非零 engine ref 判断。
+- 无终端的远程会话允许准入 ui.resolve；loader 接受顶层命名或导入的函数声明作为 hook；非法树回退原 engine ref 0，普通 hook 异常继续到核心 ref 1。
+- 绘制控制取消只抑制回包，EOF 等待 hook 收尾并释放 lease；调试日志记录绘制身份与状态。
+
+### Tests
+
+- 覆盖真实 Worker 返回树、回调、缓存、取消、Client 不在宿主运行，以及准入快照、图遍历/import 改写、模块包 hash 和类型边界；准确门禁与二进制证据见 docs/research/mods-render-bridge-292-20261007.md。
+- 其余远程控制/system/responder 和完整官方 UI/diff/G5、旧 WIP 全量门禁继续逐项验证。
+
 ## 2026-10-07 - Mods SDK UI 协议类型与输入边界
 
 ### Added

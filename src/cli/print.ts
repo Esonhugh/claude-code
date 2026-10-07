@@ -3133,6 +3133,7 @@ function runHeadlessStreaming(
           suggestionState.lastEmitted = null
           suggestionState.pendingSuggestion = null
           managedSSHControl.shutdown()
+    await remoteUIControl.dispose()
           sendControlResponseSuccess(message)
           break // exits for-await → falls through to inputClosed=true drain below
         } else if (message.request.subtype === 'initialize') {
@@ -4533,6 +4534,7 @@ function runHeadlessStreaming(
         continue
       } else if (message.type === 'control_cancel_request') {
         managedSSHControl.cancel(message.request_id)
+        remoteUIControl.cancel(message.request_id)
         continue
       } else if (message.type === 'control_response') {
         // Replay control_response messages when replay mode is enabled
@@ -4651,6 +4653,7 @@ function runHeadlessStreaming(
     inboundController.abort()
     clearPeerWake()
     managedSSHControl.shutdown()
+    await remoteUIControl.dispose()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
     if (!running && !shellCommandRunning) {

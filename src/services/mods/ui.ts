@@ -28,6 +28,8 @@ export type ModRenderConsumer = {
   /** Host binding is available before the first asynchronous drawing settles. */
   onMount?(site: ModRenderSite): void
   retainClients?: boolean
+  /** SDK clients execute their module bundle externally and own their transport attachment. */
+  externalClients?: true
   focus?: ModRenderFocusController
   render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput, clients?: ReadonlyMap<string, ModClientBinding>): void | Promise<void>
   unmount(): void | Promise<void>
@@ -333,7 +335,7 @@ export function createModUi({
   notify?: (listener: () => void) => void
   pluginOf(owner: ModUiOwner): string
   dispatch: ModUiDispatch
-  draw(owner: ModUiOwner, input: ModInput, drawing: number, core?: (input: ModInput) => Promise<unknown>, validate?: (tree: unknown) => void, signal?: AbortSignal): Promise<unknown>
+  draw(owner: ModUiOwner, input: ModRenderInput, drawing: number, core?: (input: ModInput) => Promise<unknown>, validate?: (tree: unknown) => void, signal?: AbortSignal): Promise<unknown>
   invokeDrawing(
     owner: ModUiOwner,
     drawing: number,
@@ -482,7 +484,7 @@ export function createModUi({
     await releaseDrawing(pane.owner, drawing)
   }
 
-  function renderInput(pane: PaneState): ModInput {
+  function renderInput(pane: PaneState): ModRenderInput {
     return Object.freeze({
       surface: 'terminal',
       component: 'Pane',
@@ -894,10 +896,14 @@ export function createModUi({
           ...(Array.isArray(value.children) ? { children: value.children.map((child: unknown) => expanded(child, client)) } : {}),
         }
       }
-      const renderTree = (value: unknown) => consumer.render(
-        consumer.retainClients ? value : expanded(value), drawing!, resolveEngine,
-        consumer.retainClients ? new Map([...instances].map(([key, entry]) => [key, { handle: entry.handle, tree: entry.tree }])) : undefined,
-      )
+      const renderTree = (value: unknown) => {
+        const output = consumer.retainClients || consumer.externalClients ? value : expanded(value)
+        if (consumer.surface !== 'terminal') freezeRenderTree(output)
+        return consumer.render(
+          output, drawing!, resolveEngine,
+          consumer.retainClients ? new Map([...instances].map(([key, entry]) => [key, { handle: entry.handle, tree: entry.tree }])) : undefined,
+        )
+      }
       const paint = () => {
         const work = paintingQueue.then(async () => {
           if (!disposed && drawing !== undefined) await renderTree(tree)
@@ -920,6 +926,7 @@ export function createModUi({
           } else if (Array.isArray(value.children)) value.children.forEach(visit)
         }
         visit(tree)
+        if (consumer.externalClients) return
         for (const [key, entry] of instances) {
           if (!nodes.has(key) || nodes.get(key).props.module !== entry.node.props.module) {
             instances.delete(key)
@@ -1108,7 +1115,7 @@ export function createModUi({
               throw new TypeError('Mod UI render surface must match its consumer')
             if (!['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane'].includes(request.component))
               throw new TypeError('Unknown Mod UI render component')
-            if (typeof request.requestId !== 'string' || !request.requestId || !request.props || typeof request.props !== 'object' || Array.isArray(request.props))
+            if (typeof request.requestId !== 'string' || !request.props || typeof request.props !== 'object' || Array.isArray(request.props))
               throw new TypeError('Mod UI render requires a requestId and props')
             if (request.component !== initial.component || request.requestId !== initial.requestId)
               throw new TypeError('Mod UI render site identity cannot change')
@@ -1117,7 +1124,7 @@ export function createModUi({
                 request.viewport.isFullscreen !== undefined && typeof request.viewport.isFullscreen !== 'boolean'))
               throw new TypeError('Invalid Mod UI render viewport')
           } catch (error) { return Promise.reject(error) }
-          if (!force && requested && isDeepStrictEqual({...request, viewport: {...request.viewport, rows: undefined}},
+          if (!force && request.requestId !== '' && requested && isDeepStrictEqual({...request, viewport: {...request.viewport, rows: undefined}},
               {...requested, viewport: {...requested.viewport, rows: undefined}})) {
             requested = request
             if (!pendingDraw && current) current = request
@@ -1138,7 +1145,7 @@ export function createModUi({
             let painting = true
             let published = false
             try {
-              if (!attached && request.surface !== 'terminal') {
+              if (!attached && !consumer.externalClients && request.surface !== 'terminal') {
                 await attach?.({
                   surface: request.surface,
                   clientId,
@@ -1184,7 +1191,10 @@ export function createModUi({
                 resolveEngine = previousResolve
                 if (previousClientSite) clientSites.set(owner, previousClientSite)
               }
-              if (!published) await releaseDrawing(owner, next)
+              if (!published) {
+                if (pendingDraw === controller) requested = previousInput
+                await releaseDrawing(owner, next)
+              }
               if (controller.signal.aborted) {
                 logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'draw-cancelled', component: request.component, requestId: request.requestId, drawing: next, reason: controller.signal.reason?.message })}`)
                 return

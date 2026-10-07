@@ -759,7 +759,7 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
       throw new TypeError(`${type} is not supported on ${surface}`)
     if (surface === 'terminal' && type === 'Svg')
       throw new TypeError('Svg has no consumer on terminal')
-    if (surface !== 'terminal' && ['Client', 'Raster', 'Image'].includes(type))
+    if ((type === 'Client' && !['terminal', 'desktop'].includes(surface)) || (surface !== 'terminal' && ['Raster', 'Image'].includes(type)))
       throw new TypeError(`${type} has no consumer on ${surface}`)
     if (inInline && ['Box', 'Button', 'Input', 'Select', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(type))
       throw new TypeError(`${type} cannot be nested in an inline element`)
