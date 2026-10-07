@@ -3999,6 +3999,7 @@ async function run(): Promise<CommanderCommand> {
         tasks: {},
         runningSubagents: 0,
         agentNameRegistry: new Map(),
+        sendMessagePins: {},
         verbose: verbose ?? getGlobalConfig().verbose ?? false,
         diffSidebarVisible: false,
         mainLoopModel: initialMainLoopModel,

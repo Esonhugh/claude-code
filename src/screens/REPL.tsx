@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
+import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
 import { spawnSync } from 'child_process'
 import {
@@ -3057,6 +3058,12 @@ export function REPL({
     [],
   )
 
+  useEffect(() => {
+    setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages ?? []) }))
+    // Initial history is restored once; later session swaps use sessionRestore.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   // Extract read file state from initialMessages on mount
   // This handles CLI flag resume (--resume-session) and ResumeConversation screen
   // where messages are passed as props rather than through the resume callback
@@ -5807,6 +5814,7 @@ export function REPL({
       // Restore state from the message we're rewinding to
       setAppState(prev => ({
         ...prev,
+        sendMessagePins: restoreSendMessagePins(messagesRef.current),
         diffSidebarVisible: false,
         // Restore permission mode from the message
         toolPermissionContext:

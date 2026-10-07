@@ -1869,3 +1869,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 实际终端入口：普通 Agent 的后台流保持未放行，用两次 `ctrl+x ctrl+k` 确认用户停止；检查原元数据标记，再实际调用 SendMessage，退出并 `--continue` 后再次调用。两种拒绝都不得产生新的 worker 模型请求，公开 tool.call 回执保留只读标记。
 - 原会话与冷恢复回执按官方 2.1.292 各自的措辞对照。恢复准备期间的取消竞态由受控生产模块回归覆盖，不能当成终端竞态实测。
 - 本批用新构建回归普通同步恢复、子任务、fork 技能、nested Agent、前后台移交及 Workflow 尝试；逐项证据见 [用户取消专项](docs/research/mods-user-cancellation-20261007.md)。完整用户停止 UI 矩阵、observer/teammate/Workflow、pin 与目标重绑定、G5、全部变更门禁及整体 Mods API/UI/diff 仍待验收。
+
+## 2026-10-07 SendMessage 身份绑定与名称复用
+
+- 聚焦回归：`bun test --no-env-file ./src/utils/sendMessagePins.test.ts ./src/tools/SendMessageTool/SendMessageTool.pin.test.ts ./src/tools/SendMessageTool/SendMessageTool.cancel.test.ts ./src/tools/SendMessageTool/SendMessageTool.resume.test.ts`。
+- 两个同名、不同 ID 的真实 Agent：首次 pin、裸名换绑拒绝、明确 ref 更新、确认后裸名稳定、原始 ID 继续旧目标。两个 worker 流保持未放行，结果必须来自实际 Mods/tool.call 入口。
+- 模型工具调用的成功 pin 元数据需要经退出/恢复后继续阻止裸名换绑；明确 ref 后的模型回执、终端提示、`/clear` 后重新绑定、分支及 print 消费者分别记录证据，不以作者调用替代历史恢复。
+- 保留实现前0pass/3fail及官方24项oracle；新版候选和工作区的测试、构建、终端结果见 [身份绑定专项](docs/research/mods-sendmessage-pin-20261007.md)。`observed` 只表示观察完毕，验收须以逐项断言为准；全文所列未覆盖项不计作通过。

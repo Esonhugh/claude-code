@@ -42,6 +42,7 @@ import {
 import { updateSessionName } from './concurrentSessions.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
+import { restoreSendMessagePins, retainLiveAgentNames } from './sendMessagePins.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
 import { createAttachmentMessage } from './attachments.js'
@@ -106,6 +107,9 @@ export function restoreSessionStateFromLog(
   result: ResumeResult,
   setAppState: (f: (prev: AppState) => AppState) => void,
 ): void {
+  // Rebuild bindings from the target history, never from the previous session.
+  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(result.messages ?? []), agentNameRegistry: retainLiveAgentNames(prev.agentNameRegistry, prev.tasks) }))
+
   // Restore file history state
   if (result.fileHistorySnapshots && result.fileHistorySnapshots.length > 0) {
     fileHistoryRestoreStateFromLog(result.fileHistorySnapshots, newState => {

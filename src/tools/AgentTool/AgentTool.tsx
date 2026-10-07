@@ -1309,8 +1309,7 @@ export const AgentTool = buildTool({
       })
 
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
-      // so we don't leave a stale entry if spawn fails. Sync agents skipped —
-      // coordinator is blocked, so SendMessage routing doesn't apply.
+      // so we don't leave a stale entry if background registration fails.
       if (name) {
         rootSetAppState(prev => {
           const next = new Map(prev.agentNameRegistry)
@@ -1392,6 +1391,16 @@ export const AgentTool = buildTool({
     } else {
       // Create an explicit agentId for sync agents
       const syncAgentId = asAgentId(earlyAgentId)
+
+      // A synchronous named agent is still addressable after its report,
+      // including when the foreground task has already been evicted.
+      if (name) {
+        rootSetAppState(prev => {
+          const names = new Map(prev.agentNameRegistry)
+          names.set(name, syncAgentId)
+          return { ...prev, agentNameRegistry: names }
+        })
+      }
 
       // Set up agent context for sync execution (for analytics attribution)
       const syncAgentContext = {

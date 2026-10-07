@@ -43,6 +43,7 @@ import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
 import { frameSubagentHandback, displaySubagentHandback, RESUMED_AGENT_MESSAGE, RESUMED_AGENT_FRAMED_MESSAGE, type SubagentHandback } from '../../utils/subagentHandback.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { AgentStoppedByUserError, cancelledAgentMessage } from '../../utils/agentCancellation.js'
+import { bindSubagentRecipient, resolveSubagentRecipient, type SendMessagePin } from '../../utils/sendMessagePins.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
@@ -108,6 +109,8 @@ export type MessageOutput = {
   success: boolean
   message: string
   routing?: MessageRouting
+  pin?: SendMessagePin
+  display?: string
   inlineHandback?: SubagentHandback & { displayName: string }
 }
 
@@ -719,8 +722,9 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     mapToolResultToToolResultBlockParam(data, toolUseID) {
-      if ('inlineHandback' in data && data.inlineHandback) {
-        const { inlineHandback, ...rest } = data
+      const { display: _display, ...modelData } = data as SendMessageToolOutput & { display?: string }
+      if ('inlineHandback' in modelData && modelData.inlineHandback) {
+        const { inlineHandback, ...rest } = modelData
         const framed = process.env.CLAUDE_CODE_HANDBACK_PROVENANCE === undefined || isEnvTruthy(process.env.CLAUDE_CODE_HANDBACK_PROVENANCE)
         return {
           tool_use_id: toolUseID,
@@ -736,7 +740,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
         content: [
           {
             type: 'text' as const,
-            text: jsonStringify(data),
+            text: jsonStringify(modelData),
           },
         ],
       }
@@ -821,10 +825,25 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       // through to ambient-team resolution. Stopped agents are auto-resumed.
       if (typeof input.message === 'string' && input.to !== '*') {
         const appState = context.getAppState()
-        const registered = appState.agentNameRegistry.get(input.to)
-        const agentId = registered ?? toAgentId(input.to)
+        const resolved = resolveSubagentRecipient(appState, input.to)
+        if (resolved?.kind === 'ambiguous') {
+          return { data: { success: false, message: `Recipient "${input.to}" is ambiguous. Re-send with a full name and ref:
+${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`).join('\n')}` } }
+        }
+        const agentId = resolved?.recipient.id
+        const recipientName = resolved?.recipient.name ?? input.to
         if (agentId) {
           const task = context.getAppState().tasks[agentId]
+          const shouldBind = !isMainSessionTask(task) && !(isLocalAgentTask(task) && task.status !== 'running' && task.stoppedByUser)
+          const binding = shouldBind && resolved?.kind === 'one'
+            ? bindSubagentRecipient(input.to, resolved.recipient, context.getAppState(), context.setAppStateForTasks ?? context.setAppState)
+            : { kind: 'proceed' as const, pin: undefined }
+          if (binding.kind === 'rebound') {
+            logForDebugging(`[SendMessage] pin_rebound name=${recipientName} agent_id=${agentId}`, { level: 'warn' })
+            return { data: { success: false, message: binding.message, display: binding.display } }
+          }
+          const pinReceipt = binding.pin ? { pin: binding.pin } : {}
+          if (binding.pin) logForDebugging(`[SendMessage] pin_bound name=${binding.pin.name} agent_id=${binding.pin.id} ref=${binding.pin.ref}`)
           if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
             if (task.status === 'running') {
               queuePendingMessage(
@@ -835,7 +854,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               return {
                 data: {
                   success: true,
-                  message: `Message queued for delivery to ${input.to} at its next tool round.`,
+                  message: `Message queued for delivery to ${recipientName} at its next tool round.`,
+                  ...pinReceipt,
                 },
               }
             }
@@ -856,6 +876,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               return {
                 data: {
                   success: true,
+                  ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
                   message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
                 },
@@ -885,6 +906,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               return {
                 data: {
                   success: true,
+                  ...pinReceipt,
                   ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
                   message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
                 },

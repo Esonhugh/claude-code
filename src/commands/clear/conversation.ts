@@ -3,6 +3,7 @@
  * This module has heavier dependencies and should be lazy-loaded when possible.
  */
 import { feature } from 'bun:bundle'
+import { retainLiveAgentNames } from '../../utils/sendMessagePins.js'
 import { randomUUID, type UUID } from 'crypto'
 import {
   getLastMainRequestId,
@@ -175,6 +176,8 @@ export async function clearConversation({
       return {
         ...prev,
         tasks: nextTasks,
+        sendMessagePins: {},
+        agentNameRegistry: retainLiveAgentNames(prev.agentNameRegistry, nextTasks),
         attribution: createEmptyAttributionState(),
         // Clear standalone agent context (name/color set by /rename, /color)
         // so the new session doesn't display the old session's identity badge

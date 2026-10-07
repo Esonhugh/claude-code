@@ -21,6 +21,7 @@ import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js'
 import type { AllowedPrompt } from '../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
 import type { AgentId } from '../types/ids.js'
+import type { SendMessagePins } from '../utils/sendMessagePins.js'
 import type { Message, UserMessage } from '../types/message.js'
 import type { LoadedPlugin, PluginError } from '../types/plugin.js'
 import type { DeepImmutable } from '../types/utils.js'
@@ -188,6 +189,8 @@ export type AppState = DeepImmutable<{
   // Name → AgentId registry populated by Agent tool when `name` is provided.
   // Latest-wins on collision. Used by SendMessage to route by name.
   agentNameRegistry: Map<string, AgentId>
+  // Conversation-scoped identity bindings for SendMessage receipts.
+  sendMessagePins: SendMessagePins
   // Task ID that has been foregrounded - its messages are shown in main view
   foregroundedTaskId?: string
   // Task ID of in-process teammate whose transcript is being viewed (undefined = leader's view)
@@ -498,6 +501,7 @@ export function getDefaultAppState(): AppState {
     tasks: {},
     runningSubagents: 0,
     agentNameRegistry: new Map(),
+    sendMessagePins: {},
     verbose: false,
     mainLoopModel: null, // alias, full name (as with --model or env var), or null (default)
     mainLoopModelForSession: null,

@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
+import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname } from 'path'
 import {
@@ -758,6 +759,8 @@ export async function runHeadless(
     sessionStartHooksPromise: options.sessionStartHooksPromise,
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
+
+  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages) }))
 
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext

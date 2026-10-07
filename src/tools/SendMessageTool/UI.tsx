@@ -35,7 +35,7 @@ export function renderToolResultMessage(
 
   return (
     <MessageResponse>
-      <Text dimColor>{'inlineHandback' in result && result.inlineHandback ? displaySubagentHandback(result.inlineHandback.displayName, result.inlineHandback.content) : result.message}</Text>
+      <Text dimColor>{'inlineHandback' in result && result.inlineHandback ? displaySubagentHandback(result.inlineHandback.displayName, result.inlineHandback.content) : ('display' in result && result.display ? result.display : result.message)}</Text>
     </MessageResponse>
   )
 }

@@ -1101,3 +1101,17 @@ on('tool.call', async ($, e, next) => {
 模型调用 `TaskStop` 或系统中断不会设置用户取消标记；这些任务与已完成、失败的任务仍可通过 `SendMessage` 正常恢复。标记表示停止来源，不能只凭内部 `killed` 状态判断。`[AgentCancellation]` 日志记录停止/拒绝的完整 ID 及 live/metadata 来源，不打印消息内容。
 
 回执沿官方分支保留措辞：内存中已取消的任务返回 `was stopped by the user and was not resumed`；从磁盘恢复被拒绝时返回 `was stopped by the user and won't be resumed`。两者都返回 `success: false`，不会启动新的模型请求。源码和测试证据见 [用户取消专项](docs/research/mods-user-cancellation-20261007.md)。该项不代表完整任务 UI、观察者、teammate、Workflow 或跨会话目标解析已完成兼容。
+
+## SendMessage 的会话身份绑定
+
+向本会话的具名子 Agent 发送普通文本时，成功回执包含 `pin: {id, name, ref}`。同一名称换绑至新的 Agent 后，继续使用裸名会返回 `success: false`，消息不投递；按回执中的 `name [ref]` 确认新目标，或用原始启动回执里的 Agent ID 继续旧任务。例如：
+
+```js
+await $.tool.call({tool: 'SendMessage', to: 'reviewer', message: 'Continue the review'})
+// 名称换绑后，使用拒绝回执给出的准确 ref：
+await $.tool.call({tool: 'SendMessage', to: 'reviewer [a1b2c3]', message: 'Review the new change'})
+```
+
+同步 Agent 完成后也保留名称寻址。注册名称支持官方的 Unicode 规范化规则和至少三字符的唯一前缀；前缀歧义需要完整名称和准确 ref。历史恢复只接受匹配的 SendMessage 工具调用及成功、非错误结果的 `toolUseResult` 元数据。`/clear` 清空身份绑定，恢复/分支/回退按保留的历史重建；运行中的 Agent 名称仍可使用。
+
+公开工具回执保留 pin；模型结果省略终端专用的 `display`，默认同步恢复报告框架仍采用官方的精简 JSON 头。`[SendMessage]` 日志记录绑定名称、Agent ID 和 ref，不打印消息内容。范围与证据见 [SendMessage 身份绑定专项](docs/research/mods-sendmessage-pin-20261007.md)，相关接口见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。跨会话/云目标的统一解析与完整 Mods API、UI、diff 验收继续进行。
