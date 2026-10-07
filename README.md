@@ -1350,3 +1350,15 @@ bun test --no-env-file ./src/services/mods/modelFork292.test.ts
 ```
 
 这些是模型替身驱动的源码回归；完整运行时、UI、官方 diff 和 G5 验收仍需对应的真实入口证据。详见 [测试隔离记录](docs/research/mods-test-isolation-20261007.md)。
+
+## Mods 轮次完成 checkpoint
+
+官方 2.1.292 的普通主轮次完成后，即使耗时不足 30 秒，也在原始历史中记录 `turn_duration`。本地已移除旧门槛：未取消的普通轮次都会记录；swarm 仍在运行时继续等待。本地非查询命令、查询前拒绝、取消与自动循环轮次不记录模型完成 checkpoint。调试模式可查找 `[turn-duration] completed elapsedMs=`，日志不包含输入或回复正文。
+
+`showTurnDuration` 控制现有完成时间行的显示，隐藏该行也保留历史 checkpoint。它可增加下一轮 `turn.step.messageCount`，但不成为 API 请求或 `$.session.messages` 的聊天条目。不要把该计数与公共聊天条目数量等同。
+
+```bash
+bun test --no-env-file ./src/screens/REPL.turnCheckpoint292.test.ts
+```
+
+[本批验证与已知差异](docs/research/mods-turn-checkpoint-292-20261007.md)区分准确提交候选、工作区与官方。完整附件、官方 `· done` 时间显示和原生 `ui.render` TurnDuration 挂载继续对齐；当前结果不代表完整上下文或 UI 已一致。

@@ -4689,6 +4689,8 @@ export function REPL({
         return
       }
 
+      // Local commands and query-preflight refusals are not completed model turns.
+      let didQuery = false
       try {
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
@@ -4727,6 +4729,7 @@ export function REPL({
           }
         }
 
+        didQuery = shouldQuery
         await onQueryImpl(
           latestMessages,
           newMessages,
@@ -4794,16 +4797,17 @@ export function REPL({
             snapshotOutputTokensForTurn(null)
           }
 
-          // Add turn duration message for turns longer than 30s or with a budget
-          // Skip if user aborted or if in loop mode (too noisy between ticks)
-          // Defer if swarm teammates are still running (show when they finish)
+          // Record every completed main turn, including short turns (official 2.1.292).
+          // The checkpoint remains in history even when its UI row is hidden.
+          // Skip non-query/aborted/loop turns; defer while swarm teammates are running.
           const turnDurationMs =
             Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current
           if (
-            (turnDurationMs > 30000 || budgetInfo !== undefined) &&
+            didQuery &&
             !abortController.signal.aborted &&
             !proactiveActive
           ) {
+            logForDebugging(`[turn-duration] completed elapsedMs=${turnDurationMs}`)
             const hasRunningSwarmAgents = getAllInProcessTeammateTasks(
               store.getState().tasks,
             ).some(t => t.status === 'running')

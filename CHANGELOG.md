@@ -12,6 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 短轮次完成时记录 transcript checkpoint
+
+### Changed
+
+- 以官方 2.1.292 的主轮次 finally 为基准，移除 `turn_duration` 的 30 秒门槛；短轮次也记录完成 checkpoint，本地非查询命令、查询前拒绝、取消与自动循环轮次不记录模型完成 checkpoint。
+- 后台 swarm 尚在运行时继续延后 checkpoint，并保留最初开始时间和最新 budget；完成时打印只含 elapsedMs 的调试日志。
+- checkpoint 保存在原始会话历史中，可影响后续 `turn.step.messageCount`；不转换为 API 消息或公共 `session.messages` 聊天条目。UI 隐藏完成时间行仍不删除历史。
+
+### Tests
+
+- 增加实际 REPL 完成语句与查询前置语句的 19 项回归，覆盖 0/1/29999/30000/30001ms、budget、取消、循环、swarm 延后、非查询命令、查询前拒绝和消息投影；保留原始失败用例。
+- 准确提交候选、用户工作区及固定官方制品分别验证；原始组合失败、基线对照、逐文件结果、构建和隔离终端证据见 docs/research/mods-turn-checkpoint-292-20261007.md。
+- 完整附件上下文、官方完成时间格式和 `ui.render` 的 TurnDuration 接入仍需单独对齐；本批不声明完整 Mods/UI/diff/G5 验收完成。
+
 ## 2026-10-07 - Mods 测试凭据与配置隔离
 
 ### 变更内容

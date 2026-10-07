@@ -1998,3 +1998,9 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 本批仅提交两份测试的凭据/配置夹具和说明。准确 HEAD 6940025 的 prompt.compose 在无凭据隔离运行时为 3 pass / 3 fail / 20 expect，错误由认证读取触发；补齐夹具后，候选与工作区单文件各为 6/0/57。fork 单文件两侧各为 5/0/18，正文与断言未改。两侧结果分别记录，不拼接为全量门禁通过。
 
 清理检查另发现按项目缓存的 memory 路径仍指向已删除 HOME，后续 prompt 渲染会重建旧目录；测试 setup/teardown 清空现有缓存，不修改生产路径解析。进一步检查组合执行与环境恢复、类型/lint/CHANGELOG 格式；最终命令、结果及保留的 RED 见 [本批验收](docs/research/mods-test-isolation-20261007.md)。本批不修改生产代码，不重复声明原生 runtime/官方对照通过，完整上下文、API/UI/diff/G5 和全量/HEAD 回归门禁继续开放。
+
+## 2026-10-07 — 短轮次 transcript checkpoint
+
+移除普通主轮次 `turn_duration` 的 30 秒门槛，补齐实际查询判断，保留 abort/proactive/swarm 分支。19 项新回归执行实际 REPL 完成语句与查询前置语句，验证边界时长、预算、延后与 API/public session 消息投影；原始 RED 和最终结果均保留。
+
+本批的相关组合回归出现失败，逐文件结果与未修改 HEAD 的相同命令对照另列，不能称为全量通过。隔离构建和官方/候选/工作区 tmux 验证分别记录完成与取消后的真实 transcript；计数差异不通过常数或过滤归一化隐藏。完整附件上下文、官方完成时间格式、TurnDuration 原生 Mods render、其他 UI/diff/G5 仍开放。见 [验收记录](docs/research/mods-turn-checkpoint-292-20261007.md)。
