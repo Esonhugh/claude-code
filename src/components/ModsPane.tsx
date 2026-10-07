@@ -2,7 +2,7 @@ import { parsePatch } from 'diff'
 import figures from 'figures'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import React, { useMemo, useState } from 'react'
-import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane } from '../services/mods/ui.js'
+import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions } from '../services/mods/ui.js'
 import type { ModClientHandle } from '../services/mods/client.js'
 import { copyModClientData } from '../services/mods/client.js'
 import { BaseText, Box, Button, type DOMElement, Link, Text, useInput, useStdin, useTheme } from '../ink.js'
@@ -144,6 +144,18 @@ type ValidatedTree = {
   focusKeys: ReadonlySet<string>
   hasAutoFocus: boolean
   hoverBoxes: ReadonlyMap<RenderElement, boolean>
+}
+
+type AutoFocusTarget = { plugin: string; key: string; registrationPlugin: string }
+
+function autoFocusTargetsOf(node: RenderNode): AutoFocusTarget[] {
+  if (typeof node === 'string' || node.type === 'engine') return []
+  if (node.type === 'Button' || node.type === 'Input' || node.type === 'Select') {
+    return node.props?.autoFocus === true && node.press
+      ? [{ plugin: node.press.plugin, key: node.props.key as string,
+        registrationPlugin: node.group?.plugin ?? node.press.plugin }] : []
+  }
+  return (node.children ?? []).flatMap(autoFocusTargetsOf)
 }
 
 type FocusElements = React.RefObject<Map<string, Set<DOMElement>>>
@@ -962,7 +974,7 @@ type Props = {
   ): Promise<unknown>
   onClose(pane: ModUiPane): Promise<unknown>
   /** Returns the host's final landing and its published snapshot revision. */
-  onFocus(pane: ModUiPane, element?: string): Promise<unknown>
+  onFocus(pane: ModUiPane, element?: string, origin?: Exclude<ModUiOrigin, { kind: 'unload' }>, options?: ModUiHostFocusOptions): Promise<unknown>
   onScroll(pane: ModUiPane, by: number, pointer?: { column: number; row: number }): Promise<unknown>
   /** Person input is allowed by the current composer/dialog presentation. */
   canFocus?: boolean
@@ -999,6 +1011,9 @@ export function ModsPane({
     elements: Set<DOMElement>
   }>())
   const validated = useMemo(() => validateModRenderTree(pane.tree), [pane.tree])
+  const autoFocusTargets = useMemo(() => autoFocusTargetsOf(validated.tree), [validated.tree])
+  const currentAutoFocusTargets = React.useRef(autoFocusTargets)
+  currentAutoFocusTargets.current = autoFocusTargets
 
   const reportMetrics = React.useCallback(() => {
     const scroll = scrollRef.current
@@ -1031,6 +1046,9 @@ export function ModsPane({
 
   const latest = React.useRef({ pane, onFocus, onScroll, onInteract, onError, canFocus })
   latest.current = { pane, onFocus, onScroll, onInteract, onError, canFocus }
+  const automaticTake = React.useRef<{ owner: object; id: string; attempted: boolean; controller?: AbortController }>({
+    owner: pane.owner, id: pane.id, attempted: false,
+  })
   const applyingFocus = React.useRef(false)
   const focusQueue = React.useRef(Promise.resolve())
   const pendingFocus = React.useRef(0)
@@ -1105,15 +1123,9 @@ export function ModsPane({
     const root = rootRef.current
     if (!root) return []
     const order = documentOrder(root)
-    return [...focusElements.current].flatMap(([key, entries]) => {
-      const visible = [...entries].filter(element => {
-        for (let node: DOMElement | undefined = element; node && node !== root; node = node.parentNode) {
-          if (node.style.display === 'none') return false
-        }
-        return order.has(element)
-      })
-      const element = firstInDocumentOrder(visible, order)
-      return element ? [{ key, element }] : []
+    return [...keyElements.current.values()].flatMap(({ plugin, key, elements }) => {
+      const element = firstInDocumentOrder([...elements].filter(element => order.has(element)), order)
+      return element ? [{ plugin, key, element }] : []
     }).sort((a, b) => order.get(a.element)! - order.get(b.element)!)
   }
   const applyFocus = (key: string | undefined, focused = true) => {
@@ -1134,7 +1146,8 @@ export function ModsPane({
           handoff.generation === focusGeneration.current && handoff.landing === key &&
           handoff.tree !== latest.current.pane.tree && entries.find(entry =>
             entry.key === handoff.requested && entry.element === handoff.element &&
-            entry.element.attributes.autoFocus === true)
+            currentAutoFocusTargets.current.some(target => target.key === entry.key))
+        // Official terminal landing uses the first drawn slot for duplicate keys.
         const target = reused?.element ?? entries.find(entry => entry.key === key)?.element ?? root
         let active = manager.activeElement
         if (clientRegions.has(target)) {
@@ -1144,14 +1157,17 @@ export function ModsPane({
       }
     } finally { applyingFocus.current = false }
   }
-  const requestFocus = (target: string | undefined | (() => string | undefined)) => {
+  const requestFocus = (target: string | undefined | (() => string | undefined),
+    origin: Exclude<ModUiOrigin, { kind: 'unload' }> = { kind: 'person' }, options?: ModUiHostFocusOptions) => {
+    if (pendingFocus.current >= 65) return focusQueue.current
+    automaticTake.current.attempted = true
     const owner = pane.owner
     const generation = focusGeneration.current
     pendingFocus.current++
     focusQueue.current = focusQueue.current.then(async () => {
       const current = latest.current
       if (!rootRef.current || current.pane.owner !== owner || !current.pane.visible ||
-          generation !== focusGeneration.current || !(current.pane.focused || current.canFocus)) return
+          generation !== focusGeneration.current || options?.signal?.aborted || !(current.pane.focused || current.canFocus)) return
       const key = typeof target === 'function' ? target() : target
       if (typeof target === 'function' && navigable().some(entry =>
         entry.key === key && entry.element === getFocusManager(rootRef.current!).activeElement)) return
@@ -1159,10 +1175,10 @@ export function ModsPane({
       let region = before.find(entry => entry.key === key)?.element
       while (region && !clientRegions.has(region)) region = region.parentNode
       const hostKey = region ? before.find(entry => entry.element === region)?.key ?? key : key
-      const result = await current.onFocus(current.pane, hostKey) as {
+      const result = await current.onFocus(current.pane, hostKey, origin, options) as {
         deny?: string; element?: string; focused?: boolean; revision?: number
       } | undefined
-      if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
+      if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current || options?.signal?.aborted) return
       if (!result?.deny && result?.focused !== false && key !== undefined && result?.element !== undefined) {
         const element = before.find(entry => entry.key === result.element)?.element
         focusHandoff.current = element && result.element !== key ? {
@@ -1174,14 +1190,16 @@ export function ModsPane({
         await new Promise<void>(resolve => {
           focusCommit.current = { owner, generation, revision: result.revision!, resolve }
         })
-        if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current) return
+        if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current || options?.signal?.aborted) return
       }
       const landing = hostKey !== key && !result?.deny && result?.focused !== false &&
         (result?.element === undefined || result.element === hostKey) ? key : result?.element
       if (result && 'focused' in result) applyFocus(landing, result.focused)
       else if (result?.deny) applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
+      else if (origin.kind === 'plugin') applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
       else applyFocus(landing ?? key, key !== undefined)
     }).catch(error => {
+      if (options?.signal?.aborted) return
       if (rootRef.current && generation === focusGeneration.current)
         applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
       latest.current.onError?.(error)
@@ -1193,7 +1211,17 @@ export function ModsPane({
 
   React.useLayoutEffect(() => {
     if (!pane.visible || !(pane.focused || canFocus)) focusGeneration.current++
-  }, [pane.visible, pane.focused, canFocus])
+    const take = automaticTake.current
+    if (take.owner !== pane.owner || take.id !== pane.id) {
+      take.controller?.abort()
+      automaticTake.current = { owner: pane.owner, id: pane.id, attempted: false }
+    } else if (!pane.visible || !shown || !pane.focused) {
+      take.controller?.abort()
+      take.controller = undefined
+      take.attempted = false
+    }
+  }, [pane.owner, pane.id, pane.visible, pane.focused, canFocus, shown])
+
 
   React.useLayoutEffect(() => {
     committedRevision.current = pane.revision
@@ -1206,6 +1234,7 @@ export function ModsPane({
   })
   React.useLayoutEffect(() => () => {
     focusGeneration.current++
+    automaticTake.current.controller?.abort()
     focusCommit.current?.resolve()
     focusCommit.current = undefined
   }, [pane.owner])
@@ -1286,6 +1315,28 @@ export function ModsPane({
 
   React.useLayoutEffect(() => {
     const root = rootRef.current
+    const take = automaticTake.current
+    const target = navigable().flatMap(entry => {
+      // The keyed DOM registration and the callback metadata must describe
+      // the same drawn control; preserve its callback's actual plugin actor.
+      return autoFocusTargets.filter(target => target.key === entry.key &&
+        keyElements.current.get(keyElementId(target.registrationPlugin, target.key))?.elements.has(entry.element))
+    })[0]
+    if (!root || !pane.visible || !shown || !pane.focused || pane.focusedElement !== undefined ||
+        take.attempted || pendingFocus.current > 0 || !target) return
+    const controller = new AbortController()
+    take.attempted = true
+    take.controller = controller
+    applyFocus(undefined)
+    void requestFocus(target.key, { kind: 'plugin', name: target.plugin }, {
+      signal: controller.signal, expectedElement: pane.focusedElement,
+    }).finally(() => {
+      if (take.controller === controller) take.controller = undefined
+    })
+  }, [pane.owner, pane.id, pane.visible, pane.focused, pane.focusedElement, shown, autoFocusTargets])
+
+  React.useLayoutEffect(() => {
+    const root = rootRef.current
     if (!root) return
     const manager = getFocusManager(root)
     if (!pane.focused) {
@@ -1299,9 +1350,18 @@ export function ModsPane({
       }
       return
     }
-    if (pane.focusedElement === undefined) return
+    if (pane.focusedElement === undefined) {
+      if (!pane.visible || !shown || root.isHidden || root.style.display === 'none' || pendingFocus.current > 0) return
+      let current = manager.activeElement
+      while (current && current !== root) {
+        if (current.isHidden || current.style.display === 'none') break
+        current = current.parentNode ?? null
+      }
+      if (current !== root) applyFocus(undefined)
+      return
+    }
     applyFocus(pane.focusedElement)
-  }, [pane.focused, pane.focusedElement, validated.tree])
+  }, [pane.focused, pane.focusedElement, pane.focusedPlugin, validated.tree])
 
   const run = (operation: Promise<unknown>) => {
     void operation.catch(error => onError?.(error))
@@ -1369,12 +1429,30 @@ export function ModsPane({
         binding.type === 'unbound' || binding.type === 'match' && binding.action in actions)) return
     if (!root || !pane.focused || !pane.visible || !shown ||
         keybindings?.pendingChord || event.didDispatchKeyboardEvent()) return
+    const keydown = new KeyboardEvent(event.keypress)
+    if (pendingFocus.current > 0 && (keydown.key === 'return' || keydown.key === ' ')) {
+      const owner = pane.owner
+      const generation = focusGeneration.current
+      event.markKeyboardDispatched()
+      event.stopImmediatePropagation()
+      // Activation follows the negotiated move, including its render commit.
+      focusQueue.current = focusQueue.current.then(() => {
+        const current = latest.current.pane
+        const root = rootRef.current
+        if (!root || current.owner !== owner || generation !== focusGeneration.current ||
+            !current.focused || !current.visible) return
+        const target = getFocusManager(root).activeElement ?? root
+        let ancestor: DOMElement | undefined = target
+        while (ancestor && ancestor !== root) ancestor = ancestor.parentNode
+        if (ancestor === root) dispatcher.dispatchDiscrete(target, keydown)
+      }).catch(error => latest.current.onError?.(error))
+      return
+    }
     const manager = getFocusManager(root)
     const target = manager.activeElement ?? root
     let ancestor: DOMElement | undefined = target
     while (ancestor && ancestor !== root) ancestor = ancestor.parentNode
     if (ancestor !== root) return
-    const keydown = new KeyboardEvent(event.keypress)
     event.markKeyboardDispatched()
     dispatcher.dispatchDiscrete(target, keydown)
     if (keydown.defaultPrevented || keydown.didStopImmediatePropagation()) {
@@ -2264,7 +2342,7 @@ function ModButton({
         ref={elementRef}
         onAction={run}
         tabIndex={pane.focused ? 0 : -1}
-        autoFocus={pane.focused && props.autoFocus === true}
+        autoFocus={false}
         onFocus={event => { if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
       >
         {({ focused, hovered }) => {
@@ -2346,7 +2424,7 @@ function ModSelect({
     <Box
       ref={elementRef}
       tabIndex={pane.focused ? 0 : -1}
-      autoFocus={pane.focused && props.autoFocus === true}
+      autoFocus={false}
       onFocus={event => {
         setFocused(true)
         if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)
@@ -2501,7 +2579,7 @@ function ModInput({
     <Box
       ref={elementRef}
       tabIndex={pane.focused ? 0 : -1}
-      autoFocus={pane.focused && props.autoFocus === true}
+      autoFocus={false}
       onFocus={event => {
         setFocused(true)
         if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)

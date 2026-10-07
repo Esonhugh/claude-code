@@ -373,7 +373,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const drawing = drawingId === undefined ? undefined : drawings.get(drawingId)
       const snapshot = drawing?.snapshot ?? entered?.snapshot ?? active
       const table = drawing?.table ?? entered?.table ?? nouns
-      const origin = event === 'ui.open' || options.origin?.kind === 'plugin'
+      const automaticFocus = event === 'ui.focus' && options.automaticFocus === true
+      const origin = automaticFocus ? { plugin: 'engine', tier: 'core' as const }
+        : event === 'ui.open' || options.origin?.kind === 'plugin'
         ? { plugin: (owner as Activation).declaration.name, tier: (owner as Activation).declaration.tier }
         : undefined
       // Noun effects have {value,deny} envelopes; UI interactions/render have
@@ -386,6 +388,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return wrapped ? { value } : value
       }, snapshot, table, {
         origin,
+        ...(automaticFocus ? { signal: options.signal } : {}),
         skipOwner: options.skipOwner as Activation | undefined,
         restoreInput: options.restoreInput,
       })

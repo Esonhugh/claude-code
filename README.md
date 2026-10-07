@@ -1159,3 +1159,22 @@ dock 的 grip 列在面板持有焦点或鼠标直接悬停时高亮；仅悬停
 inline 面板绘制圆角边框和关闭标记，内容按自然高度显示。默认总高度预算为终端行数的三分之一；显式 rows 请求还需预留边框和多面板 tab 行。面板 body 可以是零行。点击右上角关闭标记会产生 `ui.close` 的 person 来源；Esc 是否关闭由 closeOnEscape 决定。
 
 `--debug --debug-file /tmp/claude-pane-debug.log` 中的 `[ModsUI]` metrics 可核对 bodyRows、contentRows、placement、drawing 和 scrollOffset。运行 `bun test ./src/components/ModsPane.hostGeometry.test.tsx` 检查尺寸；实际官方对照与完整验收边界见 `mods-test.md`。
+
+
+### Mods 面板自动聚焦
+
+面板用 `$.ui.open({ id, focus: true })` 取得键盘后，可在 Button、Input 或 Select 上设置 `autoFocus: true`。多个控件声明时，按注册顺序选择第一个，并通过 `ui.focus` 协商；事件的 `origin` 是控件所属插件，`next.origin` 是 `engine/core`。hook 返回拒绝或不调用 `next` 时不会授予该控件焦点；改写 `element` 则采用已确认的实际落点。
+
+```ts
+const { Box, Button } = $.ui.resolve(e)
+return Box({ children: [Button({
+  key: 'save', label: 'Save', autoFocus: true,
+  onPress: press => $.ui.log(`${press.plugin}:${press.element}:${press.surface}`),
+})] })
+```
+
+`onPress` 收到 `ui.press` 参数，含插件、控件键、surface、component 和 requestId。焦点参数携带插件与控件键。官方终端在不同插件复用同一键时，焦点事件仍指向声明 autoFocus 的插件，但 Enter 会触发第一个同名绘制槽位；本地保留此行为。插件应使用不同控件键来避免这种歧义。官方 2.1.292 的 `display: 'none'` 保留控件注册，隐藏控件也可能获焦点及接收 Enter；不希望它参与焦点时，应从绘制树中省略它。
+
+运行 `bun test --no-env-file ./src/components/ModsPane.automaticFocus.test.tsx ./src/services/mods/uiRealm.test.ts` 检查真实 Worker 和输入。官方源码及终端对照、候选与工作区结果见 [自动聚焦验收](docs/research/mods-automatic-focus-20261007.md)。本批只验证 Pane；Band、Client 和完整 UI 对齐继续单独验收。
+
+当前对照的 35 个完整面板矩形中有 31 个字符、样式及位置相同；Input/Select 的四个状态帧仍有差异，展开列表、光标及重绘状态需继续对齐。焦点与回调行为通过不代表所有控件 UI 已匹配。

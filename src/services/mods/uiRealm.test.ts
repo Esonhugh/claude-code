@@ -59,7 +59,7 @@ describe('VM-local Mods UI constructors', () => {
     const result = run(`(() => {
       const {Button, Input, Select, Markdown} = ui.resolve({surface: 'terminal', component: 'Pane'});
       const calls = [];
-      const button = Button({label:'Run', children:['Run'], onPress:(...args) => calls.push(['press', args.length])});
+      const button = Button({label:'Run', children:['Run'], onPress:(...args) => calls.push(['press', args.length, args[0]])});
       const input = Input({key:'reply', onInput:(value, event) => calls.push(['input', value, event.kind]), onSubmit:(value, event) => calls.push(['submit', value, event.kind])});
       const select = Select({key:'source', options:[{label:'Current', value:'current'}], onSelect:(value, event) => calls.push(['select', value, event.value])});
       const markdown = Markdown({key:'docs', text:'[Docs](https://example.com/)', onLinkPress:(link, event) => calls.push(['link', link.href, event.link.href])});
@@ -80,13 +80,13 @@ describe('VM-local Mods UI constructors', () => {
     ])
     expect(JSON.stringify(result.tree)).not.toContain('onPress')
     expect(JSON.stringify(result.tree)).not.toContain('onLinkPress')
-    await result.callbacks[0]({ element: 'Run' })
+    await result.callbacks[0]({ element: 'Run', surface: 'terminal', plugin: 'owner', component: 'Pane', requestId: 'pane' })
     await result.callbacks[1]({ kind: 'change', value: 'draft' })
     await result.callbacks[1]({ kind: 'submit', value: 'sent' })
     await result.callbacks[2]({ value: 'current' })
     await result.callbacks[3]({ link: { href: 'https://example.com/' } })
     expect(result.calls).toEqual([
-      ['press', 0],
+      ['press', 1, { element: 'Run', surface: 'terminal', plugin: 'owner', component: 'Pane', requestId: 'pane' }],
       ['input', 'draft', 'change'],
       ['submit', 'sent', 'submit'],
       ['select', 'current', 'current'],

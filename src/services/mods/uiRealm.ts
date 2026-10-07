@@ -94,8 +94,8 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
         props.label = label
         props.key ??= label
         if (typeof handlers.press !== 'function') throw new Error('Button requires an onPress callback')
-        const press = handlers.press as () => unknown
-        callback = () => press()
+        const press = handlers.press as Callback
+        callback = event => press(event)
       } else if (type === 'Select') {
         if (typeof handlers.select !== 'function') throw new Error('Select requires an onSelect callback')
         const select = handlers.select as (value: unknown, event: Props) => unknown

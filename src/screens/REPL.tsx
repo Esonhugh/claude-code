@@ -3296,12 +3296,15 @@ export function REPL({
         return ui.interact(pane.id, drawing, callback, kind, element, value)
       }}
       onClose={pane => modsSession?.runtime?.ui.close(pane.owner, pane.id, { kind: 'person' }) ?? Promise.resolve()}
-      onFocus={async (pane, element) => {
+      onFocus={async (pane, element, origin = { kind: 'person' }, options) => {
         const ui = modsSession?.runtime?.ui
         if (!ui) return { focused: false }
-        const result = await ui.focus(pane.owner, { requestId: pane.id, element, origin: { kind: 'person' } }, modUiPresentationRef.current)
+        const result = origin.kind === 'plugin' && origin.name !== undefined && element !== undefined
+          ? await ui.focusHost(pane.owner, { requestId: pane.id, element, origin: { kind: 'plugin', name: origin.name } }, modUiPresentationRef.current, options)
+          : await ui.focus(pane.owner, { requestId: pane.id, element, origin }, modUiPresentationRef.current)
         const landing = ui.getSnapshot().find(current => current.id === pane.id && current.owner === pane.owner)
-        return { ...(result as Record<string, unknown>), ...(landing ? { revision: landing.revision } : { focused: false }) }
+        const focused = Boolean(landing?.visible && landing.shown !== false && landing.tree !== undefined && landing.focused)
+        return { ...(result as Record<string, unknown>), focused, element: focused ? landing?.focusedElement : undefined, ...(landing ? { revision: landing.revision } : {}) }
       }}
       onScroll={(pane, by, pointer) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, pointer, origin: { kind: 'person' } }) ?? Promise.resolve()}
       onReportMetrics={(pane, metrics) => {

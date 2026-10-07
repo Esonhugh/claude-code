@@ -2778,7 +2778,7 @@ describe('ModsPane input repair', () => {
     } finally { instance.unmount() }
   })
 
-  test('bare arrows follow host landing, skip hidden controls and do not wrap', async () => {
+  test('bare arrows follow official registration order, host landing and no wrapping', async () => {
     const stdout = new Output()
     const stdin = new Input()
     const focused: string[] = []
@@ -2802,12 +2802,15 @@ describe('ModsPane input repair', () => {
       focused.length = 0
       stdin.push('\u001b[B')
       await settle()
-      expect(focused).toEqual(['b'])
+      expect(focused).toEqual(['hidden'])
+      stdin.push('\u001b[B')
+      await settle()
+      expect(focused).toEqual(['hidden', 'b'])
       const target = renderedElement(stdout, '[ c ]', 'ink-text').parentNode!
       expect(getFocusManager(target).activeElement).toBe(target)
       stdin.push('\u001b[B')
       await settle()
-      expect(focused).toEqual(['b'])
+      expect(focused).toEqual(['hidden', 'b'])
       expect(scrolls).toEqual([])
     } finally { instance.unmount() }
   })
@@ -3237,7 +3240,7 @@ describe('ModsPane input repair', () => {
     } finally { if (!unmounted) instance.unmount() }
   })
 
-  test('person Tab enters an unfocused dock once without visiting global or hidden focus nodes', async () => {
+  test('person Tab enters the first registered dock control without visiting global focus nodes', async () => {
     const stdout = new Output()
     const stdin = new Input()
     const calls: (string | undefined)[] = []
@@ -3260,7 +3263,7 @@ describe('ModsPane input repair', () => {
       expect(calls).toEqual([])
       stdin.push('\t')
       await settle()
-      expect(calls).toEqual(['ask'])
+      expect(calls).toEqual(['hidden'])
       expect(outerFocus).toBe(0)
     } finally { instance.unmount() }
   })
@@ -4184,7 +4187,7 @@ describe('ModsPane Ink interaction', () => {
       <>
         <EnableInput />
         <ModsPane
-          pane={pane(tree)}
+          pane={pane(tree, { focusedElement: 'run' })}
           onInteract={async (_pane, _drawing, _press, kind, element, value) => {
             interactions.push({ kind, element, ...(value === undefined ? {} : { value }) })
           }}
@@ -4412,7 +4415,7 @@ describe('ModsPane Ink interaction', () => {
     const stdin = new Input()
     const interactions: { kind: string; value?: string }[] = []
     const instance = await render(<><EnableInput /><ModsPane
-      pane={pane({ type: 'Input', props: { key: 'reply', value: 'A👨‍👩‍👧‍👦B', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } })}
+      pane={pane({ type: 'Input', props: { key: 'reply', value: 'A👨‍👩‍👧‍👦B', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } }, { focusedElement: 'reply' })}
       onInteract={async (_pane, _drawing, _press, kind, _element, value) => { interactions.push({ kind, value }) }}
       onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
@@ -4433,7 +4436,7 @@ describe('ModsPane Ink interaction', () => {
     const stdin = new Input()
     const interactions: { kind: string; value?: string }[] = []
     const instance = await render(<><EnableInput /><ModsPane
-      pane={pane({ type: 'Input', props: { key: 'reply', value: 'abcd', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } })}
+      pane={pane({ type: 'Input', props: { key: 'reply', value: 'abcd', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } }, { focusedElement: 'reply' })}
       onInteract={async (_pane, _drawing, _press, kind, _element, value) => { interactions.push({ kind, value }) }}
       onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
@@ -4569,7 +4572,7 @@ describe('ModsPane Ink interaction', () => {
       <>
         <EnableInput />
         <ModsPane
-          pane={pane({ type: 'Input', props: { key: 'reply', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } })}
+          pane={pane({ type: 'Input', props: { key: 'reply', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } }, { focusedElement: 'reply' })}
           onInteract={async (_pane, _drawing, _press, kind, _element, value) => {
             interactions.push({ kind, value })
           }}
@@ -4612,7 +4615,7 @@ describe('ModsPane Ink interaction', () => {
           pane={pane({ type: 'Box', children: [
             { type: 'Input', props: { key: 'reply', autoFocus: true }, press: { plugin: 'fixture', handle: 1 } },
             { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 2 } },
-          ] })}
+          ] }, { focusedElement: 'reply' })}
           onInteract={async (_pane, _drawing, _press, kind, element) => { interactions.push(`${kind}:${element}`) }}
           onClose={async () => {}}
           onFocus={async () => ({})}

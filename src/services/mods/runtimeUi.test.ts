@@ -1009,7 +1009,7 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
     focus:async (...args:unknown[]) => {calls.push(['focus',...args]); return landing},
     scroll:async (...args:unknown[]) => {calls.push(['scroll',...args])},
     reportMetrics:(...args:unknown[]) => {calls.push(['metrics',...args])},
-    getSnapshot:() => [{...pane,revision:42}],
+    getSnapshot:() => [{...pane,focusedElement:landing.element,tree:{type:'Button',props:{key:landing.element,label:'Run'},press:{plugin:'owner',handle:10}},revision:42}],
   }
   const pane = {id:'panel',plugin:'owner',owner:{},visible:true,focused:true,bodyRows:10,contentRows:20}
   const scope = {

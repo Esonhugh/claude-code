@@ -35,6 +35,12 @@ export type ModRenderSite = {
 }
 
 export type ModUiOwner = object
+
+/** Private host-controller state; never decoded from an author call. */
+export type ModUiHostFocusOptions = {
+  signal?: AbortSignal
+  expectedElement?: string
+}
 export type ModUiOrigin =
   | { kind: 'person' }
   | { kind: 'plugin'; name?: string }
@@ -98,6 +104,7 @@ export type ModUiPane = {
   revision: number
   contentRows: number
   focusedElement?: string
+  focusedPlugin?: string
   tree?: unknown
   drawing?: number
 }
@@ -111,6 +118,8 @@ export type ModUiDispatch = (
     origin?: ModUiOrigin
     drawing?: number
     skipOwner?: ModUiOwner
+    automaticFocus?: true
+    signal?: AbortSignal
     restoreInput?: (rewritten: ModInput, received: ModInput) => ModInput
   },
 ) => Promise<unknown>
@@ -153,6 +162,12 @@ export type ModUi = {
       origin: Exclude<ModUiOrigin, { kind: 'unload' }>
     },
     presentation?: ModUiPresentation,
+  ): Promise<unknown>
+  focusHost(
+    owner: ModUiOwner,
+    input: { requestId: string; element: string; origin: { kind: 'plugin'; name: string } },
+    presentation?: ModUiPresentation,
+    options?: ModUiHostFocusOptions,
   ): Promise<unknown>
   reveal(
     owner: ModUiOwner,
@@ -347,6 +362,7 @@ export function createModUi({
   let nextDrawing = 1
   let revision = 0
   let personFocusGeneration = 0
+  const automaticFocusRequests = new WeakMap<object, ModUiHostFocusOptions>()
 
   function askedKey(owner: ModUiOwner, id: string): string {
     return `${pluginOf(owner)}\0${id}`
@@ -415,6 +431,7 @@ export function createModUi({
       revision,
       contentRows: pane.contentRows,
       ...(pane.focusedElement === undefined ? {} : { focusedElement: pane.focusedElement }),
+      ...(pane.focusedElement === undefined || pane.focusedPlugin === undefined ? {} : { focusedPlugin: pane.focusedPlugin }),
       ...(pane.tree === undefined ? {} : { tree: pane.tree }),
       ...(pane.drawing === undefined ? {} : { drawing: pane.drawing }),
     })
@@ -1444,14 +1461,38 @@ export function createModUi({
       })
     },
 
+    async focusHost(owner, input, presentation, options = {}) {
+      validateOwner(owner)
+      const pane = active.get(input.requestId)
+      if (!pane || pane.owner !== owner) return { deny: 'site is not current', focused: false }
+      const request = Object.freeze({ ...input })
+      automaticFocusRequests.set(request, {
+        ...options,
+        expectedElement: Object.hasOwn(options, 'expectedElement') ? options.expectedElement : pane.focusedElement,
+      })
+      let result: unknown
+      try { result = await ui.focus(owner, request, presentation) }
+      finally { automaticFocusRequests.delete(request) }
+      const current = ui.getSnapshot().find(pane => pane.id === input.requestId && pane.owner === owner)
+      const focused = Boolean(current?.visible && current.shown !== false && current.tree !== undefined && current.focused)
+      return {
+        ...(result as Record<string, unknown>),
+        focused,
+        element: focused ? current?.focusedElement : undefined,
+        plugin: focused ? current?.focusedPlugin : undefined,
+        ...(current ? { revision: current.revision } : {}),
+      }
+    },
+
     async focus(owner, request, rawPresentation) {
       validateOwner(owner)
+      const automatic = automaticFocusRequests.get(request)
       const person = request.origin.kind === 'person'
       const pane = active.get(request.requestId)
       if (!pane) return { deny: 'site is not open', ...(person ? { focused: false } : {}) }
       if (request.origin.kind === 'plugin' && !ownsPane(owner, pane))
         return { deny: 'site belongs to another plugin' }
-      if (person && rawPresentation !== undefined) {
+      if ((person || automatic) && rawPresentation !== undefined) {
         pane.presentation = validatePresentation(rawPresentation)
         if (pane.focused && (!visibleOf(pane) || !pane.presentation.composerEmpty ||
             pane.presentation.hasDialog || pane.presentation.keyboardOwned)) {
@@ -1465,18 +1506,21 @@ export function createModUi({
       const input: ModInput = Object.freeze({
         component: 'Pane',
         requestId: pane.id,
-        ...(request.element === undefined ? {} : { plugin: pane.plugin, element: request.element }),
+        ...(request.element === undefined ? {} : { plugin: automatic && request.origin.kind === 'plugin' ? request.origin.name : pane.plugin, element: request.element }),
         origin: request.origin,
       })
       const result = await dispatch(owner, 'ui.focus', input, async rewritten => {
-        if (active.get(pane.id) !== pane || generation !== personFocusGeneration)
+        if (active.get(pane.id) !== pane || !automatic && generation !== personFocusGeneration)
           return { deny: 'another move landed first' }
+        if (automatic?.signal?.aborted) return { deny: 'the move was abandoned' }
         if (!pane.visible || !visibleOf(pane) || pane.tree === undefined)
           return { deny: 'site is not visible' }
         const presentation = pane.presentation
         const canFocus = person && (request.element !== undefined || pane.shown === false)
           ? presentation.composerEmpty && !presentation.hasDialog && !presentation.keyboardOwned
-          : person || pane.focused
+          : automatic
+            ? pane.focused && presentation.composerEmpty && !presentation.hasDialog && !presentation.keyboardOwned
+            : person || pane.focused
         if (!canFocus) return { deny: 'site does not hold the keyboard' }
         for (const key of ['component', 'requestId', 'plugin'] as const) {
           if (Object.hasOwn(rewritten, key) && rewritten[key] !== input[key])
@@ -1488,12 +1532,14 @@ export function createModUi({
             receivedOrigin.name !== (request.origin as Extract<ModUiOrigin, { kind: 'plugin' }>).name)
           throw new TypeError('Mod UI focus cannot rewrite origin')
         const nextElement = rewritten.element
+        if (automatic && nextElement === input.element && pane.focusedElement !== automatic.expectedElement)
+          return { deny: 'the focus moved meanwhile' }
         if (input.element === undefined && nextElement !== undefined ||
             input.element !== undefined && (typeof nextElement !== 'string' || nextElement.length === 0))
           throw new TypeError('Mod UI focus cannot add or remove an element')
         if (nextElement !== undefined &&
             !focusableNode(pane.tree, nextElement as string, input.plugin as string))
-          return { deny: 'element is not drawn in this site' }
+          return { deny: `no element of ${input.plugin} is drawn under that key` }
         const relinquish = nextElement === undefined && person && pane.shown !== false
         let changed = false
         if (person && !relinquish) {
@@ -1505,7 +1551,9 @@ export function createModUi({
           }
         }
         const focused = !relinquish
-        if (pane.focusedElement !== nextElement || pane.focused !== focused) {
+        const nextPlugin = nextElement === undefined ? undefined : input.plugin as string
+        if (pane.focusedElement !== nextElement || pane.focusedPlugin !== nextPlugin || pane.focused !== focused) {
+          pane.focusedPlugin = nextPlugin
           pane.focusedElement = nextElement as string | undefined
           pane.focused = focused
           changed = true
@@ -1518,6 +1566,7 @@ export function createModUi({
         return {}
       }, {
         origin: request.origin,
+        ...(automatic ? { automaticFocus: true as const, signal: automatic.signal } : {}),
         restoreInput: (rewritten, received) => {
           const restored = { ...rewritten }
           for (const key of [

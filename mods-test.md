@@ -1913,3 +1913,12 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 固定官方 2.1.292、候选新制品与工作区新制品，同脚本同输入同 fixture 串行完成 native 流程并正常 exit0。两个本地侧分别与官方的 **19 个完整面板矩形**字符/样式/绝对位置相同，包含 90–240 列、inline 提示、关闭重开、grip focus/hover、真实长内容翻页和单次 callback；不是全终端帧。
 - baseline geometry、旧布局断言、初次 lint、官方 o1/candidate c2 barrier、颜色关闭的误通过及 grip 关闭重开 RED 均保留。旧 o3/c3/r3 的 4 个持焦点阶段仍记录 36 个 grip 颜色差异，最终新制品另有通过证据。
 - 首次自动焦点、全部 API/2.1.292 作者声明、所有 UI/多主题/drag resize/全帧和 G5 全量仍未完成。本批新增内部 bodyRowLimit 不等同于更新公开作者类型。日志字段、检查命令、source/binary SHA 和精确边界见 [本批报告](docs/research/mods-pane-geometry-20261007.md)；原 response/fix-instructions/improvment 保留。
+
+
+## 2026-10-07：Pane 自动聚焦、协商落点与控件回调
+
+- host 自动请求 ui.focus；origin 使用实际控件插件，next.origin 为 engine/core。真实 Worker/Ink/REPL 测试覆盖三种控件、deny/withhold/rewrite/unknown、隐藏注册、跨插件重名键和同次 stdin 的方向键加 Enter。Button 回调保留完整事件参数。
+- 最终候选 382 pass / 0 fail / 10 files，工作区 404 pass / 0 fail / 10 files；两侧完整 release-check 与私有 make build 均 exit0，源码身份一致且自有进程清理完成。
+- 官方 2.1.292、候选 c7、工作区 r7 同 driver/fixture/输入/resize 的九种真实终端场景通过，作者事件参数相同并正常退出。官方隐藏控件保留注册；跨插件重名键的终端首槽行为也明确保留，事件参数属于实际激活插件。
+- 两个本地侧各 35 个完整面板矩形有 31 个完全相同；Input/Select 四帧共 103 个字符/样式差异，comparator exit1，作为下一控件 UI 批次处理。不得用动作通过宣称全部 UI 相同。
+- [完整证据、源码/制品身份与失败记录](docs/research/mods-automatic-focus-20261007.md)，证据根 `/private/tmp/mods-autofocus-1zfoa9oa`。Band/Client、最新作者声明、动态 matcher 扫描、完整 API/上下文/UI/diff、G5 和全部 WIP 全量门禁继续；原用户文件与其他 Claude 工作保留，不 push。
