@@ -16,7 +16,7 @@
 
 ### 版本状态
 
-- 未发布；汇总 2026-09-30 至 2026-10-07 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
+- 未发布；汇总 2026-09-30 至 2026-10-08 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
 
 ### 关联提交
 
@@ -24,6 +24,8 @@
 
 ### 变更内容
 
+- 接通远程 prompt 编辑、补全及元素焦点，18 类客户端控制均有运行入口；对齐只读事实、UTF-16、Unicode 候选、排队/撤销、渲染焦点、控件归属、迟到 deny 和 system/ui_focus。使用方法见 README，固定官方 2.1.292 对跑与完整验收边界见[编辑与焦点专项](docs/research/mods-remote-composer-292-20261008.md)。
+- 修复 Mods capability 异常 catch 对 Proxy 原型和 name getter 的执行风险，保留安全消息和原始错误身份；真实 Worker、编译故障注入与其范围见[异常边界专项](docs/research/mods-capability-error-audit-20261008.md)。
 - 修复 Mods 宿主与嵌套回调的取消原因丢失：保留原始错误对象、预先取消和局部 clock 信号，继续执行撤销、进程回收及有界 stream 收尾。详见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
 - 远程滚动：SDK `ui_scroll` 与插件 `$.ui.scroll` 共用视图位置；接通排队增量合并、只读事件信息、程序移动后的过期回执拒绝、按所属插件查找控件位置，以及 `system/ui_scroll` 与跟随末尾推送。详见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。
 
@@ -34,7 +36,7 @@
 
 ### 测试覆盖
 
-- 已完成分项回归、类型与构建检查；完整 UI/diff 验收与部分远程控制仍有待完成项；已修复此前 host callback 取消回归，验证范围见[取消专项](docs/research/mods-cancellation-audit-292-20261008.md)。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
+- 已完成分项回归、类型与构建检查；18 类远程控制已接通，完整 UI/diff、浏览器 Client 与发布矩阵仍须闭合；已修复此前 host callback 取消回归，验证范围见[取消专项](docs/research/mods-cancellation-audit-292-20261008.md)。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
 
 - SDK Pane 的真实 Worker、协议类型与官方 2.1.292 / 新候选 / 完整工作区控制验收见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)；未覆盖的完整 UI/diff 和其他远程控制继续分别验收。
 

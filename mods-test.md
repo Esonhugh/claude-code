@@ -2128,3 +2128,14 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 本批在固定官方 2.1.292、新候选及完整工作区的新制品上复用历史八类控制的同输入驱动，单独记录剩余 prompt 编辑、补全和焦点差异；旧 274/282 不能覆盖后续 Pane/scroll 提交。准确计数、source/binary 身份、失败前像、门禁与原生结果见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
 
 跨 Agent 报告按冻结 HEAD 与范围核对；`6b13695` 的全量检查、auth 夹具阻塞、Proxy 错误及 UI/diff 未验收结果继续保留，不用有限专项声明完整兼容。本批只分项签名提交，不 push。
+
+
+## 2026-10-08 — 远程编辑、补全、元素焦点与验收有效性
+
+本批补齐 ui_prompt_edit、ui_prompt_autocomplete、ui_focus/system ui_focus，18 类控制有实际 runtime/Worker 入口。新增官方正向候选、空原始 text 拒绝、Unicode 清理、只读恢复、编辑队列、应用草稿隔离、补全撤销、渲染 isFocused、stale holder、Client 不参与控件焦点和不可迟到 deny 的红绿回归。
+
+干净候选相邻18文件 736 pass / 7 skip / 0 fail，完整工作区21文件 821 pass / 7 skip / 0 fail；两侧完整 release-check/build exit0。每侧146真实控制回执、127事件、正常EOF退出与全部私有资源清理；旧八类比较282/282，扩展双端374/374、三方562/562。准确 source/binary 身份、规范化规则、真实失败和范围见[远程编辑与焦点专项](docs/research/mods-remote-composer-292-20261008.md)。7 skip 不计通过，后续说明/脚本变更另跑新轮次。
+
+验收有效性已发现的缺口不算“测试通过”：full-gate2计划readiness+27目标，仅三项实际执行，builtin因禁用侧native ownership提取缺口失败；其余25项未启动。同步前台夹具须明确模式，Workflow保持默认路线验实际产品 caller；逐帧结果须来自从启动捕获的独立PTY字节。历史几何9/7失败原件保留，人为chalk扰动不是根因证明。Proxy catch的真实Worker及编译注入修复见[异常专项](docs/research/mods-capability-error-audit-20261008.md)，不冒称公共CLI。
+
+2026-10-08 npm latest已为2.1.293，本批运行证据固定2.1.292。五类responder、浏览器Client、完整terminal/diff/G5和全量WIP仍是必须闭合的后续目标。继续按功能签名提交，不push或宣布发布。

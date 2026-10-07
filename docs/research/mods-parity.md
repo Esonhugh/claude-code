@@ -4,10 +4,11 @@
 
 ## 2026-10-08 当前状态
 
-- 官方固定对照为 **2.1.292**，本地为 **2.1.280（未发布）**。当前复核以 `cd276f7` 加取消修复增量为候选；完整工作区和其他 Agent 的冻结快照分别记录，不互相替代。
-- 18 类远程客户端控制已接通 **15 类**。旧报告中八类 Unsupported 的 Pane 查询、显示、焦点和关闭由 `6b13695` 接通，滚动由 `cd276f7` 接通；仍缺 **ui_prompt_edit、ui_prompt_autocomplete、ui_focus**。详见[Pane 控制](mods-pane-controls-292-20261007.md)、[滚动](mods-remote-scroll-292-20261008.md)及[八类重新对照](mods-cancellation-audit-292-20261008.md)。
-- 嵌套 trusted stream 取消原因丢失在最新干净 HEAD 和工作区均重新复现；本批修复信号合并，并保留原始对象、局部取消、能力失效、预算暂停及进程回收断言。旧 25 pass / 1 fail 属于修复前快照，不能与其他所选测试合并成通过率。
-- 五类 responder、focus 推送、完整浏览器 Client、终端/diff/G5 和全量 WIP 验收仍开放；专项通过不代表整体放行。其他 Agent 的 `6b13695` 全量检查另有 Proxy 异常处理缺陷、焦点/布局断言和 auth 夹具阻塞，详见取消专项的跨报告核对；这些问题未被本批有限通过覆盖。
+- 本批实际固定对照 **2.1.292**，本地 **2.1.280 未发布**。2026-10-08 新查询 [npm latest](https://registry.npmjs.org/@anthropic-ai/claude-code/latest) 已为 **2.1.293**，尚未将新版逐项制品对照与实测算作通过。
+- **18/18 类远程控制有运行入口**。Pane 与滚动保留已提交证据；本批补齐 ui_prompt_edit、ui_prompt_autocomplete、ui_focus 及 system/ui_focus。旧八类 Unsupported 比较重跑 **282/282**，正向补全/焦点扩展三方比较 **562/562**，范围和失败历史见[编辑与焦点专项](mods-remote-composer-292-20261008.md)。
+- 45ebeb9 保留宿主与嵌套回调取消 reason；1538ee0 修复 capability Proxy catch，分别见[取消专项](mods-cancellation-audit-292-20261008.md)和[异常边界专项](mods-capability-error-audit-20261008.md)。有限回归不覆盖其他故障路径。
+- 完整 release gate **未通过**。readiness、前台转后台已通过；第二轮 builtin 因 diff 日志提取失败，25 个未启动场景不是通过。同步 fixture、Workflow 默认 caller、原始 PTY/逐帧 physical、历史布局失败分别继续处置，详细证据见专项报告。
+- 五类 responder、完整浏览器 Client、terminal/diff/G5 与全部 WIP 生命周期仍是必要目标；任何未实现项不作为兼容豁免。Privacy Mode 保留用户明确授权的设计例外。
 
 ## 历史清单与逐批记录
 

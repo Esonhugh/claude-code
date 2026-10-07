@@ -1,3 +1,7 @@
+import { createModRemoteFocus } from './remoteUiFocus.js'
+import { createModRemotePrompt } from './remoteUiPrompt.js'
+import { runModPromptEdit, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
+import { restorePromptAutocompleteInput, validatePromptAutocompleteInput, validatePromptAutocompleteResult } from './promptAutocomplete.js'
 import { modClientDataProblem } from './remoteUiClient.js'
 import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './matcher.js'
 import { combineModModelSignals } from './modelAbort.js'
@@ -642,11 +646,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (stopped) {
         attachedClients.delete(client.clientId)
         remoteScroll.reconcile()
+      remoteFocus.reconcile()
+        remotePrompt.forget(client.clientId)
         ui.refreshRemotePlacement()
         return
       }
       attachedClients.delete(client.clientId)
       remoteScroll.reconcile()
+      remoteFocus.reconcile()
+      remotePrompt.forget(client.clientId)
       ui.refreshRemotePlacement()
       logForDebugging(`[ModsUIClient] detach clientId=${client.clientId} surface=${client.surface} reason=${input.reason}`)
       await dispatch('session.detach', {surface:client.surface,clientId:client.clientId,reason:input.reason},
@@ -670,7 +678,22 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return dispatch('ui.scroll', input, core, entered?.snapshot ?? active, entered?.table ?? nouns, {origin, ...contract})
     },
   })
-  const stopRemoteScroll = ui.subscribe(() => remoteScroll.reconcile())
+  const remoteFocus = createModRemoteFocus({
+    scroll: remoteScroll, panes: () => ui.paneState(), attached: clientId => attachedClients.has(clientId),
+    placed: () => { const clients=[...attachedClients.values()].filter(client => client.viewport !== undefined); return !clients.length || clients.some(client => client.viewport?.isFullscreen !== undefined) },
+    subscribe: listener => ui.subscribe(listener),
+    dispatch: (input, core, origin, contract, signal) => { const entered = uiContext.getStore(); return dispatch('ui.focus', input, core, entered?.snapshot ?? active, entered?.table ?? nouns, {origin, ...contract, signal}) },
+  })
+  let remoteFocusedPane = ui.paneState().focusedId
+  const stopRemoteScroll = ui.subscribe(() => {
+    remoteScroll.reconcile(); remoteFocus.reconcile()
+    const focused = ui.paneState().focusedId
+    if (focused !== remoteFocusedPane) { remoteFocusedPane = focused; remoteFocus.syncPanes() }
+  })
+  const remotePrompt = createModRemotePrompt({
+    async edit(edit) { const snapshot = capture(); try { return await runModPromptEdit(snapshot, edit) } finally { snapshot.release() } },
+    autocomplete: (input, signal) => dispatch('prompt.autocomplete', input, async () => ({suggestions:[]}), active, nouns, {signal}) as Promise<import('./promptAutocomplete.js').PromptAutocompleteResult>,
+  })
 
   function attachRemoteClient(input: ModRemoteClientInput, signal?: AbortSignal) {
     signal?.throwIfAborted()
@@ -702,6 +725,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (!client) return {detached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
     attachedClients.delete(clientId)
     remoteScroll.reconcile()
+    remoteFocus.reconcile()
+    remotePrompt.forget(clientId)
     ui.refreshRemotePlacement()
     logForDebugging(`[ModsUIClient] detach clientId=${clientId} surface=${client.surface} reason=detach`)
     const settled = stopped ? Promise.resolve() : observeRemoteClient('session.detach', {
@@ -1087,6 +1112,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             typeof input.requestId !== 'string' || !input.requestId ||
             typeof input.key !== 'string' || !input.key)
           throw new TypeError('ui.focus takes { requestId, key }')
+        if (!attachedSurfaces().includes('terminal')) {
+          const abovePrompt = owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'ui.render') && (registration.matcher?.component === undefined || matchesRenderMatcher({component:registration.matcher.component}, {component:'AbovePrompt'})))
+          return remoteFocus.focus({plugin:owner.declaration.name,tier:owner.declaration.tier}, {requestId:input.requestId,key:input.key}, abovePrompt, invocationSignal.getStore(), capabilityContext.getStore()?.next.event)
+        }
         return ui.focus(owner, {
           requestId: input.requestId,
           element: input.key,
@@ -2013,6 +2042,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   }
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
+    if (event === 'prompt.edit') return validatePromptEditResult(result)
+    if (event === 'prompt.autocomplete') return validatePromptAutocompleteResult(result)
     if (event === 'prompt.compose') {
       if (!result || typeof result !== 'object' || !Array.isArray((result as ModInput).sections))
         throw new TypeError('prompt.compose must return sections')
@@ -2147,7 +2178,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         throw new Error('ui.resolve must return an element constructor table')
       return
     }
-    if (['ui.press', 'ui.input', 'ui.select', 'ui.focus', 'ui.scroll', 'ui.blit'].includes(event)) {
+    if (event === 'ui.focus') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.focus must return an object')
+      const deny = (result as {deny?:unknown}).deny
+      if (deny !== undefined && (typeof deny !== 'string' || deny === '')) throw new TypeError('ui.focus deny must be a non-empty string')
+      return
+    }
+    if (['ui.press', 'ui.input', 'ui.select', 'ui.scroll', 'ui.blit'].includes(event)) {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object`)
       return
     }
@@ -2309,6 +2346,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner)
           .filter(hook => !['ui.message', 'ui.fault'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
         signal: combined.signal, origin: options.origin,
+        ...(event === 'prompt.edit' ? {budgetMs:50} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
         // Only the calling frame is recursive; sibling policy hooks still run.
         ...(options.origin ? { skip: {
@@ -2318,10 +2356,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateResult: (result, nextResults) => {
           if (event === 'ui.render' && options.validateRenderTree) options.validateRenderTree(result)
           else validateResult(event, result, input)
+          if (event === 'ui.focus' && (result as {deny?:unknown}).deny !== undefined && nextResults.some(value => (value as {deny?:unknown}).deny === undefined)) throw new TypeError('ui.focus cannot deny after next() committed a move')
           options.validateResult?.(result, nextResults)
         },
         validateInput: (value, received) => {
           if (event === 'ui.copy') validateModUiCopyArgs(value)
+          if (event === 'prompt.edit') validatePromptEditInput(value, received)
+          if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
           if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
             throw new TypeError('model.fork takes only {prompt: string}')
@@ -2340,6 +2381,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         },
         restoreInput: (value, received) => {
           if (event === 'session.measure') return received
+          if (event === 'prompt.autocomplete') return restorePromptAutocompleteInput(value, received)
+          if (event === 'prompt.edit') {
+            const restored = {...value}
+            for (const key of ['origin', 'key']) if (!Object.hasOwn(restored, key) && Object.hasOwn(received, key)) restored[key] = received[key]
+            return restored
+          }
           const restored = options.restoreInput?.(value, received) ?? value
           if (event === 'session.compact' && restored.agentId === undefined && received.agentId !== undefined)
             return { ...restored, agentId: received.agentId }
@@ -2957,6 +3004,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       .finally(() => {
         attachedClients.clear()
         remoteScroll.reconcile()
+        remoteFocus.reconcile()
+        remotePrompt.clear()
         clientTransitions.clear()
         clearTimeout(timer)
         state.reset()
@@ -3046,6 +3095,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     isDiffOwned,
     /** Trusted SDK transport roster; not an author capability. */
     remoteScroll,
+    remoteFocus,
+    remotePrompt,
     remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces,
       has: (clientId: string) => attachedClients.has(clientId),
       placesPanes: (clientId: string) => attachedClients.get(clientId)?.viewport?.isFullscreen !== undefined,
@@ -3178,7 +3229,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       disposal = Promise.resolve().then(() => runCleanups([
         () => controller.abort(),
         () => measurements.stop(),
-        () => { stopRemoteScroll(); remoteScroll.dispose() },
+        () => { stopRemoteScroll(); remoteScroll.dispose(); remoteFocus.dispose(); remotePrompt.clear() },
         () => ui.dispose(),
         () => runCleanups([...activations].map(owner => () => disposeActivation(owner))),
         () => { active = []; nouns = {} },

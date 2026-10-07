@@ -200,10 +200,12 @@ export function createModRemoteRenderer(
           : { viewport: request.viewport }),
       })
       runtime.remoteScroll.observe(request)
+      runtime.remoteFocus.observeRequest(request)
       const key = `${input.surface}\0${input.component}\0${input.requestId}`
       let entry = sites.get(key)
       const hooked = runtime.renderHooks.matchesComponent(input.component)
       if (!runtime.renderHooks.matches(input)) {
+        runtime.remoteFocus.observe(request)
         if (entry) await remove(key, entry)
         if (clientGeneration)
           clients.record(clientGeneration, { type: 'engine', ref: 0 })
@@ -275,6 +277,7 @@ export function createModRemoteRenderer(
         }
       }
       const tree = wireTree(entry!.tree) as SDKUIRenderElement
+      runtime.remoteFocus.observe(request, tree)
       if (clientGeneration) clients.record(clientGeneration, tree)
       const props = structuredClone(entry!.selectedProps!)
       const rewritten = entry!.rewritten === true

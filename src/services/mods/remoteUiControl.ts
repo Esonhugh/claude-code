@@ -4,7 +4,7 @@ import {
   SDKControlUIRequestSchema,
   SDKControlUIClientFaultRequestSchema,
 } from '../../entrypoints/sdk/controlSchemas.js'
-import type { SDKUIInvalidateMessage, SDKUIPanesMessage, SDKUIScrollMessage, SDKControlUIPanesResponse } from '../../entrypoints/sdk/modsControlTypes.js'
+import type { SDKUIInvalidateMessage, SDKUIPanesMessage, SDKUIScrollMessage, SDKUIFocusMessage, SDKControlUIPanesResponse } from '../../entrypoints/sdk/modsControlTypes.js'
 import type { ModsRuntime } from './runtime.js'
 import { createModRemoteRenderer } from './remoteUiRender.js'
 
@@ -15,6 +15,9 @@ export const modUIDetachError =
 export const modUIRenderError =
   'ui_render: surface must be "desktop", "mobile" or "vscode", component a render site name, instance_id a string, props an object, client_id (when given) 1-64 safe characters, viewport (when given) positive integer columns and rows with isFullscreen (when given) a boolean, and on_screen (when given) null or integers first <= last < of'
 const errors: Record<string, string> = {
+  ui_prompt_edit: 'ui_prompt_edit: text must be a string of at most 1000000 characters, cursor an integer >= 0, key (when given) an object with key a string of 1-32 characters and ctrl, shift, meta each true when present, by (when given) "person" or "app", surface (when given) "desktop", "mobile" or "vscode" and client_id (when given) 1-64 of letters, digits, . _ -',
+  ui_prompt_autocomplete: 'ui_prompt_autocomplete: text must be a string of at most 1000000 characters, cursor an integer >= 0, surface (when given) "desktop", "mobile" or "vscode" and client_id (when given) 1-64 of letters, digits, . _ -',
+  ui_focus: 'ui_focus: component must be "Pane" or "AbovePrompt", instance_id a string of at most 256 characters, is_held a boolean, element (when given) null or {plugin, key} of at most 256 characters each, by (when given) "person" or "auto", surface (when given) "desktop", "mobile" or "vscode"',
   ui_scroll: 'ui_scroll: component must be "Pane" or "AbovePrompt", instance_id a string of at most 256 characters, offset, body_rows and content_rows non-negative integers, by an integer, pointer (when given) integer column and row, keyed (when given) at most 512 of {plugin, key, top, bottom}, surface (when given) "desktop", "mobile" or "vscode"',
   ui_panes: 'ui_panes: client_id (when given) 1-64 safe characters',
   ui_pane_show: 'ui_pane_show: id must be 1-64 of letters, digits, _ or -',
@@ -44,6 +47,7 @@ export function createModRemoteUIControl(options: {
     message: Omit<SDKUIInvalidateMessage, 'uuid' | 'session_id'>,
   ): void
   panes?(message: Omit<SDKUIPanesMessage, 'uuid' | 'session_id'>): void
+  focus?(message: Omit<SDKUIFocusMessage, 'uuid' | 'session_id'>): void
   scroll?(message: Omit<SDKUIScrollMessage, 'uuid' | 'session_id'>): void
   runtime(): ModsRuntime | undefined
   success(message: SDKControlRequest, response: Record<string, unknown>): void
@@ -77,7 +81,8 @@ export function createModRemoteUIControl(options: {
       publishPanes(runtime, state)
     })
     const stopScroll = runtime.remoteScroll.subscribe(message => options.scroll?.(message))
-    subscriptions.set(runtime, () => { stopPanes(); stopScroll() })
+    const stopFocus = runtime.remoteFocus.subscribe(message => options.focus?.(message))
+    subscriptions.set(runtime, () => { stopPanes(); stopScroll(); stopFocus() })
   }
   const pending = new Set<Promise<void>>()
   const jobs = new Map<string, { cancelled: boolean }>()
@@ -149,7 +154,7 @@ export function createModRemoteUIControl(options: {
         options.error(message, errors[subtype]!)
         return true
       }
-      const cancellable = !['ui_scroll', 'ui_client_fault', 'ui_panes', 'ui_pane_show', 'ui_pane_focus', 'ui_close'].includes(subtype)
+      const cancellable = !['ui_focus', 'ui_prompt_edit', 'ui_prompt_autocomplete', 'ui_scroll', 'ui_client_fault', 'ui_panes', 'ui_pane_show', 'ui_pane_focus', 'ui_close'].includes(subtype)
       const previous = jobs.get(message.request_id)
       if (previous && cancellable) previous.cancelled = true
       const job = { cancelled: false }
@@ -174,14 +179,25 @@ export function createModRemoteUIControl(options: {
         try {
           observePanes(runtime)
           const request = parsed.data
-          if (request.subtype === 'ui_scroll') {
+          if (request.subtype === 'ui_prompt_edit') {
+            return runtime.remotePrompt.edit(request).then(result => success({...result}), failure)
+          } else if (request.subtype === 'ui_prompt_autocomplete') {
+            return runtime.remotePrompt.autocomplete(request).then(result => success({...result}), failure)
+          } else if (request.subtype === 'ui_focus') {
+            return runtime.remoteFocus.report(request).then(result => success({...result}), failure)
+          } else if (request.subtype === 'ui_scroll') {
             return runtime.remoteScroll.report(request).then(result => success({...result}), failure)
           } else if (request.subtype === 'ui_panes') {
             success({...paneState(runtime)})
           } else if (request.subtype === 'ui_pane_show') {
-            success({shown_id: runtime.ui.showPane(request.id)})
+            const before = runtime.ui.paneState().focusedId
+            const shown_id = runtime.ui.showPane(request.id)
+            if (before !== runtime.ui.paneState().focusedId) runtime.remoteFocus.syncPanes(request.client_id ?? `${request.surface ?? 'desktop'}:default`)
+            success({shown_id})
           } else if (request.subtype === 'ui_pane_focus') {
-            success({focused_id: runtime.ui.focusPane(request.id)})
+            const focused_id = runtime.ui.focusPane(request.id)
+            runtime.remoteFocus.syncPanes(request.client_id ?? `${request.surface ?? 'desktop'}:default`)
+            success({focused_id})
           } else if (request.subtype === 'ui_close') {
             return runtime.ui.closePane(request.id).then(closed => success({closed}), failure)
           } else if (request.subtype === 'ui_attach') {

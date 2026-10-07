@@ -33,7 +33,7 @@ const supportedEvents = new Set([
   'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run',
   'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
   'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage',
-  'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+  'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status', 'ui.toast', 'ui.copy',
   'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault',
 ])
@@ -44,7 +44,7 @@ const scanOnlyEvents = new Set([
 ])
 const supportedCalls = new Set([...supportedEvents].filter(event => ![
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
-  'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe',
+  'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit',
 ].includes(event)))
 supportedCalls.add('config.list')
 supportedCalls.add('mcp.call')

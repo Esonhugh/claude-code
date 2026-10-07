@@ -107,6 +107,8 @@ export function createModRemoteScroll(options:{
   return view
  }
  return {
+  site(component:SDKUIScrollComponent,id:string){const view=views.get(keyOf(component,id));return view&&valid(component,id)?{clientId:view.clientId}:undefined},
+  ensureSite(component:SDKUIScrollComponent,id:string,clientId:string){ensure(component,id,clientId)},
   subscribe(listener:(message:Omit<SDKUIScrollMessage,'uuid'|'session_id'>)=>void){listeners.add(listener);return()=>{listeners.delete(listener)}},
   reconcile(){for(const[key,view]of views)if(!valid(view.component,view.id)||!options.attached(view.clientId))views.delete(key)},
   observe(request:SDKControlUIRenderRequest){

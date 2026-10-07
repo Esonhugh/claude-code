@@ -414,3 +414,9 @@ export type OrphanedPermission = {
   permissionResult: PermissionResult
   assistantMessage: AssistantMessage
 }
+
+export type TextInputEdit = {
+  before: {text:string;cursor:number}
+  after: {text:string;cursor:number}
+  key?: {key:string;ctrl?:true;shift?:true;meta?:true}
+}

@@ -1,3 +1,4 @@
+import type { PromptDecoration } from './promptEdit.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { ProcessUserInputBaseResult } from '../../utils/processUserInput/processUserInput.js'
 import type { ModDispatchOptions, ModSnapshot } from './runtime.js'
@@ -27,6 +28,7 @@ export type PromptOrigin =
 export type PromptBox = { text: string; cursor: number }
 export type PromptFillMode = 'replace' | 'append' | 'insert'
 export type PromptFillInput = {
+  decorations?: PromptDecoration[]
   text: string
   mode: PromptFillMode
   origin: { kind: 'engine' } | { kind: 'plugin'; name: string }
