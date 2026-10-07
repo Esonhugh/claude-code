@@ -14,6 +14,7 @@ import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } 
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { isDeepStrictEqual } from 'node:util'
 import { isProxy } from 'node:util/types'
+import { createModRemoteScroll } from './remoteUiScroll.js'
 import { createModUiRealm } from './uiRealm.js'
 import type { Tool } from '../../Tool.js'
 import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
@@ -640,10 +641,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       if (stopped) {
         attachedClients.delete(client.clientId)
+        remoteScroll.reconcile()
         ui.refreshRemotePlacement()
         return
       }
       attachedClients.delete(client.clientId)
+      remoteScroll.reconcile()
       ui.refreshRemotePlacement()
       logForDebugging(`[ModsUIClient] detach clientId=${client.clientId} surface=${client.surface} reason=${input.reason}`)
       await dispatch('session.detach', {surface:client.surface,clientId:client.clientId,reason:input.reason},
@@ -658,6 +661,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (!signal?.aborted) diagnostic('engine', event, error)
       })
   }
+
+  const remoteScroll = createModRemoteScroll({
+    panes: () => ui.paneState().panes,
+    attached: clientId => attachedClients.has(clientId),
+    dispatch: (input, core, origin, contract) => {
+      const entered = uiContext.getStore()
+      return dispatch('ui.scroll', input, core, entered?.snapshot ?? active, entered?.table ?? nouns, {origin, ...contract})
+    },
+  })
+  const stopRemoteScroll = ui.subscribe(() => remoteScroll.reconcile())
 
   function attachRemoteClient(input: ModRemoteClientInput, signal?: AbortSignal) {
     signal?.throwIfAborted()
@@ -688,6 +701,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const client = attachedClients.get(clientId)
     if (!client) return {detached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
     attachedClients.delete(clientId)
+    remoteScroll.reconcile()
     ui.refreshRemotePlacement()
     logForDebugging(`[ModsUIClient] detach clientId=${clientId} surface=${client.surface} reason=detach`)
     const settled = stopped ? Promise.resolve() : observeRemoteClient('session.detach', {
@@ -1086,7 +1100,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const target = input.to
         const site = input.in
         const block = input.block
-        const edge = target === 'start' || target === 'end' ? target : undefined
+        const edge: 'start' | 'end' | undefined = target === 'start' || target === 'end' ? target : undefined
         const targetRequestId = target && typeof target === 'object' && !Array.isArray(target) &&
           typeof (target as ModInput).requestId === 'string' &&
           (target as ModInput).requestId !== '' && !Object.hasOwn(target, 'key')
@@ -1102,14 +1116,21 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             site !== undefined && (typeof site !== 'string' || !site) ||
             block !== undefined && !['start', 'center', 'end', 'nearest'].includes(block as string))
           throw new TypeError('ui.scroll takes { to, in?, block? }')
-        return ui.reveal(owner, {
+        const request = {
           ...(typeof site !== 'string' ? {} : { requestId: site }),
           ...(targetRequestId === undefined ? {} : { targetRequestId }),
           ...(key === undefined ? {} : { key }),
           ...(edge === undefined ? {} : { edge }),
           ...(block === undefined ? {} : { block: block as 'start' | 'center' | 'end' | 'nearest' }),
-          origin: { kind: 'plugin', name: owner.declaration.name },
-        })
+          origin: { kind: 'plugin' as const, name: owner.declaration.name },
+        }
+        if (binding?.surface !== 'terminal') {
+          const abovePrompt = owner.environment.registrations.some(registration =>
+            matchesModEventPattern(registration.event, 'ui.render') &&
+            (registration.matcher?.component === undefined || matchesRenderMatcher({component:registration.matcher.component}, {component:'AbovePrompt'})))
+          return remoteScroll.reveal({plugin:owner.declaration.name,tier:owner.declaration.tier}, request, abovePrompt)
+        }
+        return ui.reveal(owner, request)
       }
       case 'ui.invalidate':
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
@@ -2936,6 +2957,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }).then(() => {}, error => diagnostic('engine', 'session.end', error))
       .finally(() => {
         attachedClients.clear()
+        remoteScroll.reconcile()
         clientTransitions.clear()
         clearTimeout(timer)
         state.reset()
@@ -3024,8 +3046,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     config,
     isDiffOwned,
     /** Trusted SDK transport roster; not an author capability. */
+    remoteScroll,
     remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces,
       has: (clientId: string) => attachedClients.has(clientId),
+      placesPanes: (clientId: string) => attachedClients.get(clientId)?.viewport?.isFullscreen !== undefined,
     },
 
     async remoteClientPress(input: ModInput, type: 'press' | 'input' | 'select'): Promise<{ reached?: ModInput }> {
@@ -3155,6 +3179,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       disposal = Promise.resolve().then(() => runCleanups([
         () => controller.abort(),
         () => measurements.stop(),
+        () => { stopRemoteScroll(); remoteScroll.dispose() },
         () => ui.dispose(),
         () => runCleanups([...activations].map(owner => () => disposeActivation(owner))),
         () => { active = []; nouns = {} },

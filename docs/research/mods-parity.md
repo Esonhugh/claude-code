@@ -1,3 +1,5 @@
+当前增量（2026-10-08）：[远程滚动专项](mods-remote-scroll-292-20261008.md) 接通 SDK ui_scroll、无终端作者滚动和 system/ui_scroll；18 类客户端控制中 15 类接通。剩余 ui_focus、ui_prompt_edit、ui_prompt_autocomplete、五类 responder、浏览器 Client 和完整 UI/diff/G5 仍未整体验收。下文有日期的状态属于对应批次，不替代本次验收边界。
+
 # Mods 完整兼容清单
 
 本清单用于持续完成官方 Mods 对齐，当前尚未完成。它与 [mods-test.md](../../mods-test.md) 的逐轮证据一起维护；旧 [claude-mods.md](claude-mods.md) 保留当时的研究结论。

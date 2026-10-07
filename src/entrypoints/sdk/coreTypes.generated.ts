@@ -551,12 +551,14 @@ export type SDKSessionInfo = {
 }
 
 // Union of all SDK messages
+export type SDKUIScrollMessage = import('./modsControlTypes.js').SDKUIScrollMessage
 export type SDKUIPanesMessage = import('./modsControlTypes.js').SDKUIPanesMessage
 export type SDKUIInvalidateMessage = import('./modsControlTypes.js').SDKUIInvalidateMessage
 
 export type SDKMessage =
   | SDKUIInvalidateMessage
   | SDKUIPanesMessage
+  | SDKUIScrollMessage
   | SDKAssistantMessage
   | SDKUserMessage
   | SDKUserMessageReplay

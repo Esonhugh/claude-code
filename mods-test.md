@@ -2112,3 +2112,10 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 接通 ui_panes、ui_pane_show、ui_pane_focus、ui_close 和 system/ui_panes，共用作者 pane 状态并支持无终端登记。对齐焦点请求与实际焦点、viewport 放置、同 ID 归属与属性更新、peer 关闭、重复关闭去重、取消忽略、异常恢复与 Unicode 标题；关闭后撤销外部绘制和 Client 地址。原生比较发现并修复登记阶段 isShown 与 public close origin 差异。
 
 13 文件门禁：候选 464 pass / 0 fail / 3 skip / 1633 expect，工作区 481 pass / 0 fail / 3 skip / 1685 expect；两侧 release-check 和私有 build 均 exit0。三种二进制各 161 控制回执、131 观察、24 pane 推送，592 项比较全通过，正常 EOF exit0 与全部清理。终端相邻结果与完整边界见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)。本批不代替完整 UI/diff/G5、剩余四控制、五 responder、浏览器 Client 或旧 response 全量 WIP 验收。
+
+
+## 2026-10-08 — SDK 远程滚动与作者定位
+
+本批接通 ui_scroll / system/ui_scroll，在无终端会话中共用 $.ui.scroll 的站点、位置、所属插件 key 行与 follow-end 状态。覆盖首次报告、缓存位置、clamp、hook deny/throw/只读字段恢复、作者 end/key/start、程序移动使在途报告过期、合并排队增量、取消仍回包、AbovePrompt 固定 ID、客户端 detach 和同名 pane 替换隔离。验收命令、制品身份、回执/事件/推送对照和终端相邻回归见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。
+
+当前接通 15/18 类控制。完整 UI/diff/G5、ui_focus、prompt edit/autocomplete、五类 responder、外部浏览器 Client 和旧 WIP 全量门禁仍开放；原 response/fix-instructions/improvment 的历史报告保留，不以本批有限通过宣布全部变更可发布。继续按功能分批签名提交，不 push。

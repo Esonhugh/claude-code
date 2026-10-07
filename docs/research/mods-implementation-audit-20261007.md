@@ -1,8 +1,10 @@
+后续更新（2026-10-08）：[远程滚动专项](mods-remote-scroll-292-20261008.md) 接通 ui_scroll 和 system/ui_scroll，与无终端插件 $.ui.scroll 共用视图。当前控制接通 15/18，剩余 ui_focus、ui_prompt_edit、ui_prompt_autocomplete；历史缺口表保留。完整 UI/diff 与五类 responder 仍开放。
+
 # Mods 实现、提交、文档与生命周期复核
 
 日期：2026-10-07。结论：已形成可运行的 Mods 宿主，所选核心生命周期和已接通远程路径表现稳定，但尚未达到完整官方兼容；当前不能认定整体与官方一样顺畅。提交附带文档较及时，汇总文档存在滞后和重复。
 
-后续更新（2026-10-08）：[SDK Pane 专项](mods-pane-controls-292-20261007.md) 已接通 ui_panes、ui_pane_show、ui_pane_focus、ui_close、无终端登记和 system/ui_panes。下文八项 Unsupported 记录属于本报告当时的固定制品，保留作为历史证据；当前缺失客户端控制减少为四项，完整 UI/diff 与其余门禁的结论未被这一批替代。
+后续更新（2026-10-08）：[SDK Pane 专项](mods-pane-controls-292-20261007.md) 已接通 ui_panes、ui_pane_show、ui_pane_focus、ui_close、无终端登记和 system/ui_panes。下文八项 Unsupported 记录属于本报告当时的固定制品，保留作为历史证据；该 Pane 批次后缺失客户端控制减少为四项，完整 UI/diff 与其余门禁的结论未被这一批替代。
 
 ## 范围与版本
 

@@ -1903,7 +1903,7 @@ cat requests.jsonl | claude -p --input-format stream-json --output-format stream
 
 `session.attach` 和 `session.detach` 是观察事件：调用 `$.session.surfaces()` 已能看到更新后的 roster，`next(e)` 不负责提交连接，返回伪造 clientId、抛错或取消通知也不会回滚传输状态。终端 binding 不发 attach；session.end 的 detach 使用 `reason:'end'`。调试日志可查找 `[ModsUIClient]`。
 
-当前入口接通连接、远程绘制、基础回调和 Client 模块查询；远程 responders、pane 控制和完整 UI/diff 仍在实现与验收。`answers` 只接受官方声明的五类 responder 名称，数组最多 5 项（重复值仍合法），不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+当前入口接通连接、远程绘制、基础回调、Client 模块查询、Pane 控制和滚动；远程 responders、焦点、prompt 控制和完整 UI/diff 仍在实现与验收。`answers` 只接受官方声明的五类 responder 名称，数组最多 5 项（重复值仍合法），不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 
 ### SDK 远程 UI 协议类型与校验
@@ -1932,7 +1932,7 @@ type RenderResponse = SDKControlUIResponseFor<typeof request>
 bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/entrypoints/sdk/controlSchemas.ssh.test.ts ./src/services/mods/remoteUiControl.test.ts
 ```
 
-协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message` / `ui_client_fault` 及 `ui_invalidate` 推送；其余控制器、pane/scroll/focus 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
+协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message` / `ui_client_fault` 及 `ui_invalidate` 推送；Pane/scroll 的控制与推送见下文专项；focus、prompt 控制和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 
 ### SDK 远程绘制与 Client 模块
@@ -1949,7 +1949,7 @@ Button / Input / Select 回执的 press 含 plugin 和 opaque handle。将它们
 
 桌面 Client 节点通过 client.plugin 标识所有者，client_modules 给出插件到模块包 hash 的映射。用 ui_client_module 查询 {plugin,hash,modules,runtime,limits,files}。宿主从已准入的源快照编译和重写 import，模块由外部 surface 执行；不得将包中的源代码当成宿主 hook 运行。随包返回官方 2.1.292 的固定 surface runtime/types 数据，hash 包含文件、模块清单和 limits。
 
-调试日志 `[ModsUIRemote]` 记录 surface/component/instance/drawing、hooked 和 rewritten，不新增 props 正文日志。实际三方回执、来源和边界见 [远程绘制专项](docs/research/mods-render-bridge-292-20261007.md)。客户端浏览器挂载、pane/scroll/focus 及五类 responder 仍需独立完成和验收；Client 交互、消息和故障见后续专项。
+调试日志 `[ModsUIRemote]` 记录 surface/component/instance/drawing、hooked 和 rewritten，不新增 props 正文日志。实际三方回执、来源和边界见 [远程绘制专项](docs/research/mods-render-bridge-292-20261007.md)。客户端浏览器挂载、focus 及五类 responder 仍需独立完成和验收；Pane/scroll 见后续专项，Client 交互、消息和故障见后续专项。
 
 
 ### 外部 Client 的交互与消息
@@ -1970,7 +1970,7 @@ Button / Input / Select 回执的 press 含 plugin 和 opaque handle。将它们
 bun test --no-env-file ./src/services/mods/remoteUiClient.test.ts ./src/services/mods/remoteUiRender.test.ts
 ```
 
-真实官方/候选/完整工作区的验证和未完成范围见 [Client 交互验收](docs/research/mods-client-events-292-20261007.md)。当前接通 10 类客户端控制和 ui_invalidate；剩余 8 类、5 类 responder、pane/scroll/focus 推送及完整官方 diff viewer 流程继续对齐。
+真实官方/候选/完整工作区的验证和未完成范围见 [Client 交互验收](docs/research/mods-client-events-292-20261007.md)。截至滚动专项，当前接通 15 类客户端控制和 ui_invalidate/ui_panes/ui_scroll；剩余 3 类、5 类 responder、focus 推送及完整官方 diff viewer 流程继续对齐。
 
 
 ### 外部 Client 故障与恢复
@@ -2038,4 +2038,19 @@ on('session.start', async ($, e, next) => {
 
 `ui_close` 以 person 来源经过 `ui.close` hooks，回复 `{closed:true|false}`；拒绝关闭或重复关闭仍在处理的 pane 时为 `false`。不存在的 ID 返回 `true`。已关闭 pane 的外部回调与 Client 地址随后失效。同 ID 更新保留最初的插件归属，并替换可选标题、行列和行为属性；跨插件更新不让调用者在 `$.ui.panes()` 中取得该记录。
 
-作者接口和安装版本声明的取用规则见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。本批对照与边界见 [SDK Pane 专项](docs/research/mods-pane-controls-292-20261007.md)；其余远程 scroll/focus、prompt edit/autocomplete、五类 responder 和完整 UI/diff 流程仍需各自验收。
+作者接口和安装版本声明的取用规则见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。本批对照与边界见 [SDK Pane 专项](docs/research/mods-pane-controls-292-20261007.md)；其余远程 focus、prompt edit/autocomplete、五类 responder 和完整 UI/diff 流程仍需各自验收。
+
+
+### SDK 远程滚动与插件定位
+
+已接通 `ui_scroll`，当前支持 18 类客户端控制中的 15 类。渲染 Pane 或 AbovePrompt 后，用非负整数表示窗口行数和位置，用整数 `by` 表示滚动增量：
+
+```jsonl
+{"type":"control_request","request_id":"scroll-1","request":{"subtype":"ui_scroll","client_id":"reader","component":"Pane","instance_id":"pane-1","offset":0,"by":3,"body_rows":20,"content_rows":100}}
+```
+
+Pane 必须已经登记且处于可放置状态；AbovePrompt 的 `instance_id` 固定为 `above-prompt`。尚未绘制时，已连接客户端也可以提交报告。布局客户端 attach 的回执后会补发当前 `ui_panes`，若放置变化已经发过清单则不会再补发。服务器沿用同一站点的缓存位置，首次未绘制报告从 0 开始；后续 `offset` 不覆盖缓存。回执为 `{moved,offset,deny?,follow_end?}`，合法请求被拒绝仍返回成功的控制响应，格式非法则返回错误。
+
+无终端会话中的插件 `$.ui.scroll({to:"end",in:"pane-1"})`、`to:"start"` 或 `to:{key:"item"}` 共用这份状态；控件定位只查找所属插件的 `keyed` 行，支持 `block:"nearest"|"start"|"center"|"end"`。外部界面收到 `system/ui_scroll` 后应用该位置，`follow_end:true` 表示继续跟随末尾。人的滚动报告不会生成同名推送。插件在报告处理期间移动窗口后，原报告会以 `the window moved meanwhile` 拒绝，避免覆盖新位置；排队的普通报告合并增量，控制取消仍保留回执。
+
+`[ModsUIRemote] ui.scroll` 调试日志记录站点、客户端、来源、增量、结果位置与拒绝原因。运行 `bun test --no-env-file ./src/services/mods/remoteUiScroll.test.ts`，完整证据见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。`ui_focus`、prompt edit/autocomplete、五类 responder、浏览器 Client 和完整官方 diff viewer 仍需后续验收；终端滚动继续走既有宿主路径。作者契约参考 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。

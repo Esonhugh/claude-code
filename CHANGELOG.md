@@ -24,6 +24,8 @@
 
 ### 变更内容
 
+- 远程滚动：SDK `ui_scroll` 与插件 `$.ui.scroll` 共用视图位置；接通排队增量合并、只读事件信息、程序移动后的过期回执拒绝、按所属插件查找控件位置，以及 `system/ui_scroll` 与跟随末尾推送。详见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。
+
 - 集中完善 Mods 生命周期与作者工具、官方 2.1.292 类型与 diff、终端及部分 SDK UI、Agent/fork 和会话恢复；开放 Channels，修复 OAuth 与模型缓存隔离，增加 OpenAI Daybreak 配置，并保留 Privacy Mode。
 
 - 新增无终端 Mods Pane 登记与 SDK 列表、显示、焦点、关闭控制；支持 system/ui_panes 状态推送，焦点请求和实际焦点分开保存，按远程 viewport 放置等待项。

@@ -199,6 +199,7 @@ export function createModRemoteRenderer(
           ? {}
           : { viewport: request.viewport }),
       })
+      runtime.remoteScroll.observe(request)
       const key = `${input.surface}\0${input.component}\0${input.requestId}`
       let entry = sites.get(key)
       const hooked = runtime.renderHooks.matchesComponent(input.component)
