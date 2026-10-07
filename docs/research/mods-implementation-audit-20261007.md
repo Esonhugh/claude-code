@@ -1,10 +1,8 @@
-后续更新（2026-10-08）：[远程滚动专项](mods-remote-scroll-292-20261008.md) 接通 ui_scroll 和 system/ui_scroll，与无终端插件 $.ui.scroll 共用视图。当前控制接通 15/18，剩余 ui_focus、ui_prompt_edit、ui_prompt_autocomplete；历史缺口表保留。完整 UI/diff 与五类 responder 仍开放。
-
 # Mods 实现、提交、文档与生命周期复核
 
 日期：2026-10-07。结论：已形成可运行的 Mods 宿主，所选核心生命周期和已接通远程路径表现稳定，但尚未达到完整官方兼容；当前不能认定整体与官方一样顺畅。提交附带文档较及时，汇总文档存在滞后和重复。
 
-后续更新（2026-10-08）：[SDK Pane 专项](mods-pane-controls-292-20261007.md) 已接通 ui_panes、ui_pane_show、ui_pane_focus、ui_close、无终端登记和 system/ui_panes。下文八项 Unsupported 记录属于本报告当时的固定制品，保留作为历史证据；该 Pane 批次后缺失客户端控制减少为四项，完整 UI/diff 与其余门禁的结论未被这一批替代。
+当前状态（2026-10-08）：[取消与缺口复核](mods-cancellation-audit-292-20261008.md) 重新区分固定构建与当前结果。`6b13695` 已接通四类 Pane 控制，`cd276f7` 已接通滚动；余下三类仍缺。该报告里的八类 Unsupported、274/282 和 host callback 25/1 是 `005fae9` 当时的证据，保留原结果，不作为后续版本的结论。取消修复及全量 UI/diff 的验收边界见新报告。
 
 ## 范围与版本
 
@@ -49,7 +47,7 @@ flowchart LR
 
 热更会再次执行 register，普通闭包状态不能当作持久化；需要跨重载状态时使用 state/store。作者模式的 Enable/Not now 和轮次结束加载有独立生命周期，不能用普通文件 watcher 代替。[官方创建与重载说明](https://code.claude.com/docs/en/plugins/mods/create)。
 
-## 已确认问题与优先顺序
+## 基线已确认问题与优先顺序
 
 1. **优先接通剩余 SDK 控制。** `src/services/mods/remoteUiControl.ts:17` 的路由表只有十类控制，其他合法 subtype 落入 `src/cli/print.ts` 的 Unsupported 分支。此次官方与新构建同输入验证八个缺口，影响远程 prompt 编辑/补全、Pane 管理、滚动和焦点；具体回执见下一节。这是运行时差异，不只是类型缺失。
 2. **取消回归仍红。** `src/services/mods/runtimeHostHooks.test.ts` 的 `trusted stream callback nested work pauses budget and inherits abort` 期望 `cancel stream callback`，实际为 `The operation was aborted.`。干净 HEAD 与工作区都复现 25 pass / 1 fail。待定位 `dispatchModStream`、hostCallbackFacade 和共享 AbortSignal 的竞态/原因传递；本轮没有将其直接推断为所有外部 hook 的取消失败。

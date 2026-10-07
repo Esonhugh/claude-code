@@ -2119,3 +2119,12 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 本批接通 ui_scroll / system/ui_scroll，在无终端会话中共用 $.ui.scroll 的站点、位置、所属插件 key 行与 follow-end 状态。覆盖首次报告、缓存位置、clamp、hook deny/throw/只读字段恢复、作者 end/key/start、程序移动使在途报告过期、合并排队增量、取消仍回包、AbovePrompt 固定 ID、客户端 detach 和同名 pane 替换隔离。验收命令、制品身份、回执/事件/推送对照和终端相邻回归见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。
 
 当前接通 15/18 类控制。完整 UI/diff/G5、ui_focus、prompt edit/autocomplete、五类 responder、外部浏览器 Client 和旧 WIP 全量门禁仍开放；原 response/fix-instructions/improvment 的历史报告保留，不以本批有限通过宣布全部变更可发布。继续按功能分批签名提交，不 push。
+
+
+## 2026-10-08 — 取消原因与八类历史缺口重新核对
+
+在 `cd276f7` 的干净候选和完整工作区分别重新复现 trusted stream 嵌套取消：25 pass / 1 fail，原错误被通用 AbortError 替换。修复 Mods dispatch 和 trusted callback 的信号合并，保留原始 reason；已预先取消、局部 clock、能力结束、stream result、预算暂停和真实所属进程回收分别验证。相邻三个旧断言由通用错误名称改为严格原始对象相等，未删除清理或不重放断言。
+
+本批在固定官方 2.1.292、新候选及完整工作区的新制品上复用历史八类控制的同输入驱动，单独记录剩余 prompt 编辑、补全和焦点差异；旧 274/282 不能覆盖后续 Pane/scroll 提交。准确计数、source/binary 身份、失败前像、门禁与原生结果见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
+
+跨 Agent 报告按冻结 HEAD 与范围核对；`6b13695` 的全量检查、auth 夹具阻塞、Proxy 错误及 UI/diff 未验收结果继续保留，不用有限专项声明完整兼容。本批只分项签名提交，不 push。

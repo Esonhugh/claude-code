@@ -64,9 +64,11 @@ test('trusted callback nested clock inherits cancellation and facade expires', a
   }), registration:{id:2,event:'clock.sleep',hasCatch:false} })
   const pending = value.dispatch('classic.probe', {}, async () => ({}), {signal:cancellation.signal})
   await ready
-  cancellation.abort(new Error('cancel trusted callback'))
-  await expect(pending).rejects.toMatchObject({name:'AbortError'})
+  const reason = new Error('cancel trusted callback')
+  cancellation.abort(reason)
+  await expect(pending).rejects.toBe(reason)
   expect(nestedSignal?.aborted).toBe(true)
+  expect(nestedSignal?.reason).toBe(reason)
   await expect(facade.clock.now()).rejects.toThrow()
 })
 
@@ -452,11 +454,16 @@ test('trusted stream callback nested work pauses budget and inherits abort', asy
   const advanced = performance.now() + 30
   const clock = spyOn(performance, 'now').mockReturnValue(advanced)
   try { expect(frame.budget.remainingMs).toBe(remaining) } finally { clock.mockRestore() }
-  cancellation.abort(new Error('cancel stream callback'))
+  const reason = new Error('cancel stream callback')
+  cancellation.abort(reason)
   await expect(pending).rejects.toThrow('cancel stream callback')
   await expect(stream.result).rejects.toThrow('cancel stream callback')
+  await expect(pending).rejects.toBe(reason)
+  await expect(stream.result).rejects.toBe(reason)
   expect(frame.signal.aborted).toBe(true)
+  expect(frame.signal.reason).toBe(reason)
   expect(nestedSignal?.aborted).toBe(true)
+  expect(nestedSignal?.reason).toBe(reason)
   await expect(facade.clock.now()).rejects.toThrow()
 })
 
@@ -573,7 +580,47 @@ test('host hook pending work receives cancellation without running core', async 
   cancellation.abort(reason)
   const error = await pending.catch(error => error)
   expect(error).toBe(signal?.reason)
-  expect(error).toMatchObject({ name: 'AbortError' })
+  expect(error).toBe(reason)
   expect(signal?.aborted).toBe(true)
   expect(coreCalls).toBe(0)
+})
+
+
+test.each([false, true])('trusted callback clock preserves local cancellation, already aborted=%s', async alreadyAborted => {
+  const value = runtime({testing:true})
+  const cancellation = new AbortController()
+  const reason = new Error('cancel local host clock')
+  const entered = Promise.withResolvers<void>()
+  let nestedSignal: AbortSignal | undefined, caught: unknown
+  value.registerHostHook({...hook(async (_input, next) => {
+    nestedSignal = next.signal
+    entered.resolve()
+    return new Promise((_resolve, reject) => {
+      if (next.signal.aborted) reject(next.signal.reason)
+      else next.signal.addEventListener('abort', () => reject(next.signal.reason), {once:true})
+    })
+  }),registration:{id:2,event:'clock.sleep',hasCatch:false}})
+  value.registerHostCallback({tier:'user',registration:{id:1,event:'classic.probe',hasCatch:false}}, async ($: any) => {
+    try { await $.clock.sleep(100, {signal:cancellation.signal}) } catch (error) { caught = error }
+    return {}
+  })
+  if (alreadyAborted) cancellation.abort(reason)
+  const pending = value.dispatch('classic.probe', {}, async () => ({}))
+  if (!alreadyAborted) {
+    await Promise.race([entered.promise, pending])
+    cancellation.abort(reason)
+  }
+  await expect(pending).resolves.toEqual({})
+  expect(caught).toBe(reason)
+  if (nestedSignal) expect(nestedSignal.reason).toBe(reason)
+})
+
+test('already cancelled non-model dispatch retains the original reason and skips core', async () => {
+  const value = runtime()
+  const cancellation = new AbortController()
+  const reason = {type:'owned shutdown',requestId:'custom-reason'}
+  cancellation.abort(reason)
+  const core = mock(async () => ({value:1}))
+  await expect(value.dispatch('clock.now', {}, core, {signal:cancellation.signal})).rejects.toBe(reason)
+  expect(core).not.toHaveBeenCalled()
 })

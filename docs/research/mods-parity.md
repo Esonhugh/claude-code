@@ -1,15 +1,13 @@
-当前增量（2026-10-08）：[远程滚动专项](mods-remote-scroll-292-20261008.md) 接通 SDK ui_scroll、无终端作者滚动和 system/ui_scroll；18 类客户端控制中 15 类接通。剩余 ui_focus、ui_prompt_edit、ui_prompt_autocomplete、五类 responder、浏览器 Client 和完整 UI/diff/G5 仍未整体验收。下文有日期的状态属于对应批次，不替代本次验收边界。
-
 # Mods 完整兼容清单
 
 本清单用于持续完成官方 Mods 对齐，当前尚未完成。它与 [mods-test.md](../../mods-test.md) 的逐轮证据一起维护；旧 [claude-mods.md](claude-mods.md) 保留当时的研究结论。
 
-## 2026-10-07 当前复核
+## 2026-10-08 当前状态
 
-- 当前官方对照版本为 **2.1.292**，本地构建版本仍为 **2.1.280（未发布）**。下文的 287/289/290 基线、逐批数字和待办是历史快照，不能覆盖后续专项结论；本次完整范围见[实现审查](mods-implementation-audit-20261007.md)。
-- 作者完整声明、内置 diff 原件、模型 complete/classify/fork、原生消息绘制、Agent 路由及远程 UI 已有 292 专项。类型、专项通过和完整生产兼容分别判断，不将旧 C16 成本恢复待办或 U06 全部未挂载的表述直接当作当前状态。
-- 当前远程 UI 接通 14/18 类客户端控制。新增 ui_panes、ui_pane_show、ui_pane_focus、ui_close、无终端 Pane 登记与 system/ui_panes 推送，官方 2.1.292 和本批候选的原生回执、观察和推送匹配；工作区与终端相邻流程结果见 [Pane 控制专项](mods-pane-controls-292-20261007.md)。仍开放 ui_prompt_edit、ui_prompt_autocomplete、ui_scroll、ui_focus，五类 responder、其他 system 推送和浏览器 Client 执行生命周期。
-- 本次所选七个生命周期/远程 UI 文件为 232 pass / 1 skip / 0 fail；host hooks 文件在干净 `005fae9` 与工作区均为 25 pass / 1 fail，失败是嵌套 stream 取消未保留专用原因。完整官方 API/UI/diff/G5 与全量 WIP 门禁仍未完成。
+- 官方固定对照为 **2.1.292**，本地为 **2.1.280（未发布）**。当前复核以 `cd276f7` 加取消修复增量为候选；完整工作区和其他 Agent 的冻结快照分别记录，不互相替代。
+- 18 类远程客户端控制已接通 **15 类**。旧报告中八类 Unsupported 的 Pane 查询、显示、焦点和关闭由 `6b13695` 接通，滚动由 `cd276f7` 接通；仍缺 **ui_prompt_edit、ui_prompt_autocomplete、ui_focus**。详见[Pane 控制](mods-pane-controls-292-20261007.md)、[滚动](mods-remote-scroll-292-20261008.md)及[八类重新对照](mods-cancellation-audit-292-20261008.md)。
+- 嵌套 trusted stream 取消原因丢失在最新干净 HEAD 和工作区均重新复现；本批修复信号合并，并保留原始对象、局部取消、能力失效、预算暂停及进程回收断言。旧 25 pass / 1 fail 属于修复前快照，不能与其他所选测试合并成通过率。
+- 五类 responder、focus 推送、完整浏览器 Client、终端/diff/G5 和全量 WIP 验收仍开放；专项通过不代表整体放行。其他 Agent 的 `6b13695` 全量检查另有 Proxy 异常处理缺陷、焦点/布局断言和 auth 夹具阻塞，详见取消专项的跨报告核对；这些问题未被本批有限通过覆盖。
 
 ## 历史清单与逐批记录
 

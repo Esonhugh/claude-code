@@ -1748,6 +1748,10 @@ fork 沿用快照模型和工具定义；工具调用由权限回调拒绝，最
 
 对照来源为官方 2.1.292 原生制品和生成的作者声明；[验收边界与证据](docs/research/mods-model-parent-fork-292-20261007.md)。SSE 部分 usage 字段的协议见 [Anthropic Streaming 文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。完整请求上下文和所有 UI/diff 行为仍在逐项验证。
 
+### Mods 宿主取消原因
+
+嵌入方调用 `runtime.dispatch(..., {signal})` 或 `runtime.stream(..., {signal})` 时，取消会保留原始 `signal.reason`；trusted host callback 发起的嵌套操作继承该原因，局部 `$.clock.sleep(ms, {signal})` 也保留其取消原因。跨 Worker 的错误仍按公开协议传递，不能依赖跨 realm 的对象身份。回调结束后能力失效，取消继续回收所属进程，并有界等待 stream 收尾。源码回归、真实 CLI 相邻验证和未完成兼容范围见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
+
 ## Mods 测试环境隔离
 
 `prompt.compose` 与 `model.fork` 的以下回归自行设置占位凭据及独立临时 HOME/config/XDG 目录，运行结束恢复原环境并清理自有目录。可以直接在没有 API key 的环境运行，不需要修改用户认证配置：

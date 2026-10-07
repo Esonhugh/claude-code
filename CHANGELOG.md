@@ -24,6 +24,7 @@
 
 ### 变更内容
 
+- 修复 Mods 宿主与嵌套回调的取消原因丢失：保留原始错误对象、预先取消和局部 clock 信号，继续执行撤销、进程回收及有界 stream 收尾。详见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
 - 远程滚动：SDK `ui_scroll` 与插件 `$.ui.scroll` 共用视图位置；接通排队增量合并、只读事件信息、程序移动后的过期回执拒绝、按所属插件查找控件位置，以及 `system/ui_scroll` 与跟随末尾推送。详见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。
 
 - 集中完善 Mods 生命周期与作者工具、官方 2.1.292 类型与 diff、终端及部分 SDK UI、Agent/fork 和会话恢复；开放 Channels，修复 OAuth 与模型缓存隔离，增加 OpenAI Daybreak 配置，并保留 Privacy Mode。
@@ -33,7 +34,7 @@
 
 ### 测试覆盖
 
-- 已完成分项回归、类型与构建检查；完整 UI/diff 验收、部分远程控制和取消回归仍有待完成项。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
+- 已完成分项回归、类型与构建检查；完整 UI/diff 验收与部分远程控制仍有待完成项；已修复此前 host callback 取消回归，验证范围见[取消专项](docs/research/mods-cancellation-audit-292-20261008.md)。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
 
 - SDK Pane 的真实 Worker、协议类型与官方 2.1.292 / 新候选 / 完整工作区控制验收见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)；未覆盖的完整 UI/diff 和其他远程控制继续分别验收。
 

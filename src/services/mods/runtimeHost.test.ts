@@ -588,7 +588,7 @@ test('Worker prompt.suggest cancellation does not wait for a blocked host sugges
     expect(await Promise.race([
       result,
       new Promise(resolve => setImmediate(() => resolve('still waiting'))),
-    ])).toMatchObject({ name: 'AbortError' })
+    ])).toBe(reason)
   } finally {
     blocked.resolve(false)
     await result
@@ -1158,7 +1158,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
     expect(readerSignal).toBeInstanceOf(AbortSignal)
     if (mode === 'parent') controller.abort(reason)
     const result = await pending
-    if (mode === 'parent') expect(result).toMatchObject({name:'AbortError'})
+    if (mode === 'parent') expect(result).toBe(reason)
     else expect(result).toEqual({result:{startedAt:0,context:{window:200000},rateLimits:[]}})
     expect(readerSignal!.aborted).toBe(true)
     expect(stopped).toBe(true)
@@ -2402,8 +2402,9 @@ test('parent cancellation terminates the process owned by the interrupted hook, 
       if (Date.now() > deadline) throw Error('Child did not start')
       if (!pid) await delay(10)
     }
-    controller.abort(new Error('cancelled by parent'))
-    expect((await pending).name).toBe('AbortError')
+    const reason = new Error('cancelled by parent')
+    controller.abort(reason)
+    expect(await pending).toBe(reason)
     let exited = false
     const exitDeadline = Date.now() + 700
     while (!exited && Date.now() < exitDeadline) {

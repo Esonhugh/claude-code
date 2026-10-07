@@ -1840,8 +1840,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const call = async (op: string, input: ModInput, signal?: AbortSignal) => {
       if (!alive() || stopped) throw new Error('Host callback invocation ended')
       next.signal.throwIfAborted()
-      const invocation = createCombinedAbortSignal(next.signal, { signalB: lifetime })
-      const combined = createCombinedAbortSignal(invocation.signal, { signalB: signal })
+      const invocation = combineModModelSignals(next.signal, lifetime)
+      const combined = combineModModelSignals(invocation.signal, signal)
       const resume = pauseModBudget(next)
       try {
         const result = op === 'state.get' || op === 'state.set'
@@ -2293,9 +2293,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     const context = capabilityContext.getStore()
-    const combined = ['model.complete','model.classify','model.fork','ui.render'].includes(event)
-      ? combineModModelSignals(options.signal, controller.signal)
-      : createCombinedAbortSignal(options.signal, { signalB: controller.signal })
+    // Preserve the cancellation reason for every event, including nested host calls.
+    const combined = combineModModelSignals(options.signal, controller.signal)
     const caller = options.caller ?? (context?.active ? context.hook : undefined)
     const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined
