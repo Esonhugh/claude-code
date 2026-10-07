@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { cp, lstat, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import legacyDeclarations from './fixtures/legacy280-declarations.json'
@@ -8,7 +8,7 @@ import { z } from 'zod/v4'
 import type { Tool } from '../../Tool.js'
 import { ensureModDeclarations, generateModDeclarationFiles } from './declarations.js'
 import { createModsRuntime } from './runtime.js'
-import officialDeclaration from '../../../assets/mods-2.1.290.d.ts.txt' with {type: 'text'}
+import officialDeclaration from '../../../assets/mods-2.1.292.d.ts.txt' with {type: 'text'}
 
 const repository = new URL('../../../', import.meta.url).pathname
 
@@ -17,7 +17,7 @@ function source(version = '0.0.0-test'): string {
 }
 
 async function fixture(name: string): Promise<string> {
-  return mkdtemp(join(tmpdir(), `mods-declarations-${name}-`))
+  return realpath(await mkdtemp(join(tmpdir(), `mods-declarations-${name}-`)))
 }
 
 function diagnostics(files: Readonly<Record<string, string>>, roots: readonly string[], overrides: ts.CompilerOptions = {}): readonly ts.Diagnostic[] {

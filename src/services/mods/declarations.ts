@@ -1,4 +1,4 @@
-import officialDeclaration from '../../../assets/mods-2.1.290.d.ts.txt' with {type: 'text'}
+import officialDeclaration from '../../../assets/mods-2.1.292.d.ts.txt' with {type: 'text'}
 import { constants } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, readlink, realpath, rename, rm, rmdir, stat, symlink, unlink } from 'node:fs/promises'

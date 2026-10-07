@@ -1949,3 +1949,12 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 最终同源候选 412 pass / 0 fail，工作区 430 pass / 0 fail，十文件相邻 suite 各有 3 个原有 skip；双方 release-check 和私有 make build 通过，无开发者凭据、真实 TMPDIR、自有进程清理。
 - 最新官方 2.1.292 / 独立候选 / ROOT 同 driver/fixture/input 串行 final1 原生 tmux：8 个回执、6 个事件和 origin 相等；两个 OSC 原始内容与自有 tmux buffer 字节相等，正常 exit0、binaryUnchanged、自有服务器清理通过。不是系统 clipboard 或完整 UI 验收。
 - [本批来源、日志/源码/制品身份、命令与限制](docs/research/mods-ui-copy-20261007.md)，证据根 `/private/tmp/mods-declarations-292-tawjepgs`。ROOT 已有生产实现与其他 Claude/WIP 保留，仅从 clean 候选选十二路径提交，不 push。最新作者声明、远程 responder、完整 API/上下文/UI/diff/G5 与全量 WIP 门禁继续，目标未完成。
+
+
+## 2026-10-07 — 最新官方 2.1.292 作者声明（独立提交批次）
+
+- 重新解包 native 固定完整612117字节声明体（ec9fb8b8…），保留旧290资产；主模块565导出、testing51，EventOf/ResultOf140，61操作及11事件调用映射。新增模型文本块/autocomplete，同步workflow身份与re-entry/cause类型；未改本地引擎版本。
+- qualified RED双方1/4，保留全部原测试意图/负例。在已提交 ui.copy 新基准上重跑最终候选89/0（9文件）、ROOT127/0（16文件），无skip；改动文件各自无凭据真实TMPDIR通过，双方release-check/私有build通过，源清单一致、owned清理完成。
+- 官方/候选/ROOT同driver/fixture/input串行final2：旧290生成体被真实加载更新，两插件各自严格tsc skipLibCheck=false通过，六个项目完整官方体及默认配置一致；本地header保留实际2.1.280、既有owned footer哈希明确核对，不能声称全文件头尾字节相同。8回执/6事件/origin、两个OSC原始内容/自有buffer一致，正常exit0及binary/cleanup通过。
+- [来源、精确类型差异、命令/日志/源码/制品身份与限制](docs/research/mods-declarations-292-20261007.md)，证据根 `/private/tmp/mods-declarations-292-tawjepgs`。保留之前ui.copy缺失导致的native失败及比较器头尾错误证据，最终只用重建后的完整cohort。
+- 类型同步不能代表运行时新增功能：autocomplete生产管线、model缓存块、re-entry/cause和workflow身份仍需专项处理；完整API/上下文/UI/diff/G5及全部WIP门禁继续。只选十二路径签名提交，其他Claude/WIP、原用户文件与共享binaries保留，不push，目标未完成。

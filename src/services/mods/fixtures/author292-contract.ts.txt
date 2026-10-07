@@ -1,0 +1,55 @@
+import type {
+  Register, HookFailure, ModelCompleteInput, ModelCompleteRequest, ModelTextBlock,
+  PromptAutocompleteInput, PromptAutocompleteResult, PromptAutocompleteSuggestion,
+  EventOf, ResultOf, OpEventOf,
+} from 'claude-code'
+
+const blocks: readonly ModelTextBlock[] = [{text: 'fixed rules', cache: true}, {text: 'question'}]
+const request: ModelCompleteRequest = {model: 'sonnet', prompt: blocks, system: blocks}
+const input: ModelCompleteInput = {
+  model: request.model, prompt: 'fixed rulesquestion', system: 'fixed rulesquestion',
+  promptBlocks: blocks, systemBlocks: blocks,
+}
+const operation: OpEventOf['model.complete'] = input
+const autocomplete: PromptAutocompleteInput = {text: 'ask #12', cursor: 7, start: 4, token: '#12'}
+const event: EventOf['prompt.autocomplete'] = autocomplete
+const suggestion: PromptAutocompleteSuggestion = {text: '#123', label: 'Issue 123', description: 'owned fixture'}
+const result: ResultOf['prompt.autocomplete'] = {suggestions: [suggestion]} satisfies PromptAutocompleteResult
+const failure: HookFailure = {kind: 're-entry', cause: 'lent', budget: 100}
+
+export const register: Register = on => {
+  on('model.complete', async ($, e, next) => {
+    const text: string = e.prompt
+    const cache: true | undefined = e.promptBlocks?.[0]?.cache
+    const system: readonly ModelTextBlock[] | undefined = e.systemBlocks
+    // @ts-expect-error Hook inputs are deeply readonly.
+    e.promptBlocks?.push({text: 'mutation'})
+    // @ts-expect-error Cache marks are true or absent, never false.
+    const invalid: ModelTextBlock = {text: 'x', cache: false}
+    void [text, cache, system, invalid]
+    return next({...e, prompt: e.prompt + '\nappend without moving the marks'})
+  })
+  on('prompt.autocomplete', {token: /^#/}, async ($, e, next) => {
+    const text: string = e.text
+    const cursor: number = e.cursor, start: number = e.start
+    const token: string = e.token
+    // @ts-expect-error The token is an engine fact, not mutable by the author.
+    e.token = 'forged'
+    const rows = await next(e)
+    void [text, cursor, start, token]
+    return {suggestions: [...rows.suggestions, suggestion]}
+  })
+  on('agent.spawn', ($, e, next) => {
+    const workflow: {readonly runId: string; readonly agentIndex: number} | undefined = e.workflow
+    // @ts-expect-error Workflow identity remains deeply readonly.
+    if (e.workflow) e.workflow.agentIndex = 2
+    void workflow
+    return next(e)
+  }).catch(($, e, next) => {
+    const reason: 'throw' | 'timeout' | 're-entry' = next.error.kind
+    const cause: 'lent' | undefined = next.error.cause
+    void [reason, cause]
+    return next.called ? next(e) : {deny: 'owned guard'}
+  })
+}
+void [request, input, operation, event, result, failure]

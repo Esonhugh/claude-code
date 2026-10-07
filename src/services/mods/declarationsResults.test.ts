@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import ts from 'typescript'
@@ -25,7 +25,7 @@ function schemaTools() {
 }
 
 async function authorDiagnostics(source: string, tools: readonly Tool[] = schemaTools()) {
-  const root = await mkdtemp(join(tmpdir(), 'mods-result-author-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-result-author-')))
   roots.push(root)
   const generated = await ensureModDeclarations(root, '2.1.289', tools)
   await mkdir(join(root, 'tests'))
@@ -104,7 +104,7 @@ describe('author result declarations', () => {
   test('owns the complete official main declaration and schema roots without a legacy auxiliary module', async () => {
     const files = generateModDeclarationFiles('2.1.289', schemaTools())
     const main = files.find(file => file.path === 'claude-code/index.d.ts')!
-    const official = await readFile(new URL('../../../assets/mods-2.1.290.d.ts.txt', import.meta.url), 'utf8')
+    const official = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
     expect(main.text.slice('// Written by Claude Code 2.1.289.\n'.length, main.text.lastIndexOf('\n// Claude Code owned declaration sha256='))).toBe(official)
     expect(files.some(file => file.path === 'claude-code/results.d.ts')).toBe(false)
     expect(main.text).not.toContain('/// <reference path="./results.d.ts" />')
@@ -171,7 +171,7 @@ describe('author result declarations', () => {
   })
 
   test('migrates the captured owned generation as a complete referenced set and is idempotent', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-result-owned-'))
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-result-owned-')))
     roots.push(root)
     for (const [path, text] of Object.entries(baselineOwned.files)) {
       const target = join(root, '.claude-plugin/types', path)
@@ -188,7 +188,7 @@ describe('author result declarations', () => {
   })
 
   test.each(['unowned', 'modified-owned'])('preserves %s auxiliary author changes', async kind => {
-    const root = await mkdtemp(join(tmpdir(), 'mods-result-user-'))
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-result-user-')))
     roots.push(root)
     const target = join(root, '.claude-plugin/types/claude-code/results.d.ts')
     await mkdir(dirname(target), { recursive: true })

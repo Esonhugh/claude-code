@@ -28,12 +28,13 @@ test('pinned declaration source is the verified official 290 native asset', asyn
   expect(Buffer.byteLength(text)).toBe(600277)
 })
 
-test('generated public definitions preserve the complete official declaration body', async () => {
-  const body = await readFile(new URL('../../../assets/mods-2.1.290.d.ts.txt', import.meta.url), 'utf8')
+test('generated public definitions preserve the complete current official declaration body', async () => {
+  const body = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
+  const currentHash = 'ec9fb8b86b52427c134e267749aa04ca84e419735e75810f5d2e5fa23f657ab3'
   const output = generateModDeclarationFiles('2.1.280', []).find(file => file.path === 'claude-code/index.d.ts')!.text
   const start = output.indexOf('// Claude Code function hooks:')
   expect(start).toBeGreaterThanOrEqual(0)
-  expect(sha(output.slice(start, start + body.length))).toBe(sourceHash)
+  expect(sha(output.slice(start, start + body.length))).toBe(currentHash)
   expect(output.startsWith('// Written by Claude Code 2.1.280.\n')).toBe(true)
 })
 
@@ -42,8 +43,8 @@ test('all official public names and operation maps are available without widenin
   expect(ts.getPreEmitDiagnostics(program).map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n'))).toEqual([])
   const module = checker.getAmbientModules().find(symbol => symbol.name === '"claude-code"')!
   const exports = checker.getExportsOfModule(module)
-  expect(exports).toHaveLength(560)
-  const counts = {EventOf: 139, ResultOf: 139, OpEventOf: 61, OpValueOf: 61, EventCalls: 11}
+  expect(exports).toHaveLength(565)
+  const counts = {EventOf: 140, ResultOf: 140, OpEventOf: 61, OpValueOf: 61, EventCalls: 11}
   for (const [name, count] of Object.entries(counts)) {
     const symbol = exports.find(symbol => symbol.name === name)!
     expect(checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(symbol)), name).toHaveLength(count)
@@ -77,7 +78,7 @@ test('strict authors can use the new color, mention, ceiling and server-tool def
       on('prompt.mention',async($,e,next)=>next({...e,path:'/owned/other'}));
     };
     void[theme,color,server,copy,copied,mention,refusal];`
-  const canonical = await readFile(new URL('../../../assets/mods-2.1.290.d.ts.txt', import.meta.url), 'utf8')
+  const canonical = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
   expect(ts.getPreEmitDiagnostics(project(author, canonical)).map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n'))).toEqual([])
   const program = project(author)
   expect(ts.getPreEmitDiagnostics(program).map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n'))).toEqual([])
