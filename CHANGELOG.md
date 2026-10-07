@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - narration 完成后清理 thinking 预览
+
+### Fixed
+
+- 按官方完成消息消费顺序，已落地的非空 narration 清空短时私有 thinking 预览，再保存原始消息；避免普通视图和 transcript 中重复显示摘要正文。
+- 保留 signed thinking/signature、摘要 Mods 绘制及普通私有 thinking 的既有显示路径，增加不含正文的消息 UUID 调试日志。
+
+### Tests
+
+- 增加生产 stream consumer 的完成交接、事件顺序、损坏/空白/混合块和相邻文本回归；候选、工作区及官方真实终端的结果和边界见 docs/research/mods-summary-handoff-292-20261007.md。
+- 本批不声明 live thinking delta、指标、Cowork 全屏或完整 UI/diff 已匹配。
+
 ## 2026-10-07 - narration 摘要的原生 Mods 绘制
 
 ### Changed

@@ -1424,4 +1424,6 @@ on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
 
 `isSummary` 保留为只读字段，不能删除、设置 false 或加入普通行。`next(e)` 使用原生摘要 Markdown 和模型相关的 “· summary” 标记；直接返回插件树时，其内容由插件绘制。`isFirstOfReply` 可改写以控制首行标记，空显示文本可隐藏该次原生续绘。
 
+已签名的非空 narration 消息完成时，宿主清空其短时 thinking 预览，再交给原生消息行和 Mods 绘制，避免摘要在普通视图或 transcript 中出现两份。普通私有 thinking 的预览保留规则沿用现有路径；本批完成交接与剩余流式差异见[验收记录](docs/research/mods-summary-handoff-292-20261007.md)。
+
 `maxProseWidth` 是可选的终端列数设置，整数且至少 40。摘要 prose 按该宽度换行，顶层代码和表格保留终端宽度；不在保存正文中增加换行。当前已接线的消费者与尚未验证的复杂 Markdown、模型缓存和动态桌面路径见[本批验收](docs/research/mods-assistant-summary-292-20261007.md)。

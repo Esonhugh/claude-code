@@ -147,6 +147,7 @@ import type { PermissionMode } from '../types/permissions.js'
 import { normalizeToolInput, normalizeToolInputForAPI } from './api.js'
 import { getCurrentProjectConfig } from './config.js'
 import { logAntError, logForDebugging } from './debug.js'
+import { isAssistantNarrationSummary } from './assistantNarration.js'
 import { stripIdeContextTags } from './displayTags.js'
 import { hasEmbeddedSearchTools } from './embeddedTools.js'
 import { formatFileSize } from './format.js'
@@ -3091,13 +3092,19 @@ export function handleMessageFromStream(
         block => block.type === 'thinking',
       )
       if (thinkingBlock?.type === 'thinking' && typeof thinkingBlock.thinking === 'string') {
-        const thinking = thinkingBlock.thinking
-        onStreamingThinking?.(current => ({
-          // The live stream may be rewritten by Mods; history keeps the signed block.
-          thinking: current?.isStreaming ? current.thinking : thinking,
-          isStreaming: false,
-          streamingEndedAt: Date.now(),
-        }))
+        if (isAssistantNarrationSummary(thinkingBlock)) {
+          // Narration belongs to its stored AssistantMessage row, not the private thinking preview.
+          onStreamingThinking?.(() => null)
+          logForDebugging(`[AssistantSummary] narration landed; cleared thinking preview message=${message.uuid}`)
+        } else {
+          const thinking = thinkingBlock.thinking
+          onStreamingThinking?.(current => ({
+            // The live stream may be rewritten by Mods; history keeps the signed block.
+            thinking: current?.isStreaming ? current.thinking : thinking,
+            isStreaming: false,
+            streamingEndedAt: Date.now(),
+          }))
+        }
       }
     }
     // Clear streaming text NOW so the render can switch displayedMessages

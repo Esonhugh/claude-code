@@ -2031,3 +2031,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 基于 protobuf 2/1/8 路径识别真实 thinking 块的 narration 显示分类，实际 Message 路由在私有 thinking 可见性判断之前分流摘要。验证普通/展开视图、past-thinking 隐藏、只读 isSummary、原文/signature 保留、多次 next、原生提示与自定义树、损坏签名、重复字段、未知 wire 字段、模型默认/capability/缓存和 prose/code/table 宽度。
 
 独立 HEAD 候选和包含既有 WIP 的工作区分别执行相关 L1、release-check 与私有构建；官方与两份新制品串行执行实际 stdin、模式切换、SSE thinking/signature_delta、普通相邻回复及 transcript 切换。原始 RED 和修复阶段保留，准确统计及未关闭的每模型缓存、served flags、动态 attach、复杂 Markdown和完整 UI/diff/G5 边界见[验收记录](docs/research/mods-assistant-summary-292-20261007.md)。
+
+
+## 2026-10-07 — narration 完成消息的预览交接
+
+真实 stream consumer 在已落地的非空 narration 处清空短时 thinking 预览，随后保存原始消息；完整 Message/Mods 摘要行仍负责显示。测试覆盖事件顺序、相邻 text、无 stream 的完成消息、旧预览、空白/损坏签名及混合块，并核对 signed 正文不受改写。真实终端检查普通视图及 Ctrl+O 后摘要仅出现一次，私有 thinking 邻接路径单独记录。
+
+准确候选、完整工作区、固定官方制品的证据和剩余 live delta/指标、私有 thinking 布局、Cowork/fullscreen、UI/API/context/diff/G5 与全量门禁边界见[本批验收](docs/research/mods-summary-handoff-292-20261007.md)。
