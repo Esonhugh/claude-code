@@ -595,7 +595,7 @@ export function createModEnvironmentHost({
     }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
-      worker.postMessage({ type: 'abort', environment, invocation: id, ...(['turn.step','model.complete','model.classify','model.fork'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
+      worker.postMessage({ type: 'abort', environment, invocation: id, ...(['turn.step','model.complete','model.classify','model.fork','ui.render'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
       overrun ??= setTimeout(() => fail(new Error('Mods Worker did not settle an aborted invocation')), 5000)
       overrun.unref?.()
       if (streaming) streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))

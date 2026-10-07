@@ -1386,4 +1386,7 @@ export function register(on) {
 
 `next(e)` 保留原生行，也可在一个自定义树中使用多次；改写 `word` 或 `durationMs` 只影响这次绘制，不修改历史 checkpoint。返回 `Text` 可替换整行，返回空 `Box` 可隐藏。即使配置 `showTurnDuration=false`，插件仍能替换完成行。按作者声明构建 Client、按钮等组件时，宿主保留其绘制和回调的生命周期；卸载、重载或失效的旧绘制不能继续操作新行。
 
+
+异步绘制应使用 `next.signal` 取消等待，例如 `await $.clock.sleep(500, { signal: next.signal })`。原生站点的新输入、`$.ui.invalidate('ui.render')` 或组件卸载会中止旧绘制；Worker 内的原因是 `HooksError: ui.render: superseded`。已有画面在新绘制等待时继续显示，新画面提交后才释放旧回调；相同输入不重新调用钩子。不要把被取消的绘制作为成功结果，也不要在旧绘制中继续更新状态。源码、实际终端 resize、重复失效和 `/clear` 的对照见[绘制生命周期验收](docs/research/mods-render-lifetime-292-20261007.md)；作者参数和类型以[官方 Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)及生成声明为准。
+
 没有匹配当前输入的 `ui.render` 钩子时，完成行直接走原生绘制。实际终端和源码对照范围见[本批验收](docs/research/mods-native-duration-292-20261007.md)。其他原生组件和官方完成时间/后台等待格式仍需后续对齐；本节不宣称所有 UI 或 diff viewer 已匹配。

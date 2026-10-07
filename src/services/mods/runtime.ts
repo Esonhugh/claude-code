@@ -425,12 +425,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       return result
     },
-    draw: async (owner, input, drawing, core, validateRenderTree) => {
+    draw: async (owner, input, drawing, core, validateRenderTree, signal) => {
       const entered = uiContext.getStore()
       const instance = `${input.surface}\0${input.component}\0${input.requestId}`
       const lease: DrawingLease = { instance, owner, snapshot: entered?.snapshot ?? active, table: entered?.table ?? nouns, participants: new Set() }
       drawings.set(drawing, lease)
-      return dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, { drawing, validateRenderTree })
+      return dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, { drawing, validateRenderTree, signal })
     },
     invokeDrawing: async (owner, drawing, handle, args) => {
       const lease = drawings.get(drawing)
@@ -2153,7 +2153,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     const context = capabilityContext.getStore()
-    const combined = ['model.complete','model.classify','model.fork'].includes(event)
+    const combined = ['model.complete','model.classify','model.fork','ui.render'].includes(event)
       ? combineModModelSignals(options.signal, controller.signal)
       : createCombinedAbortSignal(options.signal, { signalB: controller.signal })
     const caller = options.caller ?? (context?.active ? context.hook : undefined)

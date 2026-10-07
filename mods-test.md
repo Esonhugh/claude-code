@@ -2010,3 +2010,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 新增 `src/components/messages/SystemTextMessage.modsRender292.test.tsx` 在真正的 Mods Worker、生产消息组件和 Ink 上验证替换、原生续绘、多次 next、稳定动词、无匹配零调用、隐藏配置、非法树回退、重载/卸载、Client、viewport、实际滚动行范围、绘制后观察、按钮焦点/回调和迟到绘制隔离。候选只有当前功能及必需的私有焦点接口；工作区额外 WIP 不自动并入提交。
 
 固定 official 2.1.292 与本轮独立 candidate/workspace 制品串行执行自有 tmux，保存逐字 stdin、PTY/pane、debug、transcript 和本地 API 夹具；所有运行在独立 HOME/config/TMP/XDG 下。各层的准确命令、原始失败和尚未关闭的差异见[验收记录](docs/research/mods-native-duration-292-20261007.md)。不将聚焦通过替代更宽门禁，不将该站点接通等同于全部原生 UI、完成时间格式、官方 diff viewer 或 G5 已完成。
+
+
+## 2026-10-07 — 原生 ui.render 取消与卸载
+
+补齐初始挂载尚未完成时的宿主绑定、输入取代和真实 next.signal 取消原因。重复失效不再等旧 Worker 绘制自然完成；已绘制内容及旧回调在等待替换期间保留，过时输入/错误不发布，真正的新绘制错误回退原生。
+
+新增四项生产 SystemTextMessage + 真正 Worker/Ink 回归，以及六项独立 site 生命周期回归。现有慢重绘测试保留并加强 signal 断言：原生 site 的被取代错误不再抛给新请求，Pane 的有效错误断言不变。官方与新候选/工作区二进制均通过隔离 tmux 触发重复失效、初始绘制 resize、/clear；各层结果、原始红回归和证据边界见[验收记录](docs/research/mods-render-lifetime-292-20261007.md)。这不关闭其他原生组件、held rows、完整 formatter、diff viewer、G5、response.md 或全部变更门禁。

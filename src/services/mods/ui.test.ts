@@ -1840,13 +1840,14 @@ describe('mod UI dispatch and drawing lifetime', () => {
         const trailingStarted = Promise.withResolvers<void>()
         const trailingGate = Promise.withResolvers<void>()
         const failure = new Error('slow draw failed')
+        let firstDrawSignal: AbortSignal | undefined
         let slow = false
         let calls = 0
         let concurrentDraws = 0
         let maxConcurrentDraws = 0
         let otherDraws = 0
         const { ui } = fixture({
-          draw: async (_owner, input) => {
+          draw: async (_owner, input, _drawing, _next, _validate, signal) => {
             if (input.requestId !== 'target') {
               if (slow) otherDraws++
               return { type: 'Text' }
@@ -1856,6 +1857,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
             maxConcurrentDraws = Math.max(maxConcurrentDraws, ++concurrentDraws)
             try {
               if (call === 1) {
+                firstDrawSignal = signal
                 started.resolve()
                 await gate.promise
                 if (fails) throw failure
@@ -1889,8 +1891,13 @@ describe('mod UI dispatch and drawing lifetime', () => {
         pending.push(burst(), burst())
         await Bun.sleep(140)
         const observed = { maxConcurrentDraws, calls, settled, otherDraws }
+        if (target === 'site') {
+          expect(firstDrawSignal?.aborted).toBe(true)
+          expect(firstDrawSignal?.reason.message).toBe('ui.render: superseded')
+        }
         gate.resolve()
-        expect(await first).toBe(fails ? failure : undefined)
+        // A superseded native frame cannot publish a stale error; Pane failures remain visible.
+        expect(await first).toBe(fails && target !== 'site' ? failure : undefined)
         await trailingStarted.promise
         const settledBeforeTrailing = settled
         trailingGate.resolve()

@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 原生 Mods 绘制取消与卸载清理
+
+### Changed
+
+- 原生 render site 在首次绘制尚未完成时即绑定宿主；输入变化、显式失效重绘和组件卸载会取消旧 ui.render，阻止旧请求继续占用 Worker 或发布画面。
+- 保留已完成绘制及其回调至新绘制提交；合并尚未执行的过时输入，重复输入不取消正在进行的绘制，非法替换不干扰有效请求。
+- 将 ui.render 的取消原因传递至 Worker 中的 next.signal，保留官方 HooksError 和 ui.render: superseded 信息；被替换的错误不覆盖新画面，真正失败仍回退原生行。
+- 取消并释放旧 drawing 的资源，初始挂载和卸载的清理均可重入；调试日志输出组件、requestId、drawing 和取消原因。
+
+### Tests
+
+- 增加真实 Worker/生产完成行的四项回归和 render site 的六项生命周期测试，保留相邻 Pane、AbovePrompt、Client、dispatch 和 session 验证；官方固定制品与本轮独立构建通过私有 tmux 对照重绘取消、首次绘制 resize 和 /clear 卸载。准确结果与尚未对齐项见 docs/research/mods-render-lifetime-292-20261007.md。
+
 ## 2026-10-07 - 原生完成行接入 Mods render
 
 ### Changed

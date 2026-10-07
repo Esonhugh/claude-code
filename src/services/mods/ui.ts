@@ -25,6 +25,8 @@ export type ModRenderConsumer = {
   clientId?: string
   clientClock?: 'manual'
   signal?: AbortSignal
+  /** Host binding is available before the first asynchronous drawing settles. */
+  onMount?(site: ModRenderSite): void
   retainClients?: boolean
   focus?: ModRenderFocusController
   render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput, clients?: ReadonlyMap<string, ModClientBinding>): void | Promise<void>
@@ -331,7 +333,7 @@ export function createModUi({
   notify?: (listener: () => void) => void
   pluginOf(owner: ModUiOwner): string
   dispatch: ModUiDispatch
-  draw(owner: ModUiOwner, input: ModInput, drawing: number, core?: (input: ModInput) => Promise<unknown>, validate?: (tree: unknown) => void): Promise<unknown>
+  draw(owner: ModUiOwner, input: ModInput, drawing: number, core?: (input: ModInput) => Promise<unknown>, validate?: (tree: unknown) => void, signal?: AbortSignal): Promise<unknown>
   invokeDrawing(
     owner: ModUiOwner,
     drawing: number,
@@ -363,6 +365,7 @@ export function createModUi({
   const sites = new Map<ModUiOwner, ModRenderSite & {
     focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
     redraw(): Promise<void>
+    cancelPending(): void
     blit(plugin: string, input: {
       requestId: string; key: string; cells?: string; source?: unknown
       columns?: number; rows?: number
@@ -624,6 +627,7 @@ export function createModUi({
   }
 
   function invalidateSite(site: (typeof sites extends Map<ModUiOwner, infer S> ? S : never)): Promise<void> {
+    site.cancelPending()
     return scheduleRedraw(
       site,
       siteRedraws,
@@ -872,6 +876,9 @@ export function createModUi({
       let attached = false
       let disposal: Promise<void> | undefined
       let queue = Promise.resolve()
+      let requested: ModRenderInput | undefined
+      let pendingDraw: AbortController | undefined
+      let lastDraw = queue
       const instances = new Map<string, { node: any; handle: ModClientHandle; tree?: unknown }>()
       let resolveEngine: (ref: number) => ModInput = () => { throw new Error('Unknown Mod UI engine ref') }
       let syncing = false
@@ -1002,6 +1009,7 @@ export function createModUi({
       const site: ModRenderSite & {
         focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
         redraw(): Promise<void>
+        cancelPending(): void
         blit(plugin: string, input: {
           requestId: string; key: string; cells?: string; source?: unknown
           columns?: number; rows?: number
@@ -1034,9 +1042,9 @@ export function createModUi({
           if (matches.length > 1) throw new Error('Client key is ambiguous')
           return matches[0]?.tree
         },
+        cancelPending() { pendingDraw?.abort(new Error('ui.render: superseded')) },
         async redraw() {
-          if (!current) await queue
-          if (current && !disposed) await site.update(current, true)
+          if (requested && !disposed) await site.update(requested, true)
         },
         async blit(plugin, input) {
           await queue
@@ -1093,30 +1101,42 @@ export function createModUi({
             : queueBlit(`site\0${clientId}\0${input.requestId}\0${plugin}\0${input.key}`, serialize)
         },
         update(input, force = false) {
-          let request = structuredClone(input)
-          const work = queue.then(async () => {
+          const request = structuredClone(force ? requested ?? current ?? input : input)
+          try {
             if (disposed) throw new Error('Mod UI render site is stale')
-            if (force && current) request = structuredClone(current)
             if (request.surface !== consumer.surface || !['terminal', 'desktop', 'mobile', 'vscode'].includes(request.surface))
               throw new TypeError('Mod UI render surface must match its consumer')
             if (!['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane'].includes(request.component))
               throw new TypeError('Unknown Mod UI render component')
             if (typeof request.requestId !== 'string' || !request.requestId || !request.props || typeof request.props !== 'object' || Array.isArray(request.props))
               throw new TypeError('Mod UI render requires a requestId and props')
-            if (current && (request.component !== current.component || request.requestId !== current.requestId))
+            if (request.component !== initial.component || request.requestId !== initial.requestId)
               throw new TypeError('Mod UI render site identity cannot change')
             if (request.viewport && (!Number.isInteger(request.viewport.columns) || request.viewport.columns < 1 ||
                 !Number.isInteger(request.viewport.rows) || request.viewport.rows < 1 ||
                 request.viewport.isFullscreen !== undefined && typeof request.viewport.isFullscreen !== 'boolean'))
               throw new TypeError('Invalid Mod UI render viewport')
-            if (!force && current && isDeepStrictEqual({...request, viewport: {...request.viewport, rows: undefined}},
-                {...current, viewport: {...current.viewport, rows: undefined}})) {
-              current = request
-              return
-            }
+          } catch (error) { return Promise.reject(error) }
+          if (!force && requested && isDeepStrictEqual({...request, viewport: {...request.viewport, rows: undefined}},
+              {...requested, viewport: {...requested.viewport, rows: undefined}})) {
+            requested = request
+            if (!pendingDraw && current) current = request
+            return lastDraw
+          }
+          requested = request
+          pendingDraw?.abort(new Error('ui.render: superseded'))
+          const controller = new AbortController()
+          pendingDraw = controller
+          const work = queue.then(async () => {
+            if (disposed || controller.signal.aborted) return
             const next = nextDrawing++
             const previous = drawing
+            const previousTree = tree
+            const previousInput = current
+            const previousResolve = resolveEngine
+            const previousClientSite = clientSites.get(owner)
             let painting = true
+            let published = false
             try {
               if (!attached && request.surface !== 'terminal') {
                 await attach?.({
@@ -1134,9 +1154,9 @@ export function createModUi({
                 originals.set(ref, structuredClone(input.props as ModInput))
                 refs.add(ref)
                 return { type: 'engine', ref }
-              }, validate)
+              }, validate, controller.signal)
+              controller.signal.throwIfAborted()
               validate(result)
-              if (disposed) { await releaseDrawing(owner, next); return }
               if (request.surface !== 'terminal') freezeRenderTree(result)
               drawing = next
               tree = result
@@ -1146,24 +1166,36 @@ export function createModUi({
                 return structuredClone(originals.get(ref)!)
               }
               await syncClients()
+              controller.signal.throwIfAborted()
               await paint()
+              controller.signal.throwIfAborted()
+              published = true
               if (previous !== undefined) {
                 await releaseDrawing(owner, previous)
               }
             } catch (error) {
-              if (drawing === next) {
+              if (!published && drawing === next) {
                 clientSites.delete(owner)
                 await Promise.all([...instances.values()].map(entry => entry.handle.dispose()))
                 instances.clear()
-                drawing = undefined
-                tree = undefined
-                current = undefined
-                if (previous !== undefined) await releaseDrawing(owner, previous)
+                drawing = previous
+                tree = previousTree
+                current = previousInput
+                resolveEngine = previousResolve
+                if (previousClientSite) clientSites.set(owner, previousClientSite)
               }
-              await releaseDrawing(owner, next)
+              if (!published) await releaseDrawing(owner, next)
+              if (controller.signal.aborted) {
+                logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'draw-cancelled', component: request.component, requestId: request.requestId, drawing: next, reason: controller.signal.reason?.message })}`)
+                return
+              }
               throw error
-            } finally { painting = false }
+            } finally {
+              painting = false
+              if (pendingDraw === controller) pendingDraw = undefined
+            }
           })
+          lastDraw = work
           queue = work.catch(() => {})
           return work
         },
@@ -1198,6 +1230,8 @@ export function createModUi({
         dispose() {
           if (disposal) return disposal
           disposed = true
+          consumer.signal?.removeEventListener('abort', abortSite)
+          pendingDraw?.abort(new Error('ui.render: superseded'))
           clientSites.delete(owner)
           const stopping = Promise.all([...instances.values()].map(entry => entry.handle.dispose()))
           disposal = (async () => {
@@ -1223,9 +1257,17 @@ export function createModUi({
           return disposal
         },
       }
+      const abortSite = () => { void site.dispose().catch(error => logForDebugging(`[ModsUI] ${String(error)}`)) }
       siteInputs.set(site, structuredClone(initial))
       sites.set(owner, site)
-      try { await site.update(initial); return site }
+      consumer.signal?.addEventListener('abort', abortSite, { once: true })
+      try {
+        consumer.signal?.throwIfAborted()
+        const first = site.update(initial)
+        consumer.onMount?.(site)
+        await first
+        return site
+      }
       catch (error) { await site.dispose(); throw error }
     },
     async open(owner, input, origin, rawPresentation) {

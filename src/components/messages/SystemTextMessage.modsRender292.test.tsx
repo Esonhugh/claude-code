@@ -66,16 +66,16 @@ async function screen(wrap:(row:React.ReactNode)=>React.ReactNode = row=>row) {
   const stdin=new PassThrough();Object.assign(stdin,{isTTY:true,setRawMode(){},ref(){},unref(){}})
   const message=createTurnDurationMessage(1)
   const store=createStore(getDefaultAppState())
-  const node=<AppStoreContext value={store}><BoundRuntime>{wrap(
-    <SystemTextMessage message={message} addMargin={false} verbose={false}/>
+  const node=(durationMs=message.durationMs)=><AppStoreContext value={store}><BoundRuntime>{wrap(
+    <SystemTextMessage message={{...message,durationMs}} addMargin={false} verbose={false}/>
   )}</BoundRuntime></AppStoreContext>
-  const instance=await render(node,{stdin:stdin as never,stdout:stdout as never,patchConsole:false,exitOnCtrlC:false})
+  const instance=await render(node(),{stdin:stdin as never,stdout:stdout as never,patchConsole:false,exitOnCtrlC:false})
   async function waitFor(check:()=>boolean) {
     const until=Date.now()+2000
     while(!check()&&Date.now()<until)await new Promise<void>(resolve=>setImmediate(resolve))
     expect(check()).toBe(true)
   }
-  return {message,chunks,instance,stdin,waitFor,clear(){chunks.length=0},output:()=>chunks.join(''),close(){instance.unmount();instance.cleanup();stdin.destroy();stdout.destroy()}}
+  return {message,chunks,instance,stdin,waitFor,rerender(durationMs:number){instance.rerender(node(durationMs))},clear(){chunks.length=0},output:()=>chunks.join(''),close(){instance.unmount();instance.cleanup();stdin.destroy();stdout.destroy()}}
 }
 
 test('TurnDuration production row reaches its real Worker and replaces the native line', async () => {
@@ -293,4 +293,62 @@ test('composer presentation redraws its band without redundantly invoking native
     expect(nativeCount()).toBe(beforeNative+1)
     expect(bandCount()).toBe(beforeBand+2)
   }finally{await band.dispose();f.close()}
+})
+
+
+test('replacing the initial pending native input aborts its real Worker frame', async () => {
+  await load("if(e.props.durationMs===1){try{await $.clock.sleep(1200,{signal:next.signal})}catch(error){$.ui.log(JSON.stringify({phase:'aborted',ms:e.props.durationMs,aborted:next.signal.aborted,reason:next.signal.reason.message,name:next.signal.reason.name}),{to:'debug'});throw error}}return $.ui.resolve(e).Text({children:'LATEST-DURATION-'+e.props.durationMs});")
+  const f=await screen()
+  try{
+    await f.waitFor(()=>seen.some((e:any)=>e.props?.durationMs===1))
+    f.rerender(2)
+    await f.waitFor(()=>f.output().includes('LATEST-DURATION-2'))
+    expect(seen).toContainEqual({phase:'aborted',ms:1,aborted:true,reason:'ui.render: superseded',name:'HooksError'})
+    expect(f.output()).not.toContain('LATEST-DURATION-1')
+    expect(diagnostics).toEqual([])
+  }finally{f.close()}
+})
+
+test('unmounting an initial pending native draw aborts the Worker and cleans its site', async () => {
+  await load("try{await $.clock.sleep(1200,{signal:next.signal})}catch(error){$.ui.log(JSON.stringify({phase:'unmounted',aborted:next.signal.aborted}),{to:'debug'});throw error}return $.ui.resolve(e).Text({children:'LATE-UNMOUNT-DRAW'});")
+  const f=await screen()
+  try{
+    await f.waitFor(()=>seen.length>0)
+    f.instance.rerender(null)
+    await f.waitFor(()=>seen.some((e:any)=>e.phase==='unmounted'))
+    expect(seen).toContainEqual({phase:'unmounted',aborted:true})
+    expect(f.output()).not.toContain('LATE-UNMOUNT-DRAW')
+    expect(diagnostics).toEqual([])
+    await runtime.ui.dispose()
+  }finally{f.close()}
+})
+
+test('a settled native drawing stays visible while its replacement waits, then newer input aborts that replacement', async () => {
+  await load("if(e.props.durationMs===2){try{await $.clock.sleep(1200,{signal:next.signal})}catch(error){$.ui.log(JSON.stringify({phase:'aborted-redraw',aborted:next.signal.aborted}),{to:'debug'});throw error}}return $.ui.resolve(e).Text({children:'SETTLED-DURATION-'+e.props.durationMs});")
+  const f=await screen()
+  try{
+    await f.waitFor(()=>f.output().includes('SETTLED-DURATION-1'))
+    f.rerender(2)
+    await f.waitFor(()=>seen.some((e:any)=>e.props?.durationMs===2))
+    expect(f.output()).toContain('SETTLED-DURATION-1')
+    expect(f.output()).not.toContain('SETTLED-DURATION-2')
+    f.rerender(3)
+    await f.waitFor(()=>f.output().includes('SETTLED-DURATION-3'))
+    expect(seen).toContainEqual({phase:'aborted-redraw',aborted:true})
+    expect(f.output()).not.toContain('SETTLED-DURATION-2')
+    expect(diagnostics).toEqual([])
+  }finally{f.close()}
+})
+
+
+test('a failed newer drawing falls back to the native row after cancelling the first pending drawing', async () => {
+  await load("if(e.props.durationMs===1){await $.clock.sleep(1200,{signal:next.signal});return $.ui.resolve(e).Text({children:'NEVER-PUBLISHED'})}return {type:'InvalidNewestDrawing'};")
+  const f=await screen()
+  try{
+    await f.waitFor(()=>seen.some((e:any)=>e.props?.durationMs===1))
+    f.rerender(3000)
+    await f.waitFor(()=>f.output().includes('for 3s'))
+    expect(f.output()).not.toContain('NEVER-PUBLISHED')
+    expect(diagnostics).toContainEqual(expect.objectContaining({stage:'ui.render'}))
+  }finally{f.close()}
 })

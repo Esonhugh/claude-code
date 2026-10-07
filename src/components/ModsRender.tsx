@@ -112,11 +112,16 @@ export function ModsRender({ input: received, children: native }: {
   React.useEffect(() => {
     if (!runtime || !matched) return
     let alive = true
+    const lifetime = new AbortController()
     let mounted: ModRenderSite | undefined
     setFrame(undefined)
     setFailed(false)
     const ready = runtime.ui.mount(current.current.input, {
-      surface: 'terminal', retainClients: true,
+      surface: 'terminal', retainClients: true, signal: lifetime.signal,
+      onMount(result) {
+        mounted = result
+        if (alive) setSite({ site: result, owner })
+      },
       focus: {
         isHeldNow: () => holder() !== undefined,
         holderNow: holder,
@@ -139,18 +144,25 @@ export function ModsRender({ input: received, children: native }: {
     }).then(async result => {
       mounted = result
       if (!alive) { await result.dispose(); return }
-      setSite({ site: result, owner })
       await result.update(current.current.input)
     }).catch(error => { if (alive) { report(error); setFailed(true) } })
     return () => {
       alive = false
+      lifetime.abort(new Error('ui.render: superseded'))
       setSite(undefined)
-      // A site that finishes mounting after unmount disposes itself above.
+      // Pending Worker draws follow the site lifetime, including initial mount.
       if (mounted) void mounted.dispose().catch(report)
       else void ready
     }
   }, [runtime, matched, received.component, received.requestId, find, holder])
-  React.useEffect(() => { if (site && matched) void site.update(input).catch(report) }, [site, input, matched])
+  React.useEffect(() => {
+    if (!site || !matched) return
+    void site.update(input).catch(error => {
+      if (current.current.owner !== owner || current.current.input !== input) return
+      report(error)
+      setFailed(true)
+    })
+  }, [site, input, matched, owner])
   React.useEffect(() => {
     if (!matched || !fullscreen || !root.current) return
     const update = () => {
@@ -179,7 +191,7 @@ export function ModsRender({ input: received, children: native }: {
   if (!matched) return native(received.props)
   const fallback = native(received.props)
   return <Box ref={root} flexDirection="column">
-    {frame ? <DrawingBoundary frame={frame} fallback={fallback}>
+    {failed ? fallback : frame ? <DrawingBoundary frame={frame} fallback={fallback}>
       <ModRenderTree tree={frame.tree} engineRefs={frame.engineRefs} pane={pane}
         focusElements={focusElements} keyElements={keyElements} currentPane={() => latestPane.current}
         renderEngine={ref => native(frame.engines.get(ref)!)}
@@ -188,6 +200,6 @@ export function ModsRender({ input: received, children: native }: {
           if (_pane.owner !== live.owner || drawing !== live.frame?.drawing) return
           return live.site?.interact(drawing, callback, kind, element, value)
         }} onFocus={onFocus} onError={report} />
-    </DrawingBoundary> : failed ? fallback : null}
+    </DrawingBoundary> : null}
   </Box>
 }
