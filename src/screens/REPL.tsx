@@ -1,4 +1,5 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import {copyModTerminalText} from '../services/mods/uiCopy.js'
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
@@ -1960,6 +1961,8 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
+    uiCopy: async (input, plugin) => input.surface === 'terminal'
+      ? copyModTerminalText(input.text, plugin) : {isCopied: false, reason: 'no-clipboard'},
     captureUsage: () => captureModSessionUsage({
       ...modToolContextRef.current!(),
       messages: messagesRef.current,

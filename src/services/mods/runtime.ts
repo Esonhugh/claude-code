@@ -1,3 +1,4 @@
+import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
@@ -119,6 +120,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   builtinCommands?(): readonly Command[]
   presentation?(): CommandPresentation
   uiPresentation?(): ModUiPresentation
+  uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
   uiStatus?(plugin: string, text: string | undefined): void
   uiToast?(plugin: string, text: string, timeoutMs: number): void
@@ -220,7 +222,7 @@ const coreHost: Nouns = {
   mcp: { call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, resolve: hostIdentity },
+  ui: { open: hostIdentity, close: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -874,6 +876,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const options = args[1] as ModInput | undefined
         return { text: args[0], ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}) }
       }
+      case 'ui.copy': {
+        const value = args[0] as Partial<ModUiCopyArgs> | undefined
+        const input = {text: value?.text, ...(value?.surface === undefined ? {} : {surface: value.surface})}
+        validateModUiCopyArgs(input)
+        const surface = input.surface ?? attachedSurfaces()[0]
+        return {...input, ...(surface === undefined ? {} : {surface})}
+      }
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
@@ -1034,6 +1043,24 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (!binding) throw new Error('tool.register requires a bound session')
         if (owner.state !== 'active') throw new Error('Tool registration belongs to a retired activation')
         return tools.register(owner, input as ModToolSpec)
+      }
+      case 'ui.copy': {
+        validateModUiCopyArgs(input)
+        const {text, surface} = input
+        const plugin = owner.declaration.name
+        if (!surface || !attachedSurfaces().includes(surface)) {
+          logForDebugging(`[Mods:${plugin}] ui.copy: no surface draws (${surface ?? 'none attached'}); nothing copied`)
+          return {isCopied: false, reason: 'no-surface'}
+        }
+        if (surface !== 'terminal' && text.length > 1000000 || !services.uiCopy) {
+          logForDebugging(`[Mods:${plugin}] ui.copy: ${text.length} chars to ${surface}; no clipboard took it`)
+          return {isCopied: false, reason: 'no-clipboard'}
+        }
+        const combined = createCombinedAbortSignal(invocationSignal.getStore() ?? owner.controller.signal, {signalB: owner.controller.signal})
+        try {
+          combined.signal.throwIfAborted()
+          return await services.uiCopy({text, surface}, plugin, combined.signal)
+        } finally { combined.cleanup() }
       }
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
@@ -2122,6 +2149,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           options.validateResult?.(result, nextResults)
         },
         validateInput: (value, received) => {
+          if (event === 'ui.copy') validateModUiCopyArgs(value)
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
           if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
             throw new TypeError('model.fork takes only {prompt: string}')

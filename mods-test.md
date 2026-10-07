@@ -1941,3 +1941,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 最终官方/候选/ROOT 同一 driver/input/fixture/resize 串行：两本地侧各 **51/51 完整面板矩形完全相同，0 cells 差异，comparator exit0**；原35帧差异归零，新增16帧丰富 Select/拒绝状态。作者参数与回调一致。仅 dark 稳定面板矩形，不等于全终端、所有 transaction physical replay 或完整 Mods UI 通过。
 - 初始 RED 与错误 duplicate 接受假设、旧制品 Enter 重复回调、虚拟 Text/主题/重开夹具、缺 isLoading scope、早期类型/迁入脚本，以及 diagnostic1 50/50 但拒绝屏障失败均保留；最终只使用 final2 的完整同源 cohort，不删测试或放宽断言。
 - [源码/制品/命令、原始日志与限制](docs/research/mods-select-state-20261007.md)，证据根 `/private/tmp/mods-select-ome72dwx`。只提交十一路径候选 patch，原用户文件、共享 binaries 和其他 Claude/WIP 保留；完整 API/上下文/最新作者声明/动态 matcher/Band/Client/working取消/全UI/diff/G5及全部 WIP 门禁继续，不 push。
+
+
+## 2026-10-07 — ui.copy 函数暴露与终端 responder（独立提交批次）
+
+- clean HEAD 缺 ui.copy 函数/事件，RED 4/9；补真实 scanner、Worker 同步字段投影、host 和 REPL clipboard responder，三个单文件双方各 9/0、2/0、2/0。保留拒绝、改写、origin、无 coercion、同步 getters 和 opaque value 行为。
+- 最终同源候选 412 pass / 0 fail，工作区 430 pass / 0 fail，十文件相邻 suite 各有 3 个原有 skip；双方 release-check 和私有 make build 通过，无开发者凭据、真实 TMPDIR、自有进程清理。
+- 最新官方 2.1.292 / 独立候选 / ROOT 同 driver/fixture/input 串行 final1 原生 tmux：8 个回执、6 个事件和 origin 相等；两个 OSC 原始内容与自有 tmux buffer 字节相等，正常 exit0、binaryUnchanged、自有服务器清理通过。不是系统 clipboard 或完整 UI 验收。
+- [本批来源、日志/源码/制品身份、命令与限制](docs/research/mods-ui-copy-20261007.md)，证据根 `/private/tmp/mods-declarations-292-tawjepgs`。ROOT 已有生产实现与其他 Claude/WIP 保留，仅从 clean 候选选十二路径提交，不 push。最新作者声明、远程 responder、完整 API/上下文/UI/diff/G5 与全量 WIP 门禁继续，目标未完成。

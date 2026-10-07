@@ -12,6 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 剪贴板函数暴露
+
+### 变更内容
+
+- 将官方 ui.copy 函数和事件纳入真实加载、Worker 与 host 路径，允许文本和目标改写，保留拒绝回执及首次附着 surface 选择。仅投影 text/surface，公开 getter 在作者端同步求值。
+- 交互式终端提供真实剪贴板 responder；无 surface、无 responder 或写入超过限制时返回官方原因。debug 记录插件、长度、目标和写入状态，不打印复制内容。
+
+### 测试覆盖
+
+- 保留九个 Worker/host 用例、两个终端 OSC 写入边界及两个严格类型用例；真实 tmux 相邻作者操作与官方对照见 docs/research/mods-ui-copy-20261007.md。远程 responder、系统剪贴板和完整 Mods UI 仍需继续验收。
+
 ## 2026-10-07 - Mods Select 展开与选择状态
 
 ### 变更内容

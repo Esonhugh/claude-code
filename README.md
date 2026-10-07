@@ -1221,3 +1221,10 @@ return Select({
 运行 `bun test --no-env-file ./src/components/ModsPane.selectPresentation.test.tsx`。官方源码、三侧新制品对照、失败记录和验收范围见 [Select 专项](docs/research/mods-select-state-20261007.md)。
 
 最终官方/候选/工作区对照各 **51/51 个完整面板矩形相同，0 个差异单元格**，含原 35 帧和新增 16 帧 Select 状态。完整作者类型、Band/Client、任务取消、多主题与全终端帧仍需单独验收，不能据此宣称全部 Mods 已对齐。
+
+
+### Mods 剪贴板操作
+
+使用 `await $.ui.copy({text: '需要复制的文本'})` 复制原文；省略 `surface` 时选择首个附着界面，也可指定 `terminal`、`desktop`、`mobile` 或 `vscode`。`ui.copy` hook 通过 `next({...e,text})` 改写复制内容，或返回 `{value:{isCopied:false,reason:'refused'}}`；`{deny:'原因'}` 会拒绝调用。
+
+成功回执为 `{isCopied:true}`；失败原因包括 `no-surface`、`no-clipboard` 和 `refused`。终端复用既有剪贴板路径；OSC 52 输出上限为 1 MiB，远程目标文本上限为一百万个 UTF-16 code units。远程界面还需要自己的 responder。本轮原生流程和精确范围见 [剪贴板专项](docs/research/mods-ui-copy-20261007.md)。

@@ -187,6 +187,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       const log = methods.log;
       const status = methods.status;
       const toast = methods.toast;
+      const copy = methods.copy;
       if (log) methods.log = Object.freeze((text, options = {}) => {
         log(String(text), {to: options?.to ?? 'transcript'}).catch(error => report(error, 'ui.log'));
       });
@@ -196,6 +197,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       if (toast) methods.toast = Object.freeze((text, options = {}) => {
         toast(String(text), {...typeof options.timeoutMs === 'number' && {timeoutMs: options.timeoutMs}}).catch(error => report(error, 'ui.toast'));
       });
+      if (copy) methods.copy = Object.freeze(input => copy({text:input?.text,...input?.surface !== undefined && {surface:input.surface}}));
       if (scroll) methods.scroll = input => scroll({
         to: input?.to,
         ...(input?.in !== undefined && {in:input.in}),
@@ -361,7 +363,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
       'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
       'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
-      'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status', 'ui.toast',
+      'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status', 'ui.toast', 'ui.copy',
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
       'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
       'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);
