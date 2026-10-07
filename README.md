@@ -1339,3 +1339,14 @@ fork 沿用快照模型和工具定义；工具调用由权限回调拒绝，最
 在 `turn.step` hook 中调用模型时，父轮次取消会传入 `next.signal`：模型核心中的 complete/fork 返回普通可修改的 `aborted` 回执；classify 抛出 `${plugin}: $.model.classify: the request was aborted`。若取消发生在模型 Mods hook 内，则调用拒绝为 `HooksError: user-cancel`，finally 可读取相同的 `next.signal.reason` 并写日志。调用者自己的 complete `options.signal` 仍使用共享冻结取消回执，详见上一节。
 
 对照来源为官方 2.1.292 原生制品和生成的作者声明；[验收边界与证据](docs/research/mods-model-parent-fork-292-20261007.md)。SSE 部分 usage 字段的协议见 [Anthropic Streaming 文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。完整请求上下文和所有 UI/diff 行为仍在逐项验证。
+
+## Mods 测试环境隔离
+
+`prompt.compose` 与 `model.fork` 的以下回归自行设置占位凭据及独立临时 HOME/config/XDG 目录，运行结束恢复原环境并清理自有目录。可以直接在没有 API key 的环境运行，不需要修改用户认证配置：
+
+```bash
+bun test --no-env-file ./src/query.promptCompose.test.ts
+bun test --no-env-file ./src/services/mods/modelFork292.test.ts
+```
+
+这些是模型替身驱动的源码回归；完整运行时、UI、官方 diff 和 G5 验收仍需对应的真实入口证据。详见 [测试隔离记录](docs/research/mods-test-isolation-20261007.md)。

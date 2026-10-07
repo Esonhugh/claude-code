@@ -1992,3 +1992,9 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 官方核心取消 complete/fork 返回可修改 aborted；classify 抛出准确插件 HooksError；模型 hook 取消统一拒绝 HooksError user-cancel，finally 读取相同 reason 并记录日志。原始部分 SSE delta 用量保留。
 - 最终candidate套件645通过/0失败/5已有跳过/24文件，ROOT681/0/5/25文件；两侧 release-check、私有新构建及三侧 strict 作者类型均通过。原 RED、类型/输入失败及 unknown 分类失败证据保留。
 - 证据与边界：docs/research/mods-model-parent-fork-292-20261007.md；本地 /private/tmp/mods-model-parent-292-20261007-n6ii9a84/native-comparison.json。parent messageCount仍有差异，未宣称完整请求体或全部上下文相同；完整API/UI/diff、G5与旧response全量门禁继续处理。ROOT的相关WIP集成仍未暂存，提交仅来自20文件私有HEAD候选。
+
+## 2026-10-07 — prompt.compose 与 model.fork 测试环境隔离
+
+本批仅提交两份测试的凭据/配置夹具和说明。准确 HEAD 6940025 的 prompt.compose 在无凭据隔离运行时为 3 pass / 3 fail / 20 expect，错误由认证读取触发；补齐夹具后，候选与工作区单文件各为 6/0/57。fork 单文件两侧各为 5/0/18，正文与断言未改。两侧结果分别记录，不拼接为全量门禁通过。
+
+清理检查另发现按项目缓存的 memory 路径仍指向已删除 HOME，后续 prompt 渲染会重建旧目录；测试 setup/teardown 清空现有缓存，不修改生产路径解析。进一步检查组合执行与环境恢复、类型/lint/CHANGELOG 格式；最终命令、结果及保留的 RED 见 [本批验收](docs/research/mods-test-isolation-20261007.md)。本批不修改生产代码，不重复声明原生 runtime/官方对照通过，完整上下文、API/UI/diff/G5 和全量/HEAD 回归门禁继续开放。

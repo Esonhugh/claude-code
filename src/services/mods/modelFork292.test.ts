@@ -1,11 +1,50 @@
 import { APIError } from '@anthropic-ai/sdk'
 import { getAssistantMessageFromError } from '../api/errors.js'
-import {expect,test,beforeEach,afterEach} from 'bun:test'
-import {resetSettingsCache} from '../../utils/settings/settingsCache.js'
-let apiKey:string|undefined
-beforeEach(()=>{apiKey=process.env.ANTHROPIC_API_KEY;process.env.ANTHROPIC_API_KEY='owned-test-placeholder';resetSettingsCache()})
-afterEach(()=>{if(apiKey===undefined)delete process.env.ANTHROPIC_API_KEY;else process.env.ANTHROPIC_API_KEY=apiKey;resetSettingsCache()})
-import {createModModelFork} from './modelAdapter.js'
+import { expect, test, beforeEach, afterEach } from 'bun:test'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { createModModelFork } from './modelAdapter.js'
+
+// Error formatting reads authentication and settings even with a fake fork runner.
+// Keep those reads independent of the developer's credentials and HOME.
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-fork-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+afterEach(async () => {
+  try {
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+  }
+})
+
 const usage={input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4}
 const reply=(content:unknown[],extra={})=>({type:'assistant',message:{content},...extra})
 const snapshot=()=>({forkContextMessages:[],toolUseContext:{options:{tools:['retained']}}}) as never

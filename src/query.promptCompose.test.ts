@@ -1,4 +1,9 @@
-import { afterEach, expect, test } from 'bun:test'
+import { getAutoMemPath } from './memdir/paths.js'
+import { resetSettingsCache } from './utils/settings/settingsCache.js'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { beforeEach, afterEach, expect, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { query, type QueryParams } from './query.js'
 import type { ToolUseContext } from './Tool.js'
@@ -9,6 +14,47 @@ import { withSystemPromptSections, concatSystemPrompts, joinSystemPrompt, getSys
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { getDefaultAppState } from './state/AppStateStore.js'
 import { resetStateForTests } from './bootstrap/state.js'
+
+
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+  getAutoMemPath.cache.clear?.()
+})
+afterEach(async () => {
+  // Memory paths are memoized by project root, while HOME changes per test.
+  // Drop the old path before another test can recreate a removed fixture.
+  getAutoMemPath.cache.clear?.()
+  try {
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+  }
+})
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test', ISSUES_EXPLAINER: 'report an issue',
@@ -99,8 +145,8 @@ test('generation rejects unsupported or contradictory facts rather than inventin
   expect(noSkills.join('\n')).not.toContain('/<skill-name>')
 })
 
-// No filesystem fixtures, external requests or teardown deletion. Only the
-// transport is replaced: prompt assembly and dispatch run through real query().
+// Only transport is replaced: prompt assembly and dispatch run through real query().
+// The fixture above isolates settings and memory directories read by the loop.
 test.each([false, true])('real query sends the prompt.compose replacement on every model request (recipe=%s)', async recipe => {
   const runtime = createModsRuntime()
   const composed: unknown[] = []
