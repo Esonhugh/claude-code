@@ -644,8 +644,21 @@ export const SDKControlElicitationResponseSchema = lazySchema(() =>
 // Control Request/Response Wrappers
 // ============================================================================
 
+export const SDKControlUIAttachRequestSchema = lazySchema(() => z.object({
+  subtype: z.literal('ui_attach'),
+  surface: z.enum(['desktop', 'mobile', 'vscode']),
+  client_id: z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/),
+  viewport: z.object({columns:z.number().int().positive(), rows:z.number().int().positive(), isFullscreen:z.boolean().optional()}).optional(),
+  answers: z.array(z.enum(['ui_copy', 'ui_prompt_read', 'ui_prompt_fill', 'ui_prompt_suggest', 'ui_read_selection'])).optional(),
+}))
+export const SDKControlUIDetachRequestSchema = lazySchema(() => z.object({
+  subtype: z.literal('ui_detach'), client_id:z.string().regex(/^[a-zA-Z0-9._-]{1,64}$/),
+}))
+
 export const SDKControlRequestInnerSchema = lazySchema(() =>
   z.union([
+    SDKControlUIAttachRequestSchema(),
+    SDKControlUIDetachRequestSchema(),
     SDKControlInterruptRequestSchema(),
     SDKControlPermissionRequestSchema(),
     SDKControlInitializeRequestSchema(),

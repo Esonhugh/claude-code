@@ -1473,3 +1473,26 @@ on('turn.step', async function* ($, e, next) {
 公开 stream 有有限的取消收尾时间，应及时结束并清理资源；显式 iterator `return()` 和 runtime disposal 会立即开始取消并等待清理。没有完整消费 `next(e)` 的 hook 必须返回合法 `TurnStepResult`，省略返回会诊断并回退，取消后不会因此再发主模型请求。真实 hook/模型错误仍保留错误信息，不因为 signal 已取消就全部吞掉。
 
 合法返回、协作取消、缺少返回、真实异常与模型清理的测试、官方源码依据和终端对照见[主动取消专项](docs/research/mods-stream-abort-parity-292-20261007.md)。前一批记录的 self-abort 缺口由此专项继续验收；远程 attach/detach、完整 UI/diff/G5 和全量 WIP 的结果另行记录。
+
+
+## Mods 远程客户端连接（stream-json）
+
+将以下 JSON 行保存为 `requests.jsonl`；每条请求的 `request_id` 应唯一：
+
+```json
+{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}
+{"type":"control_request","request_id":"attach-1","request":{"subtype":"ui_attach","surface":"desktop","client_id":"desktop-main","viewport":{"columns":90,"rows":30,"isFullscreen":true}}}
+{"type":"control_request","request_id":"detach-1","request":{"subtype":"ui_detach","client_id":"desktop-main"}}
+```
+
+使用 stdin 管道启动（EOF 会结束会话并移除剩余连接）：
+
+```bash
+cat requests.jsonl | claude -p --input-format stream-json --output-format stream-json --verbose --plugin-dir /path/to/plugin
+```
+
+远程 surface 为 `desktop`、`mobile` 或 `vscode`；客户端 ID 限 1–64 个 ASCII 字母、数字、`.`、`_`、`-`，冒号保留给引擎。viewport 的列、行须为正整数。attach 回执为 `{surfaces:[...]}`，detach 回执为 `{detached:boolean,surfaces:[...]}`。重复 attach 不重复通知 hook；未知客户端的 detach 返回 `detached:false`。显式连接独立于单个绘制站点，结束时自动移除。
+
+`session.attach` 和 `session.detach` 是观察事件：调用 `$.session.surfaces()` 已能看到更新后的 roster，`next(e)` 不负责提交连接，返回伪造 clientId、抛错或取消通知也不会回滚传输状态。终端 binding 不发 attach；session.end 的 detach 使用 `reason:'end'`。调试日志可查找 `[ModsUIClient]`。
+
+本批提供连接控制及类型；`ui_render`、交互控制、client modules、远程 responders 和完整 UI/diff 仍待接通与验收。`answers` 目前只接受官方声明的五类 responder 名称，不能据此认为 responder 已实现。实际 SDK 协议对照与限制见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)，作者事件定义见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。

@@ -192,11 +192,19 @@ type DrawingLease = {
   table: Nouns
   participants: Set<Activation>
 }
+export type ModRemoteClientInput = {
+  surface: Exclude<ModRenderSurface, 'terminal'>
+  clientId: string
+  viewport?: { columns: number; rows: number; isFullscreen?: boolean }
+  answers?: readonly ('ui_copy' | 'ui_prompt_read' | 'ui_prompt_fill' | 'ui_prompt_suggest' | 'ui_read_selection')[]
+}
 type AttachedClient = {
   surface: ModRenderSurface
   clientId: string
   viewport?: { columns: number; rows: number; isFullscreen?: boolean }
   references: number
+  transport: boolean
+  answers?: ModRemoteClientInput['answers']
 }
 const tierOrder: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 // Identity-only entries; all calls, including beneath, use engineFor's bridge.
@@ -561,7 +569,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return current
   }
 
-  function attachClient(input: Omit<AttachedClient, 'references'>, signal?: AbortSignal): Promise<void> {
+  function attachClient(input: Pick<AttachedClient, 'surface' | 'clientId' | 'viewport'>, signal?: AbortSignal): Promise<void> {
     return transitionClient(input.clientId, async () => {
       signal?.throwIfAborted()
       if (stopped) throw new Error('Mods runtime disposed')
@@ -573,19 +581,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         existing.references++
         return
       }
-      const client = {...structuredClone(input),references:1}
+      const client: AttachedClient = {...structuredClone(input),references:1,transport:false}
       const event = {
         surface: client.surface,
         clientId: client.clientId,
         ...(client.viewport === undefined ? {} : {viewport:client.viewport}),
       }
-      let committed = false
-      await dispatch('session.attach', event, async received => {
-        attachedClients.set(client.clientId, client)
-        committed = true
-        return {clientId:received.clientId}
-      }, active, nouns, {signal})
-      if (!committed) attachedClients.set(client.clientId, client)
+      // Transport state precedes the observation hook; next() does not commit it.
+      attachedClients.set(client.clientId, client)
+      logForDebugging(`[ModsUIClient] attach clientId=${client.clientId} surface=${client.surface}`)
+      await dispatch('session.attach', event, async () => ({clientId:client.clientId}), active, nouns, {signal})
     })
   }
 
@@ -594,22 +599,61 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       signal?.throwIfAborted()
       const client = attachedClients.get(input.clientId)
       if (!client) return
-      if (input.reason === 'detach' && client.references > 1) {
-        client.references--
+      if (input.reason === 'detach' && (client.transport || client.references > 1)) {
+        client.references = Math.max(0, client.references - 1)
         return
       }
       if (stopped) {
         attachedClients.delete(client.clientId)
         return
       }
-      let committed = false
-      await dispatch('session.detach', {surface:client.surface,clientId:client.clientId,reason:input.reason}, async event => {
-        attachedClients.delete(client.clientId)
-        committed = true
-        return {clientId:event.clientId}
-      }, active, nouns, {signal})
-      if (!committed) attachedClients.delete(client.clientId)
+      attachedClients.delete(client.clientId)
+      logForDebugging(`[ModsUIClient] detach clientId=${client.clientId} surface=${client.surface} reason=${input.reason}`)
+      await dispatch('session.detach', {surface:client.surface,clientId:client.clientId,reason:input.reason},
+        async () => ({clientId:client.clientId}), active, nouns, {signal})
     })
+  }
+
+  function observeRemoteClient(event: 'session.attach' | 'session.detach', input: ModInput, signal?: AbortSignal): Promise<void> {
+    // The SDK acknowledges the transport transition before hook notification settles.
+    return queue.then(() => dispatch(event, input, async () => ({clientId:input.clientId}), active, nouns, {signal}))
+      .then(() => {}, error => {
+        if (!signal?.aborted) diagnostic('engine', event, error)
+      })
+  }
+
+  function attachRemoteClient(input: ModRemoteClientInput, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    if (stopped) throw new Error('Mods runtime disposed')
+    if (!binding) throw new Error('Mod UI client requires a bound session')
+    if (ending) throw new Error('Mod UI client cannot attach while the session is ending')
+    const existing = attachedClients.get(input.clientId)
+    if (existing) {
+      existing.transport = true
+      if (input.viewport !== undefined) existing.viewport = {...existing.viewport, ...structuredClone(input.viewport)}
+      if (input.answers !== undefined) existing.answers = [...input.answers]
+      return {attached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
+    }
+    const client: AttachedClient = {...structuredClone(input), references:0, transport:true}
+    attachedClients.set(client.clientId, client)
+    logForDebugging(`[ModsUIClient] attach clientId=${client.clientId} surface=${client.surface}`)
+    const settled = observeRemoteClient('session.attach', {
+      surface:client.surface, clientId:client.clientId,
+      ...(client.viewport === undefined ? {} : {viewport:client.viewport}),
+    }, signal)
+    return {attached:true, surfaces:attachedSurfaces(), settled}
+  }
+
+  function detachRemoteClient(clientId: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const client = attachedClients.get(clientId)
+    if (!client) return {detached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
+    attachedClients.delete(clientId)
+    logForDebugging(`[ModsUIClient] detach clientId=${clientId} surface=${client.surface} reason=detach`)
+    const settled = stopped ? Promise.resolve() : observeRemoteClient('session.detach', {
+      surface:client.surface, clientId, reason:'detach',
+    }, signal)
+    return {detached:true, surfaces:attachedSurfaces(), settled}
   }
 
   function cancelWait(owner: Activation, id: number) {
@@ -2930,6 +2974,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     commands,
     config,
     isDiffOwned,
+    /** Trusted SDK transport roster; not an author capability. */
+    remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces },
     ui,
     renderHooks,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },

@@ -294,9 +294,9 @@ describe('Mods lifecycle', () => {
       {surface:'mobile',clientId:'mobile:default'},
     ])
     expect(observed.events.filter((event:any)=>event?.event==='attach').map((event:any)=>({before:event.before,after:event.after,result:event.result}))).toEqual([
-      {before:['terminal'],after:['terminal','desktop'],result:{clientId:'desktop:first'}},
+      {before:['terminal','desktop'],after:['terminal','desktop'],result:{clientId:'desktop:first'}},
       {before:['terminal','desktop'],after:['terminal','desktop'],result:{clientId:'desktop:second'}},
-      {before:['terminal','desktop'],after:['terminal','desktop','mobile'],result:{clientId:'mobile:default'}},
+      {before:['terminal','desktop','mobile'],after:['terminal','desktop','mobile'],result:{clientId:'mobile:default'}},
     ])
     expect(observed.events.filter((event:any)=>event?.event==='detach').map((event:any)=>event.input)).toEqual([
       {surface:'desktop',clientId:'desktop:first',reason:'detach'},
@@ -305,41 +305,67 @@ describe('Mods lifecycle', () => {
     ])
     expect(observed.events.filter((event:any)=>event?.event==='detach').map((event:any)=>({before:event.before,after:event.after,result:event.result}))).toEqual([
       {before:['terminal','desktop','mobile'],after:['terminal','desktop','mobile'],result:{clientId:'desktop:first'}},
-      {before:['terminal','desktop','mobile'],after:['terminal','mobile'],result:{clientId:'desktop:second'}},
-      {before:['terminal','mobile'],after:['terminal'],result:{clientId:'mobile:default'}},
+      {before:['terminal','mobile'],after:['terminal','mobile'],result:{clientId:'desktop:second'}},
+      {before:['terminal'],after:['terminal'],result:{clientId:'mobile:default'}},
     ])
     expect(events).toEqual([])
   })
 
-  test('aborted attach and detach do not commit partial roster transitions', async () => {
+  test('queued publication cannot lose an early transport notification', async () => {
+    const plugin=await fixture(`let events=[];export function register(on){
+      on('engine.create',async($,e,next)=>{const built=await next(e);await built.clock.sleep(30);return built});
+      on('session.attach',async($,e,next)=>{events.push({input:e,surfaces:await $.session.surfaces()});return next(e)});
+      on('tool.call',()=>({result:events}));
+    }`)
+    const {value,events}=runtime()
+    await value.bind({cwd:plugin.pluginRoot,surface:null,isInteractive:false,sessionId:'early-transport'})
+    const publishing=value.reconcile([plugin])
+    const attached=value.remoteClients.attach({surface:'desktop',clientId:'early'})
+    expect(attached.surfaces).toEqual(['desktop'])
+    await publishing;await attached.settled
+    expect((await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any).result).toEqual([
+      {input:{surface:'desktop',clientId:'early'},surfaces:['desktop']},
+    ])
+    expect(events).toEqual([])
+  })
+
+  test('cancelled Worker observation hooks do not roll back committed transport transitions', async () => {
     const plugin = await fixture(`let events=[]; export function register(on) {
-      on('session.attach',async($,e,next)=>{if(e.clientId==='desktop:cancel-attach'){events.push('attach-enter');await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}))}return next(e)});
-      on('session.detach',async($,e,next)=>{if(e.clientId==='desktop:cancel-detach'){events.push('detach-enter');await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}))}return next(e)});
+      on('session.attach',async($,e,next)=>{events.push('attach-enter');await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}));return next(e)});
+      on('session.detach',async($,e,next)=>{events.push('detach-enter');await new Promise(resolve=>next.signal.addEventListener('abort',resolve,{once:true}));return next(e)});
       on('tool.call',async($)=>({result:{events,surfaces:await $.session.surfaces()}}));
     }`)
     const {value,events}=runtime()
     await value.reconcile([plugin])
     await value.bind({cwd:plugin.pluginRoot,surface:null,isInteractive:false,sessionId:'cancel-lifecycle'})
     const inspect=async()=>await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any
+    async function entered(event:string) {
+      const deadline=Date.now()+1000
+      while(Date.now()<deadline) {
+        if((await inspect()).result.events.includes(event))return
+        await Bun.sleep(1)
+      }
+      throw new Error('Worker observation did not enter: '+event)
+    }
     const attachController=new AbortController()
-    const attaching=value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'attach',props:{}},{surface:'desktop',clientId:'desktop:cancel-attach',signal:attachController.signal,render:()=>{},unmount:()=>{}})
-    await new Promise<void>(resolve=>{
-      const wait=async()=>{if((await inspect()).result.events.includes('attach-enter'))resolve();else setImmediate(wait)}
-      void wait()
-    })
-    attachController.abort(new Error('cancel attach'))
-    await expect(attaching).rejects.toThrow()
-    expect((await inspect()).result.surfaces).toEqual([])
-    const detachController=new AbortController()
-    const site=await value.ui.mount({surface:'desktop',component:'PromptHint',requestId:'detach',props:{}},{surface:'desktop',clientId:'desktop:cancel-detach',signal:detachController.signal,render:()=>{},unmount:()=>{}})
-    const detaching=site.dispose()
-    await new Promise<void>(resolve=>{
-      const wait=async()=>{if((await inspect()).result.events.includes('detach-enter'))resolve();else setImmediate(wait)}
-      void wait()
-    })
-    detachController.abort(new Error('cancel detach'))
-    await expect(detaching).rejects.toThrow()
+    const attached=value.remoteClients.attach({surface:'desktop',clientId:'cancel-client'},attachController.signal)
+    expect(attached.surfaces).toEqual(['desktop'])
+    await entered('attach-enter')
     expect((await inspect()).result.surfaces).toEqual(['desktop'])
+    attachController.abort(new Error('cancel attach observation'))
+    await attached.settled
+    expect((await inspect()).result.surfaces).toEqual(['desktop'])
+    const detachController=new AbortController()
+    const detached=value.remoteClients.detach('cancel-client',detachController.signal)
+    expect(detached.detached).toBe(true)
+    expect(detached.surfaces).toEqual([])
+    await entered('detach-enter')
+    detachController.abort(new Error('cancel detach observation'))
+    await detached.settled
+    expect((await inspect()).result.surfaces).toEqual([])
+    const before=new AbortController();before.abort(new Error('before transition'))
+    expect(()=>value.remoteClients.attach({surface:'mobile',clientId:'pre-aborted'},before.signal)).toThrow('before transition')
+    expect((await inspect()).result.surfaces).toEqual([])
     expect(events).toEqual([])
   })
 
@@ -373,8 +399,8 @@ describe('Mods lifecycle', () => {
     const mobile=await value.ui.mount({surface:'mobile',component:'AbovePrompt',requestId:'mobile',props:{}},{surface:'mobile',clientId:'mobile:end',render:()=>{},unmount:()=>{}})
     await value.endSession('other')
     expect((await value.dispatch('tool.call',{},async()=>({result:'unexpected'})) as any).result).toEqual([
-      {event:'detach',input:{surface:'desktop',clientId:'desktop:end',reason:'end'},surfaces:['desktop','mobile']},
-      {event:'detach',input:{surface:'mobile',clientId:'mobile:end',reason:'end'},surfaces:['mobile']},
+      {event:'detach',input:{surface:'desktop',clientId:'desktop:end',reason:'end'},surfaces:['mobile']},
+      {event:'detach',input:{surface:'mobile',clientId:'mobile:end',reason:'end'},surfaces:[]},
       {event:'end',surfaces:[]},
     ])
     await Promise.all([desktop.dispose(),mobile.dispose()])

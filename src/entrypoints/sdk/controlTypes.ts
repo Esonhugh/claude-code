@@ -283,6 +283,20 @@ export type SDKControlElicitationResponse = {
   success: boolean
 }
 
+export type SDKUIRemoteSurface = 'desktop' | 'mobile' | 'vscode'
+export type SDKUIViewport = { columns: number; rows: number; isFullscreen?: boolean }
+export type SDKUIAnswer = 'ui_copy' | 'ui_prompt_read' | 'ui_prompt_fill' | 'ui_prompt_suggest' | 'ui_read_selection'
+export type SDKControlUIAttachRequest = {
+  subtype: 'ui_attach'
+  surface: SDKUIRemoteSurface
+  client_id: string
+  viewport?: SDKUIViewport
+  answers?: SDKUIAnswer[]
+}
+export type SDKControlUIDetachRequest = { subtype: 'ui_detach'; client_id: string }
+export type SDKControlUIAttachResponse = { surfaces: ('terminal' | SDKUIRemoteSurface)[] }
+export type SDKControlUIDetachResponse = SDKControlUIAttachResponse & { detached: boolean }
+
 // Union of all control request inner types
 export type SDKControlRequestInner = {
   subtype: string

@@ -1,3 +1,4 @@
+import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
@@ -3021,6 +3022,13 @@ function runHeadlessStreaming(
     })
   }
 
+  const remoteUIControl = createModRemoteUIControl({
+    ready: () => inboundBinding ?? Promise.resolve(),
+    runtime: () => options.modsSession?.runtime ?? undefined,
+    success: sendControlResponseSuccess,
+    error: sendControlResponseError,
+  })
+
   // Handle unexpected permission responses by looking up the unresolved tool
   // call in the transcript and executing it
   const handledOrphanedToolUseIds = new Set<string>()
@@ -3088,6 +3096,7 @@ function runHeadlessStreaming(
       }
 
       if (message.type === 'control_request') {
+        if (remoteUIControl.handleRequest(message)) continue
         if (managedSSHControl.handleRequest(message)) {
           continue
         }
@@ -4638,6 +4647,7 @@ function runHeadlessStreaming(
       void run()
     }
     inputClosed = true
+    await remoteUIControl.settle()
     inboundController.abort()
     clearPeerWake()
     managedSSHControl.shutdown()

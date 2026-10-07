@@ -12,6 +12,21 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 远程客户端连接生命周期
+
+### Fixed
+
+- stdin EOF 在关闭输出前等待未完成的连接控制回执，修复一次输入多条 JSON 行时丢失合法请求回执的问题。
+- 连接控制等待首次 Mods binding 完成；后台 observation 等待当前发布队列，防止启动期间静默遗漏 attach 通知。
+- stream-json 入口接通 ui_attach 与 ui_detach，校验远程 surface、client_id、viewport 与 answers；连接回执在 observation hook 完成前发送。
+- roster 在 session.attach/detach hook 之前更新；重复连接只更新传输元数据，hook 异常、取消及伪造 clientId 回执不撤销连接事件。显式连接保持到 ui_detach 或 session.end，不因单个绘制站点关闭而消失。
+- 会话结束先从 roster 移除各客户端，再按原顺序通知 reason=end；调试日志记录客户端身份、surface 和 detach 原因，不打印绘制内容。
+
+### Tests
+
+- 保留真实 Worker 取消、只读字段、返回值、末尾清理与时限检查，将旧的连接回滚预期改为官方已提交传输状态；增加真实 runtime 的 SDK 校验、回执时机、重复连接、绘制站点释放及会话结束回归。
+- 官方 2.1.292 与最终候选/工作区的隔离控制协议、类型、构建、聚焦测试和精确边界见 docs/research/mods-remote-roster-292-20261007.md；本批仅接通连接控制，ui_render、远程 responders 与完整 UI/diff/G5 继续独立验收。
+
 ## 2026-10-07 - Mods stream 主动取消和资源收尾
 
 ### Fixed

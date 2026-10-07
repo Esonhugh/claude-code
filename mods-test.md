@@ -2058,3 +2058,12 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 最新官方的合法/协作/缺少返回/真实异常自取消场景、实际 stdin/普通视图/Ctrl-O transcript、主请求与标题旁路分离和后续恢复的证据，以及完整 API/上下文/UI/diff/G5、动态预算暂停与真实错误竞态等未关闭项，见[专项验收](docs/research/mods-stream-abort-parity-292-20261007.md)。
 
 最终两侧 release-check/build exit0，原生官方/候选/ROOT 同 driver/fixture/input 串行取得32/32/32回执并正常exit0，清理通过。六场 completion、取消信号、普通/展开 pane 与保存文本一致；主模型1/0/0/0/0/1，6个旁路请求另计。不是全帧/全部上下文字段或远程 attach/detach 通过；制品 SHA 与比较器见本批报告。
+
+
+## 2026-10-07 — 远程 roster 与 SDK 连接控制专项
+
+旧的 `aborted attach and detach do not commit partial roster transitions` 在前一批 HEAD 与原工作区均失败。本轮对官方 2.1.292 的只读解包分析及实际 `-p --input-format stream-json` 控制请求证明：roster 先提交，hook 只观察；取消、异常与短路不应回滚连接。因此保留真实 Worker 取消检查，改为验证已提交状态；不是跳过旧失败或放宽超时。
+
+本批接通 `ui_attach` / `ui_detach`，检查回执早于 hook 结束、重复连接、不合法输入、异常不回滚、显式连接独立于绘制站点和 session.end 的移除顺序。原始官方、修复前候选/工作区与最终新制品的身份、命令、回执、事件、正常退出和清理记录见 [远程连接专项](docs/research/mods-remote-roster-292-20261007.md)。
+
+`ui_render` 与其余远程 UI 控制、responder、全量终端 UI/diff/G5 及旧 WIP 全量门禁继续验证。未显式连接的旧内部 remote consumer 仍采用绘制站点引用计数；它与官方传输生命周期的统一将随绘制桥单独处理。这里的有限专项结果不代表完整官方 Mods 兼容。
