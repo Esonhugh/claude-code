@@ -10,7 +10,8 @@ import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import type { FocusEvent } from '../ink/events/focus-event.js'
 import type { ClickEvent } from '../ink/events/click-event.js'
 import type { PointerEvent } from '../ink/events/pointer-event.js'
-import type { KeyboardEvent } from '../ink/events/keyboard-event.js'
+import { KeyboardEvent } from '../ink/events/keyboard-event.js'
+import { dispatcher } from '../ink/reconciler.js'
 import { getFocusManager, getRootNode } from '../ink/focus.js'
 import { hitTest } from '../ink/hit-test.js'
 import { markDirty, scheduleRenderFrom, type TerminalImagePlacement } from '../ink/dom.js'
@@ -1340,6 +1341,30 @@ export function ModsPane({
       run(pane.closeOnEscape ? onClose(pane) : onFocus(pane))
     }
   }
+  // Pane controls get first refusal; unhandled keys still reach the composer.
+  useInput((input, key, event) => {
+    const root = rootRef.current
+    if (key.wheelUp || key.wheelDown) return
+    const binding = keybindings?.resolve(input, key, [...new Set([...keybindings.activeContexts, 'Global' as const])])
+    if (binding && (binding.type === 'chord_started' || binding.type === 'chord_cancelled' ||
+        binding.type === 'unbound' || binding.type === 'match' && binding.action in actions)) return
+    if (!root || !pane.focused || !pane.visible || !shown ||
+        keybindings?.pendingChord || event.didDispatchKeyboardEvent()) return
+    const manager = getFocusManager(root)
+    const target = manager.activeElement ?? root
+    let ancestor: DOMElement | undefined = target
+    while (ancestor && ancestor !== root) ancestor = ancestor.parentNode
+    if (ancestor !== root) return
+    const keydown = new KeyboardEvent(event.keypress)
+    event.markKeyboardDispatched()
+    dispatcher.dispatchDiscrete(target, keydown)
+    if (keydown.defaultPrevented || keydown.didStopImmediatePropagation()) {
+      event.stopImmediatePropagation()
+    } else if (keydown.key === 'tab' && !keydown.ctrl && !keydown.meta) {
+      if (keydown.shift) manager.focusPrevious(getRootNode(root))
+      else manager.focusNext(getRootNode(root))
+    }
+  }, { capture: true, isActive: pane.focused && pane.visible && shown })
   return (
     <Box
       ref={rootRef}

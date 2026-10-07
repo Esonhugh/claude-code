@@ -3481,7 +3481,7 @@ describe('ModsPane host layout', () => {
         const bodyColumns = Math.min(requested, Math.floor(columns / 2) - 2)
         const conversationColumns = columns - bodyColumns - 2
         expect(domElement(stdout, 'REQUESTED_TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
-        expect(domElement(stdout, 'REQUESTED_COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(conversationColumns)
+        expect(domElement(stdout, 'REQUESTED_COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(columns)
         expect(nodeCache.get(renderedElement(stdout, 'REQUESTED_BODY', 'ink-text'))!.x).toBe(conversationColumns + 1)
         expect(ui.getSnapshot()[0]).toMatchObject({ columns: requested, bodyColumns })
       }
@@ -3493,7 +3493,7 @@ describe('ModsPane host layout', () => {
     }
   })
 
-  test('keeps the conversation and composer left of the dock across terminal resize', async () => {
+  test('keeps the conversation beside the dock and composer full-width across terminal resize', async () => {
     const previous = process.env.CLAUDE_CODE_NO_FLICKER
     process.env.CLAUDE_CODE_NO_FLICKER = '1'
     const stdout = new Output()
@@ -3547,7 +3547,7 @@ describe('ModsPane host layout', () => {
         const diff = nodeCache.get(renderedElement(stdout, 'DIFF_BODY', 'ink-text'))!
         const width = columns >= 110 ? Math.ceil(columns / 2) : columns
         expect(domElement(stdout, 'TRANSCRIPT', 'ink-box').yogaNode!.getComputedWidth()).toBe(width)
-        expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(width)
+        expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(columns)
         expect(transcript.x).toBe(0)
         expect(composer.x).toBe(0)
         expect(composer.y).toBe(rows - 1)
@@ -3563,9 +3563,9 @@ describe('ModsPane host layout', () => {
       for (const composerRows of [8, 25, 1]) {
         instance.rerender(<ThemeProvider><Host composerRows={composerRows} /></ThemeProvider>)
         await settle()
-        expect(ui.getSnapshot()[0]!.bodyRows).toBe(50)
+        expect(ui.getSnapshot()[0]!.bodyRows).toBe(50 - composerRows)
         expect(nodeCache.get(renderedElement(stdout, 'COMPOSER', 'ink-text'))!.y).toBe(50 - composerRows)
-        expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(90)
+        expect(domElement(stdout, 'COMPOSER', 'ink-box').yogaNode!.getComputedWidth()).toBe(180)
       }
       await ui.close(owner, 'diff', { kind: 'person' })
       await settle()
@@ -3611,7 +3611,7 @@ describe('ModsPane host layout', () => {
     try {
       await settle()
       expect(nodeCache.get(renderedElement(stdout, 'TRANSCRIPT:138', 'ink-text'))).toMatchObject({ x: 0 })
-      expect(nodeCache.get(renderedElement(stdout, 'COMPOSER:138', 'ink-text'))).toMatchObject({ x: 0 })
+      expect(nodeCache.get(renderedElement(stdout, 'COMPOSER:180', 'ink-text'))).toMatchObject({ x: 0 })
       expect(nodeCache.get(renderedElement(stdout, 'DOCK:41', 'ink-text'))).toMatchObject({ x: 139 })
 
       instance.rerender(<ThemeProvider>{draw(240, true)}</ThemeProvider>)

@@ -1895,3 +1895,13 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 字节校验与绑定变量归一化后的 AST 确认 diff 注册闭包语义相同；官方公共声明整体已有新接口，不能宣称类型与 2.1.291 相同。
 - 独立升级候选的右侧面板边界在 160 列为第 80 列，官方为第 88 列，四个稳定阶段的完整单元格比较不相等（failed）；行为流程通过不能替代完整视觉对齐。
 - 详细来源、命令、证据与限制：`docs/research/mods-shipped-diff-292-20261007.md`。整体目标保持未完成。
+
+
+## 2026-10-07：Mods 面板先处理键盘输入
+
+- 聚焦回归：`bun test --no-env-file ./src/components/ModsPane.keyboardCapture.test.tsx ./src/components/ModsPane.test.tsx`。独立候选 156 pass / 0 fail，工作区 181 pass / 0 fail；两侧 release-check、私有 make build 通过，测试、检查和构建源码 manifest 逐项相同。
+- 最小 RED 用真实 Ink 输入流复现 legacy composer 提前消费 Enter；修复后面板按钮触发一次、方向键到达滚动、未处理输入透传、非关闭 Esc 交还后 Enter 到达 composer。保留全部原测试，修正六处与已提交全宽 composer/可用高度布局不符的旧断言。
+- 本轮官方 2.1.292 / 独立候选 / 工作区真实 tmux 分别为 `keyboard-owned/native-official-o10`、`native-candidate-c10`、`native-workspace-r10`：先完成 diff 打开、缩放、鼠标 ask/取消、关闭重开，再由私有插件通过合法 `ui.open`、`ui.focus` 建立按钮焦点；Enter 恰好一次、PageDown/PageUp 各请求实际 bodyRows、Esc 关闭来源为 person，随后 /exit 正常退出。
+- 普通插件的 closeOnEscape 只接受 true 或省略；省略时 Esc 交还焦点而不关闭。鼠标点击官方 diff 按钮不会主动取得键盘焦点。错误 fixture、裸 Esc 编码及自动/主动焦点竞态的失败保留，不用它们证明产品修复必要性。候选 c8 未观察到自动焦点 hook 日志，自动焦点完整契约仍待专项验证。
+- 独立候选四个稳定阶段完整右侧单元格仍与官方不等：160 列 border 80 vs 88，140 列 70 vs 77。工作区四帧相等依赖其他未提交 UI 改动，本批不计作完整 UI 对齐。
+- 证据与限制：`docs/research/mods-pane-keyboard-20261007.md`。最新公共类型、完整 UI/G5 和全部变更门禁仍待验收。
