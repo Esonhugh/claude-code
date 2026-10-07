@@ -1014,12 +1014,16 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
   const pane = {id:'panel',plugin:'owner',owner:{},visible:true,focused:true,bodyRows:10,contentRows:20}
   const scope = {
     React:{createElement:(_type:unknown,props:unknown) => props}, ModsPane:'ModsPane',
-    modPaneFocused:false, modUiPresentation:{...wide}, modUiPresentationRef:{current:{...wide}},
+    isLoading:false, modPaneFocused:false, modUiPresentation:{...wide}, modUiPresentationRef:{current:{...wide}},
     modPanes:[pane], modsSession:{runtime:{ui}} as {runtime:{ui:typeof ui}} | undefined,
     logError:() => {},
   }
   const render = new Function('scope',`with(scope) {${js}; return extracted;}`)(scope)
   const props = render(pane)
+  expect(props.isWorking).toBe(false)
+  scope.isLoading = true
+  expect(render(pane).isWorking).toBe(true)
+  scope.isLoading = false
   expect(props.pane.focused).toBe(false)
   expect(props.canFocus).toBe(true)
   scope.modPaneFocused = true

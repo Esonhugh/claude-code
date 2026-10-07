@@ -3288,6 +3288,7 @@ export function REPL({
     <ModsPane
       key={`${pane.plugin}:${pane.id}`}
       pane={pane.focused && !modPaneFocused ? { ...pane, focused: false } : pane}
+      isWorking={isLoading}
       canFocus={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
         !modUiPresentation.keyboardOwned && !modPanes.some(other => other.visible && other.shown !== false && other.focused && other.id !== pane.id)}
       onInteract={(pane, drawing, callback, kind, element, value) => {

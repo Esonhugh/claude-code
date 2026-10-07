@@ -1,5 +1,4 @@
 import { parsePatch } from 'diff'
-import figures from 'figures'
 import chalk from 'chalk'
 import { Cursor } from '../utils/Cursor.js'
 import { renderPlaceholder } from '../hooks/renderPlaceholder.js'
@@ -184,6 +183,7 @@ type HoverGroupEntry = {
 
 const LocalHoverContext = React.createContext(false)
 const PersonInputContext = React.createContext(false)
+const SelectHostContext = React.createContext<{ isWorking: boolean; release?(): void }>({ isWorking: false })
 const PaneLayoutContext = React.createContext<(() => void) | undefined>(undefined)
 
 type PaneTabEntry = {
@@ -805,8 +805,6 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
         if (values.has(optionKey)) throw new TypeError('Select option values must be unique')
         values.add(optionKey)
       }
-      if (props.value !== undefined && !values.has(props.value as string))
-        throw new TypeError('Select value must name an option')
       validatePress(node.press, type)
       focusKeys.add(key)
     } else if (type === 'Input') {
@@ -981,6 +979,8 @@ type Props = {
   onScroll(pane: ModUiPane, by: number, pointer?: { column: number; row: number }): Promise<unknown>
   /** Person input is allowed by the current composer/dialog presentation. */
   canFocus?: boolean
+  isWorking?: boolean
+  onReleaseFocus?(): void
   onReportMetrics?: (
     pane: ModUiPane,
     metrics: {
@@ -1001,6 +1001,8 @@ export function ModsPane({
   onReportMetrics,
   onError,
   canFocus = false,
+  isWorking = false,
+  onReleaseFocus,
 }: Props): React.ReactNode {
   const rootRef = React.useRef<DOMElement>(null)
   const scrollRef = React.useRef<ScrollBoxHandle>(null)
@@ -1052,6 +1054,7 @@ export function ModsPane({
   const automaticTake = React.useRef<{ owner: object; id: string; attempted: boolean; controller?: AbortController }>({
     owner: pane.owner, id: pane.id, attempted: false,
   })
+  const bodyFocusRelease = React.useRef<{ owner: object; element?: string; plugin?: string } | undefined>(undefined)
   const applyingFocus = React.useRef(false)
   const focusQueue = React.useRef(Promise.resolve())
   const pendingFocus = React.useRef(0)
@@ -1166,6 +1169,7 @@ export function ModsPane({
     automaticTake.current.attempted = true
     const owner = pane.owner
     const generation = focusGeneration.current
+    bodyFocusRelease.current = undefined
     pendingFocus.current++
     focusQueue.current = focusQueue.current.then(async () => {
       const current = latest.current
@@ -1363,6 +1367,10 @@ export function ModsPane({
       if (current !== root) applyFocus(undefined)
       return
     }
+    const released = bodyFocusRelease.current
+    if (released?.owner === pane.owner && released.element === pane.focusedElement &&
+        released.plugin === pane.focusedPlugin && manager.activeElement === root) return
+    bodyFocusRelease.current = undefined
     applyFocus(pane.focusedElement)
   }, [pane.focused, pane.focusedElement, pane.focusedPlugin, validated.tree])
 
@@ -1514,6 +1522,13 @@ export function ModsPane({
         <Box ref={contentRef} flexDirection="column" flexShrink={0} width="100%">
         <PersonInputContext.Provider value={shown && pane.visible && (pane.focused || canFocus)}>
           <PaneLayoutContext.Provider value={reportMetrics}>
+            <SelectHostContext.Provider value={{ isWorking, release: () => {
+              if (onReleaseFocus) onReleaseFocus()
+              else {
+                bodyFocusRelease.current = { owner: pane.owner, element: pane.focusedElement, plugin: pane.focusedPlugin }
+                applyFocus(undefined)
+              }
+            } }}>
             <RenderElementNode
               node={validated.tree}
               pane={pane}
@@ -1526,6 +1541,7 @@ export function ModsPane({
               hoverBoxes={validated.hoverBoxes}
               parentInline={false}
             />
+            </SelectHostContext.Provider>
           </PaneLayoutContext.Provider>
         </PersonInputContext.Provider>
         </Box>
@@ -1923,7 +1939,7 @@ function RenderElementNode({
     return <ModButton node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} active={active} handlers={canHeatGroup ? groupHover.handlers : {}} />
   }
   if (node.type === 'Select') {
-    return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} />
+    return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} />
   }
   return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} />
 }
@@ -2372,72 +2388,132 @@ function ModButton({
 }
 
 function ModSelect({
-  node, pane, focusElements, keyElements, onInteract, onFocus, onError,
+  node, pane, focusElements, keyElements, onInteract, currentPane, onFocus, onError, client = false,
 }: {
   node: RenderElement
   pane: ModUiPane
   focusElements: FocusElements
   keyElements: KeyElements
   onInteract: Props['onInteract']
+  currentPane: () => ModUiPane
   onFocus: Props['onFocus']
   onError?: Props['onError']
+  client?: boolean
 }): React.ReactNode {
   const inputAllowed = React.useContext(PersonInputContext)
+  const host = React.useContext(SelectHostContext)
   const props = node.props!
   const options = props.options as { value: string; label?: string }[]
-  const initial = Math.max(0, options.findIndex(option => option.value === props.value))
-  const [selectedIndex, setIndex] = useState(initial)
-  const [drawing, setDrawing] = useState(pane.drawing)
-  const index = drawing !== pane.drawing && props.value !== undefined
-    ? initial
-    : Math.min(selectedIndex, options.length - 1)
-  if (drawing !== pane.drawing) setDrawing(pane.drawing)
-  if (index !== selectedIndex) setIndex(index)
+  const controlledValue = props.value as string | undefined
+  const [picked, setPicked] = useState(controlledValue)
+  const pickedRef = React.useRef(picked)
+  const drawnValue = React.useRef(controlledValue)
+  if (controlledValue !== drawnValue.current) {
+    drawnValue.current = controlledValue
+    pickedRef.current = controlledValue
+    setPicked(controlledValue)
+  }
+  const [highlight, setHighlight] = useState(Math.max(0, options.findIndex(option => option.value === picked)))
+  const index = Math.min(highlight, options.length - 1)
   const indexRef = React.useRef(index)
   indexRef.current = index
+  if (index !== highlight) setHighlight(index)
+  const [open, setOpen] = useState(false)
+  const openRef = React.useRef(open)
+  const changeOpen = (value: boolean) => { openRef.current = value; setOpen(value) }
   const [focused, setFocused] = useState(false)
+  const mounted = React.useRef(true)
+  React.useLayoutEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const key = props.key as string
   const press = node.press!
+  const owner = pane.owner
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
   const select = () => {
+    if (!openRef.current) { changeOpen(true); return }
     if (!inputAllowed || pane.drawing === undefined) return
     const value = options[indexRef.current]!.value
-    void onInteract(pane, pane.drawing, press, 'select', key, value).catch(error => onError?.(error))
+    pickedRef.current = value
+    setPicked(value)
+    changeOpen(false)
+    void onInteract(pane, pane.drawing, press, 'select', key, value).then(result => {
+      if (!mounted.current || currentPane().owner !== owner || pickedRef.current !== value ||
+          result === null || typeof result !== 'object') return
+      const receipt = result as { element?: unknown; value?: unknown; deny?: unknown }
+      if (typeof receipt.element !== 'string' || typeof receipt.value !== 'string' || receipt.deny !== undefined) return
+      pickedRef.current = receipt.value
+      setPicked(receipt.value)
+    }).catch(error => onError?.(error))
   }
   const handle = (event: KeyboardEvent) => {
-    if (!pane.focused || event.ctrl || event.meta || event.superKey || event.shift) return
-    if (event.key === 'up') {
+    if (!pane.focused) return
+    if (event.ctrl && event.key === 'c') {
+      if (host.isWorking) return
       event.preventDefault()
       event.stopPropagation()
-      indexRef.current = (indexRef.current + options.length - 1) % options.length
-      setIndex(indexRef.current)
-    } else if (event.key === 'down') {
+      if (openRef.current) changeOpen(false)
+      else host.release?.()
+      return
+    }
+    if (event.ctrl || event.meta || event.superKey) return
+    if (!event.shift && (event.key === 'up' || event.key === 'down')) {
       event.preventDefault()
       event.stopPropagation()
-      indexRef.current = (indexRef.current + 1) % options.length
-      setIndex(indexRef.current)
-    } else if (event.key === 'return' || event.key === ' ') {
+      if (!openRef.current) changeOpen(true)
+      else {
+        indexRef.current = (indexRef.current + (event.key === 'up' ? -1 : 1) + options.length) % options.length
+        setHighlight(indexRef.current)
+      }
+    } else if (!event.shift && event.key === 'return') {
       event.preventDefault()
       event.stopPropagation()
       select()
+    } else if (!event.isPasted && event.text !== undefined && [...event.text].length === 1) {
+      event.preventDefault()
+      event.stopPropagation()
+      const from = openRef.current ? indexRef.current : -1
+      const query = event.text.toLowerCase()
+      for (let offset = 1; offset <= options.length; offset++) {
+        const next = (from + offset) % options.length
+        const option = options[next]!
+        if (!(option.label ?? option.value).toLowerCase().startsWith(query)) continue
+        indexRef.current = next
+        setHighlight(next)
+        changeOpen(true)
+        break
+      }
     }
   }
-  const option = options[index]!
+  const option = options.find(option => option.value === picked)
+  const first = Math.max(0, index - 7)
+  const shown = open ? options.slice(first, first + 8) : []
+  const hidden = open ? options.length - first - shown.length : 0
   return (
     <Box
       ref={elementRef}
+      flexDirection="column"
+      flexShrink={0}
       tabIndex={pane.focused ? 0 : -1}
       autoFocus={false}
       onFocus={event => {
         setFocused(true)
+        indexRef.current = Math.max(0, options.findIndex(option => option.value === pickedRef.current))
+        setHighlight(indexRef.current)
+        changeOpen(true)
         if (inputAllowed) reportElementFocus(event, pane, key, onFocus, onError)
       }}
-      onBlur={() => setFocused(false)}
+      onBlur={() => { setFocused(false); changeOpen(false) }}
       onKeyDown={handle}
-      onClick={select}
     >
-      {props.label ? <Text>{String(props.label)}: </Text> : null}
-      <Text inverse={focused}>{option.label ?? option.value} {figures.arrowUp}{figures.arrowDown}</Text>
+      <Text wrap="truncate-end">
+        <Text bold={focused}>{props.label === undefined ? '' : `${String(props.label)}: `}</Text>
+        {option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
+        <Text dimColor>{open ? ' ▴' : ' ▾'}</Text>
+      </Text>
+      {shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>)}
+      {hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
     </Box>
   )
 }

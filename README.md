@@ -1201,3 +1201,23 @@ return Input({
 运行 `bun test --no-env-file ./src/components/ModsPane.inputPresentation.test.tsx` 检查这些状态。官方源码、三侧终端对照与精确验收边界见 [Input 专项](docs/research/mods-input-presentation-20261007.md)；Select 展开列表和完整 UI 仍须继续验收。
 
 本轮最终制品的两个 Input 状态帧与官方 2.1.292 完全相同；整体 35 帧中 **33 帧相同**，其余两个 Select 帧共 50 个差异单元格。完整画面对照仍未通过，详细结果以上述 Input 专项为准。
+
+
+### Mods Select 的展开与选择
+
+```ts
+const { Select } = $.ui.resolve(e)
+return Select({
+  key: 'base', label: 'Base', value: 'main', autoFocus: true,
+  options: [{ value: 'main', label: 'Main' }, { value: 'dev', label: 'Develop' }],
+  onSelect: (value, input) => $.ui.log(`picked: ${value} (${input.element})`),
+})
+```
+
+获得焦点会展开列表；方向键改变高亮，Enter 确认并收起。收起时 Enter 或方向键只展开，不发 onSelect；输入字符循环寻找标签前缀，Space 不会提交。最多展示八项，超出的数量另行显示。空闲时 Ctrl+C 先收起，再释放控件焦点；任务运行时 Ctrl+C 交给取消流程。
+
+回执等待期间显示乐观选择；hook 改写结果的 value 会更新已选值，较晚结果不会覆盖后续选择。相同 value 的重绘保留当前选择，新 value 才覆盖。省略或不匹配选项的 value 显示 none；options 非空且 value 唯一。
+
+运行 `bun test --no-env-file ./src/components/ModsPane.selectPresentation.test.tsx`。官方源码、三侧新制品对照、失败记录和验收范围见 [Select 专项](docs/research/mods-select-state-20261007.md)。
+
+最终官方/候选/工作区对照各 **51/51 个完整面板矩形相同，0 个差异单元格**，含原 35 帧和新增 16 帧 Select 状态。完整作者类型、Band/Client、任务取消、多主题与全终端帧仍需单独验收，不能据此宣称全部 Mods 已对齐。

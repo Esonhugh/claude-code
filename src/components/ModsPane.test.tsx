@@ -165,6 +165,13 @@ function inputElement(stdout: Output, text: string): DOMElement {
   return current
 }
 
+function selectElement(stdout: Output, value: string): DOMElement {
+  let current: DOMElement | undefined = domElement(stdout, value, 'ink-virtual-text')
+  while (current && typeof current.attributes.tabIndex !== 'number') current = current.parentNode
+  assert.ok(current, 'Expected the drawn Select focus registration')
+  return current
+}
+
 function moveMouseTo(stdout: Output, node: DOMElement): void {
   const rect = nodeCache.get(node)
   assert.ok(rect, 'Expected target to have a rendered rect')
@@ -451,9 +458,10 @@ describe('ModsPane validation', () => {
     expect(() => validateModRenderTree({
       type: 'Select', props: { key: 'empty', options: [] }, press: { plugin: 'fixture', handle: 1 },
     })).toThrow(/must contain 1-/i)
-    expect(() => validateModRenderTree({
+    // Official host accepts missing values and displays none. Duplicate options remain rejected.
+    expect(validateModRenderTree({
       type: 'Select', props: { key: 'missing', value: 'gone', options: [{ value: 'main' }] }, press: { plugin: 'fixture', handle: 1 },
-    })).toThrow(/must name an option/i)
+    }).tree.type).toBe('Select')
   })
 
   test('requires unscoped hover styles and display to live in a visible unique keyed Box', () => {
@@ -1130,7 +1138,7 @@ describe('ModsPane Client consumer', () => {
       getFocusManager(input).focus(input)
       stdin.push('a\r')
       await settle()
-      const select = renderedElement(stdout, 'one ↑↓', 'ink-text').parentNode!
+      const select = selectElement(stdout, 'none')
       getFocusManager(select).focus(select)
       stdin.push('\u001b[B\r')
       await settle()
@@ -2738,7 +2746,7 @@ describe('ModsPane input repair', () => {
     const stdin = new Input()
     const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [
       fileButton('first'),
-      { type: 'Select', props: { key: 'base', options: [{ value: 'HEAD' }, { value: 'main' }] }, press: { plugin: 'fixture', handle: 2 } },
+      { type: 'Select', props: { key: 'base', value: 'HEAD', options: [{ value: 'HEAD' }, { value: 'main' }] }, press: { plugin: 'fixture', handle: 2 } },
       { type: 'Input', props: { key: 'ask', placeholder: 'Question' }, press: { plugin: 'fixture', handle: 3 } },
     ] }
     const instance = await render(<><EnableInput /><ModsPane pane={pane(tree, { focusedElement: 'first' })}
@@ -2747,17 +2755,17 @@ describe('ModsPane input repair', () => {
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      expect(latestStyles(stdout, ['HEAD ↑↓', 'Question']).get('Question')?.inverse).not.toBe(true)
+      expect(domElement(stdout, 'Question', 'ink-text').textStyles?.inverse).not.toBe(true)
       stdin.push('\t')
       await settle()
-      expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).toBe(true)
+      expect(domElement(stdout, '  HEAD', 'ink-text').textStyles?.inverse).toBe(true)
       stdin.push('\t')
       await settle()
-      expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).not.toBe(true)
+      expect(domElement(stdout, 'HEAD', 'ink-virtual-text').textStyles?.inverse).not.toBe(true)
       expect(domElement(stdout, 'Q', 'ink-virtual-text').textStyles?.inverse).toBe(true)
       stdin.push('\u001b[Z')
       await settle()
-      expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).toBe(true)
+      expect(domElement(stdout, '  HEAD', 'ink-text').textStyles?.inverse).toBe(true)
       expect(latestStyles(stdout, ['Question']).get('Question')?.inverse).not.toBe(true)
       const input = inputElement(stdout, 'Question')
       const rect = nodeCache.get(input)!
@@ -2765,7 +2773,7 @@ describe('ModsPane input repair', () => {
       dispatchClick(ink.rootNode, rect.x, rect.y)
       await settle()
       expect(getFocusManager(input).activeElement).toBe(input)
-      expect(latestStyles(stdout, ['HEAD ↑↓']).get('HEAD ↑↓')?.inverse).not.toBe(true)
+      expect(domElement(stdout, 'HEAD', 'ink-virtual-text').textStyles?.inverse).not.toBe(true)
       expect(domElement(stdout, 'Q', 'ink-virtual-text').textStyles?.inverse).toBe(true)
     } finally { instance.unmount(); chalk.level = colorLevel }
   })
@@ -3348,7 +3356,7 @@ describe('ModsPane input repair', () => {
       stdin.push('\u001b[B')
       await settle()
       expect(scrolls).toEqual([1, -1])
-      expect(renderedElement(stdout, 'turn ↑↓', 'ink-text')).toBeDefined()
+      expect(domElement(stdout, '  turn', 'ink-text').textStyles?.inverse).toBe(true)
       stdin.push('\t')
       await settle()
       expect(requests).toEqual(['source', 'ask'])
@@ -4246,12 +4254,12 @@ describe('ModsPane Ink interaction', () => {
 
   test.each([
     { label: 'Down + Enter', chunk: '\u001b[B\r', value: 'dev' },
-    { label: 'multiple Down + Space', chunk: '\u001b[B\u001b[B ', value: 'release' },
+    { label: 'multiple Down + Enter', chunk: '\u001b[B\u001b[B\r', value: 'release' },
     { label: 'Down wraparound + Enter', chunk: '\u001b[B'.repeat(4) + '\r', value: 'dev' },
-    { label: 'Up wraparound + Space', chunk: '\u001b[A ', value: 'release' },
+    { label: 'Up wraparound + Enter', chunk: '\u001b[A\r', value: 'release' },
     { label: 'multiple Up + Enter', chunk: '\u001b[A\u001b[A\r', value: 'dev' },
-    { label: 'mixed arrows + Space', chunk: '\u001b[B\u001b[A\u001b[A ', value: 'release' },
-    { label: 'Down + click', chunk: '\u001b[B', value: 'dev', click: true },
+    { label: 'mixed arrows + Enter', chunk: '\u001b[B\u001b[A\u001b[A\r', value: 'release' },
+    { label: 'Down + focus click + Enter', chunk: '\u001b[B', value: 'dev', click: true },
   ])('Select submits the new value once for $label in one stdin chunk', async sample => {
     const { value } = sample
     let { chunk } = sample
@@ -4270,23 +4278,23 @@ describe('ModsPane Ink interaction', () => {
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      const select = renderedElement(stdout, 'main ↑↓', 'ink-text').parentNode!
+      const select = selectElement(stdout, 'main')
       expect(getFocusManager(select).activeElement).toBe(select)
       if ('click' in sample) {
         const ink = instances.get(stdout as never) as unknown as InkInstance
         ink.setAltScreenActive(true, true)
         const rect = nodeCache.get(select)!
-        chunk += `\u001b[<0;${rect.x + 1};${rect.y + 1}M\u001b[<0;${rect.x + 1};${rect.y + 1}m`
+        chunk += `\u001b[<0;${rect.x + 1};${rect.y + 1}M\u001b[<0;${rect.x + 1};${rect.y + 1}m` + '\r'
       }
       stdin.push(chunk)
       await settle()
       expect(selections).toEqual([[current, 7, { plugin: 'fixture', handle: 2 }, 'select', 'base', value]])
-      expect(renderedElement(stdout, `${value} ↑↓`, 'ink-text').parentNode).toBe(select)
+      expect(selectElement(stdout, value)).toBe(select)
       expect(getFocusManager(select).activeElement).toBe(select)
     } finally { instance.unmount() }
   })
 
-  test('Select applies explicit values on each drawing without resetting picks on snapshot publishes', async () => {
+  test('Select applies changed explicit values and preserves picks on equal drawings and snapshot publishes', async () => {
     const stdout = new Output()
     const stdin = new Input()
     const owner = {}
@@ -4305,33 +4313,31 @@ describe('ModsPane Ink interaction', () => {
     const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      const select = renderedElement(stdout, 'main ↑↓', 'ink-text').parentNode!
-      stdin.push('\u001b[B')
+      const select = selectElement(stdout, 'main')
+      stdin.push('\u001b[B\r')
       await settle()
       for (const nextFocus of [false, true]) {
         focused = nextFocus
         revision++
         instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
         await settle()
-        expect(renderedElement(stdout, 'dev ↑↓', 'ink-text').parentNode).toBe(select)
+        expect(selectElement(stdout, 'dev')).toBe(select)
       }
-      stdin.push('\r')
-      await settle()
       expect(selections).toEqual([{ drawing, value: 'dev' }])
       for (const [nextValue, expected, nextPick] of [
-        ['main', 'main', 'dev'], ['release', 'release', 'main'], [undefined, 'main', 'dev'],
+        ['main', 'dev', 'release'], ['release', 'release', 'main'], [undefined, 'none', 'dev'],
       ] as const) {
         value = nextValue
         drawing++
         instance.rerender(<ThemeProvider>{draw()}</ThemeProvider>)
         await settle()
-        expect(renderedElement(stdout, `${expected} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(selectElement(stdout, expected)).toBe(select)
         expect(getFocusManager(select).activeElement).toBe(select)
         const count = selections.length
-        stdin.push('\r\u001b[B\r')
+        stdin.push(`${nextPick[0]}\r`)
         await settle()
-        expect(selections.slice(count)).toEqual([{ drawing, value: expected }, { drawing, value: nextPick }])
-        expect(renderedElement(stdout, `${nextPick} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(selections.slice(count)).toEqual([{ drawing, value: nextPick }])
+        expect(selectElement(stdout, nextPick)).toBe(select)
         expect(getFocusManager(select).activeElement).toBe(select)
       }
     } finally { instance.unmount() }
@@ -4353,22 +4359,24 @@ describe('ModsPane Ink interaction', () => {
     const instance = await render(draw(['main', 'dev', 'release']), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
-      const select = renderedElement(stdout, 'main ↑↓', 'ink-text').parentNode!
+      const select = selectElement(stdout, 'none')
       stdin.push('\u001b[A')
       await settle()
-      expect(renderedElement(stdout, 'release ↑↓', 'ink-text').parentNode).toBe(select)
+      expect(domElement(stdout, '  release', 'ink-text').textStyles?.inverse).toBe(true)
       for (const values of [['main', 'dev'], ['main', 'replacement'], ['only']]) {
         drawing++
         instance.rerender(<ThemeProvider>{draw(values)}</ThemeProvider>)
         await settle()
         assert.ok(instances.get(stdout as never), stripAnsi(stdout.output))
-        expect(renderedElement(stdout, `${values.at(-1)} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(selectElement(stdout, 'none')).toBe(select)
         expect(getFocusManager(select).activeElement).toBe(select)
+        // A pick closes the list; reopen before asserting the next drawing's clamped highlight.
+        if (elements(stdout, false).some(item => item.text === ' ▾')) { stdin.push('\r'); await settle() }
         const count = selections.length
-        stdin.push('\r\u001b[B\r\u001b[A ')
+        stdin.push('\r\u001b[B\u001b[B\r\u001b[A\u001b[A\r')
         await settle()
         expect(selections.slice(count)).toEqual([values.at(-1), values[0], values.at(-1)])
-        expect(renderedElement(stdout, `${values.at(-1)} ↑↓`, 'ink-text').parentNode).toBe(select)
+        expect(selectElement(stdout, values.at(-1)!)).toBe(select)
         expect(getFocusManager(select).activeElement).toBe(select)
       }
       stdin.push('\u001b[B\r')

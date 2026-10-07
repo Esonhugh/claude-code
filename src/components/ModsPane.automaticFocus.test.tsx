@@ -49,7 +49,7 @@ async function until(predicate: () => boolean, evidence?: () => unknown) {
 }
 function contents(node: DOMNode): string {return node.nodeName === '#text' ? node.nodeValue : node.childNodes.map(contents).join('')}
 function find(root: DOMElement, label: string): DOMElement | undefined {
-  if (root.nodeName === 'ink-text' && contents(root) === label) return root
+  if (['ink-text','ink-virtual-text'].includes(root.nodeName) && contents(root) === label) return root
   for (const child of root.childNodes) if (child.nodeName !== '#text') {const value=find(child,label); if (value) return value}
 }
 function replFocus(scope: Record<string, unknown>): React.ComponentProps<typeof ModsPane>['onFocus'] {

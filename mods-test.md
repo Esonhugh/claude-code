@@ -1931,3 +1931,13 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 - 最终官方 o2/候选 c2/ROOT r2 同一 driver 九流程作者参数与动作一致。两个 Input 画面字符/样式/矩形/位置严格相同；全 35 帧 **33 一致 / 50 cells 差异，comparator exit 1**，剩余仅 Select 的 held/action。Input 专项 checker exit 0，整体 UI 仍未通过；稳定帧不是全 output transaction physical replay。
 - 空对象/缺 value 回执误清空的 RED **8/2** 与夹具诊断日志保留，修复后最终 10/0。旧 c1 与 sourceUnchanged=false 的旧独立结果不作为本轮制品证明。
 - [源码/制品身份、命令、原始证据与验收边界](docs/research/mods-input-presentation-20261007.md)，证据根 `/private/tmp/mods-controls-0qncgv34`。只暂存七路径的候选 patch；其他 Claude/WIP 与原用户文件、共享 binary 保留。Select、Band/Client、最新作者声明、完整 API/上下文/UI/diff、G5 和全部 WIP 门禁继续，不 push。
+
+
+## 2026-10-07 — Select 展开、选择与回执（独立提交批次）
+
+- 官方 2.1.292 的 Select 区分 picked/highlight/open；获得焦点展开，Enter 确认收起，收起后的方向键/Enter 仅展开。字符按标签循环前缀，Space 不提交，窗口八项及剩余数量。未知 value 显示 none；构造函数允许生成重复 options，但官方真实 host 拒绝，保留本地重复校验。
+- 乐观选择与改写回执对齐，较晚结果不覆盖新 pick，等值绘制保留缓存。Ctrl+C 空闲先收起/再释放 ring，working 时让出；宿主传入真实 isLoading/isWorking，Band 显式释放。working 的真实模型取消和完整 Band/Client 仍待二进制验收。
+- 最终候选13文件 **415/0/2358 expect**，ROOT **437/0/2448 expect**；改动测试各自隔离运行：Select双方 **14/0/104**，ModsPane **176/0/1078、180/0/1098**，automaticFocus双方 **10/0/122**，runtimeUi **38/0/185、39/0/189**。双方 release-check/build exit0，同源清单与 owned cleanup 通过。
+- 最终官方/候选/ROOT 同一 driver/input/fixture/resize 串行：两本地侧各 **51/51 完整面板矩形完全相同，0 cells 差异，comparator exit0**；原35帧差异归零，新增16帧丰富 Select/拒绝状态。作者参数与回调一致。仅 dark 稳定面板矩形，不等于全终端、所有 transaction physical replay 或完整 Mods UI 通过。
+- 初始 RED 与错误 duplicate 接受假设、旧制品 Enter 重复回调、虚拟 Text/主题/重开夹具、缺 isLoading scope、早期类型/迁入脚本，以及 diagnostic1 50/50 但拒绝屏障失败均保留；最终只使用 final2 的完整同源 cohort，不删测试或放宽断言。
+- [源码/制品/命令、原始日志与限制](docs/research/mods-select-state-20261007.md)，证据根 `/private/tmp/mods-select-ome72dwx`。只提交十一路径候选 patch，原用户文件、共享 binaries 和其他 Claude/WIP 保留；完整 API/上下文/最新作者声明/动态 matcher/Band/Client/working取消/全UI/diff/G5及全部 WIP 门禁继续，不 push。

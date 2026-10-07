@@ -163,6 +163,8 @@ export function ModsAbovePrompt({
 
   return <ModsPane
     pane={pane}
+    isWorking={isWorking}
+    onReleaseFocus={() => { setFocused(false); latest.current.onFocusChange?.(false) }}
     canFocus={canFocus && !hasSurvey}
     onInteract={(_pane, drawing, callback, kind, element, value) => {
       const site = siteRef.current
