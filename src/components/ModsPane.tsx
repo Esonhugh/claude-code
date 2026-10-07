@@ -1772,6 +1772,7 @@ function RenderElementNode({
   onError,
   hoverBoxes,
   clientHandle,
+  renderEngine,
   parentInline = false,
 }: {
   node: RenderElement
@@ -1784,6 +1785,7 @@ function RenderElementNode({
   onError?: Props['onError']
   hoverBoxes: ReadonlyMap<RenderElement, boolean>
   clientHandle?: ModClientHandle
+  renderEngine?: (ref: number) => React.ReactNode
   parentInline?: boolean
 }): React.ReactNode {
   const inline = parentInline || node.type === 'Text' || node.type === 'Link'
@@ -1847,8 +1849,10 @@ function RenderElementNode({
       hoverBoxes={hoverBoxes}
       clientHandle={clientHandle}
       parentInline={inline}
+      renderEngine={renderEngine}
     />
   })
+  if (node.type === 'engine') return renderEngine?.(node.ref!) ?? null
   if (node.type === 'Client') {
     return <ModClient node={node} pane={pane} focusElements={focusElements} keyElements={keyElements}
       onFocus={onFocus} onError={onError} hoverBoxes={hoverBoxes} />
@@ -1942,6 +1946,15 @@ function RenderElementNode({
     return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} />
   }
   return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} />
+}
+
+/** Shared widget renderer without Pane chrome, scrolling, or a public Pane registration. */
+export function ModRenderTree({ tree, engineRefs, ...props }: {
+  tree: unknown
+  engineRefs: ReadonlySet<number>
+} & Omit<React.ComponentProps<typeof RenderElementNode>, 'node' | 'hoverBoxes'>): React.ReactNode {
+  const validated = React.useMemo(() => validateModRenderTree(tree, 'terminal', engineRefs), [tree, engineRefs])
+  return <PersonInputContext value={true}><RenderElementNode {...props} node={validated.tree} hoverBoxes={validated.hoverBoxes} /></PersonInputContext>
 }
 
 function ModClient({

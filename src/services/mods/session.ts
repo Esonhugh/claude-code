@@ -133,6 +133,20 @@ export function createModsSession(options: ModsSessionOptions) {
       ...pluginConfigRows(),
     ],
   }
+  const renderListeners = new Set<() => void>()
+  let renderSnapshot: { runtime: ModsRuntime; version: number } | undefined
+  let unsubscribeRender: (() => void) | undefined
+  const publishRender = () => {
+    renderSnapshot = !stopped && runtime ? { runtime, version: runtime.renderHooks.getSnapshot() } : undefined
+    for (const listener of renderListeners) listener()
+  }
+  const renderHooks = {
+    getSnapshot: () => renderSnapshot,
+    subscribe(listener: () => void) {
+      renderListeners.add(listener)
+      return () => { renderListeners.delete(listener) }
+    },
+  }
   const uiListeners = new Set<() => void>()
   const emptyPanes: readonly ModUiPane[] = Object.freeze([])
   let unsubscribeUi: (() => void) | undefined
@@ -142,7 +156,7 @@ export function createModsSession(options: ModsSessionOptions) {
       uiListeners.add(listener)
       return () => { uiListeners.delete(listener) }
     },
-    render: (presentation: ModUiPresentation) => runtime?.ui.render(presentation) ?? Promise.resolve(),
+    render: (presentation: ModUiPresentation) => runtime?.ui.render(presentation, { nativeSites: false }) ?? Promise.resolve(),
   }
   const commandListeners = new Set<() => void>()
   const emptyCommands: Command[] = []
@@ -582,6 +596,8 @@ export function createModsSession(options: ModsSessionOptions) {
         return
       }
       runtime = created
+      unsubscribeRender = runtime.renderHooks.subscribe(publishRender)
+      publishRender()
       runtimeBound = binding !== undefined
       unsubscribeUi = runtime.ui.subscribe(() => {
         for (const listener of uiListeners) listener()
@@ -803,6 +819,9 @@ export function createModsSession(options: ModsSessionOptions) {
   function dispose(): Promise<void> {
     if (disposal) return disposal
     stopped = true
+    publishRender()
+    unsubscribeRender?.()
+    renderListeners.clear()
     for (const listener of commandListeners) listener()
     authoringGeneration++
     authoringConsent = undefined
@@ -851,6 +870,7 @@ export function createModsSession(options: ModsSessionOptions) {
     isDiffOwned: () => !stopped && (runtime?.isDiffOwned() ?? false),
     tools,
     ui,
+    renderHooks,
     get runtime() {
       return stopped ? undefined : runtime
     },

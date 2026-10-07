@@ -1,3 +1,4 @@
+import { recordPaintedScrollTop } from './dom.js'
 import indentString from 'indent-string'
 import { applyTextStyles } from './colorize.js'
 import type { DOMElement } from './dom.js'
@@ -862,6 +863,8 @@ function renderNodeToOutput(
         if (scrollTop !== cur) node.pendingScrollDelta = undefined
         if (node.pendingScrollDelta !== undefined) scrollDrainNode = node
         scrollTop = clamped
+
+        recordPaintedScrollTop(node, scrollTop)
 
         if (content && contentYoga) {
           // Compute content wrapper's absolute render position with scroll

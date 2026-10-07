@@ -2004,3 +2004,9 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 移除普通主轮次 `turn_duration` 的 30 秒门槛，补齐实际查询判断，保留 abort/proactive/swarm 分支。19 项新回归执行实际 REPL 完成语句与查询前置语句，验证边界时长、预算、延后与 API/public session 消息投影；原始 RED 和最终结果均保留。
 
 本批的相关组合回归出现失败，逐文件结果与未修改 HEAD 的相同命令对照另列，不能称为全量通过。隔离构建和官方/候选/工作区 tmux 验证分别记录完成与取消后的真实 transcript；计数差异不通过常数或过滤归一化隐藏。完整附件上下文、官方完成时间格式、TurnDuration 原生 Mods render、其他 UI/diff/G5 仍开放。见 [验收记录](docs/research/mods-turn-checkpoint-292-20261007.md)。
+
+## 2026-10-07 — TurnDuration 原生 ui.render
+
+新增 `src/components/messages/SystemTextMessage.modsRender292.test.tsx` 在真正的 Mods Worker、生产消息组件和 Ink 上验证替换、原生续绘、多次 next、稳定动词、无匹配零调用、隐藏配置、非法树回退、重载/卸载、Client、viewport、实际滚动行范围、绘制后观察、按钮焦点/回调和迟到绘制隔离。候选只有当前功能及必需的私有焦点接口；工作区额外 WIP 不自动并入提交。
+
+固定 official 2.1.292 与本轮独立 candidate/workspace 制品串行执行自有 tmux，保存逐字 stdin、PTY/pane、debug、transcript 和本地 API 夹具；所有运行在独立 HOME/config/TMP/XDG 下。各层的准确命令、原始失败和尚未关闭的差异见[验收记录](docs/research/mods-native-duration-292-20261007.md)。不将聚焦通过替代更宽门禁，不将该站点接通等同于全部原生 UI、完成时间格式、官方 diff viewer 或 G5 已完成。

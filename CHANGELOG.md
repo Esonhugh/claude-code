@@ -12,6 +12,22 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 原生完成行接入 Mods render
+
+### Changed
+
+- 将实际 TurnDuration 消息行接入 ui.render：以消息 UUID 作为 requestId，传递 word、durationMs、实际终端 viewport，以及已知的全屏 onScreen 范围。
+- 完成动词按官方 2.1.292 的 UTF-16 字符串哈希稳定选择；同一消息重挂载不再随机变词。
+- 共享原生绘制宿主支持插件替换、嵌套及多次 next(e) 原生续绘、Client 与真实按钮回调；没有匹配钩子时跳过 render site，钩子重载和卸载更新实际行。
+- 可见行测量订阅绘制后的滚动位置，报告部分可见或视口外 null；异常自定义树回退原生行，迟到的卸载绘制不能覆盖终端。
+- 输入框 presentation 更新只重画对应 Pane/AbovePrompt，不重复调用未变化的原生 transcript 钩子；显式 invalidate 和插件重载仍更新原生站点。
+- 禁止 next(e) 添加、删去或改写由宿主报告的 props.onScreen；保持绘制重写与视口上下文分离。相邻测试夹具补齐原生焦点/订阅接口及已有工具的 isReadOnly。
+
+### Tests
+
+- 增加真实 Worker 与生产 SystemTextMessage/Ink 的 19 项聚焦回归；准确候选和工作区分别构建并与固定官方制品进行私有 tmux 交互对照。分层结果及未覆盖项目见 docs/research/mods-native-duration-292-20261007.md。
+- 该批关闭 TurnDuration 的 render 接线，不代表其他原生组件、完整完成时间格式、完整 diff viewer 或全部 Mods 门禁已完成。
+
 ## 2026-10-07 - 短轮次完成时记录 transcript checkpoint
 
 ### Changed

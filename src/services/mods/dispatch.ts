@@ -622,6 +622,11 @@ export async function dispatchModEvent(options: {
             ),
           )
       }
+      if (options.event === 'ui.render' &&
+          ['UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'CommandOutput', 'TurnDuration', 'InfoNotice'].includes(options.input.component as string) &&
+          !isDeepStrictEqual((rewritten.props as ModInput | undefined)?.onScreen, (options.input.props as ModInput | undefined)?.onScreen)) {
+        return Promise.reject(new Error(`${hook.plugin}: next() passed an argument with a props.onScreen other than the surface reported (the surface says what its viewport shows; a rewrite changes the drawing alone)`))
+      }
       try { options.validateInput?.(rewritten, input) }
       catch (error) { return Promise.reject(error) }
       const descent = new Map(skipped)

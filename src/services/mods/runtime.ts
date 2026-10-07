@@ -1,3 +1,4 @@
+import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './matcher.js'
 import { combineModModelSignals } from './modelAbort.js'
 import {validateModModelCompleteInput} from './modelTextBlocks.js'
 import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
@@ -304,6 +305,29 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const notify = (listener: () => void) => {
     if (publicationNotifications) publicationNotifications.add(listener)
     else listener()
+  }
+  let renderHooksVersion = 0
+  const renderHooksListeners = new Set<() => void>()
+  const publishRenderHooks = () => {
+    renderHooksVersion++
+    for (const listener of renderHooksListeners) notify(listener)
+  }
+  const renderHooks = {
+    getSnapshot: () => renderHooksVersion,
+    subscribe(listener: () => void) {
+      renderHooksListeners.add(listener)
+      return () => { renderHooksListeners.delete(listener) }
+    },
+    matches(input: ModInput): boolean {
+      if (stopped) return false
+      const matches = (registration: { event: string; matcher?: {readonly [key: string]: ModMatcher} }) => {
+        if (!matchesModEventPattern(registration.event, 'ui.render')) return false
+        try { return matchesRenderMatcher(registration.matcher ?? {}, input) }
+        catch { return false }
+      }
+      return [...hostHooks].some(hook => matches(hook.registration)) || active.some(owner =>
+        owner.environment.registrations.some(matches))
+    },
   }
   const toast = createModToasts({
     show: (plugin, text, timeoutMs) => {
@@ -2487,6 +2511,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       for (const owner of replaced) retire(owner)
       publishDiffOwnership()
+      publishRenderHooks()
       if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
     } finally { publicationNotifications = undefined }
     for (const listener of notifications) listener()
@@ -2690,6 +2715,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     active = []
     nouns = {}
     publishDiffOwnership()
+    publishRenderHooks()
     retired.clear()
     activations.clear()
     if (stopped || recovering) return
@@ -2807,7 +2833,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (stopped) throw new Error('Mods runtime disposed')
       const registered = { ...hook, registration: structuredClone(hook.registration) }
       hostHooks.add(registered)
-      return () => { hostHooks.delete(registered) }
+      if (matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      return () => {
+        if (hostHooks.delete(registered) && matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      }
     },
     registerHostCallback(hook: Pick<ModDispatchHook, 'tier' | 'registration'>,
       callback: (engine: Record<string, unknown>, input: ModInput, next: import('./types.js').ModNext) => unknown): () => void {
@@ -2851,7 +2880,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         },
       }
       hostHooks.add(registered)
-      return () => { hostHooks.delete(registered) }
+      if (matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      return () => {
+        if (hostHooks.delete(registered) && matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      }
     },
     captureForkSnapshotWriter() {
       const generation = forkGeneration
@@ -2872,6 +2904,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     config,
     isDiffOwned,
     ui,
+    renderHooks,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
     beginPublicTurn(turnId: string, abort?: () => void): () => void {
       if (stopped) throw new Error('Mods runtime disposed')
@@ -2911,6 +2944,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true
+      publishRenderHooks()
       for (const owner of activations) commands.release(owner)
       publishDiffOwnership()
       hostHooks.clear()

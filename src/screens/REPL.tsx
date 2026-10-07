@@ -195,6 +195,7 @@ import { useApiKeyVerification } from '../hooks/useApiKeyVerification.js'
 import { GlobalKeybindingHandlers } from '../hooks/useGlobalKeybindings.js'
 import { CommandKeybindingHandlers } from '../hooks/useCommandKeybindings.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
+import { ModsRenderProvider } from '../components/ModsRender.js'
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
 import { CancelRequestHandler } from '../hooks/useCancelRequest.js'
@@ -6757,7 +6758,7 @@ export function REPL({
       </Box>
     )
     const transcriptReturn = (
-      <KeybindingSetup>
+      <ModsRenderProvider session={modsSession}><KeybindingSetup>
         <AnimatedTerminalTitle
           isAnimating={titleIsAnimating}
           title={terminalTitle}
@@ -6878,7 +6879,7 @@ export function REPL({
             />
           </>
         )}
-      </KeybindingSetup>
+      </KeybindingSetup></ModsRenderProvider>
     )
     // The virtual-scroll branch (FullscreenLayout above) needs
     // <AlternateScreen>'s <Box height={rows}> constraint — without it,
@@ -6993,7 +6994,7 @@ export function REPL({
   // early return above wraps its virtual-scroll branch the same way; only
   // the 30-cap dump branch stays unwrapped for native terminal scrollback.
   const mainReturn = (
-    <KeybindingSetup>
+    <ModsRenderProvider session={modsSession}><KeybindingSetup>
       <AnimatedTerminalTitle
         isAnimating={titleIsAnimating}
         title={terminalTitle}
@@ -8006,7 +8007,7 @@ export function REPL({
           }
         />
       </MCPConnectionManager>
-    </KeybindingSetup>
+    </KeybindingSetup></ModsRenderProvider>
   )
   if (
     isFullscreenEnvEnabled() ||

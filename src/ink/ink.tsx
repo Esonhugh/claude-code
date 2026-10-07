@@ -571,6 +571,7 @@ export default class Ink {
       prevFrameContaminated: this.prevFrameContaminated,
     })
     const rendererMs = performance.now() - renderStart
+    for (const listener of this.rootNode.frameListeners ?? []) listener()
 
     // Sticky/auto-follow scrolled the ScrollBox this frame. Translate the
     // selection by the same delta so the highlight stays anchored to the

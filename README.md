@@ -1361,4 +1361,29 @@ bun test --no-env-file ./src/services/mods/modelFork292.test.ts
 bun test --no-env-file ./src/screens/REPL.turnCheckpoint292.test.ts
 ```
 
-[本批验证与已知差异](docs/research/mods-turn-checkpoint-292-20261007.md)区分准确提交候选、工作区与官方。完整附件、官方 `· done` 时间显示和原生 `ui.render` TurnDuration 挂载继续对齐；当前结果不代表完整上下文或 UI 已一致。
+[本批验证与已知差异](docs/research/mods-turn-checkpoint-292-20261007.md)区分准确提交候选、工作区与官方。完整附件、官方 `· done` 时间显示和其他原生 `ui.render` 站点继续对齐；当前结果不代表完整上下文或 UI 已一致。
+
+## Mods 原生完成行的绘制
+
+`ui.render` 现在可以拦截真实的 `TurnDuration` 消息行。`e.requestId` 是该消息的 UUID；`e.props.word` 是按 UUID 稳定选择的完成动词，`e.props.durationMs` 是原始耗时。可取得时还传递实际终端的 `viewport`。全屏 transcript 可见性已知时，`e.props.onScreen` 包含从 0 开始的 `first`、包含末行的 `last` 和绘制总行数 `of`；完全离开视口时为 `null`，未知时不添加字段。它描述实际绘制；`next(e)` 添加、删去或改写该字段会被拒绝，插件应保留收到的只读上下文。
+
+在插件 `hooks/register.ts` 中注册：
+
+```ts
+export function register(on) {
+  on('ui.render', { component: 'TurnDuration' }, async ($, e, next) => {
+    const { Box, Text } = $.ui.resolve(e)
+    return Box({
+      flexDirection: 'column',
+      children: [
+        Text({ children: '本轮已完成' }),
+        await next({ ...e, props: { ...e.props, word: 'Completed' } }),
+      ],
+    })
+  })
+}
+```
+
+`next(e)` 保留原生行，也可在一个自定义树中使用多次；改写 `word` 或 `durationMs` 只影响这次绘制，不修改历史 checkpoint。返回 `Text` 可替换整行，返回空 `Box` 可隐藏。即使配置 `showTurnDuration=false`，插件仍能替换完成行。按作者声明构建 Client、按钮等组件时，宿主保留其绘制和回调的生命周期；卸载、重载或失效的旧绘制不能继续操作新行。
+
+没有匹配当前输入的 `ui.render` 钩子时，完成行直接走原生绘制。实际终端和源码对照范围见[本批验收](docs/research/mods-native-duration-292-20261007.md)。其他原生组件和官方完成时间/后台等待格式仍需后续对齐；本节不宣称所有 UI 或 diff viewer 已匹配。

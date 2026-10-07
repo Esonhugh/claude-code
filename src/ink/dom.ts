@@ -52,6 +52,7 @@ export type DOMElement = {
   // Internal properties
   onComputeLayout?: () => void
   layoutListeners?: Set<() => void>
+  frameListeners?: Set<() => void>
   onRender?: () => void
   onImmediateRender?: () => void
   // Used to skip empty renders during React 19's effect double-invoke in test mode
@@ -440,6 +441,23 @@ export const subscribeLayout = (node: DOMElement, listener: () => void): (() => 
   let root = node
   while (root.parentNode) root = root.parentNode
   const listeners = root.layoutListeners ??= new Set()
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+// Keep this accessor usable by recovered hosts whose DOM shape predates the field.
+export const recordPaintedScrollTop = (node: DOMElement, top: number): void => {
+  const painted = node as DOMElement & { scrollTopRendered?: number }
+  painted.scrollTopRendered = top
+}
+export const readPaintedScrollTop = (node: DOMElement): number | undefined =>
+  (node as DOMElement & { scrollTopRendered?: number }).scrollTopRendered
+
+// Observe painted geometry, after scrollTopRendered has been clamped for this frame.
+export const subscribeFrame = (node: DOMElement, listener: () => void): (() => void) => {
+  let root = node
+  while (root.parentNode) root = root.parentNode
+  const listeners = root.frameListeners ??= new Set()
   listeners.add(listener)
   return () => { listeners.delete(listener) }
 }

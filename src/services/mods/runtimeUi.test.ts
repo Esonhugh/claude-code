@@ -788,7 +788,7 @@ test('public focus and scroll wrappers project known fields before crossing the 
     focusHostAsync:'ui.focus takes { requestId, key }',
     scrollHostSync:'returned',
     scrollHostAsync:'ui.scroll takes { to, in?, block? }',
-    denied:{deny:'site is not open'},
+    denied:{deny:"not this plugin's site"},
   })]])
   expect(diagnostics).toEqual([])
 })

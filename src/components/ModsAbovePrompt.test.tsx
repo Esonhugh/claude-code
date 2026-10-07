@@ -29,6 +29,13 @@ function fixture() {
         press: { plugin: 'fixture', handle: 3 },
       }, 7, () => ({}))
       const site: ModRenderSite = {
+        async focus(request) {
+          const focus = next.focus
+          if (!focus?.isHeldNow()) return { deny: 'unheld fixture', focused: false }
+          const deny = focus.commit(request)
+          const target = focus.holderNow()
+          return { ...(deny === undefined ? {} : { deny }), focused: focus.isHeldNow(), element: target?.element, plugin: target?.plugin }
+        },
         getTree: () => undefined,
         async key() {}, async pointer() {}, async resize() {}, async post() {}, async advance() {},
         async update(updated) { inputs.push(updated) },

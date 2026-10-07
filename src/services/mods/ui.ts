@@ -13,16 +13,25 @@ export type ModRenderInput = {
   viewport?: { columns: number; rows: number; isFullscreen?: boolean }
 }
 export type ModClientBinding = { handle: ModClientHandle; tree?: unknown }
+export type ModUiFocusTarget = Readonly<{ plugin: string; element: string }>
+export type ModRenderFocusController = {
+  isHeldNow(): boolean
+  holderNow(): ModUiFocusTarget | undefined
+  hasElement(plugin: string, element: string): boolean
+  commit(target: ModUiFocusTarget): string | void
+}
 export type ModRenderConsumer = {
   surface: ModRenderSurface
   clientId?: string
   clientClock?: 'manual'
   signal?: AbortSignal
   retainClients?: boolean
+  focus?: ModRenderFocusController
   render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput, clients?: ReadonlyMap<string, ModClientBinding>): void | Promise<void>
   unmount(): void | Promise<void>
 }
 export type ModRenderSite = {
+  focus(input: { plugin: string; element: string; origin: Exclude<ModUiOrigin, { kind: 'unload' }> }, options?: ModUiHostFocusOptions): Promise<unknown>
   key(event: { key: string; ctrl?: true; shift?: true; meta?: true; in?: string }): Promise<void>
   pointer(event: { type: 'down' | 'move' | 'up' | 'enter' | 'leave'; x: number; y: number; fine?: { x: number; y: number }; button?: 'left' | 'middle' | 'right'; shift?: true; alt?: true; ctrl?: true; in?: string }): Promise<void>
   resize(size: { columns: number; rows: number; in?: string }): Promise<void>
@@ -144,7 +153,7 @@ export type ModUi = {
   }): Promise<unknown>
   invalidate(owner: ModUiOwner, event: string): Promise<void>
   invalidateInstance(instance: Pick<ModRenderInput, 'surface' | 'component' | 'requestId'>): Promise<void>
-  render(presentation?: ModUiPresentation): Promise<void>
+  render(presentation?: ModUiPresentation, options?: { nativeSites?: boolean }): Promise<void>
   scroll(
     owner: ModUiOwner,
     input: {
@@ -352,6 +361,7 @@ export function createModUi({
   const reconcileClients = () => clients?.reconcile([...snapshot, ...clientSites.values()])
   const siteInputs = new WeakMap<ModRenderSite, ModRenderInput>()
   const sites = new Map<ModUiOwner, ModRenderSite & {
+    focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
     redraw(): Promise<void>
     blit(plugin: string, input: {
       requestId: string; key: string; cells?: string; source?: unknown
@@ -944,7 +954,53 @@ export function createModUi({
       }
       const clientId = consumer.clientId ?? `${consumer.surface}:default`
       if (typeof clientId !== 'string' || !clientId) throw new TypeError('Mod UI render clientId must be a non-empty string')
+      const focusFor = async (
+        actor: ModUiOwner,
+        request: { plugin: string; element: string; origin: Exclude<ModUiOrigin, { kind: 'unload' }> },
+        options: ModUiHostFocusOptions | undefined,
+        host: boolean,
+      ) => {
+        const controller = consumer.focus
+        if (disposed || !current || drawing === undefined || !controller)
+          return { deny: 'no such focus site' }
+        if (!controller.isHeldNow()) return { deny: 'that site does not hold the keyboard' }
+        const expected = controller.holderNow()
+        if (request.origin.kind === 'plugin' && expected && expected.plugin !== request.plugin)
+          return { deny: "another plugin's element holds the keyboard" }
+        if (!controller.hasElement(request.plugin, request.element))
+          return { deny: 'no element of its own is drawn under that key' }
+        const input = Object.freeze({
+          component: current.component, requestId: current.requestId,
+          plugin: request.plugin, element: request.element, origin: request.origin,
+        })
+        const result = await dispatch(actor, 'ui.focus', input, async rewritten => {
+          if (disposed || options?.signal?.aborted || !controller.isHeldNow() || controller.holderNow() !== expected)
+            return { deny: 'the focus moved meanwhile' }
+          if (typeof rewritten.element !== 'string' ||
+              !controller.hasElement(request.plugin, rewritten.element) ||
+              !focusableNode(tree, rewritten.element, request.plugin))
+            return { deny: 'no element of its own is drawn under that key' }
+          const deny = controller.commit({ plugin: request.plugin, element: rewritten.element })
+          return deny === undefined ? {} : { deny }
+        }, {
+          origin: request.origin, drawing, signal: options?.signal,
+          ...(host && request.origin.kind === 'plugin' ? { automaticFocus: true as const } : {}),
+          restoreInput: (rewritten, received) => ({
+            component: received.component, requestId: received.requestId,
+            plugin: received.plugin, element: rewritten.element, origin: received.origin,
+          }),
+        })
+        const landed = controller.holderNow()
+        const focused = !disposed && controller.isHeldNow()
+        logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'site-focus', component: input.component,
+          requestId: input.requestId, plugin: input.plugin, element: input.element, origin: input.origin,
+          focused, landed, result })}`)
+        if (!host) return result
+        return { ...(result as Record<string, unknown>), focused,
+          element: focused ? landed?.element : undefined, plugin: focused ? landed?.plugin : undefined }
+      }
       const site: ModRenderSite & {
+        focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
         redraw(): Promise<void>
         blit(plugin: string, input: {
           requestId: string; key: string; cells?: string; source?: unknown
@@ -952,6 +1008,10 @@ export function createModUi({
         }): Promise<unknown>
         update(input: ModRenderInput, force?: boolean): Promise<void>
       } = {
+        focus(request, options) { return focusFor(owner, request, options, true) },
+        focusPlugin(actor, element, origin) {
+          return focusFor(actor, { plugin: pluginOf(actor), element, origin }, undefined, false)
+        },
         key({ in: key, ...event }) { return control({ in: key }, handle => handle.key(event)) },
         pointer({ in: key, ...event }) { return control({ in: key }, handle => handle.pointer(event)) },
         resize({ in: key, columns, rows }) { return control({ in: key }, handle => handle.resize(columns, rows)) },
@@ -1392,9 +1452,11 @@ export function createModUi({
       ])
     },
 
-    async render(rawPresentation) {
+    async render(rawPresentation, { nativeSites = true } = {}) {
       const presentation = rawPresentation === undefined ? undefined : validatePresentation(rawPresentation)
-      const work: Promise<void>[] = [...sites.values()].map(site => site.redraw())
+      const work: Promise<void>[] = [...sites.values()]
+        .filter(site => nativeSites || ['Pane', 'AbovePrompt'].includes(siteInputs.get(site)?.component ?? ''))
+        .map(site => site.redraw())
       let changed = false
       for (const pane of active.values()) {
         if (presentation) changed = updatePresentation(pane, presentation) || changed
@@ -1489,6 +1551,11 @@ export function createModUi({
       const automatic = automaticFocusRequests.get(request)
       const person = request.origin.kind === 'person'
       const pane = active.get(request.requestId)
+      if (!pane && request.origin.kind === 'plugin' && request.element !== undefined) {
+        const matches = [...sites.values()].filter(site => siteInputs.get(site)?.requestId === request.requestId)
+        if (matches.length !== 1) return { deny: matches.length ? 'focus site is ambiguous' : "not this plugin's site" }
+        return matches[0]!.focusPlugin(owner, request.element, request.origin)
+      }
       if (!pane) return { deny: 'site is not open', ...(person ? { focused: false } : {}) }
       if (request.origin.kind === 'plugin' && !ownsPane(owner, pane))
         return { deny: 'site belongs to another plugin' }

@@ -1675,6 +1675,7 @@ describe('Mods CLI session host', () => {
     expect(host.runtime?.hasHooks('tool.call')).toBe(true)
     const tool = {
       name: 'SessionPostPolicyFixture',
+      isReadOnly: () => false,
       inputSchema: z.object({ value: z.string() }),
       outputSchema: z.object({ value: z.string() }),
       maxResultSizeChars: Infinity,
@@ -1858,6 +1859,7 @@ describe('Mods CLI session host', () => {
       commands: { subscribe: () => () => {} },
       config: { invalidate: () => {} },
       ui: { subscribe: () => () => {} },
+      renderHooks: { getSnapshot: () => 0, subscribe: () => () => {}, matches: () => false },
     } as unknown as ModsRuntime
     const host = session({
       loadPlugins: async () => [first],

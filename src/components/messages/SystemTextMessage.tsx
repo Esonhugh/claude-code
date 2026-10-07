@@ -3,7 +3,6 @@ import { Box, Text, type TextProps } from '../../ink.js'
 import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { useState } from 'react'
-import sample from 'lodash-es/sample.js'
 import {
   BLACK_CIRCLE,
   REFERENCE_MARK,
@@ -19,7 +18,8 @@ const teamMemSaved = feature('TEAMMEM')
   ? (require('./teamMemSaved.js') as typeof import('./teamMemSaved.js'))
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
-import { TURN_COMPLETION_VERBS } from '../../constants/turnCompletionVerbs.js'
+import { getTurnCompletionVerb } from '../../constants/turnCompletionVerbs.js'
+import { ModsRender } from '../ModsRender.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import type {
   SystemMessage,
@@ -349,8 +349,19 @@ function TurnDurationMessage({
   message: SystemTurnDurationMessage
   addMargin: boolean
 }): React.ReactNode {
+  const props = React.useMemo(() => ({ word: getTurnCompletionVerb(message.uuid), durationMs: message.durationMs ?? 0 }), [message.uuid, message.durationMs])
+  const input = React.useMemo(() => ({ surface: 'terminal' as const, component: 'TurnDuration' as const, requestId: message.uuid, props }), [message.uuid, props])
+  return <ModsRender input={input}>{value => <NativeTurnDurationMessage
+    message={value.durationMs === message.durationMs ? message : { ...message, durationMs: value.durationMs as number }}
+    addMargin={addMargin} verb={value.word as string} />}</ModsRender>
+}
+
+function NativeTurnDurationMessage({ message, addMargin, verb }: {
+  message: SystemTurnDurationMessage
+  addMargin: boolean
+  verb: string
+}): React.ReactNode {
   const bg = useSelectedMessageBg()
-  const [verb] = useState(() => sample(TURN_COMPLETION_VERBS) ?? 'Worked')
   const store = useAppStateStore()
   const [backgroundTaskSummary] = useState(() => {
     const tasks = store.getState().tasks
