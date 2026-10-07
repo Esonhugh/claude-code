@@ -1,3 +1,4 @@
+import { logForDebugging } from '../../utils/debug.js'
 import { isPromise, isProxy } from 'node:util/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { createModHookStream, type ModWireValue, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
@@ -130,6 +131,7 @@ export function createModEnvironmentHost({
   let epoch = 0
   const barriers = new Map<number, { resolve(): void; reject(error: Error): void }>()
   const progress = new Set<() => void>()
+  const modelCalls = new Map<string, AbortController>()
   const activeCalls = new Map<number, { environment: number; invocation: number; idle?: boolean }>()
   function changed() {
     epoch++
@@ -449,6 +451,12 @@ export function createModEnvironmentHost({
       return
     }
     changed()
+    if (message.type === 'model-abort') {
+      const cancellation = modelCalls.get(`${message.environment}:${message.call}`)
+      logForDebugging(`[Mods] model.complete signal: environment=${message.environment} call=${message.call} active=${Boolean(cancellation)}`)
+      cancellation?.abort(Object.assign(new Error(message.reason.message), {name:message.reason.name}))
+      return
+    }
     if (message.type === 'async-error') {
       if (environments.has(message.environment)) report(new Error(message.error), message.environment)
       return
@@ -494,11 +502,24 @@ export function createModEnvironmentHost({
     const idle = fn && timerWaits.has(fn.call) && kind?.type === 'value' && (kind.value === 'after' || kind.value === 'every')
     activeCalls.set(message.call, { environment: message.environment, invocation: message.invocation, idle })
     const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call }
+    let releaseModelCall: (() => void) | undefined
     try {
       stateFor(message.environment)
       if (fn?.environment !== message.environment || typeof fn.call !== 'function') throw new Error('Unknown or unloaded module capability')
       if (fn.invocation !== undefined && (fn.invocation !== message.invocation || !contexts.has(fn.invocation))) throw new Error('Module invocation already settled')
       const args = message.args.map(value => decode(message.environment, value))
+      if (modelMethods.get(fn.call) === 'complete') {
+        if (args.length !== 1) throw new TypeError('model.complete requires one request')
+        const state = stateFor(message.environment)
+        const key = `${message.environment}:${message.call}`
+        const cancellation = new AbortController()
+        if (message.modelAborted) cancellation.abort(message.modelAbortReason && Object.assign(new Error(message.modelAbortReason.message), {name:message.modelAbortReason.name}))
+        modelCalls.set(key,cancellation)
+        const revoke = () => { modelCalls.delete(key); cancellation.abort() }
+        state.cleanups.add(revoke)
+        releaseModelCall = () => { modelCalls.delete(key); state.cleanups.delete(revoke) }
+        args.push({signal:cancellation.signal})
+      }
       const context = contexts.get(message.invocation)
       if (streamBridges.has(fn.call) && !context) throw new Error('Module invocation already settled')
       const value = context ? context(fn.call, ...args) : fn.call(...args)
@@ -535,6 +556,7 @@ export function createModEnvironmentHost({
         if (frame) { response.invocation = fn.invocation; response.trace = encode(message.environment, frame.next.trace) }
       }
     } catch (error) { response.error = errorMessage(error, 'Module trace snapshot failed') }
+    releaseModelCall?.()
     activeCalls.delete(message.call)
     changed()
     if (!dead && environments.has(message.environment)) {
@@ -573,7 +595,7 @@ export function createModEnvironmentHost({
     }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
-      worker.postMessage({ type: 'abort', environment, invocation: id } satisfies ModWorkerRequest)
+      worker.postMessage({ type: 'abort', environment, invocation: id, ...(next?.event === 'model.complete' ? {reason:{name:'HooksError',message:errorMessage(next.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
       overrun ??= setTimeout(() => fail(new Error('Mods Worker did not settle an aborted invocation')), 5000)
       overrun.unref?.()
       if (streaming) streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))

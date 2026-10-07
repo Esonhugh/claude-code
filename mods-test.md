@@ -1975,3 +1975,12 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 本批从 194d243 构造干净候选。官方 2.1.292 实测后对齐 shape/maxTokens/timeoutMs/effort/允许列表/cap 的顺序、精确 HooksError 和插件名，保留空/空白模型的解析入口；允许列表忽略 [1m]，未知第一方模型保留 thinking 余量。通用 Worker 保留 NaN/Infinity/-Infinity，模型 Hook 可修复，最终非法参数由核心拒绝；typed 作者值仍严格。
 
 候选 462 pass/0 fail/5 既有 skip，ROOT 495/0/5；八场逐文件新配置测试、双方 release-check 与新隔离构建通过。官方/候选/工作区 × 普通/能力开关/允许列表九场 tmux，每侧每场 50 回执、42 complete Hook、2 classify Hook，全部输入/Hook/回执和投影请求一致；每场正常 exit0、自有 server/HTTP 清理、原 fixture/binary 保持不变。三侧实际生成声明的严格正反例编译通过。首轮四个数值传递和 [1m] 允许列表差异、RED 及类型夹具失败完整保留。仍不宣称全局模型/所有 provider/取消/fork/其他 API/UI/diff/G5 完成，详见 [模型参数专项](docs/research/mods-model-params-292-20261007.md)。
+
+
+## 2026-10-07：model.complete options、独立取消与回执语义
+
+候选基于 8cacfa0，只提交完成调用与直接受影响的取消结算/日志路径。官方 2.1.292 确认 signal getter 一次、提前取消优先于请求检查、未用 JavaScript options/额外参数忽略、非法 signal 的插件名/HooksError、共享冻结提前/Hook 取消回执，以及可修改的普通/核心取消回执。作者声明仍严格。环境+调用编号独立取消，保留原因，结算移除监听器；Hook 处理取消时最终 debug 日志可写。
+
+最终候选601 pass/0 fail/5既有skip/2197expect/20files，ROOT635/0/5/2327/21；双方 release-check、新隔离 build 通过。三侧同驱动35回执/20 enter Hook/1 caught Hook/19HTTP，stdin/fixture、冻结/可修改、getter/attach/detach、原因/并发因果屏障和全部投影请求相同；均正常exit0、原fixture/binary不变、自有tmux/HTTP线程清理，无dropped日志。三侧实际生成声明严格正反编译0diagnostics，新增debug三条仅env/call/active。
+
+原20项RED、首版原生两个冻结差异和缺失最终日志、有效取消RED以及夹具/导入/原因传播的中间失败保留。父turn.step原生取消、classify/fork、完整API/UI/diff/G5及155文件逐文件门禁保持开放；其他Claude进程和未提交WIP保留，详见[取消专项](docs/research/mods-model-signals-292-20261007.md)。

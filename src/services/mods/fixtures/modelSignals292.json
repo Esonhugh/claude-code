@@ -1,0 +1,744 @@
+[
+  {
+    "action": "basic",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:basic'});",
+    "expected": {
+      "action": "basic",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "null-options",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:null-options'},null);",
+    "expected": {
+      "action": "null-options",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "array-options",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:array-options'},[]);",
+    "expected": {
+      "action": "array-options",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "string-options",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:string-options'},'owned');",
+    "expected": {
+      "action": "string-options",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "number-options",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:number-options'},17);",
+    "expected": {
+      "action": "number-options",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "boolean-options",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:boolean-options'},false);",
+    "expected": {
+      "action": "boolean-options",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "extra-options",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:extra-options'},{extra:true});",
+    "expected": {
+      "action": "extra-options",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "extra-third",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:extra-third'},undefined,'ignored');",
+    "expected": {
+      "action": "extra-third",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "null-signal",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:null-signal'},{signal:null});",
+    "expected": {
+      "action": "null-signal",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "false-signal",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:false-signal'},{signal:false});",
+    "expected": {
+      "action": "false-signal",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: options.signal must be an AbortSignal"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "zero-signal",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:zero-signal'},{signal:0});",
+    "expected": {
+      "action": "zero-signal",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: options.signal must be an AbortSignal"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "empty-signal",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:empty-signal'},{signal:{}});",
+    "expected": {
+      "action": "empty-signal",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: options.signal must be an AbortSignal"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "string-signal",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:string-signal'},{signal:'owned'});",
+    "expected": {
+      "action": "string-signal",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: options.signal must be an AbortSignal"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "number-signal",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:number-signal'},{signal:17});",
+    "expected": {
+      "action": "number-signal",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: options.signal must be an AbortSignal"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "pre-abort",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:pre-abort'},{signal:stopped.signal});",
+    "expected": {
+      "action": "pre-abort",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": true,
+      "usageFrozen": true,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "pre-abort-bad-input",
+    "block": "result=await $.model.complete({model:17,prompt:17,maxTokens:0},{signal:stopped.signal});",
+    "expected": {
+      "action": "pre-abort-bad-input",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": true,
+      "usageFrozen": true,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "pre-abort-extra",
+    "block": "result=await $.model.complete({model:17,prompt:17},{signal:stopped.signal,extra:true});",
+    "expected": {
+      "action": "pre-abort-extra",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": true,
+      "usageFrozen": true,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "pre-abort-third",
+    "block": "result=await $.model.complete(null,{signal:stopped.signal},'ignored');",
+    "expected": {
+      "action": "pre-abort-third",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": true,
+      "usageFrozen": true,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "pre-abort-duck",
+    "block": "result=await $.model.complete(null,{signal:{aborted:true}});",
+    "expected": {
+      "action": "pre-abort-duck",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": true,
+      "usageFrozen": true,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "no-request",
+    "block": "result=await $.model.complete();",
+    "expected": {
+      "action": "no-request",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: model.complete: takes { model, prompt }, the prompt a string or a list of blocks, each { text } and at most `cache: true` (host check)"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "null-request",
+    "block": "result=await $.model.complete(null);",
+    "expected": {
+      "action": "null-request",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: model.complete: takes { model, prompt }, the prompt a string or a list of blocks, each { text } and at most `cache: true` (host check)"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "undefined-request",
+    "block": "result=await $.model.complete(undefined);",
+    "expected": {
+      "action": "undefined-request",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: model.complete: takes { model, prompt }, the prompt a string or a list of blocks, each { text } and at most `cache: true` (host check)"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "scalar-request",
+    "block": "result=await $.model.complete('owned');",
+    "expected": {
+      "action": "scalar-request",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: model.complete: takes { model, prompt }, the prompt a string or a list of blocks, each { text } and at most `cache: true` (host check)"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "array-request",
+    "block": "result=await $.model.complete([]);",
+    "expected": {
+      "action": "array-request",
+      "result": {
+        "caught": true,
+        "kind": "HooksError",
+        "message": "signal-owner: model.complete: takes { model, prompt }, the prompt a string or a list of blocks, each { text } and at most `cache: true` (host check)"
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "live-extra",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:live-extra'},{signal:live.signal,extra:true});",
+    "expected": {
+      "action": "live-extra",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "live-duck",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:live-duck'},{signal:watched});",
+    "expected": {
+      "action": "live-duck",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 1,
+      "detached": 1,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "signal-getter",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:signal-getter'},{get signal(){signalReads++;return live.signal}});",
+    "expected": {
+      "action": "signal-getter",
+      "result": {
+        "isAnswered": true,
+        "text": "ok",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 1,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "pre-abort-getters",
+    "block": "result=await $.model.complete({model:17,get prompt(){inputReads++;return 17}},{get signal(){signalReads++;return stopped.signal}});",
+    "expected": {
+      "action": "pre-abort-getters",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": true,
+      "usageFrozen": true,
+      "signalReads": 1,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "pre-abort-identity",
+    "block": "const a=await $.model.complete(null,{signal:stopped.signal}),b=await $.model.complete(null,{signal:stopped.signal});result={same:a===b,frozen:Object.isFrozen(a),usageFrozen:Object.isFrozen(a.usage)};",
+    "expected": {
+      "action": "pre-abort-identity",
+      "result": {
+        "same": true,
+        "frozen": true,
+        "usageFrozen": true
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 0
+  },
+  {
+    "action": "mutate-reply",
+    "block": "result=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:mutate-reply'});result.text+=' changed';result.usage.output_tokens=19;",
+    "expected": {
+      "action": "mutate-reply",
+      "result": {
+        "isAnswered": true,
+        "text": "ok changed",
+        "usage": [
+          1,
+          19,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false,
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 0,
+      "detached": 0,
+      "timerFired": false
+    },
+    "requests": 1
+  },
+  {
+    "action": "late-detach",
+    "block": "const first=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:late-detach-first'},{signal:watched});live.abort(new Error('OWNED_CANCEL'));const second=await $.model.complete({model:'claude-sonnet-4-6',prompt:'PARAM_CASE:late-detach-second'});result=[first,second];",
+    "expected": {
+      "action": "late-detach",
+      "result": [
+        {
+          "isAnswered": true,
+          "text": "first",
+          "usage": [
+            1,
+            2,
+            3,
+            4
+          ]
+        },
+        {
+          "isAnswered": true,
+          "text": "second",
+          "usage": [
+            1,
+            2,
+            3,
+            4
+          ]
+        }
+      ],
+      "frozen": false,
+      "usageFrozen": false,
+      "innerFrozen": [
+        {
+          "frozen": false,
+          "usageFrozen": false
+        },
+        {
+          "frozen": false,
+          "usageFrozen": false
+        }
+      ],
+      "signalReads": 0,
+      "inputReads": 0,
+      "attached": 1,
+      "detached": 1,
+      "timerFired": false
+    },
+    "requests": 2
+  }
+]

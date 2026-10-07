@@ -1,3 +1,4 @@
+import { combineModModelSignals } from './modelAbort.js'
 import {validateModModelCompleteInput} from './modelTextBlocks.js'
 import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
@@ -1322,10 +1323,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const context = capabilityContext.getStore()
         const caller = context?.active ? context.hook : undefined
         const invocation = invocationSignal.getStore()
-        const signal = context?.active && context.next
+        // Debug/transcript logging can finish while a model hook handles cancellation.
+        const signal = op === 'ui.log' && fn === hostIdentity ? undefined : context?.active && context.next
           ? getModCapabilitySignal(context.next)
           : context?.active && !invocation?.aborted ? invocation : undefined
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
+        const modelInvocation = op === 'model.complete' && fn === hostIdentity
+          ? combineModModelSignals(signal, (args[1] as {signal?:AbortSignal} | undefined)?.signal)
+          : undefined
         try {
           // State and drawing belong to this runtime, not to production host providers.
           if (testTerminal(op)) {
@@ -1656,7 +1661,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             } finally { provider.active = false }
           }, snapshot, table, {
             origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-            ...(fn === hostIdentity && signal && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal } : {}),
+            ...(fn === hostIdentity && (modelInvocation?.signal ?? signal) && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal: modelInvocation?.signal ?? signal } : {}),
             reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }
@@ -1666,7 +1671,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             throw new Error(result.deny)
           }
           return result.value
-        } finally { resumeBudget?.() }
+        } finally { modelInvocation?.cleanup(); resumeBudget?.() }
       }
       if (step) wrapped.step = step
       if (noun === 'model' && methods.complete === hostIdentity && wrapped.complete) createModModelBridge(wrapped.complete, 'complete')
@@ -2127,7 +2132,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     const context = capabilityContext.getStore()
-    const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
+    const combined = event === 'model.complete'
+      ? combineModModelSignals(options.signal, controller.signal)
+      : createCombinedAbortSignal(options.signal, { signalB: controller.signal })
     const caller = options.caller ?? (context?.active ? context.hook : undefined)
     const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined

@@ -57,6 +57,8 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const timers = new Map();
   const streams = new Map();
   const streamHandles = new Map();
+  // Official complete() reuses this frozen value only for author-side cancellation.
+  const abortedModelComplete = Object.freeze({isAnswered:false,reason:'aborted',usage:Object.freeze({input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0})});
   const normalizeModelComplete = (${normalizeModModelCompleteRequest.toString()});
   const createStream = (${createModHookStream.toString()});
   const settle = request => {
@@ -142,12 +144,12 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     seen.delete(value);
     return result;
   };
-  const decode = (wire, invocation) => {
+  const decode = (wire, invocation, mutable = false) => {
     if (wire.type === 'undefined') return undefined;
     if (wire.type === 'value') return wire.value;
     if (wire.type === 'non-finite') return Number(wire.value);
-    if (wire.type === 'array') return Object.freeze(wire.values.map(v => decode(v, invocation)));
-    if (wire.type === 'object') return Object.freeze(Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation)])));
+    if (wire.type === 'array') { const value = wire.values.map(v => decode(v, invocation, mutable)); return mutable ? value : Object.freeze(value); }
+    if (wire.type === 'object') { const value = Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation, mutable)])); return mutable ? value : Object.freeze(value); }
     if (wire.type === 'engine') {
       if (!engines.has(wire.id)) engines.set(wire.id, decode(wire.value, invocation));
       return engines.get(wire.id);
@@ -303,8 +305,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       const callHost = (...args) => {
         if (disposed) return Promise.reject(Error('Module environment unloaded'));
         const call = ++nextCall;
-        return new Promise((resolve, reject) => {
-          pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation });
+        let cleanup;
+        const result = new Promise((resolve, reject) => {
+          pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation, modelMethod:wire.modelMethod });
           try {
             if (wire.storeMethod === 'set') {
               const text = JSON.stringify(args[1]);
@@ -314,9 +317,27 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
             }
             if (wire.storeMethod && (typeof args[0] !== 'string' || args[0] === ''))
               throw TypeError('key must be a nonempty string');
-            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)) }));
+            let modelAborted, modelAbortReason;
+            if (wire.modelMethod === 'complete') {
+              const signal = args[1]?.signal;
+              if (signal !== undefined && signal !== null && (typeof signal !== 'object' || !('aborted' in signal) || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
+                throw Object.assign(Error(plugin + ': options.signal must be an AbortSignal'), {name:'HooksError'});
+              const reason = () => {
+                const value = signal?.reason;
+                return value instanceof Error ? {name:value.name,message:value.message}
+                  : {name:'AbortError',message:value === undefined ? 'This operation was aborted' : String(value)};
+              };
+              const abort = () => bridge(JSON.stringify({type:'model-abort',call,reason:reason()}));
+              if (signal && !signal.aborted) signal.addEventListener('abort',abort,{once:true});
+              cleanup = () => signal?.removeEventListener('abort',abort);
+              modelAborted = Boolean(signal?.aborted);
+              if (modelAborted) modelAbortReason = reason();
+              args = [args[0]];
+            }
+            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)), ...(wire.modelMethod === 'complete' ? {modelAborted,modelAbortReason} : {}) }));
           } catch (error) { pending.delete(call); reject(error); }
         });
+        return result.finally(() => cleanup?.());
       };
       const invokeHost = (...args) => {
         if (wire.stateMethod === 'set') {
@@ -336,9 +357,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           result,
           [Symbol.asyncIterator]() { return this; },
         };
-      } : wire.modelMethod === 'complete' ? async (request, ...options) => {
-        if (options[0]?.signal?.aborted === true) return Object.freeze({isAnswered:false,reason:'aborted',usage:Object.freeze({input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0})});
-        return invokeHost(normalizeModelComplete(request), ...options);
+      } : wire.modelMethod === 'complete' ? async (request, options) => {
+        const signal = options?.signal;
+        if (signal?.aborted === true) return abortedModelComplete;
+        try { return await invokeHost(normalizeModelComplete(request), {signal}); }
+        catch (error) { if (Boolean(signal?.aborted)) return abortedModelComplete; throw error; }
       } : invokeHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
       return Object.freeze(proxy);
@@ -420,9 +443,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       removeEventListener(type, listener) { if (type === 'abort') listeners.delete(listener); },
       throwIfAborted() { if (aborted) throw reason; },
     });
-    signals.set(invocation, () => {
+    signals.set(invocation, abortReason => {
       if (aborted) return;
-      aborted = true; reason = Object.assign(Error('Module invocation aborted'), { name: 'AbortError' });
+      aborted = true; reason = Object.assign(Error(abortReason?.message ?? 'Module invocation aborted'), { name: abortReason?.name ?? 'AbortError' });
       const event = Object.freeze({ type: 'abort', target: signal, currentTarget: signal });
       for (const [listener, once] of listeners) {
         if (once) listeners.delete(listener);
@@ -553,15 +576,15 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           if (result.errorName === 'HooksError') error.name = 'HooksError';
           if (result.errorRef !== undefined) hostErrors.set(error, result.errorRef);
           item.reject(error);
-        } else item.resolve(decode(result.value, item.invocation));
+        } else item.resolve(decode(result.value, item.invocation, item.modelMethod === 'complete'));
       } catch (error) { item.reject(error); }
     },
     trace(text) {
       const update = JSON.parse(text), frame = frames.get(update.invocation);
       if (frame) frame.trace = decode(update.trace, update.invocation);
     },
-    abort(invocation) {
-      signals.get(invocation)?.();
+    abort(invocation, reason) {
+      signals.get(invocation)?.(reason);
       if (streams.has(invocation)) for (const [call, item] of pending) {
         if (item.invocation !== invocation) continue;
         pending.delete(call);
@@ -610,7 +633,7 @@ type Environment = {
     hasStream(invocation: number): boolean
     result(text: string): void
     trace(text: string): void
-    abort(invocation: number): void
+    abort(invocation: number, reason?: {name:string;message:string}): void
     setUiAccess(allowed: boolean): void
     getUiTables(): string
     setUiTables(text: string): void
@@ -746,7 +769,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     return
   }
   if (request.type === 'abort') {
-    environments.get(request.environment)?.api.abort(request.invocation)
+    environments.get(request.environment)?.api.abort(request.invocation, request.reason)
     return
   }
   if (request.type === 'trace') {

@@ -481,9 +481,16 @@ export async function dispatchModEvent(options: {
       traceChanged()
     }
     if (!hook) {
+      let abortGrace: ReturnType<typeof setTimeout> | undefined
       let abort!: () => void
       const abandoned = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(parent!.reason)
+        abort = () => {
+          // Model completion settles cancellation as a receipt, with bounded teardown.
+          if (options.event === 'model.complete') {
+            abortGrace = setTimeout(() => reject(parent!.reason), 5000)
+            abortGrace.unref?.()
+          } else reject(parent!.reason)
+        }
         parent?.addEventListener('abort', abort, { once: true })
       })
       try {
@@ -503,6 +510,7 @@ export async function dispatchModEvent(options: {
           options.onFailure?.(directPlugin, error)
         throw error
       } finally {
+        if (abortGrace) clearTimeout(abortGrace)
         parent?.removeEventListener('abort', abort)
       }
     }
@@ -530,6 +538,7 @@ export async function dispatchModEvent(options: {
     let timer: ReturnType<typeof setTimeout> | undefined
     let expire: (() => void) | undefined
     let timedOut = false
+    let abortGrace: ReturnType<typeof setTimeout> | undefined
     let rejectAbandoned!: (error: unknown) => void
     const abandoned = new Promise<never>((_resolve, reject) => {
       rejectAbandoned = reject
@@ -538,7 +547,10 @@ export async function dispatchModEvent(options: {
     void abandoned.catch(() => {})
     const abort = () => {
       phase = 'done'
-      rejectAbandoned(parent!.reason)
+      if (options.event === 'model.complete') {
+        abortGrace = setTimeout(() => rejectAbandoned(parent!.reason), 5000)
+        abortGrace.unref?.()
+      } else rejectAbandoned(parent!.reason)
       lifetime.abort(parent!.reason)
       controller.abort(parent!.reason)
     }
@@ -885,6 +897,7 @@ export async function dispatchModEvent(options: {
     } finally {
       phase = 'done'
       stopTimer()
+      if (abortGrace) clearTimeout(abortGrace)
       parent?.removeEventListener('abort', abort)
       lifetime.abort(new Error(`Mod ${hook.plugin} frame finished`))
       controller.abort(lifetime.signal.reason)

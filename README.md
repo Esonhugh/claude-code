@@ -1294,3 +1294,25 @@ on('command.run', { command: 'summarize' }, async ($, event) => {
 参数错误和策略 `deny` 抛出 `HooksError`，包含调用插件名；API、空回复和请求取消继续使用此前定义的结构化回执。模型允许列表忽略解析名称中的 `[1m]` 上下文标记。JavaScript 的非有限数值可以进入 Hook 修复；最终模型参数仍按正整数规则拒绝。模型字符串交给已有解析器，包括空字符串；这表示 Mods 不提前拒绝，不保证真实服务会接受空模型名。未知第一方模型在完成请求中留出 2048 个 thinking token；`CLAUDE_CODE_MODEL_CAPABILITIES` 的 `rejects_disabled_thinking` / `-rejects_disabled_thinking` 控制该决定，已知允许关闭 thinking 的旧模型保留官方优先规则。
 
 调试日志记录模型、请求输出、实际 cap、thinking 余量和钳制后的 deadline。运行 `bun test --no-env-file ./src/services/mods/modelValidation.test.ts ./src/services/mods/modelOptions.test.ts ./src/services/mods/modelRuntime.test.ts` 检查参数和 Worker 路径。精确原生验收与限制见 [模型参数专项](docs/research/mods-model-params-292-20261007.md)，作者类型参考 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 及安装版本生成的声明。
+
+
+### 模型完成的独立取消信号
+
+把插件自己的 `AbortController` 留在后续处理函数可访问的位置，用 `{ signal: stop.signal }` 取消该次完成：
+
+```ts
+const stop = new AbortController();
+const pending = $.model.complete({ model: "haiku", prompt: "Summarize this text" }, {
+  signal: stop.signal,
+});
+// 在后续 Cancel 处理函数中调用；其他完成调用继续运行。
+stop.abort(new Error("Cancelled by the plugin"));
+const reply = await pending;
+if (!reply.isAnswered && reply.reason === "aborted") {
+  // 当前调用已取消。
+}
+```
+
+信号属于 options，模型 Hook 的 `e` 中没有 `signal`。已取消的信号优先于请求检查，不派发模型 Hook、不发送请求；普通完成或核心超时/取消的回执和用量可修改，作者端提前取消或 Hook 取消返回共享冻结回执。信号 getter 只读取一次，结算后移除监听器。JavaScript 会忽略未使用的 options 与额外参数，但公开 TypeScript 仍要求 `ModelCompleteOptions` 的 `signal?: AbortSignal`；非法信号报带插件名的 `HooksError`。模型 Hook 在处理取消时仍可用 `$.ui.log(..., { to: "debug" })` 输出最终诊断。
+
+本批次验证命令：`bun test --no-env-file ./src/services/mods/modelSignals.test.ts ./src/services/mods/modelLocalCancellation.test.ts ./src/services/mods/modelAbort.test.ts`。精确原生对照和未覆盖范围见 [取消专项](docs/research/mods-model-signals-292-20261007.md)，作者契约参见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 和插件生成的声明。

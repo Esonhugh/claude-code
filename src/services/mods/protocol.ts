@@ -133,7 +133,7 @@ export type ModWorkerRequest =
         tables: [string, ModWireValue][]
       }[]
     }
-  | { type: 'abort'; environment: number; invocation: number }
+  | { type: 'abort'; environment: number; invocation: number; reason?: {name:string;message:string} }
   | { type: 'trace'; environment: number; invocation: number; trace: ModWireValue }
   | {
       type: 'host-result'
@@ -168,7 +168,10 @@ export type ModWorkerReply =
       call: number
       handle: number
       args: ModWireValue[]
+      modelAborted?: boolean
+      modelAbortReason?: {name:string;message:string}
     }
+  | { type: 'model-abort'; environment: number; call: number; reason: {name:string;message:string} }
   | {
       type: 'ui-call'
       environment: number
