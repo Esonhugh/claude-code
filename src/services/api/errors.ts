@@ -1,3 +1,4 @@
+import { HttpResponseError } from '../../utils/errors.js'
 import {
   APIConnectionError,
   APIConnectionTimeoutError,
@@ -427,6 +428,18 @@ export function extractUnknownErrorFormat(value: unknown): string | undefined {
 }
 
 export function getAssistantMessageFromError(
+  ...args: Parameters<typeof formatAssistantMessageFromError>
+): AssistantMessage {
+  const message = formatAssistantMessageFromError(...args)
+  const error = args[0]
+  if ((error instanceof APIError || error instanceof HttpResponseError) && error.status !== undefined) {
+    message.apiErrorStatus = error.status
+    if (error.status >= 500 && message.error === 'unknown') message.error = 'server_error'
+  }
+  return message
+}
+
+function formatAssistantMessageFromError(
   error: unknown,
   model: string,
   options?: {

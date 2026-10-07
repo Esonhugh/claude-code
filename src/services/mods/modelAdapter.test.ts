@@ -185,21 +185,17 @@ test('model fork is cold-safe, cache-safe, tool-less and projects four usage fie
     return {messages:[{type:'assistant',message:{content:[{type:'text',text:'answer'}]}}] as any,
       totalUsage:{input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4,extra:5} as any}
   })
-  expect(await fork({prompt:'cold'})).toBeNull()
+  expect(await fork({prompt:'cold'})).toEqual({isAnswered:false,reason:'nothing-to-fork'})
   snapshot = {systemPrompt:['system'],userContext:{},systemContext:{},forkContextMessages:[],toolUseContext:{options:{tools:['keep'],thinkingConfig:{type:'disabled'}}}}
-  expect(await fork({prompt:'hello'})).toEqual({text:'answer',usage:{input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4}})
-  expect(calls[0]).toMatchObject({cacheSafeParams:snapshot,maxTurns:1,skipTranscript:true,skipCacheWrite:true,toolChoice:{type:'none'}})
+  expect(await fork({prompt:'hello'})).toEqual({isAnswered:true,text:'answer',usage:{input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4}})
+  expect(calls[0]).toMatchObject({cacheSafeParams:snapshot,maxTurns:2,skipTranscript:true,skipCacheWrite:true,querySource:'hook_prompt',forkLabel:'plugin_model_fork'})
   expect(calls[0].overrides.abortController).toBeInstanceOf(AbortController)
   await expect(fork({prompt:'x',model:'override'} as any)).rejects.toThrow()
   expect(calls).toHaveLength(1)
 })
 
-test('model fork maps API failure to null but preserves caller abort reason', async () => {
-  const snapshot = {} as any
-  expect(await createModModelFork(() => snapshot, async () => {throw Error('API failed')})({prompt:'x'})).toBeNull()
-  const controller = new AbortController()
-  const pending = createModModelFork(() => snapshot, async () => await new Promise(() => {}))({prompt:'x'},controller.signal)
-  const reason = new Error('caller cancelled')
-  controller.abort(reason)
-  await expect(pending).rejects.toBe(reason)
+test('model fork propagates runner failures', async () => {
+  const snapshot = {forkContextMessages:[]} as any
+  const failure = Error('API failed')
+  await expect(createModModelFork(() => snapshot, async () => {throw failure})({prompt:'x'})).rejects.toBe(failure)
 })

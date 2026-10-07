@@ -48,8 +48,8 @@ export function createModStoreBridge(method: 'get' | 'set' | 'delete', call: Hos
   return call
 }
 const timerWaits = new WeakSet<HostFunction>()
-const modelMethods = new WeakMap<HostFunction, 'complete'>()
-export function createModModelBridge<T extends HostFunction>(call: T, method: 'complete'): T {
+const modelMethods = new WeakMap<HostFunction, 'complete' | 'fork' | 'classify'>()
+export function createModModelBridge<T extends HostFunction>(call: T, method: 'complete' | 'fork' | 'classify'): T {
   modelMethods.set(call, method)
   return call
 }
@@ -595,7 +595,7 @@ export function createModEnvironmentHost({
     }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
-      worker.postMessage({ type: 'abort', environment, invocation: id, ...(next?.event === 'model.complete' ? {reason:{name:'HooksError',message:errorMessage(next.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
+      worker.postMessage({ type: 'abort', environment, invocation: id, ...(['turn.step','model.complete','model.classify','model.fork'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
       overrun ??= setTimeout(() => fail(new Error('Mods Worker did not settle an aborted invocation')), 5000)
       overrun.unref?.()
       if (streaming) streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))
@@ -645,22 +645,30 @@ export function createModEnvironmentHost({
         if (result.value?.type !== 'stream' || result.value.invocation !== id) throw new Error('Module did not return a stream')
         retained = true
         state.cleanups.add(unloaded)
-        let pendingPull: Promise<ModWorkerReply> | undefined
+        let pendingPull: Promise<Result> | undefined
         return createModHookStream(async (method, value) => {
           try {
             stateFor(environment)
             const interrupted = method === 'return' ? pendingPull : undefined
-            if (interrupted)
+            if (interrupted) {
               worker.postMessage({ type: 'abort', environment, invocation: id } satisfies ModWorkerRequest)
+              // An interrupted pull may settle and remove the Worker stream.
+              // Observe its finally before sending a return to a live iterator.
+              try {
+                const response = await interrupted
+                if ((decode(environment, response.value!) as IteratorResult<unknown, unknown>).done) {
+                  cleanup()
+                  return { done: true, value }
+                }
+              } catch (error) {
+                if (error !== streamAbort.signal.reason && !streamAbortErrors.has(error as Error)) throw error
+                cleanup()
+                return { done: true, value }
+              }
+            }
             const responsePromise = request({ type:'stream-pull', environment, invocation:id, method,
               value:encode(environment, value instanceof Error ? {message:value.message, name:value.name} : value) })
             if (method !== 'return') pendingPull = responsePromise
-            if (interrupted) {
-              const outcomes = await Promise.allSettled([responsePromise, interrupted])
-              for (const outcome of outcomes) {
-                if (outcome.status === 'rejected' && !streamAbortErrors.has(outcome.reason)) throw outcome.reason
-              }
-            }
             const response = await responsePromise
             const item = decode(environment, response.value!) as IteratorResult<unknown, unknown>
             if (item.done) cleanup()

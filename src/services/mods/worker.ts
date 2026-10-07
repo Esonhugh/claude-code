@@ -576,7 +576,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           if (result.errorName === 'HooksError') error.name = 'HooksError';
           if (result.errorRef !== undefined) hostErrors.set(error, result.errorRef);
           item.reject(error);
-        } else item.resolve(decode(result.value, item.invocation, item.modelMethod === 'complete'));
+        } else item.resolve(decode(result.value, item.invocation, item.modelMethod === 'complete' || item.modelMethod === 'fork'));
       } catch (error) { item.reject(error); }
     },
     trace(text) {
@@ -586,7 +586,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     abort(invocation, reason) {
       signals.get(invocation)?.(reason);
       if (streams.has(invocation)) for (const [call, item] of pending) {
-        if (item.invocation !== invocation) continue;
+        if (item.invocation !== invocation || item.modelMethod) continue;
         pending.delete(call);
         const error = Object.assign(Error('Module invocation aborted'), {name:'AbortError'});
         abortErrors.add(error);

@@ -163,6 +163,7 @@ export interface AssistantMessage {
   isMeta?: boolean
   isVirtual?: boolean
   isApiErrorMessage?: boolean
+  apiErrorStatus?: number
   apiError?: {
     status: number
     type: string
@@ -384,6 +385,7 @@ export interface NormalizedAssistantMessage<T = BetaContentBlock> {
   isMeta?: boolean
   isVirtual?: boolean
   isApiErrorMessage?: boolean
+  apiErrorStatus?: number
   apiError?: {
     status: number
     type: string

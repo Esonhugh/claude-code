@@ -1316,3 +1316,26 @@ if (!reply.isAnswered && reply.reason === "aborted") {
 信号属于 options，模型 Hook 的 `e` 中没有 `signal`。已取消的信号优先于请求检查，不派发模型 Hook、不发送请求；普通完成或核心超时/取消的回执和用量可修改，作者端提前取消或 Hook 取消返回共享冻结回执。信号 getter 只读取一次，结算后移除监听器。JavaScript 会忽略未使用的 options 与额外参数，但公开 TypeScript 仍要求 `ModelCompleteOptions` 的 `signal?: AbortSignal`；非法信号报带插件名的 `HooksError`。模型 Hook 在处理取消时仍可用 `$.ui.log(..., { to: "debug" })` 输出最终诊断。
 
 本批次验证命令：`bun test --no-env-file ./src/services/mods/modelSignals.test.ts ./src/services/mods/modelLocalCancellation.test.ts ./src/services/mods/modelAbort.test.ts`。精确原生对照和未覆盖范围见 [取消专项](docs/research/mods-model-signals-292-20261007.md)，作者契约参见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 和插件生成的声明。
+
+### Mods 模型 fork 与父轮次取消
+
+`$.model.fork({prompt})` 在已有主会话响应后使用保存的会话快照。不要将结果当作 `null | {text, usage}`；按 `isAnswered` 和 `reason` 分支：
+
+```ts
+const answer = await $.model.fork({prompt: '检查当前讨论中的遗漏'})
+if (answer.isAnswered) {
+  $.ui.log(answer.text)
+} else if (answer.reason === 'nothing-to-fork') {
+  $.ui.log('主会话还没有可复用的响应')
+} else if (answer.reason === 'api-error') {
+  $.ui.log(`模型请求失败：${answer.status ?? 'unknown'} / ${answer.error}`)
+} else {
+  $.ui.log(`模型未回答：${answer.reason}`) // empty-reply 或 aborted
+}
+```
+
+fork 沿用快照模型和工具定义；工具调用由权限回调拒绝，最多运行两轮，不写侧链 transcript 或新 prompt cache。`nothing-to-fork` 不含 usage；其他结果含四个 token 字段。回复按 assistant 消息顺序连接，每条消息的文本块用换行连接并 trim，已有有效文本优先于后续 API 错误。
+
+在 `turn.step` hook 中调用模型时，父轮次取消会传入 `next.signal`：模型核心中的 complete/fork 返回普通可修改的 `aborted` 回执；classify 抛出 `${plugin}: $.model.classify: the request was aborted`。若取消发生在模型 Mods hook 内，则调用拒绝为 `HooksError: user-cancel`，finally 可读取相同的 `next.signal.reason` 并写日志。调用者自己的 complete `options.signal` 仍使用共享冻结取消回执，详见上一节。
+
+对照来源为官方 2.1.292 原生制品和生成的作者声明；[验收边界与证据](docs/research/mods-model-parent-fork-292-20261007.md)。SSE 部分 usage 字段的协议见 [Anthropic Streaming 文档](https://platform.claude.com/docs/en/build-with-claude/streaming)。完整请求上下文和所有 UI/diff 行为仍在逐项验证。

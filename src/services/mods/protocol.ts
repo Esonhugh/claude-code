@@ -70,7 +70,7 @@ export type ModWireValue =
   | { type: 'object'; entries: [string, ModWireValue][] }
   | { type: 'engine'; id: number; value: ModWireValue }
   | { type: 'function'; id: number }
-  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; modelMethod?: 'complete' }
+  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; modelMethod?: 'complete' | 'fork' | 'classify' }
   | { type: 'host-stream'; id: number }
   | { type: 'stream'; invocation: number }
   | { type: 'clock'; now: number; wait: number; cancel: number; run: number }

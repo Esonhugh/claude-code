@@ -24,7 +24,7 @@ export type ModModelCompleteResult =
   | { isAnswered: true; text: string; usage: ModModelUsage }
   | { isAnswered: false; reason: 'api-error'; status: number | null; error: ModModelApiError; usage: ModModelUsage }
   | { isAnswered: false; reason: 'empty-reply' | 'aborted'; usage: ModModelUsage }
-export type ModModelForkResult = { text: string; usage: Omit<ModTurnUsage, 'model'> } | null
+export type ModModelForkResult = ModModelCompleteResult | {isAnswered:false;reason:'nothing-to-fork'}
 
 export type ModTier = 'prepend' | 'user' | 'append' | 'builtin' | 'core'
 export type ModInput = Record<string, unknown>

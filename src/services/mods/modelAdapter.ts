@@ -3,7 +3,7 @@ import {logForDebugging} from '../../utils/debug.js'
 import {requiresAlwaysOnAdaptiveThinking} from '../../utils/thinking.js'
 import {getAssistantMessageFromError} from '../api/errors.js'
 import { APIConnectionError, APIError } from '@anthropic-ai/sdk'
-import { runForkedAgent, extractResultText, type CacheSafeParams } from '../../utils/forkedAgent.js'
+import { runForkedAgent, type CacheSafeParams } from '../../utils/forkedAgent.js'
 import { createUserMessage } from '../../utils/messages.js'
 import type { ModModelApiError, ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, ModModelUsage } from './types.js'
 import { getModelMaxOutputTokens } from '../../utils/context.js'
@@ -240,6 +240,25 @@ export function createModModelClassify(
   }
 }
 
+/** Preserve history while removing pending tool calls at the saved response tail. */
+export function modModelForkContext(messages: CacheSafeParams['forkContextMessages']): CacheSafeParams['forkContextMessages'] {
+  let end = messages.length
+  let changed = false
+  const tail: typeof messages = []
+  while (end > 0) {
+    const message = messages[end - 1]!
+    if (message.type !== 'assistant') break
+    end--
+    const content = message.message.content.filter(block => block.type !== 'tool_use')
+    if (content.length === message.message.content.length) tail.unshift(message)
+    else {
+      changed = true
+      if (content.length > 0) tail.unshift({...message,message:{...message.message,content}})
+    }
+  }
+  return changed ? [...messages.slice(0,end),...tail] : messages
+}
+
 export function createModModelFork(
   snapshot: () => CacheSafeParams | null,
   run: typeof runForkedAgent = runForkedAgent,
@@ -248,34 +267,35 @@ export function createModModelFork(
     if (!request || typeof request !== 'object' || Array.isArray(request) ||
       typeof request.prompt !== 'string' || Object.keys(request).some(key => key !== 'prompt'))
       throw new TypeError('model.fork takes only {prompt: string}')
-    signal?.throwIfAborted()
-    const cacheSafeParams = snapshot()
-    if (!cacheSafeParams) return null
-    const abortController = new AbortController()
-    const abort = () => abortController.abort(signal?.reason)
-    signal?.addEventListener('abort', abort, {once:true})
-    try {
-      const result = await withAbort(run({
-        cacheSafeParams,
-        promptMessages: [createUserMessage({content:request.prompt})],
-        canUseTool: async () => ({behavior:'deny',message:'model.fork does not use tools',decisionReason:{type:'other',reason:'Tool-less fork'}}),
-        querySource: 'mods_model_fork',
-        forkLabel: 'mods_model_fork',
-        maxTurns: 1,
-        toolChoice: {type:'none'},
-        skipTranscript: true,
-        skipCacheWrite: true,
-        overrides: {abortController, requireCanUseTool:true},
-      }), signal)
-      signal?.throwIfAborted()
-      if (result.messages.some(message => message.type === 'assistant' && message.isApiErrorMessage)) return null
-      const {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens} = result.totalUsage
-      return {text:extractResultText(result.messages, ''),usage:{input_tokens,output_tokens,cache_read_input_tokens,cache_creation_input_tokens}}
-    } catch {
-      signal?.throwIfAborted()
-      return null
-    } finally {
-      signal?.removeEventListener('abort', abort)
+    const saved = snapshot()
+    if (!saved) {
+      logForDebugging('[Mods] model.fork: no main-thread response to fork yet')
+      return {isAnswered:false,reason:'nothing-to-fork'}
     }
+    const abortController = new AbortController()
+    const abort = () => abortController.abort()
+    if (signal?.aborted) abort()
+    else signal?.addEventListener('abort', abort, {once:true})
+    const started = Date.now()
+    try {
+      const result = await run({
+        cacheSafeParams:{...saved,forkContextMessages:modModelForkContext(saved.forkContextMessages)},
+        promptMessages:[createUserMessage({content:request.prompt})],
+        canUseTool:async()=>({behavior:'deny',message:'A model fork cannot use tools',decisionReason:{type:'other',reason:'model.fork'}}),
+        querySource:'hook_prompt',forkLabel:'plugin_model_fork',maxTurns:2,
+        skipTranscript:true,skipCacheWrite:true,overrides:{abortController},
+      })
+      const usage = modelUsage(result.totalUsage)
+      const assistants = result.messages.filter(message => message.type === 'assistant')
+      const texts = assistants.filter(message => !message.isApiErrorMessage).map(message =>
+        message.message.content.filter(block => block.type === 'text').map(block => block.text).filter(text => text !== '').join('\n').trim(),
+      ).filter(text => text !== '')
+      const failure = assistants.findLast(message => message.isApiErrorMessage)
+      logForDebugging(`[Mods] model.fork: ${Date.now()-started}ms, ${texts.length} replies${abortController.signal.aborted ? ', aborted' : ''}${failure ? `, API error ${failure.apiErrorStatus ?? 'no status'}` : ''}`)
+      if (abortController.signal.aborted) return {isAnswered:false,reason:'aborted',usage}
+      if (texts.length > 0) return {isAnswered:true,text:texts.join('\n'),usage}
+      if (failure) return {isAnswered:false,reason:'api-error',status:failure.apiErrorStatus ?? null,error:(failure.error ?? 'unknown') as ModModelApiError,usage}
+      return {isAnswered:false,reason:'empty-reply',usage}
+    } finally {signal?.removeEventListener('abort',abort)}
   }
 }

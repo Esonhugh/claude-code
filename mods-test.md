@@ -1984,3 +1984,11 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 最终候选601 pass/0 fail/5既有skip/2197expect/20files，ROOT635/0/5/2327/21；双方 release-check、新隔离 build 通过。三侧同驱动35回执/20 enter Hook/1 caught Hook/19HTTP，stdin/fixture、冻结/可修改、getter/attach/detach、原因/并发因果屏障和全部投影请求相同；均正常exit0、原fixture/binary不变、自有tmux/HTTP线程清理，无dropped日志。三侧实际生成声明严格正反编译0diagnostics，新增debug三条仅env/call/active。
 
 原20项RED、首版原生两个冻结差异和缺失最终日志、有效取消RED以及夹具/导入/原因传播的中间失败保留。父turn.step原生取消、classify/fork、完整API/UI/diff/G5及155文件逐文件门禁保持开放；其他Claude进程和未提交WIP保留，详见[取消专项](docs/research/mods-model-signals-292-20261007.md)。
+
+## 2026-10-07 — model.fork 与父轮次取消 2.1.292 批次
+
+- Source-confirmed：b5t/S5t/g5t/rN 的冷快照优先级、尾部 tool_use 裁剪、hook_prompt/plugin_model_fork、两轮、权限拒绝及文本/API 错误选择顺序已实现；同步内部 fork 联合和 apiErrorStatus 定义。
+- Runtime-observed：official o6 / candidate c4 / ROOT w3 在相同隔离160×40环境完成12场景；每侧67条日志，其中55条模型/取消回执完全一致。包含6次取消后的恢复输入、fork 空回复、HTTP529 server_error 和真实工具拒绝；三侧 /exit 0，无日志丢弃，自有HTTP/请求线程/tmux均停止。
+- 官方核心取消 complete/fork 返回可修改 aborted；classify 抛出准确插件 HooksError；模型 hook 取消统一拒绝 HooksError user-cancel，finally 读取相同 reason 并记录日志。原始部分 SSE delta 用量保留。
+- 最终candidate套件645通过/0失败/5已有跳过/24文件，ROOT681/0/5/25文件；两侧 release-check、私有新构建及三侧 strict 作者类型均通过。原 RED、类型/输入失败及 unknown 分类失败证据保留。
+- 证据与边界：docs/research/mods-model-parent-fork-292-20261007.md；本地 /private/tmp/mods-model-parent-292-20261007-n6ii9a84/native-comparison.json。parent messageCount仍有差异，未宣称完整请求体或全部上下文相同；完整API/UI/diff、G5与旧response全量门禁继续处理。ROOT的相关WIP集成仍未暂存，提交仅来自20文件私有HEAD候选。

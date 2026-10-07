@@ -24,7 +24,7 @@ type ModelEvent = {
   }
   usage?: Partial<ModTurnUsage>
 }
-type Reference = { item: ModelItem; indices?: number[] }
+type Reference = { item: ModelItem; indices?: number[]; stopUsage?: ModTurnUsage | null }
 type Block = {
   start?: StreamEvent
   original?: AssistantMessage
@@ -184,6 +184,7 @@ export async function* streamModTurnStep(
         if (usage && event.usage)
           for (const key of tokenFields) usage[key] = event.usage[key] ?? usage[key]
         emittedStop = true
+        references.get(ref)!.stopUsage = usage === null ? null : {...usage}
         yield { kind: 'stop', stopReason, usage, ref }
       } else yield { kind: 'engine', ref }
     }
@@ -396,7 +397,10 @@ export async function* streamModTurnStep(
             ...event,
             type: 'message_delta',
             delta: { ...event?.delta, stop_reason: chunk.stopReason },
-            usage: chunk.usage ?? undefined,
+            usage: reference && reference.stopUsage !== undefined &&
+              (chunk.usage === null ? reference.stopUsage === null : reference.stopUsage !== null &&
+                [...tokenFields,'model' as const].every(key => chunk.usage![key] === reference.stopUsage![key]))
+              ? event?.usage : chunk.usage ?? undefined,
           },
         }
         continue

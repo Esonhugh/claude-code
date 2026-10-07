@@ -1,0 +1,392 @@
+{
+  "version": "2.1.292",
+  "binarySHA256": "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
+  "driver": "native-parent.py official o2",
+  "events": [
+    {
+      "phase": "armed",
+      "scenario": "complete-done"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.complete",
+      "scenario": "complete-done",
+      "e": {
+        "model": "claude-sonnet-4-6",
+        "prompt": "SIDE_CASE:complete-done"
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "parent-result",
+      "scenario": "complete-done",
+      "result": {
+        "isAnswered": true,
+        "text": "OWNED_SIDE_DONE complete-done",
+        "usage": [
+          1,
+          2,
+          3,
+          4
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "complete-done",
+      "aborted": false
+    },
+    {
+      "phase": "armed",
+      "scenario": "classify-done"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.classify",
+      "scenario": "classify-done",
+      "e": {
+        "text": "SIDE_CASE:classify-done",
+        "labels": [
+          "YES",
+          "NO"
+        ],
+        "options": {
+          "model": "claude-sonnet-4-6"
+        }
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "parent-result",
+      "scenario": "classify-done",
+      "result": "YES",
+      "frozen": true,
+      "usageFrozen": false
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "classify-done",
+      "aborted": false
+    },
+    {
+      "phase": "armed",
+      "scenario": "fork-done"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.fork",
+      "scenario": "fork-done",
+      "e": {
+        "prompt": "SIDE_CASE:fork-done"
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "parent-result",
+      "scenario": "fork-done",
+      "result": {
+        "isAnswered": true,
+        "text": "OWNED_SIDE_DONE fork-done",
+        "usage": [
+          0,
+          2,
+          0,
+          0
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "fork-done",
+      "aborted": false
+    },
+    {
+      "phase": "armed",
+      "scenario": "complete-http"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.complete",
+      "scenario": "complete-http",
+      "e": {
+        "model": "claude-sonnet-4-6",
+        "prompt": "SIDE_CASE:complete-http"
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "parent-result",
+      "scenario": "complete-http",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "complete-http",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "armed",
+      "scenario": "classify-http"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.classify",
+      "scenario": "classify-http",
+      "e": {
+        "text": "SIDE_CASE:classify-http",
+        "labels": [
+          "YES",
+          "NO"
+        ],
+        "options": {
+          "model": "claude-sonnet-4-6"
+        }
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "model-caught",
+      "op": "model.classify",
+      "scenario": "classify-http",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "parent-error",
+      "scenario": "classify-http",
+      "kind": "HooksError",
+      "message": "owned-parent-owner: $.model.classify: the request was aborted"
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "classify-http",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "armed",
+      "scenario": "fork-http"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.fork",
+      "scenario": "fork-http",
+      "e": {
+        "prompt": "SIDE_CASE:fork-http"
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "parent-result",
+      "scenario": "fork-http",
+      "result": {
+        "isAnswered": false,
+        "reason": "aborted",
+        "usage": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "frozen": false,
+      "usageFrozen": false
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "fork-http",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "armed",
+      "scenario": "complete-hook"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.complete",
+      "scenario": "complete-hook",
+      "e": {
+        "model": "claude-sonnet-4-6",
+        "prompt": "SIDE_CASE:complete-hook"
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "hook-blocked",
+      "scenario": "complete-hook"
+    },
+    {
+      "phase": "model-caught",
+      "op": "model.complete",
+      "scenario": "complete-hook",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "parent-error",
+      "scenario": "complete-hook",
+      "kind": "HooksError",
+      "message": "user-cancel"
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "complete-hook",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "armed",
+      "scenario": "classify-hook"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.classify",
+      "scenario": "classify-hook",
+      "e": {
+        "text": "SIDE_CASE:classify-hook",
+        "labels": [
+          "YES",
+          "NO"
+        ],
+        "options": {
+          "model": "claude-sonnet-4-6"
+        }
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "hook-blocked",
+      "scenario": "classify-hook"
+    },
+    {
+      "phase": "model-caught",
+      "op": "model.classify",
+      "scenario": "classify-hook",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "parent-error",
+      "scenario": "classify-hook",
+      "kind": "HooksError",
+      "message": "user-cancel"
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "classify-hook",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "armed",
+      "scenario": "fork-hook"
+    },
+    {
+      "phase": "model-enter",
+      "op": "model.fork",
+      "scenario": "fork-hook",
+      "e": {
+        "prompt": "SIDE_CASE:fork-hook"
+      },
+      "frozen": true,
+      "origin": "owned-parent-owner",
+      "aborted": false
+    },
+    {
+      "phase": "hook-blocked",
+      "scenario": "fork-hook"
+    },
+    {
+      "phase": "model-caught",
+      "op": "model.fork",
+      "scenario": "fork-hook",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    },
+    {
+      "phase": "parent-error",
+      "scenario": "fork-hook",
+      "kind": "HooksError",
+      "message": "user-cancel"
+    },
+    {
+      "phase": "parent-finally",
+      "scenario": "fork-hook",
+      "aborted": true,
+      "reason": {
+        "name": "HooksError",
+        "message": "user-cancel",
+        "string": "HooksError: user-cancel"
+      }
+    }
+  ]
+}

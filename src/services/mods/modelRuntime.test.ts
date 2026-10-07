@@ -189,11 +189,11 @@ test('model fork crosses production loader and Worker with hook rewriting', asyn
     on('model.fork', ($, e, next) => next({...e,prompt:e.prompt+' rewritten'}));
   }`)
   const calls: unknown[] = []
-  const value = createModsRuntime({services:{modelFork:async request => {calls.push(request);return null}}})
+  const value = createModsRuntime({services:{modelFork:async request => {calls.push(request);return {isAnswered:false,reason:'nothing-to-fork'}}}})
   runtimes.push(value)
   await value.bind(binding(root))
   await value.reconcile([consumer,policy])
-  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:null})
+  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:{isAnswered:false,reason:'nothing-to-fork'}})
   expect(calls).toEqual([{prompt:'question rewritten'}])
 })
 
@@ -216,12 +216,12 @@ test('fork snapshots are session-owned, cleared on identity reset and reject sta
     const invoke = (runtime: typeof first) => runtime.dispatch('tool.call',{},async () => ({result:'core'}))
     const stale = first.captureForkSnapshotWriter()
     stale({systemPrompt:['first'],userContext:{},systemContext:{},forkContextMessages:[],toolUseContext:{options:{tools:[]}}} as any)
-    expect(await invoke(second)).toEqual({result:null})
-    expect(await invoke(first)).toMatchObject({result:{text:''}})
+    expect(await invoke(second)).toEqual({result:{isAnswered:false,reason:'nothing-to-fork'}})
+    expect(await invoke(first)).toEqual({result:{isAnswered:false,reason:'empty-reply',usage:{input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4}}})
     expect(calls).toHaveLength(1)
     await first.bind({...binding(root),sessionId:'new'})
     stale({systemPrompt:['stale']} as any)
-    expect(await invoke(first)).toEqual({result:null})
+    expect(await invoke(first)).toEqual({result:{isAnswered:false,reason:'nothing-to-fork'}})
     expect(calls).toHaveLength(1)
   } finally { transport.mockRestore() }
 })

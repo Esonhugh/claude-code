@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - Mods 模型 fork 与父轮次取消对齐
+
+### 变更内容
+
+- model.fork 使用官方判别联合回执：尚无主会话快照时返回 nothing-to-fork，其他结果区分回答、空回复、API 错误和取消；正常/核心取消的回执及 usage 保持可修改。
+- fork 保留主会话快照中的模型、工具和上下文，去除尾部 assistant 未完成的 tool_use；使用 hook_prompt、plugin_model_fork 与两轮上限，通过权限回调拒绝工具，按官方顺序选择回复文本和最后一个 API 错误。
+- 父 turn.step 取消后等待模型核心协作结算：complete/fork 返回取消回执，classify 抛出带插件名的 HooksError；取消发生在 Mods hook 内时保留 user-cancel 错误及 next.signal.reason，允许 finally 记录日志并正常清理 Worker。
+- turn.step 未改写用量时保留原始 message_delta 的部分字段，避免改变 fork 的官方用量累加口径；新增 fork 结果、耗时及取消/API 状态调试日志。
+
+### 测试覆盖
+
+- 新增固定官方 2.1.292 的父轮次取消回执夹具，以及 fork 参数、上下文尾部、结果优先级、协作取消与部分 SSE 用量回归。官方/候选提交/工作区的构建、测试和原生交互证据见 docs/research/mods-model-parent-fork-292-20261007.md；完整 API/UI/diff、上下文请求体及 G5 门禁继续验收。
+
 ## 2026-10-07 - Mods 模型完成的取消与回执语义
 
 ### 变更内容

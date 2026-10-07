@@ -485,8 +485,8 @@ export async function dispatchModEvent(options: {
       let abort!: () => void
       const abandoned = new Promise<never>((_resolve, reject) => {
         abort = () => {
-          // Model completion settles cancellation as a receipt, with bounded teardown.
-          if (options.event === 'model.complete') {
+          // Model cores settle cancellation as a receipt or a classifier diagnostic, with bounded teardown.
+          if (['model.complete','model.classify','model.fork'].includes(options.event)) {
             abortGrace = setTimeout(() => reject(parent!.reason), 5000)
             abortGrace.unref?.()
           } else reject(parent!.reason)
@@ -547,7 +547,7 @@ export async function dispatchModEvent(options: {
     void abandoned.catch(() => {})
     const abort = () => {
       phase = 'done'
-      if (options.event === 'model.complete') {
+      if (['model.complete','model.classify','model.fork'].includes(options.event)) {
         abortGrace = setTimeout(() => rejectAbandoned(parent!.reason), 5000)
         abortGrace.unref?.()
       } else rejectAbandoned(parent!.reason)
@@ -827,6 +827,7 @@ export async function dispatchModEvent(options: {
         )
         return publishToolResult(result)
       } catch (error) {
+        if (parent?.aborted && ['model.complete','model.classify','model.fork'].includes(options.event)) throw error
         parent?.throwIfAborted()
         if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
         if (options.event === 'engine.create') throw error

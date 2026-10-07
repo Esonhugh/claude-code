@@ -1635,7 +1635,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? createModModelComplete(undefined, undefined, undefined, owner.declaration.name)
             if (op === 'model.fork') {
               const fork = requestServices.getStore()?.modelFork ?? services.modelFork ?? productionModelFork
-              return { value: fork ? await fork(rewritten as ModModelForkRequest, signal) : null }
+              return { value: await fork(rewritten as ModModelForkRequest, signal) }
             }
             if (op === 'model.complete') {
               validateModModelCompleteInput(rewritten)
@@ -1674,7 +1674,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { modelInvocation?.cleanup(); resumeBudget?.() }
       }
       if (step) wrapped.step = step
-      if (noun === 'model' && methods.complete === hostIdentity && wrapped.complete) createModModelBridge(wrapped.complete, 'complete')
+      if (noun === 'model') for (const method of ['complete','fork','classify'] as const)
+        if (methods[method] === hostIdentity && wrapped[method]) createModModelBridge(wrapped[method],method)
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {
           if (methods[method] === hostIdentity && wrapped[method])
@@ -1946,14 +1947,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const envelope = result as {value?: ModModelForkResult; deny?: string} | null
       if (typeof envelope?.deny === 'string') return
       if (!envelope || !('value' in envelope)) throw new TypeError('model.fork must return value or deny')
-      const value = envelope.value
-      if (value === null) return
-      if (!value || typeof value.text !== 'string' || !value.usage ||
-        Object.keys(value.usage).length !== 4 ||
-        !['input_tokens','output_tokens','cache_read_input_tokens','cache_creation_input_tokens'].every(key =>
-          typeof (value.usage as Record<string, unknown>)[key] === 'number' &&
-          Number.isFinite((value.usage as Record<string, unknown>)[key])))
-        throw new TypeError('model.fork must return text and four usage fields, or null')
+
       return
     }
     if (event === 'model.complete') {
@@ -2072,7 +2066,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       core = async function* () { throw new Error(`Unhandled plugin test event: ${event}`) }
     const cancellation = new AbortController()
     const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
-    const abort = () => cancellation.abort(options.signal?.aborted ? options.signal.reason : controller.signal.reason)
+    const abort = () => {
+      const reason = options.signal?.aborted ? options.signal.reason : controller.signal.reason
+      cancellation.abort(typeof reason === 'string' ? Object.assign(new Error(reason), {name:'HooksError'}) : reason)
+    }
     combined.signal.addEventListener('abort', abort, { once: true })
     if (combined.signal.aborted) abort()
     const caller = capabilityContext.getStore()?.hook
@@ -2132,7 +2129,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
     const context = capabilityContext.getStore()
-    const combined = event === 'model.complete'
+    const combined = ['model.complete','model.classify','model.fork'].includes(event)
       ? combineModModelSignals(options.signal, controller.signal)
       : createCombinedAbortSignal(options.signal, { signalB: controller.signal })
     const caller = options.caller ?? (context?.active ? context.hook : undefined)
