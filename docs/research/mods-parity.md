@@ -6,7 +6,7 @@
 
 - 当前官方对照版本为 **2.1.292**，本地构建版本仍为 **2.1.280（未发布）**。下文的 287/289/290 基线、逐批数字和待办是历史快照，不能覆盖后续专项结论；本次完整范围见[实现审查](mods-implementation-audit-20261007.md)。
 - 作者完整声明、内置 diff 原件、模型 complete/classify/fork、原生消息绘制、Agent 路由及远程 UI 已有 292 专项。类型、专项通过和完整生产兼容分别判断，不将旧 C16 成本恢复待办或 U06 全部未挂载的表述直接当作当前状态。
-- 当前远程 UI 接通 10/18 类客户端控制。本次新构建与官方同输入实测：`ui_prompt_edit`、`ui_prompt_autocomplete`、`ui_panes`、`ui_pane_show`、`ui_pane_focus`、`ui_close`、`ui_scroll`、`ui_focus` 八类请求在官方返回合法回执，在本地返回 Unsupported；五类 responder、其他 system 推送和浏览器 Client 执行生命周期仍开放。
+- 当前远程 UI 接通 14/18 类客户端控制。新增 ui_panes、ui_pane_show、ui_pane_focus、ui_close、无终端 Pane 登记与 system/ui_panes 推送，官方 2.1.292 和本批候选的原生回执、观察和推送匹配；工作区与终端相邻流程结果见 [Pane 控制专项](mods-pane-controls-292-20261007.md)。仍开放 ui_prompt_edit、ui_prompt_autocomplete、ui_scroll、ui_focus，五类 responder、其他 system 推送和浏览器 Client 执行生命周期。
 - 本次所选七个生命周期/远程 UI 文件为 232 pass / 1 skip / 0 fail；host hooks 文件在干净 `005fae9` 与工作区均为 25 pass / 1 fail，失败是嵌套 stream 取消未保留专用原因。完整官方 API/UI/diff/G5 与全量 WIP 门禁仍未完成。
 
 ## 历史清单与逐批记录

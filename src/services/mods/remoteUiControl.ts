@@ -1,9 +1,10 @@
+import { logForDebugging } from '../../utils/debug.js'
 import type { SDKControlRequest } from '../../entrypoints/sdk/controlTypes.js'
 import {
   SDKControlUIRequestSchema,
   SDKControlUIClientFaultRequestSchema,
 } from '../../entrypoints/sdk/controlSchemas.js'
-import type { SDKUIInvalidateMessage } from '../../entrypoints/sdk/modsControlTypes.js'
+import type { SDKUIInvalidateMessage, SDKUIPanesMessage, SDKControlUIPanesResponse } from '../../entrypoints/sdk/modsControlTypes.js'
 import type { ModsRuntime } from './runtime.js'
 import { createModRemoteRenderer } from './remoteUiRender.js'
 
@@ -14,6 +15,10 @@ export const modUIDetachError =
 export const modUIRenderError =
   'ui_render: surface must be "desktop", "mobile" or "vscode", component a render site name, instance_id a string, props an object, client_id (when given) 1-64 safe characters, viewport (when given) positive integer columns and rows with isFullscreen (when given) a boolean, and on_screen (when given) null or integers first <= last < of'
 const errors: Record<string, string> = {
+  ui_panes: 'ui_panes: client_id (when given) 1-64 safe characters',
+  ui_pane_show: 'ui_pane_show: id must be 1-64 of letters, digits, _ or -',
+  ui_pane_focus: 'ui_pane_focus: id must be null or 1-64 of letters, digits, _ or -, surface (when given) "desktop", "mobile" or "vscode"',
+  ui_close: 'ui_close: id must be 1-64 of letters, digits, _ or -',
   ui_attach: modUIAttachError,
   ui_detach: modUIDetachError,
   ui_render: modUIRenderError,
@@ -37,10 +42,34 @@ export function createModRemoteUIControl(options: {
   invalidate?(
     message: Omit<SDKUIInvalidateMessage, 'uuid' | 'session_id'>,
   ): void
+  panes?(message: Omit<SDKUIPanesMessage, 'uuid' | 'session_id'>): void
   runtime(): ModsRuntime | undefined
   success(message: SDKControlRequest, response: Record<string, unknown>): void
   error(message: SDKControlRequest, reason: string): void
 }) {
+  const subscriptions = new Map<ModsRuntime, () => void>()
+  const paneState = (runtime: ModsRuntime): SDKControlUIPanesResponse => {
+    const state = runtime.ui.paneState()
+    return {
+      panes: state.panes.map(({closeOnEscape, holdToasts, ...pane}) => ({...pane,
+        ...(closeOnEscape ? {close_on_escape: true as const} : {}),
+        ...(holdToasts ? {hold_toasts: true as const} : {}),
+      })),
+      shown_id: state.shownId, focused_id: state.focusedId, focus_requested_id: state.focusRequestedId,
+    }
+  }
+  const observePanes = (runtime: ModsRuntime) => {
+    if (subscriptions.has(runtime)) return
+    let previous = JSON.stringify(paneState(runtime))
+    subscriptions.set(runtime, runtime.ui.subscribe(() => {
+      const state = paneState(runtime)
+      const next = JSON.stringify(state)
+      if (next === previous) return
+      previous = next
+      logForDebugging(`[ModsUIPanes] changed count=${state.panes.length} shown=${state.shown_id} focused=${state.focused_id} requested=${state.focus_requested_id}`)
+      options.panes?.({type: 'system', subtype: 'ui_panes', ...state})
+    }))
+  }
   const pending = new Set<Promise<void>>()
   const jobs = new Map<string, { cancelled: boolean }>()
   const renderers = new Map<
@@ -64,6 +93,13 @@ export function createModRemoteUIControl(options: {
     return renderer
   }
   return {
+    connect(): void {
+      const runtime = options.runtime()
+      if (!runtime || subscriptions.has(runtime)) return
+      observePanes(runtime)
+      const state = paneState(runtime)
+      if (state.panes.length) options.panes?.({type: 'system', subtype: 'ui_panes', ...state})
+    },
     async settle(): Promise<void> {
       await Promise.allSettled([...pending])
     },
@@ -77,6 +113,8 @@ export function createModRemoteUIControl(options: {
         [...renderers.values()].map((renderer) => renderer.dispose()),
       )
       renderers.clear()
+      for (const unsubscribe of subscriptions.values()) unsubscribe()
+      subscriptions.clear()
     },
     handleRequest(message: SDKControlRequest): boolean {
       const subtype = message.request.subtype
@@ -101,11 +139,12 @@ export function createModRemoteUIControl(options: {
         options.error(message, errors[subtype]!)
         return true
       }
+      const cancellable = !['ui_client_fault', 'ui_panes', 'ui_pane_show', 'ui_pane_focus', 'ui_close'].includes(subtype)
       const previous = jobs.get(message.request_id)
-      if (previous && subtype !== 'ui_client_fault') previous.cancelled = true
+      if (previous && cancellable) previous.cancelled = true
       const job = { cancelled: false }
       // Official fault observations do not register a cancellable control job.
-      if (subtype !== 'ui_client_fault') jobs.set(message.request_id, job)
+      if (cancellable) jobs.set(message.request_id, job)
       const success = (value: Record<string, unknown>) => {
         if (!job.cancelled) options.success(message, value)
       }
@@ -123,8 +162,17 @@ export function createModRemoteUIControl(options: {
           return
         }
         try {
+          observePanes(runtime)
           const request = parsed.data
-          if (request.subtype === 'ui_attach') {
+          if (request.subtype === 'ui_panes') {
+            success({...paneState(runtime)})
+          } else if (request.subtype === 'ui_pane_show') {
+            success({shown_id: runtime.ui.showPane(request.id)})
+          } else if (request.subtype === 'ui_pane_focus') {
+            success({focused_id: runtime.ui.focusPane(request.id)})
+          } else if (request.subtype === 'ui_close') {
+            return runtime.ui.closePane(request.id).then(closed => success({closed}), failure)
+          } else if (request.subtype === 'ui_attach') {
             const result = runtime.remoteClients.attach({
               surface: request.surface,
               clientId: request.client_id,

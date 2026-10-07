@@ -1,4 +1,4 @@
-import { SDKUIInvalidateMessageSchema } from './modsControlSchemas.js'
+import { SDKUIInvalidateMessageSchema, SDKUIPanesMessageSchema } from './modsControlSchemas.js'
 /**
  * SDK Core Schemas - Zod schemas for serializable SDK data types.
  *
@@ -1937,6 +1937,7 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKSystemMessageSchema(),
     SDKUILogMessageSchema(),
     SDKUIInvalidateMessageSchema(),
+    SDKUIPanesMessageSchema(),
     SDKPartialAssistantMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),

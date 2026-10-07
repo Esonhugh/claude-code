@@ -152,3 +152,19 @@ const terminalInvalidate: SDKUIInvalidateMessage = {
   instances: [{ surface: 'terminal', component: 'Pane', instance_id: 'site' }],
 }
 void [invalidate, invalidFaultEvent, terminalInvalidate]
+
+import type {SDKUIPanesMessage} from '../../src/entrypoints/sdk/modsControlTypes.js'
+import type {SDKUIPanesMessageSchema} from '../../src/entrypoints/sdk/modsControlSchemas.js'
+type PanesOutput = z.output<ReturnType<typeof SDKUIPanesMessageSchema>>
+type PanesSchemaMatches = Assert<PanesOutput extends SDKUIPanesMessage ? true : false>
+type PanesTypeMatches = Assert<SDKUIPanesMessage extends PanesOutput ? true : false>
+type PanesIncluded = Assert<SDKUIPanesMessage extends SDKMessage ? true : false>
+const paneMessage: SDKUIPanesMessage = {type:'system',subtype:'ui_panes',uuid:'owned',session_id:'owned',panes:[],shown_id:null,focused_id:null,focus_requested_id:null}
+// @ts-expect-error A generic SDK message cannot be mistaken for a pane roster.
+const invalidPanes: SDKUIPanesMessage = {...paneMessage,subtype:'ui_scroll'}
+const invalidPaneManners: SDKUIPanesMessage = {...paneMessage,
+ // @ts-expect-error False manners are omitted on the wire.
+ panes:[{id:'owned',title:'Owned',plugin:'owner',close_on_escape:false}]
+}
+void [paneMessage,invalidPanes,invalidPaneManners]
+export type {PanesSchemaMatches,PanesTypeMatches,PanesIncluded}

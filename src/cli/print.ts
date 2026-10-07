@@ -969,6 +969,7 @@ export async function runHeadless(
         (message.subtype === 'session_state_changed' ||
           message.subtype === 'ui_log' ||
           message.subtype === 'ui_invalidate' ||
+          message.subtype === 'ui_panes' ||
           message.subtype === 'task_notification' ||
           message.subtype === 'task_started' ||
           message.subtype === 'task_progress' ||
@@ -3044,9 +3045,12 @@ function runHeadlessStreaming(
     ready: () => inboundBinding ?? Promise.resolve(),
     runtime: () => options.modsSession?.runtime ?? undefined,
     invalidate: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
+    panes: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
     success: sendControlResponseSuccess,
     error: sendControlResponseError,
   })
+
+  void (inboundBinding ?? Promise.resolve()).then(() => remoteUIControl.connect()).catch(logError)
 
   // Handle unexpected permission responses by looking up the unresolved tool
   // call in the transcript and executing it

@@ -166,6 +166,18 @@ export function createModRemoteRenderer(
         logForDebugging(`[ModsUIRemote] release failed: ${String(error)}`),
       )
   }
+  let paneIds = new Set(runtime.ui.paneState().panes.map(pane => pane.id))
+  const unsubscribePanes = runtime.ui.subscribe(() => {
+    const current = new Set(runtime.ui.paneState().panes.map(pane => pane.id))
+    for (const id of paneIds) {
+      if (current.has(id)) continue
+      clients.remove('Pane', id)
+      for (const [key, entry] of sites) {
+        if (entry.input.component === 'Pane' && entry.input.requestId === id) retire(key, entry)
+      }
+    }
+    paneIds = current
+  })
   return {
     async render(
       request: SDKControlUIRenderRequest,
@@ -495,6 +507,7 @@ export function createModRemoteRenderer(
       disposed = true
       clients.clear()
       unsubscribe()
+      unsubscribePanes()
       await Promise.all([...sites].map(([key, entry]) => remove(key, entry)))
       await Promise.all([...retiring])
     },

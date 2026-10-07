@@ -2106,3 +2106,9 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 接通 $.ui.panes() / ui.panes，按插件过滤引擎记录，以打开顺序返回已放置项和未放置项；五个公开字段与官方作者声明匹配。真实 Worker 检查拒绝和替换回执、额外 JavaScript 参数忽略、结果副本可修改、旧代次回调撤销以及跨插件顺序。重载继承引擎已有 pane，并隔离准备阶段的关闭。
 
 结果、官方 2.1.292 对照、新制品与真实终端流程见 [pane 查询专项](docs/research/mods-pane-list-292-20261007.md)。本批未接通无终端 pane.open、ui_panes/show/focus/close 控制和 system/ui_panes 推送，也不代表剩余远程控制、5 类 responder、完整 UI/diff/G5 与旧 response 全量 WIP 门禁通过。
+
+## 2026-10-08 — SDK Pane 状态与无终端登记
+
+接通 ui_panes、ui_pane_show、ui_pane_focus、ui_close 和 system/ui_panes，共用作者 pane 状态并支持无终端登记。对齐焦点请求与实际焦点、viewport 放置、同 ID 归属与属性更新、peer 关闭、重复关闭去重、取消忽略、异常恢复与 Unicode 标题；关闭后撤销外部绘制和 Client 地址。原生比较发现并修复登记阶段 isShown 与 public close origin 差异。
+
+13 文件门禁：候选 464 pass / 0 fail / 3 skip / 1633 expect，工作区 481 pass / 0 fail / 3 skip / 1685 expect；两侧 release-check 和私有 build 均 exit0。三种二进制各 161 控制回执、131 观察、24 pane 推送，592 项比较全通过，正常 EOF exit0 与全部清理。终端相邻结果与完整边界见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)。本批不代替完整 UI/diff/G5、剩余四控制、五 responder、浏览器 Client 或旧 response 全量 WIP 验收。

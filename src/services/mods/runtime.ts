@@ -410,6 +410,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     clients,
     validateTree: (tree, input, refs) => { validateModRenderTree(tree, input?.surface, refs) },
     attach: attachClient,
+    remotePlacement: () => {
+      const clients = [...attachedClients.values()].filter(client => client.viewport !== undefined)
+      if (clients.length === 0 || clients.some(client => client.viewport?.isFullscreen !== undefined)) return {isPlaced: true}
+      return {isPlaced: false, reason: `no attached surface places panes (${clients.map(client => client.clientId).join(', ')}): placed when a surface that does attaches, or once they detach`}
+    },
     detach: detachClient,
     pluginOf: owner => (owner as Activation).declaration.name,
     dispatch: async (owner, event, input, core, options) => {
@@ -438,6 +443,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         origin,
         ...(automaticFocus ? { signal: options.signal } : {}),
         skipOwner: options.skipOwner as Activation | undefined,
+        validateInput: options.validateInput,
         restoreInput: options.restoreInput,
       })
       if (wrapped) {
@@ -617,6 +623,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       // Transport state precedes the observation hook; next() does not commit it.
       attachedClients.set(client.clientId, client)
+      ui.refreshRemotePlacement()
       logForDebugging(`[ModsUIClient] attach clientId=${client.clientId} surface=${client.surface}`)
       await dispatch('session.attach', event, async () => ({clientId:client.clientId}), active, nouns, {signal})
     })
@@ -633,9 +640,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       if (stopped) {
         attachedClients.delete(client.clientId)
+        ui.refreshRemotePlacement()
         return
       }
       attachedClients.delete(client.clientId)
+      ui.refreshRemotePlacement()
       logForDebugging(`[ModsUIClient] detach clientId=${client.clientId} surface=${client.surface} reason=${input.reason}`)
       await dispatch('session.detach', {surface:client.surface,clientId:client.clientId,reason:input.reason},
         async () => ({clientId:client.clientId}), active, nouns, {signal})
@@ -660,10 +669,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       existing.transport = true
       if (input.viewport !== undefined) existing.viewport = {...existing.viewport, ...structuredClone(input.viewport)}
       if (input.answers !== undefined) existing.answers = [...input.answers]
+      ui.refreshRemotePlacement()
       return {attached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
     }
     const client: AttachedClient = {...structuredClone(input), references:0, transport:true}
     attachedClients.set(client.clientId, client)
+    ui.refreshRemotePlacement()
     logForDebugging(`[ModsUIClient] attach clientId=${client.clientId} surface=${client.surface}`)
     const settled = observeRemoteClient('session.attach', {
       surface:client.surface, clientId:client.clientId,
@@ -677,6 +688,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const client = attachedClients.get(clientId)
     if (!client) return {detached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
     attachedClients.delete(clientId)
+    ui.refreshRemotePlacement()
     logForDebugging(`[ModsUIClient] detach clientId=${clientId} surface=${client.surface} reason=detach`)
     const settled = stopped ? Promise.resolve() : observeRemoteClient('session.detach', {
       surface:client.surface, clientId, reason:'detach',
@@ -1037,16 +1049,17 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { combined.cleanup() }
       }
       case 'ui.open': {
-        if (binding?.surface !== 'terminal' || !binding.isInteractive || !services.uiPresentation)
-          throw new Error('Mod UI panes are unavailable without an interactive terminal host')
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
         const context = uiContext.getStore()
         const origin: ModUiOrigin = context?.person && context.active !== false ? { kind: 'person' } : { kind: 'plugin', name: owner.declaration.name }
-        return ui.open(owner, input as ModUiOpenArgs, origin, services.uiPresentation())
+        const presentation = binding?.surface === 'terminal' && binding.isInteractive && services.uiPresentation
+          ? services.uiPresentation()
+          : {columns: 1, rows: 1, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false, headless: true as const}
+        return ui.open(owner, input as ModUiOpenArgs, origin, presentation)
       }
       case 'ui.close': {
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
-        const result = await ui.close(owner, input.id as string, { kind: 'plugin', name: owner.declaration.name })
+        const result = await ui.close(owner, input.id as string, { kind: 'plugin' })
         if (result && typeof (result as { deny?: string }).deny === 'string') throw new Error((result as { deny: string }).deny)
         return result
       }

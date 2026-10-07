@@ -69,6 +69,8 @@ export type ModUiPresentation = {
   hasDialog: boolean
   keyboardOwned: boolean
   agentId?: string
+  /** No terminal measures or draws this metadata; attached remote viewports decide placement. */
+  headless?: true
 }
 
 export type ModUiOpenArgs = {
@@ -89,6 +91,13 @@ export type ModUiInteraction =
   | 'input.submit'
   | 'select'
 export type ModUiPlacement = 'dock' | 'inline'
+/** Trusted host projection of the same canonical records used by $.ui.panes. */
+export type ModUiPaneState = {
+  panes: {id: string; title: string; plugin: string; closeOnEscape?: true; holdToasts?: true; rows?: number; columns?: number}[]
+  shownId: string | null
+  focusedId: string | null
+  focusRequestedId: string | null
+}
 export type ModUiPaneInfo = {
   id: string
   title: string
@@ -142,6 +151,7 @@ export type ModUiDispatch = (
     skipOwner?: ModUiOwner
     automaticFocus?: true
     signal?: AbortSignal
+    validateInput?: (rewritten: ModInput, received: ModInput) => void
     restoreInput?: (rewritten: ModInput, received: ModInput) => ModInput
   },
 ) => Promise<unknown>
@@ -222,12 +232,18 @@ export type ModUi = {
   getClientSite(owner: ModUiOwner, id: string): ModClientSite | undefined
   getSnapshot(): readonly ModUiPane[]
   panes(owner: ModUiOwner): readonly ModUiPaneInfo[]
+  paneState(): ModUiPaneState
+  showPane(id: string): string | null
+  focusPane(id: string | null): string | null
+  closePane(id: string): Promise<boolean>
+  refreshRemotePlacement(): void
   subscribe(listener: () => void): () => void
 }
 
 type PaneState = Omit<ModUiPane, 'bodyColumns' | 'revision'> & {
   presentation: ModUiPresentation
   personInitiated: boolean
+  requestedFocus?: true
   drawGeneration: number
   measuredBodyRows?: number
   keyRows: readonly ModUiKeyRow[]
@@ -286,8 +302,11 @@ function copyOpen(input: ModUiOpenArgs, expectedId?: string): Readonly<ModUiOpen
     throw new TypeError('Mod UI pane id must use 1-64 letters, digits, underscores, or dashes')
   if (expectedId !== undefined && input.id !== expectedId)
     throw new TypeError('Mod UI hooks cannot rename a pane')
-  if (input.title !== undefined && (typeof input.title !== 'string' || /[\r\n]/.test(input.title)))
-    throw new TypeError('Mod UI pane title must be a single line string')
+  if (input.title !== undefined && typeof input.title !== 'string')
+    throw new TypeError('takes a string text')
+  // eslint-disable-next-line no-control-regex -- Official title validation explicitly rejects C0/C1 controls.
+  if (input.title !== undefined && /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\ud800-\udfff\u{10eeee}]/u.test(input.title))
+    throw new TypeError('title holds a control character')
   for (const key of ['focus', 'closeOnEscape', 'holdToasts'] as const) {
     if (input[key] !== undefined && input[key] !== true)
       throw new TypeError(`Mod UI pane ${key} may only be true`)
@@ -338,6 +357,7 @@ export function createModUi({
   validateTree,
   attach,
   detach,
+  remotePlacement = () => ({ isPlaced: true }),
   clients,
 }: {
   asked?: readonly { plugin: string; id: string }[]
@@ -356,11 +376,14 @@ export function createModUi({
   validateTree?: (tree: unknown, input?: ModRenderInput, engineRefs?: ReadonlySet<number>) => void
   attach?(input: { surface: ModRenderSurface; clientId: string; viewport?: ModRenderInput['viewport'] }, signal?: AbortSignal): Promise<void>
   detach?(input: { surface: ModRenderSurface; clientId: string; reason: 'detach' }, signal?: AbortSignal): Promise<void>
+  remotePlacement?(): { isPlaced: boolean; reason?: string }
   clients?: ModClients
 }): ModUi {
   const candidates = new Map<ModUiOwner, Map<string, PaneState>>()
   const active = new Map<string, PaneState>()
   const activeOwners = new Set<ModUiOwner>()
+  const closing = new Set<string>()
+  let focusRequestedId: string | null = null
   const listeners = new Set<() => void>()
   const personRequested = new Set(asked.map(pane => `${pane.plugin}\0${pane.id}`))
   const openGenerations = new Map<string, number>()
@@ -419,12 +442,14 @@ export function createModUi({
   }
 
   function visibleOf(pane: PaneState): boolean {
+    if (pane.presentation.headless) return pane.visible || remotePlacement().isPlaced
     if (pane.personInitiated) return true
     const threshold = personRequested.has(askedKey(pane.owner, pane.id)) ? 110 : 144
     return pane.presentation.columns >= threshold
   }
 
   function placementResult(pane: PaneState): { isPlaced: boolean; reason?: string } {
+    if (pane.presentation.headless && !pane.visible) return remotePlacement()
     return pane.visible
       ? { isPlaced: true }
       : { isPlaced: false, reason: `Pane is waiting for sufficient terminal width (${pane.presentation.columns} columns)` }
@@ -468,6 +493,12 @@ export function createModUi({
   }
 
   function reconcileShown(preferred?: PaneState): void {
+    if ([...active.values()].some(pane => pane.presentation.headless)) {
+      const placed = [...active.values()].filter(pane => pane.visible)
+      const selected = preferred?.visible ? preferred : placed.find(pane => pane.shown) ?? placed.at(-1)
+      for (const pane of active.values()) pane.shown = pane === selected
+      return
+    }
     for (const placement of ['dock', 'inline'] as const) {
       const panes = [...active.values()].filter(pane => pane.visible && pane.placement === placement)
       const selected = preferred?.visible && preferred.placement === placement
@@ -480,6 +511,7 @@ export function createModUi({
   }
 
   function publish(): void {
+    if (focusRequestedId !== null && !active.get(focusRequestedId)?.visible) focusRequestedId = null
     reconcileShown()
     revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
@@ -521,7 +553,7 @@ export function createModUi({
   }
 
   async function drawCandidate(pane: PaneState): Promise<void> {
-    if (!pane.visible) return
+    if (!pane.visible || pane.presentation.headless) return
     const drawing = nextDrawing++
     try {
       const tree = await draw(pane.owner, renderInput(pane), drawing)
@@ -652,6 +684,7 @@ export function createModUi({
   }
 
   async function drawPane(pane: PaneState): Promise<void> {
+    if (pane.presentation.headless) return
     const generation = ++pane.drawGeneration
     if (!pane.visible) {
       const hadDrawing = pane.drawing !== undefined
@@ -729,7 +762,7 @@ export function createModUi({
     pane.columns = spec.columns
     pane.personInitiated = origin.kind === 'person' || (existing?.owner === owner && existing.personInitiated)
     if (
-      spec.focus === true &&
+      !presentation.headless && spec.focus === true &&
       presentation.composerEmpty &&
       !presentation.hasDialog &&
       !presentation.keyboardOwned
@@ -737,6 +770,7 @@ export function createModUi({
       pane.focused = true
     }
     updatePresentation(pane, presentation)
+    if (presentation.headless && spec.focus === true && pane.visible) pane.requestedFocus = true
     return pane
   }
 
@@ -1331,17 +1365,27 @@ export function createModUi({
           const committed = activeOwners.has(owner)
           const store = committed ? active : candidatePanes(owner)
           const existing = store.get(spec.id)
-          if (committed && existing && !ownsPane(owner, existing))
-            throw new Error(`Mod UI pane ${spec.id} is already owned by another activation`)
           if (!committed) {
             const pane = openState(owner, existing, spec, origin, presentation)
             store.set(spec.id, pane)
+            if (presentation.headless && pane.visible && (!existing || !existing.visible)) {
+              const focused = [...store.values(), ...active.values()].find(other => other.visible && other.focused)
+              const selected = focused ?? pane
+              for (const other of store.values()) other.shown = other === selected
+            }
             return placementResult(pane)
           }
 
           if (!existing) {
             const pane = openState(owner, undefined, spec, origin, presentation)
             active.set(spec.id, pane)
+            if (pane.presentation.headless) {
+              if (pane.visible) reconcileShown([...active.values()].find(other => other.visible && other.focused) ?? pane)
+              if (pane.requestedFocus) focusRequestedId = pane.id
+              delete pane.requestedFocus
+              publish()
+              return placementResult(pane)
+            }
             if (origin.kind === 'person') reconcileShown(pane)
             if (!pane.visible) {
               publish()
@@ -1376,11 +1420,16 @@ export function createModUi({
             await releaseLease(pane).catch(() => {})
             return { isPlaced: false, reason: 'Pane open was superseded or closed' }
           }
-          if (spec.focus === true) {
+          if (spec.focus === true && !presentation.headless) {
             for (const current of active.values()) current.focused = false
           }
+          if (!existing.visible && pane.visible && presentation.headless) active.delete(spec.id)
           active.set(spec.id, pane)
-          if (pane.focused || origin.kind === 'person') reconcileShown(pane)
+          if (presentation.headless) {
+            if (!existing.visible && pane.visible) reconcileShown([...active.values()].find(other => other.visible && other.focused) ?? pane)
+            if (pane.requestedFocus) focusRequestedId = pane.id
+            delete pane.requestedFocus
+          } else if (pane.focused || origin.kind === 'person') reconcileShown(pane)
           publish()
           if (existing) {
             existing.drawGeneration++
@@ -1400,15 +1449,15 @@ export function createModUi({
       const store = committed ? active : candidatePanes(owner)
       const pane = store?.get(id)
       if (!pane) return undefined
-      if (origin.kind === 'plugin' && !ownsPane(owner, pane))
-        return { deny: 'the pane belongs to another plugin' }
+      if (closing.has(id)) return undefined
+      closing.add(id)
       if (origin.kind === 'unload') {
         store!.delete(id)
         pane.drawGeneration++
         if (committed) publish()
         await releaseLease(pane).catch(() => {})
       }
-      return dispatch(
+      try { return await dispatch(
         owner,
         'ui.close',
         Object.freeze({ id, origin }) as ModInput,
@@ -1427,8 +1476,13 @@ export function createModUi({
           await releaseLease(pane).catch(() => {})
           return undefined
         },
-        { origin, ...(origin.kind === 'unload' ? { skipOwner: pane.owner } : {}) },
-      )
+        { origin, ...(origin.kind === 'unload' ? { skipOwner: pane.owner } : {}),
+          validateInput: rewritten => {
+            if (rewritten.id !== id || !isDeepStrictEqual(rewritten.origin, origin))
+              throw new TypeError('ui.close cannot rewrite id or origin')
+          },
+        },
+      ) } finally { closing.delete(id) }
     },
 
     async blit(owner, input) {
@@ -1938,6 +1992,10 @@ export function createModUi({
           }
         }
         for (const pane of prepared) active.set(pane.id, pane)
+        for (const pane of prepared) {
+          if (pane.requestedFocus && pane.visible) focusRequestedId = pane.id
+          delete pane.requestedFocus
+        }
         const preferred = prepared.find(pane => pane.focused)
         reconcileShown(preferred)
         candidates.delete(owner)
@@ -1993,6 +2051,68 @@ export function createModUi({
           isFocused: pane.visible && pane.focused,
           isPlaced: pane.visible,
         })))
+    },
+
+    paneState() {
+      const panes = [...active.values()].filter(pane => pane.visible)
+      return {
+        panes: panes.map(pane => ({
+          id: pane.id, title: pane.title, plugin: pane.plugin,
+          ...(pane.closeOnEscape ? { closeOnEscape: true as const } : {}),
+          ...(pane.holdToasts ? { holdToasts: true as const } : {}),
+          ...(pane.rows === undefined ? {} : { rows: pane.rows }),
+          ...(pane.columns === undefined ? {} : { columns: pane.columns }),
+        })),
+        shownId: panes.find(pane => pane.shown)?.id ?? null,
+        focusedId: panes.find(pane => pane.focused)?.id ?? null,
+        focusRequestedId,
+      }
+    },
+
+    showPane(id) {
+      const pane = active.get(id)
+      if (!pane?.visible || pane.shown) return this.paneState().shownId
+      const held = [...active.values()].some(other => other.visible && other.focused)
+      for (const other of active.values()) other.focused = held && other === pane
+      reconcileShown(pane)
+      publish()
+      return this.paneState().shownId
+    },
+
+    focusPane(id) {
+      const pane = id === null ? undefined : active.get(id)
+      const valid = id === null || pane?.visible === true
+      const changed = focusRequestedId !== null || valid && this.paneState().focusedId !== id
+      focusRequestedId = null
+      if (valid) {
+        for (const other of active.values()) other.focused = other === pane
+        if (pane) reconcileShown(pane)
+      }
+      if (changed) publish()
+      return this.paneState().focusedId
+    },
+
+    async closePane(id) {
+      const pane = active.get(id)
+      if (pane) {
+        try { await this.close(pane.owner, id, {kind: 'person'}) }
+        catch (error) { logForDebugging(`[ModsUIPanes] close id=${id} denied: ${String(error)}`) }
+      }
+      return !active.has(id)
+    },
+
+    refreshRemotePlacement() {
+      if (!remotePlacement().isPlaced) return
+      let changed = false
+      for (const [id, pane] of [...active]) {
+        if (!pane.presentation.headless || pane.visible) continue
+        pane.visible = true
+        active.delete(id)
+        active.set(id, pane)
+        reconcileShown([...active.values()].find(other => other.visible && other.focused) ?? pane)
+        changed = true
+      }
+      if (changed) publish()
     },
 
     subscribe(listener) {

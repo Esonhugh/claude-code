@@ -108,6 +108,9 @@ export function createModRemoteClientRegistry() {
       })
       return () => born
     },
+    remove(component: string, id: string) {
+      instances.delete(instanceKey(component, id))
+    },
     clear() {
       instances.clear()
     },

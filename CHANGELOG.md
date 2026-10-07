@@ -26,9 +26,14 @@
 
 - 集中完善 Mods 生命周期与作者工具、官方 2.1.292 类型与 diff、终端及部分 SDK UI、Agent/fork 和会话恢复；开放 Channels，修复 OAuth 与模型缓存隔离，增加 OpenAI Daybreak 配置，并保留 Privacy Mode。
 
+- 新增无终端 Mods Pane 登记与 SDK 列表、显示、焦点、关闭控制；支持 system/ui_panes 状态推送，焦点请求和实际焦点分开保存，按远程 viewport 放置等待项。
+- 对齐 Pane 同 ID 更新的插件归属、可选属性替换、跨插件关闭、重复关闭去重、异常恢复及标题 Unicode 校验；关闭时撤销外部绘制与 Client 地址。
+
 ### 测试覆盖
 
 - 已完成分项回归、类型与构建检查；完整 UI/diff 验收、部分远程控制和取消回归仍有待完成项。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
+
+- SDK Pane 的真实 Worker、协议类型与官方 2.1.292 / 新候选 / 完整工作区控制验收见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)；未覆盖的完整 UI/diff 和其他远程控制继续分别验收。
 
 ## 2026-09-19 - Mods 分页焦点与自适应布局修复
 

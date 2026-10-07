@@ -1076,10 +1076,11 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
   expect(source).toContain('{modDock.map(renderModPane)}')
 })
 
-test('unsupported headless UI surface rejects open explicitly', async () => {
+test('headless UI registers pane metadata without mounting a terminal drawing', async () => {
   const consumer = await plugin('ui-owner', source('headless'))
   const {value,diagnostics} = fixture({uiPresentation:undefined})
   await value.bind({...binding(root),surface:null,isInteractive:false}); await value.reconcile([consumer])
-  expect(value.ui.getSnapshot()).toEqual([])
-  expect(diagnostics).toContainEqual(expect.objectContaining({stage:'session.start',message:expect.stringMatching(/unsupported|unavailable|terminal/i)}))
+  expect(value.ui.paneState()).toMatchObject({panes:[{id:'panel',title:'headless',plugin:'ui-owner'}],shownId:'panel'})
+  expect(value.ui.getSnapshot()[0]?.tree).toBeUndefined()
+  expect(diagnostics).toEqual([])
 })

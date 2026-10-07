@@ -2017,4 +2017,25 @@ on('session.start', async ($, e, next) => {
 
 重载后的模块能查询仍在引擎中的自有 pane。准备阶段的开关操作在新代次发布时生效，旧绘制回调随后失效。`ui.panes` hook 收到冻结的空参数，可返回 `{value: panes}` 或 `{deny: 'reason'}`。TypeScript 方法无参数，返回 `Promise<readonly UiPane[]>`；Worker 中的结果是独立副本，修改它不会改变引擎状态。JavaScript 的额外便捷调用参数会被忽略。
 
-本方法当前沿已有交互终端的 pane 宿主运行。无终端 SDK 的 pane 登记、远程 show/focus/close 控制和 system/ui_panes 推送继续单独接通；公开协议类型不代表这些入口已实现。作者接口见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)，精确验证结果见[自有 pane 查询专项](docs/research/mods-pane-list-292-20261007.md)。
+无终端 SDK 会话也支持 pane 登记与查询，外部客户端另行请求 ui_render 绘制内容。作者接口见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)，精确验证结果见[自有 pane 查询专项](docs/research/mods-pane-list-292-20261007.md)。
+
+
+### SDK Pane 控制
+
+在 `--input-format stream-json --output-format stream-json --verbose` 会话中，客户端可发送以下请求。每个请求使用独立的 `request_id`，通过同 ID 的 `control_response` 读取结果。
+
+```json
+{"type":"control_request","request_id":"panes-1","request":{"subtype":"ui_panes"}}
+{"type":"control_request","request_id":"show-1","request":{"subtype":"ui_pane_show","id":"clock"}}
+{"type":"control_request","request_id":"focus-1","request":{"subtype":"ui_pane_focus","id":"clock","surface":"desktop"}}
+{"type":"control_request","request_id":"blur-1","request":{"subtype":"ui_pane_focus","id":null}}
+{"type":"control_request","request_id":"close-1","request":{"subtype":"ui_close","id":"clock"}}
+```
+
+`ui_panes` 返回已放置记录的 `panes` 和 `shown_id`、`focused_id`、`focus_requested_id`，空值为 `null`。打开时的 `focus:true` 提出焦点请求；客户端确认焦点后以 `ui_pane_focus` 更新实际状态。未放置项不会因此获得焦点。切换显示项时，已有键盘焦点随显示项移动。状态变化另以带 `uuid` 和 `session_id` 的 `system/ui_panes` 推送；客户端应更新自己的视图，这些消息不进入模型对话。
+
+远程 `ui_attach` 的 viewport 若带布尔 `isFullscreen`，表明该 surface 可以放置 pane，值为 `false` 也有效。只有不支持放置的已测量 viewport 时，新 pane 等待；可放置 surface 接入或这些客户端全部离开后，等待项转为已放置，已放置项不会因 detach 被撤回。没有已测量 viewport 的无终端会话可登记 pane，但登记本身不调用终端绘制。
+
+`ui_close` 以 person 来源经过 `ui.close` hooks，回复 `{closed:true|false}`；拒绝关闭或重复关闭仍在处理的 pane 时为 `false`。不存在的 ID 返回 `true`。已关闭 pane 的外部回调与 Client 地址随后失效。同 ID 更新保留最初的插件归属，并替换可选标题、行列和行为属性；跨插件更新不让调用者在 `$.ui.panes()` 中取得该记录。
+
+作者接口和安装版本声明的取用规则见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。本批对照与边界见 [SDK Pane 专项](docs/research/mods-pane-controls-292-20261007.md)；其余远程 scroll/focus、prompt edit/autocomplete、五类 responder 和完整 UI/diff 流程仍需各自验收。
