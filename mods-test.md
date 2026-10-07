@@ -2017,3 +2017,10 @@ python3 "$S/run-binary-gate.py" --repo "$PWD" --binary "$B" \
 补齐初始挂载尚未完成时的宿主绑定、输入取代和真实 next.signal 取消原因。重复失效不再等旧 Worker 绘制自然完成；已绘制内容及旧回调在等待替换期间保留，过时输入/错误不发布，真正的新绘制错误回退原生。
 
 新增四项生产 SystemTextMessage + 真正 Worker/Ink 回归，以及六项独立 site 生命周期回归。现有慢重绘测试保留并加强 signal 断言：原生 site 的被取代错误不再抛给新请求，Pane 的有效错误断言不变。官方与新候选/工作区二进制均通过隔离 tmux 触发重复失效、初始绘制 resize、/clear；各层结果、原始红回归和证据边界见[验收记录](docs/research/mods-render-lifetime-292-20261007.md)。这不关闭其他原生组件、held rows、完整 formatter、diff viewer、G5、response.md 或全部变更门禁。
+
+
+## 2026-10-07 — AssistantMessage 普通文本入口
+
+生产 Message 路由传递真实消息 UUID，在原生空文本、错误和 API 标记判断前进入 ui.render。真实 Worker/Ink 回归覆盖替换、原生 Markdown 续绘、多次 next、显示输入更新、隐藏、非法树和字段类型、只读 isSummary、无匹配及错误标记保留；显示清理向量区分分析正文删除、memory 正文保留、大小写、标签属性边界和 Unicode。
+
+候选仅包含本功能，现有其他 WIP 保持原样；两侧测试、release-check 和私有新构建分别记录。官方与两份新制品串行接受真实 stdin，保存 pane/PTY、debug 和原始 transcript，核对改写未改变已保存文本。精确结果、原始红回归与边界见[验收记录](docs/research/mods-assistant-text-292-20261007.md)。本批不关闭 narration 摘要、全部原生 UI、diff viewer、G5 或旧 response 全量门禁。

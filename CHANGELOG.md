@@ -12,6 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 助手文本行接入 Mods render
+
+### Changed
+
+- 将真实 Message 路由中的助手文本行接入 ui.render，使用消息 UUID 作为 requestId，传递清理后的 text、isFirstOfReply 及现有 viewport/onScreen 上下文。
+- 按官方显示投影移除隐藏分析块和 cc-memory 标签外壳，保留其正文、空格及尾部换行；原始消息和 API 错误标记保持在原生续绘路径中。
+- 插件可替换、装饰、隐藏或多次 next 原生 Markdown 回复，并改写显示文本和首行标记；不改写持久化会话正文。
+- 校验助手行 next 的原始字段类型，禁止添加、删除或改写宿主的 isSummary；错误树或非法续绘回退原生行。
+
+### Tests
+
+- 增加生产 Message + 实际 Worker/Ink 回归及文本投影边界向量；独立候选和工作区执行相关门禁，固定官方制品与新构建执行私有 tmux 对照。精确结果和未关闭项见 docs/research/mods-assistant-text-292-20261007.md。
+- 本批仅接通普通助手文本；narration 摘要、其他消息站点、完整 diff viewer 和全部 UI 对齐继续处理。
+
 ## 2026-10-07 - 原生 Mods 绘制取消与卸载清理
 
 ### Changed

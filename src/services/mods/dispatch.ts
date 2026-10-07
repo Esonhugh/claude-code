@@ -622,6 +622,24 @@ export async function dispatchModEvent(options: {
             ),
           )
       }
+      if (options.event === 'ui.render' && options.input.component === 'AssistantMessage') {
+        const props = rewritten.props as ModInput | undefined
+        const original = options.input.props as ModInput
+        for (const key of ['text', 'isFirstOfReply', 'isSummary']) {
+          const value = props?.[key]
+          const expected = key === 'isSummary' ? 'boolean' : typeof original[key]
+          if (key !== 'isSummary' && original[key] === undefined) continue
+          if (key === 'isSummary' && value === undefined) continue
+          if (typeof value !== expected) {
+            const received = value === undefined ? 'missing' : value === null ? 'null' :
+              Array.isArray(value) ? 'an array' : typeof value === 'object' ? 'an object' : `a ${typeof value}`
+            return Promise.reject(new Error(`${hook.plugin}: next() passed an argument with a props.${key} that is ${received}, not a ${expected}${key === 'isSummary' ? ' or missing' : ''}`))
+          }
+        }
+        if (props?.isSummary !== original.isSummary) {
+          return Promise.reject(new Error(`${hook.plugin}: next() passed an argument with a props.isSummary other than the engine drew (the row names its block as a summary or not; a rewrite changes the drawing alone)`))
+        }
+      }
       if (options.event === 'ui.render' &&
           ['UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'CommandOutput', 'TurnDuration', 'InfoNotice'].includes(options.input.component as string) &&
           !isDeepStrictEqual((rewritten.props as ModInput | undefined)?.onScreen, (options.input.props as ModInput | undefined)?.onScreen)) {

@@ -1390,3 +1390,22 @@ export function register(on) {
 异步绘制应使用 `next.signal` 取消等待，例如 `await $.clock.sleep(500, { signal: next.signal })`。原生站点的新输入、`$.ui.invalidate('ui.render')` 或组件卸载会中止旧绘制；Worker 内的原因是 `HooksError: ui.render: superseded`。已有画面在新绘制等待时继续显示，新画面提交后才释放旧回调；相同输入不重新调用钩子。不要把被取消的绘制作为成功结果，也不要在旧绘制中继续更新状态。源码、实际终端 resize、重复失效和 `/clear` 的对照见[绘制生命周期验收](docs/research/mods-render-lifetime-292-20261007.md)；作者参数和类型以[官方 Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)及生成声明为准。
 
 没有匹配当前输入的 `ui.render` 钩子时，完成行直接走原生绘制。实际终端和源码对照范围见[本批验收](docs/research/mods-native-duration-292-20261007.md)。其他原生组件和官方完成时间/后台等待格式仍需后续对齐；本节不宣称所有 UI 或 diff viewer 已匹配。
+
+
+## Mods 助手文本行
+
+真实助手回复现在触发 `ui.render` 的 `AssistantMessage`。`e.requestId` 是会话中该消息的 UUID；`e.props.text` 是移除隐藏分析块和 cc-memory 标签外壳后的显示正文，`e.props.isFirstOfReply` 控制首行标记。实际可用的终端 `viewport` 和全屏 `onScreen` 仍由宿主传递。
+
+```js
+on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+  const { Box, Text } = $.ui.resolve(e)
+  return Box({ flexDirection: 'column', children: [
+    Text({ children: '插件提示' }),
+    await next({ ...e, props: { ...e.props, text: '**重新绘制的回复**' } }),
+  ] })
+})
+```
+
+`next(e)` 保留原生 Markdown 和错误消息处理；可多次调用以绘制不同文本，也可直接返回自己的树。这些改写只影响显示，原始会话正文仍保存。`isSummary`、`onScreen` 和消息身份由宿主确定；不得在普通行中添加 `isSummary: true`。非法续绘或自定义树失败时回退原生回复。
+
+[本批验收](docs/research/mods-assistant-text-292-20261007.md)记录准确提交候选、工作区和官方制品的独立证据。narration 摘要、其模型相关显示规则、其他原生消息站点及完整 diff viewer 继续对齐。

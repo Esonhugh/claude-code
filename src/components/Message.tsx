@@ -120,6 +120,7 @@ function MessageImpl({
               isTranscriptMode={isTranscriptMode}
               lookups={lookups}
               onOpenRateLimitOptions={onOpenRateLimitOptions}
+              messageId={message.uuid}
               thinkingBlockId={`${message.uuid}:${index}`}
               lastThinkingBlockId={lastThinkingBlockId}
               advisorModel={message.advisorModel}
@@ -356,6 +357,7 @@ function AssistantMessageBlock({
   isTranscriptMode,
   lookups,
   onOpenRateLimitOptions,
+  messageId,
   thinkingBlockId,
   lastThinkingBlockId,
   advisorModel,
@@ -382,6 +384,7 @@ function AssistantMessageBlock({
   isTranscriptMode: boolean
   lookups: ReturnType<typeof buildMessageLookups>
   onOpenRateLimitOptions?: () => void
+  messageId: string
   /** ID of this content block's message:index for thinking block comparison */
   thinkingBlockId: string
   /** ID of the last thinking block to show, null means show all */
@@ -392,6 +395,7 @@ function AssistantMessageBlock({
     if (isConnectorTextBlock(param)) {
       return (
         <AssistantTextMessage
+          messageId={messageId}
           param={{ type: 'text', text: param.connector_text }}
           addMargin={addMargin}
           shouldShowDot={shouldShowDot}
@@ -423,6 +427,7 @@ function AssistantMessageBlock({
     case 'text':
       return (
         <AssistantTextMessage
+          messageId={messageId}
           param={param}
           addMargin={addMargin}
           shouldShowDot={shouldShowDot}

@@ -31,12 +31,15 @@ import { CtrlOToExpand } from '../CtrlOToExpand.js'
 import { InterruptedByUser } from '../InterruptedByUser.js'
 import { Markdown } from '../Markdown.js'
 import { MessageResponse } from '../MessageResponse.js'
+import { ModsRender } from '../ModsRender.js'
+import { cleanAssistantDisplayText } from '../../utils/assistantDisplayText.js'
 import { MessageActionsSelectedContext } from '../messageActions.js'
 import { RateLimitMessage } from './RateLimitMessage.js'
 
 const MAX_API_ERROR_CHARS = 1000
 
 type Props = {
+  messageId: string
   param: TextBlockParam
   addMargin: boolean
   shouldShowDot: boolean
@@ -62,7 +65,26 @@ function InvalidApiKeyMessage(): React.ReactNode {
   )
 }
 
-export function AssistantTextMessage({
+export function AssistantTextMessage(props: Props): React.ReactNode {
+  const { messageId, param: { text }, shouldShowDot } = props
+  const input = React.useMemo(() => ({
+    surface: 'terminal' as const,
+    component: 'AssistantMessage' as const,
+    requestId: messageId,
+    props: { text: cleanAssistantDisplayText(text), isFirstOfReply: shouldShowDot },
+  }), [messageId, text, shouldShowDot])
+  return (
+    <ModsRender input={input}>
+      {next => <NativeAssistantTextMessage
+        {...props}
+        param={next.text === input.props.text ? props.param : { ...props.param, text: next.text as string }}
+        shouldShowDot={next.isFirstOfReply as boolean}
+      />}
+    </ModsRender>
+  )
+}
+
+function NativeAssistantTextMessage({
   param: { text },
   addMargin,
   shouldShowDot,
@@ -70,7 +92,7 @@ export function AssistantTextMessage({
   onOpenRateLimitOptions,
 }: Props): React.ReactNode {
   const isSelected = useContext(MessageActionsSelectedContext)
-  if (isEmptyMessageText(text)) {
+  if (isEmptyMessageText(text) || cleanAssistantDisplayText(text).trim() === '') {
     return null
   }
 
@@ -213,7 +235,7 @@ export function AssistantTextMessage({
               </NoSelect>
             )}
             <Box flexDirection="column">
-              <Markdown>{text}</Markdown>
+              <Markdown>{cleanAssistantDisplayText(text)}</Markdown>
             </Box>
           </Box>
         </Box>
