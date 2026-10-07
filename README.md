@@ -404,6 +404,8 @@ docs/workflows/
 
 `/workflows` 仅用于查看和管理运行状态；实际执行由 `Workflow` / `WorkflowTool` 或注册后的 workflow slash command 发起。
 
+运行完成、执行失败或通过 `TaskStop` 停止后，主会话会收到对应的任务通知，包含已测 token/tool 用量、持续时间和输出文件；已完成分支的结果也保留在输出中。暂停保留恢复状态，不发送终态通知；对已经结束的 run 再次执行不会重复启动或通知。当前实现与源码回归已同步，真实 CLI 验收记录见 `mods-test.md`。
+
 官方模式兼容点包括：
 
 - facade 支持 saved workflow、inline `{ script }`、`{ scriptPath }` 和 declarative `{ plan }`；
@@ -641,6 +643,10 @@ PromptInput 按 UTF-8 stream 处理普通文本、中文等宽字符、Kitty CSI
 
 Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针对当前源码构建，不代表已发布的 `@esonhugh/claude-code` launcher 已包含这些能力。
 
+对齐目标包括官方 Mods 的函数、参数和回执、上下文传递、加载生命周期、作者测试及 UI 行为。除用户明确指定的 Privacy Mode 等差异外，现有本地行为不能自动视为例外。下文的未实现项是待完成工作；当前结果与分批修复顺序见 [兼容性清单](docs/research/mods-parity.md)，实际验收记录见 [mods-test.md](mods-test.md)。
+
+最新对照版本于2026-10-07通过[公开包登记处](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)核实为官方 **2.1.292**，同时比较对应版本的原生声明与实现。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
 最小目录为 `.claude-plugin/plugin.json`、`hooks/hooks.json` 和 `hooks/register.ts`。Manifest 使用普通 Plugin 的 `name`、`version`、`description`；在 `hooks/hooks.json` 声明入口（路径相对此文件）：
 
 ```json
@@ -649,14 +655,26 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 }
 ```
 
-`register.ts` 导出 `register` 函数，可使用 `import type { Register } from 'claude-code'` 配合目标官方类型。模块支持受限的静态相对导入；为了可移植性使用单入口，不假设支持动态导入、任意 npm/native 模块或 Node 全局对象。完整布局和示例见[研究报告](docs/research/claude-mods.md#73-最小示例)。
+`register.ts` 导出 `register` 函数，可使用 `import type { Register } from 'claude-code'` 配合本次构建自动生成的类型。模块支持受限的静态相对导入；使用单入口，不假设支持动态导入、任意 npm/native 模块或 Node 全局对象。完整布局和示例见[研究报告](docs/research/claude-mods.md#73-最小示例)。例如在会话开始时注册一条本地命令：
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  on('session.start', async ($, event, next) => {
+    await $.command.register({ name: 'hello-mod', description: 'Show a greeting', immediate: true })
+    return next(event)
+  })
+  on('command.run', { command: 'hello-mod' }, () => ({ text: 'Hello from my-mod' }))
+}
+```
 
 从源码构建后加载可信插件；非 builtin Mod 首次加载及声明变化时会自动维护 `.claude-plugin/types/` 下的 `claude-code`、tool、MCP 与测试类型声明：
 
 ```bash
 ./built-claude --plugin-dir /absolute/path/to/my-mod
-claude plugin validate /absolute/path/to/my-mod
-claude plugin test /absolute/path/to/my-mod
+./built-claude plugin validate /absolute/path/to/my-mod
+./built-claude plugin test /absolute/path/to/my-mod
 ```
 
 作者主声明采用官方 2.1.292 原生制品内的完整声明体：565 个主模块导出、51 个 testing 导出，以及完整事件、操作和全局定义。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
@@ -677,7 +695,7 @@ bun ./node_modules/typescript/bin/tsc -p /absolute/path/to/my-mod/tsconfig.json 
 
 旧本地别名 `CAS`、`HookEvent`、`EventPattern`、`Surface` 分别改用官方的 `StateSetOptions`、`EventName`、`Pattern`、`RenderSurface`；`!*` 不属于官方 pattern。testing 挂载使用对象参数，显式给出 `plugin`、`surface`、`component` 和该组件的完整 `props`。
 
-完整声明不代表所有运行时能力已经接入。当前仍缺 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`、`telemetry.log/mark` 和 `process.spawn` 的生产方法；新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需要继续对齐。依赖契约的传递类型根仍待实现。官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 与实际运行时支持范围应一起核对。
+完整声明不代表所有运行时能力已经接入。当前仍缺 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`、`telemetry.log/mark` 和 `process.spawn` 的生产方法；新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需要继续对齐。依赖契约的直接和间接类型根已接入，详见上文的作者项目生成规则。官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 与实际运行时支持范围应一起核对；2026-10-07 的提交、生命周期和双端协议复核见[实现审查](docs/research/mods-implementation-audit-20261007.md)。
 
 `plugin validate` 校验 manifest、hook module、依赖、类型契约和 state 读写；`plugin test` 运行 `tests/` 中导入 `claude-code/testing` 的隔离作者测试。会话内可用 `/plugin-authoring` 请求当前 session 的作者目录并打开内置指南，也可显式刷新或启停（`my-mod` 为 manifest 名称）：
 
@@ -687,17 +705,374 @@ bun ./node_modules/typescript/bin/tsc -p /absolute/path/to/my-mod/tsconfig.json 
 /plugin enable my-mod
 ```
 
+`plugin test ./my-mod` 支持相对路径，子进程使用解析后的插件根目录。每个测试文件使用独立的临时 HOME；inline 测试插件保留在本次独立目录内，正常结束、失败或超时后，在子进程退出之后回收。runner 不扫删历史残留或其他并发运行的目录。
+
+例如把以下测试保存为 `tests/hello.test.ts`。作者 runner 会在首次调用时自动启动测试 session；底层宿主调用需要由测试 hook 应答，不能直接调用真实 UI、进程或模型：
+
+```ts
+import { test, expect } from 'claude-code/testing'
+
+test('registers and runs the greeting', async ($, on) => {
+  const registered: string[] = []
+  on('session.start', ($, event) => ({ cwd: event.cwd }))
+  on('command.register', ($, event) => {
+    registered.push(String(event.name))
+    return { value: { command: event.name } }
+  })
+  expect(await $.command.run({ command: 'hello-mod', args: '' }))
+    .toEqual({ text: 'Hello from my-mod' })
+  expect(registered).toEqual(['hello-mod'])
+})
+```
+
+作者测试 body 中的 `$` 是事件驱动器：参数为事件输入对象，返回未解包的事件回执。例如先用 `on('session.start', (_, event) => ({ cwd: event.cwd }))` 提供桩，`await $.session.start({ cwd: '/fixture', surface: null, isInteractive: false })` 得到 `{ cwd: '/fixture' }`。生产 `register` 的 `$` 则按公开方法签名调用并解包 `{ value }`，例如 `$.http.fetch(url, init)`。测试 hook 内的 `$` 也使用生产接口签名。
+
+`testing` 已为 session、tool、command、config、prompt、skill、attribution、agent、turn 和 UI 的 31 个已有事件提供显式输入及原回执类型，包括 session.start/receive/compact/attach/detach/measure/end。例如 `$.tool.check({ tool, input, tool_use_id })` 返回 `ToolCheckResult`；`$.prompt.submit` 接受完整 `PromptSubmitInput`，`$.session.compact` 接受带 trigger 和 messages 的完整 `SessionCompactInput`。`Args<'prompt.fill'>`、`EventOf`、`ResultOf` 与 testing 的 `EngineCall` 保留事件签名；生产便利调用的默认参数和回执解包不适用于测试驱动器。builtin 工具输出按生成的 `outputSchema` 推导，MCP 输出保持 `unknown`。testing `Engine` 只从 `EventCalls` 的事件调用构造，不继承生产操作方法或任意 namespace；`$.ui.resolve`、`$.prompt.edit`、`$.ui.invalidate`、`$.ui.selection`、`$.ui.panes`、HTTP 和 session 元数据读取不是它的方便方法。生产 `$` 与 `On` 继续按各自声明使用。`ui.invalidate` 的 `Args` 为 `{ event: InvalidatableEventName }`，`ResultOf` / `OpEventResult` 是 `{ value: void }` 或 `{ deny: string }`，generic `EngineCall` 保留这份回执；生产 sugar 同步返回 `void`。当前声明保留官方完整 `OpEventOf/OpValueOf`，包括 `ui.invalidate` 和 `ui.panes`；`ui.panes` 的空输入、readonly `UiPane[]` 值和包装回执进入 generic `EngineCall`，testing `Engine` 不新增 `panes` 方便方法。session.append/send、telemetry 和其他缺失生产方法的运行时实现仍在补齐。
+
+`Frozen<T>` 按官方定义递归固定对象字段，并保留数组原声明的可变类型；这不允许修改运行时已冻结的 hook 输入。作者需要修改装饰等数组时，应创建新的数组与对象后传给 `next`。
+
+`prompt.edit` 是 composer 事件，没有公开的 `$.prompt.edit()` 方法。普通输入及 Vim Insert 的实际编辑进入 hook；输入包含编辑前的 `text/cursor`、UTF-16 `start/end`、`inputText`、可选 `key` 和固定的 `{ kind: 'composer' }` 来源。`next(event)` 返回编辑后的 `{ text, cursor }`，hook 可附加装饰，例如：
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  on('prompt.edit', async ($, event, next) => {
+    const box = await next(event)
+    return {
+      ...box,
+      decorations: box.text ? [{ start: 0, end: box.text.length, color: 'green' }] : [],
+    }
+  })
+}
+```
+
+装饰支持 `color/backgroundColor/dimColor/bold/italic/underline/strikethrough`，范围相对返回文本。编辑链使用官方 50ms 预算；同批编辑合并首个编辑前状态与最后编辑后状态，多项合并时省略 `key`。异步回复按期间输入重新计算，失效草稿和已卸载编辑器不接受旧绘制。插件 `prompt.fill` 不冒充人工编辑事件。这些路径已有真实 Worker 和挂载输入组件的源码测试，新制品与官方终端逐帧对照仍待验收。
+
+会话 hook 返回对应事件的回执，例如 session.start 返回 `{ cwd }`、session.end 返回 `{ sessionId }`；忽略 `register` 自身的返回值不等于可以从这些 hook 返回 `undefined`。`SessionContextBreakdown` 保留官方原始数组类型，传给 hook 的输入再应用 `Frozen`；旧 `UsageBreakdown` 接口仍保留现有定义。
+
+同一注册环境对每个原始事件 pattern 只允许一个不带 matcher 的注册；`*`、`namespace.*` 或 `!event` 等 broad pattern 即使带 matcher，也不能重复注册。精确事件可以有多个带 matcher 的 hook，包括 `{}`，并可以与一个不带 matcher 的 hook 共存；不同 pattern 独立计数。静态校验和实际 Worker 都会拒绝违规注册，错误包含 `registered twice`；静态错误附带编译后的位置。导入 helper 共享该注册环境，跨入口的官方分组语义仍待核对。
+
+原先依赖多个无 matcher hook 的顺序或兄弟调用示例，应给第二个精确事件注册加空 matcher，例如 `on('tool.call', {}, async ($, e, next) => next(e))`；空 matcher 保留对全部输入匹配的意图。2026-10-06 的官方2.1.289 CLI对12个真实夹具分别确认原写法拒绝、此写法接受；五个runtime测试保留原断言。运行 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/services/mods/runtime.test.ts` 等逐文件回归时，测试内部会隔离配置和占位认证；完整官方声明分支可通过 `CLAUDE_CODE_OFFICIAL_MOD_TYPES=/absolute/path/to/claude-code-2.1.289.d.ts` 启用。当前六文件ROOT复验289 pass/0 fail/4 skip，跳过的telemetry、旧官方diff命令和sec-default原件分支仍待补齐，不能作为完整门禁通过。
+
+`toolAdapter.test.ts` 和 `runtimePromptCompose.test.ts` 中的下游 context/嵌套 compose 夹具也采用上述合法写法，原上下文及调用帧断言保留。两份原件由官方289逐一拒绝，加空 matcher 后逐一接受；两文件在用户仓库路径、调用方无凭据时分别50/0和5/0，无skip。可分别运行 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/services/mods/toolAdapter.test.ts` 和 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/services/mods/runtimePromptCompose.test.ts`；测试内部隔离HOME/config/XDG并恢复环境。该55项上下文回归与前批六文件289项分别记录，不拼成完整门禁结果。
+
+额外的 `PromptInput.modsEdit.test.tsx` 已采用相同的内部认证和配置隔离，逐文件无需调用方key；`openai-compat.test.ts` 是含 `node:assert` 的模块级脚本，应检查其 `openai-compat.test.ts passed` 输出与退出码。它在 `bun test` 中注册0个case，不能将该统计解释为断言未执行或虚报为新增pass；也可用 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun ./src/services/api/openai-compat.test.ts` 直接执行。
+
+同批 Worker 按键夹具也应自行隔离 HOME/config/XDG、恢复环境，并使用测试内部占位认证；无需调用方提供真实 key。当前原4案已在实际工作区通过，尚未提交该新UI文件。
+
+`teammateResume.test.ts` 的外层入口也会为每次子进程隔离 HOME/config/XDG/TMP，不继承调用者认证。运行 `bun test ./src/utils/swarm/teammateResume.test.ts`；重复验证可加 `--rerun-each 10`。内部 child 标志是测试实现细节，手动设置会绕过外层隔离。
+
+`SendMessageTool.test.ts` 同样自行隔离子进程配置并提供测试占位认证，可直接运行 `bun test ./src/tools/SendMessageTool/SendMessageTool.test.ts`。构建路径检查可用 `bun ./scripts/build-isolated.test.mjs`；它使用调用者的 `TMPDIR` 保留证据，拒绝覆盖仓库根或祖先目录，不执行真实二进制构建。
+
+逐文件验证还需独立设置系统 `TMPDIR` 与 `CLAUDE_CODE_TMPDIR`，后者用于真实任务输出；冻结副本需有自己的 Git 仓库，才能验证依赖 Git 的 `/diff`。大型文件的整文件进程上限应覆盖全部用例的正常耗时，保持每案原预算不变。2026-10-06 对报告原155文件的完整独立进程复验均exit0；完整官方API/UI/diff交互验收仍待完成。
+
+测试卫生已分批签名提交：`eb5e545` 处理两份上下文夹具，`265c3db` 处理 OpenAI 测试环境，`4e28238` 处理 compact 注册与请求准入夹具，`734480c` 处理 SendMessage 隔离，`d9cdbbe` 处理构建路径检查。每份实际暂存版本均在对应 HEAD 上独立检查后提交；其余功能与完整兼容门禁继续验证。 主请求测试应显式传入 `publicTurn`；复用冻结请求的内部 fork 应移除该准入，避免测试设置赋予额外 turn 所有权。
+
+作者测试的 `on` 可以在普通 `await`、timer 或读取 `$` 属性之后注册；首次实际 `$` 调用开始加载后，不能再添加 `on`。`$.turn.step(input)` 只构造流，第一次 `next()` 才开始加载；从未拉取的流先 `return()` 或 `throw()` 不会进入 hook，也不会结束注册准备。
+
+`on(...).catch(handler)` 返回 `undefined`，注册句柄本身冻结。测试 kit 在加载前保存最后一次附加的 handler；生产 Mod 的 `register` 中每个注册只能附加一次。catch 的 `next.error` 是冻结的 `{ kind: 'throw' | 'timeout', message?, budget }`，`next.called` 表示原 hook 是否已调用下层；这些字段只存在于 catch 中。已调用下层时，catch 的 `next` 重放原结算结果，不重复运行下层；返回 `undefined` 表示继续下层。流事件的 catch 使用 `async function*`，其 `undefined` 返回同样继续下层。
+
+```ts
+import { test, expect } from 'claude-code/testing'
+
+test('recovers an engine hook', async ($, on) => {
+  await Promise.resolve()
+  on('env.get', () => { throw new Error('temporary failure') })
+    .catch((_, event, next) => {
+      expect(next.error.kind).toBe('throw')
+      expect(next.called).toBe(false)
+      return { value: 'recovered' }
+    })
+  expect(await $.env.get({ name: 'example' })).toEqual({ value: 'recovered' })
+})
+```
+
+Hook 的宿主预算可以结束调用等待，不能立即抢占模块的同步 CPU 循环。取消后 5 秒仍未结算时，仅拒绝该请求；共享 Worker 的独立心跳负责识别无响应和退役。已归因的故障模块不会在自动恢复中重新加载，其他已准入模块按已固定的声明重建；旧 catch、句柄及在途调用不会迁移。连续第三次未归因 Worker 崩溃停用其 JS Mods，显式 reload 重置累计计数。卸载先撤销本地能力，不等待 guest 确认。debug log 记录故障原因、Worker 年龄、等待请求数量及可确认的模块和执行来源；已结算请求使用独立 ID，真实 callback 单独标记，未知来源保持未知。同样错误文字的不同崩溃分别记录，输入、选项和私密字段不序列化。custom 方法和 UI constructor 的调用者由宿主验证后传递，保留最先七项并在同步返回或抛错后恢复；无法确认祖先对应请求时不打印叶请求 ID。公开 Worker custom 方法 10 秒未回答时拒绝宿主 Promise，guest 的迟到结果被忽略；普通 hook 和 engine.create 不套用这一期限。严格 dispatch fallback、独立 nativeHost、全部等待类别及原生故障恢复仍在对齐中。
+
+catch 成功或测试已断言某个引擎调用的拒绝时，单独的 hook 诊断不会把已完成的测试改成失败。测试 body 实际抛错、未处理的拒绝、超时和卸载失败仍判为失败，并附带引擎诊断及原错误栈。这些行为已有源码入口验证，当前制品与官方原生执行的对照另行记录。
+
+`register` 的返回值会被忽略，异步函数会等待完成；因此可以使用返回注册句柄的简写，例如 `export const register: Register = on => on('session.start', ($, event, next) => next(event))`。生成声明与实际 Worker 保持一致，返回句柄不会代替模块的 hooks 注册结果。
+
+作者项目使用完整的主声明、tool 和 MCP 辅助声明及依赖类型根；对生成项目执行严格检查：
+
+```bash
+bunx tsc -p /absolute/path/to/my-mod/.claude-plugin/types/tsconfig.json --skipLibCheck false
+```
+
+`$.tool.call` 根据实际 builtin `outputSchema` 推导输出，工具名保持字面量时，`next(event)` 和 `next.to(event, 'core')` 也保留对应结果类型；MCP、宽泛字符串或没有输出 schema 的工具按官方契约返回 `unknown`。先区分拒绝、错误与成功，再读取结果，例如：
+
+```ts
+import type { EngineInterface, ToolCallResult } from 'claude-code'
+declare const $: EngineInterface
+
+const receipt: ToolCallResult<'Read'> = await $.tool.call({
+  tool: 'Read', file_path: '/workspace/README.md',
+})
+if (receipt.deny === undefined && receipt.isError !== true && receipt.result.type === 'text') {
+  const content: string = receipt.result.file.content
+}
+```
+
+`next.to` 的类型推导不授予跨 tier 权限：`prepend` 可继续到 `append/builtin/core`，`append` 可继续到 `core`；普通用户 Mod 使用 `next(event)`。
+
+生成目录按官方规则刷新；内容校验仅用于清理旧本地生成的辅助模块。本批补齐 command/config/tool 列表、注册回执、`agent.spawn`、`mcp.call`、UI 返回，以及官方 289 的 `AgentSpec`、七态 `AgentStatus` 和精确 Agent/tool.check hook 定义；全部官方类型及真实生产路径仍在对齐中。
+
+`$.agent.register` 接受具名 `AgentSpec`，保留 `permissionMode`、`hooks`、`mcpServers`、`omitClaudeMd` 等官方字段。公开 `$.agent.spawn` 接受 `prompt` 与可选 `description/subagentType/model/name/cwd`，默认描述取 prompt 的前五个空白分词；hook 输入另含宿主固定的父身份、provider、permission、fork 与 teammate 字段，不能改写这些身份。返回可带 `agentId` 和 `teammateId`；当前同进程 teammate 已生成独立的 logical ID，完整生命周期仍待对照。`tool.check` 返回 `allow/ask/deny` 和可选 `reason/rule/hook`，来源字段来自实际权限决策。
+
+同进程 teammate 停止或任务记录被回收后，`SendMessage` 可用其名称或 logical ID 恢复原对话。恢复会重新检查当前 agent 定义、允许类型、权限规则、`agent.offer` 和定义所在项目的信任；不恢复已保存的 `bypassPermissions`。可读历史保留消息 UUID 与父链，发送者身份进入新提示，并发消息只启动一个恢复任务，其余进入邮箱。当前读取器无法读取历史时会冷启动；官方完整历史清洗、hydration、延迟加载定义和所有原生生命周期仍待补齐。上述行为有源码验证，新制品同操作验证待完成。
+
+公开 `$.config.list()` 的 `config.describe` 保留调用插件的来源，每次重新计算这份描述；引擎菜单使用独立的 `engine/core` 描述缓存。公开命令列表同样保留调用者，引擎命令投影使用自身来源。
+
+文件读取按官方重载声明：`$.fs.read(path)` 返回文本，`$.fs.read(path, { as: 'bytes' })` 返回 `{ base64 }`；使用 `FsReadOptions` 的一般重载返回 `string | FsBytes`，需要判断结果类型。显式 options 必须包含 `as`。`$.fs.stat(path)` 使用默认选项，传 options 时必须包含 `resolve: boolean`，例如 `$.fs.stat(path, { resolve: true })`；`realPath` 仍为可选字段。空对象会被运行时拒绝，也应被作者类型检查拒绝。
+
 - 生命周期：扫描并固定模块声明 → 准入 → 加载候选模块并执行 register → `engine.create` → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
 - 作者模式：`/plugin-authoring` 的 Enable 只授权当前 session 的独立 `dev-mods` 目录；公开 turn 结束后才加载新模块，取消和迟到结果有 generation fencing。同一 session 的 resume 恢复该授权；`/clear` 和 fork 创建的新 session 不继承，需重新确认。
-- 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除或拒绝准入撤下旧能力。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
-- 当前接线：tool 注册、列举、描述、调用与检查；prompt compose/read/fill/suggest/submit/context/section/attachment；turn middleware 与流式 model step；agent offer/register/list/spawn；MCP 调用；动态 slash commands；session receive/measure/usage/compact/end/authorize；config/options、accepted settings、fs、受限 HTTP、argv process、env、版本化 state/JSON store，以及 terminal/remote UI 与 terminal media。state 写入支持 owner-only、JSON/大小限制和 `ifVersion` CAS；订阅失效只重绘读取对应 key 的 UI instance。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
+- 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除、拒绝准入或接口构建失败撤下对应能力。相同声明及加载集合下不重复执行失败的 engine.create；声明、动态导入或集合变化时重新尝试。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
+- Worker 故障恢复：识别到造成 CPU 阻塞的插件后，自动恢复其余插件，已挂载的 AbovePrompt 会使用恢复后的插件重新绘制，无需额外输入或调用 invalidate。正在执行的失败调用不会自动重放；显式 reload 会重新尝试崩溃插件，刷新等待恢复完成，有 transcript 日志的宿主会提示崩溃插件已卸载。恢复本身失败仍返回错误；完整终端呈现仍待对照。
+- 环境目录：`CLAUDE_CODE_PLUGIN_DIRS` 加载绝对目录，macOS/Linux 用 `:` 分隔，Windows 用 `;`；与重复的 `--plugin-dir` 合并去重，相对路径会输出配置错误并以非零状态退出。交互会话自动观察模块变化；长期非交互会话需设置 `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` 才自动重载，未设置时仍可显式刷新。
+- 缓存清理：按官方 289 的暂存目录命名和时间边界保留有效安装暂存区，孤立版本使用 14 天期限。清理先读取有效安装记录；缺失、损坏或没有安装记录时不继续删除。安装路径按真实文件系统位置比较，marker 和递归删除不跟随链接。运行中的 `.in_use` 生命周期、发布链及平台专属边界仍待补齐。 本地Unix源码回归可运行 `bun test ./src/utils/plugins/cacheUtils.gc.test.ts ./src/utils/plugins/pluginLoader.contract.test.ts`；GC的20个case各用独立子进程和自有临时目录，不需要真实provider。
+- Managed 加载：组织 Mods 必须由 managed `enabledPlugins` 启用，并通过 managed `extraKnownMarketplaces` 中的绝对目录市场、相对插件路径原地加载。远程或复制到缓存的插件保留用户身份；设置 `allowManagedHooksOnly` 时不运行这些模块。`disableAllHooks` 在个人设置中保留组织 Mods，在 managed settings 中阻止全部安装插件的 Mods；宿主内置 Mods 和 guard 仍按自身开关与 seating 规则加载。
+- 当前接线：tool 注册、列举、描述、调用与检查；prompt compose/edit/read/fill/suggest/submit/context/section/attachment；turn middleware 与流式 model step；agent offer/register/list/spawn；MCP 调用；动态 slash commands；session receive/measure/usage/compact/end/authorize；config/options、accepted settings、fs、受限 HTTP、argv process、env、版本化 state/JSON store，以及 terminal/remote UI 与 terminal media。state 写入支持 owner-only、JSON/大小限制和 `ifVersion` CAS；订阅失效只重绘读取对应 key 的 UI instance。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
+- 会话版本：`await $.session.version()` 返回 `{ version, base?, builtAt? }`，不接受参数，terminal、非交互和未绑定 session 时均可读取。`version` 与当前 binary 的 `--version` 一致；`base` 沿用引擎 analytics 的基础版本提取规则，`builtAt` 使用 binary 内嵌的构建时间戳，源码运行没有时间戳时省略。调用经过 `session.version` 中间件；作者测试需用 `on('session.version', () => ({ value: { version: 'test-engine' } }))` 提供桩。
+- 时钟：`await $.clock.sleep(ms, { signal: next.signal })` 可在当前事件取消时提前结束等待。`$.clock.after(ms, callback)` 和 `$.clock.every(ms, callback)` 同步返回 `Timer` 句柄，调用 `timer.cancel()` 停止；模块卸载或重载也会停止旧计时器。回调发起的宿主调用使用实际存活的调度上下文：原 hook 仍在执行时保留 registration，并允许同插件其他 hook；原 hook 回执已结算后以插件作为独立来源，排除该插件自己的中间件。普通 hook 结束后，已经启动的异步宿主调用可以完成；真正取消、抛错、超时或卸载仍会阻止迟到的 UI 写入。
+- 草稿：`await $.prompt.read()` 返回 `{ text, cursor }`，`cursor` 是 UTF-16 偏移。`prompt.fill({ text, mode, decorations? })` 返回 `{ isFilled, text, cursor, refusal? }`；缺少 composer 或被对话框阻挡时分别返回 `no_composer`、`dialog`。draft 仍受调用者的 `prompt.read` 准入控制，没有声明读取或读取被拒绝时字段为空。replace 将编辑器切回 prompt 模式，装饰相对填入文本的 UTF-16 范围计算；宿主以实际接受的文本判断能否绘制。Unicode 清理在 hook 改写之后按缓存功能开关执行，装饰范围同步换算。`prompt.suggest({ text })` 返回 `{ isShown }`，可据此判断是否显示建议。
+- 插件提交：`await $.prompt.submit({ text: '检查当前变更', asUser: true })` 在当前 turn 完成后进入队列。省略 `asUser` 时模型文本带插件 sender 标记；`asUser: true` 省略该标记，但事件和 transcript 仍保留 `{ kind: 'plugin', name, asUser: true }` 来历。Promise 在 prompt 准入后返回原始或中间件改写的 `{ text, context?, origin }`，不会等待模型回答；被丢弃时返回 `{ drop }`。在 `prompt.submit`、tool/command 等可能持有 turn 的 hook 内等待它会被拒绝；应在独立 UI 回调等入口提交，prompt hook 中使用 `next`。
+- 宿主回执：`await $.fs.list()` 的每项包含 `mtimeMs`，普通文件使用同次 stat 的修改时间与字节大小，目录、链接和其他项为0，列表不跟随链接。`await $.process.run(['git', 'status', '--short'])` 返回 `exitCode/stdout/stderr/isStdoutTruncated/isStderrTruncated`；stdout、stderr 各自限4MiB，恰好限值不算截断，丢弃被切断的UTF-8尾部字符。可分别检查两项截断标志后处理输出。
+- 会话数据：`session.repo()` 返回只读 `SessionRepo` 或 `null`；无参数 `session.messages()` 返回最近 4096 条主会话的 `SessionMessage`，保留文本、tool use 与已有 tool result。在 Agent 或嵌套查询中调用也读取主会话，每次调用读取实时绑定。`{ as: 'api' }` 返回引擎规范化后的 `{ role, content }` 消息，content 始终为数组，保留图片、文档、thinking 和配对的工具块，省略每次发送的 cache control。`{ agentId }` 读取当前 session 中前台/后台 Agent、持久 fork 或同进程 teammate 的实时或已保存对话；不可读取的 ID 返回包含该 ID 的 `{ deny }`。Workflow 的内部 Agent、其他 session 和无法读取记录的其他进程不在此接口范围内。resume 重新绑定后不会读到旧 session 的记录。`session.usage()` 的 `startedAt` 始终为 epoch 毫秒数，已记录的启动时间在恢复时保留、`/clear` 时重置；缺少记录的历史会话使用官方活动时钟回退，详见下面的兼容边界。
+- 中间件声明：已有 session 读取、授权和 HTTP hook 名称均可直接用于 `on`，支持 `!*`、命名空间 pattern 和否定 pattern；`next.trace` 提供只读 `received`、`returned`、`outcome` 及流事件的可选 `chunks`。`next.called/error` 只在 catch handler 提供，普通 handler 不应要求它们存在。
+- Validate 输出：`claude plugin validate /absolute/path/to/my-mod` 按注册顺序显示 matcher，例如 `ui.render{component=Pane, requestId=review}`；同名事件的不同注册分别保留。仅经 helper 调用的方法显示 `$.fs.read (via loadFile)`，helper 名去重后排序；同一方法也直接调用时省略 `via`。诊断静态读取 AST，不执行模块代码；未知值显示 `?`。这批输出修复不扩大已有模块准入范围。
+- 命令投影：宿主获取 command 描述时以 `engine/core` 发起独立 `command.describe`；公开 `$.command.list()` 的中间件仍保留实际调用插件的来源。
+- 调用历史：嵌套宿主调用和插件提交队列保留内部 caller history，避免重新进入已经发起调用的 registration；独立插件来源排除该插件全部 hook。该历史由宿主固定，不进入公开参数或回执，也不能通过 `prompt.submit` 额外字段伪造。UI 重绘作为新的引擎事件进入渲染 hook，不沿用触发 invalidate 的插件排除项。
 - Prompt 组装：每次真实模型请求及 fallback/retry 都按当次模型与工具目录执行 `prompt.compose`；返回 section 的 shared/session scope 控制缓存边界。嵌套作者调用保持当前 hook snapshot，避免重新进入发起调用的 registration。
-- AbovePrompt 与通知：terminal `AbovePrompt` 支持宿主绘制、Client 交互和 engine continuation；只有空 composer 且无 dialog/其他键盘所有权时才能取得焦点。`ui.toast` 校验文本与时长并按插件限流，通知通过宿主 UI 展示。
-- Pane 输入：空 composer 且没有 dialog/其他输入所有权时，可用 Tab / Shift+Tab 或鼠标进入可见 dock。裸方向键在可见控件间导航，详情区域可滚动；Input/Select 优先处理自身按键，Escape 关闭或退焦。鼠标滚轮按实际命中的 Pane body 交给插件处理，Pane 外保持 transcript 滚动。
+- AbovePrompt 与通知：terminal `AbovePrompt` 支持宿主绘制、Client 交互和 engine continuation。无 dialog/其他键盘所有权时，显式 `Ctrl+X` 后按 `Tab` 可进入 Band，保留当前草稿与光标；草稿值随后实际改变时退焦。自动取得焦点的空 composer 约束另行检查。`ui.toast` 校验文本与时长并按插件限流，通知通过宿主 UI 展示。
+- 请求重绘：更新插件状态后调用 `$.ui.invalidate('ui.render')`。公开方法同步返回 `void`；即使写成 `await $.ui.invalidate(...)`，也不会等待新画面发布。`InvalidatableEventName` 限定为 `ui.render`、`prompt.section`、`prompt.context`、`prompt.attachment`、`tool.describe`、`command.describe` 或 `config.describe`。宿主排队刷新对应绘制或描述缓存，后台失败按发起插件与 `ui.invalidate` 记录诊断。正常 hook 结束后，已发起的有效调用可以继续；卸载后的旧调用不能发布新画面。此操作已有精确事件输入和包装回执声明；所有原生 surface 仍待完整验收。
+- 重绘回归：宿主测试应在触发交互前登记绘制回调，或订阅画面发布并检查当前快照，等到目标状态出现后再断言；不要用固定 sleep。运行 `bun test ./src/services/mods/render.test.ts ./src/services/mods/testLab.test.ts` 检查示例交互和旧绘制回调失效；设置 `CLAUDE_CODE_OFFICIAL_MOD_TYPES` 为官方完整 `.d.ts` 文件的绝对路径，才能同时执行示例的官方类型检查。声明路径回归可运行 `bun test ./src/services/mods/declarationsEventCalls.test.ts ./src/services/mods/declarationsTestingCalls.test.ts ./src/services/mods/declarationsSessionEvents.test.ts`，三个夹具会自行规范化 macOS 临时路径。
+- Client 与恢复回归：运行 `bun test ./src/services/mods/terminalClient.test.ts ./src/services/mods/workerRenderRecovery289.test.ts ./src/services/mods/sessionWorkerRecovery289.test.ts`。分别检查同 key 换 module 后的回收与新状态、真实 CPU 故障后的 AbovePrompt consumer 绘制，以及插件刷新等待恢复、未知退出和恢复失败的错误回执。它们是源码回归，完整 CLI/物理画面仍需另行对照。
+- Client 回调与重绘：已经接受的 Button/Input/Select 操作保留当时的回调，区域 resize 或新绘制不会静默丢掉排队输入。新画面替换后再次调用旧回调会拒绝；卸载会取消尚未执行的操作。运行 `bun test ./src/services/mods/clientHeldCallbacks289.test.ts ./src/services/mods/client.test.ts ./src/services/mods/clientRealm.test.ts` 检查原闭包、句柄释放、已移除控件和连续重绘。该回归与完整 Band UI 验收分别记录。
+- Pane 输入：没有 dialog 或其他输入所有权时，`Ctrl+X` 后按 `Tab` 依次经过 Band 实际控件、各可见 Pane 正文，再回到 composer；鼠标可直接进入可见控件。显式进入 Pane 保留当前草稿与光标，实际草稿值改变后退焦；自动入焦仍要求空 composer。未持键 Pane 的裸 Tab / Shift+Tab 由 composer 处理。已持键 Pane 内的 Tab、方向键和热键按实际控件处理，Input/Select 优先消费自身按键，Escape 关闭或退焦。控件未消费的普通字符继续进入 composer 并释放 Pane 持键；例如点击 diff 的 ask 后，可以直接输入下一条 prompt 或 `/exit`。同一个键盘事件不会重复派发。鼠标滚轮按实际命中的 Pane body 交给插件处理，Pane 外保持 transcript 滚动。
+- Band 使用：`Ctrl+X` 后按 `Tab`，把当前实际控件的 `component/requestId/plugin/element/origin` 交给 `ui.focus` 协商；合法改写按发布的真实控件落点，空格激活 Button。拒绝或不调用 next 时保留 Band body 持键，不虚构 Button 焦点。Band 未持键时，裸 Tab/Shift+Tab 留给 composer。点击 `[-]` 或 `Ctrl+X` 后按 `Ctrl+A` 折叠，按相同快捷键或点击提示展开；折叠值在同进程组件重挂和 runtime 替换后保留。快捷键可通过现有 keybindings 重绑或解绑。
+- Band 验证边界：固定官方2.1.289与本轮隔离Makefile新制品，均在160×40独立tmux中完成逐步Band→两Pane→composer以及六chord一次发送对照，作者focus DTO/原回执、按钮和Pane热键结果一致，双方正常 `/exit 0`。ROOT的 `built-claude` 未替换。完整公共scroll、动态上下文、modal、diff交互及所有logical/physical帧仍待验收，详见 `mods-test.md`。一次tmux发送不证明官方一次OS读取；源码测试另覆盖真正单次stdin读取。
+- 初始焦点：已持有键盘的可见 Pane，会把首个实际可见、带 `autoFocus: true` 的非 Client Button/Input/Select 交给真实 `ui.focus` 中间件协商。事件保留绘制控件的插件来源，从新的引擎调用开始，允许自身 hook 观察；只按宿主发布的真实落点应用 DOM 焦点。拒绝、不调用下层或无效改写不会虚构焦点，普通重绘保留已持有的输入和文本，卸载后的旧回执不能抢回键盘。Client 与 AbovePrompt 的完整焦点行为仍待对齐。
+- Band 回归：运行 `bun test ./src/components/ModsFocusChord.test.tsx ./src/components/ModsAbovePrompt.band289.test.tsx ./src/components/ModsAbovePrompt.test.tsx`。焦点文件保留原16项，并补完整循环、只有 Pane、非空草稿、同一次 stdin 读取中的多个 chord、取消及 Pane 裸 Tab 所有权，共25项，另含 Pane body 与已焦点 Button 未消费普通文字时进入真实 editor 的两项回归。连续快速 chord 按收键时的站点选择分支，仅控件移动等待先前回执；要走到 Pane，应等实际落点后再按下一次 chord。公开 `$.ui.focus({ requestId, key })` 只移动已持键且属于调用插件的实际控件；不能抢键或展开折叠 Band。调试日志 `[ModsUI] site-focus` 和 `pane-holder` 保留站点、插件、原始目标、来源、实际落点及原回执。
+- 测试环境：七个焦点、草稿、按键、prompt compose 和 REPL submit 文件已在每案创建独立 HOME/config/XDG，使用测试内部的占位 key，并恢复环境、清空 settings cache、删除自有目录；临时作者路径使用 realpath。调用方不需要提供凭据。逐文件可用 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/components/ModsFocusChord.test.tsx`，其余六个文件见 `mods-test.md` 的认证夹具修复表。2026-10-05 在真实工作区、调用方无凭据且禁网络的隔离复验为173 pass/0 fail；完整全量及官方 UI 门禁仍待完成。
+- 焦点回归：运行 `bun test ./src/components/ModsPane.autofocusHost.test.tsx ./src/components/ModsPane.focusOwner.test.tsx ./src/ink/components/App.keyboardDispatch.test.tsx`，检查真实 Worker、挂载输入、拒绝和改写及卸载。注册约束回归为 `bun test ./src/services/mods/registrationMultiplicity289.test.ts`。这些源码测试不替代双端 CLI 的界面验收。
 - 焦点与布局：有可见内容的 Button/Select/Input 用高亮提示实际焦点；列表分页按最终落点与已提交绘制顺序导航。Diff 按 Pane 与嵌套 Code 容器的可用宽度排版，终端 resize 后重新适配；dock 正文预算随实际可见高度和 composer 高度更新。内容可达性、长文本与窄屏降级仍受插件自身布局及 wrap 声明约束。
+- Pane 入场与宽度：自动打开的未入场面板通常等待144列；保留人工打开资格的面板等待110列。已入场的面板缩窄后仍保留，低于110列切换 inline，实际关闭后重新打开才重新计算入场条件。默认 dock outer 宽度为 `min(floor(columns * 0.45), 90, columns - 70)`，正文减去一列 grip；插件的 `columns` 请求正文宽度，dock outer 在24列至终端宽度减24列之间限制。inline 按实际自然内容高度与官方预算取较小值，正文边框和 padding 占4列、2行；多 tab 另占1行，空正文可为0行。fullscreen 输入区保持全宽；按官方2.1.289，dock 顶部始终预留1行，正文预算为输入区上方实际空间减1行。右上角 ✕ 与正文独立绘制，为人工关闭，不受 `closeOnEscape` 限制。用户手动尺寸持久化、grip拖拽和完整 resize 交互仍待对齐。
+- Button：`onPress(press)` 收到中间件处理后的 `UiPressArgument`，包含 `plugin/element/component/requestId/surface`；可用 `press.surface` 判断点击来自哪里。`variant: 'primary'` 在终端使用 `suggestion` 主题色，`secondary` 或省略时保留普通样式；`plain: true` 优先，hover 样式最后覆盖。`role: 'dismiss'` 只是绘制提示，关闭仍由回调调用 `$.ui.close({ id })` 完成。生成声明导出 `ButtonProps`、`UiPressArgument`、`RenderSurface`、`PressedLink` 和 `TextHoverProps`。
 - Diff action：插件声明相应 Button `action` 时，默认 Ctrl/Opt+Up/Down 切换文件，Ctrl+x 后按 b 切换 diff base；沿用现有 keybindings 配置，可重绑或解绑。显示用 `hotkey` 文本本身不会注册动作。
+- 官方 diff 使用：运行 `/diff` 打开面板。全屏中可用 `Ctrl+X` 后按 `b` 切换 base，`Ctrl/Opt+Up/Down` 翻动文件列表，点击文件定位正文；点击 `ask` 后选中 diff 随下一条被接受的 prompt 传入。再次点击 `asked ✓` 取消附加。按键仍遵循当前 keybindings 和插件实际声明的 action。已验证的接受路径与待验证的取消、内联及 resize 路径分别记录在 `mods-test.md`。
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：已提供自动作者声明、`claude plugin validate`、`claude plugin test` 和 `/plugin-authoring`，但不宣称实现全部官方 API、模型流、桌面/远端 surface 或官方 binary 动态 parity。Node `dist/cli.js` 不是当前作者工具验收目标；跨平台、完整 release gate、逐帧 logical/physical 与未执行的官方 rollout 分支仍记为未覆盖。
+
+只允许组织 Mods、同时保留个人 settings hooks 时，可在 **managed settings** 设置宿主 guard 的选项；个人、项目或 `--settings` 中的同名选项不生效。若 managed `prependPlugins` 已显式配置，必须在列表中包含 `sec-default@builtin`，该选项才生效：
+
+```json
+{
+  "pluginConfigs": {
+    "cc-plugin-sec-default@builtin": {
+      "options": { "allowManagedModsOnly": true }
+    }
+  }
+}
+```
+
+Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；仍未实现的12个公开方法包括 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`、`process.spawn` 和 `telemetry.log/mark`；它们都需要补齐和验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.289 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
+
+### 复制文本
+
+`$.ui.copy` 异步返回复制回执，文本保持原样，不做字符串转换。省略 `surface` 时，宿主先选择当前绘制的 surface，再进入 `ui.copy` middleware；middleware 可以改写文本和目标，也可以拒绝操作。
+
+```ts
+const receipt = await $.ui.copy({ text: '待复制的文本' })
+if (!receipt.isCopied) {
+  $.ui.log(`复制未完成：${receipt.reason}`, { to: 'debug' })
+}
+```
+
+导出 `UiCopyArgs` 和 `UiCopyResult`；失败原因是 `no-surface`、`no-clipboard` 或 middleware 返回的 `refused`。`{ deny }` 会使 Promise 拒绝。当前 terminal 接入既有剪贴板工具和 OSC 52，单次 OSC 写入最多 1 MiB；实际复制还取决于终端支持。远端应用的 clipboard responder、能力广告和超时协议仍待接通，当前没有对应设施时返回 `no-clipboard`。源码回归可运行 `bun test ./src/services/mods/uiCopy.test.ts ./src/services/mods/uiCopy.types.test.ts ./src/services/mods/uiCopyTerminal.test.ts`。
+
+
+print 模式也提供 `$.ui.log`：两种目标都会写入启用的 debug 日志（如 `--debug-file /tmp/mods-debug.log`），保留插件名；日志最多 10000 个 UTF-16 单元并在截断时保护代理对。`--output-format stream-json --verbose` 还把默认 `transcript` 目标输出为 SDK 事件；`debug` 目标与被 hook 改写为 debug 的日志不产生该事件。text 和普通 JSON 输出保留模型结果，日志不进入模型请求或保存的会话历史。公开便利调用仍返回 `void`，不能用 `await $.ui.log(...)` 作为投递完成屏障。
+
+```json
+{"type":"system","subtype":"ui_log","plugin":"example","text":"diff 已加载","uuid":"...","session_id":"..."}
+```
+
+交互终端的 transcript 日志按官方 `notice` 级别显示为无圆点的暗色提示，默认模式可见；原有普通 `info` 仍按 verbose 设置显示。
+
+SDK 导出 `SDKUILogMessage`，`SDKMessage` union 和运行时 schema 均接受此事件。聚焦回归：`bun test --no-env-file ./src/cli/print.modsLog.test.ts ./src/cli/print.modsLog.types.test.ts`；官方 2.1.292 实测与范围见 [print 日志专项](docs/research/mods-print-log-20261007.md)。
+
+### 持久状态通知
+
+Mod 可以设置一条属于自己的状态。状态显示在输入框下方，带有插件名和 `⚠` 标记；多个插件的状态可以同时存在，toast 超时不会清除它。同插件再次设置会替换原状态，清除时传入 `undefined`：
+
+```ts
+$.ui.status('正在读取 diff')
+$.ui.status('diff 已就绪')
+$.ui.status(undefined)
+```
+
+`$.ui.log`、`$.ui.status` 和 `$.ui.toast` 同步返回 `void`，与官方2.1.289的公开便利调用一致。`await` 这些方法不能用作通知完成的屏障，也不会捕获后台 dispatch 的拒绝；异步失败会在 debug 日志记录插件、操作名和原因。作者声明保留 `string` 参数；JavaScript 调用会先做 `String(text)`，status 的 `null`/`undefined` 则清除状态。作者类型要求清除时显式传入 `undefined`。
+
+```ts
+$.ui.log('diff 已加载')
+$.ui.log('正在分析文件', { to: 'debug' })
+$.ui.toast('检查完成', { timeoutMs: 4000 })
+```
+
+`UiLogSink`、`UiLogOptions` 和 `ToastOptions` 已导出；canonical `ui.log/status/toast` 的事件输入与 `ValueOrDeny<void>` 回执仍是异步事件调用。运行 `bun test ./src/services/mods/uiVoid289.test.ts ./src/services/mods/uiNotifications.types.test.ts ./src/services/mods/uiNotifications.lifetime.test.ts ./src/services/mods/uiVoid289.types.test.ts` 检查真实 Worker、参数转换、同步作者异常、后台拒绝和精确声明。后台失败后插件仍可继续执行。完整 UI 和跨 realm 错误原型仍有待对齐的项目，见 `mods-test.md`。
+
+Mod 可用无参数的 `await $.ui.panes()` 查询自己的 Pane。返回类型为 `Promise<readonly UiPane[]>`，每项只含 `id`、`title`、`isShown`、`isFocused` 和 `isPlaced`；已放置的 Pane 在前，各组保持打开顺序。记录属于引擎，模块重载后仍能找到原 Pane；其他插件的 Pane 不会列出。修改返回副本不会修改引擎状态。可以在激活时避免重复打开：
+
+```ts
+on('session.start', async ($, event, next) => {
+  if (!(await $.ui.panes()).some(pane => pane.id === 'clock')) {
+    await $.ui.open({ id: 'clock', title: 'Clock' })
+  }
+  return next(event)
+})
+```
+
+运行 `bun test ./src/services/mods/uiPanes.test.ts ./src/services/mods/uiPanes.types.test.ts` 检查真实 Worker、middleware、重载、回调回收及精确作者类型。官方289与本轮新制品已完成相同的查询、`/reload-plugins`、焦点 chord、按钮、持键重开和关闭流程；稳定返回值一致，双方正常退出。首次 open 后立即查询焦点的发布时间、传递依赖的作者项目与所有 UI 帧仍有差异或未覆盖，详见 `mods-test.md`。通过 composer 键入命令会先交出 Pane 持键；查询返回的是调用当时的状态。
+
+终端 Mod 可调用 `const selection = await $.ui.selection()`，得到 `{ text, requestId? }` 或 `undefined`。读取不复制、不清除高亮；复制或按键清除高亮后，选区保留到随后一次 prompt/command 结束。选区落在同一已挂载 transcript 消息范围内时附带消息 UUID 或 `tool_use_id`；跨消息和侧边 Pane 选区只返回文字。当前没有选区支持的 host 返回 `undefined`。滚动按实际绘制距离移动选区，保留离屏文字与原列，反向滚动恢复端点；相邻 Pane、边框和 padding 限定选区范围。新版跨 scope 的 softWrap 编码、已卸载历史消息的身份和完整原生终端操作仍待验证；源码检查不能视为全部选区行为一致。
+
+Client Mod 可注册 `ui.fault` 观察自己的 surface 故障：
+
+```ts
+on('ui.fault', async ($, e, next) => {
+  await $.ui.status(`${e.module}: ${e.phase}: ${e.reason}`)
+  return next(e)
+})
+```
+
+`e` 包含宿主固定的 `surface/component/requestId/element/module/phase/reason`；`phase` 只有 `load/render/run`。该事件返回空对象，不提供 `$.ui.fault()` 调用，也不能用 `next` 改写地址或原因。自己的匹配 hook 结算后，仍存活的绘制可自动重试一次；连续失败不无限重绘。未返回的 Promise 被拒绝时记录错误并继续运行该 surface；回调返回的 Promise 或 thenable 被拒绝时，停止所属实例并发送 `run` 故障，其他实例和 hook 继续运行。成功返回值不替换画面，render 返回 Promise 仍会同步失败。已排队的旧实例拒绝可记录警告。终端 Pane 和 AbovePrompt 的真实 React 绘制异常限制在 Client 区域：相同传入 props 值及全局 columns/rows/conversationColumns 保持失败缓存；这些输入变化后，须有新的宿主绘制才重建实例，单独区域 resize 不重试。跨 owner 共享、异步绘制期间 resize、完整长链晚警告及各 surface 的原生流程仍待对照。
+
+调试 Mods 时，可用 `claude --debug-file /tmp/claude-mods-debug.log`。`[ModsPrompt]` 用 UUID 关联入队与 admitted/dropped/aborted 回执，记录入口、asUser 与队列优先级；`[ModsUI]` 记录 open/close 来源、绘制 generation、发布 revision、可见性、焦点、实际正文/自然内容尺寸及滚动 offset；`[ModsSession]` 记录按 session 匹配的费用恢复时间。`[ModsUI]` 的 `ui.fault` 记录插件、七个故障字段及结算耗时；`reason` 来自模块错误，清理控制字符并限制为200个UTF-16代码单元。队列与布局记录不新增 prompt/context/provider 正文；模块错误原因与其他既有 debug 内容需按实际输出检查。日志有助于定位空白、旧绘制和布局问题，仍需结合真实终端帧验证。
+
+#### 模型辅助调用
+
+`model.complete` 返回 `ModelCompleteResult`，成功时为 `{ isAnswered: true, text, usage }`；请求失败、回复没有文本或被取消时返回 `isAnswered: false` 和 `reason`。每个已发起请求的分支都有四项实际 token 计数：`input_tokens`、`output_tokens`、`cache_read_input_tokens`、`cache_creation_input_tokens`；未报告的计数为零。`api-error` 另有 HTTP `status`（没有响应时为 `null`）与 `error` 分类，不公开错误正文或 headers。非法参数、被限制的模型与 middleware 的 `{ deny }` 仍拒绝调用。
+
+例如在 `hooks/register.ts` 注册一个摘要命令：
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  on('session.start', async ($, event, next) => {
+    await $.command.register({ name: 'model-note', description: 'Summarize the supplied text' })
+    return next(event)
+  })
+  on('command.run', { command: 'model-note' }, async ($, event) => {
+    const reply = await $.model.complete({
+      model: 'haiku', prompt: `Summarize briefly: ${event.args}`, maxTokens: 1024,
+      effort: 'medium', timeoutMs: 10_000,
+    })
+    if (reply.isAnswered) return { text: reply.text }
+    return { text: reply.reason === 'api-error'
+      ? `Request failed: ${reply.error} (${reply.status})`
+      : `No reply: ${reply.reason}` }
+  })
+}
+```
+
+`model.fork({ prompt })` 使用主会话保存的缓存共享上下文，追加一个问题，禁止工具调用和 fork 自己尾部的缓存写入。完成主会话后再调用的上下文包含刚完成的助手回复；官方 2.1.287 的同操作二进制对照也观察到这一行为，详细请求与文档表述差异见 `mods-test.md`。它返回同样的结构化结果；主会话尚无可 fork 的响应时为 `{ isAnswered: false, reason: 'nothing-to-fork' }`，这个分支不带 usage。fork 汇总所有非错误回复的文本和各响应的用量，取消或失败保留已测得的用量。`model.classify` 仅在成功回复不属于给定标签时返回 `undefined`；请求失败、取消或空回复会拒绝并指出原因。
+
+`turn.step` 和 `turn.complete` 由宿主登记的实际 turn 触发；真实 Agent 和 teammate 每轮都有自己的 `turnId`，内部 `model.fork` 查询不会因取得新 `agentId` 而成为新的 turn。`turn.complete` 在登记释放后获取当前 hooks 和查询服务；它不能再取消刚结束的主 turn，子代理的完成文本也不会追加到主会话。取消查询仍可完成当前逻辑会话内的收尾；会话结束、切换或 runtime 卸载后，旧 turn 不会向新会话发送完成事件。这些边界已通过真实 QueryLoop、runAgent、teammate 和有界 fork 的源码验证；完整 compact/settings producer、普通父 step 中的 fork 以及原生制品对照仍待验收，详见 `mods-test.md`。
+
+`complete` 的 `effort` 可选 `low`、`medium`、`high`、`xhigh` 或 `max`；仅对支持 effort 的模型发送，未指定时不添加新的请求默认值。`timeoutMs` 必须是正整数，实际计时最大为 2147483647 毫秒，从核心请求开始计时，超时返回 `aborted`。第二个参数可传 `{ signal: controller.signal }`，其中 `controller` 是插件内的 `AbortController`；信号对象和取消原因不进入 hook 输入，只传递所属调用的取消事件。已取消的信号不会发起请求，完成后的监听器会释放。父 turn 取消时，complete/fork 的调用结果为 `aborted`，fork 保留已测用量；外层 turn 仍按取消结束，classify 拒绝并指出 `aborted`。参数错误与中间件拒绝仍抛出异常。
+
+当前源码和生成声明已覆盖这些选项；实际 SDK effort 请求、Worker 取消及超时回归已通过，新的 compiled 验收结果见 `mods-test.md`。官方 API 的其他缺口仍按上面的兼容性边界列出。
+
+#### 读取主会话和 Agent 对话
+
+在模块的 `register` 中注册命令，再在命令 hook 里调用读取接口。命令参数留空时读取主会话，指定 Agent ID 时必须检查拒绝结果：
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  on('session.start', async ($, event, next) => {
+    await $.command.register({ name: 'conversation', description: 'Inspect main or agent messages' })
+    return next(event)
+  })
+  on('command.run', { command: 'conversation' }, async ($, event) => {
+    const agentId = String(event.args ?? '').trim()
+    const messages = agentId
+      ? await $.session.messages({ agentId, as: 'api' })
+      : await $.session.messages({ as: 'api' })
+    if ('deny' in messages) return { text: messages.deny }
+    return { text: JSON.stringify(messages, null, 2) }
+  })
+}
+```
+
+加载插件后执行 `/conversation` 或 `/conversation <agentId>`。ID 可来自 `agent.list()` 或 Agent tool use 的 `toolUses[].agentId`；仅在实际启动 Agent 后提供，已完成结果有测得的时长时还包含 `durationMs`。无参数读取和 `{ as: 'api' }` 主会话读取总是返回数组；带 ID 的读取检查 `deny` 区分消息与拒绝，拒绝时不替换为主会话。生成声明将消息表示为只读数组，使用 `'deny' in messages` 可完成 TypeScript 的拒绝分支收窄。
+
+API 消息最多 4096 条，从 user 开始，反映最近一次 compaction 后引擎将用于下一次请求的内容。可同时使用 `{ agentId, as: 'api' }`；文本行用法为 `await $.session.messages({ agentId })`。这些格式与 Anthropic 的 [Messages API](https://platform.claude.com/docs/en/api/messages/create) 对应；每次发送的缓存标记仍由宿主根据 [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) 规则处理，读取不会改动原始对话。源码、声明与真实制品的验收范围分别记录在 `mods-test.md`。
+
+#### 查询会话用量与首次启动时间
+
+`await $.session.usage()` 返回 `context`、`rateLimits`、可用的 `cost` 和 `startedAt`。`startedAt` 始终返回 number，使用 epoch 毫秒；有启动记录的 resume/continue 保留原值，离开会话期间的文件修改也可据此判断归属。`/clear`、新会话和 `/branch` 使用各自的新时间。它与 `/cost` 累积活动时长的内部时钟分开，计费恢复不会改写首次启动时间；带 breakdown 的异步读取也保留调用时的快照。
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'session-age',
+      description: 'Show the first launch time of this session',
+    })
+    return next(e)
+  })
+  on('command.run', { command: 'session-age' }, async $ => {
+    const { startedAt } = await $.session.usage()
+    return { text: new Date(startedAt).toISOString() }
+  })
+}
+```
+
+开启 transcript 持久化时，新会话将启动时间按 session ID 写入 `session-started-at` 元数据，压缩和恢复保留它；读取官方 transcript 时也接受同 session 的 `cost-state.startTime`，项目费用恢复接入 `lastStartTime`。分支使用自己的新时间。缺少启动记录的历史会话遵循官方 2.1.287 的活动时钟回退规则，返回恢复时刻减去已保存的活动时长（没有活动时长时使用当前会话时钟）；这个回退值不是可证明的历史首次启动时间，不应用它断言精确的历史编辑归属。首次 prompt 时间和文件创建时间不参与这个回退。公共声明保持官方的 `startedAt: number`。参考 [官方 Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)，实际可调用 API 仍以目标制品生成的声明为准。
+
+#### 向其他 Mod 暴露函数
+
+在 manifest 中增加 `"types": "./types/index.d.ts"`，以声明合并公开命名空间；调用方通过普通 plugin dependencies 引用提供方。`types/index.d.ts` 只包含自包含类型，例如：
+
+```ts
+export type Greeting = { read(input: { text: string }): Promise<string> }
+declare module 'claude-code' {
+  interface EngineInterface { greeting: Greeting }
+}
+```
+
+对应 `hooks/register.ts` 可以构建接口，并在同一模块注册中间件和命令：
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  on('engine.create', async (_, event, next) => {
+    const built = await next(event)
+    return { ...built, greeting: { read: async (input: { text: string }) => input.text } }
+  })
+  on('greeting.read', async (_, event, next) => {
+    const result = await next(event)
+    return 'deny' in result ? result : { value: result.value + '!' }
+  })
+  on('session.start', async ($, event, next) => {
+    await $.command.register({ name: 'greet-mod', description: 'Run the greeting' })
+    return next(event)
+  })
+  on('command.run', { command: 'greet-mod' }, async ($, event) => ({
+    text: await $.greeting.read({ text: String(event.args || 'Hello') }),
+  }))
+}
+```
+
+自定义方法接收一个对象或不接收参数；可调用成员自动成为有类型的 `noun.method` hook，hook 返回 `{ value }` 或 `{ deny }`，而调用方读取解包后的方法返回值。`engine.create` 的第一参数尚未构建，读取接口应使用 `await next(event)`；生成类型保留这一阶段差别。接口只能在该 hook 的直接返回对象中公开，如示例的 `return { ...beneath, greeting: ... }`；不能枚举 `$` 或 `beneath`，也不能把包含它们的接口对象存入普通变量再返回。原样转发已有命名空间，不覆盖其他 Mod 或 engine 持有的命名空间。非函数字段不成为 hook，也不能作为运行时自定义命名空间成员发布。
 
 #### 可复用测试 Mod
 
@@ -707,6 +1082,17 @@ bun ./node_modules/typescript/bin/tsc -p /absolute/path/to/my-mod/tsconfig.json 
 make build
 bun scripts/mods-test-lab.mjs check sample
 bun scripts/mods-test-lab.mjs run sample
+```
+
+其他 Claude 正在使用仓库的制品时，使用独立构建目录；`output` 交给构建脚本创建，不要预先创建。后续运行、validate、test 必须使用同一个 `MODS_CLI`：
+
+```bash
+MODS_BUILD_ROOT=$(mktemp -d /private/tmp/mods-build.XXXXXX)
+make build CLAUDE_CODE_BUILD_DIR="$MODS_BUILD_ROOT/output"
+MODS_CLI="$MODS_BUILD_ROOT/output/built-claude"
+"$MODS_CLI" plugin validate /absolute/path/to/my-mod
+"$MODS_CLI" plugin test /absolute/path/to/my-mod
+bun scripts/mods-test-lab.mjs run sample --binary "$MODS_CLI" --cache "$MODS_BUILD_ROOT/lab"
 ```
 
 `run` 输出 session/socket、调试日志和连接命令；可用 `--binary /absolute/path/to/built-claude` 指定制品。默认缓存为 `~/Library/Caches/mods-test-lab`，各命令支持 `--cache /private/tmp/mods-test-lab`；路径过长无法创建 Unix socket 时改用短缓存目录。进入会话后使用：
@@ -721,7 +1107,7 @@ bun scripts/mods-test-lab.mjs run sample
 
 无参数打开包含 Button、Input、Select、长列表和中英文 diff 的面板；`status` 查看计数，`context` 仅为下一条真正的 prompt 附加固定测试标记，`reset` 清理本 Mod 的测试状态。默认只观察事件，不改变工具输入/结果，不记录 prompt、工具参数或回答正文。最近事件最多 20 条；持久计数与当前 activation 状态分别展示。UI-only 入口没有模型服务，prompt/tool 完整链需要另行配置本地 loopback fixture。
 
-官方 2.1.277 的 `agents-md`、`diff` 和 `telemetry` 已固定 provenance 并内嵌为 builtin Mods；`telemetry` 默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载。生产 Mods 不会获得当前会话的 Anthropic credential，`session.authorize` 恒返回空授权；只有隔离的 builtin acceptance fixture 会注入固定 dummy credential 并限定到 loopback transport。`sec-default` 仍只作为可下载的官方原件检查，不因源码可扫描而获得 managed 安全身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
+官方 `agents-md` 和 `telemetry` 保留固定 provenance 的 2.1.277 内置归档；diff 使用独立的 `assets/builtin-diff-2.1.292.zip`，校验完整模块、原样注册闭包、扫描元数据和归档来源后加载。归档缺失或校验失败会打印错误并恢复原生 diff。`telemetry` 默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载。生产 Mods 不会获得当前会话的 Anthropic credential，`session.authorize` 恒返回空授权；只有隔离的 builtin acceptance fixture 会注入固定 dummy credential 并限定到 loopback transport。`sec-default` 的宿主实现保护当前已接线的 managed 事件；下载的官方原件用于作者兼容检查，不因其名称或 manifest 获得宿主身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
 
 ```bash
 bun scripts/mods-test-lab.mjs fetch-official
@@ -735,6 +1121,8 @@ bun scripts/mods-test-lab.mjs accept-builtin --binary ./built-claude
 ```
 
 下载固定官方提交到仓库外缓存，输出来源、内容摘要及实际路径；不全局安装、不修改用户 settings、不运行上游安装脚本。`run-builtin` 使用 binary 内嵌 archive 启动隔离会话，但单纯创建 session 不代表 readiness、activation 或 trigger。`accept-builtin` 使用私有 HOME/config、固定 dummy credential、loopback provider 和 sandbox，差分验证 `agents-md`、builtin/native `diff` Pane 交互以及 telemetry 的隔离授权与 `session.end` flush，并检查清理；它不读取个人认证或访问真实 provider。
+
+最新 diff 归档可用 `bun scripts/package-official-diff.mjs VERIFIED_DECODED_MODULE_DIR NEW_ARCHIVE_PATH` 离线重现；输入必须是已核实的官方 2.1.292 完整模块，输出路径必须尚不存在。`[ModsBuiltin]` 调试记录包含版本、插件、storageId、归档及模块 SHA，加载失败另记录 phase 和 error。此操作仅生成归档，不替代构建及真实界面验收。
 
 停止手工会话后可用 `bun scripts/mods-test-lab.mjs clean <run目录>` 回收工具自己的运行目录，活跃或封存的验收记录不会自动删除。`check` 只检查 discovery/preparation/scan；builtin acceptance 通过也只证明当前制品的这三项场景，不等于全部官方 Mods、远端 surface、官方 binary parity 或完整 release gate 通过。
 
@@ -821,31 +1209,6 @@ make build
 本仓库用于授权的研究、调试和二次开发。恢复或修改后的 binary 不应未经独立安全、遥测、更新和权限审查直接用于生产环境。
 
 请勿提交 `.env`、`~/.codex/auth.json`、API key、OAuth token、cookie、证书或其他私有配置。涉及外部 provider、插件、MCP、Workflow 和自动化任务时，应先确认权限范围及其对本地或共享环境的影响。
-
-
-print 模式也提供 `$.ui.log`：两种目标都会写入启用的 debug 日志（如 `--debug-file /tmp/mods-debug.log`），保留插件名；日志最多 10000 个 UTF-16 单元并在截断时保护代理对。`--output-format stream-json --verbose` 还把默认 `transcript` 目标输出为 SDK 事件；`debug` 目标与被 hook 改写为 debug 的日志不产生该事件。text 和普通 JSON 输出保留模型结果，日志不进入模型请求或保存的会话历史。公开便利调用仍返回 `void`，不能用 `await $.ui.log(...)` 作为投递完成屏障。
-
-```json
-{"type":"system","subtype":"ui_log","plugin":"example","text":"diff 已加载","uuid":"...","session_id":"..."}
-```
-
-交互终端的 transcript 日志按官方 `notice` 级别显示为无圆点的暗色提示，默认模式可见；原有普通 `info` 仍按 verbose 设置显示。
-
-SDK 导出 `SDKUILogMessage`，`SDKMessage` union 和运行时 schema 均接受此事件。聚焦回归：`bun test --no-env-file ./src/cli/print.modsLog.test.ts ./src/cli/print.modsLog.types.test.ts`；官方 2.1.292 实测与范围见 [print 日志专项](docs/research/mods-print-log-20261007.md)。
-
-### 持久状态通知
-
-Mod 可以设置一条属于自己的状态。状态显示在输入框下方，带有插件名和 `⚠` 标记；多个插件的状态可以同时存在，toast 超时不会清除它。同插件再次设置会替换原状态，清除时传入 `undefined`：
-
-```ts
-$.ui.status('正在读取 diff')
-$.ui.status('diff 已就绪')
-$.ui.status(undefined)
-```
-
-`$.ui.log(text, { to: 'debug' })`、`$.ui.status(text)` 和 `$.ui.toast(text, { timeoutMs: 4000 })` 按官方2.1.289同步返回 `void`。`await` 这些便利调用不会等待 middleware 或 UI 完成；异步拒绝会记录所属插件、操作名和原因，插件仍可继续执行。文本转换与 options getter 的错误同步抛出。已经进入 middleware 的通知可以在作者 hook 正常返回后完成；调用者取消、hook 失败或超时仍会取消相应工作。
-
-作者声明导出 `UiLogSink`、`UiLogOptions`、`ToastOptions`；清除 status 要显式传入 `undefined`。可运行 `bun test ./src/services/mods/uiVoid289.test.ts ./src/services/mods/uiNotifications.types.test.ts ./src/services/mods/uiNotifications.lifetime.test.ts` 检查真实 Worker、严格作者类型及取消/失败恢复。`toast(..., null)` 的跨 realm `instanceof TypeError` 仍与官方不同；完整操作类型映射和全部 UI 行为继续对齐。
 
 ## Diff 的语法颜色
 
