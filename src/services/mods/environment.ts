@@ -545,7 +545,8 @@ export function createModEnvironmentHost({
       } else response.value = encode(message.environment, isPromise(value) && !isProxy(value) ? await value : value)
     } catch (error) {
       response.error = errorMessage(error, 'Module capability failed')
-      if (error instanceof Error && error.name === 'HooksError') response.errorName = 'HooksError'
+      if (error && typeof error === 'object' && !isProxy(error) &&
+          Object.getOwnPropertyDescriptor(error, 'name')?.value === 'HooksError') response.errorName = 'HooksError'
       const errors = invocationErrors.get(message.invocation)
       if (errors && fn?.environment === message.environment) {
         response.errorRef = message.call
