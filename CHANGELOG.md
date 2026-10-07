@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-07 - 外部 Client 故障与恢复通知
+
+### Fixed
+
+- 接通 SDK ui_client_fault，按当前 desktop Client 地址验证并只通知所属插件；保留 engine/core 来源和七个只读字段，规范化原因文本。
+- 恢复发送 system/ui_invalidate，客户端收到后重新请求 ui_render；同一故障代次只通知一次，绘制和 props 变化不会造成故障重绘循环。
+- ui.fault 仅用于观察，作者接口保持空结果类型，不暴露 $.ui.fault；故障按插件串行，故障控制不接受取消，已移除 Client 不触发迟到恢复。
+
+### Tests
+
+- 增加真实 Worker、严格作者声明、SDK schema/type 双向检查及官方 2.1.292 / 独立候选 / 完整工作区原生控制对照。准确结果和剩余验收范围见 docs/research/mods-client-fault-292-20261007.md。
+
 ## 2026-10-07 - SubAgent effort 参数与继承
 
 ### Added

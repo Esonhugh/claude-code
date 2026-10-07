@@ -30,6 +30,8 @@ export type ModRenderConsumer = {
   retainClients?: boolean
   /** SDK clients execute their module bundle externally and own their transport attachment. */
   externalClients?: true
+  /** External clients redraw only after receiving an invalidation and requesting a render. */
+  invalidate?(): void
   focus?: ModRenderFocusController
   render(tree: unknown, drawing: number, resolveEngine: (ref: number) => ModInput, clients?: ReadonlyMap<string, ModClientBinding>): void | Promise<void>
   unmount(): void | Promise<void>
@@ -368,6 +370,7 @@ export function createModUi({
     focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
     redraw(): Promise<void>
     cancelPending(): void
+    external?: true
     blit(plugin: string, input: {
       requestId: string; key: string; cells?: string; source?: unknown
       columns?: number; rows?: number
@@ -629,6 +632,7 @@ export function createModUi({
   }
 
   function invalidateSite(site: (typeof sites extends Map<ModUiOwner, infer S> ? S : never)): Promise<void> {
+    if (site.external) return site.redraw()
     site.cancelPending()
     return scheduleRedraw(
       site,
@@ -1017,6 +1021,7 @@ export function createModUi({
         focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
         redraw(): Promise<void>
         cancelPending(): void
+        external?: true
         blit(plugin: string, input: {
           requestId: string; key: string; cells?: string; source?: unknown
           columns?: number; rows?: number
@@ -1050,7 +1055,9 @@ export function createModUi({
           return matches[0]?.tree
         },
         cancelPending() { pendingDraw?.abort(new Error('ui.render: superseded')) },
+        external: consumer.externalClients,
         async redraw() {
+          if (consumer.externalClients) { if (!disposed) consumer.invalidate?.(); return }
           if (requested && !disposed) await site.update(requested, true)
         },
         async blit(plugin, input) {

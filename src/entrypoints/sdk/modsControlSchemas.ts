@@ -664,8 +664,14 @@ export const SDKUIFocusMessageSchema = lazySchema(() =>
     key: z.string(),
   }),
 )
+export const SDKUIInvalidateMessageSchema = lazySchema(() =>
+  z.object({ ...systemEnvelope(), subtype:z.literal('ui_invalidate'), event:z.literal('ui.render'),
+    instances:z.array(z.object({surface:SDKUIRemoteSurfaceSchema(), component:SDKUIRenderComponentSchema(), instance_id:z.string()})).optional(),
+  }),
+)
 export const SDKUISystemMessageSchema = lazySchema(() =>
   z.discriminatedUnion('subtype', [
+    SDKUIInvalidateMessageSchema(),
     SDKUIPanesMessageSchema(),
     SDKUIScrollMessageSchema(),
     SDKUIFocusMessageSchema(),

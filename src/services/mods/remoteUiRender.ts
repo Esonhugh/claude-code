@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import {
   createModRemoteClientRegistry,
   modClientDataProblem,
+  normalizeModClientFaultReason,
 } from './remoteUiClient.js'
 import type {
   SDKControlUIRenderRequest,
@@ -14,6 +15,9 @@ import type {
   SDKControlUIClientPressResponse,
   SDKControlUIMessageRequest,
   SDKControlUIMessageResponse,
+  SDKControlUIClientFaultRequest,
+  SDKControlUIClientFaultResponse,
+  SDKUIInvalidateInstance,
   SDKUIRenderElement,
 } from '../../entrypoints/sdk/modsControlTypes.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -100,10 +104,14 @@ type Drawing = {
   selectedProps?: ModInput
   rewritten?: boolean
   settled?: boolean
+  stale?: boolean
 }
 
 /** Drawing leases, callbacks and Client snapshots belong to this SDK loop. */
-export function createModRemoteRenderer(runtime: ModsRuntime) {
+export function createModRemoteRenderer(
+  runtime: ModsRuntime,
+  options: { invalidate?(instances?: SDKUIInvalidateInstance[]): void } = {},
+) {
   const sites = new Map<string, Drawing>()
   const retiring = new Set<Promise<void>>()
   const clients = createModRemoteClientRegistry()
@@ -123,6 +131,26 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
       .catch(() => {})
     return result
   }
+  const versions = new Map<string, number>()
+  const faultRuns = new Map<string, Set<string>>()
+  const siteVersion = (component: string, id: string) =>
+    `${runtime.renderHooks.getSnapshot()}/${versions.get(`desktop\0${component}\0${id}`) ?? 0}`
+  const invalidate = (instance: SDKUIInvalidateInstance) => {
+    const key = `${instance.surface}\0${instance.component}\0${instance.instance_id}`
+    const next = (versions.get(key) ?? 0) + 1
+    versions.delete(key)
+    versions.set(key, next)
+    if (versions.size > 4096) versions.delete(versions.keys().next().value!)
+    const entry = sites.get(
+      `${instance.surface}\0${instance.component}\0${instance.instance_id}`,
+    )
+    if (entry) entry.stale = true
+    options.invalidate?.([instance])
+  }
+  const unsubscribe = runtime.renderHooks.subscribe(() => {
+    for (const entry of sites.values()) entry.stale = true
+    options.invalidate?.()
+  })
   let disposed = false
   const remove = async (key: string, entry: Drawing) => {
     if (sites.get(key) === entry) sites.delete(key)
@@ -146,7 +174,11 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
       const input = normalizeModRemoteRender(request)
       const clientGeneration =
         input.surface === 'desktop'
-          ? clients.begin(input.component, input.requestId)
+          ? clients.begin(
+              input.component,
+              input.requestId,
+              siteVersion(input.component, input.requestId),
+            )
           : undefined
       runtime.remoteClients.attach({
         surface: request.surface,
@@ -173,6 +205,7 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
       const version = runtime.renderHooks.getSnapshot()
       const cached =
         entry?.settled &&
+        !entry.stale &&
         entry.version === version &&
         input.requestId !== '' &&
         isDeepStrictEqual(
@@ -197,6 +230,14 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
           surface: input.surface,
           clientId: request.client_id,
           externalClients: true,
+          invalidate: () => {
+            if (sites.get(key) === drawing)
+              invalidate({
+                surface: request.surface,
+                component: request.component,
+                instance_id: request.instance_id,
+              })
+          },
           onMount: (site) => {
             drawing.site = site
           },
@@ -392,9 +433,68 @@ export function createModRemoteRenderer(runtime: ModsRuntime) {
         }
       })
     },
+    async clientFault(
+      request: SDKControlUIClientFaultRequest,
+    ): Promise<SDKControlUIClientFaultResponse> {
+      const currentVersion = () =>
+        siteVersion(request.component, request.instance_id)
+      const born = clients.has(request)
+        ? clients.toldFailed(request, currentVersion)
+        : undefined
+      if (!born) {
+        logForDebugging(
+          `[ModsUIRemote] ui.fault: no desktop Client ${request.plugin}/${request.client} (${request.module}) in ${request.component} ${JSON.stringify(request.instance_id)}`,
+        )
+        return { handled: false }
+      }
+      const input: ModInput = {
+        surface: 'desktop',
+        component: request.component,
+        requestId: request.instance_id,
+        element: request.client,
+        module: request.module,
+        phase: request.phase,
+        reason: normalizeModClientFaultReason(
+          request.plugin,
+          request.module,
+          request.reason,
+        ),
+      }
+      await serial('fault', request.plugin, async () => {
+        try {
+          await runtime.remoteClientFault(request.plugin, input)
+        } finally {
+          if (
+            request.instance_id &&
+            clients.has(request) &&
+            runtime.hearsRemoteClientFault(request.plugin, input)
+          ) {
+            const key = `${request.component}\0${request.instance_id}`
+            const previous = faultRuns.get(key)
+            if (!previous?.has(born()) || !previous.has(currentVersion())) {
+              invalidate({
+                surface: 'desktop',
+                component: request.component,
+                instance_id: request.instance_id,
+              })
+              const next = previous?.has(currentVersion())
+                ? previous
+                : new Set<string>()
+              next.add(currentVersion())
+              faultRuns.delete(key)
+              faultRuns.set(key, next)
+              if (faultRuns.size > 4096)
+                faultRuns.delete(faultRuns.keys().next().value!)
+            }
+          }
+        }
+      })
+      return { handled: true }
+    },
     async dispose() {
       disposed = true
       clients.clear()
+      unsubscribe()
       await Promise.all([...sites].map(([key, entry]) => remove(key, entry)))
       await Promise.all([...retiring])
     },

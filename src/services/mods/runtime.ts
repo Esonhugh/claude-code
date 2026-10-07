@@ -2093,6 +2093,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         throw new Error(`${event} must return an object`)
       return
     }
+    if (event === 'ui.fault') return
     if (event === 'ui.message') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.message must return an object')
       if (Object.hasOwn(result, 'props') && (result as { props?: unknown }).props !== undefined) {
@@ -2271,7 +2272,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         core = async () => { throw new Error(`Unhandled plugin test event: ${event}`) }
       const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner)
-          .filter(hook => event !== 'ui.message' || !options.only || hook.plugin === options.only.declaration.name), core,
+          .filter(hook => !['ui.message', 'ui.fault'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
         signal: combined.signal, origin: options.origin,
         reportDirectCoreFailure: options.reportDirectCoreFailure,
         // Only the calling frame is recursive; sibling policy hooks still run.
@@ -3039,6 +3040,50 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return dispatch('ui.message', input, async () => ({}), active, nouns, {
         only: owner, origin: { plugin: 'client', tier: owner.declaration.tier },
       }) as Promise<{ props?: unknown }>
+    },
+    async remoteClientFault(plugin: string, input: ModInput): Promise<void> {
+      const owner = active.find((owner) => owner.declaration.name === plugin)
+      if (!owner) return
+      const started = performance.now()
+      try {
+        await dispatch('ui.fault', input, async () => ({}), active, nouns, {
+          only: owner,
+          restoreInput: (value, received) =>
+            Object.fromEntries(
+              [
+                'surface',
+                'component',
+                'requestId',
+                'element',
+                'module',
+                'phase',
+                'reason',
+              ].map((key) => [
+                key,
+                Object.hasOwn(value, key) ? value[key] : received[key],
+              ]),
+            ),
+        })
+      } finally {
+        logForDebugging(
+          `[ModsUIRemote] ui.fault ${plugin}/${String(input.element)} (${String(input.module)}) in ${String(input.component)} ${JSON.stringify(input.requestId)} from ${String(input.surface)}, ${String(input.phase)}: reason=${JSON.stringify(input.reason)} origin=engine/core settledMs=${(performance.now() - started).toFixed(1)}`,
+        )
+      }
+    },
+    hearsRemoteClientFault(plugin: string, input: ModInput): boolean {
+      const owner = active.find((owner) => owner.declaration.name === plugin)
+      return (
+        owner?.environment.registrations.some((registration) => {
+          if (!matchesModEventPattern(registration.event, 'ui.fault'))
+            return false
+          try {
+            return matchesRenderMatcher(registration.matcher ?? {}, input)
+          } catch (error) {
+            diagnostic(plugin, 'ui.fault.matcher', error)
+            return true
+          }
+        }) ?? false
+      )
     },
     clientModule(plugin: string) {
       const owner = active.find(owner => owner.declaration.name === plugin)

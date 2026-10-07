@@ -551,7 +551,10 @@ export type SDKSessionInfo = {
 }
 
 // Union of all SDK messages
+export type SDKUIInvalidateMessage = import('./modsControlTypes.js').SDKUIInvalidateMessage
+
 export type SDKMessage =
+  | SDKUIInvalidateMessage
   | SDKAssistantMessage
   | SDKUserMessage
   | SDKUserMessageReplay

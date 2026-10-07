@@ -118,3 +118,37 @@ void [
   missingProps,
   wrongDirection,
 ]
+
+import type { SDKUIInvalidateMessage } from '../../src/entrypoints/sdk/modsControlTypes.js'
+import type { SDKUIInvalidateMessageSchema } from '../../src/entrypoints/sdk/modsControlSchemas.js'
+import type { SDKMessage } from '../../src/entrypoints/sdk/coreTypes.js'
+type InvalidateOutput = z.output<
+  ReturnType<typeof SDKUIInvalidateMessageSchema>
+>
+export type InvalidateOutputFitsWire = Assert<
+  InvalidateOutput extends SDKUIInvalidateMessage ? true : false
+>
+export type InvalidateWireFitsOutput = Assert<
+  SDKUIInvalidateMessage extends InvalidateOutput ? true : false
+>
+export type InvalidateIsSDKMessage = Assert<
+  SDKUIInvalidateMessage extends SDKMessage ? true : false
+>
+const invalidate: SDKUIInvalidateMessage = {
+  type: 'system',
+  subtype: 'ui_invalidate',
+  event: 'ui.render',
+  uuid: 'owned',
+  session_id: 'session',
+}
+const invalidFaultEvent: SDKUIInvalidateMessage = {
+  ...invalidate,
+  // @ts-expect-error Only render invalidation is supported.
+  event: 'ui.fault',
+}
+const terminalInvalidate: SDKUIInvalidateMessage = {
+  ...invalidate,
+  // @ts-expect-error Remote instances have a closed surface set.
+  instances: [{ surface: 'terminal', component: 'Pane', instance_id: 'site' }],
+}
+void [invalidate, invalidFaultEvent, terminalInvalidate]

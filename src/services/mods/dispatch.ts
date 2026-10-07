@@ -425,6 +425,8 @@ export async function dispatchModEvent(options: {
                   ? ['surface', 'clientId', 'reason']
               : options.event === 'ui.message'
                 ? ['surface', 'component', 'requestId', 'element', 'module']
+              : options.event === 'ui.fault'
+                ? ['surface', 'component', 'requestId', 'element', 'module', 'phase', 'reason']
               : options.event === 'ui.render'
                 ? ['surface', 'component', 'requestId', 'viewport', ...(options.input.component === 'Pane' ? ['props'] : [])]
                 : []

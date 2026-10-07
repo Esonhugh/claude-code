@@ -2090,3 +2090,12 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 本批将 ui_client_press / ui_message 接进 stream-json：使用真实 Client 绘制回包的规范地址，交互经过 Mods 钩子并返回最终 reached 输入；消息只交给所属插件并保留 client 来源。测试覆盖有效拦截、重写、消息 props、null、只读地址、失效地址优先于数据校验、JSON 限额、串行消息和绘制代次。
 
 结果、制品与隔离原生控制证据见 [Client 交互专项](docs/research/mods-client-events-292-20261007.md)。本批范围为这两类控制；ui_client_fault、剩余控制、5 类 responder、system 推送、完整终端 UI、官方 diff、G5 和旧 response 的全量 WIP 门禁不在完成范围内。
+
+
+## 2026-10-07：外部 Client 故障与恢复通知
+
+本批接通 ui_client_fault，验证当前 desktop Client 的规范地址、只通知所属插件、engine/core 来源、七个只读字段及 next({}) 恢复输入。load/render/run、原因文本规范化、空实例、失效地址、未监听故障、同代次恢复抑制、props 变化、跨 surface 失效与迟到节点移除均保留独立断言。
+
+恢复发送 system/ui_invalidate，外部 surface 重新请求 ui_render；故障控制不登记可取消任务，control_cancel_request 不影响 hook、通知和故障回包。严格作者类型保持 observe-only，不公开 $.ui.fault。SDK schema/type 双向检查覆盖有限 ui_invalidate 消息。
+
+准确结果、官方源证据、制品与隔离原生控制见 [Client 故障专项](docs/research/mods-client-fault-292-20261007.md)。本批不代表终端内部故障、完整浏览器 Client、剩余 8 类控制、5 类 responder、pane/scroll/focus 推送、全部 UI/diff/G5 或旧 response 全量 WIP 门禁通过。

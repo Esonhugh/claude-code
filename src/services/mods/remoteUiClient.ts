@@ -9,34 +9,58 @@ const clientKey = (plugin: string, module: string, key: string) =>
 
 /** Desktop Client addresses survive pending draws; only the newest generation publishes. */
 export function createModRemoteClientRegistry() {
-  const instances = new Map<string, { generation: number; keys: Set<string> }>()
+  const instances = new Map<
+    string,
+    {
+      generation: number
+      keys: Map<string, string>
+      failed: Map<string, string>
+    }
+  >()
   let generation = 0
   const touch = (
     key: string,
-    value: { generation: number; keys: Set<string> },
+    value: {
+      generation: number
+      keys: Map<string, string>
+      failed: Map<string, string>
+    },
   ) => {
     instances.delete(key)
     instances.set(key, value)
     if (instances.size > 1024) instances.delete(instances.keys().next().value!)
   }
   return {
-    begin(component: string, id: string) {
+    begin(component: string, id: string, version = '0') {
       const key = instanceKey(component, id)
-      const token = { key, generation: ++generation }
-      touch(key, { generation, keys: instances.get(key)?.keys ?? new Set() })
+      const token = { key, generation: ++generation, version }
+      touch(key, {
+        generation,
+        keys: instances.get(key)?.keys ?? new Map(),
+        failed: instances.get(key)?.failed ?? new Map(),
+      })
       return token
     },
     record(
-      token: { key: string; generation: number },
+      token: { key: string; generation: number; version: string },
       tree: SDKUIRenderElement,
     ) {
       if (instances.get(token.key)?.generation !== token.generation) return
-      const keys = new Set<string>()
+      const previous = instances.get(token.key)!
+      const keys = new Map<string, string>()
       const visit = (node: SDKUIRenderElement | string) => {
         if (typeof node === 'string') return
         if (node.type === 'Client') {
-          keys.add(
-            clientKey(node.client.plugin, node.props.module, node.props.key),
+          const key = clientKey(
+            node.client.plugin,
+            node.props.module,
+            node.props.key,
+          )
+          keys.set(
+            key,
+            previous.failed.has(key)
+              ? token.version
+              : (previous.keys.get(key) ?? token.version),
           )
           return
         }
@@ -44,7 +68,16 @@ export function createModRemoteClientRegistry() {
           for (const child of node.children ?? []) visit(child)
       }
       visit(tree)
-      if (keys.size) touch(token.key, { generation: token.generation, keys })
+      if (keys.size)
+        touch(token.key, {
+          generation: token.generation,
+          keys,
+          failed: new Map(
+            [...previous.failed].filter(
+              ([key, version]) => keys.has(key) && version === token.version,
+            ),
+          ),
+        })
       else instances.delete(token.key)
     },
     has(address: SDKUIClientAddress) {
@@ -58,6 +91,22 @@ export function createModRemoteClientRegistry() {
         return false
       touch(key, value)
       return true
+    },
+    toldFailed(
+      address: SDKUIClientAddress,
+      version: () => string,
+    ): (() => string) | undefined {
+      const instance = instanceKey(address.component, address.instance_id)
+      const entry = instances.get(instance)
+      const key = clientKey(address.plugin, address.module, address.client)
+      const born = entry?.keys.get(key)
+      if (!entry || born === undefined) return
+      if (entry.failed.has(key)) return version
+      touch(instance, {
+        ...entry,
+        failed: new Map([...entry.failed, [key, version()]]),
+      })
+      return () => born
     },
     clear() {
       instances.clear()
@@ -118,4 +167,29 @@ export function modClientDataProblem(value: unknown): string | undefined {
     path.delete(value)
   }
   return visit(value, 0)
+}
+
+export function normalizeModClientFaultReason(
+  plugin: string,
+  module: string,
+  reason: string,
+): string {
+  const truncate = (text: string, length: number) => {
+    let value = text.slice(0, length)
+    if (/[\ud800-\udbff]$/.test(value)) value = value.slice(0, -1)
+    return value
+  }
+  // The official fault formatter replaces control characters with spaces.
+  let text = reason.replace(
+    // eslint-disable-next-line no-control-regex
+    /[\t\n\r\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u{10eeee}\ud800-\udfff]/gu,
+    ' ',
+  )
+  if (text.length > 500) text = truncate(text, 500) + '…'
+  if (text.startsWith(`${plugin}: `)) text = text.slice(plugin.length + 2)
+  if (text.startsWith(`Client ${module}: `))
+    text = text.slice(module.length + 9)
+  if (!text.trim()) text = 'the module failed without a message'
+  text = text.replace(/[\u2028\u2029]/gu, ' ')
+  return text.length > 200 ? truncate(text, 199) + '…' : text
 }

@@ -468,7 +468,18 @@ export type SDKUIFocusMessage = SDKUISystemEnvelope & {
   plugin: string
   key: string
 }
+export type SDKUIInvalidateInstance = {
+  surface: SDKUIRemoteSurface
+  component: SDKUIRenderComponent
+  instance_id: string
+}
+export type SDKUIInvalidateMessage = SDKUISystemEnvelope & {
+  subtype: 'ui_invalidate'
+  event: 'ui.render'
+  instances?: SDKUIInvalidateInstance[]
+}
 export type SDKUISystemMessage =
+  | SDKUIInvalidateMessage
   | SDKUIPanesMessage
   | SDKUIScrollMessage
   | SDKUIFocusMessage

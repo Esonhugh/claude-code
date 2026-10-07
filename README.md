@@ -1569,7 +1569,7 @@ type RenderResponse = SDKControlUIResponseFor<typeof request>
 bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/entrypoints/sdk/controlSchemas.ssh.test.ts ./src/services/mods/remoteUiControl.test.ts
 ```
 
-协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message`；其余控制器、system 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
+协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message` / `ui_client_fault` 及 `ui_invalidate` 推送；其余控制器、pane/scroll/focus 推送和 responder 尚未完成。23 类协议定义不代表 23 类功能都能运行；完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 
 ### SDK 远程绘制与 Client 模块
@@ -1586,7 +1586,7 @@ Button / Input / Select 回执的 press 含 plugin 和 opaque handle。将它们
 
 桌面 Client 节点通过 client.plugin 标识所有者，client_modules 给出插件到模块包 hash 的映射。用 ui_client_module 查询 {plugin,hash,modules,runtime,limits,files}。宿主从已准入的源快照编译和重写 import，模块由外部 surface 执行；不得将包中的源代码当成宿主 hook 运行。随包返回官方 2.1.292 的固定 surface runtime/types 数据，hash 包含文件、模块清单和 limits。
 
-调试日志 `[ModsUIRemote]` 记录 surface/component/instance/drawing、hooked 和 rewritten，不新增 props 正文日志。实际三方回执、来源和边界见 [远程绘制专项](docs/research/mods-render-bridge-292-20261007.md)。客户端浏览器挂载、client_press/message/fault、pane/scroll/focus、system 推送及五类 responder 仍需独立完成和验收。
+调试日志 `[ModsUIRemote]` 记录 surface/component/instance/drawing、hooked 和 rewritten，不新增 props 正文日志。实际三方回执、来源和边界见 [远程绘制专项](docs/research/mods-render-bridge-292-20261007.md)。客户端浏览器挂载、pane/scroll/focus 及五类 responder 仍需独立完成和验收；Client 交互、消息和故障见后续专项。
 
 
 ### 外部 Client 的交互与消息
@@ -1607,4 +1607,32 @@ Button / Input / Select 回执的 press 含 plugin 和 opaque handle。将它们
 bun test --no-env-file ./src/services/mods/remoteUiClient.test.ts ./src/services/mods/remoteUiRender.test.ts
 ```
 
-真实官方/候选/完整工作区的验证和未完成范围见 [Client 交互验收](docs/research/mods-client-events-292-20261007.md)。当前接通 9 类客户端控制；ui_client_fault 等剩余 9 类、5 类 responder、system 推送及完整官方 diff viewer 流程继续对齐。
+真实官方/候选/完整工作区的验证和未完成范围见 [Client 交互验收](docs/research/mods-client-events-292-20261007.md)。当前接通 10 类客户端控制和 ui_invalidate；剩余 8 类、5 类 responder、pane/scroll/focus 推送及完整官方 diff viewer 流程继续对齐。
+
+
+### 外部 Client 故障与恢复
+
+外部 surface 在模块加载、组件绘制或回调运行失败时，以当前 Client 的地址发送 `ui_client_fault`，phase 分别为 load、render、run，reason 最多 200 个 UTF-16 单元：
+
+```json
+{"type":"control_request","request_id":"client-fault-1","request":{"subtype":"ui_client_fault","plugin":"example","component":"Pane","instance_id":"pane-1","client":"view","module":"hooks/view.ts","phase":"render","reason":"View failed"}}
+```
+
+地址存在时回包为 `{"handled":true}`，失效时为 false。只有所属插件收到 `ui.fault`，next.origin 为 engine/core；surface、component、requestId、element、module、phase、reason 都只读，`next({})` 恢复原输入。作者可以 `on('ui.fault', ...)` 观察故障，返回空结果；没有 `$.ui.fault()` 调用。
+
+当非空实例仍在绘制且所属插件监听此故障时，服务端发送以下推送（实际包含 uuid / session_id）。客户端据此重新发送 ui_render；服务端不会自动执行远程 Client 模块或重复执行绘制 hook。
+
+```json
+{"type":"system","subtype":"ui_invalidate","event":"ui.render","instances":[{"surface":"desktop","component":"Pane","instance_id":"pane-1"}]}
+```
+
+省略 instances 表示全局绘制失效；有 instances 时只重绘对应实例。同一故障代次的重复错误、相同请求及 props 变化不会持续触发恢复；绘制依赖再次失效后才允许新一轮恢复。故障控制没有可取消任务；control_cancel_request 不影响观察 hook、恢复通知或故障回包。`[ModsUIRemote]` 日志包含归属、规范模块、实例、来源 surface、故障 phase 和完成耗时。
+
+```bash
+bun test --no-env-file ./src/services/mods/remoteUiFault.test.ts ./src/services/mods/remoteUiFaultTypes.test.ts
+make check-mods-control-types
+```
+
+原生回执、故障文本、恢复次数与取消顺序的证据见 [Client 故障验收](docs/research/mods-client-fault-292-20261007.md)。此项不替代完整浏览器 Client、终端内部故障、官方 diff viewer 或全部 Mods 兼容验收。
+
+官方作者说明见 [Anthropic Mods 概览](https://code.claude.com/docs/en/plugins/mods/overview) 与 [Mods 接口参考](https://code.claude.com/docs/en/plugins/mods/reference)。接口参考将 ui.fault 定义为 Client 加载、绘制或运行失败的观察事件；本项目的具体类型与传输行为以固定官方版本的声明和专项验收为依据。
