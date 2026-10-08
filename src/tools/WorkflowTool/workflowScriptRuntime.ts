@@ -355,21 +355,32 @@ function escapeXmlText(value: unknown): string {
     .replace(/>/g, '&gt;')
 }
 
-function enqueueWorkflowNotification({
+async function enqueueWorkflowNotification({
   taskId,
   toolUseId,
   status,
   summary,
   outputFile,
   resultText,
+  usage,
+  setAppState,
 }: {
   taskId: string
   toolUseId?: string
-  status: 'completed' | 'failed'
+  status: 'completed' | 'failed' | 'killed'
   summary: string
   outputFile: string
   resultText: string
-}): void {
+  usage: { total_tokens: number; tool_uses: number; duration_ms: number }
+  setAppState: ToolUseContext['setAppState']
+}): Promise<void> {
+  let shouldEnqueue = false
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    shouldEnqueue = task?.type === 'local_workflow' && !task.notified
+    return prev
+  })
+  if (!shouldEnqueue) return
   const toolUseIdLine = toolUseId
     ? `\n<${TOOL_USE_ID_TAG}>${escapeXmlText(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
@@ -383,8 +394,14 @@ function enqueueWorkflowNotification({
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
 <result>${truncatedResult}</result>
+<usage><total_tokens>${usage.total_tokens}</total_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
-  enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  await enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    if (task?.type !== 'local_workflow' || task.notified) return prev
+    return { ...prev, tasks: { ...prev.tasks, [taskId]: { ...task, notified: true } } }
+  })
 }
 
 function workflowAbortStatus(reason: unknown): 'paused' | 'killed' | undefined {
@@ -1635,13 +1652,19 @@ export async function runWorkflowScript({
 
     const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
     const summary = `Dynamic workflow "${plan.description}" completed`
-    enqueueWorkflowNotification({
+    await enqueueWorkflowNotification({
       taskId: workflowTask.id,
       toolUseId: context.toolUseId,
       status: 'completed',
       summary,
       outputFile,
       resultText,
+      setAppState,
+      usage: {
+        total_tokens: completedUsage.tokenCount,
+        tool_uses: completedUsage.toolUseCount,
+        duration_ms: Date.now() - workflowTask.startTime,
+      },
     })
     emitTaskTerminatedSdk(workflowTask.id, 'completed', {
       toolUseId: context.toolUseId,
@@ -1676,9 +1699,22 @@ export async function runWorkflowScript({
           : {}),
       })
       if (abortStatus === 'killed') {
+        const summary = `Dynamic workflow "${plan.description}" stopped`
+        const resultText = scriptAgentResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || summary
+        const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+        await enqueueWorkflowNotification({
+          taskId: workflowTask.id, toolUseId: context.toolUseId,
+          status: 'killed', summary, resultText, outputFile, setAppState,
+          usage: {
+            total_tokens: abortedUsage.tokenCount,
+            tool_uses: abortedUsage.toolUseCount,
+            duration_ms: Date.now() - workflowTask.startTime,
+          },
+        })
         emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
           toolUseId: context.toolUseId,
-          summary: `Dynamic workflow "${plan.description}" stopped`,
+          summary,
+          outputFile,
           usage: {
             total_tokens: abortedUsage.tokenCount,
             tool_uses: abortedUsage.toolUseCount,
@@ -1706,13 +1742,19 @@ export async function runWorkflowScript({
     })
     const outputFile = await writeWorkflowResult(workflowTask.id, message)
     const summary = `Dynamic workflow "${plan.description}" failed: ${message}`
-    enqueueWorkflowNotification({
+    await enqueueWorkflowNotification({
       taskId: workflowTask.id,
       toolUseId: context.toolUseId,
       status: 'failed',
       summary,
       outputFile,
       resultText: message,
+      setAppState,
+      usage: {
+        total_tokens: failedUsage.tokenCount,
+        tool_uses: failedUsage.toolUseCount,
+        duration_ms: Date.now() - workflowTask.startTime,
+      },
     })
     emitTaskTerminatedSdk(workflowTask.id, 'failed', {
       toolUseId: context.toolUseId,

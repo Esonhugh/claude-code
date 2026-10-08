@@ -395,19 +395,32 @@ function escapeXmlText(value: unknown): string {
     .replace(/>/g, '&gt;')
 }
 
-function enqueueWorkflowCompletionNotification({
+async function enqueueWorkflowNotification({
   taskId,
   toolUseId,
   summary,
   outputFile,
   resultText,
+  status,
+  usage,
+  setAppState,
 }: {
   taskId: string
   toolUseId?: string
   summary: string
   outputFile: string
   resultText: string
-}): void {
+  status: 'completed' | 'failed' | 'killed'
+  usage: { total_tokens: number; tool_uses: number; duration_ms: number }
+  setAppState: ToolUseContext['setAppState']
+}): Promise<void> {
+  let shouldEnqueue = false
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    shouldEnqueue = task?.type === 'local_workflow' && !task.notified
+    return prev
+  })
+  if (!shouldEnqueue) return
   const toolUseIdLine = toolUseId
     ? `\n<${TOOL_USE_ID_TAG}>${escapeXmlText(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
@@ -418,11 +431,17 @@ function enqueueWorkflowCompletionNotification({
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${escapeXmlText(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXmlText(outputFile)}</${OUTPUT_FILE_TAG}>
-<${STATUS_TAG}>completed</${STATUS_TAG}>
+<${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
 <result>${truncatedResult}</result>
+<usage><total_tokens>${usage.total_tokens}</total_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
-  enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  await enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    if (task?.type !== 'local_workflow' || task.notified) return prev
+    return { ...prev, tasks: { ...prev.tasks, [taskId]: { ...task, notified: true } } }
+  })
 }
 
 function buildAgentPrompt(
@@ -1266,12 +1285,19 @@ export async function runWorkflowPlan({
         resultText,
       )
       const summary = `Dynamic workflow "${plan.description}" completed`
-      enqueueWorkflowCompletionNotification({
+      await enqueueWorkflowNotification({
         taskId: workflowTask.id,
         toolUseId: context.toolUseId,
         summary,
         outputFile,
         resultText,
+        status: 'completed',
+        setAppState,
+        usage: {
+          total_tokens: workflowTaskUsage.tokenCount ?? 0,
+          tool_uses: workflowTaskUsage.toolUseCount ?? 0,
+          duration_ms: Date.now() - workflowTask.startTime,
+        },
       })
       emitTaskTerminatedSdk(workflowTask.id, 'completed', {
         toolUseId: context.toolUseId,
@@ -1304,9 +1330,22 @@ export async function runWorkflowPlan({
             : {}),
         })
         if (abortStatus === 'killed') {
+          const summary = `Dynamic workflow "${plan.description}" stopped`
+          const resultText = allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || summary
+          const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+          await enqueueWorkflowNotification({
+            taskId: workflowTask.id, toolUseId: context.toolUseId,
+            status: 'killed', summary, resultText, outputFile, setAppState,
+            usage: {
+              total_tokens: abortedUsage.tokenCount ?? 0,
+              tool_uses: abortedUsage.toolUseCount ?? 0,
+              duration_ms: Date.now() - workflowTask.startTime,
+            },
+          })
           emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
             toolUseId: context.toolUseId,
-            summary: `Dynamic workflow "${plan.description}" stopped`,
+            summary,
+            outputFile,
             usage: {
               total_tokens: abortedUsage.tokenCount ?? 0,
               tool_uses: abortedUsage.toolUseCount ?? 0,
@@ -1336,10 +1375,21 @@ export async function runWorkflowPlan({
         resumeCacheEntries: resumeRuntime.entries,
         ...workflowTaskUsage,
       })
-      const outputFile = await writeWorkflowResult(workflowTask.id, message)
+      const resultText = [message, ...allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`)].join('\n\n')
+      const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+      const summary = `Dynamic workflow "${plan.description}" failed: ${message}`
+      await enqueueWorkflowNotification({
+        taskId: workflowTask.id, toolUseId: context.toolUseId,
+        status: 'failed', summary, resultText, outputFile, setAppState,
+        usage: {
+          total_tokens: workflowTaskUsage.tokenCount ?? 0,
+          tool_uses: workflowTaskUsage.toolUseCount ?? 0,
+          duration_ms: Date.now() - workflowTask.startTime,
+        },
+      })
       emitTaskTerminatedSdk(workflowTask.id, 'failed', {
         toolUseId: context.toolUseId,
-        summary: `Dynamic workflow "${plan.description}" failed: ${message}`,
+        summary,
         outputFile,
         usage: {
           total_tokens: workflowTaskUsage.tokenCount ?? 0,
