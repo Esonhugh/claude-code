@@ -1235,6 +1235,11 @@ def builtin_cache_producers_closed(cache, binary_sha256):
                     or type(eof.get('childExitCode')) is not int or eof['childExitCode'] != 0
                     or type(eof.get('rawBytes')) is not int or eof['rawBytes'] != raw.stat().st_size
                     or cleanup.get('childReaped') is not True
+                    or type(eof.get('childStatus')) is not int or eof['childStatus'] != 0
+                    or type(cleanup.get('childStatus')) is not int or cleanup['childStatus'] != eof['childStatus']
+                    or cleanup.get('physicalEof') is not True or cleanup.get('normalCompletion') is not True
+                    or cleanup.get('cleanupErrors') != [] or 'failure' not in cleanup or cleanup['failure'] is not None
+                    or 'stopReason' not in cleanup or cleanup['stopReason'] is not None
                     or not isinstance(removed, list) or sorted(removed) != ['frame-request.fifo', 'frame-response.fifo']
                     or any((run / name).exists() or (run / name).is_symlink() for name in removed)):
                 return False

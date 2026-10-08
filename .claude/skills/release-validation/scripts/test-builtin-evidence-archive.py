@@ -177,6 +177,8 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
         self.produce_report = True
         self.unknown_fifo = False
         self.open_producer = False
+        self.cleanup_override = {}
+        self.eof_override = {}
 
     def producer(self, command, **options):
         import subprocess
@@ -196,11 +198,14 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
         if not self.open_producer:
             (self.run / 'native-pty-eof.json').write_text(json.dumps({
                 'captureId': initial['captureId'], 'childPid': initial['pid'],
-                'rawBytes': len(self.raw), 'childExitCode': 0}))
+                'rawBytes': len(self.raw), 'childExitCode': 0, 'childStatus': 0,
+                **self.eof_override}))
             (self.run / 'broker-cleanup.json').write_text(json.dumps({
                 'captureId': initial['captureId'], 'childPid': initial['pid'],
-                'childReaped': True,
-                'fifoRemoved': ['frame-request.fifo', 'frame-response.fifo']}))
+                'childReaped': True, 'childStatus': 0, 'physicalEof': True, 'normalCompletion': True,
+                'failure': None, 'stopReason': None, 'cleanupErrors': [],
+                'fifoRemoved': ['frame-request.fifo', 'frame-response.fifo'],
+                **self.cleanup_override}))
         if self.unknown_fifo:
             os.mkfifo(self.run / 'unknown.fifo', 0o600)
         if self.produce_report:
@@ -233,6 +238,44 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
         self.assertEqual((self.run / 'native-pty.raw').read_bytes(), expected)
         checks = json.loads((self.gate.evidence_root / 'builtin-mods/builtin-mods-checks.json').read_text())
         self.assertEqual(checks['retained_cache'], str(self.cache))
+
+    def test_cleanup_wait_status_cannot_disagree_with_successful_eof(self):
+        self.cleanup_override = {'childStatus': 512}
+        self.assertFalse(self.execute()['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
+
+    def test_signal_wait_status_cannot_claim_successful_exit(self):
+        self.eof_override = {'childStatus': 9}
+        self.assertFalse(self.execute()['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
+
+    def test_missing_raw_wait_status_is_not_closed_proof(self):
+        self.eof_override = {'childStatus': None}
+        self.assertFalse(self.execute()['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
+
+    def test_boolean_raw_wait_status_is_not_closed_proof(self):
+        self.cleanup_override = {'childStatus': False}
+        self.assertFalse(self.execute()['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
+
+    def test_cleanup_failure_cannot_authorize_deleting_original_evidence(self):
+        self.cleanup_override = {'cleanupErrors': [{'action': 'restore-outer-tty'}]}
+        result = self.execute()
+        self.assertFalse(result['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
+
+    def test_abnormal_stop_cannot_authorize_deleting_original_evidence(self):
+        self.cleanup_override = {'normalCompletion': False, 'stopReason': 'SIGTERM'}
+        result = self.execute()
+        self.assertFalse(result['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
+
+    def test_unobserved_physical_eof_cannot_authorize_deleting_original_evidence(self):
+        self.cleanup_override = {'physicalEof': False}
+        result = self.execute()
+        self.assertFalse(result['checks']['cache_cleanup'])
+        self.assertTrue(self.cache.exists())
 
     def test_source_drift_retains_the_actual_late_producer_bytes(self):
         result = self.execute('source')
@@ -294,10 +337,11 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
                 (self.run / 'native-pty.raw').write_bytes(late_bytes)
                 (self.run / 'native-pty-eof.json').write_text(json.dumps({
                     'captureId': 'controlled-fixture', 'childPid': 123456,
-                    'rawBytes': len(late_bytes), 'childExitCode': 0}))
+                    'rawBytes': len(late_bytes), 'childExitCode': 0, 'childStatus': 0}))
                 (self.run / 'broker-cleanup.json').write_text(json.dumps({
                     'captureId': 'controlled-fixture', 'childPid': 123456,
-                    'childReaped': True,
+                    'childReaped': True, 'childStatus': 0, 'physicalEof': True, 'normalCompletion': True,
+                    'failure': None, 'stopReason': None, 'cleanupErrors': [],
                     'fifoRemoved': ['frame-request.fifo', 'frame-response.fifo']}))
             return remapped
         with patch.object(driver, 'remap_path_strings', side_effect=late):

@@ -2207,3 +2207,8 @@ Native22 的 F02 仍阻止该候选提交：复制后晚到字节且随后正常
 
 
 Native23的F03使候选不提交：复制后新增特殊端点会被普通manifest漏掉。新24实际caller RED为21案17通过4失败0错误，分别覆盖源未知FIFO/socket、晚到tmux.sock及副本未知FIFO；删除前新增双目录lstat检查，源只允许初次排除的同路径/类型/device/inode/mode端点，副本不得含特殊端点。最终共22案，含原IPC允许保留及已排除socket替换拒收；内存保留初次manifest和IPC身份，不能倒填旧收据或凭源缓存删除升级业务/native验收。新24重新绑定源码、构建、全部门禁与完整矩阵，旧23证据不改写。
+
+
+## 2026-10-08 — Broker 生命周期验收有效性
+
+实际 PTY broker 增加部分启动、独立清理、有界 native reap，以及仅在观察到 EOF 和 waitpid 后写入的回执（不能由 kill/close/PID 消失代替）；实际 caller 拒绝 cleanupErrors、异常完成与未观察 EOF 的原件删除资格。无效测试、稳定 RED、运行命令和 native/full-gate 边界见[生命周期记录](docs/research/mods-broker-lifecycle-validity-20261008.md)。既有 Native24 的23通过6失败保持失败；完整 Mods/UI 和最新官方 native 验收继续处理。

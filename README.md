@@ -2139,3 +2139,8 @@ Darwin 可用 `scripts/capture-native-terminal-writes.py --evidence-root <新目
 显式 nested Agent：当子 Agent 的过滤后工具池包含 `Agent` 时，`tools: Agent(child)` 正常解析为可调用工具；缺席或被禁止时只保留类型限制元数据，权限和深度检查继续生效。配置示例、固定292代码边界和同轮真实入口要求见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)。完整 Mods/UI 与最新版 native 验收仍在进行。
 
 内置 Mods 验收驱动自动归档证据：识别并记录本轮 FIFO/socket，核对源与副本 manifest，保留原报告及独立路径映射报告。归档失败、缺 producer EOF/reap，或删除前源/副本与原快照失配或出现新增/替换特殊端点时保留源缓存，`builtin-mods-checks.json` 的 `retained_cache` 指明路径并保持失败。回归命令、收据位置与未闭合边界见[归档有效性](docs/research/mods-builtin-evidence-archive-20261008.md)。文件复制成功不替代原生退出、逐帧或业务验收。
+
+
+### 终端采集的退出与清理回执
+
+`python3 scripts/test-terminal-evidence-broker.py` 验证真实 PTY 的启动、输入/resize、退出和故障清理。broker 只以实际 PTY EOF 与 waitpid 记录退出；清理错误和异常停止保持失败，资源清理后的终态 seal 防止迟到信号改写回执分类，原件删除还要求正常完成且无错误。采集命令、回执字段、有效/无效测试处置与完整验收边界见[broker 生命周期记录](docs/research/mods-broker-lifecycle-validity-20261008.md)。完整 Mods/UI、时序与最新版 native 验收继续进行。
