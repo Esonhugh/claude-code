@@ -2201,3 +2201,9 @@ outer seal 在真实独立重放之后生成最终manifest时，也重新比较I
 
 
 原生验收按backend绑定本轮关闭原件，严格拒收错误JSON类型、FIFO/链接及不完整diff子测试；正常EOF/reap与bounded replay不提升为完整通过。新增guard可用`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-acceptance-contracts.py`运行，实际CLI仍需上述fresh build与完整frame-journal命令。Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整发布继续失败；失败分类、固定子测试及独占收据用法见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。CHANGELOG参与二进制构建，更新后必须重新生成产物。
+
+
+原生证据writer按已排队prefix批处理并保留未完成snapshot；producer关闭和外层collector EOF分阶段严格检查，2秒关闭预算与64MiB上限保持。协议及退出guard运行方法、受控积压probe的IO缺失边界与后续完整门禁见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。正常producer退出不替代完整采集或产品时序通过。
+
+
+Native43完整30项仍为27通过、3失败；canonical和interaction实际normal_native_exit均true，interaction保存全部90帧/122项IO并正常关闭。完整CLI/frame文件14通过、1失败：真实resize后零输出快照仍为旧尺寸；此RED继续保留，未完成geometry handoff与完整发布。证据与首次分歧见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。

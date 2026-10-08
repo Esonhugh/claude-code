@@ -2363,3 +2363,11 @@ Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、w
 ### 2026-10-09 原生身份与拒收处置
 
 本轮native identity/EOF-reap使用实际backend originals，JSON类型与closed regular-file入口严格拒收；diff子测试按固定roster与完整日志检查，未把outer/child重复计数。15项完整fresh-binary CLI/frame文件及相关guard通过；Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整产品时序、input owner、官方diff/browser/Client及发布继续失败。feature源码和binary identity、RED与管理错误分类、原件收据和命令见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。文档更新后的CHANGELOG也是binary input，必须另建产物验收。
+
+
+### 2026-10-09 发布积压与关闭阶段
+
+Native41/42的完整失败原件保留。writer改为批处理并等待完整snapshot物理前缀，最终退出必须同时满足producer收据与实际collector EOF；缺描述符及摘要保持失败。受控packet/raw积压不能补回失败原件缺失的完整IO，也不是产品UI时序证明。回归入口、RED分类和默认完整矩阵边界见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。
+
+
+Native43完整30项仍为27通过、3失败；canonical和interaction实际normal_native_exit均true，interaction保存全部90帧/122项IO并正常关闭。完整CLI/frame文件14通过、1失败：真实resize后零输出快照仍为旧尺寸；此RED继续保留，未完成geometry handoff与完整发布。证据与首次分歧见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。
