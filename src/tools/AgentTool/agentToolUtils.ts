@@ -210,14 +210,12 @@ export function resolveAgentTools(
         // Parse comma-separated agent types: "worker, researcher" → ["worker", "researcher"]
         allowedAgentTypes = ruleContent.split(',').map(s => s.trim())
       }
-      // For sub-agents, Agent is excluded by filterToolsForAgent — mark the spec
-      // valid for allowedAgentTypes tracking but skip tool resolution.
-      if (!isMainThread) {
+      // A withheld Agent spec still carries type restrictions for the child.
+      // An available Agent must resolve normally so nested calls can execute.
+      if (!isMainThread && !availableToolMap.has(AGENT_TOOL_NAME)) {
         validTools.push(toolSpec)
         continue
       }
-      // For main thread, filtering was skipped so Agent is in availableToolMap —
-      // fall through to normal resolution below.
     }
 
     const tool = availableToolMap.get(toolName)

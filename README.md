@@ -2134,3 +2134,6 @@ bun test --no-env-file ./src/components/ModsPane.evidence.test.tsx ./src/ink/ter
 ### 原生输出采集有效性
 
 Darwin 可用 `scripts/capture-native-terminal-writes.py --evidence-root <新目录> --executable ./built-claude --mode pty -- --version` 独立采集原 syscall 与 PTY 字节、EOF 和退出。脚本自动编译自身观测库，使用私有配置，无 writer ACK；记录真实别名 fd、原返回值及 errno，缺片/丢包/超限/缺少封口均失败。协议与清理回归、pipe 模式、已验证范围及尚未覆盖的逐帧/时序限制见[原生采集记录](docs/research/mods-native-write-capture-validity-20261008.md)。此启动检查不代表完整 UI/diff 或发布通过。
+
+
+显式 nested Agent：当子 Agent 的过滤后工具池包含 `Agent` 时，`tools: Agent(child)` 正常解析为可调用工具；缺席或被禁止时只保留类型限制元数据，权限和深度检查继续生效。配置示例、固定292代码边界和同轮真实入口要求见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)。完整 Mods/UI 与最新版 native 验收仍在进行。

@@ -2186,3 +2186,10 @@ CHANGELOG补充第十八轮22/7摘要后，最终source epoch为 `7a49839887a8f8
 ## 2026-10-08 — 原生 syscall 采集有效性
 
 新增仓库采集器、Darwin观测库与严格字节验证器。原函数调用/参数/返回值/errno 保留，记录 NOCANCEL 和真实 alias fd，私有 datagram 分片无 ACK；缺少 header/footer、容量超限、丢包、跨 producer、缺片/重复片和未知字节均拒收。当前单线程 Bun fixture 的 pipe/控制 PTY 对照和七类原生故障实验、原始 negative、沙箱 bind 未达注入点与正式边界见[本批记录](docs/research/mods-native-write-capture-validity-20261008.md)。Native18 的22通过7失败保持失败，完整UI/diff、resize/逐帧/输入归属/时序、最新官方native与浏览器生命周期继续处理，不push。
+
+
+## 2026-10-08 — 显式 nested Agent 准入
+
+显式 nested Agent：当子 Agent 的过滤后工具池包含 `Agent` 时，`tools: Agent(child)` 正常解析为可调用工具；缺席或被禁止时只保留类型限制元数据，权限和深度检查继续生效。配置示例、固定292代码边界和同轮真实入口要求见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)。完整 Mods/UI 与最新版 native 验收仍在进行。
+
+本批从已提交 b97589c 的干净副本构建；Native18 的 nested-agent 失败保留，新的源码、构建与默认完整矩阵须单独绑定。初始化错误不计有效RED，局部测试不代替同轮 parent/child 调用、parentage、回执、通知、prompt 恢复和清理证明；未通过的其他 target 继续处理，整体验收不提升。

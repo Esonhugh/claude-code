@@ -24,6 +24,7 @@
 
 ### 变更内容
 
+- 修复显式 nested Agent 在工具已可用时仍被跳过解析的问题；缺席/禁止时保留类型元数据，权限与深度检查继续生效。使用和同轮验收边界见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)，完整发布验收仍在进行。
 - 增加 Darwin 原生 syscall 输出观测与严格字节验证：包含 NOCANCEL、别名 fd、部分写入、errno 和独立 pipe/PTY EOF；采集无 ACK，不完整证据拒收，启动与故障实验不替代完整 UI/时序验收。使用方法与边界见[原生采集记录](docs/research/mods-native-write-capture-validity-20261008.md)。
 - Mods终端观测绑定已提交DOM的私有身份、实际焦点与几何；保留合法plain空Button的逻辑焦点席位，缺失/隐藏/foreign控件仍拒绝。第十七轮29项27通过2失败；干净源码第十八轮29项22通过7失败，首次Tab未前进及终端收尾未通过，整体验收仍失败、同步采集时序仍不等价；实现与必验边界见[终端验收有效性](docs/research/mods-terminal-evidence-validity-20261008.md)。
 - 接通 Mods Pane / PaneField 的 `Ctrl+X X` 人工关闭与自定义 `pane:close`，覆盖 Input/Select 和真实 Band consumer；关闭 hook 前释放宿主与字段焦点，阻止被否决关闭后的旧焦点请求迟到恢复。使用与验收边界见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
