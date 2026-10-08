@@ -404,7 +404,9 @@ docs/workflows/
 
 `/workflows` 仅用于查看和管理运行状态；实际执行由 `Workflow` / `WorkflowTool` 或注册后的 workflow slash command 发起。
 
-运行完成、执行失败或通过 `TaskStop` 停止后，主会话会收到对应的任务通知，包含已测 token/tool 用量、持续时间和输出文件；已完成分支的结果也保留在输出中。暂停保留恢复状态，不发送终态通知；对已经结束的 run 再次执行不会重复启动或通知。当前实现与源码回归已同步，真实 CLI 验收记录见 `mods-test.md`。
+脚本中的 `await agent(...)` 和 declarative plan 会等待实际 worker 的终态。普通 Agent 被 fork 模式或定义路由到后台时，Workflow 继续等待同一个任务；用户把前台 worker 切到后台也不重放执行。进度来自实际消息，取消保留原原因并只停止本次调用的 worker。无需为 Workflow 关闭 fork 模式。
+
+运行完成、执行失败或通过 `TaskStop` 停止后，主会话会收到对应的任务通知，包含已测 token/tool 用量、持续时间和输出文件；已完成分支的结果也保留在输出中。暂停保留恢复状态，不发送终态通知；对已经结束的 run 再次执行不会重复启动或通知。Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、workflow、workflow-retry-partial-failure、workflow-failure-detail 均通过最终验收；其余失败为 builtin-mods、terminal-canonical-diff、terminal-interaction。整体仍未通过。 本批完整回归、类型检查、新构建及默认验收驱动均通过；不代表完整 Mods/UI、browser/Client 或发布通过。详见[生命周期验收](docs/research/workflow-agent-lifecycle-validity-20261009.md)。
 
 官方模式兼容点包括：
 

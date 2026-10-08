@@ -19,13 +19,15 @@
 
 ### 版本状态
 
-- 未发布；汇总 2026-09-30 至 2026-10-08 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
+- 未发布；汇总 2026-09-30 至 2026-10-09 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
 
 ### 关联提交
 
 - 累计范围为 `v2.1.219..HEAD`；逐批提交与验证细节见[历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。
 
 ### 变更内容
+
+- Workflow 等待实际 Agent 任务终态，转后台继续同一 stream；转发真实进度，取消保留原原因并隔离无关 Agent。完成、失败与停止通知绑定 task/tool ID、已测用量和输出，暂停不发送终态通知，结束 run 不重复执行或通知。详见[生命周期验收](docs/research/workflow-agent-lifecycle-validity-20261009.md)。
 
 - native resize 验收：owned broker 在真实 `TIOCSWINSZ` 前后记录 Mach 时钟与内核尺寸；时钟跨 JSON 使用精确 uint64 十进制字符串。独立回放按 syscall prefix 应用尺寸变化，在帧输出结束点逐 cell 比较；重叠、身份/几何不符及缺失括号继续拒收。真实默认 CLI 的一次 resize/正常退出局部回放已通过，完整 native 与发布门禁继续保持未通过。
 
@@ -80,6 +82,8 @@
 - 对齐 Pane 同 ID 更新的插件归属、可选属性替换、跨插件关闭、重复关闭去重、异常恢复及标题 Unicode 校验；关闭时撤销外部绘制与 Client 地址。
 
 ### 测试覆盖
+
+- Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、workflow、workflow-retry-partial-failure、workflow-failure-detail 均通过最终验收；其余失败为 builtin-mods、terminal-canonical-diff、terminal-interaction。整体仍未通过。 完整源码回归和默认验收入口通过，子测试执行数量及日志保留；共享 WIP 的私有合并回归另验，不冒充同一 binary source。原生帧关联、输入 owner、终端时序与完整 Mods 发布继续保持未通过。
 
 - 接通 $.process.spawn 真实子进程、同步流、raw/wrapped receipt、middleware 与环境归属；正常返回保有流，超时及卸载停止自己的孩子，catch 使用新信号。新增 Worker、严格作者类型及 plugin test runner 矩阵；最终14文件746通过、7项原有skip、0失败，私有合并快照44通过。新binary在Native36通过此能力的八项CLI契约和最终原件重查；完整门禁24通过/6失败，不能宣告Mods/UI或发布通过。见[流专项](docs/research/mods-process-spawn-validity-293-20261008.md)。
 - process.spawn 真实作者 CLI 入口成为必需 mods-process-spawn target；driver持有关闭摘要、binary/probe/root和全部proof map，最终必须固定唯一断言ID并重读全部原件、重新计算契约。缺target及七种最终误接收的默认入口RED保留，修复后默认回归通过。

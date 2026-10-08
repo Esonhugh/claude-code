@@ -2340,3 +2340,16 @@ Native36 完整门禁正常结束：30项 / 24通过 / 6失败，overall failed�
 冻结source `b5fb32bf65f5c2b5bfbab8bd002c19651f55ab729c173915a95ce8ce52beec7b`，binary `fdca27fe4253014308298f15d592dadc6d6964ce6ebaa1956c650b65edd20b81`；完整 `driver-final-manifest.json` SHA `5c4a0735d23050ca8b9ca462e4640b0093f8a66ba46d78f1f8dd7d7be044b17f`。实际全部14文件746通过/7skip/0失败，release-check、新build和默认release-driver回归通过；修复取消、retained next、恢复生命周期、testkit同步流及拒绝错误。七种最终误接收有真实默认入口RED/GREEN，不能只凭立即检查通过而勾掉最终原件闭合。
 
 原件保留在 `/private/tmp/mods-remote-composer-292-20261008-rptx4ocs`：final8各before/result/log、full-gate36-evidence、full-gate36-disposition.json。私有ROOT-WIP合并快照另测44/0，保留现有testkit懒加载与注册校验并补process.spawn；这是不同source `6a0e63b9ad8df8ac7d58aac5523d57c53a61f2565ced5b866cf969d5fca77b03`，不冒充完整门禁所测source。原有六失败、其余11个生产方法、完整终端/diff/browser/Client及四路发布仍待处理；完整目标保持active。
+
+
+### Workflow Agent 生命周期与验收（Native39，2026-10-09）
+
+Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、workflow、workflow-retry-partial-failure、workflow-failure-detail 均通过最终验收；其余失败为 builtin-mods、terminal-canonical-diff、terminal-interaction。整体仍未通过。
+
+冻结source `5a781ed6114efbd88b86532dcdbfbc06bec9562a16e40da9b32b05e7c94d81ab`；binary `98a9d45f612a2a3ba0225a1a1693cbe07706e2b3973a550eb36a5033774d78a4`；最终manifest SHA `767178b80b7749d3dffe832838e45812679a3f4ae28281ace32061cd6fd7c98b`。全部原有required和七个additive目标保留，没有outer timeout，源码不漂移，自有driver进程组已退出。
+
+四文件外层12/0/138expect；子日志分别2/0/16、2/0/16、3/0/13、3/0/16，不与外层重复相加。相邻五文件8/0/16expect；完整runWorkflow和workflowScriptRuntime是Node assert程序，Bun计数0但程序的完成标记及退出码均核实。脚本plan-mode仅用私有settings，不改变生产guard。release-check、新build及实际默认release-driver通过。
+
+失败对照保留：Native37的false-only修复仍六失败，Native38两项Workflow修复通过但code-review缺usage仍拒收；transition-red2复现转后台归属、取消及通知缺口。transition-red1的进度end_turn夹具不作为取消产品证据，改用真实tool-use/result后再验证。另一个进度夹具过早调用Bun pending rejects造成超时，作为夹具失败，不计产品RED。子测试现在要求明确执行数量并输出完整日志，避免0 fail但未覆盖。
+
+私有ROOT-WIP合并source `3374dfe469fbbbc1d46f142bc3df361f8f74e16aeef318d21d76f6abc13b11f9` 的回归另通过，保持其他Claude修改；这是不同source，不冒充主二进制epoch。完整terminal/diff、browser/Client及其余11个生产方法继续待处理。原件在 `/private/tmp/mods-remote-composer-292-20261008-rptx4ocs` 的final2各before/result/log、full-gate39-evidence及disposition；详见[生命周期验收](docs/research/workflow-agent-lifecycle-validity-20261009.md)。
