@@ -12,6 +12,7 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import ssl
 import socket
 import select
@@ -1203,6 +1204,151 @@ def is_relative_to(path, parent):
         return True
     except ValueError:
         return False
+
+
+def builtin_cache_producers_closed(cache, binary_sha256):
+    """Deleting a captured run also requires its producer's EOF and reap receipt."""
+    artifacts = ('native-pty.raw', 'pty-io.jsonl', 'native-pty-initial.json',
+                 'native-pty-eof.json', 'broker-cleanup.json',
+                 'frame-request.fifo', 'frame-response.fifo')
+    for run in (cache / 'runs').glob('r-*'):
+        if run.is_symlink():
+            return False
+        if not any((run / name).exists() or (run / name).is_symlink() for name in artifacts):
+            continue
+        try:
+            paths = [run / name for name in ('native-pty.raw', 'native-pty-initial.json',
+                                           'native-pty-eof.json', 'broker-cleanup.json')]
+            if any(path.is_symlink() or not path.is_file() for path in paths):
+                return False
+            raw, initial_path, eof_path, cleanup_path = paths
+            initial, eof, cleanup = [json.loads(path.read_text())
+                                     for path in (initial_path, eof_path, cleanup_path)]
+            if not all(isinstance(value, dict) for value in (initial, eof, cleanup)):
+                return False
+            pid, capture_id = initial.get('pid'), initial.get('captureId')
+            removed = cleanup.get('fifoRemoved')
+            if (type(pid) is not int or pid <= 0 or not isinstance(capture_id, str) or not capture_id
+                    or initial.get('pgid') != pid or initial.get('binarySha256') != binary_sha256
+                    or eof.get('captureId') != capture_id or cleanup.get('captureId') != capture_id
+                    or eof.get('childPid') != pid or cleanup.get('childPid') != pid
+                    or type(eof.get('childExitCode')) is not int or eof['childExitCode'] != 0
+                    or type(eof.get('rawBytes')) is not int or eof['rawBytes'] != raw.stat().st_size
+                    or cleanup.get('childReaped') is not True
+                    or not isinstance(removed, list) or sorted(removed) != ['frame-request.fifo', 'frame-response.fifo']
+                    or any((run / name).exists() or (run / name).is_symlink() for name in removed)):
+                return False
+        except (OSError, ValueError, TypeError):
+            return False
+    return True
+
+
+def builtin_cache_endpoints_match(root, expected):
+    """Only the original, explicitly excluded IPC nodes may remain in the source."""
+    if root.is_symlink() or not root.is_dir() or not isinstance(expected, list):
+        return False
+    allowed = {}
+    for row in expected:
+        if (not isinstance(row, dict) or set(row) != {'path', 'type', 'device', 'inode', 'mode'}
+                or not isinstance(row['path'], str)):
+            return False
+        parts = Path(row['path']).parts
+        if (len(parts) != 3 or parts[0] != 'runs'
+                or not re.fullmatch(r'r-[0-9a-f]{12}', parts[1])
+                or not ((row['type'] == 'fifo' and parts[2] in ('frame-request.fifo', 'frame-response.fifo'))
+                        or (row['type'] == 'socket' and parts[2] == 'tmux.sock'))
+                or any(type(row[key]) is not int for key in ('device', 'inode', 'mode'))
+                or row['path'] in allowed):
+            return False
+        allowed[row['path']] = row
+    for path in sorted(root.rglob('*')):
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            continue
+        kind = 'fifo' if stat.S_ISFIFO(info.st_mode) else 'socket' if stat.S_ISSOCK(info.st_mode) else None
+        relative = str(path.relative_to(root))
+        actual = {'path': relative, 'type': kind, 'device': info.st_dev,
+                  'inode': info.st_ino, 'mode': stat.S_IMODE(info.st_mode)}
+        if actual != allowed.get(relative):
+            return False
+    return True
+
+
+def builtin_cache_archive_matches(source, archive, receipt, expected_snapshot):
+    """Deletion requires both trees to still match the original verified snapshot."""
+    try:
+        if receipt.is_symlink() or not receipt.is_file():
+            return False
+        saved = json.loads(receipt.read_text())
+        if not isinstance(expected_snapshot, dict):
+            return False
+        expected_manifest = expected_snapshot.get('sourceManifest')
+        expected_endpoints = expected_snapshot.get('excludedTransports')
+        if (not isinstance(saved, dict) or not isinstance(expected_manifest, dict)
+                or saved.get('source') != str(source) or saved.get('archive') != str(archive)
+                or any(saved.get(key) is not True for key in (
+                    'archiveComplete', 'sourceFilesStable', 'archiveFilesMatch'))
+                or saved.get('sourceManifest') != expected_manifest
+                or saved.get('excludedTransports') != expected_endpoints):
+            return False
+        return (builtin_cache_endpoints_match(source, expected_endpoints)
+                and builtin_cache_endpoints_match(archive, [])
+                and tree_manifest(source) == expected_manifest
+                and tree_manifest(archive) == expected_manifest)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def archive_builtin_cache(source, archive, receipt):
+    """Copy durable evidence without opening the run's ephemeral IPC endpoints."""
+    if archive.exists() or receipt.exists():
+        raise FileExistsError('builtin evidence archive or receipt already exists')
+    before = tree_manifest(source)
+    excluded = []
+    stable = matched = False
+    completed = False
+
+    def ignore(directory, names):
+        ignored = []
+        for name in sorted(names):
+            path = Path(directory) / name
+            relative = path.relative_to(source)
+            parts = relative.parts
+            if (len(parts) != 3 or parts[0] != 'runs'
+                    or not re.fullmatch(r'r-[0-9a-f]{12}', parts[1])):
+                continue
+            info = path.lstat()
+            kind = None
+            if (name in ('frame-request.fifo', 'frame-response.fifo')
+                    and stat.S_ISFIFO(info.st_mode)):
+                kind = 'fifo'
+            elif name == 'tmux.sock' and stat.S_ISSOCK(info.st_mode):
+                kind = 'socket'
+            if kind is not None:
+                ignored.append(name)
+                excluded.append({'path': str(relative), 'type': kind,
+                                 'device': info.st_dev, 'inode': info.st_ino,
+                                 'mode': stat.S_IMODE(info.st_mode)})
+        return ignored
+
+    try:
+        # Preserve links as links, rather than reading a target outside this cache.
+        shutil.copytree(source, archive, ignore=ignore, symlinks=True)
+        stable = tree_manifest(source) == before
+        matched = tree_manifest(archive) == before
+        if not stable or not matched:
+            raise OSError('builtin evidence changed or archive bytes differ')
+        completed = True
+    finally:
+        with receipt.open('x', encoding='utf-8') as stream:
+            json.dump({'source': str(source), 'archive': str(archive),
+                       'archiveComplete': completed, 'sourceFilesStable': stable,
+                       'archiveFilesMatch': matched, 'sourceManifest': before,
+                       'excludedTransports': excluded,
+                       'scope': 'File preservation only; EOF, reap, timing and business verdicts remain separate.'},
+                      stream, indent=2)
+            stream.write('\n')
+    return {'sourceManifest': before, 'excludedTransports': excluded}
 
 
 def remap_path_strings(value, source_root, target_root):
@@ -3819,33 +3965,44 @@ else:
         report = None
         report_error = None
         archived_report = None
+        original_report = None
+        archive_receipt = run_dir / 'builtin-cache-archive.json'
         cache_removed = False
+        archive_verified = False
+        producers_closed = False
+        archive_current = False
+        archived_snapshot = None
+        archive = run_dir / 'acceptance-cache'
         try:
             if len(reports) == 1:
                 relative_report = reports[0].relative_to(cache)
                 archive = run_dir / 'acceptance-cache'
-                shutil.copytree(
-                    cache,
-                    archive,
-                    ignore=shutil.ignore_patterns('tmux.sock'),
-                )
-                archived_report = archive / relative_report
+                archived_snapshot = archive_builtin_cache(cache, archive, archive_receipt)
+                archive_verified = True
+                original_report = archive / relative_report
                 report = remap_path_strings(
-                    json.loads(archived_report.read_text()),
+                    json.loads(original_report.read_text()),
                     cache.resolve(),
                     archive.resolve(),
                 )
+                archived_report = run_dir / 'acceptance-remapped.json'
                 archived_report.write_text(json.dumps(report, indent=2) + '\n')
             else:
                 report_error = f'expected exactly one acceptance.json, found {len(reports)}'
         except (OSError, json.JSONDecodeError) as error:
             report_error = str(error)
         finally:
-            try:
-                shutil.rmtree(cache)
-                cache_removed = not cache.exists()
-            except OSError as error:
-                report_error = report_error or f'cache cleanup failed: {error}'
+            # Failed or incomplete archives must retain the actual producer bytes.
+            producers_closed = archive_verified and builtin_cache_producers_closed(
+                cache, self.manifest['binary_sha256'])
+            archive_current = producers_closed and builtin_cache_archive_matches(
+                cache, archive, archive_receipt, archived_snapshot)
+            if archive_current:
+                try:
+                    shutil.rmtree(cache)
+                    cache_removed = not cache.exists()
+                except OSError as error:
+                    report_error = report_error or f'cache cleanup failed: {error}'
 
         expected_assertions = {
             'completeness', 'cleanup', 'agents', 'diff', 'security', 'ui',
@@ -3908,6 +4065,9 @@ else:
             'checks': checks,
             'report_error': report_error,
             'temporary_cache': str(cache),
+            'retained_cache': str(cache) if cache.exists() else None,
+            'cache_producers_closed': producers_closed,
+            'cache_archive_current': archive_current,
         }, indent=2) + '\n')
         passed = all(checks.values())
         result = {
@@ -3922,6 +4082,10 @@ else:
                 'Compiled builtin Mods acceptance',
                 'The current binary passes agents-md, diff, telemetry, compiled native sec-default policy and ModsPane interaction, completeness, cleanup, identity, and evidence ownership checks.',
                 [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt', *(
+                    [archive_receipt] if archive_receipt.exists() else []
+                ), *(
+                    [original_report] if original_report is not None else []
+                ), *(
                     [archived_report] if archived_report else []
                 )],
                 passed=passed,

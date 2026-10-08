@@ -2193,3 +2193,17 @@ CHANGELOG补充第十八轮22/7摘要后，最终source epoch为 `7a49839887a8f8
 显式 nested Agent：当子 Agent 的过滤后工具池包含 `Agent` 时，`tools: Agent(child)` 正常解析为可调用工具；缺席或被禁止时只保留类型限制元数据，权限和深度检查继续生效。配置示例、固定292代码边界和同轮真实入口要求见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)。完整 Mods/UI 与最新版 native 验收仍在进行。
 
 本批从已提交 b97589c 的干净副本构建；Native18 的 nested-agent 失败保留，新的源码、构建与默认完整矩阵须单独绑定。初始化错误不计有效RED，局部测试不代替同轮 parent/child 调用、parentage、回执、通知、prompt 恢复和清理证明；未通过的其他 target 继续处理，整体验收不提升。
+
+## 2026-10-08 — 内置 Mods 归档有效性
+
+Native20 的29项已完成，23通过6失败；builtin 首因是 FIFO 归档异常，不能借 Native19 或 partial archive 组成通过报告。本批从795f43d的干净副本修复归档：实际 IPC 类型识别/记录、完整源与副本 manifest 核对、保留原报告并单独映射路径。回归命令、原件身份和 native/EOF/reap/时序未闭合项见[归档有效性](docs/research/mods-builtin-evidence-archive-20261008.md)。新源码必须重新绑定检查、构建、完整矩阵；旧失败不覆写，完整验收继续进行。
+
+Native21 已消除 FIFO 归档异常，但仍23通过6失败，F01调用方删除失败源缓存的缺口使该候选不提交。新增实际调用方回归RED2为14案10通过4失败0错误；只有验证稳定完整归档后才能删除源缓存，其他情况记录retained_cache并保持失败。修复后的源码/产物与Native22重新结算，不能复用旧轮green。
+
+复制后的 producer 写入窗口另有15案14通过1失败0错误的实际文件系统RED；最终还要求匹配producer EOF/reap/通道移除后才删除源缓存，缺退出证明继续保留，文件回执不能替代独立native/逐帧验收。
+
+
+Native22 的 F02 仍阻止该候选提交：复制后晚到字节且随后正常闭合，或归档自身随后损坏，旧删除条件都可能销毁原件。新23实际调用方RED为17案15通过2失败0错误，保存旧源码和失败日志；最终删除还要核对源/副本与初次内存manifest及原收据，失配保留源并令cache_cleanup=false。受控producer回执不代替native；新23重新执行全部检查、构建和完整矩阵，不继承22结果。旧setup未定义函数hash范围的M01保留，新setup采用明确AST原始行范围。
+
+
+Native23的F03使候选不提交：复制后新增特殊端点会被普通manifest漏掉。新24实际caller RED为21案17通过4失败0错误，分别覆盖源未知FIFO/socket、晚到tmux.sock及副本未知FIFO；删除前新增双目录lstat检查，源只允许初次排除的同路径/类型/device/inode/mode端点，副本不得含特殊端点。最终共22案，含原IPC允许保留及已排除socket替换拒收；内存保留初次manifest和IPC身份，不能倒填旧收据或凭源缓存删除升级业务/native验收。新24重新绑定源码、构建、全部门禁与完整矩阵，旧23证据不改写。

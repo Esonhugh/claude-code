@@ -24,6 +24,7 @@
 
 ### 变更内容
 
+- 修复内置 Mods 验收缓存含 FIFO 时归档失败；限定排除并记录真实 IPC 端点，校验源/副本 manifest，保留原报告字节。归档失败、producer 缺 EOF/reap 或删除前最终快照失配或出现新增/替换特殊端点时保留源缓存，业务及终端门禁继续独立拒收。见[归档有效性](docs/research/mods-builtin-evidence-archive-20261008.md)。
 - 修复显式 nested Agent 在工具已可用时仍被跳过解析的问题；缺席/禁止时保留类型元数据，权限与深度检查继续生效。使用和同轮验收边界见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)，完整发布验收仍在进行。
 - 增加 Darwin 原生 syscall 输出观测与严格字节验证：包含 NOCANCEL、别名 fd、部分写入、errno 和独立 pipe/PTY EOF；采集无 ACK，不完整证据拒收，启动与故障实验不替代完整 UI/时序验收。使用方法与边界见[原生采集记录](docs/research/mods-native-write-capture-validity-20261008.md)。
 - Mods终端观测绑定已提交DOM的私有身份、实际焦点与几何；保留合法plain空Button的逻辑焦点席位，缺失/隐藏/foreign控件仍拒绝。第十七轮29项27通过2失败；干净源码第十八轮29项22通过7失败，首次Tab未前进及终端收尾未通过，整体验收仍失败、同步采集时序仍不等价；实现与必验边界见[终端验收有效性](docs/research/mods-terminal-evidence-validity-20261008.md)。

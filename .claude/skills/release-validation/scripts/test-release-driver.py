@@ -45,6 +45,13 @@ def load_baseline():
     return module
 
 
+def test_retained_builtin_archive_real_filesystem():
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPTS_DIR / 'test-builtin-evidence-archive.py')],
+        cwd=SCRIPTS_DIR, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
 def test_retained_g5_contract():
     driver = load_driver()
     root = '/private/tmp/owned/config/dev-mods/session-id'
@@ -3766,7 +3773,6 @@ def assert_driver_behavior(module, baseline_module):
         "'bun', str(self.repo / 'scripts/verify-terminal-frame-evidence.mjs')"
     )
     assert "tempfile.mkdtemp(prefix='mods-release-', dir='/private/tmp')" in driver
-    assert "ignore=shutil.ignore_patterns('tmux.sock')" in driver
     assert "shutil.rmtree(cache)" in driver
     assert "'cache_cleanup': cache_removed" in driver
     assert "workflow did not reach a terminal status before timeout" in driver
