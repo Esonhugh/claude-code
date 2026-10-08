@@ -2271,3 +2271,9 @@ Native29 使用本轮新构建及动态 baseline 完成29场景，23通过、6�
 ### 实际 CLI 原生帧连接与验收身份
 
 本批实际缺帧 RED、旧原生顺序 RED、旧同步 mirror RED、output/cells 耦合伪造 RED 与 actual tmux startup Timeout 清理 RED 均保留。修复后固定几何逐帧通过，并重新校验 native originals 与独立身份；collector 新增 signed-device 回归，共22项。默认完整 driver 与完整 release 仍为 failed/not covered，未重写 Native30 的23/29 verdict。原件、明确排除的初始化/错选binary轮次和使用方法见[原生帧连接记录](docs/research/mods-native-frame-journal-validity-20261008.md)。
+
+### 默认 broker 的无 ACK 连接
+
+有效 RED `native-default-broker-red2` 从真实 CLI 正常退出确认默认 broker 忽略 enrollment；首轮 RED1 的启动目录/信任对话框问题不计产品 RED。默认 `terminal-capture-driver prepare` 预先编译、绑定 observer，并由最终 native exec 的 broker 选择 shared-slot 路径。运行时只保存有界内存 prefix，不等帧 ACK、不同步写 raw/frame 文件；溢出继续转发但不允许验收通过。预存 native artifact 的拒收与独占新建另外有 RED/回归，原件和旧 verdict 保留。
+
+这批实际默认 broker 的固定几何与启动故障回归不完成完整默认矩阵。seal 的 `boundedVerdict` 和完整 `verdict` 分开：缺 native resize/termios 历史、OS input/parser/owner 或时序证明仍是完整失败，不用普通正常退出、派生帧或测试数量补足。详细实现和验收范围见[默认无 ACK 记录](docs/research/mods-default-native-broker-validity-20261008.md)。

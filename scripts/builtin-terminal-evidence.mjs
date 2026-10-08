@@ -6,6 +6,9 @@ import {
   statSync,
   lstatSync,
   writeFileSync,
+  mkdtempSync,
+  linkSync,
+  rmSync,
 } from 'node:fs'
 import { join, resolve, relative, isAbsolute } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -37,6 +40,9 @@ const boundary = (launch) => ({
     : 0,
 })
 export function createBuiltinCapture(run, argv, env, identity = {}) {
+  const nativeJournal = identity.nativeJournal === true
+  if (nativeJournal && process.platform !== 'darwin')
+    throw Error('Native shared-slot capture requires Darwin')
   const initialSize = identity.initialSize ?? { columns: 160, rows: 50 }
   if (!['columns', 'rows'].every((key) =>
     Number.isSafeInteger(initialSize[key]) && initialSize[key] > 0 &&
@@ -45,6 +51,15 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
   const placement = identity.brokerPlacement ?? 'direct-native-exec'
   if (!['direct-native-exec', 'launcher-final-native-exec'].includes(placement))
     throw Error('Unknown native PTY broker placement')
+  if (nativeJournal) {
+    for (const name of ['observer.dylib', 'observer-compile.log', 'native-observer.json',
+      'pty.raw', 'inputs.jsonl', 'observations.jsonl', 'geometry.jsonl',
+      'launch-captured.sh', 'capture-output.sh']) {
+      try { lstatSync(join(run, name)) }
+      catch (error) { if (error.code === 'ENOENT') continue; throw error }
+      throw Error('Preexisting terminal capture artifact is not owned by this prepare')
+    }
+  }
   const ready = join(run, 'capture-ready'),
     eof = join(run, 'capture-eof'),
     raw = join(run, 'pty.raw'),
@@ -52,6 +67,7 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     collector = join(run, 'capture-output.sh')
   env.CLAUDE_CODE_FRAME_EVIDENCE_PATH = join(run, 'frames.jsonl')
   env.CLAUDE_CODE_FRAME_BROKER_DIR = run
+  env.CLAUDE_CODE_FRAME_NATIVE_JOURNAL = nativeJournal ? '1' : ''
   const captureId = randomUUID()
   env.CLAUDE_CODE_FRAME_CAPTURE_ID = captureId
   if (identity.binarySha256)
@@ -63,6 +79,28 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     env.CC_VALIDATION_FRAME_BROKER_DIR = run
     env.CC_VALIDATION_FRAME_CAPTURE_ID = captureId
     env.CC_VALIDATION_FRAME_BINARY_SHA256 = identity.binarySha256
+    env.CC_VALIDATION_FRAME_NATIVE_JOURNAL = env.CLAUDE_CODE_FRAME_NATIVE_JOURNAL
+  }
+  if (nativeJournal) {
+    const library = join(run, 'observer.dylib')
+    const compileRoot = mkdtempSync(join(run, '.native-observer-'))
+    const compiled = join(compileRoot, 'observer.dylib')
+    const source = fileURLToPath(new URL('./native-terminal-journal.c', import.meta.url))
+    try {
+      const output = execFileSync('/usr/bin/clang', [
+        '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', '-dynamiclib', source, '-o', compiled,
+      ], { encoding: 'utf8', timeout: 30000 })
+      linkSync(compiled, library)
+      writeFileSync(join(run, 'observer-compile.log'), output, { flag: 'wx', mode: 0o600 })
+    } catch (error) {
+      writeFileSync(join(run, 'observer-compile.log'), String(error), { flag: 'wx', mode: 0o600 })
+      throw error
+    } finally {
+      rmSync(compileRoot, { recursive: true, force: true })
+    }
+    writeFileSync(join(run, 'native-observer.json'), JSON.stringify({
+      method: 'native-shared-slot-v1', library, librarySha256: hash(readFileSync(library)),
+    }) + '\n', { flag: 'wx', mode: 0o600 })
   }
   for (const name of [
     'pty.raw',
@@ -104,6 +142,7 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     initialSize,
     brokerPlacement: placement,
     nativeTerminalFlagsChanged: false,
+    nativeJournal,
     transport:
       'owned PTY broker; outer transport raw mode, native initial flags preserved',
   }
@@ -272,6 +311,7 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
   const eof = join(launch.run, 'capture-eof'),
     deadline = Date.now() + timeout
   while (!existsSync(eof) && Date.now() < deadline) await delay(25)
+  if (launch.capture.nativeJournal) return sealNativeBuiltinCapture(launch)
   const names = [
       'pty.raw',
       'frames.jsonl',
@@ -425,6 +465,59 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
     JSON.stringify(report, null, 2) + '\n',
     { flag: 'wx', mode: 0o600 },
   )
+  return report
+}
+
+function sealNativeBuiltinCapture(launch) {
+  const run = launch.run, files = {}
+  const expectedPath = join(run, 'expected-native.json')
+  let physical, failure, normal = false
+  try {
+    const start = JSON.parse(readFileSync(join(run, 'start.json'), 'utf8'))
+    writeFileSync(expectedPath, JSON.stringify({
+      binarySha256: launch.binarySha256, captureId: launch.capture.captureId,
+      childPid: start.childPid, ...launch.capture.initialSize,
+    }) + '\n', { flag: 'wx', mode: 0o600 })
+    execFileSync(process.execPath, [fileURLToPath(new URL('./native-frame-journal-replay.mjs', import.meta.url)),
+      run, join(run, 'frame-physical-report.json'), expectedPath], {
+      env: launch.env, encoding: 'utf8', timeout: 60000,
+    })
+    normal = JSON.parse(readFileSync(join(run, 'cleanup.json'), 'utf8')).normalCompletion === true
+  } catch (error) { failure = String(error) }
+  if (existsSync(join(run, 'frame-physical-report.json')))
+    physical = JSON.parse(readFileSync(join(run, 'frame-physical-report.json'), 'utf8'))
+  for (const name of [
+    'pty.raw', 'native-pty.raw', 'raw.bin', 'records.bin', 'journal.bin', 'registration.json',
+    'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
+    'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
+    'observations.jsonl', 'initial-termios.txt', 'capture-eof', 'expected-native.json',
+    'native-observer.json', 'observer.dylib', 'observer-compile.log', 'frame-physical-report.json',
+  ]) {
+    const path = join(run, name)
+    if (existsSync(path)) {
+      const bytes = readFileSync(path)
+      files[name] = { path, bytes: bytes.length, sha256: hash(bytes) }
+    }
+  }
+  const eofPassed = files['capture-eof'] && readFileSync(files['capture-eof'].path, 'utf8').trim() === '0'
+  const rawMatched = files['pty.raw'] && files['raw.bin'] && files['native-pty.raw'] &&
+    files['pty.raw'].sha256 === files['raw.bin'].sha256 && files['raw.bin'].sha256 === files['native-pty.raw'].sha256
+  const boundedPassed = normal && eofPassed && rawMatched && physical?.verdict === 'passed'
+  const report = {
+    backend: 'native-shared-slot-v1', binarySha256: launch.binarySha256,
+    captureId: launch.capture.captureId, target: launch.target, pane: launch.pane,
+    files, frameCount: physical?.frameCount ?? 0, eofPassed: Boolean(eofPassed),
+    requestedInitialSize: launch.capture.initialSize,
+    stream: { method: 'native-shared-slot-v1', verdict: rawMatched ? 'passed' : 'failed' },
+    framePhysicalVerdict: physical?.verdict ?? 'failed',
+    boundedVerdict: boundedPassed ? 'passed' : 'failed', failure,
+    productTimingEquivalent: false, fullNativeGatePassed: false,
+    verdict: 'failed',
+    remaining: ['termios lifetime', 'native resize brackets', 'actual OS input/parser/owner',
+                'open-close-reopen matrix', 'product scheduling comparison', 'default release matrix'],
+  }
+  writeFileSync(join(run, 'frame-stream-map.json'), JSON.stringify(report.stream, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
+  writeFileSync(join(run, 'terminal-capture.json'), JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
   return report
 }
 

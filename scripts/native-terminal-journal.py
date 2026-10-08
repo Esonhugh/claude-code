@@ -231,6 +231,8 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
         finish = start + count
         require(previous_offset <= start <= finish <= len(raw), 'Invalid native physical frame prefix')
         entries.append({'frameId': span['spanId'], 'native': identity,
+                        **{key: value[key] for key in ('rootReset', 'terminalPanes', 'terminalUiRevision')
+                           if key in value},
                         'rawStart': start, 'rawEnd': finish,
                         'writeSequences': span['writeSequences'],
                         'outputBase64': base64.b64encode(raw[previous_offset:finish]).decode(),

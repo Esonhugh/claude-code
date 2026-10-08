@@ -189,8 +189,37 @@ class NativeFrameJournalTest(unittest.TestCase):
         launch = {'command': [str(binary), '--dangerously-skip-permissions', '--model', 'claude-sonnet-4-6'],
                   'binarySha256': digest, 'library': str(self.library), 'environment': env,
                   'captureId': str(uuid.uuid4())}
-        (run / 'launch.json').write_text(json.dumps(launch, indent=2) + '\n')
         socket = run / 'tmux.sock'
+        columns, rows = 100, 30
+        if getattr(self, 'production_broker', False):
+            import shutil
+            (run / 'bin').mkdir()
+            shutil.copy2(binary, run / 'bin/claude')
+            binary = run / 'bin/claude'
+            env.update(CC_VALIDATION_REPO_ROOT=str(SOURCE.parent),
+                       CC_VALIDATION_EVIDENCE_DIR=str(run), CC_VALIDATION_HOME=str(run / 'home'),
+                       CC_VALIDATION_CONFIG_DIR=str(run / 'config'), CC_VALIDATION_CWD=str(run / 'project'),
+                       CC_VALIDATION_BINARY=str(binary), CC_VALIDATION_USE_OPENAI='0',
+                       CC_VALIDATION_ANTHROPIC_API_KEY=env['ANTHROPIC_API_KEY'],
+                       CC_VALIDATION_ANTHROPIC_BASE_URL=env['ANTHROPIC_BASE_URL'],
+                       CC_VALIDATION_MAX_RETRIES='0', CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC='1')
+            descriptor = {'run': str(run), 'socket': str(socket), 'target': 'journal:0.0',
+                'pane': 'journal:0.0', 'tmux': '/opt/homebrew/bin/tmux', 'env': env,
+                'binarySha256': digest,
+                'argv': [str(SOURCE.parent / '.claude/skills/claude-agent-workflow-validation/scripts/launch-built-claude.sh')]}
+            path = run / 'capture-launch.json'
+            path.write_text(json.dumps(descriptor, indent=2) + '\n')
+            prepare = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                                      'prepare', str(path)], env=env, capture_output=True, timeout=5)
+            (run / 'prepare.log').write_bytes(prepare.stdout + prepare.stderr)
+            self.assertEqual(prepare.returncode, 0, prepare.stderr.decode())
+            descriptor = json.loads(path.read_text())
+            env = descriptor['env']
+            launch['captureId'] = descriptor['capture']['captureId']
+            columns, rows = (descriptor['capture']['initialSize'][key] for key in ('columns', 'rows'))
+            self.assertEqual(env['CC_VALIDATION_FRAME_NATIVE_JOURNAL'], '1')
+        else:
+            (run / 'launch.json').write_text(json.dumps(launch, indent=2) + '\n')
         config = run / 'tmux.conf'
         config.write_text('set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n')
         tmux = ['/opt/homebrew/bin/tmux', '-S', str(socket)]
@@ -211,15 +240,21 @@ class NativeFrameJournalTest(unittest.TestCase):
         try:
             if socket.exists():
                 raise RuntimeError('Private tmux socket existed before launch')
-            argv = ['python3', str(Path(__file__).resolve()), '--capture-cli', str(run)]
+            argv = [descriptor['capture']['wrapper']] if getattr(self, 'production_broker', False) else \
+                   ['python3', str(Path(__file__).resolve()), '--capture-cli', str(run)]
             # The server can exist even if its client times out or fails.
             started = True
-            pane = command('-f', str(config), 'new-session', '-d', '-s', 'journal', '-x', '100', '-y', '30',
+            pane = command('-f', str(config), 'new-session', '-d', '-s', 'journal', '-x', str(columns), '-y', str(rows),
                            '-P', '-F', '#{pane_id}', shlex.join(argv)).strip()
+            if getattr(self, 'production_broker', False):
+                install = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                                          'install', str(run / 'capture-launch.json')], env=env, capture_output=True, timeout=5)
+                (run / 'install.log').write_bytes(install.stdout + install.stderr)
+                self.assertEqual(install.returncode, 0, install.stderr.decode())
             deadline = time.monotonic() + 10
             while True:
                 text = command('capture-pane', '-p', '-t', pane)
-                if '❯' in text or 'bypass permissions' in text:
+                if '❯' in text and 'bypass permissions' in text:
                     (run / 'ready-pane.txt').write_text(text)
                     break
                 if command('display-message', '-p', '-t', pane, '#{pane_dead}').strip() == '1':
@@ -233,13 +268,14 @@ class NativeFrameJournalTest(unittest.TestCase):
                 if time.monotonic() >= deadline:
                     raise TimeoutError('CLI did not close normally')
             (run / 'final-pane.txt').write_text(command('capture-pane', '-p', '-t', pane))
+            self.assertTrue((run / 'cleanup.json').is_file(), 'Default broker ignored native journal enrollment')
             cleanup = json.loads((run / 'cleanup.json').read_text())
             self.assertTrue(cleanup['normalCompletion'], cleanup)
             self.assertEqual(cleanup['signalsSent'], [])
             start = json.loads((run / 'start.json').read_text())
             (run / 'expected-native.json').write_text(json.dumps({
                 'binarySha256': digest, 'captureId': launch['captureId'],
-                'childPid': start['childPid'], 'columns': 100, 'rows': 30,
+                'childPid': start['childPid'], 'columns': columns, 'rows': rows,
             }) + '\n')
             packets, offset = [], 0
             saved = (run / 'records.bin').read_bytes()
@@ -294,7 +330,7 @@ class NativeFrameJournalTest(unittest.TestCase):
             for entry in coupled:
                 fake = json.loads(base64.b64decode(entry['frameBase64']))
                 fake['cursor'] = {'x': 0, 'y': 0, 'visible': False}
-                fake['cells'] = [[x, y, ' ', 1, ''] for y in range(30) for x in range(100)]
+                fake['cells'] = [[x, y, ' ', 1, ''] for y in range(rows) for x in range(columns)]
                 entry['frameBase64'] = base64.b64encode(json.dumps(fake).encode()).decode()
                 entry['outputBase64'] = base64.b64encode(b'\x1b[?1049h\x1b[0m\x1b[2J\x1b[H\x1b[?25l').decode()
             (run / 'coupled-frames.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in coupled))
@@ -307,6 +343,21 @@ class NativeFrameJournalTest(unittest.TestCase):
             self.assertFalse((run / 'frame-request.fifo').exists())
             self.assertFalse((run / 'frame-response.fifo').exists())
             self.assertFalse((run / 'legacy-frames-must-not-write.jsonl').exists())
+            if getattr(self, 'production_broker', False):
+                # The real seal must preserve the difference between this
+                # bounded entry check and the still-incomplete full gate.
+                command('kill-server')
+                started = False
+                (run / 'expected-native.json').rename(run / 'entry-expected-native.json')
+                seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                                       'seal', str(run / 'capture-launch.json')], env=env, capture_output=True, timeout=5)
+                (run / 'seal.log').write_bytes(seal.stdout + seal.stderr)
+                self.assertEqual(seal.returncode, 1)
+                sealed = json.loads((run / 'terminal-capture.json').read_text())
+                self.assertEqual(sealed['boundedVerdict'], 'passed', sealed)
+                self.assertEqual(sealed['verdict'], 'failed')
+                self.assertFalse(sealed['productTimingEquivalent'])
+                self.assertFalse(sealed['fullNativeGatePassed'])
             (run / 'bounded-verdict.json').write_text(json.dumps({'verdict': 'passed', 'frameCount': len(snapshots),
                 'noFrameFifoAck': True, 'productTimingEquivalent': False, 'fullNativeGatePassed': False}) + '\n')
         finally:
@@ -328,6 +379,13 @@ class NativeFrameJournalTest(unittest.TestCase):
             if errors:
                 raise RuntimeError('Owned tmux cleanup failed: ' + str(errors))
 
+    def test_actual_default_broker_emits_native_journal_without_ack(self):
+        self.production_broker = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = False
+
     def test_owned_tmux_startup_timeout_still_stops_actual_server(self):
         from unittest.mock import patch
         real_run = subprocess.run
@@ -342,6 +400,11 @@ class NativeFrameJournalTest(unittest.TestCase):
                                env=kwargs['env'], capture_output=True, timeout=5)
                 self.assertEqual(pid.returncode, 0)
                 server = int(pid.stdout)
+                if getattr(self, 'production_broker', False):
+                    installed = real_run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                                          'install', str(self.last_cli_run / 'capture-launch.json')],
+                                         env=kwargs['env'], capture_output=True, timeout=5)
+                    self.assertEqual(installed.returncode, 0, installed.stderr.decode())
                 deadline = time.monotonic() + 3
                 while not (self.last_cli_run / 'start.json').exists():
                     if time.monotonic() >= deadline:
@@ -387,6 +450,13 @@ class NativeFrameJournalTest(unittest.TestCase):
                     self.assertFalse(cleanup['normalCompletion'])
                     self.assertEqual(cleanup['cleanupErrors'], [])
                     self.assertFalse(alive(cleanup['childPid']))
+
+    def test_owned_default_broker_startup_timeout_retains_failure(self):
+        self.production_broker = True
+        try:
+            self.test_owned_tmux_startup_timeout_still_stops_actual_server()
+        finally:
+            self.production_broker = False
 
 
 if __name__ == '__main__':

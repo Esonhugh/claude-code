@@ -17,6 +17,7 @@ if (action === 'prepare') {
       binarySha256: launch.binarySha256,
       initialSize: { columns: 200, rows: 60 },
       brokerPlacement: 'launcher-final-native-exec',
+      nativeJournal: true,
     },
   )
   writeFileSync(descriptor, JSON.stringify(launch, null, 2) + '\n',

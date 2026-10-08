@@ -56,6 +56,38 @@ test('launcher capture brokers the actual native exec and preserves requested in
     initialSize: { columns: 0, rows: 60 },
   })).toThrow('geometry')
 })
+test('native capture prepares a pinned observer before launcher startup', () => {
+  const run = mkdtempSync(join(tmpdir(), 'native-cap-'))
+  roots.push(run)
+  const env = {}
+  const capture = createBuiltinCapture(run, ['/owned/launcher.sh'], env, {
+    binarySha256: 'b'.repeat(64), brokerPlacement: 'launcher-final-native-exec',
+    initialSize: { columns: 100, rows: 30 }, nativeJournal: true,
+  })
+  const observer = JSON.parse(readFileSync(join(run, 'native-observer.json'), 'utf8'))
+  expect(capture.nativeJournal).toBe(true)
+  expect(env.CC_VALIDATION_FRAME_NATIVE_JOURNAL).toBe('1')
+  expect(env.CLAUDE_CODE_FRAME_NATIVE_JOURNAL).toBe('1')
+  expect(observer.method).toBe('native-shared-slot-v1')
+  expect(observer.library).toBe(join(run, 'observer.dylib'))
+  expect(observer.librarySha256).toBe(createHash('sha256').update(readFileSync(observer.library)).digest('hex'))
+  expect(existsSync(join(run, 'journal.bin'))).toBe(false)
+  expect(readFileSync(capture.wrapper, 'utf8')).not.toContain('FRAME_JOURNAL')
+})
+test('native prepare refuses preexisting observer bytes before compiling', () => {
+  const run = mkdtempSync(join(tmpdir(), 'native-existing-'))
+  roots.push(run)
+  const sentinel = 'preexisting observer must survive'
+  const enrollment = JSON.stringify({ ownedBy: 'older capture' })
+  writeFileSync(join(run, 'observer.dylib'), sentinel)
+  writeFileSync(join(run, 'native-observer.json'), enrollment)
+  expect(() => createBuiltinCapture(run, ['/owned/launcher.sh'], {}, {
+    binarySha256: 'b'.repeat(64), brokerPlacement: 'launcher-final-native-exec', nativeJournal: true,
+  })).toThrow('Preexisting terminal capture artifact')
+  expect(readFileSync(join(run, 'observer.dylib'), 'utf8')).toBe(sentinel)
+  expect(readFileSync(join(run, 'native-observer.json'), 'utf8')).toBe(enrollment)
+  expect(existsSync(join(run, 'observer-compile.log'))).toBe(false)
+})
 test('paste evidence requires exact owned bytes, both successful commands and actual forwarded native input', () => {
   const launch = fixture(), path = join(launch.run, 'input.bin'),
     bytes = Buffer.from('中文\r')

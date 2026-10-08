@@ -31,6 +31,17 @@ def main():
         parser.error('native argv is required')
     run = args.run.resolve(strict=True)
     os.umask(0o077)
+    native_intent = os.environ.get('CLAUDE_CODE_FRAME_NATIVE_JOURNAL', '')
+    if native_intent not in ('', '1'):
+        raise ValueError('Invalid native journal selection')
+    if native_intent == '1':
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('native_broker', Path(__file__).with_name('terminal-evidence-broker-native.py'))
+        native = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(native)
+        return native.capture_native(run, argv)
+    if os.path.lexists(run / 'native-observer.json'):
+        raise ValueError('Native observer requires explicit native journal selection')
     capture_id = os.environ.get('CLAUDE_CODE_FRAME_CAPTURE_ID')
     if not capture_id:
         raise ValueError('terminal capture identity is required')

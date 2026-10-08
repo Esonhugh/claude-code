@@ -27,6 +27,8 @@
 
 ### 变更内容
 
+- 默认终端验收采集接入 Darwin shared-slot broker：预先绑定 observer，原生执行期间用有界内存保存记录，不等待 frame ACK 或同步落盘；溢出保持失败且继续 PTY 转发，退出后保存原件及故障收尾。新增真实默认 broker 启动/退出和预存文件拒收回归；完整 geometry/input/时序与发布门禁仍未通过。
+
 - 验收证据：将 Darwin native journal 接入实际 Ink layout/write/snapshot，私有采集模式关闭旧 FIFO ACK 和同步 frame mirror；回放重新绑定原始 packets/raw、registration 与本轮身份，拒收同时改写 output/cells 的派生数据。新增真实 CLI 固定几何逐帧及 tmux 启动超时回收；完整默认 no-ACK/resize/input/diff 生命周期和 Mods 发布门禁仍未通过。
 
 #### Mods 焦点组合键

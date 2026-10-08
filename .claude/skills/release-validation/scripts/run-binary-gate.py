@@ -4486,7 +4486,7 @@ else:
             self.terminal_capture = json.loads(descriptor.read_text())
             args[-1] = self.terminal_capture['capture']['wrapper']
             for name in ('CC_VALIDATION_FRAME_BROKER_DIR', 'CC_VALIDATION_FRAME_CAPTURE_ID',
-                         'CC_VALIDATION_FRAME_BINARY_SHA256'):
+                         'CC_VALIDATION_FRAME_BINARY_SHA256', 'CC_VALIDATION_FRAME_NATIVE_JOURNAL'):
                 args[-1:-1] = ['-e', f'{name}={self.terminal_capture["env"][name]}']
             args[-1:-1] = ['-e', f'CC_VALIDATION_BINARY={binary}']
         result = self.tmux(*args)
