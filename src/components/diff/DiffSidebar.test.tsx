@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { validateDiffChildTestRun } from './testChildEvidence.js'
 
 const childKey = 'DIFF_SIDEBAR_TEST_CHILD'
 
@@ -55,7 +56,7 @@ if (!process.env[childKey]) {
           writeFileSync(join(root, 'new.txt'), 'untracked-body-marker\n')
         if (scenario === 'binary')
           writeFileSync(join(root, 'tracked.txt'), Buffer.from([0, 1, 2]))
-        const child = Bun.spawn([process.execPath, 'test', import.meta.path], {
+        const child = Bun.spawn([process.execPath, 'test', '--no-env-file', import.meta.path], {
           cwd: root,
           env: {
             PATH: process.env.PATH,
@@ -74,8 +75,10 @@ if (!process.env[childKey]) {
           new Response(child.stdout).text(),
           new Response(child.stderr).text(),
         ])
-        if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
-        expect(code).toBe(0)
+        console.info(`[diff-sidebar-child:${scenario}]`, stdout, stderr)
+        const evidence = validateDiffChildTestRun(code, stdout, stderr, ['real diff sidebar interaction'])
+        console.info('[diff-sidebar-child]', JSON.stringify({ scenario, ...evidence }))
+        expect(evidence.completedTests).toHaveLength(1)
       } finally {
         rmSync(root, { recursive: true, force: true })
       }

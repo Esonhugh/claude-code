@@ -6,6 +6,7 @@ import {
   installBuiltinCapture,
   sealBuiltinCapture,
   validateBuiltinTerminalEvidence,
+  validateNativeTerminalEvidence,
 } from './builtin-terminal-evidence.mjs'
 import { recheckBuiltinSide } from './recheck-builtin-terminal-evidence.mjs'
 
@@ -33,12 +34,18 @@ if (action === 'prepare') {
   }
   const result = {
     side,
-    captureIdentityPassed: validateBuiltinTerminalEvidence(side),
+    captureIdentityPassed: terminalCapture.backend === 'native-shared-slot-v1'
+      ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side),
     recheck: await recheckBuiltinSide(side, launch.binarySha256),
+    productTimingEquivalent: terminalCapture.productTimingEquivalent,
+    fullNativeGatePassed: terminalCapture.fullNativeGatePassed,
   }
   writeFileSync(join(launch.run, 'independent-pty-checks.json'),
     JSON.stringify(result, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
-  if (!result.captureIdentityPassed || result.recheck.verdict !== 'passed')
+  if (!result.captureIdentityPassed || result.recheck.verdict !== 'passed' ||
+      (terminalCapture.backend === 'native-shared-slot-v1' &&
+        (result.productTimingEquivalent !== true || result.fullNativeGatePassed !== true)) ||
+      !validateBuiltinTerminalEvidence(side))
     process.exitCode = 1
 } else if (action === 'verify') {
   // Read-only final acceptance: rerun the pinned parser over the sealed bytes.
@@ -52,7 +59,10 @@ if (action === 'prepare') {
       cleanup: { terminalCapture: capture },
     },
     recheck = JSON.parse(JSON.stringify(await recheckBuiltinSide(side, launch.binarySha256))),
-    passed = validateBuiltinTerminalEvidence(side) &&
+    native = capture.backend === 'native-shared-slot-v1',
+    passed = (!native || (validateNativeTerminalEvidence(side) &&
+      saved.productTimingEquivalent === true && saved.fullNativeGatePassed === true)) &&
+      validateBuiltinTerminalEvidence(side) &&
       saved.captureIdentityPassed === true &&
       isDeepStrictEqual(saved.side, side) &&
       isDeepStrictEqual(saved.recheck, recheck) &&

@@ -3,6 +3,46 @@ import { execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { validateDiffChildTestRun } from './testChildEvidence.js'
+
+const expectedChildTests = [
+  "109/110/143/144 widths and small height keep body and source navigation usable without stealing composer keys",
+  "Diff dialog owns Page and top/bottom keys before transcript scrolling resumes",
+  "a failed body refresh still renders the retained body with a warning",
+  "active sidebar consumes navigation before an earlier composer listener while text passes through",
+  "base/source, latest TodoWrite input, replacement turns and shared controller survive presentation changes",
+  "control characters cannot split diff names or alter their display identity",
+  "dialog applies same-chunk Enter+Ctrl+End to the newly entered detail body",
+  "dialog applies same-chunk Enter+PageDown to the newly entered detail body",
+  "dialog applies same-chunk keys to the newly entered detail state",
+  "dialog handles list/detail keys, long-body scrolling and Escape without Rewind",
+  "dialog keeps the selected body visible when one stdin chunk moves beyond the render budget",
+  "dialog navigates the newly selected source within the same stdin chunk",
+  "dialog opens the selection moved to earlier in the same stdin chunk",
+  "diff bodies sanitize display text without changing the Ask snapshot",
+  "empty states are per base, centered, and show only the close mark",
+  "existing Ctrl+Home/End bindings route to the dialog list, detail and active sidebar only",
+  "filter labels keep fixed width without stale terminal cells",
+  "global diff actions drive a sidebar that does not own the keyboard",
+  "highlighted render budgets match gutter-adjusted display-cell wrapping",
+  "interactive diff counts real Task tools and ignores stale TodoWrite history and internal tasks",
+  "large and fragmented bodies stay inside render budgets with explicit truncation",
+  "loading, unknown body, failed refresh and non-repository never look clean",
+  "narrow modal dialog keeps gutter signs and the close mark on the header line",
+  "noise and pre-session filters are independent and cap bodies at 20 files",
+  "real controller filter body publishes preserve physical header rows",
+  "real controller publishes unborn listings to the native view but not empty or turn views",
+  "resized long directory_ paths stay separate from stats and clickable Ask",
+  "resized long 目录_ paths stay separate from stats and clickable Ask",
+  "sidebar keeps the selected body visible when one stdin chunk moves beyond the render budget",
+  "sidebar matches the official panel: fill, one-line header, list and file frames",
+  "sidebar opens the selection moved to earlier in the same stdin chunk",
+  "small multi-file diffs render every body without render-budget truncation",
+  "source previews and branch labels are single-line display text",
+  "summary and body wheel are isolated; anchors, Ask, and clicks preserve composer",
+  "turn files use the same noise classification as current Git files",
+  "withheld untracked files never imply a clean repository"
+] as const
 
 const childKey = 'SHARED_DIFF_UI_CHILD'
 if (!process.env[childKey]) {
@@ -10,7 +50,7 @@ if (!process.env[childKey]) {
     const home = mkdtempSync(join(tmpdir(), 'diff-view-'))
     try {
       const child = Bun.spawn(
-        [process.execPath, 'test', import.meta.path],
+        [process.execPath, 'test', '--no-env-file', import.meta.path],
         {
           cwd: home,
           env: {
@@ -30,8 +70,10 @@ if (!process.env[childKey]) {
         new Response(child.stdout).text(),
         new Response(child.stderr).text(),
       ])
-      if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
-      expect(code).toBe(0)
+      console.info(stdout, stderr)
+      const evidence = validateDiffChildTestRun(code, stdout, stderr, expectedChildTests)
+      console.info('[diff-ui-child]', JSON.stringify(evidence))
+      expect(evidence.completedTests).toHaveLength(expectedChildTests.length)
     } finally {
       rmSync(home, { recursive: true, force: true })
     }

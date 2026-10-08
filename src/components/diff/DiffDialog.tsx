@@ -4,6 +4,7 @@ import { useRegisterOverlay } from '../../context/overlayContext.js'
 import type { DiffController } from '../../services/diff/controller.js'
 import type { Message } from '../../types/message.js'
 import { DiffView } from './DiffView.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 type Props = {
   messages: Message[]
@@ -28,7 +29,14 @@ export function DiffDialog({
       controller={controller}
       presentation="dialog"
       keyboardEnabled={keyboardEnabled}
-      onClose={() => onDone('Diff dialog dismissed', { display: 'system' })}
+      onClose={() => {
+        onDone('Diff dialog dismissed', { display: 'system' })
+        try {
+          logForDebugging('[diff] dialog close user')
+        } catch {
+          // A diagnostic failure must not interrupt the completed dismissal.
+        }
+      }}
     />
   )
 }

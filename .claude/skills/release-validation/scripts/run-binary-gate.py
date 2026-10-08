@@ -695,6 +695,54 @@ def submitted_input_visible(pane, text):
     return visible_lines == len(re.findall(r'\r\n|\r|\n', text))
 
 
+def terminal_native_exit_passed(run, capture, binary_sha256):
+    """Actual backend-specific EOF/reap only; never a full terminal verdict."""
+    try:
+        if type(capture.get('nativeJournal')) is not bool:
+            return False
+        if capture['nativeJournal'] and (not isinstance(capture.get('captureId'), str) or not capture['captureId']):
+            return False
+        names = (('start.json', 'cleanup.json', 'broker-cleanup.json', 'producer-expected-native.json', 'capture-eof')
+                 if capture['nativeJournal'] else ('native-pty-eof.json',))
+        values = {}
+        for name in names:
+            named = os.lstat(run / name)
+            if not stat.S_ISREG(named.st_mode):
+                return False
+            fd = os.open(run / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as file:
+                info = os.fstat(file.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                        (capture['nativeJournal'] and stat.S_IMODE(info.st_mode) != 0o600) or info.st_nlink != 1 or
+                        (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+                    return False
+                data = file.read()
+            values[name] = data.decode().strip() if name == 'capture-eof' else json.loads(data)
+        if not capture['nativeJournal']:
+            value = values['native-pty-eof.json']
+            return type(value.get('childExitCode')) is int and value['childExitCode'] == 0
+        start, closed, producer = (values[name] for name in ('start.json', 'cleanup.json', 'producer-expected-native.json'))
+        pid = start.get('childPid')
+        return (type(pid) is int and pid > 0 and type(start.get('childPgid')) is int and start['childPgid'] == pid and
+                start.get('binarySha256') == binary_sha256 and json.dumps(closed, sort_keys=True) == json.dumps(values['broker-cleanup.json'], sort_keys=True) and
+                closed.get('backend') == producer.get('backend') == 'native-shared-slot-v1' and
+                closed.get('captureId') == producer.get('captureId') == capture.get('captureId') and
+                type(closed.get('childPid')) is type(producer.get('childPid')) is int and
+                closed['childPid'] == producer['childPid'] == pid and
+                producer.get('binarySha256') == binary_sha256 and
+                type(closed.get('childExitCode')) is int and closed['childExitCode'] == 0 and
+                closed.get('childReaped') is True and closed.get('physicalEof') is True and
+                closed.get('normalCompletion') is True and 'failure' in closed and closed['failure'] is None and
+                closed.get('signalsSent') == [] and closed.get('cleanupErrors') == [] and
+                type(producer.get('nativeClose')) is dict and type(producer.get('ioClose')) is dict and
+                json.dumps(producer['nativeClose'], sort_keys=True) == json.dumps(closed.get('nativeClose'), sort_keys=True) and
+                json.dumps(producer['ioClose'], sort_keys=True) == json.dumps(closed.get('ioClose'), sort_keys=True) and
+                producer['nativeClose'].get('method') == 'owned-broker-closed-native-v1' and
+                producer['ioClose'].get('method') == 'owned-broker-closed-io-v1' and values['capture-eof'] == '0')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
 def input_prompt_ready(pane):
     plain = strip_ansi(pane).replace('\u00a0', ' ')
     lines = plain.splitlines()
@@ -5089,15 +5137,22 @@ else:
                 release_terminal_git_wrapper(run_dir)
             finally:
                 try:
-                    # Close the reachable UI before asking the native process to exit.
-                    raw('cleanup-close-dialog', b'\x1b\x1b')
-                    composer_ready = observe('11-cleanup-composer', input_prompt_ready, 5)
+                    # Each Escape belongs to an observed dialog state. Sending
+                    # a second Escape to an already closed composer opens Rewind.
+                    current = pane('11-cleanup-state')
+                    if 'Diff · detail' in current:
+                        raw('cleanup-detail-back', b'\x1b')
+                        observe('11a-cleanup-files', lambda text: 'Diff · files' in text, 5)
+                        current = pane('11b-cleanup-state')
+                    if 'Diff · files' in current:
+                        raw('cleanup-close-dialog', b'\x1b')
+                    composer_ready = observe('11-cleanup-composer', lambda text:
+                        input_prompt_ready(text) and 'Diff · files' not in text and 'Diff · detail' not in text, 5)
                     if composer_ready:
                         raw('cleanup-native-exit', b'/exit\r')
                     checks['normal_native_exit'] = composer_ready and self.wait_until(
-                        lambda: (run_dir / 'native-pty-eof.json').exists()
-                        and json.loads((run_dir / 'native-pty-eof.json').read_text()).get(
-                            'childExitCode') == 0, 5, 0.1)
+                        lambda: terminal_native_exit_passed(run_dir, self.terminal_capture['capture'],
+                            self.manifest['binary_sha256']), 5, 0.1)
                 except Exception as error:
                     result['native_exit_error'] = str(error)
                 cleanup = self.close(run_dir, session, target)
@@ -5360,8 +5415,7 @@ else:
                     self.wait_until(lambda: self.canonical_pane(run_dir) is None, 5, 0.1)
                 raw('canonical-cleanup-native-exit', b'/exit\r')
                 checks['normal_native_exit'] = self.wait_until(lambda:
-                    (run_dir / 'native-pty-eof.json').exists() and
-                    json.loads((run_dir / 'native-pty-eof.json').read_text()).get('childExitCode') == 0,
+                    terminal_native_exit_passed(run_dir, self.terminal_capture['capture'], self.manifest['binary_sha256']),
                     5, 0.1)
             except Exception as error:
                 result['native_exit_error'] = str(error)

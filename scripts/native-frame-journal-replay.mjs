@@ -1,22 +1,23 @@
-import { readFileSync, writeFileSync } from 'node:fs'
+import { writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import * as xterm from '@xterm/headless'
+import { readOwnedNativeFile } from './native-evidence-files.mjs'
 import { frameDifference } from './verify-terminal-frame-evidence.mjs'
 
 const Terminal = xterm.Terminal ?? xterm.default?.Terminal ?? xterm['module.exports']?.Terminal
 
 /** Native write/resize brackets; unknown roots and input ownership remain uncovered. */
 export async function replayNativeFrameJournal(run, expectedPath, path = join(run, 'frames.jsonl')) {
-  const expected = JSON.parse(readFileSync(expectedPath, 'utf8'))
+  const expected = JSON.parse(readOwnedNativeFile(expectedPath))
   const { columns, rows } = expected
   if (!Number.isSafeInteger(columns) || !Number.isSafeInteger(rows) || columns <= 0 || rows <= 0)
     throw Error('Independent native geometry is required')
-  const entries = readFileSync(path, 'utf8').split('\n').filter(Boolean).map(JSON.parse)
+  const entries = readOwnedNativeFile(path).toString('utf8').split('\n').filter(Boolean).map(JSON.parse)
   if (!entries.length) throw Error('No native Ink frames')
   const checked = spawnSync('python3', [join(import.meta.dir, 'verify-native-frame-journal.py'), run, expectedPath],
-                            { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+                            { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60000 })
   if (checked.status !== 0 || checked.error)
     throw Error(`Original native evidence failed: ${checked.error?.message ?? checked.stdout.trim()}`)
   const native = JSON.parse(checked.stdout)

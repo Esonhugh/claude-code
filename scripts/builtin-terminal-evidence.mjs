@@ -13,8 +13,10 @@ import {
 import { join, resolve, relative, isAbsolute } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
+import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, URL } from 'node:url'
+import { readOwnedNativeFile } from './native-evidence-files.mjs'
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`
 const append = (path, value) =>
@@ -22,7 +24,7 @@ const append = (path, value) =>
 const frames = (launch, strict = false) => {
   const path = join(launch.run, 'frames.jsonl')
   if (!existsSync(path)) return []
-  const text = readFileSync(path, 'utf8'),
+  const text = (strict ? readOwnedNativeFile(path).toString('utf8') : readFileSync(path, 'utf8')),
     lines = text.split('\n')
   if (!strict && !text.endsWith('\n')) lines.pop()
   return lines.filter(Boolean).map((line) => JSON.parse(line))
@@ -122,12 +124,12 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
   )
   writeFileSync(
     wrapper,
-    `#!/bin/sh\nwhile [ ! -f ${quote(ready)} ]; do /bin/sleep 0.02; done\n/bin/stty -g > ${quote(join(run, 'initial-termios.txt'))}\nexec ${placement === 'direct-native-exec' ? `/usr/bin/python3 ${quote(broker)} --run ${quote(run)} -- ` : ''}${argv.map(quote).join(' ')}\n`,
+    `#!/bin/sh\numask 077\nwhile [ ! -f ${quote(ready)} ]; do /bin/sleep 0.02; done\n/bin/stty -g > ${quote(join(run, 'initial-termios.txt'))}\nexec ${placement === 'direct-native-exec' ? `/usr/bin/python3 ${quote(broker)} --run ${quote(run)} -- ` : ''}${argv.map(quote).join(' ')}\n`,
     { flag: 'wx', mode: 0o700 },
   )
   writeFileSync(
     collector,
-    `#!/bin/sh\n/bin/cat > ${quote(raw)}\nstatus=$?\n/bin/echo "$status" > ${quote(eof)}\nexit "$status"\n`,
+    `#!/bin/sh\numask 077\n/bin/cat > ${quote(raw)}\nstatus=$?\n/bin/echo "$status" > ${quote(eof)}\nexit "$status"\n`,
     { flag: 'wx', mode: 0o700 },
   )
   return {
@@ -325,13 +327,13 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
   for (const name of names) {
     const path = join(launch.run, name)
     if (existsSync(path)) {
-      const bytes = readFileSync(path)
+      const bytes = readOwnedNativeFile(path)
       files[name] = { path, bytes: bytes.length, sha256: hash(bytes) }
     }
   }
   const capturedFrames = frames(launch, true),
     raw = existsSync(join(launch.run, 'pty.raw'))
-      ? readFileSync(join(launch.run, 'pty.raw'))
+      ? readOwnedNativeFile(join(launch.run, 'pty.raw'))
       : Buffer.alloc(0)
   let offset = 0,
     firstDifference
@@ -375,7 +377,7 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
     method:
       'strict contiguous byte equality from offset zero; no search, trimming or skipped frames',
   }
-  const eofPassed = existsSync(eof) && readFileSync(eof, 'utf8').trim() === '0'
+  const eofPassed = existsSync(eof) && readOwnedNativeFile(eof).toString('utf8').trim() === '0'
   let physical
   if (eofPassed && capturedFrames.some((frame) => frame.broker)) {
     const verifier = fileURLToPath(
@@ -395,7 +397,7 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
         { mode: 0o600 },
       )
     }
-    if (existsSync(output)) physical = JSON.parse(readFileSync(output, 'utf8'))
+    if (existsSync(output)) physical = JSON.parse(readOwnedNativeFile(output).toString('utf8'))
     stream = {
       method:
         'owned native PTY complete byte ledger and acknowledged frame boundaries',
@@ -427,7 +429,7 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
   ]) {
     const path = join(launch.run, name)
     if (existsSync(path)) {
-      const bytes = readFileSync(path)
+      const bytes = readOwnedNativeFile(path)
       files[name] = { path, bytes: bytes.length, sha256: hash(bytes) }
     }
   }
@@ -473,26 +475,31 @@ function sealNativeBuiltinCapture(launch) {
   const expectedPath = join(run, 'expected-native.json')
   let expected, physical, failure, normal = false
   try {
-    const start = JSON.parse(readFileSync(join(run, 'start.json'), 'utf8'))
     const producerPath = join(run, 'producer-expected-native.json'), producer = lstatSync(producerPath)
     if (!producer.isFile() || producer.isSymbolicLink() || producer.nlink !== 1 ||
         (producer.mode & 0o777) !== 0o600 || producer.uid !== process.getuid())
       throw Error('Producer expectation file identity changed')
-    expected = JSON.parse(readFileSync(producerPath, 'utf8'))
+    expected = JSON.parse(readOwnedNativeFile(producerPath, 0o600))
+    const start = JSON.parse(readOwnedNativeFile(join(run, 'start.json'), 0o600))
     if (expected.binarySha256 !== launch.binarySha256 ||
         expected.captureId !== launch.capture.captureId || expected.childPid !== start.childPid ||
         expected.columns !== launch.capture.initialSize.columns ||
         expected.rows !== launch.capture.initialSize.rows || expected.backend !== 'native-shared-slot-v1')
       throw Error('Producer expectation differs from prepared native identity')
+    for (const name of ['launch.json', 'cleanup.json', 'broker-cleanup.json', 'native-initial.json',
+      'registration.json', 'header.json', 'journal.bin', 'records.bin', 'raw.bin', 'native-pty.raw',
+      'pty.raw', 'pty-io.jsonl', 'frames.jsonl', 'capture-eof']) readOwnedNativeFile(join(run, name), 0o600)
     writeFileSync(expectedPath, JSON.stringify(expected) + '\n', { flag: 'wx', mode: 0o600 })
     execFileSync(process.execPath, [fileURLToPath(new URL('./native-frame-journal-replay.mjs', import.meta.url)),
       run, join(run, 'frame-physical-report.json'), expectedPath], {
       env: launch.env, encoding: 'utf8', timeout: 60000,
     })
-    normal = JSON.parse(readFileSync(join(run, 'cleanup.json'), 'utf8')).normalCompletion === true
+    normal = JSON.parse(readOwnedNativeFile(join(run, 'cleanup.json'), 0o600)).normalCompletion === true
   } catch (error) { failure = String(error) }
-  if (existsSync(join(run, 'frame-physical-report.json')))
-    physical = JSON.parse(readFileSync(join(run, 'frame-physical-report.json'), 'utf8'))
+  if (existsSync(join(run, 'frame-physical-report.json'))) {
+    try { physical = JSON.parse(readOwnedNativeFile(join(run, 'frame-physical-report.json'), 0o600)) }
+    catch (error) { failure ??= String(error) }
+  }
   for (const name of [
     'pty.raw', 'native-pty.raw', 'raw.bin', 'records.bin', 'journal.bin', 'registration.json',
     'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
@@ -503,11 +510,17 @@ function sealNativeBuiltinCapture(launch) {
   ]) {
     const path = join(run, name)
     if (existsSync(path)) {
-      const bytes = readFileSync(path)
-      files[name] = { path, bytes: bytes.length, sha256: hash(bytes) }
+      try {
+        const bytes = readOwnedNativeFile(path)
+        files[name] = { path, bytes: bytes.length, sha256: hash(bytes) }
+      } catch (error) { failure ??= String(error) }
     }
   }
-  const eofPassed = files['capture-eof'] && readFileSync(files['capture-eof'].path, 'utf8').trim() === '0'
+  let eofPassed = false
+  if (files['capture-eof']) {
+    try { eofPassed = readOwnedNativeFile(files['capture-eof'].path, 0o600).toString('utf8').trim() === '0' }
+    catch (error) { failure ??= String(error) }
+  }
   const rawMatched = files['pty.raw'] && files['raw.bin'] && files['native-pty.raw'] &&
     files['pty.raw'].sha256 === files['raw.bin'].sha256 && files['raw.bin'].sha256 === files['native-pty.raw'].sha256
   const nativeContentMatched = expected?.nativeClose?.method === 'owned-broker-closed-native-v1' &&
@@ -516,7 +529,7 @@ function sealNativeBuiltinCapture(launch) {
         files[name]?.sha256 === expected.nativeClose.files?.[name]?.sha256)
   const nativeIOMatched = typeof expected?.ioClose?.sha256 === 'string' &&
     files['pty-io.jsonl']?.sha256 === expected.ioClose.sha256
-  const boundedPassed = normal && eofPassed && rawMatched && nativeContentMatched && nativeIOMatched && physical?.verdict === 'passed'
+  const boundedPassed = !failure && normal && eofPassed && rawMatched && nativeContentMatched && nativeIOMatched && physical?.verdict === 'passed'
   const report = {
     backend: 'native-shared-slot-v1', binarySha256: launch.binarySha256,
     captureId: launch.capture.captureId, target: launch.target, pane: launch.pane,
@@ -533,9 +546,101 @@ function sealNativeBuiltinCapture(launch) {
     remaining: ['termios lifetime', 'child-side unobserved geometry changes', 'actual OS input/parser/owner',
                 'open-close-reopen matrix', 'product scheduling comparison', 'default release matrix'],
   }
-  writeFileSync(join(run, 'frame-stream-map.json'), JSON.stringify(report.stream, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
+  const streamPath = join(run, 'frame-stream-map.json'), streamBytes = Buffer.from(JSON.stringify(report.stream, null, 2) + '\n')
+  writeFileSync(streamPath, streamBytes, { flag: 'wx', mode: 0o600 })
+  files['frame-stream-map.json'] = { path: streamPath, bytes: streamBytes.length, sha256: hash(streamBytes) }
   writeFileSync(join(run, 'terminal-capture.json'), JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
   return report
+}
+
+/** Closed native identity/content only; OS input ownership and timing are separate. */
+export function validateNativeTerminalEvidence(side, diagnostics) {
+  let phase = 'capture', error
+  try {
+    const capture = side?.cleanup?.terminalCapture
+    if (capture?.backend !== 'native-shared-slot-v1' || capture.boundedVerdict !== 'passed' ||
+        capture.framePhysicalVerdict !== 'passed' || capture.eofPassed !== true ||
+        capture.stream?.method !== 'native-shared-slot-v1' || capture.stream.verdict !== 'passed' ||
+        capture.nativeContentMatched !== true || capture.nativeIOMatched !== true ||
+        capture.binarySha256 !== side.binarySha256 || capture.captureId !== side.captureId ||
+        capture.target !== side.target || capture.pane !== side.pane || !side.captureId ||
+        !/^[a-f0-9]{64}$/.test(side.binarySha256) || !isAbsolute(side.run) ||
+        !Number.isSafeInteger(capture.frameCount) || capture.frameCount <= 0)
+      return false
+    const root = realpathSync(side.run), data = new Map()
+    const names = ['pty.raw', 'raw.bin', 'native-pty.raw', 'records.bin', 'registration.json',
+      'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
+      'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
+      'observations.jsonl', 'initial-termios.txt', 'capture-eof', 'expected-native.json',
+      'producer-expected-native.json', 'frame-stream-map.json', 'frame-physical-report.json']
+    for (const name of names) {
+      phase = 'file:' + name
+      const path = join(root, name), info = capture.files?.[name]
+      if (info?.path !== path || !Number.isSafeInteger(info.bytes) || info.bytes < 0 ||
+          !/^[a-f0-9]{64}$/.test(info.sha256)) return false
+      const bytes = readOwnedNativeFile(path, 0o600)
+      if (bytes.length !== info.bytes || hash(bytes) !== info.sha256) return false
+      data.set(name, bytes)
+    }
+    phase = 'native-close-identity'
+    const json = name => JSON.parse(data.get(name).toString('utf8')),
+      jsonl = name => data.get(name).toString('utf8').split('\n').filter(Boolean).map(JSON.parse),
+      start = json('start.json'), launch = json('launch.json'), cleanup = json('cleanup.json'),
+      expected = json('expected-native.json'), producer = json('producer-expected-native.json'),
+      physical = json('frame-physical-report.json'), header = json('header.json')
+    if (!Number.isSafeInteger(start.childPid) || start.childPid <= 0 || start.childPgid !== start.childPid ||
+        start.binarySha256 !== side.binarySha256 || launch.binarySha256 !== side.binarySha256 ||
+        launch.captureId !== side.captureId || launch.command?.[0] !== join(root, 'bin/claude') ||
+        cleanup.backend !== 'native-shared-slot-v1' || cleanup.captureId !== side.captureId ||
+        cleanup.childPid !== start.childPid || cleanup.childExitCode !== 0 ||
+        cleanup.childReaped !== true || cleanup.physicalEof !== true || cleanup.normalCompletion !== true ||
+        cleanup.failure !== null || !isDeepStrictEqual(cleanup.cleanupErrors, []) ||
+        !isDeepStrictEqual(cleanup.signalsSent, []) || !isDeepStrictEqual(json('broker-cleanup.json'), cleanup) ||
+        data.get('capture-eof').toString('utf8').trim() !== '0' ||
+        expected.backend !== 'native-shared-slot-v1' || expected.childPid !== start.childPid ||
+        expected.binarySha256 !== side.binarySha256 || expected.captureId !== side.captureId ||
+        expected.columns !== capture.requestedInitialSize?.columns || expected.rows !== capture.requestedInitialSize?.rows ||
+        !isDeepStrictEqual(expected, producer) ||
+        !isDeepStrictEqual(expected.nativeClose, cleanup.nativeClose) ||
+        !isDeepStrictEqual(expected.ioClose, cleanup.ioClose)) return false
+    phase = 'original-close-content'
+    const content = expected.nativeClose, io = expected.ioClose,
+      nativeNames = ['raw.bin', 'native-pty.raw', 'pty.raw', 'records.bin', 'native-initial.json', 'registration.json', 'header.json']
+    if (content?.method !== 'owned-broker-closed-native-v1' ||
+        !Number.isSafeInteger(content.recordCount) || content.recordCount <= 0 ||
+        !isDeepStrictEqual(Object.keys(content.files ?? {}).sort(), nativeNames.sort()) ||
+        !nativeNames.every(name => content.files[name]?.bytes === data.get(name).length &&
+          content.files[name]?.sha256 === hash(data.get(name))) ||
+        io?.method !== 'owned-broker-closed-io-v1' || io.sha256 !== hash(data.get('pty-io.jsonl')) ||
+        io.recordCount !== jsonl('pty-io.jsonl').length || io.rawBytes !== data.get('pty.raw').length ||
+        !data.get('pty.raw').equals(data.get('raw.bin')) || !data.get('pty.raw').equals(data.get('native-pty.raw')) ||
+        !Array.isArray(header) || header.length !== 32 || header[8] !== start.childPid ||
+        header[9] !== content.recordCount || header[10] !== 0 || header[11] !== 1 ||
+        !isDeepStrictEqual(json('frame-stream-map.json'), capture.stream))
+      return false
+    phase = 'native-physical-report'
+    const entries = jsonl('frames.jsonl')
+    if (!data.get('frames.jsonl').toString('utf8').endsWith('\n') || entries.length !== capture.frameCount ||
+        !entries.every((frame, index) => frame.frameId === index + 1 &&
+          frame.native?.captureId === side.captureId && frame.native.spanId === frame.frameId &&
+          frame.native.profile === 'ink-post-write-v1') ||
+        physical.method !== 'native-journal-ioctl-geometry-replay-v1' || physical.verdict !== 'passed' ||
+        physical.rawBytes !== data.get('pty.raw').length || physical.rawSha256 !== hash(data.get('pty.raw')) ||
+        physical.frameCount !== entries.length || !Array.isArray(physical.frames) ||
+        physical.frames.length !== entries.length || !physical.frames.every((frame, index) =>
+          frame.frameId === index + 1 && frame.verdict === 'passed') ||
+        physical.closure?.verdict !== 'passed' || physical.closure.buffer !== 'normal' ||
+        physical.closure.cursorVisible !== true) return false
+    // The bounded v1 protocol cannot acquire timing/input coverage via edited labels.
+    phase = 'bounded-coverage-claims'
+    if ([capture, physical, cleanup].some(value =>
+      value.productTimingEquivalent !== false || value.fullNativeGatePassed !== false)) return false
+    phase = 'native-binary'
+    const passed = hash(readOwnedNativeFile(join(root, 'bin/claude'))) === side.binarySha256
+    if (passed) phase = 'passed'
+    return passed
+  } catch (failure) { error = failure.message; return false }
+  finally { if (diagnostics) Object.assign(diagnostics, { phase, ...(error ? { error } : {}) }) }
 }
 
 export function validateBuiltinTerminalEvidence(side) {
@@ -581,7 +686,7 @@ export function validateBuiltinTerminalEvidence(side) {
       if (!file || realpathSync(file.path) !== join(root, name)) return false
       const owned = relative(root, realpathSync(file.path))
       if (owned.startsWith('..') || isAbsolute(owned)) return false
-      const bytes = readFileSync(file.path)
+      const bytes = readOwnedNativeFile(file.path)
       if (
         !bytes.length ||
         file.bytes !== bytes.length ||
@@ -590,16 +695,16 @@ export function validateBuiltinTerminalEvidence(side) {
         return false
     }
     if (
-      readFileSync(files['capture-eof'].path, 'utf8').trim() !== '0' ||
+      readOwnedNativeFile(files['capture-eof'].path).toString('utf8').trim() !== '0' ||
       files['pty.raw'].sha256 !== files['native-pty.raw'].sha256
     )
       return false
     const initial = JSON.parse(
-        readFileSync(files['native-pty-initial.json'].path, 'utf8'),
+        readOwnedNativeFile(files['native-pty-initial.json'].path).toString('utf8'),
       ),
-      eof = JSON.parse(readFileSync(files['native-pty-eof.json'].path, 'utf8')),
+      eof = JSON.parse(readOwnedNativeFile(files['native-pty-eof.json'].path).toString('utf8')),
       cleanup = JSON.parse(
-        readFileSync(files['broker-cleanup.json'].path, 'utf8'),
+        readOwnedNativeFile(files['broker-cleanup.json'].path).toString('utf8'),
       )
     if (
       initial.captureId !== side.captureId ||
@@ -616,7 +721,7 @@ export function validateBuiltinTerminalEvidence(side) {
         JSON.stringify(['frame-request.fifo', 'frame-response.fifo'])
     )
       return false
-    if (hash(readFileSync(join(root, 'bin/claude'))) !== side.binarySha256)
+    if (hash(readOwnedNativeFile(join(root, 'bin/claude'))) !== side.binarySha256)
       return false
     const producerFrames = frames({ run: root }, true)
     if (
@@ -628,7 +733,7 @@ export function validateBuiltinTerminalEvidence(side) {
     )
       return false
     const jsonl = (path) =>
-      readFileSync(path, 'utf8').trim().split('\n').map(JSON.parse)
+      readOwnedNativeFile(path).toString('utf8').trim().split('\n').map(JSON.parse)
     const reads = jsonl(files['native-input.jsonl'].path)
     if (
       !reads.every(
@@ -646,7 +751,7 @@ export function validateBuiltinTerminalEvidence(side) {
       sends = inputs.filter((input) => input.phase === 'send'),
       sent = inputs.filter((input) => input.phase === 'sent')
     const physical = JSON.parse(
-      readFileSync(files['frame-physical-report.json'].path, 'utf8'),
+      readOwnedNativeFile(files['frame-physical-report.json'].path).toString('utf8'),
     )
     if (!validateCaptureInputs(root, side.target, inputs,
         jsonl(files['pty-io.jsonl'].path), physical.inputProof) ||
@@ -672,7 +777,7 @@ export function validateBuiltinTerminalEvidence(side) {
     )
       return false
     const stream = JSON.parse(
-      readFileSync(files['frame-stream-map.json'].path, 'utf8'),
+      readOwnedNativeFile(files['frame-stream-map.json'].path).toString('utf8'),
     )
     return (
       stream.verdict === 'passed' &&
@@ -701,7 +806,7 @@ export function captureInputIntent(root, target, inputs) {
             realpathSync(path) !== path ||
             relative(root, path).startsWith('..') ||
             isAbsolute(relative(root, path))) return null
-        const bytes = readFileSync(path)
+        const bytes = readOwnedNativeFile(path)
         if (send.target !== target || bytes.toString('hex') !== send.hex ||
             hash(bytes) !== send.bytesSHA256 ||
             JSON.stringify(send.actualCommands) !== JSON.stringify([

@@ -425,7 +425,11 @@ class NativeFrameJournalTest(unittest.TestCase):
             entries = journal.ink_frame_entries(records, (run / 'raw.bin').read_bytes(),
                                                  launch['captureId'], termios.OPOST | termios.ONLCR)
             self.assertEqual(len(entries), len(snapshots))
-            (run / 'frames.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+            derived = ''.join(json.dumps(entry) + '\n' for entry in entries).encode()
+            if getattr(self, 'production_broker', False):
+                self.assertEqual((run / 'frames.jsonl').read_bytes(), derived, 'Broker published frames differ from original native records')
+            else:
+                (run / 'frames.jsonl').write_bytes(derived)
             replay = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'native-frame-journal-replay.mjs'),
                                      str(run), str(run / 'physical-report.json'), str(run / 'expected-native.json')],
                                     env=env, capture_output=True, timeout=5)
@@ -557,6 +561,57 @@ class NativeFrameJournalTest(unittest.TestCase):
                 self.assertEqual(sealed['verdict'], 'failed')
                 self.assertFalse(sealed['productTimingEquivalent'])
                 self.assertFalse(sealed['fullNativeGatePassed'])
+                if getattr(self, 'require_native_identity', False):
+                    bounded = json.loads((run / 'independent-pty-checks.json').read_text())
+                    self.assertTrue(bounded['captureIdentityPassed'], 'Valid closed native originals were classified using legacy FIFO identity schema')
+                    self.assertEqual(bounded['recheck']['verdict'], 'passed', bounded['recheck'])
+                    self.assertFalse(bounded['fullNativeGatePassed'])
+                    self.assertFalse(bounded['productTimingEquivalent'])
+                    # Exercise identity negatives against the actual held side,
+                    # without rewriting any producer original or inventing UI frames.
+                    proof = run / 'native-identity-guards.test.mjs'
+                    module_url = (SOURCE / 'builtin-terminal-evidence.mjs').as_uri()
+                    proof.write_text("import { test, expect } from 'bun:test'\nimport { readFileSync, existsSync } from 'node:fs'\nimport { join } from 'node:path'\nimport { validateNativeTerminalEvidence, validateBuiltinTerminalEvidence } from " + json.dumps(module_url) + ";\nconst side=JSON.parse(readFileSync(" + json.dumps(str(run / 'independent-pty-checks.json')) + ",'utf8')).side;\n" + """
+test('actual native identity has no FIFO aliases and remains bounded', () => {
+  expect(validateNativeTerminalEvidence(side)).toBe(true)
+  expect(validateBuiltinTerminalEvidence(side)).toBe(false)
+  expect(existsSync(join(side.run,'native-pty-eof.json'))).toBe(false)
+  expect(existsSync(join(side.run,'frame-response.fifo'))).toBe(false)
+})
+test('native identity rejects edited side identity and required original hashes', () => {
+  for (const mutate of [
+    value => { value.captureId='foreign' },
+    value => { value.binarySha256='b'.repeat(64) },
+    value => { value.cleanup.terminalCapture.backend='legacy' },
+    value => { delete value.cleanup.terminalCapture.files['records.bin'] },
+    value => { value.cleanup.terminalCapture.files['pty-io.jsonl'].sha256='b'.repeat(64) },
+    value => { value.cleanup.terminalCapture.files['frames.jsonl'].path='../foreign' },
+    value => { value.cleanup.terminalCapture.files['header.json'].bytes+=1 },
+    value => { value.cleanup.terminalCapture.frameCount+=1 },
+  ]) {
+    const changed=structuredClone(side);mutate(changed)
+    expect(validateNativeTerminalEvidence(changed)).toBe(false)
+  }
+})
+test('coverage labels cannot upgrade bounded native evidence', () => {
+  for (const key of ['productTimingEquivalent','fullNativeGatePassed']) {
+    const changed=structuredClone(side);changed.cleanup.terminalCapture[key]=true
+    expect(validateNativeTerminalEvidence(changed)).toBe(false)
+    expect(validateBuiltinTerminalEvidence(changed)).toBe(false)
+  }
+})
+""")
+                    guards = subprocess.run(['/opt/homebrew/bin/bun', 'test', str(proof)], env=env, capture_output=True, timeout=10)
+                    (run / 'native-identity-guards.log').write_bytes(guards.stdout + guards.stderr)
+                    self.assertEqual(guards.returncode, 0, (guards.stdout + guards.stderr).decode())
+                    self.assertIn(b'3 pass', guards.stdout + guards.stderr)
+                    self.assertIn(b'0 fail', guards.stdout + guards.stderr)
+                if getattr(self, 'require_file_type_guards', False):
+                    types = subprocess.run(['python3', str(SOURCE / 'test-native-evidence-file-types.py'),
+                        str(run / 'independent-pty-checks.json')], env=env, capture_output=True, timeout=60)
+                    (run / 'file-type-guards.log').write_bytes(types.stdout + types.stderr)
+                    self.assertEqual(types.returncode, 0, (types.stdout + types.stderr).decode())
+                    self.assertIn(b'Ran 8 tests', types.stdout + types.stderr)
                 # These mutated copies are adversarial classifier fixtures,
                 # never substitute raw/native originals from the actual run.
                 import shutil
@@ -641,6 +696,11 @@ class NativeFrameJournalTest(unittest.TestCase):
                 final_io = [json.loads(line) for line in (run / 'pty-io.jsonl').read_bytes().splitlines()]
                 self.assertEqual(final_frames[:live_observation['frameCount']], live_observation['framePrefix'])
                 self.assertEqual(final_io[:live_observation['ioCount']], live_observation['ioPrefix'])
+
+            if getattr(self, 'require_native_exit', False):
+                driver = load('native_exit_guard', SOURCE.parent / '.claude/skills/release-validation/scripts/run-binary-gate.py')
+                passed = driver.terminal_native_exit_passed(run, descriptor['capture'], digest)
+                self.assertTrue(passed, 'Actual normal native EOF/reap was rejected by the legacy EOF alias predicate')
 
             (run / 'bounded-verdict.json').write_text(json.dumps({'verdict': 'passed', 'frameCount': len(snapshots),
                 'noFrameFifoAck': True, 'productTimingEquivalent': False, 'fullNativeGatePassed': False}) + '\n')
@@ -868,6 +928,27 @@ test('first seal rejects final IO replacement after actual independent replay', 
             self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
         finally:
             self.production_broker = self.require_live_prefix = False
+
+    def test_actual_default_broker_classifies_bounded_native_identity_without_legacy_aliases(self):
+        self.production_broker = self.require_native_identity = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.require_native_identity = False
+
+    def test_actual_closed_native_files_reject_fifo_without_blocking(self):
+        self.production_broker = self.require_native_identity = self.require_file_type_guards = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.require_native_identity = self.require_file_type_guards = False
+
+    def test_actual_default_broker_normal_exit_uses_native_close_receipts(self):
+        self.production_broker = self.require_native_exit = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.require_native_exit = False
 
     def test_actual_default_broker_expectation_publication_failure_is_not_normal(self):
         self.production_broker = self.fail_expectation_publication = True

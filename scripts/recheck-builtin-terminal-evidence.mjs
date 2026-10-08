@@ -2,10 +2,32 @@ import { readFileSync, writeFileSync, realpathSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath, URL } from 'node:url'
 import { isDeepStrictEqual } from 'node:util'
-import { validateBuiltinTerminalEvidence } from './builtin-terminal-evidence.mjs'
+import { validateBuiltinTerminalEvidence, validateNativeTerminalEvidence } from './builtin-terminal-evidence.mjs'
 import { verifyPtyTerminalEvidence } from './verify-pty-terminal-evidence.mjs'
+import { replayNativeFrameJournal } from './native-frame-journal-replay.mjs'
+import { join } from 'node:path'
 
 export async function recheckBuiltinSide(side, binarySha256) {
+  if (side?.cleanup?.terminalCapture?.backend === 'native-shared-slot-v1') {
+    const diagnostics = {}
+    if (side.binarySha256 !== binarySha256 || !validateNativeTerminalEvidence(side, diagnostics))
+      return { verdict: 'failed', reason: 'closed native identity or original content is invalid', nativeValidation: diagnostics,
+        productTimingEquivalent: false, fullNativeGatePassed: false }
+    try {
+      const run = realpathSync(side.run), replay = await replayNativeFrameJournal(run, join(run, 'expected-native.json'))
+      if (!validateNativeTerminalEvidence(side, diagnostics))
+        return { verdict: 'failed', reason: 'closed native originals changed during independent replay',
+          nativeValidation: diagnostics, productTimingEquivalent: false, fullNativeGatePassed: false }
+      return { verdict: replay.verdict, replay, captureId: side.captureId, run,
+        scope: 'bounded closed native identity and physical frame replay; input owner and timing are not covered',
+        productTimingEquivalent: false, fullNativeGatePassed: false,
+        oracleSha256: createHash('sha256').update(readFileSync(new URL('./native-frame-journal-replay.mjs', import.meta.url))).digest('hex'),
+        decoderSha256: createHash('sha256').update(readFileSync(new URL('./verify-native-frame-journal.py', import.meta.url))).digest('hex'),
+        journalSha256: createHash('sha256').update(readFileSync(new URL('./native-terminal-journal.py', import.meta.url))).digest('hex') }
+    } catch (error) {
+      return { verdict: 'failed', reason: error.message, productTimingEquivalent: false, fullNativeGatePassed: false }
+    }
+  }
   if (
     side?.binarySha256 !== binarySha256 ||
     !validateBuiltinTerminalEvidence(side)

@@ -17,10 +17,37 @@ journal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(journal)
 
 
+def open_native_regular(path, mode=None):
+    named = os.lstat(path)
+    journal.require(stat.S_ISREG(named.st_mode) and named.st_uid == os.getuid() and named.st_nlink == 1,
+                    'Native original is not an owned regular file')
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        opened = os.fstat(fd)
+        journal.require(stat.S_ISREG(opened.st_mode) and opened.st_uid == os.getuid() and opened.st_nlink == 1 and
+                        (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino) and
+                        (mode is None or stat.S_IMODE(opened.st_mode) == mode), 'Native original file identity changed')
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def read_native_regular(path, mode=None):
+    with os.fdopen(open_native_regular(path, mode), 'rb') as source:
+        before = os.fstat(source.fileno())
+        data = source.read()
+        after, named = os.fstat(source.fileno()), os.lstat(path)
+        journal.require(stat.S_ISREG(named.st_mode) and named.st_nlink == after.st_nlink == 1 and
+                        (named.st_dev, named.st_ino) == (before.st_dev, before.st_ino) and
+                        before.st_size == after.st_size == len(data), 'Native original changed during read')
+        return data
+
+
 def verify_fixed_geometry_io(run, expected, native_brackets=False):
     """Reject resize rather than infer native ordering from a raw read offset."""
     try:
-        data = (run / 'pty-io.jsonl').read_bytes()
+        data = read_native_regular(run / 'pty-io.jsonl')
         io = [json.loads(line) for line in data.splitlines()]
     except FileNotFoundError as error:
         raise journal.JournalError('Native IO geometry receipt is missing') from error
@@ -64,7 +91,7 @@ def verify_fixed_geometry_io(run, expected, native_brackets=False):
             offset = row['end']
         else:
             journal.require(row['rawOffset'] == offset, 'Native IO raw offset moved without output')
-    journal.require(offset == close['rawBytes'] == len((run / 'raw.bin').read_bytes()),
+    journal.require(offset == close['rawBytes'] == len(read_native_regular(run / 'raw.bin')),
                     'Native IO output coverage is incomplete')
     return io
 
@@ -78,7 +105,7 @@ def verify_native_content(run, expected, cleanup):
                     close.get('method') == 'owned-broker-closed-native-v1' and
                     type(close.get('recordCount')) is int and close['recordCount'] > 0 and
                     type(close.get('files')) is dict and set(close['files']) == names and
-                    cleanup.get('nativeClose') == close,
+                    json.dumps(cleanup.get('nativeClose'), sort_keys=True) == json.dumps(close, sort_keys=True),
                     'Native content does not match independent close receipt')
     data_by_name = {}
     for name in sorted(names):
@@ -88,7 +115,7 @@ def verify_native_content(run, expected, cleanup):
                         type(receipt.get('sha256')) is str and len(receipt['sha256']) == 64 and
                         all(char in '0123456789abcdef' for char in receipt['sha256']),
                         'Native content does not match independent close receipt')
-        fd = os.open(run / name, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = open_native_regular(run / name, 0o600)
         with os.fdopen(fd, 'rb') as source:
             file = os.fstat(source.fileno())
             journal.require(stat.S_ISREG(file.st_mode) and file.st_uid == os.getuid() and
@@ -166,19 +193,20 @@ def native_resize_events(io, header, registration, records, initial):
 
 def derive_frames(run, expected):
     run = Path(run).resolve(strict=True)
-    launch = json.loads((run / 'launch.json').read_text())
-    start = json.loads((run / 'start.json').read_text())
-    cleanup = json.loads((run / 'cleanup.json').read_text())
+    launch = json.loads(read_native_regular(run / 'launch.json'))
+    start = json.loads(read_native_regular(run / 'start.json'))
+    cleanup = json.loads(read_native_regular(run / 'cleanup.json'))
     journal.require(launch['captureId'] == expected['captureId'] and
                     launch['binarySha256'] == start['binarySha256'] == expected['binarySha256'] and
-                    start['childPid'] == start['childPgid'] == expected['childPid'],
+                    type(start['childPid']) is type(start['childPgid']) is type(expected['childPid']) is int and
+                    start['childPid'] > 0 and start['childPid'] == start['childPgid'] == expected['childPid'],
                     'Native capture does not match independent launch identity')
-    binary = Path(launch['command'][0]).resolve(strict=True)
-    journal.require(hashlib.sha256(binary.read_bytes()).hexdigest() == expected['binarySha256'],
+    binary = Path(launch['command'][0])
+    journal.require(hashlib.sha256(read_native_regular(binary)).hexdigest() == expected['binarySha256'],
                     'Actual native binary changed')
-    journal.require(cleanup['childPid'] == expected['childPid'] and cleanup['normalCompletion'] is True and
+    journal.require(type(cleanup['childPid']) is int and cleanup['childPid'] == expected['childPid'] and cleanup['normalCompletion'] is True and
                     cleanup['childReaped'] is True and cleanup['physicalEof'] is True and
-                    cleanup['childExitCode'] == 0 and cleanup['signalsSent'] == [] and
+                    type(cleanup['childExitCode']) is int and cleanup['childExitCode'] == 0 and cleanup['signalsSent'] == [] and
                     cleanup['failure'] is None and cleanup['cleanupErrors'] == [],
                     'Native capture lacks normal EOF/reap/cleanup')
     io = []
@@ -188,20 +216,21 @@ def derive_frames(run, expected):
         journal.require(expected.get('backend') == cleanup.get('backend') == 'native-shared-slot-v1',
                         'Native capture backend differs from independent expectation')
         io = verify_fixed_geometry_io(run, expected, native_brackets=True)
-        closed = json.loads((run / 'broker-cleanup.json').read_text())
-        journal.require(closed == cleanup and cleanup.get('ioClose') == expected['ioClose'] and
+        closed = json.loads(read_native_regular(run / 'broker-cleanup.json'))
+        journal.require(json.dumps(closed, sort_keys=True) == json.dumps(cleanup, sort_keys=True) and
+                        json.dumps(cleanup.get('ioClose'), sort_keys=True) == json.dumps(expected['ioClose'], sort_keys=True) and
                         cleanup.get('observedRawBytes') == expected['ioClose']['rawBytes'],
                         'Native IO does not match independent close receipt')
         native_close, content = verify_native_content(run, expected, cleanup)
     def native_bytes(name):
-        return content[name] if content is not None else (run / name).read_bytes()
+        return content[name] if content is not None else read_native_regular(run / name)
     initial = json.loads(native_bytes('native-initial.json'))
     registration = json.loads(native_bytes('registration.json'))
     rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
     journal.require(columns == expected['columns'] and rows == expected['rows'],
                     'Actual initial native geometry differs from independent expectation')
     header = json.loads(native_bytes('header.json'))
-    fd = os.open(run / 'journal.bin', os.O_RDONLY | os.O_NOFOLLOW)
+    fd = open_native_regular(run / 'journal.bin', 0o600)
     try:
         file = os.fstat(fd)
         journal.require(stat.S_ISREG(file.st_mode) and file.st_uid == os.getuid() and
@@ -238,7 +267,7 @@ if __name__ == '__main__':
     try:
         if len(sys.argv) != 3:
             raise journal.JournalError('Usage: verify-native-frame-journal.py RUN EXPECTED.json')
-        result = derive_frames(sys.argv[1], json.loads(Path(sys.argv[2]).read_text()))
+        result = derive_frames(sys.argv[1], json.loads(read_native_regular(Path(sys.argv[2]))))
         print(json.dumps(result))
     except Exception as error:
         print(json.dumps({'verdict': 'failed', 'error': str(error)}))
