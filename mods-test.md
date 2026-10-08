@@ -2258,3 +2258,11 @@ Native29 使用本轮新构建及动态 baseline 完成29场景，23通过、6�
 ## 第30轮帧验收与无需ACK后续
 
 完整29项完成，23通过6失败；424项源码/脚本回归、check/build及driver回归通过。初始化权限失败与真实产品失败分开保留，旧轮不复判；精确版本、binary/manifest、逐帧条件、正常收尾和新官方293焦点三侧证据见[本批记录](docs/research/mods-terminal-noack-validity-20261008.md)。同步ACK时序及完整browser Client/G5等仍须实现并闭合，继续分批签名提交，不push或声明发布。
+
+
+### 原生 journal 局部收据与清理处置
+
+验收脚本签名提交 `afb2741` 保留完整 Native30 的 23/29 failed。shared-slot probe 新增原件有效性 RED：saved packets 为空；非partial异常清理访问未定义 ready FD；partial异常清理再次读取已消费的控制收据。修复后保存真实完整 packet、先登记 PID、kill/wait 后逐 FD 独立关闭，21 个 native probe 通过。新覆盖真实 exclusive consumer 和 4-slot/44-record reuse；受控 fixture 的 stdin 管道只用于 probe 流程，不能当产品无 ACK/完整 UI 时序证明。原始 RED、旧 10/10 的空文件和审计 seal 均保留。详细范围见 docs/research/native-terminal-journal-validity-20261008.md。
+
+
+后续独立边界 RED 又确认 consumer 初始化在 cleanup 范围外、第二 pipe 申请失败未登记首个 FD、同实例允许 foreign thread、领取前未检查 registration。修复为全程登记/收尾、实例线程所有权，以及 C 领取前后核对 immutable nonce/endpoint 和独立 PID；错误领取保留 slot。20/20 收据限定 native collector，完整 Mods/diff/TTY/input/时序验收仍未闭合。

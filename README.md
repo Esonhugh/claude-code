@@ -2151,3 +2151,6 @@ Darwin 可用 `scripts/capture-native-terminal-writes.py --evidence-root <新目
 `python3 scripts/test-terminal-evidence-broker.py` 验证真实 PTY 的启动、输入/resize、退出和故障清理。broker 只以实际 PTY EOF 与 waitpid 记录退出；清理错误和异常停止保持失败，资源清理后的终态 seal 防止迟到信号改写回执分类，原件删除还要求正常完成且无错误。采集命令、回执字段、有效/无效测试处置与完整验收边界见[broker 生命周期记录](docs/research/mods-broker-lifecycle-validity-20261008.md)。完整 Mods/UI、时序与最新版 native 验收继续进行。
 
 `make release-check` 会运行 `bun ./scripts/check-readme-test-paths.mjs`，确认 README 引用的测试文件实际存在于当前 checkout。该检查只验证命令入口可用，不替代测试执行、官方双端、物理帧或完整发布门禁。
+
+
+原生 shared-slot 采集器的局部回归（macOS、现有 Xcode clang 和 Bun；只使用私有目录及 dummy 配置）可在一次新构建后运行：`JOURNAL_TEST_BINARY=/absolute/path/to/fresh/built-claude python3 scripts/test-native-terminal-journal.py`。脚本不会自行构建、安装依赖或读取共享认证，证据保存在其输出的 `/private/tmp/cc-journal-*`。21 项覆盖真实 CLI `--version`、原 write/writev/NOCANCEL、完整 5000 字节、实际 partial/EFAULT、不可变记录、队列饥饿拒收、两采集器独占、4 槽循环采集 44 条记录、受控异常与初始化回收、单实例线程 ownership 和领取前 registration/PID 绑定。此处“局部回归通过”只证明 native collector，尚未接入完整 Ink 帧、geometry/termios 历史、OS input/owner 和正常 diff lifecycle；同步 ACK 路径和完整 Mods 验收仍不通过。

@@ -1,5 +1,8 @@
 # 变更日志
 
+- 验收基础设施：新增 Darwin shared-slot 原生采集器，保持原 write/writev/NOCANCEL 及 errno；丢失、截断、来源或时序不明继续拒收。修复 native probe 的空 packet 收据和异常回收，新增 live CAS/循环复用与 partial/EFAULT 回归。21 项局部 probe 通过；完整无 ACK Ink/TTY/输入验收未闭合，不宣称 Mods/UI 发布通过。
+
+
 本文档记录基于 Claude Code `2.1.88` 恢复源码之后的本地变更。
 
 记录规则：
