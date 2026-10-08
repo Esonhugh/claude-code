@@ -81,6 +81,7 @@
 
 ### 测试覆盖
 
+- Native35 两批修复的准确合并source：28 collector、11真实CLI/frame、4 buffer、89 Bun及release-check通过；完整29项仍23 passed/6 failed。129帧/5owned resize与终态native/IO摘要匹配、资源清理完整，整体native/Mods/发布仍failed，见[最终处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。
 - 原生终端证据补充真实 tcsetattr 的内核前后模式及 syscall 括号，按实际 output flags重放write/frame/resize prefix；覆盖失败errno、overflow及歧义拒收。完整 mode/input/lifecycle仍未通过，见[模式观测记录](docs/research/mods-native-termios-observation-validity-20261008.md)。
 - 首封native验收另核对终态IO摘要与producer ioClose，拒绝独立重放后修改输入清单仍借旧physical通过。
 - 首封native验收固定内存来源的raw/records/metadata摘要，拒绝producer与IO不变的等长write/raw/snapshot耦合篡改；解码只消费已校验bytes，最终manifest再次匹配。真实首封RED/GREEN及边界见[内容闭包记录](docs/research/mods-native-payload-closure-validity-20261008.md)。

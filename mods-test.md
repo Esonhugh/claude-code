@@ -2321,3 +2321,7 @@ b1b只读审查在限定prepare/producer原件独立的边界关闭F-IO-1/2，�
 实际default CLI副本的等长write/raw/snapshot/derived耦合改写，在producer/IO/cleanup/metadata固定时被旧首封误判bounded passed；最小RED已保存。修复增加内存nativeClose及校验后同bytes解码，15b新构建同首封负例GREEN。整体native、完整termios/input/lifecycle和发布门禁仍未通过；本批最终matrix另记录，不把classifier负例当产品坏帧。详情见 [内容闭包](docs/research/mods-native-payload-closure-validity-20261008.md)。
 
 Native34：5066冻结source正常完成29/29，23 passed/6 failed；实际50+82=132帧、五次owned resize有限physical与七项摘要匹配，源码/owned资源清理完整。整体仍failed。随后独立复核发现F-IO-FINAL-1，真实replay后仅修改IO的6869最小RED已复现bounded误通过；outer新增终态ioClose SHA核对和nativeIOMatched，新候选重新验证，不借Native34宣称该窗口关闭。见内容闭包记录。
+
+## 2026-10-08 Native35 签名提交与最终结果
+
+652cd22终端mode记录、5b9e7cb首封内容/终态IO两批均正常GPG签名。合并committed source3123项逐blob完全匹配冻结40a5；本轮build、28 collector、11真实CLI/frame、4 buffer、89 Bun/525expect及完整release-check通过。默认完整matrix29/29、23 passed/6 failed，360.644秒，manifest SHA 34e04a77545f901f93ce8a34cd4c1eeb390bbb876160fed101232b9c4fdf29b2；实际129帧/5owned resize有限physical、nativeContentMatched与nativeIOMatched通过，normal EOF/reap/owned清理完整。整体native/Mods/四路发布仍failed，termios/direct ioctl/OS owner/调度/完整diff-Client及workflow缺口未关闭。ROOT其他Claude WIP保留、index空，无push。单独文档补录不冒充新binary门禁；详见 [Native35处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。
