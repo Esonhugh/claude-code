@@ -28,6 +28,71 @@ def load(name, filename):
 journal = load('frame_journal', 'native-terminal-journal.py')
 
 
+class NativeResizeOrderingTest(unittest.TestCase):
+    def fixture(self):
+        verifier = load('resize_verifier', 'verify-native-frame-journal.py')
+        records = []
+        for span, offset in ((1, 0), (2, 200)):
+            for kind, entry, returned in ((10, 100, 101), (12, 110, 111),
+                                          (1, 120, 121), (13, 130, 131), (11, 200, 201)):
+                records.append({'sequence': len(records) + 1, 'kind': kind, 'spanId': span,
+                                'threadId': 1, 'entry': entry + offset, 'return': returned + offset,
+                                'bytes': b'x\n' if kind == 1 else b''})
+        header = [0] * 32
+        header[8], header[12], header[13], header[19], header[21] = 123, 125, 3, 50, 500
+        before, after = struct.pack('HHHH', 30, 100, 0, 0).hex(), struct.pack('HHHH', 34, 110, 0, 0).hex()
+        bracket = {'method': 'native-mach-ioctl-resize-v1', 'entry': '150', 'return': '151',
+                   'nonce': 'owned', 'childPid': 123, 'timebaseNumer': 125, 'timebaseDenom': 3,
+                   'result': 0, 'errno': errno.EINTR, 'beforeSizeHex': before, 'afterSizeHex': after}
+        row = {'kind': 'resize-ack', 'ioId': 3, 'geometryId': 1, 'rawOffset': 0,
+               'columns': 110, 'rows': 34, 'succeeded': True,
+               'nativeClockCorrelationCovered': True, 'nativeBracket': bracket}
+        return verifier, [row], header, {'nonce': 'owned'}, records, {'sizeHex': before}
+
+    def test_resize_after_frame_end_precedes_next_frame_not_late_snapshot(self):
+        verifier, *arguments = self.fixture()
+        events = verifier.native_resize_events(*arguments)
+        self.assertEqual(len(events), 1)
+        self.assertEqual((events[0]['beforeFrameId'], events[0]['rawOffset']), (2, 3))
+        self.assertEqual(events[0]['nativeBracket']['entry'], '150')
+
+    def test_resize_rejects_output_or_layout_overlap_and_foreign_receipt(self):
+        verifier, *arguments = self.fixture()
+        bracket = arguments[0][0]['nativeBracket']
+        for entry, returned, message in (('120', '121', 'output syscall'),
+                                         ('105', '106', 'output transaction'),
+                                         ('129', '132', 'output transaction')):
+            with self.subTest(entry=entry):
+                bracket.update(entry=entry, **{'return': returned})
+                with self.assertRaisesRegex(verifier.journal.JournalError, message):
+                    verifier.native_resize_events(*arguments)
+        bracket.update(entry='150', **{'return': '151'})
+        for key, value in (('entry', 150), ('return', 2 ** 64), ('entry', '0150'),
+                           ('entry', '18446744073709551616'), ('entry', '1.5'),
+                           ('entry', '-1'), ('entry', '١٥٠'), ('childPid', True),
+                           ('result', False), ('timebaseNumer', True), ('nonce', 'foreign'),
+                           ('beforeSizeHex', '00' * 8), ('afterSizeHex', '00' * 8)):
+            with self.subTest(key=key, value=value):
+                original = bracket[key]
+                bracket[key] = value
+                with self.assertRaises(verifier.journal.JournalError):
+                    verifier.native_resize_events(*arguments)
+                bracket[key] = original
+
+    def test_resize_uint64_clock_survives_json_without_float_rounding(self):
+        verifier, *arguments = self.fixture()
+        offset = 2 ** 53 + 1
+        for row in arguments[3]:
+            row['entry'] += offset
+            row['return'] += offset
+        arguments[1][19] += offset
+        arguments[1][21] += offset
+        arguments[0][0]['nativeBracket'].update(entry=str(offset + 150), **{'return': str(offset + 151)})
+        result = verifier.native_resize_events(*arguments)
+        self.assertEqual(result[0]['nativeBracket']['entry'], '9007199254741143')
+        self.assertEqual(json.loads(json.dumps(result))[0]['nativeBracket']['entry'], str(offset + 150))
+
+
 def capture_cli(run):
     os.umask(0o077)
     spec = json.loads((run / 'launch.json').read_text())
@@ -261,6 +326,10 @@ class NativeFrameJournalTest(unittest.TestCase):
                     raise RuntimeError('CLI exited before readiness: ' + text)
                 if time.monotonic() >= deadline:
                     raise TimeoutError('No actual CLI readiness: ' + text)
+            if getattr(self, 'resize_with_native_receipt', False):
+                command('resize-window', '-t', 'journal', '-x', '110', '-y', '34')
+                self.assertEqual(command('display-message', '-p', '-t', pane,
+                                         '#{pane_width} #{pane_height}').strip(), '110 34')
             if getattr(self, 'fail_expectation_publication', False):
                 (run / 'producer-expected-native.json').write_bytes(b'late file must not be overwritten')
             command('send-keys', '-t', pane, '-l', '/exit')
@@ -283,6 +352,15 @@ class NativeFrameJournalTest(unittest.TestCase):
                                  b'late file must not be overwritten')
                 return
             self.assertTrue(cleanup['normalCompletion'], cleanup)
+            if getattr(self, 'resize_with_native_receipt', False):
+                io = [json.loads(line) for line in (run / 'pty-io.jsonl').read_bytes().splitlines()]
+                resizes = [row for row in io if row['kind'] == 'resize-ack']
+                self.assertEqual(len(resizes), 1)
+                self.assertEqual((resizes[0]['columns'], resizes[0]['rows']), (110, 34))
+                self.assertTrue(resizes[0]['nativeClockCorrelationCovered'],
+                                'Actual default broker resize lacks native Mach-clock ioctl brackets')
+                self.assertIs(type(resizes[0]['nativeBracket']['entry']), str)
+                self.assertIs(type(resizes[0]['nativeBracket']['return']), str)
             self.assertEqual(cleanup['signalsSent'], [])
             start = json.loads((run / 'start.json').read_text())
             (run / 'expected-native.json').write_text(json.dumps({
@@ -316,11 +394,34 @@ class NativeFrameJournalTest(unittest.TestCase):
                                     env=env, capture_output=True, timeout=5)
             (run / 'replay.log').write_bytes(replay.stdout + replay.stderr)
             physical = json.loads((run / 'physical-report.json').read_text())
-            self.assertEqual(replay.returncode, 0, physical['frames'])
+            self.assertEqual(replay.returncode, 0, physical)
             self.assertEqual(physical['verdict'], 'passed')
             self.assertEqual(physical['closure']['verdict'], 'passed')
             self.assertEqual(physical['closure']['buffer'], 'normal')
             self.assertTrue(physical['closure']['cursorVisible'])
+            if getattr(self, 'resize_with_native_receipt', False):
+                self.assertEqual(len(physical['geometryEvents']), 1)
+                self.assertEqual(physical['geometryEvents'][0]['columns'], 110)
+                self.assertEqual(physical['geometryEvents'][0]['rows'], 34)
+                self.assertTrue(physical['nativeResizeBracketsCovered'])
+                command('kill-server')
+                started = False
+                (run / 'expected-native.json').rename(run / 'entry-expected-native.json')
+                seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                                       'seal', str(run / 'capture-launch.json')], env=env, capture_output=True, timeout=5)
+                (run / 'seal.log').write_bytes(seal.stdout + seal.stderr)
+                self.assertEqual(seal.returncode, 1)
+                sealed = json.loads((run / 'terminal-capture.json').read_text())
+                self.assertEqual(sealed['boundedVerdict'], 'passed', sealed)
+                self.assertTrue(sealed['nativeResizeBracketsCovered'])
+                self.assertEqual(sealed['framePhysicalBoundary'], 'native-frame-end-v1')
+                self.assertEqual(sealed['verdict'], 'failed')
+                self.assertFalse(sealed['productTimingEquivalent'])
+                self.assertFalse(sealed['fullNativeGatePassed'])
+                (run / 'bounded-verdict.json').write_text(json.dumps({'verdict': 'passed',
+                    'frameCount': len(snapshots), 'nativeResizeBracketsCovered': True,
+                    'productTimingEquivalent': False, 'fullNativeGatePassed': False}) + '\n')
+                return
             with self.assertRaisesRegex(journal.JournalError, 'identity'):
                 journal.ink_frame_entries(records, (run / 'raw.bin').read_bytes(),
                                           'foreign-capture', termios.OPOST | termios.ONLCR)
@@ -525,6 +626,13 @@ class NativeFrameJournalTest(unittest.TestCase):
             self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
         finally:
             self.production_broker = self.fail_expectation_publication = False
+
+    def test_actual_default_broker_native_resize_uses_real_clock_and_replay(self):
+        self.production_broker = self.resize_with_native_receipt = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.resize_with_native_receipt = False
 
     def test_owned_tmux_startup_timeout_still_stops_actual_server(self):
         from unittest.mock import patch

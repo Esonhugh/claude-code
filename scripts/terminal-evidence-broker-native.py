@@ -182,13 +182,11 @@ def capture_native(run, argv):
                 raise TimeoutError('Owned child exited without physical PTY EOF')
             if pending_resize:
                 size = fcntl.ioctl(0, termios.TIOCGWINSZ, b'\0' * 8)
-                fcntl.ioctl(master, termios.TIOCSWINSZ, size)
-                if fcntl.ioctl(master, termios.TIOCGWINSZ, b'\0' * 8) != size:
-                    raise OSError('Native resize acknowledgement mismatch')
+                bracket = consumer.resize(master, size)
                 geometry_id += 1
                 rows, columns, _, _ = struct.unpack('HHHH', size)
                 record('resize-ack', rows=rows, columns=columns, succeeded=True,
-                       nativeClockCorrelationCovered=False)
+                       nativeClockCorrelationCovered=True, nativeBracket=bracket)
                 pending_resize = False
             for key, _mask in selector.select(.01):
                 if key.data == 'output':

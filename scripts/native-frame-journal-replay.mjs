@@ -7,7 +7,7 @@ import { frameDifference } from './verify-terminal-frame-evidence.mjs'
 
 const Terminal = xterm.Terminal ?? xterm.default?.Terminal ?? xterm['module.exports']?.Terminal
 
-/** Fixed native geometry only. Unknown roots/resize/input ownership stay uncovered. */
+/** Native write/resize brackets; unknown roots and input ownership remain uncovered. */
 export async function replayNativeFrameJournal(run, expectedPath, path = join(run, 'frames.jsonl')) {
   const expected = JSON.parse(readFileSync(expectedPath, 'utf8'))
   const { columns, rows } = expected
@@ -23,17 +23,33 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
   if (!isDeepStrictEqual(entries, native.entries))
     throw Error('Derived frame/output does not match original native ledger')
   const terminal = new Terminal({ allowProposedApi: true, cols: columns, rows, logLevel: 'off' })
-  const frames = []
+  const frames = [], geometry = native.geometryEvents
+  let geometryIndex = 0, rawOffset = 0
+  const write = bytes => new Promise(resolve => terminal.write(bytes, resolve))
+  async function writeThrough(bytes, frameId) {
+    let consumed = 0
+    while (geometryIndex < geometry.length && geometry[geometryIndex].beforeFrameId <= frameId) {
+      const event = geometry[geometryIndex++]
+      const cut = event.rawOffset - rawOffset
+      if (!Number.isSafeInteger(cut) || cut < consumed || cut > bytes.length)
+        throw Error('Native resize has no ordered physical output prefix')
+      await write(bytes.subarray(consumed, cut))
+      terminal.resize(event.columns, event.rows)
+      consumed = cut
+    }
+    await write(bytes.subarray(consumed))
+    rawOffset += bytes.length
+  }
   let closure
   try {
     for (const entry of entries) {
       const frame = JSON.parse(Buffer.from(entry.frameBase64, 'base64').toString('utf8'))
       const output = Buffer.from(entry.outputBase64, 'base64')
-      await new Promise(resolve => terminal.write(output, resolve))
+      await writeThrough(output, entry.frameId)
       let difference
       if (entry.native?.profile !== 'ink-post-write-v1') difference = 'Unsupported native frame profile'
-      else if (frame.buffer !== 'alternate') difference = 'Normal root anchor is not covered by fixed-geometry replay'
-      else if (frame.viewport?.width !== columns || frame.viewport?.height !== rows)
+      else if (frame.buffer !== 'alternate') difference = 'Normal root anchor is not covered by native geometry replay'
+      else if (frame.viewport?.width !== terminal.cols || frame.viewport?.height !== terminal.rows)
         difference = 'Logical viewport differs from independent native geometry'
       else if (typeof terminal._core?.coreService?.isCursorHidden !== 'boolean')
         difference = 'Independent cursor visibility API unavailable'
@@ -44,7 +60,9 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
                     outputBytes: output.length, verdict: difference ? 'failed' : 'passed', difference })
     }
     const tail = Buffer.from(native.tailBase64, 'base64')
-    await new Promise(resolve => terminal.write(tail, resolve))
+    await writeThrough(tail, entries.length + 1)
+    if (geometryIndex !== geometry.length || rawOffset !== native.rawBytes)
+      throw Error('Native geometry/output ledger is incomplete')
     closure = { outputBytes: tail.length, buffer: terminal.buffer.active.type,
                 cursorX: terminal.buffer.active.cursorX, cursorY: terminal.buffer.active.cursorY,
                 cursorVisible: !terminal._core.coreService.isCursorHidden,
@@ -53,12 +71,14 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
   } finally {
     terminal.dispose()
   }
-  return { method: 'native-journal-fixed-geometry-replay-v1',
+  return { method: 'native-journal-ioctl-geometry-replay-v1',
+           framePhysicalBoundary: 'native-frame-end-v1',
+           geometryEvents: geometry, nativeResizeBracketsCovered: geometry.length > 0,
            verdict: frames.every(frame => frame.verdict === 'passed') && closure.verdict === 'passed' ? 'passed' : 'failed',
            frameCount: frames.length, frames, closure, productTimingEquivalent: false,
            rawBytes: native.rawBytes, rawSha256: native.rawSha256,
            fullNativeGatePassed: false,
-           remaining: ['termios lifetime', 'native resize brackets', 'actual input/owner',
+           remaining: ['termios lifetime', 'child-side unobserved geometry changes', 'actual input/owner',
                        'open-close-reopen matrix', 'default release matrix'] }
 }
 

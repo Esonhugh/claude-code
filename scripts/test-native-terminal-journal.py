@@ -124,6 +124,45 @@ class NativeJournalTest(unittest.TestCase):
         print(json.dumps({'evidence': str(cls.root), 'librarySHA256':
               hashlib.sha256(cls.library.read_bytes()).hexdigest()}), flush=True)
 
+    def test_native_resize_brackets_real_ioctl_and_preserves_errno(self):
+        library = ctypes.CDLL(str(self.library), use_errno=True)
+        function = library.cc_terminal_native_resize
+        function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64)]
+        function.restype = ctypes.c_int
+        system = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+        now = system.mach_absolute_time
+        now.restype = ctypes.c_uint64
+        clock = (ctypes.c_uint32 * 2)()
+        self.assertEqual(system.mach_timebase_info(ctypes.byref(clock)), 0)
+        master, slave = pty.openpty()
+        try:
+            original = struct.pack('HHHH', 30, 100, 0, 0)
+            requested = struct.pack('HHHH', 34, 110, 0, 0)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, original)
+            receipt = (ctypes.c_uint64 * 12)()
+            ctypes.set_errno(errno.EALREADY)
+            before = now()
+            result = function(master, struct.unpack('<Q', requested)[0], receipt)
+            after = now()
+            self.assertEqual(result, 0)
+            self.assertEqual(ctypes.get_errno(), errno.EALREADY)
+            self.assertTrue(before <= receipt[0] <= receipt[1] <= after)
+            self.assertEqual(receipt[2:4], [0, errno.EALREADY])
+            self.assertEqual(receipt[4:6], [struct.unpack('<Q', original)[0], struct.unpack('<Q', requested)[0]])
+            self.assertEqual(receipt[6:10], [0, errno.EALREADY, 0, errno.EALREADY])
+            self.assertEqual(receipt[10:12], list(clock))
+            self.assertEqual(fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8), requested)
+            failed = (ctypes.c_uint64 * 12)()
+            self.assertEqual(function(-1, struct.unpack('<Q', requested)[0], failed), -1)
+            self.assertEqual(ctypes.get_errno(), errno.EBADF)
+            self.assertEqual(failed[2], (1 << 64) - 1)
+            self.assertEqual(failed[3], errno.EBADF)
+            self.assertEqual(failed[6], (1 << 64) - 1)
+            self.assertEqual(failed[8], (1 << 64) - 1)
+        finally:
+            os.close(master)
+            os.close(slave)
+
     def capture(self, mode='large', capacity=64, payload=65536, observed=True, binary=None, fail_after_start=False, fail_after_receipt=False, live=False, fail_after_live_records=0):
         run = self.root / f'case-{len(list(self.root.glob("case-*")))}'
         run.mkdir()

@@ -191,7 +191,7 @@ def frame_spans(records, profile='pre-write-v1'):
 def ink_frame_entries(records, raw, capture_id, output_flags):
     """Bind post-write snapshots to exact successful syscall prefixes.
 
-    This fixed-geometry adapter does not establish termios/resize lifetime or
+    This write adapter does not establish termios/resize lifetime or
     input ownership. The independent replay retains those uncovered boundaries.
     """
     import base64
@@ -273,6 +273,9 @@ class NativeConsumer:
             self.function.argtypes = [ctypes.c_void_p, ctypes.c_uint64, ctypes.c_uint64,
                                       ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint64]
             self.function.restype = ctypes.c_int
+            self.resize_function = self.library.cc_terminal_native_resize
+            self.resize_function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64)]
+            self.resize_function.restype = ctypes.c_int
             self.size = size
             self.expected = (ctypes.c_uint64 * 32)(*self.registration['header'])
             self.check_registration()
@@ -323,6 +326,23 @@ class NativeConsumer:
         self.require_owner()
         require(not self.closed, 'Native collector is closed')
         return HEADER.unpack_from(self.mapping)
+
+    def resize(self, fd, size):
+        import ctypes
+        self.require_owner()
+        require(not self.closed and self.expected_pid is not None and len(size) == 8,
+                'Native resize requires the owned collector and winsize')
+        receipt = (ctypes.c_uint64 * 12)()
+        returned = self.resize_function(fd, struct.unpack('<Q', size)[0], receipt)
+        require(returned == 0 and receipt[2] == receipt[6] == receipt[8] == 0 and
+                struct.pack('<Q', receipt[5]) == size and
+                0 < receipt[0] <= receipt[1] and receipt[10] > 0 and receipt[11] > 0,
+                'Actual native resize or acknowledgement failed')
+        return {'method': 'native-mach-ioctl-resize-v1', 'entry': str(receipt[0]), 'return': str(receipt[1]),
+                'result': returned, 'errno': receipt[3], 'beforeSizeHex': struct.pack('<Q', receipt[4]).hex(),
+                'afterSizeHex': struct.pack('<Q', receipt[5]).hex(),
+                'timebaseNumer': receipt[10], 'timebaseDenom': receipt[11],
+                'nonce': self.registration['nonce'], 'childPid': self.expected_pid}
 
     def close(self):
         self.require_owner()

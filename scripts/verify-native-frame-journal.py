@@ -17,7 +17,7 @@ journal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(journal)
 
 
-def verify_fixed_geometry_io(run, expected):
+def verify_fixed_geometry_io(run, expected, native_brackets=False):
     """Reject resize rather than infer native ordering from a raw read offset."""
     try:
         data = (run / 'pty-io.jsonl').read_bytes()
@@ -30,16 +30,21 @@ def verify_fixed_geometry_io(run, expected):
                     first.get('columns') == expected['columns'] and first.get('rows') == expected['rows'] and
                     first.get('childPid') == expected['childPid'] and first.get('rawOffset') == 0,
                     'Native IO initial geometry differs from independent expectation')
+    geometry_id = 0
     for index, row in enumerate(io, 1):
-        journal.require(row.get('kind') != 'resize-ack' and type(row.get('geometryId')) is int and
-                        row['geometryId'] == 0,
-                        'Fixed-geometry replay cannot accept resize without native brackets '
-                        f"(ioId={row.get('ioId')}, geometryId={row.get('geometryId')}, "
-                        f"size={row.get('columns')}x{row.get('rows')})")
+        if row.get('kind') == 'resize-ack':
+            journal.require(native_brackets and type(row.get('nativeBracket')) is dict and
+                            row['nativeBracket'].get('method') == 'native-mach-ioctl-resize-v1',
+                            'Fixed-geometry replay cannot accept resize without native brackets '
+                            f"(ioId={row.get('ioId')}, geometryId={row.get('geometryId')}, "
+                            f"size={row.get('columns')}x{row.get('rows')})")
+            geometry_id += 1
+        journal.require(type(row.get('geometryId')) is int and row['geometryId'] == geometry_id,
+                        'Native IO geometry identity is missing or reordered')
         journal.require(type(row.get('ioId')) is int and row['ioId'] == index and
                         type(row.get('rawOffset')) is int and row['rawOffset'] >= 0 and
                         row.get('captureId') == expected['captureId'] and
-                        row.get('kind') in ('initial-geometry', 'input', 'output') and
+                        row.get('kind') in ('initial-geometry', 'input', 'output', 'resize-ack') and
                         (row['kind'] == 'initial-geometry') == (index == 1),
                         'Foreign, missing or unsupported native IO geometry receipt')
     close = expected.get('ioClose')
@@ -61,6 +66,67 @@ def verify_fixed_geometry_io(run, expected):
             journal.require(row['rawOffset'] == offset, 'Native IO raw offset moved without output')
     journal.require(offset == close['rawBytes'] == len((run / 'raw.bin').read_bytes()),
                     'Native IO output coverage is incomplete')
+    return io
+
+
+def native_resize_events(io, header, registration, records, initial):
+    """Only non-overlapping kernel brackets determine physical resize offsets."""
+    writes = [row for row in records if row['kind'] == 1]
+    spans = journal.frame_spans(records, 'ink-post-write-v1')
+    by_sequence = {row['sequence']: row for row in records}
+    events = []
+    previous_return, size = header[19], initial['sizeHex']
+    for row in io:
+        if row['kind'] != 'resize-ack':
+            continue
+        bracket = row['nativeBracket']
+        ticks = []
+        for key in ('entry', 'return'):
+            value = bracket.get(key)
+            journal.require(type(value) is str and 0 < len(value) <= 20 and
+                            value.isascii() and value.isdecimal() and value[0] != '0' and
+                            int(value) < 2 ** 64, 'Native resize clock must be an exact uint64 decimal string')
+            ticks.append(int(value))
+        entry, returned = ticks
+        journal.require(row.get('succeeded') is True and row.get('nativeClockCorrelationCovered') is True and
+                        bracket.get('method') == 'native-mach-ioctl-resize-v1' and
+                        bracket.get('nonce') == registration['nonce'] and
+                        type(bracket.get('childPid')) is int and bracket['childPid'] == header[8] and
+                        type(bracket.get('timebaseNumer')) is int and bracket['timebaseNumer'] == header[12] and
+                        type(bracket.get('timebaseDenom')) is int and bracket['timebaseDenom'] == header[13] and
+                        type(bracket.get('result')) is int and bracket['result'] == 0 and
+                        type(bracket.get('errno')) is int and 0 <= bracket['errno'] < 2 ** 31 and
+                        previous_return <= entry <= returned <= header[21],
+                        'Native resize has foreign clock, identity or lifecycle')
+        journal.require(bracket.get('beforeSizeHex') == size, 'Native resize initial kernel geometry changed')
+        try:
+            after = bytes.fromhex(bracket['afterSizeHex'])
+            rows, columns, _, _ = struct.unpack('HHHH', after)
+        except (ValueError, KeyError, TypeError, struct.error) as error:
+            raise journal.JournalError('Malformed native resize kernel geometry') from error
+        journal.require(type(row.get('columns')) is int and type(row.get('rows')) is int and
+                        0 < columns <= 1000 and 0 < rows <= 1000 and
+                        (columns, rows) == (row['columns'], row['rows']),
+                        'Native resize confirmation differs from requested geometry')
+        journal.require(all(write['return'] <= entry or write['entry'] >= returned
+                            for write in writes), 'Native resize overlaps an output syscall')
+        before_frame = len(spans) + 1
+        for span in spans:
+            layout = by_sequence[span['layoutSequence']]
+            end = by_sequence[span['endSequence']]
+            # Compare at the output transaction's end. Its immutable copy is
+            # published later on the same thread with no intervening writes.
+            journal.require(end['return'] <= entry or layout['entry'] >= returned,
+                            f"Native resize overlaps output transaction (frameId={span['spanId']})")
+            if layout['entry'] >= returned:
+                before_frame = min(before_frame, span['spanId'])
+        raw_offset = sum(len(write['bytes'].replace(b'\n', b'\r\n')) for write in writes
+                         if write['return'] <= entry)
+        events.append({'ioId': row['ioId'], 'geometryId': row['geometryId'],
+                       'beforeFrameId': before_frame, 'rawOffset': raw_offset,
+                       'columns': columns, 'rows': rows, 'nativeBracket': bracket})
+        previous_return, size = returned, bracket['afterSizeHex']
+    return events
 
 
 def derive_frames(run, expected):
@@ -85,10 +151,11 @@ def derive_frames(run, expected):
     rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
     journal.require(columns == expected['columns'] and rows == expected['rows'],
                     'Actual initial native geometry differs from independent expectation')
+    io = []
     if 'backend' in expected or 'backend' in cleanup:
         journal.require(expected.get('backend') == cleanup.get('backend') == 'native-shared-slot-v1',
                         'Native capture backend differs from independent expectation')
-        verify_fixed_geometry_io(run, expected)
+        io = verify_fixed_geometry_io(run, expected, native_brackets=True)
         closed = json.loads((run / 'broker-cleanup.json').read_text())
         journal.require(closed == cleanup and cleanup.get('ioClose') == expected['ioClose'] and
                         cleanup.get('observedRawBytes') == expected['ioClose']['rawBytes'],
@@ -118,7 +185,8 @@ def derive_frames(run, expected):
     records = journal.decode_records(header, packets, registration, expected['childPid'])
     raw = (run / 'raw.bin').read_bytes()
     entries = journal.ink_frame_entries(records, raw, expected['captureId'], initial['outputFlags'])
-    return {'entries': entries, 'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
+    geometry = native_resize_events(io, header, registration, records, initial)
+    return {'entries': entries, 'geometryEvents': geometry, 'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
             'tailBase64': base64.b64encode(raw[entries[-1]['rawEnd']:]).decode(),
             'productTimingEquivalent': False, 'fullNativeGatePassed': False}
 

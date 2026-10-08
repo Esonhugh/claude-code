@@ -2297,3 +2297,11 @@ Native31 基于提交 `d2db8ec` 的重新构建和动态 baseline，通过实际
 两条terminal run正常exit0/EOF/reap，无信号、drop或cleanup error，分别48/72帧；canonical记录一次110×34 resize（ioId14），interaction四次109/110×34（ioId72/89/99/109）。producer expectation与seal expected相同，新fixed-geometry guard在首个resize处明确拒收bounded通过，而非用视口不匹配推断产品坏帧。native resize/Mach clock、termios、actual OS read/parser/owner、全生命周期和官方完整对照仍未完成。
 
 b1b只读审查在限定prepare/producer原件独立的边界关闭F-IO-1/2，报告/private/tmp/native-first-seal-readonly-fk9hfi5w/REPORT.md，SHA256 4be4a218ca187ca78d39c16c9966cfb0ba3af658600ad5dd4845bdd813ddff18。另保留F-DOC-1：README裸broker测试命令漏BROKER_TEST_EVIDENCE_DIR；本轮验证wrapper显式设置，四初始化案收据有效。后续文档更正提供独立新目录，不改源码、旧结果或上述8d提交的原始身份，也不形成新的四路发布通过结论。
+
+## 2026-10-08 native resize 验收有效性处置（父 cbfb0bc）
+
+补齐 owned broker 的真实 Mach-clock `TIOCSWINSZ` 括号、内核前后尺寸与严格身份/生命周期绑定，跨 JSON 的 uint64 时钟使用精确十进制字符串。独立 xterm 从原 syscall 成功字节推导 resize prefix，在 frame-end 比较每帧；缺失括号、与输出/布局重叠或篡改仍拒收。原件重推导和 producer first-seal IO 绑定继续生效。
+
+中间源码309d的真实默认入口新进程25906完成200×60→110×34、7帧/raw6559/IO27，逐帧与正常exit0/EOF/reap通过；3项ordering/type与23项collector回归通过。旧 end→snapshot gap 原件保持失败记录；新真实capture未再次命中该gap，source/unit范围与实际范围分开记录。另一次tmux在install前消失的初始化失败也保留，没有归因产品。
+
+完整seal仍failed，productTimingEquivalent/fullNativeGatePassed仍false；child-side几何、termios、OS input/owner、diff/browser完整生命周期、最新版API与四路发布门禁继续待完成。详情和命令见[本批验收](docs/research/mods-native-resize-bracket-validity-20261008.md)。同轮最终候选及完整driver结果应另绑定其source/binary，不继承中间绿色结果。

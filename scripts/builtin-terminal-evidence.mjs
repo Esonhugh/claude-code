@@ -518,10 +518,12 @@ function sealNativeBuiltinCapture(launch) {
     requestedInitialSize: launch.capture.initialSize,
     stream: { method: 'native-shared-slot-v1', verdict: rawMatched ? 'passed' : 'failed' },
     framePhysicalVerdict: physical?.verdict ?? 'failed',
+    framePhysicalBoundary: physical?.framePhysicalBoundary ?? null,
+    nativeResizeBracketsCovered: physical?.verdict === 'passed' && physical.nativeResizeBracketsCovered === true,
     boundedVerdict: boundedPassed ? 'passed' : 'failed', failure,
     productTimingEquivalent: false, fullNativeGatePassed: false,
     verdict: 'failed',
-    remaining: ['termios lifetime', 'native resize brackets', 'actual OS input/parser/owner',
+    remaining: ['termios lifetime', 'child-side unobserved geometry changes', 'actual OS input/parser/owner',
                 'open-close-reopen matrix', 'product scheduling comparison', 'default release matrix'],
   }
   writeFileSync(join(run, 'frame-stream-map.json'), JSON.stringify(report.stream, null, 2) + '\n', { flag: 'wx', mode: 0o600 })

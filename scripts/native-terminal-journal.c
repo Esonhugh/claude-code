@@ -4,6 +4,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <sys/ioctl.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdint.h>
@@ -83,6 +84,27 @@ static int registered_header(uint64_t *header,const uint64_t *expected){
   if(load_word(header+i)!=expected[i])return 0;
  }
  return 1;
+}
+// The collector performs the real resize here. These are the same kernel clock
+// and timebase as producer write records, not a Python clock approximation.
+int cc_terminal_native_resize(int fd,uint64_t packed_size,uint64_t *receipt){
+ struct winsize requested,before={0},after={0};
+ _Static_assert(sizeof(struct winsize)==8,"Darwin winsize receipt must be eight bytes");
+ memcpy(&requested,&packed_size,sizeof(requested));
+ if(!receipt)return ioctl(fd,TIOCSWINSZ,&requested);
+ int incoming=errno;memset(receipt,0,12*sizeof(uint64_t));
+ mach_timebase_info_data_t clock={0};mach_timebase_info(&clock);
+ receipt[10]=clock.numer;receipt[11]=clock.denom;
+ errno=incoming;int prior=ioctl(fd,TIOCGWINSZ,&before);int prior_errno=errno;
+ errno=incoming;receipt[0]=mach_absolute_time();
+ int returned=ioctl(fd,TIOCSWINSZ,&requested);int outcome=errno;
+ receipt[1]=mach_absolute_time();
+ errno=outcome;int confirmed=ioctl(fd,TIOCGWINSZ,&after);int confirmed_errno=errno;
+ receipt[2]=(uint64_t)(int64_t)returned;receipt[3]=(uint64_t)outcome;
+ memcpy(receipt+4,&before,sizeof(before));memcpy(receipt+5,&after,sizeof(after));
+ receipt[6]=(uint64_t)(int64_t)prior;receipt[7]=(uint64_t)prior_errno;
+ receipt[8]=(uint64_t)(int64_t)confirmed;receipt[9]=(uint64_t)confirmed_errno;
+ errno=outcome;return returned;
 }
 int cc_terminal_journal_consume(void *base,uint64_t mapped_length,uint64_t sequence,void *destination,uint64_t capacity,const uint64_t *registration,uint64_t producer_pid){
  if(!base || !destination || !registration || mapped_length<HEADER_WORDS*8 || !sequence || !producer_pid)return -1;
