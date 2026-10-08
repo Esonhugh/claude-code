@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded no-ACK capture. Frame/raw records reach disk after the child stops.
+"""Bounded no-ACK capture with asynchronous frame/IO prefix publication.
 
 Overflow invalidates evidence while PTY forwarding continues. Native geometry
 history, OS input ownership and schedule equivalence are separate open gates.
@@ -24,6 +24,9 @@ import tty
 spec = importlib.util.spec_from_file_location('native_journal', Path(__file__).with_name('native-terminal-journal.py'))
 journal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(journal)
+spec = importlib.util.spec_from_file_location('native_live_publisher', Path(__file__).with_name('native-live-publisher.py'))
+live = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(live)
 
 
 class EvidenceBuffer:
@@ -73,7 +76,7 @@ def capture_native(run, argv):
     launch = json.loads((run / 'launch.json').read_text())
     if launch['command'] != argv or launch['captureId'] != capture_id or launch['binarySha256'] != digest:
         raise ValueError('Native broker launch receipt changed')
-    child = master = slave = consumer = selector = None
+    child = master = slave = consumer = selector = publisher = None
     outer_attrs = native_attrs = None
     initial = registration = header = None
     evidence = EvidenceBuffer()
@@ -89,9 +92,11 @@ def capture_native(run, argv):
     def record(kind, **fields):
         nonlocal sequence
         sequence += 1
-        evidence.add('io', (json.dumps({'ioId': sequence, 'kind': kind,
+        data = (json.dumps({'ioId': sequence, 'kind': kind,
             'captureId': capture_id, 'geometryId': geometry_id,
-            'rawOffset': raw_offset, **fields}) + '\n').encode())
+            'rawOffset': raw_offset, **fields}) + '\n').encode()
+        if evidence.add('io', data) and publisher is not None:
+            publisher.offer('io', data)
 
     def collect():
         nonlocal packet_sequence, capture_failure
@@ -104,7 +109,8 @@ def capture_native(run, argv):
                     return
                 packet_sequence += 1
                 # Continue releasing slots even after the bounded memory is full.
-                evidence.add('packets', struct.pack('<I', len(packet)) + packet)
+                if evidence.add('packets', struct.pack('<I', len(packet)) + packet) and publisher is not None:
+                    publisher.offer('packet', packet, consumer.header())
         except Exception as error:
             capture_failure = detail(error)
 
@@ -124,7 +130,8 @@ def capture_native(run, argv):
             return
         start = raw_offset
         raw_offset += len(chunk)
-        evidence.add('raw', chunk)
+        if evidence.add('raw', chunk) and publisher is not None:
+            publisher.offer('raw', chunk)
         record('output', start=start, end=raw_offset)
         if forward:
             offset = 0
@@ -164,6 +171,8 @@ def capture_native(run, argv):
                                  start_new_session=True, preexec_fn=own_controlling_tty)
         consumer.bind_producer(child.pid)
         save_json('start.json', {'childPid': child.pid, 'childPgid': child.pid, 'binarySha256': digest})
+        publisher = live.NativeLivePublisher(run, journal, registration, child.pid, capture_id,
+                                             initial['outputFlags'])
         os.close(slave)
         slave = None
         os.set_blocking(master, False)
@@ -270,7 +279,7 @@ def capture_native(run, argv):
         native_close = {'method': 'owned-broker-closed-native-v1', 'recordCount': packet_sequence,
                         'files': {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
                                   for name, data in {**native_data, 'pty.raw': raw}.items()}}
-        for name, data in {**native_data, 'pty-io.jsonl': io}.items():
+        for name, data in native_data.items():
             cleanup('save:' + name, lambda name=name, data=data: save(name, data))
         if evidence.dropped:
             capture_failure = {'type': 'EvidenceOverflow', 'message': 'Bounded observer lost evidence',
@@ -279,6 +288,23 @@ def capture_native(run, argv):
             failure = capture_failure
         normal = bool(completed and failure is None and not cleanup_errors and eof and child is not None
                       and child.returncode == 0 and not signals_sent)
+        entries = []
+        if normal:
+            try:
+                packets, offset = [], 0
+                while offset < len(saved):
+                    length = struct.unpack_from('<I', saved, offset)[0]
+                    offset += 4
+                    packets.append(saved[offset:offset + length])
+                    offset += length
+                records = journal.decode_records(header, packets, registration, child.pid)
+                entries = journal.ink_frame_entries(records, raw, capture_id, initial['outputFlags'])
+            except BaseException as error:
+                normal, failure = False, detail(error)
+        if publisher is not None:
+            cleanup('close-live-publication', lambda: publisher.finish(io, entries))
+        if cleanup_errors:
+            normal = False
         result = {'captureId': capture_id, 'childPid': child.pid if child else None,
                   'childExitCode': child.returncode if child else None,
                   'childReaped': child is None or child.poll() is not None,
@@ -291,20 +317,6 @@ def capture_native(run, argv):
                               'finalGeometryId': geometry_id},
                   'nativeClose': native_close,
                   'productTimingEquivalent': False, 'fullNativeGatePassed': False}
-        # Keep prefix artifacts even when native decoding or frame derivation fails.
-        if normal:
-            try:
-                packets, offset = [], 0
-                while offset < len(saved):
-                    length = struct.unpack_from('<I', saved, offset)[0]
-                    offset += 4
-                    packets.append(saved[offset:offset + length])
-                    offset += length
-                records = journal.decode_records(header, packets, registration, child.pid)
-                entries = journal.ink_frame_entries(records, raw, capture_id, initial['outputFlags'])
-                save('frames.jsonl', ''.join(json.dumps(entry) + '\n' for entry in entries).encode())
-            except BaseException as error:
-                result.update(normalCompletion=False, failure=detail(error))
         # Publish the expectation from the broker's memory before any sealer
         # consumes mutable cleanup/IO files. Never regenerate it at first seal.
         if child is not None and initial is not None:

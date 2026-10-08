@@ -26,7 +26,8 @@ class NativeBrokerBufferTest(unittest.TestCase):
             scripts = run / 'scripts'
             scripts.mkdir()
             for dependency in ('terminal-evidence-broker.py', 'terminal-evidence-broker-native.py',
-                               'verify-native-frame-journal.py', 'native-terminal-journal.py'):
+                               'verify-native-frame-journal.py', 'native-terminal-journal.py',
+                               'native-live-publisher.py'):
                 shutil.copy2(source / dependency, scripts / dependency)
             env = dict(os.environ)
             env.pop('PYTHONDONTWRITEBYTECODE', None)

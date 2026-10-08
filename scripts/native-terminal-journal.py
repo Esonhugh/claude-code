@@ -78,6 +78,15 @@ def final_records(path, registration):
 
 
 def decode_records(header, records, registration, expected_pid):
+    return _decode_records(header, records, registration, expected_pid, closed=True)
+
+
+def decode_live_records(header, records, registration, expected_pid):
+    """Committed prefix only. This never establishes a close or full coverage."""
+    return _decode_records(header, records, registration, expected_pid, closed=False)
+
+
+def _decode_records(header, records, registration, expected_pid, *, closed):
     require(type(expected_pid) is int and expected_pid > 0, 'Independent main PID required')
     require(len(header) == 32 and all(type(word) is int and 0 <= word < 1 << 64
             for word in header), 'Invalid header')
@@ -85,9 +94,16 @@ def decode_records(header, records, registration, expected_pid):
                 if index not in MUTABLE_HEADER), 'Native registration changed')
     require(header[8] == expected_pid, 'Foreign or absent native producer')
     require(header[10] == 0, 'Lost native journal record')
-    require(header[11] == 1 and header[19] > 0 and header[21] >= header[19] and
-            header[12] > 0 and header[13] > 0, 'Missing native clock or close boundary')
-    require(header[9] == len(records), 'Missing native record sequence')
+    if closed:
+        require(header[11] == 1 and header[19] > 0 and header[21] >= header[19] and
+                header[12] > 0 and header[13] > 0, 'Missing native clock or close boundary')
+        require(header[9] == len(records), 'Missing native record sequence')
+    else:
+        require(header[11] in (0, 1) and header[19] > 0 and header[12] > 0 and header[13] > 0,
+                'Missing native prefix clock or lifecycle')
+        require(header[9] >= len(records), 'Prefix exceeds native record sequence')
+        if header[11] == 1:
+            require(header[21] >= header[19], 'Missing closed native prefix boundary')
     decoded = []
     for sequence, data in enumerate(records, 1):
         require(len(data) >= RECORD.size, 'Truncated native metadata')
@@ -98,7 +114,8 @@ def decode_records(header, records, registration, expected_pid):
         require(state == 2 and ticket == sequence and pid == expected_pid and thread > 0,
                 'Foreign, duplicated or incomplete native record')
         require(flags == 0 and not any(reserved), 'Truncated or unsupported native observation')
-        require(header[19] <= entry <= returned_at <= header[21],
+        require(header[19] <= entry <= returned_at and
+                (not header[11] or returned_at <= header[21]),
                 'Native syscall bracket lies outside lifecycle')
         require(length <= registration['payloadBytes'] and len(data) == RECORD.size + length,
                 'Immutable payload bounds mismatch')
@@ -284,6 +301,27 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
                         'frameBase64': value['frameBase64']})
         previous_offset = finish
     return entries
+
+
+def ink_live_frame_entries(header, packets, raw, registration, expected_pid, capture_id, output_flags):
+    """Derive complete frames from copied native records and physical raw bytes.
+
+    No close marker is invented. Incomplete trailing frames remain pending;
+    malformed earlier records and physical prefix disagreement are rejected.
+    The final verifier must separately bind all originals and the actual close.
+    """
+    records = decode_live_records(header, packets, registration, expected_pid)
+    snapshots = [index for index, row in enumerate(records) if row['kind'] == 11]
+    if not snapshots:
+        return []
+    complete = records[:snapshots[-1] + 1]
+    outputs = native_write_outputs(complete, output_flags)
+    physical = b''.join(outputs[row['sequence']] for row in complete if row['kind'] == 1)
+    if len(raw) < len(physical):
+        require(physical.startswith(raw), 'Native live raw prefix differs from original writes')
+        return []
+    require(raw.startswith(physical), 'Native live raw prefix differs from original writes')
+    return ink_frame_entries(complete, raw[:len(physical)], capture_id, output_flags)
 
 
 class NativeConsumer:

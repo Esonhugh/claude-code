@@ -326,6 +326,42 @@ class NativeFrameJournalTest(unittest.TestCase):
                     raise RuntimeError('CLI exited before readiness: ' + text)
                 if time.monotonic() >= deadline:
                     raise TimeoutError('No actual CLI readiness: ' + text)
+            live_observation = None
+            if getattr(self, 'require_live_prefix', False):
+                # A final-only file cannot witness this live checkpoint. Wait
+                # for actual complete rows, then continue normal /exit even RED.
+                deadline = time.monotonic() + 2
+                while True:
+                    values = {}
+                    for name in ('frames.jsonl', 'pty-io.jsonl'):
+                        path = run / name
+                        data = path.read_bytes() if path.exists() else b''
+                        complete = data[:data.rfind(b'\n') + 1]
+                        values[name] = [json.loads(line) for line in complete.splitlines()]
+                    frames, io = values['frames.jsonl'], values['pty-io.jsonl']
+                    physical_bytes = (run / 'pty.raw').stat().st_size
+                    child_pid = json.loads((run / 'start.json').read_text())['childPid']
+                    try:
+                        os.kill(child_pid, 0)
+                        child_alive = True
+                    except ProcessLookupError:
+                        child_alive = False
+                    running = (child_alive and not (run / 'broker-cleanup.json').exists()
+                               and command('display-message', '-p', '-t', pane, '#{pane_dead}').strip() == '0')
+                    passed = bool(running and frames and io and frames[-1]['native']['captureId'] == launch['captureId']
+                                  and 0 < frames[-1]['frameId'] == frames[-1]['native']['spanId']
+                                  and frames[-1]['rawEnd'] <= physical_bytes)
+                    live_observation = {'passed': passed, 'captureId': launch['captureId'],
+                        'frameCount': len(frames), 'ioCount': len(io), 'physicalBytes': physical_bytes,
+                        'observedBeforeExitInput': True, 'observedChildAlive': child_alive,
+                        'observedBrokerOpen': running, 'framePrefix': frames, 'ioPrefix': io,
+                        'binarySha256': digest, 'childPid': child_pid}
+                    if passed or time.monotonic() >= deadline:
+                        break
+                    if command('display-message', '-p', '-t', pane, '#{pane_dead}').strip() == '1':
+                        raise RuntimeError('CLI exited before live evidence checkpoint')
+                    time.sleep(.02)
+                (run / 'live-observation.json').write_text(json.dumps(live_observation) + '\n')
             if getattr(self, 'resize_with_native_receipt', False):
                 command('resize-window', '-t', 'journal', '-x', '110', '-y', '34')
                 self.assertEqual(command('display-message', '-p', '-t', pane,
@@ -599,6 +635,13 @@ class NativeFrameJournalTest(unittest.TestCase):
                     with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO geometry receipt is missing'):
                         verifier.derive_frames(fixture, expected)
                     self.assertEqual((run / 'pty-io.jsonl').read_bytes(), original_io)
+            if getattr(self, 'require_live_prefix', False):
+                self.assertTrue(live_observation['passed'], 'Actual native CLI was ready, but no independent frame/IO prefix was available before exit')
+                final_frames = [json.loads(line) for line in (run / 'frames.jsonl').read_bytes().splitlines()]
+                final_io = [json.loads(line) for line in (run / 'pty-io.jsonl').read_bytes().splitlines()]
+                self.assertEqual(final_frames[:live_observation['frameCount']], live_observation['framePrefix'])
+                self.assertEqual(final_io[:live_observation['ioCount']], live_observation['ioPrefix'])
+
             (run / 'bounded-verdict.json').write_text(json.dumps({'verdict': 'passed', 'frameCount': len(snapshots),
                 'noFrameFifoAck': True, 'productTimingEquivalent': False, 'fullNativeGatePassed': False}) + '\n')
         finally:
@@ -818,6 +861,13 @@ test('first seal rejects final IO replacement after actual independent replay', 
             self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
         finally:
             self.production_broker = False
+
+    def test_actual_default_broker_exposes_live_prefix_bound_to_final_originals(self):
+        self.production_broker = self.require_live_prefix = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.require_live_prefix = False
 
     def test_actual_default_broker_expectation_publication_failure_is_not_normal(self):
         self.production_broker = self.fail_expectation_publication = True
