@@ -12,9 +12,12 @@ import selectors
 import signal
 import stat
 import struct
+import sys
 import termios
 import time
 import tty
+
+sys.dont_write_bytecode = True
 
 
 class BrokerStopped(Exception):

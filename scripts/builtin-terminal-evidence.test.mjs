@@ -88,6 +88,21 @@ test('native prepare refuses preexisting observer bytes before compiling', () =>
   expect(readFileSync(join(run, 'native-observer.json'), 'utf8')).toBe(enrollment)
   expect(existsSync(join(run, 'observer-compile.log'))).toBe(false)
 })
+test('native first seal refuses missing producer expectation without rebuilding it from cleanup', async () => {
+  const launch = fixture()
+  launch.capture.nativeJournal = true
+  writeFileSync(join(launch.run, 'capture-eof'), '0\n')
+  writeFileSync(join(launch.run, 'start.json'), JSON.stringify({ childPid: 17 }))
+  writeFileSync(join(launch.run, 'broker-cleanup.json'), JSON.stringify({
+    normalCompletion: true, ioClose: { recordCount: 1, sha256: 'a'.repeat(64) },
+  }))
+  const report = await sealBuiltinCapture(launch)
+  expect(report.boundedVerdict).toBe('failed')
+  expect(report.failure).toContain('producer-expected-native.json')
+  expect(existsSync(join(launch.run, 'expected-native.json'))).toBe(false)
+  expect(report.productTimingEquivalent).toBe(false)
+  expect(report.fullNativeGatePassed).toBe(false)
+})
 test('paste evidence requires exact owned bytes, both successful commands and actual forwarded native input', () => {
   const launch = fixture(), path = join(launch.run, 'input.bin'),
     bytes = Buffer.from('中文\r')

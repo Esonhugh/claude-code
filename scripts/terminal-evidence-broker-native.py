@@ -58,7 +58,7 @@ def capture_native(run, argv):
         raise ValueError('Native binary changed before broker startup')
     owned_names = ('raw.bin', 'native-pty.raw', 'records.bin', 'pty-io.jsonl', 'journal.bin',
                    'native-initial.json', 'registration.json', 'header.json', 'start.json',
-                   'frames.jsonl', 'cleanup.json', 'broker-cleanup.json')
+                   'frames.jsonl', 'cleanup.json', 'broker-cleanup.json', 'producer-expected-native.json')
     if any(os.path.lexists(run / name) for name in owned_names):
         raise ValueError('Preexisting native capture artifact is not owned by this launch')
     def save(name, data):
@@ -259,9 +259,10 @@ def capture_native(run, argv):
         if outer_attrs is not None:
             cleanup('restore-outer-termios', lambda: termios.tcsetattr(0, termios.TCSANOW, outer_attrs))
         raw = b''.join(evidence.values['raw'])
+        io = b''.join(evidence.values['io'])
         for name, data in [('raw.bin', raw), ('native-pty.raw', raw),
                            ('records.bin', b''.join(evidence.values['packets'])),
-                           ('pty-io.jsonl', b''.join(evidence.values['io']))]:
+                           ('pty-io.jsonl', io)]:
             cleanup('save:' + name, lambda name=name, data=data: save(name, data))
         for name, data in [('native-initial.json', initial), ('registration.json', registration), ('header.json', header)]:
             if data is not None:
@@ -280,6 +281,9 @@ def capture_native(run, argv):
                   'cleanupErrors': cleanup_errors, 'normalCompletion': normal,
                   'backend': 'native-shared-slot-v1', 'evidenceBytes': evidence.used,
                   'observedRawBytes': raw_offset, 'droppedBytes': evidence.dropped,
+                  'ioClose': {'method': 'owned-broker-closed-io-v1', 'recordCount': sequence,
+                              'sha256': hashlib.sha256(io).hexdigest(), 'rawBytes': raw_offset,
+                              'finalGeometryId': geometry_id},
                   'productTimingEquivalent': False, 'fullNativeGatePassed': False}
         # Keep prefix artifacts even when native decoding or frame derivation fails.
         if normal:
@@ -296,6 +300,16 @@ def capture_native(run, argv):
                 save('frames.jsonl', ''.join(json.dumps(entry) + '\n' for entry in entries).encode())
             except BaseException as error:
                 result.update(normalCompletion=False, failure=detail(error))
+        # Publish the expectation from the broker's memory before any sealer
+        # consumes mutable cleanup/IO files. Never regenerate it at first seal.
+        if child is not None and initial is not None:
+            rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
+            cleanup('save:producer-expected-native.json', lambda: save_json('producer-expected-native.json', {
+                'binarySha256': digest, 'captureId': capture_id, 'backend': 'native-shared-slot-v1',
+                'childPid': child.pid, 'columns': columns, 'rows': rows, 'ioClose': result['ioClose'],
+            }))
+            if cleanup_errors:
+                result['normalCompletion'] = False
         save_json('cleanup.json', result)
         save_json('broker-cleanup.json', result)
     return 0 if result['normalCompletion'] else 1

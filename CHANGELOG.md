@@ -27,6 +27,12 @@
 
 ### 变更内容
 
+- 首次 seal 拒收：native broker 关闭时从内存原件提前固定 producer expectation，sealer只读并绑定prepare身份，禁止从当前cleanup重新生成摘要；真实first-seal复制负例拒收删input/重编号/改两份cleanup。该证明以prepare及producer原件保持独立为前提。
+
+- IO 原件完整性：owned broker 正常关闭时固定摘要/数量/末尾 identity，并由独立expected绑定；回放要求完整连续raw覆盖，拒收裁剪、重编号与IO/cleanup耦合改写。native resize时序、输入owner与完整验收继续保持未通过。
+
+- 验收拒收：默认 native capture 显式绑定 backend 和 IO 初始几何，任何 observed resize 不再允许固定尺寸回放的局部通过；缺失或不匹配的几何收据保持失败。Python broker/replay 入口禁止生成源码 bytecode，新增拒收及初始化回归；完整发布验收未通过。
+
 - 默认终端验收采集接入 Darwin shared-slot broker：预先绑定 observer，原生执行期间用有界内存保存记录，不等待 frame ACK 或同步落盘；溢出保持失败且继续 PTY 转发，退出后保存原件及故障收尾。新增真实默认 broker 启动/退出和预存文件拒收回归；完整 geometry/input/时序与发布门禁仍未通过。
 
 - 验收证据：将 Darwin native journal 接入实际 Ink layout/write/snapshot，私有采集模式关闭旧 FIFO ACK 和同步 frame mirror；回放重新绑定原始 packets/raw、registration 与本轮身份，拒收同时改写 output/cells 的派生数据。新增真实 CLI 固定几何逐帧及 tmux 启动超时回收；完整默认 no-ACK/resize/input/diff 生命周期和 Mods 发布门禁仍未通过。

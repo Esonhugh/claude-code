@@ -474,10 +474,17 @@ function sealNativeBuiltinCapture(launch) {
   let physical, failure, normal = false
   try {
     const start = JSON.parse(readFileSync(join(run, 'start.json'), 'utf8'))
-    writeFileSync(expectedPath, JSON.stringify({
-      binarySha256: launch.binarySha256, captureId: launch.capture.captureId,
-      childPid: start.childPid, ...launch.capture.initialSize,
-    }) + '\n', { flag: 'wx', mode: 0o600 })
+    const producerPath = join(run, 'producer-expected-native.json'), producer = lstatSync(producerPath)
+    if (!producer.isFile() || producer.isSymbolicLink() || producer.nlink !== 1 ||
+        (producer.mode & 0o777) !== 0o600 || producer.uid !== process.getuid())
+      throw Error('Producer expectation file identity changed')
+    const expected = JSON.parse(readFileSync(producerPath, 'utf8'))
+    if (expected.binarySha256 !== launch.binarySha256 ||
+        expected.captureId !== launch.capture.captureId || expected.childPid !== start.childPid ||
+        expected.columns !== launch.capture.initialSize.columns ||
+        expected.rows !== launch.capture.initialSize.rows || expected.backend !== 'native-shared-slot-v1')
+      throw Error('Producer expectation differs from prepared native identity')
+    writeFileSync(expectedPath, JSON.stringify(expected) + '\n', { flag: 'wx', mode: 0o600 })
     execFileSync(process.execPath, [fileURLToPath(new URL('./native-frame-journal-replay.mjs', import.meta.url)),
       run, join(run, 'frame-physical-report.json'), expectedPath], {
       env: launch.env, encoding: 'utf8', timeout: 60000,
@@ -491,6 +498,7 @@ function sealNativeBuiltinCapture(launch) {
     'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
     'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
     'observations.jsonl', 'initial-termios.txt', 'capture-eof', 'expected-native.json',
+    'producer-expected-native.json',
     'native-observer.json', 'observer.dylib', 'observer-compile.log', 'frame-physical-report.json',
   ]) {
     const path = join(run, name)

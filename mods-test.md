@@ -2277,3 +2277,13 @@ Native29 使用本轮新构建及动态 baseline 完成29场景，23通过、6�
 有效 RED `native-default-broker-red2` 从真实 CLI 正常退出确认默认 broker 忽略 enrollment；首轮 RED1 的启动目录/信任对话框问题不计产品 RED。默认 `terminal-capture-driver prepare` 预先编译、绑定 observer，并由最终 native exec 的 broker 选择 shared-slot 路径。运行时只保存有界内存 prefix，不等帧 ACK、不同步写 raw/frame 文件；溢出继续转发但不允许验收通过。预存 native artifact 的拒收与独占新建另外有 RED/回归，原件和旧 verdict 保留。
 
 这批实际默认 broker 的固定几何与启动故障回归不完成完整默认矩阵。seal 的 `boundedVerdict` 和完整 `verdict` 分开：缺 native resize/termios 历史、OS input/parser/owner 或时序证明仍是完整失败，不用普通正常退出、派生帧或测试数量补足。详细实现和验收范围见[默认无 ACK 记录](docs/research/mods-default-native-broker-validity-20261008.md)。
+
+### 固定几何回放的 resize 拒收
+
+Native31 基于提交 `d2db8ec` 的重新构建和动态 baseline，通过实际默认完整 driver 执行29条 roster（含 readiness），23通过、6失败，完整 verdict 保留 failed；manifest SHA256 `87ddd928cc127bb8158a29c30bb22b92432f6e9c619eea00394e0a71cbfb9028`。两条 terminal run 均有真实正常 exit0/EOF/reap、无 kill 和 droppedBytes；canonical 47帧、interaction 67帧，但记录到 resize 后固定200×60回放拒收，不能将其归因为已证明的产品坏帧。外层输入集合另新增1份 Python bytecode；原始3119源码无改写，原件及外层失败判定保留。
+
+新增几何分类 RED 在真实默认 CLI 正常退出后的复制收据中，追加 resize→恢复原尺寸，被旧 verifier 忽略；它是验收分类回归，不是实际产品 resize 错误序列。修复要求 independent backend/IO identity、唯一初始尺寸及无 observed resize，缺失 IO 或不符初始尺寸同样拒收。bytecode 的初始化 RED 与真实 Native31 side effect 另保留；修复不缩减矩阵或放宽 source 检查。完整 native clock/resize、termios、OS read/parser/owner、产品时序与全功能对照仍未完成。详见[验收边界记录](docs/research/mods-fixed-geometry-acceptance-validity-20261008.md)。
+
+`native-io-close-guard-red-cli1` 另外复现旧有限guard接受initial-only IO截断。修复在broker收尾固定IO摘要/数量/最终geometry/raw tip，并绑定独立expected；测试增加截断、删output重编号、耦合修改普通/双份cleanup与output区间/非output offset拒收。复制fixture和人工摘要只作classifier测试，不是native resize或产品时序证明；旧f6b轮次与其暂缓提交的审计报告保持原判。
+
+首次seal只读审查发现f393仍在seal时从当前broker-cleanup生成expected，故该轮也暂缓提交。native-first-seal-red-cli1 通过真实默认CLI关闭后的复制原件，删一条input、重编号并更新两份cleanup，第一次实际sealer误判bounded passed；RED及完整failed原判保留。修复改为broker在退出前从内存原件独占发布producer-expected-native.json，sealer只读该提前固定原件并绑定prepare身份，缺失/预存/发布失败不得fallback。完整native geometry/termios/input/时序和发布验收继续failed。

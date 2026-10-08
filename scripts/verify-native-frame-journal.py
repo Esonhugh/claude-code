@@ -10,9 +10,57 @@ import stat
 import struct
 import sys
 
+sys.dont_write_bytecode = True
+
 spec = importlib.util.spec_from_file_location('native_journal', Path(__file__).with_name('native-terminal-journal.py'))
 journal = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(journal)
+
+
+def verify_fixed_geometry_io(run, expected):
+    """Reject resize rather than infer native ordering from a raw read offset."""
+    try:
+        data = (run / 'pty-io.jsonl').read_bytes()
+        io = [json.loads(line) for line in data.splitlines()]
+    except FileNotFoundError as error:
+        raise journal.JournalError('Native IO geometry receipt is missing') from error
+    journal.require(io and all(type(row) is dict for row in io), 'Invalid native IO geometry receipt')
+    first = io[0]
+    journal.require(first.get('kind') == 'initial-geometry' and
+                    first.get('columns') == expected['columns'] and first.get('rows') == expected['rows'] and
+                    first.get('childPid') == expected['childPid'] and first.get('rawOffset') == 0,
+                    'Native IO initial geometry differs from independent expectation')
+    for index, row in enumerate(io, 1):
+        journal.require(row.get('kind') != 'resize-ack' and type(row.get('geometryId')) is int and
+                        row['geometryId'] == 0,
+                        'Fixed-geometry replay cannot accept resize without native brackets '
+                        f"(ioId={row.get('ioId')}, geometryId={row.get('geometryId')}, "
+                        f"size={row.get('columns')}x{row.get('rows')})")
+        journal.require(type(row.get('ioId')) is int and row['ioId'] == index and
+                        type(row.get('rawOffset')) is int and row['rawOffset'] >= 0 and
+                        row.get('captureId') == expected['captureId'] and
+                        row.get('kind') in ('initial-geometry', 'input', 'output') and
+                        (row['kind'] == 'initial-geometry') == (index == 1),
+                        'Foreign, missing or unsupported native IO geometry receipt')
+    close = expected.get('ioClose')
+    journal.require(type(close) is dict and close.get('method') == 'owned-broker-closed-io-v1' and
+                    type(close.get('recordCount')) is int and close['recordCount'] == len(io) and
+                    close.get('sha256') == hashlib.sha256(data).hexdigest() and
+                    type(close.get('rawBytes')) is int and close['rawBytes'] > 0 and
+                    type(close.get('finalGeometryId')) is int and
+                    close['finalGeometryId'] == io[-1]['geometryId'],
+                    'Native IO does not match independent close receipt')
+    offset = 0
+    for row in io:
+        if row['kind'] == 'output':
+            journal.require(type(row.get('start')) is int and type(row.get('end')) is int and
+                            row['start'] == offset < row['end'] <= close['rawBytes'] and
+                            row['rawOffset'] == row['end'], 'Native IO output coverage is incomplete')
+            offset = row['end']
+        else:
+            journal.require(row['rawOffset'] == offset, 'Native IO raw offset moved without output')
+    journal.require(offset == close['rawBytes'] == len((run / 'raw.bin').read_bytes()),
+                    'Native IO output coverage is incomplete')
 
 
 def derive_frames(run, expected):
@@ -37,6 +85,14 @@ def derive_frames(run, expected):
     rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
     journal.require(columns == expected['columns'] and rows == expected['rows'],
                     'Actual initial native geometry differs from independent expectation')
+    if 'backend' in expected or 'backend' in cleanup:
+        journal.require(expected.get('backend') == cleanup.get('backend') == 'native-shared-slot-v1',
+                        'Native capture backend differs from independent expectation')
+        verify_fixed_geometry_io(run, expected)
+        closed = json.loads((run / 'broker-cleanup.json').read_text())
+        journal.require(closed == cleanup and cleanup.get('ioClose') == expected['ioClose'] and
+                        cleanup.get('observedRawBytes') == expected['ioClose']['rawBytes'],
+                        'Native IO does not match independent close receipt')
     header = json.loads((run / 'header.json').read_text())
     fd = os.open(run / 'journal.bin', os.O_RDONLY | os.O_NOFOLLOW)
     try:

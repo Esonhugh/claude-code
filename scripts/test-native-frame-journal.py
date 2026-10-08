@@ -261,6 +261,8 @@ class NativeFrameJournalTest(unittest.TestCase):
                     raise RuntimeError('CLI exited before readiness: ' + text)
                 if time.monotonic() >= deadline:
                     raise TimeoutError('No actual CLI readiness: ' + text)
+            if getattr(self, 'fail_expectation_publication', False):
+                (run / 'producer-expected-native.json').write_bytes(b'late file must not be overwritten')
             command('send-keys', '-t', pane, '-l', '/exit')
             command('send-keys', '-t', pane, 'Enter')
             deadline = time.monotonic() + 10
@@ -270,12 +272,24 @@ class NativeFrameJournalTest(unittest.TestCase):
             (run / 'final-pane.txt').write_text(command('capture-pane', '-p', '-t', pane))
             self.assertTrue((run / 'cleanup.json').is_file(), 'Default broker ignored native journal enrollment')
             cleanup = json.loads((run / 'cleanup.json').read_text())
+            if getattr(self, 'fail_expectation_publication', False):
+                self.assertFalse(cleanup['normalCompletion'])
+                self.assertEqual(cleanup['childExitCode'], 0)
+                self.assertTrue(cleanup['physicalEof'] and cleanup['childReaped'])
+                self.assertEqual(cleanup['signalsSent'], [])
+                self.assertEqual([error['action'] for error in cleanup['cleanupErrors']],
+                                 ['save:producer-expected-native.json'])
+                self.assertEqual((run / 'producer-expected-native.json').read_bytes(),
+                                 b'late file must not be overwritten')
+                return
             self.assertTrue(cleanup['normalCompletion'], cleanup)
             self.assertEqual(cleanup['signalsSent'], [])
             start = json.loads((run / 'start.json').read_text())
             (run / 'expected-native.json').write_text(json.dumps({
                 'binarySha256': digest, 'captureId': launch['captureId'],
                 'childPid': start['childPid'], 'columns': columns, 'rows': rows,
+                **({'backend': 'native-shared-slot-v1'} if getattr(self, 'production_broker', False) else {}),
+                **({'ioClose': cleanup['ioClose']} if 'ioClose' in cleanup else {}),
             }) + '\n')
             packets, offset = [], 0
             saved = (run / 'records.bin').read_bytes()
@@ -348,6 +362,47 @@ class NativeFrameJournalTest(unittest.TestCase):
                 # bounded entry check and the still-incomplete full gate.
                 command('kill-server')
                 started = False
+                # Exercise the actual first seal before it can create any
+                # expectation. The broker originals remain unchanged.
+                import shutil
+                import tempfile
+                fixture = Path(tempfile.mkdtemp(prefix='first-seal-classification-', dir=run))
+                for name in ('launch.json', 'start.json', 'cleanup.json', 'native-initial.json',
+                             'registration.json', 'header.json', 'journal.bin', 'records.bin',
+                             'raw.bin', 'native-pty.raw', 'pty.raw', 'pty-io.jsonl', 'broker-cleanup.json',
+                             'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'observations.jsonl',
+                             'initial-termios.txt', 'capture-eof', 'producer-expected-native.json'):
+                    if (run / name).exists():
+                        shutil.copy2(run / name, fixture / name)
+                original_io = (run / 'pty-io.jsonl').read_bytes()
+                io = [json.loads(line) for line in original_io.splitlines()]
+                removed = next(index for index, row in enumerate(io) if row['kind'] == 'input')
+                del io[removed]
+                for index, row in enumerate(io, 1):
+                    row['ioId'] = index
+                shortened = ''.join(json.dumps(row) + '\n' for row in io).encode()
+                (fixture / 'pty-io.jsonl').write_bytes(shortened)
+                forged = json.loads((run / 'cleanup.json').read_text())
+                forged['ioClose'].update(recordCount=len(io), sha256=hashlib.sha256(shortened).hexdigest())
+                for name in ('cleanup.json', 'broker-cleanup.json'):
+                    (fixture / name).write_text(json.dumps(forged) + '\n')
+                descriptor_copy = json.loads((run / 'capture-launch.json').read_text())
+                descriptor_copy['run'] = str(fixture)
+                (fixture / 'capture-launch.json').write_text(json.dumps(descriptor_copy) + '\n')
+                first_seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                                             'seal', str(fixture / 'capture-launch.json')],
+                                            env=env, capture_output=True, timeout=5)
+                (fixture / 'seal.log').write_bytes(first_seal.stdout + first_seal.stderr)
+                first_result = json.loads((fixture / 'terminal-capture.json').read_text())
+                self.assertEqual(first_seal.returncode, 1)
+                self.assertEqual(first_result['boundedVerdict'], 'failed',
+                                 'Actual first seal accepted IO/cleanup coupled rewrite before expectation was fixed')
+                self.assertIn('Native IO does not match independent close receipt',
+                              json.loads((fixture / 'frame-physical-report.json').read_text())['error'])
+                producer = (run / 'producer-expected-native.json').read_bytes()
+                self.assertEqual((fixture / 'producer-expected-native.json').read_bytes(), producer)
+                self.assertEqual(json.loads(producer)['ioClose'], cleanup['ioClose'])
+                self.assertEqual((run / 'pty-io.jsonl').read_bytes(), original_io)
                 (run / 'expected-native.json').rename(run / 'entry-expected-native.json')
                 seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
                                        'seal', str(run / 'capture-launch.json')], env=env, capture_output=True, timeout=5)
@@ -358,6 +413,84 @@ class NativeFrameJournalTest(unittest.TestCase):
                 self.assertEqual(sealed['verdict'], 'failed')
                 self.assertFalse(sealed['productTimingEquivalent'])
                 self.assertFalse(sealed['fullNativeGatePassed'])
+                # These mutated copies are adversarial classifier fixtures,
+                # never substitute raw/native originals from the actual run.
+                import shutil
+                import tempfile
+                verifier = load('geometry_verifier', 'verify-native-frame-journal.py')
+                with tempfile.TemporaryDirectory(prefix='geometry-classification-', dir=run) as directory:
+                    fixture = Path(directory)
+                    for name in ('launch.json', 'start.json', 'cleanup.json', 'native-initial.json',
+                                 'registration.json', 'header.json', 'journal.bin', 'records.bin',
+                                 'raw.bin', 'pty-io.jsonl', 'broker-cleanup.json'):
+                        shutil.copy2(run / name, fixture / name)
+                    expected = json.loads((run / 'entry-expected-native.json').read_text())
+                    original_io = (fixture / 'pty-io.jsonl').read_bytes()
+                    self.assertGreater(len(verifier.derive_frames(fixture, expected)['entries']), 0)
+                    io = [json.loads(line) for line in original_io.splitlines()]
+                    first = io[0]
+                    self.assertEqual(first['kind'], 'initial-geometry')
+                    final = io[-1]
+                    for geometry_id, width, height in ((1, 110, 34), (2, columns, rows)):
+                        io.append({**final, 'ioId': final['ioId'] + geometry_id,
+                            'kind': 'resize-ack', 'geometryId': geometry_id,
+                            'columns': width, 'rows': height, 'succeeded': True})
+                    (fixture / 'pty-io.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in io))
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Fixed-geometry replay cannot accept resize'):
+                        verifier.derive_frames(fixture, expected)
+                    (fixture / 'pty-io.jsonl').write_bytes(original_io)
+                    io = [json.loads(line) for line in original_io.splitlines()]
+                    io[0]['columns'] += 1
+                    (fixture / 'pty-io.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in io))
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO initial geometry differs'):
+                        verifier.derive_frames(fixture, expected)
+                    io = [json.loads(line) for line in original_io.splitlines()]
+                    (fixture / 'pty-io.jsonl').write_text(json.dumps(io[0]) + '\n')
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO does not match independent close receipt'):
+                        verifier.derive_frames(fixture, expected)
+                    (fixture / 'pty-io.jsonl').write_bytes(original_io)
+                    original_cleanup = (fixture / 'cleanup.json').read_bytes()
+                    original_closed = (fixture / 'broker-cleanup.json').read_bytes()
+                    io = [json.loads(line) for line in original_io.splitlines()]
+                    removed = next(index for index, row in enumerate(io) if row['kind'] == 'output')
+                    del io[removed]
+                    for index, row in enumerate(io, 1):
+                        row['ioId'] = index
+                    shortened = ''.join(json.dumps(row) + '\n' for row in io).encode()
+                    (fixture / 'pty-io.jsonl').write_bytes(shortened)
+                    forged = json.loads(original_cleanup)
+                    forged['ioClose'].update(recordCount=len(io), sha256=hashlib.sha256(shortened).hexdigest())
+                    (fixture / 'cleanup.json').write_text(json.dumps(forged))
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO does not match independent close receipt'):
+                        verifier.derive_frames(fixture, expected)
+                    (fixture / 'broker-cleanup.json').write_text(json.dumps(forged))
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO does not match independent close receipt'):
+                        verifier.derive_frames(fixture, expected)
+                    (fixture / 'cleanup.json').write_bytes(original_cleanup)
+                    (fixture / 'broker-cleanup.json').write_bytes(original_closed)
+                    # Synthetic close digests below exercise the coverage
+                    # classifier; they are never used as native run evidence.
+                    io = [json.loads(line) for line in original_io.splitlines()]
+                    output = next(row for row in io if row['kind'] == 'output')
+                    output['start'] += 1
+                    malformed = ''.join(json.dumps(row) + '\n' for row in io).encode()
+                    (fixture / 'pty-io.jsonl').write_bytes(malformed)
+                    artificial = copy.deepcopy(expected)
+                    artificial['ioClose']['sha256'] = hashlib.sha256(malformed).hexdigest()
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO output coverage is incomplete'):
+                        verifier.verify_fixed_geometry_io(fixture, artificial)
+                    io = [json.loads(line) for line in original_io.splitlines()]
+                    input_row = next(row for row in io if row['kind'] == 'input')
+                    input_row['rawOffset'] += 1
+                    malformed = ''.join(json.dumps(row) + '\n' for row in io).encode()
+                    (fixture / 'pty-io.jsonl').write_bytes(malformed)
+                    artificial['ioClose']['sha256'] = hashlib.sha256(malformed).hexdigest()
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO raw offset moved without output'):
+                        verifier.verify_fixed_geometry_io(fixture, artificial)
+                    (fixture / 'pty-io.jsonl').unlink()
+                    with self.assertRaisesRegex(verifier.journal.JournalError, 'Native IO geometry receipt is missing'):
+                        verifier.derive_frames(fixture, expected)
+                    self.assertEqual((run / 'pty-io.jsonl').read_bytes(), original_io)
             (run / 'bounded-verdict.json').write_text(json.dumps({'verdict': 'passed', 'frameCount': len(snapshots),
                 'noFrameFifoAck': True, 'productTimingEquivalent': False, 'fullNativeGatePassed': False}) + '\n')
         finally:
@@ -385,6 +518,13 @@ class NativeFrameJournalTest(unittest.TestCase):
             self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
         finally:
             self.production_broker = False
+
+    def test_actual_default_broker_expectation_publication_failure_is_not_normal(self):
+        self.production_broker = self.fail_expectation_publication = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.fail_expectation_publication = False
 
     def test_owned_tmux_startup_timeout_still_stops_actual_server(self):
         from unittest.mock import patch
