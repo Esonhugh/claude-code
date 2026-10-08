@@ -2166,3 +2166,7 @@ native replay 要求默认 backend 的独立身份及完整 IO 初始几何收�
 默认 native broker 另在退出前独占写入 producer-expected-native.json，摘要来自其内存原件及实际PID/初始几何。第一次 seal 只读该producer expectation并核对prepare身份；缺失、预存、发布失败均不能通过，不会从当前IO或cleanup重算。真实入口负例在首次seal前删input、重编号并更新两份cleanup，保持producer expectation不变，仍被拒收。若prepare identity、producer expectation及所有原件都同时被替换，仍需外层可信封存；这里没有加密认证或完整native时序证明。
 
 原生采集另记录真实 `tcsetattr` 的 Mach-clock entry/return、原始 retval/errno及内核 before/requested/after flags、speed、control chars。write重放、frame与resize prefix按已观测 mode 顺序使用实际 output flags；mode/write重叠、未知输出转换或证据缺失拒收。可继续用上述新构建后的两项 Python 脚本串行运行，包含关闭/恢复 OPOST、ECHO、失败 action和观测溢出的回归。此处只覆盖实际捕获的 tcsetattr 调用，直接 mode ioctl、完整 termios lifetime、OS input owner和时序等价仍未通过。见[终端模式观测与回归](docs/research/mods-native-termios-observation-validity-20261008.md)。
+
+首封还要求producer的 `nativeClose` 内容回执：从采集器内存固定raw三alias、完整records（含mode与snapshot）、header、registration及initial的字节数/SHA256与record count。verifier先核对原件并从同一份已校验bytes解码；缺失内容回执、等长耦合改写或缩水schema拒收，sealer最终manifest也必须匹配。新构建后可串行运行上述帧脚本，其中包含实际default CLI首封负例；详情及单项命令见[内容来源闭包](docs/research/mods-native-payload-closure-validity-20261008.md)。这未改变完整native/Mods尚未通过的结论。
+
+outer seal 在真实独立重放之后生成最终manifest时，也重新比较IO清单SHA与producer的 `ioClose.sha256`；`nativeContentMatched` 和 `nativeIOMatched` 均须为true才能取得bounded通过。帧脚本另覆盖重放成功后、终态摘要前删input/重编号的真实副本负例，避免沿用旧physical passed掩盖IO变动；完整native与发布结论仍独立。

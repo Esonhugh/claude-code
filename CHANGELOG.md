@@ -82,6 +82,8 @@
 ### 测试覆盖
 
 - 原生终端证据补充真实 tcsetattr 的内核前后模式及 syscall 括号，按实际 output flags重放write/frame/resize prefix；覆盖失败errno、overflow及歧义拒收。完整 mode/input/lifecycle仍未通过，见[模式观测记录](docs/research/mods-native-termios-observation-validity-20261008.md)。
+- 首封native验收另核对终态IO摘要与producer ioClose，拒绝独立重放后修改输入清单仍借旧physical通过。
+- 首封native验收固定内存来源的raw/records/metadata摘要，拒绝producer与IO不变的等长write/raw/snapshot耦合篡改；解码只消费已校验bytes，最终manifest再次匹配。真实首封RED/GREEN及边界见[内容闭包记录](docs/research/mods-native-payload-closure-validity-20261008.md)。
 - Native33 本批冻结候选完整默认矩阵及追加项29/29记录、23 passed/6 failed；真实diff与交互125帧、五次owned resize的有限物理回放通过，正常EOF/reap及资源清理完整。整体native/Mods/四路发布仍未通过，失败分类与原始manifest见[resize验收记录](docs/research/mods-native-resize-bracket-validity-20261008.md#native33-最终处置)。
 
 - 关闭功能干净候选的相邻四文件 291 项通过，`make release-check` 通过；共享工作区冻结候选的相邻五文件 308 项、验收驱动回归、类型与构建检查通过。完整 29 项真实终端矩阵已执行，26 通过、3 失败，整体未通过；不能将源码结果视为完整 UI/diff 或发布通过。详见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。

@@ -64,8 +64,10 @@ def capture_native(run, argv):
     def save(name, data):
         with open(run / name, 'xb') as file:
             file.write(data)
+    def encode_json(data):
+        return (json.dumps(data) + '\n').encode()
     def save_json(name, data):
-        save(name, (json.dumps(data) + '\n').encode())
+        save(name, encode_json(data))
     if not (run / 'launch.json').exists():
         save_json('launch.json', {'command': argv, 'captureId': capture_id, 'binarySha256': digest})
     launch = json.loads((run / 'launch.json').read_text())
@@ -258,13 +260,18 @@ def capture_native(run, argv):
             cleanup('restore-outer-termios', lambda: termios.tcsetattr(0, termios.TCSANOW, outer_attrs))
         raw = b''.join(evidence.values['raw'])
         io = b''.join(evidence.values['io'])
-        for name, data in [('raw.bin', raw), ('native-pty.raw', raw),
-                           ('records.bin', b''.join(evidence.values['packets'])),
-                           ('pty-io.jsonl', io)]:
-            cleanup('save:' + name, lambda name=name, data=data: save(name, data))
+        saved = b''.join(evidence.values['packets'])
+        native_data = {'raw.bin': raw, 'native-pty.raw': raw, 'records.bin': saved}
         for name, data in [('native-initial.json', initial), ('registration.json', registration), ('header.json', header)]:
             if data is not None:
-                cleanup('save:' + name, lambda name=name, data=data: save_json(name, data))
+                native_data[name] = encode_json(data)
+        # Bind held bytes before publishing files. The outer PTY copy must
+        # later equal the same memory-origin digest, never a disk rehash.
+        native_close = {'method': 'owned-broker-closed-native-v1', 'recordCount': packet_sequence,
+                        'files': {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
+                                  for name, data in {**native_data, 'pty.raw': raw}.items()}}
+        for name, data in {**native_data, 'pty-io.jsonl': io}.items():
+            cleanup('save:' + name, lambda name=name, data=data: save(name, data))
         if evidence.dropped:
             capture_failure = {'type': 'EvidenceOverflow', 'message': 'Bounded observer lost evidence',
                                'droppedBytes': evidence.dropped}
@@ -282,11 +289,11 @@ def capture_native(run, argv):
                   'ioClose': {'method': 'owned-broker-closed-io-v1', 'recordCount': sequence,
                               'sha256': hashlib.sha256(io).hexdigest(), 'rawBytes': raw_offset,
                               'finalGeometryId': geometry_id},
+                  'nativeClose': native_close,
                   'productTimingEquivalent': False, 'fullNativeGatePassed': False}
         # Keep prefix artifacts even when native decoding or frame derivation fails.
         if normal:
             try:
-                saved = (run / 'records.bin').read_bytes()
                 packets, offset = [], 0
                 while offset < len(saved):
                     length = struct.unpack_from('<I', saved, offset)[0]
@@ -305,6 +312,7 @@ def capture_native(run, argv):
             cleanup('save:producer-expected-native.json', lambda: save_json('producer-expected-native.json', {
                 'binarySha256': digest, 'captureId': capture_id, 'backend': 'native-shared-slot-v1',
                 'childPid': child.pid, 'columns': columns, 'rows': rows, 'ioClose': result['ioClose'],
+                'nativeClose': native_close,
             }))
             if cleanup_errors:
                 result['normalCompletion'] = False

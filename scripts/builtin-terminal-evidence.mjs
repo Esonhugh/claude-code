@@ -471,14 +471,14 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
 function sealNativeBuiltinCapture(launch) {
   const run = launch.run, files = {}
   const expectedPath = join(run, 'expected-native.json')
-  let physical, failure, normal = false
+  let expected, physical, failure, normal = false
   try {
     const start = JSON.parse(readFileSync(join(run, 'start.json'), 'utf8'))
     const producerPath = join(run, 'producer-expected-native.json'), producer = lstatSync(producerPath)
     if (!producer.isFile() || producer.isSymbolicLink() || producer.nlink !== 1 ||
         (producer.mode & 0o777) !== 0o600 || producer.uid !== process.getuid())
       throw Error('Producer expectation file identity changed')
-    const expected = JSON.parse(readFileSync(producerPath, 'utf8'))
+    expected = JSON.parse(readFileSync(producerPath, 'utf8'))
     if (expected.binarySha256 !== launch.binarySha256 ||
         expected.captureId !== launch.capture.captureId || expected.childPid !== start.childPid ||
         expected.columns !== launch.capture.initialSize.columns ||
@@ -510,7 +510,13 @@ function sealNativeBuiltinCapture(launch) {
   const eofPassed = files['capture-eof'] && readFileSync(files['capture-eof'].path, 'utf8').trim() === '0'
   const rawMatched = files['pty.raw'] && files['raw.bin'] && files['native-pty.raw'] &&
     files['pty.raw'].sha256 === files['raw.bin'].sha256 && files['raw.bin'].sha256 === files['native-pty.raw'].sha256
-  const boundedPassed = normal && eofPassed && rawMatched && physical?.verdict === 'passed'
+  const nativeContentMatched = expected?.nativeClose?.method === 'owned-broker-closed-native-v1' &&
+    ['raw.bin', 'native-pty.raw', 'pty.raw', 'records.bin', 'registration.json', 'header.json', 'native-initial.json']
+      .every(name => files[name]?.bytes === expected.nativeClose.files?.[name]?.bytes &&
+        files[name]?.sha256 === expected.nativeClose.files?.[name]?.sha256)
+  const nativeIOMatched = typeof expected?.ioClose?.sha256 === 'string' &&
+    files['pty-io.jsonl']?.sha256 === expected.ioClose.sha256
+  const boundedPassed = normal && eofPassed && rawMatched && nativeContentMatched && nativeIOMatched && physical?.verdict === 'passed'
   const report = {
     backend: 'native-shared-slot-v1', binarySha256: launch.binarySha256,
     captureId: launch.capture.captureId, target: launch.target, pane: launch.pane,
@@ -520,6 +526,7 @@ function sealNativeBuiltinCapture(launch) {
     framePhysicalVerdict: physical?.verdict ?? 'failed',
     framePhysicalBoundary: physical?.framePhysicalBoundary ?? null,
     nativeResizeBracketsCovered: physical?.verdict === 'passed' && physical.nativeResizeBracketsCovered === true,
+    nativeContentMatched: Boolean(nativeContentMatched), nativeIOMatched: Boolean(nativeIOMatched),
     boundedVerdict: boundedPassed ? 'passed' : 'failed', failure,
     productTimingEquivalent: false, fullNativeGatePassed: false,
     verdict: 'failed',

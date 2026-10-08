@@ -368,6 +368,7 @@ class NativeFrameJournalTest(unittest.TestCase):
                 'childPid': start['childPid'], 'columns': columns, 'rows': rows,
                 **({'backend': 'native-shared-slot-v1'} if getattr(self, 'production_broker', False) else {}),
                 **({'ioClose': cleanup['ioClose']} if 'ioClose' in cleanup else {}),
+                **({'nativeClose': cleanup['nativeClose']} if 'nativeClose' in cleanup else {}),
             }) + '\n')
             packets, offset = [], 0
             saved = (run / 'records.bin').read_bytes()
@@ -463,6 +464,12 @@ class NativeFrameJournalTest(unittest.TestCase):
                 # bounded entry check and the still-incomplete full gate.
                 command('kill-server')
                 started = False
+                if getattr(self, 'rewrite_final_io', False):
+                    self.check_final_io_rewrite_after_native_replay(run, env)
+                    return
+                if getattr(self, 'rewrite_native_payload', False):
+                    self.check_first_seal_native_payload_rewrite(run, env)
+                    return
                 # Exercise the actual first seal before it can create any
                 # expectation. The broker originals remain unchanged.
                 import shutil
@@ -523,7 +530,7 @@ class NativeFrameJournalTest(unittest.TestCase):
                     fixture = Path(directory)
                     for name in ('launch.json', 'start.json', 'cleanup.json', 'native-initial.json',
                                  'registration.json', 'header.json', 'journal.bin', 'records.bin',
-                                 'raw.bin', 'pty-io.jsonl', 'broker-cleanup.json'):
+                                 'raw.bin', 'native-pty.raw', 'pty.raw', 'pty-io.jsonl', 'broker-cleanup.json'):
                         shutil.copy2(run / name, fixture / name)
                     expected = json.loads((run / 'entry-expected-native.json').read_text())
                     original_io = (fixture / 'pty-io.jsonl').read_bytes()
@@ -612,6 +619,198 @@ class NativeFrameJournalTest(unittest.TestCase):
             (run / 'tmux-cleanup.json').write_text(json.dumps({'errors': errors, 'socketRemoved': not socket.exists()}) + '\n')
             if errors:
                 raise RuntimeError('Owned tmux cleanup failed: ' + str(errors))
+
+    def check_first_seal_native_payload_rewrite(self, run, env):
+        import base64
+        import shutil
+        import tempfile
+        names = ('launch.json', 'start.json', 'cleanup.json', 'native-initial.json',
+                 'registration.json', 'header.json', 'journal.bin', 'records.bin',
+                 'raw.bin', 'native-pty.raw', 'pty.raw', 'pty-io.jsonl', 'broker-cleanup.json',
+                 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'observations.jsonl',
+                 'initial-termios.txt', 'capture-eof', 'producer-expected-native.json')
+        original = {name: hashlib.sha256((run / name).read_bytes()).hexdigest()
+                    for name in names if (run / name).exists()}
+        fixture = Path(tempfile.mkdtemp(prefix='native-payload-first-seal-', dir=run))
+        for name in original:
+            shutil.copy2(run / name, fixture / name)
+        old, new = b'EsonClaw', b'DsonClaw'
+        self.assertIn(old, (run / 'raw.bin').read_bytes())
+        for name in ('raw.bin', 'native-pty.raw', 'pty.raw'):
+            data = (fixture / name).read_bytes()
+            self.assertIn(old, data)
+            (fixture / name).write_bytes(data.replace(old, new))
+        saved = (run / 'records.bin').read_bytes()
+        packets, offset, write_changes, snapshot_changes = [], 0, 0, 0
+        while offset < len(saved):
+            size = struct.unpack_from('<I', saved, offset)[0]
+            offset += 4
+            packet = saved[offset:offset + size]
+            offset += size
+            word = journal.RECORD.unpack_from(packet)
+            body = packet[journal.RECORD.size:]
+            if word[2] == 1:
+                write_changes += body.count(old)
+                body = body.replace(old, new)
+            elif word[2] == 11:
+                value = json.loads(body)
+                frame_bytes = base64.b64decode(value['frameBase64'], validate=True)
+                cells = json.loads(frame_bytes)['cells']
+                changes = []
+                for index, cell in enumerate(cells):
+                    title = cells[index:index + len(old)]
+                    if ''.join(item[2] for item in title) == old.decode() and all(
+                            item[0] == cell[0] + step and item[1] == cell[1]
+                            for step, item in enumerate(title)):
+                        changes.append(cell)
+                for x, y, _, *_ in changes:
+                    pattern = ('[' + str(x) + ',' + str(y) + ',"E",').encode()
+                    replacement = ('[' + str(x) + ',' + str(y) + ',"D",').encode()
+                    self.assertEqual(frame_bytes.count(pattern), 1)
+                    frame_bytes = frame_bytes.replace(pattern, replacement)
+                snapshot_changes += len(changes)
+                replacement = base64.b64encode(frame_bytes)
+                self.assertEqual(len(replacement), len(value['frameBase64']))
+                body = body.replace(value['frameBase64'].encode(), replacement)
+            self.assertEqual(len(body), size - journal.RECORD.size)
+            packets.append(packet[:journal.RECORD.size] + body)
+        self.assertGreater(write_changes, 0)
+        self.assertGreater(snapshot_changes, 0)
+        forged = b''.join(struct.pack('<I', len(packet)) + packet for packet in packets)
+        self.assertEqual(len(forged), len(saved))
+        (fixture / 'records.bin').write_bytes(forged)
+        start = json.loads((fixture / 'start.json').read_text())
+        records = journal.decode_records(json.loads((fixture / 'header.json').read_text()), packets,
+                                         json.loads((fixture / 'registration.json').read_text()), start['childPid'])
+        producer = json.loads((fixture / 'producer-expected-native.json').read_text())
+        entries = journal.ink_frame_entries(records, (fixture / 'raw.bin').read_bytes(),
+                                             producer['captureId'], json.loads((fixture / 'native-initial.json').read_text())['outputFlags'])
+        (fixture / 'frames.jsonl').write_text(''.join(json.dumps(entry) + '\n' for entry in entries))
+        descriptor = json.loads((run / 'capture-launch.json').read_text())
+        descriptor['run'] = str(fixture)
+        (fixture / 'capture-launch.json').write_text(json.dumps(descriptor) + '\n')
+        changed = {'raw.bin', 'native-pty.raw', 'pty.raw', 'records.bin', 'frames.jsonl'}
+        fixed = {name: digest for name, digest in original.items() if name not in changed}
+        self.assertEqual({name: hashlib.sha256((fixture / name).read_bytes()).hexdigest() for name in fixed}, fixed)
+        self.assertFalse((fixture / 'expected-native.json').exists())
+        seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                               'seal', str(fixture / 'capture-launch.json')],
+                              env=env, capture_output=True, timeout=5)
+        (fixture / 'seal.log').write_bytes(seal.stdout + seal.stderr)
+        report = json.loads((fixture / 'terminal-capture.json').read_text())
+        (fixture / 'classification-proof.json').write_text(json.dumps({
+            'originalRun': str(run), 'fixedSHA256': fixed, 'changed': sorted(changed),
+            'writeChanges': write_changes, 'snapshotChanges': snapshot_changes,
+            'sameRawLength': len((fixture / 'raw.bin').read_bytes()) == len((run / 'raw.bin').read_bytes()),
+            'sourceOriginalsUnchanged': all(hashlib.sha256((run / name).read_bytes()).hexdigest() == digest
+                                             for name, digest in original.items()),
+            'firstSealExitCode': seal.returncode, 'boundedVerdict': report['boundedVerdict'],
+            'scope': 'adversarial fixture classification; never actual bad product frame'}, indent=2) + '\n')
+        self.assertEqual({name: hashlib.sha256((run / name).read_bytes()).hexdigest() for name in original}, original)
+        self.assertEqual(seal.returncode, 1)
+        self.assertEqual(report['boundedVerdict'], 'failed',
+                         'First seal accepted an equal-length raw/write/snapshot coupled rewrite')
+        self.assertIn('Native content does not match independent close receipt',
+                      json.loads((fixture / 'frame-physical-report.json').read_text())['error'])
+
+        # Decode exactly the checked bytes, even if files disappear after
+        # the content check. This copy is never substituted for the real run.
+        from unittest.mock import patch
+        verifier = load('closed_content_verifier', 'verify-native-frame-journal.py')
+        control = Path(tempfile.mkdtemp(prefix='native-content-read-once-', dir=run))
+        for name in original:
+            shutil.copy2(run / name, control / name)
+        real_check = verifier.verify_native_content
+        def remove_after_check(*args):
+            checked = real_check(*args)
+            for name in ('raw.bin', 'records.bin', 'native-initial.json', 'registration.json', 'header.json'):
+                (control / name).unlink()
+            return checked
+        with patch.object(verifier, 'verify_native_content', remove_after_check):
+            checked = verifier.derive_frames(control, producer)
+        self.assertEqual(checked['entries'], [json.loads(line) for line in (run / 'frames.jsonl').read_text().splitlines()])
+        self.assertEqual({name: hashlib.sha256((run / name).read_bytes()).hexdigest() for name in original}, original)
+
+    def check_final_io_rewrite_after_native_replay(self, run, env):
+        import shutil
+        import tempfile
+        fixture = Path(tempfile.mkdtemp(prefix='final-io-first-seal-', dir=run))
+        names = ('launch.json', 'start.json', 'cleanup.json', 'native-initial.json',
+                 'registration.json', 'header.json', 'journal.bin', 'records.bin',
+                 'raw.bin', 'native-pty.raw', 'pty.raw', 'pty-io.jsonl', 'broker-cleanup.json',
+                 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'observations.jsonl',
+                 'initial-termios.txt', 'capture-eof', 'producer-expected-native.json')
+        original = {name: hashlib.sha256((run / name).read_bytes()).hexdigest()
+                    for name in names if (run / name).exists()}
+        for name in original:
+            shutil.copy2(run / name, fixture / name)
+        descriptor = json.loads((run / 'capture-launch.json').read_text())
+        descriptor['run'] = str(fixture)
+        (fixture / 'capture-launch.json').write_text(json.dumps(descriptor) + '\n')
+        script = fixture / 'final-io-fault.test.mjs'
+        script.write_text("""import { test, expect, mock } from 'bun:test'
+import * as child from 'node:child_process'
+import { readFileSync, writeFileSync } from 'node:fs'
+const run = FIXTURE_PATH
+const realExec = child.execFileSync
+let injected = 0
+mock.module('node:child_process', () => ({ ...child, execFileSync(file, args, ...options) {
+  const result = realExec(file, args, ...options)
+  if (args[0]?.endsWith('/native-frame-journal-replay.mjs')) {
+    const physical = JSON.parse(readFileSync(run + '/frame-physical-report.json', 'utf8'))
+    if (physical.verdict !== 'passed') throw Error('Fault did not reach actual successful independent replay')
+    const io = readFileSync(run + '/pty-io.jsonl', 'utf8').trimEnd().split('\\n').map(JSON.parse)
+    const input = io.findIndex(row => row.kind === 'input')
+    if (input < 0) throw Error('Fault fixture has no actual input')
+    io.splice(input, 1)
+    io.forEach((row, index) => { row.ioId = index + 1 })
+    writeFileSync(run + '/pty-io.jsonl', io.map(JSON.stringify).join('\\n') + '\\n')
+    injected++
+  }
+  return result
+}}))
+test('first seal rejects final IO replacement after actual independent replay', async () => {
+  const { sealBuiltinCapture } = await import(SOURCE_PATH)
+  const launch = JSON.parse(readFileSync(run + '/capture-launch.json', 'utf8'))
+  const result = await sealBuiltinCapture(launch)
+  writeFileSync(run + '/final-io-fault-proof.json', JSON.stringify({ injected, boundedVerdict: result.boundedVerdict,
+    physicalVerdict: result.framePhysicalVerdict, nativeContentMatched: result.nativeContentMatched, nativeIOMatched: result.nativeIOMatched,
+    finalIO: result.files['pty-io.jsonl'], expectedIO: JSON.parse(readFileSync(run + '/producer-expected-native.json', 'utf8')).ioClose }) + '\\n')
+  expect(injected).toBe(1)
+  expect(result.framePhysicalVerdict).toBe('passed')
+  expect(result.nativeContentMatched).toBe(true)
+  expect(result.boundedVerdict).toBe('failed')
+  expect(result.nativeIOMatched).toBe(false)
+})
+""".replace('FIXTURE_PATH', json.dumps(str(fixture)))
+             .replace('SOURCE_PATH', json.dumps(str(SOURCE / 'builtin-terminal-evidence.mjs'))))
+        self.assertFalse((fixture / 'expected-native.json').exists())
+        result = subprocess.run(['/opt/homebrew/bin/bun', 'test', '--no-env-file', str(script)],
+                                env=env, capture_output=True, timeout=8)
+        (fixture / 'fault.log').write_bytes(result.stdout + result.stderr)
+        proof = json.loads((fixture / 'final-io-fault-proof.json').read_text())
+        self.assertEqual(proof['injected'], 1)
+        self.assertEqual(proof['physicalVerdict'], 'passed')
+        self.assertNotEqual(proof['finalIO']['sha256'], proof['expectedIO']['sha256'])
+        fixed = {name: digest for name, digest in original.items() if name != 'pty-io.jsonl'}
+        self.assertEqual({name: hashlib.sha256((fixture / name).read_bytes()).hexdigest() for name in fixed}, fixed)
+        self.assertEqual({name: hashlib.sha256((run / name).read_bytes()).hexdigest() for name in original}, original)
+        self.assertEqual(proof['boundedVerdict'], 'failed', 'Final seal accepted IO replacement after successful replay')
+        self.assertEqual(result.returncode, 0, result.stdout.decode() + result.stderr.decode())
+
+    def test_actual_first_seal_rejects_io_rewrite_after_independent_replay(self):
+        self.production_broker = self.rewrite_final_io = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.rewrite_final_io = False
+
+    def test_actual_first_seal_rejects_equal_length_native_payload_rewrite(self):
+        self.production_broker = self.rewrite_native_payload = True
+        try:
+            self.test_actual_cli_emits_immutable_frame_journal_without_fifo_ack()
+        finally:
+            self.production_broker = self.rewrite_native_payload = False
 
     def test_actual_default_broker_emits_native_journal_without_ack(self):
         self.production_broker = True

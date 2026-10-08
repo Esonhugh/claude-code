@@ -2315,3 +2315,9 @@ b1b只读审查在限定prepare/producer原件独立的边界关闭F-IO-1/2，�
 ## 2026-10-08 native termios 有效性补充
 
 已复现“最终attrs相等但过程缺失”和“OPOST变化导致固定转换错误”两个真实C probe失败；tcsetattr记录及按mode转换已实现。8988隔离新构建collector25/25、CLI/frame/order9/9通过，完整termios/direct ioctl/OS输入owner/调度仍未闭合。新增失败action、overflow和重叠拒收回归，最终批次完整driver结果单独处置。详情见 [termios证据](docs/research/mods-native-termios-observation-validity-20261008.md)。
+
+## 2026-10-08 首封内容误通过处置
+
+实际default CLI副本的等长write/raw/snapshot/derived耦合改写，在producer/IO/cleanup/metadata固定时被旧首封误判bounded passed；最小RED已保存。修复增加内存nativeClose及校验后同bytes解码，15b新构建同首封负例GREEN。整体native、完整termios/input/lifecycle和发布门禁仍未通过；本批最终matrix另记录，不把classifier负例当产品坏帧。详情见 [内容闭包](docs/research/mods-native-payload-closure-validity-20261008.md)。
+
+Native34：5066冻结source正常完成29/29，23 passed/6 failed；实际50+82=132帧、五次owned resize有限physical与七项摘要匹配，源码/owned资源清理完整。整体仍failed。随后独立复核发现F-IO-FINAL-1，真实replay后仅修改IO的6869最小RED已复现bounded误通过；outer新增终态ioClose SHA核对和nativeIOMatched，新候选重新验证，不借Native34宣称该窗口关闭。见内容闭包记录。

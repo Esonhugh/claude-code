@@ -69,6 +69,40 @@ def verify_fixed_geometry_io(run, expected, native_brackets=False):
     return io
 
 
+def verify_native_content(run, expected, cleanup):
+    """Require the broker's closed memory bytes before deriving any frames."""
+    close = expected.get('nativeClose')
+    names = {'raw.bin', 'native-pty.raw', 'pty.raw', 'records.bin',
+             'native-initial.json', 'registration.json', 'header.json'}
+    journal.require(type(close) is dict and set(close) == {'method', 'recordCount', 'files'} and
+                    close.get('method') == 'owned-broker-closed-native-v1' and
+                    type(close.get('recordCount')) is int and close['recordCount'] > 0 and
+                    type(close.get('files')) is dict and set(close['files']) == names and
+                    cleanup.get('nativeClose') == close,
+                    'Native content does not match independent close receipt')
+    data_by_name = {}
+    for name in sorted(names):
+        receipt = close['files'][name]
+        journal.require(type(receipt) is dict and set(receipt) == {'bytes', 'sha256'} and
+                        type(receipt.get('bytes')) is int and receipt['bytes'] > 0 and
+                        type(receipt.get('sha256')) is str and len(receipt['sha256']) == 64 and
+                        all(char in '0123456789abcdef' for char in receipt['sha256']),
+                        'Native content does not match independent close receipt')
+        fd = os.open(run / name, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, 'rb') as source:
+            file = os.fstat(source.fileno())
+            journal.require(stat.S_ISREG(file.st_mode) and file.st_uid == os.getuid() and
+                            stat.S_IMODE(file.st_mode) == 0o600 and file.st_nlink == 1,
+                            'Native content file identity changed (' + name + ')')
+            data = source.read()
+        data_by_name[name] = data
+        journal.require(len(data) == receipt['bytes'] and hashlib.sha256(data).hexdigest() == receipt['sha256'],
+                        'Native content does not match independent close receipt (' + name + ')')
+    journal.require(close['files']['raw.bin'] == close['files']['native-pty.raw'] == close['files']['pty.raw'],
+                    'Native content does not match independent close receipt')
+    return close, data_by_name
+
+
 def native_resize_events(io, header, registration, records, initial):
     """Only non-overlapping kernel brackets determine physical resize offsets."""
     writes = [row for row in records if row['kind'] == 1]
@@ -135,8 +169,6 @@ def derive_frames(run, expected):
     launch = json.loads((run / 'launch.json').read_text())
     start = json.loads((run / 'start.json').read_text())
     cleanup = json.loads((run / 'cleanup.json').read_text())
-    initial = json.loads((run / 'native-initial.json').read_text())
-    registration = json.loads((run / 'registration.json').read_text())
     journal.require(launch['captureId'] == expected['captureId'] and
                     launch['binarySha256'] == start['binarySha256'] == expected['binarySha256'] and
                     start['childPid'] == start['childPgid'] == expected['childPid'],
@@ -149,10 +181,9 @@ def derive_frames(run, expected):
                     cleanup['childExitCode'] == 0 and cleanup['signalsSent'] == [] and
                     cleanup['failure'] is None and cleanup['cleanupErrors'] == [],
                     'Native capture lacks normal EOF/reap/cleanup')
-    rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
-    journal.require(columns == expected['columns'] and rows == expected['rows'],
-                    'Actual initial native geometry differs from independent expectation')
     io = []
+    native_close = None
+    content = None
     if 'backend' in expected or 'backend' in cleanup:
         journal.require(expected.get('backend') == cleanup.get('backend') == 'native-shared-slot-v1',
                         'Native capture backend differs from independent expectation')
@@ -161,7 +192,15 @@ def derive_frames(run, expected):
         journal.require(closed == cleanup and cleanup.get('ioClose') == expected['ioClose'] and
                         cleanup.get('observedRawBytes') == expected['ioClose']['rawBytes'],
                         'Native IO does not match independent close receipt')
-    header = json.loads((run / 'header.json').read_text())
+        native_close, content = verify_native_content(run, expected, cleanup)
+    def native_bytes(name):
+        return content[name] if content is not None else (run / name).read_bytes()
+    initial = json.loads(native_bytes('native-initial.json'))
+    registration = json.loads(native_bytes('registration.json'))
+    rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
+    journal.require(columns == expected['columns'] and rows == expected['rows'],
+                    'Actual initial native geometry differs from independent expectation')
+    header = json.loads(native_bytes('header.json'))
     fd = os.open(run / 'journal.bin', os.O_RDONLY | os.O_NOFOLLOW)
     try:
         file = os.fstat(fd)
@@ -173,7 +212,7 @@ def derive_frames(run, expected):
                         'Saved header differs from original native mapping')
     finally:
         os.close(fd)
-    saved = (run / 'records.bin').read_bytes()
+    saved = native_bytes('records.bin')
     packets, offset = [], 0
     while offset < len(saved):
         journal.require(offset + 4 <= len(saved), 'Truncated saved native packet prefix')
@@ -183,8 +222,11 @@ def derive_frames(run, expected):
                         offset + size <= len(saved), 'Truncated saved native packet')
         packets.append(saved[offset:offset + size])
         offset += size
+    if native_close is not None:
+        journal.require(native_close['recordCount'] == len(packets),
+                        'Native content does not match independent close receipt')
     records = journal.decode_records(header, packets, registration, expected['childPid'])
-    raw = (run / 'raw.bin').read_bytes()
+    raw = native_bytes('raw.bin')
     entries = journal.ink_frame_entries(records, raw, expected['captureId'], initial['outputFlags'])
     geometry = native_resize_events(io, header, registration, records, initial)
     return {'entries': entries, 'geometryEvents': geometry, 'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
