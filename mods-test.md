@@ -2353,3 +2353,8 @@ Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、w
 失败对照保留：Native37的false-only修复仍六失败，Native38两项Workflow修复通过但code-review缺usage仍拒收；transition-red2复现转后台归属、取消及通知缺口。transition-red1的进度end_turn夹具不作为取消产品证据，改用真实tool-use/result后再验证。另一个进度夹具过早调用Bun pending rejects造成超时，作为夹具失败，不计产品RED。子测试现在要求明确执行数量并输出完整日志，避免0 fail但未覆盖。
 
 私有ROOT-WIP合并source `3374dfe469fbbbc1d46f142bc3df361f8f74e16aeef318d21d76f6abc13b11f9` 的回归另通过，保持其他Claude修改；这是不同source，不冒充主二进制epoch。完整terminal/diff、browser/Client及其余11个生产方法继续待处理。原件在 `/private/tmp/mods-remote-composer-292-20261008-rptx4ocs` 的final2各before/result/log、full-gate39-evidence及disposition；详见[生命周期验收](docs/research/workflow-agent-lifecycle-validity-20261009.md)。
+
+
+## 2026-10-09 原生运行中前缀及 Native40
+
+真实 ready CLI 在退出前没有frame/IO、退出后42帧的 RED 已由异步有界 writer 与严格 prefix/closed 原件绑定修复。10 prefix/publisher、28 native journal、4 native broker、13旧broker及45 Bun回归通过；同一冻结源码完整release-check/新build/default-driver、新binary完整12项actual frame-journal通过。Native40动态完整30项27通过3失败，源码/原件无漂移、owned group退出；完整Mods/terminal/browser/Client与发布仍未通过。旧FIFO字段、真实input/owner及调度证据不由新prefix代替。身份、exact命令、RED/夹具错误处置及剩余项见[实时前缀验收](docs/research/mods-native-live-prefix-validity-20261009.md)。
