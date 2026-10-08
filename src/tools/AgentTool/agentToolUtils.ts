@@ -70,6 +70,20 @@ export type ResolvedAgentTools = {
   allowedAgentTypes?: string[]
 }
 
+const agentProgressObservers = new WeakMap<ToolUseContext, (message: MessageType) => void>()
+
+// The exact host call context owns this sink; child context copies do not inherit it.
+export function observeAgentProgress(context: ToolUseContext, observer: (message: MessageType) => void): () => void {
+  agentProgressObservers.set(context, observer)
+  return () => {
+    if (agentProgressObservers.get(context) === observer) agentProgressObservers.delete(context)
+  }
+}
+
+export function reportObservedAgentProgress(context: ToolUseContext, message: MessageType): void {
+  agentProgressObservers.get(context)?.(message)
+}
+
 export function filterToolsForExactAgent(tools: Tools): Tools {
   // Cache-sharing forks preserve the complete parent tool definitions. Tools
   // restricted to the main thread still reject child calls in validateInput/call.
@@ -687,6 +701,7 @@ export async function runAsyncAgentLifecycle({
         getProgressUpdate(tracker),
         rootSetAppState,
       )
+      reportObservedAgentProgress(toolUseContext, message)
       const lastToolName = getLastToolUseName(message)
       if (lastToolName) {
         emitTaskProgress(

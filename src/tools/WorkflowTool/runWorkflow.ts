@@ -70,6 +70,8 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import {
   createProgressTracker,
+  isLocalAgentTask,
+  killAsyncAgent,
   getProgressUpdate,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -78,12 +80,15 @@ import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import { applyRequestedAgentPermissionMode } from '../AgentTool/permissionMode.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
+import { sleep } from '../../utils/sleep.js'
+import { observeAgentProgress } from '../AgentTool/agentToolUtils.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
 const COMMAND_MESSAGE_RE = new RegExp(`<${COMMAND_MESSAGE_TAG}>${TAG_CONTENT_ESCAPE}<\\/${COMMAND_MESSAGE_TAG}>`)
 
 type AgentToolInput = {
+  run_in_background: false
   description: string
   prompt: string
   subagent_type?: string
@@ -180,6 +185,77 @@ function findAgentTool(tools: readonly Tool[]): Tool | undefined {
   return tools.find(
     tool => AGENT_TOOL_NAMES.has(tool.name) || tool.aliases?.some(alias => AGENT_TOOL_NAMES.has(alias)),
   )
+}
+
+export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Tool['call']>): Promise<Awaited<ReturnType<Tool['call']>>> {
+  const [input, context, canUseTool, assistantMessage, onProgress] = args
+  const signal = context.abortController.signal
+  const setTasks = context.setAppStateForTasks ?? context.setAppState
+  const owned = new Set<string>()
+  let settled = false
+  const stop = () => {
+    for (const id of owned) {
+      const task = context.getAppState().tasks[id]
+      if (!isLocalAgentTask(task)) continue
+      task.abortController?.abort(signal.reason)
+      killAsyncAgent(id, setTasks)
+    }
+  }
+  const callContext: ToolUseContext = {
+    ...context,
+    modAgentStarted: launch => {
+      setTasks(prev => {
+        const task = Object.values(prev.tasks).find(task =>
+          isLocalAgentTask(task) && task.agentId === launch.agentId,
+        )
+        if (!task) return prev
+        owned.add(task.id)
+        return { ...prev, tasks: { ...prev.tasks, [task.id]: { ...task, notified: true } } }
+      })
+      if (signal.aborted) stop()
+      context.modAgentStarted?.(launch)
+    },
+  }
+  const removeProgressObserver = observeAgentProgress(callContext, message => onProgress?.({
+    toolUseID: context.toolUseId ?? assistantMessage?.message.id ?? '',
+    data: { type: 'agent_progress', message },
+  }))
+  signal.addEventListener('abort', stop, { once: true })
+  try {
+    signal.throwIfAborted()
+    const result = await agentTool.call(input, callContext, canUseTool, assistantMessage, onProgress)
+    signal.throwIfAborted()
+    const output = result.data as { status?: string; agentId?: string }
+    if (output.status !== 'async_launched') {
+      settled = true
+      return result
+    }
+    const id = output.agentId
+    const initial = typeof id === 'string' ? Object.values(context.getAppState().tasks).find(task =>
+      isLocalAgentTask(task) && task.agentId === id && owned.has(task.id),
+    ) : undefined
+    if (!initial) throw new Error('Workflow Agent returned an unowned background task')
+    logForDebugging(`[WorkflowAgent] awaiting background task=${initial.id} agent=${id}`)
+    for (;;) {
+      signal.throwIfAborted()
+      const task = context.getAppState().tasks[initial.id]
+      if (!isLocalAgentTask(task) || task.agentId !== id) throw new Error('Workflow Agent task disappeared')
+      if (task.status === 'completed') {
+        if (!task.result) throw new Error('Workflow Agent completed without its result')
+        settled = true
+        logForDebugging(`[WorkflowAgent] completed background task=${task.id} agent=${id} tokens=${task.result.totalTokens}`)
+        return { ...result, data: { ...task.result, status: task.status } }
+      }
+      if (task.status === 'failed' || task.status === 'killed') {
+        throw new Error(task.error ?? `Workflow Agent task ${task.status}`)
+      }
+      await sleep(20, signal)
+    }
+  } finally {
+    removeProgressObserver()
+    signal.removeEventListener('abort', stop)
+    if (!settled) stop()
+  }
 }
 
 export function snapshotWorkflowAgentContext(
@@ -467,6 +543,7 @@ async function runPhaseAgentAttempt({
   const teamName =
     plan.defaults.execution === 'team' ? workflowTeamName(context) : undefined
   const input: AgentToolInput = {
+    run_in_background: false,
     description,
     prompt,
     subagent_type: phase.agentType,
@@ -565,7 +642,7 @@ async function runPhaseAgentAttempt({
 
   let result: Awaited<ReturnType<Tool['call']>>
   try {
-    result = await agentTool.call(input as never, agentContext, canUseTool, assistantMessage, progress => {
+    result = await callWorkflowAgent(agentTool, input as never, agentContext, canUseTool, assistantMessage, progress => {
       lastProgress = Date.now()
       const metrics = agentProgressMetrics(progress)
       if (!metrics) return

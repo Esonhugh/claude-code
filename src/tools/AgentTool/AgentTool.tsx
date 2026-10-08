@@ -113,6 +113,7 @@ import {
   getLastToolUseName,
   resolveAgentTools,
   runAsyncAgentLifecycle,
+  reportObservedAgentProgress,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { normalizeAgentType, resolveAgentType } from './agentTypeResolver.js'
@@ -1695,6 +1696,7 @@ export const AgentTool = buildTool({
                           tracker,
                           rootSetAppState,
                         )
+                        reportObservedAgentProgress(toolUseContext, msg)
 
                         const lastToolName = getLastToolUseName(msg)
                         if (lastToolName) {

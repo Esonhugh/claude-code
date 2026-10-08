@@ -77,7 +77,7 @@ import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
-import { snapshotWorkflowAgentContext } from './runWorkflow.js'
+import { callWorkflowAgent, snapshotWorkflowAgentContext } from './runWorkflow.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 
 // --- Constants ---
@@ -93,6 +93,7 @@ function workflowRetryBudget(maxRetries: number | undefined): number {
 
 // --- Types ---
 type AgentToolInput = {
+  run_in_background: false
   description: string
   prompt: string
   subagent_type?: string
@@ -1068,6 +1069,7 @@ export async function runWorkflowScript({
       : undefined
 
     const input: AgentToolInput = {
+      run_in_background: false,
       description,
       prompt: prompt + schemaPrompt,
       subagent_type: opts?.agentType,
@@ -1125,7 +1127,7 @@ export async function runWorkflowScript({
         workflowProgress: currentWorkflowProgress(),
       })
 
-      const agentCall = agentTool.call(
+      const agentCall = callWorkflowAgent(agentTool,
         input as never,
         {
           ...agentContext,
