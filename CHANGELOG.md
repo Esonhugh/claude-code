@@ -81,6 +81,8 @@
 
 ### 测试覆盖
 
+- Native33 本批冻结候选完整默认矩阵及追加项29/29记录、23 passed/6 failed；真实diff与交互125帧、五次owned resize的有限物理回放通过，正常EOF/reap及资源清理完整。整体native/Mods/四路发布仍未通过，失败分类与原始manifest见[resize验收记录](docs/research/mods-native-resize-bracket-validity-20261008.md#native33-最终处置)。
+
 - 关闭功能干净候选的相邻四文件 291 项通过，`make release-check` 通过；共享工作区冻结候选的相邻五文件 308 项、验收驱动回归、类型与构建检查通过。完整 29 项真实终端矩阵已执行，26 通过、3 失败，整体未通过；不能将源码结果视为完整 UI/diff 或发布通过。详见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
 
 - 本批验收器干净候选33项、保留工作区 WIP 的提交后像40项 retained 与原有断言通过。最终封存修复后的完整私有工作区矩阵28项执行、26通过、2失败，整体未通过；[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)记录真实失败、制品及范围。

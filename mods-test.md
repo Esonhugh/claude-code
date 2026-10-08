@@ -2305,3 +2305,9 @@ b1b只读审查在限定prepare/producer原件独立的边界关闭F-IO-1/2，�
 中间源码309d的真实默认入口新进程25906完成200×60→110×34、7帧/raw6559/IO27，逐帧与正常exit0/EOF/reap通过；3项ordering/type与23项collector回归通过。旧 end→snapshot gap 原件保持失败记录；新真实capture未再次命中该gap，source/unit范围与实际范围分开记录。另一次tmux在install前消失的初始化失败也保留，没有归因产品。
 
 完整seal仍failed，productTimingEquivalent/fullNativeGatePassed仍false；child-side几何、termios、OS input/owner、diff/browser完整生命周期、最新版API与四路发布门禁继续待完成。详情和命令见[本批验收](docs/research/mods-native-resize-bracket-validity-20261008.md)。同轮最终候选及完整driver结果应另绑定其source/binary，不继承中间绿色结果。
+
+## 2026-10-08 Native33 完整矩阵最终处置
+
+签名提交95d2947对应提交前冻结源码c582：完整默认矩阵加原有追加项正常结束348.465s，29/29记录齐全，23 passed、6 failed。canonical diff的52帧/1次resize、terminal interaction的73帧/4次resize均独立physical passed、bounded passed，正常exit0/EOF/reap且无signals/cleanupErrors；两个target整体仍因完整native范围未闭合而failed，不能误归因为本轮坏帧或提升为full passed。
+
+其余失败为builtin-mods、code-review、workflow、workflow-retry-partial-failure；builtin独立frame复查passed但assertionsfailed，生产completion与API/lifecycle继续待处理。source/Git unchanged、lease/auth/workflow清理完整，27个direct场景和本轮driver/两个native子进程已终态。完整flags保持false，四路正式发布未通过；[精确manifest、hash与逐项处置](docs/research/mods-native-resize-bracket-validity-20261008.md#native33-最终处置)。
