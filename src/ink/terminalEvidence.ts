@@ -9,6 +9,7 @@ import {
 import { join } from 'node:path'
 import type { FrameEvent } from './frame.js'
 import { cellAt, CellWidth } from './screen.js'
+import { nativeTerminalJournalRequested, recordNativeTerminalFrame } from './nativeTerminalJournal.js'
 
 export type TerminalEvidenceBoundary = {
   ioId: number
@@ -40,6 +41,7 @@ export function getEvidenceCursorVisible(): boolean {
 }
 
 export function recordEvidenceInputRead(chunk: string): void {
+  if (nativeTerminalJournalRequested()) return
   const directory = process.env.CLAUDE_CODE_FRAME_BROKER_DIR
   if (!directory) return
   appendFileSync(
@@ -61,6 +63,7 @@ export function terminalEvidenceBoundary(
   renderer: number,
   rootEpoch: number,
 ): TerminalEvidenceBoundary | undefined {
+  if (nativeTerminalJournalRequested()) return undefined
   const directory = process.env.CLAUDE_CODE_FRAME_BROKER_DIR
   if (!directory) return undefined
   requestFd ??= openSync(
@@ -161,6 +164,16 @@ export function serializeValidationFrame(
 
 let evidenceFrameId = 0
 export function recordTerminalEvidenceFrame(event: FrameEvent): void {
+  if (nativeTerminalJournalRequested()) {
+    if (event.frame && event.nativeTerminalEvidence)
+      recordNativeTerminalFrame(event, serializeValidationFrame(
+        event.frame,
+        { ...(event.physicalCursor ?? event.frame.cursor), visible: event.nativeTerminalCursorVisible },
+        event.terminalBuffer,
+        event.terminalViewport,
+      ))
+    return
+  }
   const path = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH
   if (!path || !event.frame || !event.terminalEvidence) return
   if (evidenceFrameId === 0)

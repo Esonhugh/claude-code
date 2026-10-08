@@ -2266,3 +2266,8 @@ Native29 使用本轮新构建及动态 baseline 完成29场景，23通过、6�
 
 
 后续独立边界 RED 又确认 consumer 初始化在 cleanup 范围外、第二 pipe 申请失败未登记首个 FD、同实例允许 foreign thread、领取前未检查 registration。修复为全程登记/收尾、实例线程所有权，以及 C 领取前后核对 immutable nonce/endpoint 和独立 PID；错误领取保留 slot。20/20 收据限定 native collector，完整 Mods/diff/TTY/input/时序验收仍未闭合。
+
+
+### 实际 CLI 原生帧连接与验收身份
+
+本批实际缺帧 RED、旧原生顺序 RED、旧同步 mirror RED、output/cells 耦合伪造 RED 与 actual tmux startup Timeout 清理 RED 均保留。修复后固定几何逐帧通过，并重新校验 native originals 与独立身份；collector 新增 signed-device 回归，共22项。默认完整 driver 与完整 release 仍为 failed/not covered，未重写 Native30 的23/29 verdict。原件、明确排除的初始化/错选binary轮次和使用方法见[原生帧连接记录](docs/research/mods-native-frame-journal-validity-20261008.md)。

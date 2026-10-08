@@ -27,6 +27,8 @@
 
 ### 变更内容
 
+- 验收证据：将 Darwin native journal 接入实际 Ink layout/write/snapshot，私有采集模式关闭旧 FIFO ACK 和同步 frame mirror；回放重新绑定原始 packets/raw、registration 与本轮身份，拒收同时改写 output/cells 的派生数据。新增真实 CLI 固定几何逐帧及 tmux 启动超时回收；完整默认 no-ACK/resize/input/diff 生命周期和 Mods 发布门禁仍未通过。
+
 #### Mods 焦点组合键
 
 - 已持键 Pane 的裸 Tab、Shift+Tab、上下键和人工 Band 导航保留同插件、同 key 控件的独立槽位；自动或改写焦点保留首匹配规则。私有宿主回执区分真正接受与 withholding，避免按相同坐标误移焦点；请求被 withholding 时，改写回执也保留已获焦的原槽位。人工 Pane 跨插件导航携带实际目标 plugin，维持 person 来源，作者公开参数不增加内部字段。

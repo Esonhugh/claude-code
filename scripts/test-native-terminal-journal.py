@@ -308,6 +308,13 @@ class NativeJournalTest(unittest.TestCase):
         self.assertEqual(next(row for row in records if row['kind'] == 11)['bytes'], b'ORIGINAL')
         self.assertEqual(journal.frame_spans(records)[0]['untransformedBytes'], 5013)
 
+    def test_signed_native_device_identity_has_the_same_unsigned_representation(self):
+        from types import SimpleNamespace
+        endpoint = SimpleNamespace(st_dev=-3, st_ino=123, st_rdev=-1, st_mode=0o20620)
+        registration = journal.create_journal(self.root / 'signed-device.bin', endpoint, 3)
+        self.assertEqual(registration['header'][14:19],
+                         [(1 << 64) - 3, 123, (1 << 64) - 1, 0o20620, 3])
+
     def test_starved_consumer_never_blocks_original_write_and_loss_fails(self):
         header, packets, registration, pid, raw = self.capture('starve', capacity=2)
         self.assertEqual(raw, b'live\r\n' * 16)

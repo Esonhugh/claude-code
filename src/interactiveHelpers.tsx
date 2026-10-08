@@ -22,6 +22,7 @@ import { initializeTelemetryAfterTrust } from './entrypoints/init.js'
 import { isSynchronizedOutputSupported } from './ink/terminal.js'
 import type { RenderOptions, Root, TextProps } from './ink.js'
 import { serializeValidationFrame } from './ink/terminalEvidence.js'
+import { nativeTerminalJournalRequested } from './ink/nativeTerminalJournal.js'
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js'
 import { startDeferredPrefetches } from './main.js'
 import {
@@ -422,7 +423,7 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   let frameId = 0
   let pendingOutput = Buffer.alloc(0)
   let originalStdoutWrite: typeof process.stdout.write | undefined
-  if (frameEvidencePath && !process.env.CLAUDE_CODE_FRAME_BROKER_DIR) {
+  if (frameEvidencePath && !nativeTerminalJournalRequested() && !process.env.CLAUDE_CODE_FRAME_BROKER_DIR) {
     writeFileSync(frameEvidencePath, '', { mode: 0o600 })
     originalStdoutWrite = process.stdout.write.bind(process.stdout)
     process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -442,7 +443,7 @@ export function getRenderContext(exitOnCtrlC: boolean): {
       onFrame: event => {
         fpsTracker.record(event.durationMs)
         stats.observe('frame_duration_ms', event.durationMs)
-        if (frameEvidencePath && event.frame && !event.terminalEvidence) {
+        if (frameEvidencePath && !nativeTerminalJournalRequested() && event.frame && !event.terminalEvidence) {
           frameId++
           appendFileSync(
             frameEvidencePath,

@@ -2,11 +2,6 @@ import { screenLines, semanticEvidence } from './terminal-frame-semantics.mjs'
 import { readFileSync, writeFileSync } from 'node:fs'
 import * as xtermHeadless from '@xterm/headless'
 
-const [inputPath, outputPath] = process.argv.slice(2)
-if (!inputPath || !outputPath) {
-  throw new Error('Usage: verify-terminal-frame-evidence.mjs INPUT.jsonl OUTPUT.json')
-}
-
 const Terminal =
   xtermHeadless.Terminal ??
   xtermHeadless.default?.Terminal ??
@@ -57,7 +52,7 @@ function styleFromAnsi(Terminal, ansi) {
   }
 }
 
-function frameDifference(frame, terminal, Terminal) {
+export function frameDifference(frame, terminal, Terminal) {
   const buffer = terminal.buffer.active
   if (terminal.cols !== frame.columns || terminal.rows !== frame.rows) {
     return `dimensions ${frame.columns}x${frame.rows} !== ${terminal.cols}x${terminal.rows}`
@@ -115,6 +110,7 @@ function frameDifference(frame, terminal, Terminal) {
   return undefined
 }
 
+export function verifyRendererFrameEvidence(inputPath) {
 const entries = readFileSync(inputPath, 'utf8')
   .split('\n')
   .filter(Boolean)
@@ -177,5 +173,14 @@ const report = {
   sizeSequence,
   frames,
 }
-writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
-if (report.verdict !== 'passed') process.exitCode = 1
+return report
+}
+
+if (import.meta.main) {
+  const [inputPath, outputPath] = process.argv.slice(2)
+  if (!inputPath || !outputPath)
+    throw new Error('Usage: verify-terminal-frame-evidence.mjs INPUT.jsonl OUTPUT.json')
+  const report = verifyRendererFrameEvidence(inputPath)
+  writeFileSync(outputPath, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
+  if (report.verdict !== 'passed') process.exitCode = 1
+}

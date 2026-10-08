@@ -36,8 +36,11 @@ def create_journal(path, endpoint, output_mask, capacity=64, payload_bytes=65536
     stride = ((RECORD.size + payload_bytes + 63) // 64) * 64
     header = [MAGIC, 1, HEADER.size, stride, capacity, payload_bytes,
               nonce >> 64, nonce & ((1 << 64) - 1), *([0] * 24)]
-    header[14:19] = [endpoint.st_dev, endpoint.st_ino, endpoint.st_rdev,
-                     endpoint.st_mode, output_mask]
+    # Darwin exposes signed dev_t in Python; the observer casts it to uint64_t.
+    identity = [endpoint.st_dev, endpoint.st_ino, endpoint.st_rdev, endpoint.st_mode]
+    require(all(type(value) is int and -(1 << 63) <= value < 1 << 64 for value in identity),
+            'Invalid native endpoint identity')
+    header[14:19] = [value & ((1 << 64) - 1) for value in identity] + [output_mask]
     path = Path(path)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
@@ -134,13 +137,15 @@ def verify_raw(records, raw, output_flags):
                           'immutable logical/physical frame proof', 'normal PTY EOF/reap']}
 
 
-def frame_spans(records):
+def frame_spans(records, profile='pre-write-v1'):
     """Use strict native brackets; do not guess offsets from nearby timestamps.
 
     Kinds 10 layout, 11 immutable snapshot, 12 begin, 13 end. Every frame write
     must occur completely after begin returns and before end enters. Other
     output remains in the byte ledger. No logical correctness is claimed here.
     """
+    require(profile in ('pre-write-v1', 'ink-post-write-v1'), 'Unknown native frame profile')
+    order = [10, 11, 12, 13] if profile == 'pre-write-v1' else [10, 12, 13, 11]
     groups = {}
     for row in records:
         if row['kind'] in (10, 11, 12, 13):
@@ -152,9 +157,12 @@ def frame_spans(records):
     previous_end = 0
     result = []
     for span, rows in groups.items():
-        require([row['kind'] for row in rows] == [10, 11, 12, 13],
+        require([row['kind'] for row in rows] == order,
                 'Missing, duplicated or reordered frame markers')
-        layout, snapshot, begin, end = rows
+        if profile == 'pre-write-v1':
+            layout, snapshot, begin, end = rows
+        else:
+            layout, begin, end, snapshot = rows
         require(previous_end <= layout['entry'] and
                 all(left['return'] <= right['entry'] for left, right in zip(rows, rows[1:])),
                 'Overlapping frame metadata')
@@ -164,6 +172,9 @@ def frame_spans(records):
         require(all(not (row['entry'] < begin['entry'] < row['return'] or
                          row['entry'] < end['return'] < row['return']) for row in writes),
                 'Asynchronous write crosses native frame boundary')
+        if profile == 'ink-post-write-v1':
+            require(all(not (end['entry'] <= row['entry'] < snapshot['return'])
+                        for row in writes), 'Output occurred before immutable post-write snapshot')
         start = sum(len(row['bytes']) for row in writes if row['return'] <= begin['entry'])
         byte_count = sum(len(row['bytes']) for row in selected)
         result.append({'spanId': span, 'layoutSequence': layout['sequence'],
@@ -173,8 +184,59 @@ def frame_spans(records):
                        'untransformedStart': start, 'untransformedBytes': byte_count,
                        'observationKind': 'output-transaction' if byte_count else 'logical-observation',
                        'scope': 'native span only; no geometry or UI verdict'})
-        previous_end = end['return']
+        previous_end = rows[-1]['return']
     return result
+
+
+def ink_frame_entries(records, raw, capture_id, output_flags):
+    """Bind post-write snapshots to exact successful syscall prefixes.
+
+    This fixed-geometry adapter does not establish termios/resize lifetime or
+    input ownership. The independent replay retains those uncovered boundaries.
+    """
+    import base64
+    verify_raw(records, raw, output_flags)
+    spans = frame_spans(records, 'ink-post-write-v1')
+    require(spans and [span['spanId'] for span in spans] == list(range(1, len(spans) + 1)),
+            'Missing native Ink frame identity')
+    by_sequence = {row['sequence']: row for row in records}
+    entries = []
+    previous_offset = 0
+    for span in spans:
+        layout, begin, end, snapshot = [by_sequence[span[key]] for key in
+                                      ('layoutSequence', 'startSequence', 'endSequence', 'snapshotSequence')]
+        try:
+            identities = [json.loads(row['bytes']) for row in (layout, begin, end)]
+            value = json.loads(snapshot['bytes'])
+            frame_bytes = base64.b64decode(value['frameBase64'], validate=True)
+            frame = json.loads(frame_bytes)
+        except (ValueError, KeyError, TypeError) as error:
+            raise JournalError('Malformed immutable Ink frame') from error
+        identity = identities[0]
+        require(all(row == identity for row in identities) and value['native'] == identity and
+                identity.get('profile') == 'ink-post-write-v1' and identity.get('captureId') == capture_id and
+                identity.get('spanId') == span['spanId'], 'Foreign immutable Ink frame identity')
+        require(all(type(identity.get(key)) is int and identity[key] > 0
+                    for key in ('spanId', 'rendererId', 'rootEpoch', 'columns', 'rows')),
+                'Invalid immutable Ink layout identity')
+        require(type(value.get('rootReset')) is bool and type(value.get('cursorVisible')) is bool and
+                isinstance(frame, dict) and frame.get('viewport') ==
+                {'width': identity['columns'], 'height': identity['rows']} and
+                frame.get('cursor', {}).get('visible') is value['cursorVisible'],
+                'Immutable Ink snapshot differs from its layout or cursor policy')
+        before = [row for row in records if row['kind'] == 1 and row['return'] <= begin['entry']]
+        selected = [by_sequence[sequence] for sequence in span['writeSequences']]
+        start = sum(len(row['bytes'].replace(b'\n', b'\r\n')) for row in before)
+        count = sum(len(row['bytes'].replace(b'\n', b'\r\n')) for row in selected)
+        finish = start + count
+        require(previous_offset <= start <= finish <= len(raw), 'Invalid native physical frame prefix')
+        entries.append({'frameId': span['spanId'], 'native': identity,
+                        'rawStart': start, 'rawEnd': finish,
+                        'writeSequences': span['writeSequences'],
+                        'outputBase64': base64.b64encode(raw[previous_offset:finish]).decode(),
+                        'frameBase64': value['frameBase64']})
+        previous_offset = finish
+    return entries
 
 
 class NativeConsumer:

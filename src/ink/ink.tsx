@@ -29,6 +29,7 @@ import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
 import { getEvidenceCursorVisible, nextEvidenceRendererId, recordTerminalEvidenceFrame, setEvidenceCursorVisible, terminalEvidenceBoundary } from './terminalEvidence.js'
+import { beginNativeTerminalFrame, initializeNativeTerminalJournal, nativeTerminalFrameBoundary } from './nativeTerminalJournal.js'
 import { collectTerminalPaneEvidence, collectTerminalUiRevision } from './terminalPaneEvidence.js'
 import { dispatchClick, dispatchHover } from './hit-test.js'
 import instances from './instances.js'
@@ -260,6 +261,7 @@ export default class Ink {
   private displayCursor: { x: number; y: number } | null = null
 
   constructor(private readonly options: Options) {
+    initializeNativeTerminalJournal()
     autoBind(this)
 
     if (this.options.patchConsole) {
@@ -567,6 +569,8 @@ export default class Ink {
     const renderStart = performance.now()
     const terminalWidth = this.options.stdout.columns || 80
     const terminalRows = this.options.stdout.rows || 24
+
+    const nativeTerminalEvidence = beginNativeTerminalFrame(this.evidenceRendererId, this.evidenceRootEpoch, terminalWidth, terminalRows)
 
     const frame = this.renderer({
       frontFrame: this.frontFrame,
@@ -914,6 +918,7 @@ export default class Ink {
 
     const tWrite = performance.now()
     const evidenceStart = terminalEvidenceBoundary('frame-start', this.evidenceRendererId, this.evidenceRootEpoch)
+    nativeTerminalFrameBoundary('frame-start', nativeTerminalEvidence)
     writeDiffToTerminal(
       this.terminal,
       optimized,
@@ -929,6 +934,7 @@ export default class Ink {
     }
     const writeMs = performance.now() - tWrite
     const evidenceEnd = terminalEvidenceBoundary('frame-end', this.evidenceRendererId, this.evidenceRootEpoch)
+    nativeTerminalFrameBoundary('frame-end', nativeTerminalEvidence)
     const terminalEvidence = evidenceStart && evidenceEnd ? {
       start: evidenceStart,
       end: evidenceEnd,
@@ -936,7 +942,7 @@ export default class Ink {
       cursorVisible: getEvidenceCursorVisible(),
     } : undefined
     const terminalViewport = { width: terminalWidth, height: terminalRows }
-    recordTerminalEvidenceFrame({ durationMs: writeMs, frame, physicalCursor: this.displayCursor ?? frame.cursor, terminalBuffer: this.altScreenActive ? 'alternate' : 'normal', terminalViewport, terminalPanes, terminalUiRevision, terminalEvidence, flickers })
+    recordTerminalEvidenceFrame({ durationMs: writeMs, frame, physicalCursor: this.displayCursor ?? frame.cursor, terminalBuffer: this.altScreenActive ? 'alternate' : 'normal', terminalViewport, terminalPanes, terminalUiRevision, terminalEvidence, nativeTerminalEvidence, nativeTerminalRootReset: prevFrame.screen.height === 0, nativeTerminalCursorVisible: getEvidenceCursorVisible(), flickers })
 
     // Update blit safety for the NEXT frame. The frame just rendered
     // becomes frontFrame (= next frame's prevScreen). If we applied the
@@ -984,6 +990,7 @@ export default class Ink {
       terminalPanes,
       terminalUiRevision,
       terminalEvidence,
+      nativeTerminalEvidence,
       phases: {
         renderer: rendererMs,
         diff: diffMs,

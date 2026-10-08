@@ -3,6 +3,7 @@ import type { Size } from './layout/geometry.js'
 import type { ScrollHint } from './render-node-to-output.js'
 import type { TerminalImage } from './dom.js'
 import type { TerminalEvidenceBoundary } from './terminalEvidence.js'
+import type { NativeTerminalFrameSpan } from './nativeTerminalJournal.js'
 import type { TerminalPaneEvidence } from './terminalPaneEvidence.js'
 import {
   type CharPool,
@@ -62,6 +63,9 @@ export type FrameEvent = {
   terminalViewport?: { width: number; height: number }
   terminalPanes?: readonly TerminalPaneEvidence[]
   terminalUiRevision?: number
+  nativeTerminalEvidence?: NativeTerminalFrameSpan
+  nativeTerminalRootReset?: boolean
+  nativeTerminalCursorVisible?: boolean
   terminalEvidence?: {
     start: TerminalEvidenceBoundary
     end: TerminalEvidenceBoundary
