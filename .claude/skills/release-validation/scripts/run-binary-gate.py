@@ -695,14 +695,17 @@ def submitted_input_visible(pane, text):
     return visible_lines == len(re.findall(r'\r\n|\r|\n', text))
 
 
-def terminal_native_exit_passed(run, capture, binary_sha256):
-    """Actual backend-specific EOF/reap only; never a full terminal verdict."""
+def _terminal_native_exit_receipts_passed(run, capture, binary_sha256, collector_closed):
+    """Backend originals; outer collector EOF is a separate closing stage."""
     try:
         if type(capture.get('nativeJournal')) is not bool:
             return False
+        if capture['nativeJournal'] and (not isinstance(binary_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', binary_sha256)):
+            return False
         if capture['nativeJournal'] and (not isinstance(capture.get('captureId'), str) or not capture['captureId']):
             return False
-        names = (('start.json', 'cleanup.json', 'broker-cleanup.json', 'producer-expected-native.json', 'capture-eof')
+        names = (('start.json', 'cleanup.json', 'broker-cleanup.json', 'producer-expected-native.json') +
+                 (('capture-eof',) if collector_closed else ())
                  if capture['nativeJournal'] else ('native-pty-eof.json',))
         values = {}
         for name in names:
@@ -738,9 +741,34 @@ def terminal_native_exit_passed(run, capture, binary_sha256):
                 json.dumps(producer['nativeClose'], sort_keys=True) == json.dumps(closed.get('nativeClose'), sort_keys=True) and
                 json.dumps(producer['ioClose'], sort_keys=True) == json.dumps(closed.get('ioClose'), sort_keys=True) and
                 producer['nativeClose'].get('method') == 'owned-broker-closed-native-v1' and
-                producer['ioClose'].get('method') == 'owned-broker-closed-io-v1' and values['capture-eof'] == '0')
+                producer['ioClose'].get('method') == 'owned-broker-closed-io-v1' and
+                (not collector_closed or values['capture-eof'] == '0'))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
+
+
+def terminal_native_exit_identity(run, launch, binary_sha256):
+    """Keep the launch-bound primitive identity across close clearing members."""
+    if (not isinstance(launch, dict) or launch.get('run') != str(run.resolve()) or
+            not isinstance(binary_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', binary_sha256) or
+            launch.get('binarySha256') != binary_sha256):
+        return None
+    capture = launch.get('capture')
+    if (not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool or
+            not isinstance(capture.get('captureId'), str) or not capture['captureId']):
+        return None
+    return {'capture': {'nativeJournal': capture['nativeJournal'], 'captureId': capture['captureId']},
+            'binarySha256': binary_sha256}
+
+
+def terminal_native_producer_exit_passed(run, capture, binary_sha256):
+    """Normal native producer closure only; never validates the outer pipe."""
+    return _terminal_native_exit_receipts_passed(run, capture, binary_sha256, False)
+
+
+def terminal_native_exit_passed(run, capture, binary_sha256):
+    """Normal producer plus actual collector EOF; never a full UI verdict."""
+    return _terminal_native_exit_receipts_passed(run, capture, binary_sha256, True)
 
 
 def input_prompt_ready(pane):
@@ -5136,6 +5164,9 @@ else:
             try:
                 release_terminal_git_wrapper(run_dir)
             finally:
+                native_exit_requested = False
+                exit_identity = terminal_native_exit_identity(run_dir, getattr(self, 'terminal_capture', None),
+                    (getattr(self, 'manifest', None) or {}).get('binary_sha256'))
                 try:
                     # Each Escape belongs to an observed dialog state. Sending
                     # a second Escape to an already closed composer opens Rewind.
@@ -5150,12 +5181,16 @@ else:
                         input_prompt_ready(text) and 'Diff · files' not in text and 'Diff · detail' not in text, 5)
                     if composer_ready:
                         raw('cleanup-native-exit', b'/exit\r')
-                    checks['normal_native_exit'] = composer_ready and self.wait_until(
-                        lambda: terminal_native_exit_passed(run_dir, self.terminal_capture['capture'],
-                            self.manifest['binary_sha256']), 5, 0.1)
+                        native_exit_requested = True
+                    result['native_exit_observation'] = {'producerClosedBeforeCaptureClose':
+                        native_exit_requested and exit_identity is not None and self.wait_until(
+                            lambda: terminal_native_producer_exit_passed(run_dir, exit_identity['capture'],
+                                exit_identity['binarySha256']), 5, 0.1)}
                 except Exception as error:
                     result['native_exit_error'] = str(error)
                 cleanup = self.close(run_dir, session, target)
+                checks['normal_native_exit'] = native_exit_requested and exit_identity is not None and terminal_native_exit_passed(
+                    run_dir, exit_identity['capture'], exit_identity['binarySha256'])
         checks['cleanup'] = self.cleanup_passed(cleanup)
         (run_dir / 'input-chunks.json').write_text(json.dumps(input_chunks, indent=2) + '\n')
         frame_report = run_dir / 'frame-physical-report.json'
@@ -5408,18 +5443,24 @@ else:
                 checks['canonical_release_watcher_stopped'] = not release_thread.is_alive()
             release_terminal_git_wrapper(run_dir)
             wire = server.snapshot()
+            native_exit_requested = False
+            exit_identity = terminal_native_exit_identity(run_dir, getattr(self, 'terminal_capture', None),
+                (getattr(self, 'manifest', None) or {}).get('binary_sha256'))
             try:
                 raw('canonical-cleanup-leave-focus', b'\x1b')
                 if self.canonical_pane(run_dir) is not None:
                     raw('canonical-cleanup-close', b'/diff\r')
                     self.wait_until(lambda: self.canonical_pane(run_dir) is None, 5, 0.1)
                 raw('canonical-cleanup-native-exit', b'/exit\r')
-                checks['normal_native_exit'] = self.wait_until(lambda:
-                    terminal_native_exit_passed(run_dir, self.terminal_capture['capture'], self.manifest['binary_sha256']),
-                    5, 0.1)
+                native_exit_requested = True
+                result['native_exit_observation'] = {'producerClosedBeforeCaptureClose': exit_identity is not None and self.wait_until(lambda:
+                    terminal_native_producer_exit_passed(run_dir, exit_identity['capture'], exit_identity['binarySha256']),
+                    5, 0.1)}
             except Exception as error:
                 result['native_exit_error'] = str(error)
             cleanup = self.close(run_dir, session, target)
+            checks['normal_native_exit'] = native_exit_requested and exit_identity is not None and terminal_native_exit_passed(
+                run_dir, exit_identity['capture'], exit_identity['binarySha256'])
         checks['cleanup'] = self.cleanup_passed(cleanup)
         try:
             fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
