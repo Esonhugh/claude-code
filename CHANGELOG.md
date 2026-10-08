@@ -27,6 +27,8 @@
 
 ### 变更内容
 
+- canonical 验收接入真实 native marker/write span、host launch 与 Mach geometry，严格关联当前动作窗口、DOM pane 和零输出的同 root 来源；保留合法失败 write/retry 与原 errno，resize 严格绑定发送前边界及实际 ACK/返回配对，最终认证已记录的 exact frame，原始输入文件 exclusive/no-follow 0600 创建。live、最终及归档重验一致，旧 resize RED、child input owner 和完整发布仍未闭合，见[原生 canonical 绑定](docs/research/mods-native-canonical-binding-validity-20261009.md)。
+
 - 验收采集：原生writer批处理已排队prefix，避免重复重建已发布帧；producer退出与外层collector EOF分阶段核对，保留原关闭预算、内存上限及全量原件拒收。Native43完整30项27通过3失败，真实关闭/完整90帧与122项IO已保存；CLI/frame文件14通过1个resize失败。受控积压正例不替代真实UI或完整发布，见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。
 
 - 验收有效性：native身份/退出分别绑定实际关闭原件，拒收错误JSON类型、FIFO/链接及不完整diff子测试；新增真实CLI原件负例和关闭状态清理回归。15项完整CLI/frame文件通过；Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整时序、input owner和发布保持未通过。见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。

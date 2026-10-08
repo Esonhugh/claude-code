@@ -2371,3 +2371,16 @@ Native41/42的完整失败原件保留。writer改为批处理并等待完整sna
 
 
 Native43完整30项仍为27通过、3失败；canonical和interaction实际normal_native_exit均true，interaction保存全部90帧/122项IO并正常关闭。完整CLI/frame文件14通过、1失败：真实resize后零输出快照仍为旧尺寸；此RED继续保留，未完成geometry handoff与完整发布。证据与首次分歧见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。
+
+
+### 原生 canonical span/动作窗口（2026-10-09）
+
+新增 backend-specific native marker/write、Mach resize 和 host launch 关联，接入 live pane、dock fallback、最终与归档重验；合法 failed write/retry 保留原 errno 和真实零字节 prefix，不补造旧 FIFO broker 字段。历史 Native44 原件的只读重算能够找到先前被 schema 阻断的 alpha dock，47 帧旧字段与原件复读完全一致；此结果不是新 binary 的 lifecycle 或历史 verdict 改判。
+
+新增回归命令、RED 与夹具/运行条件错误分类、零输出 source 和 action-window 规则见[原生 canonical 绑定](docs/research/mods-native-canonical-binding-validity-20261009.md)。当前旧 resize RED、真实 child read/parser/owner、时序、官方 diff/browser/Client 与完整发布仍未闭合。文档编入 binary 后必须重新执行 fresh build、完整 CLI/frame 文件与原默认动态矩阵；不拼接此前通过结果。
+
+Native46 完整原默认矩阵及七项追加目标仍为27/3，canonical 首个失败推进到 inline resize。真实 send IO64→ACK IO65→return IO66 证明旧 return 下界造成 consumer 误拒收；red8 最小回归保留。修复以 send 下界和同 actionId 的原 geometry 收据绑定，不移动 Mach resize、不改历史失败、不跳过原完整矩阵。
+
+Native47 原默认完整30项仍为27/3，现场 canonical 23个检查点全部true，但最终验收三UI字段false由alpha记录frame36、boundary已37时重新选37触发；14个原始input0644也会被0600reader拒收。red12两项最小回归保留。本次pin原记录frame并保留所有上界/原IO关联，input producer exclusive/no-follow 0600创建；不改历史frame/权限/verdict。geometryEvents消费者、真实host Git receipt、securityOrdinary suggestion replacement超时仍独立开放，现场23true不是完整验收通过。
+
+red10/green11 的 input producer synthetic receipt 最初缺少 phase/transport，不能据其首次失败证明权限根因；原结果保留为夹具缺口。补齐真实 receipt shape 后，red12在旧producer明确失败，修复不放宽consumer条件。

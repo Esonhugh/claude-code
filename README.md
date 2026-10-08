@@ -2207,3 +2207,7 @@ outer seal 在真实独立重放之后生成最终manifest时，也重新比较I
 
 
 Native43完整30项仍为27通过、3失败；canonical和interaction实际normal_native_exit均true，interaction保存全部90帧/122项IO并正常关闭。完整CLI/frame文件14通过、1失败：真实resize后零输出快照仍为旧尺寸；此RED继续保留，未完成geometry handoff与完整发布。证据与首次分歧见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。
+
+canonical 验收新增 native span、动作窗口与 Mach geometry 关联；零输出观察只可引用同 root/几何的实际输出帧，不能补造 FIFO ACK 或证明 child input owner。回归入口：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-canonical-binding.py`，随后仍须上述 fresh build、完整 CLI/frame 文件和默认完整矩阵。实现、拒收条件及历史重算边界见[原生 canonical 绑定](docs/research/mods-native-canonical-binding-validity-20261009.md)。旧 resize RED 和完整发布失败继续保留。
+
+原生 canonical 验收认证已经记录的 frame identity，并保持完整 checkpoint/action/IO/geometry 校验；输入原件使用 exclusive/no-follow 0600 创建。历史门禁和未覆盖边界见 [原生 canonical 绑定验收](docs/research/mods-native-canonical-binding-validity-20261009.md)，现场检查点通过不替代最终完整门禁。
