@@ -27,7 +27,7 @@ class NativeLivePublisher:
         self.error = self.expected = None
         self.frames, self.packets, self.io = [], [], []
         self.raw, self.header = bytearray(), None
-        self.has_snapshot = False
+        self.pending_snapshot = False
         self.thread = threading.Thread(target=self._run, name='native-prefix-writer', daemon=True)
         self.thread.start()
 
@@ -66,7 +66,7 @@ class NativeLivePublisher:
             offset += count
 
     def _publish_frames(self, fd):
-        if not self.has_snapshot:
+        if not self.pending_snapshot:
             return
         frames = self.journal.ink_live_frame_entries(self.header, self.packets, bytes(self.raw),
             self.registration, self.pid, self.capture_id, self.output_flags)
@@ -76,6 +76,7 @@ class NativeLivePublisher:
             raise ValueError('Published native frame prefix changed')
         self._write(fd, rows_bytes(frames[len(self.frames):]))
         self.frames = frames
+        self.pending_snapshot = False
 
     def _verify_file(self, name, fd, expected):
         opened, named = os.fstat(fd), os.lstat(self.run / name)
@@ -110,22 +111,31 @@ class NativeLivePublisher:
                     if self.closing.is_set():
                         break
                     continue
-                if kind == 'packet':
-                    self.packets.append(value)
-                    self.header = header
-                    snapshot = self.journal.RECORD.unpack_from(value)[2] == 11
-                    self.has_snapshot |= snapshot
-                    if snapshot:
-                        self._publish_frames(files['frames.jsonl'])
-                elif kind == 'raw':
-                    self.raw.extend(value)
-                    self._publish_frames(files['frames.jsonl'])
-                else:
-                    self.io.append(value)
-                    self._write(files['pty-io.jsonl'], value)
-                with self.lock:
-                    self.queued -= size
-                    self.retained += size
+                # Consume the already queued prefix as one batch. Capture does
+                # not wait for this thread, and later offers form another batch.
+                # Decode once after its last packet/raw update, rather than
+                # re-decoding the complete retained history for every item.
+                batch = [(kind, value, header, size)]
+                for _ in range(self.queue.qsize()):
+                    try:
+                        batch.append(self.queue.get_nowait())
+                    except queue.Empty:
+                        break
+                for kind, value, header, size in batch:
+                    if kind == 'packet':
+                        self.packets.append(value)
+                        self.header = header
+                        if self.journal.RECORD.unpack_from(value)[2] == 11:
+                            self.pending_snapshot = True
+                    elif kind == 'raw':
+                        self.raw.extend(value)
+                    else:
+                        self.io.append(value)
+                        self._write(files['pty-io.jsonl'], value)
+                    with self.lock:
+                        self.queued -= size
+                        self.retained += size
+                self._publish_frames(files['frames.jsonl'])
             if self.error is not None:
                 return
             io, frames = self.expected

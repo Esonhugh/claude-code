@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 
 spec = importlib.util.spec_from_file_location('live_journal', Path(__file__).with_name('native-terminal-journal.py'))
@@ -101,6 +102,130 @@ class NativeLivePrefixTest(unittest.TestCase):
 
 
 class NativeLivePublisherTest(unittest.TestCase):
+    def two_frames(self):
+        header, first, registration = NativeLivePrefixTest().fixture()
+        packets = list(first)
+        for packet in first:
+            word = list(journal.RECORD.unpack_from(packet))
+            data = packet[journal.RECORD.size:]
+            word[1] += 5
+            word[5] += 200
+            word[6] += 200
+            if word[2] == 1:
+                data = b'BY'
+            else:
+                value = json.loads(data)
+                (value['native'] if word[2] == 11 else value)['spanId'] = 2
+                data = json.dumps(value).encode()
+                word[15] = 2
+            word[10] = word[14] = len(data)
+            packets.append(journal.RECORD.pack(*word) + data)
+        header[9] = len(packets)
+        return header, packets, registration
+
+    def complete_frames(self, header, packets, registration, raw):
+        closed = list(header)
+        closed[11], closed[21] = 1, 700
+        return journal.ink_frame_entries(journal.decode_records(closed, packets, registration, 789),
+                                         raw, 'unit-prefix', 0)
+
+    def wait_for_frames(self, run, count):
+        path = Path(run) / 'frames.jsonl'
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            if path.exists():
+                data = path.read_bytes()
+                if data.endswith(b'\n'):
+                    rows = [json.loads(line) for line in data.splitlines()]
+                    if len(rows) == count:
+                        return rows
+            time.sleep(.01)
+        self.fail('Incomplete live frame prefix')
+
+    def test_multiple_queued_snapshots_keep_the_exact_physical_prefix(self):
+        with tempfile.TemporaryDirectory() as run:
+            header, packets, registration = self.two_frames()
+            expected = self.complete_frames(header, packets, registration, b'HIBY')
+            io = b'{"ioId": 1}\n'
+            writer = live.NativeLivePublisher(run, journal, registration, 789, 'unit-prefix', 0)
+            entered, release = threading.Event(), threading.Event()
+            original = writer._write
+            def blocked(fd, data):
+                if not entered.is_set():
+                    entered.set()
+                    self.assertTrue(release.wait(2))
+                original(fd, data)
+            writer._write = blocked
+            try:
+                self.assertTrue(writer.offer('io', io))
+                self.assertTrue(entered.wait(2))
+                self.assertTrue(writer.offer('raw', b'HIBY'))
+                for packet in packets:
+                    self.assertTrue(writer.offer('packet', packet, header))
+                release.set()
+                writer.finish(io, expected)
+                self.assertFalse(writer.thread.is_alive())
+                self.assertEqual((Path(run) / 'frames.jsonl').read_bytes(), live.rows_bytes(expected))
+                self.assertEqual((Path(run) / 'pty-io.jsonl').read_bytes(), io)
+            finally:
+                release.set()
+                if writer.thread.is_alive():
+                    writer.finish(io, expected)
+
+    def test_pending_snapshot_crosses_batches_and_tail_does_not_invent_a_frame(self):
+        with tempfile.TemporaryDirectory() as run:
+            header, packets, registration = self.two_frames()
+            pending, drained, tail_drained = threading.Event(), threading.Event(), threading.Event()
+            def observe(*args):
+                result = journal.ink_live_frame_entries(*args)
+                if not result:
+                    pending.set()
+                return result
+            observed = SimpleNamespace(RECORD=journal.RECORD, ink_live_frame_entries=observe)
+            writer = live.NativeLivePublisher(run, observed, registration, 789, 'unit-prefix', 0)
+            original = writer._write
+            def write(fd, data):
+                original(fd, data)
+                if data == b'{"ioId": 2}\n':
+                    drained.set()
+                elif data == b'{"ioId": 3}\n':
+                    tail_drained.set()
+            writer._write = write
+            io = b'{"ioId": 2}\n{"ioId": 3}\n'
+            word = list(journal.RECORD.unpack_from(packets[7]))
+            word[1], word[5], word[6] = 11, 500, 501
+            word[10], word[11], word[14] = 4, 4, 4
+            tail = journal.RECORD.pack(*word) + b'tail'
+            final_header = list(header)
+            final_header[9] = 11
+            expected = self.complete_frames(final_header, [*packets, tail], registration, b'HIBYtail')
+            try:
+                for packet in packets[:5]:
+                    self.assertTrue(writer.offer('packet', packet, header))
+                self.assertTrue(pending.wait(2))
+                self.assertEqual((Path(run) / 'frames.jsonl').read_bytes(), b'')
+                self.assertTrue(writer.offer('raw', b'HI'))
+                self.assertEqual(self.wait_for_frames(run, 1), expected[:1])
+                for packet in packets[5:8]:
+                    self.assertTrue(writer.offer('packet', packet, header))
+                self.assertTrue(writer.offer('raw', b'BY'))
+                self.assertTrue(writer.offer('io', b'{"ioId": 2}\n'))
+                self.assertTrue(drained.wait(2))
+                self.assertEqual((Path(run) / 'frames.jsonl').read_bytes(), live.rows_bytes(expected[:1]))
+                for packet in packets[8:]:
+                    self.assertTrue(writer.offer('packet', packet, header))
+                self.assertEqual(self.wait_for_frames(run, 2), expected)
+                self.assertTrue(writer.offer('packet', tail, final_header))
+                self.assertTrue(writer.offer('raw', b'tail'))
+                self.assertTrue(writer.offer('io', b'{"ioId": 3}\n'))
+                self.assertTrue(tail_drained.wait(2))
+                self.assertEqual((Path(run) / 'frames.jsonl').read_bytes(), live.rows_bytes(expected))
+                writer.finish(io, expected)
+                self.assertFalse(writer.thread.is_alive())
+            finally:
+                if writer.thread.is_alive():
+                    writer.finish(io, expected)
+
     def start(self, run, **options):
         header, packets, registration = NativeLivePrefixTest().fixture()
         writer = live.NativeLivePublisher(run, journal, registration, 789, 'unit-prefix', 0, **options)
