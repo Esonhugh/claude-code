@@ -19,7 +19,8 @@ import { hitTest } from '../ink/hit-test.js'
 import { markDirty, scheduleRenderFrom, subscribeLayout, type TerminalImagePlacement } from '../ink/dom.js'
 import { nodeCache } from '../ink/node-cache.js'
 import type { InputEvent } from '../ink/events/input-event.js'
-import { useOptionalKeybindingContext } from '../keybindings/KeybindingContext.js'
+import { useOptionalKeybindingContext, useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js'
+import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { KEYBINDING_ACTIONS } from '../keybindings/schema.js'
 import type { Color } from '../ink/styles.js'
 import { getTheme, type Theme } from '../utils/theme.js'
@@ -964,6 +965,7 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
 }
 
 type Props = {
+  chrome?: 'frame' | 'band'
   pane: ModUiPane
   onInteract(
     pane: ModUiPane,
@@ -993,6 +995,7 @@ type Props = {
 }
 
 export function ModsPane({
+  chrome = 'frame',
   pane,
   onInteract,
   onClose,
@@ -1298,6 +1301,33 @@ export function ModsPane({
   }
   visitActions(validated.tree)
   const actionsActive = pane.visible && (pane.focused || canFocus)
+  const closeActive = chrome !== 'band' && pane.visible && shown && pane.focused
+  const focusedField = (node: RenderElement): boolean => {
+    if (node.props?.display === 'none') return false
+    return (node.type === 'Input' || node.type === 'Select') && node.props?.key === pane.focusedElement &&
+      (pane.focusedPlugin === undefined || (node.group?.plugin ?? node.press?.plugin) === pane.focusedPlugin) ||
+      (node.children ?? []).some(child => typeof child !== 'string' && focusedField(child))
+  }
+  const closeContext = focusedField(validated.tree) ? 'PaneField' : 'Pane'
+  const closeByPerson = (current: ModUiPane) => {
+    focusGeneration.current++
+    focusCommit.current?.resolve()
+    focusCommit.current = undefined
+    automaticTake.current.controller?.abort()
+    automaticTake.current.attempted = true
+    applyFocus(undefined, false)
+    onReleaseFocus?.()
+    return onClose?.(current) ?? Promise.resolve()
+  }
+  useRegisterKeybindingContext(closeContext, closeActive)
+  useKeybinding('pane:close', () => {
+    const current = latest.current.pane, root = rootRef.current
+    if (!onClose || !root || !current.visible || !current.focused || !shown) return false
+    let active: DOMElement | null | undefined = getFocusManager(root).activeElement
+    while (active && active !== root) active = active.parentNode
+    if (active !== root) return false
+    void closeByPerson(current).catch(error => latest.current.onError?.(error))
+  }, { context: closeContext, isActive: closeActive, capture: true })
   React.useEffect(() => {
     if (!keybindings || !actionsActive) return
     const unregister = Object.entries(actions).map(([action, handler]) =>
@@ -1428,7 +1458,7 @@ export function ModsPane({
       focusGeneration.current++
       focusCommit.current?.resolve()
       focusCommit.current = undefined
-      run(pane.closeOnEscape ? onClose(pane) : onFocus(pane))
+      run(pane.closeOnEscape ? closeByPerson(pane) : onFocus(pane))
     }
   }
   // Pane controls get first refusal; unhandled keys still reach the composer.
@@ -1437,7 +1467,8 @@ export function ModsPane({
     if (key.wheelUp || key.wheelDown) return
     const binding = keybindings?.resolve(input, key, [...new Set([...keybindings.activeContexts, 'Global' as const])])
     if (binding && (binding.type === 'chord_started' || binding.type === 'chord_cancelled' ||
-        binding.type === 'unbound' || binding.type === 'match' && binding.action in actions)) return
+        binding.type === 'unbound' || binding.type === 'match' &&
+        (binding.action in actions || binding.action === 'pane:close'))) return
     if (!root || !pane.focused || !pane.visible || !shown ||
         keybindings?.pendingChord || event.didDispatchKeyboardEvent()) return
     const keydown = new KeyboardEvent(event.keypress)
@@ -1552,7 +1583,7 @@ export function ModsPane({
         onClick={event => {
           event.stopImmediatePropagation()
           if (rootRef.current) getFocusManager(rootRef.current).blur()
-          void onClose(pane).catch(error => onError?.(error))
+          void closeByPerson(pane).catch(error => onError?.(error))
         }}>
         <Text inverse={closeHovered} dimColor={!closeHovered}>✕</Text>
       </Box>}

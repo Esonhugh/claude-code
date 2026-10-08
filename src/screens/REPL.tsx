@@ -3301,6 +3301,7 @@ export function REPL({
         return ui.interact(pane.id, drawing, callback, kind, element, value)
       }}
       onClose={pane => modsSession?.runtime?.ui.close(pane.owner, pane.id, { kind: 'person' }) ?? Promise.resolve()}
+      onReleaseFocus={() => { modsSession?.runtime?.ui.focusPane(null) }}
       onFocus={async (pane, element, origin = { kind: 'person' }, options) => {
         const ui = modsSession?.runtime?.ui
         if (!ui) return { focused: false }

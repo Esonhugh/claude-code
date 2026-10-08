@@ -163,6 +163,7 @@ export function ModsAbovePrompt({
 
   return <ModsPane
     pane={pane}
+    chrome="band"
     isWorking={isWorking}
     onReleaseFocus={() => { setFocused(false); latest.current.onFocusChange?.(false) }}
     canFocus={canFocus && !hasSurvey}

@@ -76,6 +76,8 @@ const VALID_CONTEXTS: KeybindingContextName[] = [
   'ModelPicker',
   'Select',
   'Plugin',
+  'Pane',
+  'PaneField',
 ]
 
 /**

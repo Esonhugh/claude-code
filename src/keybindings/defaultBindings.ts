@@ -30,6 +30,8 @@ const SUPPORTS_TERMINAL_VT_MODE =
 const MODE_CYCLE_KEY = SUPPORTS_TERMINAL_VT_MODE ? 'shift+tab' : 'meta+m'
 
 export const DEFAULT_BINDINGS: KeybindingBlock[] = [
+  { context: 'Pane', bindings: { 'ctrl+x x': 'pane:close' } },
+  { context: 'PaneField', bindings: { 'ctrl+x x': 'pane:close' } },
   {
     context: 'Global',
     bindings: {

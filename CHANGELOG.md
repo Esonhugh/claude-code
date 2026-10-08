@@ -24,6 +24,8 @@
 
 ### 变更内容
 
+- 接通 Mods Pane / PaneField 的 `Ctrl+X X` 人工关闭与自定义 `pane:close`，覆盖 Input/Select 和真实 Band consumer；关闭 hook 前释放宿主与字段焦点，阻止被否决关闭后的旧焦点请求迟到恢复。使用与验收边界见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
+
 - 完善 code-review 空变更 Scope 的同轮原生身份、请求回执和通知核对，保存专属输入快照；最终汇总重验全部快照与证明哈希。修复 provider 收尾后 wire 空表、请求线程提前结算和合法异步时序误拒绝。
 - 收紧发布验收：追加目标也必须有同次运行的有效断言；缺失或未声明的证据、仅空文件或目录不能通过。`--targets builtin-mods` 保留其他必验目标及独立 readiness，readiness 和本地生命周期使用隔离 dummy 认证。测试入口执行全部已定义的 retained 回归。
 - 接通远程 prompt 编辑、补全及元素焦点，18 类客户端控制均有运行入口；对齐只读事实、UTF-16、Unicode 候选、排队/撤销、渲染焦点、控件归属、迟到 deny 和 system/ui_focus。使用方法见 README，固定官方 2.1.292 对跑与完整验收边界见[编辑与焦点专项](docs/research/mods-remote-composer-292-20261008.md)。
@@ -37,6 +39,8 @@
 - 对齐 Pane 同 ID 更新的插件归属、可选属性替换、跨插件关闭、重复关闭去重、异常恢复及标题 Unicode 校验；关闭时撤销外部绘制与 Client 地址。
 
 ### 测试覆盖
+
+- 关闭功能干净候选的相邻四文件 291 项通过，`make release-check` 通过；共享工作区冻结候选的相邻五文件 308 项、验收驱动回归、类型与构建检查通过。完整 29 项真实终端矩阵已执行，26 通过、3 失败，整体未通过；不能将源码结果视为完整 UI/diff 或发布通过。详见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
 
 - 本批验收器干净候选33项、保留工作区 WIP 的提交后像40项 retained 与原有断言通过。最终封存修复后的完整私有工作区矩阵28项执行、26通过、2失败，整体未通过；[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)记录真实失败、制品及范围。
 - 验收器六个缺口均有干净 HEAD 的失败对照，修复候选的原有断言和 25 个 retained 回归通过。完整工作区的新制品矩阵仍为 28 项执行、25 通过、3 失败，整体未通过；帧诊断不能代替完整终端验收。详见[验收有效性记录](docs/research/release-acceptance-validity-20261008.md)。

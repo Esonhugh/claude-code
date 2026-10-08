@@ -2060,19 +2060,19 @@ const ChordInterceptor = new Function('useCallback', 'useInput', 'resolveKeyWith
   new Bun.Transpiler({ loader: 'tsx' }).transformSync(interceptorSource.slice(interceptorSource.indexOf('function ChordInterceptor('))) + '\nreturn ChordInterceptor',
 )(React.useCallback, useInput, resolveKeyWithChordState) as React.ComponentType<Record<string, unknown>>
 
-function Bindings({ children, bindings = {} }: { children: React.ReactNode; bindings?: Record<string, string | null> }) {
+function Bindings({ children, bindings = {}, context = 'Global' }: { children: React.ReactNode; bindings?: Record<string, string | null>; context?: KeybindingContextName }) {
   const pending = React.useRef<ParsedKeystroke[] | null>(null)
   const registry = React.useRef(new Map())
   const contexts = React.useRef(new Set<KeybindingContextName>(['Global']))
   return <KeybindingProvider
-    bindings={parseBindings([{ context: 'Global', bindings }])}
+    bindings={parseBindings([{ context, bindings }])}
     pendingChordRef={pending} pendingChord={null}
     setPendingChord={value => { pending.current = value }}
     activeContexts={contexts.current}
     registerActiveContext={value => { contexts.current.add(value) }}
     unregisterActiveContext={value => { contexts.current.delete(value) }}
     handlerRegistryRef={registry}
-  ><ChordInterceptor bindings={parseBindings([{ context: 'Global', bindings }])}
+  ><ChordInterceptor bindings={parseBindings([{ context, bindings }])}
     pendingChordRef={pending} setPendingChord={(value: ParsedKeystroke[] | null) => { pending.current = value }}
     activeContexts={contexts.current} handlerRegistryRef={registry} />{children}</KeybindingProvider>
 }
@@ -2080,6 +2080,217 @@ function Bindings({ children, bindings = {} }: { children: React.ReactNode; bind
 const fileButton = (key: string, action?: string) => ({
   type: 'Button', props: { key, label: key, ...(action ? { action } : {}) },
   press: { plugin: 'fixture', handle: 1 },
+})
+
+test.each(['x', 'y'])('Pane close uses its current person owner through the registered ctrl+x %s chord', async suffix => {
+  const stdout = new Output(), stdin = new Input(), calls: string[] = []
+  const owner = {}
+  const presentation = { columns: 110, rows: 34, isFullscreen: true,
+    composerEmpty: true, hasDialog: false, keyboardOwned: false }
+  const ui = createModUi({ pluginOf: () => 'fixture',
+    dispatch: async (_owner, event, input, core) => {
+      if (event === 'ui.close') calls.push(`${input.id}:${(input.origin as { kind: string }).kind}`)
+      return core(input)
+    }, draw: async () => ({ type: 'Text', children: ['OWNED_PANE'] }),
+    invokeDrawing: async () => undefined, releaseDrawing: async () => {} })
+  await ui.open(owner, { id: 'owned', focus: true }, { kind: 'person' }, presentation)
+  await ui.commit(owner)
+  function Host() {
+    const current = useSyncExternalStore(ui.subscribe, ui.getSnapshot)
+    return <><EnableInput />{current.map(value => <ModsPane key={value.id} pane={value}
+      onInteract={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})}
+      onClose={pane => ui.close(pane.owner, pane.id, { kind: 'person' })} />)}</>
+  }
+  const app = await render(<Bindings bindings={{ [`ctrl+x ${suffix}`]: 'pane:close' }}><Host /></Bindings>,
+    { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  try {
+    await settle()
+    stdin.push(`\u0018${suffix}`)
+    await settle()
+    expect(calls).toEqual(['owned:person'])
+    expect(ui.getSnapshot()).toEqual([])
+    stdin.push(`\u0018${suffix}`)
+    await settle()
+    expect(calls).toEqual(['owned:person'])
+  } finally { app.unmount(); await ui.dispose() }
+})
+
+test('official Pane and PaneField close bindings are exposed to user configuration', async () => {
+  const { DEFAULT_BINDINGS } = await import('../keybindings/defaultBindings.js')
+  const { KEYBINDING_ACTIONS, KEYBINDING_CONTEXTS } = await import('../keybindings/schema.js')
+  const { validateUserConfig } = await import('../keybindings/validate.js')
+  expect(KEYBINDING_ACTIONS).toContain('pane:close')
+  for (const context of ['Pane', 'PaneField'] as const) {
+    expect(KEYBINDING_CONTEXTS).toContain(context)
+    expect(DEFAULT_BINDINGS.find(block => block.context === context)?.bindings['ctrl+x x']).toBe('pane:close')
+    expect(validateUserConfig([{ context, bindings: { 'ctrl+x y': 'pane:close' } }])).toEqual([])
+  }
+})
+
+test.each(['Input', 'Select'] as const)('a custom PaneField close chord reaches the owner of the actually focused %s', async type => {
+  const stdout = new Output(), stdin = new Input(), calls: string[] = []
+  const current = pane({ type, props: { key: 'ask', autoFocus: true,
+    ...(type === 'Select' ? { value: 'main', options: [{ value: 'main' }, { value: 'dev' }] } : { placeholder: 'OWNED_INPUT' }) },
+    press: { plugin: 'fixture', handle: 1 } }, { focusedElement: 'ask', focusedPlugin: 'fixture' })
+  const app = await render(<Bindings context="PaneField" bindings={{ 'ctrl+x y': 'pane:close' }}>
+    <EnableInput /><ModsPane pane={current} onFocus={async () => ({})} onScroll={async () => ({})}
+      onInteract={async () => {}} onClose={async value => { expect(value.owner).toBe(current.owner); calls.push(value.id) }} />
+  </Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  try {
+    await settle()
+    const input = type === 'Input' ? inputElement(stdout, 'OWNED_INPUT') : selectElement(stdout, 'main')
+    expect(getFocusManager(input).activeElement).toBe(input)
+    stdin.push('\u0018y')
+    await settle()
+    expect(calls).toEqual(['test'])
+  } finally { app.unmount() }
+})
+
+test.each(['kept-open', 'throw'] as const)('Pane close releases field and host focus before a %s hook', async mode => {
+  const stdout = new Output(), stdin = new Input(), owner = {}, errors: unknown[] = []
+  const focusAtClose: (string | null)[] = [], interactions: unknown[] = []
+  const presentation = { columns: 80, rows: 30, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false }
+  const ui = createModUi({ pluginOf: () => 'fixture',
+    dispatch: async (_owner, event, input, core) => {
+      if (event !== 'ui.close') return core(input)
+      focusAtClose.push(ui.paneState().focusedId)
+      if (mode === 'throw') throw Error('close denied')
+      return undefined
+    }, draw: async () => ({ type: 'Input', props: { key: 'ask', placeholder: 'KEPT_INPUT' }, press: { plugin: 'fixture', handle: 1 } }),
+    invokeDrawing: async () => undefined, releaseDrawing: async () => {} })
+  await ui.open(owner, { id: 'kept', focus: true }, { kind: 'person' }, presentation)
+  await ui.commit(owner)
+  await ui.focus(owner, { requestId: 'kept', element: 'ask', origin: { kind: 'person' } }, presentation)
+  function Host() {
+    const current = useSyncExternalStore(ui.subscribe, ui.getSnapshot)[0]!
+    return <><EnableInput /><ModsPane pane={current}
+      onReleaseFocus={() => { ui.focusPane(null) }}
+      onInteract={async (...args) => { interactions.push(args) }}
+      onFocus={async () => ({})} onScroll={async () => ({})}
+      onClose={value => ui.close(value.owner, value.id, { kind: 'person' })}
+      onError={error => { errors.push(error) }} /></>
+  }
+  const app = await render(<Bindings context="PaneField" bindings={{ 'ctrl+x x': 'pane:close' }}><Host /></Bindings>,
+    { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  try {
+    await settle()
+    const input = inputElement(stdout, 'KEPT_INPUT')
+    expect(getFocusManager(input).activeElement).toBe(input)
+    stdin.push('\u0018x'); await settle()
+    expect(focusAtClose).toEqual([null])
+    expect(ui.getSnapshot()[0]!.visible).toBe(true)
+    expect(ui.paneState().focusedId).toBeNull()
+    expect(getFocusManager(input).activeElement).not.toBe(input)
+    stdin.push('z'); await settle()
+    expect(interactions).toEqual([])
+    expect(errors.length).toBe(mode === 'throw' ? 1 : 0)
+  } finally { app.unmount(); await ui.dispose() }
+})
+
+test.each(['foreign-focus', 'unfocused', 'hidden', 'band'] as const)('Pane close does not run under %s ownership', async mode => {
+  const stdout = new Output(), stdin = new Input(), closed: string[] = []
+  const current = pane({ type: 'Text', children: ['OWNED_PANE'] },
+    { focused: mode !== 'unfocused', visible: mode !== 'hidden' })
+  const app = await render(<Bindings context="Pane" bindings={{ 'ctrl+x x': 'pane:close' }}>
+    <EnableInput /><Box tabIndex={0}><Text>FOREIGN_FOCUS</Text></Box>
+    <ModsPane {...mode === 'band'
+      ? { chrome: 'band' as const, onClose: async (value: ModUiPane) => { closed.push(value.id) } }
+      : { chrome: 'frame' as const, onClose: async (value: ModUiPane) => { closed.push(value.id) } }} pane={current}
+      onInteract={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})}
+    />
+  </Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  try {
+    await settle()
+    if (mode === 'foreign-focus') {
+      const target = renderedElement(stdout, 'FOREIGN_FOCUS', 'ink-text').parentNode!
+      getFocusManager(target).focus(target)
+      expect(getFocusManager(target).activeElement).toBe(target)
+    }
+    stdin.push('\u0018x')
+    await settle()
+    expect(closed).toEqual([])
+  } finally { app.unmount() }
+})
+
+test('Pane close prevents a suspended person focus hook from reclaiming a kept-open pane', async () => {
+  const stdout = new Output(), stdin = new Input(), owner = {}
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>(), done = Promise.withResolvers<void>()
+  let suspended = false
+  const results: unknown[] = [], errors: unknown[] = [], closed: string[] = []
+  const presentation = { columns: 80, rows: 30, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false }
+  const ui = createModUi({ pluginOf: () => 'fixture',
+    dispatch: async (_owner, event, input, core) => {
+      if (event === 'ui.close') { closed.push(input.id as string); return undefined }
+      if (event === 'ui.focus' && suspended) { entered.resolve(); await release.promise }
+      return core(input)
+    }, draw: async () => ({ type: 'Box', children: [
+      { type: 'Input', props: { key: 'ask', placeholder: 'PENDING_INPUT' }, press: { plugin: 'fixture', handle: 1 } },
+      { type: 'Button', props: { key: 'next', label: 'NEXT' }, press: { plugin: 'fixture', handle: 2 } },
+    ] }), invokeDrawing: async () => undefined, releaseDrawing: async () => {} })
+  await ui.open(owner, { id: 'pending', focus: true }, { kind: 'person' }, presentation)
+  await ui.commit(owner)
+  await ui.focus(owner, { requestId: 'pending', element: 'ask', origin: { kind: 'person' } }, presentation)
+  function Host() {
+    const current = useSyncExternalStore(ui.subscribe, ui.getSnapshot)[0]!
+    return <><EnableInput /><ModsPane pane={current}
+      onReleaseFocus={() => { ui.focusPane(null) }}
+      onInteract={async () => {}} onScroll={async () => ({})}
+      onFocus={async (value, element) => {
+        const result = await ui.focus(value.owner, { requestId: value.id, element, origin: { kind: 'person' } }, presentation)
+        if (element === 'next') { results.push(result); done.resolve() }
+        return result
+      }}
+      onClose={value => ui.close(value.owner, value.id, { kind: 'person' })}
+      onError={error => { errors.push(error) }} /></>
+  }
+  const app = await render(<Bindings context="PaneField" bindings={{ 'ctrl+x x': 'pane:close' }}><Host /></Bindings>,
+    { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  try {
+    await settle(); suspended = true
+    stdin.push('\t'); await entered.promise
+    stdin.push('\u0018x'); await settle()
+    expect(closed).toEqual(['pending'])
+    expect(ui.paneState().focusedId).toBeNull()
+    expect(inputElement(stdout, 'PENDING_INPUT')).toBeDefined()
+    release.resolve(); await done.promise; await settle()
+    expect(ui.getSnapshot()[0]!.visible).toBe(true)
+    expect(ui.paneState().focusedId).toBeNull()
+    expect(getFocusManager(inputElement(stdout, 'PENDING_INPUT')).activeElement).toBeNull()
+    expect(results).toEqual([{ deny: 'another move landed first', focused: false }])
+    expect(errors).toEqual([])
+    suspended = false
+    expect(await ui.focus(owner, { requestId: 'pending', element: 'next', origin: { kind: 'person' } }, presentation)).toMatchObject({ focused: true, element: 'next' })
+    await settle()
+    expect(ui.paneState().focusedId).toBe('pending')
+  } finally { release.resolve(); app.unmount(); await ui.dispose() }
+})
+
+test('actual AbovePrompt focus does not activate Pane close contexts', async () => {
+  const { ModsAbovePrompt } = await import('./ModsAbovePrompt.js')
+  const previous = process.env.ANTHROPIC_API_KEY
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  const stdout = new Output(), stdin = new Input(), changes: boolean[] = [], errors: unknown[] = []
+  let context: ReturnType<typeof useOptionalKeybindingContext>
+  function Inspect() { context = useOptionalKeybindingContext(); return null }
+  const ui = createModUi({ pluginOf: () => 'fixture',
+    dispatch: async (_owner, _event, input, core) => core(input),
+    draw: async () => ({ type: 'Button', props: { key: 'band', label: 'BAND_BUTTON' }, press: { plugin: 'fixture', handle: 1 } }),
+    invokeDrawing: async () => undefined, releaseDrawing: async () => {} })
+  const app = await render(<Bindings context="Pane" bindings={{ 'ctrl+x x': 'pane:close' }}>
+    <EnableInput /><Inspect /><ModsAbovePrompt ui={ui} hasSurvey={false} isWorking={false} view={{}} canFocus
+      onFocusChange={value => { changes.push(value) }} onError={error => { errors.push(error) }} />
+  </Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+  try {
+    await settle(); stdin.push('\t'); await settle()
+    expect(errors).toEqual([])
+    expect(changes.at(-1)).toBe(true)
+    expect(context!.activeContexts.has('Pane')).toBe(false)
+    expect(context!.activeContexts.has('PaneField')).toBe(false)
+  } finally {
+    app.unmount(); await ui.dispose()
+    if (previous === undefined) delete process.env.ANTHROPIC_API_KEY
+    else process.env.ANTHROPIC_API_KEY = previous
+  }
 })
 
 describe('ModsPane placement tabs', () => {

@@ -2085,6 +2085,8 @@ export function createModUi({
       const changed = focusRequestedId !== null || valid && this.paneState().focusedId !== id
       focusRequestedId = null
       if (valid) {
+        personFocusGeneration++
+        wakeFocusWaiters()
         for (const other of active.values()) other.focused = other === pane
         if (pane) reconcileShown(pane)
       }

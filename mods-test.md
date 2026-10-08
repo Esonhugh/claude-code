@@ -2153,3 +2153,12 @@ adapter 在正常/异常/暂停期间取消及显式关闭时等待真实清理�
 补齐本案 start metadata、真实 provider 的最终全量 wire、父子 UUID/sidechain/回执及完成通知核对。输入第一次读取即保存专属快照；Scope assertion 和最终汇总核对全部快照及证明 JSON 哈希，七种篡改/缺失哈希、联动删减、归属前读取及删除/改名必需断言的 RED 修复后拒绝。provider 关闭后仍核对同案请求，等待实际 handler 收尾；快速 child 的合法异步次序不会误拒绝。
 
 干净候选33项、共享工作区提交后像40项、完整私有工作区41项 retained 及原有断言通过。修复后新构建的第十轮矩阵28/28，26通过、2失败；code-review 空变更 Scope通过，整体未通过，失败 `builtin-mods, terminal-interaction` 保留。没有用逻辑身份代替 PTY、完整 code-review 或 UI/diff。准确命令、SHA、真实ID、历史失败和剩余实现见[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)。继续分批签名提交，不push。
+
+
+## 2026-10-08 — Pane 关闭与在途焦点
+
+Pane / PaneField 注册 `pane:close` 和默认 `Ctrl+X X`；Input/Select 接通自定义关闭 chord，真实 AbovePrompt consumer 标为 Band。关闭先释放实际字段、组件和可信 host 焦点，再调用当前 owner 的人工 `ui.close`；保持打开或抛错不能恢复旧焦点请求，新显式请求仍可进入。
+
+干净候选 `37e45a6211de8e4602d88d22508dd4115ea598f0a19d0ebb428061b744337fcd`：四个相邻文件 291 pass / 0 fail / 1748 expects，release-check exit0；独立审查封存零漂移。共享工作区冻结候选 `32eea1503bcebfafe3d34e934f1dd6b65e6d16898834a7a54e017bd8ad583c08`：五文件 308 pass / 0 fail / 1832 expects，验收驱动、release-check、make build exit0。后者包含其他工作区变更和待独立提交的帧证据/验收守卫，不等于干净关闭提交。新增说明另有独立身份，不继承旧源 epoch。
+
+第十五轮完整矩阵 29 项完成、27 通过、2 失败（builtin-mods、terminal-canonical-diff；terminal-interaction 通过）。第十六轮新制品完整矩阵 29 项完成、26 通过、3 失败（builtin-mods、terminal-canonical-diff、terminal-interaction），正常收尾且共享源码不变；manifest SHA-256 为 d7638b04f1b003577f714f37c8bcc079ef0df017f53b0116216d364f0db53fa0，binary SHA-256 为 49f2dc860ffcb99b02b2180255724b6c0e0719212d7a89ea5c83aa6f930912b1。新的严格焦点守卫拒绝了第二次 Tab 的 base 落点：host 声称 base，帧71–72没有该控件的实际几何与实际焦点；后续 canonical 关闭/重开未执行。整体仍未通过，不复判旧运行。同步 ACK 改变产品时序、逐帧 paint 覆盖和语义输入消费归属、293 native 及浏览器 Client 生命周期继续是必须处理的工作；详见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。继续按功能签名提交，不 push。

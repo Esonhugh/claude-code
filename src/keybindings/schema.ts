@@ -29,6 +29,8 @@ export const KEYBINDING_CONTEXTS = [
   'ModelPicker',
   'Select',
   'Plugin',
+  'Pane',
+  'PaneField',
 ] as const
 
 /**
@@ -56,6 +58,8 @@ export const KEYBINDING_CONTEXT_DESCRIPTIONS: Record<
   ModelPicker: 'When the model picker is open',
   Select: 'When a select/list component is focused',
   Plugin: 'When the plugin dialog is open',
+  Pane: 'When a Mods pane owns keyboard focus',
+  PaneField: 'When an editable control in a Mods pane owns keyboard focus',
 }
 
 /**
@@ -83,6 +87,7 @@ export const KEYBINDING_ACTIONS = [
   // Chat input actions
   'chat:cancel',
   'chat:killAgents',
+  'pane:close',
   'chat:cycleMode',
   'chat:modelPicker',
   'chat:fastMode',
