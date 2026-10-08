@@ -2287,3 +2287,13 @@ Native31 基于提交 `d2db8ec` 的重新构建和动态 baseline，通过实际
 `native-io-close-guard-red-cli1` 另外复现旧有限guard接受initial-only IO截断。修复在broker收尾固定IO摘要/数量/最终geometry/raw tip，并绑定独立expected；测试增加截断、删output重编号、耦合修改普通/双份cleanup与output区间/非output offset拒收。复制fixture和人工摘要只作classifier测试，不是native resize或产品时序证明；旧f6b轮次与其暂缓提交的审计报告保持原判。
 
 首次seal只读审查发现f393仍在seal时从当前broker-cleanup生成expected，故该轮也暂缓提交。native-first-seal-red-cli1 通过真实默认CLI关闭后的复制原件，删一条input、重编号并更新两份cleanup，第一次实际sealer误判bounded passed；RED及完整failed原判保留。修复改为broker在退出前从内存原件独占发布producer-expected-native.json，sealer只读该提前固定原件并绑定prepare身份，缺失/预存/发布失败不得fallback。完整native geometry/termios/input/时序和发布验收继续failed。
+
+### Native32：首次 seal 修复后的完整失败验收
+
+签名提交 8d0ca5e 的新检出、新构建和动态 baseline 完整执行默认串行矩阵及追加目标，29条roster（含readiness）全部结束，23通过/6失败，driver正常退出exit1、345.118秒，whole verdict仍failed。失败标签为builtin-mods、code-review、terminal-canonical-diff、terminal-interaction、workflow及workflow-retry-partial-failure；不以当前专项通过补足缺失生产流程。
+
+本轮binary SHA256 1a0811b6128ba4fc1418628fd650a2fc9c9b91d2ad89273d74b3dd52a6fc2eed，manifest SHA256 4573e6a2f5ffba89ba15551ced89d4d4767bf5229ed7966d7e9197df8c333f19。源码集合b1b9f489…前后相同，无新增bytecode；repository state不变，auth cleanup无错误，owned workflow原件先归档再清理，lease释放、owned driver进程组不存在。原件见/private/tmp/mods-remote-composer-292-20261008-rptx4ocs/full-gate32-evidence/driver-final-manifest.json，标量处置见同根full-gate32-disposition.json。
+
+两条terminal run正常exit0/EOF/reap，无信号、drop或cleanup error，分别48/72帧；canonical记录一次110×34 resize（ioId14），interaction四次109/110×34（ioId72/89/99/109）。producer expectation与seal expected相同，新fixed-geometry guard在首个resize处明确拒收bounded通过，而非用视口不匹配推断产品坏帧。native resize/Mach clock、termios、actual OS read/parser/owner、全生命周期和官方完整对照仍未完成。
+
+b1b只读审查在限定prepare/producer原件独立的边界关闭F-IO-1/2，报告/private/tmp/native-first-seal-readonly-fk9hfi5w/REPORT.md，SHA256 4be4a218ca187ca78d39c16c9966cfb0ba3af658600ad5dd4845bdd813ddff18。另保留F-DOC-1：README裸broker测试命令漏BROKER_TEST_EVIDENCE_DIR；本轮验证wrapper显式设置，四初始化案收据有效。后续文档更正提供独立新目录，不改源码、旧结果或上述8d提交的原始身份，也不形成新的四路发布通过结论。

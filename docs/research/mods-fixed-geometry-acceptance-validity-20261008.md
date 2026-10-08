@@ -23,3 +23,7 @@ Native31 外层内容集合另记录到 `scripts/__pycache__/native-terminal-jou
 后续只读审查发现f393的sealer在首次seal才从磁盘broker-cleanup建立expected；这不是提前固定的producer证明。native-first-seal-red-cli1 在真实默认CLI正常关闭后复制原件，保留全部output/raw，删一条input并重编号、同时更新两份cleanup，首次实际seal仍bounded passed，故f393未提交。
 
 最小修复让owned broker关闭时从内存IO、已绑定launch/PID及实际初始几何独占发布producer-expected-native.json，然后发布cleanup；sealer只读该producer原件、核对prepare身份，不能重算或在缺失时fallback。发布失败使normalCompletion=false，启动前预存文件也拒收。真实first-seal复制负例保持producer原件不变，删input/重编号/改两份cleanup仍失败；没有将classifier负例当作实际产品input或native resize错误。若prepare、producer expectation及所有原件全部可同步替换，仍需外层可信封存，此有限证明不提供加密认证。
+
+Native32在签名8d0ca5e的新检出重新构建，动态baseline及默认完整driver29条全部结束（345.118秒），23通过/6失败；最终manifest SHA256 4573e6a2f5ffba89ba15551ced89d4d4767bf5229ed7966d7e9197df8c333f19，binary SHA256 1a0811b6128ba4fc1418628fd650a2fc9c9b91d2ad89273d74b3dd52a6fc2eed。源码集合b1b9f489…不变且无新增bytecode，driver/group、auth、lease及owned workflow清理结果保持原failed判定。
+
+canonical/interaction分别48/72帧且正常exit0/EOF/reap，无kill/drop/cleanup error；producer expectation和seal expected完全一致。前者在ioId14/geometry1/110×34，后者在ioId72/geometry1/109×34处被新的fixed-geometry guard明确拒收，不能再宣称局部通过，也不把方法缺失当作已证明产品坏帧。完整native geometry/termios/input-owner/时序与生命周期、官方完整对照及四路门禁仍未通过。详情记录于mods-test.md和私有full-gate32-disposition.json。
