@@ -415,7 +415,7 @@ import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
 import { ModsAbovePrompt } from '../components/ModsAbovePrompt.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
-import { getModUiSnapshotTerminalRevision, withModUiPaneFocus } from '../services/mods/ui.js'
+import { getModUiSnapshotTerminalRevision, withModUiPaneFocus, withModUiHostFocusOutcome } from '../services/mods/ui.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
@@ -3235,6 +3235,7 @@ export function REPL({
     rows: modTerminalSize.rows,
     isFullscreen: isFullscreenEnvEnabled(),
     composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
+    composerValue: inputValue,
     hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow || showResponsiveDiffDialog),
     keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode === 'selecting-agent',
     agentId: viewedAgentTask?.id,
@@ -3273,10 +3274,10 @@ export function REPL({
   useEffect(() => {
     void modsSession?.ui.render(modUiPresentation).catch(logError)
   }, [modsSession, modUiPresentation])
-  const modPaneFocused = modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
+  const modPaneFocused = !modUiPresentation.hasDialog &&
     !modUiPresentation.keyboardOwned && modPanes.some(pane => pane.visible && pane.shown !== false && pane.focused)
-  const modAbovePromptCanFocus = modUiPresentation.composerEmpty &&
-    !modUiPresentation.hasDialog && !modUiPresentation.keyboardOwned && !modPaneFocused
+  const modAbovePromptCanFocus = !modUiPresentation.hasDialog &&
+    !modUiPresentation.keyboardOwned
   const hasModSurvey = feedbackSurvey.state !== 'closed' ||
     postCompactSurvey.state !== 'closed' || memorySurvey.state !== 'closed' ||
     frustrationDetection.state !== 'closed' || skillImprovementSurvey.isOpen
@@ -3286,6 +3287,7 @@ export function REPL({
     isWorking={isLoading}
     view={viewedAgentTask ? { agentId: viewedAgentTask.id } : {}}
     canFocus={modAbovePromptCanFocus}
+    composerValue={inputValue}
     onFocusChange={setModAbovePromptFocused}
     onError={logError}
   />
@@ -3308,10 +3310,18 @@ export function REPL({
         if (!ui) return { focused: false }
         const result = origin.kind === 'plugin' && origin.name !== undefined && element !== undefined
           ? await ui.focusHost(pane.owner, { requestId: pane.id, element, origin: { kind: 'plugin', name: origin.name } }, modUiPresentationRef.current, options)
+          : origin.kind === 'person' && options?.plugin && element !== undefined
+            ? await ui.focusPerson(pane.owner, { requestId: pane.id, element }, options.plugin, modUiPresentationRef.current)
           : await ui.focus(pane.owner, { requestId: pane.id, element, origin }, modUiPresentationRef.current)
         const landing = ui.getSnapshot().find(current => current.id === pane.id && current.owner === pane.owner)
         const focused = Boolean(landing?.visible && landing.shown !== false && landing.tree !== undefined && landing.focused)
-        return { ...(result as Record<string, unknown>), focused, element: focused ? landing?.focusedElement : undefined, ...(landing ? { revision: landing.revision } : {}) }
+        return withModUiHostFocusOutcome(result, {
+          ...(result as Record<string, unknown>),
+          focused,
+          element: focused ? landing?.focusedElement : undefined,
+          plugin: focused ? landing?.focusedPlugin : undefined,
+          ...(landing ? { revision: landing.revision } : {}),
+        })
       }}
       onScroll={(pane, by, pointer) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, pointer, origin: { kind: 'person' } }) ?? Promise.resolve()}
       onReportMetrics={(pane, metrics) => {
@@ -7057,6 +7067,8 @@ export function REPL({
       >
         <FullscreenLayout
           terminalUiRevision={getModUiSnapshotTerminalRevision(modPanes)}
+          abovePrompt={!toolJSX?.shouldHidePromptInput && !focusedInputDialog && !isExiting && !disabled && !cursor
+            ? modAbovePrompt : undefined}
           scrollRef={scrollRef}
           overlay={toolPermissionOverlay}
           bottomFloat={
@@ -7764,7 +7776,6 @@ export function REPL({
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {
                       }
-                      {modAbovePrompt}
                       <HoldToastsProvider hold={shouldHoldToasts(modPanes)}>
                       <PromptInput
                         debug={debug}
@@ -7773,7 +7784,6 @@ export function REPL({
                         isLocalJSXCommandActive={
                           isShowingLocalJSXCommand ||
                           showResponsiveDiffDialog ||
-                          modPaneFocused ||
                           modAbovePromptFocused
                         }
                         getToolUseContext={getToolUseContext}

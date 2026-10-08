@@ -29,6 +29,7 @@ release-check:
 	node -e "const p=require('./package.json'); if (p.version !== '0.0.0-dev') { console.error('package.json version must stay 0.0.0-dev, got ' + p.version); process.exit(1); }"
 	bun run check:changelog $(VERSION)
 	bun run test:changelog
+	bun ./scripts/check-readme-test-paths.mjs
 	bunx tsc --noEmit --pretty false
 	$(MAKE) check-mods-control-types
 	bun run lint

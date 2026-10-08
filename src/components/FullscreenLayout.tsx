@@ -24,9 +24,9 @@ import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import instances from '../ink/instances.js'
-import { subscribeLayout, type DOMElement } from '../ink/dom.js'
-import { ModsPaneHostRowsContext } from '../context/modsPaneHostContext.js'
 import { Box, Text } from '../ink.js'
+import { subscribeLayout, type DOMElement } from '../ink/dom.js'
+import { ModsBandBudgetContext, ModsPaneHostRowsContext } from '../context/modsPaneHostContext.js'
 import type { Message } from '../types/message.js'
 import { openBrowser, openPath } from '../utils/browser.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
@@ -52,6 +52,8 @@ type Props = {
   scrollable: ReactNode
   /** Content pinned to the bottom (spinner, prompt, permissions) */
   bottom: ReactNode
+  /** Plugin band above the composer, using the conversation width beside a dock. */
+  abovePrompt?: ReactNode
   /** Content rendered inside the ScrollBox after messages — user can scroll
    *  up to see context while it's showing (used by PermissionRequest). */
   overlay?: ReactNode
@@ -319,6 +321,7 @@ export function FullscreenLayout({
   terminalUiRevision,
   scrollable,
   bottom,
+  abovePrompt,
   overlay,
   bottomFloat,
   dockPane,
@@ -350,18 +353,37 @@ export function FullscreenLayout({
       )
     : 0
   const conversationSize = useMemo(
-    () => ({ columns: columns - dockColumns - sidebarColumns, rows: terminalRows }),
+    () => ({ columns: columns - dockColumns - sidebarColumns, rows: terminalRows, global: {columns,rows:terminalRows,conversationColumns:columns-dockColumns-sidebarColumns} }),
     [columns, dockColumns, sidebarColumns, terminalRows],
   )
   const sidebarSize = useMemo(
-    () => ({ columns: sidebarColumns, rows: terminalRows }),
-    [sidebarColumns, terminalRows],
+    () => ({ columns: sidebarColumns, rows: terminalRows, global: conversationSize.global }),
+    [sidebarColumns, terminalRows, conversationSize.global],
   )
   const dockSize = useMemo(
-    () => ({ columns: Math.max(0, dockColumns - 1), rows: terminalRows }),
-    [dockColumns, terminalRows],
+    () => ({ columns: Math.max(0, dockColumns - 1), rows: terminalRows, global: conversationSize.global }),
+    [dockColumns, terminalRows, conversationSize.global],
   )
   const bottomRef = useRef<DOMElement>(null)
+  const subscribeBottomLayout = useCallback((listener: () => void) => {
+    if (!bottomRef.current) return () => {}
+    let active = true
+    let pending = false
+    const unsubscribe = subscribeLayout(bottomRef.current, () => {
+      if (pending) return
+      pending = true
+      queueMicrotask(() => { pending = false; if (active) listener() })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [])
+  const bottomRows = useSyncExternalStore(subscribeBottomLayout, () =>
+    Math.max(0, Math.ceil(bottomRef.current?.yogaNode?.getComputedHeight() ?? 0)),
+  )
+  const bandRows = Math.max(0, Math.floor(terminalRows / 2) - bottomRows)
+  const bandSize = useMemo(
+    () => ({ columns: columns - dockColumns, rows: terminalRows, global: conversationSize.global }),
+    [columns, dockColumns, terminalRows, conversationSize.global],
+  )
   const mainRowRef = useRef<DOMElement>(null)
   const subscribeMainLayout = useCallback((listener: () => void) => {
     if (!mainRowRef.current) return () => {}
@@ -464,6 +486,13 @@ export function FullscreenLayout({
       <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">
         <SuggestionsOverlay />
         <DialogOverlay />
+        {abovePrompt != null && <TerminalSizeContext value={bandSize}>
+          <ModsBandBudgetContext value={bandRows}>
+            <Box flexShrink={0} flexDirection="column" width={bandSize.columns} maxHeight={bandRows} overflowY="hidden">
+              {abovePrompt}
+            </Box>
+          </ModsBandBudgetContext>
+        </TerminalSizeContext>}
         <Box
           ref={bottomRef}
           flexDirection="column"
@@ -477,6 +506,7 @@ export function FullscreenLayout({
       </Box>
     )
     return (
+      <TerminalSizeContext value={{columns,rows:terminalRows,global:conversationSize.global}}>
       <PromptOverlayProvider container={bottomRef}>
         <Box terminalUiRevision={terminalUiRevision} flexGrow={1} flexDirection="column" overflow="hidden">
           <Box ref={mainRowRef} flexGrow={1} flexDirection="row" overflow="hidden">
@@ -593,19 +623,23 @@ export function FullscreenLayout({
           </ModalContext>
         )}
       </PromptOverlayProvider>
+      </TerminalSizeContext>
     )
   }
 
   return (
+    <TerminalSizeContext value={{columns,rows:terminalRows,global:conversationSize.global}}>
     <>
       {scrollable}
       {sidebarPane}
       {dockPane}
       {inlinePane}
+      {abovePrompt}
       {bottom}
       {overlay}
       {modal}
     </>
+    </TerminalSizeContext>
   )
 }
 

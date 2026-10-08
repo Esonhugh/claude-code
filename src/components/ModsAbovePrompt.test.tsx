@@ -2,15 +2,25 @@ import { PassThrough, Writable } from 'node:stream'
 import { describe, expect, test } from 'bun:test'
 import React from 'react'
 import { createRoot, render } from '../ink.js'
-import type { ModRenderConsumer, ModRenderInput, ModRenderSite, ModUi, ModUiDispatch } from '../services/mods/ui.js'
+import type { ModRenderConsumer, ModRenderInput, ModRenderSite, ModUi, ModUiDispatch, ModUiPane } from '../services/mods/ui.js'
 import { ModsAbovePrompt } from './ModsAbovePrompt.js'
 import { createModUi } from '../services/mods/ui.js'
 import { createModClients } from '../services/mods/client.js'
 import { createModClientRealm } from '../services/mods/clientRealm.js'
 import { createModUiRealm } from '../services/mods/uiRealm.js'
 import { isProxy } from 'node:util/types'
+import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
+import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
+import { createStore } from '../state/store.js'
+
+const noPanes: readonly ModUiPane[] = Object.freeze([])
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+
+function Bindings({ children }: { children: React.ReactNode }) {
+  const [store] = React.useState(() => createStore(getDefaultAppState()))
+  return <AppStoreContext value={store}><KeybindingSetup>{children}</KeybindingSetup></AppStoreContext>
+}
 
 function fixture() {
   const inputs: ModRenderInput[] = []
@@ -19,6 +29,8 @@ function fixture() {
   let disposed = 0
   let mounts = 0
   const ui = {
+    subscribe: (_listener: () => void) => () => {},
+    getSnapshot: () => noPanes,
     async mount(input: ModRenderInput, next: ModRenderConsumer) {
       mounts++
       inputs.push(input)
@@ -118,6 +130,8 @@ describe('ModsAbovePrompt', () => {
   test('reports an unknown continuation ref instead of weakening validation', async () => {
     const errors: unknown[] = []
     const ui = {
+    subscribe: (_listener: () => void) => () => {},
+    getSnapshot: () => noPanes,
       async mount(_input: ModRenderInput, consumer: ModRenderConsumer) {
         await consumer.render({type:'Box', children:[{type:'engine', ref:999}]}, 1, () => {
           throw new Error('Unknown or stale Mod UI engine ref')
@@ -163,7 +177,7 @@ describe('ModsAbovePrompt', () => {
     })
     const io = streams()
     const app = await createRoot({stdout:io.stdout as never, stdin:io.stdin as never, patchConsole:false, exitOnCtrlC:false})
-    const draw = (isWorking: boolean) => <ModsAbovePrompt ui={ui} hasSurvey={false} isWorking={isWorking} view={{}} canFocus onError={error => errors.push(error)} />
+    const draw = (isWorking: boolean) => <Bindings><ModsAbovePrompt ui={ui} hasSurvey={false} isWorking={isWorking} view={{}} canFocus onError={error => errors.push(error)} /></Bindings>
     async function painted(text: string) {
       if (!io.stdout.output.includes(text)) await new Promise<void>((resolve, reject) => {
         const check = () => {
@@ -184,7 +198,7 @@ describe('ModsAbovePrompt', () => {
     app.render(draw(false))
     try {
       await painted('idle:0')
-      io.stdin.write('\t')
+      io.stdin.write('\x18\t')
       await tick()
       io.stdin.write('\t')
       await tick()
@@ -230,10 +244,10 @@ describe('ModsAbovePrompt', () => {
     const io = streams()
     const app = await createRoot({stdout:io.stdout as never,stdin:io.stdin as never,patchConsole:false,exitOnCtrlC:false})
     try {
-      app.render(<ModsAbovePrompt ui={ui} hasSurvey={false} isWorking={false} view={{}} canFocus onFocusChange={value => { if (!value && focus.at(-1)) released.resolve(); focus.push(value) }} onError={error => errors.push(error)} />)
+      app.render(<Bindings><ModsAbovePrompt ui={ui} hasSurvey={false} isWorking={false} view={{}} canFocus onFocusChange={value => { if (!value && focus.at(-1)) released.resolve(); focus.push(value) }} onError={error => errors.push(error)} /></Bindings>)
       await tick()
       await tick()
-      io.stdin.write('\t')
+      io.stdin.write('\x18\t')
       await tick()
       io.stdin.write('k')
       await tick()
@@ -274,7 +288,7 @@ describe('ModsAbovePrompt', () => {
         surface: 'terminal', component: 'AbovePrompt', requestId: 'above-prompt',
         viewport: { columns: 80, rows: 24, isFullscreen: false },
         props: {
-          hasSurvey: false, isWorking: false, maxRows: 24, bodyColumns: 80,
+          hasSurvey: false, isWorking: false, maxRows: 24, bodyColumns: 75,
           scroll: { offset: 0, bodyRows: 23 }, view: {},
         },
       })
@@ -284,17 +298,18 @@ describe('ModsAbovePrompt', () => {
         surface: 'terminal', component: 'AbovePrompt', requestId: 'above-prompt',
         viewport: { columns: 80, rows: 24, isFullscreen: false },
         props: {
-          hasSurvey: true, isWorking: true, maxRows: 24, bodyColumns: 80,
+          hasSurvey: true, isWorking: true, maxRows: 24, bodyColumns: 75,
           scroll: { bodyRows: 23 }, view: { agentId: 'agent-1' },
         },
       })
       io.stdout.columns = 48
       io.stdout.rows = 16
       io.stdout.emit('resize')
-      await tick()
+      const deadline = Date.now() + 1500
+      while (host.inputs.at(-1)?.props.maxRows !== 16 && Date.now() < deadline) await tick()
       expect(host.inputs.at(-1)).toMatchObject({
         viewport:{columns:48,rows:16},
-        props:{maxRows:16,bodyColumns:48,scroll:{bodyRows:15}},
+        props:{maxRows:16,bodyColumns:43,scroll:{bodyRows:15}},
       })
     } finally {
       app.unmount()
@@ -310,6 +325,8 @@ describe('ModsAbovePrompt', () => {
     const updates: ModRenderInput[] = []
     const updated = Promise.withResolvers<void>()
     const ui = {
+    subscribe: (_listener: () => void) => () => {},
+    getSnapshot: () => noPanes,
       async mount() {
         entered.resolve()
         await resume.promise
@@ -347,6 +364,8 @@ describe('ModsAbovePrompt', () => {
     const disposed = Promise.withResolvers<void>()
     let disposals = 0
     const ui = {
+    subscribe: (_listener: () => void) => () => {},
+    getSnapshot: () => noPanes,
       async mount(_input: ModRenderInput, consumer: ModRenderConsumer) {
         entered.resolve()
         await resume.promise
@@ -374,10 +393,10 @@ describe('ModsAbovePrompt', () => {
     const io = streams()
     const focus: boolean[] = []
     const app = await createRoot({stdout:io.stdout as never, stdin:io.stdin as never, patchConsole:false, exitOnCtrlC:false})
-    app.render(<ModsAbovePrompt ui={host.ui} hasSurvey={false} isWorking={false} view={{}} canFocus onFocusChange={value => focus.push(value)} />)
+    app.render(<Bindings><ModsAbovePrompt ui={host.ui} hasSurvey={false} isWorking={false} view={{}} canFocus onFocusChange={value => focus.push(value)} /></Bindings>)
     try {
       await tick()
-      io.stdin.write('\t')
+      io.stdin.write('\x18\t')
       await tick()
       expect(focus).toContain(true)
       await host.consumer()!.render({type:'engine'}, 9, () => ({}))
@@ -385,7 +404,7 @@ describe('ModsAbovePrompt', () => {
       expect(focus.at(-1)).toBe(false)
       await host.consumer()!.render({type:'Button', props:{key:'run',label:'Run'}, press:{plugin:'fixture',handle:3}}, 10, () => ({}))
       await tick()
-      io.stdin.write('\t')
+      io.stdin.write('\x18\t')
       await tick()
       expect(focus.at(-1)).toBe(true)
       app.render(null)

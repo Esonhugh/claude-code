@@ -14,6 +14,7 @@ import useStdin from '../ink/hooks/use-stdin.js'
 import {createModsRuntime, type ModDiagnostic} from '../services/mods/runtime.js'
 import {resetSettingsCache} from '../utils/settings/settingsCache.js'
 import {ModsPane} from './ModsPane.js'
+import {withModUiHostFocusOutcome} from '../services/mods/ui.js'
 
 const envKeys = ['HOME','CLAUDE_CONFIG_DIR','XDG_CONFIG_HOME','XDG_CACHE_HOME','XDG_STATE_HOME',
   'ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR','CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR']
@@ -84,7 +85,7 @@ async function mount(kind: Kind, policy: Policy, hidden = false, decorate = fals
   const presentation={columns:160,rows:40,isFullscreen:false,composerEmpty:true,hasDialog:false,keyboardOwned:false}
   const runtime=createModsRuntime({onDiagnostic:e=>diagnostics.push(e),services:{uiPresentation:()=>presentation,uiStatus:(_plugin,text)=>{if(text) receipts.push(JSON.parse(text))}}})
   const stdin=new Input(),stdout=new Output();let completed=0; let committedRevision=-1; let committedDrawing: number | undefined; let reorderInput: (() => void) | undefined
-  const onFocus=replFocus({modsSession:{runtime},modUiPresentationRef:{current:presentation}})
+  const onFocus=replFocus({modsSession:{runtime},modUiPresentationRef:{current:presentation},withModUiHostFocusOutcome})
   function Observer() {
     const {internal_eventEmitter}=useStdin()
     useLayoutEffect(()=>{const observe=()=>{queueMicrotask(()=>{completed++})};reorderInput=()=>{internal_eventEmitter.removeListener('input',observe);internal_eventEmitter.prependListener('input',observe)};reorderInput();return()=>{internal_eventEmitter.removeListener('input',observe)}},[internal_eventEmitter])
@@ -119,13 +120,14 @@ async function mount(kind: Kind, policy: Policy, hidden = false, decorate = fals
     const raw=async (value:string,count:number) => {
       await runtime.settle(); await until(()=>{const pane=runtime.ui.getSnapshot()[0];return pane?.revision===committedRevision && pane?.drawing===committedDrawing});
       const before=completed; reorderInput!(); stdin.push(value); await until(()=>completed===before+count); await runtime.settle();
-      if(decorate) await until(()=>receipts.some(r=>r.kind==='decoratorAction'),()=>({receipts,diagnostics,errors:errors.map(String),focus:getFocusManager(dom()).activeElement?contents(getFocusManager(dom()).activeElement!):null,text:contents(dom())}))
+      if(decorate) await until(()=>receipts.some(r=>r.kind==='action'),()=>({receipts,diagnostics,errors:errors.map(String),focus:getFocusManager(dom()).activeElement?contents(getFocusManager(dom()).activeElement!):null,text:contents(dom())}))
       const snapshot=runtime.capture()
       try {const result=await snapshot.dispatch('command.run',{command:'checkpoint',args:'',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:false}},async()=>({})) as {text:string};return JSON.parse(result.text)}
       finally {snapshot.release()}
     }
     const dispose=async()=>{instance?.unmount();await runtime.dispose();await rm(directory,{recursive:true,force:true})}
-    return {runtime,receipts,diagnostics,errors,dom,element,raw,dispose}
+    const committed = () => {const pane=runtime.ui.getSnapshot()[0];return pane?.revision===committedRevision && pane?.drawing===committedDrawing}
+    return {runtime,receipts,diagnostics,errors,dom,element,raw,dispose,committed}
   } catch(error) {instance?.unmount();await runtime.dispose();await rm(directory,{recursive:true,force:true});throw error}
 }
 for(const kind of ['Button','Input','Select'] as const) test('automatic '+kind+' negotiates from engine before landing the first drawn control',async()=>{
@@ -166,14 +168,17 @@ test('automatic focus preserves official registration order for a hidden control
 })
 
 
-test('automatic focus preserves official duplicate-key event and terminal slot behavior',async()=>{
+test('automatic focus preserves official 293 plugin identity for duplicate keys and the terminal input owner',async()=>{
   const h=await mount('Button','accept',false,true)
   try {
     await until(()=>h.runtime.ui.getSnapshot()[0]?.focusedElement==='first')
-    await until(()=>getFocusManager(h.dom()).activeElement===h.element('duplicate'))
+    await until(h.committed)
+    expect(h.runtime.ui.getSnapshot()[0]?.focusedPlugin).toBe('af-owner')
+    expect(getFocusManager(h.dom()).activeElement).toBe(h.element('first')!)
+    expect(getFocusManager(h.dom()).activeElement).not.toBe(h.element('duplicate')!)
     const state=await h.raw('\r',1)
-    expect(state.actions).toHaveLength(0)
-    expect(h.receipts.filter(r=>r.kind==='decoratorAction')).toEqual([{kind:'decoratorAction',event:{plugin:'af-decorator',element:'first',component:'Pane',requestId:'af',surface:'terminal'}}])
+    expect(state.actions).toEqual([{key:'first',event:{plugin:'af-owner',element:'first',component:'Pane',requestId:'af',surface:'terminal'}}])
+    expect(h.receipts.filter(r=>r.kind==='decoratorAction')).toEqual([])
     expect(h.receipts.filter(r=>r.kind==='focus')).toHaveLength(1)
     expect(h.diagnostics).toEqual([]);expect(h.errors).toEqual([])
   } finally {await h.dispose()}

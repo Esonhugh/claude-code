@@ -73,6 +73,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       escape: 'chat:cancel',
       // ctrl+x chord prefix avoids shadowing readline editing keys (ctrl+a/b/e/f/...).
       'ctrl+x ctrl+k': 'chat:killAgents',
+      'ctrl+x ctrl+a': 'abovePrompt:toggle',
+      'ctrl+x tab': 'abovePrompt:focus',
       [MODE_CYCLE_KEY]: 'chat:cycleMode',
       'meta+p': 'chat:modelPicker',
       'meta+o': 'chat:fastMode',

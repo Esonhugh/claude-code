@@ -1,10 +1,18 @@
 import React from 'react'
-import { ModsPane } from './ModsPane.js'
+import { Box, Button, Text, type DOMElement } from '../ink.js'
+import { getFocusManager } from '../ink/focus.js'
+import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
+import { ModsPane, type ModsPaneFocusHandle } from './ModsPane.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
-import type { ModRenderSite, ModUi, ModUiPane } from '../services/mods/ui.js'
+import type { ModRenderSite, ModUi, ModUiPane, ModUiFocusTarget } from '../services/mods/ui.js'
+import { ModsBandBudgetContext } from '../context/modsPaneHostContext.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 
 const REQUEST_ID = 'above-prompt'
+const MARK_COLUMNS = 5
+const EMPTY_PANES: readonly ModUiPane[] = Object.freeze([])
+let bandCollapsed = false
 
 type Props = {
   ui?: ModUi
@@ -12,6 +20,7 @@ type Props = {
   isWorking: boolean
   view: Readonly<{ agentId?: string }>
   canFocus: boolean
+  composerValue?: string
   onFocusChange?(focused: boolean): void
   onError?(error: unknown): void
 }
@@ -42,20 +51,53 @@ export function ModsAbovePrompt({
   isWorking,
   view,
   canFocus,
+  composerValue,
   onFocusChange,
   onError,
 }: Props): React.ReactNode {
-  const { columns, rows } = useTerminalSize()
+  const terminalSize = useTerminalSize()
+  const panes = React.useSyncExternalStore(ui?.subscribe ?? (() => () => {}), ui?.getSnapshot ?? (() => EMPTY_PANES))
+  const paneHeld = panes.some(pane => pane.visible && pane.shown !== false && pane.focused)
+  const { columns, rows } = terminalSize
+  const hostBudget = React.useContext(ModsBandBudgetContext)
+  const availableRows = Math.max(0, hostBudget ?? rows)
+  const [settledRows, setSettledRows] = React.useState(availableRows)
+  React.useEffect(() => {
+    if (settledRows === availableRows) return
+    const timer = setTimeout(() => setSettledRows(availableRows), 150)
+    return () => clearTimeout(timer)
+  }, [availableRows, settledRows])
   const [frame, setFrame] = React.useState<Frame>()
   const [focused, setFocused] = React.useState(false)
+  const heldNow = React.useRef(false)
+  const holderNow = React.useRef<ModUiFocusTarget | undefined>(undefined)
+  const heldComposer = React.useRef(composerValue)
+  const controls = React.useRef<ModsPaneFocusHandle>(null)
+  const [focusTarget, setFocusTarget] = React.useState<ModUiFocusTarget>()
+  const [collapsed, setCollapsed] = React.useState(() => bandCollapsed)
+  const collapsedNow = React.useRef(bandCollapsed)
+  const collapsedRoot = React.useRef<DOMElement>(null)
+  const shortcut = useShortcutDisplay('abovePrompt:toggle', 'Chat', 'ctrl+x ctrl+a')
   const [scrollOffset, setScrollOffset] = React.useState(0)
   const [contentRows, setContentRows] = React.useState(0)
   const siteRef = React.useRef<ModRenderSite | undefined>(undefined)
-  const bodyRows = Math.max(0, rows - 1)
-  const maxOffset = Math.max(0, contentRows - bodyRows)
+  const bodyRows = Math.max(0, settledRows - 1)
+  const hasCue = contentRows > availableRows
+  const windowRows = Math.max(0, availableRows - (hasCue ? 1 : 0))
+  const bodyColumns = Math.max(0, columns - MARK_COLUMNS)
+  const maxOffset = Math.max(0, contentRows - windowRows)
   const effectiveOffset = Math.min(scrollOffset, maxOffset)
-  const latest = React.useRef({ onError, onFocusChange })
-  latest.current = { onError, onFocusChange }
+  const latest = React.useRef({ onError, onFocusChange, canFocus, hasSurvey, composerValue, frame, hasCue })
+  latest.current = { onError, onFocusChange, canFocus, hasSurvey, composerValue, frame, hasCue }
+  const hold = React.useCallback((value: boolean, target?: ModUiFocusTarget) => {
+    if (!value && heldNow.current) controls.current?.forget()
+    if (value && !heldNow.current) heldComposer.current = latest.current.composerValue
+    heldNow.current = value
+    holderNow.current = value ? target : undefined
+    setFocusTarget(holderNow.current)
+    setFocused(value)
+    latest.current.onFocusChange?.(value)
+  }, [])
 
   const input = React.useMemo(() => ({
     surface: 'terminal' as const,
@@ -65,12 +107,12 @@ export function ModsAbovePrompt({
     props: {
       hasSurvey,
       isWorking,
-      maxRows: rows,
-      bodyColumns: columns,
+      maxRows: settledRows,
+      bodyColumns,
       scroll: { offset: effectiveOffset, bodyRows },
       view,
     },
-  }), [bodyRows, columns, effectiveOffset, hasSurvey, isWorking, rows, view])
+  }), [bodyRows, bodyColumns, columns, effectiveOffset, hasSurvey, isWorking, rows, settledRows, view])
 
   const latestInput = React.useRef(input)
   latestInput.current = input
@@ -86,6 +128,20 @@ export function ModsAbovePrompt({
     void ui.mount(input, {
       surface: 'terminal',
       retainClients: true,
+      focus: {
+        isHeldNow: () => active && heldNow.current && !collapsedNow.current && latest.current.canFocus &&
+          !latest.current.hasSurvey && !ui.getSnapshot().some(pane => pane.visible && pane.focused) &&
+          heldComposer.current === latest.current.composerValue,
+        holderNow: () => holderNow.current,
+        hasElement: (plugin, element) => !collapsedNow.current && controls.current?.hasElement(plugin, element) === true,
+        commit: target => {
+          if (!active || !heldNow.current || !latest.current.canFocus ||
+              heldComposer.current !== latest.current.composerValue ||
+              !controls.current?.hasElement(target.plugin, target.element))
+            return 'the focus moved meanwhile'
+          hold(true, target)
+        },
+      },
       render(tree, drawing, resolveEngine, clients) {
         if (!active) return
         const element = tree as { type?: unknown; ref?: unknown } | null
@@ -111,6 +167,8 @@ export function ModsAbovePrompt({
     }).catch(error => latest.current.onError?.(error))
     return () => {
       active = false
+      heldNow.current = false
+      holderNow.current = undefined
       if (siteRef.current === mounted) siteRef.current = undefined
       void mounted?.dispose().catch(error => latest.current.onError?.(error))
     }
@@ -125,10 +183,10 @@ export function ModsAbovePrompt({
   }, [input])
 
   React.useEffect(() => {
-    if (canFocus && !hasSurvey && frame) return
-    setFocused(false)
-    latest.current.onFocusChange?.(false)
-  }, [canFocus, hasSurvey, frame])
+    if (canFocus && !hasSurvey && frame && !collapsed && !paneHeld &&
+        (!heldNow.current || heldComposer.current === composerValue)) return
+    hold(false)
+  }, [canFocus, hasSurvey, frame, collapsed, hold, composerValue, paneHeld])
 
   React.useEffect(() => () => {
     latest.current.onFocusChange?.(false)
@@ -138,7 +196,56 @@ export function ModsAbovePrompt({
     if (effectiveOffset !== scrollOffset) setScrollOffset(effectiveOffset)
   }, [effectiveOffset, scrollOffset])
 
+  const toggle = React.useCallback(() => {
+    if (!frame) return false
+    collapsedNow.current = !collapsedNow.current
+    bandCollapsed = collapsedNow.current
+    setCollapsed(collapsedNow.current)
+    hold(false)
+  }, [frame, hold])
+  useKeybinding('abovePrompt:toggle', toggle, { context: 'Chat', isActive: frame !== undefined, capture: true })
+  useKeybinding('abovePrompt:focus', () => {
+    if (hasSurvey || !canFocus) return false
+    const panes = ui?.getSnapshot().filter(pane => pane.visible) ?? []
+    if (panes.some(pane => pane.focused)) {
+      hold(false)
+      ui?.cyclePaneFocus(latest.current.composerValue)
+      return
+    }
+    const canEnter = frame && !collapsedNow.current &&
+      (controls.current?.hasNext() || hasCue)
+    // Choose the site on receipt; only control moves wait for earlier replies.
+    if (canEnter && (controls.current?.hasNext(holderNow.current) || panes.length === 0)) {
+      const wasHeld = heldNow.current
+      if (!wasHeld) {
+        hold(true)
+        controls.current?.focusBody()
+      }
+      void controls.current?.next(!wasHeld, panes.length === 0)
+      return
+    }
+    if (!panes.length) return false
+    hold(false)
+    ui?.cyclePaneFocus(latest.current.composerValue)
+  }, { context: 'Chat', capture: true })
+
   if (!frame) return null
+  const more = hasCue && <Text dimColor wrap="truncate-end">{[
+    effectiveOffset > 0 ? `↑ ${effectiveOffset} more` : '',
+    maxOffset > effectiveOffset ? `↓ ${maxOffset - effectiveOffset} more` : '',
+  ].filter(Boolean).join(' · ')}</Text>
+  if (collapsed) return <Box ref={collapsedRoot} flexDirection="column" flexShrink={0} maxHeight={availableRows} overflowY="hidden"
+    onClick={event => {
+      event.stopImmediatePropagation()
+      if (collapsedRoot.current) getFocusManager(collapsedRoot.current).blur()
+    }}>
+    <Button tabIndex={-1} flexShrink={0} alignSelf="flex-start" onAction={toggle}>
+      {({ hovered }) => <Text dimColor inverse={hovered} wrap="truncate-end">
+        {`▸ plugin panel hidden · ${shortcut} or click to show`}
+      </Text>}
+    </Button>
+    {more}
+  </Box>
 
   const pane: ModUiPane = {
     id: REQUEST_ID,
@@ -149,11 +256,14 @@ export function ModsAbovePrompt({
     shown: true,
     placement: 'inline',
     focused,
+    focusedElement: focusTarget?.element,
+    focusedPlugin: focusTarget?.plugin,
     closeOnEscape: false,
     holdToasts: false,
     scrollOffset: effectiveOffset,
-    bodyRows: Math.max(1, Math.min(rows, contentRows || 1)),
-    bodyColumns: columns,
+    bodyRows: windowRows,
+    bodyRowLimit: windowRows,
+    bodyColumns,
     revision: frame.drawing,
     contentRows,
     tree: frame.tree,
@@ -161,23 +271,29 @@ export function ModsAbovePrompt({
     drawing: frame.drawing,
   }
 
-  return <ModsPane
+  return <Box flexDirection="column" flexShrink={0} maxHeight={availableRows} overflowY="hidden"><ModsPane
     pane={pane}
-    chrome="band"
+    focusRef={controls}
     isWorking={isWorking}
-    onReleaseFocus={() => { setFocused(false); latest.current.onFocusChange?.(false) }}
+    onReleaseFocus={() => hold(false)}
     canFocus={canFocus && !hasSurvey}
     onInteract={(_pane, drawing, callback, kind, element, value) => {
       const site = siteRef.current
       if (!site) return Promise.reject(new Error('Mod UI AbovePrompt site is unavailable'))
       return site.interact(drawing, callback, kind, element, value)
     }}
-    onClose={async () => {}}
-    onFocus={async (_pane, element) => {
-      const next = element !== undefined
-      setFocused(next)
-      latest.current.onFocusChange?.(next)
-      return { focused: next, element }
+    chrome="band"
+    onCollapse={toggle}
+    onFocus={async (_pane, element, origin = { kind: 'person' }, options) => {
+      if (element === undefined) {
+        hold(false)
+        return { focused: false }
+      }
+      const site = siteRef.current
+      const plugin = options?.plugin ?? (origin.kind === 'plugin' ? origin.name : undefined)
+      if (!site || !plugin || collapsedNow.current || hasSurvey) return { focused: false }
+      if (origin.kind === 'person' && !heldNow.current) hold(true)
+      return site.focus({ plugin, element, origin }, options)
     }}
     onScroll={async (_pane, by) => {
       setScrollOffset(current => Math.max(0, Math.min(maxOffset, current + by)))
@@ -186,5 +302,5 @@ export function ModsAbovePrompt({
       setContentRows(metrics.contentRows)
     }}
     onError={onError}
-  />
+  />{more}</Box>
 }

@@ -2212,3 +2212,44 @@ Native23的F03使候选不提交：复制后新增特殊端点会被普通manife
 ## 2026-10-08 — Broker 生命周期验收有效性
 
 实际 PTY broker 增加部分启动、独立清理、有界 native reap，以及仅在观察到 EOF 和 waitpid 后写入的回执（不能由 kill/close/PID 消失代替）；实际 caller 拒绝 cleanupErrors、异常完成与未观察 EOF 的原件删除资格。无效测试、稳定 RED、运行命令和 native/full-gate 边界见[生命周期记录](docs/research/mods-broker-lifecycle-validity-20261008.md)。既有 Native24 的23通过6失败保持失败；完整 Mods/UI 和最新官方 native 验收继续处理。
+
+## 2026-10-08：焦点组合键与有效性处置
+
+- 官方 2.1.293 默认按键定义已按提取源码核对；原生对照仍固定官方 diff 2.1.292，不将静态核对等同于 2.1.293 原生验收。
+- Native27 完整默认矩阵完成 29 场景，23 passed / 6 failed。实际键入 `18 09` 后进入 source，但按键前缀未清空；下一个 `09` 被判为 chord_cancelled。修复前最小回归用现有真实 UI/按键系统再次复现相同前缀遗留，不以 fixture 初始化失败作为产品 RED。
+- 可复现回归入口为 `src/components/ModsPane.chordNavigation.test.tsx`，相邻组件命令及隔离要求见 README。历史工作区中引用的未交付夹具不能计入当前提交的通过项。
+- Native26 在 readiness 前因权限失败，0 场景执行；保留失败终态及无遗留进程证据。Native27 退出后精确查询 9 个自有 native PID，均不存在，不发送信号，也不据进程不存在补写历史 EOF 或更改验收 verdict。
+- 第一物理尺寸分歧需继续核对：零输出帧的 start/end 之间有真实 resize ACK，旧 logical viewport 与新 PTY geometry 的比较不是已定位的渲染根因；保留 failed 和 productTimingEquivalent=false，不能跳过、加等待或借最终截图判通过。
+- 完整生命周期、原始写入与帧对应、无同步 ACK 的时序证据、官方双端和浏览器 Client 门禁仍需同轮闭合。记录见 `docs/research/mods-focus-chord-validity-20261008.md`。
+
+
+## 2026-10-08：Native28 及焦点所有权复核
+
+Native28 使用冻结源码 ca84c4eb3d97af8c6fa18829bef4270daa8ee71d3e179d1fa55a370b20cabb93 与新 binary 8db299f800e3304af1bfc64fcb256435fa36aaffa38b010c74836569a997d56b，29 场景正常结算为23 passed / 6 failed，61 assertions 为52 passed / 9 failed。Canonical 的23个语义 checkpoint 和实际 source→base→alpha→omega Tab/DOM 落点通过，关闭和重开语义通过；这不是完整 target 通过。物理 frame6 为零输出但跨 resize，productTimingEquivalent=false；Git wrapper 有实际阻塞/释放结果，而宿主 start/close 关联 marker 缺失，不能判定真实 Git 失败或补写通过。terminal-interaction 的 diff_closed 复合条件失败、后续未完成；原始回执已有 EOF/reap，退出为 SIGHUP/status9，normalCompletion=false。退出后9个自有 native PID 与driver组不存在，无信号操作，不升级历史 verdict。
+
+三项只读焦点 finding 已收敛为实际失败回归：挂起 person focus 在非空草稿清空后错误重新持键；显式持键后的非空草稿首焦被拒绝；Band 跨插件同 key 的回执选B但实际 DOM落A。首轮 Band 夹具只因默认 Button 括号显示预期不匹配而失败，保留为初始化断言错误；修正夹具后3案0通过3失败，三项真正失败均发生在前置条件完成后。修复后的同字节回归3通过0失败，检查真实 DOM、按键 callback actor 与宿主状态；该组件 fixture 不冒充 Worker 或 CLI。
+
+README 原有13个未交付测试路径已从当前可执行用法中分开记录，新增检查脚本在原 README 上真实返回非零。当前原生完整矩阵、官方双端和无 ACK 时序仍未闭合；上述修复使旧轮结果失效，必须用新源码和 binary 再验，不拼接旧轮通过数。
+
+
+最新版自动首焦的定向复核：官方2.1.293完整校验来源的私有可执行副本，在独立HOME/config/dummy provider/tmux中运行合法跨插件同key绘制。`ui.focus`事件指向原作者plugin/first，Enter恰好调用该作者，装饰插件无回调，正常`/exit 0`。原件`native-official-pane293r2`被借用的292旧A预期拒收，保留failed并标为过时oracle；`native-official-pane293r3`同夹具按实际293契约检查通过，不使用固定稳定等待。旧本地automaticFocus测试已绑定已提交绘制revision与真实DOM，并更新为plugin B落点；真实Worker中另一个REPL AST夹具漏注入withModUiPaneFocus，作为测试初始化错误修复，不计产品RED。该定向运行未完成全部默认矩阵或逐帧证据，不能报告293完整原生兼容。
+
+
+## 官方 2.1.293 同 key 控件导航
+
+官方定向原生运行 `native-official-band293r1` 在同一插件绘制两个相同 key、不同 handle 的 Button，三次默认 Ctrl+X Tab / Enter 实际回调依次为 slot1、slot2、slot1；三个 ui.focus DTO 的 plugin/element 相同，origin 均为 person，正常 /exit 0。此为独立 HOME/config/tmux 的实际行为证据，不是完整四路或逐帧通过。
+
+本地 `focus-slot-red1` 在第二次合法回执后，实际 DOM 仍为 CONTROL-1，稳定复现控件被 plugin+key 去重的问题。人工导航应保留选中的真实槽位；自动或改写焦点的 fallback 仍按 plugin+key 查找首个绘制控件。宿主用私有 WeakMap 保存 core 是否实际接受这次移动，并在 REPL 回执副本间传递，不增加作者 DTO 的字段或 symbol。插件没有调用 next 时，即使旧 holder 的 plugin/element 相同，也不能把它误认成这次移动已接受。
+
+`focus-slot-green1` 的新真实 consumer 夹具误用了 invokeDrawing 参数，保留为夹具失败，不计产品 RED。修正签名后的 `focus-slot-green2` 六案通过，包含真实 KeybindingSetup、AbovePrompt、ModUi core、DOM 与 callback handle，以及 withholding 保留原槽位和 1→2→1 导航；仍不冒充 Worker 或完整 CLI。修复后的完整 native 门禁须使用新的冻结源码、build 和动态 baseline，旧轮通过数不沿用。
+
+
+## Native29 与三项后续回归
+
+Native29 使用本轮新构建及动态 baseline 完成29场景，23通过、6失败，整体 failed。canonical23语义checkpoint及四次实际Tab通过；frame5在frame-start前已发生resize ACK，旧200×60快照不能与实际110×34匹配。该帧不是跨边界零输出情形，不可通过新关联规则放行。Builtin七侧364物理帧和9项业务通过，时序门禁仍失败；interaction缺geometryProof且SIGHUP退出，不能凭EOF/reap改判正常退出。
+
+只读审计的三项实现差异已取得同字节有效RED：重复key的已持键Pane裸导航留在第一槽位；第三个不同key请求被withholding后从第二槽位错误跳回第一；REPL人工Pane导航丢失目标plugin，被实际ModUi core拒绝。`focus-person-red1`的43案中40通过、3失败；修复后的`focus-person-green1`为43通过、0失败。前两案经过真实Ink输入、DOM与callback，第三案使用生产REPL函数与真实core，边界为AST调用夹具，均不声称覆盖完整Worker/native。
+
+修复保存裸导航目标槽位，在dedup守卫检查实际DOM；withholding不触发改写handoff；宿主内部focusPerson通过私有WeakMap携带绘制actor，仅person分支读取，不改变作者DTO，也不复用automatic标记。最新官方源码的person与automatic规则分别保留，关键信息包括plugin、key、origin、实际接受结果。
+
+独立验收脚本回归证明：只有实际原始字节区间长度为零且resize位于frame-start/end之间，才将逻辑观察与resize前物理网格比较，然后无条件回放到end并检查后续新geometry帧。`frame-resize-red1`为14通过3失败，`frame-resize-green1`为17通过0失败；Native28新离线诊断107帧通过，Native29新诊断仍拒收frame5。原始两轮failed manifest未修改；离线诊断不是新的完整门禁，不证明时序等价。

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime, type ModHostServices } from './runtime.js'
 import { createModsSession } from './session.js'
-import type { ModUiPresentation } from './ui.js'
+import { createModUi, didModUiHostFocusMove, withModUiPaneFocus, withModUiHostFocusOutcome, type ModUiPresentation } from './ui.js'
 import ts from 'typescript'
 import { readFileSync } from 'node:fs'
 import React from 'react'
@@ -1014,6 +1014,8 @@ test('REPL pane callbacks call the live UI host and keep independent dock/inline
   const pane = {id:'panel',plugin:'owner',owner:{},visible:true,focused:true,bodyRows:10,contentRows:20}
   const scope = {
     React:{createElement:(_type:unknown,props:unknown) => props}, ModsPane:'ModsPane',
+    withModUiPaneFocus,
+    withModUiHostFocusOutcome,
     isLoading:false, modPaneFocused:false, modUiPresentation:{...wide}, modUiPresentationRef:{current:{...wide}},
     modPanes:[pane], modsSession:{runtime:{ui}} as {runtime:{ui:typeof ui}} | undefined,
     logError:() => {},
@@ -1083,4 +1085,54 @@ test('headless UI registers pane metadata without mounting a terminal drawing', 
   expect(value.ui.paneState()).toMatchObject({panes:[{id:'panel',title:'headless',plugin:'ui-owner'}],shownId:'panel'})
   expect(value.ui.getSnapshot()[0]?.tree).toBeUndefined()
   expect(diagnostics).toEqual([])
+})
+
+test('the production REPL person focus callback retains a drawn decorator plugin through the live Pane core', async () => {
+  const source = readFileSync(new URL('../../screens/REPL.tsx', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let callback: ts.Expression | undefined
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === 'renderModPane') callback = node.initializer
+    ts.forEachChild(node, visit)
+  }
+  visit(ast)
+  expect(callback).toBeDefined()
+  const js = ts.transpileModule(`const extracted = ${callback!.getText(ast)};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.React, module: ts.ModuleKind.None },
+  }).outputText
+  const owner = {}
+  const focuses: { input: any; automatic: unknown }[] = []
+  const ui = createModUi({
+    pluginOf: () => 'owner',
+    dispatch: async (_owner, event, input, core, options) => {
+      if (event === 'ui.focus') focuses.push({ input, automatic: options?.automaticFocus })
+      return core(input)
+    },
+    draw: async () => ({ type: 'Box', children: [
+      { type: 'Button', props: { key: 'own', label: 'Own' }, press: { plugin: 'owner', handle: 1 } },
+      { type: 'Button', props: { key: 'foreign', label: 'Decorator' }, press: { plugin: 'decorator', handle: 2 } },
+    ] }),
+    invokeDrawing: async () => undefined, releaseDrawing: async () => {},
+  })
+  await ui.open(owner, { id: 'panel' }, { kind: 'person' }, wide)
+  await ui.commit(owner)
+  expect(ui.cyclePaneFocus()).toBe(true)
+  const pane = ui.getSnapshot()[0]!
+  const scope = {
+    React: { createElement: (_type: unknown, props: unknown) => props }, ModsPane: 'ModsPane',
+    withModUiPaneFocus, withModUiHostFocusOutcome, isLoading: false, modPaneFocused: true,
+    modUiPresentation: wide, modUiPresentationRef: { current: wide },
+    modPanes: [pane], modsSession: { runtime: { ui } }, logError: () => {},
+  }
+  const render = new Function('scope', `with(scope) {${js}; return extracted;}`)(scope)
+  // Real production callback and ModUi core; this AST fixture is not a CLI or Worker gate.
+  try {
+    const result = await render(pane).onFocus(pane, 'foreign', { kind: 'person' }, { plugin: 'decorator' })
+    expect(result).toMatchObject({ focused: true, element: 'foreign' })
+    expect(didModUiHostFocusMove(result)).toBe(true)
+    expect(ui.getSnapshot()[0]).toMatchObject({ focusedElement: 'foreign', focusedPlugin: 'decorator' })
+    expect(focuses).toEqual([{ input: {
+      component: 'Pane', requestId: 'panel', plugin: 'decorator', element: 'foreign', origin: { kind: 'person' },
+    }, automatic: undefined }])
+  } finally { await ui.release(owner) }
 })

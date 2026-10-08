@@ -76,10 +76,27 @@ export function withModUiPaneFocus(pane: ModUiPane, focused: boolean): ModUiPane
   return copy
 }
 
+// Host-only negotiation outcome. No additional field crosses the author DTO.
+const hostFocusOutcomes = new WeakMap<object, boolean>()
+export function didModUiHostFocusMove(result: unknown): boolean | undefined {
+  return result !== null && typeof result === 'object' ? hostFocusOutcomes.get(result) : undefined
+}
+export function withModUiHostFocusOutcome<T extends object>(result: unknown, copy: T): T {
+  const outcome = didModUiHostFocusMove(result)
+  if (outcome !== undefined) hostFocusOutcomes.set(copy, outcome)
+  return copy
+}
+function recordHostFocusOutcome<T extends object>(result: T, applied: boolean): T {
+  hostFocusOutcomes.set(result, applied)
+  return result
+}
+
 /** Private host-controller state; never decoded from an author call. */
 export type ModUiHostFocusOptions = {
   signal?: AbortSignal
   expectedElement?: string
+  plugin?: string
+  alwaysNegotiate?: true
 }
 export type ModUiOrigin =
   | { kind: 'person' }
@@ -91,6 +108,7 @@ export type ModUiPresentation = {
   rows: number
   isFullscreen: boolean
   composerEmpty: boolean
+  composerValue?: string
   hasDialog: boolean
   keyboardOwned: boolean
   agentId?: string
@@ -226,6 +244,13 @@ export type ModUi = {
     presentation?: ModUiPresentation,
     options?: ModUiHostFocusOptions,
   ): Promise<unknown>
+  /** Trusted terminal navigation pins the drawn actor without changing author args. */
+  focusPerson(
+    owner: ModUiOwner,
+    input: { requestId: string; element: string },
+    plugin: string,
+    presentation?: ModUiPresentation,
+  ): Promise<unknown>
   reveal(
     owner: ModUiOwner,
     input: {
@@ -255,6 +280,7 @@ export type ModUi = {
   releaseCandidate(owner: ModUiOwner): void
   release(owner: ModUiOwner): Promise<void>
   getClientSite(owner: ModUiOwner, id: string): ModClientSite | undefined
+  cyclePaneFocus(composerValue?: string): boolean
   getSnapshot(): readonly ModUiPane[]
   panes(owner: ModUiOwner): readonly ModUiPaneInfo[]
   paneState(): ModUiPaneState
@@ -268,6 +294,7 @@ export type ModUi = {
 type PaneState = Omit<ModUiPane, 'bodyColumns' | 'revision'> & {
   presentation: ModUiPresentation
   personInitiated: boolean
+  canonicalHold?: { value?: string; empty: boolean }
   requestedFocus?: true
   drawGeneration: number
   measuredBodyRows?: number
@@ -315,6 +342,8 @@ function validatePresentation(input: ModUiPresentation): ModUiPresentation {
     if (typeof input[key] !== 'boolean')
       throw new TypeError(`Mod UI presentation ${key} must be boolean`)
   }
+  if (input.composerValue !== undefined && typeof input.composerValue !== 'string')
+    throw new TypeError('Mod UI presentation composerValue must be a string')
   if (input.agentId !== undefined && typeof input.agentId !== 'string')
     throw new TypeError('Mod UI presentation agentId must be a string')
   return Object.freeze({ ...input })
@@ -438,6 +467,7 @@ export function createModUi({
   let revision = 0
   let personFocusGeneration = 0
   const automaticFocusRequests = new WeakMap<object, ModUiHostFocusOptions>()
+  const personFocusPlugins = new WeakMap<object, string>()
 
   function askedKey(owner: ModUiOwner, id: string): string {
     return `${pluginOf(owner)}\0${id}`
@@ -807,7 +837,17 @@ export function createModUi({
     return pane
   }
 
+  function unchangedComposer(pane: PaneState, presentation: ModUiPresentation): boolean {
+    return pane.canonicalHold === undefined ? presentation.composerEmpty
+      : pane.canonicalHold.value !== undefined && presentation.composerValue !== undefined
+        ? pane.canonicalHold.value === presentation.composerValue
+        : pane.canonicalHold.empty === presentation.composerEmpty
+  }
+
   function updatePresentation(pane: PaneState, presentation: ModUiPresentation): boolean {
+    const composerChanged = pane.presentation.composerValue !== undefined && presentation.composerValue !== undefined
+      ? pane.presentation.composerValue !== presentation.composerValue
+      : pane.presentation.composerEmpty !== presentation.composerEmpty
     const placement = placementOf(presentation)
     if (pane.presentation.columns !== presentation.columns ||
         pane.presentation.rows !== presentation.rows || pane.placement !== placement) {
@@ -815,8 +855,17 @@ export function createModUi({
     }
     pane.presentation = presentation
     const visible = visibleOf(pane)
-    const focused = pane.focused && presentation.composerEmpty &&
+    const focused = pane.focused && unchangedComposer(pane, presentation) &&
       !presentation.hasDialog && !presentation.keyboardOwned
+    if (composerChanged || pane.focused && !focused) {
+      personFocusGeneration++
+      wakeFocusWaiters()
+    }
+    if (!focused) {
+      pane.canonicalHold = undefined
+      pane.focusedElement = undefined
+      pane.focusedPlugin = undefined
+    }
     const bodyRows = pane.measuredBodyRows ?? bodyRowsOf(pane, placement)
     const scrollOffset = Math.min(
       pane.scrollOffset,
@@ -1077,6 +1126,7 @@ export function createModUi({
           return { deny: 'no such focus site' }
         if (!controller.isHeldNow()) return { deny: 'that site does not hold the keyboard' }
         const expected = controller.holderNow()
+        let committedTarget: ModUiFocusTarget | undefined
         if (request.origin.kind === 'plugin' && expected && expected.plugin !== request.plugin)
           return { deny: "another plugin's element holds the keyboard" }
         if (!controller.hasElement(request.plugin, request.element))
@@ -1093,6 +1143,7 @@ export function createModUi({
               !focusableNode(tree, rewritten.element, request.plugin))
             return { deny: 'no element of its own is drawn under that key' }
           const deny = controller.commit({ plugin: request.plugin, element: rewritten.element })
+          if (deny === undefined) committedTarget = controller.holderNow()
           return deny === undefined ? {} : { deny }
         }, {
           origin: request.origin, drawing, signal: options?.signal,
@@ -1108,8 +1159,9 @@ export function createModUi({
           requestId: input.requestId, plugin: input.plugin, element: input.element, origin: input.origin,
           focused, landed, result })}`)
         if (!host) return result
-        return { ...(result as Record<string, unknown>), focused,
-          element: focused ? landed?.element : undefined, plugin: focused ? landed?.plugin : undefined }
+        return recordHostFocusOutcome({ ...(result as Record<string, unknown>), focused,
+          element: focused ? landed?.element : undefined, plugin: focused ? landed?.plugin : undefined },
+        focused && committedTarget !== undefined && committedTarget === landed)
       }
       const site: ModRenderSite & {
         focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
@@ -1693,6 +1745,27 @@ export function createModUi({
       })
     },
 
+    cyclePaneFocus(composerValue) {
+      const panes = [...active.values()].filter(pane => pane.visible && pane.tree !== undefined)
+      if (!panes.length) return false
+      const current = panes.findIndex(pane => pane.focused)
+      const next = panes[current + 1]
+      personFocusGeneration++
+      wakeFocusWaiters()
+      for (const pane of active.values()) {
+        pane.focused = pane === next
+        pane.focusedElement = undefined
+        pane.canonicalHold = pane === next ? {
+          value: composerValue ?? pane.presentation.composerValue,
+          empty: composerValue === undefined ? pane.presentation.composerEmpty : composerValue.length === 0,
+        } : undefined
+      }
+      if (next) reconcileShown(next)
+      publish()
+      logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'pane-holder', requestId: next?.id, origin: { kind: 'person' } })}`)
+      return true
+    },
+
     async focusHost(owner, input, presentation, options = {}) {
       validateOwner(owner)
       const pane = active.get(input.requestId)
@@ -1707,13 +1780,24 @@ export function createModUi({
       finally { automaticFocusRequests.delete(request) }
       const current = ui.getSnapshot().find(pane => pane.id === input.requestId && pane.owner === owner)
       const focused = Boolean(current?.visible && current.shown !== false && current.tree !== undefined && current.focused)
-      return {
+      return withModUiHostFocusOutcome(result, {
         ...(result as Record<string, unknown>),
         focused,
         element: focused ? current?.focusedElement : undefined,
         plugin: focused ? current?.focusedPlugin : undefined,
         ...(current ? { revision: current.revision } : {}),
-      }
+      })
+    },
+
+    async focusPerson(owner, input, plugin, presentation) {
+      validateOwner(owner)
+      const pane = active.get(input.requestId)
+      if (!pane || pane.owner !== owner) return { deny: 'site is not current', focused: false }
+      if (typeof plugin !== 'string' || !plugin) throw new TypeError('Host focus plugin must be non-empty')
+      const request = Object.freeze({ ...input, origin: { kind: 'person' as const } })
+      personFocusPlugins.set(request, plugin)
+      try { return await ui.focus(owner, request, presentation) }
+      finally { personFocusPlugins.delete(request) }
     },
 
     async focus(owner, request, rawPresentation) {
@@ -1731,8 +1815,10 @@ export function createModUi({
         return { deny: 'site belongs to another plugin' }
       if ((person || automatic) && rawPresentation !== undefined) {
         pane.presentation = validatePresentation(rawPresentation)
-        if (pane.focused && (!visibleOf(pane) || !pane.presentation.composerEmpty ||
+        if (person && pane.focused && (!visibleOf(pane) ||
+            !unchangedComposer(pane, pane.presentation) ||
             pane.presentation.hasDialog || pane.presentation.keyboardOwned)) {
+          pane.canonicalHold = undefined
           pane.focused = false
           pane.focusedElement = undefined
           publish()
@@ -1743,9 +1829,15 @@ export function createModUi({
       const input: ModInput = Object.freeze({
         component: 'Pane',
         requestId: pane.id,
-        ...(request.element === undefined ? {} : { plugin: automatic && request.origin.kind === 'plugin' ? request.origin.name : pane.plugin, element: request.element }),
+        ...(request.element === undefined ? {} : {
+          plugin: person ? personFocusPlugins.get(request) ?? pane.plugin
+            : automatic && request.origin.kind === 'plugin' ? request.origin.name : pane.plugin,
+          element: request.element,
+        }),
         origin: request.origin,
       })
+      let appliedElement: string | undefined
+      let coreApplied = false
       const result = await dispatch(owner, 'ui.focus', input, async rewritten => {
         if (active.get(pane.id) !== pane || !automatic && generation !== personFocusGeneration)
           return { deny: 'another move landed first' }
@@ -1754,9 +1846,9 @@ export function createModUi({
           return { deny: 'site is not visible' }
         const presentation = pane.presentation
         const canFocus = person && (request.element !== undefined || pane.shown === false)
-          ? presentation.composerEmpty && !presentation.hasDialog && !presentation.keyboardOwned
+          ? (pane.focused || presentation.composerEmpty) && !presentation.hasDialog && !presentation.keyboardOwned
           : automatic
-            ? pane.focused && presentation.composerEmpty && !presentation.hasDialog && !presentation.keyboardOwned
+            ? pane.focused && unchangedComposer(pane, presentation) && !presentation.hasDialog && !presentation.keyboardOwned
             : person || pane.focused
         if (!canFocus) return { deny: 'site does not hold the keyboard' }
         for (const key of ['component', 'requestId', 'plugin'] as const) {
@@ -1788,6 +1880,8 @@ export function createModUi({
           }
         }
         const focused = !relinquish
+        coreApplied = true
+        appliedElement = nextElement as string | undefined
         const nextPlugin = nextElement === undefined ? undefined : input.plugin as string
         if (pane.focusedElement !== nextElement || pane.focusedPlugin !== nextPlugin || pane.focused !== focused) {
           pane.focusedPlugin = nextPlugin
@@ -1815,7 +1909,8 @@ export function createModUi({
           return restored
         },
       })
-      if (!person) return result
+      if (!person) return automatic ? recordHostFocusOutcome({ ...(result as Record<string, unknown>) },
+        coreApplied && active.get(pane.id) === pane && pane.focused && pane.focusedElement === appliedElement) : result
       // Fire-and-forget invalidation may still be publishing this move's tree.
       while (request.element !== undefined && active.get(pane.id) === pane &&
           pane.visible && pane.focused && generation === personFocusGeneration) {
@@ -1844,7 +1939,8 @@ export function createModUi({
       delete reported.element
       if (focused && landing?.focusedElement !== undefined)
         reported.element = landing.focusedElement
-      return reported
+      return recordHostFocusOutcome(reported, coreApplied && generation === personFocusGeneration &&
+        focused && landing?.focusedElement === appliedElement)
     },
 
     async reveal(owner, request) {

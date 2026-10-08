@@ -4,7 +4,8 @@ import { Cursor } from '../utils/Cursor.js'
 import { renderPlaceholder } from '../hooks/renderPlaceholder.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import React, { useMemo, useState } from 'react'
-import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions } from '../services/mods/ui.js'
+import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions, ModUiFocusTarget } from '../services/mods/ui.js'
+import { didModUiHostFocusMove } from '../services/mods/ui.js'
 import type { ModClientHandle } from '../services/mods/client.js'
 import { copyModClientData } from '../services/mods/client.js'
 import { BaseText, Box, Button, type DOMElement, Link, Text, useInput, useStdin, useTheme, useTerminalFocus } from '../ink.js'
@@ -969,9 +970,17 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
   return { tree, focusKeys, hasAutoFocus, hoverBoxes }
 }
 
+export type ModsPaneFocusHandle = {
+  hasElement(plugin: string, element: string): boolean
+  hasNext(current?: ModUiFocusTarget): boolean
+  forget(): void
+  next(preferAutoFocus: boolean, wrap?: boolean): Promise<boolean>
+  focusBody(): void
+}
+
 type Props = {
-  chrome?: 'frame' | 'band'
   pane: ModUiPane
+  focusRef?: React.Ref<ModsPaneFocusHandle>
   onInteract(
     pane: ModUiPane,
     drawing: number,
@@ -980,9 +989,13 @@ type Props = {
     element: string,
     value?: string,
   ): Promise<unknown>
-  onClose(pane: ModUiPane): Promise<unknown>
   /** Returns the host's final landing and its published snapshot revision. */
-  onFocus(pane: ModUiPane, element?: string, origin?: Exclude<ModUiOrigin, { kind: 'unload' }>, options?: ModUiHostFocusOptions): Promise<unknown>
+  onFocus(
+    pane: ModUiPane,
+    element?: string,
+    origin?: Exclude<ModUiOrigin, { kind: 'unload' }>,
+    options?: ModUiHostFocusOptions,
+  ): Promise<unknown>
   onScroll(pane: ModUiPane, by: number, pointer?: { column: number; row: number }): Promise<unknown>
   /** Person input is allowed by the current composer/dialog presentation. */
   canFocus?: boolean
@@ -997,13 +1010,18 @@ type Props = {
     },
   ) => void | Promise<void>
   onError?: (error: unknown) => void
-}
+} & (
+  | { chrome?: 'frame'; onClose(pane: ModUiPane): Promise<unknown>; onCollapse?: never }
+  | { chrome: 'band'; onCollapse(): void; onClose?: never }
+)
 
 export function ModsPane({
-  chrome = 'frame',
   pane,
+  focusRef,
   onInteract,
   onClose,
+  onCollapse,
+  chrome = 'frame',
   onFocus,
   onScroll,
   onReportMetrics,
@@ -1073,7 +1091,8 @@ export function ModsPane({
   } | undefined>(undefined)
   const focusHandoff = React.useRef<{
     owner: object; generation: number; tree: unknown
-    requested: string; landing: string; element: DOMElement
+    requested: string; requestedPlugin?: string; landing: string; landingPlugin?: string; element: DOMElement
+    exact?: true
   } | undefined>(undefined)
   const { internal_eventEmitter } = useStdin()
   const [tabsRevision, setTabsRevision] = useState(0)
@@ -1086,7 +1105,7 @@ export function ModsPane({
   }
   React.useLayoutEffect(() => {
     const root = rootRef.current
-    if (!root) return
+    if (!root || chrome === 'band') return
     const group = paneTabGroup(getRootNode(root), pane.placement)
     const entry = { pane, onFocus, onError }
     tabGroupRef.current = group
@@ -1101,7 +1120,7 @@ export function ModsPane({
       tabEntryRef.current = undefined
       notifyPaneTabs(group)
     }
-  }, [pane.owner, pane.placement])
+  }, [pane.owner, pane.placement, chrome])
   React.useLayoutEffect(() => {
     const group = tabGroupRef.current
     if (group) notifyPaneTabs(group)
@@ -1137,12 +1156,12 @@ export function ModsPane({
     const root = rootRef.current
     if (!root) return []
     const order = documentOrder(root)
-    return [...keyElements.current.values()].flatMap(({ plugin, key, elements }) => {
-      const element = firstInDocumentOrder([...elements].filter(element => order.has(element)), order)
-      return element ? [{ plugin, key, element, emptyButton: emptyButtons.has(element) }] : []
-    }).sort((a, b) => order.get(a.element)! - order.get(b.element)!)
+    return [...keyElements.current.values()].flatMap(({ plugin, key, elements }) =>
+      [...elements].filter(element => order.has(element)).map(element =>
+        ({ plugin, key, element, emptyButton: emptyButtons.has(element) })),
+    ).sort((a, b) => order.get(a.element)! - order.get(b.element)!)
   }
-  const applyFocus = (key: string | undefined, focused = true) => {
+  const applyFocus = (key: string | undefined, focused = true, plugin = latest.current.pane.focusedPlugin) => {
     const root = rootRef.current
     if (!root) return
     const manager = getFocusManager(root)
@@ -1153,16 +1172,23 @@ export function ModsPane({
         manager.blur()
       } else {
         const entries = navigable()
-        if (focusHandoff.current?.landing !== key) focusHandoff.current = undefined
+        if (focusHandoff.current?.landing !== key || plugin !== undefined && focusHandoff.current?.landingPlugin !== plugin)
+          focusHandoff.current = undefined
         const handoff = focusHandoff.current
         // Some drawings return the old key of a row's destination slot.
         const reused = handoff && handoff.owner === latest.current.pane.owner &&
           handoff.generation === focusGeneration.current && handoff.landing === key &&
           handoff.tree !== latest.current.pane.tree && entries.find(entry =>
-            entry.key === handoff.requested && entry.element === handoff.element &&
-            currentAutoFocusTargets.current.some(target => target.key === entry.key))
-        // Official terminal landing uses the first drawn slot for duplicate keys.
-        const target = reused?.element ?? entries.find(entry => entry.key === key)?.element ?? root
+            entry.key === handoff.requested && entry.plugin === handoff.requestedPlugin && entry.element === handoff.element &&
+            currentAutoFocusTargets.current.some(target => target.key === entry.key && target.registrationPlugin === entry.plugin))
+        // Unchanged person moves retain the selected slot; rewritten and automatic
+        // moves fall back to the first drawn control for the plugin and key.
+        const landingPlugin = plugin ?? handoff?.landingPlugin
+        const exact = handoff?.exact && handoff.owner === latest.current.pane.owner &&
+          handoff.generation === focusGeneration.current ? entries.find(entry => entry.element === handoff.element &&
+            entry.key === key && entry.plugin === landingPlugin) : undefined
+        const target = exact?.element ?? reused?.element ?? entries.find(entry => entry.key === key &&
+          (landingPlugin === undefined || entry.plugin === landingPlugin))?.element ?? root
         let active = manager.activeElement
         if (clientRegions.has(target)) {
           while (active && active !== target) active = active.parentNode ?? null
@@ -1171,33 +1197,60 @@ export function ModsPane({
       }
     } finally { applyingFocus.current = false }
   }
-  const requestFocus = (target: string | undefined | (() => string | undefined),
-    origin: Exclude<ModUiOrigin, { kind: 'unload' }> = { kind: 'person' }, options?: ModUiHostFocusOptions) => {
+  const requestFocus = (
+    target: string | (ModUiFocusTarget & { slot?: DOMElement }) | undefined | (() => string | (ModUiFocusTarget & { slot?: DOMElement }) | undefined | null),
+    origin: Exclude<ModUiOrigin, { kind: 'unload' }> = { kind: 'person' },
+    options?: ModUiHostFocusOptions,
+  ) => {
     if (pendingFocus.current >= 65) return focusQueue.current
-    automaticTake.current.attempted = true
     const owner = pane.owner
+    const id = pane.id
+    const root = rootRef.current
     const generation = focusGeneration.current
+    automaticTake.current.attempted = true
     bodyFocusRelease.current = undefined
     pendingFocus.current++
     focusQueue.current = focusQueue.current.then(async () => {
       const current = latest.current
-      if (!rootRef.current || current.pane.owner !== owner || !current.pane.visible ||
+      if (!root || rootRef.current !== root || current.pane.owner !== owner || current.pane.id !== id || !current.pane.visible ||
           generation !== focusGeneration.current || options?.signal?.aborted || !(current.pane.focused || current.canFocus)) return
-      const key = typeof target === 'function' ? target() : target
-      if (typeof target === 'function' && navigable().some(entry =>
-        entry.key === key && entry.element === getFocusManager(rootRef.current!).activeElement)) return
+      const requested = typeof target === 'function' ? target() : target
+      if (requested === null) return
+      const key = typeof requested === 'object' ? requested.element : requested
+      const plugin = typeof requested === 'object' ? requested.plugin : options?.plugin
+      const requestedSlot = typeof requested === 'object' ? requested.slot : undefined
+      if (typeof target === 'function' && !options?.alwaysNegotiate && navigable().some(entry =>
+        entry.key === key && (plugin === undefined || entry.plugin === plugin) &&
+        (requestedSlot === undefined || entry.element === requestedSlot) &&
+        entry.element === getFocusManager(rootRef.current!).activeElement)) return
       const before = navigable()
-      let region = before.find(entry => entry.key === key)?.element
+      const active = getFocusManager(root).activeElement
+      const targetEntry = before.find(entry => entry.key === key && entry.element === requestedSlot &&
+        (plugin === undefined || entry.plugin === plugin)) ?? before.find(entry => entry.key === key &&
+        (plugin === undefined ? entry.element === active : entry.plugin === plugin)) ??
+        before.find(entry => entry.key === key && (plugin === undefined || entry.plugin === plugin))
+      let region = targetEntry?.element
       while (region && !clientRegions.has(region)) region = region.parentNode
       const hostKey = region ? before.find(entry => entry.element === region)?.key ?? key : key
-      const result = await current.onFocus(current.pane, hostKey, origin, options) as {
-        deny?: string; element?: string; focused?: boolean; revision?: number
+      const result = await current.onFocus(current.pane, hostKey, origin,
+        targetEntry ? { ...options, plugin: targetEntry.plugin } : options) as {
+        deny?: string; element?: string; plugin?: string; focused?: boolean; revision?: number
       } | undefined
-      if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current || options?.signal?.aborted) return
-      if (!result?.deny && result?.focused !== false && key !== undefined && result?.element !== undefined) {
-        const element = before.find(entry => entry.key === result.element)?.element
-        focusHandoff.current = element && result.element !== key ? {
-          owner, generation, tree: current.pane.tree, requested: key, landing: result.element, element,
+      if (rootRef.current !== root || latest.current.pane.owner !== owner || latest.current.pane.id !== id ||
+          generation !== focusGeneration.current || options?.signal?.aborted) return
+      const applied = didModUiHostFocusMove(result)
+      if (origin.kind === 'person' && applied !== false && !result?.deny && result?.focused !== false &&
+          targetEntry && result?.element === key && (result?.plugin === undefined || result.plugin === targetEntry.plugin)) {
+        focusHandoff.current = { owner, generation, tree: current.pane.tree, requested: key!, requestedPlugin: targetEntry.plugin,
+          landing: key!, landingPlugin: targetEntry.plugin, element: targetEntry.element, exact: true }
+      }
+      if (applied !== false && !result?.deny && result?.focused !== false && key !== undefined && result?.element !== undefined && result.element !== key) {
+        const landingPlugin = result.plugin ?? targetEntry?.plugin
+        const element = before.find(entry => entry.key === result.element &&
+          (landingPlugin === undefined || entry.plugin === landingPlugin))?.element
+        focusHandoff.current = element ? {
+          owner, generation, tree: current.pane.tree, requested: key, requestedPlugin: targetEntry?.plugin,
+          landing: result.element, landingPlugin, element,
         } : undefined
       }
       if (result?.focused !== false && result?.revision !== undefined &&
@@ -1205,14 +1258,15 @@ export function ModsPane({
         await new Promise<void>(resolve => {
           focusCommit.current = { owner, generation, revision: result.revision!, resolve }
         })
-        if (!rootRef.current || latest.current.pane.owner !== owner || generation !== focusGeneration.current || options?.signal?.aborted) return
+        if (rootRef.current !== root || latest.current.pane.owner !== owner || latest.current.pane.id !== id ||
+            generation !== focusGeneration.current || options?.signal?.aborted) return
       }
       const landing = hostKey !== key && !result?.deny && result?.focused !== false &&
         (result?.element === undefined || result.element === hostKey) ? key : result?.element
-      if (result && 'focused' in result) applyFocus(landing, result.focused)
+      if (result && 'focused' in result) applyFocus(landing, result.focused, result.plugin ?? targetEntry?.plugin)
       else if (result?.deny) applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
       else if (origin.kind === 'plugin') applyFocus(latest.current.pane.focusedElement, latest.current.pane.focused)
-      else applyFocus(landing ?? key, key !== undefined)
+      else applyFocus(landing ?? key, key !== undefined, result?.plugin ?? targetEntry?.plugin)
     }).catch(error => {
       if (options?.signal?.aborted) return
       if (rootRef.current && generation === focusGeneration.current)
@@ -1223,6 +1277,41 @@ export function ModsPane({
   }
   const handleFocus: Props['onFocus'] = (_pane, key) =>
     !rootRef.current || applyingFocus.current || pendingFocus.current > 0 ? Promise.resolve() : requestFocus(key)
+
+  React.useImperativeHandle(focusRef, () => ({
+    hasElement: (plugin, element) => navigable().some(entry => entry.plugin === plugin && entry.key === element),
+    forget: () => {
+      focusGeneration.current++
+      focusCommit.current?.resolve()
+      focusCommit.current = undefined
+    },
+    hasNext: current => {
+      const entries = navigable()
+      const active = rootRef.current && getFocusManager(rootRef.current).activeElement
+      const activeIndex = current ? entries.findIndex(entry => entry.element === active && entry.plugin === current.plugin && entry.key === current.element) : -1
+      const index = activeIndex >= 0 ? activeIndex : current ? entries.findIndex(entry => entry.plugin === current.plugin && entry.key === current.element) : -1
+      return index + 1 < entries.length
+    },
+    focusBody: () => applyFocus(undefined),
+    next: (preferAutoFocus, wrap = true) => {
+      if (!navigable().length) return Promise.resolve(false)
+      let moved = false
+      return requestFocus(() => {
+        const entries = navigable()
+        const current = latest.current.pane
+        const active = rootRef.current && getFocusManager(rootRef.current).activeElement
+        const activeIndex = entries.findIndex(entry => entry.element === active)
+        const index = activeIndex >= 0 ? activeIndex : entries.findIndex(entry => entry.key === current.focusedElement &&
+          (current.focusedPlugin === undefined || entry.plugin === current.focusedPlugin))
+        const preferred = preferAutoFocus && currentAutoFocusTargets.current.flatMap(target => entries.filter(entry =>
+          entry.key === target.key && entry.plugin === target.registrationPlugin))[0]
+        if (!preferred && !wrap && index + 1 >= entries.length) return null
+        const target = preferred || entries[(index + 1) % entries.length]
+        moved = Boolean(target)
+        return target ? { plugin: target.plugin, element: target.key, slot: target.element } : null
+      }, { kind: 'person' }, { alwaysNegotiate: true }).then(() => moved)
+    },
+  }))
 
   React.useLayoutEffect(() => {
     if (!pane.visible || !(pane.focused || canFocus)) focusGeneration.current++
@@ -1236,7 +1325,6 @@ export function ModsPane({
       take.attempted = false
     }
   }, [pane.owner, pane.id, pane.visible, pane.focused, canFocus, shown])
-
 
   React.useLayoutEffect(() => {
     committedRevision.current = pane.revision
@@ -1258,16 +1346,6 @@ export function ModsPane({
   React.useEffect(() => {
     const capture = (event: InputEvent) => {
       const current = latest.current
-      if (event.key.tab && !event.key.ctrl && !event.key.meta && !event.key.super &&
-          current.canFocus && current.pane.visible && !current.pane.focused) {
-        const controls = navigable()
-        const key = (event.key.shift ? controls.at(-1) : controls[0])?.key
-        if (key !== undefined) {
-          event.stopImmediatePropagation()
-          void requestFocus(key)
-        }
-        return
-      }
       const pointer = event.keypress.pointer
       const viewport = scrollRef.current?.getElement()
       if (!current.pane.visible || !pointer || !viewport ||
@@ -1407,7 +1485,7 @@ export function ModsPane({
         released.plugin === pane.focusedPlugin && manager.activeElement === root) return
     bodyFocusRelease.current = undefined
     applyFocus(pane.focusedElement)
-  }, [pane.focused, pane.focusedElement, pane.focusedPlugin, validated.tree])
+  }, [pane.owner, pane.visible, pane.focused, pane.focusedElement, pane.focusedPlugin, shown, validated.tree])
 
   const run = (operation: Promise<unknown>) => {
     void operation.catch(error => onError?.(error))
@@ -1443,7 +1521,8 @@ export function ModsPane({
           const active = rootRef.current && getFocusManager(rootRef.current).activeElement
           const index = entries.findIndex(entry => entry.element === active)
           const next = index < 0 ? (direction === 1 ? 0 : entries.length - 1) : index + direction
-          return entries[next]?.key ?? entries[index]?.key
+          const target = entries[next] ?? entries[index]
+          return target ? { plugin: target.plugin, element: target.key, slot: target.element } : undefined
         }))
         return
       }
@@ -1463,7 +1542,7 @@ export function ModsPane({
       focusGeneration.current++
       focusCommit.current?.resolve()
       focusCommit.current = undefined
-      run(pane.closeOnEscape ? closeByPerson(pane) : onFocus(pane))
+      run(pane.closeOnEscape && onClose ? closeByPerson(pane) : onFocus(pane))
     }
   }
   // Pane controls get first refusal; unhandled keys still reach the composer.
@@ -1474,7 +1553,7 @@ export function ModsPane({
     if (binding && (binding.type === 'chord_started' || binding.type === 'chord_cancelled' ||
         binding.type === 'unbound' || binding.type === 'match' &&
         (binding.action in actions || binding.action === 'pane:close'))) return
-    if (!root || !pane.focused || !pane.visible || !shown ||
+    if (!root || chrome === 'band' || !pane.focused || !pane.visible || !shown ||
         keybindings?.pendingChord || event.didDispatchKeyboardEvent()) return
     const keydown = new KeyboardEvent(event.keypress)
     if (pendingFocus.current > 0 && (keydown.key === 'return' || keydown.key === ' ')) {
@@ -1508,7 +1587,7 @@ export function ModsPane({
       if (keydown.shift) manager.focusPrevious(getRootNode(root))
       else manager.focusNext(getRootNode(root))
     }
-  }, { capture: true, isActive: pane.focused && pane.visible && shown })
+  }, { capture: true, isActive: chrome !== 'band' && pane.focused && pane.visible && shown })
   const terminalIdentity = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH ? getModUiTerminalIdentity(pane) : undefined
   return (
     <Box
@@ -1542,9 +1621,9 @@ export function ModsPane({
     >
       <Box flexDirection="column" flexShrink={0}
         height={pane.placement === 'dock' ? dockHostRows : undefined}
-        borderStyle={pane.placement === 'inline' ? 'round' : undefined}
+        borderStyle={chrome === 'frame' && pane.placement === 'inline' ? 'round' : undefined}
         borderDimColor={!pane.focused}
-        paddingX={pane.placement === 'inline' ? 1 : 0}>
+        paddingX={chrome === 'frame' && pane.placement === 'inline' ? 1 : 0}>
       {showTabs ? <Box flexShrink={0} height={1} gap={1} overflow="hidden"
         width={pane.placement === 'dock' ? Math.max(0, pane.bodyColumns - 3) : pane.bodyColumns}>
         {tabs.map((entry, index) => {
@@ -1591,7 +1670,15 @@ export function ModsPane({
         </Box>
       </ScrollBox>
       </Box>
-      {<Box position="absolute" top={0} right={pane.placement === 'inline' ? 2 : 1}
+      {chrome === 'band' && onCollapse ? <Box position="absolute" top={0} right={1}
+        onClick={event => {
+          event.stopImmediatePropagation()
+          if (rootRef.current) getFocusManager(rootRef.current).blur()
+        }}>
+        <Button tabIndex={-1} onAction={onCollapse}>
+          {({ hovered }) => <Text inverse={hovered} dimColor={!hovered}>[-]</Text>}
+        </Button>
+      </Box> : onClose && <Box position="absolute" top={0} right={pane.placement === 'inline' ? 2 : 1}
         tabIndex={-1} onMouseEnter={() => setCloseHovered(true)} onMouseLeave={() => setCloseHovered(false)}
         onClick={event => {
           event.stopImmediatePropagation()

@@ -2194,7 +2194,7 @@ test.each(['foreign-focus', 'unfocused', 'hidden', 'band'] as const)('Pane close
   const app = await render(<Bindings context="Pane" bindings={{ 'ctrl+x x': 'pane:close' }}>
     <EnableInput /><Box tabIndex={0}><Text>FOREIGN_FOCUS</Text></Box>
     <ModsPane {...mode === 'band'
-      ? { chrome: 'band' as const, onClose: async (value: ModUiPane) => { closed.push(value.id) } }
+      ? { chrome: 'band' as const, onCollapse: () => { closed.push('collapsed') } }
       : { chrome: 'frame' as const, onClose: async (value: ModUiPane) => { closed.push(value.id) } }} pane={current}
       onInteract={async () => {}} onFocus={async () => ({})} onScroll={async () => ({})}
     />
@@ -2281,7 +2281,13 @@ test('actual AbovePrompt focus does not activate Pane close contexts', async () 
       onFocusChange={value => { changes.push(value) }} onError={error => { errors.push(error) }} />
   </Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
   try {
-    await settle(); stdin.push('\t'); await settle()
+    await settle()
+    const label = renderedElement(stdout, '[ BAND_BUTTON ]', 'ink-text')
+    const rect = nodeCache.get(label)!
+    const ink = instances.get(stdout as never) as unknown as InkInstance
+    ink.setAltScreenActive(true, true)
+    stdin.push(`\u001b[<0;${rect.x + 1};${rect.y + 1}M\u001b[<0;${rect.x + 1};${rect.y + 1}m`)
+    await settle()
     expect(errors).toEqual([])
     expect(changes.at(-1)).toBe(true)
     expect(context!.activeContexts.has('Pane')).toBe(false)
@@ -3365,7 +3371,7 @@ describe('ModsPane input repair', () => {
     } finally { instance.unmount(); await ui.release(owner) }
   })
 
-  test('Escape releases a pending host draw so Tab can enter through a newer drawing', async () => {
+  test('Escape releases a pending host draw so a person click can enter through a newer drawing', async () => {
     const stdout = new Output()
     const stdin = new Input()
     const owner = {}
@@ -3415,7 +3421,10 @@ describe('ModsPane input repair', () => {
       stdin.push('\u001b')
       await settle()
       expect(ui.getSnapshot()[0]!.focused).toBe(false)
-      stdin.push('\t')
+      const button = renderedElement(stdout, '[ one ]', 'ink-text')
+      const rect = nodeCache.get(button)!
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      dispatchClick(ink.rootNode, rect.x, rect.y)
       await settle()
       expect(requests).toEqual(['two', undefined, 'one'])
       const target = renderedElement(stdout, '[ one ]', 'ink-text').parentNode!
@@ -3479,7 +3488,7 @@ describe('ModsPane input repair', () => {
     } finally { if (!unmounted) instance.unmount() }
   })
 
-  test('person Tab enters the first registered dock control without visiting global focus nodes', async () => {
+  test('person click enters an unfocused dock once without visiting global or hidden focus nodes', async () => {
     const stdout = new Output()
     const stdin = new Input()
     const calls: (string | undefined)[] = []
@@ -3489,7 +3498,7 @@ describe('ModsPane input repair', () => {
       <Box tabIndex={0} onFocus={() => { outerFocus++ }}><Text>unrelated</Text></Box>
       <ModsPane canFocus pane={pane({ type: 'Box', children: [
         { type: 'Box', props: { display: 'none' }, children: [fileButton('hidden')] },
-        { type: 'Input', props: { key: 'ask' }, press: { plugin: 'fixture', handle: 1 } },
+        { type: 'Input', props: { key: 'ask', placeholder: 'Ask' }, press: { plugin: 'fixture', handle: 1 } },
       ] }, { focused: false, placement: 'dock' })}
         onFocus={async (_pane, key) => {
           calls.push(key)
@@ -3500,9 +3509,12 @@ describe('ModsPane input repair', () => {
     try {
       await settle()
       expect(calls).toEqual([])
-      stdin.push('\t')
+      const input = elements(stdout, true).find(({ node }) => typeof node.attributes.tabIndex === 'number' && typeof node._eventHandlers?.onKeyDown === 'function' && nodeCache.has(node))!.node
+      const rect = nodeCache.get(input)!
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      dispatchClick(ink.rootNode, rect.x, rect.y)
       await settle()
-      expect(calls).toEqual(['hidden'])
+      expect(calls).toEqual(['ask'])
       expect(outerFocus).toBe(0)
     } finally { instance.unmount() }
   })
@@ -3610,7 +3622,7 @@ describe('ModsPane input repair', () => {
     const localOwnership = repl.match(/isLocalJSXCommandActive=\{([\s\S]*?)\}/)?.[1]
       ?.replace(/\s+/g, ' ').trim()
     expect(localOwnership).toBe(
-      'isShowingLocalJSXCommand || showResponsiveDiffDialog || modPaneFocused || modAbovePromptFocused',
+      'isShowingLocalJSXCommand || showResponsiveDiffDialog || modAbovePromptFocused',
     )
     expect(repl).toContain('keyboardEnabled={false}')
     expect(repl).toContain('isActive={!toolJSX?.isLocalJSXCommand}')
@@ -4301,7 +4313,7 @@ describe('ModsPane Ink interaction', () => {
     } finally { instance.unmount() }
   })
 
-  test('omits the title for one pane and reserves its engine chrome row', async () => {
+  test('omits the title for one pane and gives the full height to its body', async () => {
     const stdout = new Output()
     const tree = {
       type: 'Box', props: { flexDirection: 'column' }, children: [
@@ -4431,7 +4443,7 @@ describe('ModsPane Ink interaction', () => {
             interactions.push({ kind, element, ...(value === undefined ? {} : { value }) })
           }}
           onClose={async () => {}}
-          onFocus={async () => ({})}
+          onFocus={async (_pane, element) => ({ focused: true, element })}
           onScroll={async () => ({})}
         />
       </>,
@@ -4656,7 +4668,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await render(<><EnableInput /><ModsPane
       pane={pane({ type: 'Input', props: { key: 'reply', value: 'A👨‍👩‍👧‍👦B', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } }, { focusedElement: 'reply' })}
       onInteract={async (_pane, _drawing, _press, kind, _element, value) => { interactions.push({ kind, value }) }}
-      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+      onFocus={async (_pane, element) => ({ focused: true, element })} onClose={async () => {}} onScroll={async () => ({})}
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
@@ -4677,7 +4689,7 @@ describe('ModsPane Ink interaction', () => {
     const instance = await render(<><EnableInput /><ModsPane
       pane={pane({ type: 'Input', props: { key: 'reply', value: 'abcd', autoFocus: true }, press: { plugin: 'fixture', handle: 2 } }, { focusedElement: 'reply' })}
       onInteract={async (_pane, _drawing, _press, kind, _element, value) => { interactions.push({ kind, value }) }}
-      onFocus={async () => ({})} onClose={async () => {}} onScroll={async () => ({})}
+      onFocus={async (_pane, element) => ({ focused: true, element })} onClose={async () => {}} onScroll={async () => ({})}
     /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
@@ -4816,7 +4828,7 @@ describe('ModsPane Ink interaction', () => {
             interactions.push({ kind, value })
           }}
           onClose={async () => {}}
-          onFocus={async () => ({})}
+          onFocus={async (_pane, element) => ({ focused: true, element })}
           onScroll={async () => ({})}
         />
       </>,
@@ -4857,7 +4869,7 @@ describe('ModsPane Ink interaction', () => {
           ] }, { focusedElement: 'reply' })}
           onInteract={async (_pane, _drawing, _press, kind, element) => { interactions.push(`${kind}:${element}`) }}
           onClose={async () => {}}
-          onFocus={async () => ({})}
+          onFocus={async (_pane, element) => ({ focused: true, element })}
           onScroll={async () => ({})}
         />
       </>,
