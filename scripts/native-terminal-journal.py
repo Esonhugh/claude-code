@@ -104,6 +104,8 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
         require(header[9] >= len(records), 'Prefix exceeds native record sequence')
         if header[11] == 1:
             require(header[21] >= header[19], 'Missing closed native prefix boundary')
+    clock = {'nonce': f'{header[6]:016x}{header[7]:016x}', 'pid': expected_pid,
+             'timebaseNumer': header[12], 'timebaseDenom': header[13], 'openedAt': str(header[19])}
     decoded = []
     for sequence, data in enumerate(records, 1):
         require(len(data) >= RECORD.size, 'Truncated native metadata')
@@ -142,6 +144,8 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
                         'fd': fd, 'outputMask': mask, 'operation': operation,
                         'requested': requested, 'result': result, 'errno': error,
                         'spanId': span, 'bytes': data[RECORD.size:]})
+        if kind in (10, 12, 13, 11):
+            decoded[-1]['nativeClock'] = clock
         if kind == 2:
             for index, name in enumerate(('modeBefore', 'modeRequested', 'modeAfter')):
                 values = TERMIOS_VALUE.unpack_from(data, RECORD.size + TERMIOS_PREFIX.size + index * TERMIOS_VALUE.size)
@@ -292,7 +296,21 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
         count = sum(len(outputs[row['sequence']]) for row in selected)
         finish = start + count
         require(previous_offset <= start <= finish <= len(raw), 'Invalid native physical frame prefix')
+        clock = layout.get('nativeClock')
+        require(type(clock) is dict and all(row.get('nativeClock') == clock for row in (begin, end, snapshot)),
+                'Native Ink frame lacks its original clock identity')
+        native_span = {'method': 'native-mach-frame-span-v1', 'clock': dict(clock),
+                       'threadId': layout['threadId'],
+                       'observationKind': 'output-transaction' if count else 'logical-observation',
+                       'markers': [{'kind': row['kind'], 'sequence': row['sequence'],
+                                    'entry': str(row['entry']), 'return': str(row['return'])}
+                                   for row in (layout, begin, end, snapshot)],
+                       'writes': [{'sequence': row['sequence'], 'entry': str(row['entry']),
+                                   'return': str(row['return']), 'result': row['result'],
+                                   'errno': row['errno'], 'outputBytes': len(outputs[row['sequence']])}
+                                  for row in selected]}
         entries.append({'frameId': span['spanId'], 'native': identity,
+                        'nativeSpan': native_span,
                         **{key: value[key] for key in ('rootReset', 'terminalPanes', 'terminalUiRevision')
                            if key in value},
                         'rawStart': start, 'rawEnd': finish,

@@ -1314,7 +1314,13 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                     if not all(canonical_git_checks(source_root, events, decoded('canonical-release.json'),
                                 verified_bytes[str(source_root / 'debug.log')].decode()).values()):
                         return False
-                    if not all(canonical_ui_checks(source_root).values()):
+                    native_context = None
+                    if launch.get('capture', {}).get('nativeJournal') is True:
+                        native_context = canonical_native_context(source_root, launch,
+                            expected_hashes[str((source_root / 'bin/claude').resolve())])
+                        if native_context is None:
+                            return False
+                    if not all(canonical_ui_checks(source_root, native_context).values()):
                         return False
                 if not revalidate_terminal_assertion(source_root):
                     return False
@@ -1698,7 +1704,268 @@ CANONICAL_PANE_CHECKPOINTS = (
 )
 
 
-def canonical_frame_snapshot(states, entries, floor=0, io=None):
+def canonical_native_context(run, launch, binary_sha256):
+    """Read only the bounded header identity, never live slots or counters."""
+    launch_identity = terminal_native_exit_identity(run, launch, binary_sha256)
+    if launch_identity is None or launch_identity['capture']['nativeJournal'] is not True:
+        return None
+    try:
+        import importlib.util
+        import struct
+        schema_path = Path(__file__).resolve().parents[4] / 'scripts/native-terminal-journal.py'
+        spec = importlib.util.spec_from_file_location('canonical_native_schema', schema_path)
+        schema = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schema)
+        def read(name, limit, header=False):
+            path = run / name
+            named = os.lstat(path)
+            if not stat.S_ISREG(named.st_mode):
+                raise ValueError('Native context requires an owned regular file')
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                opened = os.fstat(fd)
+                if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid() or
+                        stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_nlink != 1 or
+                        (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) or
+                        (not header and opened.st_size > limit)):
+                    raise ValueError('Native context file identity changed')
+                data = os.pread(fd, limit, 0)
+                after, current = os.fstat(fd), os.lstat(path)
+                if ((after.st_dev, after.st_ino, after.st_size) != (opened.st_dev, opened.st_ino, opened.st_size) or
+                        (current.st_dev, current.st_ino, current.st_size, current.st_nlink, current.st_mode) !=
+                        (opened.st_dev, opened.st_ino, opened.st_size, 1, opened.st_mode)):
+                    raise ValueError('Native context changed during read')
+                return data, opened
+            finally:
+                os.close(fd)
+        start = json.loads(read('start.json', 65536)[0])
+        pid = start.get('childPid')
+        if (type(pid) is not int or pid <= 0 or type(start.get('childPgid')) is not int or
+                start['childPgid'] != pid or start.get('binarySha256') != binary_sha256):
+            return None
+        data, identity = read('journal.bin', schema.HEADER.size, True)
+        size = identity.st_size
+        words = schema.HEADER.unpack(data)
+        data, reread = read('journal.bin', schema.HEADER.size, True)
+        if (identity.st_dev, identity.st_ino, identity.st_size) != (reread.st_dev, reread.st_ino, reread.st_size):
+            return None
+        again = schema.HEADER.unpack(data)
+        stable = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 19)
+        if (any(words[key] != again[key] for key in stable) or words[0] != schema.MAGIC or
+                words[1] != 1 or words[2] != schema.HEADER.size or words[8] != pid or
+                not 1 <= words[4] <= 4096 or not 1 <= words[5] <= 1048576 or
+                words[3] < schema.RECORD.size + words[5] or words[3] % 64 or
+                size != words[2] + words[3] * words[4] or
+                not words[12] or not words[13] or not words[19]):
+            return None
+        initial = launch['capture']['initialSize']
+        if any(type(initial.get(key)) is not int or not 0 < initial[key] <= 1000 for key in ('columns', 'rows')):
+            return None
+        return {'nativeJournal': True, 'captureId': launch_identity['capture']['captureId'],
+                'binarySha256': binary_sha256, 'childPid': pid,
+                'clock': {'nonce': f'{words[6]:016x}{words[7]:016x}', 'pid': pid,
+                          'timebaseNumer': words[12], 'timebaseDenom': words[13], 'openedAt': str(words[19])},
+                'initialSize': dict(initial)}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, struct.error):
+        return None
+
+
+def canonical_native_frame_binding(entry, entries, io, context):
+    """Native span/geometry association; final original re-derivation is mandatory."""
+    try:
+        import struct
+        def tick(value):
+            if (type(value) is not str or not value.isascii() or not value.isdecimal() or
+                    not 0 < len(value) <= 20 or value[0] == '0' or not 0 < int(value) < 2 ** 64):
+                raise ValueError('Exact native uint64 clock required')
+            return int(value)
+        if (not isinstance(context, dict) or context.get('nativeJournal') is not True or
+                type(context.get('captureId')) is not str or not context['captureId'] or
+                type(context.get('childPid')) is not int or context['childPid'] <= 0 or
+                type(context.get('binarySha256')) is not str or not re.fullmatch(r'[a-f0-9]{64}', context['binarySha256'])):
+            return None
+        clock = context['clock']
+        if (type(clock) is not dict or type(clock.get('nonce')) is not str or
+                not re.fullmatch(r'[a-f0-9]{32}', clock['nonce']) or
+                any(type(clock.get(key)) is not int or clock[key] <= 0 for key in ('pid', 'timebaseNumer', 'timebaseDenom')) or
+                clock['pid'] != context['childPid']):
+            return None
+        opened = tick(clock['openedAt'])
+        geometry_id, offset = 0, 0
+        if not io or io[0].get('kind') != 'initial-geometry':
+            return None
+        initial = io[0]
+        if (type(initial.get('childPid')) is not int or initial['childPid'] != context['childPid'] or
+                any(type(initial.get(key)) is not int or initial[key] != context['initialSize'][key] for key in ('columns', 'rows'))):
+            return None
+        current_size = context['initialSize'].copy()
+        events, previous_return = [], opened
+        for index, row in enumerate(io, 1):
+            if row.get('kind') == 'resize-ack':
+                geometry_id += 1
+            if (type(row.get('ioId')) is not int or row['ioId'] != index or
+                    type(row.get('geometryId')) is not int or row['geometryId'] != geometry_id or
+                    type(row.get('rawOffset')) is not int or row['rawOffset'] < 0 or
+                    row.get('captureId') != context['captureId'] or
+                    row.get('kind') not in ('initial-geometry', 'input', 'output', 'resize-ack') or
+                    (row['kind'] == 'initial-geometry') != (index == 1)):
+                return None
+            if row['kind'] == 'output':
+                if (type(row.get('start')) is not int or type(row.get('end')) is not int or
+                        row['start'] != offset or not offset < row['end'] == row['rawOffset']):
+                    return None
+                offset = row['end']
+            elif row['rawOffset'] != offset:
+                return None
+            if row['kind'] != 'resize-ack':
+                continue
+            bracket = row['nativeBracket']
+            a, b = tick(bracket['entry']), tick(bracket['return'])
+            if (row.get('succeeded') is not True or row.get('nativeClockCorrelationCovered') is not True or
+                    bracket.get('method') != 'native-mach-ioctl-resize-v1' or bracket.get('nonce') != clock['nonce'] or
+                    type(bracket.get('childPid')) is not int or bracket['childPid'] != context['childPid'] or
+                    any(type(bracket.get(key)) is not int or bracket[key] != clock[key] for key in ('timebaseNumer', 'timebaseDenom')) or
+                    type(bracket.get('result')) is not int or bracket['result'] != 0 or
+                    type(bracket.get('errno')) is not int or not 0 <= bracket['errno'] < 2 ** 31 or
+                    not previous_return <= a <= b):
+                return None
+            before = struct.unpack('HHHH', bytes.fromhex(bracket['beforeSizeHex']))
+            after = struct.unpack('HHHH', bytes.fromhex(bracket['afterSizeHex']))
+            if (before[:2] != (current_size['rows'], current_size['columns']) or
+                    any(type(row.get(key)) is not int or not 0 < row[key] <= 1000 for key in ('columns', 'rows')) or
+                    after[:2] != (row['rows'], row['columns'])):
+                return None
+            current_size = {'columns': row['columns'], 'rows': row['rows']}
+            events.append((a, b, row))
+            previous_return = b
+        def span(value):
+            native, data = value['native'], value['nativeSpan']
+            frame_id = value['frameId']
+            if ('broker' in value or type(frame_id) is not int or frame_id <= 0 or
+                    native.get('profile') != 'ink-post-write-v1' or native.get('captureId') != context['captureId'] or
+                    any(type(native.get(key)) is not int or native[key] <= 0 for key in ('spanId','rendererId','rootEpoch','columns','rows')) or
+                    native['spanId'] != frame_id or data.get('method') != 'native-mach-frame-span-v1' or
+                    json.dumps(data.get('clock'), sort_keys=True) != json.dumps(clock, sort_keys=True) or
+                    type(data.get('threadId')) is not int or data['threadId'] <= 0):
+                return None
+            markers = data['markers']
+            if (type(markers) is not list or len(markers) != 4 or
+                    [row.get('kind') for row in markers] != [10,12,13,11] or
+                    any(type(row.get('kind')) is not int or type(row.get('sequence')) is not int or row['sequence'] <= 0 for row in markers)):
+                return None
+            ticks = [(tick(row['entry']), tick(row['return'])) for row in markers]
+            if (ticks[0][0] < opened or any(a > b for a,b in ticks) or
+                    any(a['sequence'] >= b['sequence'] for a,b in zip(markers, markers[1:])) or
+                    any(a[1] > b[0] for a,b in zip(ticks,ticks[1:]))):
+                return None
+            writes = data['writes']
+            if type(writes) is not list or value.get('writeSequences') != [row.get('sequence') for row in writes]:
+                return None
+            previous_sequence, byte_count = markers[1]['sequence'], 0
+            for write in writes:
+                if (type(write.get('sequence')) is not int or not previous_sequence < write['sequence'] < markers[2]['sequence'] or
+                        type(write.get('result')) is not int or write['result'] < -1 or
+                        any(type(write.get(key)) is not int or write[key] < 0 for key in ('errno','outputBytes')) or
+                        (write['result'] == -1 and (write['errno'] == 0 or write['outputBytes'] != 0)) or
+                        not ticks[1][1] <= tick(write['entry']) <= tick(write['return']) <= ticks[2][0]):
+                    return None
+                previous_sequence = write['sequence']; byte_count += write['outputBytes']
+            if (any(type(value.get(key)) is not int or value[key] < 0 for key in ('rawStart','rawEnd')) or
+                    value['rawEnd']-value['rawStart'] != byte_count or value['rawEnd'] > offset or
+                    data.get('observationKind') != ('output-transaction' if byte_count else 'logical-observation')):
+                return None
+            selected = {'geometryId':0,'ioId':1,**context['initialSize']}
+            for a,b,row in events:
+                if ticks[2][1] <= a:
+                    continue
+                if ticks[0][0] < b:
+                    return None
+                selected = row
+            if (native['columns'],native['rows']) != (selected['columns'],selected['rows']):
+                return None
+            frame = json.loads(base64.b64decode(value['frameBase64'], validate=True))
+            if (frame.get('viewport') != {'width': selected['columns'],'height': selected['rows']} or
+                    frame.get('columns') != selected['columns'] or frame.get('buffer') != 'alternate'):
+                return None
+            return {'frame':frame,'geometryId':selected['geometryId'],'resizeIoId':selected['ioId'],
+                    'columns':selected['columns'],'rows':selected['rows'],'outputBytes':byte_count}
+        bound = span(entry)
+        if bound is None:
+            return None
+        output = entry
+        if not bound['outputBytes']:
+            output = None
+            for previous in reversed(entries):
+                if (previous.get('frameId',0) >= entry['frameId'] or
+                        previous.get('native',{}).get('rootEpoch') != entry['native']['rootEpoch'] or
+                        previous.get('native',{}).get('rendererId') != entry['native']['rendererId']):
+                    continue
+                other = span(previous)
+                if (other and other['outputBytes'] and other['geometryId'] == bound['geometryId'] and
+                        previous['rawEnd'] == entry['rawEnd'] and other['frame'] == bound['frame']):
+                    output = previous
+                    break
+            if output is None:
+                return None
+        return {'method':'native-canonical-span-geometry-v1','captureId':context['captureId'],
+                'frameId':entry['frameId'],'observationKind':entry['nativeSpan']['observationKind'],
+                'geometryId':bound['geometryId'],'resizeIoId':bound['resizeIoId'],
+                'outputSourceFrameId':output['frameId'],'outputRawStart':output['rawStart'],'outputRawEnd':output['rawEnd'],
+                'actualInputOwnerCovered':False,'productTimingEquivalent':False}
+    except (KeyError, ValueError, TypeError, AttributeError, OverflowError, struct.error):
+        return None
+
+
+def canonical_native_action_associated(entry, binding, io, action, boundary):
+    """Bounded transport/output association, never a child read or owner claim."""
+    try:
+        receipt = action['receipt']
+        lower = receipt
+        if action['kind'] == 'resize':
+            lower = action.get('send')
+            if (type(lower) is not dict or lower.get('phase') != 'resize-send' or
+                    receipt.get('phase') != 'resize-return' or type(receipt.get('exitCode')) is not int or
+                    receipt['exitCode'] != 0 or type(lower.get('actionId')) is not int or lower['actionId'] <= 0 or
+                    type(receipt.get('actionId')) is not int or lower['actionId'] != receipt['actionId'] or
+                    any(type(value.get(key)) is not int or not 0 < value[key] <= 1000
+                        for value in (lower,receipt) for key in ('columns','rows')) or
+                    any(lower[key] != receipt[key] for key in ('columns','rows'))):
+                return False
+        if (not isinstance(binding, dict) or binding.get('method') != 'native-canonical-span-geometry-v1' or
+                any(type(value.get(key)) is not int or value[key] < 0 for value in (lower,receipt,boundary)
+                    for key in ('lastObservedFrameId','lastObservedIoId','observedRawBytes')) or
+                not lower['lastObservedFrameId'] < entry['frameId'] <= boundary['lastObservedFrameId'] or
+                not lower['observedRawBytes'] <= binding['outputRawStart'] <= binding['outputRawEnd'] <= boundary['observedRawBytes']):
+            return False
+        if action['kind'] == 'resize' and any(not lower[key] <= receipt[key] <= boundary[key]
+                for key in ('lastObservedFrameId','lastObservedIoId','observedRawBytes')):
+            return False
+        window = [row for row in io if lower['lastObservedIoId'] < row['ioId'] <= boundary['lastObservedIoId']]
+        if action['kind'] == 'resize':
+            return (receipt.get('phase') == 'resize-return' and type(receipt.get('exitCode')) is int and receipt['exitCode']==0 and
+                    any(row['kind']=='resize-ack' and row['ioId']==binding['resizeIoId'] and
+                        (row['columns'],row['rows'])==(receipt['columns'],receipt['rows']) for row in window))
+        if action['kind'] != 'input' or receipt.get('phase') != 'send' or receipt.get('transport') != 'tmux-paste-buffer':
+            return False
+        data = bytes.fromhex(receipt['hex'])
+        if not data:
+            return False
+        inputs = [row for row in window if row['kind']=='input' and row.get('captureId')==binding['captureId']]
+        matches = []
+        for start in range(len(inputs)):
+            chunks = b''
+            for end in range(start,len(inputs)):
+                chunks += bytes.fromhex(inputs[end]['hex'])
+                if chunks==data:
+                    matches.append(inputs[start:end+1]);break
+                if not data.startswith(chunks):break
+        return (len(matches)==1 and all(type(row.get('rawOffset')) is int and
+                receipt['observedRawBytes'] <= row['rawOffset'] <= binding['outputRawStart'] for row in matches[0]))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def canonical_frame_snapshot(states, entries, floor=0, io=None, native_context=None, action=None, boundary=None):
     if not states:
         return None
     state = states[-1]
@@ -1716,7 +1983,14 @@ def canonical_frame_snapshot(states, entries, floor=0, io=None):
         if (columns not in (109, 110) or rows != 34 or frame.get('columns') != columns
                 or frame.get('buffer') != 'alternate'):
             continue
-        if io is not None:
+        native_binding = None
+        if native_context is not None and entry.get('native') is None:
+            continue
+        if entry.get('native') is not None:
+            native_binding = canonical_native_frame_binding(entry, entries, io, native_context)
+            if native_binding is None or (action is not None and not canonical_native_action_associated(entry, native_binding, io, action, boundary)):
+                continue
+        elif io is not None:
             broker = entry.get('broker', {})
             start, end = broker.get('start', {}), broker.get('end', {})
             acks = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start.get('geometryId')]
@@ -1781,7 +2055,8 @@ def canonical_frame_snapshot(states, entries, floor=0, io=None):
         elif witnesses:
             continue
         return {'state': state, 'frameId': entry['frameId'], 'terminalUiRevision': entry['terminalUiRevision'],
-                'terminalViewport': viewport, 'witness': witness, 'body': body, 'screen': screen}
+                'terminalViewport': viewport, 'witness': witness, 'body': body, 'screen': screen,
+                **({'nativeBinding': native_binding} if native_binding else {})}
     return None
 
 
@@ -1801,7 +2076,34 @@ def canonical_debug_states(debug):
     return states
 
 
-def canonical_ui_checks(root):
+def canonical_input_file_matches(root, receipt, native=False):
+    try:
+        path = Path(receipt['inputFile'])
+        if (receipt.get('phase') != 'send' or receipt.get('transport') != 'tmux-paste-buffer' or path.parent != root):
+            return False
+        named = os.lstat(path)
+        if not stat.S_ISREG(named.st_mode):
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as file:
+            opened = os.fstat(file.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid() or opened.st_nlink != 1 or
+                    opened.st_size > 65536 or (native and stat.S_IMODE(opened.st_mode) != 0o600) or
+                    (opened.st_dev,opened.st_ino) != (named.st_dev,named.st_ino)):
+                return False
+            data = file.read(65537)
+            after, current = os.fstat(file.fileno()), os.lstat(path)
+            if (len(data) != opened.st_size or
+                    (after.st_dev,after.st_ino,after.st_size) != (opened.st_dev,opened.st_ino,opened.st_size) or
+                    (current.st_dev,current.st_ino,current.st_size,current.st_nlink,current.st_mode) !=
+                    (opened.st_dev,opened.st_ino,opened.st_size,1,opened.st_mode)):
+                return False
+        return data.hex() == receipt['hex'] and hashlib.sha256(data).hexdigest() == receipt['bytesSHA256']
+    except (OSError, KeyError, ValueError, TypeError):
+        return False
+
+
+def canonical_ui_checks(root, native_context=None):
     checks = {'canonical_pane_frame_association': False,
               'canonical_pane_lifecycle': False, 'canonical_keyboard_landing': False}
     def read(name):
@@ -1847,38 +2149,54 @@ def canonical_ui_checks(root):
             state = [entry for entry in states if entry['revision'] == observation['terminalUiRevision']]
             if (len(frame) != 1 or len(state) != 1 or frame_id < previous_id
                     or type(checkpoint.get('lastObservedFrameId')) is not int
-                    or frame_id > checkpoint['lastObservedFrameId']
-                    or checkpoint['frameFloor'] > receipt['lastObservedFrameId']):
+                    or frame_id > checkpoint['lastObservedFrameId']):
                 return checks
-            matched = canonical_frame_snapshot(state, frame, receipt['lastObservedFrameId'], io)
+            native = frame[0].get('native') is not None
+            lower = action.get('send') if native and action['kind'] == 'resize' else receipt
+            if not isinstance(lower, dict) or checkpoint['frameFloor'] > lower['lastObservedFrameId']:
+                return checks
+            # Authenticate the recorded observation; publication may advance
+            # between observing it and recording the checkpoint boundary.
+            matched = canonical_frame_snapshot(state, frames[:frame_id],
+                lower['lastObservedFrameId'], io[:checkpoint['lastObservedIoId']], native_context, action, checkpoint)
             if matched is None:
                 return checks
             if matched != observation or checkpoint.get('pane') != matched['state']['pane']:
                 return checks
-            start, end = frame[0]['broker']['start'], frame[0]['broker']['end']
-            if (any(type(row.get(key)) is not int for row in (start, end) for key in ('ioId', 'geometryId', 'rawOffset'))
-                    or start['geometryId'] != end['geometryId']
-                    or not receipt['lastObservedIoId'] < start['ioId'] < end['ioId'] <= checkpoint['lastObservedIoId']
-                    or not receipt['observedRawBytes'] <= start['rawOffset'] <= end['rawOffset'] <= checkpoint['observedRawBytes']
-                    or any(row.get('captureId') != frame[0].get('captureId') for row in (start, end))):
-                return checks
-            ack = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start['geometryId']]
-            if (len(ack) != 1 or ack[0].get('succeeded') is not True
-                    or ack[0].get('captureId') != frame[0].get('captureId') or ack[0]['ioId'] > start['ioId']
-                    or matched['terminalViewport'] != {'width': ack[0]['columns'], 'height': ack[0]['rows']}):
-                return checks
+            native = frame[0].get('native') is not None
+            if native:
+                if not canonical_native_action_associated(frame[0], matched.get('nativeBinding'), io, action, checkpoint):
+                    return checks
+                ack = [row for row in io if row.get('ioId') == matched['nativeBinding']['resizeIoId']]
+            else:
+                start, end = frame[0]['broker']['start'], frame[0]['broker']['end']
+                if (any(type(row.get(key)) is not int for row in (start, end) for key in ('ioId', 'geometryId', 'rawOffset'))
+                        or start['geometryId'] != end['geometryId']
+                        or not receipt['lastObservedIoId'] < start['ioId'] < end['ioId'] <= checkpoint['lastObservedIoId']
+                        or not receipt['observedRawBytes'] <= start['rawOffset'] <= end['rawOffset'] <= checkpoint['observedRawBytes']
+                        or any(row.get('captureId') != frame[0].get('captureId') for row in (start, end))):
+                    return checks
+                ack = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start['geometryId']]
+                if (len(ack) != 1 or ack[0].get('succeeded') is not True
+                        or ack[0].get('captureId') != frame[0].get('captureId') or ack[0]['ioId'] > start['ioId']
+                        or matched['terminalViewport'] != {'width': ack[0]['columns'], 'height': ack[0]['rows']}):
+                    return checks
             if action['kind'] == 'input':
                 path = Path(receipt['inputFile'])
-                if (receipt.get('phase') != 'send' or receipt.get('transport') != 'tmux-paste-buffer'
-                        or path.parent != root or path.is_symlink() or path.read_bytes().hex() != receipt['hex']
-                        or sha256(path) != receipt['bytesSHA256']):
+                if not canonical_input_file_matches(root, receipt, native):
                     return checks
+                if native:
+                    sent = [row for row in inputs if row.get('actionId') == receipt.get('actionId') and row.get('phase') == 'sent']
+                    if (len(sent) != 1 or sent[0].get('exitCodes') != [0,0] or
+                            any(type(code) is not int for code in sent[0]['exitCodes'])):
+                        return checks
             else:
                 if (receipt.get('phase') != 'resize-return' or receipt.get('exitCode') != 0
                         or matched['terminalViewport'] != {'width': receipt['columns'], 'height': receipt['rows']}):
                     return checks
                 sent = [row for row in geometry if row.get('phase') == 'resize-send' and row.get('actionId') == receipt.get('actionId')]
                 if (len(sent) != 1 or sent[0]['columns'] != receipt['columns'] or sent[0]['rows'] != receipt['rows']
+                        or (native and action.get('send') != sent[0])
                         or ack[0]['ioId'] <= sent[0]['lastObservedIoId']):
                     return checks
             previous_id = frame_id
@@ -5259,7 +5577,9 @@ else:
     def canonical_dock_text(self, run_dir):
         observation = getattr(self, 'canonical_observation', None) or canonical_frame_snapshot(
             self.canonical_pane_states(run_dir), self.terminal_jsonl(run_dir / 'frames.jsonl'),
-            getattr(self, 'canonical_frame_floor', 0) or 0)
+            getattr(self, 'canonical_frame_floor', 0) or 0, self.terminal_jsonl(run_dir / 'pty-io.jsonl'),
+            getattr(self, 'canonical_native_identity', None), getattr(self, 'canonical_action', None),
+            self.terminal_capture_boundary(run_dir))
         return observation['body'] if observation and observation['witness'] and observation['witness']['placement'] == 'dock' else ''
 
     def terminal_canonical_diff(self):
@@ -5272,6 +5592,7 @@ else:
         self.canonical_frame_floor = 0
         self.canonical_observation = None
         self.canonical_action = None
+        self.canonical_native_identity = None
         release_checks = {}
         release_done = threading.Event()
         release_cancelled = threading.Event()
@@ -5289,7 +5610,10 @@ else:
             self.canonical_frame_floor = self.terminal_capture_boundary(run_dir)['lastObservedFrameId']
             self.tmux('resize-window', '-t', target, '-x', str(columns), '-y', '34', check=True)
             resized = [row for row in self.terminal_jsonl(run_dir / 'geometry.jsonl') if row.get('phase') == 'resize-return']
-            self.canonical_action = {'kind': 'resize', 'receipt': resized[-1]} if resized else None
+            sent = [row for row in self.terminal_jsonl(run_dir / 'geometry.jsonl')
+                    if resized and row.get('phase') == 'resize-send' and row.get('actionId') == resized[-1].get('actionId')]
+            self.canonical_action = {'kind': 'resize', 'receipt': resized[-1],
+                                     'send': sent[0] if len(sent) == 1 else None} if resized else None
 
         def release_on_receipt():
             deadline = time.monotonic() + 30
@@ -5321,9 +5645,13 @@ else:
             def probe():
                 nonlocal observation
                 if pane_checkpoint:
+                    if self.canonical_native_identity is None:
+                        self.canonical_native_identity = canonical_native_context(run_dir,
+                            getattr(self, 'terminal_capture', None), (getattr(self, 'manifest', None) or {}).get('binary_sha256'))
                     observation = canonical_frame_snapshot(self.canonical_pane_states(run_dir),
                         self.terminal_jsonl(run_dir / 'frames.jsonl'), self.canonical_frame_floor,
-                        self.terminal_jsonl(run_dir / 'pty-io.jsonl'))
+                        self.terminal_jsonl(run_dir / 'pty-io.jsonl'), self.canonical_native_identity,
+                        self.canonical_action, self.terminal_capture_boundary(run_dir))
                     self.canonical_observation = observation
                     if observation is None:
                         return False
@@ -5492,7 +5820,8 @@ else:
         (run_dir / 'canonical-checkpoints.json').write_text(json.dumps(checkpoints, indent=2) + '\n')
         (run_dir / 'canonical-ui-states.json').write_text(json.dumps(states, indent=2) + '\n')
         (run_dir / 'canonical-wire.json').write_text(json.dumps(wire, indent=2) + '\n')
-        checks.update(canonical_ui_checks(run_dir))
+        checks.update(canonical_ui_checks(run_dir, self.canonical_native_identity))
+        result['native_association_scope'] = 'Bounded native span, transport and Mach geometry; child read/parser/owner and timing remain uncovered.' if self.canonical_native_identity else None
         checks_path = run_dir / 'canonical-checks.json'
         checks_path.write_text(json.dumps(checks, indent=2) + '\n')
         proofs = [run_dir / name for name in (
@@ -5805,7 +6134,9 @@ else:
 
     def paste_bytes(self, target, run_dir, data, filename):
         input_path = run_dir / filename
-        input_path.write_bytes(data)
+        with os.fdopen(os.open(input_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                               0o600), 'wb') as input_file:
+            input_file.write(data)
         buffer_name = f'cc-release-{self.pid}-{self.session_index}'
         commands = [
             ['load-buffer', '-b', buffer_name, str(input_path)],

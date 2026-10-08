@@ -8033,9 +8033,15 @@ def test_retained_canonical_body_cannot_use_frames_before_current_input():
                     'bodyRect': {'x': 71, 'y': 0, 'width': 39, 'height': 34},
                     'actualFocusWithin': False, 'controls': [], 'paintedScrollTop': 0}],
                  'frameBase64': base64.b64encode(json.dumps(frame).encode()).decode()}
-        gate.terminal_jsonl = lambda _: [stale]
+        capture_id = 'legacy-canonical-fixture'
+        stale.update(captureId=capture_id, broker={'start': {'ioId': 2, 'geometryId': 1, 'rawOffset': 0, 'captureId': capture_id},
+            'end': {'ioId': 3, 'geometryId': 1, 'rawOffset': 0, 'captureId': capture_id}})
+        io = [{'ioId': 1, 'kind': 'resize-ack', 'geometryId': 1, 'captureId': capture_id,
+               'succeeded': True, 'columns': 110, 'rows': 34}, {'ioId': 2}, {'ioId': 3}]
+        (root / 'pty.raw').write_bytes(b'')
+        gate.terminal_jsonl = lambda path: [stale] if path.name == 'frames.jsonl' else io
         assert gate.canonical_dock_text(root) == '', 'old frame accepted for a new input'
-        gate.terminal_jsonl = lambda _: [{**stale, 'frameId': 10}]
+        gate.terminal_jsonl = lambda path: [{**stale, 'frameId': 10}] if path.name == 'frames.jsonl' else io
         assert 'OMEGA_RELEASE_BODY' in gate.canonical_dock_text(root)
         failures = []
         for key, value in [('revision', 6), ('drawing', 2), ('activation', 9), ('lease', 9),
@@ -8043,14 +8049,14 @@ def test_retained_canonical_body_cannot_use_frames_before_current_input():
             changed = json.loads(json.dumps(stale))
             changed['frameId'] = 10
             changed['terminalPanes'][0][key] = value
-            gate.terminal_jsonl = lambda _: [changed]
+            gate.terminal_jsonl = lambda path: [changed] if path.name == 'frames.jsonl' else io
             if gate.canonical_dock_text(root): failures.append(key)
         changed = {**stale, 'frameId': 10, 'terminalUiRevision': 6}
-        gate.terminal_jsonl = lambda _: [changed]
+        gate.terminal_jsonl = lambda path: [changed] if path.name == 'frames.jsonl' else io
         if gate.canonical_dock_text(root): failures.append('global-ui-revision')
         changed = json.loads(json.dumps(stale)); changed['frameId'] = 10
         changed['terminalPanes'][0]['bodyRect']['x'] = 0
-        gate.terminal_jsonl = lambda _: [changed]
+        gate.terminal_jsonl = lambda path: [changed] if path.name == 'frames.jsonl' else io
         if gate.canonical_dock_text(root): failures.append('body-outside-painted-pane')
         assert not failures, failures
 

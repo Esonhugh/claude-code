@@ -73,6 +73,52 @@ class NativeLivePrefixTest(unittest.TestCase):
             with self.subTest(raw=raw), self.assertRaisesRegex(journal.JournalError, 'raw prefix differs'):
                 journal.ink_live_frame_entries(*args, raw, *rest)
 
+    def test_native_span_preserves_uint64_markers_and_live_closed_identity(self):
+        header, packets, registration = self.fixture()
+        epoch = 2 ** 53 + 117
+        header[19] += epoch
+        shifted = []
+        for packet in packets:
+            words = list(journal.RECORD.unpack_from(packet))
+            words[5] += epoch
+            words[6] += epoch
+            shifted.append(journal.RECORD.pack(*words) + packet[journal.RECORD.size:])
+        live_entries = journal.ink_live_frame_entries(header, shifted, b'HI', registration, 789, 'unit-prefix', 0)
+        header[11], header[21] = 1, epoch + 200
+        closed_entries = journal.ink_frame_entries(journal.decode_records(header, shifted, registration, 789),
+                                                   b'HI', 'unit-prefix', 0)
+        self.assertEqual(live_entries, closed_entries)
+        span = live_entries[0]['nativeSpan']
+        self.assertEqual(span['clock'], {'nonce': f'{123:016x}{456:016x}', 'pid': 789,
+            'timebaseNumer': 1, 'timebaseDenom': 1, 'openedAt': str(epoch + 50)})
+        self.assertEqual([(row['kind'], row['sequence'], row['entry'], row['return']) for row in span['markers']],
+                         [(kind, sequence, str(epoch + tick), str(epoch + tick + 1)) for kind, sequence, tick in
+                          [(10, 1, 100), (12, 2, 110), (13, 4, 130), (11, 5, 140)]])
+        self.assertEqual(span['writes'], [{'sequence': 3, 'entry': str(epoch + 120), 'return': str(epoch + 121),
+            'result': 2, 'errno': 0, 'outputBytes': 2}])
+        self.assertEqual(span['observationKind'], 'output-transaction')
+        self.assertNotIn('broker', live_entries[0])
+
+    def test_failed_write_retains_errno_without_advancing_the_physical_prefix(self):
+        header, packets, registration = self.fixture()
+        words = list(journal.RECORD.unpack_from(packets[2]))
+        words[1], words[5], words[6], words[11], words[12], words[14] = 3, 115, 116, 2 ** 64 - 1, 35, 0
+        failed = journal.RECORD.pack(*words)
+        changed = packets[:2] + [failed]
+        for packet in packets[2:]:
+            words = list(journal.RECORD.unpack_from(packet)); words[1] += 1
+            changed.append(journal.RECORD.pack(*words) + packet[journal.RECORD.size:])
+        header[9] = 6
+        live_entries = journal.ink_live_frame_entries(header, changed, b'HI', registration, 789, 'unit-prefix', 0)
+        header[11], header[21] = 1, 200
+        closed_entries = journal.ink_frame_entries(journal.decode_records(header, changed, registration, 789),
+                                                   b'HI', 'unit-prefix', 0)
+        self.assertEqual(live_entries, closed_entries)
+        self.assertEqual((live_entries[0]['rawStart'], live_entries[0]['rawEnd']), (0, 2))
+        self.assertEqual(live_entries[0]['writeSequences'], [3, 4])
+        self.assertEqual([(row['result'], row['errno'], row['outputBytes']) for row in live_entries[0]['nativeSpan']['writes']],
+                         [(-1, 35, 0), (2, 0, 2)])
+
     def test_live_prefix_rejects_foreign_lost_and_malformed_committed_records(self):
         header, packets, registration = self.fixture()
         for index, value in ((8, 790), (10, 1), (11, 2), (12, 0), (19, 0), (9, 4), (6, 999)):
