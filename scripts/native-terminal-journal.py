@@ -15,6 +15,8 @@ import uuid
 MAGIC = 0x314C4E4A544343
 HEADER = struct.Struct('<32Q')
 RECORD = struct.Struct('<20Q')
+TERMIOS_PREFIX = struct.Struct('<6Q')
+TERMIOS_VALUE = struct.Struct('<6Q20B')
 MUTABLE_HEADER = {8, 9, 10, 11, 12, 13, 19, 21}
 
 
@@ -106,6 +108,15 @@ def decode_records(header, records, registration, expected_pid):
                     and fd < 1 << 31 and -1 <= result <= requested <= registration['payloadBytes']
                     and length == max(0, result), 'Original write result/prefix mismatch')
             require(result != -1 or error > 0, 'Failed write lacks original errno')
+        elif kind == 2:
+            require(mask == registration['header'][18] and fd < 1 << 31 and span == 0 and
+                    -1 <= result <= 0 and (operation in (0, 1, 2) or result == -1) and
+                    requested == length == TERMIOS_PREFIX.size + 3 * TERMIOS_VALUE.size,
+                    'Original tcsetattr result or canonical payload mismatch')
+            require(result != -1 or error > 0, 'Failed tcsetattr lacks original errno')
+            prefix = TERMIOS_PREFIX.unpack_from(data, RECORD.size)
+            require(prefix[:2] == (1, 20) and prefix[2] == prefix[4] == 0,
+                    'Native termios kernel query failed')
         else:
             require(10 <= kind <= 20 and fd == mask == operation == returned == error == 0
                     and requested == length, 'Invalid native metadata observation')
@@ -114,20 +125,53 @@ def decode_records(header, records, registration, expected_pid):
                         'fd': fd, 'outputMask': mask, 'operation': operation,
                         'requested': requested, 'result': result, 'errno': error,
                         'spanId': span, 'bytes': data[RECORD.size:]})
+        if kind == 2:
+            for index, name in enumerate(('modeBefore', 'modeRequested', 'modeAfter')):
+                values = TERMIOS_VALUE.unpack_from(data, RECORD.size + TERMIOS_PREFIX.size + index * TERMIOS_VALUE.size)
+                decoded[-1][name] = dict(zip(('inputFlags', 'outputFlags', 'controlFlags', 'localFlags',
+                                             'inputSpeed', 'outputSpeed'), values[:6])) | {'controlChars': list(values[6:])}
     return decoded
 
 
-def verify_raw(records, raw, output_flags):
+def native_write_outputs(records, output_flags):
+    """Transform each successful write using ordered observed kernel modes.
+
+    Captured tcsetattr calls do not cover unobserved direct mode ioctls or input
+    ownership. An overlapping mode change cannot select a write's transform.
+    """
     import termios
+    require(type(output_flags) is int and 0 <= output_flags < 2 ** 64,
+            'Invalid native initial output flags')
+    effects = sorted((row for row in records if row['kind'] in (1, 2)),
+                     key=lambda row: (row['entry'], row['return'], row['sequence']))
+    require(all(left['return'] <= right['entry'] for left, right in zip(effects, effects[1:])),
+            'Overlapping writes or termios changes lack kernel order')
+    outputs = {}
+    current = output_flags
+    for row in effects:
+        if row['kind'] == 2:
+            require(row['modeBefore']['outputFlags'] == current,
+                    'Native termios before-state differs from mode ledger')
+            current = row['modeAfter']['outputFlags']
+            continue
+        if current & termios.OPOST:
+            require(current == termios.OPOST | termios.ONLCR, 'Unproved native PTY transformation')
+            output = row['bytes'].replace(b'\n', b'\r\n')
+        else:
+            output = row['bytes']
+        outputs[row['sequence']] = output
+    return outputs
+
+
+def verify_raw(records, raw, output_flags):
     writes = [row for row in records if row['kind'] == 1]
     require(len({row['threadId'] for row in writes}) <= 1,
             'Multiple writers lack kernel order')
     require(all(left['return'] <= right['entry'] for left, right in zip(writes, writes[1:])),
             'Overlapping writes lack kernel order')
-    require(output_flags == termios.OPOST | termios.ONLCR,
-            'Unproved native PTY transformation')
-    source = b''.join(row['bytes'] for row in writes)
-    require(source.replace(b'\n', b'\r\n') == raw,
+    outputs = native_write_outputs(records, output_flags)
+    source = b''.join(outputs[row['sequence']] for row in writes)
+    require(source == raw,
             'Unowned, missing, transformed or reordered raw bytes')
     return {'verdict': 'passed', 'method': 'native-shared-slot-writes-v1',
             'rawBytes': len(raw), 'rawSHA256': hashlib.sha256(raw).hexdigest(),
@@ -196,6 +240,7 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
     """
     import base64
     verify_raw(records, raw, output_flags)
+    outputs = native_write_outputs(records, output_flags)
     spans = frame_spans(records, 'ink-post-write-v1')
     require(spans and [span['spanId'] for span in spans] == list(range(1, len(spans) + 1)),
             'Missing native Ink frame identity')
@@ -226,8 +271,8 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
                 'Immutable Ink snapshot differs from its layout or cursor policy')
         before = [row for row in records if row['kind'] == 1 and row['return'] <= begin['entry']]
         selected = [by_sequence[sequence] for sequence in span['writeSequences']]
-        start = sum(len(row['bytes'].replace(b'\n', b'\r\n')) for row in before)
-        count = sum(len(row['bytes'].replace(b'\n', b'\r\n')) for row in selected)
+        start = sum(len(outputs[row['sequence']]) for row in before)
+        count = sum(len(outputs[row['sequence']]) for row in selected)
         finish = start + count
         require(previous_offset <= start <= finish <= len(raw), 'Invalid native physical frame prefix')
         entries.append({'frameId': span['spanId'], 'native': identity,

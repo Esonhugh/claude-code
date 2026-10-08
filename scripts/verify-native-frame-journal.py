@@ -72,6 +72,7 @@ def verify_fixed_geometry_io(run, expected, native_brackets=False):
 def native_resize_events(io, header, registration, records, initial):
     """Only non-overlapping kernel brackets determine physical resize offsets."""
     writes = [row for row in records if row['kind'] == 1]
+    outputs = journal.native_write_outputs(records, initial['outputFlags'])
     spans = journal.frame_spans(records, 'ink-post-write-v1')
     by_sequence = {row['sequence']: row for row in records}
     events = []
@@ -120,7 +121,7 @@ def native_resize_events(io, header, registration, records, initial):
                             f"Native resize overlaps output transaction (frameId={span['spanId']})")
             if layout['entry'] >= returned:
                 before_frame = min(before_frame, span['spanId'])
-        raw_offset = sum(len(write['bytes'].replace(b'\n', b'\r\n')) for write in writes
+        raw_offset = sum(len(outputs[write['sequence']]) for write in writes
                          if write['return'] <= entry)
         events.append({'ioId': row['ioId'], 'geometryId': row['geometryId'],
                        'beforeFrameId': before_frame, 'rawOffset': raw_offset,

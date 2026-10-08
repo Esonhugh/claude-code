@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <stdint.h>
@@ -219,8 +220,47 @@ static ssize_t observed_write(int fd,const void *bytes,size_t length){return rec
 static ssize_t observed_writev(int fd,const struct iovec *iov,int count){return record_writev(fd,iov,count,writev,2);}
 static ssize_t observed_write_nocancel(int fd,const void *bytes,size_t length){return record_write(fd,bytes,length,write_nocancel,3);}
 static ssize_t observed_writev_nocancel(int fd,const struct iovec *iov,int count){return record_writev(fd,iov,count,writev_nocancel,4);}
+// Canonical fields omit struct padding and retain Darwin's full 64-bit flags.
+static void pack_termios(unsigned char *target,const struct termios *value){
+ uint64_t flags[6]={value->c_iflag,value->c_oflag,value->c_cflag,value->c_lflag,value->c_ispeed,value->c_ospeed};
+ memcpy(target,flags,sizeof(flags));memcpy(target+sizeof(flags),value->c_cc,NCCS);
+}
+static int observed_tcsetattr(int fd,int action,const struct termios *requested){
+ int incoming=errno,channel=output_channel(fd);errno=incoming;
+ if(!channel)return tcsetattr(fd,action,requested);
+ _Static_assert(sizeof(tcflag_t)==8 && sizeof(speed_t)==8 && NCCS==20,"Darwin termios field sizes changed");
+ uint64_t *slot=reserve(2,0),prefix[6]={1,NCCS,0,0,0,0};
+ struct termios before={0},copied={0},after={0};
+ const size_t value_bytes=6*sizeof(uint64_t)+NCCS,payload_bytes=sizeof(prefix)+3*value_bytes;
+ if(slot){
+  slot[7]=(uint64_t)fd;slot[8]=(uint64_t)channel;slot[9]=(uint64_t)(int64_t)action;slot[10]=payload_bytes;
+  if(payload_bytes>payload_capacity)slot[13]=1;
+  else{
+   errno=incoming;int queried=tcgetattr(fd,&before);prefix[2]=(uint64_t)(int64_t)queried;prefix[3]=(uint64_t)errno;
+   if(queried || copy_memory(requested,sizeof(copied),&copied)!=sizeof(copied))slot[13]=1;
+  }
+ }
+ errno=incoming;if(slot)slot[5]=mach_absolute_time();
+ int returned=tcsetattr(fd,action,requested);int outcome=errno;
+ if(slot){
+  slot[6]=mach_absolute_time();slot[11]=(uint64_t)(int64_t)returned;slot[12]=(uint64_t)outcome;
+  if(!slot[13]){
+   errno=outcome;int queried=tcgetattr(fd,&after);prefix[4]=(uint64_t)(int64_t)queried;prefix[5]=(uint64_t)errno;
+   if(queried)slot[13]=1;
+   else{
+    unsigned char *payload=(unsigned char*)(slot+RECORD_WORDS);
+    memcpy(payload,prefix,sizeof(prefix));payload+=sizeof(prefix);
+    pack_termios(payload,&before);pack_termios(payload+value_bytes,&copied);pack_termios(payload+2*value_bytes,&after);
+    slot[14]=payload_bytes;
+   }
+  }
+  publish(slot);
+ }
+ errno=outcome;return returned;
+}
 #define INTERPOSE(replacement,original) __attribute__((used)) static struct {const void *replacement;const void *original;} interpose_##original __attribute__((section("__DATA,__interpose")))={(const void*)replacement,(const void*)original}
 INTERPOSE(observed_write,write);
 INTERPOSE(observed_writev,writev);
 INTERPOSE(observed_write_nocancel,write_nocancel);
 INTERPOSE(observed_writev_nocancel,writev_nocancel);
+INTERPOSE(observed_tcsetattr,tcsetattr);

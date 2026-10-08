@@ -2164,3 +2164,5 @@ native replay 要求默认 backend 的独立身份及完整 IO 初始几何收�
 默认 native IO 另由 owned broker 的关闭收据固定原始JSONL摘要、记录数量、最终geometry identity及raw字节数；expected独立保留该收据，回放要求每个output区间连续覆盖全部raw，其他事件offset不跳动。截断、重新编号或同时改写IO和普通cleanup仍会拒收；这项完整性绑定不代表native resize时序或OS input ownership已得到证明。
 
 默认 native broker 另在退出前独占写入 producer-expected-native.json，摘要来自其内存原件及实际PID/初始几何。第一次 seal 只读该producer expectation并核对prepare身份；缺失、预存、发布失败均不能通过，不会从当前IO或cleanup重算。真实入口负例在首次seal前删input、重编号并更新两份cleanup，保持producer expectation不变，仍被拒收。若prepare identity、producer expectation及所有原件都同时被替换，仍需外层可信封存；这里没有加密认证或完整native时序证明。
+
+原生采集另记录真实 `tcsetattr` 的 Mach-clock entry/return、原始 retval/errno及内核 before/requested/after flags、speed、control chars。write重放、frame与resize prefix按已观测 mode 顺序使用实际 output flags；mode/write重叠、未知输出转换或证据缺失拒收。可继续用上述新构建后的两项 Python 脚本串行运行，包含关闭/恢复 OPOST、ECHO、失败 action和观测溢出的回归。此处只覆盖实际捕获的 tcsetattr 调用，直接 mode ioctl、完整 termios lifetime、OS input owner和时序等价仍未通过。见[终端模式观测与回归](docs/research/mods-native-termios-observation-validity-20261008.md)。

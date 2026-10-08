@@ -47,7 +47,7 @@ class NativeResizeOrderingTest(unittest.TestCase):
         row = {'kind': 'resize-ack', 'ioId': 3, 'geometryId': 1, 'rawOffset': 0,
                'columns': 110, 'rows': 34, 'succeeded': True,
                'nativeClockCorrelationCovered': True, 'nativeBracket': bracket}
-        return verifier, [row], header, {'nonce': 'owned'}, records, {'sizeHex': before}
+        return verifier, [row], header, {'nonce': 'owned'}, records, {'sizeHex': before, 'outputFlags': termios.OPOST | termios.ONLCR}
 
     def test_resize_after_frame_end_precedes_next_frame_not_late_snapshot(self):
         verifier, *arguments = self.fixture()

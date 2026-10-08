@@ -2311,3 +2311,7 @@ b1b只读审查在限定prepare/producer原件独立的边界关闭F-IO-1/2，�
 签名提交95d2947对应提交前冻结源码c582：完整默认矩阵加原有追加项正常结束348.465s，29/29记录齐全，23 passed、6 failed。canonical diff的52帧/1次resize、terminal interaction的73帧/4次resize均独立physical passed、bounded passed，正常exit0/EOF/reap且无signals/cleanupErrors；两个target整体仍因完整native范围未闭合而failed，不能误归因为本轮坏帧或提升为full passed。
 
 其余失败为builtin-mods、code-review、workflow、workflow-retry-partial-failure；builtin独立frame复查passed但assertionsfailed，生产completion与API/lifecycle继续待处理。source/Git unchanged、lease/auth/workflow清理完整，27个direct场景和本轮driver/两个native子进程已终态。完整flags保持false，四路正式发布未通过；[精确manifest、hash与逐项处置](docs/research/mods-native-resize-bracket-validity-20261008.md#native33-最终处置)。
+
+## 2026-10-08 native termios 有效性补充
+
+已复现“最终attrs相等但过程缺失”和“OPOST变化导致固定转换错误”两个真实C probe失败；tcsetattr记录及按mode转换已实现。8988隔离新构建collector25/25、CLI/frame/order9/9通过，完整termios/direct ioctl/OS输入owner/调度仍未闭合。新增失败action、overflow和重叠拒收回归，最终批次完整driver结果单独处置。详情见 [termios证据](docs/research/mods-native-termios-observation-validity-20261008.md)。

@@ -29,6 +29,7 @@ PROBE = r'''
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
+#include <termios.h>
 #include <stdint.h>
 #include <dlfcn.h>
 #include <pthread.h>
@@ -46,6 +47,19 @@ int main(int argc,char **argv){
   pthread_t thread;if(pthread_create(&thread,NULL,other,NULL))return 75;
   if(write(1,"main\n",5)!=5)return 76;
   pthread_join(thread,NULL);
+ }else if(!strcmp(mode,"termios-cycle")||!strcmp(mode,"termios-output-cycle")){
+  struct termios original,changed;
+  if(tcgetattr(1,&original))return 90;
+  changed=original;
+  if(!strcmp(mode,"termios-output-cycle"))changed.c_oflag&=~OPOST;else changed.c_lflag^=ECHO;
+  errno=EALREADY;if(tcsetattr(1,TCSANOW,&changed)||errno!=EALREADY)return 91;
+  if(write(1,"mode\n",5)!=5)return 92;
+  errno=EALREADY;if(tcsetattr(1,TCSANOW,&original)||errno!=EALREADY)return 93;
+  if(write(1,"restored\n",9)!=9)return 94;
+ }else if(!strcmp(mode,"termios-failed")){
+  struct termios original;if(tcgetattr(1,&original))return 95;
+  errno=EALREADY;if(tcsetattr(1,12345,&original)!=-1||errno!=EINVAL)return 96;
+  if(write(1,"failed-mode\n",12)!=12)return 97;
  }else if(!strcmp(mode,"nocancel")){
   ssize_t(*w)(int,const void*,size_t)=dlsym(RTLD_DEFAULT,"write$NOCANCEL");
   ssize_t(*v)(int,const struct iovec*,int)=dlsym(RTLD_DEFAULT,"writev$NOCANCEL");
@@ -346,6 +360,68 @@ class NativeJournalTest(unittest.TestCase):
         self.assertEqual(writes[2]['errno'], errno.EBADF)
         self.assertEqual(next(row for row in records if row['kind'] == 11)['bytes'], b'ORIGINAL')
         self.assertEqual(journal.frame_spans(records)[0]['untransformedBytes'], 5013)
+
+    def test_real_termios_cycle_is_recorded_even_when_final_attrs_and_raw_match(self):
+        plain = self.capture('termios-cycle', observed=False)
+        header, packets, registration, pid, raw = self.capture('termios-cycle')
+        self.assertEqual(raw, plain[-1])
+        self.assertEqual(raw, b'mode\r\nrestored\r\n')
+        records = journal.decode_records(header, packets, registration, pid)
+        self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+        modes = [row for row in records if row['kind'] == 2]
+        self.assertEqual(len(modes), 2, 'Final termios equality hides real ECHO disable/restore history')
+        self.assertEqual([row['result'] for row in modes], [0, 0])
+        self.assertEqual([row['errno'] for row in modes], [errno.EALREADY, errno.EALREADY])
+        self.assertEqual(modes[0]['modeBefore']['localFlags'] ^ modes[0]['modeAfter']['localFlags'], termios.ECHO)
+        self.assertEqual(modes[0]['modeRequested'], modes[0]['modeAfter'])
+        self.assertEqual(modes[1]['modeBefore'], modes[0]['modeAfter'])
+        self.assertEqual(modes[1]['modeRequested'], modes[1]['modeAfter'])
+        self.assertEqual(modes[1]['modeAfter'], modes[0]['modeBefore'])
+
+    def test_real_output_mode_cycle_replays_each_write_with_actual_kernel_flags(self):
+        plain = self.capture('termios-output-cycle', observed=False)
+        header, packets, registration, pid, raw = self.capture('termios-output-cycle')
+        self.assertEqual(raw, plain[-1])
+        self.assertEqual(raw, b'mode\nrestored\r\n')
+        records = journal.decode_records(header, packets, registration, pid)
+        self.assertEqual(len([row for row in records if row['kind'] == 2]), 2)
+        self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+
+    def test_failed_termios_preserves_actual_errno_and_kernel_state(self):
+        plain = self.capture('termios-failed', observed=False)
+        header, packets, registration, pid, raw = self.capture('termios-failed')
+        self.assertEqual(raw, plain[-1])
+        records = journal.decode_records(header, packets, registration, pid)
+        modes = [row for row in records if row['kind'] == 2]
+        self.assertEqual(len(modes), 1)
+        self.assertEqual((modes[0]['operation'], modes[0]['result'], modes[0]['errno']), (12345, -1, errno.EINVAL))
+        self.assertEqual(modes[0]['modeBefore'], modes[0]['modeAfter'])
+        self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+
+    def test_termios_observation_overflow_preserves_original_mode_changes(self):
+        plain = self.capture('termios-output-cycle', observed=False)
+        header, packets, registration, pid, raw = self.capture('termios-output-cycle', payload=128)
+        self.assertEqual(raw, plain[-1])
+        self.assertEqual(raw, b'mode\nrestored\r\n')
+        with self.assertRaisesRegex(journal.JournalError, 'Truncated or unsupported'):
+            journal.decode_records(header, packets, registration, pid)
+
+    def test_termios_write_order_and_unknown_output_transform_are_rejected(self):
+        header, packets, registration, pid, raw = self.capture('termios-output-cycle')
+        records = journal.decode_records(header, packets, registration, pid)
+        self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+        for mutation, message in (('before', 'before-state'), ('overlap', 'Overlapping'), ('transform', 'Unproved')):
+            changed = copy.deepcopy(records)
+            mode = next(row for row in changed if row['kind'] == 2)
+            if mutation == 'before':
+                mode['modeBefore']['outputFlags'] ^= termios.OPOST
+            elif mutation == 'overlap':
+                write = next(row for row in changed if row['kind'] == 1)
+                mode['return'] = write['return']
+            else:
+                mode['modeAfter']['outputFlags'] = termios.OPOST
+            with self.subTest(mutation=mutation), self.assertRaisesRegex(journal.JournalError, message):
+                journal.verify_raw(changed, raw, termios.OPOST | termios.ONLCR)
 
     def test_signed_native_device_identity_has_the_same_unsigned_representation(self):
         from types import SimpleNamespace
