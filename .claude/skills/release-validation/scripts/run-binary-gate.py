@@ -354,6 +354,13 @@ TARGET_PATH_RULES += (('terminal-canonical-diff', (
     'src/plugins/builtinShippedMods', 'src/plugins/builtinPlugins',
     'src/services/mods/', 'assets/builtin-diff-',
 )),)
+TARGET_PATH_RULES += (('mods-process-spawn', (
+    'src/services/mods/hostOperations', 'src/services/mods/runtime',
+    'src/services/mods/dispatch', 'src/services/mods/protocol',
+    'src/services/mods/loader', 'src/services/mods/environment',
+    'src/services/mods/worker', 'src/services/mods/testing/runner',
+    'src/services/mods/processSpawn', 'scripts/validate-mods-process-spawn.py',
+)),)
 SSH_LIFECYCLE_IDS = {
     'session_id': 'release-ssh-session-0001',
     'task_id': 'release-ssh-task-0001',
@@ -1014,7 +1021,7 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
     expected_hashes = assertion.get('evidence_sha256')
     terminal_target = next((target for target, (required_id, _) in TERMINAL_ACCEPTANCE.items()
                             if assertion_id == required_id), None)
-    if expected_hashes is not None or assertion_id in ('code-review-native-scope-identity', 'builtin-mods-compiled-acceptance') or terminal_target:
+    if expected_hashes is not None or assertion_id in ('code-review-native-scope-identity', 'builtin-mods-compiled-acceptance', 'mods-process-spawn-real-author') or terminal_target:
         if (not isinstance(expected_hashes, dict) or not expected_hashes
                 or any(not isinstance(path, str) or not Path(path).is_absolute()
                        or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
@@ -1103,6 +1110,41 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                 if not revalidate_builtin_assertion(source_root, acceptance_path, registered['binary_sha256']):
                     return False
                 if any(Path(path).read_bytes() != data for path, data in verified_bytes.items()):
+                    return False
+            if assertion_id == 'mods-process-spawn-real-author':
+                import importlib.util
+                registered = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                native = source_root / 'native'
+                report_key = str(native / 'evidence/result.json')
+                checks_key = str(source_root / 'process-spawn-checks.json')
+                probe_path = Path(__file__).resolve().parents[4] / 'scripts/validate-mods-process-spawn.py'
+                if (expected_hashes != registered.get('process_spawn_evidence_sha256')
+                        or registered.get('process_spawn_root') != str(native)
+                        or report_key not in verified_bytes
+                        or expected_hashes[report_key] != registered.get('process_spawn_report_sha256')
+                        or sha256(probe_path) != registered.get('process_spawn_probe_sha256')):
+                    return False
+                report = json.loads(verified_bytes[report_key])
+                artifacts = report.get('artifactsSHA256')
+                if not isinstance(artifacts, dict) or not artifacts:
+                    return False
+                required = {checks_key, str(source_root / 'stdout.txt'),
+                            str(source_root / 'stderr.txt'), report_key,
+                            *(str(native / name) for name in artifacts)}
+                if required != set(verified_bytes):
+                    return False
+                if (report.get('originalBinary') != registered.get('binary')
+                        or json.loads(verified_bytes[str(source_root / 'stdout.txt')]).get('reportSHA256') != registered.get('process_spawn_report_sha256')):
+                    return False
+                spec = importlib.util.spec_from_file_location('mods_spawn_final_probe', probe_path)
+                probe = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(probe)
+                checks = {'foreground_native_exit': True, **probe.recheck_process_spawn_report(
+                    native, registered['process_spawn_report_sha256'], registered['binary_sha256']),
+                    'closed_originals_rechecked': True}
+                if (not all(value is True for value in checks.values())
+                        or json.loads(verified_bytes[checks_key]).get('checks') != checks
+                        or any(Path(path).read_bytes() != data for path, data in verified_bytes.items())):
                     return False
             if terminal_target:
                 required_files = {'capture-launch.json', 'terminal-capture.json',
@@ -1290,6 +1332,10 @@ def validate_required_target_results(required_targets, runs, registered_runs=Non
                 if len(matching) != 1 or matching[0].get('source_run') != Path(run['evidence_dir']).name:
                     valid = False
                     break
+        if valid and target == 'mods-process-spawn':
+            matching = [item for item in assertions
+                        if item.get('assertion_id') == 'mods-process-spawn-real-author']
+            valid = len(matching) == 1 and matching[0].get('source_run') == Path(run['evidence_dir']).name
         if valid and target == 'builtin-mods':
             matching = [item for item in assertions
                         if item.get('assertion_id') == 'builtin-mods-compiled-acceptance']
@@ -4773,18 +4819,20 @@ else:
         raise SystemExit(128 + signum)
 
     def record(self, result):
-        if result.get('label') in TERMINAL_ACCEPTANCE:
+        if result.get('label') in TERMINAL_ACCEPTANCE or result.get('label') == 'mods-process-spawn':
             root = Path(result['evidence_dir']).resolve()
             metadata_path = root / 'run-metadata.json'
             registered = self.registered_runs[str(root)]
             if metadata_path.read_text() != registered:
                 raise RuntimeError('terminal producer metadata changed before acceptance registration')
-            required_id = TERMINAL_ACCEPTANCE[result['label']][0]
+            process_spawn = result['label'] == 'mods-process-spawn'
+            required_id = 'mods-process-spawn-real-author' if process_spawn else TERMINAL_ACCEPTANCE[result['label']][0]
             matching = [item for item in result.get('assertions', []) if item.get('assertion_id') == required_id]
             if len(matching) != 1 or str(metadata_path) in matching[0].get('evidence_sha256', {}):
                 raise RuntimeError('terminal producer has no unique sealed business assertion')
             metadata = json.loads(registered)
-            metadata['terminal_evidence_sha256'] = dict(matching[0]['evidence_sha256'])
+            anchor = 'process_spawn_evidence_sha256' if process_spawn else 'terminal_evidence_sha256'
+            metadata[anchor] = dict(matching[0]['evidence_sha256'])
             metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
             self.registered_runs[str(root)] = metadata_path.read_text()
         assertions = result.get('assertions')
@@ -5382,6 +5430,81 @@ else:
             )],
         })
         self.record(result)
+
+    def mods_process_spawn(self):
+        import importlib.util
+        run_dir = self.evidence_root / 'mods-process-spawn'
+        run_dir.mkdir()
+        metadata_path = run_dir / 'run-metadata.json'
+        metadata_path.write_text(json.dumps({
+            'label': 'mods-process-spawn', 'source_run': run_dir.name,
+            'driver_run': f'{self.stamp}-{self.pid}',
+            'evidence_dir': str(run_dir.resolve()), 'binary': str(self.binary),
+            'binary_sha256': self.manifest['binary_sha256'],
+        }, indent=2) + '\n')
+        self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+        script = self.repo / 'scripts/validate-mods-process-spawn.py'
+        command = [sys.executable, str(script), '--binary', str(self.binary),
+                   '--binary-sha256', self.manifest['binary_sha256'],
+                   '--evidence-root', str(run_dir / 'native')]
+        completed = subprocess.run(command, cwd=self.repo, capture_output=True,
+                                   text=True, check=False)
+        (run_dir / 'stdout.txt').write_text(completed.stdout)
+        (run_dir / 'stderr.txt').write_text(completed.stderr)
+        checks = {'foreground_native_exit': completed.returncode == 0}
+        error = None
+        held_sha = None
+        try:
+            receipt = json.loads(completed.stdout)
+            held_sha = receipt['reportSHA256']
+            spec = importlib.util.spec_from_file_location('mods_spawn_probe', script)
+            probe = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(probe)
+            checks.update(probe.recheck_process_spawn_report(
+                run_dir / 'native', held_sha, self.manifest['binary_sha256']))
+        except (OSError, ValueError, KeyError, TypeError) as failure:
+            error = str(failure)
+            checks['closed_originals_rechecked'] = False
+        else:
+            checks['closed_originals_rechecked'] = True
+        checks_path = run_dir / 'process-spawn-checks.json'
+        checks_path.write_text(json.dumps({
+            'checks': checks, 'held_report_sha256': held_sha,
+            'error': error, 'command': command,
+            'coverage': 'eight actual author CLI contracts; no complete UI/Mods claim',
+        }, indent=2) + '\n')
+        proofs = [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt',
+                  run_dir / 'native/evidence/result.json',
+                  run_dir / 'native/evidence/debug.log',
+                  run_dir / 'native/evidence/pty.raw',
+                  run_dir / 'native/evidence/inputs.jsonl',
+                  run_dir / 'native/evidence/driver-used.py',
+                  run_dir / 'native/cwd/children.jsonl']
+        passed = all(checks.values())
+        if passed:
+            report = json.loads((run_dir / 'native/evidence/result.json').read_bytes())
+            proofs = list(dict.fromkeys([*proofs, *(run_dir / 'native' / name
+                        for name in report['artifactsSHA256'])]))
+            metadata = json.loads(self.registered_runs[str(run_dir.resolve())])
+            metadata.update(process_spawn_root=str(run_dir / 'native'),
+                            process_spawn_report_sha256=held_sha,
+                            process_spawn_probe_sha256=sha256(script))
+            metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+            self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+        self.record({
+            'label': 'mods-process-spawn', 'evidence_dir': str(run_dir),
+            'validation_verdict': 'passed' if passed else 'failed',
+            'checks': checks,
+            'assertions': [self.required_assertion(
+                run_dir, 'mods-process-spawn-real-author',
+                'Process stream through actual author CLI',
+                'Eight real author calls preserve pipes, raw/wrapped receipts, origin, repeat, deny and close semantics; owned children and socket close, with held report and originals rechecked.',
+                proofs, passed=passed,
+                reason=error or 'process.spawn actual entry contract failed',
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
+            )],
+        })
 
     def builtin_mods(self):
         run_dir = self.evidence_root / 'builtin-mods'
@@ -10856,6 +10979,7 @@ else:
             'terminal-interaction': self.terminal_interaction,
             'terminal-canonical-diff': self.terminal_canonical_diff,
             'builtin-mods': self.builtin_mods,
+            'mods-process-spawn': self.mods_process_spawn,
         }
         try:
             self.run_target('readiness-smoke', self.readiness_smoke)

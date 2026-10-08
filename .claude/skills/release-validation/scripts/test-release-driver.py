@@ -3842,7 +3842,7 @@ def assert_driver_behavior(module, baseline_module):
         'scripts/mods-test-lab.mjs',
         'src/services/mods/runtime.ts',
         'src/components/ModsPane.tsx',
-    ]) == {'builtin-mods', 'terminal-interaction', 'terminal-canonical-diff'}
+    ]) == {'builtin-mods', 'terminal-interaction', 'terminal-canonical-diff', 'mods-process-spawn'}
     driver_source = Path(module.__file__).read_text()
     for assertion in (
         'completeness', 'cleanup', 'agents', 'diff', 'security', 'ui',
@@ -8393,6 +8393,121 @@ def test_retained_stdout_mirror_never_proves_native_pty_physical_cells():
                                for frame in (frames[0], frames[3], frames[4])]}
     checks = module.terminal_frame_report_checks(report)
     assert checks.get('frame_physical') is not True, checks
+
+def test_retained_process_spawn_real_entry_is_required_for_its_runtime_and_validator_paths():
+    module = load_driver()
+    for path in [
+        'src/services/mods/hostOperations.ts', 'src/services/mods/runtime.ts',
+        'src/services/mods/dispatch.ts', 'src/services/mods/protocol.ts',
+        'src/services/mods/loader.ts', 'src/services/mods/environment.ts',
+        'src/services/mods/worker.ts', 'src/services/mods/testing/runner.ts',
+        'scripts/validate-mods-process-spawn.py',
+    ]:
+        assert 'mods-process-spawn' in module.required_targets_for_paths([path]), path
+
+
+def test_retained_process_spawn_closed_receipts_cannot_pass_without_their_child_and_stream_contracts():
+    spec = importlib.util.spec_from_file_location('process_spawn_probe', SCRIPTS_DIR.parents[3] / 'scripts/validate-mods-process-spawn.py')
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    fixture = json.loads((SCRIPTS_DIR.parents[3] / 'tests/fixtures/mods-process-spawn-official-293.json').read_text())['observations']
+    assert all(probe.process_spawn_checks(fixture).values())
+    for field in ['caseResults', 'children']:
+        changed = json.loads(json.dumps(fixture))
+        changed[field] = changed[field][:-1]
+        assert not all(probe.process_spawn_checks(changed).values()), field
+    for field in ['normalExitPassed', 'childrenGone', 'binaryUnchanged', 'socketReleased']:
+        changed = json.loads(json.dumps(fixture))
+        changed[field] = False
+        assert not all(probe.process_spawn_checks(changed).values()), field
+    for case, field, value in [('pending','receiptState','rejected'),('before','resultState','fulfilled'),('normal','receipt',{'code':0,'signal':None}),('deny','chunks',[{'stream':'stdout','text':'obs:unexpected'}])]:
+        changed = json.loads(json.dumps(fixture))
+        next(row for row in changed['caseResults'] if row['case']==case)[field] = value
+        assert not all(probe.process_spawn_checks(changed).values()), (case,field)
+    with tempfile.TemporaryDirectory() as directory:
+        root=Path(directory)
+        (root/'evidence').mkdir()
+        path=root/'evidence/result.json'
+        path.write_text(json.dumps(fixture))
+        held=hashlib.sha256(path.read_bytes()).hexdigest()
+        path.write_text(json.dumps({**fixture,'childrenGone':False}))
+        try:
+            probe.recheck_process_spawn_report(root,held,'held-binary')
+        except ValueError as error:
+            assert 'closed report changed' in str(error)
+        else:
+            raise AssertionError('rewritten closed report was accepted')
+
+
+
+def test_retained_process_spawn_final_rechecks_all_registered_originals_and_exact_assertion():
+    module = load_driver()
+    probe_path = SCRIPTS_DIR.parents[3] / 'scripts/validate-mods-process-spawn.py'
+    spec = importlib.util.spec_from_file_location('process_spawn_final_probe', probe_path)
+    probe = importlib.util.module_from_spec(spec); spec.loader.exec_module(probe)
+    fixture = json.loads((SCRIPTS_DIR.parents[3] / 'tests/fixtures/mods-process-spawn-official-293.json').read_text())['observations']
+    failures = []
+    for scenario in ('valid', 'unlisted-original-changed', 'renamed-id', 'missing-hashes', 'original-proof-omitted', 'report-rewritten-and-rehashed', 'binary-rebound', 'probe-rebound'):
+        with tempfile.TemporaryDirectory(prefix='spawn-final-closure-unit-') as tmp:
+            root = Path(tmp).resolve(); native = root / 'native'; native.mkdir()
+            def write(relative, data):
+                path = native / relative; path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data); return path
+            binary = write('bin/claude', b'controlled unit binary, not a native run')
+            binary_sha = module.sha256(binary)
+            report = json.loads(json.dumps(fixture))
+            report.update(binarySHA256=binary_sha, originalBinarySHA256=binary_sha,
+                          originalBinary=str(binary), driverSHA256=module.sha256(probe_path), inputs=[])
+            debug = ''.join('SPAWN-ORACLE:'+json.dumps(row)+'\n' for row in report['caseResults'])
+            debug += ''.join('SPAWN-NEXT:'+json.dumps({'case':case,'origin':{'plugin':'spawn-oracle-author','tier':'user'},'receipt':{'value':{'code':7,'signal':None}}})+'\n' for case in ('normal','twice','afterdeny'))
+            write('evidence/debug.log', debug.encode())
+            write('evidence/pty.raw', b'controlled unit transcript')
+            write('evidence/driver-used.py', probe_path.read_bytes())
+            write('evidence/inputs.jsonl', b'')
+            write('cwd/children.jsonl', ''.join(json.dumps(row)+'\n' for row in report['children']).encode())
+            extra = write('plugin/hooks/register.js', b'controlled original author module')
+            report['artifactsSHA256'] = {str(path.relative_to(native)):module.sha256(path) for path in native.rglob('*') if path.is_file()}
+            report_path = write('evidence/result.json', json.dumps(report).encode())
+            held = module.sha256(report_path)
+            checks = {'foreground_native_exit':True, **probe.recheck_process_spawn_report(native,held,binary_sha), 'closed_originals_rechecked':True}
+            assert all(checks.values()), checks
+            checks_path = root / 'process-spawn-checks.json'; checks_path.write_text(json.dumps({'checks':checks,'held_report_sha256':held}))
+            stdout = root / 'stdout.txt'; stdout.write_text(json.dumps({'reportSHA256':held}))
+            stderr = root / 'stderr.txt'; stderr.write_text('')
+            proofs = [checks_path,stdout,stderr,report_path,*(native / name for name in report['artifactsSHA256'])]
+            assertion = {'assertion_id':'mods-process-spawn-real-author','source_run':root.name,
+                         'runtime_state':'done','validation_verdict':'passed',
+                         'required_evidence':[str(path) for path in proofs],
+                         'observed_evidence_paths':[str(path) for path in proofs],
+                         'evidence_sha256':{str(path):module.sha256(path) for path in proofs}}
+            metadata = {'label':'mods-process-spawn','source_run':root.name,'driver_run':'unit-driver',
+                        'evidence_dir':str(root),'binary':str(binary),'binary_sha256':binary_sha,
+                        'process_spawn_root':str(native),'process_spawn_report_sha256':held,
+                        'process_spawn_probe_sha256':module.sha256(probe_path),
+                        'process_spawn_evidence_sha256':assertion['evidence_sha256'].copy()}
+            path = root / 'run-metadata.json'; path.write_text(json.dumps(metadata))
+            registered = {str(root):path.read_text()}
+            # The old method's narrow proof roster omits the author module. This scenario
+            # preserves that roster and mutates only a report-listed original.
+            if scenario=='unlisted-original-changed':
+                keep=[checks_path,stdout,stderr,report_path,native/'evidence/debug.log',native/'evidence/pty.raw',native/'evidence/inputs.jsonl',native/'evidence/driver-used.py',native/'cwd/children.jsonl']
+                assertion['required_evidence']=assertion['observed_evidence_paths']=[str(item) for item in keep]
+                assertion['evidence_sha256']={str(item):module.sha256(item) for item in keep}
+                metadata['process_spawn_evidence_sha256']=assertion['evidence_sha256'].copy()
+                path.write_text(json.dumps(metadata)); registered={str(root):path.read_text()}
+                extra.write_bytes(b'changed after immediate recheck')
+            elif scenario=='renamed-id': assertion['assertion_id']='borrowed-green'
+            elif scenario=='missing-hashes': assertion.pop('evidence_sha256')
+            elif scenario=='original-proof-omitted':
+                assertion['required_evidence'].remove(str(extra)); assertion['observed_evidence_paths'].remove(str(extra)); assertion['evidence_sha256'].pop(str(extra))
+            elif scenario=='report-rewritten-and-rehashed':
+                report['childrenGone']=False; report_path.write_text(json.dumps(report)); assertion['evidence_sha256'][str(report_path)]=module.sha256(report_path)
+            elif scenario=='binary-rebound': metadata['binary_sha256']='0'*64; path.write_text(json.dumps(metadata)); registered={str(root):path.read_text()}
+            elif scenario=='probe-rebound': metadata['process_spawn_probe_sha256']='0'*64; path.write_text(json.dumps(metadata)); registered={str(root):path.read_text()}
+            run={'label':'mods-process-spawn','evidence_dir':str(root),'driver_run':'unit-driver','validation_verdict':'passed','assertions':[assertion]}
+            passed=module.validate_required_target_results({'mods-process-spawn'},[run],registered)['passed']
+            if passed != (scenario=='valid'): failures.append(scenario)
+    assert not failures, failures
 
 if __name__ == '__main__':
     main()

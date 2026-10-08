@@ -1,0 +1,173 @@
+{
+  "kind": "unit contract fixture; no current binary pass",
+  "officialVersion": "2.1.293",
+  "sourceReceiptSHA256": "df6e244fb6798ad54750102eea357f405ba55763ac755c787e12ac95136eae54",
+  "observations": {
+    "caseResults": [
+      {
+        "case": "normal",
+        "immediate": true,
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "obs:{\"pid\":77593,\"input\":\"stdin-é\",\"marker\":\"observer\"}"
+          },
+          {
+            "stream": "stderr",
+            "text": "obs:stderr-é-漢字"
+          }
+        ],
+        "receipt": {
+          "code": 7,
+          "signal": null
+        }
+      },
+      {
+        "case": "twice",
+        "immediate": true,
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "obs:{\"pid\":77611,\"input\":\"stdin-é\",\"marker\":\"observer\"}"
+          },
+          {
+            "stream": "stderr",
+            "text": "obs:stderr-é-漢字"
+          },
+          {
+            "stream": "stdout",
+            "text": "obs:{\"pid\":77613,\"input\":\"stdin-é\",\"marker\":\"observer\"}"
+          },
+          {
+            "stream": "stderr",
+            "text": "obs:stderr-é-漢字"
+          }
+        ],
+        "receipt": {
+          "code": 7,
+          "signal": null
+        }
+      },
+      {
+        "case": "deny",
+        "immediate": true,
+        "chunks": [],
+        "error": {
+          "name": "HooksError",
+          "message": "spawn-oracle-author: $.process.spawn: held spawn"
+        },
+        "receiptError": {
+          "name": "HooksError",
+          "message": "spawn-oracle-author: $.process.spawn: held spawn"
+        }
+      },
+      {
+        "case": "afterdeny",
+        "immediate": true,
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "obs:{\"pid\":77643,\"input\":\"stdin-é\",\"marker\":\"observer\"}"
+          },
+          {
+            "stream": "stderr",
+            "text": "obs:stderr-é-漢字"
+          }
+        ],
+        "error": {
+          "name": "HooksError",
+          "message": "spawn-oracle-author: $.process.spawn ran, and a plugin withheld its result: held after child"
+        },
+        "receiptError": {
+          "name": "HooksError",
+          "message": "spawn-oracle-author: $.process.spawn ran, and a plugin withheld its result: held after child"
+        }
+      },
+      {
+        "case": "before",
+        "immediate": true,
+        "chunks": [],
+        "returned": {
+          "done": true
+        },
+        "resultState": "pending"
+      },
+      {
+        "case": "pending",
+        "immediate": true,
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "obs:{\"pid\":77666,\"input\":\"stdin-é\",\"marker\":\"observer\"}"
+          }
+        ],
+        "returned": {
+          "done": true
+        },
+        "pending": {
+          "value": {
+            "done": true
+          }
+        },
+        "receiptState": "fulfilled"
+      },
+      {
+        "case": "break",
+        "immediate": true,
+        "chunks": [
+          {
+            "stream": "stdout",
+            "text": "obs:{\"pid\":77698,\"input\":\"stdin-é\",\"marker\":\"observer\"}"
+          }
+        ],
+        "returned": {
+          "done": true
+        },
+        "receiptError": {
+          "name": "HooksError",
+          "message": "the stream was closed before its result"
+        }
+      },
+      {
+        "case": "badreceipt",
+        "immediate": true,
+        "chunks": [],
+        "receipt": {
+          "code": "bad-code",
+          "signal": 12
+        }
+      }
+    ],
+    "children": [
+      {
+        "pid": 77593,
+        "case": "normal"
+      },
+      {
+        "pid": 77611,
+        "case": "twice"
+      },
+      {
+        "pid": 77613,
+        "case": "twice"
+      },
+      {
+        "pid": 77643,
+        "case": "afterdeny"
+      },
+      {
+        "pid": 77666,
+        "case": "pending"
+      },
+      {
+        "pid": 77698,
+        "case": "break"
+      }
+    ],
+    "status": "observed",
+    "normalExitPassed": true,
+    "childrenGone": true,
+    "binaryUnchanged": true,
+    "socketReleased": true
+  }
+}

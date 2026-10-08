@@ -859,8 +859,8 @@ test.each([false, true])('nested unhandled capability fails instead of invoking 
 test('nested mocked capabilities do not require production services', async () => {
   const {result} = await scenario(`import {test, expect} from 'claude-code/testing';
     test('usage', async ($, on) => {
-      on('session.usage', () => ({value:{context:{window:123},rateLimits:[]}}));
-      expect(await $.tool.call({name:'probe'})).toEqual({result:{context:{window:123},rateLimits:[]}});
+      on('session.usage', () => ({value:{startedAt:1234,context:{window:123},rateLimits:[]}}));
+      expect(await $.tool.call({name:'probe'})).toEqual({result:{startedAt:1234,context:{window:123},rateLimits:[]}});
     });`, `export function register(on) {
       on('tool.call', {name:'probe'}, async $ => ({result: await $.session.usage()}));
     }`)
