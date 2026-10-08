@@ -2211,3 +2211,5 @@ Native43完整30项仍为27通过、3失败；canonical和interaction实际norma
 canonical 验收新增 native span、动作窗口与 Mach geometry 关联；零输出观察只可引用同 root/几何的实际输出帧，不能补造 FIFO ACK 或证明 child input owner。回归入口：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-canonical-binding.py`，随后仍须上述 fresh build、完整 CLI/frame 文件和默认完整矩阵。实现、拒收条件及历史重算边界见[原生 canonical 绑定](docs/research/mods-native-canonical-binding-validity-20261009.md)。旧 resize RED 和完整发布失败继续保留。
 
 原生 canonical 验收认证已经记录的 frame identity，并保持完整 checkpoint/action/IO/geometry 校验；输入原件使用 exclusive/no-follow 0600 创建。历史门禁和未覆盖边界见 [原生 canonical 绑定验收](docs/research/mods-native-canonical-binding-validity-20261009.md)，现场检查点通过不替代最终完整门禁。
+
+原生终端报告保留独立backend，区分帧事务输出与连续replay段，并将原resize请求、真实内核ACK与后续正确尺寸的实际绘制帧一一对应。回归入口为 `scripts/test-native-report-consumers.py` 和 `scripts/native-frame-journal-replay.test.mjs`；使用方法与仍未闭合的完整门禁见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。

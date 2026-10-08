@@ -2384,3 +2384,7 @@ Native46 完整原默认矩阵及七项追加目标仍为27/3，canonical 首个
 Native47 原默认完整30项仍为27/3，现场 canonical 23个检查点全部true，但最终验收三UI字段false由alpha记录frame36、boundary已37时重新选37触发；14个原始input0644也会被0600reader拒收。red12两项最小回归保留。本次pin原记录frame并保留所有上界/原IO关联，input producer exclusive/no-follow 0600创建；不改历史frame/权限/verdict。geometryEvents消费者、真实host Git receipt、securityOrdinary suggestion replacement超时仍独立开放，现场23true不是完整验收通过。
 
 red10/green11 的 input producer synthetic receipt 最初缺少 phase/transport，不能据其首次失败证明权限根因；原结果保留为夹具缺口。补齐真实 receipt shape 后，red12在旧producer明确失败，修复不放宽consumer条件。
+# 原生报告契约验收
+
+默认native报告保留自身method与独立parser身份；实际physical尺寸/语义、原请求→Mach ACK→后续positive-output帧用于最终及归档消费，不添加legacy别名。`outputBytes`只计帧事务，`replayBytes`包含帧前输出。回归入口及Native48原件、synthetic/历史重算与fresh binary边界见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。完整发布、input owner、timing和旧resize RED保持未闭合。
+CLI resize fixture必须在实际tmux命令前后保存geometry send/return，绑定当时完整frame/IO前缀、raw长度、真实target/参数及exit code；内核ACK不能代替请求收据。Green2完整CLI文件14/1的首次缺证据失败及17项原件hash保留于`native-canonical-schema-green2-cli1-fixture-disposition.json`，不得改判历史通过。
