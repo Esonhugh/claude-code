@@ -1,0 +1,114 @@
+import { readFileSync, writeFileSync, realpathSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { fileURLToPath, URL } from 'node:url'
+import { isDeepStrictEqual } from 'node:util'
+import { validateBuiltinTerminalEvidence } from './builtin-terminal-evidence.mjs'
+import { verifyPtyTerminalEvidence } from './verify-pty-terminal-evidence.mjs'
+
+export async function recheckBuiltinSide(side, binarySha256) {
+  if (
+    side?.binarySha256 !== binarySha256 ||
+    !validateBuiltinTerminalEvidence(side)
+  )
+    return {
+      verdict: 'failed',
+      reason: 'sealed native identity, input, EOF or file hashes are invalid',
+    }
+  try {
+    const replay = await verifyPtyTerminalEvidence(realpathSync(side.run))
+    return {
+      verdict: replay.verdict,
+      replay,
+      captureId: side.captureId,
+      run: realpathSync(side.run),
+    }
+  } catch (error) {
+    return { verdict: 'failed', reason: error.message }
+  }
+}
+
+export async function recheckBuiltinEvidence(report, binarySha256) {
+  const names = [
+    'privacyOff',
+    'privacyOn',
+    'enabled',
+    'disabled',
+    'securityOrdinary',
+    'securityTeam',
+    'securityEnterprise',
+  ]
+  const sides = names.map((name) => report?.pair?.[name]),
+    result = {}
+  if (
+    sides.some((side) => !side?.captureId || !side?.run) ||
+    new Set(sides.map((side) => side.captureId)).size !== names.length ||
+    new Set(sides.map((side) => realpathSync(side.run))).size !== names.length
+  )
+    return {
+      verdict: 'failed',
+      reason: 'seven distinct owned runs and capture identities are required',
+    }
+  for (const [index, name] of names.entries())
+    result[name] = await recheckBuiltinSide(sides[index], binarySha256)
+  return {
+    verdict: Object.values(result).every((side) => side.verdict === 'passed')
+      ? 'passed'
+      : 'failed',
+    scope:
+      'independent archived Ink-root frame replay; product timing and complete terminal gate remain separate',
+    oracleSha256: createHash('sha256').update(readFileSync(new URL('./verify-pty-terminal-evidence.mjs', import.meta.url))).digest('hex'),
+    verifierSha256: createHash('sha256')
+      .update(readFileSync(fileURLToPath(import.meta.url)))
+      .digest('hex'),
+    sides: result,
+  }
+}
+
+export async function recheckFinalBuiltinEvidence(input, binarySha256, savedPath) {
+  const report = JSON.parse(readFileSync(input, 'utf8')),
+    saved = JSON.parse(readFileSync(savedPath, 'utf8')),
+    { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs'),
+    assertions = assessBuiltinAcceptance(report.pair),
+    current = JSON.parse(JSON.stringify(await recheckBuiltinEvidence(report, binarySha256)))
+  const timingPreserved = Object.values(report.pair).every(side =>
+    side.cleanup.terminalCapture.productTimingEquivalent === true &&
+    // The acknowledged v1 recorder changes the product render schedule.
+    side.cleanup.terminalCapture.stream.method !==
+      'owned native PTY complete byte ledger and acknowledged frame boundaries')
+  const passed = current.verdict === 'passed' && timingPreserved &&
+    isDeepStrictEqual(saved, current) &&
+    isDeepStrictEqual(report.assertions, assertions) &&
+    Object.values(assertions).every(assertion => assertion.verdict === 'passed')
+  return { verdict: passed ? 'passed' : 'failed', acceptance: input,
+    binarySha256, reason: passed ? null : 'current seven-side assertions, identity, timing or replay differ from sealed acceptance' }
+}
+
+if (import.meta.main) {
+  const [input, binarySha256, output, saved] = process.argv.slice(2)
+  if (input === '--final') {
+    let result
+    try {
+      result = await recheckFinalBuiltinEvidence(binarySha256, output, saved)
+    } catch (error) { result = { verdict: 'failed', reason: error.message } }
+    process.stdout.write(JSON.stringify(result) + '\n')
+    if (result.verdict !== 'passed') process.exitCode = 1
+  } else {
+  if (!input || !output || !/^[a-f0-9]{64}$/.test(binarySha256 ?? ''))
+    throw Error(
+      'Usage: recheck-builtin-terminal-evidence.mjs ACCEPTANCE.json BINARY_SHA256 OUTPUT.json',
+    )
+  let result
+  try {
+    result = await recheckBuiltinEvidence(
+      JSON.parse(readFileSync(input, 'utf8')),
+      binarySha256,
+    )
+  } catch (error) {
+    result = { verdict: 'failed', reason: error.message }
+  }
+  writeFileSync(output, JSON.stringify(result, null, 2) + '\n', {
+    mode: 0o600,
+  })
+  if (result.verdict !== 'passed') process.exitCode = 1
+}
+}

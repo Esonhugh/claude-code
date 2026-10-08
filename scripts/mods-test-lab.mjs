@@ -1,3 +1,4 @@
+import {createBuiltinCapture,installBuiltinCapture,recordedBuiltinTmux,sealBuiltinCapture,validateBuiltinTerminalEvidence} from './builtin-terminal-evidence.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -158,7 +159,8 @@ export function fixtureEnvironment(run, apiUrl = 'http://127.0.0.1:1') {
     PATH: `${join(run, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`, SHELL: '/bin/sh', TERM: 'xterm-256color', LANG: 'en_US.UTF-8',
     ANTHROPIC_API_KEY: 'sk-ant-mods-test-lab-fake-not-a-credential', ANTHROPIC_BASE_URL: apiUrl,
     ENABLE_TOOL_SEARCH: 'true',
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1',
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
   }
 }
@@ -288,16 +290,20 @@ export function startBuiltinRun(options, execute = execFileSync, findTmux = () =
   const pluginArgs = copiedPlugin === undefined ? [] : ['--plugin-dir', copiedPlugin]
   const argv = sandboxCommand(run, [binary, '--dangerously-skip-permissions', ...pluginArgs, '--setting-sources', 'user,project,local', '--debug-file', debug])
   const metadata = { run, socket, session: 'mods', mode: inlinePlugin === undefined ? 'builtin-only' : 'builtin-with-inline-acceptance-fixture', binary: options.binary, binarySha256: sha256(readFileSync(binary)), ...(copiedPlugin === undefined ? {} : { plugin: inventory(copiedPlugin) }), debug, env, argv, uiOnly: options.apiUrl === 'http://127.0.0.1:1', activation: 'not-verified', trigger: 'not-run' }
-  writeJSON(join(run, 'command.json'), metadata)
   const tmuxConfig = join(run, 'tmux.conf')
   writeFileSync(tmuxConfig, 'set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n', { flag: 'wx', mode: 0o600 })
-  const child = execute(tmux, ['-S', socket, '-f', tmuxConfig, 'new-session', '-d', '-s', 'mods', '-x', '160', '-y', '50', '-c', join(run, 'project'), '-P', '-F', '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pid}', ...argv], { env, encoding: 'utf8', timeout: 10000 }).trim()
+  const capture = createBuiltinCapture(run, argv, env, {binarySha256:metadata.binarySha256})
+  metadata.capture = capture
+  metadata.launchArgv = [capture.wrapper]
+  writeJSON(join(run, 'command.json'), metadata)
+  const child = execute(tmux, ['-S', socket, '-f', tmuxConfig, 'new-session', '-d', '-s', 'mods', '-x', '160', '-y', '50', '-c', join(run, 'project'), '-P', '-F', '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pid}', capture.wrapper], { env, encoding: 'utf8', timeout: 10000 }).trim()
   const [target, pane, serverPid] = child.split(/\s+/)
+  installBuiltinCapture({run, socket, target, tmux, env}, capture, execute)
   const tmuxArgs = [tmux, '-S', socket]
   const note = inlinePlugin === undefined
     ? 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
     : 'Compiled builtin launch with one copied inline acceptance fixture under the private run; no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
-  const report = { ...metadata, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), capture: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: `${note} Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.` }
+  const report = { ...metadata, capture, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), captureCommand: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: `${note} Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.` }
   writeJSON(join(run, 'run.json'), report)
   console.log(JSON.stringify(report, null, 2))
   return report
@@ -374,12 +380,15 @@ export function assessBuiltinAcceptance(pair) {
     enabled.every(row => markers.every(marker => !JSON.stringify(row.body).includes(marker))) &&
     disabled.every(row => markers.every(marker => JSON.stringify(row.body).includes(marker)))
   const diffSides = [pair.enabled, pair.disabled]
-  const diff = diffSides.every(side => side && !side.error && (!side.cleanup || side.cleanup.status === 0)) && diffSides.every(side =>
-    side.catalog.includes('View uncommitted changes and per-turn diffs') &&
-    !side.catalog.includes('Toggle the diff panel showing uncommitted changes')) &&
+  const diff = diffSides.every(side => side && !side.error && (!side.cleanup || side.cleanup.status === 0)) && pair.enabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
+    !pair.enabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
+    pair.disabled.catalog.includes('View uncommitted changes and per-turn diffs') &&
+    !pair.disabled.catalog.includes('Toggle the diff panel showing uncommitted changes') &&
     diffSides.every(side => ['tracked.txt', '-before', '+after'].every(text => side.diff.includes(text))) &&
     diffSides.every(side => side.closed.includes('bypass permissions') && !side.closed.includes('tracked.txt') && !side.closed.includes('Enter to view')) &&
-    diffSides.every(side => side.dismissalEscapes === 2)
+    diffSides.every(side => side.dismissalEscapes === 2) &&
+    pair.enabled.diffOwner === 'plugin' && pair.enabled.canonicalDiffPane === true &&
+    pair.disabled.diffOwner === 'native' && pair.disabled.nativeDiffBody === true
   const registration = side => side?.registration ?? ''
   const security = registration(pair.securityOrdinary).includes('mcp__mods-test-lab__acceptance-probe') &&
     [pair.securityTeam, pair.securityEnterprise].every(side =>
@@ -425,7 +434,11 @@ export function assessBuiltinAcceptance(pair) {
     privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'authorize' && privacyOn[1]?.granted === true &&
     privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
     privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
+  const frameEvidence = sides.every(side => validateBuiltinTerminalEvidence(side))
+  const timingEquivalent = sides.every(side => side?.cleanup?.terminalCapture?.productTimingEquivalent === true)
+  const terminalEvidence = frameEvidence && timingEquivalent
   return {
+    terminalEvidence: {verdict:terminalEvidence?'passed':'failed', frameEvidence, timingEquivalent, reason:'all seven sides require independently verified physical frames and preserved product timing; synchronous diagnostic capture cannot close the terminal gate'},
     completeness: { verdict: complete && matchingBinary ? 'passed' : 'failed', reason: 'all seven sides must record the same valid copied binary hash and complete cleanup evidence' },
     cleanup: { verdict: cleanup ? 'passed' : 'failed', reason: 'all seven sides must observe a dead pane, kill tmux successfully, remove its socket, close the provider successfully, and pass cleanup' },
     agents: { verdict: agents ? 'passed' : 'failed', reason: 'managed-only must remove both native instruction markers from every main request; disabled must retain both' },
@@ -453,6 +466,9 @@ async function cleanupAcceptanceSide(launch, provider) {
     cleanup.paneDead = checked.status === 0 && checked.stdout.trim() === '1'
     const stopped = spawnSync(launch.tmux, ['-S', launch.socket, 'kill-server'], { encoding: 'utf8', timeout: 10000 })
     cleanup.tmuxKill = { status: stopped.status, error: stopped.error?.message }
+    if (launch.capture && cleanup.paneDead && stopped.status === 0) {
+      try { cleanup.terminalCapture = await sealBuiltinCapture(launch) } catch (error) { cleanup.terminalCapture = {verdict:'failed',error:error.message} }
+    }
     try {
       if (stopped.status === 0 && existsSync(launch.socket)) rmSync(launch.socket)
       cleanup.socketRemove = { status: stopped.status === 0 && !existsSync(launch.socket) ? 0 : 1 }
@@ -501,8 +517,8 @@ export async function acceptBuiltin(options) {
         const configPath = join(run, 'config/.claude.json')
         writeFileSync(configPath, JSON.stringify({ ...json(configPath), projects: { [join(run, 'project')]: { hasTrustDialogAccepted: true } } }))
       })
-      side.run = launch.run
-      const tmux = (...args) => execFileSync(launch.tmux, ['-S', launch.socket, ...args], { encoding: 'utf8', timeout: 10000 })
+      Object.assign(side, {run:launch.run, target:launch.target, pane:launch.pane, socket:launch.socket, binarySha256:launch.binarySha256, captureId:launch.capture.captureId})
+      const tmux = (...args) => recordedBuiltinTmux(launch, args)
       const wait = async predicate => {
         const deadline = Date.now() + 45000
         do {
@@ -557,13 +573,10 @@ export async function acceptBuiltin(options) {
         const configPath = join(run, 'config/.claude.json')
         writeFileSync(configPath, JSON.stringify({ ...json(configPath), projects: { [join(run, 'project')]: { hasTrustDialogAccepted: true } } }))
       })
-      side.run = launch.run
-      side.target = launch.target
-      side.socket = launch.socket
-      side.binarySha256 = launch.binarySha256
+      Object.assign(side, {run:launch.run, target:launch.target, pane:launch.pane, socket:launch.socket, binarySha256:launch.binarySha256, captureId:launch.capture.captureId})
       const tmux = (...args) => {
         appendFileSync(join(root, 'commands.jsonl'), `${JSON.stringify(args)}\n`, { mode: 0o600 })
-        return execFileSync(launch.tmux, ['-S', launch.socket, ...args], { encoding: 'utf8', timeout: 10000 })
+        return recordedBuiltinTmux(launch, args)
       }
       const capture = label => {
         const text = tmux('capture-pane', '-p', '-S', '-2000', '-t', launch.target)
@@ -599,6 +612,16 @@ export async function acceptBuiltin(options) {
         tmux('send-keys', '-t', launch.target, 'Enter')
       }
       side.diff = await wait('diff', text => text.includes('tracked.txt') && text.includes('before') && text.includes('after'))
+      const debug = readFileSync(join(launch.run, 'debug.log'), 'utf8')
+      const ownership = [...debug.matchAll(/\[Mods:diff\] ownership=(plugin|native)\b/g)].at(-1)
+      side.diffOwner = ownership?.[1]
+      side.canonicalDiffPane = debug.split('\n').some(line => {
+        const at = line.indexOf('[ModsUI] ')
+        if (at < 0) return false
+        try { const value = JSON.parse(line.slice(at + '[ModsUI] '.length)); return value.event === 'publish' && value.panes.some(pane => pane.plugin === 'cc-plugin-diff' && pane.id === 'diff' && pane.visible === true && pane.hasTree === true) } catch { return false }
+      })
+      side.nativeDiffBody = debug.includes('[diff] open') && debug.includes('[diff] body ready')
+      if (side.diffOwner === undefined && side.nativeDiffBody && !side.canonicalDiffPane) side.diffOwner = 'native'
       tmux('send-keys', '-t', launch.target, 'Escape')
       await delay(200)
       tmux('send-keys', '-t', launch.target, 'Escape')
@@ -641,13 +664,10 @@ export async function acceptBuiltin(options) {
           } }), { mode: 0o600 })
         }
       }, join(REPO, 'examples/mods/mods-test-lab'))
-      side.run = launch.run
-      side.target = launch.target
-      side.socket = launch.socket
-      side.binarySha256 = launch.binarySha256
+      Object.assign(side, {run:launch.run, target:launch.target, pane:launch.pane, socket:launch.socket, binarySha256:launch.binarySha256, captureId:launch.capture.captureId})
       const tmux = (...args) => {
         appendFileSync(join(root, 'commands.jsonl'), `${JSON.stringify(args)}\n`, { mode: 0o600 })
-        return execFileSync(launch.tmux, ['-S', launch.socket, ...args], { encoding: 'utf8', timeout: 10000 })
+        return recordedBuiltinTmux(launch, args)
       }
       const capture = label => {
         const text = tmux('capture-pane', '-p', '-S', '-2000', '-t', launch.target)
@@ -703,8 +723,23 @@ export async function acceptBuiltin(options) {
         side.suggestionRollback = await wait('suggestion-rollback', text => text.includes('MODS_SUGGESTION:replacement:rollbackcheck') && text.includes('suggestion=shown:replacement:rollbackcheck'))
         await send('/mods-test open')
         side.opened = await wait('opened', text => text.includes('Mods test lab') && text.includes('Local input'))
+        const latestLabPane = () => {
+          const debug = readFileSync(join(launch.run, 'debug.log'), 'utf8')
+          const publications = debug.split('\n').flatMap(line => {
+            const at = line.indexOf('[ModsUI] ')
+            if (at < 0) return []
+            try { const value = JSON.parse(line.slice(at + '[ModsUI] '.length)); return value.event === 'publish' ? [value] : [] } catch { return [] }
+          })
+          const publication = publications.at(-1)
+          const pane = publication?.panes.find(pane => pane.id === 'mods-test-lab' && pane.plugin === 'mods-test-lab')
+          return pane && { ...pane, revision: publication.revision }
+        }
+        await wait('count-focused', () => { const pane = latestLabPane(); return pane?.focused === true && pane.focusedElement === 'count' && pane.hasTree === true })
         tmux('send-keys', '-t', launch.target, 'Tab')
+        side.inputFocused = await wait('input-focused', () => { const pane = latestLabPane(); return pane?.focused === true && pane.focusedElement === 'input' && pane.hasTree === true })
+        const inputDrawing = latestLabPane().drawing
         tmux('send-keys', '-t', launch.target, '-l', '中文')
+        side.inputChanged = await wait('input-changed', text => { const pane = latestLabPane(); return text.includes('Input length=2/256') && text.includes('\"input\":1') && text.includes('\"submit\":0') && pane?.focusedElement === 'input' && pane.drawing !== inputDrawing })
         tmux('send-keys', '-t', launch.target, 'Enter')
         side.interacted = await wait('interacted', text => text.includes('Input length=2/256') && text.includes('"input":1') && text.includes('"submit":1'))
         tmux('resize-window', '-t', launch.target, '-x', '100', '-y', '35')
@@ -713,8 +748,8 @@ export async function acceptBuiltin(options) {
         side.closed = await wait('closed', text => text.includes('bypass permissions') && !text.includes('Mods test lab'))
         await send('/mods-test background')
         side.reopened = await wait('reopened', text => text.includes('Mods test lab') && text.includes('Input length=2/256') && text.includes('background'))
-        tmux('send-keys', '-t', launch.target, 'Tab')
-        await delay(200)
+        tmux('send-keys', '-t', launch.target, 'C-x', 'Tab')
+        side.reopenedFocused = await wait('reopened-focused', () => latestLabPane()?.focused === true)
         tmux('send-keys', '-t', launch.target, 'Escape')
         side.reclosed = await wait('reclosed', text => text.includes('bypass permissions') && !text.includes('Mods test lab'))
       }

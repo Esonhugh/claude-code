@@ -7,6 +7,7 @@ import { createServer } from 'node:net'
 import { join } from 'node:path'
 import { zipSync } from 'fflate'
 import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
+import {createBuiltinCapture} from './builtin-terminal-evidence.mjs'
 
 const roots = []
 function temp() {
@@ -215,14 +216,19 @@ describe('builtin-only compiled launcher', () => {
     try {
       report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]), (file, args, options) => {
         calls.push({ file, args, options })
-        return 'mods:0.0 %1 12345\n'
+        return args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n'
       }, () => '/usr/local/bin/tmux')
     } finally {
       if (before === undefined) delete process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
       else process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = before
     }
 
-    expect(calls).toHaveLength(1)
+    expect(calls).toHaveLength(3)
+    expect(report.capture.initialSize).toEqual({columns:160,rows:50})
+    expect(typeof report.captureCommand).toBe('string')
+    const capturedCommand=JSON.parse(readFileSync(join(report.run,'command.json'),'utf8'))
+    expect(capturedCommand.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH).toBe(report.capture.frames)
+    expect(capturedCommand.launchArgv).toEqual([report.capture.wrapper])
     expect(calls[0].file).toBe('/usr/local/bin/tmux')
     expect(calls[0].args).toContain('new-session')
     expect(calls[0].options.cwd).toBeUndefined()
@@ -250,7 +256,7 @@ describe('builtin-only compiled launcher', () => {
       expect(settings.pluginConfigs['agents-md@builtin'].options.instructionFiles).toBe('managed-only')
       expect(settings.enabledPlugins['diff@builtin']).toBe(false)
       expect(env.ANTHROPIC_MODEL).toBe('claude-sonnet-4-5-20250929')
-      return 'mods:0.0 %1 12345\n'
+      return _args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n'
     }, () => '/usr/local/bin/tmux', (run, env) => {
       configured = run
       env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
@@ -268,7 +274,7 @@ describe('builtin-only compiled launcher', () => {
     const fixture = plugin(shortTemp())
     const report = startBuiltinRun(
       parseArgs(['run-builtin', '--binary', binary, '--cache', cache]),
-      () => 'mods:0.0 %1 12345\n',
+      (_file,args) => args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n',
       () => '/usr/local/bin/tmux',
       undefined,
       fixture,
@@ -328,6 +334,17 @@ exit 1
     expect(cleanup.verdict).toBe('passed')
     expect(cleanup.socketRemove.status).toBe(0)
     expect(existsSync(socket)).toBe(false)
+  })
+
+  test('seals only after the output collector receives EOF from owned tmux shutdown', async () => {
+    const run = temp(), socket = join(run,'tmux.sock'), tmux = join(run,'tmux')
+    writeFileSync(socket,'')
+    const capture = createBuiltinCapture(run,['/bin/echo','fixture'],{})
+    writeFileSync(tmux,`#!/bin/sh\nif [ "$3" = "display-message" ]; then printf '1\\n'; exit 0; fi\nif [ "$3" = "kill-server" ]; then printf '0\\n' > '${capture.eof}'; exit 0; fi\nexit 1\n`)
+    chmodSync(tmux,0o700)
+    const cleanup = await cleanupAcceptanceSide({run,socket,tmux,target:'test:0.0',capture,binarySha256:'a'.repeat(64)}, {close:async()=>{}})
+    expect(cleanup.terminalCapture.eofPassed).toBe(true)
+    expect(cleanup.terminalCapture.framePhysicalVerdict).toBe('not covered')
   })
 
   test('does not unlink the socket when tmux shutdown fails and still closes the provider', async () => {
@@ -416,10 +433,10 @@ exit 1
     const { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs')
     const request = text => ({ body: { model: 'claude-sonnet-4-5-20250929', messages: [{ role: 'user', content: `MODS_ACCEPT_PROMPT ${text}` }] } })
     const binarySha256 = 'a'.repeat(64)
-    const cleanup = { verdict: 'passed', paneDead: true, tmuxKill: { status: 0 }, socketRemove: { status: 0 }, providerClose: { status: 0 }, status: 0 }
+    const cleanup = { terminalCapture:{framePhysicalVerdict:'passed'}, verdict: 'passed', paneDead: true, tmuxKill: { status: 0 }, socketRemove: { status: 0 }, providerClose: { status: 0 }, status: 0 }
     const pair = {
-      enabled: { binarySha256, cleanup, requests: [request('')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
-      disabled: { binarySha256, cleanup, requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
+      enabled: { binarySha256, cleanup, diffOwner: 'plugin', canonicalDiffPane: true, requests: [request('')], catalog: 'Toggle the diff panel showing uncommitted changes', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
+      disabled: { binarySha256, cleanup, diffOwner: 'native', nativeDiffBody: true, requests: [request('MODS_ACCEPT_CLAUDE_MARKER MODS_TEST_LAB_AGENTS_MARKER')], catalog: 'View uncommitted changes and per-turn diffs', diff: 'tracked.txt\n-before\n+after', closed: '❯\n bypass permissions on', dismissalEscapes: 2 },
       securityOrdinary: { binarySha256, cleanup, registration: 'registration=mcp__mods-test-lab__acceptance-probe', toolSearch: 'MODS_TOOLSEARCH_COMPLETE:acceptance123', requests: [
         { body: { model: 'claude-haiku-4-5-20251001', messages: [{ role: 'user', content: 'Generate a title' }] } },
         request('MODS_TOOLSEARCH_PROMPT:acceptance123'),
@@ -444,6 +461,8 @@ exit 1
     }
     const result = assessBuiltinAcceptance(pair)
     expect(result.completeness.verdict).toBe('passed')
+    expect(result.terminalEvidence.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({...pair,securityOrdinary:{...pair.securityOrdinary,cleanup:{...cleanup,terminalCapture:{verdict:'captured',framePhysicalVerdict:'not covered'}}}}).terminalEvidence.verdict).toBe('failed')
     expect(result.cleanup.verdict).toBe('passed')
     expect(result.agents.verdict).toBe('passed')
     expect(result.security.verdict).toBe('passed')
@@ -474,10 +493,12 @@ exit 1
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, requests: [request('MODS_ACCEPT_CLAUDE_MARKER')] } }).agents.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, requests: [request('')] } }).agents.verdict).toBe('failed')
-    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, catalog: 'Toggle the diff panel showing uncommitted changes' } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, catalog: 'View uncommitted changes and per-turn diffs' } }).diff.verdict).toBe('failed')
+    expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, catalog: 'Toggle the diff panel showing uncommitted changes' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, diff: 'Diff panel shown' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, closed: 'bypass permissions on tracked.txt Enter to view' } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, disabled: { ...pair.disabled, diff: 'tracked.txt +after' } }).diff.verdict).toBe('failed')
+    for (const [side, facts] of [['enabled', {diffOwner:'native'}], ['enabled', {canonicalDiffPane:false}], ['disabled', {diffOwner:'plugin'}], ['disabled', {nativeDiffBody:false}]]) expect(assessBuiltinAcceptance({...pair, [side]: {...pair[side], ...facts}}).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, enabled: { ...pair.enabled, dismissalEscapes: 1 } }).diff.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, securityTeam: { ...pair.securityTeam, registration: 'registered' } }).security.verdict).toBe('failed')
     expect(assessBuiltinAcceptance({ ...pair, securityOrdinary: { ...pair.securityOrdinary, registration: 'denied' } }).security.verdict).toBe('failed')
@@ -500,7 +521,7 @@ exit 1
     const binary = join(shortTemp(), 'built-claude')
     writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
     const report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]),
-      () => 'mods:0.0 %1 12345\n', () => '/usr/local/bin/tmux', (run, env) => {
+      (_file,args) => args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n', () => '/usr/local/bin/tmux', (run, env) => {
         const ledger = join(run, 'host.jsonl')
         writeFileSync(ledger, '', { mode: 0o600 })
         env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledger

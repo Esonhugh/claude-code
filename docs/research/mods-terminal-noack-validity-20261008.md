@@ -1,0 +1,17 @@
+# 终端帧关联与无需 ACK 的验收
+
+本批修复验证器的零输出关联及证据闭包，不宣称发布、完整官方UI/diff或产品时序等价通过。
+
+实际raw start/end偏移之差决定输出量，不能用产品的空outputBase64推断。只有差值为零且同一io ledger的resize位于frame-start/end之间，才在start比较逻辑观察；随后无条件回放到end，保留resize后的buffer、root anchor、cursor和viewport，并由后续帧独立核对新尺寸。ACK先于start或区间有字节时，比较end，旧尺寸不能倒退选择有利帧。
+
+最小有效RED `frame-resize-red1`为14通过、3失败；修复17通过。新增分类RED23通过1失败，修复后24通过0失败，86断言，包括错误字符、宽度、背景样式、cursor、buffer、ACK在start前及缺后续新geometry。Native28新的独立离线重放107帧通过；Native29仍拒收frame5。原历史failed manifest保留。
+
+新候选 `focus-acceptance30-candidate`的同案源码SHA为057594dbe0faae2a54b7e03ebf80b69131b26d6d24ab7f35aa7b230d739cf171，binary a7b240135bce23e6dc5712ed69d9004d8569d42e399bdafd9e73d6b886aa7113。最初424测试中3项受sandbox/本地listen环境拒绝，记录为初始化条件失败，不计产品RED；使用私有短TMPDIR和所需本机权限、保持断言后424通过0失败。check/build及release-driver回归通过。
+
+第30轮完整前台driver新build后捕获动态baseline，29场景完成、23通过6失败，manifest SHA1246316236887fa86a793900935b1eb1b3a4fa0e901c46f532addcd4f957add7。失败builtin-mods、code-review、terminal-canonical-diff、terminal-interaction、workflow、workflow-retry-partial-failure。canonical23 checkpoint和四次实际Tab通过，109物理帧中frame5仍错位：resize在start前已生效，因此继续拒收。interaction真实diff_closed条件失败且SIGHUP/status9，不把EOF/reap改写为正常退出。builtin七侧业务和物理报告通过，同步ACK的productTimingEquivalent=false仍阻止通过。
+
+driver正常完成，源码/仓库状态无漂移、认证清理无错误、lease释放。9个本轮native PID和driver进程组均在只读探测时已消失，未发信号；这一探测不替代原EOF/reap收据。三份独立只读审计与Root验证不冒充正式四独立Agent全通过。原件根为/private/tmp/mods-remote-composer-292-20261008-rptx4ocs。
+
+官方2.1.293与两侧新本地制品另用相同合法Mod、真实Worker/CLI、私有HOME/config/dummy/tmux验证三项焦点：Pane重复key裸Tab/ShiftTab/Up/Down回调1→2→1→2→1；跨插件person移动own→foreign；Band请求tail被withholding后slot1→slot2→slot2。三侧正常/exit0，证据在focus-person293-native-comparison.json。它们只证明这些具体流程，不拼入完整帧门禁。焦点修复已单独签名提交d5dba33。
+
+无需ACK的下一阶段必须保持产品原write，独立复制不可变snapshot，通过真实syscall entry/return、同clock的layout/frame/resize/termios括号及输入read/consumer身份关联。重叠、队列满、丢失、unknown endpoint、异步越界、多writer、缺EOF/正常终态都继续失败；不提高等待预算、抑制resize或根据期望图像猜raw offset。已有独立shared-slot原型的5项native probe仅证明有限write/errno/alias、完整5000字节、immutable复制及饥饿loss拒收，尚未接入完整Ink/TTY/owner，不提升时序结论。

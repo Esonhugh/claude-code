@@ -15,6 +15,7 @@ import signal
 import stat
 import ssl
 import socket
+import stat
 import select
 import subprocess
 import sys
@@ -70,7 +71,16 @@ MOCK_OPENAI_TARGETS = frozenset({
     'workflow',
     'code-review',
     'terminal-interaction',
+    'terminal-canonical-diff',
 })
+# These scenarios exercise the supported synchronous caller contract. Keep the
+# default fork route for every other target, including Workflow workers.
+FOREGROUND_FIXTURES = {
+    'agent-fg-bg': ('release-foreground', 'Read'),
+    'nested-agent': ('release-nested-foreground', 'Agent'),
+    'coordinator-selector': ('release-coordinator-foreground', 'Bash, Read'),
+    'subagent-stop-failure-lifecycle': ('release-stop-foreground', ''),
+}
 WORKFLOW_FAULT_SCRIPTS = {
     'workflow-failure-detail': """export const meta = { name: 'release-failure-detail', description: 'Deterministic workflow failure diagnostics.', phases: [{ title: 'Failure probe' }] }
 phase('Failure probe')
@@ -292,6 +302,13 @@ TARGET_PATH_RULES = (
         'src/entrypoints/sdk/controlSchemas',
     )),
     ('terminal-interaction', (
+        'scripts/builtin-terminal-evidence',
+        'scripts/terminal-evidence-broker',
+        'scripts/test-terminal-evidence-broker',
+        'scripts/verify-pty-terminal-evidence',
+        'scripts/recheck-builtin-terminal-evidence',
+        'scripts/terminal-capture-', 'scripts/terminal-input-evidence',
+        'scripts/terminal-frame-semantics',
         'src/components/FullscreenLayout',
         'src/components/LogoV2/',
         'src/components/ModsPane',
@@ -307,6 +324,13 @@ TARGET_PATH_RULES = (
     )),
     ('builtin-mods', (
         'scripts/mods-test-lab',
+        'scripts/builtin-terminal-evidence',
+        'scripts/terminal-evidence-broker',
+        'scripts/test-terminal-evidence-broker',
+        'scripts/verify-pty-terminal-evidence',
+        'scripts/recheck-builtin-terminal-evidence',
+        'scripts/terminal-capture-', 'scripts/terminal-input-evidence',
+        'scripts/terminal-frame-semantics',
         'src/services/mods/',
         'src/components/ModsPane',
         'src/screens/REPL',
@@ -315,9 +339,21 @@ TARGET_PATH_RULES = (
         'src/utils/handlePromptSubmit',
         'src/utils/processUserInput/',
         'src/entrypoints/cli',
-        'src/services/plugins/builtinMods',
+        'src/plugins/builtinMods',
+        'src/plugins/builtinShippedMods',
+        'src/plugins/builtinPlugins',
+        'src/plugins/bundled/',
+        'assets/builtin-mods-',
+        'assets/builtin-diff-',
     )),
 )
+TARGET_PATH_RULES += (('terminal-canonical-diff', (
+    *next(prefixes for target, prefixes in TARGET_PATH_RULES if target == 'terminal-interaction'),
+    'scripts/terminal-capture-', 'scripts/terminal-input-evidence',
+    'scripts/terminal-frame-semantics',
+    'src/plugins/builtinShippedMods', 'src/plugins/builtinPlugins',
+    'src/services/mods/', 'assets/builtin-diff-',
+)),)
 SSH_LIFECYCLE_IDS = {
     'session_id': 'release-ssh-session-0001',
     'task_id': 'release-ssh-task-0001',
@@ -564,7 +600,6 @@ def code_review_scope_identity(*, run_args, task_id, run_id, artifact, parents, 
                 'scope': 'bounded empty Scope; same CLI/task/run identity; actual pane/TTY and later review phases require separate evidence'}
     except (ValueError, KeyError, TypeError, IndexError, AttributeError, ElementTree.ParseError) as error:
         return {'complete': False, 'agent_ids': [], 'checks': checks, 'reason': str(error)}
-
 
 
 def submitted_input_pending(pane):
@@ -832,7 +867,109 @@ def assertion_source_runs(runs, registered_runs):
 
 
 
-def assertion_is_valid(assertion, source_runs):
+
+
+BUILTIN_SIDE_NAMES = ('privacyOff', 'privacyOn', 'enabled', 'disabled',
+                      'securityOrdinary', 'securityTeam', 'securityEnterprise')
+BUILTIN_ASSERTIONS = frozenset({'completeness', 'cleanup', 'agents', 'diff', 'security',
+                              'ui', 'dynamicTools', 'suggestionReload', 'telemetry', 'terminalEvidence'})
+BUILTIN_CHECKS = frozenset({'subprocess', 'report', 'assertions', 'binary', 'sides',
+                           'evidence_ownership', 'cache_cleanup', 'independent_frame_replay'})
+
+
+def revalidate_builtin_assertion(source_root, acceptance_path, binary_sha256):
+    script = Path(__file__).resolve().parents[4] / 'scripts/recheck-builtin-terminal-evidence.mjs'
+    try:
+        completed = subprocess.run(
+            [shutil.which('bun') or 'bun', '--no-env-file', str(script), '--final',
+             str(acceptance_path), binary_sha256, str(source_root / 'builtin-terminal-recheck.json')],
+            cwd=script.parent.parent,
+            env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
+                 'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
+                 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
+            capture_output=True, text=True, timeout=60,
+        )
+        result = json.loads(completed.stdout)
+        return (completed.returncode == 0 and result.get('verdict') == 'passed'
+                and result.get('acceptance') == str(acceptance_path)
+                and result.get('binarySha256') == binary_sha256)
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return False
+
+
+
+def canonical_wire_checks(run_dir, wire, debug, expected_host):
+    invalid = {'canonical_wire_complete': False, 'canonical_wire_identity': False,
+               'canonical_wire_tool_receipts': False}
+    try:
+        session_ids = set(re.findall(r'\[ForkMode\] enabled source=default sessionId=([a-f0-9-]{36})', debug))
+        if len(session_ids) != 1 or not isinstance(wire, list) or len(wire) != 8:
+            return invalid
+        session = next(iter(session_ids))
+        posts = [row for row in wire if row.get('method') == 'POST' and row.get('path') == '/v1/responses']
+        main = [row for row in posts if is_main_response_request(row)]
+        kinds = [f'canonical-{file}-{step}' for file in ('alpha', 'omega')
+                 for step in ('read', 'write', 'completed')]
+        complete = (len(posts) == 7 and len(main) == 6
+                    and [row.get('response_kind') for row in main] == kinds
+                    and sum(row.get('response_kind') == 'title' and not is_main_response_request(row)
+                            for row in posts) == 1
+                    and sum(row.get('method') == 'GET' and row.get('path') == '/v1/models'
+                            and row.get('response_kind') == 'models' for row in wire) == 1
+                    and [row.get('sequence') for row in wire] == list(range(1, 9)))
+        request_ids = [row.get('headers', {}).get('x-client-request-id') for row in posts]
+        models = {row.get('body', {}).get('model') for row in main}
+        identity = (bool(expected_host) and len(models) == 1 and all(isinstance(model, str) and model for model in models)
+                    and len(set(request_ids)) == 7
+                    and all(isinstance(value, str) and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value)
+                            for value in request_ids)
+                    and all(row.get('authorization') == {'present': True, 'matches_dummy': True} for row in wire)
+                    and all(openai_request_metadata_matches(row.get('headers', {}), session)
+                            and row['headers'].get('host') == expected_host
+                            and row['headers'].get('content-type') == 'application/json'
+                            and row['body'].get('prompt_cache_key') == session
+                            and row['body'].get('stream') is True and row['body'].get('store') is False
+                            for row in posts))
+        server = object.__new__(MockOpenAIServer)
+        server.run_dir = run_dir
+        receipts = complete and all(server.canonical_diff_response(row['body'])[0] == kind
+                                    for row, kind in zip(main, kinds))
+        # Every tool continuation must retain the exact preceding input bytes.
+        # The live Responses adapter appends one call/result pair per step.
+        receipts = receipts and all(
+            len(following['body']['input']) == len(previous['body']['input']) + 2
+            and following['body']['input'][:-2] == previous['body']['input']
+            for base in (0, 3)
+            for previous, following in zip(main[base:base + 2], main[base + 1:base + 3]))
+        return {'canonical_wire_complete': complete, 'canonical_wire_identity': identity,
+                'canonical_wire_tool_receipts': receipts}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return invalid
+
+
+def revalidate_terminal_assertion(source_root):
+    script = Path(__file__).resolve().parents[4] / 'scripts/terminal-capture-driver.mjs'
+    try:
+        completed = subprocess.run(
+            [shutil.which('bun') or 'bun', '--no-env-file', str(script), 'verify',
+             str(source_root / 'capture-launch.json')],
+            cwd=script.parent.parent,
+            env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
+                 'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
+                 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
+            capture_output=True, text=True, timeout=60,
+        )
+        result = json.loads(completed.stdout)
+        launch = json.loads((source_root / 'capture-launch.json').read_text())
+        return (completed.returncode == 0 and result.get('verdict') == 'passed'
+                and result.get('run') == str(source_root)
+                and result.get('captureId') == launch['capture']['captureId']
+                and result.get('binarySha256') == launch['binarySha256'])
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        return False
+
+
+def assertion_is_valid(assertion, source_runs, registered_runs=None):
     if not isinstance(assertion, dict):
         return False
     if assertion.get('validation_verdict') != 'passed':
@@ -875,7 +1012,9 @@ def assertion_is_valid(assertion, source_runs):
         if absolute_path.is_file() and absolute_path.stat().st_size > 0:
             nonempty_proof = True
     expected_hashes = assertion.get('evidence_sha256')
-    if expected_hashes is not None or assertion_id == 'code-review-native-scope-identity':
+    terminal_target = next((target for target, (required_id, _) in TERMINAL_ACCEPTANCE.items()
+                            if assertion_id == required_id), None)
+    if expected_hashes is not None or assertion_id in ('code-review-native-scope-identity', 'builtin-mods-compiled-acceptance') or terminal_target:
         if (not isinstance(expected_hashes, dict) or not expected_hashes
                 or any(not isinstance(path, str) or not Path(path).is_absolute()
                        or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
@@ -910,10 +1049,222 @@ def assertion_is_valid(assertion, source_runs):
                         or set(expected_hashes) != {*snapshots, proof_path}
                         or any(expected_hashes.get(path) != digest for path, digest in snapshots.items())):
                     return False
-        except (OSError, ValueError, TypeError, AttributeError):
+            if assertion_id == 'builtin-mods-compiled-acceptance':
+                registered = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                acceptance_path = Path(registered.get('acceptance_report', ''))
+                acceptance_key = str(acceptance_path)
+                checks_key = str(source_root / 'builtin-mods-checks.json')
+                required = {checks_key, str(source_root / 'builtin-terminal-recheck.json'),
+                            str(source_root / 'stdout.txt'), str(source_root / 'stderr.txt'), acceptance_key}
+                if (not acceptance_path.is_absolute() or not is_relative_to(acceptance_path, source_root)
+                        or not required <= verified_bytes.keys()
+                        or expected_hashes[acceptance_key] != registered.get('acceptance_sha256')):
+                    return False
+                report = json.loads(verified_bytes[acceptance_key])
+                checks = json.loads(verified_bytes[checks_key]).get('checks')
+                pair = report.get('pair', {})
+                assertions = report.get('assertions', {})
+                if (not isinstance(checks, dict) or set(checks) != BUILTIN_CHECKS
+                        or not all(value is True for value in checks.values())
+                        or set(pair) != set(BUILTIN_SIDE_NAMES) or set(assertions) != BUILTIN_ASSERTIONS
+                        or not all(value.get('verdict') == 'passed' for value in assertions.values())):
+                    return False
+                registry = registered.get('builtin_capture_registry', {})
+                if set(registry) != set(BUILTIN_SIDE_NAMES):
+                    return False
+                owned_runs, capture_ids = set(), set()
+                for name in BUILTIN_SIDE_NAMES:
+                    side = pair[name]
+                    root = Path(side['run'])
+                    capture = side['cleanup']['terminalCapture']
+                    identity = {key: side.get(key) for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
+                    if (identity != registry[name] or side['binarySha256'] != registered.get('binary_sha256')
+                            or not root.is_absolute() or root.is_symlink() or root.resolve() != root
+                            or not is_relative_to(root, source_root / 'acceptance-cache')
+                            or str(root) in owned_runs or side['captureId'] in capture_ids
+                            or expected_hashes.get(str(root / 'bin/claude')) != side['binarySha256']):
+                        return False
+                    owned_runs.add(str(root)); capture_ids.add(side['captureId'])
+                    files = capture['files']
+                    if not TERMINAL_CAPTURE_FILES <= files.keys():
+                        return False
+                    for filename, info in files.items():
+                        key = str(root / filename)
+                        if (info.get('path') != key or key not in verified_bytes
+                                or expected_hashes[key] != info.get('sha256')
+                                or len(verified_bytes[key]) != info.get('bytes')):
+                            return False
+                    for sent in (json.loads(line) for line in verified_bytes[str(root / 'inputs.jsonl')].splitlines()):
+                        if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':
+                            key = sent.get('inputFile')
+                            if (key not in verified_bytes or verified_bytes[key].hex() != sent.get('hex')
+                                    or expected_hashes[key] != sent.get('bytesSHA256')):
+                                return False
+                if not revalidate_builtin_assertion(source_root, acceptance_path, registered['binary_sha256']):
+                    return False
+                if any(Path(path).read_bytes() != data for path, data in verified_bytes.items()):
+                    return False
+            if terminal_target:
+                required_files = {'capture-launch.json', 'terminal-capture.json',
+                    'independent-pty-checks.json', 'bin/claude',
+                    TERMINAL_ACCEPTANCE[terminal_target][1], *TERMINAL_BUSINESS_FILES[terminal_target]}
+                if not {str((source_root / name).resolve()) for name in required_files} <= set(verified_bytes):
+                    return False
+                def decoded(name):
+                    return json.loads(verified_bytes[str((source_root / name).resolve())])
+                capture = decoded('terminal-capture.json')
+                fresh = decoded('independent-pty-checks.json')
+                launch = decoded('capture-launch.json')
+                checks = decoded(TERMINAL_ACCEPTANCE[terminal_target][1])
+                metadata = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                registered = metadata.get('terminal_capture')
+                if (expected_hashes != metadata.get('terminal_evidence_sha256')
+                        or not isinstance(registered, dict)
+                        or any(launch.get(key) != registered.get(key)
+                               for key in ('run', 'target', 'pane', 'binarySha256', 'socket',
+                                           'socketRoot', 'serverPid', 'socketIdentity'))
+                        or launch.get('capture', {}).get('captureId') !=
+                            registered.get('capture', {}).get('captureId')):
+                    return False
+                if (not isinstance(checks, dict)
+                        or not TERMINAL_REQUIRED_CHECKS[terminal_target] <= checks.keys()
+                        or not all(value is True for value in checks.values())
+                        or fresh.get('captureIdentityPassed') is not True
+                        or fresh.get('recheck', {}).get('verdict') != 'passed'
+                        or fresh.get('side', {}).get('run') != str(source_root)
+                        or fresh.get('recheck', {}).get('run') != str(source_root)
+                        or fresh.get('recheck', {}).get('captureId') != capture.get('captureId')
+                        or fresh.get('side', {}).get('captureId') != capture.get('captureId')
+                        or fresh.get('side', {}).get('binarySha256') != capture.get('binarySha256')
+                        or fresh.get('side', {}).get('target') != launch.get('target')
+                        or fresh.get('side', {}).get('pane') != launch.get('pane')
+                        or capture.get('target') != launch.get('target')
+                        or capture.get('pane') != launch.get('pane')
+                        or fresh.get('side', {}).get('cleanup', {}).get('terminalCapture') != capture
+                        or launch.get('run') != str(source_root)
+                        or launch.get('capture', {}).get('captureId') != capture.get('captureId')
+                        or capture.get('framePhysicalVerdict') != 'passed'
+                        or capture.get('eofPassed') is not True
+                        or capture.get('binarySha256') != launch.get('binarySha256')
+                        or expected_hashes[str((source_root / 'bin/claude').resolve())] != capture.get('binarySha256')):
+                    return False
+                files = capture.get('files')
+                if not isinstance(files, dict) or not TERMINAL_CAPTURE_FILES <= files.keys():
+                    return False
+                for name, info in files.items():
+                    key = str((source_root / name).resolve())
+                    if (not isinstance(info, dict) or info.get('path') != key
+                            or key not in verified_bytes or expected_hashes[key] != info.get('sha256')
+                            or len(verified_bytes[key]) != info.get('bytes')):
+                        return False
+                inputs = [json.loads(line) for line in verified_bytes[str((source_root / 'inputs.jsonl').resolve())].splitlines()]
+                for sent in inputs:
+                    if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':
+                        key = sent.get('inputFile')
+                        if (not isinstance(key, str) or key not in verified_bytes
+                                or verified_bytes[key].hex() != sent.get('hex')
+                                or expected_hashes[key] != sent.get('bytesSHA256')):
+                            return False
+                replay = fresh.get('recheck', {}).get('replay', {})
+                sizes = [(row['columns'], row['rows']) for row in
+                         replay.get('geometryProof', {}).get('sizes', [])]
+                if replay.get('geometryProof', {}).get('verdict') != 'passed':
+                    return False
+                if terminal_target == 'terminal-interaction':
+                    logical = terminal_frame_report_checks(replay)
+                    if (not logical['frame_semantics'] or not logical['frame_resize_sequence']
+                            or sizes != [(109, 34), (110, 34), (109, 34), (110, 34), (109, 34)]):
+                        return False
+                elif sizes != [(110, 34), (109, 34), (110, 34), (109, 34)]:
+                    return False
+                if terminal_target == 'terminal-canonical-diff':
+                    keys = {str(source_root / 'canonical-wire.json'), str(source_root / 'debug.log')}
+                    if not keys <= verified_bytes.keys():
+                        return False
+                    metadata = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                    host = urlsplit(metadata.get('mock_openai', {}).get('base_url', '')).netloc
+                    protocol = canonical_wire_checks(source_root, decoded('canonical-wire.json'),
+                        verified_bytes[str(source_root / 'debug.log')].decode(), host)
+                    if not all(protocol.values()):
+                        return False
+                    git_keys = {str(source_root / name) for name in
+                        ('canonical-git.jsonl', 'canonical-release.json',
+                         'canonical-git-output.json', 'canonical-git-output.raw')}
+                    if not git_keys <= verified_bytes.keys():
+                        return False
+                    events = [json.loads(line) for line in verified_bytes[str(source_root / 'canonical-git.jsonl')].splitlines()]
+                    if not all(canonical_git_checks(source_root, events, decoded('canonical-release.json'),
+                                verified_bytes[str(source_root / 'debug.log')].decode()).values()):
+                        return False
+                    if not all(canonical_ui_checks(source_root).values()):
+                        return False
+                if not revalidate_terminal_assertion(source_root):
+                    return False
+                # Replay is read-only; also reject evidence changed during it.
+                if any(Path(path).read_bytes() != data for path, data in verified_bytes.items()):
+                    return False
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
             return False
     return nonempty_proof
 
+
+TERMINAL_CAPTURE_FILES = frozenset({'pty.raw', 'native-pty.raw', 'native-pty-initial.json',
+    'native-pty-eof.json', 'native-input.jsonl', 'pty-io.jsonl', 'broker-cleanup.json',
+    'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'initial-termios.txt', 'observations.jsonl',
+    'capture-eof', 'frame-stream-map.json', 'frame-physical-report.json'})
+
+TERMINAL_ACCEPTANCE = {
+    'terminal-interaction': ('terminal-interaction-frame-and-input-matrix', 'terminal-interaction-checks.json'),
+    'terminal-canonical-diff': ('terminal-canonical-diff-real-tools-and-pty', 'canonical-checks.json'),
+}
+
+TERMINAL_BUSINESS_FILES = {
+    'terminal-interaction': frozenset({'omega-body-blocked.json', 'input-chunks.json'}),
+    'terminal-canonical-diff': frozenset({'canonical-checkpoints.json', 'canonical-ui-states.json',
+        'omega-body-blocked.json', 'canonical-wire.json', 'debug.log', 'canonical-git.jsonl',
+        'canonical-release.json', 'canonical-git-output.json', 'canonical-git-output.raw'}),
+}
+
+
+TERMINAL_REQUIRED_CHECKS = {
+    'terminal-interaction': frozenset({
+        'ready', 'custom_clawd_layout', 'same_chunk_utf8_submit', 'csi_u_submit',
+        'raw_backspace_submit', 'raw_del_submit', 'forward_delete_submit',
+        'cursor_combination_submit', 'paste_head_visible', 'paste_continuation_visible',
+        'paste_recovery_submit', 'diff_alpha_ready', 'diff_partial_loading',
+        'diff_same_chunk_navigation', 'resize_intent', 'resize_keyboard_ownership',
+        'diff_closed', 'diff_reopened', 'frame_physical', 'frame_resize_sequence',
+        'frame_semantics', 'cleanup', 'independent_pty_capture_identity',
+        'independent_pty_resize_sequence', 'normal_native_exit',
+        'same_chunk_utf8_submit_prompt_restored', 'same_chunk_utf8_submit_exact_request',
+        'csi_u_submit_prompt_restored', 'csi_u_submit_exact_request',
+        'raw_backspace_submit_prompt_restored', 'raw_backspace_submit_exact_request',
+        'raw_del_submit_prompt_restored', 'raw_del_submit_exact_request',
+        'forward_delete_submit_prompt_restored', 'forward_delete_submit_exact_request',
+        'cursor_combination_submit_prompt_restored', 'cursor_combination_submit_exact_request',
+        'paste_head_not_submitted', 'paste_continuation_not_submitted',
+        'paste_recovery_submit_prompt_restored', 'paste_recovery_submit_exact_request',
+        'diff_dialog_entry', 'omega_body_blocked', 'diff_partial_publish',
+        'loading_keyboard_ownership', 'resize_detail_preserved',
+        'resize_files_after_explicit_back', 'diff_files_before_close',
+    }),
+    'terminal-canonical-diff': frozenset({
+        'ready', 'canonical_command_owner', 'alpha_real_write_receipt',
+        'alpha_prompt_restored', 'canonical_alpha_dock', 'canonical_initial_focus',
+        'omega_real_write_receipt', 'omega_prompt_restored', 'canonical_batch_blocked',
+        'canonical_exact_git_lane', 'canonical_two_files_before_select',
+        'canonical_focus_landing', 'canonical_omega_control', 'canonical_before_press_alpha_body',
+        'canonical_file_body', 'canonical_escape_keeps_open', 'canonical_inline_same_identity',
+        'canonical_redocked', 'canonical_refocus_landing', 'canonical_person_closed',
+        'canonical_reopened', 'canonical_reopen_scroll_reset', 'canonical_command_closed',
+        'canonical_narrow_refused', 'canonical_no_native_fallback', 'canonical_keyboard_owner',
+        'canonical_release_watcher_stopped', 'scenario_completed', 'normal_native_exit',
+        'cleanup', 'independent_pty_capture_identity', 'independent_pty_ink_frames',
+        'independent_pty_resize_sequence', 'canonical_wire_complete', 'canonical_wire_identity',
+        'canonical_wire_tool_receipts', 'canonical_git_release_causal', 'canonical_git_success',
+        'canonical_pane_frame_association', 'canonical_pane_lifecycle', 'canonical_keyboard_landing',
+    }),
+}
 
 
 def validate_required_target_results(required_targets, runs, registered_runs=None):
@@ -930,7 +1281,7 @@ def validate_required_target_results(required_targets, runs, registered_runs=Non
             run.get('validation_verdict') == 'passed'
             and isinstance(assertions, list)
             and bool(assertions)
-            and all(assertion_is_valid(assertion, own_sources) for assertion in assertions)
+            and all(assertion_is_valid(assertion, own_sources, registered_runs) for assertion in assertions)
         )
         if valid and target == 'code-review':
             for assertion_id in ('code-review-native-scope-identity', 'code-review-mock-wire',
@@ -939,6 +1290,14 @@ def validate_required_target_results(required_targets, runs, registered_runs=Non
                 if len(matching) != 1 or matching[0].get('source_run') != Path(run['evidence_dir']).name:
                     valid = False
                     break
+        if valid and target == 'builtin-mods':
+            matching = [item for item in assertions
+                        if item.get('assertion_id') == 'builtin-mods-compiled-acceptance']
+            valid = len(matching) == 1 and matching[0].get('source_run') == Path(run['evidence_dir']).name
+        if valid and target in TERMINAL_ACCEPTANCE:
+            matching = [item for item in assertions
+                        if item.get('assertion_id') == TERMINAL_ACCEPTANCE[target][0]]
+            valid = len(matching) == 1 and matching[0].get('source_run') == Path(run['evidence_dir']).name
         if not valid:
             invalid.append(target)
     return {
@@ -1060,8 +1419,413 @@ def release_terminal_git_wrapper(run_dir):
         os.close(fd)
 
 
+def canonical_diff_content(file):
+    return (f'{file} before\n{file.upper()}_RELEASE_BODY\n'
+            + ''.join(f'{file.upper()}_RELEASE_LINE_{index:03d}\n' for index in range(80)))
+
+
+
+def canonical_git_prefix(run_dir):
+    project = run_dir / 'project'
+    return ['-c', 'core.hooksPath=/dev/null',
+        '--git-dir=' + str(project / '.git'), '--work-tree=' + str(project),
+        '--literal-pathspecs', '--no-optional-locks',
+        '-c', 'diff.relative=false', '-c', 'core.quotePath=false',
+        'diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=dirty',
+        '--submodule=short', '--no-renames', '--src-prefix=a/', '--dst-prefix=b/',
+        '--raw', '-z', '-p', 'HEAD', '--']
+
+
+def canonical_git_output(run_dir, argv):
+    project = run_dir / 'project'
+    prefix = canonical_git_prefix(run_dir)
+    if (project.is_symlink() or not project.is_dir() or argv[:len(prefix)] != prefix
+            or argv[len(prefix):] not in (['omega.txt'], ['alpha.txt', 'omega.txt'])):
+        raise ValueError('unowned canonical Git command')
+    files = {}
+    for name in ('alpha', 'omega'):
+        path = project / (name + '.txt')
+        if path.is_symlink() or path.read_text() != canonical_diff_content(name):
+            raise ValueError('canonical Git worktree is not the actual completed Write')
+        files[path.name] = sha256(path)
+    git = Path(shutil.which('git', path='/opt/homebrew/bin:/usr/bin:/bin')).resolve()
+    env = {'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(run_dir),
+           'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+    def run(args):
+        return subprocess.run([str(git), *args], cwd=project, env=env,
+                              capture_output=True, check=True, timeout=5)
+    head = run(['-c', 'core.hooksPath=/dev/null', 'rev-parse', '--verify', 'HEAD']).stdout.decode().strip()
+    completed = run(argv)
+    if len(completed.stdout) > 4 * 1024 * 1024 or len(completed.stderr) > 4 * 1024 * 1024:
+        raise ValueError('independent Git output exceeds the unchanged process budget')
+    return {'method': 'owned-independent-git-read-v1',
+        'git': {'path': str(git), 'sha256': sha256(git)}, 'project': str(project),
+        'head': head, 'files': files, 'argv': argv, 'exitCode': completed.returncode,
+        'stdoutBytes': len(completed.stdout), 'stdoutSHA256': hashlib.sha256(completed.stdout).hexdigest(),
+        'stderrBytes': len(completed.stderr), 'stderrSHA256': hashlib.sha256(completed.stderr).hexdigest()}, completed.stdout
+
+
+def canonical_git_checks(run_dir, events, watcher, debug):
+    failed = {'canonical_git_release_causal': False, 'canonical_git_success': False}
+    try:
+        blocked = [row for row in events if row.get('phase') == 'blocked']
+        released = [row for row in events if row.get('phase') == 'released']
+        if len(blocked) != 1 or len(released) != 1:
+            return failed
+        block, release = blocked[0], released[0]
+        prefix = canonical_git_prefix(run_dir)
+        argv = block['argv']
+        args_hash = hashlib.sha256(json.dumps(argv, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+        pid = block['pid']
+        start = [row for row in events if row.get('phase') == 'start' and row.get('pid') == pid]
+        marker = watcher.get('blockedMarker', {})
+        causal = (len(start) == 1 and start[0]['monotonic'] <= block['monotonic']
+            and all(row.get('lane') == 'canonical-292' and row.get('pid') == pid
+                    and row.get('argv') == argv and row.get('cwd') == str(run_dir / 'project')
+                    and row.get('matched') is True for row in (start[0], block, release))
+            and argv[:len(prefix)] == prefix and argv[len(prefix):] in
+                (['omega.txt'], ['alpha.txt', 'omega.txt'])
+            and watcher.get('source') == 'owned-blocked-marker-watcher'
+            and watcher.get('livePidObserved') is True and marker.get('pid') == pid
+            and marker.get('argv') == argv and marker.get('lane') == 'canonical-292'
+            and block['monotonic'] <= watcher['signalStartedAt'] <= release['monotonic']
+            and 0 <= release['monotonic'] - block['monotonic'] < 5)
+        host = []
+        for line in debug.splitlines():
+            if '[ModsProcess] ' in line:
+                row = json.loads(line.split('[ModsProcess] ', 1)[1])
+                if row.get('pid') == pid:
+                    host.append(row)
+        closed = [row for row in host if row.get('phase') == 'close']
+        opened = [row for row in host if row.get('phase') == 'start']
+        output, raw = canonical_git_output(run_dir, argv)
+        saved = json.loads((run_dir / 'canonical-git-output.json').read_text())
+        success = (causal and len(opened) == 1
+            and all(row.get('owner') == 'cc-plugin-diff@builtin'
+                    and row.get('argsSHA256') == args_hash and row.get('timeoutMs') == 5000 for row in host)
+            and not any(row.get('phase') in ('stop', 'error') for row in host)
+            and len(closed) == 1 and closed[0].get('exitCode') == 0
+            and closed[0].get('timeoutMs') == 5000 and not closed[0].get('stopped')
+            and closed[0].get('isStdoutTruncated') is False
+            and closed[0].get('isStderrTruncated') is False
+            and 0 < closed[0].get('elapsedMs', 0) < 5000
+            and closed[0]['elapsedMs'] - opened[0]['elapsedMs'] >=
+                (release['monotonic'] - start[0]['monotonic']) * 1000
+            and saved == output and (run_dir / 'canonical-git-output.raw').read_bytes() == raw
+            and output['stdoutBytes'] > 0
+            and all(closed[0].get(key) == output[key] for key in
+                    ('stdoutBytes', 'stdoutSHA256')))
+        return {'canonical_git_release_causal': causal, 'canonical_git_success': success}
+    except (OSError, AttributeError, KeyError, TypeError, ValueError, subprocess.SubprocessError):
+        return failed
+
+
+def create_canonical_terminal_git_wrapper(run_dir):
+    real_git = shutil.which('git')
+    if not real_git:
+        raise RuntimeError('git unavailable for canonical terminal fixture')
+    wrapper_dir = run_dir / 'driver-bin'
+    wrapper_dir.mkdir()
+    os.mkfifo(run_dir / 'omega-body.fifo', 0o600)
+    wrapper = wrapper_dir / 'git'
+    wrapper.write_text(f'''#!{sys.executable} -S
+import json, os, select, sys, time
+from pathlib import Path
+root = Path({str(run_dir)!r})
+project = root / 'project'
+args = sys.argv[1:]
+prefix = {canonical_git_prefix(run_dir)!r}
+paths = args[len(prefix):]
+body = (Path.cwd() == project and args[:len(prefix)] == prefix and paths in (
+ ['omega.txt'], ['alpha.txt', 'omega.txt']))
+latched = body and (root / 'canonical-omega-arm').exists() and not (root / 'omega-body-released').exists()
+def log(phase, **fields):
+ with (root / 'canonical-git.jsonl').open('a') as stream:
+  stream.write(json.dumps({{'lane':'canonical-292', 'phase':phase,
+   'pid':os.getpid(), 'cwd':os.getcwd(), 'argv':args,
+   'monotonic':time.monotonic(), 'matched':body, **fields}}) + '\\n')
+log('start')
+if latched:
+ fd = os.open(root / 'omega-body.fifo', os.O_RDWR | os.O_NONBLOCK)
+ try:
+  log('blocked')
+  marker = root / ('omega-body-' + str(os.getpid()) + '.tmp')
+  marker.write_text(json.dumps({{'pid':os.getpid(),'argv':args,'lane':'canonical-292'}}))
+  marker.replace(root / 'omega-body-blocked.json')
+  if not (root / 'omega-body-released').exists():
+   if not select.select([fd], [], [], 5)[0]:
+    raise RuntimeError('canonical body release exceeded the official Git budget')
+   os.read(fd, 1)
+  if not (root / 'omega-body-released').exists():
+   raise RuntimeError('canonical body release missing latch')
+  log('released')
+ finally:
+  os.close(fd)
+os.execv({real_git!r}, [{real_git!r}, *args])
+''')
+    wrapper.chmod(0o700)
+    return wrapper_dir
+
+
+CANONICAL_PANE_CHECKPOINTS = (
+    'canonical_alpha_dock', 'canonical_two_files_before_select', 'canonical_focus_landing',
+    'canonical_omega_control', 'canonical_file_body', 'canonical_escape_keeps_open',
+    'canonical_inline_same_identity', 'canonical_redocked', 'canonical_refocus_landing',
+    'canonical_person_closed', 'canonical_reopened', 'canonical_command_closed',
+    'canonical_narrow_refused',
+)
+
+
+def canonical_frame_snapshot(states, entries, floor=0, io=None):
+    if not states:
+        return None
+    state = states[-1]
+    pane = state.get('pane')
+    for entry in reversed(entries):
+        if entry.get('frameId', 0) <= floor or entry.get('terminalUiRevision') != state.get('revision'):
+            continue
+        witnesses = entry.get('terminalPanes')
+        if not isinstance(witnesses, list):
+            continue
+        witnesses = [row for row in witnesses if row.get('plugin') == 'cc-plugin-diff' and row.get('id') == 'diff']
+        frame = json.loads(base64.b64decode(entry['frameBase64']))
+        viewport = frame.get('viewport', {})
+        columns, rows = viewport.get('width'), viewport.get('height')
+        if (columns not in (109, 110) or rows != 34 or frame.get('columns') != columns
+                or frame.get('buffer') != 'alternate'):
+            continue
+        if io is not None:
+            broker = entry.get('broker', {})
+            start, end = broker.get('start', {}), broker.get('end', {})
+            acks = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start.get('geometryId')]
+            if (len(acks) != 1 or start.get('geometryId') != end.get('geometryId')
+                    or acks[0].get('succeeded') is not True
+                    or acks[0].get('captureId') != entry.get('captureId')
+                    or acks[0].get('columns') != columns or acks[0].get('rows') != rows
+                    or type(start.get('ioId')) is not int or acks[0]['ioId'] > start['ioId']):
+                continue
+        cells = {(x, y): (char, width) for x, y, char, width, *_ in frame['cells']}
+        screen = '\n'.join(''.join(cells.get((x, y), (' ', 1))[0]
+                                  for x in range(columns) if cells.get((x, y), (' ', 1))[1] != 0)
+                           for y in range(rows))
+        witness = None
+        body = ''
+        if pane and pane.get('visible') and pane.get('shown') and pane.get('hasTree'):
+            if len(witnesses) != 1:
+                continue
+            witness = witnesses[0]
+            if (witness.get('revision') != state.get('revision')
+                    or any(witness.get(key) != pane.get(key) for key in
+                        ('plugin', 'id', 'activation', 'lease', 'drawing', 'visible', 'shown',
+                         'placement', 'focused', 'focusedElement', 'focusedPlugin'))
+                    or any(type(witness.get(key)) is not int or witness[key] <= 0
+                           for key in ('activation', 'lease', 'mount', 'drawing'))
+                    or witness.get('actualFocusWithin') is not pane.get('focused')):
+                continue
+            if pane.get('focusedElement'):
+                controls = [row for row in witness.get('controls', [])
+                            if row.get('key') == pane['focusedElement'] and row.get('plugin') == pane.get('focusedPlugin')]
+                if (len(controls) != 1 or witness.get('actualFocusedElement') != pane['focusedElement']
+                        or witness.get('actualFocusedPlugin') != pane.get('focusedPlugin')):
+                    continue
+            rect, body_rect = witness.get('rect', {}), witness.get('bodyRect', {})
+            if (witness.get('paintable') is not True or not isinstance(rect, dict) or not isinstance(body_rect, dict)
+                    or any(type(value.get(key)) is not int for value in (rect, body_rect)
+                    for key in ('x', 'y', 'width', 'height'))
+                    or any(value['width'] <= 0 or value['height'] <= 0 for value in (rect, body_rect))
+                    or rect['x'] < 0 or rect['x'] + rect['width'] > columns
+                    or body_rect['x'] < rect['x'] or body_rect['y'] < rect['y']
+                    or body_rect['x'] + body_rect['width'] > rect['x'] + rect['width']
+                    or body_rect['y'] + body_rect['height'] > rect['y'] + rect['height']
+                    or body_rect['y'] >= rows or body_rect['y'] + body_rect['height'] <= 0):
+                continue
+            if pane.get('focusedElement'):
+                control = controls[0]
+                control_rect = control.get('rect')
+                empty_button = (control.get('emptyButton') is True and control.get('paintable') is False
+                                and control_rect is None)
+                if not empty_button and (control.get('paintable') is not True or not isinstance(control_rect, dict)
+                        or any(type(control_rect.get(key)) is not int for key in ('x', 'y', 'width', 'height'))
+                        or control_rect['width'] <= 0 or control_rect['height'] <= 0
+                        or control_rect['x'] >= body_rect['x'] + body_rect['width']
+                        or control_rect['x'] + control_rect['width'] <= body_rect['x']
+                        or control_rect['y'] >= min(rows, body_rect['y'] + body_rect['height'])
+                        or control_rect['y'] + control_rect['height'] <= max(0, body_rect['y'])):
+                    continue
+            body = '\n'.join(''.join(cells.get((x, y), (' ', 1))[0]
+                                    for x in range(body_rect['x'], body_rect['x'] + body_rect['width'])
+                                    if cells.get((x, y), (' ', 1))[1] != 0)
+                             for y in range(max(0, body_rect['y']), min(rows, body_rect['y'] + body_rect['height'])))
+        elif witnesses:
+            continue
+        return {'state': state, 'frameId': entry['frameId'], 'terminalUiRevision': entry['terminalUiRevision'],
+                'terminalViewport': viewport, 'witness': witness, 'body': body, 'screen': screen}
+    return None
+
+
+def canonical_debug_states(debug):
+    states = []
+    for line in debug.splitlines():
+        if '[ModsUI] ' not in line:
+            continue
+        row = json.loads(line.split('[ModsUI] ', 1)[1])
+        if row.get('event') != 'publish':
+            continue
+        panes = [pane for pane in row.get('panes', [])
+                 if pane.get('plugin') == 'cc-plugin-diff' and pane.get('id') == 'diff']
+        if len(panes) > 1:
+            raise ValueError('ambiguous canonical Pane publish')
+        states.append({'revision': row['revision'], 'pane': panes[0] if panes else None})
+    return states
+
+
+def canonical_ui_checks(root):
+    checks = {'canonical_pane_frame_association': False,
+              'canonical_pane_lifecycle': False, 'canonical_keyboard_landing': False}
+    def read(name):
+        return json.loads((root / name).read_bytes())
+    def lines(name):
+        return [json.loads(line) for line in (root / name).read_bytes().splitlines()]
+    try:
+        states, checkpoints, frames = read('canonical-ui-states.json'), read('canonical-checkpoints.json'), lines('frames.jsonl')
+        if states != canonical_debug_states((root / 'debug.log').read_text()):
+            return checks
+        if not states or any(a['revision'] >= b['revision'] for a, b in zip(states, states[1:])):
+            return checks
+        selected = [row for row in checkpoints if row.get('name') in CANONICAL_PANE_CHECKPOINTS
+                    or row.get('name', '').startswith('canonical_tab_landing_')]
+        names = [row['name'] for row in selected]
+        if (len(names) != len(set(names))
+                or [name for name in names if name in CANONICAL_PANE_CHECKPOINTS] != list(CANONICAL_PANE_CHECKPOINTS)):
+            return checks
+        tabs = [name for name in names if name.startswith('canonical_tab_landing_')]
+        if tabs != [f'canonical_tab_landing_{i}' for i in range(len(tabs))]:
+            return checks
+        inputs, geometry, io = lines('inputs.jsonl'), lines('geometry.jsonl'), lines('pty-io.jsonl')
+        tab_inputs = [row for row in inputs if row.get('phase') == 'send' and
+                      re.fullmatch(r'raw-canonical-tab-\d+\.bin', Path(row.get('inputFile', '')).name)]
+        if ([Path(row['inputFile']).stem.removeprefix('raw-').replace('canonical-tab-', 'canonical_tab_landing_')
+             for row in tab_inputs] != tabs):
+            return checks
+        focus_index, omega_index = names.index('canonical_focus_landing'), names.index('canonical_omega_control')
+        if names[focus_index + 1:omega_index] != tabs:
+            return checks
+        observed = {}
+        previous_id = 0
+        for checkpoint in selected:
+            observation, action = checkpoint['observation'], checkpoint['action']
+            if checkpoint.get('passed') is not True or not isinstance(observation, dict) or not isinstance(action, dict):
+                return checks
+            receipt = action['receipt']
+            journal = inputs if action['kind'] == 'input' else geometry if action['kind'] == 'resize' else []
+            if sum(row == receipt for row in journal) != 1:
+                return checks
+            frame_id = observation['frameId']
+            frame = [entry for entry in frames if entry['frameId'] == frame_id]
+            state = [entry for entry in states if entry['revision'] == observation['terminalUiRevision']]
+            if (len(frame) != 1 or len(state) != 1 or frame_id < previous_id
+                    or type(checkpoint.get('lastObservedFrameId')) is not int
+                    or frame_id > checkpoint['lastObservedFrameId']
+                    or checkpoint['frameFloor'] > receipt['lastObservedFrameId']):
+                return checks
+            matched = canonical_frame_snapshot(state, frame, receipt['lastObservedFrameId'], io)
+            if matched is None:
+                return checks
+            if matched != observation or checkpoint.get('pane') != matched['state']['pane']:
+                return checks
+            start, end = frame[0]['broker']['start'], frame[0]['broker']['end']
+            if (any(type(row.get(key)) is not int for row in (start, end) for key in ('ioId', 'geometryId', 'rawOffset'))
+                    or start['geometryId'] != end['geometryId']
+                    or not receipt['lastObservedIoId'] < start['ioId'] < end['ioId'] <= checkpoint['lastObservedIoId']
+                    or not receipt['observedRawBytes'] <= start['rawOffset'] <= end['rawOffset'] <= checkpoint['observedRawBytes']
+                    or any(row.get('captureId') != frame[0].get('captureId') for row in (start, end))):
+                return checks
+            ack = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start['geometryId']]
+            if (len(ack) != 1 or ack[0].get('succeeded') is not True
+                    or ack[0].get('captureId') != frame[0].get('captureId') or ack[0]['ioId'] > start['ioId']
+                    or matched['terminalViewport'] != {'width': ack[0]['columns'], 'height': ack[0]['rows']}):
+                return checks
+            if action['kind'] == 'input':
+                path = Path(receipt['inputFile'])
+                if (receipt.get('phase') != 'send' or receipt.get('transport') != 'tmux-paste-buffer'
+                        or path.parent != root or path.is_symlink() or path.read_bytes().hex() != receipt['hex']
+                        or sha256(path) != receipt['bytesSHA256']):
+                    return checks
+            else:
+                if (receipt.get('phase') != 'resize-return' or receipt.get('exitCode') != 0
+                        or matched['terminalViewport'] != {'width': receipt['columns'], 'height': receipt['rows']}):
+                    return checks
+                sent = [row for row in geometry if row.get('phase') == 'resize-send' and row.get('actionId') == receipt.get('actionId')]
+                if (len(sent) != 1 or sent[0]['columns'] != receipt['columns'] or sent[0]['rows'] != receipt['rows']
+                        or ack[0]['ioId'] <= sent[0]['lastObservedIoId']):
+                    return checks
+            previous_id = frame_id
+            observed[checkpoint['name']] = (matched, action)
+        checks['canonical_pane_frame_association'] = True
+        def match(name): return observed[name][0]
+        def witness(name): return match(name)['witness']
+        def body(name): return match(name)['body']
+        def input_is(name, stem, data):
+            action = observed[name][1]
+            return (action['kind'] == 'input' and Path(action['receipt']['inputFile']).name == f'raw-{stem}.bin'
+                    and action['receipt']['hex'] == data.hex())
+        navigation = ('canonical_focus_landing', *tabs)
+        if observed['canonical_omega_control'][1] != observed[navigation[-1]][1]:
+            return checks
+        if any(observed[name][1]['receipt'] != receipt for name, receipt in zip(tabs, tab_inputs)):
+            return checks
+        keyboard = all(witness(name) and witness(name)['focused'] is True and witness(name)['actualFocusWithin'] is True
+                       for name in ('canonical_focus_landing', *tabs, 'canonical_omega_control', 'canonical_refocus_landing'))
+        keyboard = keyboard and witness('canonical_omega_control')['focusedElement'] == 'file:omega.txt'
+        previous_key = witness('canonical_focus_landing').get('focusedElement')
+        for index, name in enumerate(tabs):
+            current_key = witness(name).get('focusedElement')
+            keyboard = keyboard and current_key != previous_key and input_is(name, f'canonical-tab-{index}', b'\t')
+            previous_key = current_key
+        checks['canonical_keyboard_landing'] = bool(keyboard and
+            input_is('canonical_focus_landing', 'canonical-focus-chord', b'\x18\t') and
+            input_is('canonical_refocus_landing', 'canonical-refocus', b'\x18\t') and
+            input_is('canonical_file_body', 'canonical-file-press', b'\r') and
+            input_is('canonical_escape_keeps_open', 'canonical-leave-focus', b'\x1b'))
+        first = witness('canonical_alpha_dock')
+        continuation = ('canonical_two_files_before_select', 'canonical_focus_landing', *tabs,
+            'canonical_omega_control', 'canonical_file_body', 'canonical_escape_keeps_open',
+            'canonical_inline_same_identity', 'canonical_redocked', 'canonical_refocus_landing')
+        same_lease = all(witness(name) and all(witness(name)[key] == first[key] for key in ('activation', 'lease'))
+                         for name in continuation)
+        reopened = witness('canonical_reopened')
+        checks['canonical_pane_lifecycle'] = bool(first and same_lease and reopened and
+            first['placement'] == 'dock' and first['focused'] is False and
+            'ALPHA_RELEASE_BODY' in body('canonical_alpha_dock') and 'omega.txt' not in body('canonical_alpha_dock') and
+            all(text in body('canonical_two_files_before_select') for text in ('alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY')) and
+            'OMEGA_RELEASE_BODY' not in body('canonical_two_files_before_select') and
+            'OMEGA_RELEASE_BODY' in body('canonical_file_body') and 'ALPHA_RELEASE_BODY' not in body('canonical_file_body') and
+            witness('canonical_escape_keeps_open')['focused'] is False and
+            witness('canonical_inline_same_identity')['placement'] == 'inline' and
+            observed['canonical_inline_same_identity'][1]['kind'] == 'resize' and
+            observed['canonical_inline_same_identity'][1]['receipt']['columns'] == 109 and
+            'Resize' in match('canonical_inline_same_identity')['screen'] and
+            witness('canonical_redocked')['placement'] == 'dock' and
+            observed['canonical_redocked'][1]['kind'] == 'resize' and
+            observed['canonical_redocked'][1]['receipt']['columns'] == 110 and
+            'OMEGA_RELEASE_BODY' in body('canonical_redocked') and
+            witness('canonical_person_closed') is None and
+            input_is('canonical_person_closed', 'canonical-close-chord', b'\x18x') and
+            reopened['activation'] == first['activation'] and reopened['lease'] != first['lease'] and
+            'ALPHA_RELEASE_BODY' in body('canonical_reopened') and 'ALPHA_RELEASE_LINE_000' in body('canonical_reopened') and
+            'OMEGA_RELEASE_BODY' not in body('canonical_reopened') and reopened['paintedScrollTop'] == 0 and
+            input_is('canonical_reopened', 'canonical-reopen', b'/diff\r') and
+            witness('canonical_command_closed') is None and input_is('canonical_command_closed', 'canonical-command-close', b'/diff\r') and
+            witness('canonical_narrow_refused') is None and input_is('canonical_narrow_refused', 'canonical-too-narrow', b'/diff\r') and
+            match('canonical_narrow_refused')['terminalViewport']['width'] == 109 and
+            'Resize your terminal to at least 110 columns to show the diff panel' in match('canonical_narrow_refused')['screen'])
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        pass
+    return checks
+
+
 def terminal_frame_report_checks(report):
-    invalid = {'frame_physical': False, 'frame_resize_sequence': False, 'frame_semantics': False}
+    invalid = {'renderer_write_replay': False, 'frame_resize_sequence': False, 'frame_semantics': False}
     if not isinstance(report, dict):
         return invalid
     frames = report.get('frames', [])
@@ -1070,7 +1834,8 @@ def terminal_frame_report_checks(report):
         for frame in frames
     ):
         return invalid
-    physical = (report.get('verdict') == 'passed' and bool(frames)
+    replay = (report.get('method') in {'renderer-write-replay-v1', 'independent-pty-replay-v1'}
+                and report.get('verdict') == 'passed' and bool(frames)
                 and report.get('frameCount') == len(frames)
                 and all(f.get('verdict') == 'passed' for f in frames)
                 and all(isinstance(f.get('frameId'), int) for f in frames)
@@ -1090,16 +1855,70 @@ def terminal_frame_report_checks(report):
                      and s.get('loading') is True and s.get('omegaBody') is False,
         lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'detail'
                      and s.get('omegaFile') is True and s.get('omegaBody') is True,
-        lambda f, s: f.get('columns') == 109 and s.get('diffMode') is None,
-        lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'files'
+        lambda f, s: f.get('columns') == 109 and s.get('diffMode') == 'detail'
+                     and s.get('omegaFile') is True and s.get('omegaBody') is True,
+        lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'detail'
                      and s.get('omegaFile') is True and s.get('omegaBody') is True,
     ]
     stage = 0
     for frame in frames:
         if stage < len(predicates) and predicates[stage](frame, frame.get('semantic', {})):
             stage += 1
-    return {'frame_physical': physical, 'frame_resize_sequence': resize,
-            'frame_semantics': physical and resize and stage == len(predicates)}
+    return {'renderer_write_replay': replay and report.get('method') == 'renderer-write-replay-v1',
+            'frame_resize_sequence': resize,
+            'frame_semantics': replay and resize and stage == len(predicates)}
+
+
+def terminal_socket_identity(capture):
+    root = Path(capture['socketRoot'])
+    path = Path(capture['socket'])
+    if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
+            or path.parent != root or path.name != 's' or path.is_symlink()):
+        raise ValueError('terminal socket is outside its owned canonical directory')
+    root_info, info = root.lstat(), path.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & 0o077
+            or root_info.st_uid != os.getuid() or not stat.S_ISSOCK(info.st_mode)
+            or info.st_uid != os.getuid()):
+        raise ValueError('terminal socket ownership or file type is invalid')
+    return {'rootDevice': root_info.st_dev, 'rootInode': root_info.st_ino,
+            'device': info.st_dev, 'inode': info.st_ino}
+
+
+def release_owned_terminal_socket(capture):
+    path = Path(capture['socket'])
+    result = {'socket_released': False, 'server_exited': False, 'stale_socket_removed': False}
+    try:
+        pid = capture.get('serverPid')
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+            raise ValueError('terminal socket server identity is missing')
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            result['server_exited'] = True
+        else:
+            raise ValueError('terminal socket server has not exited')
+        if not path.exists() and not path.is_symlink():
+            result['socket_released'] = True
+            return result
+        if terminal_socket_identity(capture) != capture.get('socketIdentity'):
+            raise ValueError('terminal socket inode no longer belongs to this run')
+        # A dead server may leave its unix socket entry after the last session.
+        # Refuse a live/replaced endpoint; remove only the captured owned inode.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            try:
+                probe.connect(str(path))
+            except ConnectionRefusedError:
+                pass
+            else:
+                raise ValueError('terminal socket endpoint is still live')
+        if terminal_socket_identity(capture) != capture['socketIdentity']:
+            raise ValueError('terminal socket changed during cleanup')
+        path.unlink()
+        result.update(socket_released=True, stale_socket_removed=True)
+    except (OSError, ValueError) as error:
+        result['error'] = str(error)
+    return result
 
 
 def sha256(path):
@@ -1763,7 +2582,7 @@ class MockOpenAIServer:
                 else:
                     kind, response = 'nested-parent-launch', sse_function_call(
                         'fc_nested_child', 'Agent', {
-                            'description': 'release nested child', 'subagent_type': 'general-purpose',
+                            'description': 'release nested child', 'subagent_type': 'release-nested-foreground',
                             'run_in_background': False,
                             'prompt': 'RELEASE_NESTED_CHILD_REQUEST: Reply exactly RELEASE_NESTED_CHILD_DONE.',
                         })
@@ -1773,7 +2592,7 @@ class MockOpenAIServer:
                 else:
                     kind, response = 'nested-root-launch', sse_function_call(
                         'fc_nested_parent', 'Agent', {
-                            'description': 'release nested parent', 'subagent_type': 'general-purpose',
+                            'description': 'release nested parent', 'subagent_type': 'release-nested-foreground',
                             'run_in_background': False,
                             'prompt': 'RELEASE_NESTED_PARENT_REQUEST: Use Agent once to launch a foreground child, then reply RELEASE_NESTED_PARENT_DONE.',
                         })
@@ -1838,6 +2657,101 @@ class MockOpenAIServer:
                 self.lifecycle_responses.add(kind)
         return kind, response
 
+    def canonical_diff_response(self, body):
+        nonce = hashlib.sha256(str(self.run_dir.resolve()).encode()).hexdigest()[:24]
+        items = body.get('input', [])
+        users = [(index, item) for index, item in enumerate(items)
+                 if isinstance(item, dict) and item.get('role') == 'user']
+        invalid = ('canonical-invalid', sse_incomplete('Invalid owned canonical Read/Write continuation'))
+        if not users:
+            return invalid
+        user_index, user = users[-1]
+        content = user.get('content')
+        if isinstance(content, list):
+            texts = []
+            for block in content:
+                if (not isinstance(block, dict) or block.get('type') != 'input_text'
+                        or not isinstance(block.get('text'), str)):
+                    return invalid
+                text = block['text']
+                if re.fullmatch(r'<(system-reminder|available-deferred-tools)>.*</\1>\s*',
+                                text, re.DOTALL):
+                    continue
+                texts.append(text)
+            caveat = ('<local-command-caveat>Caveat: The messages below were generated by the user '
+                      'while running local commands. DO NOT respond to these messages or otherwise '
+                      'consider them in your response unless the user explicitly asks you to.'
+                      '</local-command-caveat>')
+            if texts and texts[0].strip() == caveat:
+                if (len(texts) != 4
+                        or not re.fullmatch(r'<command-name>/diff</command-name>\s*'
+                            r'<command-message>diff</command-message>\s*'
+                            r'<command-args></command-args>\s*', texts[1])
+                        or not re.fullmatch(r'<local-command-stdout>Diff panel '
+                            r'(shown|hidden)</local-command-stdout>\s*', texts[2])):
+                    return invalid
+                texts = texts[3:]
+            if len(texts) != 1:
+                return invalid
+            content = texts[0]
+        file = next((name for name in ('alpha', 'omega')
+                     if content == f'RELEASE_CANONICAL_DIFF:{nonce}:{name}'), None)
+        if file is None:
+            return invalid
+        read_id = f'fc_canonical_{file}_read_{nonce}'
+        write_id = f'fc_canonical_{file}_write_{nonce}'
+        outputs = [item for item in items[user_index + 1:]
+                   if isinstance(item, dict) and item.get('type') == 'function_call_output']
+        if any(item.get('call_id') not in {read_id, write_id} for item in outputs):
+            return invalid
+        read = [item for item in outputs if item.get('call_id') == read_id]
+        wrote = [item for item in outputs if item.get('call_id') == write_id]
+        if len(read) > 1 or len(wrote) > 1 or (wrote and not read):
+            return invalid
+        calls = [item for item in items[user_index + 1:] if isinstance(item, dict)
+                 and item.get('type') == 'function_call']
+        if len(calls) != len(outputs):
+            return invalid
+        tail = items[user_index + 1:]
+        expected_tail = [(kind, call_id) for call_id in
+                         ([read_id, write_id] if wrote else [read_id] if read else [])
+                         for kind in ('function_call', 'function_call_output')]
+        if (len(tail) != len(expected_tail) or any(
+                not isinstance(item, dict) or (item.get('type'), item.get('call_id')) != expected
+                for item, expected in zip(tail, expected_tail))):
+            return invalid
+        path = self.run_dir / f'project/{file}.txt'
+        for item in outputs:
+            paired = [call for call in calls if call.get('call_id') == item.get('call_id')]
+            if len(paired) != 1 or items.index(paired[0]) >= items.index(item):
+                return invalid
+            call = paired[0]
+            reading = item.get('call_id') == read_id
+            expected_args = {'file_path': str(path)} if reading else {
+                'file_path': str(path), 'content': canonical_diff_content(file)}
+            try:
+                arguments = json.loads(call.get('arguments', ''))
+            except (ValueError, TypeError):
+                return invalid
+            if call.get('name') != ('Read' if reading else 'Write') or arguments != expected_args:
+                return invalid
+            output = item.get('output')
+            if not isinstance(output, str) or not output.strip() or re.search(
+                r'(?i)(?:^|\n)\s*(?:error:|permission denied|tool use rejected)', output):
+                return invalid
+        if read and f'{file} before' not in read[0]['output']:
+            return invalid
+        if wrote:
+            if 'successfully' not in wrote[0]['output'] or f'{file}.txt' not in wrote[0]['output']:
+                return invalid
+            return f'canonical-{file}-completed', sse_completed(f'RELEASE_CANONICAL_{file.upper()}_DONE:{nonce}')
+        if read:
+            return f'canonical-{file}-write', sse_function_call(write_id, 'Write', {
+                'file_path': str(path),
+            'content': canonical_diff_content(file),
+            })
+        return f'canonical-{file}-read', sse_function_call(read_id, 'Read', {'file_path': str(path)})
+
     def response_for(self, body):
         current_request = {
             'method': 'POST',
@@ -1846,6 +2760,8 @@ class MockOpenAIServer:
         }
         if not is_main_response_request(current_request):
             return 'title', sse_completed('{"title":"Release validation"}')
+        if self.label == 'terminal-canonical-diff':
+            return self.canonical_diff_response(body)
         if self.label == 'retained-turn-end-load':
             self.turn_waiting.set()
             if not self.turn_release.wait(90):
@@ -1895,7 +2811,7 @@ class MockOpenAIServer:
                         'RELEASE_FGBG_CHILD_REQUEST: Read Makefile and report its '
                         'VERSION line, then print RELEASE_FGBG_CHILD_DONE.'
                     ),
-                    'subagent_type': 'general-purpose',
+                    'subagent_type': 'release-foreground',
                     'run_in_background': False,
                 },
             )
@@ -2082,7 +2998,7 @@ class MockOpenAIServer:
                 {
                     'description': 'release coordinator selector',
                     'prompt': 'RELEASE_COORDINATOR_CHILD_REQUEST: Run Bash then Read Makefile and report its VERSION line.',
-                    'subagent_type': 'general-purpose',
+                    'subagent_type': 'release-coordinator-foreground',
                     'run_in_background': False,
                 },
             )
@@ -2207,7 +3123,8 @@ class MockOpenAIServer:
                                 'This release validation request is expected to fail. '
                                 'Do not call tools.'
                             ),
-                            'subagent_type': 'general-purpose',
+                            'subagent_type': 'release-stop-foreground',
+                            'run_in_background': False,
                         },
                     ),
                 )
@@ -2609,6 +3526,7 @@ class BinaryGate:
         self.pid = os.getpid()
         self.session_index = 0
         self.active_runs = {}
+        self.terminal_capture = None
         self.code_review_mock_servers = {}
         self.registered_runs = {}
         self.auth_homes = set()
@@ -2848,7 +3766,98 @@ class BinaryGate:
         }
 
     def tmux(self, *args, check=False, timeout=30):
-        return command(['tmux', *args], check=check, timeout=timeout)
+        capture = getattr(self, 'terminal_capture', None)
+        if capture is None:
+            return command(['tmux', *args], check=check, timeout=timeout)
+        run = Path(capture['run'])
+        before = self.terminal_capture_boundary(run)
+        kind = args[0]
+        action = None
+        if kind == 'send-keys':
+            keys = {'Enter': b'\r', 'Escape': b'\x1b', 'C-c': b'\x03',
+                    'Tab': b'\t', 'Down': b'\x1b[B', 'Up': b'\x1b[A'}
+            rest = list(args[args.index('-t') + 2:])
+            data = (''.join(rest[1:]).encode() if rest[:1] == ['-l'] else
+                    b''.join(keys[key] for key in rest))
+            action = self.terminal_input_begin(run, {
+                'transport': 'tmux-send-keys', 'args': list(args),
+                'hex': data.hex(), 'target': capture['target'],
+            })
+        elif kind == 'resize-window':
+            rows = self.terminal_jsonl(run / 'geometry.jsonl')
+            action = sum(row.get('phase') == 'resize-send' for row in rows) + 1
+            geometry = {
+                'actionId': action, 'columns': int(args[args.index('-x') + 1]),
+                'rows': int(args[args.index('-y') + 1]),
+                'actualArgs': list(args), 'target': capture['target'],
+            }
+            self.terminal_append(run / 'geometry.jsonl', {
+                **geometry, 'phase': 'resize-send', **before,
+            })
+        result = command(['tmux', '-S', capture['socket'], *args],
+                         check=False, timeout=timeout)
+        if kind == 'send-keys':
+            self.terminal_append(run / 'inputs.jsonl', {
+                'actionId': action, 'phase': 'sent' if result.returncode == 0 else 'failed',
+                'exitCodes': [result.returncode], **self.terminal_capture_boundary(run),
+            })
+        elif kind == 'resize-window':
+            self.terminal_append(run / 'geometry.jsonl', {
+                **geometry, 'phase': 'resize-return', 'exitCode': result.returncode,
+                **self.terminal_capture_boundary(run),
+            })
+        elif kind == 'capture-pane':
+            self.terminal_append(run / 'observations.jsonl', {
+                'args': list(args), 'exitCode': result.returncode,
+                'textSHA256': text_sha256(result.stdout), **before,
+            })
+        if check and result.returncode:
+            raise RuntimeError(f'owned tmux {args!r}: {result.stderr}')
+        return result
+
+    @staticmethod
+    def terminal_jsonl(path):
+        if not path.exists():
+            return []
+        text = path.read_text()
+        lines = text.split('\n')
+        if not text.endswith('\n'):
+            lines.pop()
+        return [json.loads(line) for line in lines if line]
+
+    @staticmethod
+    def terminal_append(path, row):
+        with path.open('a') as stream:
+            stream.write(json.dumps(row) + '\n')
+
+    def terminal_capture_boundary(self, run):
+        frames = self.terminal_jsonl(run / 'frames.jsonl')
+        io = self.terminal_jsonl(run / 'pty-io.jsonl')
+        return {
+            'lastObservedFrameId': frames[-1]['frameId'] if frames else None,
+            'lastObservedIoId': io[-1]['ioId'] if io else None,
+            'observedRawBytes': (run / 'pty.raw').stat().st_size,
+        }
+
+    def terminal_input_begin(self, run, row):
+        action = sum(value.get('phase') == 'send'
+                     for value in self.terminal_jsonl(run / 'inputs.jsonl')) + 1
+        self.terminal_append(run / 'inputs.jsonl', {
+            **row, 'actionId': action, 'phase': 'send',
+            'chunkClaim': 'one transport command; native read grouping unknown',
+            **self.terminal_capture_boundary(run),
+        })
+        return action
+
+    def terminal_capture_command(self, action, descriptor):
+        result = command([
+            'bun', str(self.repo / 'scripts/terminal-capture-driver.mjs'),
+            action, str(descriptor),
+        ], timeout=90)
+        run = descriptor.parent
+        (run / f'capture-{action}-stdout.txt').write_text(result.stdout)
+        (run / f'capture-{action}-stderr.txt').write_text(result.stderr)
+        return result
 
     def capture(self, target, path, *, history=True):
         args = ['capture-pane', '-p', '-e', '-J']
@@ -3219,6 +4228,16 @@ else:
                     }],
                 }],
             }
+        if label in FOREGROUND_FIXTURES:
+            agent_type, tools = FOREGROUND_FIXTURES[label]
+            agents = config / 'agents'
+            agents.mkdir(parents=True)
+            (agents / f'{agent_type}.md').write_text(
+                f'---\nname: {agent_type}\n'
+                'description: Deterministic foreground lifecycle validation.\n'
+                f'tools: {tools}\nmodel: inherit\nbackground: false\n---\n'
+                'Follow the requested validation task and return its completion marker.\n'
+            )
         if label == 'model-discovery-empty-picker':
             settings['model'] = 'gpt-empty-discovery-current'
         if label == 'first-party-bootstrap-picker':
@@ -3304,6 +4323,7 @@ else:
         run_key = f'{self.stamp}-{label}-{self.pid}-{self.session_index}'
         run_dir = self.evidence_root / 'runs' / run_key
         run_dir.mkdir(parents=True)
+        (run_dir / 'tmp').mkdir(mode=0o700)
         config, home = self.make_fixture(run_dir, label)
         mock_base_url = None
         uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'
@@ -3322,6 +4342,7 @@ else:
             '-e', f'CC_VALIDATION_EVIDENCE_DIR={run_dir}',
             '-e', f'CC_VALIDATION_CONFIG_DIR={config}',
             '-e', f'CC_VALIDATION_HOME={home}',
+            '-e', f'CC_VALIDATION_TMPDIR={run_dir / "tmp"}',
             '-e', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1',
         ]
         for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
@@ -3339,6 +4360,8 @@ else:
             settings = json.loads(settings_path.read_text())
             settings['teammateMode'] = 'in-process'
             settings_path.write_text(json.dumps(settings, indent=2) + '\n')
+        if label in FOREGROUND_FIXTURES:
+            args.extend(['-e', 'CC_VALIDATION_FORK_SUBAGENT=0'])
         if label == 'workflow-retry-partial-failure':
             args.extend([
                 '-e',
@@ -3369,7 +4392,7 @@ else:
                 '-e',
                 f'CC_VALIDATION_SYSTEM_PROMPT={CUSTOM_SYSTEM_PROMPT_MARKER}',
             ])
-        if label == 'terminal-interaction':
+        if label in {'terminal-interaction', 'terminal-canonical-diff'}:
             fixture = run_dir / 'project'
             initialize_terminal_interaction_repository(fixture)
             global_config_path = config / '.claude.json'
@@ -3380,7 +4403,7 @@ else:
             }
             global_config_path.write_text(json.dumps(global_config, indent=2) + '\n')
             args.extend([
-                '-e', f'CC_VALIDATION_PATH_PREFIX={create_terminal_git_wrapper(run_dir)}',
+                '-e', f'CC_VALIDATION_PATH_PREFIX={(create_terminal_git_wrapper if label == "terminal-interaction" else create_canonical_terminal_git_wrapper)(run_dir)}',
                 '-e', f'CC_VALIDATION_CWD={fixture}',
                 '-e', f'CC_VALIDATION_FRAME_EVIDENCE_PATH={run_dir / "frames.jsonl"}',
                 '-e', 'CC_VALIDATION_NO_FLICKER=1',
@@ -3388,6 +4411,10 @@ else:
             settings_path = config / 'settings.json'
             settings = json.loads(settings_path.read_text())
             settings['tui'] = 'fullscreen'
+            if label == 'terminal-interaction':
+                settings['enabledPlugins'] = {
+                    'cc-plugin-diff@builtin': False, 'diff@builtin': False,
+                }
             settings_path.write_text(json.dumps(settings, indent=2) + '\n')
             clawd = config / 'clawd.txt'
             clawd.write_text('\n'.join([
@@ -3434,7 +4461,48 @@ else:
                                     '--debug', '--debug-file', str(run_dir / 'debug.log')]))
         else:
             args.append(str(self.launcher))
+        if label in {'terminal-interaction', 'terminal-canonical-diff'}:
+            if self.terminal_capture is not None:
+                raise RuntimeError('terminal captures must be serial')
+            socket_root = Path(tempfile.mkdtemp(prefix='cc-term-', dir='/private/tmp'))
+            binary = run_dir / 'bin/claude'
+            binary.parent.mkdir()
+            shutil.copy2(self.binary, binary)
+            if sha256(binary) != self.manifest['binary_sha256']:
+                raise RuntimeError('copied terminal binary differs from baseline')
+            descriptor = run_dir / 'capture-launch.json'
+            launch = {
+                'run': str(run_dir), 'socket': str(socket_root / 's'),
+                'socketRoot': str(socket_root), 'target': target, 'pane': target,
+                'tmux': shutil.which('tmux'), 'argv': [str(self.launcher)],
+                'binarySha256': self.manifest['binary_sha256'],
+                'env': {'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+                        'HOME': str(home), 'TERM': 'xterm-256color'},
+            }
+            descriptor.write_text(json.dumps(launch, indent=2) + '\n')
+            prepared = self.terminal_capture_command('prepare', descriptor)
+            if prepared.returncode:
+                raise RuntimeError('terminal capture preparation failed')
+            self.terminal_capture = json.loads(descriptor.read_text())
+            args[-1] = self.terminal_capture['capture']['wrapper']
+            for name in ('CC_VALIDATION_FRAME_BROKER_DIR', 'CC_VALIDATION_FRAME_CAPTURE_ID',
+                         'CC_VALIDATION_FRAME_BINARY_SHA256'):
+                args[-1:-1] = ['-e', f'{name}={self.terminal_capture["env"][name]}']
+            args[-1:-1] = ['-e', f'CC_VALIDATION_BINARY={binary}']
         result = self.tmux(*args)
+        if label in {'terminal-interaction', 'terminal-canonical-diff'} and result.returncode == 0:
+            self.active_runs[session] = (run_dir, target)
+            self.tmux('set-option', '-w', '-t', target, 'remain-on-exit', 'on', check=True)
+            pane = self.tmux('display-message', '-p', '-t', target, '#{pane_id}',
+                             check=True).stdout.strip()
+            self.terminal_capture['pane'] = pane
+            self.terminal_capture['serverPid'] = int(self.tmux(
+                'display-message', '-p', '-t', target, '#{pid}', check=True).stdout.strip())
+            self.terminal_capture['socketIdentity'] = terminal_socket_identity(self.terminal_capture)
+            descriptor.write_text(json.dumps(self.terminal_capture, indent=2) + '\n')
+            installed = self.terminal_capture_command('install', descriptor)
+            if installed.returncode:
+                raise RuntimeError('terminal capture recorder installation failed')
         (run_dir / 'tmux-start-stdout.txt').write_text(result.stdout)
         (run_dir / 'tmux-start-stderr.txt').write_text(result.stderr)
         (run_dir / 'pane-target.txt').write_text(target + '\n')
@@ -3455,6 +4523,7 @@ else:
             ),
             'config': str(config),
             'home': str(home),
+            'fork_subagent': '0' if label in FOREGROUND_FIXTURES else 'product default',
             'mock_openai': {
                 'enabled': mock_base_url is not None,
                 'base_url': mock_base_url,
@@ -3464,6 +4533,7 @@ else:
                 ),
             },
             'terminal': {'cols': 200, 'rows': 60},
+            'terminal_capture': self.terminal_capture if label in {'terminal-interaction', 'terminal-canonical-diff'} else None,
             'flags': [
                 *(
                     []
@@ -3581,6 +4651,43 @@ else:
             if mock_server is not None
             else {'stopped': True, 'thread_alive': False}
         )
+        captured = getattr(self, 'terminal_capture', None)
+        capture_cleanup = None
+        if captured and captured['run'] == str(run_dir):
+            killed = None
+            try:
+                if terminal_socket_identity(captured) == captured.get('socketIdentity'):
+                    server = self.tmux('display-message', '-p', '#{pid}')
+                    if server.returncode == 0 and server.stdout.strip() == str(captured['serverPid']):
+                        killed = self.tmux('kill-server')
+            except (OSError, ValueError):
+                pass
+            sealed = self.terminal_capture_command('seal', run_dir / 'capture-launch.json')
+            def server_gone():
+                try:
+                    os.kill(captured['serverPid'], 0)
+                    return False
+                except ProcessLookupError:
+                    return True
+                except PermissionError:
+                    return False
+            self.wait_until(server_gone, 5, 0.1)
+            socket_cleanup = release_owned_terminal_socket(captured)
+            capture_cleanup = {
+                'kill_server_exit': killed.returncode if killed is not None else None,
+                'seal_exit': sealed.returncode,
+                **socket_cleanup,
+                'descriptor': str(run_dir / 'capture-launch.json'),
+            }
+            self.terminal_capture = None
+            socket_root = Path(captured['socketRoot'])
+            if socket_cleanup['socket_released']:
+                try:
+                    socket_root.rmdir()
+                    capture_cleanup['socket_root_released'] = True
+                except OSError as error:
+                    capture_cleanup['socket_root_released'] = False
+                    capture_cleanup['socket_root_error'] = str(error)
         return {
             'kill_exit': close_result.returncode,
             'session_exists_after': session_exists_after,
@@ -3589,6 +4696,7 @@ else:
             'remaining_processes': list(remaining.values()),
             'forced_termination': terminated,
             'mock_server': mock_cleanup,
+            'terminal_capture': capture_cleanup,
         }
 
     def close_active_runs(self):
@@ -3620,6 +4728,11 @@ else:
             and not cleanup['forced_termination']
             and cleanup.get('mock_server', {}).get('stopped', True)
             and not cleanup.get('mock_server', {}).get('thread_alive', False)
+            and (cleanup.get('terminal_capture') is None
+                 or (cleanup['terminal_capture'].get('socket_released') is True
+                     and cleanup['terminal_capture'].get('server_exited') is True
+                     and cleanup['terminal_capture'].get('socket_root_released') is True
+                     and cleanup['terminal_capture'].get('seal_exit') == 0))
         )
 
     def remove_auth_homes(self):
@@ -3660,6 +4773,20 @@ else:
         raise SystemExit(128 + signum)
 
     def record(self, result):
+        if result.get('label') in TERMINAL_ACCEPTANCE:
+            root = Path(result['evidence_dir']).resolve()
+            metadata_path = root / 'run-metadata.json'
+            registered = self.registered_runs[str(root)]
+            if metadata_path.read_text() != registered:
+                raise RuntimeError('terminal producer metadata changed before acceptance registration')
+            required_id = TERMINAL_ACCEPTANCE[result['label']][0]
+            matching = [item for item in result.get('assertions', []) if item.get('assertion_id') == required_id]
+            if len(matching) != 1 or str(metadata_path) in matching[0].get('evidence_sha256', {}):
+                raise RuntimeError('terminal producer has no unique sealed business assertion')
+            metadata = json.loads(registered)
+            metadata['terminal_evidence_sha256'] = dict(matching[0]['evidence_sha256'])
+            metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+            self.registered_runs[str(root)] = metadata_path.read_text()
         assertions = result.get('assertions')
         if result.get('validation_verdict') == 'passed' and isinstance(assertions, list) and any(
             assertion.get('validation_verdict') != 'passed'
@@ -3768,6 +4895,8 @@ else:
             'diff_alpha_ready', 'diff_partial_loading', 'diff_same_chunk_navigation',
             'resize_intent', 'resize_keyboard_ownership', 'diff_closed', 'diff_reopened',
             'frame_physical', 'frame_resize_sequence', 'frame_semantics', 'cleanup',
+            'independent_pty_capture_identity', 'independent_pty_resize_sequence',
+            'normal_native_exit',
         ), False)
         checks['ready'] = ready
         evidence = []
@@ -3836,12 +4965,18 @@ else:
             raw('delayed-paste-enter', b'\r')
             submitted('paste_recovery_submit', offset, 'RECOVERY_LITERAL_CONTINUATION')
 
-            self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
+            # Enter the reachable keyboard dialog at 109 columns. At 110 the
+            # native command opens a mouse-only sidebar instead.
+            self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
             fixture = run_dir / 'project'
             (fixture / 'alpha.txt').write_text('alpha before\nALPHA_RELEASE_BODY\n')
             raw('diff-open', b'/diff\r')
+            require('diff_dialog_entry', observe('06-dialog-entry', lambda text:
+                    'Diff · files' in text and 'alpha.txt' in text and 'ALPHA_RELEASE_BODY' in text
+                    and 'omega.txt' not in text))
+            self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
             require('diff_alpha_ready', observe('06-alpha-ready', lambda text:
-                    'alpha.txt' in text and 'ALPHA_RELEASE_BODY' in text
+                    'Diff · files' in text and 'alpha.txt' in text and 'ALPHA_RELEASE_BODY' in text
                     and 'omega.txt' not in text))
             (fixture / 'omega.txt').write_text('omega before\nOMEGA_RELEASE_BODY\n')
             require('omega_body_blocked', self.wait_until(
@@ -3864,17 +4999,21 @@ else:
 
             before_resize = self.debug(run_dir).count('[diff] close')
             self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
-            require('resize_hidden', observe('08-resize-109', lambda text:
-                    'Base:' not in text and 'Diff · detail' not in text
+            require('resize_detail_preserved', observe('08-resize-109', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and 'ALPHA_RELEASE_BODY' not in text
                     and self.tmux('display-message', '-p', '-t', target,
                                   '#{window_width}x#{window_height}').stdout.strip() == '109x34'))
             self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
             require('resize_intent', observe('08a-resize-110', lambda text:
-                    'Diff · detail' not in text
-                    and all(marker in text for marker in ('alpha.txt', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and 'ALPHA_RELEASE_BODY' not in text
                     and self.tmux('display-message', '-p', '-t', target,
                                   '#{window_width}x#{window_height}').stdout.strip() == '110x34')
                     and self.debug(run_dir).count('[diff] close') == before_resize)
+            raw('resize-detail-back', b'\x1b')
+            require('resize_files_after_explicit_back', observe('08b-files-after-back', lambda text:
+                    'Diff · files' in text and all(name in text for name in ('alpha.txt', 'omega.txt'))))
             raw('resize-up-enter', b'\x1b[A\r')
             require('resize_keyboard_ownership', observe('08c-alpha-detail', lambda text:
                     all(marker in text for marker in ('Diff · detail', 'alpha.txt', 'ALPHA_RELEASE_BODY'))
@@ -3887,10 +5026,12 @@ else:
             raw('diff-close', b'\x1b')
             require('diff_closed', observe('09a-closed', lambda text:
                     not any(name in text for name in ('alpha.txt', 'omega.txt'))
-                    and '[diff] close user' in self.debug(run_dir)))
+                    and input_prompt_ready(text)
+                    and '[diff] dialog close user' in self.debug(run_dir)))
+            self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
             raw('diff-reopen', b'/diff\r')
             require('diff_reopened', observe('10-reopened', lambda text:
-                    all(marker in text for marker in ('alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY'))))
+                    all(marker in text for marker in ('Diff · files', 'alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY'))))
         except Exception as error:
             result['error'] = str(error)
             checks['scenario_completed'] = False
@@ -3899,27 +5040,53 @@ else:
             try:
                 release_terminal_git_wrapper(run_dir)
             finally:
+                try:
+                    # Close the reachable UI before asking the native process to exit.
+                    raw('cleanup-close-dialog', b'\x1b\x1b')
+                    composer_ready = observe('11-cleanup-composer', input_prompt_ready, 5)
+                    if composer_ready:
+                        raw('cleanup-native-exit', b'/exit\r')
+                    checks['normal_native_exit'] = composer_ready and self.wait_until(
+                        lambda: (run_dir / 'native-pty-eof.json').exists()
+                        and json.loads((run_dir / 'native-pty-eof.json').read_text()).get(
+                            'childExitCode') == 0, 5, 0.1)
+                except Exception as error:
+                    result['native_exit_error'] = str(error)
                 cleanup = self.close(run_dir, session, target)
         checks['cleanup'] = self.cleanup_passed(cleanup)
         (run_dir / 'input-chunks.json').write_text(json.dumps(input_chunks, indent=2) + '\n')
         frame_report = run_dir / 'frame-physical-report.json'
         frames = run_dir / 'frames.jsonl'
         if frames.exists() and frames.stat().st_size:
-            verified = subprocess.run([
-                'bun', str(self.repo / 'scripts/verify-terminal-frame-evidence.mjs'),
-                str(frames), str(frame_report),
-            ], cwd=self.repo, capture_output=True, text=True, check=False)
-            (run_dir / 'frame-verifier-stdout.txt').write_text(verified.stdout)
-            (run_dir / 'frame-verifier-stderr.txt').write_text(verified.stderr)
             try:
                 report = json.loads(frame_report.read_text())
-                checks.update(terminal_frame_report_checks(report))
+                logical = terminal_frame_report_checks(report)
+                checks['frame_resize_sequence'] = logical['frame_resize_sequence']
+                checks['frame_semantics'] = logical['frame_semantics']
+                fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
+                checks['independent_pty_capture_identity'] = fresh['captureIdentityPassed'] is True
+                checks['frame_physical'] = fresh['recheck']['verdict'] == 'passed'
+                checks['independent_pty_resize_sequence'] = (
+                    report['geometryProof']['verdict'] == 'passed'
+                    and [(size['columns'], size['rows'])
+                         for size in report['geometryProof']['sizes']] ==
+                        [(109, 34), (110, 34), (109, 34), (110, 34), (109, 34)])
             except (OSError, ValueError, TypeError, KeyError) as error:
                 result['frame_report_error'] = str(error)
-            checks['frame_physical'] = checks['frame_physical'] and verified.returncode == 0
         checks_path = run_dir / 'terminal-interaction-checks.json'
         checks_path.write_text(json.dumps(checks, indent=2) + '\n')
         passed = all(checks.values())
+        capture_paths = [run_dir / name for name in (
+            'pty.raw', 'native-pty.raw', 'pty-io.jsonl', 'native-pty-initial.json',
+            'native-pty-eof.json', 'broker-cleanup.json', 'inputs.jsonl',
+            'geometry.jsonl', 'capture-eof', 'terminal-capture.json',
+            'native-input.jsonl', 'initial-termios.txt', 'frame-stream-map.json', 'bin/claude',
+            'independent-pty-checks.json', 'capture-launch.json', 'observations.jsonl',
+        )]
+        proofs = [*evidence, run_dir / 'omega-body-blocked.json',
+                  run_dir / 'input-chunks.json', frames, frame_report, checks_path,
+                  *capture_paths, *[Path(row['inputFile']) for row in self.terminal_jsonl(run_dir / 'inputs.jsonl')
+                    if row.get('phase') == 'send' and row.get('transport') == 'tmux-paste-buffer']]
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'checks': checks,
@@ -3929,12 +5096,290 @@ else:
                 'terminal-interaction-frame-and-input-matrix',
                 'Current-binary terminal interaction matrix',
                 'Exact incremental requests, raw input, partial loading ownership, open intent resize and physical/semantic frames agree.',
-                [*evidence, run_dir / 'omega-body-blocked.json',
-                 run_dir / 'input-chunks.json', frames, frame_report, checks_path],
+                proofs,
                 passed=passed,
                 reason='Terminal input, lifecycle, frame replay, or cleanup evidence was incomplete',
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
             )],
             'cleanup': cleanup,
+            'frame_scope': 'Independent native PTY bytes and declared Ink roots; synchronous capture timing, non-Ink regions and tail semantics remain open.',
+            'renderer_write_replay': 'not run in broker capture',
+        })
+        self.record(result)
+
+    def canonical_pane_states(self, run_dir):
+        return canonical_debug_states(self.debug(run_dir))
+
+    def canonical_pane(self, run_dir):
+        observation = getattr(self, 'canonical_observation', None)
+        if observation is not None:
+            return observation['state']['pane']
+        states = self.canonical_pane_states(run_dir)
+        return states[-1]['pane'] if states else None
+
+    def canonical_dock_text(self, run_dir):
+        observation = getattr(self, 'canonical_observation', None) or canonical_frame_snapshot(
+            self.canonical_pane_states(run_dir), self.terminal_jsonl(run_dir / 'frames.jsonl'),
+            getattr(self, 'canonical_frame_floor', 0) or 0)
+        return observation['body'] if observation and observation['witness'] and observation['witness']['placement'] == 'dock' else ''
+
+    def terminal_canonical_diff(self):
+        run_dir, session, target, ready = self.start('terminal-canonical-diff')
+        server = self.mock_servers[run_dir.name]
+        result = {'label': 'terminal-canonical-diff', 'evidence_dir': str(run_dir)}
+        checks = {'ready': ready}
+        checkpoints = []
+        wire = []
+        self.canonical_frame_floor = 0
+        self.canonical_observation = None
+        self.canonical_action = None
+        release_checks = {}
+        release_done = threading.Event()
+        release_cancelled = threading.Event()
+        release_thread = None
+
+        def raw(name, data):
+            self.canonical_observation = None
+            self.canonical_frame_floor = self.terminal_capture_boundary(run_dir)['lastObservedFrameId']
+            self.paste_bytes(target, run_dir, data, f'raw-{name}.bin')
+            sent = [row for row in self.terminal_jsonl(run_dir / 'inputs.jsonl') if row.get('phase') == 'send']
+            self.canonical_action = {'kind': 'input', 'receipt': sent[-1]} if sent else None
+
+        def resize(columns):
+            self.canonical_observation = None
+            self.canonical_frame_floor = self.terminal_capture_boundary(run_dir)['lastObservedFrameId']
+            self.tmux('resize-window', '-t', target, '-x', str(columns), '-y', '34', check=True)
+            resized = [row for row in self.terminal_jsonl(run_dir / 'geometry.jsonl') if row.get('phase') == 'resize-return']
+            self.canonical_action = {'kind': 'resize', 'receipt': resized[-1]} if resized else None
+
+        def release_on_receipt():
+            deadline = time.monotonic() + 30
+            try:
+                marker = run_dir / 'omega-body-blocked.json'
+                while not release_cancelled.wait(0.01) and time.monotonic() < deadline:
+                    if not marker.exists():
+                        continue
+                    blocked = json.loads(marker.read_text())
+                    release_checks['canonical_exact_git_lane'] = blocked.get('lane') == 'canonical-292'
+                    os.kill(blocked['pid'], 0)
+                    watcher = {'source': 'owned-blocked-marker-watcher', 'blockedMarker': blocked,
+                               'livePidObserved': True, 'signalStartedAt': time.monotonic()}
+                    release_terminal_git_wrapper(run_dir)
+                    watcher['signalCompletedAt'] = time.monotonic()
+                    (run_dir / 'canonical-release.json').write_text(json.dumps(watcher, indent=2) + '\n')
+                    release_checks['canonical_batch_blocked'] = True
+                    release_checks['releaseObservedAt'] = time.monotonic()
+                    return
+                release_checks['canonical_batch_blocked'] = False
+            except (OSError, ValueError, KeyError) as error:
+                release_checks['error'] = str(error)
+            finally:
+                release_done.set()
+
+        def require(name, predicate, timeout=30):
+            pane_checkpoint = name in CANONICAL_PANE_CHECKPOINTS or name.startswith('canonical_tab_landing_')
+            observation = None
+            def probe():
+                nonlocal observation
+                if pane_checkpoint:
+                    observation = canonical_frame_snapshot(self.canonical_pane_states(run_dir),
+                        self.terminal_jsonl(run_dir / 'frames.jsonl'), self.canonical_frame_floor,
+                        self.terminal_jsonl(run_dir / 'pty-io.jsonl'))
+                    self.canonical_observation = observation
+                    if observation is None:
+                        return False
+                return predicate()
+            value = self.wait_until(probe, timeout, 0.1)
+            checks[name] = value
+            self.capture(target, run_dir / f'{name}-pane.txt', history=False)
+            checkpoints.append({'name': name, 'passed': value,
+                                'pane': self.canonical_pane(run_dir),
+                                'frameFloor': self.canonical_frame_floor,
+                                'observation': observation,
+                                'action': self.canonical_action,
+                                **self.terminal_capture_boundary(run_dir)})
+            if not value:
+                raise RuntimeError(f'canonical terminal interaction failed: {name}')
+
+        def pane_open():
+            pane = self.canonical_pane(run_dir)
+            return bool(pane and pane.get('visible') and pane.get('shown') and pane.get('hasTree'))
+
+        def edit(file):
+            nonce = hashlib.sha256(str(run_dir.resolve()).encode()).hexdigest()[:24]
+            raw(f'{file}-real-read-write', f'RELEASE_CANONICAL_DIFF:{nonce}:{file}\r'.encode())
+            require(f'{file}_real_write_receipt', lambda:
+                    sum(item.get('response_kind') == f'canonical-{file}-completed'
+                        for item in server.snapshot()) == 1
+                    and (run_dir / f'project/{file}.txt').read_text() ==
+                        canonical_diff_content(file))
+            require(f'{file}_prompt_restored', lambda: input_prompt_ready(strip_ansi(
+                self.capture(target, run_dir / f'{file}-restored-pane.txt', history=False))))
+
+        try:
+            if not ready:
+                raise RuntimeError('canonical terminal did not reach readiness')
+            resize(110)
+            require('canonical_command_owner', lambda:
+                    '[Mods:diff] ownership=plugin' in self.debug(run_dir))
+            edit('alpha')
+            raw('canonical-open', b'/diff\r')
+            require('canonical_alpha_dock', lambda: pane_open()
+                    and self.canonical_pane(run_dir).get('placement') == 'dock'
+                    and 'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'omega.txt' not in self.canonical_dock_text(run_dir))
+            checks['canonical_initial_focus'] = self.canonical_pane(run_dir).get('focused') is False
+            (run_dir / 'canonical-omega-arm').touch(mode=0o600)
+            release_thread = threading.Thread(target=release_on_receipt, daemon=False)
+            release_thread.start()
+            edit('omega')
+            require('canonical_batch_blocked', lambda: release_done.is_set()
+                    and release_checks.get('canonical_batch_blocked') is True)
+            checks['canonical_exact_git_lane'] = release_checks.get('canonical_exact_git_lane') is True
+            require('canonical_two_files_before_select', lambda: pane_open()
+                    and 'alpha.txt' in self.canonical_dock_text(run_dir)
+                    and 'omega.txt' in self.canonical_dock_text(run_dir)
+                    and 'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'OMEGA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            provider_offset = len(server.snapshot())
+            raw('canonical-focus-chord', b'\x18\t')
+            require('canonical_focus_landing', lambda:
+                    self.canonical_pane(run_dir).get('focused') is True)
+            for index in range(32):
+                if self.canonical_pane(run_dir).get('focusedElement') == 'file:omega.txt':
+                    break
+                previous = self.canonical_pane(run_dir).get('focusedElement')
+                raw(f'canonical-tab-{index}', b'\t')
+                require(f'canonical_tab_landing_{index}', lambda:
+                        self.canonical_pane(run_dir).get('focusedElement') != previous, 5)
+            require('canonical_omega_control', lambda:
+                    self.canonical_pane(run_dir).get('focusedElement') == 'file:omega.txt', 5)
+            checks['canonical_before_press_alpha_body'] = (
+                'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                and 'OMEGA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            raw('canonical-file-press', b'\r')
+            require('canonical_file_body', lambda:
+                    'OMEGA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'ALPHA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            raw('canonical-leave-focus', b'\x1b')
+            require('canonical_escape_keeps_open', lambda:
+                    pane_open() and self.canonical_pane(run_dir).get('focused') is False)
+            resize(109)
+            require('canonical_inline_same_identity', lambda:
+                    pane_open() and self.canonical_pane(run_dir).get('placement') == 'inline'
+                    and 'Resize' in self.canonical_observation['screen'])
+            resize(110)
+            require('canonical_redocked', lambda:
+                    pane_open() and self.canonical_pane(run_dir).get('placement') == 'dock'
+                    and 'OMEGA_RELEASE_BODY' in self.canonical_dock_text(run_dir))
+            raw('canonical-refocus', b'\x18\t')
+            require('canonical_refocus_landing', lambda:
+                    self.canonical_pane(run_dir).get('focused') is True)
+            raw('canonical-close-chord', b'\x18x')
+            require('canonical_person_closed', lambda: self.canonical_pane(run_dir) is None)
+            raw('canonical-reopen', b'/diff\r')
+            require('canonical_reopened', lambda:
+                    pane_open() and 'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'OMEGA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            checks['canonical_reopen_scroll_reset'] = (
+                'ALPHA_RELEASE_LINE_000' in self.canonical_dock_text(run_dir))
+            raw('canonical-command-close', b'/diff\r')
+            require('canonical_command_closed', lambda: self.canonical_pane(run_dir) is None)
+            resize(109)
+            raw('canonical-too-narrow', b'/diff\r')
+            require('canonical_narrow_refused', lambda: self.canonical_pane(run_dir) is None
+                    and 'Resize your terminal to at least 110 columns to show the diff panel'
+                    in self.canonical_observation['screen'])
+            checks['canonical_no_native_fallback'] = '[diff] open' not in self.debug(run_dir)
+            checks['canonical_keyboard_owner'] = (
+                len(server.snapshot()) == provider_offset)
+            checks['scenario_completed'] = True
+        except Exception as error:
+            result['error'] = str(error)
+            checks['scenario_completed'] = False
+        finally:
+            release_cancelled.set()
+            if release_thread is not None:
+                release_thread.join(timeout=2)
+                checks['canonical_release_watcher_stopped'] = not release_thread.is_alive()
+            release_terminal_git_wrapper(run_dir)
+            wire = server.snapshot()
+            try:
+                raw('canonical-cleanup-leave-focus', b'\x1b')
+                if self.canonical_pane(run_dir) is not None:
+                    raw('canonical-cleanup-close', b'/diff\r')
+                    self.wait_until(lambda: self.canonical_pane(run_dir) is None, 5, 0.1)
+                raw('canonical-cleanup-native-exit', b'/exit\r')
+                checks['normal_native_exit'] = self.wait_until(lambda:
+                    (run_dir / 'native-pty-eof.json').exists() and
+                    json.loads((run_dir / 'native-pty-eof.json').read_text()).get('childExitCode') == 0,
+                    5, 0.1)
+            except Exception as error:
+                result['native_exit_error'] = str(error)
+            cleanup = self.close(run_dir, session, target)
+        checks['cleanup'] = self.cleanup_passed(cleanup)
+        try:
+            fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
+            physical = fresh['recheck'].get('replay', {})
+            checks['independent_pty_capture_identity'] = fresh['captureIdentityPassed'] is True
+            checks['independent_pty_ink_frames'] = fresh['recheck']['verdict'] == 'passed'
+            checks['independent_pty_resize_sequence'] = (
+                physical.get('geometryProof', {}).get('verdict') == 'passed'
+                and [(row['columns'], row['rows'])
+                     for row in physical['geometryProof']['sizes']] ==
+                    [(110, 34), (109, 34), (110, 34), (109, 34)])
+        except (OSError, ValueError, KeyError) as error:
+            result['physical_error'] = str(error)
+            checks['independent_pty_ink_frames'] = False
+        wire = server.snapshot()
+        host = urlsplit(json.loads((run_dir / 'run-metadata.json').read_text())['mock_openai']['base_url']).netloc
+        checks.update(canonical_wire_checks(run_dir, wire, self.debug(run_dir), host))
+        watcher_path = run_dir / 'canonical-release.json'
+        watcher = json.loads(watcher_path.read_text()) if watcher_path.exists() else {}
+        try:
+            output, raw_output = canonical_git_output(run_dir, watcher['blockedMarker']['argv'])
+            (run_dir / 'canonical-git-output.json').write_text(json.dumps(output, indent=2) + '\n')
+            (run_dir / 'canonical-git-output.raw').write_bytes(raw_output)
+        except (OSError, KeyError, ValueError, subprocess.SubprocessError) as error:
+            result['git_output_error'] = str(error)
+        checks.update(canonical_git_checks(run_dir, self.terminal_jsonl(run_dir / 'canonical-git.jsonl'),
+                                          watcher, self.debug(run_dir)))
+        states = self.canonical_pane_states(run_dir)
+        (run_dir / 'canonical-checkpoints.json').write_text(json.dumps(checkpoints, indent=2) + '\n')
+        (run_dir / 'canonical-ui-states.json').write_text(json.dumps(states, indent=2) + '\n')
+        (run_dir / 'canonical-wire.json').write_text(json.dumps(wire, indent=2) + '\n')
+        checks.update(canonical_ui_checks(run_dir))
+        checks_path = run_dir / 'canonical-checks.json'
+        checks_path.write_text(json.dumps(checks, indent=2) + '\n')
+        proofs = [run_dir / name for name in (
+            'canonical-checkpoints.json', 'canonical-ui-states.json', 'canonical-wire.json',
+            'canonical-git.jsonl', 'omega-body-blocked.json', 'canonical-release.json',
+            'canonical-git-output.json', 'canonical-git-output.raw',
+            'canonical-checks.json', 'debug.log',
+            'pty.raw', 'native-pty.raw', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl',
+            'geometry.jsonl', 'native-pty-initial.json', 'native-pty-eof.json',
+            'broker-cleanup.json', 'capture-eof', 'capture-launch.json',
+            'native-input.jsonl', 'initial-termios.txt', 'frame-stream-map.json', 'bin/claude',
+            'terminal-capture.json', 'frame-physical-report.json', 'independent-pty-checks.json',
+            'observations.jsonl',
+        )]
+        proofs.extend(Path(row['inputFile']) for row in self.terminal_jsonl(run_dir / 'inputs.jsonl')
+                      if row.get('phase') == 'send' and row.get('transport') == 'tmux-paste-buffer')
+        passed = all(checks.values())
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed', 'checks': checks,
+            'cleanup': cleanup,
+            'frame_scope': 'Independent native PTY and declared Ink roots; synchronous capture timing and non-Ink/tail semantics remain open.',
+            'assertions': [self.required_assertion(
+                run_dir, 'terminal-canonical-diff-real-tools-and-pty',
+                'Official shipped Mods Diff through the real CLI',
+                'Real Read/Write receipts trigger the canonical Git batch; actual pane identity, focus, keyboard, resize, close/reopen and independent PTY frames agree.',
+                proofs, passed=passed,
+                reason=result.get('error', 'canonical tool, UI, PTY or cleanup evidence incomplete'),
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
+            )],
         })
         self.record(result)
 
@@ -4009,10 +5454,7 @@ else:
                 except OSError as error:
                     report_error = report_error or f'cache cleanup failed: {error}'
 
-        expected_assertions = {
-            'completeness', 'cleanup', 'agents', 'diff', 'security', 'ui',
-            'dynamicTools', 'suggestionReload', 'telemetry', 'terminalEvidence',
-        }
+        expected_assertions = BUILTIN_ASSERTIONS
         checks = {
             'subprocess': completed.returncode == 0,
             'report': report is not None,
@@ -4021,7 +5463,9 @@ else:
             'sides': False,
             'evidence_ownership': False,
             'cache_cleanup': cache_removed,
+            'independent_frame_replay': False,
         }
+        recheck_path = run_dir / 'builtin-terminal-recheck.json'
         if report is not None and archived_report is not None:
             assertions = report.get('assertions', {})
             pair = report.get('pair', {})
@@ -4065,6 +5509,20 @@ else:
                 )
                 and all(path.exists() for path in durable_paths)
             )
+            rechecked = subprocess.run([
+                'bun', '--no-env-file', str(self.repo / 'scripts/recheck-builtin-terminal-evidence.mjs'),
+                str(archived_report), self.manifest['binary_sha256'], str(recheck_path),
+            ], cwd=self.repo, text=True, capture_output=True, check=False, timeout=120)
+            (run_dir / 'terminal-recheck-stdout.txt').write_text(rechecked.stdout)
+            (run_dir / 'terminal-recheck-stderr.txt').write_text(rechecked.stderr)
+            try:
+                recheck = json.loads(recheck_path.read_text())
+                checks['independent_frame_replay'] = (
+                    rechecked.returncode == 0 and recheck.get('verdict') == 'passed'
+                    and len(recheck.get('sides', {})) == 7
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                report_error = report_error or f'independent terminal recheck failed: {error}'
         checks_path = run_dir / 'builtin-mods-checks.json'
         checks_path.write_text(json.dumps({
             'checks': checks,
@@ -4074,6 +5532,38 @@ else:
             'cache_producers_closed': producers_closed,
             'cache_archive_current': archive_current,
         }, indent=2) + '\n')
+        proofs = [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt']
+        if archive_receipt.exists():
+            proofs.append(archive_receipt)
+        if original_report is not None:
+            proofs.append(original_report)
+        if archived_report is not None:
+            proofs.append(archived_report)
+        if recheck_path.exists():
+            proofs.append(recheck_path)
+        if report is not None and archived_report is not None:
+            metadata = json.loads(metadata_path.read_text())
+            metadata.update(acceptance_report=str(archived_report.resolve()),
+                            acceptance_sha256=sha256(archived_report),
+                            builtin_capture_registry={name: {
+                                key: report.get('pair', {}).get(name, {}).get(key)
+                                for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
+                                for name in BUILTIN_SIDE_NAMES})
+            metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+            self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+            for side in report.get('pair', {}).values():
+                if not isinstance(side, dict):
+                    continue
+                files = side.get('cleanup', {}).get('terminalCapture', {}).get('files', {})
+                proofs.extend(Path(info['path']) for info in files.values() if isinstance(info, dict) and 'path' in info)
+                if side.get('run'):
+                    root = Path(side['run'])
+                    proofs.append(root / 'bin/claude')
+                    for sent in self.terminal_jsonl(root / 'inputs.jsonl'):
+                        if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':
+                            proofs.append(Path(sent['inputFile']))
+                proofs.extend(Path(path) for path in side.get('captures', {}).values())
+        proofs = sorted(set(proofs))
         passed = all(checks.values())
         result = {
             'label': 'builtin-mods',
@@ -4085,16 +5575,12 @@ else:
                 run_dir,
                 'builtin-mods-compiled-acceptance',
                 'Compiled builtin Mods acceptance',
-                'The current binary passes agents-md, diff, telemetry, compiled native sec-default policy and ModsPane interaction, completeness, cleanup, identity, and evidence ownership checks.',
-                [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt', *(
-                    [archive_receipt] if archive_receipt.exists() else []
-                ), *(
-                    [original_report] if original_report is not None else []
-                ), *(
-                    [archived_report] if archived_report else []
-                )],
+                'The current binary passes agents-md, diff, telemetry, compiled native sec-default policy and ModsPane interaction, dynamic tools, suggestion reload, independent raw-backed physical terminal replay for every side, completeness, cleanup, identity and evidence ownership checks.',
+                proofs,
                 passed=passed,
                 reason=report_error or 'builtin Mods compiled acceptance checks failed',
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
             )],
         }
         self.record(result)
@@ -4103,8 +5589,35 @@ else:
         input_path = run_dir / filename
         input_path.write_bytes(data)
         buffer_name = f'cc-release-{self.pid}-{self.session_index}'
-        self.tmux('load-buffer', '-b', buffer_name, str(input_path), check=True)
-        self.tmux('paste-buffer', '-b', buffer_name, '-t', target, check=True)
+        commands = [
+            ['load-buffer', '-b', buffer_name, str(input_path)],
+            ['paste-buffer', '-b', buffer_name, '-t', target],
+        ]
+        capture = getattr(self, 'terminal_capture', None)
+        if not capture or capture['run'] != str(run_dir):
+            for args in commands:
+                self.tmux(*args, check=True)
+            return
+        action = self.terminal_input_begin(run_dir, {
+            'transport': 'tmux-paste-buffer', 'target': target,
+            'buffer': buffer_name, 'inputFile': str(input_path),
+            'hex': data.hex(), 'bytesSHA256': hashlib.sha256(data).hexdigest(),
+            'actualCommands': commands,
+        }) if capture and capture['run'] == str(run_dir) else None
+        exits = []
+        try:
+            for args in commands:
+                completed = self.tmux(*args, check=False)
+                exits.append(completed.returncode)
+                if completed.returncode:
+                    raise RuntimeError(f'raw terminal input failed: {completed.stderr}')
+        finally:
+            if action is not None:
+                self.terminal_append(run_dir / 'inputs.jsonl', {
+                    'actionId': action,
+                    'phase': 'sent' if exits == [0, 0] else 'failed',
+                    'exitCodes': exits, **self.terminal_capture_boundary(run_dir),
+                })
 
     def send(self, target, run_dir, text, filename, *, confirm_pending=True):
         self.paste_bytes(
@@ -5162,8 +6675,11 @@ else:
         markers = self.write_markers(run_dir, log)
         notifications = self.notification_count(run_dir)
         cleanup = self.close(run_dir, session, target)
+        launches = [json.loads(line.split('AgentTool launch params ', 1)[1]) for line in log.splitlines() if 'AgentTool launch params ' in line]
+        foreground_mode = (len(launches) == 1 and launches[0].get('selectedAgentType') == 'release-foreground' and launches[0].get('runInBackground') is False and launches[0].get('isAsync') is False and '[ForkMode] enabled' not in log)
         passed = (
             terminal
+            and foreground_mode
             and agent_proof['complete']
             and notification_ready
             and len(ids) == 1
@@ -5177,6 +6693,7 @@ else:
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'agent_ids': ids,
+            'foreground_mode': foreground_mode,
             'notification_ready': notification_ready,
             'notification_count': notifications,
             'marker_counts': markers,
@@ -5539,7 +7056,6 @@ else:
         proof['evidence_paths'] = list(dict.fromkeys(evidence))
         proof['evidence_sha256'] = {**hashes, str(proof_path.resolve()): hashlib.sha256(proof_bytes).hexdigest()}
         return proof
-
 
     def slash_workflow(self, kind):
         run_dir, session, target, ready = self.start(kind)
@@ -6923,7 +8439,7 @@ else:
             hook_once
             and hook_record.get('hook_event_name') == 'SubagentStop'
             and hook_record.get('stop_hook_active') is False
-            and hook_record.get('agent_type') == 'general-purpose'
+            and hook_record.get('agent_type') == 'release-stop-foreground'
             and isinstance(hook_record.get('agent_id'), str)
             and bool(hook_record.get('agent_id'))
             and hook_record.get('cwd') == str(self.repo)
@@ -7485,6 +9001,10 @@ else:
         analysis_path = run_dir / 'first-party-bootstrap-analysis.json'
         config_path = run_dir / 'config' / '.claude-local-oauth.json'
         mock_server = getattr(self, 'mock_servers', {}).get(run_dir.name)
+        metadata = json.loads((run_dir / 'run-metadata.json').read_text())
+        base_url = metadata['mock_openai']['base_url'].rstrip('/')
+        normalized_base = base_url if base_url.endswith('/v1') else base_url + '/v1'
+        expected_key = f'anthropic:{normalized_base}:api-key:{hashlib.sha256(DUMMY_ANTHROPIC_API_KEY.encode()).hexdigest()[:16]}'
 
         def bootstrap_ready():
             try:
@@ -7503,7 +9023,8 @@ else:
                     'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
                     'description': 'Release validation bootstrap model',
                 }]
-                and 'additionalModelOptionsCacheKey' not in global_config
+                and global_config.get('additionalModelOptionsCacheKey') == expected_key
+                and global_config.get('bootstrapCacheKey') == expected_key
             )
 
         bootstrap_completed = ready and self.wait_until(
@@ -7540,14 +9061,15 @@ else:
         except (OSError, json.JSONDecodeError):
             global_config = {}
         options = global_config.get('additionalModelOptionsCache')
-        unkeyed_cache = (
+        keyed_cache = (
             isinstance(options, list)
             and options == [{
                 'value': 'release-first-party-bootstrap-model',
                 'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
                 'description': 'Release validation bootstrap model',
             }]
-            and 'additionalModelOptionsCacheKey' not in global_config
+            and global_config.get('additionalModelOptionsCacheKey') == expected_key
+            and global_config.get('bootstrapCacheKey') == expected_key
         )
         mock_server = getattr(self, 'mock_servers', {}).get(run_dir.name)
         bootstrap_requests = [
@@ -7558,17 +9080,19 @@ else:
         analysis_path.write_text(json.dumps({
             'bootstrap_endpoint_contract': '/api/claude_cli/bootstrap',
             'bootstrap_endpoint_request_count': len(bootstrap_requests),
-            'unkeyed_cache': unkeyed_cache,
+            'keyed_cache': keyed_cache,
+            'expected_cache_key': expected_key,
+            'observed_cache_key': global_config.get('additionalModelOptionsCacheKey'),
             'picker_visible': picker_visible,
             'current_model_confirmed': current,
         }, indent=2) + '\n')
         cleanup = self.close(run_dir, session, target)
         cache_passed = (
-            ready and endpoint_once and unkeyed_cache
+            ready and endpoint_once and keyed_cache
             and self.cleanup_passed(cleanup)
         )
         picker_passed = (
-            ready and picker_visible and current and unkeyed_cache
+            ready and picker_visible and current and keyed_cache
             and self.cleanup_passed(cleanup)
         )
         passed = cache_passed and picker_passed
@@ -7582,7 +9106,7 @@ else:
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'reason': None if passed else 'first-party bootstrap startup cache or picker evidence was incomplete',
-            'unkeyed_cache': unkeyed_cache,
+            'keyed_cache': keyed_cache,
             'bootstrap_endpoint_once': endpoint_once,
             'picker_visible': picker_visible,
             'current_model_confirmed': current,
@@ -7591,10 +9115,10 @@ else:
                     run_dir,
                     'first-party-bootstrap-startup-cache',
                     'First-party bootstrap startup cache',
-                    'Startup consumes the persisted unkeyed /api/claude_cli/bootstrap model cache without keyed-discovery filtering.',
+                    'Startup consumes the persisted /api/claude_cli/bootstrap model cache only when both keys match this run endpoint and dummy credential identity.',
                     evidence,
                     passed=cache_passed,
-                    reason='the isolated startup did not preserve and consume the unkeyed bootstrap cache',
+                    reason='the isolated startup did not preserve and consume its exact bootstrap cache identity',
                 ),
                 self.required_assertion(
                     run_dir,
@@ -9330,6 +10854,7 @@ else:
             'transcript-retention': self.transcript_retention,
             'ssh-remote-session-lifecycle': self.ssh_remote_session_lifecycle,
             'terminal-interaction': self.terminal_interaction,
+            'terminal-canonical-diff': self.terminal_canonical_diff,
             'builtin-mods': self.builtin_mods,
         }
         try:
@@ -9494,8 +11019,65 @@ def retained_readiness_request(requests):
     )
 
 
+def retained_builtin_cache_sandbox_profile(root, port, target, *, cold):
+    root = Path(root)
+    target = Path(target)
+    cache = target.parent
+    writable = [
+        root / 'config', root / 'tmp', root / 'cwd', root / 'evidence',
+        root / 'home/.cache', root / 'home/.config', root / 'home/.local',
+    ]
+    rules = [
+        '(version 1)', '(allow default)', '(deny file-write*)',
+        *(f'(allow file-write* (subpath {json.dumps(str(path))}))' for path in writable),
+        f'(allow file-write* (literal {json.dumps(str(root / "t"))}))',
+        '(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (regex #"^/dev/ttys"))',
+        '(deny file-write-unlink)',
+        f'(allow file-write-unlink (literal {json.dumps(str(root / "t"))}))',
+        f'(allow file-write-unlink (subpath {json.dumps(str(root / "config"))}))',
+        '(deny network*)',
+        '(allow network* (local unix-socket) (remote unix-socket))',
+        f'(allow network-outbound (remote ip "localhost:{port}"))',
+        '(deny process-exec (literal "/usr/bin/security"))',
+        '(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))',
+        '(deny file-read* (regex #"/Library/Keychains(/|$)"))',
+    ]
+    if cold:
+        escaped_target = ''.join(
+            character if character.isalnum() or character in '/_-' else f'[{character}]'
+            for character in str(target)
+        )
+        temporary = '^' + escaped_target + r'[.]tmp[.][0-9]+[.]' + '[0-9a-f-]' * 36 + '(/|$)'
+        for path in (root / 'home/Library', root / 'home/Library/Caches',
+                     cache.parent, cache, target):
+            rules.append(f'(allow file-write* (literal {json.dumps(str(path))}))')
+        rules.extend((
+            f'(allow file-write* (subpath {json.dumps(str(target))}) (regex #"{temporary}"))',
+            f'(allow file-write-unlink (subpath {json.dumps(str(target))}) (regex #"{temporary}"))',
+            f'(allow file-write* (literal {json.dumps(str(target) + ".lock")}))',
+            f'(allow file-write-unlink (literal {json.dumps(str(target) + ".lock")}))',
+        ))
+    else:
+        rules.append(f'(deny file-write* (subpath {json.dumps(str(cache))}))')
+    return '\n'.join(rules) + '\n'
 
 
+def retained_builtin_cache_snapshot(root):
+    root = Path(root)
+    entries = {}
+    if not root.is_dir() or root.is_symlink():
+        return {'root': str(root), 'entries': entries}
+    for path in sorted(root.rglob('*')):
+        relative = path.relative_to(root).as_posix()
+        stat_result = path.lstat()
+        entry = {'type': 'directory' if path.is_dir() else 'file',
+                 'inode': stat_result.st_ino, 'mtime_ns': stat_result.st_mtime_ns}
+        if path.is_file() and not path.is_symlink():
+            entry.update({'size': stat_result.st_size, 'sha256': sha256(path)})
+        elif path.is_symlink():
+            entry['type'] = 'symlink'
+        entries[relative] = entry
+    return {'root': str(root), 'entries': entries}
 
 
 RETAINED_BUILTIN_TREE_DIGEST_SCRIPT = r'''
@@ -9517,8 +11099,137 @@ console.log(await treeDigest(process.argv.at(-2), process.argv.at(-1)));
 '''
 
 
+def retained_builtin_tree_digest(root, relative=''):
+    env = {
+        'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+        'HOME': '/dev/null',
+        'TMPDIR': '/private/tmp',
+        'LANG': 'en_US.UTF-8',
+        'BUN_RUNTIME_TRANSPILER_CACHE_PATH': '0',
+    }
+    completed = subprocess.run(
+        ['bun', '--eval', RETAINED_BUILTIN_TREE_DIGEST_SCRIPT, str(root), relative],
+        env=env, capture_output=True, text=True, check=True, timeout=30,
+    )
+    tree_digest = completed.stdout.strip()
+    if not re.fullmatch('[0-9a-f]{64}', tree_digest):
+        raise ValueError('invalid builtin tree digest output')
+    return tree_digest
 
 
+def validate_retained_builtin_cache(archive, target, first, second):
+    import zipfile
+
+    target = Path(target)
+    archive = Path(archive)
+    expected = {}
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            expected = {entry.filename: hashlib.sha256(zipped.read(entry)).hexdigest()
+                        for entry in zipped.infolist() if not entry.is_dir()}
+        complete = (target / '.complete').read_text().splitlines()
+    except (OSError, ValueError, zipfile.BadZipFile):
+        complete = []
+    entries = second.get('entries', {})
+    archive_entries = all(
+        entries.get(name, {}).get('sha256') == digest for name, digest in expected.items()
+    )
+    expected_names = {*expected, '.complete'}
+    expected_directories = {
+        parent.as_posix()
+        for name in expected
+        for parent in Path(name).parents
+        if parent != Path('.')
+    }
+    return {
+        'archive_digest': hashlib.sha256(archive.read_bytes()).hexdigest() == OFFICIAL_BUILTIN_MODS_SHA256,
+        'archive_entries': archive_entries,
+        'complete_marker': complete == [OFFICIAL_BUILTIN_MODS_SHA256,
+                                        retained_builtin_tree_digest(target)],
+        'no_extra_entries': set(entries) == expected_names | expected_directories,
+        'no_generated_artifacts': not any(
+            name.endswith('/types') or name.endswith('/generated')
+            or '.tmp.' in name or '.stale.' in name
+            for name in entries if name not in expected_names and name not in expected_directories
+        ),
+        'identity_unchanged': first == second,
+    }
+
+
+def retained_request_texts(request):
+    texts = []
+    body = request.get('body') if isinstance(request.get('body'), dict) else {}
+    instructions = body.get('instructions')
+    if isinstance(instructions, str):
+        texts.append(instructions)
+    for message in body.get('input', []):
+        if not isinstance(message, dict):
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.extend(part.get('text', '') for part in content
+                         if isinstance(part, dict) and part.get('type') == 'input_text')
+    return texts
+
+
+def retained_builtin_response_ready(pane, request, prompt, agents_marker):
+    texts = retained_request_texts(request)
+    plain = strip_ansi(pane)
+    return (
+        is_main_response_request(request)
+        and prompt in texts
+        and any(agents_marker in text for text in texts)
+        and request.get('authorization', {}).get('matches_dummy') is True
+        and request.get('response_kind') == 'retained-readiness'
+        and 'RELEASE_RETAINED_RESPONSE' in plain
+        and input_prompt_ready(plain)
+    )
+
+
+def retained_builtin_diff_list_ready(pane, tracked_filename):
+    plain = strip_ansi(pane)
+    return 'Diff · files' in plain and tracked_filename in plain
+
+
+def retained_builtin_diff_detail_ready(pane, tracked_filename, diff_marker):
+    plain = strip_ansi(pane)
+    return all(marker in plain for marker in ('Diff · detail', tracked_filename, diff_marker))
+
+
+def validate_retained_builtin_launch_behavior(*, requests, request_offset, prompt,
+                                               agents_marker, tracked_filename,
+                                               diff_marker, response_pane,
+                                               diff_list_pane, diff_detail_pane,
+                                               closed_pane):
+    corresponding = [
+        request for request in requests[request_offset:]
+        if is_main_response_request(request)
+        and prompt in retained_request_texts(request)
+    ]
+    request = corresponding[0] if len(corresponding) == 1 else {}
+    texts = retained_request_texts(request)
+    plain_closed = strip_ansi(closed_pane)
+    return {
+        'one_corresponding_provider_request': len(corresponding) == 1,
+        'provider_dummy_authorized': request.get('authorization', {}).get('matches_dummy') is True,
+        'provider_response_ready': retained_builtin_response_ready(
+            response_pane, request, prompt, agents_marker,
+        ),
+        'agents_marker_in_corresponding_request': any(agents_marker in text for text in texts),
+        'diff_list_has_tracked_file': retained_builtin_diff_list_ready(
+            diff_list_pane, tracked_filename,
+        ),
+        'diff_detail_has_independent_marker': retained_builtin_diff_detail_ready(
+            diff_detail_pane, tracked_filename, diff_marker,
+        ),
+        'diff_closed': tracked_filename not in plain_closed
+            and diff_marker not in plain_closed
+            and input_prompt_ready(plain_closed),
+        'provider_request_sequence': request.get('sequence'),
+        'provider_request_path': request.get('path'),
+    }
 
 
 def seed_retained_builtin_cache(repo, root, env):
@@ -9593,6 +11304,233 @@ def seed_retained_ripgrep_cache(repo, root, env):
             'sha256': hashlib.sha256(data).hexdigest()}
 
 
+def retained_builtin_cache_restart(root, binary, repo, evidence, baseline_module):
+    result = {
+        'label': 'builtin-mods', 'status': 'failed', 'validation_verdict': 'failed',
+        'scenario_id': 'S7-builtin-cache-restart', 'evidence_dir': str(evidence),
+        'physical_covered': False, 'physical_frames': 'not covered', 'assertions': [],
+    }
+    env = {**baseline_module.retained_environment(root),
+           'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+           'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+    for name in ('home/.codex', 'config', 'tmp', 'cwd', 'evidence/first', 'evidence/second'):
+        (root / name).mkdir(parents=True, mode=0o700)
+    fixture = root / 'cwd'
+    tracked_filename = '00-s7-fixture.txt'
+    tracked_file = fixture / tracked_filename
+    agents_file = fixture / 'AGENTS.md'
+    tracked_file.write_text('S7 fixture baseline\n')
+    agents_file.write_text('S7 AGENTS baseline\n')
+    command(['git', '-C', str(fixture), 'init', '-q'], check=True)
+    command(['git', '-C', str(fixture), 'add', tracked_filename, 'AGENTS.md'], check=True)
+    (root / 'home/.codex/auth.json').write_text(json.dumps({'OPENAI_API_KEY': DUMMY_OPENAI_API_KEY}))
+    (root / 'home/.codex/auth.json').chmod(0o600)
+    (root / 'config/.claude.json').write_text(json.dumps({
+        'numStartups': 1, 'installMethod': 'local', 'hasCompletedOnboarding': True,
+        'projects': {str(root / 'cwd'): {'hasTrustDialogAccepted': True,
+                                       'hasCompletedProjectOnboarding': True}},
+    }))
+    (root / 'config/settings.json').write_text(json.dumps({
+        'skipDangerousModePermissionPrompt': True, 'model': 'gpt-release-discovered',
+        'enabledPlugins': {'agents-md@builtin': True, 'diff@builtin': True,
+                           'telemetry@builtin': False},
+    }))
+    result['ripgrep_cache'] = seed_retained_ripgrep_cache(repo, root, env)
+    archive = repo / 'assets/builtin-mods-2.1.277.zip'
+    cache = root / 'home/Library/Caches/claude-cli-nodejs/builtin-mods'
+    target = cache / OFFICIAL_BUILTIN_MODS_SHA256
+    result['cache_initially_absent'] = not cache.exists()
+    if not result['cache_initially_absent']:
+        result['error'] = f'S7 builtin cache was not cold: {cache}'
+        (evidence / 's7-result.json').write_text(json.dumps(result, indent=2) + '\n')
+        return result
+    provider = MockOpenAIServer(evidence, 'retained-readiness')
+    launcher = repo / '.claude/skills/claude-agent-workflow-validation/scripts/launch-built-claude.sh'
+    tmux_path = shutil.which('tmux', path=env['PATH'])
+    socket_path = str(root / 't')
+    if not tmux_path or not Path('/usr/bin/sandbox-exec').is_file():
+        raise RuntimeError('retained S7 requires tmux and macOS sandbox-exec')
+    server = None
+    log = None
+
+    def launch_once(name, cold):
+        nonlocal server, log
+        run_evidence = evidence / name
+        profile = evidence / f'{name}.sb'
+        prompt = f'S7_{name.upper()}_PROMPT'
+        agents_marker = f'S7_{name.upper()}_AGENTS_MARKER'
+        diff_marker = f'S7_{name.upper()}_DIFF_MARKER'
+        agents_file.write_text(f'{agents_marker}\n')
+        tracked_file.write_text(f'S7 fixture baseline\n{diff_marker}\n')
+        # Unborn HEAD reads the staged body and withholds stale unstaged edits.
+        command(['git', '-C', str(fixture), 'add', tracked_filename, 'AGENTS.md'], check=True)
+        request_offset = len(provider.snapshot())
+        url = result['provider_url']
+        profile.write_text(retained_builtin_cache_sandbox_profile(
+            root, urlsplit(url).port, target, cold=cold,
+        ))
+        launch_env = {**env, 'CC_VALIDATION_RETAIN_ARTIFACTS': '1',
+            'CC_VALIDATION_RUN_ROOT': str(root), 'CC_VALIDATION_BINARY': str(binary),
+            'CC_VALIDATION_REPO_ROOT': str(repo), 'CC_VALIDATION_CWD': str(root / 'cwd'),
+            'CC_VALIDATION_HOME': env['HOME'], 'CC_VALIDATION_CONFIG_DIR': env['CLAUDE_CONFIG_DIR'],
+            'CC_VALIDATION_EVIDENCE_DIR': str(run_evidence),
+            'CC_VALIDATION_OPENAI_BASE_URL': url + '/v1',
+            'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
+        command_line = shlex.join(['/usr/bin/env', '-i',
+            *(f'{key}={value}' for key, value in launch_env.items()), '/bin/sh', str(launcher)])
+        argv = ['/usr/bin/sandbox-exec', '-f', str(profile), tmux_path,
+                '-D', '-S', socket_path, '-f', '/dev/null']
+        log = (run_evidence / 'tmux-server.log').open('x')
+        server = subprocess.Popen(argv, cwd=root / 'cwd', env=env, stdout=log, stderr=log,
+                                  start_new_session=True)
+        deadline = time.monotonic() + 10
+        while not (root / 't').exists() and server.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        def tmux(*arguments, check=True):
+            completed = subprocess.run([tmux_path, '-S', socket_path, *arguments],
+                                       cwd=root / 'cwd', env=env, capture_output=True,
+                                       text=True, timeout=10)
+            if check and completed.returncode:
+                raise RuntimeError(f'tmux {arguments!r}: {completed.stderr}')
+            return completed
+        inputs = []
+        def send(label, value, *, key=False):
+            encoded = ({'Enter': b'\r', 'Escape': b'\x1b'}[value]
+                       if key else value.encode())
+            inputs.append({'label': label, 'hex': encoded.hex(),
+                           'transport': 'tmux key' if key else 'tmux literal'})
+            (run_evidence / 'input-hex.json').write_text(json.dumps(inputs, indent=2) + '\n')
+            tmux('send-keys', '-t', 's7:0.0', *([] if key else ['-l']), value)
+        tmux('set-option', '-g', 'remain-on-exit', 'on')
+        # Below the native sidebar threshold; Enter/Escape belong to the dialog.
+        tmux('new-session', '-d', '-s', 's7', '-x', '109', '-y', '40', command_line)
+        def wait_state(label, predicate):
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                pane = tmux('capture-pane', '-p', '-S', '-2000', '-t', 's7:0.0', check=False)
+                (run_evidence / f'{label}.txt').write_text(pane.stdout)
+                if pane.returncode == 0 and predicate(strip_ansi(pane.stdout)):
+                    return pane.stdout
+                if server.poll() is not None:
+                    break
+                time.sleep(0.1)
+            raise RuntimeError(f'S7 {name} {label} state not observed')
+        startup = wait_state('startup', input_prompt_ready)
+        send('prompt', prompt)
+        send('prompt-submit', 'Enter', key=True)
+        response = wait_state('response-ready', lambda pane:
+            any(retained_builtin_response_ready(pane, request, prompt, agents_marker)
+                    for request in provider.snapshot()[request_offset:]))
+        send('diff-command', '/diff')
+        send('diff-submit', 'Enter', key=True)
+        diff_list = wait_state('diff-list', lambda pane:
+                              retained_builtin_diff_list_ready(pane, tracked_filename))
+        send('diff-detail', 'Enter', key=True)
+        diff_detail = wait_state('diff-detail', lambda pane:
+            retained_builtin_diff_detail_ready(pane, tracked_filename, diff_marker))
+        send('diff-back', 'Escape', key=True)
+        wait_state('diff-list-restored', lambda pane:
+                   retained_builtin_diff_list_ready(pane, tracked_filename))
+        send('diff-close', 'Escape', key=True)
+        diff_closed = wait_state('diff-closed', lambda pane:
+            tracked_filename not in pane and diff_marker not in pane and input_prompt_ready(pane))
+        checks = validate_retained_builtin_launch_behavior(
+            requests=provider.snapshot(), request_offset=request_offset, prompt=prompt,
+            agents_marker=agents_marker, tracked_filename=tracked_filename,
+            diff_marker=diff_marker, response_pane=response, diff_list_pane=diff_list,
+            diff_detail_pane=diff_detail, closed_pane=diff_closed,
+        )
+        (run_evidence / 'behavior-checks.json').write_text(json.dumps(checks, indent=2) + '\n')
+        if not all(checks.values()):
+            raise RuntimeError(f'S7 {name} behavior checks failed: {checks}')
+        send('exit-command', '/exit')
+        send('exit-submit', 'Enter', key=True)
+        wait_state('exit', lambda _pane: tmux(
+            'display-message', '-p', '-t', 's7:0.0', '#{pane_dead} #{pane_dead_status}',
+        ).stdout.strip() == '1 0')
+        launch = {
+            'name': name, 'cache_state': 'cold' if cold else 'warm',
+            'argv': [str(binary), '--dangerously-skip-permissions', '--debug',
+                     '--debug-file', str(run_evidence / 'debug.log')],
+            'command': command_line, 'profile': str(profile),
+            'home': env['HOME'], 'config': env['CLAUDE_CONFIG_DIR'],
+            'cwd': str(fixture), 'cache': str(cache),
+            'prompt': prompt, 'agents_marker': agents_marker, 'diff_marker': diff_marker,
+            'request_offset': request_offset,
+            'provider_request_sequence': checks['provider_request_sequence'],
+            'provider_request_path': checks['provider_request_path'],
+            'panes': {label: str(run_evidence / f'{label}.txt') for label in (
+                'startup', 'response-ready', 'diff-list', 'diff-detail',
+                'diff-list-restored', 'diff-closed', 'exit')},
+            'input_hex': str(run_evidence / 'input-hex.json'),
+            'checks': checks, 'normal_exit': True,
+        }
+        (run_evidence / 'launch.json').write_text(json.dumps(launch, indent=2) + '\n')
+        result.setdefault('launches', []).append(launch)
+        closed = tmux('kill-server', check=False)
+        server.wait(timeout=10)
+        socket_file = root / 't'
+        if socket_file.is_socket():
+            socket_file.unlink()
+        cleanup = {'kill_returncode': closed.returncode, 'server_exit': server.returncode,
+                   'socket_released': not socket_file.exists()}
+        log.close()
+        log = None
+        server = None
+        if not all((cleanup['kill_returncode'] == 0, cleanup['server_exit'] == 0,
+                    cleanup['socket_released'])):
+            raise RuntimeError(f'S7 {name} cleanup failed: {cleanup}')
+        return checks
+
+    try:
+        result['provider_url'] = provider.start()
+        before_binary = baseline_module.binary_identity(binary)
+        launch_once('first', True)
+        first = retained_builtin_cache_snapshot(target)
+        (evidence / 'cache-first.json').write_text(json.dumps(first, indent=2) + '\n')
+        launch_once('second', False)
+        second = retained_builtin_cache_snapshot(target)
+        (evidence / 'cache-second.json').write_text(json.dumps(second, indent=2) + '\n')
+        checks = validate_retained_builtin_cache(archive, target, first, second)
+        checks.update({
+            'cache_initially_absent': result['cache_initially_absent'],
+            'two_normal_exits': len(result.get('launches', [])) == 2
+                and all(launch['normal_exit'] for launch in result['launches']),
+            'same_home_config_cache_cwd': True,
+            'no_resume': all('--resume' not in launch['command'] for launch in result['launches']),
+            'binary_unchanged': before_binary == baseline_module.binary_identity(binary),
+        })
+        result['checks'] = checks
+        checks_path = evidence / 's7-checks.json'
+        checks_path.write_text(json.dumps(checks, indent=2) + '\n')
+        passed = all(checks.values())
+        result['status'] = result['validation_verdict'] = 'passed' if passed else 'failed'
+        result['assertions'] = [{
+            'assertion_id': 'retained-builtin-cache-restart', 'source_run': 'builtin-mods',
+            'runtime_state': 'done', 'validation_verdict': result['validation_verdict'],
+            'observed_evidence_paths': [str(checks_path), str(evidence / 'cache-first.json'),
+                                        str(evidence / 'cache-second.json')],
+        }]
+    except Exception as error:
+        result['error'] = f'{type(error).__name__}: {error}'
+    finally:
+        if server is not None:
+            subprocess.run([tmux_path, '-S', socket_path, 'kill-server'], env=env,
+                           capture_output=True, timeout=10)
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.terminate()
+                server.wait(timeout=10)
+            socket_file = root / 't'
+            if socket_file.is_socket():
+                socket_file.unlink()
+        provider.stop()
+        if log:
+            log.close()
+        result.pop('provider_url', None)
+        (evidence / 's7-result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
 
 
 def retained_g5_consent(pane):
@@ -10209,6 +12147,20 @@ def retained_preflight(args, extra_targets):
         manifest['tmux']['started'] = 'server_pid' in readiness
         manifest['processes_started'] = [readiness['server_pid']] if 'server_pid' in readiness else []
         manifest['cleanup'] = {key: readiness.get(key) for key in ('server_exit', 'socket_released', 'close_server')}
+        if readiness['status'] == 'passed' and 'builtin-mods' in targets:
+            s7_root = root / 's7-builtin-cache-restart'
+            s7_root.mkdir(mode=0o700)
+            s7_evidence = s7_root / 'evidence'
+            s7_evidence.mkdir(mode=0o700)
+            s7 = retained_builtin_cache_restart(
+                s7_root, binary, repo, s7_evidence, baseline_module,
+            )
+            manifest['runs'].append(s7)
+            manifest['recorded_run_count'] = len(manifest['runs'])
+            if s7.get('validation_verdict') == 'passed':
+                manifest['blocked_targets']['builtin-mods'] = (
+                    'full builtin-mods acceptance contract not covered by retained S7'
+                )
         if readiness['status'] == 'passed' and 'terminal-interaction' in targets:
             g5 = retained_g5(root, binary, repo, evidence, baseline_module,
                              getattr(args, 'g5_scenario', None))

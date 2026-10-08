@@ -2253,3 +2253,8 @@ Native29 使用本轮新构建及动态 baseline 完成29场景，23通过、6�
 修复保存裸导航目标槽位，在dedup守卫检查实际DOM；withholding不触发改写handoff；宿主内部focusPerson通过私有WeakMap携带绘制actor，仅person分支读取，不改变作者DTO，也不复用automatic标记。最新官方源码的person与automatic规则分别保留，关键信息包括plugin、key、origin、实际接受结果。
 
 独立验收脚本回归证明：只有实际原始字节区间长度为零且resize位于frame-start/end之间，才将逻辑观察与resize前物理网格比较，然后无条件回放到end并检查后续新geometry帧。`frame-resize-red1`为14通过3失败，`frame-resize-green1`为17通过0失败；Native28新离线诊断107帧通过，Native29新诊断仍拒收frame5。原始两轮failed manifest未修改；离线诊断不是新的完整门禁，不证明时序等价。
+
+
+## 第30轮帧验收与无需ACK后续
+
+完整29项完成，23通过6失败；424项源码/脚本回归、check/build及driver回归通过。初始化权限失败与真实产品失败分开保留，旧轮不复判；精确版本、binary/manifest、逐帧条件、正常收尾和新官方293焦点三侧证据见[本批记录](docs/research/mods-terminal-noack-validity-20261008.md)。同步ACK时序及完整browser Client/G5等仍须实现并闭合，继续分批签名提交，不push或声明发布。
