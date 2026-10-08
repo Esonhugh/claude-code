@@ -36,13 +36,14 @@ import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugi
 import { getOfficialShippedPaneRequests, updateOfficialShippedPaneRequest } from '../../plugins/builtinShippedMods.js'
 import builtinDiff from '../../commands/diff/index.js'
 import { matchesModEventPattern } from './matcher.js'
-import { createModHostOperations, type ModHttpServices } from './hostOperations.js'
+import { createModHostOperations, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
 import { createModTools, type ModToolSpec } from './tools.js'
 import { describeModCommand, runModCommand, type CommandPresentation } from './commandAdapter.js'
 import { getCommandName, type Command } from '../../types/command.js'
 import { validateModRenderTree } from '../../components/ModsPane.js'
 import { createModHookStream, dispatchModEvent, dispatchModStream, getModCapabilitySignal, pauseModBudget } from './dispatch.js'
+import { createModProcessStream } from './protocol.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
 import { createModSessionMeasure } from './sessionMeasure.js'
@@ -160,7 +161,7 @@ export type ModSnapshot = {
   pluginOrigin?(storageId: string): ModOrigin | undefined
   toolOrigin?(tool: Tool): ModOrigin | undefined
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
-  stream?(event: 'turn.step', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
+  stream?(event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
   hasHooks(event: string): boolean
   release(): void
 }
@@ -184,6 +185,7 @@ type Activation = {
   engine?: Record<string, unknown>
   engineScope?: { snapshot: readonly Activation[]; table: Nouns }
   controller: AbortController
+  processControllers: Set<AbortController>
   operations: ReturnType<typeof createModHostOperations>
   uiPublished?: boolean
   uiStatus?: { text: string | undefined }
@@ -226,7 +228,7 @@ const hostIdentity = () => { throw new Error('Host calls must use the environmen
 const coreHost: Nouns = {
   plugin: { name: hostIdentity, root: hostIdentity },
   fs: { read: hostIdentity, write: hostIdentity, list: hostIdentity, exists: hostIdentity, stat: hostIdentity, ancestors: hostIdentity },
-  process: { run: hostIdentity },
+  process: { run: hostIdentity, spawn: hostIdentity },
   settings: { read: hostIdentity },
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
@@ -782,6 +784,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     tools.release(owner)
     agents.release(owner)
     retired.add(owner)
+    // Stop environment-owned process streams before their snapshot references can hold retirement open.
+    for (const operation of owner.processControllers) operation.abort(new Error('Module environment unloaded'))
     // A pending sleep may belong to an in-flight hook; stop future timer ticks,
     // but do not turn a normal reload into cancellation of that continuation.
     for (const [id, wait] of owner.waits) if (wait.kind !== 'sleep') cancelWait(owner, id)
@@ -1836,6 +1840,73 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           return result.value
         } finally { modelInvocation?.cleanup(); resumeBudget?.() }
       }
+      if (noun === 'process' && methods.spawn === hostIdentity) wrapped.spawn = createModStreamBridge((request: unknown) => {
+        const args = request && typeof request === 'object' && !Array.isArray(request) ? request as Record<string, unknown> : undefined
+        const input = args ? {
+          argv: Array.isArray(args.argv) ? [...args.argv] : args.argv,
+          ...(args.cwd === undefined ? {} : {cwd:args.cwd}),
+          ...(args.env === undefined ? {} : {env:args.env && typeof args.env === 'object' && !Array.isArray(args.env) ? {...args.env} : args.env}),
+          ...(args.input === undefined ? {} : {input:args.input}),
+        } : request
+        const caller = capabilityContext.getStore()
+        const parent = caller?.active && caller.next ? getModCapabilitySignal(caller.next) : invocationSignal.getStore()
+        let phase: 'nothing' | 'started' | 'ran' = 'nothing'
+        let operation: AbortController | undefined
+        let signal: AbortSignal | undefined
+        let source: ModHookStream | undefined
+        const output = createModHookStream((async function* () {
+          const {snapshot, table, lease} = scope()
+          checkCall(owner, 'process.spawn', table, lease)
+          if (owner.state === 'retiring') throw new Error('Module environment unloaded')
+          validateModProcessSpawnRequest(input)
+          operation = new AbortController()
+          owner.processControllers.add(operation)
+          signal = AbortSignal.any([operation.signal, owner.controller.signal, ...(parent ? [parent] : [])])
+          try {
+            // Middleware sees ValueOrDeny; the public facade exposes only the raw process receipt.
+            source = stream('process.spawn', input as ModInput, async function* (rewritten, signal) {
+              validateModProcessSpawnRequest(rewritten)
+              phase = 'started'
+              const receipt = yield* owner.operations.process.spawn(rewritten, signal)
+              phase = 'ran'
+              return {value:receipt}
+            }, snapshot, table, {signal, origin:{plugin:owner.declaration.name, tier:owner.declaration.tier}})
+            let thrown: {error: unknown} | undefined
+            for (;;) {
+              const resume = pauseModBudget(caller?.active ? caller.next : undefined)
+              let item: IteratorResult<unknown, unknown>
+              try { item = await (thrown ? source.throw(thrown.error) : source.next()) }
+              finally { resume?.() }
+              thrown = undefined
+              if (item.done) {
+                const result = item.value as {value?: unknown; deny?: string}
+                if (typeof result.deny === 'string') {
+                  const effect = phase === 'nothing' ? '' : ` ${phase}, and a plugin withheld its result`
+                  throw Object.assign(new Error(`${owner.declaration.name}: $.process.spawn${effect}: ${result.deny}`), {name:'HooksError'})
+                }
+                return result.value
+              }
+              try { yield item.value } catch (error) { thrown = {error} }
+            }
+          } finally {
+            operation.abort(new Error('Process stream finished'))
+            try { if (source) await source.return(undefined) }
+            finally { owner.processControllers.delete(operation) }
+          }
+        })(), reason => { operation?.abort(reason); void source?.return(undefined).catch(() => {}) })
+        return {
+          next: value => output.next(value),
+          throw: error => output.throw(error),
+          // Preserve the cancellation entering finally, so revocation does not report it again as a teardown failure.
+          return: value => {
+            const reason = signal?.aborted ? signal.reason : value instanceof Error ? value : new Error('Module stream closed before completion')
+            operation?.abort(reason)
+            return output.return(reason)
+          },
+          result: output.result,
+          [Symbol.asyncIterator]() { return this },
+        }
+      }, 'environment')
       if (step) wrapped.step = step
       if (noun === 'model') for (const method of ['complete','fork','classify'] as const)
         if (methods[method] === hostIdentity && wrapped[method]) createModModelBridge(wrapped[method],method)
@@ -1917,6 +1988,44 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (noun === 'plugin' || noun === 'clock') continue
       engine[noun] = Object.freeze(Object.fromEntries(Object.keys(methods).map(method => {
         const op = `${noun}.${method}`
+        if (op === 'process.spawn' && methods[method] === hostIdentity) return [method, (request: ModInput) => {
+          const args = request && typeof request === 'object' && !Array.isArray(request) ? request : undefined
+          const input = args ? {
+            argv: Array.isArray(args.argv) ? [...args.argv] : args.argv,
+            ...(args.cwd === undefined ? {} : {cwd:args.cwd}),
+            ...(args.env === undefined ? {} : {env:args.env && typeof args.env === 'object' && !Array.isArray(args.env) ? {...args.env} : args.env}),
+            ...(args.input === undefined ? {} : {input:args.input}),
+          } : request
+          let source: ModHookStream | undefined
+          let combined: ReturnType<typeof combineModModelSignals> | undefined
+          return createModProcessStream(async (method, value) => {
+            if (!source) {
+              if (method === 'return') return {done:true, value}
+              if (!alive() || stopped) throw new Error('Host callback invocation ended')
+              next.signal.throwIfAborted()
+              validateModProcessSpawnRequest(input)
+              combined = combineModModelSignals(next.signal, lifetime)
+              // Test callbacks share the stream chain; its terminal never launches a real child.
+              source = stream('process.spawn', input,
+                // eslint-disable-next-line require-yield -- A rejecting terminal emits no chunks.
+                async function* () {throw new Error('Unhandled plugin test event: process.spawn')},
+                snapshot, table, {origin,signal:combined.signal})
+            }
+            const resume = pauseModBudget(next)
+            try {
+              const item = await source[method](value)
+              if (item.done) {
+                combined?.cleanup()
+                const receipt = item.value as {value?:unknown;deny?:string}
+                if (typeof receipt.deny === 'string')
+                  throw Object.assign(new Error(`${origin.plugin}: $.process.spawn: ${receipt.deny}`), {name:'HooksError'})
+                return {done:true,value:receipt.value}
+              }
+              return item
+            } catch (error) {combined?.cleanup(); throw error}
+            finally {resume?.()}
+          })
+        }]
         if (op === 'ui.resolve') {
           const realm = createModUiRealm(origin.plugin, isProxy)
           return [method, (input: ModInput) => {
@@ -2231,7 +2340,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
-  function stream(event: 'turn.step', input: ModInput,
+  function stream(event: 'turn.step' | 'process.spawn', input: ModInput,
     core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>,
     snapshot: readonly Activation[] = active, table: Nouns = nouns, options: ModDispatchOptions = {},
   ): ModHookStream {
@@ -2273,9 +2382,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       try {
         source = dispatchModStream({ event, input, core, settleAfterAbort: true, hooks: hooksFor(snapshot, table), signal: cancellation.signal, origin: options.origin,
           ...(options.origin ? { skip: { plugin: options.origin.plugin, registrationId: caller?.plugin === options.origin.plugin ? caller.registrationId : -1 } } : {}),
-          validateInput: (value, received) => { validateTurnStepInput(value); options.validateInput?.(value, received) },
-          validateChunk: validateTurnStepChunk,
-          validateResult: (result, previous) => { validateTurnStepResult(result, input); options.validateResult?.(result, previous) },
+          validateInput: (value, received) => {
+            if (event === 'turn.step') validateTurnStepInput(value)
+            else validateModProcessSpawnRequest(value)
+            options.validateInput?.(value, received)
+          },
+          validateChunk: event === 'turn.step' ? validateTurnStepChunk : (value: unknown) => {
+            const chunk = value as {stream?: unknown; text?: unknown} | null
+            if (!chunk || typeof chunk !== 'object' || !['stdout','stderr'].includes(chunk.stream as string) || typeof chunk.text !== 'string' || !chunk.text)
+              throw new TypeError('process.spawn chunks require {stream: stdout | stderr, text: non-empty string}')
+          },
+          validateResult: (result, previous) => {
+            if (event === 'turn.step') validateTurnStepResult(result, input)
+            else {
+              const receipt = result as {value?: unknown; deny?: unknown} | null
+              if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+                  !Object.hasOwn(receipt,'value') && typeof receipt.deny !== 'string')
+                throw new TypeError('process.spawn hooks must return value or deny')
+            }
+            options.validateResult?.(result, previous)
+          },
           onFailure: (plugin, error) => diagnostic(plugin, event, error),
         })
         let thrown: { error: unknown } | undefined
@@ -2286,7 +2412,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           try { yield item.value } catch (error) { thrown = { error } }
         }
       } finally {
-        try { if (source) await source.return(undefined) }
+        try { if (source) await source.return(event === 'process.spawn' && cancellation.signal.aborted ? cancellation.signal.reason : undefined) }
         finally {
           clearAbortDelivery(); combined.signal.removeEventListener('abort', abort); combined.cleanup()
           await release()
@@ -2296,7 +2422,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       clearAbortDelivery(); cancellation.abort(error)
       // Explicit close cancels the pending chain immediately; signal-driven
       // cancellation of an active pull instead lets the hook settle first.
-      void source?.return(undefined).catch(() => {})
+      void source?.return(event === 'process.spawn' ? error : undefined).catch(() => {})
       combined.signal.removeEventListener('abort', abort)
       combined.cleanup()
     }, delivery.signal)
@@ -2839,7 +2965,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const candidate: Activation = {
           declaration, environment, state: 'active', references: 0, started: false,
           ...(isCanonicalDiffMod(input) ? { builtinInput: input } : {}),
-          waits: new Map(), methods: new WeakMap(), controller: activationController,
+          waits: new Map(), methods: new WeakMap(), controller: activationController, processControllers: new Set(),
           suggestionOwner: `${declaration.storageId}:${++activationId}`,
           suggestionEligible: true,
           operations: createModHostOperations({
@@ -3043,7 +3169,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const source = callback(engine, input, next) as AsyncGenerator<unknown, unknown> | undefined
             if (!source || typeof source[Symbol.asyncIterator] !== 'function' ||
                 typeof source.next !== 'function' || typeof source.return !== 'function' || typeof source.throw !== 'function')
-              throw new TypeError('turn.step requires an async generator hook')
+              throw new TypeError(`${next.event} requires an async generator hook`)
             return yield* source
           } finally { lifetime.abort() }
         },
@@ -3213,7 +3339,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       binding = next
       if (active.length) await publish({ modules: active, table: nouns })
     }),
-    stream: (event: 'turn.step', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
+    stream: (event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
     dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
     hasHooks: (event: string) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
     dispose(): Promise<void> {

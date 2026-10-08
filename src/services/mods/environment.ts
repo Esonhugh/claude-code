@@ -53,9 +53,9 @@ export function createModModelBridge<T extends HostFunction>(call: T, method: 'c
   modelMethods.set(call, method)
   return call
 }
-const streamBridges = new WeakSet<HostFunction>()
-export function createModStreamBridge<T extends HostFunction>(call: T): T {
-  streamBridges.add(call)
+const streamBridges = new WeakMap<HostFunction, 'invocation' | 'environment'>()
+export function createModStreamBridge<T extends HostFunction>(call: T, lifetime: 'invocation' | 'environment' = 'invocation'): T {
+  streamBridges.set(call, lifetime)
   return call
 }
 type HostHandle = { environment: number; call: HostFunction; invocation?: number }
@@ -121,7 +121,7 @@ export function createModEnvironmentHost({
   // Host leases must follow a provider's current call, not the invocation in
   // which its captured capability proxy was first encoded.
   const contexts = new Map<number, ReturnType<typeof AsyncLocalStorage.snapshot>>()
-  const hostStreams = new Map<number, { environment: number; invocation: number; iterator: AsyncGenerator<unknown, unknown>; continuation: boolean }>()
+  const hostStreams = new Map<number, { environment: number; invocation: number; iterator: AsyncGenerator<unknown, unknown>; continuation: boolean; lifetime: 'invocation' | 'environment' }>()
   const invocationErrors = new Map<number, Map<number, unknown>>()
   const unloading = new Map<number, Promise<void>>()
   let nextRequest = 0, nextFunction = 0, nextEnvironment = 0, nextEngine = 0
@@ -175,7 +175,7 @@ export function createModEnvironmentHost({
 
   function releaseHostStreams(environment: number, invocation?: number) {
     for (const [id, stream] of hostStreams) {
-      if (stream.environment !== environment || invocation !== undefined && stream.invocation !== invocation) continue
+      if (stream.environment !== environment || invocation !== undefined && (stream.invocation !== invocation || stream.lifetime === 'environment')) continue
       hostStreams.delete(id)
       functions.delete(id)
       // A failed streaming hook leaves its continuation for dispatch to resume.
@@ -260,7 +260,7 @@ export function createModEnvironmentHost({
       const storeMethod = storeMethods.get(value as HostFunction)
       const stateMethod = stateMethods.get(value as HostFunction)
       const modelMethod = modelMethods.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(modelMethod ? {modelMethod} : {}) }
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)
@@ -523,9 +523,10 @@ export function createModEnvironmentHost({
         args.push({signal:cancellation.signal})
       }
       const context = contexts.get(message.invocation)
-      if (streamBridges.has(fn.call) && !context) throw new Error('Module invocation already settled')
+      if (streamBridges.get(fn.call) === 'invocation' && !context) throw new Error('Module invocation already settled')
       const value = context ? context(fn.call, ...args) : fn.call(...args)
       if (streamBridges.has(fn.call)) {
+        const lifetime = streamBridges.get(fn.call)!
         const iterator = value as AsyncGenerator<unknown, unknown>
         if (!iterator || isProxy(iterator) || typeof iterator.next !== 'function' || typeof iterator.return !== 'function' || typeof iterator.throw !== 'function') throw new Error('Streaming capability must return an async iterator')
         const id = hostHandle(message.environment, async (method, input) => {
@@ -539,9 +540,9 @@ export function createModEnvironmentHost({
             if (item.done) { hostStreams.delete(id); functions.delete(id) }
             return item
           } catch (error) { hostStreams.delete(id); functions.delete(id); throw error }
-        }, message.invocation)
-        hostStreams.set(id, {environment:message.environment, invocation:message.invocation, iterator, continuation:fn.invocation !== undefined})
-        response.value = {type:'host-stream', id}
+        }, lifetime === 'environment' ? undefined : message.invocation)
+        hostStreams.set(id, {environment:message.environment, invocation:message.invocation, iterator, continuation:fn.invocation !== undefined, lifetime})
+        response.value = {type:'host-stream', id, ...(lifetime === 'environment' ? {streamLifetime:'environment'} : {})}
       } else response.value = encode(message.environment, isPromise(value) && !isProxy(value) ? await value : value)
     } catch (error) {
       response.error = errorMessage(error, 'Module capability failed')
@@ -598,7 +599,7 @@ export function createModEnvironmentHost({
     }
     const cancel = () => {
       if (dead || !environments.has(environment)) return
-      worker.postMessage({ type: 'abort', environment, invocation: id, ...(streaming && next && canSettleModStreamAfterAbort(next) ? {cooperative:true as const} : {}), ...(['turn.step','model.complete','model.classify','model.fork','ui.render'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
+      worker.postMessage({ type: 'abort', environment, invocation: id, ...(streaming && next && canSettleModStreamAfterAbort(next) ? {cooperative:true as const} : {}), ...(['turn.step','process.spawn','model.complete','model.classify','model.fork','ui.render'].includes(next?.event ?? '') ? {reason:{name:'HooksError',message:typeof next?.signal.reason === 'string' ? next.signal.reason : errorMessage(next?.signal.reason, 'Module invocation aborted')}} : {}) } satisfies ModWorkerRequest)
       if (streaming && retained) {
         // The opening RPC is already settled; the watchdog must cover the
         // retained stream's pulls as well, including a guest-only pending wait.
@@ -633,7 +634,7 @@ export function createModEnvironmentHost({
           if (!['prepend', 'user', 'append', 'builtin', 'core'].includes(tier as string) || !state.declaration.nextTiers.includes(tier as Parameters<ModNext['to']>[1])) throw new Error('Module next tier is absent from scan')
           return next.to(input as ModInput, tier as Parameters<ModNext['to']>[1])
         }, id)
-        if (next.event === 'turn.step') {
+        if (next.event === 'turn.step' || next.event === 'process.spawn') {
           createModStreamBridge(functions.get(call)!.call)
           createModStreamBridge(functions.get(to)!.call)
         }

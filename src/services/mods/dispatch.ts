@@ -88,7 +88,7 @@ export function createModHookStream<C, R>(iterator: AsyncGenerator<C, R>, close?
 }
 
 export function dispatchModStream(options: {
-  event: 'turn.step'
+  event: 'turn.step' | 'process.spawn'
   settleAfterAbort?: boolean
   input: ModInput
   hooks: readonly ModDispatchHook[]
@@ -108,6 +108,9 @@ export function dispatchModStream(options: {
   const skip = options.skip ?? (options.origin ? { plugin: options.origin.plugin } : undefined)
   function run(start: number, input: ModInput, parent?: AbortSignal, skipped = new Set<ModTier>(), trace: TraceNode[] = [], changed = () => {}): ModHookStream {
     const lifetime = createAbortController()
+    let operationController = createAbortController()
+    const operationSignal = parent ? capabilitySignals.get(parent) ?? parent : createAbortController().signal
+    capabilitySignals.set(lifetime.signal, operationSignal)
     const abort = () => lifetime.abort(parent?.reason)
     parent?.addEventListener('abort', abort, { once: true })
     if (parent?.aborted) abort()
@@ -167,8 +170,8 @@ export function dispatchModStream(options: {
         started = performance.now()
         timer = setTimeout(() => {
           stop(); timedOut = true
-          const error = new Error(`Mod ${hook?.plugin} timed out for turn.step`)
-          expire?.(error); controller.abort(error)
+          const error = new Error(`Mod ${hook?.plugin} timed out for ${options.event}`)
+          operationController.abort(error); expire?.(error); controller.abort(error)
         }, Math.max(0, remaining))
         publish()
       }
@@ -192,9 +195,9 @@ export function dispatchModStream(options: {
       void abandon.catch(() => {})
       const wait = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, abandon])
       function below(rewritten: ModInput, target?: ModTier): ModHookStream {
-        if (!rewritten || typeof rewritten !== 'object' || Array.isArray(rewritten)) throw new Error('turn.step next requires an input object')
-        if (rewritten.agentId === undefined && input.agentId !== undefined) rewritten = { ...rewritten, agentId: input.agentId }
-        for (const key of ['turnId', 'index', 'messageCount', 'agentId']) {
+        if (!rewritten || typeof rewritten !== 'object' || Array.isArray(rewritten)) throw new Error(`${options.event} next requires an input object`)
+        if (options.event === 'turn.step' && rewritten.agentId === undefined && input.agentId !== undefined) rewritten = { ...rewritten, agentId: input.agentId }
+        for (const key of options.event === 'turn.step' ? ['turnId', 'index', 'messageCount', 'agentId'] : []) {
           if (rewritten[key] !== options.input[key]) throw new Error(`Mod ${hook!.plugin} cannot rewrite ${key} for turn.step`)
         }
         options.validateInput?.(rewritten, input)
@@ -220,11 +223,12 @@ export function dispatchModStream(options: {
       }
       function nextFor(catching: boolean, failure?: ModNext['error']): ModNext {
         const own = controller
+        capabilitySignals.set(own.signal, AbortSignal.any([operationSignal, operationController.signal]))
         const call = (rewritten: ModInput, target?: ModTier) => {
           own.signal.throwIfAborted()
           if (catching && last) {
             if (rewritten && rewritten.agentId === undefined && input.agentId !== undefined) rewritten = { ...rewritten, agentId: input.agentId }
-            if (!isDeepStrictEqual(rewritten, lastInput)) throw new Error(`Mod ${hook!.plugin} cannot rewrite input when resuming turn.step`)
+            if (!isDeepStrictEqual(rewritten, lastInput)) throw new Error(`Mod ${hook!.plugin} cannot rewrite input when resuming ${options.event}`)
           }
           const branch = catching && last ? last : below(rewritten, target)
           const view = createModHookStream((async function* () {
@@ -246,7 +250,9 @@ export function dispatchModStream(options: {
             const unpause = pause()
             try {
               // Closing a hook's view must not destroy the branch needed by failure recovery.
-              return await view[method](value as never)
+              const item = await view[method](value as never)
+              if (options.event === 'process.spawn' && !catching && !item.done) {remaining = allowance; publish()}
+              return item
             } finally { unpause() }
           }
           return { next: () => pull('next'), return: (value: unknown) => pull('return', value), throw: (error: unknown) => pull('throw', error), result: view.result, [Symbol.asyncIterator]() { return this } }
@@ -266,6 +272,7 @@ export function dispatchModStream(options: {
       }
       async function* invoke(catching: boolean, failure?: ModNext['error']) {
         controller = createAbortController()
+        operationController = createAbortController()
         allowance = catching ? options.catchGraceMs ?? 1000 : options.budgetMs ?? 10_000
         remaining = allowance; pauses = 0
         clock = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT)); publish()
@@ -273,10 +280,11 @@ export function dispatchModStream(options: {
         const timeout = new Promise<never>((_resolve, reject) => { expire = reject })
         void timeout.catch(() => {})
         try {
-          if (!hook!.invokeStream) throw new Error('turn.step requires an async generator hook')
+          if (!hook!.invokeStream) throw new Error(`${options.event} requires an async generator hook`)
           current = hook!.invokeStream(input, next, catching)
           let thrown: { error: unknown } | undefined
           for (;;) {
+            if (options.event === 'process.spawn' && !catching) remaining = allowance
             working = true; resume()
             let item: IteratorResult<unknown, unknown>
             try {
@@ -288,7 +296,7 @@ export function dispatchModStream(options: {
             thrown = undefined
             if (item.done) {
               if (item.value === undefined && !lastResolved)
-                throw new Error('turn.step returned no result (and read no next() stream to its end)')
+                throw new Error(`${options.event} returned no result (and read no next() stream to its end)`)
               const result = item.value === undefined ? lastResult : item.value
               options.validateResult?.(result, results)
               return result
@@ -368,6 +376,7 @@ export function dispatchModStream(options: {
     })()
     return createModHookStream(body, error => {
       explicitlyClosed = true
+      operationController.abort(error)
       clearAbortGrace(); rejectAbort?.(error)
       parent?.removeEventListener('abort', abort); lifetime.abort(error)
     }, options.settleAfterAbort ? undefined : parent)

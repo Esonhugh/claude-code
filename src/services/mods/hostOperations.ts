@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { StringDecoder } from 'node:string_decoder'
+import { logForDebugging } from '../../utils/debug.js'
 import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { atomicWriteToZipCache } from '../../utils/plugins/zipCache.js'
@@ -9,6 +10,7 @@ import { appendFileSync, constants } from 'node:fs'
 import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import treeKill from 'tree-kill'
+import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { getInitialSettings, getSettingsForSource } from '../../utils/settings/settings.js'
 import { getAdditionalDirectoriesForClaudeMd } from '../../bootstrap/state.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
@@ -119,6 +121,29 @@ export type ProcessRunResult = {
   exitCode: number
   stdout: string
   stderr: string
+}
+
+export type ProcessSpawnRequest = {
+  argv: readonly string[]
+  cwd?: string
+  env?: Record<string, string>
+  input?: string
+}
+export type ProcessSpawnChunk = { stream: 'stdout' | 'stderr'; text: string }
+export type ProcessSpawnResult = { code: number | null; signal: string | null }
+
+export function validateModProcessSpawnRequest(value: unknown): asserts value is ProcessSpawnRequest {
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new TypeError('process.spawn takes { argv, cwd?, env?, input? }')
+  const request = value as ProcessSpawnRequest
+  if (!Array.isArray(request.argv) || !request.argv.length || !request.argv.every(arg => typeof arg === 'string') || request.argv[0] === '')
+    throw new TypeError('process.spawn takes argv, a non-empty list of strings naming the command first')
+  if (request.cwd !== undefined && (typeof request.cwd !== 'string' || !request.cwd))
+    throw new TypeError('process.spawn cwd is a non-empty path')
+  if (request.env !== undefined && (!request.env || typeof request.env !== 'object' || Array.isArray(request.env) || !Object.values(request.env).every(value => typeof value === 'string')))
+    throw new TypeError('process.spawn env is an object of strings')
+  if (request.input !== undefined && typeof request.input !== 'string')
+    throw new TypeError('process.spawn input is a string')
 }
 
 const MAX_BYTES = 4 * 1024 * 1024
@@ -385,6 +410,121 @@ export function createModHostOperations({
       },
     },
     process: {
+      async *spawn(request: ProcessSpawnRequest, signal: AbortSignal = activationSignal): AsyncGenerator<ProcessSpawnChunk, ProcessSpawnResult> {
+        signal = AbortSignal.any([activationSignal, signal])
+        signal.throwIfAborted()
+        validateModProcessSpawnRequest(request)
+        const [command, ...args] = request.argv
+        const child = spawn(command!, args, {
+          cwd: request.cwd === undefined ? cwd() : resolve(cwd(), request.cwd),
+          env: {...process.env, ...request.env},
+          stdio: [request.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+          detached: process.platform !== 'win32', windowsHide: true,
+        })
+        type Item = ProcessSpawnChunk | {ended: ProcessSpawnResult} | {failed: unknown}
+        const queue: Item[] = []
+        let queuedCharacters = 0, paused = false, ended = false
+        let wake: (() => void) | undefined
+        let stopping: Promise<void> | undefined
+        const closed = Promise.withResolvers<void>()
+        const pipes = [child.stdout!, child.stderr!]
+        const push = (item: Item) => { queue.push(item); wake?.() }
+        const flow = (resume: boolean) => {
+          paused = !resume
+          for (const pipe of pipes) if (resume) pipe.resume(); else pipe.pause()
+        }
+        for (const [index, pipe] of pipes.entries()) {
+          pipe.setEncoding('utf8')
+          pipe.on('data', (text: string) => {
+            if (!text) return
+            queuedCharacters += text.length
+            push({stream:index === 0 ? 'stdout' : 'stderr', text})
+            if (queuedCharacters > 1048576 && !paused) flow(false)
+          })
+          pipe.once('error', () => {})
+        }
+        child.once('error', error => push({failed:error}))
+        child.once('close', (code, signal) => {
+          ended = true
+          closed.resolve()
+          push({ended:{code,signal}})
+          logForDebugging(`[Mods:process.spawn] owner=${storageId} pid=${child.pid ?? '?'} code=${code} signal=${signal ?? 'none'} closed`)
+        })
+        const stop = () => stopping ??= (async () => {
+          if (!ended && child.pid !== undefined) {
+            if (process.platform === 'win32') {
+              await new Promise<void>((resolve, reject) => treeKill(child.pid!, 'SIGKILL', error => error ? reject(error) : resolve()))
+            } else {
+              // PPID ownership includes descendants that moved to a different process group.
+              const listing = await execFileNoThrowWithCwd('ps', ['-A','-o','pid=','-o','ppid='], {cwd:'/',timeout:500})
+              const descendants = new Set<number>()
+              const parents = new Map<number, number[]>()
+              for (const line of listing.stdout.split('\n')) {
+                const match = /^\s*(\d+)\s+(\d+)\s*$/.exec(line)
+                if (!match) continue
+                const pid = Number(match[1]), parent = Number(match[2])
+                parents.set(parent, [...parents.get(parent) ?? [], pid])
+              }
+              const pending = [child.pid]
+              for (const parent of pending) for (const pid of parents.get(parent) ?? []) {
+                if (pid > 1 && pid !== process.pid && pid !== child.pid && !descendants.has(pid)) {descendants.add(pid); pending.push(pid)}
+              }
+              const pids = [child.pid, ...descendants]
+              const starts = async () => {
+                const result = await execFileNoThrowWithCwd('ps', ['-o','pid=','-o','lstart=','-p',pids.join(',')], {cwd:'/',timeout:500,env:{LC_ALL:'C',TZ:'UTC'}})
+                const values = new Map<number,string>()
+                for (const line of result.stdout.split('\n')) {
+                  const match = /^\s*(\d+)\s+(\S.*\S)\s*$/.exec(line)
+                  if (match) values.set(Number(match[1]),match[2]!)
+                }
+                return values
+              }
+              const owned = await starts()
+              const send = (pid: number, signal: 'SIGTERM' | 'SIGKILL') => {
+                try {process.kill(pid,signal)}
+                catch (error) {if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error}
+              }
+              try {process.kill(-child.pid,'SIGTERM')}
+              catch (error) {if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error}
+              for (const pid of owned.keys()) send(pid,'SIGTERM')
+              let timer: ReturnType<typeof setTimeout> | undefined
+              try {
+                const grace = new Promise<void>(resolve => {timer = setTimeout(resolve,2000);timer.unref?.()})
+                await (descendants.size ? grace : Promise.race([closed.promise,grace]))
+              } finally {if (timer !== undefined) clearTimeout(timer)}
+              const current = await starts()
+              for (const [pid,start] of owned) if (current.get(pid) === start) send(pid,'SIGKILL')
+            }
+          }
+          child.stdin?.destroy()
+          for (const pipe of pipes) pipe.destroy()
+          await closed.promise
+        })()
+        const abort = () => {
+          queue.length = 0
+          push({failed:signal.reason})
+          void stop().catch(error => push({failed:error}))
+        }
+        signal.addEventListener('abort', abort, {once:true})
+        if (signal.aborted) abort()
+        child.stdin?.once('error', () => {})
+        child.stdin?.end(request.input)
+        logForDebugging(`[Mods:process.spawn] owner=${storageId} pid=${child.pid ?? '?'} started`)
+        try {
+          for (;;) {
+            const item = queue.shift()
+            if (item === undefined) { await new Promise<void>(resolve => { wake = resolve }); wake = undefined; continue }
+            if ('failed' in item) throw item.failed
+            if ('ended' in item) return item.ended
+            queuedCharacters -= item.text.length
+            if (paused && queuedCharacters <= 1048576) flow(true)
+            yield item
+          }
+        } finally {
+          signal.removeEventListener('abort', abort)
+          await stop()
+        }
+      },
       async run(
         argv: readonly string[],
         init: ProcessRunInit = {},

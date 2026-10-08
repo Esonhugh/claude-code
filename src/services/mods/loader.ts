@@ -30,7 +30,7 @@ const supportedEvents = new Set([
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
   'clock.now', 'clock.sleep', 'clock.after', 'clock.every', 'mcp.call',
   'config.set', 'config.describe', 'session.authorize', 'http.fetch',
-  'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run',
+  'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn',
   'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
   'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage',
   'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
@@ -428,8 +428,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   }
 
   function visitFunction(node: Node, scope: Scope, roles: (Capability | undefined)[] = [], event?: string, handler = false) {
-    if (handler && event === 'turn.step') {
-      if (!node.async || !node.generator) fail(path, 'turn.step handlers must be async generators')
+    if (handler && (event === 'turn.step' || event === 'process.spawn')) {
+      if (!node.async || !node.generator) fail(path, `${event} handlers must be async generators`)
     } else if (roles.length && node.generator) fail(path, 'generator register/handlers are unsupported')
     const inner = cachedScope(node, scope, JSON.stringify([event, handler, roles]), () => {
       const bindings = new Map<string, Binding>()

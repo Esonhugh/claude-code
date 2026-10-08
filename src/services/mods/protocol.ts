@@ -1,5 +1,47 @@
 import type { ModDeclaration, ModHookStream, ModRegistration } from './types.js'
 
+// Public process streams use the native generator lifecycle: closing before
+// entry leaves result pending, while closing a pending read finishes that read.
+export function createModProcessStream(
+  pull: (method: 'next' | 'return' | 'throw', value: unknown) => Promise<IteratorResult<unknown, unknown>>,
+): ModHookStream {
+  const result = Promise.withResolvers<unknown>()
+  void result.promise.catch(() => {})
+  const interrupted = Promise.withResolvers<IteratorResult<unknown, unknown>>()
+  let settled = false
+  let closing: Promise<IteratorResult<unknown, unknown>> | undefined
+  const iterator = (async function* () {
+    let thrown: {error: unknown} | undefined
+    try {
+      for (;;) {
+        const item = closing ? {done:true as const, value:undefined} : await Promise.race([
+          pull(thrown ? 'throw' : 'next', thrown?.error), interrupted.promise,
+        ])
+        thrown = undefined
+        if (item.done) {settled = true; result.resolve(item.value); return item.value}
+        try {yield item.value} catch (error) {thrown = {error}}
+      }
+    } catch (error) {settled = true; result.reject(error); throw error}
+    finally {
+      if (!settled) result.reject(Object.assign(new Error('the stream was closed before its result'), {name:'HooksError'}))
+    }
+  })()
+  const finish = iterator.return.bind(iterator)
+  return Object.defineProperties(iterator, {
+    result: {value:result.promise, enumerable:true},
+    return: {value:(value: unknown) => {
+      if (!settled && !closing) {
+        try {closing = Promise.resolve(pull('return', value))}
+        catch (error) {closing = Promise.reject(error)}
+        void closing.catch(() => {})
+        interrupted.resolve({done:true, value:undefined})
+      }
+      const returned = finish(value)
+      return closing ? Promise.all([returned, closing]).then(([item]) => item) : returned
+    }},
+  }) as ModHookStream
+}
+
 // Shared with the VM bootstrap so both boundaries have identical pull/result semantics.
 export function createModHookStream(
   pull: (method: 'next' | 'return' | 'throw', value: unknown) => Promise<IteratorResult<unknown, unknown>>,
@@ -34,7 +76,7 @@ export function createModHookStream(
     if (!closed) cancel(signal?.reason ?? new Error('Module invocation aborted'), undefined)
   }
   const run = (method: 'next' | 'return' | 'throw', value: unknown) => {
-    if (method === 'return') return cancel(new Error('Module stream closed before completion'), value)
+    if (method === 'return') return cancel(signal?.aborted ? signal.reason : value instanceof Error ? value : new Error('Module stream closed before completion'), value)
     const pending = queue.then(async () => {
       if (closed) {
         if (method === 'throw') throw value
@@ -70,8 +112,8 @@ export type ModWireValue =
   | { type: 'object'; entries: [string, ModWireValue][] }
   | { type: 'engine'; id: number; value: ModWireValue }
   | { type: 'function'; id: number }
-  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; modelMethod?: 'complete' | 'fork' | 'classify' }
-  | { type: 'host-stream'; id: number }
+  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; streamLifetime?: 'environment'; modelMethod?: 'complete' | 'fork' | 'classify' }
+  | { type: 'host-stream'; id: number; streamLifetime?: 'environment' }
   | { type: 'stream'; invocation: number }
   | { type: 'clock'; now: number; wait: number; cancel: number; run: number }
   | { type: 'ui'; methods: [string, ModWireValue][] }

@@ -12,7 +12,7 @@ import type { ModRenderComponent, ModRenderInput, ModRenderSite, ModRenderSurfac
 import { expect } from './expect.js'
 import { createMock } from './mock.js'
 import { modStateLibrarySource } from '../stateLibrary.js'
-import { createModHookStream } from '../protocol.js'
+import { createModHookStream, createModProcessStream } from '../protocol.js'
 import { HOOK_EVENTS } from '../../../entrypoints/sdk/coreTypes.js'
 
 export type PluginTestCaseResult = {
@@ -477,7 +477,7 @@ function createEngine(
   return engine
 
   function capability(event: string) {
-    if (event === 'turn.step') return (input: ModInput = {}) => {
+    if (event === 'turn.step' || event === 'process.spawn') return (input: ModInput = {}) => {
       const pending = track(async () => {
         await initialize()
         signal.throwIfAborted()
@@ -488,7 +488,8 @@ function createEngine(
         )
       })
       void pending.catch(() => {})
-      return createModHookStream(async (method, value) => (await pending)[method](value))
+      const wrap = event === 'process.spawn' ? createModProcessStream : createModHookStream
+      return wrap(async (method, value) => (await pending)[method](value))
     }
     return (input: ModInput = {}) => track(async () => {
       await initialize()

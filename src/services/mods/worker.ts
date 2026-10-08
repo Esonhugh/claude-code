@@ -7,7 +7,7 @@ import { performance as hostPerformance } from 'node:perf_hooks'
 import { TextDecoder as HostTextDecoder, TextEncoder as HostTextEncoder } from 'node:util'
 import { isPromise, isProxy } from 'node:util/types'
 import { URL as HostURL, URLSearchParams as HostURLSearchParams } from 'node:url'
-import { createModHookStream, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
+import { createModHookStream, createModProcessStream, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
 import { createModUiRealm } from './uiRealm.js'
 import { createModClientRealm, copyModClientData } from './clientRealm.js'
 import { isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
@@ -61,6 +61,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const abortedModelComplete = Object.freeze({isAnswered:false,reason:'aborted',usage:Object.freeze({input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0})});
   const normalizeModelComplete = (${normalizeModModelCompleteRequest.toString()});
   const createStream = (${createModHookStream.toString()});
+  const createProcessStream = (${createModProcessStream.toString()});
   const settle = request => {
     signals.delete(request.id);
     const frame = frames.get(request.id);
@@ -293,8 +294,8 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       const pull = decode({type:'host-function', id:wire.id}, invocation);
       let handles = streamHandles.get(invocation);
       if (!handles) { handles = new Set(); streamHandles.set(invocation, handles); }
-      handles.add(wire.id);
-      return createStream(async (method, value) => {
+      if (wire.streamLifetime !== 'environment') handles.add(wire.id);
+      return (wire.streamLifetime === 'environment' ? createProcessStream : createStream)(async (method, value) => {
         try {
           const item = await pull(method, value instanceof Error ? {message:value.message,name:value.name} : value);
           if (item.done) { handles.delete(wire.id); hostFunctions.delete(wire.id); }
@@ -351,6 +352,8 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       };
       const proxy = wire.stream ? (...args) => {
         const opened = invokeHost(...args);
+        if (wire.streamLifetime === 'environment')
+          return createProcessStream((method,value) => opened.then(stream => stream[method](value)));
         const result = opened.then(stream => stream.result);
         result.catch(() => {});
         return {
@@ -383,9 +386,9 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const checkHandler = (event, handler) => {
     if (typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook handler');
     const prototype = Object.getPrototypeOf(handler);
-    if (event === 'turn.step') {
-      if (prototype !== asyncGeneratorPrototype) throw Error('turn.step handlers must be async generators');
-    } else if (prototype === asyncGeneratorPrototype || prototype === generatorPrototype) throw Error('Generator hooks require exact turn.step');
+    if (event === 'turn.step' || event === 'process.spawn') {
+      if (prototype !== asyncGeneratorPrototype) throw Error(event + ' handlers must be async generators');
+    } else if (prototype === asyncGeneratorPrototype || prototype === generatorPrototype) throw Error('Generator hooks require exact turn.step or process.spawn');
   };
   function on(event, matcher, handler) {
     if (!registering) throw Error('on() is only available during register()');
@@ -393,7 +396,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
     const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env']);
     const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
-      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
+      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
       'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.log', 'ui.status', 'ui.toast', 'ui.copy',
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
@@ -504,8 +507,8 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         const meta = request.next;
         const frame = { active: true, trace: decode(meta.trace, request.id), budgetMs: readBudget(request.id, false), remainingMs: undefined };
         frames.set(request.id, frame);
-        const call = decode({type:'host-function', id: meta.call, stream:meta.event === 'turn.step'}, request.id);
-        const to = decode({type:'host-function', id: meta.to, stream:meta.event === 'turn.step'}, request.id);
+        const call = decode({type:'host-function', id: meta.call, stream:meta.event === 'turn.step' || meta.event === 'process.spawn'}, request.id);
+        const to = decode({type:'host-function', id: meta.to, stream:meta.event === 'turn.step' || meta.event === 'process.spawn'}, request.id);
         const next = (...args) => frame.active ? call(...args) : Promise.reject(Error('Module invocation already settled'));
         Object.defineProperties(next, {
           to: { value: Object.freeze((...args) => frame.active ? to(...args) : Promise.reject(Error('Module invocation already settled'))) },
