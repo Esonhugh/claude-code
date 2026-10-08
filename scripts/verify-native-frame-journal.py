@@ -258,7 +258,7 @@ def derive_frames(run, expected):
     raw = native_bytes('raw.bin')
     entries = journal.ink_frame_entries(records, raw, expected['captureId'], initial['outputFlags'])
     geometry = native_resize_events(io, header, registration, records, initial)
-    return {'entries': entries, 'geometryEvents': geometry, 'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
+    return {'entries': entries, 'io': io, 'geometryEvents': geometry, 'rawBytes': len(raw), 'rawSha256': hashlib.sha256(raw).hexdigest(),
             'tailBase64': base64.b64encode(raw[entries[-1]['rawEnd']:]).decode(),
             'productTimingEquivalent': False, 'fullNativeGatePassed': False}
 

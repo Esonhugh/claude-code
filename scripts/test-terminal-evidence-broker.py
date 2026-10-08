@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import errno
 import fcntl
 from contextlib import nullcontext
 import json
@@ -242,11 +243,14 @@ def observe_write(fd, data):
     except BlockingIOError as error:
         caller = inspect.currentframe().f_back
         if os.getpid() == parent and caller.f_locals.get('master') == fd:
-            (run/'input-backpressure.json').write_text(json.dumps({
+            marker = run/'input-backpressure.json'
+            pending = run/'input-backpressure.json.tmp'
+            pending.write_text(json.dumps({
                 'parentPid': parent, 'nativePid': caller.f_locals['child'],
                 'errno': error.errno, 'bytes': len(data), 'fd': fd,
                 'stopped': caller.f_locals.get('stopped'),
                 'stopReason': caller.f_locals.get('stop_reason')}))
+            pending.replace(marker)
         raise
 def observe_read(fd, size):
     caller = inspect.currentframe().f_back
@@ -407,6 +411,7 @@ while True:
         pressure = json.loads((self.run/'input-backpressure.json').read_text())
         self.assertEqual(pressure['nativePid'], self.native_pid)
         self.assertEqual(pressure['parentPid'], self.child.pid)
+        self.assertEqual(pressure['errno'], errno.EAGAIN)
         self.assertGreater(pressure['bytes'], 0)
         self.assertGreater(sent, 0)
         self.child.send_signal(signal.SIGTERM)

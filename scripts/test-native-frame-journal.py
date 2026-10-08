@@ -289,15 +289,34 @@ class NativeFrameJournalTest(unittest.TestCase):
         config.write_text('set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n')
         tmux = ['/opt/homebrew/bin/tmux', '-S', str(socket)]
         calls = []
+        def boundary():
+            values = {}
+            for name in ('frames.jsonl', 'pty-io.jsonl'):
+                data = (run / name).read_bytes()
+                values[name] = [json.loads(line) for line in data[:data.rfind(b'\n') + 1].splitlines()]
+            return {'lastObservedFrameId': values['frames.jsonl'][-1]['frameId'] if values['frames.jsonl'] else 0,
+                    'lastObservedIoId': values['pty-io.jsonl'][-1]['ioId'],
+                    'observedRawBytes': (run / 'pty.raw').stat().st_size}
         def command(*args):
             receipt = {'argv': list(args)}
             calls.append(receipt)
+            geometry = None
+            if args[0] == 'resize-window':
+                geometry = {'actionId': 1, 'columns': int(args[args.index('-x') + 1]),
+                            'rows': int(args[args.index('-y') + 1]),
+                            'actualArgs': list(args), 'target': descriptor['target']}
+                with (run / 'geometry.jsonl').open('a') as stream:
+                    stream.write(json.dumps({**geometry, 'phase': 'resize-send', **boundary()}) + '\n')
             try:
                 result = subprocess.run([*tmux, *args], env=env, capture_output=True, timeout=5)
                 receipt['exitCode'] = result.returncode
             except Exception as error:
                 receipt['error'] = {'type': type(error).__name__, 'message': str(error)}
                 raise
+            if geometry is not None:
+                with (run / 'geometry.jsonl').open('a') as stream:
+                    stream.write(json.dumps({**geometry, 'phase': 'resize-return',
+                                             'exitCode': result.returncode, **boundary()}) + '\n')
             if result.returncode:
                 raise RuntimeError(result.stderr.decode())
             return result.stdout.decode()
@@ -363,7 +382,7 @@ class NativeFrameJournalTest(unittest.TestCase):
                     time.sleep(.02)
                 (run / 'live-observation.json').write_text(json.dumps(live_observation) + '\n')
             if getattr(self, 'resize_with_native_receipt', False):
-                command('resize-window', '-t', 'journal', '-x', '110', '-y', '34')
+                command('resize-window', '-t', descriptor['target'], '-x', '110', '-y', '34')
                 self.assertEqual(command('display-message', '-p', '-t', pane,
                                          '#{pane_width} #{pane_height}').strip(), '110 34')
             if getattr(self, 'fail_expectation_publication', False):
@@ -445,6 +464,10 @@ class NativeFrameJournalTest(unittest.TestCase):
                 self.assertEqual(physical['geometryEvents'][0]['columns'], 110)
                 self.assertEqual(physical['geometryEvents'][0]['rows'], 34)
                 self.assertTrue(physical['nativeResizeBracketsCovered'])
+                proof = physical['nativeGeometryProof']
+                self.assertEqual(proof['verdict'], 'passed')
+                self.assertEqual((proof['requested'], proof['acknowledged']), (1, 1))
+                self.assertEqual([(size['columns'], size['rows']) for size in proof['sizes']], [(110, 34)])
                 command('kill-server')
                 started = False
                 (run / 'expected-native.json').rename(run / 'entry-expected-native.json')

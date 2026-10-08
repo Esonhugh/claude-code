@@ -1284,9 +1284,8 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                                 or expected_hashes[key] != sent.get('bytesSHA256')):
                             return False
                 replay = fresh.get('recheck', {}).get('replay', {})
-                sizes = [(row['columns'], row['rows']) for row in
-                         replay.get('geometryProof', {}).get('sizes', [])]
-                if replay.get('geometryProof', {}).get('verdict') != 'passed':
+                sizes = terminal_resize_sizes(replay)
+                if sizes is None:
                     return False
                 if terminal_target == 'terminal-interaction':
                     logical = terminal_frame_report_checks(replay)
@@ -2264,6 +2263,45 @@ def canonical_ui_checks(root, native_context=None):
     return checks
 
 
+def terminal_resize_sizes(report):
+    """Keep native request/ACK/paint proof distinct from legacy broker proof."""
+    if not isinstance(report, dict) or report.get('verdict') != 'passed':
+        return None
+    native = report.get('method') == 'native-journal-ioctl-geometry-replay-v1'
+    if not native and report.get('method') != 'independent-pty-replay-v1':
+        return None
+    proof = report.get('nativeGeometryProof' if native else 'geometryProof', {})
+    if (not isinstance(proof, dict) or proof.get('verdict') != 'passed' or
+            (native and (proof.get('method') != 'native-driver-mach-frame-geometry-v1' or
+                         report.get('framePhysicalBoundary') != 'native-frame-end-v1' or
+                         report.get('parserSHA256') != '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'))):
+        return None
+    rows = proof.get('sizes')
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or
+            any(type(row.get(key)) is not int or not 0 < row[key] <= 1000 for key in ('columns', 'rows'))
+            for row in rows):
+        return None
+    if native:
+        frames = report.get('frames')
+        if (not isinstance(frames, list) or type(proof.get('requested')) is not int or
+                type(proof.get('acknowledged')) is not int or
+                proof['requested'] != proof['acknowledged'] or proof['requested'] != len(rows) or
+                any(any(type(row.get(key)) is not int or row[key] <= 0
+                        for key in ('actionId', 'ioId', 'geometryId', 'frameId')) or
+                    row['actionId'] != index or row['geometryId'] != index or
+                    not any(isinstance(frame, dict) and type(frame.get('frameId')) is int and
+                        frame['frameId'] == row['frameId'] and
+                        frame.get('verdict') == 'passed' and type(frame.get('outputBytes')) is int and
+                        frame['outputBytes'] > 0 and
+                        (frame.get('columns'), frame.get('rows')) == (row['columns'], row['rows'])
+                        for frame in frames)
+                    for index, row in enumerate(rows, 1)) or
+                any(left['ioId'] >= right['ioId'] or left['frameId'] >= right['frameId']
+                    for left, right in zip(rows, rows[1:]))):
+            return None
+    return [(row['columns'], row['rows']) for row in rows]
+
+
 def terminal_frame_report_checks(report):
     invalid = {'renderer_write_replay': False, 'frame_resize_sequence': False, 'frame_semantics': False}
     if not isinstance(report, dict):
@@ -2274,11 +2312,19 @@ def terminal_frame_report_checks(report):
         for frame in frames
     ):
         return invalid
-    replay = (report.get('method') in {'renderer-write-replay-v1', 'independent-pty-replay-v1'}
+    native = (report.get('method') == 'native-journal-ioctl-geometry-replay-v1' and
+              report.get('framePhysicalBoundary') == 'native-frame-end-v1' and
+              report.get('semanticSource') == 'independent-xterm-native-frame-end-v1' and
+              report.get('parserSHA256') == '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed')
+    replay = ((native or report.get('method') in {'renderer-write-replay-v1', 'independent-pty-replay-v1'})
                 and report.get('verdict') == 'passed' and bool(frames)
-                and report.get('frameCount') == len(frames)
+                and type(report.get('frameCount')) is int and report['frameCount'] == len(frames)
                 and all(f.get('verdict') == 'passed' for f in frames)
-                and all(isinstance(f.get('frameId'), int) for f in frames)
+                and all(type(f.get('frameId')) is int and f['frameId'] > 0 and
+                    all(type(f.get(key)) is int and 0 < f[key] <= 1000 for key in ('columns', 'rows'))
+                    for f in frames)
+                and (not native or all(type(f.get('outputBytes')) is int and f['outputBytes'] >= 0 and
+                    type(f.get('replayBytes')) is int and f['replayBytes'] >= f['outputBytes'] for f in frames))
                 and all(a['frameId'] < b['frameId'] for a, b in zip(frames, frames[1:])))
     sequence = []
     for frame in frames:
@@ -5522,11 +5568,8 @@ else:
                 fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
                 checks['independent_pty_capture_identity'] = fresh['captureIdentityPassed'] is True
                 checks['frame_physical'] = fresh['recheck']['verdict'] == 'passed'
-                checks['independent_pty_resize_sequence'] = (
-                    report['geometryProof']['verdict'] == 'passed'
-                    and [(size['columns'], size['rows'])
-                         for size in report['geometryProof']['sizes']] ==
-                        [(109, 34), (110, 34), (109, 34), (110, 34), (109, 34)])
+                checks['independent_pty_resize_sequence'] = terminal_resize_sizes(report) == [
+                    (109, 34), (110, 34), (109, 34), (110, 34), (109, 34)]
             except (OSError, ValueError, TypeError, KeyError) as error:
                 result['frame_report_error'] = str(error)
         checks_path = run_dir / 'terminal-interaction-checks.json'
@@ -5795,11 +5838,8 @@ else:
             physical = fresh['recheck'].get('replay', {})
             checks['independent_pty_capture_identity'] = fresh['captureIdentityPassed'] is True
             checks['independent_pty_ink_frames'] = fresh['recheck']['verdict'] == 'passed'
-            checks['independent_pty_resize_sequence'] = (
-                physical.get('geometryProof', {}).get('verdict') == 'passed'
-                and [(row['columns'], row['rows'])
-                     for row in physical['geometryProof']['sizes']] ==
-                    [(110, 34), (109, 34), (110, 34), (109, 34)])
+            checks['independent_pty_resize_sequence'] = terminal_resize_sizes(physical) == [
+                (110, 34), (109, 34), (110, 34), (109, 34)]
         except (OSError, ValueError, KeyError) as error:
             result['physical_error'] = str(error)
             checks['independent_pty_ink_frames'] = False
