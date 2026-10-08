@@ -2162,3 +2162,22 @@ Pane / PaneField 注册 `pane:close` 和默认 `Ctrl+X X`；Input/Select 接通�
 干净候选 `37e45a6211de8e4602d88d22508dd4115ea598f0a19d0ebb428061b744337fcd`：四个相邻文件 291 pass / 0 fail / 1748 expects，release-check exit0；独立审查封存零漂移。共享工作区冻结候选 `32eea1503bcebfafe3d34e934f1dd6b65e6d16898834a7a54e017bd8ad583c08`：五文件 308 pass / 0 fail / 1832 expects，验收驱动、release-check、make build exit0。后者包含其他工作区变更和待独立提交的帧证据/验收守卫，不等于干净关闭提交。新增说明另有独立身份，不继承旧源 epoch。
 
 第十五轮完整矩阵 29 项完成、27 通过、2 失败（builtin-mods、terminal-canonical-diff；terminal-interaction 通过）。第十六轮新制品完整矩阵 29 项完成、26 通过、3 失败（builtin-mods、terminal-canonical-diff、terminal-interaction），正常收尾且共享源码不变；manifest SHA-256 为 d7638b04f1b003577f714f37c8bcc079ef0df017f53b0116216d364f0db53fa0，binary SHA-256 为 49f2dc860ffcb99b02b2180255724b6c0e0719212d7a89ea5c83aa6f930912b1。新的严格焦点守卫拒绝了第二次 Tab 的 base 落点：host 声称 base，帧71–72没有该控件的实际几何与实际焦点；后续 canonical 关闭/重开未执行。整体仍未通过，不复判旧运行。同步 ACK 改变产品时序、逐帧 paint 覆盖和语义输入消费归属、293 native 及浏览器 Client 生命周期继续是必须处理的工作；详见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。继续按功能签名提交，不 push。
+
+
+## 2026-10-08 — 已提交 DOM 观测与验收有效性
+
+单独整理17条源码/测试路径，不包含其他 Claude 的未提交功能。干净 HEAD d10f0a8 上的代码候选 source `8e32cd2a2a86a43457ce2bccfe6eabba8131abbfafac310b91e03664325e2100`：6文件378 pass / 0 fail / 2234 expects，release-check及make build exit0，输入未漂移、进程组已回收。另有仅验证脚本覆盖的真实入口副本，2860份产品src逐文件与此候选相同，source `efc7bbe0f9fe3b45ef50fbcedde3519bd9f9afa2c81fc17521eb07e9486f5db0`，驱动回归/check/build通过；其第十八轮矩阵另行记录，不继承第十七轮结论。
+
+第十七轮固定292与共享工作区候选：29项完成，27通过、2失败；manifest `b605aabce6b709b5d37a8ea897c28fc6f920d5dc2ea8e033c7a4b52aeba588dd`，binary `ec2cac81d16ffb68753f673e0368e59f2d748c2b3a93449616a5bbdab210cfbd`，source `b946a5ca773eb0dcb323f82d38b96bb9fe9be6340cf1a215f6bdbe145218339b`。`base` 的actual DOM注册/焦点已补足，23个canonical checkpoint全部成功，后续关闭重开有同案原始证据；canonical startup frame7跨真实resize ACK而失败。terminal-interaction当前bounded target通过，builtin-mods时序门禁仍失败。未重新判定Native15/16，未声称正式四路发布或293完整parity通过。
+
+同步采集仍标记 `productTimingEquivalent=false`。异步journal仅在私有实现副本中推进：编码与原始写入结果/回调、不可变快照、容量/时限、收尾失败、同fd不同写入队列和原始byte歧义有回归；真实 --version证明Bun console绕过stdout.write，byte归属校验正确拒绝漏记。它尚未完成全生命周期、termios/geometry epoch、每帧paint generation与语义消费者证明。详情见[验收有效性记录](docs/research/mods-terminal-evidence-validity-20261008.md)，不push。
+
+只读审计发现上述旧 8e32 候选的 evidence 测试在 render/setup 或 unmount/dispose 失败时可能泄漏采集环境。final 候选改用完整 scope；terminal-dom-cleanup-red1 为 2 pass/2 fail，修复后的 green1 为 5 pass/0 fail，并覆盖单独 setup、unmount 和 setup+dispose 双错误。原 C/D 与 Native17/18 输入不改写，final 测试 epoch 另行记录。
+
+最终测试夹具先创建可清理的 Ink root、登记 unmount，再执行首次 render；单独 scope 失败测试覆盖环境和错误保留。最终代码/测试 epoch `7879224706f66ef766e609e01a2b6cde24997b8d5d2009ea339257b55e53550b`：terminal-dom-final-tests3 为381 pass/0 fail/2243 expects，check2/build2 exit0、输入无漂移、各自进程组已回收。与 C/D 的2383份非 test 的 src 文件逐字相同；文档、脚本和最终 binary 身份不能据此借用旧结果。
+
+第十八轮真实入口副本 source `efc7bbe0f9fe3b45ef50fbcedde3519bd9f9afa2c81fc17521eb07e9486f5db0` 完成29/29，22通过、7失败，退出1；binary `eeb7bc442c3c947c22757a90c6ef305bf3d87eaffbcbe10e6e1eb11108dfc5cf`，manifest `04a2a3e430910025f8f03f5f51654ba06eab3360d09040c6586a5c53b3af02f3`，证据目录 full-gate18-evidence。失败builtin-mods、code-review、nested-agent、terminal-canonical-diff、terminal-interaction、workflow、workflow-retry-partial-failure。此副本未包含其他工作区功能改动，不能把第十七轮结果继承给它。
+
+canonical在首次独立Tab（canonical_tab_landing_0）停止：输入09的floor frame64之后，frames65–67的public与actual焦点仍为source；base实际登记且emptyButton=true，但未取得实际焦点。后续resize/关闭重开未执行。77帧physical回放本轮成功不代表输入业务链通过。terminal-interaction缺少native-pty-eof/有效帧，broker childReaped=false；driver pane进程清理不能替代原native进程组与EOF证明。整体及功能组合门禁保持未通过，不借旧成功片段、不放宽断言，也不宣称293或四路正式发布通过。
+
+CHANGELOG补充第十八轮22/7摘要后，最终source epoch为 `7a49839887a8f8178ae3b3506e7e9fff1aab36e1cfd6f69c137cd346697b3523`；terminal-dom-final-tests4仍381 pass/0 fail/2243 expects，check3/build3均exit0/sourceUnchanged，且PG已回收。旧787代码与14份生产源码保持逐字一致，旧结果封存。Native18独立矩阵仍failed；terminal-interaction同时存在diff_closed业务失败与采集/EOF缺口，不能描述为只有观测失败。

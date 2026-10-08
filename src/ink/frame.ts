@@ -2,6 +2,8 @@ import type { Cursor } from './cursor.js'
 import type { Size } from './layout/geometry.js'
 import type { ScrollHint } from './render-node-to-output.js'
 import type { TerminalImage } from './dom.js'
+import type { TerminalEvidenceBoundary } from './terminalEvidence.js'
+import type { TerminalPaneEvidence } from './terminalPaneEvidence.js'
 import {
   type CharPool,
   createScreen,
@@ -56,6 +58,16 @@ export type FrameEvent = {
   physicalCursor?: Cursor
   /** Terminal buffer that received this frame. */
   terminalBuffer?: 'normal' | 'alternate'
+  /** Actual stdout dimensions, independent of the renderer's sentinel viewport. */
+  terminalViewport?: { width: number; height: number }
+  terminalPanes?: readonly TerminalPaneEvidence[]
+  terminalUiRevision?: number
+  terminalEvidence?: {
+    start: TerminalEvidenceBoundary
+    end: TerminalEvidenceBoundary
+    rootReset: boolean
+    cursorVisible: boolean
+  }
   /** Phase breakdown in ms + patch count. Populated when the ink instance
    *  has frame-timing instrumentation enabled (via onFrame wiring). */
   phases?: {

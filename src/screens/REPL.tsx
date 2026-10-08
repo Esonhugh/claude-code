@@ -415,6 +415,7 @@ import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { ModsPane } from '../components/ModsPane.js'
 import { ModsAbovePrompt } from '../components/ModsAbovePrompt.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
+import { getModUiSnapshotTerminalRevision, withModUiPaneFocus } from '../services/mods/ui.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
@@ -3291,7 +3292,7 @@ export function REPL({
   const renderModPane = (pane: ModUiPane) => (
     <ModsPane
       key={`${pane.plugin}:${pane.id}`}
-      pane={pane.focused && !modPaneFocused ? { ...pane, focused: false } : pane}
+      pane={pane.focused && !modPaneFocused ? withModUiPaneFocus(pane, false) : pane}
       isWorking={isLoading}
       canFocus={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
         !modUiPresentation.keyboardOwned && !modPanes.some(other => other.visible && other.shown !== false && other.focused && other.id !== pane.id)}
@@ -6802,6 +6803,7 @@ export function REPL({
         <CancelRequestHandler {...cancelRequestProps} />
         {transcriptScrollRef ? (
           <FullscreenLayout
+            terminalUiRevision={getModUiSnapshotTerminalRevision(modPanes)}
             scrollRef={scrollRef}
             scrollable={
               <>
@@ -7054,6 +7056,7 @@ export function REPL({
         disabled={sshRemote.isRemoteMode}
       >
         <FullscreenLayout
+          terminalUiRevision={getModUiSnapshotTerminalRevision(modPanes)}
           scrollRef={scrollRef}
           overlay={toolPermissionOverlay}
           bottomFloat={

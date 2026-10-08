@@ -6,6 +6,7 @@ import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
 import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
 import { BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
+import { setEvidenceCursorVisible } from './terminalEvidence.js'
 import { link } from './termio/osc.js'
 
 export type Progress = {
@@ -220,9 +221,11 @@ export function writeDiffToTerminal(
         break
       case 'cursorHide':
         buffer += HIDE_CURSOR
+        setEvidenceCursorVisible(false)
         break
       case 'cursorShow':
         buffer += SHOW_CURSOR
+        setEvidenceCursorVisible(true)
         break
       case 'cursorMove':
         buffer += cursorMove(patch.x, patch.y)

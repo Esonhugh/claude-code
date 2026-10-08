@@ -24,6 +24,7 @@
 
 ### 变更内容
 
+- Mods终端观测绑定已提交DOM的私有身份、实际焦点与几何；保留合法plain空Button的逻辑焦点席位，缺失/隐藏/foreign控件仍拒绝。第十七轮29项27通过2失败；干净源码第十八轮29项22通过7失败，首次Tab未前进及终端收尾未通过，整体验收仍失败、同步采集时序仍不等价；实现与必验边界见[终端验收有效性](docs/research/mods-terminal-evidence-validity-20261008.md)。
 - 接通 Mods Pane / PaneField 的 `Ctrl+X X` 人工关闭与自定义 `pane:close`，覆盖 Input/Select 和真实 Band consumer；关闭 hook 前释放宿主与字段焦点，阻止被否决关闭后的旧焦点请求迟到恢复。使用与验收边界见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
 
 - 完善 code-review 空变更 Scope 的同轮原生身份、请求回执和通知核对，保存专属输入快照；最终汇总重验全部快照与证明哈希。修复 provider 收尾后 wire 空表、请求线程提前结算和合法异步时序误拒绝。

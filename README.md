@@ -2112,3 +2112,20 @@ make check-mods-control-types
 ```
 
 `--debug --debug-file /absolute/path/debug.log` 的 `[ModsRemotePrompt]` 与 `[ModsUIRemote]` 记录客户端、站点、来源、长度/位置和拒绝原因。宿主 capability 异常的 Proxy/getter 安全提取见[异常边界专项](docs/research/mods-capability-error-audit-20261008.md)。本批真实原生对跑与完整发布门禁分别记录在[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)；完整 terminal/diff/浏览器生命周期仍需闭合。作者接口参考 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
+
+### Mods 终端观测与验收边界
+
+终端 Pane 的观测读取已提交的 Ink DOM，记录插件/pane、activation、lease、drawing、实际焦点、控件注册及几何；host 发布新状态不能替旧帧更换身份。关闭、隐藏、缩放和重开需要分别核对。官方 diff 的 `base` 是一个合法的 plain 空 Button：它可进入焦点环，没有像素面积；仅该明确登记的类别允许 `rect=null`，仍必须有正确的实际 plugin/key 焦点，缺失控件不能通过。上述身份是内部验收信息，不是作者 API。
+
+相关回归可离线执行：
+
+```bash
+bun test --no-env-file ./src/components/ModsPane.evidence.test.tsx ./src/ink/terminalEvidence.viewport.test.ts
+```
+
+整体验收继续保留失败。固定官方 2.1.292 的第十七轮矩阵完成 29 项，27 通过、2 失败；diff 的 Tab、文件切换、关闭/重开业务链完成，但启动帧跨 resize epoch，且同步 ACK 采集仍不具备产品时序等价性。新异步 journal 的纯字节校验也必须拒绝未知前缀/尾部、归属歧义和不完整收尾；Bun 原生 console 的遗漏已由真实 CLI 检查检出，尚未补齐。不能用成功片段、较新的帧或候选构建替代完整通过。实现、身份和后续必验项见[终端验收有效性](docs/research/mods-terminal-evidence-validity-20261008.md)。作者契约见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
+新增 DOM 测试从设置采集环境开始覆盖整个生命周期；setup、unmount、dispose 失败均尝试全部清理并恢复环境，多个错误一起保留。失败注入回归与真实 Ink 成功路径独立检查，不把异常清理成功当作终端时序通过。
+
+本批干净源码真实入口的第十八轮结果为22通过、7失败（29项完整执行），包含首次Tab未前进及终端采集未完整收尾；它与含其他工作区变更的第十七轮是不同构建。实现提交不等于功能或发布验收通过，后续仍须补齐对应功能和证据。

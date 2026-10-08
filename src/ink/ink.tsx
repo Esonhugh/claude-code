@@ -28,6 +28,8 @@ import * as dom from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
+import { getEvidenceCursorVisible, nextEvidenceRendererId, recordTerminalEvidenceFrame, setEvidenceCursorVisible, terminalEvidenceBoundary } from './terminalEvidence.js'
+import { collectTerminalPaneEvidence, collectTerminalUiRevision } from './terminalPaneEvidence.js'
 import { dispatchClick, dispatchHover } from './hit-test.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
@@ -162,6 +164,8 @@ export type Options = {
 export default class Ink {
   private readonly log: LogUpdate
   private readonly terminal: Terminal
+  private readonly evidenceRendererId = nextEvidenceRendererId()
+  private evidenceRootEpoch = 1
   private displayedTerminalImages = new Map<number, string>()
   private terminalImageIds = new Set<number>()
   private scheduleRender: (() => void) & { cancel?: () => void }
@@ -390,6 +394,7 @@ export default class Ink {
     if (!this.options.stdout.isTTY) {
       return
     }
+    this.evidenceRootEpoch++
 
     // Alt screen: after SIGCONT, content is stale (shell may have written
     // to main screen, switching focus away) and mouse tracking was
@@ -477,6 +482,7 @@ export default class Ink {
    * Call `exitAlternateScreen()` when done to restore Ink.
    */
   enterAlternateScreen(): void {
+    setEvidenceCursorVisible(true)
     this.pause()
     this.suspendStdin()
     this.options.stdout.write(
@@ -517,6 +523,7 @@ export default class Ink {
         '\x1b[?25l', // hide cursor (Ink manages)
     )
     this.resumeStdin()
+    setEvidenceCursorVisible(false)
     if (this.altScreenActive) {
       this.resetFramesForAltScreen()
     } else {
@@ -572,6 +579,8 @@ export default class Ink {
     })
     const rendererMs = performance.now() - renderStart
     for (const listener of this.rootNode.frameListeners ?? []) listener()
+    const terminalPanes = collectTerminalPaneEvidence(this.rootNode)
+    const terminalUiRevision = collectTerminalUiRevision(this.rootNode)
 
     // Sticky/auto-follow scrolled the ScrollBox this frame. Translate the
     // selection by the same delta so the highlight stays anchored to the
@@ -904,6 +913,7 @@ export default class Ink {
     }
 
     const tWrite = performance.now()
+    const evidenceStart = terminalEvidenceBoundary('frame-start', this.evidenceRendererId, this.evidenceRootEpoch)
     writeDiffToTerminal(
       this.terminal,
       optimized,
@@ -918,6 +928,15 @@ export default class Ink {
       this.displayCursor = { x: col - 1, y: row - 1 }
     }
     const writeMs = performance.now() - tWrite
+    const evidenceEnd = terminalEvidenceBoundary('frame-end', this.evidenceRendererId, this.evidenceRootEpoch)
+    const terminalEvidence = evidenceStart && evidenceEnd ? {
+      start: evidenceStart,
+      end: evidenceEnd,
+      rootReset: prevFrame.screen.height === 0,
+      cursorVisible: getEvidenceCursorVisible(),
+    } : undefined
+    const terminalViewport = { width: terminalWidth, height: terminalRows }
+    recordTerminalEvidenceFrame({ durationMs: writeMs, frame, physicalCursor: this.displayCursor ?? frame.cursor, terminalBuffer: this.altScreenActive ? 'alternate' : 'normal', terminalViewport, terminalPanes, terminalUiRevision, terminalEvidence, flickers })
 
     // Update blit safety for the NEXT frame. The frame just rendered
     // becomes frontFrame (= next frame's prevScreen). If we applied the
@@ -961,6 +980,10 @@ export default class Ink {
       frame,
       physicalCursor: this.displayCursor ?? frame.cursor,
       terminalBuffer: this.altScreenActive ? 'alternate' : 'normal',
+      terminalViewport,
+      terminalPanes,
+      terminalUiRevision,
+      terminalEvidence,
       phases: {
         renderer: rendererMs,
         diff: diffMs,
@@ -998,6 +1021,7 @@ export default class Ink {
    * an external process (e.g. tmux, shell, full-screen TUI).
    */
   repaint(): void {
+    this.evidenceRootEpoch++
     this.frontFrame = emptyFrame(
       this.frontFrame.viewport.height,
       this.frontFrame.viewport.width,
@@ -1204,6 +1228,7 @@ export default class Ink {
    * matches the physical cursor after ENTER_ALT_SCREEN + CSI H (home).
    */
   private resetFramesForAltScreen(): void {
+    this.evidenceRootEpoch++
     const rows = this.terminalRows
     const cols = this.terminalColumns
     const blank = (): Frame => ({
@@ -1863,6 +1888,7 @@ export default class Ink {
 
   resetLineCount(): void {
     if (this.options.stdout.isTTY) {
+      this.evidenceRootEpoch++
       // Swap so old front becomes back (for screen reuse), then reset front
       this.backFrame = this.frontFrame
       this.frontFrame = emptyFrame(

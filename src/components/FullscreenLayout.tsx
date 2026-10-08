@@ -47,6 +47,7 @@ export const ScrollChromeContext = createContext<{
 }>({ setStickyPrompt: () => {} })
 
 type Props = {
+  terminalUiRevision?: number
   /** Content that scrolls (messages, tool output) */
   scrollable: ReactNode
   /** Content pinned to the bottom (spinner, prompt, permissions) */
@@ -315,6 +316,7 @@ export function computeUnseenDivider(
  * so nothing can accidentally render outside it.
  */
 export function FullscreenLayout({
+  terminalUiRevision,
   scrollable,
   bottom,
   overlay,
@@ -476,7 +478,7 @@ export function FullscreenLayout({
     )
     return (
       <PromptOverlayProvider container={bottomRef}>
-        <Box flexGrow={1} flexDirection="column" overflow="hidden">
+        <Box terminalUiRevision={terminalUiRevision} flexGrow={1} flexDirection="column" overflow="hidden">
           <Box ref={mainRowRef} flexGrow={1} flexDirection="row" overflow="hidden">
             <TerminalSizeContext value={conversationSize}>
               <Box width={conversationSize.columns} height={mainRowRows} flexShrink={0} flexDirection="column">

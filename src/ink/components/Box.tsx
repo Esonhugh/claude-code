@@ -7,9 +7,13 @@ import type { FocusEvent } from '../events/focus-event.js'
 import type { KeyboardEvent } from '../events/keyboard-event.js'
 import type { Styles } from '../styles.js'
 import * as warn from '../warn.js'
+import type { TerminalPaneCommit } from '../terminalPaneEvidence.js'
 
 export type Props = Except<Styles, 'textWrap'> & {
   ref?: Ref<DOMElement>
+  /** Private capture metadata applied in the reconciler mutation phase. */
+  terminalPaneCommit?: TerminalPaneCommit
+  terminalUiRevision?: number
   /**
    * Tab order index. Nodes with `tabIndex >= 0` participate in
    * Tab/Shift+Tab cycling; `-1` means programmatically focusable only.
@@ -55,6 +59,8 @@ function Box({
   flexGrow = 0,
   flexShrink = 1,
   ref,
+  terminalPaneCommit,
+  terminalUiRevision,
   tabIndex,
   autoFocus,
   onClick,
@@ -90,6 +96,8 @@ function Box({
   return (
     <ink-box
       ref={ref}
+      terminalPaneCommit={terminalPaneCommit}
+      terminalUiRevision={terminalUiRevision}
       tabIndex={tabIndex}
       autoFocus={autoFocus}
       onClick={onClick}

@@ -21,7 +21,7 @@ import { getSystemContext } from './context.js'
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js'
 import { isSynchronizedOutputSupported } from './ink/terminal.js'
 import type { RenderOptions, Root, TextProps } from './ink.js'
-import { cellAt, CellWidth } from './ink/screen.js'
+import { serializeValidationFrame } from './ink/terminalEvidence.js'
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js'
 import { startDeferredPrefetches } from './main.js'
 import {
@@ -395,45 +395,6 @@ export async function showSetupScreens(
   return onboardingShown
 }
 
-function serializeValidationFrame(
-  frame: NonNullable<Parameters<NonNullable<RenderOptions['onFrame']>>[0]['frame']>,
-  physicalCursor: Parameters<NonNullable<RenderOptions['onFrame']>>[0]['physicalCursor'],
-  terminalBuffer: Parameters<NonNullable<RenderOptions['onFrame']>>[0]['terminalBuffer'],
-): string {
-  const cells: Array<[number, number, string, number, string]> = []
-  for (let y = 0; y < frame.screen.height; y++) {
-    for (let x = 0; x < frame.screen.width; x++) {
-      const cell = cellAt(frame.screen, x, y)
-      if (!cell) continue
-      cells.push([
-        x,
-        y,
-        cell.char,
-        cell.width === CellWidth.Wide
-          ? 2
-          : cell.width === CellWidth.Narrow
-            ? 1
-            : 0,
-        cell.styleId === frame.screen.emptyStyleId
-          ? ''
-          : frame.screen.stylePool.transition(
-              frame.screen.stylePool.none,
-              cell.styleId,
-            ),
-      ])
-    }
-  }
-  return Buffer.from(
-    JSON.stringify({
-      columns: frame.screen.width,
-      rows: frame.screen.height,
-      viewport: frame.viewport,
-      cursor: physicalCursor ?? frame.cursor,
-      buffer: terminalBuffer ?? 'normal',
-      cells,
-    }),
-  ).toString('base64')
-}
 
 export function getRenderContext(exitOnCtrlC: boolean): {
   renderOptions: RenderOptions
@@ -461,7 +422,7 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   let frameId = 0
   let pendingOutput = Buffer.alloc(0)
   let originalStdoutWrite: typeof process.stdout.write | undefined
-  if (frameEvidencePath) {
+  if (frameEvidencePath && !process.env.CLAUDE_CODE_FRAME_BROKER_DIR) {
     writeFileSync(frameEvidencePath, '', { mode: 0o600 })
     originalStdoutWrite = process.stdout.write.bind(process.stdout)
     process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
@@ -481,7 +442,7 @@ export function getRenderContext(exitOnCtrlC: boolean): {
       onFrame: event => {
         fpsTracker.record(event.durationMs)
         stats.observe('frame_duration_ms', event.durationMs)
-        if (frameEvidencePath && event.frame) {
+        if (frameEvidencePath && event.frame && !event.terminalEvidence) {
           frameId++
           appendFileSync(
             frameEvidencePath,
@@ -493,6 +454,7 @@ export function getRenderContext(exitOnCtrlC: boolean): {
                 event.frame,
                 event.physicalCursor,
                 event.terminalBuffer,
+                event.terminalViewport,
               ),
             }) + '\n',
           )

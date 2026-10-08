@@ -25,6 +25,13 @@ class Input extends Readable {
   ref() {return this}
   unref() {return this}
 }
+async function cleanHost(stdout: Output, instance: Awaited<ReturnType<typeof render>> | undefined, release: () => Promise<void>, restore: () => void, failure: unknown) {
+  const errors: unknown[] = []
+  try { (instance ?? instances.get(stdout as never))?.unmount() } catch (error) { errors.push(error) }
+  try { await release() } catch (error) { errors.push(error) }
+  finally { restore() }
+  if (errors.length) throw new AggregateError([...(failure === undefined ? [] : [failure]), ...errors], 'Geometry fixture cleanup failed; original failure retained')
+}
 async function until(predicate: () => boolean) {
   const deadline = Date.now() + 1500
   while (!predicate() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
@@ -102,9 +109,10 @@ test('actual fullscreen host height reserves its chrome above a full-width compo
         /> : undefined} />
     </Box>
   }
-  const instance = await render(<ThemeProvider><Host composerRows={3} /></ThemeProvider>,
-    {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
+  let instance: Awaited<ReturnType<typeof render>> | undefined, failure: unknown
   try {
+    instance = await render(<ThemeProvider><Host composerRows={3} /></ThemeProvider>,
+      {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
     for (const composerRows of [3, 12, 20, 1]) {
       instance.rerender(<ThemeProvider><Host composerRows={composerRows} /></ThemeProvider>)
       await until(() => ui.getSnapshot()[0]?.bodyRows === stdout.rows - composerRows - 1)
@@ -119,10 +127,12 @@ test('actual fullscreen host height reserves its chrome above a full-width compo
     expect(dispatchClick(ink.rootNode, close.x, close.y)).toBe(true)
     await until(() => closes === 1 && ui.getSnapshot().length === 0)
     expect(outsideClicks).toBe(0)
-  } finally {
-    instance.unmount(); await ui.release(owner)
-    if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
-    else process.env.CLAUDE_CODE_NO_FLICKER = previous
+  } catch (error) { failure = error; throw error }
+  finally {
+    await cleanHost(stdout, instance, () => ui.release(owner), () => {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }, failure)
   }
 })
 
@@ -139,12 +149,14 @@ test.each([[0, undefined, 0], [1, undefined, 1], [30, undefined, 11], [30, 1, 3]
         onFocus={async () => ({})} onClose={async () => {}} onInteract={async () => {}} onScroll={async () => {}}
       /></Box>
     }
-    const instance = await render(<ThemeProvider><Host /></ThemeProvider>,
-      {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
+    let instance: Awaited<ReturnType<typeof render>> | undefined, failure: unknown
     try {
+      instance = await render(<ThemeProvider><Host /></ThemeProvider>,
+        {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
       await until(() => ui.getSnapshot()[0]?.bodyRows === expected && ui.getSnapshot()[0]?.contentRows === count)
       if (count) expect(nodeCache.get(element(stdout, 'BODY_0', 'ink-text')!)?.y).toBe(1)
-    } finally {instance.unmount(); await ui.release(owner)}
+    } catch (error) { failure = error; throw error }
+    finally {await cleanHost(stdout, instance, () => ui.release(owner), () => {}, failure)}
   })
 
 
@@ -161,7 +173,9 @@ test('dock grip uses suggestion colour only while focused or directly hovered', 
       </Box>}
       dockPane={visible ? <Text>BODY</Text> : undefined} bottom={<Box height={3}><Text>COMPOSER</Text></Box>} />
   </Box></ThemeProvider>
-  const instance = await render(host(true),
+  let instance: Awaited<ReturnType<typeof render>> | undefined, failure: unknown
+  try {
+  instance = await render(host(true),
     {stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false})
   const ink = instances.get(stdout as never) as unknown as {
     frontFrame: {screen: Screen}, setAltScreenActive(active: boolean, mouseTracking: boolean): void,
@@ -175,7 +189,6 @@ test('dock grip uses suggestion colour only while focused or directly hovered', 
     const reference = nodeCache.get(element(stdout, text, 'ink-text')!)
     return reference && JSON.stringify(styles(88, 0)) === JSON.stringify(styles(reference.x, reference.y))
   }
-  try {
     const lit = nodeCache.get(element(stdout, 'LIT', 'ink-text')!)!
     const dim = nodeCache.get(element(stdout, 'DIM', 'ink-text')!)!
     expect(styles(lit.x, lit.y).length).toBeGreaterThan(0)
@@ -200,10 +213,12 @@ test('dock grip uses suggestion colour only while focused or directly hovered', 
     await until(() => matches('LIT') === true)
     ink.dispatchHover(-1, -1)
     await until(() => matches('LIT') === true)
-  } finally {
-    instance.unmount()
-    chalk.level = colorLevel
-    if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
-    else process.env.CLAUDE_CODE_NO_FLICKER = previous
+  } catch (error) { failure = error; throw error }
+  finally {
+    await cleanHost(stdout, instance, async () => {}, () => {
+      chalk.level = colorLevel
+      if (previous === undefined) delete process.env.CLAUDE_CODE_NO_FLICKER
+      else process.env.CLAUDE_CODE_NO_FLICKER = previous
+    }, failure)
   }
 })

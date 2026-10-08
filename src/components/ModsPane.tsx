@@ -37,6 +37,7 @@ import { Markdown } from './Markdown.js'
 import { TerminalWriteContext } from '../ink/useTerminalNotification.js'
 import { wrapForMultiplexer } from '../ink/termio/osc.js'
 import { ModsPaneHostRowsContext } from '../context/modsPaneHostContext.js'
+import { getModUiTerminalIdentity } from '../services/mods/ui.js'
 
 const MAX_TREE_DEPTH = 100
 const MAX_TREE_NODES = 2_000
@@ -233,6 +234,7 @@ function selectedPaneTab(entries: readonly PaneTabEntry[]): PaneTabEntry | undef
 const hoverGroups = new Map<string, HoverGroupEntry>()
 const clientPointerCapture = new WeakMap<object, DOMElement>()
 const clientRegions = new WeakSet<DOMElement>()
+const emptyButtons = new WeakSet<DOMElement>()
 
 function hoverGroupKey(group: HoverGroup): string {
   return `${group.plugin}\0scope\0${group.scope}`
@@ -310,6 +312,7 @@ function useElementRegistration(
   plugin: string | undefined,
   key: unknown,
   focusElements?: FocusElements,
+  emptyButton = false,
 ): (element: DOMElement | null) => void {
   return useMemo(() => {
     let registered: DOMElement | null = null
@@ -317,6 +320,7 @@ function useElementRegistration(
       if (typeof key !== 'string' || !key) return
       const id = plugin === undefined ? undefined : keyElementId(plugin, key)
       if (registered) {
+        emptyButtons.delete(registered)
         const focused = focusElements?.current.get(key)
         focused?.delete(registered)
         if (focused?.size === 0) focusElements!.current.delete(key)
@@ -326,6 +330,7 @@ function useElementRegistration(
       }
       registered = element
       if (!element) return
+      if (emptyButton) emptyButtons.add(element)
       if (focusElements) {
         let entries = focusElements.current.get(key)
         if (!entries) {
@@ -343,7 +348,7 @@ function useElementRegistration(
         entry.elements.add(element)
       }
     }
-  }, [keyElements, plugin, key, focusElements])
+  }, [keyElements, plugin, key, focusElements, emptyButton])
 }
 
 function documentOrder(root: DOMElement): Map<DOMElement, number> {
@@ -1134,7 +1139,7 @@ export function ModsPane({
     const order = documentOrder(root)
     return [...keyElements.current.values()].flatMap(({ plugin, key, elements }) => {
       const element = firstInDocumentOrder([...elements].filter(element => order.has(element)), order)
-      return element ? [{ plugin, key, element }] : []
+      return element ? [{ plugin, key, element, emptyButton: emptyButtons.has(element) }] : []
     }).sort((a, b) => order.get(a.element)! - order.get(b.element)!)
   }
   const applyFocus = (key: string | undefined, focused = true) => {
@@ -1504,9 +1509,17 @@ export function ModsPane({
       else manager.focusNext(getRootNode(root))
     }
   }, { capture: true, isActive: pane.focused && pane.visible && shown })
+  const terminalIdentity = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH ? getModUiTerminalIdentity(pane) : undefined
   return (
     <Box
       ref={rootRef}
+      terminalPaneCommit={terminalIdentity ? {
+        pane: { ...terminalIdentity, plugin: pane.plugin, id: pane.id, revision: pane.revision,
+          drawing: pane.drawing, visible: pane.visible, shown: shown && pane.shown !== false,
+          placement: pane.placement, focused: pane.focused,
+          focusedElement: pane.focusedElement, focusedPlugin: pane.focusedPlugin },
+        geometry: () => ({ viewport: scrollRef.current?.getElement(), controls: navigable() }),
+      } : undefined}
       flexDirection="column"
       width={pane.placement === 'dock' ? pane.bodyColumns : '100%'}
       height={!shown ? 0 : undefined}
@@ -2392,7 +2405,8 @@ function ModButton({
   const props = node.props!
   const key = props.key as string
   const press = node.press!
-  const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
+  const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements,
+    props.plain === true && props.label === '' && !props.hotkey)
   const plain = props.plain === true
   const style = hoverStyles(node, active)
   const run = () => {

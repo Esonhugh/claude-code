@@ -17,6 +17,7 @@ import {
   parseMultipleKeypresses,
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
+import { recordEvidenceInputRead, setEvidenceCursorVisible } from '../terminalEvidence.js'
 import {
   finishSelection,
   hasSelection,
@@ -242,12 +243,14 @@ export default class App extends PureComponent<Props, State> {
       !isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)
     ) {
       this.props.stdout.write(HIDE_CURSOR)
+      setEvidenceCursorVisible(false)
     }
   }
 
   override componentWillUnmount() {
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR)
+      setEvidenceCursorVisible(true)
     }
 
     // Clear any pending timers
@@ -447,6 +450,7 @@ export default class App extends PureComponent<Props, State> {
     try {
       let chunk
       while ((chunk = this.props.stdin.read() as string | null) !== null) {
+        recordEvidenceInputRead(chunk)
         // Process the input chunk
         this.processInput(chunk)
       }
@@ -519,6 +523,7 @@ export default class App extends PureComponent<Props, State> {
     // shell prompt while suspended.
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR + DFE + DISABLE_MOUSE_TRACKING)
+      setEvidenceCursorVisible(true)
     }
 
     // Emit suspend event for Claude Code to handle. Mostly just has a notification
@@ -537,6 +542,7 @@ export default class App extends PureComponent<Props, State> {
       if (this.props.stdout.isTTY) {
         if (!isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
           this.props.stdout.write(HIDE_CURSOR)
+          setEvidenceCursorVisible(false)
         }
         // Re-enable focus reporting to restore terminal state
         this.props.stdout.write(EFE)

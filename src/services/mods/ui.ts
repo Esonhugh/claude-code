@@ -51,6 +51,31 @@ export type ModRenderSite = {
 
 export type ModUiOwner = object
 
+const terminalOwnerIds = new WeakMap<object, number>()
+const terminalPaneIds = new WeakMap<object, number>()
+const terminalSnapshotIds = new WeakMap<object, Readonly<{ activation: number; lease: number }>>()
+const terminalSnapshotRevisions = new WeakMap<object, number>()
+let nextTerminalIdentity = 1
+function terminalIdentity(ids: WeakMap<object, number>, value: object): number {
+  let identity = ids.get(value)
+  if (identity === undefined) { identity = nextTerminalIdentity++; ids.set(value, identity) }
+  return identity
+}
+/** Private terminal capture identity, never an author API field. */
+export function getModUiTerminalIdentity(pane: ModUiPane): Readonly<{ activation: number; lease: number }> | undefined {
+  return terminalSnapshotIds.get(pane)
+}
+export function getModUiSnapshotTerminalRevision(snapshot: readonly ModUiPane[]): number | undefined {
+  return terminalSnapshotRevisions.get(snapshot)
+}
+/** Preserve the committed lease when the host temporarily suppresses focus. */
+export function withModUiPaneFocus(pane: ModUiPane, focused: boolean): ModUiPane {
+  const copy = Object.freeze({ ...pane, focused })
+  const identity = terminalSnapshotIds.get(pane)
+  if (identity) terminalSnapshotIds.set(copy, identity)
+  return copy
+}
+
 /** Private host-controller state; never decoded from an author call. */
 export type ModUiHostFocusOptions = {
   signal?: AbortSignal
@@ -408,6 +433,7 @@ export function createModUi({
     }): Promise<unknown>
   }>()
   let snapshot: readonly ModUiPane[] = Object.freeze([])
+  terminalSnapshotRevisions.set(snapshot, 0)
   let nextDrawing = 1
   let revision = 0
   let personFocusGeneration = 0
@@ -461,7 +487,7 @@ export function createModUi({
 
   function snapshotPane(pane: PaneState): ModUiPane {
     const visible = pane.visible && pane.tree !== undefined
-    return Object.freeze({
+    const current = Object.freeze({
       id: pane.id,
       ...(clients ? { clients } : {}),
       title: pane.title,
@@ -486,6 +512,11 @@ export function createModUi({
       ...(pane.tree === undefined ? {} : { tree: pane.tree }),
       ...(pane.drawing === undefined ? {} : { drawing: pane.drawing }),
     })
+    terminalSnapshotIds.set(current, Object.freeze({
+      activation: terminalIdentity(terminalOwnerIds, pane.owner),
+      lease: terminalIdentity(terminalPaneIds, pane),
+    }))
+    return current
   }
 
   function wakeFocusWaiters(): void {
@@ -515,6 +546,8 @@ export function createModUi({
     reconcileShown()
     revision++
     snapshot = Object.freeze([...active.values()].map(snapshotPane))
+    terminalSnapshotRevisions.set(snapshot, revision)
+    logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'publish', revision, panes: snapshot.map(pane => ({ plugin: pane.plugin, id: pane.id, ...getModUiTerminalIdentity(pane), drawing: pane.drawing, visible: pane.visible, shown: pane.shown, placement: pane.placement, focused: pane.focused, focusedElement: pane.focusedElement, focusedPlugin: pane.focusedPlugin, bodyColumns: pane.bodyColumns, bodyRows: pane.bodyRows, contentRows: pane.contentRows, scrollOffset: pane.scrollOffset, hasTree: pane.tree !== undefined })) })}`)
     reconcileClients()
     wakeFocusWaiters()
     for (const listener of [...listeners]) notify(listener)

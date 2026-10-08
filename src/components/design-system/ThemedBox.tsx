@@ -31,6 +31,7 @@ type BaseStylesWithoutColors = Omit<
 >
 
 export type Props = BaseStylesWithoutColors &
+  Pick<React.ComponentProps<typeof Box>, 'terminalPaneCommit' | 'terminalUiRevision'> &
   ThemedColorProps & {
     ref?: Ref<DOMElement>
     tabIndex?: number
