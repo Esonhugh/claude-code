@@ -2129,3 +2129,8 @@ bun test --no-env-file ./src/components/ModsPane.evidence.test.tsx ./src/ink/ter
 新增 DOM 测试从设置采集环境开始覆盖整个生命周期；setup、unmount、dispose 失败均尝试全部清理并恢复环境，多个错误一起保留。失败注入回归与真实 Ink 成功路径独立检查，不把异常清理成功当作终端时序通过。
 
 本批干净源码真实入口的第十八轮结果为22通过、7失败（29项完整执行），包含首次Tab未前进及终端采集未完整收尾；它与含其他工作区变更的第十七轮是不同构建。实现提交不等于功能或发布验收通过，后续仍须补齐对应功能和证据。
+
+
+### 原生输出采集有效性
+
+Darwin 可用 `scripts/capture-native-terminal-writes.py --evidence-root <新目录> --executable ./built-claude --mode pty -- --version` 独立采集原 syscall 与 PTY 字节、EOF 和退出。脚本自动编译自身观测库，使用私有配置，无 writer ACK；记录真实别名 fd、原返回值及 errno，缺片/丢包/超限/缺少封口均失败。协议与清理回归、pipe 模式、已验证范围及尚未覆盖的逐帧/时序限制见[原生采集记录](docs/research/mods-native-write-capture-validity-20261008.md)。此启动检查不代表完整 UI/diff 或发布通过。

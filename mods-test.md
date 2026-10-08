@@ -2181,3 +2181,8 @@ Pane / PaneField 注册 `pane:close` 和默认 `Ctrl+X X`；Input/Select 接通�
 canonical在首次独立Tab（canonical_tab_landing_0）停止：输入09的floor frame64之后，frames65–67的public与actual焦点仍为source；base实际登记且emptyButton=true，但未取得实际焦点。后续resize/关闭重开未执行。77帧physical回放本轮成功不代表输入业务链通过。terminal-interaction缺少native-pty-eof/有效帧，broker childReaped=false；driver pane进程清理不能替代原native进程组与EOF证明。整体及功能组合门禁保持未通过，不借旧成功片段、不放宽断言，也不宣称293或四路正式发布通过。
 
 CHANGELOG补充第十八轮22/7摘要后，最终source epoch为 `7a49839887a8f8178ae3b3506e7e9fff1aab36e1cfd6f69c137cd346697b3523`；terminal-dom-final-tests4仍381 pass/0 fail/2243 expects，check3/build3均exit0/sourceUnchanged，且PG已回收。旧787代码与14份生产源码保持逐字一致，旧结果封存。Native18独立矩阵仍failed；terminal-interaction同时存在diff_closed业务失败与采集/EOF缺口，不能描述为只有观测失败。
+
+
+## 2026-10-08 — 原生 syscall 采集有效性
+
+新增仓库采集器、Darwin观测库与严格字节验证器。原函数调用/参数/返回值/errno 保留，记录 NOCANCEL 和真实 alias fd，私有 datagram 分片无 ACK；缺少 header/footer、容量超限、丢包、跨 producer、缺片/重复片和未知字节均拒收。当前单线程 Bun fixture 的 pipe/控制 PTY 对照和七类原生故障实验、原始 negative、沙箱 bind 未达注入点与正式边界见[本批记录](docs/research/mods-native-write-capture-validity-20261008.md)。Native18 的22通过7失败保持失败，完整UI/diff、resize/逐帧/输入归属/时序、最新官方native与浏览器生命周期继续处理，不push。
