@@ -2198,3 +2198,6 @@ native replay 要求默认 backend 的独立身份及完整 IO 初始几何收�
 outer seal 在真实独立重放之后生成最终manifest时，也重新比较IO清单SHA与producer的 `ioClose.sha256`；`nativeContentMatched` 和 `nativeIOMatched` 均须为true才能取得bounded通过。帧脚本另覆盖重放成功后、终态摘要前删input/重编号的真实副本负例，避免沿用旧physical passed掩盖IO变动；完整native与发布结论仍独立。
 
 默认原生 broker 现异步发布运行中的完整帧与 IO JSONL 前缀；关闭时重新绑定 held copies、实际文件身份和最终 closed 原件。可用 `PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-live-prefix.py` 跑协议/写入器回归，再按上述新构建命令运行完整 frame-journal 文件，含 child alive 与正常退出后 exact prefix 检查。Native40 完整30项27通过3失败；旧 FIFO schema 的 canonical/resize/退出关联、输入 owner 和时序证明仍未闭合，完整发布继续失败。使用方法、失败处置和同轮身份见[实时前缀验收](docs/research/mods-native-live-prefix-validity-20261009.md)。
+
+
+原生验收按backend绑定本轮关闭原件，严格拒收错误JSON类型、FIFO/链接及不完整diff子测试；正常EOF/reap与bounded replay不提升为完整通过。新增guard可用`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-native-acceptance-contracts.py`运行，实际CLI仍需上述fresh build与完整frame-journal命令。Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整发布继续失败；失败分类、固定子测试及独占收据用法见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。CHANGELOG参与二进制构建，更新后必须重新生成产物。

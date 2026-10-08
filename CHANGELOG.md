@@ -27,6 +27,8 @@
 
 ### 变更内容
 
+- 验收有效性：native身份/退出分别绑定实际关闭原件，拒收错误JSON类型、FIFO/链接及不完整diff子测试；新增真实CLI原件负例和关闭状态清理回归。15项完整CLI/frame文件通过；Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整时序、input owner和发布保持未通过。见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。
+
 - 原生验收实时前缀：默认 broker 通过有界独立 writer 发布真实 frame/IO，拒收溢出、篡改和 final 原件不一致，不新增产品 ACK。新二进制完整12项 CLI/frame文件及相关回归通过；Native40 完整30项27通过3失败，旧后端字段关联、输入owner、时序与完整发布仍未闭合。见[实时前缀验收](docs/research/mods-native-live-prefix-validity-20261009.md)。
 
 - Workflow 等待实际 Agent 任务终态，转后台继续同一 stream；转发真实进度，取消保留原原因并隔离无关 Agent。完成、失败与停止通知绑定 task/tool ID、已测用量和输出，暂停不发送终态通知，结束 run 不重复执行或通知。详见[生命周期验收](docs/research/workflow-agent-lifecycle-validity-20261009.md)。

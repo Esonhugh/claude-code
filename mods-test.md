@@ -2358,3 +2358,8 @@ Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、w
 ## 2026-10-09 原生运行中前缀及 Native40
 
 真实 ready CLI 在退出前没有frame/IO、退出后42帧的 RED 已由异步有界 writer 与严格 prefix/closed 原件绑定修复。10 prefix/publisher、28 native journal、4 native broker、13旧broker及45 Bun回归通过；同一冻结源码完整release-check/新build/default-driver、新binary完整12项actual frame-journal通过。Native40动态完整30项27通过3失败，源码/原件无漂移、owned group退出；完整Mods/terminal/browser/Client与发布仍未通过。旧FIFO字段、真实input/owner及调度证据不由新prefix代替。身份、exact命令、RED/夹具错误处置及剩余项见[实时前缀验收](docs/research/mods-native-live-prefix-validity-20261009.md)。
+
+
+### 2026-10-09 原生身份与拒收处置
+
+本轮native identity/EOF-reap使用实际backend originals，JSON类型与closed regular-file入口严格拒收；diff子测试按固定roster与完整日志检查，未把outer/child重复计数。15项完整fresh-binary CLI/frame文件及相关guard通过；Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整产品时序、input owner、官方diff/browser/Client及发布继续失败。feature源码和binary identity、RED与管理错误分类、原件收据和命令见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。文档更新后的CHANGELOG也是binary input，必须另建产物验收。
