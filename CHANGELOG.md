@@ -81,6 +81,9 @@
 
 ### 测试覆盖
 
+- 接通 $.process.spawn 真实子进程、同步流、raw/wrapped receipt、middleware 与环境归属；正常返回保有流，超时及卸载停止自己的孩子，catch 使用新信号。新增 Worker、严格作者类型及 plugin test runner 矩阵；最终14文件746通过、7项原有skip、0失败，私有合并快照44通过。新binary在Native36通过此能力的八项CLI契约和最终原件重查；完整门禁24通过/6失败，不能宣告Mods/UI或发布通过。见[流专项](docs/research/mods-process-spawn-validity-293-20261008.md)。
+- process.spawn 真实作者 CLI 入口成为必需 mods-process-spawn target；driver持有关闭摘要、binary/probe/root和全部proof map，最终必须固定唯一断言ID并重读全部原件、重新计算契约。缺target及七种最终误接收的默认入口RED保留，修复后默认回归通过。
+
 - Native35 两批修复的准确合并source：28 collector、11真实CLI/frame、4 buffer、89 Bun及release-check通过；完整29项仍23 passed/6 failed。129帧/5owned resize与终态native/IO摘要匹配、资源清理完整，整体native/Mods/发布仍failed，见[最终处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。
 - 原生终端证据补充真实 tcsetattr 的内核前后模式及 syscall 括号，按实际 output flags重放write/frame/resize prefix；覆盖失败errno、overflow及歧义拒收。完整 mode/input/lifecycle仍未通过，见[模式观测记录](docs/research/mods-native-termios-observation-validity-20261008.md)。
 - 首封native验收另核对终态IO摘要与producer ioClose，拒绝独立重放后修改输入清单仍借旧physical通过。

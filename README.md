@@ -695,7 +695,31 @@ bun ./node_modules/typescript/bin/tsc -p /absolute/path/to/my-mod/tsconfig.json 
 
 旧本地别名 `CAS`、`HookEvent`、`EventPattern`、`Surface` 分别改用官方的 `StateSetOptions`、`EventName`、`Pattern`、`RenderSurface`；`!*` 不属于官方 pattern。testing 挂载使用对象参数，显式给出 `plugin`、`surface`、`component` 和该组件的完整 `props`。
 
-完整声明不代表所有运行时能力已经接入。当前仍缺 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`、`telemetry.log/mark` 和 `process.spawn` 的生产方法；新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需要继续对齐。依赖契约的直接和间接类型根已接入，详见上文的作者项目生成规则。官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 与实际运行时支持范围应一起核对；2026-10-07 的提交、生命周期和双端协议复核见[实现审查](docs/research/mods-implementation-audit-20261007.md)。
+完整声明不代表所有运行时能力已经接入。当前仍缺 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`和 `telemetry.log/mark` 的生产方法；新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需要继续对齐。依赖契约的直接和间接类型根已接入，详见上文的作者项目生成规则。官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 与实际运行时支持范围应一起核对；2026-10-07 的提交、生命周期和双端协议复核见[实现审查](docs/research/mods-implementation-audit-20261007.md)。
+
+`$.process.spawn(request)` 已接通真实子进程与流式 middleware。它同步返回 `HookStream`，不是 Promise；request 仅有 argv/cwd/env/input。公开结果是 `{code,signal}`，hook 的 `next(e).result` 是 `{value:{code,signal}}` 或 `{deny}`：
+
+```ts
+export function register(on) {
+  on('session.start', async ($, event, next) => {
+    await $.command.register({name:'inspect',description:'Inspect git status',immediate:true})
+    return next(event)
+  })
+  on('command.run', {command:'inspect'}, async ($) => {
+    const child = $.process.spawn({argv:['git','status','--short']})
+    let text = ''
+    for await (const chunk of child) text += chunk.text
+    const {code, signal} = await child.result
+    return {text:`${text}\ncode=${code}, signal=${signal}`}
+  })
+}
+```
+
+块使用 `{stream:'stdout'|'stderr',text}`，以 UTF-8 解码，不承诺两根管道的相互顺序。spawn 没有输出截断或 timeoutMs；积压超过 1 MiB 字符时暂停读取。结束消费、真实取消、钩子超时及模块卸载会停止归属该操作的孩子，正常 hook 返回可继续保有已启动流。process.spawn 普通 hook 的自身预算按块重置，catch 共用一段 1000ms 恢复预算。首次拉取前 return 不启动孩子、result pending；结束已读块的流会拒绝未完成结果；关闭仍在等待的拉取按官方语义完成该拉取与结果。复现见[流与验收专项](docs/research/mods-process-spawn-validity-293-20261008.md)。
+
+插件测试工具同样同步返回流，但测试主体读取 wrapped receipt，插件和测试 hook 的公开方法读取 raw receipt。测试底层需由 `on('process.spawn', async function* ...)` 应答，无 stub 时明确拒绝，不启动真实孩子。完整 gate 根据源码强制加入 mods-process-spawn，用新 binary 的真实作者命令检查八个 CLI 契约，重核关闭收据、原始日志、孩子副作用与 binary 身份；完整 Mods/UI 与发布仍需独立验收。
+
+Native36 完整门禁正常结束：30项 / 24通过 / 6失败，overall failed。新增 mods-process-spawn 通过实际八项作者 CLI 契约和最终关闭原件重查；其余失败为 builtin-mods、code-review、terminal-canonical-diff、terminal-interaction、workflow、workflow-retry-partial-failure。 本批14文件回归746通过、7项原有skip、0失败；私有合并快照另有44项通过。构建、release-check及默认验收回归均通过，仍不代表完整Mods/UI或发布通过。完整源码身份与原件摘要见[流与验收专项](docs/research/mods-process-spawn-validity-293-20261008.md)。
 
 `plugin validate` 校验 manifest、hook module、依赖、类型契约和 state 读写；`plugin test` 运行 `tests/` 中导入 `claude-code/testing` 的隔离作者测试。会话内可用 `/plugin-authoring` 请求当前 session 的作者目录并打开内置指南，也可显式刷新或启停（`my-mod` 为 manifest 名称）：
 
@@ -890,9 +914,9 @@ TMPDIR="$validation_tmp" python3 .claude/skills/release-validation/scripts/test-
 
 该入口执行所有已定义的 retained 回归。真实门禁仍须新构建、动态 baseline 和完整 `run-binary-gate.py` 矩阵；`--targets` 只追加目标，不能缩减必验范围。缺失、跨运行或仅空文件/目录的证据不能通过。code-review 的空变更 Scope 核对本案真实父子调用、请求及通知，最终汇总重验输入快照与证明 JSON 的哈希；其完整后续阶段仍需验收。该历史 Scope 轮矩阵为 28 项完成、26通过、2失败，整体未通过（不是最新门禁结果），见[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)；[上一批验收记录](docs/research/release-acceptance-validity-20261008.md)保留历史结果。
 
-最新封存的第30轮完整矩阵为29项完成、23通过、6失败。零输出观察只有在实际raw区间为零且resize位于其start/end之间时，才与start的物理网格比较；仍回放全部resize并要求后续新尺寸帧。ACK在start前生效的旧快照继续失败，同步ACK的时序门禁也继续失败，详见[帧与验收记录](docs/research/mods-terminal-noack-validity-20261008.md)。
+Native30 是历史记录；已封存的 Native35 完整矩阵仍为29项完成、23通过、6失败，准确范围见[Native35处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。零输出观察只有在实际raw区间为零且resize位于其start/end之间时，才与start的物理网格比较；仍回放全部resize并要求后续新尺寸帧。ACK在start前生效的旧快照继续失败，同步ACK的时序门禁也继续失败，详见[帧与验收记录](docs/research/mods-terminal-noack-validity-20261008.md)。
 
-Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；仍未实现的12个公开方法包括 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`、`process.spawn` 和 `telemetry.log/mark`；它们都需要补齐和验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.292 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
+Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；仍未接通生产宿主的11个公开方法包括 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run` 和 `telemetry.log/mark`；它们都需要补齐和验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.292 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
 
 ### 复制文本
 

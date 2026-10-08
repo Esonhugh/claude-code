@@ -2325,3 +2325,18 @@ Native34：5066冻结source正常完成29/29，23 passed/6 failed；实际50+82=
 ## 2026-10-08 Native35 签名提交与最终结果
 
 652cd22终端mode记录、5b9e7cb首封内容/终态IO两批均正常GPG签名。合并committed source3123项逐blob完全匹配冻结40a5；本轮build、28 collector、11真实CLI/frame、4 buffer、89 Bun/525expect及完整release-check通过。默认完整matrix29/29、23 passed/6 failed，360.644秒，manifest SHA 34e04a77545f901f93ce8a34cd4c1eeb390bbb876160fed101232b9c4fdf29b2；实际129帧/5owned resize有限physical、nativeContentMatched与nativeIOMatched通过，normal EOF/reap/owned清理完整。整体native/Mods/四路发布仍failed，termios/direct ioctl/OS owner/调度/完整diff-Client及workflow缺口未关闭。ROOT其他Claude WIP保留、index空，无push。单独文档补录不冒充新binary门禁；详见 [Native35处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。
+
+## 2026-10-08 process.spawn 与验收入口
+
+新源码接通 process.spawn。固定官方293的八个真实 tmux 作者命令用于同步流、真实管道、receipt/origin、重复孩子、deny前后、unpulled/pending/break与异常value透传 oracle；不能替代本轮本地 binary。过渡 epoch 54eaaa6e4ed824f15b7fb09124e6932ad52e28520875526d5d4f3ffc654d24e9 的 Worker、作者类型及 test runner 为22 passed/0 failed/123 expect，包括正常返回继续、超时停止旧孩子、catch 新信号启动新孩子及保留 next 恢复。新 candidate 须重跑相关测试、release-check、build和完整CLI门禁。
+
+验收有效性另处置默认入口未执行新回归的假阳性：未进入 test_retained_* 清单时的 exit0不计新 target 覆盖；改入实际清单后，缺少 process target 映射会在默认入口真实失败。Native35 六项、原生UI/完整Mods/四路发布仍未通过，详见[process.spawn专项](docs/research/mods-process-spawn-validity-293-20261008.md)。
+
+
+### process.spawn 最终验收处置（Native36，2026-10-09）
+
+Native36 完整门禁正常结束：30项 / 24通过 / 6失败，overall failed。新增 mods-process-spawn 通过实际八项作者 CLI 契约和最终关闭原件重查；其余失败为 builtin-mods、code-review、terminal-canonical-diff、terminal-interaction、workflow、workflow-retry-partial-failure。
+
+冻结source `b5fb32bf65f5c2b5bfbab8bd002c19651f55ab729c173915a95ce8ce52beec7b`，binary `fdca27fe4253014308298f15d592dadc6d6964ce6ebaa1956c650b65edd20b81`；完整 `driver-final-manifest.json` SHA `5c4a0735d23050ca8b9ca462e4640b0093f8a66ba46d78f1f8dd7d7be044b17f`。实际全部14文件746通过/7skip/0失败，release-check、新build和默认release-driver回归通过；修复取消、retained next、恢复生命周期、testkit同步流及拒绝错误。七种最终误接收有真实默认入口RED/GREEN，不能只凭立即检查通过而勾掉最终原件闭合。
+
+原件保留在 `/private/tmp/mods-remote-composer-292-20261008-rptx4ocs`：final8各before/result/log、full-gate36-evidence、full-gate36-disposition.json。私有ROOT-WIP合并快照另测44/0，保留现有testkit懒加载与注册校验并补process.spawn；这是不同source `6a0e63b9ad8df8ac7d58aac5523d57c53a61f2565ced5b866cf969d5fca77b03`，不冒充完整门禁所测source。原有六失败、其余11个生产方法、完整终端/diff/browser/Client及四路发布仍待处理；完整目标保持active。
