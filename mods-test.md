@@ -2410,3 +2410,16 @@ Native52原完整30项正常结束、27通过/3失败，保留原件。真实CLI
 native observer 补齐主 PTY 的 read/readv 与两种 NOCANCEL 入口。最小真实 PTY RED 保留：原调用成功收到10字节，但旧 observer 没有读取记录。新增回归分别验证返回前不可变拷贝、短读与大请求、errno、EOF与零请求、Darwin零iov的EINVAL、非法iov拒收、满槽与foreign pipe；实际 CLI 回归从原始 records 重算并核对唯一 `/exit` 字节。详细入口、历史失败和覆盖边界见[child 读入处置](docs/research/mods-native-child-input-read-validity-20261009.md)。
 
 本批仅补实际读取层。UTF-8/Tokenizer/Paste缓冲的来源、唯一实际消费 owner、异步效果、React/Yoga/frame因果及七类builtin的native准入仍须独立关闭；不从读取记录或局部回放推导完整Mods/UI或发布通过。旧Native54完整30项27通过/3失败、归档路径及历史resize失败保留。
+
+
+## 2026-10-09 builtin native 普通屏幕及归档验收处置
+
+旧 Native55 的 30 项原始矩阵保持 27 passed / 3 failed；当时 builtin 七案为 legacy 采集，不作为新 native 路径通过证据。真实编译入口 RED 先复现 `nativeJournal=false`；接入原 sandbox 内 broker 后，10 帧又因缺少普通 root 起点被拒收。新 pre-ready 物理状态与 pre-Popen origin SHA 绑定解决有限起点证明，逐原字节 prefix 后取得 marker，不从目标画面选择起点。
+
+实际 tmux pending 的一个 LF 为输出格式分隔符；改用 `capture-pane -P -C` 精确核对，失败前先保存 screen/pending 原件。已另复现旧 cache 路径不可用时的真实归档 RED，读取链现按同次归档回执贯穿 JS/Python/origin/geometry；原启动 JSON、producer expectation 和哈希保持原样。中间同源 Green3 编译入口正常 exit/EOF/reap 和归档独立回放通过，完整 native/frame 与原 driver 文件在最终候选重新执行，不借中间结果提升完整门禁。
+
+ENOSPC 的 CLI/driver 失败日志单独保留，缺失最终收据不重建为成功；仅对本任务已关闭的派生副本做字节不变的空间恢复。新的 APFS 复制保留独立 inode 和逻辑字节，原断言及非 APFS fallback 均保留。完整 termios、输入 parser/owner、父通道登记、调度和所有 Client/终端生命周期继续待验收。详见[本批说明](docs/research/mods-builtin-native-normal-root-validity-20261009.md)。
+
+Native57 原完整30项为27通过/3失败；七侧 builtin 的 native 关闭与归档物理回放通过，但 legacy-only 缓存删除守卫误拒绝，原 cache 已保留。实际七run最小RED与新后端关闭守卫修复单独取证，missing/link/foreign/mixed/未关闭保持拒收，不从缓存释放推出 full/input/timing。
+
+Green6 的完整 CLI 文件真实14通过/1失败：成功 child read 中 DA 应答实际插入 /exit 与回车之间，连续子串 oracle 因而误拒收；记录、errno、完整输入与正常退出原件保留。新读取证明要求全部 child 字节与 broker input 完全相同，再由独立输出 parser 仅在真实已发查询后识别确切终端应答，并严格匹配完整预期命令。任意删改或额外字节、无对应查询、错误格式或超过对应查询数的应答仍拒收；不据此认证应答发送者、应用 tokenizer 或输入 owner。Green7 的完整 CLI 文件真实14通过/1失败：非 production 的直接 wrapper 没有 broker IO 文件，被新断言错误要求读取；原件保留。直接 wrapper 现严格核对 input.json 全部成功写入前缀与完整 child read，并保留原连续 /exit 与回车断言；该分支不声称覆盖查询应答因果顺序。

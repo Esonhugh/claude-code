@@ -2222,3 +2222,19 @@ canonical 验收新增 native span、动作窗口与 Mach geometry 关联；零�
 原生终端验证的 `seal` 与 `verify --bounded` 仅结算闭合身份/物理证据；默认 `verify` 和发布门禁仍要求完整覆盖。后端文件清单、资源关闭及未覆盖条件见[验收结算说明](docs/research/mods-native-capture-scope-validity-20261009.md)。
 
 归档后的 builtin recheck 使用同次运行的 `builtin-cache-archive.json` 将原始 producer run 映射到 `acceptance-cache`，同时核对原始 `capture-launch.json` 的摘要。不会改写启动记录；源、归档目录、完成标志或原件摘要不符均拒收。独立重放可用 `bun scripts/recheck-builtin-terminal-evidence.mjs ACCEPTANCE_REMAPPED.json BINARY_SHA256 OUTPUT.json ARCHIVE_RECEIPT.json`，其通过只代表所声明的证据范围；完整门禁另外对照 parent 在归档完成时固定的收据摘要，拒收启动原件与收据同时改写。
+
+
+#### Builtin 原生普通屏幕与归档回放
+
+`run-builtin` 的 native broker 在现有 sandbox 内执行，启动前保存 tmux 物理状态、空白屏幕和未完成 parser 输入。当前起点证明限定 tmux **3.6b** 的新建私有 pane；未知版本、非初始模式或残留输入会拒收。普通屏幕按真实输出前缀取得物理 marker，再检查相对光标、宽字符、样式和缩短后的尾行。
+
+```sh
+make build
+BUILTIN_NATIVE_TEST_BINARY="$PWD/built-claude" bun test --no-env-file ./scripts/builtin-native-launch.integration.test.mjs
+bun test --no-env-file ./scripts/native-normal-root.test.mjs
+python3 scripts/test-owned-evidence-copy.py
+```
+
+编译入口测试使用私有 tmux/socket/config，等待真实 prompt 后正常 `/exit`，随后在原 cache 路径暂不可用时重验归档，并保留所有原件。未设置 `BUILTIN_NATIVE_TEST_BINARY` 时该入口测试会跳过，不能计为通过。APFS 副本仅改变存储分配，逻辑字节、SHA 和原断言保持一致；其他平台使用普通复制。`boundedVerdict` 仅表示已覆盖的关闭和物理帧证据，`fullNativeGatePassed`、输入归属与产品时序不会由此升级。详见[实际失败、修复和边界](docs/research/mods-builtin-native-normal-root-validity-20261009.md)。
+
+原生 child 读取证明保留所有字节，包括插入命令之间的 tmux 应答；只有原始输出 parser 已识别对应查询时才分类协议响应，随后严格核对完整预期输入。未读入、删改、额外或无查询的控制字节仍拒收，应用 tokenizer/owner 另外验收。
