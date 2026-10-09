@@ -16,6 +16,11 @@ import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { getTurnCompletionVerb } from '../../constants/turnCompletionVerbs.js'
 import { getModOnScreen } from '../../services/mods/renderGeometry.js'
 import { subscribeFrame } from '../../ink/dom.js'
+import instances from '../../ink/instances.js'
+import { nodeCache } from '../../ink/node-cache.js'
+import { dispatchClick } from '../../ink/hit-test.js'
+import { getFocusManager } from '../../ink/focus.js'
+import { ClockContext, createClock, type Clock } from '../../ink/components/ClockContext.js'
 import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 
 const envKeys = ['HOME','CLAUDE_CONFIG_DIR','XDG_CONFIG_HOME','XDG_CACHE_HOME','XDG_STATE_HOME','ANTHROPIC_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR','CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR','CLAUDE_CODE_NO_FLICKER']
@@ -75,7 +80,7 @@ async function screen(wrap:(row:React.ReactNode)=>React.ReactNode = row=>row) {
     while(!check()&&Date.now()<until)await new Promise<void>(resolve=>setImmediate(resolve))
     expect(check()).toBe(true)
   }
-  return {message,chunks,instance,stdin,waitFor,rerender(durationMs:number){instance.rerender(node(durationMs))},clear(){chunks.length=0},output:()=>chunks.join(''),close(){instance.unmount();instance.cleanup();stdin.destroy();stdout.destroy()}}
+  return {message,chunks,instance,stdin,stdout,waitFor,rerender(durationMs:number){instance.rerender(node(durationMs))},clear(){chunks.length=0},output:()=>chunks.join(''),close(){instance.unmount();instance.cleanup();stdin.destroy();stdout.destroy()}}
 }
 
 test('TurnDuration production row reaches its real Worker and replaces the native line', async () => {
@@ -214,19 +219,41 @@ test('frame observers run after the scroll clamp is painted', async () => {
 })
 
 
-function OwnedInput({children}:{children:React.ReactNode}) {useInput(()=>{});return children}
+function OwnedInput({children,clock,onTab}:{children:React.ReactNode;clock:Clock;onTab():void}) {
+  useInput((_input,key)=>{if(key.tab)onTab()})
+  return <ClockContext.Provider value={clock}>{children}</ClockContext.Provider>
+}
 
-test('actual native-site Button focus and press retain the Worker callback lease', async () => {
+test('actual native-site Button stays outside Tab and mouse presses retain the Worker callback lease', async () => {
   await load("return $.ui.resolve(e).Button({key:'owned-run',label:'OWNED-RUN',onPress:press=>$.ui.log(JSON.stringify({phase:'pressed',element:press.element,requestId:press.requestId}),{to:'debug'})});",'TurnDuration',"on('ui.focus',async($,e,next)=>{$.ui.log(JSON.stringify({phase:'focus',element:e.element,requestId:e.requestId}),{to:'debug'});return await next(e)});")
-  const f=await screen(row=><OwnedInput>{row}</OwnedInput>)
+  const realClock=createClock(16)
+  let clickOffset=0
+  const clock={...realClock,now:()=>realClock.now()+clickOffset}
+  const tab=Promise.withResolvers<void>()
+  const f=await screen(row=><OwnedInput clock={clock} onTab={()=>tab.resolve()}>{row}</OwnedInput>)
   try {
     await f.waitFor(()=>f.output().includes('OWNED-RUN'))
+    const ink=instances.get(f.stdout as never) as unknown as {rootNode:DOMElement}
+    const findButton=(node:DOMElement):DOMElement|undefined=>{
+      if(node.attributes.tabIndex===-1&&node._eventHandlers?.onClick)return node
+      for(const child of node.childNodes)if(child.nodeName!=='#text'){
+        const button=findButton(child)
+        if(button)return button
+      }
+    }
+    const button=findButton(ink.rootNode)!
+    expect(button).toBeDefined()
     f.stdin.write('\t')
-    await f.waitFor(()=>seen.some((e:any)=>e.phase==='focus'))
-    f.stdin.write('\r')
-    await f.waitFor(()=>seen.some((e:any)=>e.phase==='pressed'))
-    expect(seen).toContainEqual({phase:'focus',element:'owned-run',requestId:f.message.uuid})
-    expect(seen).toContainEqual({phase:'pressed',element:'owned-run',requestId:f.message.uuid})
+    await tab.promise
+    expect(getFocusManager(ink.rootNode).activeElement).not.toBe(button)
+    for(const count of [1,2]){
+      clickOffset+=300 // Official Button mount protection, without a wall-clock sleep.
+      const rect=nodeCache.get(button)!
+      expect(dispatchClick(ink.rootNode,rect.x,rect.y)).toBe(true)
+      await f.waitFor(()=>seen.filter((e:any)=>e.phase==='pressed').length===count)
+    }
+    expect(seen.filter((e:any)=>e.phase==='focus')).toEqual([])
+    expect(seen.filter((e:any)=>e.phase==='pressed')).toEqual(Array(2).fill({phase:'pressed',element:'owned-run',requestId:f.message.uuid}))
   }finally{f.close()}
 })
 
