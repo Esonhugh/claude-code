@@ -14,8 +14,8 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 const parserDigest = '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'
 
 /** Requests, measured ioctl brackets and actual painted frames are distinct evidence. */
-export function verifyNativeGeometryRequests(geometry, io, events, entries, frames, target) {
-  if (geometry === null) return { method: 'native-driver-mach-frame-geometry-v1', verdict: 'not covered' }
+export function verifyNativeGeometryRequests(geometry, io, events, entries, frames, target, driverPid) {
+  if (geometry === null) return { method: 'native-driver-mach-frame-geometry-v2', verdict: 'not covered' }
   const initial = io[0], launch = geometry[0]
   if (!launch || launch.phase !== 'launch' || launch.geometryId !== 0 || launch.rawOffset !== 0 ||
       initial?.kind !== 'initial-geometry' || launch.columns !== initial.columns || launch.rows !== initial.rows ||
@@ -27,6 +27,16 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
   if (geometry.length !== 1 + sends.length * 2 || sends.length !== returns.length ||
       sends.length !== acks.length || acks.length !== events.length)
     throw Error('Native geometry requests and measured ACKs are not a bijection')
+  const tick = value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) < 2n ** 64n
+  const callerClock = (row, bracket) => {
+    const clock = row?.nativeDriverClock
+    return clock?.method === 'driver-mach-absolute-time-v1' && tick(clock.tick) &&
+      clock.captureId === initial.captureId && clock.nonce === bracket.nonce &&
+      clock.childPid === initial.childPid && clock.childPid === bracket.childPid &&
+      Number.isSafeInteger(driverPid) && driverPid > 0 && clock.callerPid === driverPid &&
+      driverPid !== clock.childPid && tick(clock.callerThreadId) &&
+      clock.timebaseNumer === bracket.timebaseNumer && clock.timebaseDenom === bracket.timebaseDenom
+  }
   const sizes = []
   for (const [index, send] of sends.entries()) {
     const returned = returns[index], ack = acks[index], event = events[index],
@@ -36,6 +46,17 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
       row.lastObservedFrameId >= 0 && row.lastObservedFrameId <= entries.length &&
       Number.isSafeInteger(row.observedRawBytes) && row.observedRawBytes >= 0 &&
       row.observedRawBytes <= io.at(-1).rawOffset
+    if (!callerClock(send, bracket) || !callerClock(returned, bracket) ||
+        send.nativeDriverClock.callerThreadId !== returned.nativeDriverClock.callerThreadId ||
+        send.nativeDriverClock.callerThreadId !== sends[0].nativeDriverClock?.callerThreadId ||
+        !tick(bracket.entry) || !tick(bracket.return) ||
+        BigInt(bracket.return) < BigInt(bracket.entry) ||
+        BigInt(send.nativeDriverClock.tick) > BigInt(returned.nativeDriverClock.tick) ||
+        BigInt(bracket.entry) < BigInt(send.nativeDriverClock.tick) ||
+        (next && (!callerClock(next, nextAck?.nativeBracket) ||
+          BigInt(returned.nativeDriverClock.tick) > BigInt(next.nativeDriverClock.tick) ||
+          BigInt(bracket.return) > BigInt(next.nativeDriverClock.tick))))
+      throw Error('Native resize lacks an original caller Mach clock and unique request window')
     if (geometry[index * 2 + 1] !== send || geometry[index * 2 + 2] !== returned ||
         send.actionId !== index + 1 || returned.actionId !== send.actionId || returned.exitCode !== 0 ||
         !boundary(send) || !boundary(returned) ||
@@ -55,8 +76,7 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
         !Number.isSafeInteger(event.rawOffset) || event.rawOffset !== ack.rawOffset ||
         !Number.isSafeInteger(event.beforeFrameId) || event.beforeFrameId < 1 || event.beforeFrameId > entries.length + 1 ||
         event.columns !== ack.columns || event.rows !== ack.rows || !isDeepStrictEqual(event.nativeBracket, bracket) ||
-        (next && (ack.ioId > next.lastObservedIoId ||
-          ['lastObservedIoId', 'lastObservedFrameId', 'observedRawBytes'].some(key => next[key] < returned[key]))))
+        (next && ['lastObservedIoId', 'lastObservedFrameId', 'observedRawBytes'].some(key => next[key] < returned[key])))
       throw Error('Native resize lacks a unique successful original send/return and ACK')
     const frame = entries.find(entry => {
       const span = entry.nativeSpan, painted = frames.find(row => row.frameId === entry.frameId)
@@ -69,7 +89,6 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
           painted?.verdict !== 'passed' || painted.columns !== ack.columns || painted.rows !== ack.rows ||
           painted.outputBytes !== entry.rawEnd - entry.rawStart)
         return false
-      const tick = value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) < 2n ** 64n
       const layout = span.markers[0].entry, end = span.markers[2].return
       if (![layout, end, bracket.entry, bracket.return, ...(nextAck ? [nextAck.nativeBracket?.entry] : [])].every(tick))
         return false
@@ -80,7 +99,7 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
     sizes.push({ columns: ack.columns, rows: ack.rows, actionId: send.actionId,
       ioId: ack.ioId, geometryId: ack.geometryId, frameId: frame.frameId })
   }
-  return { method: 'native-driver-mach-frame-geometry-v1', verdict: 'passed',
+  return { method: 'native-driver-mach-frame-geometry-v2', verdict: 'passed',
     requested: sends.length, acknowledged: acks.length, sizes,
     actualInputOwnerCovered: false, productTimingEquivalent: false }
 }
@@ -155,7 +174,7 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
   } finally {
     terminal.dispose()
   }
-  let requestGeometry = null, target
+  let requestGeometry = null, target, driverPid
   try {
     const bytes = readOwnedNativeFile(join(run, 'geometry.jsonl'))
     if (!bytes.toString('utf8').endsWith('\n')) throw Error('Native request geometry is unsealed')
@@ -165,10 +184,11 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
         launch.capture?.captureId !== expected.captureId || launch.capture?.nativeJournal !== true)
       throw Error('Native resize request capture identity differs from original launch')
     target = launch.target
+    driverPid = launch.driverPid
   } catch (error) {
     if (error.code !== 'ENOENT' || requestGeometry !== null) throw error
   }
-  const nativeGeometryProof = verifyNativeGeometryRequests(requestGeometry, native.io, geometry, entries, frames, target)
+  const nativeGeometryProof = verifyNativeGeometryRequests(requestGeometry, native.io, geometry, entries, frames, target, driverPid)
   return { method: 'native-journal-ioctl-geometry-replay-v1',
            framePhysicalBoundary: 'native-frame-end-v1',
            parserSHA256, semanticSource: 'independent-xterm-native-frame-end-v1',

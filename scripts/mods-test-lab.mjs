@@ -267,6 +267,7 @@ export function startRun(options) {
   const tmuxArgs = [tmux, '-S', socket]
   const input = options.target === 'sample' ? '/mods-test status' : options.target === 'diff' ? '/diff' : '/plugins'
   const report = { ...metadata, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), input: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', input]), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), capture: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', realpathSync(options.cache)]), note: 'Session creation is not readiness/activation. Default API is a closed loopback port: use commands/UI only. No managed identity, builtin pin override, real credentials or telemetry endpoints. /exit then Enter before clean; capture/seal evidence first.' }
+  writeJSON(join(run, 'capture-launch.json'), report)
   writeJSON(join(run, 'run.json'), report)
   console.log(JSON.stringify(report, null, 2))
   return report
@@ -303,7 +304,7 @@ export function startBuiltinRun(options, execute = execFileSync, findTmux = () =
   const note = inlinePlugin === undefined
     ? 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
     : 'Compiled builtin launch with one copied inline acceptance fixture under the private run; no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
-  const report = { ...metadata, capture, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), captureCommand: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: `${note} Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.` }
+  const report = { ...metadata, driverPid: process.pid, capture, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), captureCommand: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: `${note} Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.` }
   writeJSON(join(run, 'run.json'), report)
   console.log(JSON.stringify(report, null, 2))
   return report

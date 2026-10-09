@@ -27,6 +27,9 @@ spec.loader.exec_module(journal)
 spec = importlib.util.spec_from_file_location('native_live_publisher', Path(__file__).with_name('native-live-publisher.py'))
 live = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(live)
+spec = importlib.util.spec_from_file_location('native_original_files', Path(__file__).with_name('verify-native-frame-journal.py'))
+original_files = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(original_files)
 
 
 class EvidenceBuffer:
@@ -159,6 +162,9 @@ def capture_native(run, argv):
         initial = {'sizeHex': fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8).hex(),
                    'outputFlags': native_attrs[1]}
         registration = journal.create_journal(run / 'journal.bin', os.fstat(slave), 3, 256, 1048576)
+        # Immutable enrollment is available before producer startup. Driver
+        # clocks never depend on registration first appearing at final close.
+        save_json('registration.json', registration)
         consumer = journal.NativeConsumer(run / 'journal.bin', registration, library)
         env = {**os.environ, 'DYLD_INSERT_LIBRARIES': str(library),
                'CLAUDE_PRIVATE_NATIVE_JOURNAL': str(run / 'journal.bin'),
@@ -280,7 +286,13 @@ def capture_native(run, argv):
                         'files': {name: {'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()}
                                   for name, data in {**native_data, 'pty.raw': raw}.items()}}
         for name, data in native_data.items():
-            cleanup('save:' + name, lambda name=name, data=data: save(name, data))
+            if name == 'registration.json':
+                def verify_registration():
+                    if original_files.read_native_regular(run / name, 0o600) != data:
+                        raise ValueError('Original startup registration changed before close')
+                cleanup('verify:registration.json', verify_registration)
+            else:
+                cleanup('save:' + name, lambda name=name, data=data: save(name, data))
         if evidence.dropped:
             capture_failure = {'type': 'EvidenceOverflow', 'message': 'Bounded observer lost evidence',
                                'droppedBytes': evidence.dropped}

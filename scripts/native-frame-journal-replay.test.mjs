@@ -15,10 +15,12 @@ function fixture() {
   ]
   const send = { phase: 'resize-send', actionId: 1, target: 'owned:0.0', columns: 109, rows: 34,
     actualArgs: ['resize-window', '-t', 'owned:0.0', '-x', '109', '-y', '34'],
-    lastObservedIoId: 2, lastObservedFrameId: 1, observedRawBytes: 10 }
+    lastObservedIoId: 2, lastObservedFrameId: 1, observedRawBytes: 10,
+    nativeDriverClock: { method: 'driver-mach-absolute-time-v1', tick: '90', captureId: 'owned',
+      nonce: clock.nonce, childPid: 42, callerPid: 900, callerThreadId: '901', timebaseNumer: 1, timebaseDenom: 1 } }
   // ACK can be published after the parent return. The send remains the lower bound.
   const geometry = [{ phase: 'launch', geometryId: 0, columns: 110, rows: 34, rawOffset: 0 }, send,
-    { ...send, phase: 'resize-return', exitCode: 0 }]
+    { ...send, phase: 'resize-return', exitCode: 0, nativeDriverClock: { ...send.nativeDriverClock, tick: '95' } }]
   const events = [{ ioId: 3, geometryId: 1, beforeFrameId: 2, rawOffset: 10,
     columns: 109, rows: 34, nativeBracket: bracket }]
   const entries = [{ frameId: 1, rawStart: 0, rawEnd: 10 },
@@ -29,12 +31,12 @@ function fixture() {
     { frameId: 2, columns: 109, rows: 34, outputBytes: 10, verdict: 'passed' }]
   return { geometry, io, events, entries, frames, target: 'owned:0.0' }
 }
-const verify = f => verifyNativeGeometryRequests(f.geometry, f.io, f.events, f.entries, f.frames, f.target)
+const verify = f => verifyNativeGeometryRequests(f.geometry, f.io, f.events, f.entries, f.frames, f.target, 900)
 
 describe('native original resize request and physical frame contracts', () => {
   test('pairs the original send/return, Mach ACK and actual painted frame without legacy aliases', () => {
     const result = verify(fixture())
-    expect(result).toMatchObject({ method: 'native-driver-mach-frame-geometry-v1', verdict: 'passed',
+    expect(result).toMatchObject({ method: 'native-driver-mach-frame-geometry-v2', verdict: 'passed',
       requested: 1, acknowledged: 1, actualInputOwnerCovered: false, productTimingEquivalent: false,
       sizes: [{ columns: 109, rows: 34, actionId: 1, ioId: 3, geometryId: 1, frameId: 2 }] })
     expect(result.geometryProof).toBeUndefined()
@@ -61,6 +63,7 @@ describe('native original resize request and physical frame contracts', () => {
 
   test('exact clocks remain usable above 2**53', () => {
     const f = fixture(), base = 2n ** 53n
+    for (const row of f.geometry) if (row.nativeDriverClock) row.nativeDriverClock.tick = String(base + BigInt(row.nativeDriverClock.tick))
     for (const key of ['entry', 'return']) f.io[2].nativeBracket[key] = String(base + BigInt(f.io[2].nativeBracket[key]))
     for (const marker of f.entries[1].nativeSpan.markers)
       for (const key of ['entry', 'return']) marker[key] = String(base + BigInt(marker[key]))
@@ -78,8 +81,10 @@ describe('native original resize request and physical frame contracts', () => {
       { ioId: 6, kind: 'output', captureId: 'owned', geometryId: 2, rawOffset: 30 })
     const send = { ...f.geometry[1], actionId: 2, columns: 110,
       actualArgs: ['resize-window', '-t', 'owned:0.0', '-x', '110', '-y', '34'],
-      lastObservedIoId: 4, lastObservedFrameId: 2, observedRawBytes: 20 }
-    f.geometry.push(send, { ...send, phase: 'resize-return', exitCode: 0 })
+      lastObservedIoId: 4, lastObservedFrameId: 2, observedRawBytes: 20,
+      nativeDriverClock: { ...f.geometry[1].nativeDriverClock, tick: '190' } }
+    f.geometry.push(send, { ...send, phase: 'resize-return', exitCode: 0,
+      nativeDriverClock: { ...send.nativeDriverClock, tick: '195' } })
     f.events.push({ ...f.events[0], ioId: 5, geometryId: 2, columns: 110,
       rawOffset: 20, beforeFrameId: 3, nativeBracket: bracket })
     f.entries.push({ ...f.entries[1], frameId: 3, rawStart: 20, rawEnd: 30,

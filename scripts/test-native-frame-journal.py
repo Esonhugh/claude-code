@@ -26,6 +26,7 @@ def load(name, filename):
     spec.loader.exec_module(module)
     return module
 journal = load('frame_journal', 'native-terminal-journal.py')
+driver_clock = load('frame_driver_clock', 'native-driver-clock.py')
 
 
 class NativeResizeOrderingTest(unittest.TestCase):
@@ -268,7 +269,7 @@ class NativeFrameJournalTest(unittest.TestCase):
                        CC_VALIDATION_ANTHROPIC_API_KEY=env['ANTHROPIC_API_KEY'],
                        CC_VALIDATION_ANTHROPIC_BASE_URL=env['ANTHROPIC_BASE_URL'],
                        CC_VALIDATION_MAX_RETRIES='0', CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC='1')
-            descriptor = {'run': str(run), 'socket': str(socket), 'target': 'journal:0.0',
+            descriptor = {'run': str(run), 'driverPid': os.getpid(), 'socket': str(socket), 'target': 'journal:0.0',
                 'pane': 'journal:0.0', 'tmux': '/opt/homebrew/bin/tmux', 'env': env,
                 'binarySha256': digest,
                 'argv': [str(SOURCE.parent / '.claude/skills/claude-agent-workflow-validation/scripts/launch-built-claude.sh')]}
@@ -305,18 +306,40 @@ class NativeFrameJournalTest(unittest.TestCase):
                 geometry = {'actionId': 1, 'columns': int(args[args.index('-x') + 1]),
                             'rows': int(args[args.index('-y') + 1]),
                             'actualArgs': list(args), 'target': descriptor['target']}
-                with (run / 'geometry.jsonl').open('a') as stream:
-                    stream.write(json.dumps({**geometry, 'phase': 'resize-send', **boundary()}) + '\n')
+                sent = {**geometry, 'phase': 'resize-send', **boundary(),
+                        'nativeDriverClock': driver_clock.read_native_driver_clock(descriptor)}
+            result = command_error = clock_error = returned_clock = None
             try:
                 result = subprocess.run([*tmux, *args], env=env, capture_output=True, timeout=5)
-                receipt['exitCode'] = result.returncode
             except Exception as error:
+                command_error = error
                 receipt['error'] = {'type': type(error).__name__, 'message': str(error)}
-                raise
+            try:
+                if geometry is not None:
+                    returned_clock = driver_clock.read_native_driver_clock(descriptor)
+            except Exception as error:
+                clock_error = error
+            if result is not None:
+                receipt['exitCode'] = result.returncode
             if geometry is not None:
-                with (run / 'geometry.jsonl').open('a') as stream:
-                    stream.write(json.dumps({**geometry, 'phase': 'resize-return',
-                                             'exitCode': result.returncode, **boundary()}) + '\n')
+                try:
+                    with (run / 'geometry.jsonl').open('a') as stream:
+                        stream.write(json.dumps(sent) + '\n')
+                        stream.write(json.dumps({**geometry, 'phase': 'resize-return',
+                            'exitCode': result.returncode if result is not None else None, **boundary(),
+                            **({'nativeDriverClock': returned_clock} if returned_clock else {}),
+                            **({'commandError': type(command_error).__name__} if command_error else {}),
+                            **({'clockError': str(clock_error)} if clock_error else {})}) + '\n')
+                except Exception as publication_error:
+                    if command_error is None and clock_error is None:
+                        raise
+                    receipt['publicationError'] = {'type':type(publication_error).__name__,
+                                                  'errno':getattr(publication_error,'errno',None)}
+                    raise command_error if command_error is not None else clock_error
+            if command_error:
+                raise command_error
+            if clock_error:
+                raise clock_error
             if result.returncode:
                 raise RuntimeError(result.stderr.decode())
             return result.stdout.decode()

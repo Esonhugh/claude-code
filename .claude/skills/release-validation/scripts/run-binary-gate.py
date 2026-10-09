@@ -4,6 +4,7 @@ import atexit
 import base64
 import fcntl
 import hashlib
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -26,6 +27,10 @@ from urllib.parse import urlsplit
 
 
 sys.dont_write_bytecode = True
+_clock_spec = importlib.util.spec_from_file_location('native_driver_clock',
+    Path(__file__).resolve().parents[4] / 'scripts/native-driver-clock.py')
+_driver_clock = importlib.util.module_from_spec(_clock_spec)
+_clock_spec.loader.exec_module(_driver_clock)
 
 
 AUTH_ENV_VARS = (
@@ -1239,7 +1244,7 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                 if (expected_hashes != metadata.get('terminal_evidence_sha256')
                         or not isinstance(registered, dict)
                         or any(launch.get(key) != registered.get(key)
-                               for key in ('run', 'target', 'pane', 'binarySha256', 'socket',
+                               for key in ('run', 'driverPid', 'target', 'pane', 'binarySha256', 'socket',
                                            'socketRoot', 'serverPid', 'socketIdentity'))
                         or launch.get('capture', {}).get('captureId') !=
                             registered.get('capture', {}).get('captureId')):
@@ -2272,7 +2277,7 @@ def terminal_resize_sizes(report):
         return None
     proof = report.get('nativeGeometryProof' if native else 'geometryProof', {})
     if (not isinstance(proof, dict) or proof.get('verdict') != 'passed' or
-            (native and (proof.get('method') != 'native-driver-mach-frame-geometry-v1' or
+            (native and (proof.get('method') != 'native-driver-mach-frame-geometry-v2' or
                          report.get('framePhysicalBoundary') != 'native-frame-end-v1' or
                          report.get('parserSHA256') != '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'))):
         return None
@@ -4277,20 +4282,54 @@ class BinaryGate:
                 'rows': int(args[args.index('-y') + 1]),
                 'actualArgs': list(args), 'target': capture['target'],
             }
-            self.terminal_append(run / 'geometry.jsonl', {
-                **geometry, 'phase': 'resize-send', **before,
-            })
-        result = command(['tmux', '-S', capture['socket'], *args],
-                         check=False, timeout=timeout)
+        if kind == 'resize-window':
+            sent = {**geometry, 'phase': 'resize-send', **before}
+            native = capture.get('capture', {}).get('nativeJournal') is True
+            if native:
+                sent['nativeDriverClock'] = _driver_clock.read_native_driver_clock(capture)
+            result = execution_error = clock_error = returned_clock = None
+            try:
+                result = command(['tmux', '-S', capture['socket'], *args], check=False, timeout=timeout)
+            except BaseException as error:
+                execution_error = error
+            try:
+                if native:
+                    returned_clock = _driver_clock.read_native_driver_clock(capture)
+            except Exception as error:
+                clock_error = error
+            # Samples precede publication; an observation failure never replaces
+            # the original command failure or invents an exit status.
+            try:
+                self.terminal_append(run / 'geometry.jsonl', sent)
+                self.terminal_append(run / 'geometry.jsonl', {
+                    **geometry, 'phase': 'resize-return',
+                    'exitCode': result.returncode if result is not None else None,
+                    **self.terminal_capture_boundary(run),
+                    **({'nativeDriverClock': returned_clock} if returned_clock else {}),
+                    **({'commandError': type(execution_error).__name__} if execution_error else {}),
+                    **({'clockError': str(clock_error)} if clock_error else {}),
+                })
+            except Exception as publication_error:
+                if execution_error is None and clock_error is None:
+                    raise
+                try:
+                    print(json.dumps({'phase':'resize-evidence-publication-failed',
+                        'captureId':capture.get('capture',{}).get('captureId'),'actionId':action,
+                        'errno':getattr(publication_error,'errno',None),
+                        'errorType':type(publication_error).__name__}),file=sys.stderr)
+                except Exception:
+                    pass  # Preserve the original failure even when diagnostics are unavailable.
+                raise execution_error if execution_error is not None else clock_error
+            if execution_error:
+                raise execution_error
+            if clock_error:
+                raise clock_error
+        else:
+            result = command(['tmux', '-S', capture['socket'], *args], check=False, timeout=timeout)
         if kind == 'send-keys':
             self.terminal_append(run / 'inputs.jsonl', {
                 'actionId': action, 'phase': 'sent' if result.returncode == 0 else 'failed',
                 'exitCodes': [result.returncode], **self.terminal_capture_boundary(run),
-            })
-        elif kind == 'resize-window':
-            self.terminal_append(run / 'geometry.jsonl', {
-                **geometry, 'phase': 'resize-return', 'exitCode': result.returncode,
-                **self.terminal_capture_boundary(run),
             })
         elif kind == 'capture-pane':
             self.terminal_append(run / 'observations.jsonl', {
@@ -4958,7 +4997,7 @@ else:
                 raise RuntimeError('copied terminal binary differs from baseline')
             descriptor = run_dir / 'capture-launch.json'
             launch = {
-                'run': str(run_dir), 'socket': str(socket_root / 's'),
+                'run': str(run_dir), 'driverPid': os.getpid(), 'socket': str(socket_root / 's'),
                 'socketRoot': str(socket_root), 'target': target, 'pane': target,
                 'tmux': shutil.which('tmux'), 'argv': [str(self.launcher)],
                 'binarySha256': self.manifest['binary_sha256'],

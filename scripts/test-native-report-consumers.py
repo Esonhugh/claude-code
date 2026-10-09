@@ -53,7 +53,7 @@ class NativeReportContractTest(unittest.TestCase):
         value = report()
         for frame in value['frames']:
             frame['outputBytes'] = 10
-        value['nativeGeometryProof'] = {'method': 'native-driver-mach-frame-geometry-v1',
+        value['nativeGeometryProof'] = {'method': 'native-driver-mach-frame-geometry-v2',
             'verdict': 'passed', 'requested': 2, 'acknowledged': 2,
             'sizes': [{'columns': 109, 'rows': 34, 'actionId': 1, 'geometryId': 1, 'ioId': 3, 'frameId': 4},
                       {'columns': 110, 'rows': 34, 'actionId': 2, 'geometryId': 2, 'ioId': 5, 'frameId': 5}]}
@@ -88,7 +88,7 @@ class NativeReportContractTest(unittest.TestCase):
 
     def test_gap_replay_bytes_cannot_count_as_a_positive_frame_transaction(self):
         value = report()
-        value['nativeGeometryProof'] = {'method': 'native-driver-mach-frame-geometry-v1',
+        value['nativeGeometryProof'] = {'method': 'native-driver-mach-frame-geometry-v2',
             'verdict': 'passed', 'requested': 1, 'acknowledged': 1,
             'sizes': [{'columns': 109, 'rows': 34, 'actionId': 1, 'geometryId': 1, 'ioId': 3, 'frameId': 4}]}
         value['frames'][3].update(outputBytes=0, replayBytes=32)

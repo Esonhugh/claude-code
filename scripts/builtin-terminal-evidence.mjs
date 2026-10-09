@@ -17,6 +17,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, URL } from 'node:url'
 import { readOwnedNativeFile } from './native-evidence-files.mjs'
+import { readNativeDriverClock } from './native-driver-clock.mjs'
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`
 const append = (path, value) =>
@@ -255,13 +256,35 @@ export function recordedBuiltinTmux(launch, args, execute = execFileSync) {
       .filter((row) => row.phase === 'resize-send').length + 1
     resizeGeometry = { actionId: resizeAction, columns, rows,
       target: launch.target, actualArgs: args }
-    append(join(launch.run, 'geometry.jsonl'), {
-      ...resizeGeometry,
-      phase: 'resize-send',
-      columns,
-      rows,
-      ...before,
-    })
+    const sent = { ...resizeGeometry, phase: 'resize-send', ...before }
+    if (launch.capture.nativeJournal) sent.nativeDriverClock = readNativeDriverClock(launch)
+    let output, commandError, clockError, returnedClock
+    try { output = execute(launch.tmux, ['-S', launch.socket, ...actual], { encoding: 'utf8', timeout: 10000 }) }
+    catch (error) { commandError = error }
+    // Capture the return before any synchronous evidence publication. A clock
+    // failure remains evidence failure and must not replace the original error.
+    try { if (launch.capture.nativeJournal) returnedClock = readNativeDriverClock(launch) }
+    catch (error) { clockError = error }
+    try {
+      append(join(launch.run, 'geometry.jsonl'), sent)
+      append(join(launch.run, 'geometry.jsonl'), {
+        ...resizeGeometry, phase: 'resize-return',
+        exitCode: commandError ? (commandError.status ?? null) : 0,
+        ...boundary(launch), ...(returnedClock ? { nativeDriverClock: returnedClock } : {}),
+        ...(clockError ? { clockError: String(clockError) } : {}),
+        ...(commandError ? { commandError: String(commandError) } : {}),
+      })
+    } catch (publicationError) {
+      if (!commandError && !clockError) throw publicationError
+      try { console.error(JSON.stringify({ phase: 'resize-evidence-publication-failed',
+        captureId: launch.capture.captureId, actionId: resizeAction,
+        code: publicationError.code ?? null, errorType: publicationError.name })) }
+      catch { /* A closed diagnostics channel cannot replace the original failure. */ }
+      throw commandError ?? clockError
+    }
+    if (commandError) throw commandError
+    if (clockError) throw clockError
+    return output
   }
   try {
     const output = execute(launch.tmux, ['-S', launch.socket, ...actual], {
@@ -285,20 +308,8 @@ export function recordedBuiltinTmux(launch, args, execute = execFileSync) {
         textSHA256: hash(Buffer.from(output)),
         args,
       })
-    if (resize)
-      append(join(launch.run, 'geometry.jsonl'), {
-        ...resizeGeometry,
-        phase: 'resize-return',
-        exitCode: 0,
-        ...boundary(launch),
-      })
     return output
   } catch (error) {
-    if (resize)
-      append(join(launch.run, 'geometry.jsonl'), {
-        ...resizeGeometry, phase: 'resize-return',
-        exitCode: error.status ?? -1, ...boundary(launch),
-      })
     if (input)
       append(inputsPath, {
         actionId: sequence,
