@@ -2404,3 +2404,9 @@ Native50原完整30项正常结束，27 passed / 3 failed；io84与后次send已
 ## 2026-10-09 原生证据结算与后端清单
 
 Native52原完整30项正常结束、27通过/3失败，保留原件。真实CLI最小RED复现合法bounded原生原件被旧seal拒绝；新轮需独立验证seal/资源关闭/full coverage与启动协议选择。七侧builtin仍legacy、完整owner/timing未覆盖，不能升级旧轮或用bounded替代完整门禁，详见[结算与回归入口](docs/research/mods-native-capture-scope-validity-20261009.md)。
+
+## 2026-10-09 — child 实际读入证据
+
+native observer 补齐主 PTY 的 read/readv 与两种 NOCANCEL 入口。最小真实 PTY RED 保留：原调用成功收到10字节，但旧 observer 没有读取记录。新增回归分别验证返回前不可变拷贝、短读与大请求、errno、EOF与零请求、Darwin零iov的EINVAL、非法iov拒收、满槽与foreign pipe；实际 CLI 回归从原始 records 重算并核对唯一 `/exit` 字节。详细入口、历史失败和覆盖边界见[child 读入处置](docs/research/mods-native-child-input-read-validity-20261009.md)。
+
+本批仅补实际读取层。UTF-8/Tokenizer/Paste缓冲的来源、唯一实际消费 owner、异步效果、React/Yoga/frame因果及七类builtin的native准入仍须独立关闭；不从读取记录或局部回放推导完整Mods/UI或发布通过。旧Native54完整30项27通过/3失败、归档路径及历史resize失败保留。
