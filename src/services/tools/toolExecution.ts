@@ -1453,7 +1453,8 @@ async function checkPermissionsAndCallTool(
         // retain an invocation snapshot past the executor's release.
         ...(toolUseContext.modsSnapshot &&
         tool.name !== TOOL_SEARCH_TOOL_NAME &&
-        tool.name !== AGENT_TOOL_NAME
+        tool.name !== AGENT_TOOL_NAME &&
+        tool.name !== 'SendMessage'
           ? { modsSnapshot: undefined }
           : {}),
         modToolCallResult: undefined,

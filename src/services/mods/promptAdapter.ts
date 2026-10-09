@@ -12,16 +12,15 @@ export type PromptOrigin =
         | 'sdk'
         | 'task-notification'
         | 'scheduled-trigger'
-        | 'peer'
         | 'peer-send-message'
         | 'projects-relay'
-        | 'coordinator'
         | 'observer'
         | 'observer-activity'
         | 'auto-continuation'
         | 'unclassified'
         | 'slack-ping'
     }
+  | {kind:'peer'|'coordinator';plugin?:string;teammate?:string;isVerified?:boolean}
   | { kind: 'channel'; server: string }
   | { kind: 'plugin'; name: string }
 

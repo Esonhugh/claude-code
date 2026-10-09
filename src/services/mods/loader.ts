@@ -29,7 +29,7 @@ const coreNouns = new Set([
   'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env',
 ])
 const supportedEvents = new Set([
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
+  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
   'clock.now', 'clock.sleep', 'clock.after', 'clock.every', 'mcp.call',
   'config.set', 'config.describe', 'session.authorize', 'http.fetch',
   'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn',

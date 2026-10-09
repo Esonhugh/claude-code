@@ -119,7 +119,7 @@ function admit(command: QueuedCommand, wasHeld = false): void {
   const signal = inboundController.signal
   let queued = false
   let policyHandled = false
-  void enqueueInboundMessage(command, { kind: 'peer' }, {
+  void enqueueInboundMessage(command, { kind: 'peer', ...(command.origin?.kind === 'peer' && command.origin.plugin ? {plugin:command.origin.plugin} : {}) }, {
     signal,
     enqueue: admitted => {
       // Policy and capacity can change while a receive hook is suspended.
@@ -205,11 +205,12 @@ function handleFrame(frame: unknown): void {
     seen.set(duplicateKey, Date.now())
   }
   const provenance = metadata?.from === from ? metadata : undefined
+  const plugin = typeof data.from_plugin === 'string' ? data.from_plugin.replace(/["<>\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu, '').trim() || undefined : undefined
   // Raw legacy frames remain text, but are always explicitly attributed to a
   // peer rather than promoted to a keyboard/user instruction.
   const value = formatPeerMessage(provenance?.body ?? content, {
     ...(from !== 'unknown' && /^[A-Za-z0-9%:_/.\\-]+$/.test(from) && { from }),
-    fromName: provenance?.fromName, fromMode: provenance?.fromMode,
+    fromName: provenance?.fromName, fromMode: provenance?.fromMode, fromPlugin: plugin,
     fromSession: provenance?.fromSession, hopChain: provenance?.hopChain,
   })
   const command: QueuedCommand = {
@@ -217,7 +218,7 @@ function handleFrame(frame: unknown): void {
     value,
     uuid: randomUUID(),
     priority: data.priority === 'now' || data.priority === 'later' ? data.priority : 'next',
-    origin: { kind: 'peer', from, msg_id: id, name: provenance?.fromName, fromMode: provenance?.fromMode },
+    origin: { kind: 'peer', from, msg_id: id, name: provenance?.fromName, fromMode: provenance?.fromMode, ...(plugin ? {plugin} : {}) },
     skipSlashCommands: true, skipAttachments: true, isMeta: true,
   }
   switch (policyFor(command)) {

@@ -10,6 +10,8 @@ export type PeerMessageMetadata = {
   fromSession?: string
   hopChain?: string[]
   fromName?: string
+  /** Sender-provided plugin attribution; never an authorization key. */
+  fromPlugin?: string
   fromMode?: PeerPermissionClass
 }
 
@@ -19,7 +21,7 @@ export const PEER_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 const addressChars = 'A-Za-z0-9%:_/.\\\\-'
 const sessionPattern = '[A-Za-z0-9_-]{1,80}'
 const hopPattern = '[0-9a-f]{24}(?:,[0-9a-f]{24}){0,31}'
-const wrapperPattern = new RegExp(`^<cross-session-message(?: from="([${addressChars}]+)")?(?: from-session="(${sessionPattern})")?(?: hop-chain="(${hopPattern})")?(?: from-name="([^"<>\\n\\r]+)")?(?: from-mode="(bypass|prompting)")?>\\n([\\s\\S]*)\\n</cross-session-message>$`)
+const wrapperPattern = new RegExp(`^<cross-session-message(?: from="([${addressChars}]+)")?(?: from-session="(${sessionPattern})")?(?: hop-chain="(${hopPattern})")?(?: from-name="([^"<>\\n\\r]+)")?(?: from-mode="(bypass|prompting)")?(?: from-plugin="([^"<>\\n\\r]+)")?>\\n([\\s\\S]*)\\n</cross-session-message>$`)
 
 // Match the official closing-tag escape, including invisible separators and
 // bracket/slash lookalikes. Escaped '<\\' is intentionally left unchanged.
@@ -76,6 +78,8 @@ export function formatPeerMessage(body: string, metadata: PeerMessageMetadata): 
   const name = metadata.fromName && cleanPeerName(metadata.fromName)
   if (name) attrs.push(`from-name="${name}"`)
   if (metadata.fromMode) attrs.push(`from-mode="${metadata.fromMode}"`)
+  const plugin = metadata.fromPlugin && cleanPeerName(metadata.fromPlugin)
+  if (plugin) attrs.push(`from-plugin="${plugin}"`)
   return `<cross-session-message${attrs.length ? ` ${attrs.join(' ')}` : ''}>\n${body.replace(closingTag, '<\\')}\n</cross-session-message>`
 }
 
@@ -88,7 +92,8 @@ export function parsePeerMessage(content: string): (PeerMessageMetadata & { body
     ...(match[3] !== undefined && { hopChain: match[3].split(',') }),
     ...(match[4] !== undefined && { fromName: match[4] }),
     ...(match[5] !== undefined && { fromMode: match[5] as PeerPermissionClass }),
-    body: match[6]!,
+    ...(match[6] !== undefined && { fromPlugin: match[6] }),
+    body: match[7]!,
   }
   return formatPeerMessage(result.body, result) === content ? result : undefined
 }

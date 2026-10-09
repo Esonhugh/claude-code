@@ -1,3 +1,4 @@
+import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { officialCoreCalls } from './coreCalls.js'
@@ -241,7 +242,7 @@ const coreHost: Nouns = {
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
+  session: { send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
@@ -946,6 +947,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateComposeInput(input, true)
         return input as ModInput
       }
+      case 'session.send': return modSessionSendArgs(args[0], plugin)
       case 'session.usage': {
         const input = args[0] === undefined ? {} : args[0]
         if (args.length > 1) throw new TypeError('session.usage takes one optional object')
@@ -1743,9 +1745,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               combined.cleanup()
             }
           }
-          if (fn === hostIdentity && op === 'tool.call') {
+          if (fn === hostIdentity && (op === 'tool.call' || op === 'session.send')) {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
+            if (op === 'session.send' && !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'SendMessage'))
+              return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
             if (!host) throw new Error('Tool execution host is unavailable on this host')
+            let toolInput = input as ModInput
+            if (op === 'session.send') {
+              const resolved = await resolveModSessionSendAddress((input as ReturnType<typeof modSessionSendArgs>).to, services.tasks?.())
+              if ('reason' in resolved) {
+                logForDebugging(`[ModsSend] plugin=${owner.declaration.name} refused: ${resolved.reason}`)
+                return {isDelivered:false,reason:resolved.reason}
+              }
+              toolInput = {tool:'SendMessage',to:resolved.to,message:(input as ModInput).text}
+            }
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
@@ -1772,7 +1785,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
             try {
               combined.signal.throwIfAborted()
-              return await withReference(owner, () => host.call(input as ModInput, callSnapshot, combined.signal, owner.declaration.name))
+              const receipt = await withReference(owner, () => host.call(toolInput, callSnapshot, combined.signal, owner.declaration.name))
+              if (op !== 'session.send') return receipt
+              const sent = sessionSendToolResult(receipt as import('./toolAdapter.js').ToolCallResult)
+              logForDebugging(`[ModsSend] plugin=${owner.declaration.name} to=${String(toolInput.to)} delivered=${sent.isDelivered}${sent.isDelivered ? '' : ` reason=${sent.reason}`}`)
+              return sent
             } finally { open = false; combined.cleanup() }
           }
           if (fn === hostIdentity && op === 'tool.check') {
@@ -2254,6 +2271,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return
     }
     if (event === 'session.receive') return validateSessionReceiveResult(result)
+    if (event === 'session.send') return validateSessionSendResult(result)
     if (event === 'session.attach' || event === 'session.detach') {
       if (!result || typeof result !== 'object' || Array.isArray(result) || typeof (result as ModInput).clientId !== 'string')
         throw new TypeError(`${event} must return clientId`)

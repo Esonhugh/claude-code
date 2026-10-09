@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { createAssistantMessage } from '../../utils/messages.js'
+import { isEqual } from 'lodash-es'
+import { runModSessionSend, sessionSendToolResult } from '../../services/mods/sessionSend.js'
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
@@ -747,6 +751,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     async call(input, context, canUseTool, assistantMessage) {
+      const send = async (input: z.infer<InputSchema>): Promise<{data:SendMessageToolOutput}> => {
       if (feature('UDS_INBOX') && typeof input.message === 'string') {
         const addr = parseAddress(input.to)
         if (addr.scheme === 'bridge') {
@@ -797,6 +802,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           try {
             const permissions = context.getAppState().toolPermissionContext
             await sendToUdsSocket(addr.target, input.message, {
+                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
+                ...(context.abortController ? {signal:context.abortController.signal} : {}),
               fromMode:
                 permissions.mode === 'bypassPermissions' ||
                 (permissions.mode === 'plan' && permissions.isBypassPermissionsModeAvailable)
@@ -957,6 +964,8 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                 }
               }
               await sendToUdsSocket(peer.messagingSocketPath, input.message, {
+                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
+                ...(context.abortController ? {signal:context.abortController.signal} : {}),
                 fromMode:
                   appState.toolPermissionContext.mode === 'bypassPermissions' ||
                   (appState.toolPermissionContext.mode === 'plan' &&
@@ -1019,6 +1028,57 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
             context,
           )
       }
+      }
+      if (typeof input.message !== 'string') return send(input)
+      const owned = context.modsSnapshot ? undefined : context.mods?.capture()
+      const snapshot = context.modsSnapshot ?? owned
+      const signal = context.abortController?.signal ?? new AbortController().signal
+      let receipt: {data:SendMessageToolOutput} | undefined
+      try {
+        const result = await runModSessionSend(snapshot, {
+          to:input.to,text:input.message,
+          origin:context.modSpawnedBy ? {kind:'plugin',name:context.modSpawnedBy} : {kind:'model'},
+          ...(context.agentId ? {agentId:context.agentId} : {}),
+        }, async (value, branch) => {
+          branch?.throwIfAborted()
+          let rewritten: z.infer<InputSchema> = {...input,to:value.to,message:value.text}
+          if (value.text !== input.message) delete rewritten.summary
+          if (value.to !== input.to || value.text !== input.message) {
+            const parsed = SendMessageTool.inputSchema.safeParse(rewritten)
+            const validation = parsed.success ? await SendMessageTool.validateInput!(parsed.data,context) : undefined
+            if (!parsed.success || validation?.result === false) {
+              receipt = {data:{success:false,message:`A plugin hook rewrote this send into one the tool refuses (${validation?.result === false ? validation.message : 'a shape SendMessage does not accept'}); nothing was sent.`}}
+              return sessionSendToolResult({result:receipt.data})
+            }
+            rewritten = parsed.data
+          }
+          if (value.to !== input.to) {
+            if (typeof canUseTool !== 'function') {
+              receipt = {data:{success:false,message:`A plugin hook readdressed this send to '${value.to}' and no permission check can run here; nothing was sent.`}}
+              return sessionSendToolResult({result:receipt.data})
+            }
+            const approval = await canUseTool(SendMessageTool,rewritten,context,assistantMessage ?? createAssistantMessage({content:[]}),randomUUID())
+            branch?.throwIfAborted()
+            if (approval.behavior !== 'allow') {
+              receipt = {data:{success:false,message:approval.behavior === 'deny' && approval.message ? approval.message : `Sending to '${value.to}' (a plugin hook readdressed this send) was not approved; nothing was sent.`}}
+              return sessionSendToolResult({result:receipt.data})
+            }
+            if (approval.updatedInput !== undefined) {
+              const narrowed = SendMessageTool.inputSchema.safeParse(approval.updatedInput)
+              if (!narrowed.success) {
+                receipt = {data:{success:false,message:'The permission handler narrowed the input to a shape SendMessage does not accept — nothing was sent.'}}
+                return sessionSendToolResult({result:receipt.data})
+              }
+              rewritten = narrowed.data
+            }
+          }
+          receipt = await send(rewritten)
+          branch?.throwIfAborted()
+          return sessionSendToolResult({result:receipt.data})
+        }, signal)
+        if (receipt && isEqual(sessionSendToolResult({result:receipt.data}),result)) return receipt
+        return {data:{success:result.isDelivered,message:result.isDelivered ? 'Message delivered' : `Not sent: a plugin hook refused it (${result.reason}).`}}
+      } finally {owned?.release()}
     },
 
     renderToolUseMessage,

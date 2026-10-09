@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util'
 import type { ModDispatchOptions, ModSnapshot } from './runtime.js'
 import type { ModInput } from './types.js'
 
-export type SessionReceiveOrigin = { kind: 'bridge' | 'task-notification' | 'scheduled-trigger' | 'peer' | 'peer-send-message' | 'projects-relay' | 'slack-ping' | 'unclassified' }
+export type SessionReceiveOrigin = { kind: 'bridge' | 'task-notification' | 'scheduled-trigger' | 'peer-send-message' | 'projects-relay' | 'slack-ping' | 'unclassified' } | {kind:'peer'|'coordinator';plugin?:string;teammate?:string;isVerified?:boolean}
 export type SessionReceiveEvent = {
   source: string
   kind: string

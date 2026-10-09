@@ -16,6 +16,7 @@ export type MessageOrigin =
       msg_id?: string
       name?: string
       fromMode?: 'bypass' | 'prompting'
+      plugin?: string
     }
 
 export type SystemMessageLevel = 'info' | 'notice' | 'warning' | 'error' | 'suggestion'
