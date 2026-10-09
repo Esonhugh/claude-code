@@ -93,6 +93,8 @@ let nonStreamingThinkingTokens: number | undefined
 let streamInterrupted = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
+let modsReplyUsage: {input_tokens:number;output_tokens:number;cache_read_input_tokens:number;cache_creation_input_tokens:number} | undefined
+let modsRefuseStatus: number | undefined
 const client = new Anthropic({
   apiKey: 'test-only',
   maxRetries: 0,
@@ -106,6 +108,7 @@ const client = new Anthropic({
       return Response.json({input_tokens:123})
     }
     requests.push(request)
+    if (modsRefuseStatus) return Response.json({type:'error',error:{type:'invalid_request_error',message:'FAKE_PRIVATE_BODY'}},{status:modsRefuseStatus})
     if (request.model === overloadedModel) {
       return Response.json({
         type: 'error',
@@ -169,7 +172,7 @@ const client = new Anthropic({
       content: [],
       stop_reason: null,
       stop_sequence: null,
-      usage: { input_tokens: 1, output_tokens: 1 },
+      usage: modsReplyUsage ? {...modsReplyUsage,output_tokens:0} : { input_tokens: 1, output_tokens: 1 },
     }
     if (!request.stream) {
       return Response.json({
@@ -200,7 +203,7 @@ const client = new Anthropic({
       {
         type: 'message_delta',
         delta: { stop_reason: 'end_turn', stop_sequence: null },
-        usage: { output_tokens: 1 },
+        usage: { output_tokens: modsReplyUsage?.output_tokens ?? 1 },
       },
       { type: 'message_stop' },
     ]
@@ -357,7 +360,62 @@ afterEach(() => {
   streamInterrupted = false
   overflowRequest = 0
   overloadedModel = undefined
+  modsReplyUsage = undefined
+  modsRefuseStatus = undefined
 })
+
+test.each(['without a turn.step hook','with a turn.step hook','refused provider request'] as const)(
+  'Mods model fork reports its actual reply and usage: %s', async mode => {
+    const {mkdtemp,realpath,writeFile,rm}=await import('node:fs/promises')
+    const {tmpdir}=await import('node:os')
+    const {join}=await import('node:path')
+    const {getDefaultAppState}=await import('../../state/AppStateStore.js')
+    const {createFileStateCacheWithSizeLimit}=await import('../../utils/fileStateCache.js')
+    const {createModsRuntime}=await import('../mods/runtime.js')
+    const {createModModelFork}=await import('../mods/modelAdapter.js')
+    const root=await realpath(await mkdtemp(join(tmpdir(),'mods-fork-usage-wire-')))
+    const diagnostics:unknown[]=[]
+    const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+    modsReplyUsage={input_tokens:3,output_tokens:4,cache_read_input_tokens:5,cache_creation_input_tokens:6}
+    if(mode==='refused provider request') modsRefuseStatus=400
+    try {
+      await runtime.bind({cwd:root,sessionId:'fork-usage',surface:'terminal',isInteractive:false})
+      if(mode==='with a turn.step hook') {
+        const entry=join(root,'register.ts')
+        await writeFile(entry,`export function register(on) {
+          on('turn.step',async function* ($,e,next) {const stream=next(e);yield* stream;return await stream.result;});
+        }`)
+        await runtime.reconcile([{name:'fork-usage',storageId:'fork-usage@test',pluginRoot:root,entrypoints:[entry]}])
+      }
+      let state=getDefaultAppState()
+      const parent=[createUserMessage({content:'main prefix'})]
+      const before=JSON.stringify(parent)
+      const context:import('../../Tool.js').ToolUseContext={
+        options:{commands:[],debug:false,mainLoopModel:'claude-sonnet-5',tools:[],verbose:false,
+          thinkingConfig:{type:'disabled'},mcpClients:[],mcpResources:{},isNonInteractiveSession:true,
+          agentDefinitions:{activeAgents:[],allAgents:[],allowedAgentTypes:undefined}},
+        abortController:new AbortController(),readFileState:createFileStateCacheWithSizeLimit(10),
+        getAppState:()=>state,setAppState:update=>{state=update(state)},setInProgressToolUseIDs(){},
+        setResponseLength(){},updateFileHistoryState(){},updateAttributionState(){},messages:parent,mods:runtime,
+      }
+      const fork=createModModelFork(()=>({systemPrompt:asSystemPrompt(['cache prefix']),userContext:{},systemContext:{},
+        forkContextMessages:parent,toolUseContext:context}))
+      // Official 2.1.292: this SSE fixture reports only message_delta usage
+      // for forks, and HTTP 400 invalid_request_error is exposed as unknown.
+      const expected:import('../mods/types.js').ModModelForkResult=mode==='refused provider request'
+        ? {isAnswered:false,reason:'api-error',status:400,error:'unknown',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}
+        : {isAnswered:true,text:'OK',usage:{input_tokens:0,output_tokens:4,cache_read_input_tokens:0,cache_creation_input_tokens:0}}
+      expect(await fork({prompt:'fork question'})).toEqual(expected)
+      expect(requests).toHaveLength(1)
+      // Official 2.1.292 leaves tool_choice unset; fork tool denial is internal.
+      expect(requests[0]).not.toHaveProperty('tool_choice')
+      expect(requests[0]!.messages[0]).toMatchObject({role:'user'})
+      expect(JSON.stringify(parent)).toBe(before)
+      expect(diagnostics).toEqual([])
+      expect(unexpectedIO).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  },
+)
 
 test('cache marker inspection accepts stable and beta thinking blocks', async () => {
   const { hasExtendedCacheTtlMarker } = await import('./claude.js')
