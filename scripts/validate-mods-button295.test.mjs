@@ -4,6 +4,11 @@ import { buttonAcceptanceFailures } from './validate-mods-button295.mjs'
 const complete = () => ({ mode: 'local', businessPassed: true,
   binarySHA256: 'pinned', binarySHA256After: 'pinned', launchedBinarySHA256: 'pinned', expectedBinarySHA256: 'pinned',
   captureId: 'one-run', socketExists: false,
+  hoverObservations: [['focus-stop', false, 4, false], ['focus-other', false, 4], ['hover-enter', true, 4], ['hover-paint-leave', false, 5],
+    ['hover-paint-enter', true, 6], ['hover-resize-leave', false, 6], ['hover-resize-enter', true, 6]].map(([label, inverse, count, otherInverse = true]) =>
+      ({ label, count, captureId: 'one-run', col: inverse ? 20 : 8, row: 3, pointer: label.startsWith('focus-') ? null : { col: 22, row: 3 },
+        cells: Array.from('[ Save 2m ]', text => ({ text, inverse })),
+        otherCells: Array.from('[ Other control ]', text => ({ text, inverse: otherInverse })) })),
   childCompletion: { start: { childPid: 101, binarySha256: 'pinned' },
     launch: { captureId: 'one-run', binarySha256: 'pinned' },
     broker: { captureId: 'one-run', childPid: 101, childExitCode: 0, childReaped: true, physicalEof: true,
@@ -74,4 +79,36 @@ test('official producer absence never excuses a child failure or unrelated colle
   result.childCompletion.broker.failure.message = 'Native capture overflow'
   result.childCompletion.cleanup = globalThis.structuredClone(result.childCompletion.broker)
   expect(buttonAcceptanceFailures(result)).toContain('Original child completion did not pass')
+})
+
+
+test('Button acceptance requires stationary hover entry, leave, return, and resize observations', () => {
+  const result = complete()
+  result.hoverObservations = []
+  expect(buttonAcceptanceFailures(result)).toContain('Hover paint interaction did not complete')
+})
+
+
+test('hover observations reject stale style, foreign capture, wrong geometry, and missing rows', () => {
+  for (const mode of ['local', 'official']) {
+    for (const mutate of [
+      result => { result.hoverObservations.find(value => value.label === 'hover-paint-leave').cells[2].inverse = true },
+      result => { result.hoverObservations[3].captureId = 'foreign' },
+      result => { result.hoverObservations[3].pointer.col = 99 },
+      result => { result.hoverObservations[4].count = 7 },
+      result => { result.hoverObservations[4].otherCells[0].inverse = false },
+      result => { result.hoverObservations[1] = null },
+      result => { result.hoverObservations.pop() },
+    ]) {
+      const result = complete(); result.mode = mode
+      mutate(result)
+      expect(buttonAcceptanceFailures(result)).toContain('Hover paint interaction did not complete')
+    }
+  }
+})
+
+test('Button acceptance requires mouse-preserved focus and the terminal stop slot', () => {
+  const result = complete()
+  result.hoverObservations.shift()
+  expect(buttonAcceptanceFailures(result)).toContain('Hover paint interaction did not complete')
 })

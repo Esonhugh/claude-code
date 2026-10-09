@@ -80,6 +80,31 @@ class NativeResizeOrderingTest(unittest.TestCase):
                     verifier.native_resize_events(*arguments)
                 bracket[key] = original
 
+    def test_resize_inside_no_write_observation_compares_before_layout(self):
+        verifier, *arguments = self.fixture()
+        arguments[3][:] = [row for row in arguments[3] if not (row['spanId'] == 1 and row['kind'] == 1)]
+        arguments[0][0]['nativeBracket'].update(entry='105', **{'return': '106'})
+        events = verifier.native_resize_events(*arguments)
+        self.assertEqual((events[0]['beforeFrameId'], events[0]['rawOffset']), (2, 0))
+
+    def test_no_write_observation_rejects_layout_overlap_and_hidden_write_attempts(self):
+        for entry, payload, result in ((105, b'', 0), (105, b'', -1), (105, b'x', 1), (120, b'', 0)):
+            with self.subTest(entry=entry, result=result):
+                verifier, *arguments = self.fixture()
+                write = next(row for row in arguments[3] if row['spanId'] == 1 and row['kind'] == 1)
+                write.update(entry=entry, **{'return': entry + 1}, bytes=payload, result=result)
+                arguments[0][0]['nativeBracket'].update(entry='125', **{'return': '126'})
+                with self.assertRaisesRegex(verifier.journal.JournalError, 'output transaction'):
+                    verifier.native_resize_events(*arguments)
+        verifier, *arguments = self.fixture()
+        arguments[3][:] = [row for row in arguments[3] if not (row['spanId'] == 1 and row['kind'] == 1)]
+        arguments[0][0]['nativeBracket'].update(entry='100', **{'return': '101'})
+        with self.assertRaisesRegex(verifier.journal.JournalError, 'observation layout marker'):
+            verifier.native_resize_events(*arguments)
+        # Publication after the zero observation cannot turn it into an ACK-after proof.
+        arguments[0][0]['nativeBracket'].update(entry='135', **{'return': '136'})
+        self.assertEqual(verifier.native_resize_events(*arguments)[0]['beforeFrameId'], 2)
+
     def test_resize_uint64_clock_survives_json_without_float_rounding(self):
         verifier, *arguments = self.fixture()
         offset = 2 ** 53 + 1

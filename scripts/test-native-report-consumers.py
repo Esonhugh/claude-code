@@ -71,6 +71,26 @@ class NativeReportContractTest(unittest.TestCase):
         altered['nativeGeometryProof']['sizes'][1]['frameId'] = 4
         self.assertIsNone(driver.terminal_resize_sizes(altered))
 
+    def test_per_frame_boundaries_require_explicit_zero_write_observations(self):
+        value = report()
+        value.update(framePhysicalBoundary='native-per-frame-boundary-v2',
+                     semanticSource='independent-xterm-native-per-frame-v2')
+        for frame in value['frames']:
+            frame['physicalBoundary'] = 'native-frame-end-v1'
+        value['frames'][0].update(physicalBoundary='native-pre-layout-observation-v1',
+                                  outputBytes=0, rawStart=0, rawEnd=0)
+        self.assertTrue(driver.terminal_frame_report_checks(value)['frame_semantics'])
+        for mutation in ({'physicalBoundary': None}, {'physicalBoundary': 'frame-end'},
+                         {'outputBytes': 1}, {'outputBytes': False}, {'rawEnd': 1}, {'rawStart': False}):
+            with self.subTest(mutation=mutation):
+                altered = copy.deepcopy(value)
+                altered['frames'][0].update(mutation)
+                self.assertFalse(driver.terminal_frame_report_checks(altered)['frame_semantics'])
+                self.assertIsNone(driver.terminal_resize_sizes(altered))
+        altered = copy.deepcopy(value)
+        altered['frames'][1].pop('physicalBoundary')
+        self.assertFalse(driver.terminal_frame_report_checks(altered)['frame_semantics'])
+
     def test_legacy_alias_cannot_stand_in_for_native_geometry(self):
         value = report()
         value['geometryProof'] = {'verdict': 'passed', 'sizes': [{'columns': 109, 'rows': 34}]}

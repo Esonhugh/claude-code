@@ -1930,9 +1930,19 @@ def canonical_native_frame_binding(entry, entries, io, context):
                     value['rawEnd']-value['rawStart'] != byte_count or value['rawEnd'] > offset or
                     data.get('observationKind') != ('output-transaction' if byte_count else 'logical-observation')):
                 return None
+            boundary = value.get('physicalBoundary', 'native-frame-end-v1')
+            if boundary not in ('native-frame-end-v1', 'native-pre-layout-observation-v1'):
+                return None
+            if boundary == 'native-pre-layout-observation-v1':
+                prefix = data.get('layoutWriteSequences')
+                if (writes or byte_count or value['rawStart'] != value['rawEnd'] or
+                        type(data.get('layoutRawStart')) is not int or data['layoutRawStart'] != value['rawStart'] or
+                        type(prefix) is not list or any(type(seq) is not int or not 0 < seq < markers[0]['sequence'] for seq in prefix) or
+                        any(left >= right for left,right in zip(prefix,prefix[1:]))):
+                    return None
             selected = {'geometryId':0,'ioId':1,**context['initialSize']}
             for a,b,row in events:
-                if ticks[2][1] <= a:
+                if (ticks[0][1] if boundary == 'native-pre-layout-observation-v1' else ticks[2][1]) <= a:
                     continue
                 if ticks[0][0] < b:
                     return None
@@ -1944,7 +1954,7 @@ def canonical_native_frame_binding(entry, entries, io, context):
                     frame.get('columns') != selected['columns'] or frame.get('buffer') != 'alternate'):
                 return None
             return {'frame':frame,'geometryId':selected['geometryId'],'resizeIoId':selected['ioId'],
-                    'columns':selected['columns'],'rows':selected['rows'],'outputBytes':byte_count}
+                    'columns':selected['columns'],'rows':selected['rows'],'outputBytes':byte_count,'physicalBoundary':boundary}
         bound = span(entry)
         if bound is None:
             return None
@@ -1965,6 +1975,7 @@ def canonical_native_frame_binding(entry, entries, io, context):
                 return None
         return {'method':'native-canonical-span-geometry-v1','captureId':context['captureId'],
                 'frameId':entry['frameId'],'observationKind':entry['nativeSpan']['observationKind'],
+                'physicalBoundary':bound['physicalBoundary'],
                 'geometryId':bound['geometryId'],'resizeIoId':bound['resizeIoId'],
                 'outputSourceFrameId':output['frameId'],'outputRawStart':output['rawStart'],'outputRawEnd':output['rawEnd'],
                 'actualInputOwnerCovered':False,'productTimingEquivalent':False}
@@ -2320,6 +2331,28 @@ def canonical_ui_checks(root, native_context=None):
     return checks
 
 
+def native_physical_boundaries_valid(report):
+    """Versioned per-frame boundaries; labels never supply missing evidence."""
+    if not isinstance(report, dict) or report.get('method') != 'native-journal-ioctl-geometry-replay-v1':
+        return False
+    if report.get('framePhysicalBoundary') == 'native-frame-end-v1':
+        return report.get('semanticSource') == 'independent-xterm-native-frame-end-v1'
+    if (report.get('framePhysicalBoundary') != 'native-per-frame-boundary-v2' or
+            report.get('semanticSource') != 'independent-xterm-native-per-frame-v2' or
+            not isinstance(report.get('frames'), list) or not report['frames']):
+        return False
+    for frame in report['frames']:
+        if not isinstance(frame, dict) or frame.get('physicalBoundary') not in (
+                'native-frame-end-v1', 'native-pre-layout-observation-v1'):
+            return False
+        if frame['physicalBoundary'] == 'native-pre-layout-observation-v1' and (
+                type(frame.get('outputBytes')) is not int or frame['outputBytes'] != 0 or
+                type(frame.get('rawStart')) is not int or frame['rawStart'] < 0 or
+                type(frame.get('rawEnd')) is not int or frame['rawStart'] != frame['rawEnd']):
+            return False
+    return True
+
+
 def terminal_resize_sizes(report):
     """Keep native request/ACK/paint proof distinct from legacy broker proof."""
     if not isinstance(report, dict) or report.get('verdict') != 'passed':
@@ -2330,7 +2363,7 @@ def terminal_resize_sizes(report):
     proof = report.get('nativeGeometryProof' if native else 'geometryProof', {})
     if (not isinstance(proof, dict) or proof.get('verdict') != 'passed' or
             (native and (proof.get('method') != 'native-driver-mach-frame-geometry-v2' or
-                         report.get('framePhysicalBoundary') != 'native-frame-end-v1' or
+                         not native_physical_boundaries_valid(report) or
                          report.get('parserSHA256') != '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'))):
         return None
     rows = proof.get('sizes')
@@ -2370,8 +2403,7 @@ def terminal_frame_report_checks(report):
     ):
         return invalid
     native = (report.get('method') == 'native-journal-ioctl-geometry-replay-v1' and
-              report.get('framePhysicalBoundary') == 'native-frame-end-v1' and
-              report.get('semanticSource') == 'independent-xterm-native-frame-end-v1' and
+              native_physical_boundaries_valid(report) and
               report.get('parserSHA256') == '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed')
     replay = ((native or report.get('method') in {'renderer-write-replay-v1', 'independent-pty-replay-v1'})
                 and report.get('verdict') == 'passed' and bool(frames)

@@ -158,6 +158,11 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
     for (const entry of entries) {
       const frame = JSON.parse(Buffer.from(entry.frameBase64, 'base64').toString('utf8'))
       const output = Buffer.from(entry.outputBase64, 'base64')
+      if (!['native-frame-end-v1', 'native-pre-layout-observation-v1'].includes(entry.physicalBoundary) ||
+          (entry.physicalBoundary === 'native-pre-layout-observation-v1' &&
+           (entry.rawStart !== entry.rawEnd || entry.writeSequences.length !== 0 ||
+            entry.nativeSpan.writes.length !== 0 || entry.nativeSpan.layoutRawStart !== entry.rawStart)))
+        throw Error('Native frame has no proved physical comparison boundary')
       const prefixBytes = entry.rawStart - rawOffset
       if (!Number.isSafeInteger(prefixBytes) || prefixBytes < 0 || prefixBytes > output.length)
         throw Error('Native frame start has no exact preceding raw prefix')
@@ -178,6 +183,7 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
         terminal.buffer.active.getLine(terminal.buffer.active.viewportY + y)?.translateToString(true) ?? '')
       frames.push({ frameId: entry.frameId, rawStart: entry.rawStart, rawEnd: entry.rawEnd,
                     columns: terminal.cols, rows: terminal.rows, text, semantic: semanticEvidence(text),
+                    physicalBoundary: entry.physicalBoundary,
                     replayBytes: output.length, outputBytes: entry.rawEnd - entry.rawStart,
                     verdict: difference ? 'failed' : 'passed', difference })
     }
@@ -210,8 +216,8 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
   }
   const nativeGeometryProof = verifyNativeGeometryRequests(requestGeometry, native.io, geometry, entries, frames, target, driverPid)
   return { method: 'native-journal-ioctl-geometry-replay-v1',
-           framePhysicalBoundary: 'native-frame-end-v1',
-           parserSHA256, semanticSource: 'independent-xterm-native-frame-end-v1',
+           framePhysicalBoundary: 'native-per-frame-boundary-v2',
+           parserSHA256, semanticSource: 'independent-xterm-native-per-frame-v2',
            nativeGeometryProof,
            normalRootOrigin: normalOrigin ? { method: normalOrigin.method,
              verdict: 'passed', actualInputOwnerCovered: false, productTimingEquivalent: false } : { verdict: 'not covered' },

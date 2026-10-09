@@ -726,10 +726,17 @@ export function validateNativeTerminalEvidence(side, diagnostics, evidenceLocati
           frame.native?.captureId === side.captureId && frame.native.spanId === frame.frameId &&
           frame.native.profile === 'ink-post-write-v1') ||
         physical.method !== 'native-journal-ioctl-geometry-replay-v1' || physical.verdict !== 'passed' ||
+        physical.framePhysicalBoundary !== 'native-per-frame-boundary-v2' ||
+        physical.semanticSource !== 'independent-xterm-native-per-frame-v2' ||
         physical.rawBytes !== data.get('pty.raw').length || physical.rawSha256 !== hash(data.get('pty.raw')) ||
         physical.frameCount !== entries.length || !Array.isArray(physical.frames) ||
         physical.frames.length !== entries.length || !physical.frames.every((frame, index) =>
-          frame.frameId === index + 1 && frame.verdict === 'passed') ||
+          frame.frameId === index + 1 && frame.verdict === 'passed' &&
+          frame.physicalBoundary === entries[index].physicalBoundary &&
+          ['native-frame-end-v1', 'native-pre-layout-observation-v1'].includes(frame.physicalBoundary) &&
+          (frame.physicalBoundary !== 'native-pre-layout-observation-v1' ||
+            (frame.outputBytes === 0 && frame.rawStart === frame.rawEnd &&
+             entries[index].writeSequences.length === 0 && entries[index].nativeSpan.writes.length === 0))) ||
         physical.closure?.verdict !== 'passed' || physical.closure.buffer !== 'normal' ||
         physical.closure.cursorVisible !== true) return false
     // The bounded v1 protocol cannot acquire timing/input coverage via edited labels.

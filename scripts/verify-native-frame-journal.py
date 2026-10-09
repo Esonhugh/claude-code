@@ -177,10 +177,15 @@ def native_resize_events(io, header, registration, records, initial):
         for span in spans:
             layout = by_sequence[span['layoutSequence']]
             end = by_sequence[span['endSequence']]
-            # Compare at the output transaction's end. Its immutable copy is
-            # published later on the same thread with no intervening writes.
-            journal.require(end['return'] <= entry or layout['entry'] >= returned,
-                            f"Native resize overlaps output transaction (frameId={span['spanId']})")
+            if span['physicalBoundary'] == 'native-pre-layout-observation-v1':
+                # This branch was proved from every original syscall, not from
+                # outputBytes or a supplied label. Compare before layout, then
+                # apply the actual ACK before subsequent raw output/paint.
+                journal.require(layout['return'] <= entry or layout['entry'] >= returned,
+                                f"Native resize overlaps observation layout marker (frameId={span['spanId']})")
+            else:
+                journal.require(end['return'] <= entry or layout['entry'] >= returned,
+                                f"Native resize overlaps output transaction (frameId={span['spanId']})")
             if layout['entry'] >= returned:
                 before_frame = min(before_frame, span['spanId'])
         raw_offset = sum(len(outputs[write['sequence']]) for write in writes

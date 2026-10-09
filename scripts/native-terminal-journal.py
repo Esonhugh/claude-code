@@ -249,6 +249,13 @@ def frame_spans(records, profile='pre-write-v1'):
         if profile == 'ink-post-write-v1':
             require(all(not (end['entry'] <= row['entry'] < snapshot['return'])
                         for row in writes), 'Output occurred before immutable post-write snapshot')
+        # A zero-write observation can describe the physical state immediately
+        # before layout. Prove the complete syscall ledger is unchanged through
+        # the immutable copy, including failed and zero-result writes.
+        before_layout = [row['sequence'] for row in writes if row['return'] <= layout['entry']]
+        before_begin = [row['sequence'] for row in writes if row['return'] <= begin['entry']]
+        pre_layout = (profile == 'ink-post-write-v1' and not selected and before_layout == before_begin and
+                      all(row['return'] <= layout['entry'] or row['entry'] >= snapshot['return'] for row in writes))
         start = sum(len(row['bytes']) for row in writes if row['return'] <= begin['entry'])
         byte_count = sum(len(row['bytes']) for row in selected)
         result.append({'spanId': span, 'layoutSequence': layout['sequence'],
@@ -257,6 +264,7 @@ def frame_spans(records, profile='pre-write-v1'):
                        'writeSequences': [row['sequence'] for row in selected],
                        'untransformedStart': start, 'untransformedBytes': byte_count,
                        'observationKind': 'output-transaction' if byte_count else 'logical-observation',
+                       'physicalBoundary': 'native-pre-layout-observation-v1' if pre_layout else 'native-frame-end-v1',
                        'scope': 'native span only; no geometry or UI verdict'})
         previous_end = rows[-1]['return']
     return result
@@ -318,7 +326,12 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
                                    'return': str(row['return']), 'result': row['result'],
                                    'errno': row['errno'], 'outputBytes': len(outputs[row['sequence']])}
                                   for row in selected]}
+        if span['physicalBoundary'] == 'native-pre-layout-observation-v1':
+            native_span['layoutRawStart'] = start
+            native_span['layoutWriteSequences'] = [row['sequence'] for row in records
+                                                  if row['kind'] == 1 and row['return'] <= layout['entry']]
         entries.append({'frameId': span['spanId'], 'native': identity,
+                        'physicalBoundary': span['physicalBoundary'],
                         'nativeSpan': native_span,
                         **{key: value[key] for key in ('rootReset', 'terminalPanes', 'terminalUiRevision')
                            if key in value},

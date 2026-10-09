@@ -102,6 +102,36 @@ class NativeCanonicalBindingTest(unittest.TestCase):
         changed=copy.deepcopy(entry);changed['native']['columns']=200
         self.assertIsNone(self.observe(state,changed,io,context))
 
+    def test_zero_observation_inside_resize_binds_old_layout_without_becoming_a_paint(self):
+        _, entry, io, context = self.fixture()
+        logical = copy.deepcopy(entry)
+        logical['frameId'] = logical['native']['spanId'] = 2
+        logical['rawStart'] = logical['rawEnd'] = 12
+        logical['writeSequences'] = logical['nativeSpan']['writes'] = []
+        logical['outputBase64'] = ''
+        logical['nativeSpan'].update(observationKind='logical-observation', layoutRawStart=12, layoutWriteSequences=[22])
+        logical['physicalBoundary'] = 'native-pre-layout-observation-v1'
+        for marker in logical['nativeSpan']['markers']:
+            marker['sequence'] += 5
+            marker['entry'], marker['return'] = str(int(marker['entry'])+100), str(int(marker['return'])+100)
+        ack = copy.deepcopy(io[2])
+        ack.update(ioId=len(io)+1, geometryId=2, rawOffset=12, columns=109)
+        ack['nativeBracket'].update(entry='305', **{'return':'306'},
+             beforeSizeHex=struct.pack('HHHH',34,110,0,0).hex(), afterSizeHex=struct.pack('HHHH',34,109,0,0).hex())
+        io.append(ack)
+        result = driver.canonical_native_frame_binding(logical, [entry,logical], io, context)
+        self.assertIsNotNone(result)
+        self.assertEqual((result['geometryId'], result['outputSourceFrameId']), (1, 1))
+        self.assertEqual(result['physicalBoundary'], 'native-pre-layout-observation-v1')
+        for field, bad in [('layoutRawStart', 11), ('layoutRawStart', True),
+                           ('layoutWriteSequences', [26]), ('layoutWriteSequences', [22,22])]:
+            changed = copy.deepcopy(logical); changed['nativeSpan'][field] = bad
+            self.assertIsNone(driver.canonical_native_frame_binding(changed, [entry,changed], io, context))
+        changed = copy.deepcopy(logical); changed['physicalBoundary'] = 'native-frame-end-v1'
+        self.assertIsNone(driver.canonical_native_frame_binding(changed, [entry,changed], io, context))
+        ack['nativeBracket'].update(entry='300', **{'return':'301'})
+        self.assertIsNone(driver.canonical_native_frame_binding(logical, [entry,logical], io, context))
+
     def test_zero_output_after_real_resize_cannot_borrow_old_geometry(self):
         state, entry, io, context=self.fixture()
         entry['rawStart']=entry['rawEnd']=9;entry['writeSequences']=entry['nativeSpan']['writes']=[]
