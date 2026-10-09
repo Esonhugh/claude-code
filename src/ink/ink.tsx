@@ -31,7 +31,8 @@ import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
 import { getEvidenceCursorVisible, nextEvidenceRendererId, recordTerminalEvidenceFrame, setEvidenceCursorVisible, terminalEvidenceBoundary } from './terminalEvidence.js'
 import { beginNativeTerminalFrame, initializeNativeTerminalJournal, nativeTerminalFrameBoundary } from './nativeTerminalJournal.js'
 import { collectTerminalPaneEvidence, collectTerminalUiRevision } from './terminalPaneEvidence.js'
-import { dispatchClick, dispatchHover } from './hit-test.js'
+import { dispatchMouseClick, dispatchHover } from './hit-test.js'
+import { ClickEvent, type ClickDisposition, type ClickModifiers } from './events/click-event.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
@@ -1538,9 +1539,13 @@ export default class Ink {
    * nodeCache rects map 1:1 to terminal cells (no scrollback offset).
    */
   dispatchClick(col: number, row: number): boolean {
-    if (!this.altScreenActive) return false
+    return this.dispatchMouseClick(col, row) !== 'unhandled'
+  }
+
+  dispatchMouseClick(col: number, row: number, isWindowActivation = false, mods?: ClickModifiers): ClickDisposition {
+    if (!this.altScreenActive) return 'unhandled'
     const blank = isEmptyCellAt(this.frontFrame.screen, col, row)
-    return dispatchClick(this.rootNode, col, row, blank)
+    return dispatchMouseClick(this.rootNode, new ClickEvent(col, row, blank, this.getHyperlinkAt(col, row), isWindowActivation, mods))
   }
 
   dispatchHover(col: number, row: number): void {
@@ -1748,7 +1753,7 @@ export default class Ink {
         terminalRows={this.terminalRows}
         selection={this.selection}
         onSelectionChange={this.notifySelectionChange}
-        onClickAt={this.dispatchClick}
+        onClickAt={this.dispatchMouseClick}
         onHoverAt={this.dispatchHover}
         getHyperlinkAt={this.getHyperlinkAt}
         onOpenHyperlink={this.openHyperlink}

@@ -6,6 +6,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isMouseClicksDisabled } from '../../utils/fullscreen.js'
 import { logError } from '../../utils/log.js'
 import { EventEmitter } from '../events/emitter.js'
+import type { ClickDisposition, ClickModifiers } from '../events/click-event.js'
 import { InputEvent } from '../events/input-event.js'
 import { PointerEvent } from '../events/pointer-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
@@ -31,6 +32,7 @@ import {
 } from '../terminal.js'
 import {
   getTerminalFocused,
+  getTerminalFocusGainedAt,
   setTerminalFocused,
 } from '../terminal-focus-state.js'
 import { TerminalQuerier, xtversion } from '../terminal-querier.js'
@@ -90,7 +92,7 @@ type Props = {
   // onClick handlers. Returns true if a DOM handler consumed the click.
   // No-op (returns false) outside fullscreen mode (Ink.dispatchClick
   // gates on altScreenActive).
-  readonly onClickAt: (col: number, row: number) => boolean
+  readonly onClickAt: (col: number, row: number, isWindowActivation?: boolean, mods?: ClickModifiers) => boolean | ClickDisposition
   // Dispatch hover (onMouseEnter/onMouseLeave) as the pointer moves over
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
@@ -171,6 +173,9 @@ export default class App extends PureComponent<Props, State> {
   lastClickCol = -1
   lastClickRow = -1
   clickCount = 0
+  pressIsWindowActivation = false
+  windowActivationClickArmed = true
+  lastActivationInputTime = Number.NEGATIVE_INFINITY
   // Deferred hyperlink-open timer — cancelled if a second click arrives
   // within MULTI_CLICK_TIMEOUT_MS (so double-clicking a hyperlink selects
   // the word without also opening the browser). DOM onClick dispatch is
@@ -500,7 +505,16 @@ export default class App extends PureComponent<Props, State> {
   handleTerminalFocus = (isFocused: boolean): void => {
     // setTerminalFocused notifies subscribers: TerminalFocusProvider (context)
     // and Clock (interval speed) — no App setState needed.
+    if (!isFocused || Date.now() - this.lastActivationInputTime >= 400)
+      this.windowActivationClickArmed = true
     setTerminalFocused(isFocused)
+  }
+
+  consumeWindowActivationLatch(now: number): boolean {
+    this.lastActivationInputTime = now
+    if (!this.windowActivationClickArmed) return false
+    this.windowActivationClickArmed = false
+    return true
   }
 
   handleSuspend = (): void => {
@@ -559,6 +573,17 @@ export default class App extends PureComponent<Props, State> {
   }
 }
 
+function isSemanticInput(item: ParsedInput): boolean {
+  if (item.kind === 'response') return false
+  if (item.kind === 'mouse') return (item.button & 0x20) === 0
+  return !['wheelup', 'wheeldown', 'mouse'].includes(item.name)
+}
+
+function flushInputUpdates(): void {
+  // @ts-ignore flushSyncWork exists in react-reconciler but not in its types
+  reconciler.flushSyncWork()
+}
+
 // Helper to process all keys within a single discrete update context.
 // discreteUpdates expects (fn, a, b, c, d) -> fn(a, b, c, d)
 function processKeysInBatch(
@@ -584,7 +609,13 @@ function processKeysInBatch(
     updateLastInteractionTime()
   }
 
+  const flushBetweenInputs = items.filter(isSemanticInput).length > 1
+  let processedSemanticInput = false
   for (const item of items) {
+    if (isSemanticInput(item)) {
+      if (flushBetweenInputs && processedSemanticInput) flushInputUpdates()
+      processedSemanticInput = true
+    }
     // Terminal responses (DECRPM, DA1, OSC replies, etc.) are not user
     // input — route them to the querier to resolve pending promises.
     if (item.kind === 'response') {
@@ -596,6 +627,8 @@ function processKeysInBatch(
     // Terminal sends 1-indexed col/row; convert to 0-indexed for the
     // screen buffer. Button bit 0x20 = drag (motion while button held).
     if (item.kind === 'mouse') {
+      if (item.action === 'press' && !((item.button & 0x20) !== 0 && (item.button & 3) === 3) && !getTerminalFocused())
+        app.handleTerminalFocus(true)
       handleMouseEvent(app, item)
       continue
     }
@@ -605,12 +638,14 @@ function processKeysInBatch(
     // Handle terminal focus events (DECSET 1004)
     if (sequence === FOCUS_IN) {
       app.handleTerminalFocus(true)
+      if (flushBetweenInputs) flushInputUpdates()
       const event = new TerminalFocusEvent('terminalfocus')
       app.internal_eventEmitter.emit('terminalfocus', event)
       continue
     }
     if (sequence === FOCUS_OUT) {
       app.handleTerminalFocus(false)
+      if (flushBetweenInputs) flushInputUpdates()
       // Defensive: if we lost the release event (mouse released outside
       // terminal window — some emulators drop it rather than capturing the
       // pointer), focus-out is the next observable signal that the drag is
@@ -628,7 +663,11 @@ function processKeysInBatch(
     // Failsafe: if we receive input, the terminal must be focused
     if (!getTerminalFocused()) {
       setTerminalFocused(true)
+      if (isSemanticInput(item)) flushInputUpdates()
     }
+
+    if (item.isPasted || !['wheelup', 'wheeldown', 'mouse'].includes(item.name ?? ''))
+      app.consumeWindowActivationLatch(Date.now())
 
     // Handle Ctrl+Z (suspend) using parsed key to support both raw (\x1a) and
     // CSI u format (\x1b[122;5u) from Kitty keyboard protocol terminals
@@ -647,6 +686,7 @@ function processKeysInBatch(
       app.props.dispatchKeyboardEvent(item)
     }
   }
+  if (flushBetweenInputs && processedSemanticInput) flushInputUpdates()
 }
 
 /** Exported for testing. Mutates app.props.selection and click/hover state. */
@@ -689,6 +729,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+      if ((m.button & 0x20) === 0) app.consumeWindowActivationLatch(Date.now())
       return
     }
     if ((m.button & 0x20) !== 0) {
@@ -716,10 +757,14 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       now - app.lastClickTime < MULTI_CLICK_TIMEOUT_MS &&
       Math.abs(col - app.lastClickCol) <= MULTI_CLICK_DISTANCE &&
       Math.abs(row - app.lastClickRow) <= MULTI_CLICK_DISTANCE
-    app.clickCount = nearLast ? app.clickCount + 1 : 1
-    app.lastClickTime = now
-    app.lastClickCol = col
-    app.lastClickRow = row
+    app.pressIsWindowActivation = app.consumeWindowActivationLatch(now) && now - getTerminalFocusGainedAt() < 400
+    if (app.pressIsWindowActivation) app.clickCount = 0
+    else {
+      app.clickCount = nearLast ? app.clickCount + 1 : 1
+      app.lastClickTime = now
+      app.lastClickCol = col
+      app.lastClickRow = row
+    }
     if (app.clickCount >= 2) {
       // Cancel any pending hyperlink-open from the first click — this is
       // a double-click, not a single-click on a link.
@@ -771,7 +816,10 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     // Single click: dispatch DOM click immediately (cursor repositioning
     // etc. are latency-sensitive). If no DOM handler consumed it, defer
     // the hyperlink check so a second click can cancel it.
-    if (!app.props.onClickAt(col, row)) {
+    const result = app.props.onClickAt(col, row, app.pressIsWindowActivation,
+      { shift: (m.button & 4) !== 0, alt: (m.button & 8) !== 0, ctrl: (m.button & 16) !== 0 })
+    if (result === 'stray' || result === 'repeat') { app.clickCount = 0; app.lastClickTime = 0 }
+    if ((result === false || result === 'unhandled') && !app.pressIsWindowActivation) {
       // Resolve the hyperlink URL synchronously while the screen buffer
       // still reflects what the user clicked — deferring only the
       // browser-open so double-click can cancel it.

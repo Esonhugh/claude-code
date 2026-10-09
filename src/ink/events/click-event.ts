@@ -1,5 +1,8 @@
 import { Event } from './event.js'
 
+export type ClickDisposition = 'handled' | 'unhandled' | 'stray' | 'repeat'
+export type ClickModifiers = { shift: boolean; alt: boolean; ctrl: boolean }
+
 /**
  * Mouse click event. Fired on left-button release without drag, only when
  * mouse tracking is enabled (i.e. inside <AlternateScreen>).
@@ -29,10 +32,24 @@ export class ClickEvent extends Event {
    */
   readonly cellIsBlank: boolean
 
-  constructor(col: number, row: number, cellIsBlank: boolean) {
+  readonly hyperlinkUrl: string | undefined
+  readonly isWindowActivation: boolean
+  readonly mods: ClickModifiers
+  defaultAllowed = false
+  droppedAsStray = false
+  endsClickChain = false
+  allowDefault(): void { this.defaultAllowed = true }
+  dropAsStray(): void { this.droppedAsStray = true }
+  endClickChain(): void { this.endsClickChain = true }
+
+  constructor(col: number, row: number, cellIsBlank: boolean, hyperlinkUrl?: string,
+    isWindowActivation = false, mods: ClickModifiers = { shift: false, alt: false, ctrl: false }) {
     super()
     this.col = col
     this.row = row
     this.cellIsBlank = cellIsBlank
+    this.hyperlinkUrl = hyperlinkUrl
+    this.isWindowActivation = isWindowActivation
+    this.mods = mods
   }
 }

@@ -1,5 +1,5 @@
 import type { DOMElement } from './dom.js'
-import { ClickEvent } from './events/click-event.js'
+import { ClickEvent, type ClickDisposition } from './events/click-event.js'
 import type { EventHandlerProps } from './events/event-handlers.js'
 import { nodeCache } from './node-cache.js'
 
@@ -52,12 +52,17 @@ export function dispatchClick(
   row: number,
   cellIsBlank = false,
 ): boolean {
+  return dispatchMouseClick(root, new ClickEvent(col, row, cellIsBlank)) !== 'unhandled'
+}
+
+export function dispatchMouseClick(root: DOMElement, event: ClickEvent): ClickDisposition {
+  const { col, row } = event
   let target: DOMElement | undefined = hitTest(root, col, row) ?? undefined
-  if (!target) return false
+  if (!target) return 'unhandled'
 
   // Click-to-focus: find the closest focusable ancestor and focus it.
   // root is always ink-root, which owns the FocusManager.
-  if (root.focusManager) {
+  if (root.focusManager && !event.isWindowActivation) {
     let focusTarget: DOMElement | undefined = target
     while (focusTarget) {
       if (typeof focusTarget.attributes['tabIndex'] === 'number') {
@@ -67,25 +72,27 @@ export function dispatchClick(
       focusTarget = focusTarget.parentNode
     }
   }
-  const event = new ClickEvent(col, row, cellIsBlank)
   let handled = false
   while (target) {
     const handler = target._eventHandlers?.onClick as
       | ((event: ClickEvent) => void)
       | undefined
     if (handler) {
-      handled = true
       const rect = nodeCache.get(target)
       if (rect) {
         event.localCol = col - rect.x
         event.localRow = row - rect.y
       }
+      event.defaultAllowed = false
       handler(event)
-      if (event.didStopImmediatePropagation()) return true
+      if (!event.defaultAllowed) handled = true
+      if (event.didStopImmediatePropagation()) { handled = !event.defaultAllowed; break }
     }
     target = target.parentNode
   }
-  return handled
+  if (event.droppedAsStray) return 'stray'
+  if (handled && event.endsClickChain) return 'repeat'
+  return handled ? 'handled' : 'unhandled'
 }
 
 /**
