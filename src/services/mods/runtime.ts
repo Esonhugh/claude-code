@@ -1,3 +1,4 @@
+import { createModUiAskRequest } from './uiAsk.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
@@ -110,7 +111,7 @@ export type ModRequestServices = {
   toolHost?(): {
     tools?(): readonly Tool[]
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string } | { deny: string }>
-    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<unknown>
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<unknown>
     check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }>
   }
   toolCatalog?(): ToolCatalog
@@ -252,7 +253,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -1060,6 +1061,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateModModelClassifyInput(input, plugin ?? 'mod')
         return input
       }
+      case 'ui.ask': return createModUiAskRequest(args, plugin ?? 'mod').input
       case 'ui.log': {
         const options = args[1] === undefined ? {} : args[1]
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
@@ -1516,7 +1518,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const op = `${noun}.${method}`
         checkCall(owner, op, table, lease)
         const fn=dynamic ? table[noun]![method]! : bound
-        const input = fn === hostIdentity ? hostInput(op, args, owner.declaration.name) : args[0] ?? {}
+        const ask = fn === hostIdentity && op === 'ui.ask' ? createModUiAskRequest(args, owner.declaration.name) : undefined
+        const input = ask?.input ?? (fn === hostIdentity ? hostInput(op, args, owner.declaration.name) : args[0] ?? {})
         if (op === 'env.get' || op === 'env.set') {
           const name = (input as ModInput).name
           const allowed = owner.declaration.env?.[op === 'env.get' ? 'reads' : 'writes']
@@ -1752,10 +1755,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               combined.cleanup()
             }
           }
-          if (fn === hostIdentity && (op === 'tool.call' || op === 'session.send')) {
+          if (fn === hostIdentity && (op === 'tool.call' || op === 'session.send' || op === 'ui.ask')) {
             const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
             if (op === 'session.send' && !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'SendMessage'))
               return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
+            if (ask && (!binding?.isInteractive || !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'AskUserQuestion')))
+              throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: no tool named \"AskUserQuestion\" in this session`), {name:'HooksError'})
             if (!host) throw new Error('Tool execution host is unavailable on this host')
             let toolInput = input as ModInput
             if (op === 'session.send') {
@@ -1792,7 +1797,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
             try {
               combined.signal.throwIfAborted()
-              const receipt = await withReference(owner, () => host.call(toolInput, callSnapshot, combined.signal, owner.declaration.name))
+              const receipt = await withReference(owner, () => host.call(toolInput, callSnapshot, combined.signal, owner.declaration.name, ask ? 'ui.ask' : undefined))
+              if (ask) {
+                const answer = ask.answer(receipt as import('./toolAdapter.js').ToolCallResult)
+                logForDebugging(`[ModsUI] ui.ask plugin=${owner.declaration.name} answered chars=${answer.length}`)
+                return answer
+              }
               if (op !== 'session.send') return receipt
               const sent = sessionSendToolResult(receipt as import('./toolAdapter.js').ToolCallResult)
               logForDebugging(`[ModsSend] plugin=${owner.declaration.name} to=${String(toolInput.to)} delivered=${sent.isDelivered}${sent.isDelivered ? '' : ` reason=${sent.reason}`}`)

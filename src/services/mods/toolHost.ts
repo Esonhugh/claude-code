@@ -84,7 +84,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }
     },
-    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string): Promise<ToolCallResult> {
+    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<ToolCallResult> {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
         typeof input.tool !== 'string' || !input.tool.trim() ||
         (input.consent !== undefined && typeof input.consent !== 'string'))
@@ -93,7 +93,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       const tools = getTools()
       const tool = findToolByName(tools, name)
       const refusal = authorCallRefusals.get(tool?.name ?? name)
-      if (refusal) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
+      if (refusal && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
       if (!tool) throw new Error(`No such tool available: ${name}`)
       const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: randomUUID(), name: tool.name, input: args }
       const assistant = createAssistantMessage({ content: [block] })
