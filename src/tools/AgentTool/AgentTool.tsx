@@ -64,6 +64,7 @@ import { EFFORT_LEVELS, getDefaultEffortForModel, isEffortLevel, type EffortValu
 import { AbortError, errorMessage, toError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import {
   createUserMessage,
   extractTextContent,
@@ -309,10 +310,28 @@ function planDisabledInputSchema() {
     : planDisabledSchema()
 }
 
+type ProviderInputSchema = ReturnType<typeof planEnabledInputSchema> | ReturnType<typeof planDisabledInputSchema>
+function withAnthropicEffort(schema: ProviderInputSchema) {
+  return schema.extend({
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
+      .optional()
+      .describe(baseInputSchema().shape.effort.description!),
+  })
+}
+const anthropicInputSchemas = new WeakMap<ProviderInputSchema, ReturnType<typeof withAnthropicEffort>>()
+
 export function inputSchema() {
-  return isPlanModeAvailable()
+  const schema = isPlanModeAvailable()
     ? planEnabledInputSchema()
     : planDisabledInputSchema()
+  // Restrict model requests; configured/ inherited effort keeps its wider type.
+  if (getAPIProvider() === 'openai') return schema
+  let anthropicSchema = anthropicInputSchemas.get(schema)
+  if (!anthropicSchema) {
+    anthropicSchema = withAnthropicEffort(schema)
+    anthropicInputSchemas.set(schema, anthropicSchema)
+  }
+  return anthropicSchema
 }
 type InputSchema = ReturnType<typeof inputSchema>
 

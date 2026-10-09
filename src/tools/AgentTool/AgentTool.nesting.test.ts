@@ -504,13 +504,30 @@ for (const model of ['', null]) {
   assert.equal(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'model test', model }).success, false)
 }
 
-test('Agent effort accepts configured levels and integer overrides', () => {
-  for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'ultracode', 0, 42]) {
-    const parsed = AgentTool.inputSchema.parse({ prompt: 'inspect', description: 'effort test', effort })
-    expect(parsed).toHaveProperty('effort', effort)
-  }
-  for (const effort of ['', 'inherit', 'invalid', null, 1.5, Infinity]) {
-    expect(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'effort test', effort }).success).toBe(false)
+test('Agent model-visible effort follows the provider without changing configured launch effort', () => {
+  const keys = ['CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']
+  const saved = keys.map(key => process.env[key])
+  const official = ['low', 'medium', 'high', 'xhigh', 'max']
+  try {
+    for (const providerFlag of [undefined, ...keys.slice(1), keys[0], undefined]) {
+      for (const key of keys) delete process.env[key]
+      if (providerFlag) process.env[providerFlag] = '1'
+      const allowed = providerFlag === keys[0]
+        ? ['none', 'minimal', ...official, 'ultra', 'ultracode', 0, 42]
+        : official
+      // Official 2.1.292 API request: Agent.effort is exactly these five strings.
+      for (const effort of ['none', 'minimal', ...official, 'ultra', 'ultracode', 0, 42, '', 'inherit', 'invalid', null, 1.5, Infinity]) {
+        const parsed = AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'effort test', effort })
+        expect(parsed.success).toBe(allowed.includes(effort as never))
+        if (parsed.success) expect(parsed.data).toHaveProperty('effort', effort)
+      }
+      expect(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'effort test' }).success).toBe(true)
+    }
+  } finally {
+    keys.forEach((key, index) => {
+      if (saved[index] === undefined) delete process.env[key]
+      else process.env[key] = saved[index]
+    })
   }
 })
 
