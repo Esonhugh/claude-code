@@ -2189,6 +2189,33 @@ async function loadPluginsFromMarketplaces({
 }
 
 /**
+ * Resolve a relative marketplace entry source inside its marketplace directory.
+ * A source that escapes is recorded as a load error so only that plugin is
+ * skipped.
+ */
+function resolveMarketplaceSourcePath(
+  marketplaceDir: string,
+  source: string,
+  entry: PluginMarketplaceEntry,
+  pluginId: string,
+  errorsOut: PluginError[],
+): string | null {
+  try {
+    return validatePathWithinBase(marketplaceDir, source)
+  } catch {
+    const error = `Plugin source path refused: ${source} does not stay inside its marketplace directory. Check that the marketplace entry has a plain relative path.`
+    logForDebugging(error, { level: 'warn' })
+    errorsOut.push({
+      type: 'generic-error',
+      source: pluginId,
+      plugin: entry.name,
+      error,
+    })
+    return null
+  }
+}
+
+/**
  * Cache-only variant of loadPluginFromMarketplaceEntry.
  *
  * Skips network (cachePlugin) and disk-copy (copyPluginToVersionedCache).
@@ -2224,7 +2251,15 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
       })
       return null
     }
-    pluginPath = join(marketplaceDir, entry.source)
+    const confinedPath = resolveMarketplaceSourcePath(
+      marketplaceDir,
+      entry.source,
+      entry,
+      pluginId,
+      errorsOut,
+    )
+    if (!confinedPath) return null
+    pluginPath = confinedPath
     // finishLoadingPluginFromPath reads pluginPath — its error handling
     // surfaces ENOENT as a load failure, no need to pre-check here.
   } else {
@@ -2327,7 +2362,14 @@ async function loadPluginFromMarketplaceEntry(
     ).isDirectory()
       ? marketplaceInstallLocation
       : join(marketplaceInstallLocation, '..')
-    const sourcePluginPath = join(marketplaceDir, entry.source)
+    const sourcePluginPath = resolveMarketplaceSourcePath(
+      marketplaceDir,
+      entry.source,
+      entry,
+      pluginId,
+      errorsOut,
+    )
+    if (!sourcePluginPath) return null
 
     if (!(await pathExists(sourcePluginPath))) {
       const error = new Error(`Plugin path not found: ${sourcePluginPath}`)

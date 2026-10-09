@@ -24,6 +24,7 @@ import {
   writeFileSync_DEPRECATED,
 } from '../slowOperations.js'
 import { getPluginsDirectory } from './pluginDirectories.js'
+import { validatePathWithinBase } from './pluginInstallationHelpers.js'
 import {
   type InstalledPlugin,
   InstalledPluginsFileSchemaV1,
@@ -1200,7 +1201,11 @@ export async function migrateFromEnabledPlugins(): Promise<void> {
         let gitCommitSha: string | undefined = undefined
 
         if (typeof entry.source === 'string') {
-          installPath = join(marketplaceInstallLocation, entry.source)
+          // Throws for a source outside the marketplace; caught below.
+          installPath = validatePathWithinBase(
+            marketplaceInstallLocation,
+            entry.source,
+          )
           version = getPluginVersionFromManifest(installPath, pluginId)
           gitCommitSha = await getGitCommitSha(installPath)
         } else {

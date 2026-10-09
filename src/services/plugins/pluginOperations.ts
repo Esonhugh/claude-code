@@ -45,6 +45,7 @@ import {
 import {
   formatResolutionError,
   installResolvedPlugin,
+  validatePathWithinBase,
 } from '../../utils/plugins/pluginInstallationHelpers.js'
 import {
   cachePlugin,
@@ -1028,7 +1029,16 @@ async function performPluginUpdate({
     const marketplaceDir = marketplaceStats.isDirectory()
       ? marketplaceInstallLocation
       : dirname(marketplaceInstallLocation)
-    sourcePath = join(marketplaceDir, entry.source)
+    try {
+      sourcePath = validatePathWithinBase(marketplaceDir, entry.source)
+    } catch {
+      return {
+        success: false,
+        message: `Plugin source path refused: ${entry.source} does not stay inside its marketplace directory. Check that the marketplace entry has a plain relative path.`,
+        pluginId,
+        scope,
+      }
+    }
 
     // Verify sourcePath exists. This stat is required — neither downstream
     // op reliably surfaces ENOENT:
