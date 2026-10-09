@@ -1,3 +1,5 @@
+import { createModMcpConnections } from '../services/mods/mcpConnect.js'
+import { getDefaultAppState } from '../state/AppStateStore.js'
 import { prepareConversationRewind, rewindConversationTo } from '../utils/conversationRewind.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { join } from 'node:path'
@@ -92,11 +94,16 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
       return ts.visitNode(root, visit) as ts.SourceFile
     }] },
   }).outputText
-  return (scope: Record<string, any>) => new Function(
+  return (scope: Record<string, any>) => {
+    let mcpState = getDefaultAppState()
+    const modMcpConnections = createModMcpConnections({getState:()=>mcpState,setState:update=>{mcpState=update(mcpState)}})
+    return new Function(
     'scope',
+    'modMcpConnections',
     'getModHttpServices',
     `with (scope) { ${js}; return extracted; }`,
-  )(scope, getModHttpServices)
+  )(scope, modMcpConnections, getModHttpServices)
+  }
 }
 
 test('REPL sizes the dock from the shown pane requested body columns', () => {

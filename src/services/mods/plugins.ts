@@ -227,6 +227,7 @@ export function prepareModPlugins(
       fingerprintOptions: prepared.fingerprintOptions,
       tier: getModPluginOrigin(plugin, settings).tier,
     }
+    Object.defineProperty(input, 'mcpPlugin', {value:plugin})
     markBuiltinModInput(plugin, input)
     inputs.push(input)
   }

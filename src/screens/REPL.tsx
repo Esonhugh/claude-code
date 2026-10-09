@@ -1,3 +1,4 @@
+import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
@@ -1960,6 +1961,11 @@ export function REPL({
   const diffOwned = React.useSyncExternalStore(subscribeDiffOwnership, getDiffOwnership)
   const diffOwnershipRef = useRef(getDiffOwnership)
   diffOwnershipRef.current = getDiffOwnership
+  const modMcpConnections = useMemo(() => createModMcpConnections({
+    getState: store.getState, setState: setAppState,
+    policyReason: () => strictMcpConfig ? 'This session runs with --strict-mcp-config, which connects no plugin servers.'
+      : isRemoteExecutionSession ? 'This session is a remote client, which connects no plugin servers.' : undefined,
+  }), [store, setAppState, strictMcpConfig, isRemoteExecutionSession])
   const awaitMods = useCallback(() => modsSession?.bind({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
@@ -1980,6 +1986,8 @@ export function REPL({
         !message.message.content.every(block => block.type === 'tool_result')),
     ).length,
     ...getModHttpServices(),
+    mcpConnect: modMcpConnections.connect,
+    mcpRelease: modMcpConnections.release,
     mcpCall: (server, tool, args, signal) => {
       const clients = modToolContextRef.current!().options.mcpClients
       return callMCPToolForMod(findMCPConnectionForMod(clients, server), tool, args, signal)
@@ -2117,7 +2125,7 @@ export function REPL({
         key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
       })
     },
-  }), [modsSession, setAppState, setMessages, addNotification, removeNotification])
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modMcpConnections])
 
   useEffect(() => {
     if (!modsSession) return

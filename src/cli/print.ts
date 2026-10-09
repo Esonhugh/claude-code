@@ -1,3 +1,4 @@
+import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
@@ -2865,6 +2866,7 @@ function runHeadlessStreaming(
       setAppState(state => ({ ...state, attribution: updater(state.attribution) }))
     },
   })
+  const modMcpConnections = createModMcpConnections({getState:getAppState,setState:setAppState})
   const inboundBinding = options.modsSession?.bind({
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
@@ -2904,6 +2906,8 @@ function runHeadlessStreaming(
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
     toolHost: () => createModToolHost(getModToolContext(), canUseTool),
+    mcpConnect: modMcpConnections.connect,
+    mcpRelease: modMcpConnections.release,
     mcpCall: (server, tool, args, signal) =>
       callMCPToolForMod(
         findMCPConnectionForMod([

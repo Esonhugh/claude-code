@@ -1,3 +1,5 @@
+import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
+import type { LoadedPlugin } from '../../types/plugin.js'
 import { officialCoreCalls } from './coreCalls.js'
 import type { ModWorkerFault } from './protocol.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
@@ -73,6 +75,8 @@ import {
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier, ModHookStream } from './types.js'
 
 export type ModPluginInput = {
+  /** Trusted host metadata; never serialized into the module declaration. */
+  mcpPlugin?: LoadedPlugin
   name: string
   storageId: string
   version?: string
@@ -113,6 +117,8 @@ export type ModRequestServices = {
   captureUsage?(): ModUsageReader
   modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<ModModelCompleteResult>
+  mcpConnect?(plugin: LoadedPlugin | undefined, server: string, signal: AbortSignal): Promise<ModMcpConnectResult>
+  mcpRelease?(source: string): Promise<void>
   mcpCall?(server: string, tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   submitPrompt?(input: {
     text: string
@@ -242,7 +248,7 @@ const coreHost: Nouns = {
   config: { list: hostIdentity, set: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { compose: hostIdentity, read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
-  mcp: { call: hostIdentity },
+  mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
   ui: { open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
@@ -780,6 +786,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       () => tools.release(owner),
       () => agents.release(owner),
       () => owner.controller.abort(),
+      () => services.mcpRelease?.(declarations.find(input => input.storageId === owner.declaration.storageId)?.mcpPlugin?.source ?? owner.declaration.storageId),
       ...[...owner.waits.keys()].map(id => () => cancelWait(owner, id)),
       () => releaseUi(owner),
       () => owner.environment.dispose(),
@@ -955,6 +962,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           throw new TypeError('http.fetch takes a URL and optional init object')
         return { url: args[0], init }
       }
+      case 'mcp.connect':
+        if (typeof args[0] !== 'string' || args[0].trim() === '') throw new TypeError('$.mcp.connect takes { server } (a non-empty string)')
+        return {server: args[0]}
       case 'mcp.call': {
         const callArgs = args[2] === undefined ? {} : args[2]
         if (args.length > 3 || typeof args[0] !== 'string' || !args[0] || typeof args[1] !== 'string' || !args[1] ||
@@ -1775,6 +1785,34 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
                   signal: combined.signal,
                 }))
+            } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'mcp.connect') {
+            const plugin = declarations.find(input => input.storageId === owner.declaration.storageId)?.mcpPlugin
+            const connect = requestServices.getStore()?.mcpConnect ?? services.mcpConnect
+            const combined = createCombinedAbortSignal(signal, {signalB:owner.controller.signal})
+            try {
+              const result = await withReference(owner, () => dispatch(op, input as ModInput, async rewritten => ({
+                value: await (async () => {
+                  const value = connect ? await connect(plugin, rewritten.server as string, combined.signal)
+                    : plugin ? {isConnected:false as const,reason:'failed' as const,message:'MCP connection host is unavailable on this host'}
+                    : unlistedModMcpServer(rewritten.server as string)
+                  if (owner.state !== 'active' && value.isConnected) {
+                    await services.mcpRelease?.(plugin?.source ?? owner.declaration.storageId)
+                    return {isConnected:false as const,reason:'failed' as const,message:`The MCP server "${value.server}" was taken out: its plugin unloaded while it connected.`}
+                  }
+                  return value
+                })(),
+              }), snapshot, table, {
+                origin:{plugin:owner.declaration.name,tier:owner.declaration.tier},signal:combined.signal,
+                ...(caller ? {caller} : {}),
+                validateInput: rewritten => {
+                  if (typeof rewritten.server !== 'string' || rewritten.server.trim() === '')
+                    throw new TypeError('$.mcp.connect takes { server } (a non-empty string)')
+                },
+              })) as {value?:ModMcpConnectResult;deny?:string}
+              if (typeof result.deny === 'string') throw new Error(result.deny)
+              return result.value
             } finally { combined.cleanup() }
           }
           if (fn === hostIdentity && op === 'mcp.call') {
