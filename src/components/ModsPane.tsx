@@ -23,6 +23,7 @@ import type { InputEvent } from '../ink/events/input-event.js'
 import { useOptionalKeybindingContext, useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { KEYBINDING_ACTIONS } from '../keybindings/schema.js'
+import { logForDebugging } from '../utils/debug.js'
 import type { Color } from '../ink/styles.js'
 import { getTheme, type Theme } from '../utils/theme.js'
 import { basename, extname, isAbsolute } from 'node:path'
@@ -1417,6 +1418,7 @@ export function ModsPane({
     if (node.type === 'Button' && typeof action === 'string') {
       actions[action] = () => {
         const current = latest.current.pane
+        logForDebugging(`[ModsPaneAction] ${JSON.stringify({phase:'dispatch', plugin:current.plugin, pane:current.id, action, drawing:pane.drawing, currentDrawing:current.drawing, visible:current.visible, focused:current.focused, canFocus:latest.current.canFocus})}`)
         if (!current.visible || !(current.focused || latest.current.canFocus) ||
             current.owner !== pane.owner || current.drawing !== pane.drawing) return false
         const key = node.props!.key as string
@@ -1458,7 +1460,7 @@ export function ModsPane({
     if (active !== root) return false
     void closeByPerson(current).catch(error => latest.current.onError?.(error))
   }, { context: closeContext, isActive: closeActive, capture: true })
-  React.useEffect(() => {
+  React.useLayoutEffect(() => {
     if (!keybindings || !actionsActive) return
     const unregister = Object.entries(actions).map(([action, handler]) =>
       keybindings.registerHandler({ action, context: 'Global', handler }))
