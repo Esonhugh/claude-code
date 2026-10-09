@@ -237,7 +237,7 @@ test.each([
   ["next({...e,messages:[{...e.messages[0],handle:'unknown'}]})", 'unknown message handle'],
   ["({messages:[],skip:'both'})", 'messages or skip'],
   ["({messages:[{role:'user',text:'x',toolUses:[]}],tokensAfter:-1})", 'token counts'],
-  ["({messages:[],tokensAfter:Infinity})", 'Non-finite module value'],
+  ["({messages:[{role:'user',text:'x',toolUses:[]}],tokensAfter:Infinity})", 'token counts'],
 ])('malformed compact rewrite/result recovers inside the Worker catch: %s', async (expression, error) => {
   await register(`export function register(on) {
     on('session.compact',($,e,next)=>${expression}).catch(($,e,next)=>({skip:next.error.message}));
