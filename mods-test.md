@@ -2423,3 +2423,14 @@ ENOSPC 的 CLI/driver 失败日志单独保留，缺失最终收据不重建为�
 Native57 原完整30项为27通过/3失败；七侧 builtin 的 native 关闭与归档物理回放通过，但 legacy-only 缓存删除守卫误拒绝，原 cache 已保留。实际七run最小RED与新后端关闭守卫修复单独取证，missing/link/foreign/mixed/未关闭保持拒收，不从缓存释放推出 full/input/timing。
 
 Green6 的完整 CLI 文件真实14通过/1失败：成功 child read 中 DA 应答实际插入 /exit 与回车之间，连续子串 oracle 因而误拒收；记录、errno、完整输入与正常退出原件保留。新读取证明要求全部 child 字节与 broker input 完全相同，再由独立输出 parser 仅在真实已发查询后识别确切终端应答，并严格匹配完整预期命令。任意删改或额外字节、无对应查询、错误格式或超过对应查询数的应答仍拒收；不据此认证应答发送者、应用 tokenizer 或输入 owner。Green7 的完整 CLI 文件真实14通过/1失败：非 production 的直接 wrapper 没有 broker IO 文件，被新断言错误要求读取；原件保留。直接 wrapper 现严格核对 input.json 全部成功写入前缀与完整 child read，并保留原连续 /exit 与回车断言；该分支不声称覆盖查询应答因果顺序。
+
+
+## 2026-10-09 Button 2.1.295 与 native resize tail
+
+官方固定制品 SHA-256 `0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70`。本批覆盖 Button children、同 guest 跨重绘持有、最后释放/新 guest 拒收，以及实际 core-entry 前 `setUiAccess` 的异步间隙；九项真实 Worker 回归不等于完整 browser/Client 验收。Ink 单独验证 299/300ms、399/400ms、键盘立即激活、click disposition 与语义输入批次。
+
+原 local5 终端记录完成行为断言却因 resize consumer 失败而不可验收；原件保持 failed。第一次 ACK 的 broker tail 为12427，内核 write 前缀为12472，二者差45字节已由原始成功 write packet核对。新消费层仅允许已独立验证的 kernel prefix 位于 broker tail 与最终 raw 之间；Python 原件推导、Mach 时序、exact target、identity 与物理帧断言保持。Green6 的42项回归通过；原记录 posthoc 58帧/两次resize通过仅证明消费修复，不当作新binary或历史verdict改判。
+
+新入口 `scripts/validate-mods-button295.mjs` 默认 local 必须同时完成业务、正常退出和本次原生逐帧/resize 校验；官方模式明确无本地 logical producer 的物理验收。新增关闭/重开流程必须在最终源冻结后重新运行；该脚本是专项入口，不替代 `scripts/run-binary-gate.py` 原默认完整动态矩阵，也不改变旧27/3结果。详细定义、命令及未闭合项见[本批说明](docs/research/mods-button-295-validity-20261009.md)。
+
+Green7 的 standalone 脚本真实双端完成13个步骤，local70帧与两次resize通过；实际两侧 child 均 exit0/reaped/physical EOF。然而其 official 分支只检查dead pane，不能拒收非0退出，red8 已在旧脚本得到3通过/1失败。新轮两模式都读取原 broker 身份及关闭收据，拒收非0/null退出、未reap/EOF、错child/capture、信号和清理错误；官方仅允许明确缺本地producer，不能豁免其他错误。一次tmux send命令不代表已证明一次child read/tokenizer批次，相关边界保持未覆盖。

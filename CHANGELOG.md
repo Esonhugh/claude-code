@@ -28,6 +28,10 @@
 
 ### 变更内容
 
+- Mods Button 对齐官方 2.1.295 的字符串/Text children、稳定 guest handle 和绘制持有生命周期；作者声明按固定摘要投影两个 Button 定义，其他声明仍为 2.1.292 基线。终端补齐挂载点击稳定期、窗口激活/点击处置和语义输入批次刷新；新增真实 Worker、Ink 与隔离终端验收入口，完整 Mods/UI 与发布仍待闭合。见[Button 验收边界](docs/research/mods-button-295-validity-20261009.md)。
+
+- 修正 native resize 消费层把 broker 已读 tail 等同内核 write 前缀的误拒收；继续用原 Mach/write 记录重算前缀并核对原件、唯一请求窗口和后续物理帧。保留历史失败收据，新增 tail 落后正例及越界负例，不据局部回放提升完整 native 或发布结论。
+
 - Builtin 终端验收在原 sandbox 内启动 native broker，在 ready/Popen 前固定普通屏幕起点与原始 parser 状态；按实际输出前缀和物理 marker 比较普通屏幕帧。归档重验依据同次回执读取副本，保留原 JSON/摘要且不依赖原 cache；删除守卫按实际 backend 分别校验 native 或 legacy 关闭原件；child 读取核对全部 broker 字节，并只按实际查询识别终端应答。APFS 副本保留独立 inode 与完整逻辑字节，避免为稀疏 journal 分配空槽；完整输入归属、时序与发布门禁仍单独验收。见[验收范围](docs/research/mods-builtin-native-normal-root-validity-20261009.md)。
 
 - native 终端验收记录实际 child 的 read/readv/NOCANCEL、errno 和不可变成功前缀，补齐 PTY 别名、短读、EOF、EAGAIN/EBADF/EFAULT、容量不足与非法元数据拒收。实际 CLI 回归核对唯一 /exit 字节并输出独立读取证明；parser、消费 owner、状态与帧因果及时序门禁继续保持未覆盖。

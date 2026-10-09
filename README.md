@@ -647,7 +647,11 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 
 对齐目标包括官方 Mods 的函数、参数和回执、上下文传递、加载生命周期、作者测试及 UI 行为。除用户明确指定的 Privacy Mode 等差异外，现有本地行为不能自动视为例外。下文的未实现项是待完成工作；当前结果与分批修复顺序见 [兼容性清单](docs/research/mods-parity.md)，实际验收记录见 [mods-test.md](mods-test.md)。
 
-最新对照版本于2026-10-07通过[公开包登记处](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)核实为官方 **2.1.292**，同时比较对应版本的原生声明与实现。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+最新对照版本于2026-10-09通过[公开包登记处](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)核实为官方 **2.1.295**。作者声明仍以 2.1.292 完整声明体为基线，本批仅投影已实现且逐块核对的 2.1.295 Button children 定义；不表示其他新增 API 或全部 UI 已完成迁移。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+
+`Button` 可以持有字符串和嵌套 `Text` children，整段仍是一个可点击控件和一个焦点位置。例如在 `ui.render` 中使用 `const {Button, Text} = $.ui.resolve(event)`，返回 `Button({key:'save', label:'Save', children:['Save ', Text({dimColor:true, children:'2m'})], onPress:() => {}})`。`label` 是无 children 显示能力的 surface 使用的名称；仅单字符串 child 的旧写法继续默认以 label 为 key。其他元素会被拒绝；复合 children 应给出稳定 key。终端鼠标沿用官方的挂载后 300ms 点击稳定期和窗口激活处理，Enter/Space 不等待此稳定期。已接受的 press 绑定原 guest handle，重绘期间只要仍有 drawing 持有它就可继续；新 Button 即使复用 key 或函数也不能接管旧 guest。
+
+本批可重复终端脚本为 `bun scripts/validate-mods-button295.mjs --binary /absolute/built-claude --binary-sha256 SHA256 --evidence-root /private/tmp/new-button-run`。先运行 `make build`，传入该新产物的 SHA-256；证据目录必须不存在。脚本使用隔离配置、dummy credential、关闭的 loopback provider 和私有 tmux，验证子文本绘制、重绘中的 press、重复 Enter、单次发送 Tab+Enter、两次实际 resize、子文本鼠标点击及关闭/重开。两种模式都核对实际 child 的零退出码、reap、EOF、无清理信号/错误及原关闭身份。默认 local 模式还要求原生逐帧与 resize 证据通过，不能只靠 pane 文本；官方对照加 `--mode official`，只报告行为验收。两种模式均不宣称完整 input owner、调度时序或 Mods 发布通过。覆盖边界和回归入口见 [Button 与鼠标验收](docs/research/mods-button-295-validity-20261009.md)。
 
 最小目录为 `.claude-plugin/plugin.json`、`hooks/hooks.json` 和 `hooks/register.ts`。Manifest 使用普通 Plugin 的 `name`、`version`、`description`；在 `hooks/hooks.json` 声明入口（路径相对此文件）：
 
@@ -679,7 +683,7 @@ export const register: Register = on => {
 ./built-claude plugin test /absolute/path/to/my-mod
 ```
 
-作者主声明采用官方 2.1.292 原生制品内的完整声明体：565 个主模块导出、51 个 testing 导出，以及完整事件、操作和全局定义。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
+作者主声明采用官方 2.1.292 原生制品内的完整声明体作为基线：565 个主模块导出、51 个 testing 导出，以及完整事件、操作和全局定义。仅 ButtonProps 与 RenderElement 的 Button 分支追加固定 2.1.295 制品核对过的 children 定义；基线、增量和片段摘要均在生成前校验，文件头明确两者来源。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
 
 新增的 `PromptAutocompleteInput/Result/Suggestion`、`ModelTextBlock/ModelCompleteInput`、`AgentSpawnInput.workflow` 和 `HookFailure` 重入定义均来自官方原文。它们的运行时生产、分发和上下文仍须按功能验收；声明增量的历史差异见[声明专项](docs/research/mods-declarations-292-20261007.md)，本批 prompt.autocomplete 的实际实现与有限验收见[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)，不能仅凭类型检查通过推断其他功能支持。
 
