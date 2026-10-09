@@ -47,6 +47,10 @@ export type Props = Except<Styles, 'textWrap'> & {
   onMouseEnter?: () => void
   /** Fired when the mouse moves out of this Box's rendered rect. */
   onMouseLeave?: () => void
+  /** Reconcile hover after paint when layout moves beneath a stationary pointer. */
+  hoverFollowsPaint?: boolean
+  /** Exclude unpainted cells while preserving gaps inside one painted Text. */
+  hoverIgnoresBlankCells?: boolean
 }
 
 /**
@@ -70,6 +74,8 @@ function Box({
   onBlurCapture,
   onMouseEnter,
   onMouseLeave,
+  hoverFollowsPaint,
+  hoverIgnoresBlankCells,
   onKeyDown,
   onKeyDownCapture,
   ...style
@@ -107,6 +113,8 @@ function Box({
       onBlurCapture={onBlurCapture}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
+      hoverFollowsPaint={hoverFollowsPaint}
+      hoverIgnoresBlankCells={hoverIgnoresBlankCells}
       onKeyDown={onKeyDown}
       onKeyDownCapture={onKeyDownCapture}
       style={{

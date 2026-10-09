@@ -31,7 +31,7 @@ import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
 import { getEvidenceCursorVisible, nextEvidenceRendererId, recordTerminalEvidenceFrame, setEvidenceCursorVisible, terminalEvidenceBoundary } from './terminalEvidence.js'
 import { beginNativeTerminalFrame, initializeNativeTerminalJournal, nativeTerminalFrameBoundary } from './nativeTerminalJournal.js'
 import { collectTerminalPaneEvidence, collectTerminalUiRevision } from './terminalPaneEvidence.js'
-import { dispatchMouseClick, dispatchHover } from './hit-test.js'
+import { dispatchMouseClick, dispatchHover, followHover, hitTest, hoverCellIsBlank } from './hit-test.js'
 import { ClickEvent, type ClickDisposition, type ClickModifiers } from './events/click-event.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
@@ -63,7 +63,6 @@ import {
   cellAt,
   createScreen,
   HyperlinkPool,
-  isEmptyCellAt,
   migrateScreenPools,
   StylePool,
 } from './screen.js'
@@ -226,6 +225,11 @@ export default class Ink {
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
   private readonly hoveredNodes = new Set<dom.DOMElement>()
+  private hoverCol = -1
+  private hoverRow = -1
+  private hoverFollowStreak = 0
+  private hoverFollowHeldUntil = 0
+  private readonly appRef = React.createRef<App>()
   // Set by <AlternateScreen> via setAltScreenActive(). Controls the
   // renderer's cursor.y clamping (keeps cursor in-viewport to avoid
   // LF-induced scroll when screen.height === terminalRows) and gates
@@ -394,6 +398,7 @@ export default class Ink {
   }
 
   private handleResume = () => {
+    this.forgetPointer()
     if (!this.options.stdout.isTTY) {
       return
     }
@@ -487,6 +492,7 @@ export default class Ink {
   enterAlternateScreen(): void {
     setEvidenceCursorVisible(true)
     this.pause()
+    this.forgetPointer()
     this.suspendStdin()
     this.options.stdout.write(
       // Disable extended key reporting first — editors that don't speak
@@ -982,6 +988,7 @@ export default class Ink {
       cacheHits: 0,
       live: 0,
     }
+    if (hasDiff || didLayoutShift()) this.followHover()
     this.options.onFrame?.({
       durationMs: performance.now() - renderStart,
       frame,
@@ -1108,6 +1115,7 @@ export default class Ink {
       this.resetFramesForAltScreen()
     } else {
       this.pendingAltScreenEntry = null
+      this.forgetPointer()
       this.clearTextSelection()
       this.repaint()
     }
@@ -1544,13 +1552,52 @@ export default class Ink {
 
   dispatchMouseClick(col: number, row: number, isWindowActivation = false, mods?: ClickModifiers): ClickDisposition {
     if (!this.altScreenActive) return 'unhandled'
-    const blank = isEmptyCellAt(this.frontFrame.screen, col, row)
+    const target = hitTest(this.rootNode, col, row)
+    const blank = hoverCellIsBlank(this.rootNode, this.frontFrame.screen, col, row, target) &&
+      !this.litWhereClicked(target, col, row)
     return dispatchMouseClick(this.rootNode, new ClickEvent(col, row, blank, this.getHyperlinkAt(col, row), isWindowActivation, mods))
   }
 
   dispatchHover(col: number, row: number): void {
     if (!this.altScreenActive) return
-    dispatchHover(this.rootNode, col, row, this.hoveredNodes)
+    this.hoverCol = col
+    this.hoverRow = row
+    this.hoverFollowStreak = 0
+    this.hoverFollowHeldUntil = 0
+    dispatchHover(this.rootNode, col, row, this.hoveredNodes, this.frontFrame.screen)
+  }
+
+  private litWhereClicked(target: dom.DOMElement | null, col: number, row: number): boolean {
+    if (col !== this.hoverCol || row !== this.hoverRow) return false
+    let node: dom.DOMElement | undefined = target ?? undefined
+    while (node) {
+      if (node.attributes.hoverIgnoresBlankCells && this.hoveredNodes.has(node)) return true
+      node = node.parentNode
+    }
+    return false
+  }
+
+  private forgetPointer(): void {
+    this.hoverCol = -1
+    this.hoverRow = -1
+    this.hoverFollowStreak = 0
+    this.hoverFollowHeldUntil = 0
+    const app = this.appRef.current
+    if (app) {
+      app.lastHoverCol = -1
+      app.lastHoverRow = -1
+    }
+  }
+
+  private followHover(): void {
+    if (!this.altScreenActive || this.hoverCol < 0 || performance.now() < this.hoverFollowHeldUntil) return
+    const changed = followHover(this.rootNode, this.hoverCol, this.hoverRow, this.hoveredNodes, this.frontFrame.screen)
+    this.hoverFollowStreak = changed ? this.hoverFollowStreak + 1 : 0
+    // A hover style can move its own target. Match the official four-paint, 1s backoff.
+    if (this.hoverFollowStreak >= 4) {
+      this.hoverFollowStreak = 0
+      this.hoverFollowHeldUntil = performance.now() + 1000
+    }
   }
 
   dispatchKeyboardEvent(parsedKey: ParsedKey): void {
@@ -1744,6 +1791,7 @@ export default class Ink {
 
     const tree = (
       <App
+        ref={this.appRef}
         stdin={this.options.stdin}
         stdout={this.options.stdout}
         stderr={this.options.stderr}
@@ -1755,6 +1803,7 @@ export default class Ink {
         onSelectionChange={this.notifySelectionChange}
         onClickAt={this.dispatchMouseClick}
         onHoverAt={this.dispatchHover}
+        onHoverLost={this.forgetPointer}
         getHyperlinkAt={this.getHyperlinkAt}
         onOpenHyperlink={this.openHyperlink}
         onMultiClick={this.handleMultiClick}

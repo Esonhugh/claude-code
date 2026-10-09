@@ -60,6 +60,7 @@ export type DOMElement = {
 
   // When true, this node needs re-rendering
   dirty: boolean
+  hasAbsoluteDescendant?: boolean
   // Set by the reconciler's hideInstance/unhideInstance; survives style updates.
   isHidden?: boolean
   // Event handlers set by the reconciler for the capture/bubble dispatcher.
@@ -149,6 +150,14 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
   return node
 }
 
+function markAbsoluteAncestors(node: DOMElement): void {
+  let current: DOMElement | undefined = node
+  while (current && !current.hasAbsoluteDescendant) {
+    current.hasAbsoluteDescendant = true
+    current = current.parentNode
+  }
+}
+
 export const appendChildNode = (
   node: DOMElement,
   childNode: DOMElement,
@@ -159,6 +168,9 @@ export const appendChildNode = (
 
   childNode.parentNode = node
   node.childNodes.push(childNode)
+  if (childNode.style.position === 'absolute' || childNode.hasAbsoluteDescendant) {
+    markAbsoluteAncestors(node)
+  }
 
   if (childNode.yogaNode) {
     node.yogaNode?.insertChild(
@@ -180,6 +192,10 @@ export const insertBeforeNode = (
   }
 
   newChildNode.parentNode = node
+  if (newChildNode.style.position === 'absolute' ||
+    (newChildNode.nodeName !== '#text' && newChildNode.hasAbsoluteDescendant)) {
+    markAbsoluteAncestors(node)
+  }
 
   const index = node.childNodes.indexOf(beforeChildNode)
 
@@ -293,7 +309,11 @@ export const setStyle = (node: DOMNode, style: Styles): void => {
     // Previous pixels may overlap clean siblings when the absolute region changes.
     if (cached) addPendingClear(node.parentNode, cached, true)
   }
+  const becameAbsolute = style.position === 'absolute' && node.style.position !== 'absolute'
   node.style = style
+  if (becameAbsolute && node.parentNode) {
+    markAbsoluteAncestors(node.parentNode)
+  }
   markDirty(node)
 }
 

@@ -138,6 +138,7 @@ function Button({
       onBlur={handleBlur}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      hoverFollowsPaint
       {...style}
     >
       {content}

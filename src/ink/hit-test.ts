@@ -2,6 +2,7 @@ import type { DOMElement } from './dom.js'
 import { ClickEvent, type ClickDisposition } from './events/click-event.js'
 import type { EventHandlerProps } from './events/event-handlers.js'
 import { nodeCache } from './node-cache.js'
+import { isEmptyCellAt, type Screen } from './screen.js'
 
 /**
  * Find the deepest DOM element whose rendered rect contains (col, row).
@@ -19,25 +20,41 @@ export function hitTest(
   node: DOMElement,
   col: number,
   row: number,
+  depth = 0,
 ): DOMElement | null {
+  if (depth >= 256) return null
   const rect = nodeCache.get(node)
   if (!rect) return null
-  if (
-    col < rect.x ||
-    col >= rect.x + rect.width ||
-    row < rect.y ||
-    row >= rect.y + rect.height
-  ) {
-    return null
+  const inside = col >= rect.x && col < rect.x + rect.width &&
+    row >= rect.y && row < rect.y + rect.height
+  if (!inside && !node.hasAbsoluteDescendant) return null
+  if (!inside) {
+    const overflowX = node.style.overflowX ?? node.style.overflow
+    const overflowY = node.style.overflowY ?? node.style.overflow
+    if (((overflowX === 'hidden' || overflowX === 'scroll') && (col < rect.x || col >= rect.x + rect.width)) ||
+        ((overflowY === 'hidden' || overflowY === 'scroll') && (row < rect.y || row >= rect.y + rect.height))) return null
   }
-  // Later siblings paint on top; reversed traversal returns topmost hit.
+  let candidate: DOMElement | null = null
+  let escaped = false
+  // Absolute overflow is painted above in-flow siblings, even when its parent is earlier.
   for (let i = node.childNodes.length - 1; i >= 0; i--) {
     const child = node.childNodes[i]!
     if (child.nodeName === '#text') continue
-    const hit = hitTest(child, col, row)
-    if (hit) return hit
+    const childRect = nodeCache.get(child)
+    if (!childRect) continue
+    const childInside = col >= childRect.x && col < childRect.x + childRect.width &&
+      row >= childRect.y && row < childRect.y + childRect.height
+    if (!childInside && !child.hasAbsoluteDescendant) continue
+    if (candidate && childInside) continue
+    const hit = hitTest(child, col, row, depth + 1)
+    if (!hit) continue
+    if (!candidate || (!childInside && !escaped)) {
+      candidate = hit
+      escaped = !childInside
+    }
+    if (escaped) break
   }
-  return node
+  return candidate ?? (inside ? node : null)
 }
 
 /**
@@ -95,6 +112,33 @@ export function dispatchMouseClick(root: DOMElement, event: ClickEvent): ClickDi
   return handled ? 'handled' : 'unhandled'
 }
 
+export function hoverCellIsBlank(
+  root: DOMElement,
+  screen: Screen,
+  col: number,
+  row: number,
+  target: DOMElement | null = hitTest(root, col, row),
+): boolean {
+  if (!isEmptyCellAt(screen, col, row)) return false
+  const rect = target && ['ink-text', 'ink-raw-ansi'].includes(target.nodeName) ? nodeCache.get(target) : undefined
+  if (!rect) return true
+  let left: number | undefined, right: number | undefined
+  for (let x = col - 1; x >= Math.floor(rect.x); x--) {
+    if (!isEmptyCellAt(screen, x, row)) { left = x; break }
+  }
+  for (let x = col + 1; x < Math.ceil(rect.x + rect.width); x++) {
+    if (!isEmptyCellAt(screen, x, row)) { right = x; break }
+  }
+  return !(left !== undefined && right !== undefined &&
+    hitTest(root, left, row) === target && hitTest(root, right, row) === target)
+}
+
+function hoverEligible(node: DOMElement, cellIsBlank: boolean): boolean {
+  const handlers = node._eventHandlers as EventHandlerProps | undefined
+  return Boolean(handlers?.onMouseEnter || handlers?.onMouseLeave) &&
+    !(cellIsBlank && node.attributes.hoverIgnoresBlankCells)
+}
+
 /**
  * Fire onMouseEnter/onMouseLeave as the pointer moves. Like DOM
  * mouseenter/mouseleave: does NOT bubble — moving between children does
@@ -111,12 +155,13 @@ export function dispatchHover(
   col: number,
   row: number,
   hovered: Set<DOMElement>,
+  screenOrBlank: Screen | boolean = false,
 ): void {
   const next = new Set<DOMElement>()
   let node: DOMElement | undefined = hitTest(root, col, row) ?? undefined
+  const blank = typeof screenOrBlank === 'boolean' ? screenOrBlank : hoverCellIsBlank(root, screenOrBlank, col, row, node ?? null)
   while (node) {
-    const h = node._eventHandlers as EventHandlerProps | undefined
-    if (h?.onMouseEnter || h?.onMouseLeave) next.add(node)
+    if (hoverEligible(node, blank)) next.add(node)
     node = node.parentNode
   }
   for (const old of hovered) {
@@ -134,4 +179,40 @@ export function dispatchHover(
       ;(n._eventHandlers as EventHandlerProps | undefined)?.onMouseEnter?.()
     }
   }
+}
+
+/** Paint follows only opted-in nodes; ordinary hover still waits for pointer motion. */
+export function followHover(
+  root: DOMElement,
+  col: number,
+  row: number,
+  hovered: Set<DOMElement>,
+  screenOrBlank: Screen | boolean = false,
+): boolean {
+  const target = hitTest(root, col, row)
+  const blank = typeof screenOrBlank === 'boolean' ? screenOrBlank : hoverCellIsBlank(root, screenOrBlank, col, row, target)
+  let changed = false
+  for (const old of hovered) {
+    if (!old.attributes.hoverFollowsPaint) continue
+    let ancestor: DOMElement | undefined = target ?? undefined
+    const handlers = old._eventHandlers as EventHandlerProps | undefined
+    if (!hoverEligible(old, blank)) ancestor = undefined
+    while (ancestor && ancestor !== old) ancestor = ancestor.parentNode
+    if (!ancestor) {
+      hovered.delete(old)
+      changed = true
+      if (old.parentNode) handlers?.onMouseLeave?.()
+    }
+  }
+  let node: DOMElement | undefined = target ?? undefined
+  while (node) {
+    const handlers = node._eventHandlers as EventHandlerProps | undefined
+    if (node.attributes.hoverFollowsPaint && hoverEligible(node, blank) && !hovered.has(node)) {
+      hovered.add(node)
+      changed = true
+      handlers?.onMouseEnter?.()
+    }
+    node = node.parentNode
+  }
+  return changed
 }

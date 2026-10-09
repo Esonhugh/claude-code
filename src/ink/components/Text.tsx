@@ -41,6 +41,9 @@ type BaseProps = {
   readonly wrap?: Styles['textWrap']
 
   readonly children?: ReactNode
+  readonly onMouseEnter?: () => void
+  readonly onMouseLeave?: () => void
+  readonly hoverFollowsPaint?: boolean
 }
 
 /**
@@ -119,6 +122,9 @@ export default function Text({
   inverse = false,
   wrap = 'wrap',
   children,
+  onMouseEnter,
+  onMouseLeave,
+  hoverFollowsPaint,
 }: Props): React.ReactNode {
   if (children === undefined || children === null) {
     return null
@@ -137,7 +143,8 @@ export default function Text({
   }
 
   return (
-    <ink-text style={memoizedStylesForWrap[wrap]} textStyles={textStyles}>
+    <ink-text style={memoizedStylesForWrap[wrap]} textStyles={textStyles}
+      onMouseEnter={onMouseEnter} onMouseLeave={onMouseLeave} hoverFollowsPaint={hoverFollowsPaint}>
       {children}
     </ink-text>
   )
