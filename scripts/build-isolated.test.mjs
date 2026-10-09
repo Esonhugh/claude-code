@@ -8,7 +8,10 @@ import { execFileSync } from 'node:child_process';
 import * as buildModule from './build.mjs';
 
 const projectDir = fileURLToPath(new URL('..', import.meta.url));
-const evidenceDir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'isolated-build-test-'));
+// macOS TMPDIR can live outside the build's intentionally narrow /tmp allowlist.
+const evidenceRoot = path.join(fs.realpathSync('/tmp'), 'claude-test');
+fs.mkdirSync(evidenceRoot, { recursive: true });
+const evidenceDir = fs.mkdtempSync(path.join(evidenceRoot, 'isolated-build-test-'));
 console.log(`Retained build test evidence: ${evidenceDir}`);
 assert.equal(typeof buildModule.prepareBuildDirectory, 'function');
 const outputDir = path.join(evidenceDir, 'output');
