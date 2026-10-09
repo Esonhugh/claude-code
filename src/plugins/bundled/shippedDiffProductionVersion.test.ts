@@ -16,7 +16,7 @@ test('production initializer registers the pinned latest diff instead of the leg
   delete process.env.CLAUDE_CODE_ENTRYPOINT;delete process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE
   enableConfigs();setIsInteractive(true);clearBuiltinPlugins()
   await initBuiltinPlugins()
-  expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.292')
+  expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.295')
   expect(getBuiltinPluginDefinition('diff')).toBeUndefined()
  }finally{
   clearBuiltinPlugins();setIsInteractive(false)

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { unzipSync } from "fflate";
 import { packageOfficialDiff } from "./package-official-diff.mjs";
 import { copyRuntimeAssets } from "./build.mjs";
-const archiveName = "builtin-diff-2.1.292.zip";
+const archiveName = "builtin-diff-2.1.295.zip";
 test("actual runtime asset producer copies latest diff beside the preserved legacy archive", async () => {
   const root = await fs.mkdtemp(path.join(tmpdir(), "diff-assets-292-"));
   try {
@@ -49,19 +49,19 @@ test("actual offline producer reproduces the pinned archive from its genuine ful
       new URL("../assets/" + archiveName, import.meta.url),
     );
     const entries = unzipSync(original);
-    for (const name of ["chunk-01whafa0.js", "chunk-cnv756hy.js"])
+    for (const name of ["chunk-8mmnqsff.js", "chunk-56g3eekf.js"])
       await fs.writeFile(path.join(root, name), entries["official/" + name]);
     const output = path.join(root, "out.zip");
     await packageOfficialDiff({ modulesDir: root, output });
     expect(await fs.readFile(output)).toEqual(original);
     expect(createHash("sha256").update(original).digest("hex")).toBe(
-      "745c46dae5714492d5fe0351df623579f82000d132db8df365bf690031d1cc65",
+      "67a4025549b14844f13e3d6a906b336306652f7cb62d61dcc32179acd5762340",
     );
     await expect(
       packageOfficialDiff({ modulesDir: root, output }),
     ).rejects.toThrow("EEXIST");
     expect(await fs.readFile(output)).toEqual(original);
-    for (const name of ["chunk-01whafa0.js", "chunk-cnv756hy.js"]) {
+    for (const name of ["chunk-8mmnqsff.js", "chunk-56g3eekf.js"]) {
       const clean = entries["official/" + name];
       const tampered = clean.slice();
       tampered[tampered.length - 1] ^= 1;
@@ -73,7 +73,7 @@ test("actual offline producer reproduces the pinned archive from its genuine ful
       expect(existsSync(bad)).toBe(false);
       await fs.writeFile(path.join(root, name), clean);
     }
-    await fs.rm(path.join(root, "chunk-cnv756hy.js"));
+    await fs.rm(path.join(root, "chunk-56g3eekf.js"));
     const missing = path.join(root, "missing.zip");
     await expect(
       packageOfficialDiff({ modulesDir: root, output: missing }),

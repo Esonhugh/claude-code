@@ -32,15 +32,15 @@ afterEach(async()=>{
  for(const [key,value]of previous)if(value===undefined)delete process.env[key];else process.env[key]=value
  previous.clear();await rm(root,{recursive:true,force:true})
 })
-test('production startup exposes exactly the genuine shipped292 diff and actual loader admits its original Worker',async()=>{
+test('production startup exposes exactly the genuine shipped295 diff and actual loader admits its original Worker',async()=>{
  await initBuiltinPlugins()
  expect(getBuiltinPluginDefinition('diff')).toBeUndefined()
- expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.292')
+ expect(getBuiltinPluginDefinition('cc-plugin-diff')?.version).toBe('2.1.295')
  const loaded=getBuiltinPlugins().enabled.find(p=>p.name==='cc-plugin-diff')!
  expect(loaded).toBeDefined()
  const input=prepareModPlugins([loaded],{userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}).inputs[0]!
- const files=unzipArchive(await readFile(new URL('../../../assets/builtin-diff-2.1.292.zip',import.meta.url)))
- const metadata=new TextDecoder().decode(files['official/chunk-01whafa0.js'].subarray(shippedDiffProvenance.metadataStart,shippedDiffProvenance.metadataEnd))
+ const files=unzipArchive(await readFile(new URL('../../../assets/builtin-diff-2.1.295.zip',import.meta.url)))
+ const metadata=new TextDecoder().decode(files['official/chunk-8mmnqsff.js'].subarray(shippedDiffProvenance.metadataStart,shippedDiffProvenance.metadataEnd))
  const array=(key:string)=>JSON.parse(metadata.match(new RegExp(key+':(\\[[^\\]]*\\])'))![1]!)
  const declaration=getShippedBuiltinModDeclaration(input)!
  expect(declaration.events).toEqual(array('hooks'))
@@ -123,7 +123,7 @@ test.each(['missing','tampered','outdated'])('latest package %s leaves startup a
  const archive=join(root,'candidate.zip')
  if(kind==='outdated')await writeFile(archive,await readFile(new URL('../../../assets/builtin-diff-2.1.291.zip',import.meta.url)))
  if(kind==='tampered'){
-  const bytes=await readFile(new URL('../../../assets/builtin-diff-2.1.292.zip',import.meta.url));bytes[bytes.length-1]^=1;await writeFile(archive,bytes)
+  const bytes=await readFile(new URL('../../../assets/builtin-diff-2.1.295.zip',import.meta.url));bytes[bytes.length-1]^=1;await writeFile(archive,bytes)
  }
  process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE=archive;await initBuiltinPlugins()
  expect(getBuiltinPluginDefinition('cc-plugin-diff')).toBeUndefined();expect(getBuiltinPluginDefinition('diff')).toBeUndefined()
@@ -158,7 +158,7 @@ test('read-only production discovery projects latest archived source without min
  expect(result.enabled.map(p=>p.name)).toContain('cc-plugin-diff');expect(result.enabled.map(p=>p.name)).not.toContain('diff')
  expect(getBuiltinPluginDefinition('cc-plugin-diff')).toBeUndefined()
  const plugin=result.enabled.find(p=>p.name==='cc-plugin-diff')!
- expect(plugin.manifest.version).toBe('2.1.292');expect(plugin.contractFiles?.['hooks/register.js']).toBeDefined()
+ expect(plugin.manifest.version).toBe('2.1.295');expect(plugin.contractFiles?.['hooks/register.js']).toBeDefined()
  const input=prepareModPlugins([plugin],{userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}).inputs[0]!
  expect(getShippedBuiltinModDeclaration(input)).toBeUndefined()
 })
@@ -171,7 +171,7 @@ test('read-only discovery keeps the actual pinned availability and legacy settin
  expect((await loadPluginsForContractValidation()).enabled.some(p=>p.name==='cc-plugin-diff')).toBe(false)
 })
 test('known host availability facet is not copied onto spread definitions or arbitrary callbacks',async()=>{
- await initBuiltinPlugins();const contract=await readOfficialShippedDiffContract(new URL('../../../assets/builtin-diff-2.1.292.zip',import.meta.url).pathname)
+ await initBuiltinPlugins();const contract=await readOfficialShippedDiffContract(new URL('../../../assets/builtin-diff-2.1.295.zip',import.meta.url).pathname)
  expect(()=>getBuiltinPlugins([contract.definition])).not.toThrow()
  expect(()=>getBuiltinPlugins([{...contract.definition}])).toThrow('without executing its callback')
  let called=0;registerBuiltinPlugin({name:'fixture',description:'fixture',isAvailable:()=>{called++;return true}})

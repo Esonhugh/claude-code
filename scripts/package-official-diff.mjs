@@ -5,30 +5,27 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { zipSync, strToU8 } from "fflate";
 
-// Byte ranges are from the verified 2.1.292 darwin-arm64 release, without executing it.
+// Byte ranges are from the verified 2.1.295 darwin-arm64 release, without executing it.
 export const officialDiffPackageProvenance = Object.freeze({
-  version: "2.1.292",
+  version: "2.1.295",
   name: "cc-plugin-diff",
-  binarySha256:
-    "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
-  moduleSha256:
-    "6cd79b0d5118de9485b1268d64238019e3a41510c943eb17832b128fd976afd3",
-  identityModule: "chunk-cnv756hy.js",
-  identityModuleSha256:
-    "86406ab18044de34edba1f7247b591268b86b1cff7522aaf07f1d67725f915c7",
-  sourceStart: 12068,
-  sourceEnd: 62473,
-  sourceSha256:
-    "ccafc3393958bc6e428f8909030d06af0e50e6db73f7308ec26ac286f27e97a4",
-  metadataStart: 5666,
-  metadataEnd: 6250,
-  metadataSha256:
-    "41ada677ee5d534b88f953e89e0b8261a7cc567d538b21678f41f7d3e45319ca",
+  binarySha256: "0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70",
+  module: "chunk-8mmnqsff.js",
+  moduleSha256: "4d5f17d872d8a0c50a386300a4f0c8deb3823fb53717a021353231e22cbba922",
+  identityModule: "chunk-56g3eekf.js",
+  identityModuleSha256: "8590c66308f2aec88ef8e6e2052ff3a7394a38ec4cbdf454dedff37641267fc1",
+  registerExport: "xm",
+  sourceStart: 12121,
+  sourceEnd: 62470,
+  sourceSha256: "a703dae9955fc3884f22672a5761cd360cec59a07f67d9e48f50b5ace667176e",
+  metadataStart: 5744,
+  metadataEnd: 6328,
+  metadataSha256: "865ed020c6db1a6b4924eaa47b85a7ba3478190e8ce19c3084f26d892ec72d5b",
 });
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 export async function packageOfficialDiff({ modulesDir, output }) {
   const p = officialDiffPackageProvenance;
-  const module = await readFile(join(modulesDir, "chunk-01whafa0.js"));
+  const module = await readFile(join(modulesDir, p.module));
   const identity = await readFile(join(modulesDir, p.identityModule));
   const source = module.subarray(p.sourceStart, p.sourceEnd);
   const scan = module.subarray(p.metadataStart, p.metadataEnd);
@@ -44,7 +41,7 @@ export async function packageOfficialDiff({ modulesDir, output }) {
     "The diff panel as a plugin pane: /diff, the changed files and their hunks beside the transcript, refreshed as Claude edits";
   const entries = {
     "provenance.json": strToU8(JSON.stringify(p, null, 2) + "\n"),
-    "official/chunk-01whafa0.js": module,
+    ["official/" + p.module]: module,
     ["official/" + p.identityModule]: identity,
     "cc-plugin-diff/.claude-plugin/plugin.json": strToU8(
       JSON.stringify(
@@ -58,7 +55,7 @@ export async function packageOfficialDiff({ modulesDir, output }) {
     ),
     "cc-plugin-diff/hooks/register.js": strToU8(
       new TextDecoder("utf-8", { fatal: true }).decode(source) +
-        "\nexport {ym as register};\n",
+        `\nexport {${p.registerExport} as register};\n`,
     ),
   };
   const files = Object.fromEntries(

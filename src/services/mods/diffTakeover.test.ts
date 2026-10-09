@@ -33,9 +33,9 @@ afterEach(async () => {
 })
 const settings = () => ({userSettings:null, flagSettings:null, policySettings:null, hookPolicy:{managedOnly:false,allDisabled:false}})
 async function originalModule() {
-  const archive = new URL('../../../assets/builtin-diff-2.1.292.zip', import.meta.url).pathname
+  const archive = new URL('../../../assets/builtin-diff-2.1.295.zip', import.meta.url).pathname
   const packaged = await materializeBuiltinModsArchive(archive, join(root, 'original-package'))
-  return join(packaged, 'official', 'chunk-01whafa0.js')
+  return join(packaged, 'official', 'chunk-8mmnqsff.js')
 }
 async function packagedDiff(legacy = false) {
   const target = join(root, 'mods')
@@ -58,7 +58,7 @@ async function running(input: Awaited<ReturnType<typeof packagedDiff>>['input'],
   await value.reconcile([input])
   return {value,diagnostics,logs}
 }
-test('actual official292 hook registers /diff through the host builtin loader and unload restores native', async () => {
+test('actual official295 hook registers /diff through the host builtin loader and unload restores native', async () => {
   const {input} = await packagedDiff()
   const {value, diagnostics, logs} = await running(input)
   expect(diagnostics).toEqual([])
@@ -99,11 +99,11 @@ test('plain registration, spread definitions and tampered artifact bytes cannot 
   const bytes=await readFile(await originalModule());bytes[bytes.length-1]^=1;await writeFile(fake,bytes)
   await expect(loadOfficialShippedDiffDefinition(fake,root)).rejects.toThrow('SHA-256 mismatch')
   const metadataCopy=join(root,'forged-package');await mkdir(metadataCopy)
-  const moduleCopy=join(metadataCopy,'chunk-01whafa0.js')
+  const moduleCopy=join(metadataCopy,'chunk-8mmnqsff.js')
   await writeFile(moduleCopy,await readFile(await originalModule()))
-  const identity=await readFile(join(dirname(await originalModule()),'chunk-cnv756hy.js'))
+  const identity=await readFile(join(dirname(await originalModule()),'chunk-56g3eekf.js'))
   identity[identity.length-1]^=1
-  await writeFile(join(metadataCopy,'chunk-cnv756hy.js'),identity)
+  await writeFile(join(metadataCopy,'chunk-56g3eekf.js'),identity)
   await expect(loadOfficialShippedDiffDefinition(moduleCopy,root)).rejects.toThrow('identity module SHA-256 mismatch')
 })
 test('contract-only discovery cannot mint canonical runtime identity',async()=>{
@@ -234,7 +234,7 @@ test('verified legacy277 healthy-owner replacement failure retains ownership; ac
   expect(value.isDiffOwned()).toBe(false)
 })
 
-test('actual official292 first successful main-thread edit opens its Pane and native stays suspended', async () => {
+test('actual official295 first successful main-thread edit opens its Pane and native stays suspended', async () => {
   const git=(...args:string[])=>{
     const child=Bun.spawnSync(['git','-C',root,...args],{stdout:'pipe',stderr:'pipe'})
     if(child.exitCode!==0) throw Error(child.stderr.toString())
@@ -274,6 +274,10 @@ test('actual official292 first successful main-thread edit opens its Pane and na
     await value.ui.render()
     const painted=JSON.stringify(value.ui.getSnapshot()[0]?.tree)
     expect(painted).toContain('sample.txt')
+    const tree=value.ui.getSnapshot()[0]?.tree as {type:string;props?:Record<string,unknown>}
+    expect(tree.type).toBe('Box')
+    // Official295 gives all dock rows to content, without the older top gap.
+    expect(tree.props?.paddingTop).toBeUndefined()
     await value.ui.close(pane.owner,pane.id,{kind:'person'})
     expect(value.isDiffOwned()).toBe(true)
     expect(value.commands.projection([builtinDiff])).not.toContain(builtinDiff)

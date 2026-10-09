@@ -36,7 +36,7 @@ const sharpNativePath = path.join(
 );
 const builtinModsArchiveNames = [
   'builtin-mods-2.1.277.zip',
-  'builtin-diff-2.1.292.zip',
+  'builtin-diff-2.1.295.zip',
 ];
 const defaultVersion = '0.0.0-dev';
 const buildVersion = String(

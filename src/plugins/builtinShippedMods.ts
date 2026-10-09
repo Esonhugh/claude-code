@@ -24,18 +24,22 @@ export function getVerifiedOfficialShippedModDeclaration(definition:BuiltinPlugi
   return isVerifiedOfficialShippedModDefinition(definition) ? structuredClone(verifiedDefinitions.get(definition)!.declaration) : undefined
 }
 
-// Exact decoded module from the verified 2.1.292 darwin-arm64 release artifact.
+// Exact decoded module from the verified 2.1.295 darwin-arm64 release artifact.
 export const shippedDiffProvenance = Object.freeze({
-  version:'2.1.292',
-  name:'cc-plugin-diff',
-  binarySha256:'97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f',
-  moduleSha256:'6cd79b0d5118de9485b1268d64238019e3a41510c943eb17832b128fd976afd3',
-  identityModule:'chunk-cnv756hy.js',
-  identityModuleSha256:'86406ab18044de34edba1f7247b591268b86b1cff7522aaf07f1d67725f915c7',
-  sourceStart:12068, sourceEnd:62473,
-  sourceSha256:'ccafc3393958bc6e428f8909030d06af0e50e6db73f7308ec26ac286f27e97a4',
-  metadataStart:5666,metadataEnd:6250,
-  metadataSha256:'41ada677ee5d534b88f953e89e0b8261a7cc567d538b21678f41f7d3e45319ca',
+  version: "2.1.295",
+  name: "cc-plugin-diff",
+  binarySha256: "0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70",
+  module: "chunk-8mmnqsff.js",
+  moduleSha256: "4d5f17d872d8a0c50a386300a4f0c8deb3823fb53717a021353231e22cbba922",
+  identityModule: "chunk-56g3eekf.js",
+  identityModuleSha256: "8590c66308f2aec88ef8e6e2052ff3a7394a38ec4cbdf454dedff37641267fc1",
+  registerExport: "xm",
+  sourceStart: 12121,
+  sourceEnd: 62470,
+  sourceSha256: "a703dae9955fc3884f22672a5761cd360cec59a07f67d9e48f50b5ace667176e",
+  metadataStart: 5744,
+  metadataEnd: 6328,
+  metadataSha256: "865ed020c6db1a6b4924eaa47b85a7ba3478190e8ce19c3084f26d892ec72d5b",
 })
 
 /** Host package initialization only; a manifest or caller-provided scan cannot issue a declaration. */
@@ -56,8 +60,8 @@ export async function loadOfficialShippedDiffDefinition(modulePath:string, root:
     hookModules:[{configPath:join(root,'hooks','hooks.json'),paths:['./register.js']}],
   }
   const declaration:ModDeclaration = {name:shippedDiffProvenance.name,storageId:`${shippedDiffProvenance.name}@builtin`,version:shippedDiffProvenance.version,pluginRoot:root,
-    entrypoints:[entry],modules:[{path:entry,source:`${new TextDecoder('utf-8',{fatal:true}).decode(source)}\nexport {ym as register};\n`}],links:[],
-    // The module's original $n scan (bytes5666..6250), independently pinned above.
+    entrypoints:[entry],modules:[{path:entry,source:`${new TextDecoder('utf-8',{fatal:true}).decode(source)}\nexport {${shippedDiffProvenance.registerExport} as register};\n`}],links:[],
+    // The module's original jn scan (bytes5744..6328), independently pinned above.
     events:['session.start','ui.render','command.run','ui.close','ui.focus','ui.scroll','tool.call','prompt.submit'],
     calls:['clock.after','clock.every','clock.now','command.register','env.get','fs.list','fs.read','fs.stat','process.run',
       'session.id','session.messages','session.usage','settings.read','store.get','store.set','telemetry.log','telemetry.mark',
@@ -69,7 +73,7 @@ export async function loadOfficialShippedDiffDefinition(modulePath:string, root:
   return definition
 }
 
-export const shippedDiffArchiveSha256='745c46dae5714492d5fe0351df623579f82000d132db8df365bf690031d1cc65'
+export const shippedDiffArchiveSha256='67a4025549b14844f13e3d6a906b336306652f7cb62d61dcc32179acd5762340'
 const paneRequests=new Set<string>()
 const availabilityFacets=new WeakMap<BuiltinPluginDefinition,{callback:()=>boolean;read:()=>boolean}>()
 const contractFacets=new WeakMap<BuiltinPluginDefinition,{coordinates:string;callback:()=>boolean;read:()=>boolean}>()
@@ -126,7 +130,7 @@ export async function readOfficialShippedDiffContract(archivePath:string):Promis
 export async function initializeOfficialShippedDiff(archivePath:string,cacheRoot:string):Promise<void> {
  const {bytes}=await readShippedArchive(archivePath)
  const root=await materializeBuiltinModsArchive(archivePath,cacheRoot,{bytes})
- const definition=await loadOfficialShippedDiffDefinition(join(root,'official','chunk-01whafa0.js'),join(root,'cc-plugin-diff'))
+ const definition=await loadOfficialShippedDiffDefinition(join(root,'official',shippedDiffProvenance.module),join(root,'cc-plugin-diff'))
  let pinned:boolean|undefined
  const available=()=>paneDrawable() && (pinned ??= offeredNow())
  definition.isAvailable=available
