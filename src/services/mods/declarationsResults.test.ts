@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto'
 import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -101,11 +102,11 @@ describe('author result declarations', () => {
     `)).toBe('')
   })
 
-  test('owns the complete official main declaration and schema roots without a legacy auxiliary module', async () => {
+  test('owns the baseline plus295 Button extension and schema roots without a legacy auxiliary module', async () => {
     const files = generateModDeclarationFiles('2.1.289', schemaTools())
     const main = files.find(file => file.path === 'claude-code/index.d.ts')!
-    const official = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
-    expect(main.text.slice('// Written by Claude Code 2.1.289.\n'.length, main.text.lastIndexOf('\n// Claude Code owned declaration sha256='))).toBe(official)
+    const body=main.text.slice(main.text.indexOf('// Claude Code function hooks:'),main.text.lastIndexOf('\n// Claude Code owned declaration sha256='))
+    expect(createHash('sha256').update(body).digest('hex')).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
     expect(files.some(file => file.path === 'claude-code/results.d.ts')).toBe(false)
     expect(main.text).not.toContain('/// <reference path="./results.d.ts" />')
     expect(main.text).toContain('export type ToolCallResult')

@@ -1,4 +1,5 @@
 import officialDeclaration from '../../../assets/mods-2.1.292.d.ts.txt' with {type: 'text'}
+import {withButtonChildrenDeclarations, buttonChildrenDeclarationNote} from './buttonChildrenDeclarations.js'
 import { constants } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, readlink, realpath, rename, rm, rmdir, stat, symlink, unlink } from 'node:fs/promises'
@@ -37,7 +38,7 @@ const authorProject = {
 const compilerOptions = `${JSON.stringify(authorProject, null, 2)}\n`
 
 function declaration(version: string): string {
-  return `// Written by Claude Code ${version}.\n${officialDeclaration}`
+  return `// Written by Claude Code ${version}.\n${buttonChildrenDeclarationNote}${withButtonChildrenDeclarations(officialDeclaration)}`
 }
 
 // Deliberately bounded: no ref resolution, conditionals, tuple or pattern-property inference.

@@ -40,12 +40,12 @@ test('pinned 292 source matches the verified native declaration asset', () => {
   expect(sha(canonical)).toBe(hash)
 })
 
-test('generated declarations contain the entire 292 body with the local engine version', () => {
+test('generated declarations preserve292 with only the pinned official295 Button extension', () => {
   const text = generateModDeclarationFiles('2.1.280', [])[0]!.text
   expect(text.startsWith('// Written by Claude Code 2.1.280.\n')).toBe(true)
   const start = text.indexOf('// Claude Code function hooks:')
   expect(start).toBeGreaterThanOrEqual(0)
-  expect(sha(text.slice(start, start + canonical.length))).toBe(hash)
+  expect(sha(text.slice(start, text.lastIndexOf('\n// Claude Code owned declaration sha256=')))).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
 })
 
 test('all current public names and testing exports match the official checker', () => {

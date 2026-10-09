@@ -41,6 +41,23 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
     return [value]
   }
 
+  function buttonText(children: unknown[], path = new Set<object>()): string {
+    let text = ''
+    for (const child of children) {
+      if (typeof child === 'string') {
+        text += child
+        continue
+      }
+      const node = ownProps(child)
+      if (node.type !== 'Text') throw new TypeError('Button children must be strings or Text')
+      if (path.has(child as object) || path.size >= 100) throw new Error('Cyclic or excessive Button children')
+      path.add(child as object)
+      if (Array.isArray(node.children)) text += buttonText(node.children, path)
+      path.delete(child as object)
+    }
+    return text
+  }
+
   function validateSvg(props: Props): void {
     const allowed = new Set(['source', 'alt', 'width', 'height', 'isInteractive'])
     for (const key of Object.keys(props)) {
@@ -87,12 +104,22 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
       delete props.onSubmit
       delete props.onSelect
       delete props.onLinkPress
+      let buttonChildren: unknown[] | undefined
       let callback: Callback | undefined
       if (type === 'Button') {
-        const label = props.label ?? (children.length === 1 && typeof children[0] === 'string' ? children[0] : undefined)
-        if (typeof label !== 'string') throw new Error('Button requires a label')
+        if (props.variant !== undefined && props.variant !== 'primary' && props.variant !== 'secondary')
+          throw new TypeError('Button variant must be primary or secondary')
+        if (props.role !== undefined && props.role !== 'dismiss')
+          throw new TypeError('Button role must be dismiss')
+        const text = buttonText(children)
+        buttonChildren = props.label === undefined && children.length === 1 && typeof children[0] === 'string'
+          ? [] : children
+        const label = props.label ?? (children.length === 0 ? undefined : text)
+        const key = props.key ?? (buttonChildren.length === 0 ? label : props.label)
+        if (typeof label !== 'string') throw new Error('Button requires a label or strings and Text')
+        if (typeof key !== 'string' || key === '') throw new Error('Button children require a non-empty key or explicit label')
         props.label = label
-        props.key ??= label
+        props.key = key
         if (typeof handlers.press !== 'function') throw new Error('Button requires an onPress callback')
         const press = handlers.press as Callback
         callback = event => press(event)
@@ -118,6 +145,8 @@ export function createModUiRealm(plugin: string, isProxy: (value: unknown) => bo
       const node: Node = { type, props: Object.freeze(props) }
       if (type === 'Box' || type === 'Text' || (type === 'Link' && children.some(child => child !== '')))
         node.children = Object.freeze(children) as unknown as unknown[]
+      if (type === 'Button' && buttonChildren?.length)
+        node.children = Object.freeze(buttonChildren) as unknown as unknown[]
       if (hover !== undefined) node.hover = Object.freeze(ownProps(hover))
       if (props.key !== undefined || callback ||
           (node.hover as Props | undefined)?.scope !== undefined)

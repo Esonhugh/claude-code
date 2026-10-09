@@ -1,3 +1,4 @@
+import {createHash} from 'node:crypto'
 import { describe, expect, test } from 'bun:test'
 import { cp, lstat, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -72,16 +73,17 @@ describe('generated Mods declarations', () => {
     }
   })
 
-  test('are deterministic, version-bound, and preserve the complete official author definitions', () => {
+  test('are deterministic and version-bound with exactly the verified295 Button extension', () => {
     expect(generateModDeclarationFiles('1.2.3')).toEqual(generateModDeclarationFiles('1.2.3'))
     const text = source('1.2.3'), header = '// Written by Claude Code 1.2.3.\n'
     expect(text.startsWith(header)).toBe(true)
     const end = text.lastIndexOf('\n// Claude Code owned declaration sha256=')
     expect(end).toBeGreaterThan(header.length)
     // The original 45 KB subset omitted public names and browser APIs. Full
-    // native-asset equality is the compatibility boundary, including globals.
-    expect(text.slice(header.length, end)).toBe(officialDeclaration)
-    expect(source('1.2.4').slice('// Written by Claude Code 1.2.4.\n'.length, end)).toBe(officialDeclaration)
+    // Whole-body equality includes the two pinned official295 Button blocks;
+    // the independent projection test proves every other292 byte is unchanged.
+    expect(createHash('sha256').update(text.slice(text.indexOf('// Claude Code function hooks:'), end)).digest('hex')).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
+    expect(createHash('sha256').update(source('1.2.4').slice(source('1.2.4').indexOf('// Claude Code function hooks:'), end)).digest('hex')).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
   })
 
   test('types register, state families, CAS, UI, usage, and the implemented testing expect', () => {

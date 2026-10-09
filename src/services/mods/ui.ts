@@ -451,6 +451,7 @@ export function createModUi({
   const clientSites = new Map<ModUiOwner, ModClientSite>()
   const reconcileClients = () => clients?.reconcile([...snapshot, ...clientSites.values()])
   const siteInputs = new WeakMap<ModRenderSite, ModRenderInput>()
+  const heldSites = new Map<ModUiOwner, { drawing: number; tree: unknown }>()
   const sites = new Map<ModUiOwner, ModRenderSite & {
     focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
     redraw(): Promise<void>
@@ -973,6 +974,27 @@ export function createModUi({
     return Object.freeze(output)
   }
 
+  function holdsCallback(value: unknown, callback: ModUiCallback, seen = new Set<object>()): boolean {
+    if (!value || typeof value !== 'object' || seen.has(value)) return false
+    seen.add(value)
+    if (Array.isArray(value)) return value.some(child => holdsCallback(child, callback, seen))
+    const node = value as { type?: string; press?: ModUiCallback; children?: unknown[] }
+    if (['Button', 'Input', 'Select', 'Markdown'].includes(node.type ?? '') &&
+        node.press?.plugin === callback.plugin && node.press.handle === callback.handle) return true
+    return Array.isArray(node.children) && node.children.some(child => holdsCallback(child, callback, seen))
+  }
+
+  function heldDrawing(callback: ModUiCallback): { owner: ModUiOwner; drawing: number } | undefined {
+    for (const pane of active.values()) {
+      if (pane.visible && pane.drawing !== undefined && holdsCallback(pane.tree, callback))
+        return { owner: pane.owner, drawing: pane.drawing }
+    }
+    for (const [owner, site] of heldSites) {
+      if (holdsCallback(site.tree, callback)) return { owner, drawing: site.drawing }
+    }
+    return undefined
+  }
+
   function interactiveNode(
     value: unknown,
     kind: ModUiInteraction,
@@ -1321,6 +1343,7 @@ export function createModUi({
               drawing = next
               tree = result
               current = request
+              heldSites.set(owner, { drawing: next, tree: result })
               resolveEngine = ref => {
                 if (disposed || !painting && drawing !== next || !originals.has(ref)) throw new Error('Unknown or stale Mod UI engine ref')
                 return structuredClone(originals.get(ref)!)
@@ -1341,6 +1364,8 @@ export function createModUi({
                 drawing = previous
                 tree = previousTree
                 current = previousInput
+                if (previous === undefined) heldSites.delete(owner)
+                else heldSites.set(owner, { drawing: previous, tree: previousTree })
                 resolveEngine = previousResolve
                 if (previousClientSite) clientSites.set(owner, previousClientSite)
               }
@@ -1385,14 +1410,16 @@ export function createModUi({
             ...(kind === 'press' ? {} : kind === 'link.press' ? {link:{href:value}} : kind === 'select' ? {value} : {value, kind: kind === 'input.submit' ? 'submit' : 'change'}),
           }
           return dispatch(owner, kind === 'press' || kind === 'link.press' ? 'ui.press' : kind === 'select' ? 'ui.select' : 'ui.input', input, async rewritten => {
-            if (disposed || drawing !== lease) throw new Error('Mod UI drawing callback is stale')
-            await invokeDrawing(owner, lease, callback.handle, [rewritten])
+            const held = heldDrawing(callback)
+            if (!held) throw new Error('Mod UI drawing callback is stale')
+            await invokeDrawing(held.owner, held.drawing, callback.handle, [rewritten])
             return kind === 'press' || kind === 'link.press' ? {element: rewritten.element} : {element: rewritten.element, value: rewritten.value}
           }, {origin: {kind:'person'}, drawing: lease})
         },
         dispose() {
           if (disposal) return disposal
           disposed = true
+          heldSites.delete(owner)
           consumer.signal?.removeEventListener('abort', abortSite)
           pendingDraw?.abort(new Error('ui.render: superseded'))
           clientSites.delete(owner)
@@ -2004,6 +2031,7 @@ export function createModUi({
       if (kind !== 'press' && typeof value !== 'string')
         throw new TypeError('Mod UI interaction value must be a string')
       const pane = active.get(id)
+      logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'interaction-start', id, drawing, currentDrawing: pane?.drawing, plugin: callback.plugin, handle: callback.handle, kind, element, visible: pane?.visible })}`)
       if (
         !pane ||
         pane.drawing !== drawing ||
@@ -2030,9 +2058,11 @@ export function createModUi({
               : { kind: kind === 'input.submit' ? 'submit' : 'change', value }),
       })
       return dispatch(pane.owner, event, input, async rewritten => {
-        if (active.get(id) !== pane || pane.drawing !== drawing)
-          throw new Error('Mod UI drawing callback is stale')
-        await invokeDrawing(pane.owner, drawing, callback.handle, [rewritten])
+        logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'interaction-core', id, drawing, currentDrawing: pane.drawing, active: active.get(id) === pane, plugin: callback.plugin, handle: callback.handle, kind, element })}`)
+        const held = heldDrawing(callback)
+        if (!held) throw new Error('Mod UI drawing callback is stale')
+        await invokeDrawing(held.owner, held.drawing, callback.handle, [rewritten])
+        logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'interaction-invoked', id, drawing, plugin: callback.plugin, handle: callback.handle, kind, element })}`)
         return kind === 'press' || kind === 'link.press'
           ? { element: rewritten.element }
           : { element: rewritten.element, value: rewritten.value }

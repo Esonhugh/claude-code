@@ -28,13 +28,14 @@ test('pinned declaration source is the verified official 290 native asset', asyn
   expect(Buffer.byteLength(text)).toBe(600277)
 })
 
-test('generated public definitions preserve the complete current official declaration body', async () => {
+test('generated public definitions preserve the baseline with the verified295 Button extension', async () => {
   const body = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
   const currentHash = 'ec9fb8b86b52427c134e267749aa04ca84e419735e75810f5d2e5fa23f657ab3'
   const output = generateModDeclarationFiles('2.1.280', []).find(file => file.path === 'claude-code/index.d.ts')!.text
   const start = output.indexOf('// Claude Code function hooks:')
   expect(start).toBeGreaterThanOrEqual(0)
-  expect(sha(output.slice(start, start + body.length))).toBe(currentHash)
+  expect(sha(body)).toBe(currentHash)
+  expect(sha(output.slice(start, output.lastIndexOf('\n// Claude Code owned declaration sha256=')))).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
   expect(output.startsWith('// Written by Claude Code 2.1.280.\n')).toBe(true)
 })
 

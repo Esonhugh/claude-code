@@ -39,6 +39,14 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   };
   Object.defineProperties(globalThis, { h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment} });
   const drawings = new Map();
+  const drawingCallbacks = new WeakMap();
+  const keepDrawingCallback = (callback, handles, allocated) => {
+    let id = drawingCallbacks.get(callback);
+    if (id === undefined) { id = ++nextHandle; drawingCallbacks.set(callback, id); }
+    if (!functions.has(id)) { functions.set(id, callback); allocated.push(id); }
+    handles.add(id);
+    return id;
+  };
   let currentDrawing;
   let nextUiCall = 0;
   let uiAllowed = true;
@@ -489,7 +497,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         const value = Reflect.apply(functions.get(handle), undefined, [decode(JSON.parse(props))]);
         if (isPromise(value)) throw Error('UI constructors must be synchronous functions');
         const result = uiRealm.materialize(value, callback => {
-          const id = ++nextHandle; functions.set(id, callback); handles.add(id); allocated.push(id); return id;
+          return keepDrawingCallback(callback, handles, allocated);
         });
         return JSON.stringify(encode(result));
       } catch (error) {
@@ -499,7 +507,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     },
     async invoke(text) {
       const request = JSON.parse(text);
-      if (request.callbackDrawing !== undefined && !drawings.get(request.callbackDrawing)?.has(request.handle)) throw Error('Unknown drawing callback');
+      if (request.callbackDrawing !== undefined && ![...drawings.values()].some(handles => handles.has(request.handle))) throw Error('Unknown drawing callback');
       if (disposed || !functions.has(request.handle)) throw Error('Unknown or unloaded module function');
       const allocated = [];
       const args = request.args.map(v => decode(v, request.id));
@@ -543,7 +551,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         }
         if (drawingHandles) {
           result = uiRealm.materialize(result, callback => {
-            const id = ++nextHandle; functions.set(id, callback); drawingHandles.add(id); allocated.push(id); return id;
+            return keepDrawingCallback(callback, drawingHandles, allocated);
           });
         }
         return JSON.stringify(encode(result));
@@ -608,8 +616,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     registerClient(path, draw) { clients.register(path, draw); },
     client(text) { return JSON.stringify(encode(clients.request(JSON.parse(text)))); },
     releaseDrawing(drawing) {
-      for (const handle of drawings.get(drawing) ?? []) functions.delete(handle);
+      const handles = drawings.get(drawing);
       drawings.delete(drawing);
+      for (const handle of handles ?? []) {
+        if (![...drawings.values()].some(current => current.has(handle))) functions.delete(handle);
+      }
     },
     dispose() {
       if (disposed) return;

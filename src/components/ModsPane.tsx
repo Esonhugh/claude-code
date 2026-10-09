@@ -61,7 +61,7 @@ const textProps = new Set([
   'strikethrough', 'inverse', 'wrap',
 ])
 const buttonProps = new Set([
-  'key', 'label', 'hotkey', 'action', 'plain', 'dimColor', 'autoFocus',
+  'key', 'label', 'hotkey', 'action', 'plain', 'dimColor', 'autoFocus', 'variant', 'role',
 ])
 const selectProps = new Set(['key', 'label', 'options', 'value', 'autoFocus'])
 const inputProps = new Set([
@@ -740,6 +740,7 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
     localScope: 'none' | 'valid' | 'hidden' | 'inert' = 'none',
     concealed = false,
     siblingBoxKeys = new Set<string>(),
+    inButton = false,
   ): RenderNode {
     if (++nodes > MAX_TREE_NODES) throw new RangeError('UI tree node budget exceeded')
     if (depth > MAX_TREE_DEPTH) throw new RangeError('UI tree depth exceeded')
@@ -762,6 +763,7 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
     if (!['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(String(node.type)))
       throw new TypeError(`Unsupported UI element ${String(node.type)}`)
     const type = node.type as RenderElement['type']
+    if (inButton && type !== 'Text') throw new TypeError('Button children must be strings or Text')
     if (surface === 'mobile' && ['Input', 'Select'].includes(type))
       throw new TypeError(`${type} is not supported on ${surface}`)
     if (surface === 'terminal' && type === 'Svg')
@@ -792,6 +794,10 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
       trueProp(props, 'autoFocus')
       hasAutoFocus ||= props.autoFocus === true
       booleanProp(props, 'dimColor')
+      if (props.variant !== undefined && props.variant !== 'primary' && props.variant !== 'secondary')
+        throw new TypeError('Button variant must be primary or secondary')
+      if (props.role !== undefined && props.role !== 'dismiss')
+        throw new TypeError('Button role must be dismiss')
       validatePress(node.press, type)
       focusKeys.add(key)
     } else if (type === 'Select') {
@@ -933,7 +939,7 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
       if (hover.borderStyle !== undefined && props.borderStyle === undefined)
         throw new TypeError('hover borderStyle requires an existing Box borderStyle')
     }
-    if (['Button', 'Input', 'Select', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(type) && node.children !== undefined)
+    if (['Input', 'Select', 'Code', 'Markdown', 'Client', 'Raster', 'Image', 'Svg'].includes(type) && node.children !== undefined)
       throw new TypeError(`${type} is a leaf element`)
     if (['Client', 'Raster', 'Image', 'Svg'].includes(type) && (node.hover !== undefined || node.press !== undefined))
       throw new TypeError(`${type} does not support hover or press`)
@@ -945,10 +951,11 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
         visit(
           child,
           depth + 1,
-          inInline || type === 'Text' || type === 'Link',
+          inInline || type === 'Text' || type === 'Link' || type === 'Button',
           childLocalScope,
           concealed || props.display === 'none',
           childBoxKeys,
+          inButton || type === 'Button',
         ),
       )
     }
@@ -1919,7 +1926,7 @@ function RenderElementNode({
   renderEngine?: (ref: number) => React.ReactNode
   parentInline?: boolean
 }): React.ReactNode {
-  const inline = parentInline || node.type === 'Text' || node.type === 'Link'
+  const inline = parentInline || node.type === 'Text' || node.type === 'Link' || node.type === 'Button'
   const [themeName] = useTheme()
   const theme = getTheme(themeName)
   const props = terminalStyles(node.props ?? {})
@@ -2071,7 +2078,7 @@ function RenderElementNode({
       value?: string,
     ) => clientHandle.press(callback, kind, element, value)
   if (node.type === 'Button') {
-    return <ModButton node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} active={active} handlers={canHeatGroup ? groupHover.handlers : {}} />
+    return <ModButton node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} active={active} handlers={canHeatGroup ? groupHover.handlers : {}}>{children}</ModButton>
   }
   if (node.type === 'Select') {
     return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} />
@@ -2475,8 +2482,12 @@ function reportElementFocus(
   void onFocus(pane, key).catch(error => onError?.(error))
 }
 
+function buttonContentText(children: readonly RenderNode[]): string {
+  return children.map(child => typeof child === 'string' ? child : buttonContentText(child.children ?? [])).join('')
+}
+
 function ModButton({
-  node, pane, focusElements, keyElements, onInteract, onFocus, onError, active, handlers,
+  node, pane, focusElements, keyElements, onInteract, onFocus, onError, active, handlers, children,
 }: {
   node: RenderElement
   pane: ModUiPane
@@ -2487,13 +2498,14 @@ function ModButton({
   onError?: Props['onError']
   active: boolean
   handlers: HoverHandlers
+  children?: React.ReactNode
 }): React.ReactNode {
   const inputAllowed = React.useContext(PersonInputContext)
   const props = node.props!
   const key = props.key as string
   const press = node.press!
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements,
-    props.plain === true && props.label === '' && !props.hotkey)
+    props.plain === true && (node.children?.length ? buttonContentText(node.children) === '' : props.label === '') && !props.hotkey)
   const plain = props.plain === true
   const style = hoverStyles(node, active)
   const run = () => {
@@ -2515,6 +2527,7 @@ function ModButton({
             <Text
               inverse={chrome}
               bold={!plain}
+              color={!plain && props.variant === 'primary' ? 'suggestion' : undefined}
               dimColor={props.dimColor === true && !chrome}
               {...style as React.ComponentProps<typeof Text>}
             >
@@ -2522,7 +2535,7 @@ function ModButton({
                 ? <Text color="suggestion">{props.hotkey as string}</Text>
                 : plain ? '' : '[ '}
               {plain && props.hotkey ? ': ' : ''}
-              {props.label as string}
+              {node.children?.length ? children : props.label as string}
               {plain ? '' : ' ]'}
             </Text>
           )
