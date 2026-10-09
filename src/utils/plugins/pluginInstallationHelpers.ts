@@ -35,6 +35,7 @@ import {
 import {
   addInstalledPlugin,
   getGitCommitSha,
+  getInstalledPluginsReadRefusal,
 } from './installedPluginsManager.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import { getMarketplaceCacheOnly, getPluginById } from './marketplaceManager.js'
@@ -334,6 +335,11 @@ export async function installResolvedPlugin({
   // are covered in one place.
   if (isPluginBlockedByPolicy(pluginId)) {
     return { ok: false, reason: 'blocked-by-policy', pluginName: entry.name }
+  }
+
+  const recordRefusal = getInstalledPluginsReadRefusal()
+  if (recordRefusal) {
+    throw new Error(`Plugin "${pluginId}" was not installed: ${recordRefusal}`)
   }
 
   // ── Resolve dependency closure ──

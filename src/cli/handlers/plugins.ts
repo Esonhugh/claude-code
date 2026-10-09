@@ -29,6 +29,9 @@ import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
 import { getInstallCounts } from '../../utils/plugins/installCounts.js'
 import {
+  getInstalledPluginsReadRefusal,
+  getSetAsideInstalledPluginsNote,
+  getUnreadableInstalledPluginsNote,
   isPluginInstalled,
   loadInstalledPluginsV2,
 } from '../../utils/plugins/installedPluginsManager.js'
@@ -458,15 +461,23 @@ export async function pluginListHandler(options: {
     }
   }
 
+  const refusal = getInstalledPluginsReadRefusal()
+  const recoveryNotes = [getSetAsideInstalledPluginsNote(), getUnreadableInstalledPluginsNote()]
+    .filter((note): note is string => note !== null)
   if (pluginIds.length === 0 && inlinePlugins.length === 0) {
     // inlineLoadErrors can exist with zero inline plugins (e.g. --plugin-dir
     // points at a nonexistent path). Don't early-exit over them — fall
     // through to the session section so the failure is visible.
     if (inlineLoadErrors.length === 0) {
-      cliOk(
-        'No plugins installed. Use `claude plugin install` to install a plugin.',
-      )
+      const first = refusal ? `Note: ${refusal}` : 'No plugins installed. Use `claude plugin install` to install a plugin.'
+      cliOk([first, ...recoveryNotes].join('\n\n') + (refusal || recoveryNotes.length > 0 ? '\n' : ''))
     }
+  }
+
+  const notes = [...(refusal ? [`Note: ${refusal}`] : []), ...recoveryNotes]
+  if (notes.length > 0) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`${notes.join('\n\n')}\n`)
   }
 
   if (pluginIds.length > 0) {

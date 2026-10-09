@@ -1,4 +1,5 @@
 import { z } from 'zod/v4'
+import { posix, win32 } from 'path'
 import { HooksSchema } from '../../schemas/hooks.js'
 import { McpServerConfigSchema } from '../../services/mcp/types.js'
 import { lazySchema } from '../lazySchema.js'
@@ -1375,8 +1376,14 @@ export const PluginMarketplaceSchema = lazySchema(() =>
 export const PluginIdSchema = lazySchema(() =>
   z
     .string()
-    .regex(
-      /^[a-z0-9][-a-z0-9._]*@[a-z0-9][-a-z0-9._]*$/i,
+    .refine(
+      (id) =>
+        /^[a-z0-9][-a-z0-9._]*@[a-z0-9][-a-z0-9._]*$/i.test(id) ||
+        (id.endsWith('@npm') &&
+          !id.slice(0, -4).includes('..') &&
+          /^(?:@[a-z0-9][a-z0-9-._]*\/)?[a-z0-9][a-z0-9-._]*$/.test(
+            id.slice(0, -4),
+          )),
       'Plugin ID must be in format: plugin@marketplace',
     ),
 )
@@ -1479,6 +1486,59 @@ export const SettingsPluginEntrySchema = lazySchema(() =>
  *   "installPath": "/home/user/.claude/plugins/installed/anthropic-tools/code-formatter"
  * }
  */
+// Optional record metadata declared by official 2.1.292. Malformed optional
+// provenance fields are ignored; malformed required records refuse a rewrite.
+function installationMetadataFields() {
+  const absolute = (path: string) =>
+    posix.isAbsolute(path) || win32.isAbsolute(path)
+  return {
+    resolvedVersion: z.string().optional(),
+    auto: z.boolean().optional(),
+    claudeaiPluginId: z.string().max(128).optional().catch(undefined),
+    archiveSha256: z
+      .string()
+      .regex(/^[0-9a-fA-F]{64}$/)
+      .optional()
+      .catch(undefined),
+    directoryRepositoryKey: z.string().max(4096).optional().catch(undefined),
+    sourceCommand: z.string().max(520).optional().catch(undefined),
+    sourceProducerPath: z
+      .string()
+      .max(4096)
+      .refine(absolute)
+      .optional()
+      .catch(undefined),
+    previousProducerPaths: z
+      .array(z.unknown())
+      .transform((paths) =>
+        paths
+          .filter(
+            (path): path is string =>
+              typeof path === 'string' && path.length <= 4096 && absolute(path),
+          )
+          .slice(-32),
+      )
+      .optional()
+      .catch(undefined),
+    npmVersionSpec: z.string().max(256).optional().catch(undefined),
+    npmResolved: z.string().max(2048).optional().catch(undefined),
+    npmIntegrity: z.string().max(256).optional().catch(undefined),
+    npmRegistry: z
+      .string()
+      .max(2048)
+      .refine((value) => {
+        if (!/^https?:\/\/[^/\\]/i.test(value)) return false
+        try {
+          return ['http:', 'https:'].includes(new URL(value).protocol)
+        } catch {
+          return false
+        }
+      })
+      .optional()
+      .catch(undefined),
+  }
+}
+
 export const InstalledPluginSchema = lazySchema(() =>
   z.object({
     version: z.string().describe('Currently installed version'),
@@ -1494,6 +1554,7 @@ export const InstalledPluginSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Git commit SHA for git-based plugins (for version tracking)'),
+    ...installationMetadataFields(),
   }),
 )
 
@@ -1574,6 +1635,7 @@ export const PluginInstallationEntrySchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Git commit SHA for git-based plugins'),
+    ...installationMetadataFields(),
   }),
 )
 
