@@ -75,7 +75,10 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
         ack.columns !== send.columns || ack.rows !== send.rows ||
         bracket?.method !== 'native-mach-ioctl-resize-v1' || bracket.result !== 0 ||
         bracket.childPid !== initial.childPid || event.ioId !== ack.ioId || event.geometryId !== ack.geometryId ||
-        !Number.isSafeInteger(event.rawOffset) || event.rawOffset !== ack.rawOffset ||
+        // The broker's consumed tail may lag the kernel write prefix verified
+        // from the original non-overlapping Mach write/resize brackets.
+        !Number.isSafeInteger(event.rawOffset) || event.rawOffset < ack.rawOffset ||
+        event.rawOffset > io.at(-1).rawOffset ||
         !Number.isSafeInteger(event.beforeFrameId) || event.beforeFrameId < 1 || event.beforeFrameId > entries.length + 1 ||
         event.columns !== ack.columns || event.rows !== ack.rows || !isDeepStrictEqual(event.nativeBracket, bracket) ||
         (next && ['lastObservedIoId', 'lastObservedFrameId', 'observedRawBytes'].some(key => next[key] < returned[key])))

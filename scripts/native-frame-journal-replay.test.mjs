@@ -34,6 +34,21 @@ function fixture() {
 const verify = f => verifyNativeGeometryRequests(f.geometry, f.io, f.events, f.entries, f.frames, f.target, 900)
 
 describe('native original resize request and physical frame contracts', () => {
+  test('uses the verified kernel write prefix when the broker read tail lags behind it', () => {
+    const f = fixture()
+    // The broker has consumed 10 bytes at ACK; five more old-size bytes were
+    // already written before the non-overlapping kernel resize bracket.
+    f.events[0].rawOffset = 15
+    f.entries[0].rawEnd = 15
+    f.entries[1].rawStart = 15
+    f.frames[0].outputBytes = 15
+    f.frames[1].outputBytes = 5
+    expect(verify(f).verdict).toBe('passed')
+    f.events[0].rawOffset = 9
+    expect(() => verify(f)).toThrow()
+    f.events[0].rawOffset = 21
+    expect(() => verify(f)).toThrow()
+  })
   test('pairs the original send/return, Mach ACK and actual painted frame without legacy aliases', () => {
     const result = verify(fixture())
     expect(result).toMatchObject({ method: 'native-driver-mach-frame-geometry-v2', verdict: 'passed',
