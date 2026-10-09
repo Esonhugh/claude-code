@@ -1,3 +1,4 @@
+import { createModTimerRealm } from './timerRealm.js'
 import {normalizeModModelCompleteRequest} from './modelTextBlocks.js'
 import * as vm from 'node:vm'
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -744,6 +745,17 @@ function createEnvironment(id: number, plugin: string): Environment {
     performance: hostPerformance,
     schedule: (callback: () => void, milliseconds: number) => setTimeout(() => callbacks.run(true, () => stamped(id, invocations.getStore() ?? 0, callback, true)), milliseconds),
   })
+  const timerRealm = vm.runInContext(`(${createModTimerRealm.toString()})`, context)({
+    schedule: (callback: () => void, milliseconds: number, repeat: boolean) => {
+      const fire = () => callbacks.run(true, () => stamped(id, invocations.getStore() ?? 0, callback, true))
+      return repeat ? setInterval(fire, milliseconds) : setTimeout(fire, milliseconds)
+    },
+    cancel: (handle: ReturnType<typeof setTimeout>, repeat: boolean) => {
+      if (repeat) clearInterval(handle)
+      else clearTimeout(handle)
+    },
+    report: (error: string) => reply({type:'async-error',environment:id,error}),
+  }, plugin) as {dispose():void}
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
     reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id, ...(callbacks.getStore() && {callback:true}) })
@@ -797,6 +809,8 @@ function createEnvironment(id: number, plugin: string): Environment {
       return Math.max(0, Number(available) / 1000 - elapsed)
     }
   }, () => invocations.getStore()) as Environment['api']
+  const dispose = api.dispose
+  api.dispose = () => {timerRealm.dispose();dispose()}
   const lifetime = { id, disposed: false }
   promiseRealms.set(vm.runInContext('Promise.prototype', context), lifetime)
   return { context, api, lifetime }

@@ -113,7 +113,7 @@ describe('Mods Worker hooks globals', () => {
       own: true,
       hardened: true,
       console: 'undefined',
-      boundaries: ['undefined', 'undefined', 'undefined', 'undefined', 'undefined'],
+      boundaries: ['undefined', 'undefined', 'undefined', 'function', 'undefined'],
       url: {
         href: 'https://example.test/after?x=1&x=2', origin: 'https://example.test', params: ['1', '2'],
         instance: true, paramsInstance: true, canParse: true, entries: [['first', '1'], ['second', '2']],
