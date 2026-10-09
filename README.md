@@ -927,7 +927,7 @@ Darwin native journal 另记录实际 child 的 `read/readv` 与两种 `NOCANCEL
 
 Native30 是历史记录；已封存的 Native35 完整矩阵仍为29项完成、23通过、6失败，准确范围见[Native35处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。零输出观察只有在实际raw区间为零且resize位于其start/end之间时，才与start的物理网格比较；仍回放全部resize并要求后续新尺寸帧。ACK在start前生效的旧快照继续失败，同步ACK的时序门禁也继续失败，详见[帧与验收记录](docs/research/mods-terminal-noack-validity-20261008.md)。
 
-Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；仍未接通生产宿主的11个公开方法包括 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run` 和 `telemetry.log/mark`；它们都需要补齐和验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.292 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
+Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；仍未接通生产宿主的11个公开方法包括 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run` 和 `telemetry.log/mark`；它们都需要补齐和验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.295 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
 
 ### 复制文本
 
@@ -1157,7 +1157,7 @@ bun scripts/mods-test-lab.mjs run sample --binary "$MODS_CLI" --cache "$MODS_BUI
 
 无参数打开包含 Button、Input、Select、长列表和中英文 diff 的面板；`status` 查看计数，`context` 仅为下一条真正的 prompt 附加固定测试标记，`reset` 清理本 Mod 的测试状态。默认只观察事件，不改变工具输入/结果，不记录 prompt、工具参数或回答正文。最近事件最多 20 条；持久计数与当前 activation 状态分别展示。UI-only 入口没有模型服务，prompt/tool 完整链需要另行配置本地 loopback fixture。
 
-官方 `agents-md` 和 `telemetry` 保留固定 provenance 的 2.1.277 内置归档；diff 使用独立的 `assets/builtin-diff-2.1.292.zip`，校验完整模块、原样注册闭包、扫描元数据和归档来源后加载。归档缺失或校验失败会打印错误并恢复原生 diff。`telemetry` 默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载。生产 Mods 不会获得当前会话的 Anthropic credential，`session.authorize` 恒返回空授权；只有隔离的 builtin acceptance fixture 会注入固定 dummy credential 并限定到 loopback transport。`sec-default` 的宿主实现保护当前已接线的 managed 事件；下载的官方原件用于作者兼容检查，不因其名称或 manifest 获得宿主身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
+官方 `agents-md` 和 `telemetry` 保留固定 provenance 的 2.1.277 内置归档；diff 使用独立的 `assets/builtin-diff-2.1.295.zip`，校验完整模块、原样注册闭包、扫描元数据和归档来源后加载。归档缺失或校验失败会打印错误并恢复原生 diff。`telemetry` 默认关闭，只有设置 `CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY=1` 或在 `/plugin` 中启用时才加载。生产 Mods 不会获得当前会话的 Anthropic credential，`session.authorize` 恒返回空授权；只有隔离的 builtin acceptance fixture 会注入固定 dummy credential 并限定到 loopback transport。`sec-default` 的宿主实现保护当前已接线的 managed 事件；下载的官方原件用于作者兼容检查，不因其名称或 manifest 获得宿主身份。可用以下入口区分静态检查、手工启动和 compiled 行为验收：
 
 ```bash
 bun scripts/mods-test-lab.mjs fetch-official
@@ -1313,12 +1313,12 @@ CLI 启动时校验并自动恢复损坏的内置 Mods 缓存。多个 CLI 同�
 运行 `bun test ./src/services/mods/testing/runner.childRoot.test.ts` 检查三种路径及真实作者子进程加载。
 
 
-### 官方 diff 2.1.292 的离线归档与构建
+### 官方 diff 2.1.295 的离线归档与构建
 
-`scripts/package-official-diff.mjs` 从已核验的官方完整模块生成 `assets/builtin-diff-2.1.292.zip`。它在写入前校验完整模块、身份模块、原始注册闭包和 compiled scan；输出使用固定 ZIP 时间，只创建新文件，拒绝覆盖或接受损坏输入。提取出的官方 JavaScript 不会由打包脚本执行。
+`scripts/package-official-diff.mjs` 从已核验的官方完整模块生成 `assets/builtin-diff-2.1.295.zip`。它在写入前校验完整模块、身份模块、原始注册闭包和 compiled scan；输出使用固定 ZIP 时间，只创建新文件，拒绝覆盖或接受损坏输入。提取出的官方 JavaScript 不会由打包脚本执行。
 
 ```bash
-bun scripts/package-official-diff.mjs /path/to/verified-modules /tmp/new-official-diff-292.zip
+bun scripts/package-official-diff.mjs /path/to/verified-2.1.295-modules /tmp/new-official-diff-295.zip
 bun test ./scripts/shipped-diff-production.test.mjs ./scripts/build.test.mjs ./scripts/build-isolated.test.mjs
 make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
 ```
@@ -1327,7 +1327,7 @@ make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
 
 ## 官方 Mods 接管 diff
 
-生产启动从内嵌的 `builtin-diff-2.1.292.zip` 校验并加载原始 `cc-plugin-diff` Worker。在全屏 Git 工作区输入 `/diff` 打开或关闭面板。原生 diff 的已保存打开偏好只迁移一次；用户明确关闭后清除请求状态。活跃官方插件接管时，原生 diff 面板与后台刷新暂停；禁用、拒绝或卸载后恢复原生命令。
+生产启动从内嵌的 `builtin-diff-2.1.295.zip` 校验并加载原始 `cc-plugin-diff` Worker。在全屏 Git 工作区输入 `/diff` 打开或关闭面板。原生 diff 的已保存打开偏好只迁移一次；用户明确关闭后清除请求状态。活跃官方插件接管时，原生 diff 面板与后台刷新暂停；禁用、拒绝或卸载后恢复原生命令。
 
 可以在 settings 中禁用官方插件：
 
@@ -1588,19 +1588,21 @@ await $.tool.call({tool: 'SendMessage', to: 'reviewer [a1b2c3]', message: 'Revie
 公开工具回执保留 pin；模型结果省略终端专用的 `display`，默认同步恢复报告框架仍采用官方的精简 JSON 头。`[SendMessage]` 日志记录绑定名称、Agent ID 和 ref，不打印消息内容。范围与证据见 [SendMessage 身份绑定专项](docs/research/mods-sendmessage-pin-20261007.md)，相关接口见 [Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。跨会话/云目标的统一解析与完整 Mods API、UI、diff 验收继续进行。
 
 
-### 官方 diff 2.1.292 的当前固定来源
+### 官方 diff 2.1.295 的当前固定来源
 
-当前生产归档为 `assets/builtin-diff-2.1.292.zip`，包含官方完整模块、身份模块、编译扫描元数据及原始注册闭包。加载和离线打包均核对固定字节范围与 SHA-256；过期或损坏归档会记录 `[ModsBuiltin]` 错误并保留原生 diff。旧归档仅用于历史来源核对。
+当前生产归档为 `assets/builtin-diff-2.1.295.zip`，包含官方完整模块、身份模块、编译扫描元数据及原始注册闭包。加载和离线打包均核对固定字节范围与 SHA-256；过期或损坏归档会记录 `[ModsBuiltin]` 错误并保留原生 diff。旧归档仅用于历史来源核对。
 
 ```bash
-bun scripts/package-official-diff.mjs /path/to/verified-2.1.292-modules /tmp/new-official-diff-292.zip
+bun scripts/package-official-diff.mjs /path/to/verified-2.1.295-modules /tmp/new-official-diff-295.zip
 bun test ./scripts/shipped-diff-production.test.mjs ./src/plugins/bundled/shippedDiffStartup.test.ts ./src/services/mods/diffTakeover.test.ts
 make build CLAUDE_CODE_BUILD_DIR=/tmp/new-claude-build
 ```
 
 在全屏 Git 工作区输入 `/diff` 打开或关闭官方模块的面板；settings 的 `cc-plugin-diff@builtin` 开关及 `diff@builtin` 别名沿用原契约。使用 `--debug --debug-file /tmp/claude-diff-debug.log` 可核对加载版本、来源哈希与接管状态。
 
-官方最新来源核对见 [Anthropic package metadata](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)，使用背景见 [Anthropic plugins 文档](https://code.claude.com/docs/en/plugins)。此升级只更新 diff 的固定官方来源；2.1.292 公共声明的新接口和完整 API/UI 对齐仍须独立验收，详见 `mods-test.md` 和 `docs/research/mods-shipped-diff-292-20261007.md`。
+`Ctrl+X B` 切换比较 base，`Ctrl+↑/↓` 滚动文件列表。Pane 的 action 在绘制提交阶段登记，重绘后使用当前 drawing；`[ModsPaneAction]` 调试日志记录动作、绘制代次及准入状态，不记录输入正文。提交时序回归可运行 `bun test ./src/components/ModsPane.actionCommit.test.tsx`。
+
+官方最新来源核对见 [Anthropic package metadata](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)，使用背景见 [Anthropic plugins 文档](https://code.claude.com/docs/en/plugins)。此升级原样加载官方 2.1.295 diff 注册闭包，使用最新 dock 行数与滚动计算，移除旧版顶部留白。公开声明基线及完整 API/UI 对齐仍须独立验收，详见 `mods-test.md` 和 [diff 2.1.295 来源与边界](docs/research/mods-shipped-diff-295-20261010.md)。
 
 
 ### Mods 面板的键盘处理顺序

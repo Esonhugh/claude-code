@@ -2466,3 +2466,16 @@ Green7 的 standalone 脚本真实双端完成13个步骤，local70帧与两次r
 最终夹具在修复前 HEAD 的 14 案为3通过/11失败；过渡实现修复后的14案通过，扩大19文件为415通过/12失败。12项原件保留；按固定官方规则区分旧clamp/鼠标焦点预期、真实scroll优先级与Client焦点回归、以及溢出夹具缺口，逐项处置见新文档。新增空Pane无scroll副作用、真实60行溢出与标签选中/hover检查；过渡green11为16通过/0失败。该数量属于文档改动前的独立源码，最终数量和源码身份以新冻结回执为准。
 
 过渡新binary已实际完成24步骤、7样式观察和107帧有限native replay；这是前一源码 epoch，不能替代最终构建。最终源码仍须完成相关完整回归、release-check、build和本轮local/official同脚本验收。完整默认矩阵、G5、官方diff、browser/Client生命周期、实际OS input/parser/owner与产品时序继续未闭合，不宣称正式四路发布通过。操作和公开/私有类型边界见[Pane 焦点记录](docs/research/mods-pane-focus295-20261009.md)。
+
+
+## 2026-10-10：固定官方 diff 更新至 2.1.295
+
+本批从已验证 SHA-256 `0116ee2e0a513900b633d9951367f18747686478e2b462805b8c31609f047f70` 的官方原件模块表只读提取，不执行解包后的 CLI JavaScript。diff 原样注册闭包、完整模块、身份模块及 scan 独立固定摘要；最新归档 `builtin-diff-2.1.295.zip` SHA-256 为 `67a4025549b14844f13e3d6a906b336306652f7cb62d61dcc32179acd5762340`。
+
+2.1.295 相比 292 移除 dock 顶部一行 padding，并同步可见行数、内容起点和 viewport 行数计算。旧源码下真实 Worker 首次 Write 后，新增无顶部留白回归为13 pass/1 fail，actual paddingTop=1；真实295输入在旧离线 producer/loader下为0 pass/2 fail，失败原件保留。本批更新固定来源和资源链，不用手写替代 diff UI。
+
+证据根为 `/tmp/claude-test/mods-diff295-20261010-v0ozm8cn/`，准确源码、制品、执行及各层 verdict 以该目录的新回执为准。只有单测、来源或构建通过时不能声明真实二进制交互或完整效果一致；最新双端CLI、逐帧、上下文及完整发布矩阵分别验收。历史289/292结果不升级成295。实现与使用方法见 [diff 2.1.295](docs/research/mods-shipped-diff-295-20261010.md)。
+
+同脚本真实对照另发现本地首次 `Ctrl+X B` 未生效；只加调试日志的成功轮次不能证明修复。确定性 layout commit 回归为0 pass/1 fail，action 改在 layout effect 同步登记/替换/释放；新冻结源码与 binary 的完整相关回归及本轮双端结果单独结算，不修改旧失败回执。G5 为 Gap 5 的插件作者授权六场景，最新完整集成和逐帧仍未由本批覆盖。
+
+最终冻结生产源码 `16d61c51ef2805687350714c7dde8d32e6db62b8897b4f735f0767a66e35b8b0`：284 pass/0 fail/1504 expect，release-check/build 通过；制品 `db7c0277631695c63050616d459c83a1e89e6e1697eb165e41c41421e232ca82` 与官方同脚本各完成10检查点，local 74帧严格回放通过。五阶段×3195 dock cell 比较为 failed：初始0差异，首次正文1093（文字227），之后三阶段各1077样式差异（文字0）。官方256色、本地RGB，独立日志确认本地选择truecolor；来源未确证。保留原件，不将后续文字一致等同于完整UI通过。此段仅为验收后文档补记，生产代码及构建输入未变；完整发布、G5和Client生命周期仍未通过。
