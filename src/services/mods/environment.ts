@@ -1,7 +1,7 @@
 import { logForDebugging } from '../../utils/debug.js'
 import { isPromise, isProxy } from 'node:util/types'
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { createModHookStream, type ModWireValue, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
+import { createModHookStream, type ModWireValue, type ModWorkerReply, type ModWorkerRequest, type ModWorkerFault } from './protocol.js'
 import type { ModDeclaration, ModHookStream, ModInput, ModNext, ModRegistration } from './types.js'
 import { matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 import { canSettleModStreamAfterAbort, getModBudgetClock, subscribeModTrace } from './dispatch.js'
@@ -62,7 +62,7 @@ type HostHandle = { environment: number; call: HostFunction; invocation?: number
 type Result = Extract<ModWorkerReply, { type: 'result' }>
 type WithRequestId = Extract<ModWorkerRequest, { id: number }>
 type WithoutId<T> = T extends unknown ? Omit<T, 'id'> : never
-type PendingRequest = { environment: number; resolve(value: Result): void; reject(error: Error): void }
+type PendingRequest = { environment: number; stage: ModWorkerRequest['type']; handle?: number; resolve(value: Result): void; reject(error: Error): void }
 type ClientInstance = {
   run(input: ModClientRequest): Promise<Result>
   stop(error: Error): void
@@ -107,14 +107,18 @@ export function createModEnvironmentHost({
   onDied,
   onError = error => console.error(error),
 }: {
-  onDied?: (error: Error) => void
+  onDied?: (error: Error, fault: ModWorkerFault) => void
   onError?: (error: Error, environment: number) => void
 } = {}) {
   // Compiled builds must include worker.ts as an explicit worker.js entrypoint.
   const sourceWorker = import.meta.url.endsWith('.ts') && !import.meta.url.includes('/$bunfs/')
   const workerUrl = new URL(sourceWorker ? './worker.ts' : './worker.js', import.meta.url).href
-  const worker = new Worker(workerUrl)
+  const stamp = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 13))
+  const workerOptions: WorkerOptions & { data: { stamp: SharedArrayBuffer } } = { data: { stamp: stamp.buffer } }
+  const worker = new Worker(workerUrl, workerOptions)
+  const spawnedAt = performance.now()
   const requests = new Map<number, PendingRequest>()
+  const settledRequests = new Map<number, { id: number; stage: PendingRequest['stage'] }>()
   const functions = new Map<number, HostHandle>()
   const environments = new Map<number, EnvironmentState>()
   const frames = new Map<number, { environment: number; next: ModNext }>()
@@ -127,7 +131,9 @@ export function createModEnvironmentHost({
   let nextRequest = 0, nextFunction = 0, nextEnvironment = 0, nextEngine = 0
   let dead: Error | undefined
   let disposal: Promise<void> | undefined
-  let pingSent: number | undefined
+  let pingSent: { n: number; at: number } | undefined
+  let pingCounter = 0
+  let heartbeat: ReturnType<typeof setInterval> | undefined
   let epoch = 0
   const barriers = new Map<number, { resolve(): void; reject(error: Error): void }>()
   const progress = new Set<() => void>()
@@ -155,18 +161,30 @@ export function createModEnvironmentHost({
       await new Promise<void>(resolve => { progress.add(resolve) })
     }
   }
+  function stopHeartbeat() {
+    clearInterval(heartbeat)
+    heartbeat = undefined
+    pingSent = undefined
+  }
   // Probe the event loop, not Promise duration: long asynchronous work is allowed.
-  const heartbeat = setInterval(() => {
+  function startHeartbeat() {
+    if (heartbeat !== undefined) return
+    heartbeat = setInterval(() => {
+    if (requests.size === 0) { stopHeartbeat(); return }
     if (pingSent !== undefined) {
-      if (performance.now() - pingSent >= 5000) fail(new Error('Mods Worker is unresponsive'))
+      if (performance.now() - pingSent.at >= 5000) {
+        const fault = faultFor('heartbeat')
+        const culprit = fault.culprit
+        fail(new Error(`Mods Worker is unresponsive (heartbeat${culprit ? `: ${culprit.plugin}, ${culprit.evidence}, ${culprit.stage}${culprit.requestId ? `#${culprit.requestId}` : ''}` : ': culprit unknown'})`), true, fault)
+      }
       return
     }
-    if (requests.size === 0) return
-    pingSent = performance.now()
-    try { worker.postMessage({ type: 'ping' } satisfies ModWorkerRequest) }
+    pingSent = { n: ++pingCounter, at: performance.now() }
+    try { worker.postMessage({ type: 'ping', n: pingSent.n } satisfies ModWorkerRequest) }
     catch (error) { fail(new Error(errorMessage(error, 'Mods Worker heartbeat failed'))) }
-  }, 250)
-  heartbeat.unref?.()
+    }, 1000)
+    heartbeat.unref?.()
+  }
 
   function report(error: unknown, environment: number) {
     try { onError(new Error(errorMessage(error, 'Module asynchronous callback failed')), environment) }
@@ -189,6 +207,7 @@ export function createModEnvironmentHost({
     releaseHostStreams(environment)
     const state = environments.get(environment)
     environments.delete(environment)
+    settledRequests.delete(environment)
     for (const [call, owner] of activeCalls) if (owner.environment === environment) activeCalls.delete(call)
     changed()
     const errors: unknown[] = []
@@ -210,20 +229,52 @@ export function createModEnvironmentHost({
     if (errors.length > 1) throw new AggregateError(errors, 'Module revocation failed')
   }
 
-  function fail(error: Error, notify = true) {
+  function rememberSettlement(id: number, request: PendingRequest) {
+    const stacked = Atomics.load(stamp, 0)
+    if ((stacked || Atomics.load(stamp, 1)) === request.environment && Atomics.load(stamp, stacked ? 2 : 3) === id) {
+      settledRequests.set(request.environment, { id, stage: request.stage })
+    }
+  }
+
+  function faultFor(cause: ModWorkerFault['cause']): ModWorkerFault {
+    const stacked = Atomics.load(stamp, 0)
+    const resumed = Atomics.load(stamp, 1)
+    const caller = Array.from({ length: 7 }, (_, index) => Atomics.load(stamp, 6 + index)).find(id => environments.has(id))
+    const environment = caller ?? (stacked || (cause === 'heartbeat' ? resumed : 0))
+    const owner = environments.get(environment)
+    const requestId = Atomics.load(stamp, stacked ? 2 : 3)
+    const request = requests.get(requestId)
+    const callback = environment === (stacked || resumed) && Atomics.load(stamp, stacked ? 4 : 5) === 1
+    const settled = settledRequests.get(environment)
+    const live = !callback && request?.environment === environment
+    const historical = !callback && !live && settled?.id === requestId
+    return {
+      cause, workerAgeMs: performance.now() - spawnedAt, pendingRequests: requests.size,
+      ...(pingSent && { pingAgeMs: performance.now() - pingSent.at }),
+      ...(owner && { culprit: {
+        environment, plugin: owner.declaration.name, storageId: owner.declaration.storageId,
+        evidence: caller !== undefined || stacked ? 'stack' : 'resumed',
+        stage: callback ? 'callback' : live ? request.stage : historical ? settled.stage : 'unknown',
+        ...(live && { requestId, ...(request.handle !== undefined && { handle: request.handle }) }),
+        ...(historical && { settledRequestId: requestId }),
+      } }),
+    }
+  }
+
+  function fail(error: Error, notify = true, fault = faultFor('error')) {
     if (dead) return
     dead = error
     for (const barrier of barriers.values()) barrier.reject(error)
     barriers.clear()
     changed()
-    clearInterval(heartbeat)
+    stopHeartbeat()
     for (const request of requests.values()) request.reject(error)
     requests.clear()
     for (const environment of environments.keys()) {
       try { revoke(environment) } catch (failure) { report(failure, environment) }
     }
     worker.terminate()
-    if (notify) { try { onDied?.(error) } catch (failure) { report(failure, 0) } }
+    if (notify) { try { onDied?.(error, fault) } catch (failure) { report(failure, 0) } }
   }
 
   function stateFor(environment: number) {
@@ -433,17 +484,18 @@ export function createModEnvironmentHost({
   function request(message: WithoutId<WithRequestId>, id = ++nextRequest): Promise<Result> {
     if (dead) return Promise.reject(dead)
     return new Promise((resolve, reject) => {
-      requests.set(id, { environment: message.environment, resolve, reject })
+      requests.set(id, { environment: message.environment, stage: message.type, ...('handle' in message && { handle: message.handle }), resolve, reject })
+      startHeartbeat()
       changed()
       try { worker.postMessage({ ...message, id }) }
-      catch (error) { requests.delete(id); reject(new Error(errorMessage(error, 'Mods Worker request failed'))) }
+      catch (error) { requests.delete(id); if (requests.size === 0) stopHeartbeat(); reject(new Error(errorMessage(error, 'Mods Worker request failed'))) }
     })
   }
 
   const streamAbortErrors = new WeakSet<Error>()
   worker.onmessage = async (event: MessageEvent<ModWorkerReply>) => {
     const message = event.data
-    if (message.type === 'pong') { pingSent = undefined; return }
+    if (message.type === 'pong') { if (message.n === pingSent?.n) pingSent = undefined; return }
     if (message.type === 'settled') {
       const barrier = barriers.get(message.id)
       barriers.delete(message.id)
@@ -464,7 +516,9 @@ export function createModEnvironmentHost({
     if (message.type === 'result') {
       const pending = requests.get(message.id)
       if (!pending) return
+      rememberSettlement(message.id, pending)
       requests.delete(message.id)
+      if (requests.size === 0) stopHeartbeat()
       if (message.error !== undefined) {
         const errors = invocationErrors.get(message.invocation ?? message.id)
         if (message.errorRef !== undefined && errors?.has(message.errorRef)) pending.reject(errors.get(message.errorRef) as Error)
@@ -503,7 +557,7 @@ export function createModEnvironmentHost({
     const kind = message.args[0]
     const idle = fn && timerWaits.has(fn.call) && kind?.type === 'value' && (kind.value === 'after' || kind.value === 'every')
     activeCalls.set(message.call, { environment: message.environment, invocation: message.invocation, idle })
-    const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call }
+    const response: Extract<ModWorkerRequest, { type: 'host-result' }> = { type: 'host-result', environment: message.environment, call: message.call, invocation: message.invocation, ...(message.callback && {callback:true}) }
     let releaseModelCall: (() => void) | undefined
     try {
       stateFor(message.environment)
@@ -570,7 +624,7 @@ export function createModEnvironmentHost({
   worker.onerror = event => fail(new Error(event.message || 'Mods Worker failed'))
   worker.onmessageerror = () => fail(new Error('Mods Worker message could not be decoded'))
   // Bun's Web Worker exit event is named close (node:worker_threads calls it exit).
-  worker.addEventListener('close', () => fail(new Error('Mods Worker exited')))
+  worker.addEventListener('close', () => fail(new Error('Mods Worker exited'), true, faultFor('exit')))
 
   async function invoke(environment: number, handle: number, args: unknown[], next?: ModNext, drawing?: number, callbackDrawing?: number, streaming = false) {
     const state = stateFor(environment)
@@ -609,7 +663,15 @@ export function createModEnvironmentHost({
         }, 5000)
         overrun.unref?.()
       }
-      overrun ??= setTimeout(() => fail(new Error('Mods Worker did not settle an aborted invocation')), 5000)
+      overrun ??= setTimeout(() => {
+        const pending = requests.get(id)
+        if (!pending) return
+        rememberSettlement(id, pending)
+        requests.delete(id)
+        pending.reject(new Error('Mods Worker did not settle an aborted invocation'))
+        changed()
+        if (requests.size === 0) stopHeartbeat()
+      }, 5000)
       overrun.unref?.()
       if (streaming && (!next || !canSettleModStreamAfterAbort(next)))
         streamAbort.abort(next?.signal.reason ?? new Error('Module invocation aborted'))
@@ -721,16 +783,13 @@ export function createModEnvironmentHost({
     unloading.set(environment, pending)
     const errors: unknown[] = []
     try { revoke(environment) } catch (error) { errors.push(error) }
-    void (async () => {
-      const timeout = setTimeout(() => fail(new Error('Mods Worker unload timed out')), 1000)
-      timeout.unref?.()
-      try { if (!dead) await request({ type: 'unload', environment }) }
-      catch (error) { errors.push(error) }
-      finally { clearTimeout(timeout); unloading.delete(environment) }
-      if (errors.length === 1) reject(errors[0])
-      else if (errors.length > 1) reject(new AggregateError(errors, 'Module unload failed'))
-      else resolve()
-    })()
+    // Capabilities are revoked locally; guest teardown must not block retirement.
+    try { if (!dead) worker.postMessage({ type: 'unload', environment, id: ++nextRequest } satisfies ModWorkerRequest) }
+    catch (error) { errors.push(error) }
+    unloading.delete(environment)
+    if (errors.length === 1) reject(errors[0])
+    else if (errors.length > 1) reject(new AggregateError(errors, 'Module unload failed'))
+    else resolve()
     return pending
   }
 

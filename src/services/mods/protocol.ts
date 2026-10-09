@@ -1,5 +1,22 @@
 import type { ModDeclaration, ModHookStream, ModRegistration } from './types.js'
 
+export type ModWorkerFault = {
+  cause: 'heartbeat' | 'abort-overrun' | 'unload' | 'error' | 'exit'
+  workerAgeMs: number
+  pendingRequests: number
+  pingAgeMs?: number
+  culprit?: {
+    environment: number
+    plugin: string
+    storageId: string
+    evidence: 'stack' | 'resumed'
+    stage: ModWorkerRequest['type'] | 'callback' | 'unknown'
+    requestId?: number
+    settledRequestId?: number
+    handle?: number
+  }
+}
+
 // Public process streams use the native generator lifecycle: closing before
 // entry leaves result pending, while closing a pending read finishes that read.
 export function createModProcessStream(
@@ -135,7 +152,7 @@ export type ModWireValue =
 
 export type ModWorkerRequest =
   | { id: number; type: 'client'; environment: number; request: import('./client.js').ModClientRequest }
-  | { type: 'ping' }
+  | { type: 'ping'; n: number }
   | { type: 'settle'; barrier: number }
   | { id: number; type: 'load'; environment: number; declaration: ModDeclaration }
   | { id: number; type: 'load-client'; environment: number; declaration: ModDeclaration; module: string }
@@ -182,6 +199,7 @@ export type ModWorkerRequest =
       environment: number
       call: number
       invocation?: number
+      callback?: true
       trace?: ModWireValue
       value?: ModWireValue
       error?: string
@@ -190,7 +208,7 @@ export type ModWorkerRequest =
     }
 
 export type ModWorkerReply =
-  | { type: 'pong' }
+  | { type: 'pong'; n: number }
   | { type: 'settled'; id: number }
   | { type: 'async-error'; environment: number; error: string }
   | {
@@ -205,6 +223,7 @@ export type ModWorkerReply =
     }
   | {
       type: 'host-call'
+      callback?: true
       environment: number
       invocation: number
       call: number

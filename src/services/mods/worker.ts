@@ -1,6 +1,7 @@
 import {normalizeModModelCompleteRequest} from './modelTextBlocks.js'
 import * as vm from 'node:vm'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { workerData } from 'node:worker_threads'
 import { atob as hostAtob, btoa as hostBtoa } from 'node:buffer'
 import { webcrypto } from 'node:crypto'
 import { performance as hostPerformance } from 'node:perf_hooks'
@@ -666,6 +667,31 @@ type Environment = {
 
 const environments = new Map<number, Environment>()
 const invocations = new AsyncLocalStorage<number>()
+const callbacks = new AsyncLocalStorage<boolean>()
+const attribution = workerData?.stamp instanceof SharedArrayBuffer ? new Int32Array(workerData.stamp) : undefined
+function stamped<T>(environment: number, request: number, call: () => T, callback = false): T {
+  if (!attribution) return call()
+  const previous = Atomics.load(attribution, 0)
+  const previousRequest = Atomics.load(attribution, 2)
+  const previousCallback = Atomics.load(attribution, 4)
+  Atomics.store(attribution, 0, environment)
+  Atomics.store(attribution, 2, request)
+  Atomics.store(attribution, 1, environment)
+  Atomics.store(attribution, 3, request)
+  Atomics.store(attribution, 4, callback ? 1 : 0)
+  Atomics.store(attribution, 5, callback ? 1 : 0)
+  try { return call() }
+  finally {
+    Atomics.store(attribution, 0, previous)
+    Atomics.store(attribution, 2, previousRequest)
+    Atomics.store(attribution, 4, previousCallback)
+    if (previous) {
+      Atomics.store(attribution, 1, previous)
+      Atomics.store(attribution, 3, previousRequest)
+      Atomics.store(attribution, 5, previousCallback)
+    }
+  }
+}
 const budgetClocks = new Map<number, BigInt64Array>()
 const promiseRealms = new WeakMap<object, Environment['lifetime']>()
 const uiPublications = new Map<number, number>()
@@ -716,11 +742,11 @@ function createEnvironment(id: number, plugin: string): Environment {
     btoa: hostBtoa,
     crypto: webcrypto,
     performance: hostPerformance,
-    schedule: (callback: () => void, milliseconds: number) => setTimeout(callback, milliseconds),
+    schedule: (callback: () => void, milliseconds: number) => setTimeout(() => callbacks.run(true, () => stamped(id, invocations.getStore() ?? 0, callback, true)), milliseconds),
   })
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
-    reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id })
+    reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id, ...(callbacks.getStore() && {callback:true}) })
   }, (wireText: string, props: string) => {
     const wire = JSON.parse(wireText) as {
       type?: unknown
@@ -778,14 +804,22 @@ function createEnvironment(id: number, plugin: string): Environment {
 
 self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
   const request = event.data
-  if (request.type === 'ping') { reply({ type: 'pong' }); return }
+  if (request.type === 'ping') { reply({ type: 'pong', n: request.n }); return }
+  if (attribution) {
+    Atomics.store(attribution, 1, 0)
+    Atomics.store(attribution, 3, 0)
+    Atomics.store(attribution, 5, 0)
+    setImmediate(() => { Atomics.store(attribution, 1, 0); Atomics.store(attribution, 3, 0); Atomics.store(attribution, 5, 0) })
+  }
+
   if (request.type === 'settle') {
     // A worker turn boundary drains continuations without awaiting held capabilities.
     setImmediate(() => reply({ type: 'settled', id: request.barrier }))
     return
   }
   if (request.type === 'host-result') {
-    environments.get(request.environment)?.api.result(JSON.stringify(request))
+    const environment = environments.get(request.environment)
+    if (environment) stamped(request.environment, request.invocation ?? 0, () => environment.api.result(JSON.stringify(request)), request.callback === true)
     return
   }
   if (request.type === 'abort') {
@@ -896,7 +930,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       if (!environment) throw new Error('Module environment unloaded')
       if (request.next?.budget) budgetClocks.set(request.id, new BigInt64Array(request.next.budget))
       try {
-        const value = JSON.parse(await invocations.run(request.id, () => environment.api.invoke(JSON.stringify(request))))
+        const value = JSON.parse(await invocations.run(request.id, () => stamped(request.environment, request.id, () => environment.api.invoke(JSON.stringify(request)))))
         reply({ type: 'result', id: request.id, value })
       } finally { if (!environment.api.hasStream(request.id)) budgetClocks.delete(request.id) }
       return
@@ -905,7 +939,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       const environment = environments.get(request.environment)
       if (!environment) throw new Error('Module environment unloaded')
       try {
-        const value = JSON.parse(await invocations.run(request.invocation, () => environment.api.pull(JSON.stringify(request))))
+        const value = JSON.parse(await invocations.run(request.invocation, () => stamped(request.environment, request.id, () => environment.api.pull(JSON.stringify(request)))))
         reply({ type:'result', id:request.id, invocation:request.invocation, value })
       } finally { if (!environment.api.hasStream(request.invocation)) budgetClocks.delete(request.invocation) }
       return
@@ -942,7 +976,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
         if (!link) throw new Error('Import missing from scanned snapshot')
         return getModule(link.to)
       })
-      if (module.status === 'linked') await module.evaluate()
+      if (module.status === 'linked') await stamped(request.environment, request.id, () => module.evaluate())
     }
     const clients = request.type === 'load-client'
       ? (declaration.clients ?? []).filter(client => client.module === request.module)
@@ -956,7 +990,7 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
         if (!link) throw new Error('Client import missing from scanned snapshot')
         return getModule(link.to)
       })
-      if (module.status === 'linked') await module.evaluate()
+      if (module.status === 'linked') await stamped(request.environment, request.id, () => module.evaluate())
       const namespace = module.namespace as Record<string, unknown>
       const names = Object.keys(namespace).filter(name => /^[A-Z]/.test(name) && typeof namespace[name] === 'function')
       const draw = namespace.default ?? (names.length === 1 ? namespace[names[0]!] : undefined)
@@ -965,12 +999,12 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     }
     const exports = entrypoints.map(module => (module.namespace as { register?: unknown }).register)
     if (exports.some(register => typeof register !== 'function')) throw new Error('Hooks module must export register(on, options)')
-    const registrations = JSON.parse(await environment.api.register(
+    const registrations = JSON.parse(await stamped(request.environment, request.id, () => environment.api.register(
       async (on: unknown, options: unknown) => {
         for (const register of exports) await (register as (on: unknown, options: unknown) => unknown)(on, options)
       },
       JSON.stringify(declaration.options),
-    ))
+    )))
     reply({ type: 'result', id: request.id, registrations })
   } catch (error) {
     if (request.type === 'load' || request.type === 'load-client') {

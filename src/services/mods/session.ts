@@ -329,20 +329,31 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   function diagnostic(event: ModDiagnostic) {
-    let message = event.message
-    for (const secret of [...diagnosticSecrets].sort((a, b) => b.length - a.length)) {
-      message = message.replaceAll(secret, '[REDACTED]')
+    const redact = (value: string) => {
+      for (const secret of [...diagnosticSecrets].sort((a, b) => b.length - a.length)) value = value.replaceAll(secret, '[REDACTED]')
+      return value
     }
-    event = { ...event, message }
+    event = { ...event, message: redact(event.message) }
     const key = `${event.plugin}:${event.stage}:${event.message}`
-    if (reported.has(key)) return
+    if (reported.has(key) && !event.workerFault) return
     reported.add(key)
     // Do not serialize settings, options, event input or stack traces here.
     const text = `[Mods] ${event.plugin} (${event.stage}): ${event.message}`
       .replace(/[\r\n]/g, ' ')
       .replaceAll(String.fromCharCode(27), ' ')
     process.stderr.write(text + '\n')
-    logForDebugging(text)
+    const fault = event.workerFault
+    logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
+      cause: fault.cause, workerAgeMs: fault.workerAgeMs, pendingRequests: fault.pendingRequests,
+      ...(fault.pingAgeMs === undefined ? {} : {pingAgeMs:fault.pingAgeMs}),
+      ...(fault.culprit && {culprit: {
+        environment:fault.culprit.environment, plugin:redact(fault.culprit.plugin), storageId:redact(fault.culprit.storageId),
+        evidence:fault.culprit.evidence, stage:fault.culprit.stage,
+        ...(fault.culprit.requestId === undefined ? {} : {requestId:fault.culprit.requestId}),
+        ...(fault.culprit.settledRequestId === undefined ? {} : {settledRequestId:fault.culprit.settledRequestId}),
+        ...(fault.culprit.handle === undefined ? {} : {handle:fault.culprit.handle}),
+      }}),
+    })}` : ''))
     diagnostics.push({
       type: 'generic-error',
       source: `plugin:mods:${event.plugin}`,

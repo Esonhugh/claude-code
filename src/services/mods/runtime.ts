@@ -1,3 +1,4 @@
+import type { ModWorkerFault } from './protocol.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
 import { createModRemotePrompt } from './remoteUiPrompt.js'
 import { runModPromptEdit, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
@@ -138,7 +139,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiToast?(plugin: string, text: string, timeoutMs: number): void
   prompt?(): ModPromptHost | undefined
 }
-export type ModDiagnostic = { plugin: string; stage: string; message: string }
+export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault }
 export type ModDispatchOptions = {
   /** Host-pinned caller identity, never read from the event's input. */
   origin?: ModOrigin
@@ -306,7 +307,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let stopped = false
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
+  const knownArgs = new Map<string, ModDeclaration>()
+  let unattributedCrashes = 0
+  let workerError: Error | undefined
+  const workerRecoveries = new WeakMap<Error, Promise<void>>()
   let recovering = false
+  let recoveryRequested = false
+  let currentRecovery: Promise<void> | undefined
   let hostEpoch = 0
   let activationId = 0
   let hostDead = false
@@ -463,7 +470,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return result
     },
     draw: async (owner, input, drawing, core, validateRenderTree, signal) => {
-      const entered = uiContext.getStore()
+      const context = uiContext.getStore()
+      // Recovery may inherit a settled hook's scope; render the published generation.
+      const entered = context?.active === false ? undefined : context
       const instance = `${input.surface}\0${input.component}\0${input.requestId}`
       const lease: DrawingLease = { instance, owner, snapshot: entered?.snapshot ?? active, table: entered?.table ?? nouns, participants: new Set() }
       drawings.set(drawing, lease)
@@ -508,8 +517,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let lastInterface: InterfaceState = { owners: new Map(['clock', ...Object.keys(coreHost)].map(noun => [noun, 'engine'])), withheld: new Map() }
   const crashedWithholders = new Map<string, Set<string>>()
   const controller = new AbortController()
-  const diagnostic = (plugin: string, stage: string, error: unknown) => onDiagnostic?.({
-    plugin, stage, message: error instanceof Error ? error.message : String(error),
+  const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault) => onDiagnostic?.({
+    plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}),
   })
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   let activeHostCallbacks = 0
@@ -2851,7 +2860,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (staleDrawings && !stopped) await ui.render(services.uiPresentation?.())
   }
 
-  async function reconcile(inputs: ModPluginInput[]) {
+  async function reconcile(inputs: ModPluginInput[], recoveringOwners?: ReadonlySet<string>) {
+    if (recoveringOwners === undefined) unattributedCrashes = 0
     if (hostDead) {
       host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
       hostDead = false
@@ -2867,9 +2877,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const epoch = hostEpoch
     const ensureLive = () => {
       if (stopped) throw new Error('Mods runtime disposed')
-      if (hostEpoch !== epoch) throw new Error('Mods Worker generation changed during reload')
+      if (hostEpoch !== epoch) throw workerError ?? new Error('Mods Worker generation changed during reload')
     }
     const wanted = new Set(inputs.map(input => input.storageId))
+    for (const id of knownArgs.keys()) if (!wanted.has(id)) knownArgs.delete(id)
     const removed = previous.filter(owner => !wanted.has(owner.declaration.storageId))
     active = previous.filter(owner => wanted.has(owner.declaration.storageId))
     for (const owner of removed) retire(owner)
@@ -2880,7 +2891,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!
     const cold = previous.length === 0
     const scanned = new Map<ModPluginInput, ModDeclaration>()
-    let loading = inputs
+    let loading = inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))
     let bootstrap: { modules: Activation[]; table: Nouns } | undefined
     // A native seat holds the user tier out of the privileged events it wraps.
     // Its own failure must not leave user Mods running unguarded, so the whole
@@ -2898,9 +2909,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       retire(owner)
     }
     if (cold) {
-      for (const input of inputs) {
+      for (const input of loading) {
         try {
-          scanned.set(input, getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input))
+          const declaration = recoveringOwners ? knownArgs.get(input.storageId)
+            : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+          if (!declaration) continue
+          scanned.set(input, declaration)
+          if (!recoveringOwners) knownArgs.set(input.storageId, declaration)
         } catch (error) {
           ensureLive()
           failGuard(input)
@@ -2931,7 +2946,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       let suggestionSuspended = false
       try {
-        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+        const declaration = scanned.get(input) ?? (recoveringOwners ? knownArgs.get(input.storageId)
+          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input))
+        if (!declaration) continue
+        if (!recoveringOwners) knownArgs.set(input.storageId, declaration)
         const refreshDeclarations = async () => {
           if (declaration.isNative || declaration.tier === 'builtin') return
           try {
@@ -3027,8 +3045,17 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     diagnostic(owner?.declaration.name ?? 'engine', 'async', error)
   }
 
-  function workerDied(error: Error) {
-    diagnostic('engine', 'worker', error)
+  function workerDied(error: Error, fault: ModWorkerFault) {
+    workerError = error
+    diagnostic(fault.culprit?.plugin ?? 'engine', 'worker', error, fault)
+    const disabled = new Set<string>()
+    if (fault.culprit) disabled.add(fault.culprit.storageId)
+    else if (++unattributedCrashes >= 3) {
+      const native = new Set(declarations.filter(input => getNativeModDeclaration(input) !== undefined).map(input => input.storageId))
+      for (const id of knownArgs.keys()) if (!native.has(id)) disabled.add(id)
+      diagnostic('engine', 'worker.disable', `Worker Mods are off after ${unattributedCrashes} unattributed crashes; withholdings remain until reload or disable`)
+    }
+    for (const id of disabled) { knownArgs.delete(id) }
     hostEpoch++
     hostDead = true
     for (const [noun, owners] of lastInterface.withheld) crashedWithholders.set(noun, new Set(owners))
@@ -3047,12 +3074,33 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     publishRenderHooks()
     retired.clear()
     activations.clear()
-    if (stopped || recovering) return
+    if (fault.culprit) {
+      const plugin = fault.culprit.plugin
+      const withheld = [...lastInterface.withheld].filter(([, owners]) => owners.has(plugin)).map(([noun]) => `$.${noun}`).join(', ')
+      const text = `${plugin} was unloaded: it crashed the hooks worker` +
+        (withheld ? `; what it withheld (${withheld}) stays withheld until it reloads or is disabled` : '')
+      try { services.uiLog?.(plugin, text, 'transcript') }
+      catch (error) { diagnostic(plugin, 'ui.log', error) }
+    }
+    if (stopped) return
+    if (recovering) {
+      recoveryRequested = true
+      if (currentRecovery) workerRecoveries.set(error, currentRecovery)
+      return
+    }
     recovering = true
-    void enqueue(async () => {
-      try { await reconcile(declarations) }
-      finally { recovering = false }
-    }).catch(error => diagnostic('engine', 'recovery', error))
+    currentRecovery = enqueue(async () => {
+      try {
+        for (let round = 0; round < 3; round++) {
+          recoveryRequested = false
+          try { await reconcile(declarations, new Set(knownArgs.keys())) }
+          catch (error) { if (stopped || !recoveryRequested) throw error }
+          if (!recoveryRequested || stopped) break
+        }
+      } finally { recovering = false; currentRecovery = undefined }
+    })
+    workerRecoveries.set(error, currentRecovery)
+    void currentRecovery.catch(error => diagnostic('engine', 'recovery', error))
   }
 
   function capture(hostServices: ModRequestServices = {}): ModSnapshot {
@@ -3331,7 +3379,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (publicTurn === turn) publicTurn = undefined
       }
     },
-    reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)),
+    reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)).catch(error => {
+      const recovery = error instanceof Error ? workerRecoveries.get(error) : undefined
+      if (recovery) return recovery
+      throw error
+    }),
     bind: (next: ModBinding) => enqueue(async () => {
       if (!ending && binding && Object.keys(next).every(key =>
         next[key as keyof ModBinding] === binding![key as keyof ModBinding],

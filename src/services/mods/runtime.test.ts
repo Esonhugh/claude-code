@@ -1449,14 +1449,14 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'new core' }))).toEqual({ result: 'mod:new core' })
   })
 
-  test('allows manual reload after the single automatic Worker recovery fails', async () => {
+  test('allows manual reload after repeated unattributed Worker crashes are disabled', async () => {
     const plugin = await fixture(`export function register(on) { on('tool.call', () => ({ result: 'recovered' })); }`)
     const RealWorker = globalThis.Worker
     const workers: Worker[] = []
     globalThis.Worker = class extends RealWorker {
       private readonly fails: boolean
       constructor(url: string | URL, options?: WorkerOptions) {
-        super(url, options); workers.push(this); this.fails = workers.length === 2
+        super(url, options); workers.push(this); this.fails = workers.length === 2 || workers.length === 3
       }
       postMessage(message: unknown, options?: Transferable[] | StructuredSerializeOptions) {
         if (this.fails && (message as { type?: string }).type === 'load') this.terminate()
@@ -1464,17 +1464,25 @@ describe('Mods lifecycle', () => {
         else super.postMessage(message, options)
       }
     } as typeof Worker
-    const failed = Promise.withResolvers<void>()
-    const value = createModsRuntime({ onDiagnostic: event => { if (event.stage === 'recovery') failed.resolve() } })
+    const disabled = Promise.withResolvers<void>()
+    const faults: string[] = []
+    const value = createModsRuntime({ onDiagnostic: event => {
+      faults.push(event.stage)
+      if (event.stage === 'worker.disable') disabled.resolve()
+    } })
     cleanups.push(() => value.dispose())
     try {
       await value.reconcile([plugin])
       workers[0]!.terminate()
-      await failed.promise
-      expect(workers).toHaveLength(2)
+      await disabled.promise
+      await value.bind({cwd: plugin.pluginRoot, surface: null, isInteractive: false, sessionId: 'repeated-crash'})
+      expect(faults.filter(stage => stage === 'worker')).toHaveLength(3)
+      expect(faults.filter(stage => stage === 'worker.disable')).toHaveLength(1)
+      expect(workers).toHaveLength(4)
+      expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
       await value.reconcile([plugin])
       expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'recovered' })
-      expect(workers).toHaveLength(3)
+      expect(workers).toHaveLength(4)
     } finally { globalThis.Worker = RealWorker }
   })
 

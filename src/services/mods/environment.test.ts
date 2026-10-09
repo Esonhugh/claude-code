@@ -30,48 +30,52 @@ function next(call: (input: Record<string, unknown>) => Promise<unknown>): ModNe
 }
 
 describe('Mods disposal failures', () => {
-  test.each([false, true])('waits for every unload and terminates once (multiple failures: %s)', async multiple => {
+  test.each([false, true])('collects local unload failures without guest acknowledgments and terminates once (multiple failures: %s)', async multiple => {
     const OriginalWorker = globalThis.Worker
-    const pending: any[] = []
-    const workerRef: { current?: any } = {}
+    const pending: {type: string; id: number; environment: number}[] = []
+    const workers: FaultWorker[] = []
     let terminated = 0
+    const firstError = new Error('first local unload')
+    const secondError = new Error('second local unload')
     class FaultWorker {
-      onmessage: any
+      onmessage!: (event: {data: unknown}) => void
       addEventListener() {}
-      postMessage(message: any) {
+      postMessage(message: {type: string; id: number; environment: number}) {
         if (message.type === 'load') queueMicrotask(() => this.onmessage({data:{type:'result',id:message.id,registrations:[]}}))
-        else if (message.type === 'unload') pending.push(message)
+        else if (message.type === 'unload') {
+          pending.push(message)
+          if (pending.length === 1) throw firstError
+          if (multiple) throw secondError
+        }
       }
       terminate() { terminated++ }
-      constructor() { workerRef.current = this }
+      constructor() { workers.push(this) }
     }
-    globalThis.Worker = FaultWorker as any
+    globalThis.Worker = FaultWorker as unknown as typeof Worker
     const value = createModEnvironmentHost()
     globalThis.Worker = OriginalWorker
+    expect(workers).toHaveLength(1)
+    const worker = workers[0]!
     try {
       const first = await value.load(declaration(''))
-      await value.load(declaration(''))
-      const unloading = first.dispose()
-      const firstError = unloading.catch(error => error)
-      await expect(first.invoke(first.registrations[0]?.id ?? 1, []))
-        .rejects.toThrow('unloaded')
+      const second = await value.load(declaration(''))
       const disposal = value.dispose()
-      let settled = false
-      const outcome = disposal.catch(error => error).finally(() => { settled = true })
-      await new Promise(resolve => setTimeout(resolve, 0))
-      workerRef.current.onmessage({data:{type:'result',id:pending[0].id,error:'first unload'}})
-      await firstError
-      await new Promise(resolve => setTimeout(resolve, 0))
-      expect(settled).toBe(false)
-      expect(terminated).toBe(0)
-      workerRef.current.onmessage({data:{type:'result',id:pending[1].id,...(multiple ? {error:'second unload'} : {})}})
-      const error = await outcome
+      const error = await disposal.catch(error => error)
+      expect(pending.map(message => message.environment)).toEqual([first.id, second.id])
       if (multiple) {
         expect(error).toBeInstanceOf(AggregateError)
-        expect(error.errors.map((error: Error) => error.message)).toEqual(['second unload', 'first unload'])
-      } else expect(error).toBe(await firstError)
-      expect(first.dispose()).toBe(unloading)
+        expect(error.errors).toEqual([firstError, secondError])
+        expect(error.errors[0]).toBe(firstError)
+        expect(error.errors[1]).toBe(secondError)
+      } else expect(error).toBe(firstError)
+      expect(terminated).toBe(1)
+      await expect(first.invoke(1, [])).rejects.toThrow('unloaded')
+      await expect(second.invoke(1, [])).rejects.toThrow('unloaded')
+      // Official zBt/ITo does not await guest cleanup. Late replies cannot replace local failures.
+      for (const message of pending) worker.onmessage({data:{type:'result',id:message.id,error:'late guest unload'}})
       expect(value.dispose()).toBe(disposal)
+      expect(await value.dispose().catch(error => error)).toBe(error)
+      await first.dispose(); await second.dispose()
       expect(terminated).toBe(1)
     } finally { await value.dispose().catch(() => {}) }
   })
