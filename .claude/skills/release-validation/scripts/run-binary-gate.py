@@ -2574,8 +2574,39 @@ def builtin_cache_producers_closed(cache, binary_sha256):
                  'native-pty-eof.json', 'broker-cleanup.json',
                  'frame-request.fifo', 'frame-response.fifo')
     for run in (cache / 'runs').glob('r-*'):
-        if run.is_symlink():
+        if run.is_symlink() or not run.is_dir():
             return False
+        native_artifacts = ('journal.bin', 'registration.json', 'native-initial.json',
+                            'native-observer.json', 'producer-expected-native.json')
+        has_native = any((run / name).exists() or (run / name).is_symlink()
+                         for name in native_artifacts)
+        launch_path = run / 'capture-launch.json'
+        if has_native or launch_path.exists() or launch_path.is_symlink():
+            try:
+                named = launch_path.lstat()
+                fd = os.open(launch_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                            or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+                        return False
+                    launch = json.load(stream)
+                capture = launch.get('capture') if isinstance(launch, dict) else None
+                if not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool:
+                    return False
+                if has_native and capture['nativeJournal'] is not True:
+                    return False
+                if capture['nativeJournal']:
+                    identity = terminal_native_exit_identity(run, launch, binary_sha256)
+                    if (identity is None
+                            or not terminal_native_exit_passed(run, identity['capture'], binary_sha256)
+                            or any((run / name).exists() or (run / name).is_symlink()
+                                   for name in ('frame-request.fifo', 'frame-response.fifo'))):
+                        return False
+                    continue
+            except (OSError, ValueError, KeyError, TypeError):
+                return False
         if not any((run / name).exists() or (run / name).is_symlink() for name in artifacts):
             continue
         try:
@@ -2700,7 +2731,12 @@ def archive_builtin_cache(source, archive, receipt):
 
     try:
         # Preserve links as links, rather than reading a target outside this cache.
-        shutil.copytree(source, archive, ignore=ignore, symlinks=True)
+        copy_spec = importlib.util.spec_from_file_location('owned_evidence_copy',
+            Path(__file__).resolve().parents[4] / 'scripts/owned-evidence-copy.py')
+        copy_module = importlib.util.module_from_spec(copy_spec)
+        copy_spec.loader.exec_module(copy_module)
+        shutil.copytree(source, archive, ignore=ignore, symlinks=True,
+                        copy_function=copy_module.copy_evidence_file)
         stable = tree_manifest(source) == before
         matched = tree_manifest(archive) == before
         if not stable or not matched:

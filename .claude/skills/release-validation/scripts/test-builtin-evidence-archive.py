@@ -413,5 +413,115 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
 
 
 
+
+class NativeCacheClosureTest(unittest.TestCase):
+    """Synthetic closure/type tests; the original seven-run RED is separate."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='bn-close-', dir='/private/tmp')
+        self.addCleanup(self.temporary.cleanup)
+        self.cache = Path(self.temporary.name)
+        self.run = self.cache / 'runs/r-012345abcdef'
+        self.run.mkdir(parents=True)
+        self.binary = 'a' * 64
+        self.capture = {'nativeJournal': True, 'captureId': 'native-cache-fixture'}
+        self.native_close = {'method': 'owned-broker-closed-native-v1', 'recordCount': 5, 'files': {}}
+        self.io_close = {'method': 'owned-broker-closed-io-v1', 'recordCount': 3, 'rawBytes': 0, 'finalGeometryId': 0}
+        self.producer = {'backend': 'native-shared-slot-v1', 'captureId': self.capture['captureId'],
+                         'childPid': 123, 'binarySha256': self.binary,
+                         'nativeClose': self.native_close, 'ioClose': self.io_close}
+        self.closed = {'backend': 'native-shared-slot-v1', 'captureId': self.capture['captureId'],
+                       'childPid': 123, 'childExitCode': 0, 'childReaped': True,
+                       'physicalEof': True, 'normalCompletion': True, 'failure': None,
+                       'signalsSent': [], 'cleanupErrors': [],
+                       'nativeClose': self.native_close, 'ioClose': self.io_close}
+        self.launch = {'run': str(self.run.resolve()), 'binarySha256': self.binary, 'capture': self.capture}
+        self.write('journal.bin', b'native artifact; this fixture does not claim content/physical coverage')
+        self.write('capture-launch.json', self.launch)
+        self.write('start.json', {'childPid': 123, 'childPgid': 123, 'binarySha256': self.binary})
+        self.write('producer-expected-native.json', self.producer)
+        self.write('capture-eof', b'0\n')
+        self.reset_closed()
+
+    def write(self, name, value):
+        path = self.run / name
+        path.write_bytes(value if isinstance(value, bytes) else (json.dumps(value) + '\n').encode())
+        path.chmod(0o600)
+
+    def reset_closed(self):
+        for name in ('cleanup.json', 'broker-cleanup.json'):
+            self.write(name, self.closed)
+
+    def passed(self):
+        return driver.builtin_cache_producers_closed(self.cache, self.binary)
+
+    def test_closed_native_without_legacy_aliases_is_accepted(self):
+        self.assertTrue(self.passed())
+        for name in ('native-pty-initial.json', 'native-pty-eof.json', 'frame-request.fifo', 'frame-response.fifo'):
+            self.assertFalse((self.run / name).exists())
+
+    def test_each_missing_required_native_receipt_is_rejected(self):
+        for name in ('capture-launch.json', 'start.json', 'cleanup.json', 'broker-cleanup.json',
+                     'producer-expected-native.json', 'capture-eof'):
+            with self.subTest(name=name):
+                path = self.run / name
+                original = path.read_bytes()
+                path.unlink()
+                self.assertFalse(self.passed())
+                self.write(name, original)
+
+    def test_failed_or_wrong_native_closure_cannot_delete_cache(self):
+        for key, value in {'childExitCode': True, 'childPid': True, 'childReaped': False,
+                           'physicalEof': False, 'normalCompletion': False,
+                           'failure': {'error': 'failed'}, 'signalsSent': ['SIGTERM'],
+                           'cleanupErrors': [{'action': 'close'}], 'captureId': 'foreign',
+                           'backend': 'legacy'}.items():
+            with self.subTest(key=key):
+                original = self.closed[key]
+                self.closed[key] = value
+                self.reset_closed()
+                self.assertFalse(self.passed())
+                self.closed[key] = original
+                self.reset_closed()
+
+    def test_legacy_declaration_cannot_mask_native_artifacts(self):
+        self.capture['nativeJournal'] = False
+        self.write('capture-launch.json', self.launch)
+        self.assertFalse(self.passed())
+
+    def test_foreign_launch_run_or_binary_is_rejected(self):
+        for key, value in {'run': str(self.run.parent / 'foreign'), 'binarySha256': 'b' * 64}.items():
+            with self.subTest(key=key):
+                original = self.launch[key]
+                self.launch[key] = value
+                self.write('capture-launch.json', self.launch)
+                self.assertFalse(self.passed())
+                self.launch[key] = original
+                self.write('capture-launch.json', self.launch)
+
+    def test_linked_launch_or_close_receipts_are_rejected(self):
+        for name in ('capture-launch.json', 'cleanup.json', 'capture-eof'):
+            with self.subTest(name=name):
+                path = self.run / name
+                retained = self.cache / ('retained-' + name)
+                original = path.read_bytes()
+                path.rename(retained)
+                path.symlink_to(retained)
+                self.assertFalse(self.passed())
+                path.unlink()
+                self.write(name, original)
+                retained.unlink()
+
+    def test_launch_must_keep_owned_private_mode(self):
+        (self.run / 'capture-launch.json').chmod(0o644)
+        self.assertFalse(self.passed())
+
+    def test_collector_error_or_mixed_fifo_retains_native_cache(self):
+        self.write('capture-eof', b'1\n')
+        self.assertFalse(self.passed())
+        self.write('capture-eof', b'0\n')
+        os.mkfifo(self.run / 'frame-response.fifo', 0o600)
+        self.assertFalse(self.passed())
+
+
 if __name__ == '__main__':
     unittest.main()
