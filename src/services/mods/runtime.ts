@@ -36,7 +36,7 @@ import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugi
 import { getOfficialShippedPaneRequests, updateOfficialShippedPaneRequest } from '../../plugins/builtinShippedMods.js'
 import builtinDiff from '../../commands/diff/index.js'
 import { matchesModEventPattern } from './matcher.js'
-import { createModHostOperations, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
+import { createModHostOperations, ModProcessTimeoutError, ModProcessTerminationError, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
 import { createModTools, type ModToolSpec } from './tools.js'
 import { describeModCommand, runModCommand, type CommandPresentation } from './commandAdapter.js'
@@ -1056,14 +1056,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
-  async function hostCall(owner: Activation, op: string, input: ModInput): Promise<unknown> {
+  async function hostCall(owner: Activation, op: string, input: ModInput, signal: AbortSignal | undefined = invocationSignal.getStore()): Promise<unknown> {
     const { fs, process, store, settings } = owner.operations
     switch (op) {
       case 'settings.read': return settings.read(input)
       case 'env.get': return owner.operations.env.get(input.name as string)
       case 'env.set': return owner.operations.env.set(input.name as string, input.value as string | undefined)
       case 'fs.read': case 'fs.list': case 'fs.stat': case 'fs.exists': case 'fs.write': case 'fs.ancestors': case 'process.run': {
-        const combined = createCombinedAbortSignal(invocationSignal.getStore(), {signalB:owner.controller.signal})
+        const combined = createCombinedAbortSignal(signal, {signalB:owner.controller.signal})
         try {
           switch (op) {
             case 'fs.read': return await fs.read(input.path as string, { as: input.as as 'text' | 'bytes' }, combined.signal)
@@ -1072,7 +1072,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             case 'fs.stat': return await fs.stat(input.path as string, { resolve: input.resolve as boolean }, combined.signal)
             case 'fs.exists': return await fs.exists(input.path as string, combined.signal)
             case 'fs.write': return await fs.write(input.path as string, input.text as string, combined.signal)
-            case 'process.run': return await process.run(input.argv as string[], input.init as Parameters<typeof process.run>[1], combined.signal)
+            case 'process.run': {
+              try {
+                return await process.run(input.argv as string[], input.init as Parameters<typeof process.run>[1], combined.signal)
+              } catch (error) {
+                const code = (error as NodeJS.ErrnoException | null)?.code
+                const message = error instanceof Error ? error.message : String(error)
+                const detail = error instanceof ModProcessTimeoutError
+                  ? `aborted: still running after ${error.timeoutMs}ms`
+                  : error instanceof ModProcessTerminationError ? 'failed to terminate process tree'
+                  : combined.signal.aborted ? 'aborted'
+                  : `failed to start: ${code === undefined ? message : `${code}: ${message}`}`
+                throw Object.assign(new Error(`${owner.declaration.name}: $.process.run(${(input.argv as string[])[0]}) ${detail}`), { name: 'HooksError' })
+              }
+            }
           }
         } finally { combined.cleanup() }
       }
@@ -1823,7 +1836,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const provider = { snapshot, table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true }
             try {
               if (fn === hostIdentity)
-                return { value: await capabilityContext.run(provider, () => hostCall(owner, op, rewritten)) }
+                return { value: await capabilityContext.run(provider, () => hostCall(owner, op, rewritten, signal)) }
               return { value: await capabilityContext.run(provider, () => fn(rewritten)) }
             } finally { provider.active = false }
           }, snapshot, table, {

@@ -1555,7 +1555,7 @@ test('Worker environment calls publish names at admission and affect the host an
     events:['tool.call'], calls:['env.get','env.set','process.run'],
     env:{reads:['MODS_CONTRACT_VALUE'],writes:['MODS_CONTRACT_VALUE']},
   }})
-  expect(await run('Write')).toEqual({result:{before:undefined,after:'host-value',child:{exitCode:0,stdout:'host-value',stderr:''}}})
+  expect(await run('Write')).toEqual({result:{before:undefined,after:'host-value',child:{exitCode:0,stdout:'host-value',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}}})
   expect(process.env.MODS_CONTRACT_VALUE).toBe('host-value')
   expect(await run('Delete')).toEqual({result:{value:undefined}})
   expect(process.env.MODS_CONTRACT_VALUE).toBeUndefined()

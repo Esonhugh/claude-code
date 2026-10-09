@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { spawn } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
-import { StringDecoder } from 'node:string_decoder'
 import { logForDebugging } from '../../utils/debug.js'
 import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
@@ -121,6 +120,20 @@ export type ProcessRunResult = {
   exitCode: number
   stdout: string
   stderr: string
+  isStdoutTruncated: boolean
+  isStderrTruncated: boolean
+}
+
+export class ModProcessTimeoutError extends DOMException {
+  constructor(readonly timeoutMs: number) {
+    super(`Process timed out after ${timeoutMs}ms`, 'TimeoutError')
+  }
+}
+
+export class ModProcessTerminationError extends AggregateError {
+  constructor(reason: unknown, error: unknown) {
+    super([reason, error], 'Process tree termination failed')
+  }
 }
 
 export type ProcessSpawnRequest = {
@@ -573,6 +586,9 @@ export function createModHostOperations({
                 ...argv.slice(1),
               ]
             : argv.slice(1)
+          const startedAt = performance.now()
+          const operationId = randomUUID()
+          const argsSHA256 = createHash('sha256').update(JSON.stringify(args)).digest('hex')
           const child = spawn(argv[0], args, {
             cwd: resolvePath(init.cwd ?? '.'),
             env: { ...process.env, ...init.env },
@@ -581,52 +597,145 @@ export function createModHostOperations({
             detached: process.platform !== 'win32',
             windowsHide: true,
           })
-          let stopped: Error | undefined
+          const record = (phase: string, fields: Record<string, unknown> = {}) =>
+            logForDebugging(`[ModsProcess] ${JSON.stringify({
+              phase, operationId, owner: storageId, pid: child.pid ?? null,
+              argsSHA256, timeoutMs, elapsedMs: performance.now() - startedAt, ...fields,
+            })}`)
+          child.once('spawn', () => record('start'))
+          let stopped = false
+          let stopReason: unknown
+          let spawnError: Error | undefined
           let termination: Promise<void> = Promise.resolve()
+          const closed = Promise.withResolvers<void>()
           const cleanup = () => {
             clearTimeout(timer)
             signal.removeEventListener('abort', onAbort)
           }
-          const stop = (error: Error) => {
+          const stop = (reason: unknown, cause: 'abort' | 'timeout') => {
             if (stopped) return
-            stopped = error
+            stopped = true
+            stopReason = reason
             cleanup()
-            termination = new Promise<void>((done) => {
-              const finish = (killError?: Error) => {
-                if (killError)
-                  stopped = new AggregateError(
-                    [error, killError],
-                    'Process tree termination failed',
-                  )
+            record('stop', { cause })
+            termination = (async () => {
+              try {
+                if (child.pid !== undefined) {
+                  if (process.platform === 'win32') {
+                    await new Promise<void>((resolve, reject) =>
+                      treeKill(child.pid!, 'SIGKILL', error => error ? reject(error) : resolve()))
+                    record('terminate', { signal: 'SIGKILL' })
+                  } else {
+                    // Include the original group when the parent has exited with inherited pipes open.
+                    const listing = await execFileNoThrowWithCwd('ps', ['-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'pgid='], { cwd: '/', timeout: 500 })
+                    const parents = new Map<number, number[]>()
+                    const descendants = new Set<number>()
+                    for (const line of listing.stdout.split('\n')) {
+                      const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s*$/.exec(line)
+                      if (!match) continue
+                      const pid = Number(match[1]), parent = Number(match[2]), group = Number(match[3])
+                      parents.set(parent, [...parents.get(parent) ?? [], pid])
+                      if (group === child.pid && pid > 1 && pid !== process.pid && pid !== child.pid) descendants.add(pid)
+                    }
+                    const pending = [child.pid, ...descendants]
+                    for (const parent of pending) for (const pid of parents.get(parent) ?? []) {
+                      if (pid > 1 && pid !== process.pid && pid !== child.pid && !descendants.has(pid)) { descendants.add(pid); pending.push(pid) }
+                    }
+                    const pids = [...descendants]
+                    if (child.exitCode === null && child.signalCode === null) pids.unshift(child.pid)
+                    const starts = async (stage: 'before-term' | 'after-grace') => {
+                      if (!pids.length) return { values: new Map<number, string>(), code: 0 }
+                      const result = await execFileNoThrowWithCwd('ps', ['-o', 'pid=', '-o', 'lstart=', '-p', pids.join(',')], { cwd: '/', timeout: 500, env: { LC_ALL: 'C', TZ: 'UTC' } })
+                      const values = new Map<number, string>()
+                      for (const line of result.stdout.split('\n')) {
+                        const match = /^\s*(\d+)\s+(\S.*\S)\s*$/.exec(line)
+                        if (match) values.set(Number(match[1]), match[2]!)
+                      }
+                      record('identity-query', { stage, exitCode: result.code, hasError: result.error !== undefined, observedPids: values.size })
+                      return { values, code: result.code }
+                    }
+                    const initial = await starts('before-term')
+                    const owned = initial.values
+                    let signalFailure: unknown
+                    let killFailure: unknown
+                    const failedSignal = (pid: number, signal: 'SIGTERM' | 'SIGKILL', error: unknown) => {
+                      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return
+                      signalFailure ??= error
+                      if (signal === 'SIGKILL') killFailure ??= error
+                      record('signal-error', { targetPid: pid, signal, errorCode: (error as NodeJS.ErrnoException).code })
+                    }
+                    const send = (pid: number, signal: 'SIGTERM' | 'SIGKILL') => {
+                      try { process.kill(pid, signal); return true }
+                      catch (error) { failedSignal(pid, signal, error); return false }
+                    }
+                    const childAlive = () => child.exitCode === null && child.signalCode === null
+                    const sendChild = (signal: 'SIGTERM' | 'SIGKILL') => {
+                      try { return child.kill(signal) }
+                      catch (error) { failedSignal(child.pid!, signal, error); return false }
+                    }
+                    if (owned.size || childAlive()) {
+                      // A group failure must not skip independently addressable owned PIDs.
+                      const groupSignaled = send(-child.pid, 'SIGTERM')
+                      let sent = 0
+                      for (const pid of owned.keys()) if (send(pid, 'SIGTERM')) sent++
+                      if (!owned.has(child.pid) && childAlive() && sendChild('SIGTERM')) sent++
+                      record('terminate', { signal: 'SIGTERM', groupSignaled, ownedPids: owned.size, signaledPids: sent, graceMs: 2000 })
+                      let graceTimer: ReturnType<typeof setTimeout> | undefined
+                      try {
+                        const grace = new Promise<void>(resolve => { graceTimer = setTimeout(resolve, 2000); graceTimer.unref?.() })
+                        await (descendants.size ? grace : Promise.race([closed.promise, grace]))
+                      } finally { if (graceTimer !== undefined) clearTimeout(graceTimer) }
+                      const rechecked = await starts('after-grace')
+                      const current = rechecked.values
+                      let killed = 0
+                      for (const [pid, start] of owned) if (current.get(pid) === start && send(pid, 'SIGKILL')) killed++
+                      if (killed) record('terminate', { signal: 'SIGKILL', signaledPids: killed, identityRechecked: true })
+                      // Missing initial identity and a conflicting captured identity are different cases.
+                      if (childAlive() && owned.has(child.pid) && current.has(child.pid) && owned.get(child.pid) !== current.get(child.pid)) {
+                        throw new Error('Owned child process identity changed during termination')
+                      }
+                      if (childAlive() && (!owned.has(child.pid) || !current.has(child.pid))) {
+                        if (sendChild('SIGKILL')) {
+                          record('terminate', { signal: 'SIGKILL', identityMethod: 'owned-live-child-handle' })
+                        } else if (childAlive()) {
+                          throw signalFailure ?? new Error('Unable to signal the owned live child process')
+                        }
+                      }
+                      if (killFailure !== undefined) throw killFailure
+                      for (const pid of descendants) {
+                        if (owned.has(pid) && current.get(pid) === owned.get(pid)) continue
+                        if (!current.has(pid)) {
+                          // A missing query row is not proof of exit; only an actual ESRCH is.
+                          try { process.kill(pid, 0) }
+                          catch (error) {
+                            if ((error as NodeJS.ErrnoException).code === 'ESRCH') continue
+                          }
+                        }
+                        record('identity-unresolved', { targetPid: pid, queryExitCode: rechecked.code })
+                        throw signalFailure ?? Object.assign(new Error('Unable to verify descendant process identity during termination'), { code: 'ERR_MOD_PROCESS_IDENTITY_UNVERIFIED', queryExitCode: rechecked.code })
+                      }
+                    }
+                  }
+                }
+              } catch (error) {
+                stopReason = new ModProcessTerminationError(reason, error)
+                record('error', { stage: 'terminate', errorCode: (error as NodeJS.ErrnoException).code })
+                reject(stopReason)
+                return
+              } finally {
                 child.stdin.destroy()
                 child.stdout.destroy()
                 child.stderr.destroy()
-                done()
               }
-              if (child.pid === undefined) return finish()
-              if (process.platform === 'win32') {
-                treeKill(child.pid, 'SIGKILL', finish)
-              } else {
-                try {
-                  process.kill(-child.pid, 'SIGKILL')
-                  finish()
-                } catch (killError) {
-                  if ((killError as NodeJS.ErrnoException).code === 'ESRCH')
-                    finish()
-                  else treeKill(child.pid, 'SIGKILL', finish)
-                }
-              }
-            })
+              await closed.promise
+            })()
           }
-          const onAbort = () =>
-            stop(new DOMException('Process aborted', 'AbortError'))
+          const onAbort = () => stop(signal.reason, 'abort')
           const timer = setTimeout(
             () =>
               stop(
-                new DOMException(
-                  `Process timed out after ${timeoutMs}ms`,
-                  'TimeoutError',
-                ),
+                new ModProcessTimeoutError(timeoutMs),
+                'timeout',
               ),
             timeoutMs,
           )
@@ -636,35 +745,51 @@ export function createModHostOperations({
           const stderr: Buffer[] = []
           let stdoutSize = 0
           let stderrSize = 0
+          let stdoutBytes = 0, stderrBytes = 0
+          let isStdoutTruncated = false, isStderrTruncated = false
+          const stdoutHash = createHash('sha256'), stderrHash = createHash('sha256')
           child.stdout.on('data', (chunk: Buffer) => {
+            stdoutBytes += chunk.length
+            stdoutHash.update(chunk)
             const kept = chunk.subarray(0, MAX_BYTES - stdoutSize)
+            if (kept.length < chunk.length) isStdoutTruncated = true
             if (kept.length) stdout.push(kept)
             stdoutSize += kept.length
           })
           child.stderr.on('data', (chunk: Buffer) => {
+            stderrBytes += chunk.length
+            stderrHash.update(chunk)
             const kept = chunk.subarray(0, MAX_BYTES - stderrSize)
+            if (kept.length < chunk.length) isStderrTruncated = true
             if (kept.length) stderr.push(kept)
             stderrSize += kept.length
           })
           child.once('error', (error) => {
             cleanup()
-            if (!stopped) reject(error)
+            spawnError = error
+            record('error', { stage: 'spawn', errorCode: (error as NodeJS.ErrnoException).code })
           })
-          child.once('close', async (code) => {
+          child.once('close', async (code, exitSignal) => {
+            closed.resolve()
             cleanup()
             await termination
-            if (stopped) reject(stopped)
+            record('close', { exitCode: code ?? 1, signal: exitSignal, stopped,
+              stdoutBytes, stderrBytes, stdoutRetainedBytes: stdoutSize, stderrRetainedBytes: stderrSize,
+              stdoutSHA256: stdoutHash.digest('hex'), stderrSHA256: stderrHash.digest('hex'),
+              isStdoutTruncated, isStderrTruncated })
+            if (stopped) reject(stopReason)
+            else if (spawnError) reject(spawnError)
             else {
-              // Do not turn an incomplete UTF-8 tail at the cap into a larger replacement character.
-              const decode = (chunks: Buffer[], size: number) => {
-                const decoder = new StringDecoder('utf8')
-                const text = decoder.write(Buffer.concat(chunks))
-                return text + (size < MAX_BYTES ? decoder.end() : '')
+              const decode = (chunks: Buffer[], truncated: boolean) => {
+                const bytes = Buffer.concat(chunks)
+                return truncated ? new TextDecoder().decode(bytes, { stream: true }) : bytes.toString('utf8')
               }
               resolveResult({
                 exitCode: code ?? 1,
-                stdout: decode(stdout, stdoutSize),
-                stderr: decode(stderr, stderrSize),
+                stdout: decode(stdout, isStdoutTruncated),
+                stderr: decode(stderr, isStderrTruncated),
+                isStdoutTruncated,
+                isStderrTruncated,
               })
             }
           })
