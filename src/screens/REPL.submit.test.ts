@@ -1,3 +1,4 @@
+import { prepareConversationRewind, rewindConversationTo } from '../utils/conversationRewind.js'
 import { resetSettingsCache } from '../utils/settings/settingsCache.js'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -113,9 +114,9 @@ test('REPL sizes the dock from the shown pane requested body columns', () => {
   expect(shownModDock).toBeDefined()
   expect(dockWidth).toBeDefined()
   const evaluate = new Function('modDock', `const shownModDock = ${shownModDock!.getText(file)}; return ${dockWidth!.getText(file)};`)
-  expect(evaluate([{ shown: false, columns: 60, bodyColumns: 60 }, { shown: true, columns: 24, bodyColumns: 24 }])).toBe(26)
-  expect(evaluate([{ shown: true, columns: 100, bodyColumns: 53 }])).toBe(55)
-  expect(evaluate([{ shown: true, bodyColumns: 78 }])).toBeUndefined()
+  expect(evaluate([{ shown: false, columns: 60, bodyColumns: 60 }, { shown: true, columns: 24, bodyColumns: 24 }])).toBe(25)
+  expect(evaluate([{ shown: true, columns: 100, bodyColumns: 53 }])).toBe(54)
+  expect(evaluate([{ shown: true, bodyColumns: 78 }])).toBe(79)
   expect(evaluate([])).toBeUndefined()
 })
 
@@ -649,7 +650,8 @@ test('Diff sidebar leaves PromptInput active while its responsive dialog takes o
   expect(expression).not.toContain('diffSidebarKeyboardActive')
   expect(expression).toContain('isShowingLocalJSXCommand')
   expect(expression).toContain('showResponsiveDiffDialog')
-  expect(expression).toContain('modPaneFocused')
+  // A focused Pane retains the mounted composer; focus routing owns its keys.
+  expect(expression).not.toContain('modPaneFocused')
   expect(expression).toContain('modAbovePromptFocused')
   const active = new Function(
     'isShowingLocalJSXCommand',
@@ -661,6 +663,7 @@ test('Diff sidebar leaves PromptInput active while its responsive dialog takes o
   expect(active(false, false, false, false)).toBe(false)
   expect(active(false, true, false, false)).toBe(true)
   expect(active(false, false, false, true)).toBe(true)
+  expect(active(false, false, true, false)).toBe(false)
 })
 
 test('Diff sidebar leaves keyboard navigation with the composer and background tasks', () => {
@@ -793,19 +796,35 @@ test('successful same-ID resume resets diff without waiting for identity change'
 })
 
 test('rewind resets diff state even though the session ID is unchanged', () => {
-  const target = { type: 'user', uuid: 'target' }
-  let resets = 0
-  let state = { diffSidebarVisible: true, toolPermissionContext: { mode: 'default' } }
-  const rewind = extract('./REPL.tsx', 'rewindConversationTo')({
-    messagesRef: { current: [target] }, logEvent: noop, setMessages: noop,
-    setConversationId: noop, randomUUID: () => 'new-rows', resetMicrocompactState: noop,
-    feature: () => false, getCwd: () => '/repo',
-    diffController: { reset: () => { resets++ } },
-    setAppState: (fn: any) => { state = fn(state) },
+  const target = { type: 'user', uuid: 'target' } as any
+  const order: string[] = []
+  let state: any = { diffSidebarVisible: true, toolPermissionContext: { mode: 'default' } }
+  rewindConversationTo(target, {
+    messages: [target], logEvent: noop,
+    setMessages: messages => { expect(messages).toEqual([]); order.push('messages') },
+    resetDiff: () => { order.push('diff') },
+    setConversationId: () => { order.push('conversation') },
+    resetMicrocompactState: noop, resetContextCollapse: noop,
+    setAppState: fn => { state = fn(state) },
   })
-  rewind(target)
-  expect(resets).toBe(1)
+  expect(order).toEqual(['messages', 'diff', 'conversation'])
   expect(state.diffSidebarVisible).toBe(false)
+  expect(state.sendMessagePins).toEqual({})
+})
+
+test('rewind plans retain earlier messages and restore permission without mutating state', () => {
+  const earlier = { type: 'user', uuid: 'earlier', message: { content: 'retained' } } as any
+  const target = { type: 'user', uuid: 'target', permissionMode: 'plan' } as any
+  const messages = [earlier, target, { type: 'user', uuid: 'later' } as any]
+  const previous: any = { diffSidebarVisible: true, toolPermissionContext: { mode: 'default' }, sendMessagePins: { stale: {} } }
+  const plan = prepareConversationRewind(messages, target)!
+  expect(plan.messages).toEqual([earlier])
+  expect(plan.metrics).toEqual({ preRewindMessageCount: 3, postRewindMessageCount: 1, messagesRemoved: 2, rewindToMessageIndex: 1 })
+  expect(plan.updateAppState(previous)).toMatchObject({ diffSidebarVisible: false, toolPermissionContext: { mode: 'plan' }, sendMessagePins: {}, promptSuggestion: { text: null } })
+  expect(previous.diffSidebarVisible).toBe(true)
+  expect(previous.toolPermissionContext.mode).toBe('default')
+  expect(messages).toHaveLength(3)
+  expect(prepareConversationRewind(messages, { type: 'user', uuid: 'missing' } as any)).toBeUndefined()
 })
 
 function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'prompt', stash = undefined as any,

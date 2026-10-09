@@ -1,3 +1,4 @@
+import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
 import { feature } from 'bun:bundle'
@@ -5806,60 +5807,23 @@ export function REPL({
   // stale closures.
   const rewindConversationTo = useCallback(
     (message: UserMessage) => {
-      const prev = messagesRef.current
-      const messageIndex = prev.lastIndexOf(message)
-      if (messageIndex === -1) return
-
-      logEvent('tengu_conversation_rewind', {
-        preRewindMessageCount: prev.length,
-        postRewindMessageCount: messageIndex,
-        messagesRemoved: prev.length - messageIndex,
-        rewindToMessageIndex: messageIndex,
-      })
-      setMessages(prev.slice(0, messageIndex))
-      diffController?.reset(getCwd())
-      // Careful, this has to happen after setMessages
-      setConversationId(randomUUID())
-      // Reset cached microcompact state so stale pinned cache edits
-      // don't reference tool_use_ids from truncated messages
-      resetMicrocompactState()
-      if (feature('CONTEXT_COLLAPSE')) {
-        // Rewind truncates the REPL array. Commits whose archived span
-        // was past the rewind point can't be projected anymore
-        // (projectView silently skips them) but the staged queue and ID
-        // maps reference stale uuids. Simplest safe reset: drop
-        // everything. The ctx-agent will re-stage on the next
-        // threshold crossing.
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        ;(
-          require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')
-        ).resetContextCollapse()
-        /* eslint-enable @typescript-eslint/no-require-imports */
-      }
-
-      // Restore state from the message we're rewinding to
-      setAppState(prev => ({
-        ...prev,
-        sendMessagePins: restoreSendMessagePins(messagesRef.current),
-        diffSidebarVisible: false,
-        // Restore permission mode from the message
-        toolPermissionContext:
-          message.permissionMode &&
-          prev.toolPermissionContext.mode !== message.permissionMode
-            ? {
-                ...prev.toolPermissionContext,
-                mode: message.permissionMode as typeof prev.toolPermissionContext.mode,
-              }
-            : prev.toolPermissionContext,
-        // Clear stale prompt suggestion from previous conversation state
-        promptSuggestion: {
-          text: null,
-          promptId: null,
-          shownAt: 0,
-          acceptedAt: 0,
-          generationRequestId: null,
+      applyConversationRewind(message, {
+        messages: messagesRef.current,
+        logEvent,
+        setMessages,
+        resetDiff: () => diffController?.reset(getCwd()),
+        setConversationId,
+        resetMicrocompactState,
+        resetContextCollapse: () => {
+          if (feature('CONTEXT_COLLAPSE')) {
+            // Truncating the transcript invalidates archived spans and staged IDs.
+            /* eslint-disable @typescript-eslint/no-require-imports */
+            ;(require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')).resetContextCollapse()
+            /* eslint-enable @typescript-eslint/no-require-imports */
+          }
         },
-      }))
+        setAppState,
+      })
     },
     [setMessages, setAppState, diffController],
   )
