@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterAll, expect, mock, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
@@ -33,6 +33,15 @@ import {
   resetSettingsCache,
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
+
+const originalTestConfigDir = process.env.CLAUDE_CONFIG_DIR
+const testConfigDir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-tool-config-')))
+process.env.CLAUDE_CONFIG_DIR = testConfigDir
+afterAll(() => {
+  if (originalTestConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalTestConfigDir
+  rmSync(testConfigDir, { recursive: true, force: true })
+})
 
 const originalSettings = getSessionSettingsCache()
 const originalApiKey = process.env.ANTHROPIC_API_KEY
