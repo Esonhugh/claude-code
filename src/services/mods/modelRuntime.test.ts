@@ -176,9 +176,10 @@ test('aborting the parent request rejects the model operation and aborts the com
     signal: controller.signal,
   })
   await entered.promise
-  controller.abort(new Error('cancel model request'))
+  const reason = new Error('cancel model request')
+  controller.abort(reason)
 
-  await expect(pending).rejects.toMatchObject({name:'AbortError'})
+  await expect(pending).rejects.toBe(reason)
   expect(boundarySignal?.aborted).toBe(true)
 })
 test('model fork crosses production loader and Worker with hook rewriting', async () => {
@@ -248,9 +249,10 @@ test('fork deny never reaches the provider and caller abort propagates through W
   const controller = new AbortController()
   const pending = value.dispatch('tool.call',{},async () => ({result:'core'}),{signal:controller.signal})
   await entered.promise
-  controller.abort(new Error('fork caller cancelled'))
-  // Runtime dispatch normalizes cancellation; the adapter separately preserves its input reason.
-  await expect(pending).rejects.toMatchObject({name:'AbortError'})
+  const reason = new Error('fork caller cancelled')
+  controller.abort(reason)
+  // The outer request preserves its cancellation reason even if the direct fork returns aborted.
+  await expect(pending).rejects.toBe(reason)
 })
 
 
