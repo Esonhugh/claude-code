@@ -2396,3 +2396,7 @@ CLI resize fixture必须在实际tmux命令前后保存geometry send/return，�
 Green4已跑完的39项及15项native CLI不覆盖瞬时ps恢复或group-only错误的PID fallback；只读复核已否定其完整闭合结论，未迁移。red7四案1通过/3失败，保留真实恢复ps、signal尝试、实际child状态及监督回收；新候选必须重新冻结并全跑，不拼接旧轮通过。
 
 Green5的41项/相邻文件通过而check因finally throw lint失败；后次ps故障的后代状态遗漏另由red8复现，red9在结算点实测存活descendant与错误rawFalse同时出现（2通过/1失败）。Green6必须验证真实ESRCH/未知身份失败与监督gone，不能把查询缺行、父close或pipe销毁替代后代清理。
+
+## 2026-10-09 原生 resize 请求时钟有效性
+
+Native50原完整30项正常结束，27 passed / 3 failed；io84与后次send已发布尾io83的拒收属于时序证据不足，不据此判产品绘制错误。旧epoch保持原verdict。新控制器保存真实Mach时钟与caller身份；v2关联要求唯一请求窗口和真实ACK后的正输出物理帧，不改完整覆盖标志。最小未修复回归1通过/14失败，实际caller clock与新CLI/矩阵必须分别取证，详见[处置与入口](docs/research/mods-native-driver-clock-validity-20261009.md)。

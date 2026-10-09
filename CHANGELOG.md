@@ -27,6 +27,8 @@
 
 ### 变更内容
 
+- 验收有效性：resize控制器保存真实Mach send/return与caller身份；独立回放按同案时钟关联内核ACK和实际正输出帧，异步发布尾不充当执行时间。旧Native50的27通过/3失败保留，完整input owner、timing和发布仍未通过；见[请求时钟处置](docs/research/mods-native-driver-clock-validity-20261009.md)。
+
 - Mods process.run：宿主合并信号保留首个原始取消原因（包括false/null/0/空字符串）；实际operation signal交付core，公开失败按固定官方2.1.293的HooksError语义包装。补齐独立截断标志、恰好4MiB的UTF-8边界和真实start/stop/TERM/KILL/close摘要日志；终止允许2000ms宽限并复验PID起始身份，处理helper首次失败后恢复与group TERM失败后的PID兜底；终止失败保留errno、identity查询exitCode、后代未知状态与原取消原因，避免无界结算等待及把查询失败当作退出。完整input owner、无观测时序、终端/Client发布验收仍未通过。
 
 - 修复原生终端验收报告被旧格式拒收的问题；严格校验实际resize请求与后续绘制帧，CLI fixture在真实命令前后保存请求与返回边界，故障fixture原子发布实际EAGAIN回执，保留完整门禁未通过状态。使用方法与证据边界见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。
