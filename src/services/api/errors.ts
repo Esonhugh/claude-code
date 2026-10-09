@@ -435,6 +435,8 @@ export function getAssistantMessageFromError(
   if ((error instanceof APIError || error instanceof HttpResponseError) && error.status !== undefined) {
     message.apiErrorStatus = error.status
     if (error.status >= 500 && message.error === 'unknown') message.error = 'server_error'
+    // Preserve HTTP metadata without copying provider error bodies.
+    message.apiError = {status:error.status,type:'api_error',message:''}
   }
   return message
 }

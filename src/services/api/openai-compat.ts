@@ -28,6 +28,7 @@ import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import type { OpenAITurnScope } from './openai-turn-scope.js'
 import { normalizeModelStringForAPI } from '../../utils/model/model.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
+import { HttpResponseError } from '../../utils/errors.js'
 
 // --- Auth config ---
 
@@ -552,7 +553,7 @@ async function fetchResponsesWithRetry(
       if (resp.ok) return resp
 
       const errText = await resp.text()
-      lastError = new Error(`OpenAI API ${resp.status}: ${errText}`)
+      lastError = new HttpResponseError(resp.status, `OpenAI API ${resp.status}: ${errText}`)
       if (!isRetryableOpenAIResponse(resp.status) || attempt >= maxRetries) {
         throw lastError
       }

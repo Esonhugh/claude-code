@@ -78,6 +78,7 @@ function completeApiFailure(error: unknown, usage: ModModelUsage, model: string)
   const status = error instanceof APIError || error instanceof HttpResponseError ? error.status ?? null : null
   let kind = (failure.error ?? 'unknown') as ModModelApiError
   if (error instanceof APIConnectionError) kind = 'server_error'
+  else if ((status === 401 || status === 403) && kind === 'unknown') kind = 'authentication_failed'
   else if (status === 404 && ['unknown','invalid_request'].includes(kind)) kind = 'model_not_found'
   else if (status === 429 && kind === 'unknown') kind = 'rate_limit'
   else if (status !== null && status >= 500 && ['unknown','overloaded'].includes(kind)) kind = 'server_error'

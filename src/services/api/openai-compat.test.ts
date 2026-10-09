@@ -1589,6 +1589,25 @@ try {
 
   assert.equal(attempts, 1)
 
+  const { createModModelComplete } = await import('../mods/modelAdapter.js')
+  const { getAssistantMessageFromError } = await import('./errors.js')
+  const statusClient = createOpenAICompatClient({apiKey:'sk-test-api-key',maxRetries:0,timeout:1000})
+  // Shared Mods receipts follow the pinned 2.1.292 categories, including OpenAI transport failures.
+  for (const [status, category] of [[400,'unknown'],[401,'authentication_failed'],[403,'authentication_failed'],[404,'model_not_found'],[429,'rate_limit'],[500,'server_error'],[529,'server_error']] as const) {
+    globalThis.fetch = (async () => new Response('{"error":{"message":"FAKE_PRIVATE_PROVIDER_BODY"}}', {status,headers:{'X-Private':'FAKE_PRIVATE_HEADER'}})) as unknown as typeof fetch
+    const complete = createModModelComplete(async options => statusClient.beta.messages.create({model:options.model,max_tokens:16,messages:options.messages}), model=>model, ()=>64000)
+    assert.deepEqual(await complete({model:'gpt-5.5',prompt:'failure'}), {
+      isAnswered:false,reason:'api-error',status,error:category,
+      usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},
+    })
+    await assert.rejects(statusClient.beta.messages.create({model:'gpt-5.5',max_tokens:16,messages:[{role:'user',content:'failure'}]}), error => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message,new RegExp(`OpenAI API ${status}:`))
+      assert.deepEqual(getAssistantMessageFromError(error,'gpt-5.5').apiError,{status,type:'api_error',message:''})
+      return true
+    })
+  }
+
   requests.length = 0
   process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET = '/tmp/openai.sock'
   process.env.CLAUDE_CODE_OPENAI_AUTH_MODE = 'chatgpt'
