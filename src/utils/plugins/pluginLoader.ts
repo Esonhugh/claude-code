@@ -44,6 +44,7 @@ import {
   stat,
   symlink,
 } from 'fs/promises'
+import { publishDirectory } from './stagingDirectory.js'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, relative, resolve, sep } from 'path'
 import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
@@ -135,7 +136,6 @@ import {
   type PluginSource,
 } from './schemas.js'
 import {
-  convertDirectoryToZipInPlace,
   extractZipToDirectory,
   getSessionPluginCachePath,
   isPluginZipCacheEnabled,
@@ -389,92 +389,97 @@ export async function copyPluginToVersionedCache(
   version: string,
   entry?: PluginMarketplaceEntry,
   marketplaceDir?: string,
+  options: { replaceExisting?: boolean } = {},
 ): Promise<string> {
   // When zip cache is enabled, the canonical format is a ZIP file
   const zipCacheMode = isPluginZipCacheEnabled()
   const cachePath = getVersionedCachePath(pluginId, version)
   const zipPath = getVersionedZipCachePath(pluginId, version)
 
-  // If cache already exists (directory or ZIP), return it
-  if (zipCacheMode) {
-    if (await pathExists(zipPath)) {
+  if (!options.replaceExisting) {
+    // If cache already exists (directory or ZIP), return it
+    if (zipCacheMode) {
+      if (await pathExists(zipPath)) {
+        logForDebugging(
+          `Plugin ${pluginId} version ${version} already cached at ${zipPath}`,
+        )
+        return zipPath
+      }
+    } else if (await pathExists(cachePath)) {
+      const entries = await readdir(cachePath)
+      if (entries.length > 0) {
+        logForDebugging(
+          `Plugin ${pluginId} version ${version} already cached at ${cachePath}`,
+        )
+        return cachePath
+      }
+      // Directory exists but is empty, remove it so we can recreate with content
       logForDebugging(
-        `Plugin ${pluginId} version ${version} already cached at ${zipPath}`,
+        `Removing empty cache directory for ${pluginId} at ${cachePath}`,
       )
-      return zipPath
+      await rmdir(cachePath)
     }
-  } else if (await pathExists(cachePath)) {
-    const entries = await readdir(cachePath)
-    if (entries.length > 0) {
+
+    // Seed cache hit — return seed path in place (read-only, no copy).
+    // Callers handle both directory and .zip paths; this returns a directory.
+    const seedPath = await probeSeedCache(pluginId, version)
+    if (seedPath) {
       logForDebugging(
-        `Plugin ${pluginId} version ${version} already cached at ${cachePath}`,
+        `Using seed cache for ${pluginId}@${version} at ${seedPath}`,
       )
-      return cachePath
+      return seedPath
     }
-    // Directory exists but is empty, remove it so we can recreate with content
-    logForDebugging(
-      `Removing empty cache directory for ${pluginId} at ${cachePath}`,
-    )
-    await rmdir(cachePath)
   }
 
-  // Seed cache hit — return seed path in place (read-only, no copy).
-  // Callers handle both directory and .zip paths; this returns a directory.
-  const seedPath = await probeSeedCache(pluginId, version)
-  if (seedPath) {
-    logForDebugging(
-      `Using seed cache for ${pluginId}@${version} at ${seedPath}`,
-    )
-    return seedPath
-  }
+  await publishDirectory(
+    cachePath,
+    async (stagingPath) => {
+      // For local plugins: copy entry.source directory (the single source of truth)
+      // For remote plugins: marketplaceDir is undefined, fall back to copying sourcePath
+      if (entry && typeof entry.source === 'string' && marketplaceDir) {
+        const sourceDir = validatePathWithinBase(marketplaceDir, entry.source)
 
-  // Create parent directories
-  await getFsImplementation().mkdir(dirname(cachePath))
+        logForDebugging(
+          `Copying source directory ${entry.source} for plugin ${pluginId}`,
+        )
+        try {
+          await copyDir(sourceDir, stagingPath)
+        } catch (e: unknown) {
+          // Only remap ENOENT from the top-level sourceDir itself — nested ENOENTs
+          // from recursive copyDir (broken symlinks, raced deletes) should preserve
+          // their original path in the error.
+          if (isENOENT(e) && getErrnoPath(e) === sourceDir) {
+            throw new Error(
+              `Plugin source directory not found: ${sourceDir} (from entry.source: ${entry.source})`,
+            )
+          }
+          throw e
+        }
+      } else {
+        // Fallback for remote plugins (already downloaded) or plugins without entry.source
+        logForDebugging(
+          `Copying plugin ${pluginId} to versioned cache (fallback to full copy)`,
+        )
+        await copyDir(sourcePath, stagingPath)
+      }
 
-  // For local plugins: copy entry.source directory (the single source of truth)
-  // For remote plugins: marketplaceDir is undefined, fall back to copying sourcePath
-  if (entry && typeof entry.source === 'string' && marketplaceDir) {
-    const sourceDir = validatePathWithinBase(marketplaceDir, entry.source)
+      // Remove .git directory from cache if present
+      const gitPath = join(stagingPath, '.git')
+      await rm(gitPath, { recursive: true, force: true })
 
-    logForDebugging(
-      `Copying source directory ${entry.source} for plugin ${pluginId}`,
-    )
-    try {
-      await copyDir(sourceDir, cachePath)
-    } catch (e: unknown) {
-      // Only remap ENOENT from the top-level sourceDir itself — nested ENOENTs
-      // from recursive copyDir (broken symlinks, raced deletes) should preserve
-      // their original path in the error.
-      if (isENOENT(e) && getErrnoPath(e) === sourceDir) {
+      // Validate that cache has content - if empty, throw so fallback can be used
+      const cacheEntries = await readdir(stagingPath)
+      if (cacheEntries.length === 0) {
         throw new Error(
-          `Plugin source directory not found: ${sourceDir} (from entry.source: ${entry.source})`,
+          `Failed to copy plugin ${pluginId} to versioned cache: destination is empty after copy`,
         )
       }
-      throw e
-    }
-  } else {
-    // Fallback for remote plugins (already downloaded) or plugins without entry.source
-    logForDebugging(
-      `Copying plugin ${pluginId} to versioned cache (fallback to full copy)`,
-    )
-    await copyDir(sourcePath, cachePath)
-  }
+    },
+    zipCacheMode ? zipPath : undefined,
+  )
 
-  // Remove .git directory from cache if present
-  const gitPath = join(cachePath, '.git')
-  await rm(gitPath, { recursive: true, force: true })
-
-  // Validate that cache has content - if empty, throw so fallback can be used
-  const cacheEntries = await readdir(cachePath)
-  if (cacheEntries.length === 0) {
-    throw new Error(
-      `Failed to copy plugin ${pluginId} to versioned cache: destination is empty after copy`,
-    )
-  }
-
-  // Zip cache mode: convert directory to ZIP and remove the directory
+  // Zip cache mode returns the ZIP already published under the same lock.
   if (zipCacheMode) {
-    await convertDirectoryToZipInPlace(cachePath, zipPath)
     logForDebugging(
       `Successfully cached plugin ${pluginId} as ZIP at ${zipPath}`,
     )

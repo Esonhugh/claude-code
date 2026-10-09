@@ -1097,6 +1097,21 @@ async function performPluginUpdate({
       installation.installPath === versionedPath ||
       installation.installPath === zipPath
     if (isUpToDate) {
+      // Old interrupted updates can have a recorded version with incomplete
+      // contents. Rebuild the canonical cache from the resolved source.
+      if (
+        installation.installPath === versionedPath ||
+        installation.installPath === zipPath
+      ) {
+        await copyPluginToVersionedCache(
+          sourcePath,
+          pluginId,
+          newVersion,
+          entry,
+          undefined,
+          { replaceExisting: true },
+        )
+      }
       return {
         success: true,
         message: `${pluginName} is already at the latest version (${newVersion}).`,
@@ -1114,6 +1129,8 @@ async function performPluginUpdate({
       pluginId,
       newVersion,
       entry,
+      undefined,
+      { replaceExisting: true },
     )
 
     // Store old version path for potential cleanup

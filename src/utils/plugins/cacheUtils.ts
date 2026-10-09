@@ -1,4 +1,9 @@
-import { readdir, rm, stat, unlink, writeFile } from 'fs/promises'
+import {
+  cleanupPluginPublicationEntry,
+  cleanupUninstalledPluginStaging,
+  isPluginPublicationEntry,
+} from './stagingDirectory.js'
+import { lstat, readdir, rm, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import { clearCommandsCache } from '../../commands.js'
 import { clearAllOutputStylesCache } from '../../constants/outputStyles.js'
@@ -8,7 +13,10 @@ import { resetSentSkillNames } from '../attachments.js'
 import { logForDebugging } from '../debug.js'
 import { getErrnoCode } from '../errors.js'
 import { logError } from '../log.js'
-import { loadInstalledPluginsFromDisk } from './installedPluginsManager.js'
+import {
+  getInstalledPluginsFilePath,
+  loadInstalledPluginsFromDisk,
+} from './installedPluginsManager.js'
 import { clearPluginAgentCache } from './loadPluginAgents.js'
 import { clearPluginCommandCache } from './loadPluginCommands.js'
 import {
@@ -97,15 +105,24 @@ export async function markPluginVersionOrphaned(
 export async function cleanupOrphanedPluginVersionsInBackground(): Promise<void> {
   // Zip cache mode stores plugins as .zip files, not directories. readSubdirs
   // filters to directories only, so removeIfEmpty would see plugin dirs as empty
-  // and delete them (including the ZIPs). Skip cleanup entirely in zip mode.
-  if (isPluginZipCacheEnabled()) {
-    return
-  }
+  // and delete them (including the ZIPs). Only sweep publication staging in zip mode.
   try {
     const installedVersions = getInstalledVersionPaths()
-    if (!installedVersions) return
-
     const cachePath = getPluginCachePath()
+    if (!installedVersions) {
+      try {
+        await lstat(getInstalledPluginsFilePath())
+        return
+      } catch (error) {
+        if (getErrnoCode(error) !== 'ENOENT') throw error
+      }
+      await cleanupUninstalledPluginStaging(cachePath, Date.now())
+      return
+    }
+    if (isPluginZipCacheEnabled()) {
+      await cleanupUninstalledPluginStaging(cachePath, Date.now(), installedVersions)
+      return
+    }
 
     const now = Date.now()
 
@@ -125,6 +142,10 @@ export async function cleanupOrphanedPluginVersionsInBackground(): Promise<void>
         for (const version of await readSubdirs(pluginPath)) {
           const versionPath = join(pluginPath, version)
           if (installedVersions.has(versionPath)) continue
+          if (isPluginPublicationEntry(version)) {
+            await cleanupPluginPublicationEntry(versionPath,now, installedVersions)
+            continue
+          }
           await processOrphanedPluginVersion(versionPath, now)
         }
 
