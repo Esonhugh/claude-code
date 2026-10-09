@@ -260,7 +260,7 @@ class NativeFrameJournalTest(unittest.TestCase):
         if getattr(self, 'production_broker', False):
             import shutil
             (run / 'bin').mkdir()
-            shutil.copy2(binary, run / 'bin/claude')
+            load('owned_copy', 'owned-evidence-copy.py').copy_evidence_file(binary, run / 'bin/claude')
             binary = run / 'bin/claude'
             env.update(CC_VALIDATION_REPO_ROOT=str(SOURCE.parent),
                        CC_VALIDATION_EVIDENCE_DIR=str(run), CC_VALIDATION_HOME=str(run / 'home'),
@@ -459,8 +459,49 @@ class NativeFrameJournalTest(unittest.TestCase):
                                               json.loads((run / 'registration.json').read_text()), start['childPid'])
             child_reads = [row for row in records if row['kind'] == 3]
             self.assertGreater(len(child_reads), 0, 'Real child stdin read was not observed')
-            self.assertEqual(b''.join(row['bytes'] for row in child_reads).count(b'/exit\r'), 1,
-                             'Sent /exit must occur exactly once in successful child read prefixes')
+            # Only the production broker records ordered output-query and input
+            # events. The direct wrapper instead binds its actual write prefixes
+            # to all child reads and retains its original contiguous command check.
+            if getattr(self, 'production_broker', False):
+                input_script = """
+    import { readFileSync } from 'node:fs'
+    import { join } from 'node:path'
+    import { verifyNativeChildInputReads } from './scripts/terminal-input-evidence.mjs'
+    const [run, intended, prefixes] = process.argv.slice(-3)
+    const io = readFileSync(join(run, 'pty-io.jsonl'), 'utf8').trimEnd().split('\\n').map(JSON.parse)
+    const proof = await verifyNativeChildInputReads(readFileSync(join(run, 'native-pty.raw')),
+      io, Buffer.from(intended, 'hex'), JSON.parse(prefixes).map(hex => Buffer.from(hex, 'hex')))
+    console.log(JSON.stringify(proof))
+    """
+                input_checked = subprocess.run(['bun', '--no-env-file', '--eval', input_script,
+                    str(run), b'/exit\r'.hex(), json.dumps([row['bytes'].hex() for row in child_reads])],
+                    cwd=SOURCE.parent, capture_output=True, text=True, timeout=60)
+                self.assertEqual(input_checked.returncode, 0, input_checked.stderr)
+                child_input = json.loads(input_checked.stdout)
+            else:
+                inputs = json.loads((run / 'input.json').read_text())
+                self.assertTrue(inputs)
+                written_prefixes = []
+                for row in inputs:
+                    data = bytes.fromhex(row['hex'])
+                    self.assertIs(type(row['returned']), int)
+                    self.assertGreater(row['returned'], 0)
+                    self.assertLessEqual(row['returned'], len(data))
+                    written_prefixes.append(data[:row['returned']])
+                written = b''.join(written_prefixes)
+                read = b''.join(row['bytes'] for row in child_reads)
+                self.assertEqual(read, written, 'Actual direct-wrapper input differs from child reads')
+                self.assertEqual(read.count(b'/exit\r'), 1)
+                child_input = {'method': 'direct-wrapper-child-input-prefix-v1', 'verdict': 'passed',
+                    'childReadBytes': len(read), 'childReadSHA256': hashlib.sha256(read).hexdigest(),
+                    'nativeInputSHA256': hashlib.sha256(written).hexdigest(),
+                    'driverBytes': len(b'/exit\r'), 'intendedSHA256': hashlib.sha256(b'/exit\r').hexdigest(),
+                    'parsedQueryRepliesCovered': False, 'actualInputOwnerCovered': False,
+                    'productTimingEquivalent': False}
+            self.assertEqual(child_input['verdict'], 'passed')
+            self.assertEqual(child_input['driverBytes'], len(b'/exit\r'))
+            self.assertEqual(child_input['intendedSHA256'], hashlib.sha256(b'/exit\r').hexdigest())
+            self.assertEqual(child_input['childReadBytes'], sum(len(row['bytes']) for row in child_reads))
             self.assertTrue(all(row['inputMask'] == 4 and row['outputMask'] == 0 and
                                 row['operation'] in (1, 2, 3, 4) and 'nativeClock' in row
                                 for row in child_reads))
@@ -474,7 +515,8 @@ class NativeFrameJournalTest(unittest.TestCase):
                            'hex': row['bytes'].hex(), 'nativeClock': row['nativeClock']}
                           for row in child_reads],
                 'actualInputOwnerCovered': False, 'productTimingEquivalent': False,
-                'scope': 'actual child PTY read prefixes only; no parser or semantic owner proof',
+                'protocolProjection': child_input,
+                'scope': 'all actual child PTY read prefixes match captured input; parsed terminal replies only for production broker; no application parser or semantic owner proof',
             }, indent=2) + '\n')
             proof = json.loads((run / 'child-input-read-proof.json').read_text())
             self.assertEqual([(row['entry'], row['return'], row['threadId'], row['requested']) for row in proof['reads']],
@@ -599,7 +641,7 @@ class NativeFrameJournalTest(unittest.TestCase):
                              'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'observations.jsonl',
                              'initial-termios.txt', 'capture-eof', 'producer-expected-native.json'):
                     if (run / name).exists():
-                        shutil.copy2(run / name, fixture / name)
+                        load('owned_copy', 'owned-evidence-copy.py').copy_evidence_file(run / name, fixture / name)
                 original_io = (run / 'pty-io.jsonl').read_bytes()
                 io = [json.loads(line) for line in original_io.splitlines()]
                 removed = next(index for index, row in enumerate(io) if row['kind'] == 'input')
@@ -720,7 +762,7 @@ test('coverage labels cannot upgrade bounded native evidence', () => {
                     for name in ('launch.json', 'start.json', 'cleanup.json', 'native-initial.json',
                                  'registration.json', 'header.json', 'journal.bin', 'records.bin',
                                  'raw.bin', 'native-pty.raw', 'pty.raw', 'pty-io.jsonl', 'broker-cleanup.json'):
-                        shutil.copy2(run / name, fixture / name)
+                        load('owned_copy', 'owned-evidence-copy.py').copy_evidence_file(run / name, fixture / name)
                     expected = json.loads((run / 'entry-expected-native.json').read_text())
                     original_io = (fixture / 'pty-io.jsonl').read_bytes()
                     self.assertGreater(len(verifier.derive_frames(fixture, expected)['entries']), 0)
@@ -834,7 +876,7 @@ test('coverage labels cannot upgrade bounded native evidence', () => {
                     for name in names if (run / name).exists()}
         fixture = Path(tempfile.mkdtemp(prefix='native-payload-first-seal-', dir=run))
         for name in original:
-            shutil.copy2(run / name, fixture / name)
+            load('owned_copy', 'owned-evidence-copy.py').copy_evidence_file(run / name, fixture / name)
         old, new = b'EsonClaw', b'DsonClaw'
         self.assertIn(old, (run / 'raw.bin').read_bytes())
         for name in ('raw.bin', 'native-pty.raw', 'pty.raw'):
@@ -920,7 +962,7 @@ test('coverage labels cannot upgrade bounded native evidence', () => {
         verifier = load('closed_content_verifier', 'verify-native-frame-journal.py')
         control = Path(tempfile.mkdtemp(prefix='native-content-read-once-', dir=run))
         for name in original:
-            shutil.copy2(run / name, control / name)
+            load('owned_copy', 'owned-evidence-copy.py').copy_evidence_file(run / name, control / name)
         real_check = verifier.verify_native_content
         def remove_after_check(*args):
             checked = real_check(*args)
@@ -944,7 +986,7 @@ test('coverage labels cannot upgrade bounded native evidence', () => {
         original = {name: hashlib.sha256((run / name).read_bytes()).hexdigest()
                     for name in names if (run / name).exists()}
         for name in original:
-            shutil.copy2(run / name, fixture / name)
+            load('owned_copy', 'owned-evidence-copy.py').copy_evidence_file(run / name, fixture / name)
         descriptor = json.loads((run / 'capture-launch.json').read_text())
         descriptor['run'] = str(fixture)
         (fixture / 'capture-launch.json').write_text(json.dumps(descriptor) + '\n')

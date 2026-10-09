@@ -84,3 +84,16 @@ export async function verifyNativeInputEvents(raw, io, intended) {
     terminal.dispose()
   }
 }
+
+/** Bind decoded actual child read prefixes to the complete broker input stream. */
+export async function verifyNativeChildInputReads(raw, io, intended, prefixes) {
+  if (!Array.isArray(prefixes) || !prefixes.length || prefixes.some(bytes => !Buffer.isBuffer(bytes)))
+    throw Error('Decoded actual child read prefixes are required')
+  const child = Buffer.concat(prefixes)
+  const input = await verifyNativeInputEvents(raw, io, intended)
+  if (hash(child) !== input.nativeInputSHA256 || child.length !== input.nativeBytes)
+    throw Error('Actual child read bytes differ from the complete broker input stream')
+  return { ...input, method: 'parsed-native-child-input-v1', parentMethod: input.method,
+    childReadBytes: child.length, childReadSHA256: hash(child),
+    actualInputOwnerCovered: false, productTimingEquivalent: false }
+}
