@@ -534,6 +534,7 @@ async function* queryLoop(
   let systemPrompt = getSystemPromptSections(params.systemPrompt)
     ? asSystemPrompt([...params.systemPrompt])
     : params.systemPrompt
+  const engineSystemPrompt = systemPrompt
   let userContext = params.userContext
   let contextBlocks = params.resolvedPromptContextBlocks ??
     Object.entries(userContext).map(([name, text]) => ({ name, text }))
@@ -1130,7 +1131,12 @@ async function* queryLoop(
               mcpTools: appState.mcp.tools,
               modsSnapshot: toolUseContext.modsSnapshot,
               composeSystemPrompt: composeRequest ? async (model, tools, signal) => {
-                systemPrompt = await composeRequest(model, tools, signal)
+                try { systemPrompt = await composeRequest(model, tools, signal) }
+                catch (error) {
+                  if (signal.aborted) throw error
+                  systemPrompt = engineSystemPrompt
+                  logForDebugging(`[Mods] prompt.compose failed; using engine prompt: ${error instanceof Error ? error.message : String(error)}`, {level:'error'})
+                }
                 toolUseContext.renderedSystemPrompt = systemPrompt
                 updateCatalogContext?.(toolUseContext)
                 if (params.onCacheSafeParams) {

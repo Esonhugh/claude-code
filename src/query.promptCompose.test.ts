@@ -1,9 +1,10 @@
+import * as debugging from './utils/debug.js'
 import { getAutoMemPath } from './memdir/paths.js'
 import { resetSettingsCache } from './utils/settings/settingsCache.js'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { mkdtemp, realpath, rm } from 'node:fs/promises'
-import { beforeEach, afterEach, expect, test } from 'bun:test'
+import { beforeEach, afterEach, expect, spyOn, test } from 'bun:test'
 import { randomUUID } from 'node:crypto'
 import { query, type QueryParams } from './query.js'
 import type { ToolUseContext } from './Tool.js'
@@ -246,4 +247,72 @@ test.each([false, true])('real query sends the prompt.compose replacement on eve
   } finally {
     await runtime.dispose()
   }
+})
+
+
+test.each(['unsupported-trait', 'after-success', 'aborted'] as const)('per-request compose failure preserves the engine prompt and cancellation (%s)', async mode => {
+  const runtime = createModsRuntime()
+  let state = getDefaultAppState()
+  const controller = new AbortController()
+  const reason = Error('compose caller cancelled')
+  const messages: string[] = []
+  const logging = spyOn(debugging, 'logForDebugging').mockImplementation(text => { messages.push(text) })
+  let compositions = 0
+  runtime.registerHostHook({
+    plugin: 'trait-rewrite', tier: 'append',
+    registration: { id: 1, event: 'prompt.compose', hasCatch: false },
+    async invoke(input, next) {
+      compositions++
+      if (mode === 'after-success' && compositions === 1) return {sections:[{id:'policy',text:'first composed policy',scope:'session'}]}
+      if (mode === 'aborted') { controller.abort(reason); throw reason }
+      return next({...input, traits:[...(input.traits as string[]), 'teammate']})
+    },
+  })
+  const context = {
+    options: {
+      commands: [], debug: false, mainLoopModel: 'claude-sonnet-4-6', tools: [], verbose: false,
+      thinkingConfig: {type:'disabled'}, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+      agentDefinitions: {activeAgents:[],allAgents:[],allowedAgentTypes:undefined},
+    },
+    abortController: controller, readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => state, setAppState: (update: (previous: typeof state) => typeof state) => {state=update(state)},
+    setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+    messages: [], mods: runtime,
+  } as unknown as ToolUseContext
+  const generated = concatSystemPrompts(await (await import('./constants/prompts.js')).getSystemPrompt([], 'claude-sonnet-4-6'))
+  const prompts: string[][] = []
+  const snapshots: string[][] = []
+  let requestError: unknown
+  const params: QueryParams = {
+    messages: [createUserMessage({content:'answer'})], systemPrompt: generated, userContext:{}, systemContext:{},
+    toolUseContext: context, canUseTool: async () => ({behavior:'allow',updatedInput:{}}), querySource:'sdk',
+    onCacheSafeParams: cached => {snapshots.push([...cached.systemPrompt])},
+    deps: {
+      uuid:randomUUID, microcompact:async messages=>({messages}), autocompact:async messages=>({messages,wasCompacted:false}),
+      callModel: async function* (request) {
+        const prompt = await request.options.composeSystemPrompt!(request.options.model, [], request.signal).catch(error => {requestError=error;throw error})
+        prompts.push([...prompt])
+        const message = createAssistantMessage({content:'done'})
+        Object.assign(message.message,{id:`fallback-${prompts.length}`,model:'claude-sonnet-4-6',stop_reason:'end_turn'})
+        if (mode === 'after-success' && prompts.length === 1) Object.assign(message,{apiError:'max_output_tokens',isApiErrorMessage:true})
+        yield message
+      },
+    },
+  }
+  try {
+    const drain = async () => {for await (const _message of query(params)) { /* Drain the real request loop. */ }}
+    if (mode === 'aborted') {
+      await drain()
+      expect(requestError).toBe(reason)
+      expect(prompts).toEqual([])
+      expect(messages.filter(text=>text.includes('[Mods] prompt.compose'))).toEqual([])
+    } else {
+      await drain()
+      expect(prompts).toEqual(mode === 'after-success' ? [['first composed policy'], [...generated]] : [[...generated]])
+      const diagnostics = messages.filter(text=>text.includes('[Mods] prompt.compose'))
+      expect(diagnostics).toHaveLength(1)
+      expect(diagnostics[0]).toContain('Unsupported prompt generation trait')
+      expect(snapshots).toEqual(prompts)
+    }
+  } finally {await runtime.dispose();logging.mockRestore()}
 })
