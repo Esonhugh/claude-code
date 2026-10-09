@@ -54,8 +54,8 @@ describe('system prompt section metadata', () => {
       { name: 'missing', text: null },
       { text: 'boundary' },
       { name: 'last', text: 'two' },
-      { text: 'append one' },
-      { text: 'append two' },
+      { text: 'append one', scope: 'session' },
+      { text: 'append two', scope: 'session' },
     ])
   })
 
@@ -72,7 +72,7 @@ describe('system prompt section metadata', () => {
     ])
     const enhanced = concatSystemPrompts(joined, ['Notes'])
     expect([...enhanced]).toEqual(['one\ntwo', 'Notes'])
-    expect(getSystemPromptSections(enhanced)?.[1]).toEqual({ text: 'Notes' })
+    expect(getSystemPromptSections(enhanced)?.[1]).toEqual({ text: 'Notes', scope: 'session' })
     const custom = joinSystemPrompt(['opaque', 'append'], '\n')
     expect([...custom]).toEqual(['opaque\nappend'])
     expect(getSystemPromptSections(custom)).toBeUndefined()
