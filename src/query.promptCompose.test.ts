@@ -129,21 +129,45 @@ test('real generation rerenders model, output style and tool guidance without po
   expect(await getSystemPrompt([], 'claude-opus-4-6')).toEqual(generated)
 })
 
-test('generation rejects unsupported or contradictory facts rather than inventing provenance', async () => {
+test('generation keeps recipe errors and derives observational traits from the engine', async () => {
   const { getSystemPrompt } = await import('./constants/prompts.js')
   const { renderSystemPrompt } = await import('./utils/systemPromptType.js')
   const generated = await getSystemPrompt([], 'render-model')
   const input = { model: 'request-model', promptModel: 'render-model', tools: [], outputStyle: null, traits: [], surfaces: [] } as const
   await expect(renderSystemPrompt(['custom text'], input)).rejects.toThrow('recipe is unavailable')
   await expect(renderSystemPrompt(withSystemPromptSections([{ name: 'identity', text: 'custom', scope: 'shared' }], input), input)).rejects.toThrow('recipe is unavailable')
-  await expect(renderSystemPrompt(generated, { ...input, traits: ['lean'] })).rejects.toThrow('Unsupported prompt generation trait')
   await expect(renderSystemPrompt(generated, { ...input, outputStyle: { name: 'missing-style', isKeepingCodingInstructions: false } })).rejects.toThrow('Unknown output style')
-  await expect(renderSystemPrompt(generated, { ...input, traits: ['bare'], outputStyle: { name: 'Explanatory', isKeepingCodingInstructions: true } })).rejects.toThrow('Bare prompts do not render output styles or skills')
-  await expect(renderSystemPrompt(generated, { ...input, traits: ['skills'] })).rejects.toThrow('Skills guidance requires the Skill tool')
-  const skills = await renderSystemPrompt(generated, { ...input, tools: ['Skill'], traits: ['skills'] })
-  expect(skills.join('\n')).toContain('/<skill-name>')
-  const noSkills = await renderSystemPrompt(generated, { ...input, tools: ['Skill'], traits: [] })
-  expect(noSkills.join('\n')).not.toContain('/<skill-name>')
+  const baseline = await renderSystemPrompt(generated, input)
+  // Official 292: these facts describe engine decisions; rewriting them does not steer next().
+  for (const trait of ['bare', 'lean', 'print', 'skills', 'send-user-message', 'teammate', 'analysis'] as const) {
+    const rewritten = await renderSystemPrompt(generated, { ...input, traits: [trait] })
+    expect([...rewritten]).toEqual([...baseline])
+  }
+})
+
+test('SDK preset uses static memory and environment sections before the cache boundary', async () => {
+  const { getSystemPrompt } = await import('./constants/prompts.js')
+  const { renderSystemPrompt } = await import('./utils/systemPromptType.js')
+  const generated = await getSystemPrompt([], 'render-model')
+  const input = { model: 'request-model', promptModel: 'render-model', tools: [], outputStyle: null, traits: ['sdk-preset'] as const, surfaces: [] }
+  const rendered = await renderSystemPrompt(generated, input)
+  const sections = getSystemPromptSections(rendered)!.filter((s): s is {name:string;text:string;scope:'shared'|'session'} => 'name' in s && s.text !== null)
+  expect(sections.some(s => s.name === 'memory')).toBe(false)
+  expect(sections.some(s => s.name === 'env_info_simple')).toBe(false)
+  const memory = sections.find(s => s.name === 'memory_static')!
+  expect(memory.scope).toBe('shared')
+  expect(memory.text).toContain('The directory path is provided in your session context.')
+  expect(memory.text).not.toContain(getAutoMemPath())
+  const environment = sections.find(s => s.name === 'env_info_static')!
+  expect(environment.scope).toBe('session')
+  expect(environment.text).not.toContain('Primary working directory:')
+  expect(environment.text).not.toContain('Fast mode')
+  expect(sections.findIndex(s => s.name === 'memory_static')).toBeLessThan(sections.findIndex(s => s.scope === 'session'))
+  expect(await getSystemPrompt([], 'render-model')).toEqual(generated)
+  const old = process.env.CLAUDE_CODE_SIMPLE
+  process.env.CLAUDE_CODE_SIMPLE = '1'
+  try { expect([...(await renderSystemPrompt(generated, input))]).toEqual([]) }
+  finally { if (old === undefined) delete process.env.CLAUDE_CODE_SIMPLE; else process.env.CLAUDE_CODE_SIMPLE = old }
 })
 
 // Only transport is replaced: prompt assembly and dispatch run through real query().
@@ -250,7 +274,7 @@ test.each([false, true])('real query sends the prompt.compose replacement on eve
 })
 
 
-test.each(['unsupported-trait', 'after-success', 'aborted'] as const)('per-request compose failure preserves the engine prompt and cancellation (%s)', async mode => {
+test.each(['failed-rewrite', 'after-success', 'aborted'] as const)('per-request compose failure preserves the engine prompt and cancellation (%s)', async mode => {
   const runtime = createModsRuntime()
   let state = getDefaultAppState()
   const controller = new AbortController()
@@ -265,7 +289,7 @@ test.each(['unsupported-trait', 'after-success', 'aborted'] as const)('per-reque
       compositions++
       if (mode === 'after-success' && compositions === 1) return {sections:[{id:'policy',text:'first composed policy',scope:'session'}]}
       if (mode === 'aborted') { controller.abort(reason); throw reason }
-      return next({...input, traits:[...(input.traits as string[]), 'teammate']})
+      return next({...input, outputStyle:{name:'missing-style',isKeepingCodingInstructions:false}})
     },
   })
   const context = {
@@ -311,7 +335,7 @@ test.each(['unsupported-trait', 'after-success', 'aborted'] as const)('per-reque
       expect(prompts).toEqual(mode === 'after-success' ? [['first composed policy'], [...generated]] : [[...generated]])
       const diagnostics = messages.filter(text=>text.includes('[Mods] prompt.compose'))
       expect(diagnostics).toHaveLength(1)
-      expect(diagnostics[0]).toContain('Unsupported prompt generation trait')
+      expect(diagnostics[0]).toContain('Unknown output style: missing-style')
       expect(snapshots).toEqual(prompts)
     }
   } finally {await runtime.dispose();logging.mockRestore()}

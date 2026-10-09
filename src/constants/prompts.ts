@@ -57,7 +57,7 @@ import {
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
-import { loadMemoryPrompt } from '../memdir/memdir.js'
+import { loadMemoryPrompt, loadStaticMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import {
@@ -359,11 +359,11 @@ function getDiscoverSkillsGuidance(): string | null {
 function getSessionSpecificGuidanceSection(
   enabledTools: Set<string>,
   skillToolCommands: Command[],
-  traits?: readonly string[],
+  excludeDynamicSections = false,
 ): string | null {
   const hasAskUserQuestionTool = enabledTools.has(ASK_USER_QUESTION_TOOL_NAME)
   const hasSkills =
-    (traits ? traits.includes('skills') : skillToolCommands.length > 0) && enabledTools.has(SKILL_TOOL_NAME)
+    !excludeDynamicSections && skillToolCommands.length > 0 && enabledTools.has(SKILL_TOOL_NAME)
   const hasAgentTool = enabledTools.has(AGENT_TOOL_NAME)
   const searchTools = hasEmbeddedSearchTools()
     ? `\`find\` or \`grep\` via the ${BASH_TOOL_NAME} tool`
@@ -373,7 +373,7 @@ function getSessionSpecificGuidanceSection(
     hasAskUserQuestionTool
       ? `If you do not understand why the user has denied a tool call, use the ${ASK_USER_QUESTION_TOOL_NAME} to ask them.`
       : null,
-    (traits ? traits.includes('print') : getIsNonInteractiveSession())
+    getIsNonInteractiveSession()
       ? null
       : `If you need the user to run a shell command themselves (e.g., an interactive login like \`gcloud auth login\`), suggest they type \`! <command>\` in the prompt — the \`!\` prefix runs the command in this session so its output lands directly in the conversation.`,
     // isForkSubagentEnabled() reads getIsNonInteractiveSession() — must be
@@ -458,23 +458,18 @@ export async function getSystemPrompt(
 ): Promise<string[]> {
   const recipe = (input: import('../services/mods/types.js').PromptComposeInput) =>
     getSystemPrompt(tools, input.promptModel, additionalWorkingDirectories, mcpClients, input)
-  if (composition?.traits.some(trait => !['bare', 'print', 'skills'].includes(trait))) {
-    throw new Error('Unsupported prompt generation trait')
-  }
-  if (composition?.traits.includes('skills') && !composition.tools.includes(SKILL_TOOL_NAME)) {
-    throw new Error('Skills guidance requires the Skill tool')
-  }
-  if (composition ? composition.traits.includes('bare') : isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
-    if (composition && (composition.outputStyle !== null || composition.traits.includes('skills'))) {
-      throw new Error('Bare prompts do not render output styles or skills')
-    }
-    return withSystemPromptSections([
-      {
-        name: 'identity',
-        scope: 'session',
-        text: `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
-      },
-    ], { promptModel: model, outputStyle: null, traits: ['bare', ...((composition ? composition.traits.includes('print') : getIsNonInteractiveSession()) ? ['print' as const] : [])] }, recipe)
+  const excludeDynamicSections = composition?.traits.includes('sdk-preset') === true
+  // Official 292: only these three rewrites steer generation; other traits
+  // describe decisions made by the engine rather than flags a mod can force.
+  const steeringTraits = composition?.traits.filter(trait =>
+    trait === 'sdk-preset' || trait === 'teammate' || trait === 'analysis') ?? []
+  if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+    const facts: SystemPromptFacts = { promptModel: model, outputStyle: null,
+      traits: ['bare', ...(getIsNonInteractiveSession() ? ['print' as const] : []), ...steeringTraits] }
+    return withSystemPromptSections(excludeDynamicSections ? [] : [
+      { name: 'identity', scope: 'session',
+        text: `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}` },
+    ], facts, recipe)
   }
 
   const cwd = getCwd()
@@ -501,7 +496,8 @@ export async function getSystemPrompt(
       name: outputStyleConfig.name,
       isKeepingCodingInstructions: outputStyleConfig.keepCodingInstructions === true,
     },
-    traits: composition ? [...composition.traits] : [
+    traits: [
+      ...steeringTraits,
       ...(getIsNonInteractiveSession() ? ['print' as const] : []),
       ...(enabledTools.has(SKILL_TOOL_NAME) && skillToolCommands.length > 0 ? ['skills' as const] : []),
     ],
@@ -540,14 +536,14 @@ ${CYBER_RISK_INSTRUCTION}`,
 
   const dynamicSections = [
     systemPromptSection('session_guidance', () =>
-      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, composition?.traits),
+      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, excludeDynamicSections),
     ),
-    systemPromptSection('memory', () => loadMemoryPrompt()),
+    ...(excludeDynamicSections ? [] : [systemPromptSection('memory', () => loadMemoryPrompt())]),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),
-    systemPromptSection('env_info_simple', () =>
-      computeSimpleEnvInfo(model, additionalWorkingDirectories),
+    systemPromptSection(excludeDynamicSections ? 'env_info_static' : 'env_info_simple', () =>
+      computeSimpleEnvInfo(model, additionalWorkingDirectories, excludeDynamicSections),
     ),
     systemPromptSection('language', () =>
       getLanguageSection(settings.language),
@@ -652,6 +648,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       layer: 'capability',
       content: getUsingYourToolsSection(enabledTools),
     },
+    ...(excludeDynamicSections ? [{ id: 'memory_static', layer: 'capability' as const, content: loadStaticMemoryPrompt() }] : []),
     ...resolvedDynamicSections.map((content, index) => ({
       id: dynamicSections[index]!.name,
       layer: 'task-dynamic' as const,
@@ -765,6 +762,7 @@ ${modelDescription}${knowledgeCutoffMessage}`
 export async function computeSimpleEnvInfo(
   modelId: string,
   additionalWorkingDirectories?: string[],
+  staticOnly = false,
 ): Promise<string> {
   const [isGit, unameSR] = await Promise.all([getIsGit(), getUnameSR()])
 
@@ -788,6 +786,7 @@ export async function computeSimpleEnvInfo(
   const isWorktree = getCurrentWorktreeSession() !== null
 
   const envItems = [
+    ...(staticOnly ? [] : [
     `Primary working directory: ${cwd}`,
     isWorktree
       ? `This is a git worktree — an isolated copy of the repository. Run all commands from this directory. Do NOT \`cd\` to the original repository root.`
@@ -804,13 +803,14 @@ export async function computeSimpleEnvInfo(
     `OS Version: ${unameSR}`,
     modelDescription,
     knowledgeCutoffMessage,
+    ]),
     isAnt() && isUndercover()
       ? null
       : `The most recent Claude model family is Claude 4.5/4.6. Model IDs — Opus 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.opus}', Sonnet 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     isAnt() && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
-    isAnt() && isUndercover()
+    staticOnly || (isAnt() && isUndercover())
       ? null
       : `Fast mode for Claude Code uses the same ${FRONTIER_MODEL_NAME} model with faster output. It does NOT switch to a different model. It can be toggled with /fast.`,
   ].filter(item => item !== null)

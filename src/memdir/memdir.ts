@@ -198,7 +198,7 @@ function logMemoryDirCounts(
  */
 export function buildMemoryLines(
   displayName: string,
-  memoryDir: string,
+  memoryDir: string | null,
   extraGuidelines?: string[],
   skipIndex = false,
 ): string[] {
@@ -236,7 +236,9 @@ export function buildMemoryLines(
   const lines: string[] = [
     `# ${displayName}`,
     '',
-    `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`,
+    memoryDir
+      ? `You have a persistent, file-based memory system at \`${memoryDir}\`. ${DIR_EXISTS_GUIDANCE}`
+      : `You have a persistent, file-based memory system. The directory path is provided in your session context. ${DIR_EXISTS_GUIDANCE}`,
     '',
     "You should build up this memory system over time so that future conversations can have a complete picture of who the user is, how they'd like to collaborate with you, what behaviors to avoid or repeat, and the context behind the work the user gives you.",
     '',
@@ -260,7 +262,7 @@ export function buildMemoryLines(
     '',
   ]
 
-  lines.push(...buildSearchingPastContextSection(memoryDir))
+  if (memoryDir !== null) lines.push(...buildSearchingPastContextSection(memoryDir))
 
   return lines
 }
@@ -416,6 +418,13 @@ export function buildSearchingPastContextSection(autoMemDir: string): string[] {
  *
  * Returns null when auto memory is disabled.
  */
+/** Shared SDK policy: personal paths and indexes arrive in session context. */
+export function loadStaticMemoryPrompt(): string | null {
+  if (!isAutoMemoryEnabled() || (feature('TEAMMEM') && teamMemPaths!.isTeamMemoryEnabled()) ||
+    (feature('KAIROS') && getKairosActive())) return null
+  return buildMemoryLines(AUTO_MEM_DISPLAY_NAME, null).join('\n')
+}
+
 export async function loadMemoryPrompt(): Promise<string | null> {
   const autoEnabled = isAutoMemoryEnabled()
 
