@@ -28,6 +28,8 @@
 
 ### 变更内容
 
+- 对齐官方 2.1.295 Pane 的控件/标签/关闭位置焦点环、可滚动内容优先级及标签选中/hover 样式；RenderElement Button 鼠标激活保留自定义键盘槽位。内部关闭位置移动经过真实 ui.focus 协商及取消/迟到保护，不改变作者公开 undefined focus 的释放含义；修复 Client Input 后 Tab 导航，完整发布门禁仍独立结算。见[Pane 焦点记录](docs/research/mods-pane-focus295-20261009.md)。
+
 - Mods Button 对齐官方 2.1.295 的字符串/Text children、稳定 guest handle 和绘制持有生命周期；作者声明按固定摘要投影两个 Button 定义，其他声明仍为 2.1.292 基线。终端补齐挂载点击稳定期、窗口激活/点击处置和语义输入批次刷新；新增真实 Worker、Ink 与隔离终端验收入口，完整 Mods/UI 与发布仍待闭合。见[Button 验收边界](docs/research/mods-button-295-validity-20261009.md)。
 
 - 对齐官方 2.1.295 绘制后的 hover 重新命中、四次连续变化后的 1000ms 暂停、指针恢复、文本内部空格点击及可见 absolute 溢出命中/按轴裁剪；Button、Box 和 Text 的内部类型与 host 属性分别接线。专项验收增加静止指针、按钮移动和 resize 样式检查，完整 Mods/UI 与发布门禁继续独立结算。

@@ -2455,3 +2455,14 @@ Green7 的 standalone 脚本真实双端完成13个步骤，local70帧与两次r
 新源码 `1a993f5d477cbeaceebc79054a21d60b3e7d063abe478e1462418be3208cd7f0` 的12文件86项/301 expect、release-check、build通过；新制品 `d884268957ea907930d4bb14ca71872f7b3acb43208aeb8ca4fe2618e13b9f5e` 与官方2.1.295同脚本对照。官方24步骤/7样式观察/正常退出完成，只判专项行为通过；没有本地logical producer的物理通过。local2在 focus-stop 超时，整体 failed，但同案88帧、2次resize、内容/IO和exit0/EOF/reap的有限native证据 passed。它没有执行后续 hover 步骤，不能借官方结果填补本地缺项。以上均为本段文档改动前的独立源码 epoch，不冒充最新源码完整验收。
 
 已确证本地 ModButton 的 native onFocus 反向改变 custom focus，缺官方 click wrapper blur/custom chrome；Pane 的末项 Tab clamp 缺关闭位置环。官方点击 Save 只 press、保留 Other custom focus，Tab 到 engine stop。本地关闭位置流程必须继续实现；不能放宽样式断言或用 undefined element 释放整个 Pane 冒充关闭位置。完整默认矩阵、G5、官方 diff、browser/Client、input owner/tokenizer和时序继续未闭合。
+
+
+## 2026-10-09 新建文档、Pane 焦点环与回归处置
+
+新建验证文档为 `/tmp/claude-test/mods-focus295-20261009-4luam14j/VALIDATION.md`；每次测试保留独立目录、源码文件哈希、命令/隔离环境、原始日志、退出码和进程组清理回执。旧文档和失败原件不覆盖。本段是下一批修复记录，不将前段 focus-stop 失败改判。
+
+固定官方 2.1.295 的 Qt click wrapper 保留 custom ring、Bne 在 maxOffset>0 时优先滚动、Une 循环 controls+其他 Pane tabs+close、r0 按 shown/held/hover 绘制标签。本地新增私有 engine focus，完整通过真实 ui.focus middleware；public person undefined element 仍释放 Pane，私有 engine undefined element 才保持持键。deny/withhold、较新 person move、abort、owner/绘制 revision 和实际 DOM 槽位均保留守卫。关闭位置及标签以稳定身份持有，其他 Pane 移除时不因索引变化误跳。
+
+最终夹具在修复前 HEAD 的 14 案为3通过/11失败；过渡实现修复后的14案通过，扩大19文件为415通过/12失败。12项原件保留；按固定官方规则区分旧clamp/鼠标焦点预期、真实scroll优先级与Client焦点回归、以及溢出夹具缺口，逐项处置见新文档。新增空Pane无scroll副作用、真实60行溢出与标签选中/hover检查；过渡green11为16通过/0失败。该数量属于文档改动前的独立源码，最终数量和源码身份以新冻结回执为准。
+
+过渡新binary已实际完成24步骤、7样式观察和107帧有限native replay；这是前一源码 epoch，不能替代最终构建。最终源码仍须完成相关完整回归、release-check、build和本轮local/official同脚本验收。完整默认矩阵、G5、官方diff、browser/Client生命周期、实际OS input/parser/owner与产品时序继续未闭合，不宣称正式四路发布通过。操作和公开/私有类型边界见[Pane 焦点记录](docs/research/mods-pane-focus295-20261009.md)。
