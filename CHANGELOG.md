@@ -30,6 +30,8 @@
 
 - Mods Button 对齐官方 2.1.295 的字符串/Text children、稳定 guest handle 和绘制持有生命周期；作者声明按固定摘要投影两个 Button 定义，其他声明仍为 2.1.292 基线。终端补齐挂载点击稳定期、窗口激活/点击处置和语义输入批次刷新；新增真实 Worker、Ink 与隔离终端验收入口，完整 Mods/UI 与发布仍待闭合。见[Button 验收边界](docs/research/mods-button-295-validity-20261009.md)。
 
+- 对齐官方 2.1.295 绘制后的 hover 重新命中、四次连续变化后的 1000ms 暂停、指针恢复、文本内部空格点击及可见 absolute 溢出命中/按轴裁剪；Button、Box 和 Text 的内部类型与 host 属性分别接线。专项验收增加静止指针、按钮移动和 resize 样式检查，完整 Mods/UI 与发布门禁继续独立结算。
+
 - 修正 native resize 消费层把 broker 已读 tail 等同内核 write 前缀的误拒收；继续用原 Mach/write 记录重算前缀并核对原件、唯一请求窗口和后续物理帧。保留历史失败收据，新增 tail 落后正例及越界负例，不据局部回放提升完整 native 或发布结论。
 
 - Builtin 终端验收在原 sandbox 内启动 native broker，在 ready/Popen 前固定普通屏幕起点与原始 parser 状态；按实际输出前缀和物理 marker 比较普通屏幕帧。归档重验依据同次回执读取副本，保留原 JSON/摘要且不依赖原 cache；删除守卫按实际 backend 分别校验 native 或 legacy 关闭原件；child 读取核对全部 broker 字节，并只按实际查询识别终端应答。APFS 副本保留独立 inode 与完整逻辑字节，避免为稀疏 journal 分配空槽；完整输入归属、时序与发布门禁仍单独验收。见[验收范围](docs/research/mods-builtin-native-normal-root-validity-20261009.md)。
@@ -107,6 +109,8 @@
 
 - 新增无终端 Mods Pane 登记与 SDK 列表、显示、焦点、关闭控制；支持 system/ui_panes 状态推送，焦点请求和实际焦点分开保存，按远程 viewport 放置等待项。
 - 对齐 Pane 同 ID 更新的插件归属、可选属性替换、跨插件关闭、重复关闭去重、异常恢复及标题 Unicode 校验；关闭时撤销外部绘制与 Client 地址。
+
+- 原生验收对零写入观察新增原始 marker/全部 syscall 前缀证明和明确的 pre-layout 比较边界；实际输出事务与 resize 重叠继续拒收。专项修正官方 Button 点击后的键盘焦点前置，增加关闭位置往返；本地焦点差异及完整发布仍未通过。
 
 ### 测试覆盖
 

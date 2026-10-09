@@ -2434,3 +2434,24 @@ Green6 的完整 CLI 文件真实14通过/1失败：成功 child read 中 DA 应
 新入口 `scripts/validate-mods-button295.mjs` 默认 local 必须同时完成业务、正常退出和本次原生逐帧/resize 校验；官方模式明确无本地 logical producer 的物理验收。新增关闭/重开流程必须在最终源冻结后重新运行；该脚本是专项入口，不替代 `scripts/run-binary-gate.py` 原默认完整动态矩阵，也不改变旧27/3结果。详细定义、命令及未闭合项见[本批说明](docs/research/mods-button-295-validity-20261009.md)。
 
 Green7 的 standalone 脚本真实双端完成13个步骤，local70帧与两次resize通过；实际两侧 child 均 exit0/reaped/physical EOF。然而其 official 分支只检查dead pane，不能拒收非0退出，red8 已在旧脚本得到3通过/1失败。新轮两模式都读取原 broker 身份及关闭收据，拒收非0/null退出、未reap/EOF、错child/capture、信号和清理错误；官方仅允许明确缺本地producer，不能豁免其他错误。一次tmux send命令不代表已证明一次child read/tokenizer批次，相关边界保持未覆盖。
+
+
+## 2026-10-09 绘制后 hover 与空白命中 2.1.295
+
+干净 HEAD `1bb3c768e926637580cc7825d1b65d6b3abeea8d` 的新最小回归实测0通过/3失败、12 expect：静止指针下移走与移入 Button 均未更新 hover；同一 Text 的 A B 内部空格被判为空白点击。失败发生在真实 Ink 布局和绘制后，不是缺导出或初始化错误。新增专项合同测试在旧 validator 实测5通过/1失败、27 expect：即便没有任何 hover 样式观察，旧结算仍通过。新证据保存在工作区忽略目录 `.claude-test-evidence/mods-hover295-le7vy782/`；不重建或冒充清理中丢失的旧原件。
+
+实现按固定官方模块对齐 motion/paint 的祖先命中、可选 hoverIgnoresBlankCells、同 Text 内两侧字符判定、held hover 的原位置点击、四次连续 paint 变化后的1000ms暂停，以及输入坐标改变、alternate screen/外部终端交接后的 pointer reset。Button 默认跟随绘制，普通 hover 不自动提升；Text 只转发其对应的内部属性。类型/作者声明未新增私有 Ink 参数。
+
+当前源码须运行新增 `src/ink/hoverFollowsPaint295.test.tsx` 及 Button、App、hit-test、Mods children/Worker/声明和脚本相邻回归，并在同一冻结源上运行完整 release-check/build。专项终端脚本必须保存七个样式观察，包含点击后 Tab 到关闭位置及 Shift+Tab 返回、他控件持焦、一次真实 motion、按键引起移出/移回，以及静止指针下两次额外 resize；检查实际 ANSI 经独立 xterm 解析的每个按钮字符反色，不以最终文本推定 hover。local 仍要求同案 native frame/resize/退出通过，official 只比较真实行为和退出。专项不替代默认完整动态矩阵、input owner/tokenizer、产品时序或官方 diff/browser/Client 生命周期。
+
+### 新目录验证与已确认差异
+
+用户要求后续证据保存在 `/tmp/claude-test/`。本轮新文档为 `/tmp/claude-test/mods-hover295-20261009-29pwecpw/VALIDATION.md`，新运行及原件归档均在该目录或其同级 `mb-*`；旧原件保留其原身份，迁移另记完整 manifest 与父收据摘要。
+
+绝对定位10项最小回归实际4通过/6失败；修复 hasAbsoluteDescendant 的保守祖先标记、可见溢出优先级和按轴裁剪后，与 hover/hit-test 同测23通过、70 expect。换父节点会清除旧坐标，最初的夹具漏补布局失败保留，不计产品 RED。新增 `src/ink/hit-testAbsolute295.test.tsx` 同时经过真实 Ink Button。
+
+零写入观察只在原 layout→immutable copy 之间没有任何 syscall 写入、layout/begin 原前缀完全一致时按 pre-layout 结算。v2 报告逐帧注明边界，canonical/final/archive 消费链分别校验；实际 write、layout marker 及真实输出事务的 resize 重叠继续拒收。旧 local1 原件重算仍因 frame80 真实事务重叠 failed，不升级历史结果。
+
+新源码 `1a993f5d477cbeaceebc79054a21d60b3e7d063abe478e1462418be3208cd7f0` 的12文件86项/301 expect、release-check、build通过；新制品 `d884268957ea907930d4bb14ca71872f7b3acb43208aeb8ca4fe2618e13b9f5e` 与官方2.1.295同脚本对照。官方24步骤/7样式观察/正常退出完成，只判专项行为通过；没有本地logical producer的物理通过。local2在 focus-stop 超时，整体 failed，但同案88帧、2次resize、内容/IO和exit0/EOF/reap的有限native证据 passed。它没有执行后续 hover 步骤，不能借官方结果填补本地缺项。以上均为本段文档改动前的独立源码 epoch，不冒充最新源码完整验收。
+
+已确证本地 ModButton 的 native onFocus 反向改变 custom focus，缺官方 click wrapper blur/custom chrome；Pane 的末项 Tab clamp 缺关闭位置环。官方点击 Save 只 press、保留 Other custom focus，Tab 到 engine stop。本地关闭位置流程必须继续实现；不能放宽样式断言或用 undefined element 释放整个 Pane 冒充关闭位置。完整默认矩阵、G5、官方 diff、browser/Client、input owner/tokenizer和时序继续未闭合。
