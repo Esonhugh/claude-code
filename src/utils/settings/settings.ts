@@ -468,6 +468,7 @@ export function getPolicySettingsOrigin():
 export function updateSettingsForSource(
   source: EditableSettingSource,
   settings: SettingsJson,
+  options?: { atomicOnly?: boolean },
 ): { error: Error | null } {
   if (
     (source as unknown) === 'policySettings' ||
@@ -547,7 +548,10 @@ export function updateSettingsForSource(
     )
 
     const content = jsonStringify(updatedSettings, null, 2) + '\n'
-    writeFileSyncAndFlush_DEPRECATED(filePath, content)
+    writeFileSyncAndFlush_DEPRECATED(filePath, content, {
+      encoding: 'utf-8',
+      atomicOnly: options?.atomicOnly,
+    })
     // The synchronous write has completed before a watcher callback can run.
     markInternalWrite(filePath, content)
 

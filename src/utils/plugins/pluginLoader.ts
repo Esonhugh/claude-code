@@ -938,6 +938,8 @@ export async function cachePlugin(
   source: PluginSource,
   options?: {
     manifest?: PluginManifest
+    // The installer publishes this owned copy directly to its version path.
+    keepTemporary?: boolean
   },
 ): Promise<{ path: string; manifest: PluginManifest; gitCommitSha?: string }> {
   const cachePath = getPluginCachePath()
@@ -988,138 +990,150 @@ export async function cachePlugin(
           throw new Error(`Unsupported plugin source type`)
       }
     }
+
+    const manifestPath = join(tempPath, '.claude-plugin', 'plugin.json')
+    const legacyManifestPath = join(tempPath, 'plugin.json')
+    let manifest: PluginManifest
+
+    if (await pathExists(manifestPath)) {
+      try {
+        const content = await readFile(manifestPath, { encoding: 'utf-8' })
+        const parsed = jsonParse(content)
+        const result = PluginManifestSchema().safeParse(parsed)
+
+        if (result.success) {
+          manifest = result.data
+        } else {
+          // Manifest exists but is invalid - throw error
+          const errors = result.error.issues
+            .map(err => `${err.path.join('.')}: ${err.message}`)
+            .join(', ')
+
+          logForDebugging(`Invalid manifest at ${manifestPath}: ${errors}`, {
+            level: 'error',
+          })
+
+          throw new Error(
+            `Plugin has an invalid manifest file at ${manifestPath}. Validation errors: ${errors}`,
+          )
+        }
+      } catch (error) {
+        // Check if this is a validation error we just threw
+        if (
+          error instanceof Error &&
+          error.message.includes('invalid manifest file')
+        ) {
+          throw error
+        }
+
+        // JSON parse error
+        const errorMsg = errorMessage(error)
+        logForDebugging(
+          `Failed to parse manifest at ${manifestPath}: ${errorMsg}`,
+          {
+            level: 'error',
+          },
+        )
+
+        throw new Error(
+          `Plugin has a corrupt manifest file at ${manifestPath}. JSON parse error: ${errorMsg}`,
+        )
+      }
+    } else if (await pathExists(legacyManifestPath)) {
+      try {
+        const content = await readFile(legacyManifestPath, {
+          encoding: 'utf-8',
+        })
+        const parsed = jsonParse(content)
+        const result = PluginManifestSchema().safeParse(parsed)
+
+        if (result.success) {
+          manifest = result.data
+        } else {
+          // Manifest exists but is invalid - throw error
+          const errors = result.error.issues
+            .map(err => `${err.path.join('.')}: ${err.message}`)
+            .join(', ')
+
+          logForDebugging(
+            `Invalid legacy manifest at ${legacyManifestPath}: ${errors}`,
+            { level: 'error' },
+          )
+
+          throw new Error(
+            `Plugin has an invalid manifest file at ${legacyManifestPath}. Validation errors: ${errors}`,
+          )
+        }
+      } catch (error) {
+        // Check if this is a validation error we just threw
+        if (
+          error instanceof Error &&
+          error.message.includes('invalid manifest file')
+        ) {
+          throw error
+        }
+
+        // JSON parse error
+        const errorMsg = errorMessage(error)
+        logForDebugging(
+          `Failed to parse legacy manifest at ${legacyManifestPath}: ${errorMsg}`,
+          {
+            level: 'error',
+          },
+        )
+
+        throw new Error(
+          `Plugin has a corrupt manifest file at ${legacyManifestPath}. JSON parse error: ${errorMsg}`,
+        )
+      }
+    } else {
+      manifest = options?.manifest || {
+        name: tempName,
+        description: `Plugin cached from ${typeof source === 'string' ? source : source.source}`,
+      }
+    }
+
+    if (options?.keepTemporary) {
+      return { path: tempPath, manifest, ...(gitCommitSha && { gitCommitSha }) }
+    }
+
+    const finalName = manifest.name.replace(/[^a-zA-Z0-9-_]/g, '-')
+    const finalPath = join(cachePath, finalName)
+
+    if (await pathExists(finalPath)) {
+      logForDebugging(`Removing old cached version at ${finalPath}`)
+      await rm(finalPath, { recursive: true, force: true })
+    }
+
+    await rename(tempPath, finalPath)
+
+    logForDebugging(
+      `Successfully cached plugin ${manifest.name} to ${finalPath}`,
+    )
+
+    return {
+      path: finalPath,
+      manifest,
+      ...(gitCommitSha && { gitCommitSha }),
+    }
   } catch (error) {
     if (shouldCleanup && (await pathExists(tempPath))) {
       logForDebugging(`Cleaning up failed installation at ${tempPath}`)
       try {
         await rm(tempPath, { recursive: true, force: true })
       } catch (cleanupError) {
+        if (options?.keepTemporary) {
+          throw new AggregateError(
+            [error, cleanupError],
+            `Plugin copy and cleanup failed at ${tempPath}`,
+          )
+        }
         logForDebugging(`Failed to clean up installation: ${cleanupError}`, {
           level: 'error',
         })
       }
     }
     throw error
-  }
-
-  const manifestPath = join(tempPath, '.claude-plugin', 'plugin.json')
-  const legacyManifestPath = join(tempPath, 'plugin.json')
-  let manifest: PluginManifest
-
-  if (await pathExists(manifestPath)) {
-    try {
-      const content = await readFile(manifestPath, { encoding: 'utf-8' })
-      const parsed = jsonParse(content)
-      const result = PluginManifestSchema().safeParse(parsed)
-
-      if (result.success) {
-        manifest = result.data
-      } else {
-        // Manifest exists but is invalid - throw error
-        const errors = result.error.issues
-          .map(err => `${err.path.join('.')}: ${err.message}`)
-          .join(', ')
-
-        logForDebugging(`Invalid manifest at ${manifestPath}: ${errors}`, {
-          level: 'error',
-        })
-
-        throw new Error(
-          `Plugin has an invalid manifest file at ${manifestPath}. Validation errors: ${errors}`,
-        )
-      }
-    } catch (error) {
-      // Check if this is a validation error we just threw
-      if (
-        error instanceof Error &&
-        error.message.includes('invalid manifest file')
-      ) {
-        throw error
-      }
-
-      // JSON parse error
-      const errorMsg = errorMessage(error)
-      logForDebugging(
-        `Failed to parse manifest at ${manifestPath}: ${errorMsg}`,
-        {
-          level: 'error',
-        },
-      )
-
-      throw new Error(
-        `Plugin has a corrupt manifest file at ${manifestPath}. JSON parse error: ${errorMsg}`,
-      )
-    }
-  } else if (await pathExists(legacyManifestPath)) {
-    try {
-      const content = await readFile(legacyManifestPath, {
-        encoding: 'utf-8',
-      })
-      const parsed = jsonParse(content)
-      const result = PluginManifestSchema().safeParse(parsed)
-
-      if (result.success) {
-        manifest = result.data
-      } else {
-        // Manifest exists but is invalid - throw error
-        const errors = result.error.issues
-          .map(err => `${err.path.join('.')}: ${err.message}`)
-          .join(', ')
-
-        logForDebugging(
-          `Invalid legacy manifest at ${legacyManifestPath}: ${errors}`,
-          { level: 'error' },
-        )
-
-        throw new Error(
-          `Plugin has an invalid manifest file at ${legacyManifestPath}. Validation errors: ${errors}`,
-        )
-      }
-    } catch (error) {
-      // Check if this is a validation error we just threw
-      if (
-        error instanceof Error &&
-        error.message.includes('invalid manifest file')
-      ) {
-        throw error
-      }
-
-      // JSON parse error
-      const errorMsg = errorMessage(error)
-      logForDebugging(
-        `Failed to parse legacy manifest at ${legacyManifestPath}: ${errorMsg}`,
-        {
-          level: 'error',
-        },
-      )
-
-      throw new Error(
-        `Plugin has a corrupt manifest file at ${legacyManifestPath}. JSON parse error: ${errorMsg}`,
-      )
-    }
-  } else {
-    manifest = options?.manifest || {
-      name: tempName,
-      description: `Plugin cached from ${typeof source === 'string' ? source : source.source}`,
-    }
-  }
-
-  const finalName = manifest.name.replace(/[^a-zA-Z0-9-_]/g, '-')
-  const finalPath = join(cachePath, finalName)
-
-  if (await pathExists(finalPath)) {
-    logForDebugging(`Removing old cached version at ${finalPath}`)
-    await rm(finalPath, { recursive: true, force: true })
-  }
-
-  await rename(tempPath, finalPath)
-
-  logForDebugging(`Successfully cached plugin ${manifest.name} to ${finalPath}`)
-
-  return {
-    path: finalPath,
-    manifest,
-    ...(gitCommitSha && { gitCommitSha }),
   }
 }
 
