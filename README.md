@@ -2216,3 +2216,7 @@ canonical 验收新增 native span、动作窗口与 Mach geometry 关联；零�
 原生终端报告保留独立backend，区分帧事务输出与连续replay段，并将原resize请求、真实内核ACK与后续正确尺寸的实际绘制帧一一对应。回归入口为 `scripts/test-native-report-consumers.py` 和 `scripts/native-frame-journal-replay.test.mjs`；使用方法与仍未闭合的完整门禁见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。
 
 `--debug-file /absolute/path/mods-debug.log` 可记录 `[ModsProcess]` 的实际启动、停止、终止和close。日志绑定宿主生成的operationId、owner、PID、参数摘要、预算与单调耗时，以及实际读取/保留字节、摘要和截断标志；不打印argv、stdin、env或输出内容。首次TERM与2000ms宽限后身份复验的KILL分开记录；group失败仍尝试独立PID，逐目标失败记录errno。初次ps不可用、后次恢复也允许真实仍存活的owned child handle回退；已捕获身份冲突及后代查询失败不能声称清理完成；日志保留实际查询exitCode与未闭合PID，缺行须以真实ESRCH确认退出。见[process.run生命周期与取消契约](docs/research/mods-process-run-lifecycle-validity-20261009.md)。
+
+原生终端验证的 `seal` 与 `verify --bounded` 仅结算闭合身份/物理证据；默认 `verify` 和发布门禁仍要求完整覆盖。后端文件清单、资源关闭及未覆盖条件见[验收结算说明](docs/research/mods-native-capture-scope-validity-20261009.md)。
+
+归档后的 builtin recheck 使用同次运行的 `builtin-cache-archive.json` 将原始 producer run 映射到 `acceptance-cache`，同时核对原始 `capture-launch.json` 的摘要。不会改写启动记录；源、归档目录、完成标志或原件摘要不符均拒收。独立重放可用 `bun scripts/recheck-builtin-terminal-evidence.mjs ACCEPTANCE_REMAPPED.json BINARY_SHA256 OUTPUT.json ARCHIVE_RECEIPT.json`，其通过只代表所声明的证据范围；完整门禁另外对照 parent 在归档完成时固定的收据摘要，拒收启动原件与收据同时改写。

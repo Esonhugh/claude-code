@@ -2400,3 +2400,7 @@ Green5的41项/相邻文件通过而check因finally throw lint失败；后次ps�
 ## 2026-10-09 原生 resize 请求时钟有效性
 
 Native50原完整30项正常结束，27 passed / 3 failed；io84与后次send已发布尾io83的拒收属于时序证据不足，不据此判产品绘制错误。旧epoch保持原verdict。新控制器保存真实Mach时钟与caller身份；v2关联要求唯一请求窗口和真实ACK后的正输出物理帧，不改完整覆盖标志。最小未修复回归1通过/14失败，实际caller clock与新CLI/矩阵必须分别取证，详见[处置与入口](docs/research/mods-native-driver-clock-validity-20261009.md)。
+
+## 2026-10-09 原生证据结算与后端清单
+
+Native52原完整30项正常结束、27通过/3失败，保留原件。真实CLI最小RED复现合法bounded原生原件被旧seal拒绝；新轮需独立验证seal/资源关闭/full coverage与启动协议选择。七侧builtin仍legacy、完整owner/timing未覆盖，不能升级旧轮或用bounded替代完整门禁，详见[结算与回归入口](docs/research/mods-native-capture-scope-validity-20261009.md)。
