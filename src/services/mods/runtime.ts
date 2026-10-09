@@ -255,12 +255,15 @@ async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
   if (errors.length > 1) throw new AggregateError(errors, 'Mods cleanup failed')
 }
 
-export function createModsRuntime({ onDiagnostic, services = {}, testing = false }: {
+export function createModsRuntime({ onDiagnostic, services = {}, testing = false, promptEditBudgetMs = 50 }: {
   onDiagnostic?: (event: ModDiagnostic) => void
   services?: ModHostServices
   /** Mock host capabilities or throw at their terminal; retain runtime-owned state and drawing. */
   testing?: boolean
+  /** Host-selected edit budget; production retains the official 50ms default. */
+  promptEditBudgetMs?: number
 } = {}) {
+  if (!Number.isFinite(promptEditBudgetMs) || promptEditBudgetMs <= 0) throw new TypeError('promptEditBudgetMs must be a positive finite number')
   const testTerminal = (event: string) => {
     const [noun, method] = event.split('.')
     return testing && noun !== 'state' && !(noun === 'ui' &&
@@ -2485,7 +2488,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner)
           .filter(hook => !['ui.message', 'ui.fault'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
         signal: combined.signal, origin: options.origin,
-        ...(event === 'prompt.edit' ? {budgetMs:50} : {}),
+        ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
         // Only the calling frame is recursive; sibling policy hooks still run.
         ...(options.origin ? { skip: {
