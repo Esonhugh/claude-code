@@ -3308,7 +3308,9 @@ export function REPL({
       onFocus={async (pane, element, origin = { kind: 'person' }, options) => {
         const ui = modsSession?.runtime?.ui
         if (!ui) return { focused: false }
-        const result = origin.kind === 'plugin' && origin.name !== undefined && element !== undefined
+        const result = origin.kind === 'person' && options?.engine
+          ? await ui.focusHost(pane.owner, { requestId: pane.id, origin }, modUiPresentationRef.current, options)
+          : origin.kind === 'plugin' && origin.name !== undefined && element !== undefined
           ? await ui.focusHost(pane.owner, { requestId: pane.id, element, origin: { kind: 'plugin', name: origin.name } }, modUiPresentationRef.current, options)
           : origin.kind === 'person' && options?.plugin && element !== undefined
             ? await ui.focusPerson(pane.owner, { requestId: pane.id, element }, options.plugin, modUiPresentationRef.current)
