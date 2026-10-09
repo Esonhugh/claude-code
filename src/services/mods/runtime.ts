@@ -242,7 +242,7 @@ const coreHost: Nouns = {
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
+  session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
@@ -946,6 +946,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (args.length > 1) throw new TypeError('prompt.compose takes one optional object')
         validateComposeInput(input, true)
         return input as ModInput
+      }
+      case 'session.compact': {
+        const entry = args[0] as ModInput | undefined
+        if (entry !== undefined && (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+            entry.instructions !== undefined && typeof entry.instructions !== 'string'))
+          throw Object.assign(new Error(`${plugin}: $.session.compact takes { instructions } (a string) or nothing`), {name:'HooksError'})
+        return entry?.instructions === undefined ? {} : {instructions:entry.instructions}
       }
       case 'session.send': return modSessionSendArgs(args[0], plugin)
       case 'session.usage': {
@@ -1865,6 +1872,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               if (typeof result.deny === 'string') throw new Error(result.deny)
               return result.value
             } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'session.compact') {
+            if (binding && !binding.isInteractive)
+              throw Object.assign(new Error(`${owner.declaration.name}: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on`), {name:'HooksError'})
+            throw new Error('$.session.compact is not available in this build')
           }
           const catalog = fn === hostIdentity && op === 'tool.list'
             ? (requestServices.getStore()?.toolCatalog ?? services.toolCatalog)?.()
