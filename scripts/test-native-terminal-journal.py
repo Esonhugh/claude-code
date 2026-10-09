@@ -47,6 +47,48 @@ int main(int argc,char **argv){
   pthread_t thread;if(pthread_create(&thread,NULL,other,NULL))return 75;
   if(write(1,"main\n",5)!=5)return 76;
   pthread_join(thread,NULL);
+ }else if(!strncmp(mode,"input-",6)){
+  int fd=dup(0);if(fd<0)return 101;
+  char bytes[256];memset(bytes,'X',sizeof(bytes));
+  ssize_t returned;errno=EALREADY;
+  if(!strcmp(mode,"input-foreign")){
+   int pipefd[2];if(pipe(pipefd))return 114;
+   if(write(pipefd[1],"foreign",7)!=7)return 115;close(pipefd[1]);
+   errno=EALREADY;if(read(pipefd[0],bytes,128)!=7||errno!=EALREADY||memcmp(bytes,"foreign",7))return 116;
+   errno=EALREADY;if(read(pipefd[0],bytes,128)||errno!=EALREADY)return 117;close(pipefd[0]);
+  }else if(!strcmp(mode,"input-empty")||!strcmp(mode,"input-emptyv")){
+   returned=!strcmp(mode,"input-emptyv")?readv(fd,NULL,0):read(fd,bytes,0);
+   if(returned!=(!strcmp(mode,"input-emptyv")?-1:0)||errno!=(!strcmp(mode,"input-emptyv")?EINVAL:EALREADY))return 102;
+  }else if(!strcmp(mode,"input-failed")){
+   int flags=fcntl(fd,F_GETFL);if(flags<0||fcntl(fd,F_SETFL,flags|O_NONBLOCK))return 103;
+   errno=EALREADY;if(read(fd,bytes,1)!=-1||errno!=EAGAIN)return 104;
+   if(fcntl(fd,F_SETFL,flags))return 105;
+   int saved=dup(0);if(saved<0)return 106;close(0);
+   if(read(0,bytes,1)!=-1||errno!=EBADF)return 107;
+   if(dup2(saved,0)<0)return 108;close(saved);
+  }else{
+   if(write(1,"input-ready\n",12)!=12)return 109;
+   errno=!strcmp(mode,"input-read-negative")?-7:EALREADY;
+   if(!strcmp(mode,"input-readv")){
+    struct iovec parts[2]={{bytes,3},{bytes+3,125}};
+    returned=readv(fd,parts,2);
+   }else if(!strcmp(mode,"input-nocancel")||!strcmp(mode,"input-vnocancel")){
+    ssize_t(*r)(int,void*,size_t)=dlsym(RTLD_DEFAULT,"read$NOCANCEL");
+    ssize_t(*v)(int,const struct iovec*,int)=dlsym(RTLD_DEFAULT,"readv$NOCANCEL");
+    struct iovec parts[2]={{bytes,3},{bytes+3,125}};
+    if(!r||!v)return 110;
+    returned=!strcmp(mode,"input-nocancel")?r(fd,bytes,128):v(fd,parts,2);
+   }else if(!strcmp(mode,"input-bad-memory")||!strcmp(mode,"input-bad-iov")){
+    returned=!strcmp(mode,"input-bad-iov")?readv(fd,(const struct iovec*)1,1):read(fd,(void*)1,128);if(returned!=-1||errno!=EFAULT)return 111;
+   }else{
+    returned=read(fd,bytes,128);
+   }
+   if(strcmp(mode,"input-bad-memory")&&strcmp(mode,"input-bad-iov")&&
+      (returned!=(!strcmp(mode,"input-eof")?0:10)||errno!=(!strcmp(mode,"input-read-negative")?-7:EALREADY)))return 112;
+   if(returned>0&&memcmp(bytes,"[A[Btest",10))return 113;
+   memset(bytes,'Y',sizeof(bytes));
+  }
+  close(fd);
  }else if(!strcmp(mode,"termios-cycle")||!strcmp(mode,"termios-output-cycle")){
   struct termios original,changed;
   if(tcgetattr(1,&original))return 90;
@@ -177,7 +219,7 @@ class NativeJournalTest(unittest.TestCase):
             os.close(master)
             os.close(slave)
 
-    def capture(self, mode='large', capacity=64, payload=65536, observed=True, binary=None, fail_after_start=False, fail_after_receipt=False, live=False, fail_after_live_records=0):
+    def capture(self, mode='large', capacity=64, payload=65536, observed=True, binary=None, fail_after_start=False, fail_after_receipt=False, live=False, fail_after_live_records=0, input_bytes=None):
         run = self.root / f'case-{len(list(self.root.glob("case-*")))}'
         run.mkdir()
         master = slave = None
@@ -192,6 +234,15 @@ class NativeJournalTest(unittest.TestCase):
             master, slave = pty.openpty()
             attrs = termios.tcgetattr(slave)
             self.assertEqual(attrs[1], termios.OPOST | termios.ONLCR)
+            if mode.startswith('input-'):
+                attrs[3] &= ~termios.ECHO
+                if mode != 'input-eof':
+                    attrs[0] &= ~(termios.ICRNL | termios.IXON)
+                    attrs[3] &= ~(termios.ICANON | termios.IEXTEN)
+                    attrs[6][termios.VMIN] = 1
+                    attrs[6][termios.VTIME] = 0
+                termios.tcsetattr(slave, termios.TCSANOW, attrs)
+                attrs = termios.tcgetattr(slave)
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 30, 100, 0, 0))
             path = run / 'journal.bin'
             registration = journal.create_journal(path, os.fstat(slave), 3, capacity, payload)
@@ -202,6 +253,7 @@ class NativeJournalTest(unittest.TestCase):
             control_fds = []
             partial_expected = None
             partial_released = False
+            input_sent = False
             if mode == 'partial':
                 ready_read, ready_write = os.pipe()
                 control_fds.extend([ready_read, ready_write])
@@ -265,6 +317,9 @@ class NativeJournalTest(unittest.TestCase):
                         eof = True
                         break
                     raw.extend(chunk)
+                    if input_bytes is not None and not input_sent and b'input-ready\r\n' in raw:
+                        self.assertEqual(os.write(master, input_bytes), len(input_bytes))
+                        input_sent = True
                     if mode == 'partial' and not partial_released and len(raw) == partial_expected:
                         os.write(resume_write, b'1')
                         partial_released = True
@@ -281,7 +336,9 @@ class NativeJournalTest(unittest.TestCase):
                       'observed': observed, 'header': list(header), 'rawBytes': len(raw),
                       'librarySHA256': hashlib.sha256(self.library.read_bytes()).hexdigest(),
                       'binarySHA256': hashlib.sha256(Path(command[0]).read_bytes()).hexdigest(),
-                      'registration': registration, 'scope': 'bounded native probe only'}
+                      'registration': registration, 'scope': 'bounded native probe only',
+                      'inputBytesHex': input_bytes.hex() if input_bytes is not None else None,
+                      'inputSent': input_sent}
             (run / 'raw.bin').write_bytes(raw)
             if live:
                 header = consumer.header()
@@ -347,6 +404,112 @@ class NativeJournalTest(unittest.TestCase):
             }) + '\n')
             if cleanup_errors and error is None:
                 raise RuntimeError('Native probe cleanup failed: ' + json.dumps(cleanup_errors))
+
+    def test_actual_child_read_retains_returned_input_prefix_before_caller_mutation(self):
+        incoming = b'\x1b[A\x1b[Btest'
+        header, packets, registration, pid, raw = self.capture('input-read', input_bytes=incoming)
+        self.assertEqual(raw, b'input-ready\r\n')
+        reads = [row for row in journal.decode_records(header, packets, registration, pid) if row['kind'] == 3]
+        self.assertEqual(len(reads), 1, 'Native child read must be observed independently of parent sent bytes')
+        self.assertEqual(reads[0]['bytes'], incoming)
+        self.assertEqual((reads[0]['operation'], reads[0]['requested'], reads[0]['result'], reads[0]['errno']),
+                         (1, 128, 10, errno.EALREADY))
+        self.assertGreater(reads[0]['fd'], 2, 'Duplicated stdin PTY descriptor must retain ownership')
+
+    def test_actual_read_success_preserves_negative_incoming_errno_in_native_dto(self):
+        incoming = b'\x1b[A\x1b[Btest'
+        header, packets, registration, pid, raw = self.capture('input-read-negative', input_bytes=incoming)
+        reads = [row for row in journal.decode_records(header, packets, registration, pid) if row['kind'] == 3]
+        self.assertEqual(len(reads), 1)
+        self.assertEqual((reads[0]['result'], reads[0]['errno'], reads[0]['bytes']), (10, -7, incoming))
+
+    def test_actual_read_families_preserve_short_prefix_and_errno_with_large_request(self):
+        incoming = b'\x1b[A\x1b[Btest'
+        for mode, operation in [('input-read', 1), ('input-readv', 2),
+                                ('input-nocancel', 3), ('input-vnocancel', 4)]:
+            with self.subTest(mode=mode):
+                plain = self.capture(mode, observed=False, input_bytes=incoming)
+                header, packets, registration, pid, raw = self.capture(mode, payload=16, input_bytes=incoming)
+                self.assertEqual(raw, plain[-1])
+                records = journal.decode_records(header, packets, registration, pid)
+                reads = [row for row in records if row['kind'] == 3]
+                self.assertEqual(len(reads), 1, 'Nested libc calls must not duplicate the original read')
+                read = reads[0]
+                self.assertEqual((read['operation'], read['inputMask'], read['outputMask']), (operation, 4, 0))
+                self.assertEqual((read['requested'], read['result'], read['errno']), (128, 10, errno.EALREADY))
+                self.assertEqual(read['bytes'], incoming)
+                self.assertEqual(journal.verify_raw(records, raw, termios.OPOST | termios.ONLCR)['verdict'], 'passed')
+
+    def test_actual_read_eof_zero_request_and_zero_iovec_have_distinct_results(self):
+        for mode, incoming, requested, returned, error in [('input-eof', b'\x04', 128, 0, errno.EALREADY),
+                                                          ('input-empty', None, 0, 0, errno.EALREADY),
+                                                          ('input-emptyv', None, 0, -1, errno.EINVAL)]:
+            with self.subTest(mode=mode):
+                header, packets, registration, pid, raw = self.capture(mode, input_bytes=incoming)
+                reads = [row for row in journal.decode_records(header, packets, registration, pid) if row['kind'] == 3]
+                self.assertEqual(len(reads), 1)
+                self.assertEqual((reads[0]['requested'], reads[0]['result'], reads[0]['errno'], reads[0]['bytes']),
+                                 (requested, returned, error, b''))
+
+    def test_actual_failed_reads_keep_eagain_ebadf_and_efault_without_fake_input(self):
+        header, packets, registration, pid, raw = self.capture('input-failed')
+        reads = [row for row in journal.decode_records(header, packets, registration, pid) if row['kind'] == 3]
+        self.assertEqual([(row['result'], row['errno'], row['bytes']) for row in reads],
+                         [(-1, errno.EAGAIN, b''), (-1, errno.EBADF, b'')])
+        self.assertEqual(reads[1]['fd'], 0)
+        header, packets, registration, pid, raw = self.capture('input-bad-memory', input_bytes=b'input')
+        reads = [row for row in journal.decode_records(header, packets, registration, pid) if row['kind'] == 3]
+        self.assertEqual([(row['result'], row['errno'], row['bytes']) for row in reads], [(-1, errno.EFAULT, b'')])
+
+    def test_actual_read_payload_overflow_preserves_input_and_rejects_truncated_evidence(self):
+        incoming = b'\x1b[A\x1b[Btest'
+        plain = self.capture('input-read', observed=False, input_bytes=incoming)
+        header, packets, registration, pid, raw = self.capture('input-read', payload=8, input_bytes=incoming)
+        self.assertEqual(raw, plain[-1])
+        read = next(journal.RECORD.unpack_from(row) for row in packets if journal.RECORD.unpack_from(row)[2] == 3)
+        self.assertEqual((read[10], read[11], read[13], read[14]), (128, 10, 1, 0))
+        with self.assertRaisesRegex(journal.JournalError, 'Truncated or unsupported'):
+            journal.decode_records(header, packets, registration, pid)
+        header, packets, registration, pid, raw = self.capture('input-read', capacity=2, input_bytes=incoming)
+        self.assertEqual(raw, plain[-1], 'Full observer ring must not prevent the original read')
+        self.assertGreater(header[10], 0)
+        with self.assertRaisesRegex(journal.JournalError, 'Lost'):
+            journal.decode_records(header, packets, registration, pid)
+
+    def test_invalid_readv_metadata_preserves_original_efault_and_refuses_unproven_prefix(self):
+        header, packets, registration, pid, raw = self.capture('input-bad-iov', input_bytes=b'input')
+        read = next(journal.RECORD.unpack_from(row) for row in packets if journal.RECORD.unpack_from(row)[2] == 3)
+        self.assertEqual((read[9], read[11], read[12], read[13], read[14]), (2, 2 ** 64 - 1, errno.EFAULT, 1, 0))
+        with self.assertRaisesRegex(journal.JournalError, 'Truncated or unsupported'):
+            journal.decode_records(header, packets, registration, pid)
+
+    def test_control_pipe_reads_are_not_attributed_to_registered_stdin(self):
+        header, packets, registration, pid, raw = self.capture('input-foreign')
+        records = journal.decode_records(header, packets, registration, pid)
+        self.assertFalse(any(row['kind'] == 3 for row in records))
+        self.assertEqual(raw, b'')
+
+    def test_read_decoder_rejects_foreign_channel_operation_span_result_and_errno(self):
+        header, packets, registration, pid, raw = self.capture('input-read', input_bytes=b'\x1b[A\x1b[Btest')
+        index = next(index for index, row in enumerate(packets) if journal.RECORD.unpack_from(row)[2] == 3)
+        for field, value in [(8, 3), (9, 5), (15, 1), (7, 1 << 31), (10, 9), (11, 9)]:
+            with self.subTest(field=field):
+                changed = list(packets)
+                words = list(journal.RECORD.unpack_from(changed[index]));words[field] = value
+                changed[index] = journal.RECORD.pack(*words) + changed[index][journal.RECORD.size:]
+                with self.assertRaisesRegex(journal.JournalError, 'Original read result/prefix mismatch'):
+                    journal.decode_records(header, changed, registration, pid)
+        for error in [1 << 31, (1 << 32) - 7, 1 << 63]:
+            changed = list(packets);words = list(journal.RECORD.unpack_from(changed[index]));words[12] = error
+            changed[index] = journal.RECORD.pack(*words) + changed[index][journal.RECORD.size:]
+            with self.subTest(error=error), self.assertRaisesRegex(journal.JournalError, 'Noncanonical native read errno'):
+                journal.decode_records(header, changed, registration, pid)
+        header, packets, registration, pid, raw = self.capture('input-failed')
+        index = next(index for index, row in enumerate(packets) if journal.RECORD.unpack_from(row)[2] == 3)
+        changed = list(packets);words = list(journal.RECORD.unpack_from(changed[index]));words[12] = 0
+        changed[index] = journal.RECORD.pack(*words) + changed[index][journal.RECORD.size:]
+        with self.assertRaisesRegex(journal.JournalError, 'Failed read lacks original errno'):
+            journal.decode_records(header, changed, registration, pid)
 
     def test_actual_write_writev_alias_errno_and_immutable_payload(self):
         plain = self.capture(observed=False)

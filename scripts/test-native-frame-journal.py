@@ -457,6 +457,29 @@ class NativeFrameJournalTest(unittest.TestCase):
                 offset += size
             records = journal.decode_records(json.loads((run / 'header.json').read_text()), packets,
                                               json.loads((run / 'registration.json').read_text()), start['childPid'])
+            child_reads = [row for row in records if row['kind'] == 3]
+            self.assertGreater(len(child_reads), 0, 'Real child stdin read was not observed')
+            self.assertEqual(b''.join(row['bytes'] for row in child_reads).count(b'/exit\r'), 1,
+                             'Sent /exit must occur exactly once in successful child read prefixes')
+            self.assertTrue(all(row['inputMask'] == 4 and row['outputMask'] == 0 and
+                                row['operation'] in (1, 2, 3, 4) and 'nativeClock' in row
+                                for row in child_reads))
+            (run / 'child-input-read-proof.json').write_text(json.dumps({
+                'method': 'native-child-read-prefix-v1', 'childPid': start['childPid'],
+                'binarySha256': digest, 'captureId': launch['captureId'],
+                'reads': [{'sequence': row['sequence'], 'fd': row['fd'], 'operation': row['operation'],
+                           'entry': str(row['entry']), 'return': str(row['return']),
+                           'threadId': str(row['threadId']), 'requested': str(row['requested']),
+                           'result': row['result'], 'errno': row['errno'],
+                           'hex': row['bytes'].hex(), 'nativeClock': row['nativeClock']}
+                          for row in child_reads],
+                'actualInputOwnerCovered': False, 'productTimingEquivalent': False,
+                'scope': 'actual child PTY read prefixes only; no parser or semantic owner proof',
+            }, indent=2) + '\n')
+            proof = json.loads((run / 'child-input-read-proof.json').read_text())
+            self.assertEqual([(row['entry'], row['return'], row['threadId'], row['requested']) for row in proof['reads']],
+                             [(str(row['entry']), str(row['return']), str(row['threadId']), str(row['requested']))
+                              for row in child_reads])
             snapshots = [row for row in records if row['kind'] == 11]
             self.assertGreater(len(snapshots), 0, 'Real CLI emitted no immutable frame snapshot')
             self.assertGreater(len([row for row in records if row['kind'] == 10]), 0)

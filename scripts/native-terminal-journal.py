@@ -127,6 +127,13 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
                     and fd < 1 << 31 and -1 <= result <= requested <= registration['payloadBytes']
                     and length == max(0, result), 'Original write result/prefix mismatch')
             require(result != -1 or error > 0, 'Failed write lacks original errno')
+        elif kind == 3:
+            error = error if error < 1 << 63 else error - (1 << 64)
+            require(-(1 << 31) <= error < 1 << 31, 'Noncanonical native read errno')
+            require(mask == 4 and operation in (1, 2, 3, 4) and span == 0
+                    and fd < 1 << 31 and -1 <= result <= requested
+                    and length == max(0, result), 'Original read result/prefix mismatch')
+            require(result != -1 or error > 0, 'Failed read lacks original errno')
         elif kind == 2:
             require(mask == registration['header'][18] and fd < 1 << 31 and span == 0 and
                     -1 <= result <= 0 and (operation in (0, 1, 2) or result == -1) and
@@ -141,10 +148,12 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
                     and requested == length, 'Invalid native metadata observation')
         decoded.append({'sequence': ticket, 'kind': kind, 'pid': pid,
                         'threadId': thread, 'entry': entry, 'return': returned_at,
-                        'fd': fd, 'outputMask': mask, 'operation': operation,
+                        'fd': fd, 'outputMask': 0 if kind == 3 else mask, 'operation': operation,
                         'requested': requested, 'result': result, 'errno': error,
                         'spanId': span, 'bytes': data[RECORD.size:]})
-        if kind in (10, 12, 13, 11):
+        if kind == 3:
+            decoded[-1]['inputMask'] = mask
+        if kind in (3, 10, 12, 13, 11):
             decoded[-1]['nativeClock'] = clock
         if kind == 2:
             for index, name in enumerate(('modeBefore', 'modeRequested', 'modeAfter')):

@@ -22,6 +22,8 @@
 _Static_assert(__atomic_always_lock_free(8, 0), "Observer requires lock-free 64-bit atomics");
 extern ssize_t write_nocancel(int,const void*,size_t) __asm("_write$NOCANCEL");
 extern ssize_t writev_nocancel(int,const struct iovec*,int) __asm("_writev$NOCANCEL");
+extern ssize_t read_nocancel(int,void*,size_t) __asm("_read$NOCANCEL");
+extern ssize_t readv_nocancel(int,const struct iovec*,int) __asm("_readv$NOCANCEL");
 static uint64_t *journal;
 static size_t mapped_bytes;
 static int journal_fd=-1;
@@ -29,6 +31,8 @@ static size_t slot_stride,slot_capacity,payload_capacity;
 static uint64_t endpoint_identity[5];
 static _Thread_local unsigned inside_write;
 static _Thread_local struct iovec vectors[MAX_IOVECS];
+static _Thread_local unsigned inside_read;
+static _Thread_local struct iovec input_vectors[MAX_IOVECS];
 static uint64_t load_word(uint64_t *word){return __atomic_load_n(word,__ATOMIC_ACQUIRE);}
 static void lose(void){if(journal)__atomic_fetch_add(journal+10,1,__ATOMIC_RELAXED);}
 static int same_endpoint(const struct stat *identity){
@@ -41,6 +45,12 @@ static int output_channel(int fd){
  if(fstat(fd,&identity)){return (fd==1||fd==2)?(int)endpoint_identity[4]:0;}
  if(same_endpoint(&identity))mask=(int)endpoint_identity[4];
  return mask;
+}
+static int input_channel(int fd){
+ if(!journal || inside_read || fd==journal_fd)return 0;
+ struct stat identity;
+ if(fstat(fd,&identity))return fd==0?4:0;
+ return same_endpoint(&identity)?4:0;
 }
 static uint64_t *reserve(uint64_t kind,uint64_t span){
  if(!journal)return NULL;
@@ -220,6 +230,61 @@ static ssize_t observed_write(int fd,const void *bytes,size_t length){return rec
 static ssize_t observed_writev(int fd,const struct iovec *iov,int count){return record_writev(fd,iov,count,writev,2);}
 static ssize_t observed_write_nocancel(int fd,const void *bytes,size_t length){return record_write(fd,bytes,length,write_nocancel,3);}
 static ssize_t observed_writev_nocancel(int fd,const struct iovec *iov,int count){return record_writev(fd,iov,count,writev_nocancel,4);}
+// Reserve after the original read returns: a blocked read must not leave a
+// sequence hole that prevents the collector from acquiring concurrent writes.
+static ssize_t record_read(int fd,void *bytes,size_t count,ssize_t(*original)(int,void*,size_t),uint64_t operation){
+ int incoming=errno,channel=input_channel(fd);errno=incoming;
+ if(!channel)return original(fd,bytes,count);
+ inside_read++;uint64_t entry=mach_absolute_time();
+ ssize_t returned=original(fd,bytes,count);int outcome=errno;
+ uint64_t returned_at=mach_absolute_time(),*slot=reserve(3,0);
+ if(slot){
+  slot[5]=entry;slot[6]=returned_at;slot[7]=(uint64_t)fd;slot[8]=(uint64_t)channel;
+  slot[9]=operation;slot[10]=count;slot[11]=(uint64_t)returned;slot[12]=(uint64_t)outcome;
+  if(returned>0){
+   if((uint64_t)returned>count || (uint64_t)returned>payload_capacity)slot[13]=1;
+   else{
+    slot[14]=copy_memory(bytes,(size_t)returned,slot+RECORD_WORDS);
+    if(slot[14]!=(uint64_t)returned)slot[13]=1;
+   }
+  }
+  publish(slot);
+ }
+ inside_read--;errno=outcome;return returned;
+}
+static ssize_t record_readv(int fd,const struct iovec *iov,int count,ssize_t(*original)(int,const struct iovec*,int),uint64_t operation){
+ int incoming=errno,channel=input_channel(fd);errno=incoming;
+ if(!channel)return original(fd,iov,count);
+ size_t requested=0;int invalid=0;
+ if(count<0 || count>MAX_IOVECS || copy_memory(iov,(size_t)count*sizeof(struct iovec),input_vectors)!=(size_t)count*sizeof(struct iovec))invalid=1;
+ else for(int i=0;i<count;i++){
+  if(input_vectors[i].iov_len>SIZE_MAX-requested){invalid=1;break;}
+  requested+=input_vectors[i].iov_len;
+ }
+ errno=incoming;inside_read++;uint64_t entry=mach_absolute_time();
+ ssize_t returned=original(fd,iov,count);int outcome=errno;
+ uint64_t returned_at=mach_absolute_time(),*slot=reserve(3,0);
+ if(slot){
+  slot[5]=entry;slot[6]=returned_at;slot[7]=(uint64_t)fd;slot[8]=(uint64_t)channel;
+  slot[9]=operation;slot[10]=requested;slot[11]=(uint64_t)returned;slot[12]=(uint64_t)outcome;
+  if(invalid || (returned>0 && ((uint64_t)returned>requested || (uint64_t)returned>payload_capacity)))slot[13]=1;
+  else if(returned>0){
+   size_t remaining=(size_t)returned,copied=0;
+   for(int i=0;i<count && remaining;i++){
+    size_t length=input_vectors[i].iov_len<remaining?input_vectors[i].iov_len:remaining;
+    size_t n=copy_memory(input_vectors[i].iov_base,length,(unsigned char*)(slot+RECORD_WORDS)+copied);
+    copied+=n;if(n!=length){slot[13]=1;break;}remaining-=length;
+   }
+   slot[14]=copied;if(remaining)slot[13]=1;
+  }
+  publish(slot);
+ }
+ inside_read--;errno=outcome;return returned;
+}
+static ssize_t observed_read(int fd,void *bytes,size_t length){return record_read(fd,bytes,length,read,1);}
+static ssize_t observed_readv(int fd,const struct iovec *iov,int count){return record_readv(fd,iov,count,readv,2);}
+static ssize_t observed_read_nocancel(int fd,void *bytes,size_t length){return record_read(fd,bytes,length,read_nocancel,3);}
+static ssize_t observed_readv_nocancel(int fd,const struct iovec *iov,int count){return record_readv(fd,iov,count,readv_nocancel,4);}
 // Canonical fields omit struct padding and retain Darwin's full 64-bit flags.
 static void pack_termios(unsigned char *target,const struct termios *value){
  uint64_t flags[6]={value->c_iflag,value->c_oflag,value->c_cflag,value->c_lflag,value->c_ispeed,value->c_ospeed};
@@ -264,3 +329,7 @@ INTERPOSE(observed_writev,writev);
 INTERPOSE(observed_write_nocancel,write_nocancel);
 INTERPOSE(observed_writev_nocancel,writev_nocancel);
 INTERPOSE(observed_tcsetattr,tcsetattr);
+INTERPOSE(observed_read,read);
+INTERPOSE(observed_readv,readv);
+INTERPOSE(observed_read_nocancel,read_nocancel);
+INTERPOSE(observed_readv_nocancel,readv_nocancel);
