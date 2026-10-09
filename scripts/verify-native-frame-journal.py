@@ -9,6 +9,7 @@ from pathlib import Path
 import stat
 import struct
 import sys
+import re
 
 sys.dont_write_bytecode = True
 
@@ -191,7 +192,40 @@ def native_resize_events(io, header, registration, records, initial):
     return events
 
 
-def derive_frames(run, expected):
+def archived_binary(run, launch, archive_receipt):
+    if archive_receipt is None:
+        return Path(launch['command'][0])
+    receipt_path = Path(archive_receipt).resolve(strict=True)
+    receipt = json.loads(read_native_regular(receipt_path))
+    capture_bytes = read_native_regular(run / 'capture-launch.json')
+    capture = json.loads(capture_bytes)
+    source, archive, original = [Path(value) for value in
+        (receipt['source'], receipt['archive'], capture['run'])]
+    journal.require(all(path.is_absolute() and str(path) == os.path.normpath(str(path))
+                        for path in (source, archive, original)), 'Native archive paths are not canonical')
+    try:
+        relative = original.relative_to(source)
+    except ValueError:
+        raise journal.JournalError('Native archive original run is outside its source')
+    journal.require(re.fullmatch(r'runs/r-[0-9a-f]{12}', str(relative)) is not None
+                    and receipt_path == archive.parent / 'builtin-cache-archive.json'
+                    and archive == (receipt_path.parent / 'acceptance-cache').resolve(strict=True)
+                    and run == archive / relative
+                    and all(receipt.get(key) is True for key in
+                        ('archiveComplete', 'sourceFilesStable', 'archiveFilesMatch'))
+                    and launch['command'][0] == str(original / 'bin/claude'),
+                    'Native archive is not bound to the original launch')
+    for name, data in [('capture-launch.json', capture_bytes),
+                       ('launch.json', read_native_regular(run / 'launch.json')),
+                       ('bin/claude', read_native_regular(run / 'bin/claude'))]:
+        held = receipt['sourceManifest'].get(str(relative / name), {})
+        journal.require(held.get('type') == 'file' and
+                        held.get('sha256') == hashlib.sha256(data).hexdigest(),
+                        'Native archived original differs from held source digest (' + name + ')')
+    return run / 'bin/claude'
+
+
+def derive_frames(run, expected, archive_receipt=None):
     run = Path(run).resolve(strict=True)
     launch = json.loads(read_native_regular(run / 'launch.json'))
     start = json.loads(read_native_regular(run / 'start.json'))
@@ -201,7 +235,7 @@ def derive_frames(run, expected):
                     type(start['childPid']) is type(start['childPgid']) is type(expected['childPid']) is int and
                     start['childPid'] > 0 and start['childPid'] == start['childPgid'] == expected['childPid'],
                     'Native capture does not match independent launch identity')
-    binary = Path(launch['command'][0])
+    binary = archived_binary(run, launch, archive_receipt)
     journal.require(hashlib.sha256(read_native_regular(binary)).hexdigest() == expected['binarySha256'],
                     'Actual native binary changed')
     journal.require(type(cleanup['childPid']) is int and cleanup['childPid'] == expected['childPid'] and cleanup['normalCompletion'] is True and
@@ -265,9 +299,10 @@ def derive_frames(run, expected):
 
 if __name__ == '__main__':
     try:
-        if len(sys.argv) != 3:
-            raise journal.JournalError('Usage: verify-native-frame-journal.py RUN EXPECTED.json')
-        result = derive_frames(sys.argv[1], json.loads(read_native_regular(Path(sys.argv[2]))))
+        if len(sys.argv) not in (3, 4):
+            raise journal.JournalError('Usage: verify-native-frame-journal.py RUN EXPECTED.json [ARCHIVE_RECEIPT.json]')
+        result = derive_frames(sys.argv[1], json.loads(read_native_regular(Path(sys.argv[2]))),
+                               sys.argv[3] if len(sys.argv) == 4 else None)
         print(json.dumps(result))
     except Exception as error:
         print(json.dumps({'verdict': 'failed', 'error': str(error)}))

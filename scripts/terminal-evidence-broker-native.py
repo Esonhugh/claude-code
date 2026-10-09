@@ -79,6 +79,17 @@ def capture_native(run, argv):
     launch = json.loads((run / 'launch.json').read_text())
     if launch['command'] != argv or launch['captureId'] != capture_id or launch['binarySha256'] != digest:
         raise ValueError('Native broker launch receipt changed')
+    normal_origin = None
+    origin_path = run / 'native-normal-origin.json'
+    if os.path.lexists(origin_path):
+        origin_bytes = original_files.read_native_regular(origin_path, 0o600)
+        origin = json.loads(origin_bytes)
+        if (origin.get('method') != 'builtin-fresh-tmux-normal-origin-v1'
+                or origin.get('captureId') != capture_id or origin.get('binarySha256') != digest
+                or origin.get('rawOffset') != 0):
+            raise ValueError('Native normal origin enrollment differs from the prepared launch')
+        # Hold this pre-Popen identity. Closing never regenerates an origin from frames.
+        normal_origin = {'path': str(origin_path), 'sha256': hashlib.sha256(origin_bytes).hexdigest()}
     child = master = slave = consumer = selector = publisher = None
     outer_attrs = native_attrs = None
     initial = registration = header = None
@@ -337,6 +348,7 @@ def capture_native(run, argv):
                 'binarySha256': digest, 'captureId': capture_id, 'backend': 'native-shared-slot-v1',
                 'childPid': child.pid, 'columns': columns, 'rows': rows, 'ioClose': result['ioClose'],
                 'nativeClose': native_close,
+                **({'normalRootOrigin': normal_origin} if normal_origin is not None else {}),
             }))
             if cleanup_errors:
                 result['normalCompletion'] = False

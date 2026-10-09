@@ -1,4 +1,4 @@
-import {createBuiltinCapture,installBuiltinCapture,recordedBuiltinTmux,sealBuiltinCapture,validateBuiltinTerminalEvidence} from './builtin-terminal-evidence.mjs'
+import {createBuiltinNativeLauncher,createBuiltinCapture,installBuiltinCapture,recordedBuiltinTmux,sealBuiltinCapture,validateBuiltinTerminalEvidence} from './builtin-terminal-evidence.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -289,17 +289,19 @@ export function startBuiltinRun(options, execute = execFileSync, findTmux = () =
   const debug = join(run, 'debug.log')
   const copiedPlugin = inlinePlugin === undefined ? undefined : join(run, 'plugin')
   const pluginArgs = copiedPlugin === undefined ? [] : ['--plugin-dir', copiedPlugin]
-  const argv = sandboxCommand(run, [binary, '--dangerously-skip-permissions', ...pluginArgs, '--setting-sources', 'user,project,local', '--debug-file', debug])
+  const nativeLauncher = createBuiltinNativeLauncher(run)
+  const argv = sandboxCommand(run, [nativeLauncher.path, binary, '--dangerously-skip-permissions', ...pluginArgs, '--setting-sources', 'user,project,local', '--debug-file', debug])
   const metadata = { run, socket, session: 'mods', mode: inlinePlugin === undefined ? 'builtin-only' : 'builtin-with-inline-acceptance-fixture', binary: options.binary, binarySha256: sha256(readFileSync(binary)), ...(copiedPlugin === undefined ? {} : { plugin: inventory(copiedPlugin) }), debug, env, argv, uiOnly: options.apiUrl === 'http://127.0.0.1:1', activation: 'not-verified', trigger: 'not-run' }
   const tmuxConfig = join(run, 'tmux.conf')
   writeFileSync(tmuxConfig, 'set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n', { flag: 'wx', mode: 0o600 })
-  const capture = createBuiltinCapture(run, argv, env, {binarySha256:metadata.binarySha256})
+  const capture = createBuiltinCapture(run, argv, env, {binarySha256:metadata.binarySha256,
+    nativeJournal:true, brokerPlacement:'launcher-final-native-exec', nativeLauncher})
   metadata.capture = capture
   metadata.launchArgv = [capture.wrapper]
   writeJSON(join(run, 'command.json'), metadata)
   const child = execute(tmux, ['-S', socket, '-f', tmuxConfig, 'new-session', '-d', '-s', 'mods', '-x', '160', '-y', '50', '-c', join(run, 'project'), '-P', '-F', '#{session_name}:#{window_index}.#{pane_index} #{pane_id} #{pid}', capture.wrapper], { env, encoding: 'utf8', timeout: 10000 }).trim()
   const [target, pane, serverPid] = child.split(/\s+/)
-  installBuiltinCapture({run, socket, target, tmux, env}, capture, execute)
+  installBuiltinCapture({run, socket, target, pane, serverPid:Number(serverPid), freshPane:true, tmux, env}, capture, execute)
   const tmuxArgs = [tmux, '-S', socket]
   const note = inlinePlugin === undefined
     ? 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'

@@ -7,9 +7,10 @@ import { verifyPtyTerminalEvidence } from './verify-pty-terminal-evidence.mjs'
 import { replayNativeFrameJournal } from './native-frame-journal-replay.mjs'
 import { join, dirname, relative, resolve, isAbsolute } from 'node:path'
 import { readOwnedNativeFile } from './native-evidence-files.mjs'
+import { nativeEvidenceLocation } from './native-evidence-location.mjs'
 
 export async function recheckBuiltinSide(side, binarySha256, archiveReceiptPath) {
-  let launch
+  let launch, evidenceLocation
   try {
     const launchBytes = readOwnedNativeFile(join(side.run, 'capture-launch.json'))
     launch = JSON.parse(launchBytes)
@@ -35,18 +36,19 @@ export async function recheckBuiltinSide(side, binarySha256, archiveReceiptPath)
           ? side.cleanup?.terminalCapture?.backend !== 'native-shared-slot-v1'
           : side.cleanup?.terminalCapture?.backend !== undefined))
       throw Error('Prepared capture protocol or identity differs from terminal report')
+    evidenceLocation = nativeEvidenceLocation(side.run, launch.run !== realpathSync(side.run) ? archiveReceiptPath : undefined)
   } catch (error) {
     return { verdict: 'failed', reason: error.message,
       productTimingEquivalent: false, fullNativeGatePassed: false }
   }
   if (launch.capture.nativeJournal) {
     const diagnostics = {}
-    if (side.binarySha256 !== binarySha256 || !validateNativeTerminalEvidence(side, diagnostics))
+    if (side.binarySha256 !== binarySha256 || !validateNativeTerminalEvidence(side, diagnostics, evidenceLocation))
       return { verdict: 'failed', reason: 'closed native identity or original content is invalid', nativeValidation: diagnostics,
         productTimingEquivalent: false, fullNativeGatePassed: false }
     try {
-      const run = realpathSync(side.run), replay = await replayNativeFrameJournal(run, join(run, 'expected-native.json'))
-      if (!validateNativeTerminalEvidence(side, diagnostics))
+      const run = realpathSync(side.run), replay = await replayNativeFrameJournal(run, join(run, 'expected-native.json'), join(run, 'frames.jsonl'), evidenceLocation)
+      if (!validateNativeTerminalEvidence(side, diagnostics, evidenceLocation))
         return { verdict: 'failed', reason: 'closed native originals changed during independent replay',
           nativeValidation: diagnostics, productTimingEquivalent: false, fullNativeGatePassed: false }
       return { verdict: replay.verdict, replay, captureId: side.captureId, run,

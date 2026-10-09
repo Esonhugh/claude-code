@@ -4,7 +4,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { createServer } from 'node:net'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { zipSync } from 'fflate'
 import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
 import {createBuiltinCapture} from './builtin-terminal-evidence.mjs'
@@ -204,6 +204,16 @@ describe('private fixtures without a compiled TTY', () => {
   })
 })
 
+function builtinTmuxFixture(args, env) {
+  if (args.includes('display-message')) {
+    if (args.at(-1) === '#{pane_pipe}') return '1\n'
+    return ['%1', '23456', '12345', '0', '0', '160', '50', '0', '0', '0',
+      '0', '1', '0', '1', '0', '49', '3.6b', join(dirname(env.CLAUDE_CONFIG_DIR), 'launch-captured.sh')].join('\t') + '\n'
+  }
+  if (args.includes('capture-pane')) return args.includes('-P') ? '\n' : '\n'.repeat(50)
+  return 'mods:0.0 %1 12345\n'
+}
+
 describe('builtin-only compiled launcher', () => {
   test('builds a private sandboxed tmux launch without inline plugin or archive override', () => {
     const cache = shortTemp()
@@ -216,14 +226,14 @@ describe('builtin-only compiled launcher', () => {
     try {
       report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]), (file, args, options) => {
         calls.push({ file, args, options })
-        return args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n'
+        return builtinTmuxFixture(args, options.env)
       }, () => '/usr/local/bin/tmux')
     } finally {
       if (before === undefined) delete process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE
       else process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = before
     }
 
-    expect(calls).toHaveLength(3)
+    expect(calls).toHaveLength(6)
     expect(report.capture.initialSize).toEqual({columns:160,rows:50})
     expect(typeof report.captureCommand).toBe('string')
     const capturedCommand=JSON.parse(readFileSync(join(report.run,'command.json'),'utf8'))
@@ -256,7 +266,7 @@ describe('builtin-only compiled launcher', () => {
       expect(settings.pluginConfigs['agents-md@builtin'].options.instructionFiles).toBe('managed-only')
       expect(settings.enabledPlugins['diff@builtin']).toBe(false)
       expect(env.ANTHROPIC_MODEL).toBe('claude-sonnet-4-5-20250929')
-      return _args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n'
+      return builtinTmuxFixture(_args, env)
     }, () => '/usr/local/bin/tmux', (run, env) => {
       configured = run
       env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
@@ -274,7 +284,7 @@ describe('builtin-only compiled launcher', () => {
     const fixture = plugin(shortTemp())
     const report = startBuiltinRun(
       parseArgs(['run-builtin', '--binary', binary, '--cache', cache]),
-      (_file,args) => args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n',
+      (_file,args,{env}) => builtinTmuxFixture(args, env),
       () => '/usr/local/bin/tmux',
       undefined,
       fixture,
@@ -521,7 +531,7 @@ exit 1
     const binary = join(shortTemp(), 'built-claude')
     writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o700 })
     const report = startBuiltinRun(parseArgs(['run-builtin', '--binary', binary, '--cache', cache]),
-      (_file,args) => args.includes('display-message')?'1\n':'mods:0.0 %1 12345\n', () => '/usr/local/bin/tmux', (run, env) => {
+      (_file,args,{env}) => builtinTmuxFixture(args, env), () => '/usr/local/bin/tmux', (run, env) => {
         const ledger = join(run, 'host.jsonl')
         writeFileSync(ledger, '', { mode: 0o600 })
         env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledger

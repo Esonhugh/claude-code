@@ -8,6 +8,8 @@ import * as xterm from '@xterm/headless'
 import { readOwnedNativeFile } from './native-evidence-files.mjs'
 import { frameDifference } from './verify-terminal-frame-evidence.mjs'
 import { semanticEvidence } from './terminal-frame-semantics.mjs'
+import { verifyNativeNormalOrigin, createNativeNormalRoots } from './native-normal-root.mjs'
+import { nativeEvidenceLocation, checkNativeEvidenceLocation } from './native-evidence-location.mjs'
 
 const Terminal = xterm.Terminal ?? xterm.default?.Terminal ?? xterm['module.exports']?.Terminal
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
@@ -105,16 +107,21 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
 }
 
 /** Native write/resize brackets; unknown roots and input ownership remain uncovered. */
-export async function replayNativeFrameJournal(run, expectedPath, path = join(run, 'frames.jsonl')) {
+export async function replayNativeFrameJournal(run, expectedPath, path = join(run, 'frames.jsonl'), evidenceLocation) {
   const parserSHA256 = hash(readOwnedNativeFile(new URL(import.meta.resolve('@xterm/headless'))))
   if (parserSHA256 !== parserDigest) throw Error('Independent native parser does not match the pinned oracle')
-  const expected = JSON.parse(readOwnedNativeFile(expectedPath))
+  const location = evidenceLocation ? checkNativeEvidenceLocation(evidenceLocation, run) : nativeEvidenceLocation(run)
+  if (location.receiptPath && !expectedPath.startsWith(run + '/'))
+    throw Error('Archived native expectation must be inside its verified run')
+  const expected = JSON.parse(location.receiptPath
+    ? location.read(expectedPath.slice(run.length + 1)) : readOwnedNativeFile(expectedPath))
   const { columns, rows } = expected
   if (!Number.isSafeInteger(columns) || !Number.isSafeInteger(rows) || columns <= 0 || rows <= 0)
     throw Error('Independent native geometry is required')
   const entries = readOwnedNativeFile(path).toString('utf8').split('\n').filter(Boolean).map(JSON.parse)
   if (!entries.length) throw Error('No native Ink frames')
-  const checked = spawnSync('python3', [join(import.meta.dir, 'verify-native-frame-journal.py'), run, expectedPath],
+  const checked = spawnSync('python3', [join(import.meta.dir, 'verify-native-frame-journal.py'), run, expectedPath,
+    ...(location.receiptPath ? [location.receiptPath] : [])],
                             { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60000 })
   if (checked.status !== 0 || checked.error)
     throw Error(`Original native evidence failed: ${checked.error?.message ?? checked.stdout.trim()}`)
@@ -122,13 +129,17 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
   if (!isDeepStrictEqual(entries, native.entries))
     throw Error('Derived frame/output does not match original native ledger')
   const terminal = new Terminal({ allowProposedApi: true, cols: columns, rows, logLevel: 'off' })
+  const normalOrigin = verifyNativeNormalOrigin(run, expected, location)
+  const normalRoots = createNativeNormalRoots(terminal, Terminal, normalOrigin)
   const frames = [], geometry = native.geometryEvents
   let geometryIndex = 0, rawOffset = 0
   const write = bytes => new Promise(resolve => terminal.write(bytes, resolve))
   async function writeThrough(bytes, frameId) {
     let consumed = 0
     while (geometryIndex < geometry.length && geometry[geometryIndex].beforeFrameId <= frameId) {
-      const event = geometry[geometryIndex++]
+      const event = geometry[geometryIndex]
+      if (event.rawOffset > rawOffset + bytes.length) break
+      geometryIndex++
       const cut = event.rawOffset - rawOffset
       if (!Number.isSafeInteger(cut) || cut < consumed || cut > bytes.length)
         throw Error('Native resize has no ordered physical output prefix')
@@ -144,16 +155,21 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
     for (const entry of entries) {
       const frame = JSON.parse(Buffer.from(entry.frameBase64, 'base64').toString('utf8'))
       const output = Buffer.from(entry.outputBase64, 'base64')
-      await writeThrough(output, entry.frameId)
+      const prefixBytes = entry.rawStart - rawOffset
+      if (!Number.isSafeInteger(prefixBytes) || prefixBytes < 0 || prefixBytes > output.length)
+        throw Error('Native frame start has no exact preceding raw prefix')
+      await writeThrough(output.subarray(0, prefixBytes), entry.frameId)
+      normalRoots.before(entry, frame)
+      await writeThrough(output.subarray(prefixBytes), entry.frameId)
       let difference
       if (entry.native?.profile !== 'ink-post-write-v1') difference = 'Unsupported native frame profile'
-      else if (frame.buffer !== 'alternate') difference = 'Normal root anchor is not covered by native geometry replay'
       else if (frame.viewport?.width !== terminal.cols || frame.viewport?.height !== terminal.rows)
         difference = 'Logical viewport differs from independent native geometry'
       else if (typeof terminal._core?.coreService?.isCursorHidden !== 'boolean')
         difference = 'Independent cursor visibility API unavailable'
       else if (!terminal._core.coreService.isCursorHidden !== frame.cursor?.visible)
         difference = 'Native cursor visibility differs from immutable snapshot'
+      else if (frame.buffer === 'normal') difference = await normalRoots.difference(frame)
       else difference = frameDifference(frame, terminal, Terminal)
       const text = Array.from({ length: terminal.rows }, (_, y) =>
         terminal.buffer.active.getLine(terminal.buffer.active.viewportY + y)?.translateToString(true) ?? '')
@@ -172,15 +188,16 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
                 baseY: terminal.buffer.active.baseY, viewportY: terminal.buffer.active.viewportY }
     closure.verdict = closure.buffer === 'normal' && closure.cursorVisible === true ? 'passed' : 'failed'
   } finally {
+    normalRoots.dispose()
     terminal.dispose()
   }
   let requestGeometry = null, target, driverPid
   try {
-    const bytes = readOwnedNativeFile(join(run, 'geometry.jsonl'))
+    const bytes = location.read('geometry.jsonl')
     if (!bytes.toString('utf8').endsWith('\n')) throw Error('Native request geometry is unsealed')
     requestGeometry = bytes.toString('utf8').split('\n').filter(Boolean).map(JSON.parse)
-    const launch = JSON.parse(readOwnedNativeFile(join(run, 'capture-launch.json')))
-    if (launch.run !== run || launch.binarySha256 !== expected.binarySha256 ||
+    const launch = JSON.parse(location.read('capture-launch.json'))
+    if (launch.run !== location.originalRun || launch.binarySha256 !== expected.binarySha256 ||
         launch.capture?.captureId !== expected.captureId || launch.capture?.nativeJournal !== true)
       throw Error('Native resize request capture identity differs from original launch')
     target = launch.target
@@ -193,6 +210,8 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
            framePhysicalBoundary: 'native-frame-end-v1',
            parserSHA256, semanticSource: 'independent-xterm-native-frame-end-v1',
            nativeGeometryProof,
+           normalRootOrigin: normalOrigin ? { method: normalOrigin.method,
+             verdict: 'passed', actualInputOwnerCovered: false, productTimingEquivalent: false } : { verdict: 'not covered' },
            sizeSequence: frames.filter((frame, index) => !index || frame.columns !== frames[index - 1].columns ||
              frame.rows !== frames[index - 1].rows).map(({ columns, rows, frameId }) => ({ columns, rows, frameId })),
            geometryEvents: geometry, nativeResizeBracketsCovered: geometry.length > 0,

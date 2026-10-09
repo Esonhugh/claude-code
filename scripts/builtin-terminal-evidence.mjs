@@ -7,6 +7,7 @@ import {
   lstatSync,
   writeFileSync,
   mkdtempSync,
+  mkdirSync,
   linkSync,
   rmSync,
 } from 'node:fs'
@@ -18,6 +19,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { fileURLToPath, URL } from 'node:url'
 import { readOwnedNativeFile } from './native-evidence-files.mjs'
 import { readNativeDriverClock } from './native-driver-clock.mjs'
+import { nativeEvidenceLocation, checkNativeEvidenceLocation } from './native-evidence-location.mjs'
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
 const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`
 const append = (path, value) =>
@@ -42,6 +44,37 @@ const boundary = (launch) => ({
     ? statSync(join(launch.run, 'pty.raw')).size
     : 0,
 })
+// Protected sandbox-exec strips DYLD settings. Start the broker after entering
+// that sandbox and keep its exact helper bytes within the owned readable run.
+export function createBuiltinNativeLauncher(run) {
+  const directory = join(run, 'native-broker')
+  mkdirSync(directory, { mode: 0o700 })
+  const names = [
+    'terminal-evidence-broker.py', 'terminal-evidence-broker-native.py',
+    'native-terminal-journal.py', 'native-live-publisher.py', 'verify-native-frame-journal.py',
+  ]
+  const files = [], pinnedFiles = []
+  for (const name of names) {
+    const source = fileURLToPath(new URL('./' + name, import.meta.url))
+    const bytes = readOwnedNativeFile(source), path = join(directory, name)
+    writeFileSync(path, bytes, { flag: 'wx', mode: 0o600 })
+    const sha256 = hash(bytes)
+    if (hash(readOwnedNativeFile(path, 0o600)) !== sha256)
+      throw Error('Copied native broker helper differs from source')
+    files.push({ name, sha256 })
+    pinnedFiles.push({ path, sha256, mode: 0o600 })
+  }
+  const manifest = join(directory, 'helpers.json')
+  writeFileSync(manifest, JSON.stringify({ method: 'builtin-native-broker-helpers-v1', files }) + '\n',
+    { flag: 'wx', mode: 0o600 })
+  pinnedFiles.push({ path: manifest, sha256: hash(readOwnedNativeFile(manifest, 0o600)), mode: 0o600 })
+  const path = join(run, 'launch-native.sh'), broker = join(directory, names[0])
+  writeFileSync(path, `#!/bin/sh\numask 077\nexec /usr/bin/python3 ${quote(broker)} --run ${quote(run)} -- "$@"\n`,
+    { flag: 'wx', mode: 0o700 })
+  pinnedFiles.push({ path, sha256: hash(readOwnedNativeFile(path, 0o700)), mode: 0o700 })
+  return { path, broker, pinnedFiles }
+}
+
 export function createBuiltinCapture(run, argv, env, identity = {}) {
   const nativeJournal = identity.nativeJournal === true
   if (nativeJournal && process.platform !== 'darwin')
@@ -120,7 +153,7 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     rawOffset: 0,
     lastObservedFrameId: null,
   })
-  const broker = fileURLToPath(
+  const broker = identity.nativeLauncher?.broker ?? fileURLToPath(
     new URL('./terminal-evidence-broker.py', import.meta.url),
   )
   writeFileSync(
@@ -146,6 +179,7 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     brokerPlacement: placement,
     nativeTerminalFlagsChanged: false,
     nativeJournal,
+    ...(identity.nativeLauncher ? { nativeLauncher: identity.nativeLauncher } : {}),
     transport:
       'owned PTY broker; outer transport raw mode, native initial flags preserved',
   }
@@ -165,6 +199,61 @@ export function installBuiltinCapture(launch, capture, execute = execFileSync) {
     ).trim()
     if (active !== '1')
       throw Error('PTY recorder was not installed before native startup')
+    if (capture.nativeLauncher) {
+      for (const file of capture.nativeLauncher.pinnedFiles) {
+        if (hash(readOwnedNativeFile(file.path, file.mode)) !== file.sha256)
+          throw Error('Prepared native launcher changed before startup')
+      }
+    }
+    if (capture.nativeLauncher) {
+      if (launch.freshPane !== true || !/^%[0-9]+$/.test(launch.pane ?? '') ||
+          !Number.isSafeInteger(launch.serverPid) || launch.serverPid <= 0 ||
+          readOwnedNativeFile(capture.raw, 0o600).length !== 0)
+        throw Error('Native normal origin requires a fresh waiting pane with no prior output')
+      const names = ['pane_id', 'pane_pid', 'pid', 'cursor_x', 'cursor_y',
+        'pane_width', 'pane_height', 'alternate_on', 'pane_in_mode', 'history_size',
+        'origin_flag', 'wrap_flag', 'insert_flag', 'cursor_flag',
+        'scroll_region_upper', 'scroll_region_lower', 'version', 'pane_start_command']
+      const args = [...base, 'display-message', '-p', '-t', launch.target,
+        names.map(name => '#{' + name + '}').join('\t')]
+      const measured = execute(launch.tmux, args,
+        { env: launch.env, encoding: 'utf8', timeout: 10000 }).trimEnd().split('\t')
+      const wanted = [launch.pane, null, String(launch.serverPid), '0', '0',
+        String(capture.initialSize.columns), String(capture.initialSize.rows),
+        '0', '0', '0', '0', '1', '0', '1', '0', String(capture.initialSize.rows - 1),
+        '3.6b', capture.wrapper]
+      if (measured.length !== wanted.length || !/^[1-9][0-9]*$/.test(measured[1]) ||
+          wanted.some((value, index) => value !== null && measured[index] !== value))
+        throw Error('Native normal origin has unknown or noninitial tmux state')
+      const screenArgs = [...base, 'capture-pane', '-p', '-e', '-t', launch.target]
+      const pendingArgs = [...base, 'capture-pane', '-p', '-P', '-C', '-t', launch.target]
+      const screen = execute(launch.tmux, screenArgs,
+        { env: launch.env, encoding: 'utf8', timeout: 10000 })
+      const pending = execute(launch.tmux, pendingArgs,
+        { env: launch.env, encoding: 'utf8', timeout: 10000 })
+      const screenPath = join(launch.run, 'native-origin-screen.txt'),
+        pendingPath = join(launch.run, 'native-origin-pending.bin')
+      writeFileSync(screenPath, screen, { flag: 'wx', mode: 0o600 })
+      writeFileSync(pendingPath, pending, { flag: 'wx', mode: 0o600 })
+      if (!/^[ \r\n]*$/.test(screen) || pending !== '\n' ||
+          readOwnedNativeFile(capture.raw, 0o600).length !== 0)
+        throw Error('Native normal origin has painted cells or unfinished parser input')
+
+      const origin = { method: 'builtin-fresh-tmux-normal-origin-v1',
+        captureId: capture.captureId, binarySha256: launch.env.CLAUDE_CODE_FRAME_BINARY_SHA256,
+        driverPid: process.pid, socket: launch.socket, target: launch.target,
+        pane: launch.pane, serverPid: launch.serverPid, panePid: Number(measured[1]),
+        rawOffset: 0, columns: capture.initialSize.columns, rows: capture.initialSize.rows,
+        measurements: Object.fromEntries(names.map((name, index) => [name, measured[index]])),
+        commands: [args, screenArgs, pendingArgs],
+        pendingEncoding: 'tmux-capture-p-P-C-v1',
+        files: [screenPath, pendingPath, capture.wrapper].map(path =>
+          ({ path, sha256: hash(readOwnedNativeFile(path)) })),
+        initialStateBasis: 'owned new-session; waiting no-output wrapper; tmux 3.6b screen_init/input_init',
+        productTimingEquivalent: false, fullNativeGatePassed: false }
+      writeFileSync(join(launch.run, 'native-normal-origin.json'), JSON.stringify(origin) + '\n',
+        { flag: 'wx', mode: 0o600 })
+    }
     writeFileSync(capture.ready, 'installed\n', { flag: 'wx', mode: 0o600 })
   } catch (error) {
     try {
@@ -565,7 +654,7 @@ function sealNativeBuiltinCapture(launch) {
 }
 
 /** Closed native identity/content only; OS input ownership and timing are separate. */
-export function validateNativeTerminalEvidence(side, diagnostics) {
+export function validateNativeTerminalEvidence(side, diagnostics, evidenceLocation) {
   let phase = 'capture', error
   try {
     const capture = side?.cleanup?.terminalCapture
@@ -578,7 +667,8 @@ export function validateNativeTerminalEvidence(side, diagnostics) {
         !/^[a-f0-9]{64}$/.test(side.binarySha256) || !isAbsolute(side.run) ||
         !Number.isSafeInteger(capture.frameCount) || capture.frameCount <= 0)
       return false
-    const root = realpathSync(side.run), data = new Map()
+    const root = realpathSync(side.run), data = new Map(),
+      location = evidenceLocation ? checkNativeEvidenceLocation(evidenceLocation, root) : nativeEvidenceLocation(root)
     const names = ['pty.raw', 'raw.bin', 'native-pty.raw', 'records.bin', 'registration.json',
       'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
       'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
@@ -589,7 +679,7 @@ export function validateNativeTerminalEvidence(side, diagnostics) {
       const path = join(root, name), info = capture.files?.[name]
       if (info?.path !== path || !Number.isSafeInteger(info.bytes) || info.bytes < 0 ||
           !/^[a-f0-9]{64}$/.test(info.sha256)) return false
-      const bytes = readOwnedNativeFile(path, 0o600)
+      const bytes = location.read(name, 0o600)
       if (bytes.length !== info.bytes || hash(bytes) !== info.sha256) return false
       data.set(name, bytes)
     }
@@ -601,7 +691,7 @@ export function validateNativeTerminalEvidence(side, diagnostics) {
       physical = json('frame-physical-report.json'), header = json('header.json')
     if (!Number.isSafeInteger(start.childPid) || start.childPid <= 0 || start.childPgid !== start.childPid ||
         start.binarySha256 !== side.binarySha256 || launch.binarySha256 !== side.binarySha256 ||
-        launch.captureId !== side.captureId || launch.command?.[0] !== join(root, 'bin/claude') ||
+        launch.captureId !== side.captureId || launch.command?.[0] !== join(location.originalRun, 'bin/claude') ||
         cleanup.backend !== 'native-shared-slot-v1' || cleanup.captureId !== side.captureId ||
         cleanup.childPid !== start.childPid || cleanup.childExitCode !== 0 ||
         cleanup.childReaped !== true || cleanup.physicalEof !== true || cleanup.normalCompletion !== true ||
