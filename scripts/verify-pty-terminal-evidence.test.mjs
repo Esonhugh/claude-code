@@ -7,6 +7,7 @@ import {
   readFileSync,
   mkdirSync,
   rmSync,
+  cpSync,
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
 import { tmpdir } from 'node:os'
@@ -495,8 +496,10 @@ test('sealed proof checks actual native files and independent replay defeats sel
     target: 'mods:0.0',
     pane: '%1',
     binarySha256,
-    capture: { captureId, initialSize: { columns: 10, rows: 8 } },
+    capture: { captureId, nativeJournal: false, initialSize: { columns: 10, rows: 8 } },
   }
+  // Synthetic legacy classifier fixture, explicitly enrolled before consumption.
+  writeFileSync(join(run, 'capture-launch.json'), JSON.stringify(launch))
   value.io.splice(-1, 0, {
     kind: 'input', captureId, geometryId: 0,
     rawOffset: value.io.at(-1).rawOffset, hex: '2f65786974',
@@ -519,9 +522,9 @@ test('sealed proof checks actual native files and independent replay defeats sel
       recheck,
     }))
   }
-  const verifyFinal = () => spawnSync(process.execPath, ['--no-env-file',
+  const verifyFinal = (options = ['--bounded']) => spawnSync(process.execPath, ['--no-env-file',
     new URL('./terminal-capture-driver.mjs', import.meta.url).pathname,
-    'verify', join(run, 'capture-launch.json')], {
+    'verify', join(run, 'capture-launch.json'), ...options], {
     env: { PATH: '/opt/homebrew/bin:/usr/bin:/bin', HOME: run, TMPDIR: run },
     encoding: 'utf8', timeout: 5000,
   })
@@ -532,7 +535,52 @@ test('sealed proof checks actual native files and independent replay defeats sel
   const accepted = verifyFinal()
   expect(accepted.status).toBe(0)
   expect(JSON.parse(accepted.stdout).verdict).toBe('passed')
+  const full = verifyFinal([])
+  expect(full.status).toBe(1)
+  expect(JSON.parse(full.stdout).boundedVerdict).toBe('passed')
+  expect(JSON.parse(full.stdout).fullCoverageVerdict).toBe('not covered')
   expect(sealedNames.map(name => readFileSync(join(run, name)).toString('hex'))).toEqual(before)
+  // Synthetic archive classifier, with original launch bytes pinned by the
+  // archive receipt. This does not claim complete terminal timing coverage.
+  const archiveParent = mkdtempSync(join(tmpdir(), 'sealed-archive-'))
+  roots.push(archiveParent)
+  const sourceCache = join(archiveParent, 'source'),
+    sourceRun = join(sourceCache, 'runs/r-000000000001'),
+    archive = join(archiveParent, 'acceptance-cache'),
+    archivedRun = join(archive, 'runs/r-000000000001'),
+    receiptPath = join(archiveParent, 'builtin-cache-archive.json'),
+    remap = (object, source, target) => JSON.parse(JSON.stringify(object).replaceAll(source, target))
+  mkdirSync(sourceRun, { recursive: true })
+  cpSync(run, sourceRun, { recursive: true })
+  const originalLaunch = remap(launch, run, sourceRun)
+  writeFileSync(join(sourceRun, 'capture-launch.json'), JSON.stringify(originalLaunch))
+  const originalLaunchBytes = readFileSync(join(sourceRun, 'capture-launch.json')),
+    receipt = {
+      source: sourceCache, archive, archiveComplete: true, sourceFilesStable: true, archiveFilesMatch: true,
+      sourceManifest: { 'runs/r-000000000001/capture-launch.json': {
+        type: 'file', sha256: createHash('sha256').update(originalLaunchBytes).digest('hex'),
+      } },
+    }
+  cpSync(sourceCache, archive, { recursive: true })
+  writeFileSync(receiptPath, JSON.stringify(receipt))
+  const archivedSide = remap(side, run, archivedRun)
+  expect((await recheckBuiltinSide(archivedSide, binarySha256, receiptPath)).verdict).toBe('passed')
+  expect((await recheckBuiltinSide(archivedSide, binarySha256)).verdict).toBe('failed')
+  for (const mutate of [
+    value => { value.archiveComplete = false },
+    value => { value.sourceFilesStable = false },
+    value => { value.archiveFilesMatch = false },
+    value => { value.source = '/private/tmp/foreign-source' },
+    value => { value.archive = '/private/tmp/foreign-archive' },
+    value => { value.sourceManifest['runs/r-000000000001/capture-launch.json'].sha256 = '0'.repeat(64) },
+  ]) {
+    const changed = JSON.parse(JSON.stringify(receipt))
+    mutate(changed)
+    writeFileSync(receiptPath, JSON.stringify(changed))
+    expect((await recheckBuiltinSide(archivedSide, binarySha256, receiptPath)).verdict).toBe('failed')
+  }
+  expect(readFileSync(join(archivedRun, 'capture-launch.json'))).toEqual(originalLaunchBytes)
+  expect(readFileSync(join(sourceRun, 'capture-launch.json'))).toEqual(originalLaunchBytes)
   const streamVerdict = terminalCapture.stream.verdict
   terminalCapture.stream.verdict = 'failed'
   persistFinal(archivedRecheck)

@@ -970,7 +970,8 @@ def revalidate_builtin_assertion(source_root, acceptance_path, binary_sha256):
     try:
         completed = subprocess.run(
             [shutil.which('bun') or 'bun', '--no-env-file', str(script), '--final',
-             str(acceptance_path), binary_sha256, str(source_root / 'builtin-terminal-recheck.json')],
+             str(acceptance_path), binary_sha256, str(source_root / 'builtin-terminal-recheck.json'),
+             str(source_root / 'builtin-cache-archive.json')],
             cwd=script.parent.parent,
             env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
                  'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
@@ -1157,6 +1158,17 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                         or set(pair) != set(BUILTIN_SIDE_NAMES) or set(assertions) != BUILTIN_ASSERTIONS
                         or not all(value.get('verdict') == 'passed' for value in assertions.values())):
                     return False
+                archive_key = str(source_root / 'builtin-cache-archive.json')
+                if (archive_key not in verified_bytes
+                        or expected_hashes[archive_key] != registered.get('builtin_archive_receipt_sha256')):
+                    return False
+                archive_proof = json.loads(verified_bytes[archive_key])
+                if (archive_proof.get('source') != registered.get('builtin_archive_source')
+                        or archive_proof.get('archive') != registered.get('builtin_archive_root')
+                        or archive_proof.get('archive') != str(source_root / 'acceptance-cache')
+                        or any(archive_proof.get(key) is not True for key in
+                               ('archiveComplete', 'sourceFilesStable', 'archiveFilesMatch'))):
+                    return False
                 registry = registered.get('builtin_capture_registry', {})
                 if set(registry) != set(BUILTIN_SIDE_NAMES):
                     return False
@@ -1166,15 +1178,34 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                     root = Path(side['run'])
                     capture = side['cleanup']['terminalCapture']
                     identity = {key: side.get(key) for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
-                    if (identity != registry[name] or side['binarySha256'] != registered.get('binary_sha256')
+                    if (identity != {key: registry[name].get(key) for key in identity} or side['binarySha256'] != registered.get('binary_sha256')
                             or not root.is_absolute() or root.is_symlink() or root.resolve() != root
                             or not is_relative_to(root, source_root / 'acceptance-cache')
                             or str(root) in owned_runs or side['captureId'] in capture_ids
                             or expected_hashes.get(str(root / 'bin/claude')) != side['binarySha256']):
                         return False
                     owned_runs.add(str(root)); capture_ids.add(side['captureId'])
+                    launch_key = str(root / 'capture-launch.json')
+                    if launch_key not in verified_bytes:
+                        return False
+                    launch = json.loads(verified_bytes[launch_key])
+                    if (any(launch.get(key) != registry[name].get(key)
+                            for key in ('target', 'pane', 'binarySha256', 'driverPid', 'capture'))
+                            or launch.get('run') != registry[name].get('originalRun')
+                            or launch.get('capture', {}).get('captureId') != side['captureId']):
+                        return False
+                    original_relative = str(root.relative_to(source_root / 'acceptance-cache'))
+                    original_launch = archive_proof.get('sourceManifest', {}).get(original_relative + '/capture-launch.json', {})
+                    if (registry[name].get('originalRun') != str(Path(archive_proof['source']) / original_relative)
+                            or original_launch.get('type') != 'file'
+                            or original_launch.get('sha256') != expected_hashes.get(launch_key)):
+                        return False
+                    required_files = terminal_capture_required_files(launch)
                     files = capture['files']
-                    if not TERMINAL_CAPTURE_FILES <= files.keys():
+                    if (required_files is None or not required_files <= files.keys()
+                            or (launch['capture']['nativeJournal']
+                                and capture.get('backend') != 'native-shared-slot-v1')
+                            or (not launch['capture']['nativeJournal'] and capture.get('backend') is not None)):
                         return False
                     for filename, info in files.items():
                         key = str(root / filename)
@@ -1246,8 +1277,7 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                         or any(launch.get(key) != registered.get(key)
                                for key in ('run', 'driverPid', 'target', 'pane', 'binarySha256', 'socket',
                                            'socketRoot', 'serverPid', 'socketIdentity'))
-                        or launch.get('capture', {}).get('captureId') !=
-                            registered.get('capture', {}).get('captureId')):
+                        or launch.get('capture') != registered.get('capture')):
                     return False
                 if (not isinstance(checks, dict)
                         or not TERMINAL_REQUIRED_CHECKS[terminal_target] <= checks.keys()
@@ -1272,7 +1302,11 @@ def assertion_is_valid(assertion, source_runs, registered_runs=None):
                         or expected_hashes[str((source_root / 'bin/claude').resolve())] != capture.get('binarySha256')):
                     return False
                 files = capture.get('files')
-                if not isinstance(files, dict) or not TERMINAL_CAPTURE_FILES <= files.keys():
+                required_files = terminal_capture_required_files(registered)
+                if (not isinstance(files, dict) or required_files is None or not required_files <= files.keys()
+                        or (registered['capture']['nativeJournal']
+                            and capture.get('backend') != 'native-shared-slot-v1')
+                        or (not registered['capture']['nativeJournal'] and capture.get('backend') is not None)):
                     return False
                 for name, info in files.items():
                     key = str((source_root / name).resolve())
@@ -1341,6 +1375,24 @@ TERMINAL_CAPTURE_FILES = frozenset({'pty.raw', 'native-pty.raw', 'native-pty-ini
     'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'initial-termios.txt', 'observations.jsonl',
     'capture-eof', 'frame-stream-map.json', 'frame-physical-report.json'})
 
+NATIVE_TERMINAL_CAPTURE_FILES = frozenset({
+    'pty.raw', 'native-pty.raw', 'raw.bin', 'records.bin', 'journal.bin', 'registration.json',
+    'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
+    'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
+    'observations.jsonl', 'initial-termios.txt', 'capture-eof', 'expected-native.json',
+    'producer-expected-native.json', 'native-observer.json', 'observer.dylib',
+    'observer-compile.log', 'frame-stream-map.json', 'frame-physical-report.json',
+})
+
+
+def terminal_capture_required_files(launch):
+    """Protocol from the held prepared launch, never the final report's labels."""
+    capture = launch.get('capture') if isinstance(launch, dict) else None
+    if (not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool
+            or not isinstance(capture.get('captureId'), str) or not capture['captureId']):
+        return None
+    return NATIVE_TERMINAL_CAPTURE_FILES if capture['nativeJournal'] else TERMINAL_CAPTURE_FILES
+
 TERMINAL_ACCEPTANCE = {
     'terminal-interaction': ('terminal-interaction-frame-and-input-matrix', 'terminal-interaction-checks.json'),
     'terminal-canonical-diff': ('terminal-canonical-diff-real-tools-and-pty', 'canonical-checks.json'),
@@ -1362,7 +1414,7 @@ TERMINAL_REQUIRED_CHECKS = {
         'paste_recovery_submit', 'diff_alpha_ready', 'diff_partial_loading',
         'diff_same_chunk_navigation', 'resize_intent', 'resize_keyboard_ownership',
         'diff_closed', 'diff_reopened', 'frame_physical', 'frame_resize_sequence',
-        'frame_semantics', 'cleanup', 'independent_pty_capture_identity',
+        'frame_semantics', 'cleanup', 'bounded_terminal_evidence', 'full_terminal_coverage', 'independent_pty_capture_identity',
         'independent_pty_resize_sequence', 'normal_native_exit',
         'same_chunk_utf8_submit_prompt_restored', 'same_chunk_utf8_submit_exact_request',
         'csi_u_submit_prompt_restored', 'csi_u_submit_exact_request',
@@ -1387,7 +1439,7 @@ TERMINAL_REQUIRED_CHECKS = {
         'canonical_reopened', 'canonical_reopen_scroll_reset', 'canonical_command_closed',
         'canonical_narrow_refused', 'canonical_no_native_fallback', 'canonical_keyboard_owner',
         'canonical_release_watcher_stopped', 'scenario_completed', 'normal_native_exit',
-        'cleanup', 'independent_pty_capture_identity', 'independent_pty_ink_frames',
+        'cleanup', 'bounded_terminal_evidence', 'full_terminal_coverage', 'independent_pty_capture_identity', 'independent_pty_ink_frames',
         'independent_pty_resize_sequence', 'canonical_wire_complete', 'canonical_wire_identity',
         'canonical_wire_tool_receipts', 'canonical_git_release_causal', 'canonical_git_success',
         'canonical_pane_frame_association', 'canonical_pane_lifecycle', 'canonical_keyboard_landing',
@@ -5256,8 +5308,7 @@ else:
             and (cleanup.get('terminal_capture') is None
                  or (cleanup['terminal_capture'].get('socket_released') is True
                      and cleanup['terminal_capture'].get('server_exited') is True
-                     and cleanup['terminal_capture'].get('socket_root_released') is True
-                     and cleanup['terminal_capture'].get('seal_exit') == 0))
+                     and cleanup['terminal_capture'].get('socket_root_released') is True))
         )
 
     def remove_auth_homes(self):
@@ -5596,6 +5647,14 @@ else:
                     run_dir, exit_identity['capture'], exit_identity['binarySha256'])
         checks['cleanup'] = self.cleanup_passed(cleanup)
         (run_dir / 'input-chunks.json').write_text(json.dumps(input_chunks, indent=2) + '\n')
+        checks['bounded_terminal_evidence'] = (cleanup.get('terminal_capture') or {}).get('seal_exit') == 0
+        checks['full_terminal_coverage'] = False
+        if (run_dir / 'capture-launch.json').is_file():
+            try:
+                full_verify = self.terminal_capture_command('verify', run_dir / 'capture-launch.json')
+                checks['full_terminal_coverage'] = full_verify.returncode == 0
+            except (OSError, subprocess.SubprocessError) as error:
+                result['full_coverage_error'] = str(error)
         frame_report = run_dir / 'frame-physical-report.json'
         frames = run_dir / 'frames.jsonl'
         if frames.exists() and frames.stat().st_size:
@@ -5614,12 +5673,11 @@ else:
         checks_path = run_dir / 'terminal-interaction-checks.json'
         checks_path.write_text(json.dumps(checks, indent=2) + '\n')
         passed = all(checks.values())
+        held_launch = json.loads(getattr(self, 'registered_runs', {}).get(str(run_dir.resolve()), '{}')).get('terminal_capture', {})
         capture_paths = [run_dir / name for name in (
-            'pty.raw', 'native-pty.raw', 'pty-io.jsonl', 'native-pty-initial.json',
-            'native-pty-eof.json', 'broker-cleanup.json', 'inputs.jsonl',
-            'geometry.jsonl', 'capture-eof', 'terminal-capture.json',
-            'native-input.jsonl', 'initial-termios.txt', 'frame-stream-map.json', 'bin/claude',
-            'independent-pty-checks.json', 'capture-launch.json', 'observations.jsonl',
+            *sorted(terminal_capture_required_files(held_launch) or ()),
+            'terminal-capture.json', 'bin/claude', 'independent-pty-checks.json',
+            'capture-launch.json', 'capture-verify-stdout.txt', 'capture-verify-stderr.txt',
         )]
         proofs = [*evidence, run_dir / 'omega-body-blocked.json',
                   run_dir / 'input-chunks.json', frames, frame_report, checks_path,
@@ -5872,6 +5930,14 @@ else:
             checks['normal_native_exit'] = native_exit_requested and exit_identity is not None and terminal_native_exit_passed(
                 run_dir, exit_identity['capture'], exit_identity['binarySha256'])
         checks['cleanup'] = self.cleanup_passed(cleanup)
+        checks['bounded_terminal_evidence'] = (cleanup.get('terminal_capture') or {}).get('seal_exit') == 0
+        checks['full_terminal_coverage'] = False
+        if (run_dir / 'capture-launch.json').is_file():
+            try:
+                full_verify = self.terminal_capture_command('verify', run_dir / 'capture-launch.json')
+                checks['full_terminal_coverage'] = full_verify.returncode == 0
+            except (OSError, subprocess.SubprocessError) as error:
+                result['full_coverage_error'] = str(error)
         try:
             fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
             physical = fresh['recheck'].get('replay', {})
@@ -5908,13 +5974,12 @@ else:
             'canonical-git.jsonl', 'omega-body-blocked.json', 'canonical-release.json',
             'canonical-git-output.json', 'canonical-git-output.raw',
             'canonical-checks.json', 'debug.log',
-            'pty.raw', 'native-pty.raw', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl',
-            'geometry.jsonl', 'native-pty-initial.json', 'native-pty-eof.json',
-            'broker-cleanup.json', 'capture-eof', 'capture-launch.json',
-            'native-input.jsonl', 'initial-termios.txt', 'frame-stream-map.json', 'bin/claude',
+            'capture-launch.json', 'bin/claude',
             'terminal-capture.json', 'frame-physical-report.json', 'independent-pty-checks.json',
-            'observations.jsonl',
+            'capture-verify-stdout.txt', 'capture-verify-stderr.txt',
         )]
+        held_launch = json.loads(getattr(self, 'registered_runs', {}).get(str(run_dir.resolve()), '{}')).get('terminal_capture', {})
+        proofs.extend(run_dir / name for name in sorted(terminal_capture_required_files(held_launch) or ()))
         proofs.extend(Path(row['inputFile']) for row in self.terminal_jsonl(run_dir / 'inputs.jsonl')
                       if row.get('phase') == 'send' and row.get('transport') == 'tmux-paste-buffer')
         passed = all(checks.values())
@@ -6021,6 +6086,8 @@ else:
             'evidence_dir': str(run_dir.resolve()),
             'binary': str(self.binary),
             'binary_sha256': self.manifest['binary_sha256'],
+            'builtin_archive_source': str(cache),
+            'builtin_archive_root': str(run_dir / 'acceptance-cache'),
         }, indent=2) + '\n')
         self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
         completed = subprocess.run(
@@ -6048,12 +6115,16 @@ else:
         producers_closed = False
         archive_current = False
         archived_snapshot = None
+        archive_receipt_sha256 = None
         archive = run_dir / 'acceptance-cache'
         try:
             if len(reports) == 1:
                 relative_report = reports[0].relative_to(cache)
                 archive = run_dir / 'acceptance-cache'
                 archived_snapshot = archive_builtin_cache(cache, archive, archive_receipt)
+                # Pin the parent-produced receipt before any consumer or cleanup.
+                # It binds the original launch bytes, not a later coupled rewrite.
+                archive_receipt_sha256 = sha256(archive_receipt)
                 archive_verified = True
                 original_report = archive / relative_report
                 report = remap_path_strings(
@@ -6063,10 +6134,35 @@ else:
                 )
                 archived_report = run_dir / 'acceptance-remapped.json'
                 archived_report.write_text(json.dumps(report, indent=2) + '\n')
+                # Preserve malformed originals, then settle them as failed evidence.
+                if not isinstance(report, dict):
+                    raise ValueError('Builtin acceptance report must be an object')
+                pair, assertions = report.get('pair', {}), report.get('assertions', {})
+                if (not isinstance(pair, dict) or not isinstance(assertions, dict)
+                        or any(not isinstance(value, dict) for value in assertions.values())
+                        or not isinstance(report.get('evidence', ''), str)):
+                    raise ValueError('Builtin acceptance pair/assertions/evidence have invalid types')
+                for name, side in pair.items():
+                    if not isinstance(side, dict):
+                        raise ValueError(f'Builtin side {name} must be an object')
+                    if any(key in side and not isinstance(side[key], str) for key in ('run', 'socket')):
+                        raise ValueError(f'Builtin side {name} paths must be strings')
+                    captures, cleanup = side.get('captures', {}), side.get('cleanup', {})
+                    if (not isinstance(captures, dict) or not isinstance(cleanup, dict)
+                            or any(not isinstance(value, str) for value in captures.values())):
+                        raise ValueError(f'Builtin side {name} captures/cleanup have invalid types')
+                    terminal = cleanup.get('terminalCapture', {})
+                    files = terminal.get('files', {}) if isinstance(terminal, dict) else None
+                    if (not isinstance(files, dict)
+                            or any(not isinstance(info, dict)
+                                   or ('path' in info and not isinstance(info['path'], str))
+                                   for info in files.values())):
+                        raise ValueError(f'Builtin side {name} terminal files have invalid types')
             else:
                 report_error = f'expected exactly one acceptance.json, found {len(reports)}'
-        except (OSError, json.JSONDecodeError) as error:
+        except (OSError, ValueError, TypeError) as error:
             report_error = str(error)
+            report = None
         finally:
             # Failed or incomplete archives must retain the actual producer bytes.
             producers_closed = archive_verified and builtin_cache_producers_closed(
@@ -6137,7 +6233,7 @@ else:
             )
             rechecked = subprocess.run([
                 'bun', '--no-env-file', str(self.repo / 'scripts/recheck-builtin-terminal-evidence.mjs'),
-                str(archived_report), self.manifest['binary_sha256'], str(recheck_path),
+                str(archived_report), self.manifest['binary_sha256'], str(recheck_path), str(archive_receipt),
             ], cwd=self.repo, text=True, capture_output=True, check=False, timeout=120)
             (run_dir / 'terminal-recheck-stdout.txt').write_text(rechecked.stdout)
             (run_dir / 'terminal-recheck-stderr.txt').write_text(rechecked.stderr)
@@ -6171,10 +6267,35 @@ else:
             metadata = json.loads(metadata_path.read_text())
             metadata.update(acceptance_report=str(archived_report.resolve()),
                             acceptance_sha256=sha256(archived_report),
+                            builtin_archive_receipt_sha256=archive_receipt_sha256,
                             builtin_capture_registry={name: {
                                 key: report.get('pair', {}).get(name, {}).get(key)
                                 for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
                                 for name in BUILTIN_SIDE_NAMES})
+            for name in BUILTIN_SIDE_NAMES:
+                side = report.get('pair', {}).get(name, {})
+                if not isinstance(side, dict) or not isinstance(side.get('run'), str):
+                    continue  # Incomplete business reports remain failed, not a driver exception.
+                root = Path(side['run'])
+                try:
+                    if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
+                            or not is_relative_to(root, run_dir / 'acceptance-cache')):
+                        raise ValueError('Capture launch is outside the owned archived run')
+                    path = root / 'capture-launch.json'
+                    info = path.lstat()
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or info.st_uid != os.getuid()):
+                        raise ValueError('Capture launch file is not an owned regular original')
+                    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+                        actual = os.fstat(source.fileno())
+                        if (actual.st_dev, actual.st_ino) != (info.st_dev, info.st_ino):
+                            raise ValueError('Capture launch identity changed during read')
+                        launch = json.loads(source.read())
+                    metadata['builtin_capture_registry'][name].update(
+                        originalRun=str(cache / root.relative_to(archive)),
+                        driverPid=launch.get('driverPid'), capture=launch.get('capture'))
+                except (OSError, ValueError, TypeError, AttributeError) as error:
+                    metadata['builtin_capture_registry'][name]['capture_launch_error'] = str(error)
             metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
             self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
             for side in report.get('pair', {}).values():
@@ -6184,6 +6305,7 @@ else:
                 proofs.extend(Path(info['path']) for info in files.values() if isinstance(info, dict) and 'path' in info)
                 if side.get('run'):
                     root = Path(side['run'])
+                    proofs.append(root / 'capture-launch.json')
                     proofs.append(root / 'bin/claude')
                     for sent in self.terminal_jsonl(root / 'inputs.jsonl'):
                         if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':

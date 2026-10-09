@@ -6343,7 +6343,8 @@ def assert_terminal_matrix_execution(module):
             checks = results[0]['checks']
             if failure is None:
                 incomplete = {'normal_native_exit', 'independent_pty_capture_identity',
-                              'independent_pty_resize_sequence'}
+                              'independent_pty_resize_sequence', 'bounded_terminal_evidence',
+                              'full_terminal_coverage'}
                 assert all(value for key, value in checks.items()
                            if not key.startswith('frame_') and key not in incomplete), checks
                 assert all(checks[key] is False for key in incomplete), checks
@@ -6741,6 +6742,110 @@ def test_retained_builtin_legacy_missing_evidence_fixture():
         assert recorded[0]['checks']['cache_cleanup'] is True
         archive = Path(recorded[0]['evidence_dir']) / 'acceptance-cache'
         assert (archive / 'runs/r-acceptance/acceptance.json').is_file()
+
+
+
+def test_retained_builtin_malformed_report_records_failed_without_driver_exception():
+    module = load_driver()
+    variants = {
+        'report-null': None,
+        'report-list': [],
+        'run-number': {'pair': {'privacyOff': {'run': 1}}},
+        'cleanup-null': {'pair': {'privacyOff': {'cleanup': None}}},
+        'terminal-null': {'pair': {'privacyOff': {'cleanup': {'terminalCapture': None}}}},
+        'capture-path-number': {'pair': {'privacyOff': {'captures': {'ready': 1}}}},
+        'pair-list': {'pair': []},
+        'side-null': {'pair': {'privacyOff': None}},
+        'side-list': {'pair': {'privacyOff': []}},
+        'assertion-null': {'assertions': {'cleanup': None}},
+        'captures-list': {'pair': {'privacyOff': {'captures': []}}},
+        'capture-file-null': {'pair': {'privacyOff': {'cleanup': {'terminalCapture': {'files': {'pty.raw': None}}}}}},
+    }
+    failures = []
+    for name, report in variants.items():
+        with tempfile.TemporaryDirectory(prefix='builtin-malformed-' + name + '-') as directory:
+            root = Path(directory)
+            gate = object.__new__(module.BinaryGate)
+            gate.evidence_root = root / 'evidence'
+            gate.evidence_root.mkdir()
+            gate.repo, gate.binary = root / 'repo', root / 'binary'
+            gate.manifest = {'binary_sha256': 'a' * 64}
+            gate.stamp, gate.pid, gate.registered_runs = 'unit', 1, {}
+            recorded = []
+            gate.record = recorded.append
+            producer_original = json.dumps(report)
+            def producer(command, **_kwargs):
+                if '--cache' not in command:
+                    return subprocess.CompletedProcess(command, 1, '', 'No native evidence supplied')
+                cache = Path(command[command.index('--cache') + 1])
+                report_root = cache / 'runs/r-acceptance'
+                report_root.mkdir(parents=True)
+                (report_root / 'acceptance.json').write_text(producer_original)
+                return subprocess.CompletedProcess(command, 0, producer_original, '')
+            try:
+                with patch.object(module.subprocess, 'run', producer):
+                    gate.builtin_mods()
+                assert len(recorded) == 1 and recorded[0]['validation_verdict'] == 'failed'
+                evidence = Path(recorded[0]['evidence_dir'])
+                checks = json.loads((evidence / 'builtin-mods-checks.json').read_text())
+                assert checks['report_error'] and checks['checks']['report'] is False, checks
+                assert (evidence / 'acceptance-cache/runs/r-acceptance/acceptance.json').read_text() == producer_original
+                assert (evidence / 'acceptance-remapped.json').is_file()
+                assert (evidence / 'builtin-cache-archive.json').is_file()
+                assert recorded[0]['assertions'][0]['validation_verdict'] == 'failed'
+            except (AssertionError, AttributeError, TypeError, ValueError) as error:
+                failures.append((name, type(error).__name__, str(error)))
+    assert not failures, failures
+
+
+def test_retained_builtin_invalid_launch_keeps_failed_originals():
+    module = load_driver()
+    for variant in ('missing', 'bad-json', 'directory', 'symlink'):
+        with tempfile.TemporaryDirectory(prefix='builtin-launch-' + variant + '-') as directory:
+            root = Path(directory)
+            gate = object.__new__(module.BinaryGate)
+            gate.evidence_root = root / 'evidence'
+            gate.evidence_root.mkdir()
+            gate.repo, gate.binary = root / 'repo', root / 'binary'
+            gate.manifest = {'binary_sha256': 'a' * 64}
+            gate.stamp, gate.pid, gate.registered_runs = 'unit', 1, {}
+            recorded = []
+            gate.record = recorded.append
+            outside = root / 'outside-launch.json'
+            outside.write_text('{"foreign":true}')
+            originals = []
+            def producer(command, **_kwargs):
+                if '--cache' not in command:
+                    return subprocess.CompletedProcess(command, 1, '', 'No native evidence supplied')
+                cache = Path(command[command.index('--cache') + 1])
+                report_root = cache / 'runs/r-acceptance'
+                report_root.mkdir(parents=True)
+                pair = {}
+                for name in module.BUILTIN_SIDE_NAMES:
+                    run = cache / 'runs' / ('r-' + name)
+                    run.mkdir()
+                    launch = run / 'capture-launch.json'
+                    if variant == 'bad-json':
+                        launch.write_text('{bad')
+                    elif variant == 'directory':
+                        launch.mkdir()
+                    elif variant == 'symlink':
+                        launch.symlink_to(outside)
+                    pair[name] = {'run': str(run), 'binarySha256': 'a' * 64, 'captures': {}}
+                report = {'evidence': str(report_root), 'pair': pair, 'assertions': {}}
+                originals.append(json.dumps(report))
+                (report_root / 'acceptance.json').write_text(originals[-1])
+                return subprocess.CompletedProcess(command, 0, originals[-1], '')
+            with patch.object(module.subprocess, 'run', producer):
+                gate.builtin_mods()
+            assert len(recorded) == 1 and recorded[0]['validation_verdict'] == 'failed', variant
+            evidence = Path(recorded[0]['evidence_dir'])
+            assert (evidence / 'acceptance-cache/runs/r-acceptance/acceptance.json').read_text() == originals[0]
+            metadata = json.loads((evidence / 'run-metadata.json').read_text())
+            assert all(metadata['builtin_capture_registry'][name].get('capture_launch_error')
+                       for name in module.BUILTIN_SIDE_NAMES), variant
+            assert outside.read_text() == '{"foreign":true}'
+            assert recorded[0]['assertions'][0]['validation_verdict'] == 'failed'
 
 
 def main():
@@ -7220,8 +7325,10 @@ def test_retained_terminal_cleanup_requires_owned_socket_release():
     complete = {'socket_released': True, 'server_exited': True,
                 'socket_root_released': True, 'seal_exit': 0}
     assert gate.cleanup_passed({**cleanup, 'terminal_capture': complete}) is True
-    for key in complete:
-        invalid = {**complete, key: 1 if key == 'seal_exit' else False}
+    # Resource closure and bounded evidence availability are separate checks.
+    assert gate.cleanup_passed({**cleanup, 'terminal_capture': {**complete, 'seal_exit': 1}}) is True
+    for key in ('socket_released', 'server_exited', 'socket_root_released'):
+        invalid = {**complete, key: False}
         assert gate.cleanup_passed({**cleanup, 'terminal_capture': invalid}) is False, key
 
 
@@ -7538,7 +7645,7 @@ def _terminal_acceptance_fixture(module, root, target):
         'captureIdentityPassed': True, 'recheck': {'verdict': 'passed', 'run': str(root),
                                                 'captureId': capture['captureId'], 'replay': replay}}))
     (root / 'capture-launch.json').write_text(json.dumps({'run': str(root),
-        'binarySha256': capture['binarySha256'], 'capture': {'captureId': capture['captureId']},
+        'binarySha256': capture['binarySha256'], 'capture': {'captureId': capture['captureId'], 'nativeJournal': False},
         'target': capture['target'], 'pane': capture['pane']}))
     metadata_path = root / 'run-metadata.json'
     metadata = json.loads(metadata_path.read_text())
@@ -7892,12 +7999,16 @@ def _builtin_final_integrity_fixture(module, root):
         _terminal_acceptance_fixture(module, side_root, 'terminal-interaction')
         capture = json.loads((side_root / 'terminal-capture.json').read_text())
         capture['captureId'] = 'unit-' + name
+        launch_path = side_root / 'capture-launch.json'
+        launch = json.loads(launch_path.read_text())
+        launch['capture']['captureId'] = capture['captureId']
+        launch_path.write_text(json.dumps(launch))
         side = {'run': str(side_root), 'captureId': capture['captureId'],
                 'binarySha256': capture['binarySha256'], 'target': capture['target'],
                 'pane': capture['pane'], 'cleanup': {'terminalCapture': capture}}
         pair[name] = side
         files.extend(Path(info['path']) for info in capture['files'].values())
-        files.extend([side_root / 'bin/claude', side_root / 'raw-unit-input.bin'])
+        files.extend([side_root / 'bin/claude', side_root / 'raw-unit-input.bin', launch_path])
     report = root / 'acceptance-cache/runs/acceptance.json'
     report.write_text(json.dumps({'pair': pair, 'assertions': {
         name: {'verdict': 'passed'} for name in ('completeness', 'cleanup', 'agents',
@@ -7917,6 +8028,24 @@ def _builtin_final_integrity_fixture(module, root):
                 'builtin_capture_registry': {name: {key: side[key]
                     for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
                     for name, side in pair.items()}}
+    for name, side in pair.items():
+        launch = json.loads((Path(side['run']) / 'capture-launch.json').read_text())
+        metadata['builtin_capture_registry'][name].update(
+            driverPid=launch.get('driverPid'), capture=launch['capture'])
+    # Synthetic aggregation shape, not actual archive/native evidence.
+    metadata.update(builtin_archive_source=str(root / 'acceptance-cache'),
+                    builtin_archive_root=str(root / 'acceptance-cache'))
+    archive_receipt = root / 'builtin-cache-archive.json'
+    archive_receipt.write_text(json.dumps({'source': metadata['builtin_archive_source'],
+        'archive': metadata['builtin_archive_root'], 'archiveComplete': True,
+        'sourceFilesStable': True, 'archiveFilesMatch': True, 'sourceManifest': {
+            str(Path(side['run']).relative_to(root / 'acceptance-cache')) + '/capture-launch.json': {
+                'type': 'file', 'sha256': module.sha256(Path(side['run']) / 'capture-launch.json')}
+            for side in pair.values()}}))
+    files.append(archive_receipt)
+    metadata['builtin_archive_receipt_sha256'] = module.sha256(archive_receipt)
+    for name, side in pair.items():
+        metadata['builtin_capture_registry'][name]['originalRun'] = side['run']
     metadata_path = root / 'run-metadata.json'
     metadata_path.write_text(json.dumps(metadata))
     assertion = {'assertion_id': 'builtin-mods-compiled-acceptance', 'source_run': root.name,
@@ -7933,7 +8062,11 @@ def test_retained_builtin_final_seven_side_closure_is_not_replaceable():
     module = load_driver()
     scenarios = ('valid', 'capture-file-omitted', 'input-file-omitted', 'binary-omitted',
                  'report-omitted', 'recheck-omitted', 'side-deleted', 'capture-rebound',
-                 'report-failed', 'roster-omitted', 'current-replay-failed')
+                 'report-failed', 'roster-omitted', 'current-replay-failed',
+                 'archive-omitted', 'archive-source-rebound', 'archive-root-rebound',
+                 'archive-incomplete', 'archive-source-unstable', 'archive-files-differ',
+                 'archive-launch-digest-rebound', 'archive-launch-omitted',
+                 'original-run-rebound', 'launch-bytes-rebound', 'archive-digest-omitted')
     failures = []
     for scenario in scenarios:
         with tempfile.TemporaryDirectory(prefix='builtin-final-integrity-') as tmp:
@@ -7946,7 +8079,8 @@ def test_retained_builtin_final_seven_side_closure_is_not_replaceable():
             omitted = {'capture-file-omitted': side / 'frames.jsonl',
                        'input-file-omitted': side / 'raw-unit-input.bin',
                        'binary-omitted': side / 'bin/claude', 'report-omitted': report,
-                       'recheck-omitted': root / 'builtin-terminal-recheck.json'}.get(scenario)
+                       'recheck-omitted': root / 'builtin-terminal-recheck.json',
+                       'archive-omitted': root / 'builtin-cache-archive.json'}.get(scenario)
             if omitted:
                 key = str(omitted)
                 assertion['required_evidence'].remove(key)
@@ -7963,6 +8097,50 @@ def test_retained_builtin_final_seven_side_closure_is_not_replaceable():
                 file = root / 'builtin-mods-checks.json'
                 data = json.loads(file.read_text()); data['checks'].pop('independent_frame_replay')
                 file.write_text(json.dumps(data)); assertion['evidence_sha256'][str(file)] = module.sha256(file)
+            elif scenario.startswith('archive-') and scenario != 'archive-digest-omitted':
+                file = root / 'builtin-cache-archive.json'
+                data = json.loads(file.read_text())
+                key = 'runs/enabled/capture-launch.json'
+                if scenario == 'archive-source-rebound': data['source'] = '/private/tmp/foreign-source'
+                elif scenario == 'archive-root-rebound': data['archive'] = '/private/tmp/foreign-archive'
+                elif scenario == 'archive-incomplete': data['archiveComplete'] = False
+                elif scenario == 'archive-source-unstable': data['sourceFilesStable'] = False
+                elif scenario == 'archive-files-differ': data['archiveFilesMatch'] = False
+                elif scenario == 'archive-launch-digest-rebound': data['sourceManifest'][key]['sha256'] = '0' * 64
+                elif scenario == 'archive-launch-omitted': data['sourceManifest'].pop(key)
+                file.write_text(json.dumps(data))
+                # Rehash the coupled proof: trusted launch/source registration,
+                # rather than just an old receipt digest, must reject it.
+                assertion['evidence_sha256'][str(file)] = module.sha256(file)
+            elif scenario == 'archive-digest-omitted':
+                metadata.pop('builtin_archive_receipt_sha256')
+                registered[str(root)] = json.dumps(metadata)
+                (root / 'run-metadata.json').write_text(registered[str(root)])
+            elif scenario == 'launch-bytes-rebound':
+                launch_path = side / 'capture-launch.json'
+                launch = json.loads(launch_path.read_text())
+                # Keep all previously compared identity fields identical.
+                launch['launchArgv'] = ['/private/tmp/foreign-binary']
+                launch_path.write_text(json.dumps(launch, indent=2))
+                digest = module.sha256(launch_path)
+                assertion['evidence_sha256'][str(launch_path)] = digest
+                file = root / 'builtin-cache-archive.json'
+                data = json.loads(file.read_text())
+                data['sourceManifest']['runs/enabled/capture-launch.json']['sha256'] = digest
+                file.write_text(json.dumps(data))
+                assertion['evidence_sha256'][str(file)] = module.sha256(file)
+            elif scenario == 'original-run-rebound':
+                launch_path = side / 'capture-launch.json'
+                launch = json.loads(launch_path.read_text())
+                launch['run'] = '/private/tmp/foreign-source/runs/enabled'
+                launch_path.write_text(json.dumps(launch))
+                digest = module.sha256(launch_path)
+                assertion['evidence_sha256'][str(launch_path)] = digest
+                file = root / 'builtin-cache-archive.json'
+                data = json.loads(file.read_text())
+                data['sourceManifest']['runs/enabled/capture-launch.json']['sha256'] = digest
+                file.write_text(json.dumps(data))
+                assertion['evidence_sha256'][str(file)] = module.sha256(file)
             with patch.object(module, 'revalidate_builtin_assertion',
                               return_value=scenario != 'current-replay-failed', create=True):
                 coverage = module.validate_required_target_results({'builtin-mods'}, [row], registered)
@@ -8514,6 +8692,33 @@ def test_retained_process_spawn_final_rechecks_all_registered_originals_and_exac
             passed=module.validate_required_target_results({'mods-process-spawn'},[run],registered)['passed']
             if passed != (scenario=='valid'): failures.append(scenario)
     assert not failures, failures
+
+def test_retained_capture_roster_uses_prepared_protocol_not_report_labels():
+    module = load_driver()
+    native = {'capture': {'nativeJournal': True, 'captureId': 'owned'}}
+    selected = module.terminal_capture_required_files(native)
+    assert len(selected) == 26
+    assert {'registration.json', 'producer-expected-native.json', 'journal.bin',
+            'observer.dylib', 'native-observer.json', 'observer-compile.log'} <= selected
+    assert not {'native-pty-initial.json', 'native-pty-eof.json', 'native-input.jsonl'} & selected
+    for label in (None, 'legacy', 'unknown'):
+        assert module.terminal_capture_required_files({**native, 'backend': label}) == selected
+    legacy = {'capture': {'nativeJournal': False, 'captureId': 'owned'}}
+    assert module.terminal_capture_required_files(legacy) == module.TERMINAL_CAPTURE_FILES
+    assert module.terminal_capture_required_files({**legacy, 'backend': 'native-shared-slot-v1'}) == module.TERMINAL_CAPTURE_FILES
+
+
+def test_retained_capture_roster_missing_or_ambiguous_intent_fails_closed():
+    module = load_driver()
+    for invalid in (None, {}, {'capture': {}}, {'capture': {'nativeJournal': True}},
+                    *({'capture': {'nativeJournal': value, 'captureId': 'owned'}}
+                      for value in (None, 0, 1, 'true', 'false')),
+                    *({'capture': {'nativeJournal': True, 'captureId': value}}
+                      for value in (None, '', 1))):
+        assert module.terminal_capture_required_files(invalid) is None, invalid
+    for target in module.TERMINAL_ACCEPTANCE:
+        assert {'bounded_terminal_evidence', 'full_terminal_coverage'} <= module.TERMINAL_REQUIRED_CHECKS[target]
+
 
 if __name__ == '__main__':
     main()

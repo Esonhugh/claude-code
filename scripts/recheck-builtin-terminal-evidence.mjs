@@ -5,10 +5,41 @@ import { isDeepStrictEqual } from 'node:util'
 import { validateBuiltinTerminalEvidence, validateNativeTerminalEvidence } from './builtin-terminal-evidence.mjs'
 import { verifyPtyTerminalEvidence } from './verify-pty-terminal-evidence.mjs'
 import { replayNativeFrameJournal } from './native-frame-journal-replay.mjs'
-import { join } from 'node:path'
+import { join, dirname, relative, resolve, isAbsolute } from 'node:path'
+import { readOwnedNativeFile } from './native-evidence-files.mjs'
 
-export async function recheckBuiltinSide(side, binarySha256) {
-  if (side?.cleanup?.terminalCapture?.backend === 'native-shared-slot-v1') {
+export async function recheckBuiltinSide(side, binarySha256, archiveReceiptPath) {
+  let launch
+  try {
+    const launchBytes = readOwnedNativeFile(join(side.run, 'capture-launch.json'))
+    launch = JSON.parse(launchBytes)
+    let preparedRun = launch.run
+    if (preparedRun !== realpathSync(side.run) && archiveReceiptPath) {
+      const receipt = JSON.parse(readOwnedNativeFile(archiveReceiptPath)),
+        originalRelative = relative(receipt.source, preparedRun),
+        original = receipt.sourceManifest?.[join(originalRelative, 'capture-launch.json')]
+      if (!isAbsolute(receipt.source) || resolve(receipt.source) !== receipt.source ||
+          !isAbsolute(preparedRun) || resolve(preparedRun) !== preparedRun ||
+          !/^runs\/r-[0-9a-f]{12}$/.test(originalRelative) ||
+          receipt.archive !== realpathSync(join(dirname(archiveReceiptPath), 'acceptance-cache')) ||
+          resolve(archiveReceiptPath) !== join(dirname(receipt.archive), 'builtin-cache-archive.json') ||
+          receipt.archiveComplete !== true || receipt.sourceFilesStable !== true || receipt.archiveFilesMatch !== true ||
+          original?.type !== 'file' || original.sha256 !== createHash('sha256').update(launchBytes).digest('hex'))
+        throw Error('Prepared archive mapping or original launch digest is invalid')
+      preparedRun = join(receipt.archive, originalRelative)
+    }
+    if (preparedRun !== realpathSync(side.run) || launch.binarySha256 !== binarySha256 ||
+        launch.capture?.captureId !== side.captureId || typeof launch.capture?.nativeJournal !== 'boolean' ||
+        launch.target !== side.target || launch.pane !== side.pane ||
+        (launch.capture.nativeJournal
+          ? side.cleanup?.terminalCapture?.backend !== 'native-shared-slot-v1'
+          : side.cleanup?.terminalCapture?.backend !== undefined))
+      throw Error('Prepared capture protocol or identity differs from terminal report')
+  } catch (error) {
+    return { verdict: 'failed', reason: error.message,
+      productTimingEquivalent: false, fullNativeGatePassed: false }
+  }
+  if (launch.capture.nativeJournal) {
     const diagnostics = {}
     if (side.binarySha256 !== binarySha256 || !validateNativeTerminalEvidence(side, diagnostics))
       return { verdict: 'failed', reason: 'closed native identity or original content is invalid', nativeValidation: diagnostics,
@@ -49,7 +80,7 @@ export async function recheckBuiltinSide(side, binarySha256) {
   }
 }
 
-export async function recheckBuiltinEvidence(report, binarySha256) {
+export async function recheckBuiltinEvidence(report, binarySha256, archiveReceiptPath) {
   const names = [
     'privacyOff',
     'privacyOn',
@@ -71,7 +102,7 @@ export async function recheckBuiltinEvidence(report, binarySha256) {
       reason: 'seven distinct owned runs and capture identities are required',
     }
   for (const [index, name] of names.entries())
-    result[name] = await recheckBuiltinSide(sides[index], binarySha256)
+    result[name] = await recheckBuiltinSide(sides[index], binarySha256, archiveReceiptPath)
   return {
     verdict: Object.values(result).every((side) => side.verdict === 'passed')
       ? 'passed'
@@ -86,12 +117,12 @@ export async function recheckBuiltinEvidence(report, binarySha256) {
   }
 }
 
-export async function recheckFinalBuiltinEvidence(input, binarySha256, savedPath) {
+export async function recheckFinalBuiltinEvidence(input, binarySha256, savedPath, archiveReceiptPath) {
   const report = JSON.parse(readFileSync(input, 'utf8')),
     saved = JSON.parse(readFileSync(savedPath, 'utf8')),
     { assessBuiltinAcceptance } = await import('./mods-test-lab.mjs'),
     assertions = assessBuiltinAcceptance(report.pair),
-    current = JSON.parse(JSON.stringify(await recheckBuiltinEvidence(report, binarySha256)))
+    current = JSON.parse(JSON.stringify(await recheckBuiltinEvidence(report, binarySha256, archiveReceiptPath)))
   const timingPreserved = Object.values(report.pair).every(side =>
     side.cleanup.terminalCapture.productTimingEquivalent === true &&
     // The acknowledged v1 recorder changes the product render schedule.
@@ -106,24 +137,25 @@ export async function recheckFinalBuiltinEvidence(input, binarySha256, savedPath
 }
 
 if (import.meta.main) {
-  const [input, binarySha256, output, saved] = process.argv.slice(2)
+  const [input, binarySha256, output, saved, archiveReceipt] = process.argv.slice(2)
   if (input === '--final') {
     let result
     try {
-      result = await recheckFinalBuiltinEvidence(binarySha256, output, saved)
+      result = await recheckFinalBuiltinEvidence(binarySha256, output, saved, archiveReceipt)
     } catch (error) { result = { verdict: 'failed', reason: error.message } }
     process.stdout.write(JSON.stringify(result) + '\n')
     if (result.verdict !== 'passed') process.exitCode = 1
   } else {
   if (!input || !output || !/^[a-f0-9]{64}$/.test(binarySha256 ?? ''))
     throw Error(
-      'Usage: recheck-builtin-terminal-evidence.mjs ACCEPTANCE.json BINARY_SHA256 OUTPUT.json',
+      'Usage: recheck-builtin-terminal-evidence.mjs ACCEPTANCE.json BINARY_SHA256 OUTPUT.json [ARCHIVE_RECEIPT.json]',
     )
   let result
   try {
     result = await recheckBuiltinEvidence(
       JSON.parse(readFileSync(input, 'utf8')),
       binarySha256,
+      saved,
     )
   } catch (error) {
     result = { verdict: 'failed', reason: error.message }

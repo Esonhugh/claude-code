@@ -10,8 +10,13 @@ import {
 } from './builtin-terminal-evidence.mjs'
 import { recheckBuiltinSide } from './recheck-builtin-terminal-evidence.mjs'
 
-const [action, descriptor] = process.argv.slice(2)
+const [action, descriptor, ...options] = process.argv.slice(2)
+const boundedOnly = options.length === 1 && options[0] === '--bounded'
+if (options.length && (!boundedOnly || action !== 'verify'))
+  throw Error('Only verify accepts --bounded')
 const launch = JSON.parse(readFileSync(descriptor, 'utf8'))
+if (action !== 'prepare' && typeof launch.capture?.nativeJournal !== 'boolean')
+  throw Error('Prepared capture protocol is missing')
 if (action === 'prepare') {
   launch.capture = createBuiltinCapture(
     launch.run, launch.argv, launch.env, {
@@ -34,7 +39,7 @@ if (action === 'prepare') {
   }
   const result = {
     side,
-    captureIdentityPassed: terminalCapture.backend === 'native-shared-slot-v1'
+    captureIdentityPassed: launch.capture.nativeJournal
       ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side),
     recheck: await recheckBuiltinSide(side, launch.binarySha256),
     productTimingEquivalent: terminalCapture.productTimingEquivalent,
@@ -42,10 +47,9 @@ if (action === 'prepare') {
   }
   writeFileSync(join(launch.run, 'independent-pty-checks.json'),
     JSON.stringify(result, null, 2) + '\n', { flag: 'wx', mode: 0o600 })
-  if (!result.captureIdentityPassed || result.recheck.verdict !== 'passed' ||
-      (terminalCapture.backend === 'native-shared-slot-v1' &&
-        (result.productTimingEquivalent !== true || result.fullNativeGatePassed !== true)) ||
-      !validateBuiltinTerminalEvidence(side))
+  // Seal closes bounded originals and physical replay. Full coverage is checked
+  // independently at verify; it cannot turn missing input/timing evidence green.
+  if (!result.captureIdentityPassed || result.recheck.verdict !== 'passed')
     process.exitCode = 1
 } else if (action === 'verify') {
   // Read-only final acceptance: rerun the pinned parser over the sealed bytes.
@@ -59,20 +63,27 @@ if (action === 'prepare') {
       cleanup: { terminalCapture: capture },
     },
     recheck = JSON.parse(JSON.stringify(await recheckBuiltinSide(side, launch.binarySha256))),
-    native = capture.backend === 'native-shared-slot-v1',
-    passed = (!native || (validateNativeTerminalEvidence(side) &&
-      saved.productTimingEquivalent === true && saved.fullNativeGatePassed === true)) &&
-      validateBuiltinTerminalEvidence(side) &&
+    native = launch.capture.nativeJournal,
+    boundedPassed = (native ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side)) &&
       saved.captureIdentityPassed === true &&
       isDeepStrictEqual(saved.side, side) &&
       isDeepStrictEqual(saved.recheck, recheck) &&
       isDeepStrictEqual(physical, recheck.replay) &&
-      recheck.verdict === 'passed'
+      recheck.verdict === 'passed',
+    fullCovered = boundedPassed && saved.productTimingEquivalent === true && saved.fullNativeGatePassed === true &&
+      capture.productTimingEquivalent === true && capture.fullNativeGatePassed === true &&
+      recheck.productTimingEquivalent === true && recheck.fullNativeGatePassed === true,
+    passed = boundedPassed && (boundedOnly || fullCovered)
   process.stdout.write(JSON.stringify({
     verdict: passed ? 'passed' : 'failed',
+    scope: boundedOnly ? 'bounded identity and independent physical replay' : 'full terminal acceptance',
+    boundedVerdict: boundedPassed ? 'passed' : 'failed',
+    fullCoverageVerdict: fullCovered ? 'passed' : 'not covered',
     run: launch.run, captureId: side.captureId,
     binarySha256: launch.binarySha256,
-    reason: passed ? null : 'current identity, inputs or independent PTY replay differs from sealed evidence',
+    reason: passed ? null : !boundedPassed
+      ? 'current identity, inputs or independent PTY replay differs from sealed evidence'
+      : 'full input, lifecycle and product timing coverage is not established',
   }) + '\n')
   if (!passed) process.exitCode = 1
 } else {

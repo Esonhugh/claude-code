@@ -497,7 +497,8 @@ class NativeFrameJournalTest(unittest.TestCase):
                 seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
                                        'seal', str(run / 'capture-launch.json')], env=env, capture_output=True, timeout=5)
                 (run / 'seal.log').write_bytes(seal.stdout + seal.stderr)
-                self.assertEqual(seal.returncode, 1)
+                self.assertEqual(seal.returncode, 0,
+                                 'Bounded native seal must not impose legacy or whole input/timing requirements')
                 sealed = json.loads((run / 'terminal-capture.json').read_text())
                 self.assertEqual(sealed['boundedVerdict'], 'passed', sealed)
                 self.assertTrue(sealed['nativeResizeBracketsCovered'])
@@ -505,6 +506,14 @@ class NativeFrameJournalTest(unittest.TestCase):
                 self.assertEqual(sealed['verdict'], 'failed')
                 self.assertFalse(sealed['productTimingEquivalent'])
                 self.assertFalse(sealed['fullNativeGatePassed'])
+                for options, wanted in ((['--bounded'], 0), ([], 1)):
+                    verified = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                        'verify', str(run / 'capture-launch.json'), *options], env=env, capture_output=True, timeout=5)
+                    (run / ('verify-bounded.log' if options else 'verify-full.log')).write_bytes(verified.stdout + verified.stderr)
+                    self.assertEqual(verified.returncode, wanted, verified.stderr.decode())
+                    disposition = json.loads(verified.stdout)
+                    self.assertEqual(disposition['boundedVerdict'], 'passed')
+                    self.assertEqual(disposition['fullCoverageVerdict'], 'not covered')
                 (run / 'bounded-verdict.json').write_text(json.dumps({'verdict': 'passed',
                     'frameCount': len(snapshots), 'nativeResizeBracketsCovered': True,
                     'productTimingEquivalent': False, 'fullNativeGatePassed': False}) + '\n')
@@ -601,12 +610,21 @@ class NativeFrameJournalTest(unittest.TestCase):
                 seal = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
                                        'seal', str(run / 'capture-launch.json')], env=env, capture_output=True, timeout=5)
                 (run / 'seal.log').write_bytes(seal.stdout + seal.stderr)
-                self.assertEqual(seal.returncode, 1)
+                self.assertEqual(seal.returncode, 0,
+                                 'Bounded native seal must not impose legacy or whole input/timing requirements')
                 sealed = json.loads((run / 'terminal-capture.json').read_text())
                 self.assertEqual(sealed['boundedVerdict'], 'passed', sealed)
                 self.assertEqual(sealed['verdict'], 'failed')
                 self.assertFalse(sealed['productTimingEquivalent'])
                 self.assertFalse(sealed['fullNativeGatePassed'])
+                for options, wanted in ((['--bounded'], 0), ([], 1)):
+                    verified = subprocess.run(['/opt/homebrew/bin/bun', str(SOURCE / 'terminal-capture-driver.mjs'),
+                        'verify', str(run / 'capture-launch.json'), *options], env=env, capture_output=True, timeout=5)
+                    (run / ('verify-bounded.log' if options else 'verify-full.log')).write_bytes(verified.stdout + verified.stderr)
+                    self.assertEqual(verified.returncode, wanted, verified.stderr.decode())
+                    disposition = json.loads(verified.stdout)
+                    self.assertEqual(disposition['boundedVerdict'], 'passed')
+                    self.assertEqual(disposition['fullCoverageVerdict'], 'not covered')
                 if getattr(self, 'require_native_identity', False):
                     bounded = json.loads((run / 'independent-pty-checks.json').read_text())
                     self.assertTrue(bounded['captureIdentityPassed'], 'Valid closed native originals were classified using legacy FIFO identity schema')
@@ -623,6 +641,17 @@ test('actual native identity has no FIFO aliases and remains bounded', () => {
   expect(validateBuiltinTerminalEvidence(side)).toBe(false)
   expect(existsSync(join(side.run,'native-pty-eof.json'))).toBe(false)
   expect(existsSync(join(side.run,'frame-response.fifo'))).toBe(false)
+})
+test('actual native recheck uses prepared intent and rejects report downgrades', async () => {
+  const { recheckBuiltinSide } = await import(RECHECK_SOURCE)
+  expect((await recheckBuiltinSide(side, side.binarySha256)).verdict).toBe('passed')
+  for (const backend of [undefined, 'legacy', 'unknown']) {
+    const changed = structuredClone(side)
+    changed.cleanup.terminalCapture.backend = backend
+    const result = await recheckBuiltinSide(changed, side.binarySha256)
+    expect(result.verdict).toBe('failed')
+    expect(result.reason).toContain('Prepared capture protocol')
+  }
 })
 test('native identity rejects edited side identity and required original hashes', () => {
   for (const mutate of [
@@ -646,11 +675,11 @@ test('coverage labels cannot upgrade bounded native evidence', () => {
     expect(validateBuiltinTerminalEvidence(changed)).toBe(false)
   }
 })
-""")
+""".replace('RECHECK_SOURCE', json.dumps((SOURCE / 'recheck-builtin-terminal-evidence.mjs').as_uri())))
                     guards = subprocess.run(['/opt/homebrew/bin/bun', 'test', str(proof)], env=env, capture_output=True, timeout=10)
                     (run / 'native-identity-guards.log').write_bytes(guards.stdout + guards.stderr)
                     self.assertEqual(guards.returncode, 0, (guards.stdout + guards.stderr).decode())
-                    self.assertIn(b'3 pass', guards.stdout + guards.stderr)
+                    self.assertIn(b'4 pass', guards.stdout + guards.stderr)
                     self.assertIn(b'0 fail', guards.stdout + guards.stderr)
                 if getattr(self, 'require_file_type_guards', False):
                     types = subprocess.run(['python3', str(SOURCE / 'test-native-evidence-file-types.py'),

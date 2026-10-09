@@ -305,6 +305,7 @@ export function startBuiltinRun(options, execute = execFileSync, findTmux = () =
     ? 'Builtin-only compiled launch: no --plugin-dir and no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
     : 'Compiled builtin launch with one copied inline acceptance fixture under the private run; no CLAUDE_CODE_BUILTIN_MODS_ARCHIVE override.'
   const report = { ...metadata, driverPid: process.pid, capture, target, pane, serverPid: Number(serverPid), tmux, attach: commandText([...tmuxArgs, 'attach-session', '-t', 'mods']), captureCommand: `${commandText([...tmuxArgs, 'capture-pane', '-p', '-t', target])} > ${quote(join(run, 'capture.txt'))}`, exit: commandText([...tmuxArgs, 'send-keys', '-t', target, '-l', '/exit']), enter: commandText([...tmuxArgs, 'send-keys', '-t', target, 'Enter']), seal: `touch ${quote(join(run, 'SEALED'))}`, clean: commandText([process.execPath, SCRIPT, 'clean', basename(run), '--cache', cache]), note: `${note} Session creation is not readiness/activation. Default API is a closed loopback port; no external provider is contacted unless explicitly changed.` }
+  writeJSON(join(run, 'capture-launch.json'), report)
   writeJSON(join(run, 'run.json'), report)
   console.log(JSON.stringify(report, null, 2))
   return report
