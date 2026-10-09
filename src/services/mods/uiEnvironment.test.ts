@@ -71,6 +71,7 @@ test('drawing callbacks cannot invoke registration handles or another drawing le
   const second = await environment.invoke(handle, [{ ui }, event], undefined, 2) as any
   for (const forged of [handle, second.press.handle]) {
     const failure = await environment.invokeDrawing(1, forged, [{}]).then(() => null, error => error)
+    expect(failure).toBeInstanceOf(Error)
     expect(failure.message).toContain('Unknown drawing callback')
   }
   await environment.invokeDrawing(1, first.press.handle, [{}])
@@ -101,7 +102,7 @@ test('real Worker provides synchronous constructors and drawing-owned callback h
   expect(failure.message).toContain('Unknown or unloaded')
 })
 
-test('redrawing a cached tree allocates a new drawing lease; releasing old handles leaves new ones live', async () => {
+test('redrawing a cached tree retains its callback in independent drawing leases', async () => {
   const { environment, handle } = await fixture(`let cached;
     export function register(on) {on('ui.render', ($, e) => {
       const { Button } = $.ui.resolve(e);
@@ -113,12 +114,12 @@ test('redrawing a cached tree allocates a new drawing lease; releasing old handl
   const ui = createModUiBridge({ status: value => { statuses.push(value) } })
   const first = await environment.invoke(handle, [{ ui }, event], undefined, 1) as any
   const second = await environment.invoke(handle, [{ ui }, event], undefined, 2) as any
-  expect(first.press.handle).not.toBe(second.press.handle)
+  expect(first.press.handle).toBe(second.press.handle)
   await environment.releaseDrawing(1)
-  await environment.invoke(second.press.handle, [{}])
+  await environment.invokeDrawing(2, second.press.handle, [{}])
   expect(statuses).toEqual(['live'])
-  const oldFailure = await environment.invoke(first.press.handle, [{}]).then(() => null, error => error)
-  expect(oldFailure.message).toContain('Unknown or unloaded')
+  const oldFailure = await environment.invokeDrawing(1, first.press.handle, [{}]).then(() => null, error => error)
+  expect(oldFailure.message).toContain('Unknown drawing callback')
   await environment.releaseDrawing(2)
   const failure = await environment.invoke(second.press.handle, [{}]).then(() => null, error => error)
   expect(failure.message).toContain('Unknown or unloaded')

@@ -507,7 +507,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     },
     async invoke(text) {
       const request = JSON.parse(text);
-      if (request.callbackDrawing !== undefined && ![...drawings.values()].some(handles => handles.has(request.handle))) throw Error('Unknown drawing callback');
+      if (request.callbackDrawing !== undefined && !drawings.get(request.callbackDrawing)?.has(request.handle)) throw Error('Unknown drawing callback');
       if (disposed || !functions.has(request.handle)) throw Error('Unknown or unloaded module function');
       const allocated = [];
       const args = request.args.map(v => decode(v, request.id));
