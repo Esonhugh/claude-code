@@ -274,7 +274,7 @@ export async function* query(
   | ToolUseSummaryMessage,
   Terminal
 > {
-  if (!params.toolUseContext.agentId && (params.querySource === 'repl_main_thread' || params.querySource === 'sdk')) {
+  if (!params.toolUseContext.agentId && (params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk')) {
     params = {...params, saveModForkSnapshot: params.toolUseContext.mods?.captureForkSnapshotWriter?.()}
   }
   const consumedCommandUuids: string[] = []
