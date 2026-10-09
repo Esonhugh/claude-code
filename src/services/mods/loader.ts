@@ -1,3 +1,4 @@
+import { OFFICIAL_CORE_CALLS } from './coreCalls.js'
 import { parse } from 'acorn'
 import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'node:fs/promises'
@@ -23,6 +24,7 @@ type Capability = { role: Exclude<Role, null>; members: string[] }
 type Resolved = { binding: Binding; members: string[] }
 const tiers: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
 const coreNouns = new Set([
+  ...OFFICIAL_CORE_CALLS.map(call => call.split('.')[0]!),
   'engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp',
   'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env',
 ])
@@ -46,6 +48,7 @@ const supportedCalls = new Set([...supportedEvents].filter(event => ![
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
   'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit',
 ].includes(event)))
+for (const call of OFFICIAL_CORE_CALLS) supportedCalls.add(call)
 supportedCalls.add('config.list')
 supportedCalls.add('mcp.call')
 const scanOnlyCalls = new Set(['settings.read', 'tool.list', 'tool.call', 'tool.register'])

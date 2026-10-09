@@ -1,3 +1,4 @@
+import { officialCoreCalls } from './coreCalls.js'
 import type { ModWorkerFault } from './protocol.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
 import { createModRemotePrompt } from './remoteUiPrompt.js'
@@ -827,6 +828,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const withholders = new Set([...(state?.withheld.get(noun) ?? []), ...(lease.building ? state?.carried?.get(noun) ?? [] : [])].filter(plugin => plugin !== owner.declaration.name))
     if (withholders.size) throw new Error(`Module capability ${op} was withheld by ${[...withholders].join(', ')}`)
     if (!table[noun]?.[method] || (!lease.building && current[noun]?.[method] !== table[noun]?.[method])) {
+      if (!table[noun]?.[method] && officialCoreCalls.has(op))
+        throw new Error(`$.${op} is not available in this build`)
       throw new Error(`Module capability ${op} was withdrawn`)
     }
   }
@@ -1064,7 +1067,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
       }
-      default: throw new Error(`Unsupported host capability ${op}`)
+      default: throw new Error(officialCoreCalls.has(op) ? `$.${op} is not available in this build` : `Unsupported host capability ${op}`)
     }
   }
 
@@ -1324,7 +1327,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validatePromptBox(box)
         return structuredClone(box)
       }
-      default: throw new Error(`Unsupported host capability ${op}`)
+      default: throw new Error(officialCoreCalls.has(op) ? `$.${op} is not available in this build` : `Unsupported host capability ${op}`)
     }
   }
 
