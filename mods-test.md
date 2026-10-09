@@ -2388,3 +2388,11 @@ red10/green11 的 input producer synthetic receipt 最初缺少 phase/transport�
 
 默认native报告保留自身method与独立parser身份；实际physical尺寸/语义、原请求→Mach ACK→后续positive-output帧用于最终及归档消费，不添加legacy别名。`outputBytes`只计帧事务，`replayBytes`包含帧前输出。回归入口及Native48原件、synthetic/历史重算与fresh binary边界见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。完整发布、input owner、timing和旧resize RED保持未闭合。
 CLI resize fixture必须在实际tmux命令前后保存geometry send/return，绑定当时完整frame/IO前缀、raw长度、真实target/参数及exit code；内核ACK不能代替请求收据。Green2完整CLI文件14/1的首次缺证据失败及17项原件hash保留于`native-canonical-schema-green2-cli1-fixture-disposition.json`，不得改判历史通过。
+
+# process.run真实生命周期验收
+
+取消须分开检查host合并信号、内部run拒绝值与真实Worker公开HooksError；外层dispatch原Error身份不能代替core reason验收。真实PID ready/TERM marker/close、Git实际argv摘要和完整读取字节与保留字节分别核对；实际helper非零故障与仅PATH夹具失败分别归档，终止权限失败不得伪造close。回归入口及固定官方293合同见[process.run生命周期](docs/research/mods-process-run-lifecycle-validity-20261009.md)。独立bounded回归不等于完整native门禁，历史RED不改判。
+
+Green4已跑完的39项及15项native CLI不覆盖瞬时ps恢复或group-only错误的PID fallback；只读复核已否定其完整闭合结论，未迁移。red7四案1通过/3失败，保留真实恢复ps、signal尝试、实际child状态及监督回收；新候选必须重新冻结并全跑，不拼接旧轮通过。
+
+Green5的41项/相邻文件通过而check因finally throw lint失败；后次ps故障的后代状态遗漏另由red8复现，red9在结算点实测存活descendant与错误rawFalse同时出现（2通过/1失败）。Green6必须验证真实ESRCH/未知身份失败与监督gone，不能把查询缺行、父close或pipe销毁替代后代清理。

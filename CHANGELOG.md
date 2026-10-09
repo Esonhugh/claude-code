@@ -27,6 +27,8 @@
 
 ### 变更内容
 
+- Mods process.run：宿主合并信号保留首个原始取消原因（包括false/null/0/空字符串）；实际operation signal交付core，公开失败按固定官方2.1.293的HooksError语义包装。补齐独立截断标志、恰好4MiB的UTF-8边界和真实start/stop/TERM/KILL/close摘要日志；终止允许2000ms宽限并复验PID起始身份，处理helper首次失败后恢复与group TERM失败后的PID兜底；终止失败保留errno、identity查询exitCode、后代未知状态与原取消原因，避免无界结算等待及把查询失败当作退出。完整input owner、无观测时序、终端/Client发布验收仍未通过。
+
 - 修复原生终端验收报告被旧格式拒收的问题；严格校验实际resize请求与后续绘制帧，CLI fixture在真实命令前后保存请求与返回边界，故障fixture原子发布实际EAGAIN回执，保留完整门禁未通过状态。使用方法与证据边界见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。
 
 - canonical 验收接入真实 native marker/write span、host launch 与 Mach geometry，严格关联当前动作窗口、DOM pane 和零输出的同 root 来源；保留合法失败 write/retry 与原 errno，resize 严格绑定发送前边界及实际 ACK/返回配对，最终认证已记录的 exact frame，原始输入文件 exclusive/no-follow 0600 创建。live、最终及归档重验一致，旧 resize RED、child input owner 和完整发布仍未闭合，见[原生 canonical 绑定](docs/research/mods-native-canonical-binding-validity-20261009.md)。
