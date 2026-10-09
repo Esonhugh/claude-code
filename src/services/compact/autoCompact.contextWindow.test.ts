@@ -8,6 +8,9 @@ const settings = await import('../../utils/settings/settings.js')
 const getSettings = spyOn(settings, 'getInitialSettings').mockReturnValue({
   autoCompactWindow: 150_000,
 })
+const api = await import('../api/claude.js')
+// This test isolates window selection from provider/model output limits.
+const maxOutput = spyOn(api, 'getMaxOutputTokensForModel').mockReturnValue(4096)
 const { getEffectiveContextWindowSize } = await import('./autoCompact.js')
 
 const previousAutoCompactWindow =
@@ -20,6 +23,7 @@ afterEach(() => {
 
 afterAll(() => {
   getSettings.mockRestore()
+  maxOutput.mockRestore()
   if (previousAutoCompactWindow === undefined)
     delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   else
