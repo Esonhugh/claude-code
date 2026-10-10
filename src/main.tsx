@@ -366,6 +366,7 @@ import {
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js'
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js'
+import { getStdinStream } from 'src/utils/stdin.js'
 import { setCwd } from 'src/utils/Shell.js'
 import {
   type ProcessedResume,
@@ -1122,22 +1123,24 @@ async function getInputPrompt(
     // Input hijacking breaks MCP.
     !process.argv.includes('mcp')
   ) {
+    const stdin = getStdinStream()
+    if (stdin !== process.stdin) logForDebugging('[stdin] reading redirected regular file through an explicit fd stream')
     if (inputFormat === 'stream-json') {
-      return process.stdin
+      return stdin
     }
-    process.stdin.setEncoding('utf8')
+    stdin.setEncoding('utf8')
     let data = ''
     const onData = (chunk: string) => {
       data += chunk
     }
-    process.stdin.on('data', onData)
+    stdin.on('data', onData)
     // If no data arrives in 3s, stop waiting and warn. Stdin is likely an
     // inherited pipe from a parent that isn't writing (subprocess spawned
     // without explicit stdin handling). 3s covers slow producers like curl,
     // jq on large files, python with import overhead. The warning makes
     // silent data loss visible for the rare producer that's slower still.
-    const timedOut = await peekForStdinData(process.stdin, 3000)
-    process.stdin.off('data', onData)
+    const timedOut = await peekForStdinData(stdin, 3000)
+    stdin.off('data', onData)
     if (timedOut) {
       process.stderr.write(
         'Warning: no stdin data received in 3s, proceeding without it. ' +
