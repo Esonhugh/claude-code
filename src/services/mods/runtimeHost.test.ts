@@ -2707,20 +2707,26 @@ test('custom noun calls retain same-plugin middleware and host-owned origin', as
   expect(diagnostics).toEqual([])
 })
 
-test('clock callbacks without a live hook frame still run the owning plugin middleware', async () => {
+test('clock callbacks exclude the whole owning plugin after the original hook receipt settles', async () => {
   await writeFile(join(root, 'callback.txt'), 'callback text')
-  const consumer = await plugin('callback-siblings', `let result; export function register(on) {
-    on('tool.call', {tool:'Start'}, ($) => {
-      $.clock.after(0, async () => { result=await $.fs.read('callback.txt'); });
+  const consumer = await plugin('callback-siblings', `let result, release; export function register(on) {
+    on('tool.call', {tool:'Start'}, async ($) => {
+      await new Promise(started => $.clock.after(0, async () => {
+        await new Promise(resolve => { release=resolve; started(); });
+        try { result=await $.fs.read('callback.txt'); }
+        catch (error) { result={error:error.message}; }
+      }));
       return {result:'started'};
     });
     on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+next.origin.plugin}));
+    on('tool.call', {tool:'Release'}, () => { release(); return {result:'released'}; });
     on('tool.call', {tool:'Result'}, () => ({result}));
   }`)
   const { value, diagnostics } = runtime()
   await value.bind(binding(root))
   await value.reconcile([consumer])
   expect(await value.dispatch('tool.call', {...input,tool:'Start'}, async () => ({result:'unexpected core'}))).toEqual({result:'started'})
+  expect(await value.dispatch('tool.call', {...input,tool:'Release'}, async () => ({result:'unexpected core'}))).toEqual({result:'released'})
   const deadline = Date.now() + 2000
   let result: unknown
   do {
@@ -2728,7 +2734,8 @@ test('clock callbacks without a live hook frame still run the owning plugin midd
     if ((result as {result?: unknown}).result !== undefined) break
     await delay(5)
   } while (Date.now() < deadline)
-  expect(result).toEqual({result:'callback text:callback-siblings'})
+  // Official 2.1.292 native: the original receipt is settled before Release.
+  expect(result).toEqual({result:'callback text'})
   expect(diagnostics).toEqual([])
 })
 

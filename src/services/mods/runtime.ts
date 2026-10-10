@@ -353,7 +353,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const activations = new Set<Activation>()
   const retired = new Set<Activation>()
   const interfaceStates = new WeakMap<Nouns, InterfaceState>()
-  const capabilityContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; active: boolean; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
+  const capabilityContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; active: boolean; callbackOwner?: string; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
   const invocationSignal = new AsyncLocalStorage<AbortSignal>()
   const turnStepCore = new AsyncLocalStorage<(input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>>()
   const requestServices = new AsyncLocalStorage<ModRequestServices>()
@@ -1497,10 +1497,15 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const {snapshot,table,lease}=scope()
         checkCall(owner, `clock.${kind}`, table, lease)
         if (owner.state !== 'active' && !(owner.state === 'candidate' && lease.building)) throw new Error('Module timer belongs to a retired activation')
-        // Pin the callback's entry generation until it drains; no hook is its caller.
+        // Pin this generation and consult the scheduling frame until its receipt settles.
         for (const item of snapshot) item.references++
         lease.entries++
-        const entered={snapshot,table,active:true}
+        const parent = capabilityContext.getStore()
+        const entered={snapshot,table,active:true,
+          get hook() { return parent?.active && parent.hook?.plugin === owner.declaration.name ? parent.hook : undefined },
+          get callbackOwner() { return parent?.active && parent.hook?.plugin === owner.declaration.name ? undefined : owner.declaration.name },
+          get next() { return parent?.active ? parent.next : undefined },
+        }
         try { return await capabilityContext.run(entered, () => uiContext.run({ snapshot, table, person: false }, () => withReference(owner, callback))) }
         finally {
           entered.active=false
@@ -1595,6 +1600,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         }
         const context = capabilityContext.getStore()
         const caller = context?.active ? context.hook : undefined
+        const callbackOwner = context?.active ? context.callbackOwner : undefined
         const invocation = invocationSignal.getStore()
         // Logging and the operation that cancels the turn must acknowledge
         // completion even after that turn's cancellation reaches this frame.
@@ -1633,7 +1639,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
                   matchesModEventPattern(registration.event, event) &&
-                  (item !== owner || registration.id !== caller?.registrationId),
+                  (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               release() {},
             }
@@ -1799,7 +1805,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
                   matchesModEventPattern(registration.event, event) &&
-                  (item !== owner || registration.id !== caller?.registrationId),
+                  (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               pluginOrigin: storageId => {
                 const provider = snapshot.find(value => value.declaration.storageId === storageId)
@@ -1876,7 +1882,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
                   matchesModEventPattern(registration.event, event) &&
-                  (item !== owner || registration.id !== caller?.registrationId),
+                  (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               pluginOrigin: storageId => {
                 const provider = snapshot.find(value => value.declaration.storageId === storageId)
@@ -2578,7 +2584,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     combined.signal.addEventListener('abort', abort, { once: true })
     if (combined.signal.aborted) abort()
-    const caller = capabilityContext.getStore()?.hook
+    const context = capabilityContext.getStore()
+    const caller = context?.active ? context.hook : undefined
+    const callbackOwner = context?.active ? context.callbackOwner : undefined
     const services = requestServices.getStore()
     for (const owner of snapshot) owner.references++
     let entered = false
@@ -2593,7 +2601,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       entered = true
       try {
         source = dispatchModStream({ event, input, core, settleAfterAbort: true, hooks: hooksFor(snapshot, table), signal: cancellation.signal, origin: options.origin,
-          ...(options.origin ? { skip: { plugin: options.origin.plugin, registrationId: caller?.plugin === options.origin.plugin ? caller.registrationId : -1 } } : {}),
+          ...(options.origin ? { skip: { plugin: options.origin.plugin, registrationId: callbackOwner === options.origin.plugin ? undefined : caller?.plugin === options.origin.plugin ? caller.registrationId : -1 } } : {}),
           validateInput: (value, received) => {
             if (event === 'turn.step') validateTurnStepInput(value)
             else validateModProcessSpawnRequest(value)
@@ -2671,6 +2679,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     // Preserve the cancellation reason for every event, including nested host calls.
     const combined = combineModModelSignals(options.signal, controller.signal)
     const caller = options.caller ?? (context?.active ? context.hook : undefined)
+    const callbackOwner = context?.active ? context.callbackOwner : undefined
     const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined
     for (const owner of snapshot) owner.references++
@@ -2686,10 +2695,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         signal: combined.signal, origin: options.origin,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
-        // Only the calling frame is recursive; sibling policy hooks still run.
+        // A live callback excludes its scheduling frame; a settled one excludes its owner.
         ...(options.origin ? { skip: {
           plugin: options.origin.plugin,
-          registrationId: caller?.plugin === options.origin.plugin ? caller.registrationId : -1,
+          registrationId: callbackOwner === options.origin.plugin ? undefined : caller?.plugin === options.origin.plugin ? caller.registrationId : -1,
         } } : {}),
         validateResult: (result, nextResults) => {
           if (event === 'ui.render' && options.validateRenderTree) options.validateRenderTree(result)
@@ -3333,9 +3342,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (released) throw new Error('Mods snapshot released')
         const context = capabilityContext.getStore()
         const caller = context?.active && context.hook?.plugin === origin?.plugin ? context.hook : undefined
+        const callbackOwner = context?.active && context.callbackOwner === origin?.plugin ? context.callbackOwner : undefined
         const matches = new Map<string, ModOrigin>()
         for (const hook of hooksFor(snapshot, table)) {
-          if (caller?.plugin === hook.plugin && caller.registrationId === hook.registration.id) continue
+          if (callbackOwner === hook.plugin || caller?.plugin === hook.plugin && caller.registrationId === hook.registration.id) continue
           if (!matchesModEventPattern(hook.registration.event, 'command.run') ||
               !matchesRenderMatcher(hook.registration.matcher ?? {}, {command})) continue
           if (!matches.has(hook.plugin)) matches.set(hook.plugin, {plugin:hook.plugin,tier:hook.tier})
