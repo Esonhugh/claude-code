@@ -117,6 +117,8 @@ import type {
 import type {
   BaseTextInputProps,
   PromptInputMode,
+  PromptInputHandle,
+  TextInputEdit,
   VimMode,
 } from '../../types/textInputTypes.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -182,7 +184,11 @@ import type { TeamSummary } from '../../utils/teamDiscovery.js'
 import { getTeammateColor } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
-import type { TextHighlight } from '../../utils/textHighlighting.js'
+import { mergePromptDecorations, type TextHighlight } from '../../utils/textHighlighting.js'
+import { carryPromptDecorations, normalizePromptDecorations, type PromptDecoration } from '../../services/mods/promptEdit.js'
+import { firstGrapheme } from '../../utils/intl.js'
+import { getTheme } from '../../utils/theme.js'
+import { useTheme } from '../design-system/ThemeProvider.js'
 import type { Theme } from '../../utils/theme.js'
 import {
   findThinkingTriggerPositions,
@@ -261,6 +267,7 @@ type Props = {
   input: string
   onInputChange: (value: string) => void
   onInputStateChange?: () => void
+  onPromptEdit?: (edit: TextInputEdit) => void
   mode: PromptInputMode
   onModeChange: (mode: PromptInputMode) => void
   stashedPrompt:
@@ -322,11 +329,7 @@ type Props = {
   setHelpOpen: React.Dispatch<React.SetStateAction<boolean>>
   hasSuppressedDialogs?: boolean
   isLocalJSXCommandActive?: boolean
-  insertTextRef?: React.MutableRefObject<{
-    insert: (text: string) => void
-    setInputWithCursor: (value: string, cursor: number) => void
-    cursorOffset: number
-  } | null>
+  insertTextRef?: React.MutableRefObject<PromptInputHandle | null>
   typeaheadActiveRef?: React.MutableRefObject<boolean>
   voiceInterimRange?: { start: number; end: number } | null
 }
@@ -355,6 +358,7 @@ function PromptInput({
   input,
   onInputChange,
   onInputStateChange,
+  onPromptEdit,
   mode,
   onModeChange,
   stashedPrompt,
@@ -410,8 +414,20 @@ function PromptInput({
   }, [onInputStateChange])
   // Track the last input value set via internal handlers so we can detect
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
+  type PromptPaint = {text: string; decorations: PromptDecoration[]}
+  const [promptPaint, setPromptPaint] = useState<PromptPaint>()
+  const paintRef = useRef<PromptPaint | undefined>(undefined)
+  const previousPaintRef = useRef<PromptPaint | undefined>(undefined)
+  const [themeName] = useTheme()
   const lastInternalInputRef = React.useRef(input)
+  const clearPaintForChange = useCallback((value: string) => {
+    if (value === lastInternalInputRef.current) return
+    previousPaintRef.current = paintRef.current?.text === lastInternalInputRef.current ? paintRef.current : undefined
+    paintRef.current = undefined
+    setPromptPaint(undefined)
+  }, [])
   if (input !== lastInternalInputRef.current) {
+    clearPaintForChange(input)
     // Input changed externally (not through any internal handler) — move cursor to end
     cursorOffsetRef.current = input.length
     setCursorOffsetState(input.length)
@@ -420,32 +436,43 @@ function PromptInput({
   // Wrap onInputChange to track internal changes before they trigger re-render
   const trackAndSetInput = React.useCallback(
     (value: string) => {
+      clearPaintForChange(value)
       lastInternalInputRef.current = value
       onInputChange(value)
     },
-    [onInputChange],
+    [onInputChange, clearPaintForChange],
   )
   // Expose an insertText function so callers (e.g. STT) can splice text at the
   // current cursor position instead of replacing the entire input.
   if (insertTextRef) {
     insertTextRef.current = {
-      cursorOffset,
+      get text() { return lastInternalInputRef.current },
+      get cursorOffset() { return cursorOffsetRef.current },
       insert: (text: string) => {
-        const needsSpace =
-          cursorOffset === input.length &&
-          input.length > 0 &&
-          !/\s$/.test(input)
-        const insertText = needsSpace ? ' ' + text : text
-        const newValue =
-          input.slice(0, cursorOffset) + insertText + input.slice(cursorOffset)
-        lastInternalInputRef.current = newValue
-        onInputChange(newValue)
-        setCursorOffset(cursorOffset + insertText.length)
+        const value = lastInternalInputRef.current, cursor = getCursorOffset()
+        const needsSpace = cursor === value.length && value.length > 0 && !/\s$/.test(value)
+        const inserted = needsSpace ? ' ' + text : text
+        trackAndSetInput(value.slice(0, cursor) + inserted + value.slice(cursor))
+        setCursorOffset(cursor + inserted.length)
       },
       setInputWithCursor: (value: string, cursor: number) => {
-        lastInternalInputRef.current = value
-        onInputChange(value)
+        trackAndSetInput(value)
         setCursorOffset(cursor)
+      },
+      paintDecorations: (decorations, text) => {
+        if (text !== lastInternalInputRef.current) return
+        previousPaintRef.current = undefined
+        const runs = normalizePromptDecorations(decorations, text)
+        paintRef.current = runs.length ? {text, decorations: runs} : undefined
+        setPromptPaint(paintRef.current)
+      },
+      carryDecorations: edit => {
+        const previous = previousPaintRef.current
+        previousPaintRef.current = undefined
+        if (!previous || previous.text !== edit.before.text || lastInternalInputRef.current !== edit.after.text) return
+        const runs = carryPromptDecorations(previous.decorations, edit.before, edit.after)
+        paintRef.current = runs.length ? {text: edit.after.text, decorations: runs} : undefined
+        setPromptPaint(paintRef.current)
       },
     }
   }
@@ -1159,8 +1186,16 @@ function PromptInput({
       }
     }
 
-    return highlights
+    return mergePromptDecorations(highlights,
+      !isSearchingHistory && displayedValue === input && promptPaint?.text === displayedValue ? promptPaint.decorations : [],
+      getTheme(themeName), !footerItemSelected && !isSearchingHistory && !cursorAtImageChip
+        ? {start: cursorOffset, end: cursorOffset + (firstGrapheme(displayedValue.slice(cursorOffset)).length || 1)} : undefined)
   }, [
+    promptPaint,
+    themeName,
+    footerItemSelected,
+    cursorAtImageChip,
+    input,
     isSearchingHistory,
     historyQuery,
     historyMatch,
@@ -1321,7 +1356,9 @@ function PromptInput({
   })
 
   const onChange = useCallback(
-    (value: string, proposedCursorOffset = cursorOffset) => {
+    (value: string, proposedCursorOffset = getCursorOffset()) => {
+      const input = lastInternalInputRef.current
+      const cursorOffset = getCursorOffset()
       if (value === '?') {
         logEvent('tengu_help_toggled', {})
         setHelpOpen(v => !v)
@@ -1388,8 +1425,7 @@ function PromptInput({
     [
       trackAndSetInput,
       onModeChange,
-      input,
-      cursorOffset,
+      getCursorOffset,
       pushToBuffer,
       pastedContents,
       dismissStashHint,
@@ -1833,10 +1869,10 @@ function PromptInput({
 
       setPastedContents(prev => ({ ...prev, [pasteId]: newContent }))
 
-      insertTextAtCursor(formatPastedTextRef(pasteId, numLines))
+      insertTextAtCursor(formatPastedTextRef(pasteId, numLines), true)
     } else {
       // For shorter pastes, just insert the text normally
-      insertTextAtCursor(text)
+      insertTextAtCursor(text, true)
     }
   }
 
@@ -1850,14 +1886,16 @@ function PromptInput({
     [],
   )
 
-  function insertTextAtCursor(text: string) {
+  function insertTextAtCursor(text: string, isTyped = false) {
+    const before = {text: lastInternalInputRef.current, cursor: getCursorOffset()}
     // Push current state to buffer before inserting
-    pushToBuffer(input, cursorOffset, pastedContents)
+    pushToBuffer(before.text, before.cursor, pastedContents)
 
     const newInput =
-      input.slice(0, cursorOffset) + text + input.slice(cursorOffset)
+      before.text.slice(0, before.cursor) + text + before.text.slice(before.cursor)
     trackAndSetInput(newInput)
-    setCursorOffset(cursorOffset + text.length)
+    setCursorOffset(before.cursor + text.length)
+    if (isTyped) onPromptEdit?.({before, after: {text: newInput, cursor: getCursorOffset()}})
   }
 
   const doublePressEscFromEmpty = useDoublePress(
@@ -3150,6 +3188,13 @@ function PromptInput({
   }
 
   const baseProps: BaseTextInputProps = {
+    onEdit: onPromptEdit,
+    getInputBox: historyMatch
+      ? undefined
+      : () => ({
+          text: lastInternalInputRef.current,
+          cursor: cursorOffsetRef.current,
+        }),
     multiline: true,
     onSubmit,
     onChange,

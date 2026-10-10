@@ -127,6 +127,8 @@ import {
 import { isCommandImmediate, type LocalJSXCommandOnDone } from '../types/command.js'
 import type {
   PromptInputMode,
+  PromptInputHandle,
+  TextInputEdit,
   QueuedCommand,
   VimMode,
 } from '../types/textInputTypes.js'
@@ -414,6 +416,7 @@ import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
+import { createModPromptEditQueue, runModPromptEdit } from '../services/mods/promptEdit.js'
 import { ModsPane } from '../components/ModsPane.js'
 import { ModsAbovePrompt } from '../components/ModsAbovePrompt.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
@@ -2043,7 +2046,7 @@ export function REPL({
       read: () =>
         insertTextRef.current
           ? {
-              text: inputValueRef.current,
+              text: insertTextRef.current!.text,
               cursor: insertTextRef.current.cursorOffset,
             }
           : { text: '', cursor: 0 },
@@ -2052,11 +2055,14 @@ export function REPL({
           ? fillPromptBox(
               {
                 read: () => ({
-                  text: inputValueRef.current,
+                  text: insertTextRef.current!.text,
                   cursor: insertTextRef.current!.cursorOffset,
                 }),
                 set: (text, cursor) =>
                   insertTextRef.current!.setInputWithCursor(text, cursor),
+                setMode: mode => setInputMode(mode),
+                paint: (decorations, text) =>
+                  insertTextRef.current!.paintDecorations(decorations, text),
               },
               input,
             )
@@ -2153,11 +2159,26 @@ export function REPL({
   }, [])
   const inputValueRef = useRef(inputValue)
   inputValueRef.current = inputValue
-  const insertTextRef = useRef<{
-    insert: (text: string) => void
-    setInputWithCursor: (value: string, cursor: number) => void
-    cursorOffset: number
-  } | null>(null)
+  const insertTextRef = useRef<PromptInputHandle | null>(null)
+
+  const modPromptEditRuntime = modsSession?.runtime
+  const modPromptEditSessionId = getSessionId()
+  const modPromptEditQueue = useMemo(() => createModPromptEditQueue({
+    read: () => ({text: insertTextRef.current?.text ?? inputValueRef.current, cursor: insertTextRef.current?.cursorOffset ?? 0}),
+    commit: box => insertTextRef.current?.setInputWithCursor(box.text, box.cursor),
+    paint: (decorations, text) => insertTextRef.current?.paintDecorations(decorations, text),
+    carry: edit => insertTextRef.current?.carryDecorations(edit),
+    raise: async (edit, signal) => {
+      const snapshot = modPromptEditRuntime?.capture()
+      try { return await runModPromptEdit(snapshot, edit, signal) }
+      finally { snapshot?.release() }
+    },
+    report: reason => logForDebugging(`[ModsPromptEdit] session=${modPromptEditSessionId} ${reason}`),
+  }), [modPromptEditRuntime, modPromptEditSessionId, viewingAgentTaskId])
+  useLayoutEffect(() => () => modPromptEditQueue.dispose(), [modPromptEditQueue])
+  const onModPromptEdit = useCallback((edit: TextInputEdit) => {
+    if (modPromptEditRuntime?.hasHooks('prompt.edit')) modPromptEditQueue.record(edit)
+  }, [modPromptEditRuntime, modPromptEditQueue])
 
   // Wrap setInputValue to co-locate suppression state updates.
   // Both setState calls happen in the same synchronous context so React
@@ -7783,6 +7804,7 @@ export function REPL({
                         input={inputValue}
                         onInputChange={setInputValue}
                         onInputStateChange={onInputStateChange}
+                        onPromptEdit={onModPromptEdit}
                         mode={inputMode}
                         onModeChange={setInputMode}
                         stashedPrompt={stashedPrompt}

@@ -38,12 +38,45 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   const persistentRef = React.useRef<PersistentState>(
     createInitialPersistentState(),
   )
+  const liveDraftRef = React.useRef({
+    text: props.value,
+    cursor: props.externalOffset,
+  })
+  React.useLayoutEffect(() => {
+    liveDraftRef.current = { text: props.value, cursor: props.externalOffset }
+  }, [props.value, props.externalOffset])
+
+  function changeText(text: string, cursor = liveDraftRef.current.cursor) {
+    const result = props.onChange(text, cursor)
+    const accepted = typeof result === 'object' && result ? result : undefined
+    const value = typeof result === 'string' ? result : accepted?.value ?? text
+    const offset = accepted?.cursorOffset ?? cursor
+    liveDraftRef.current = {
+      text: value,
+      cursor: Math.max(0, Math.min(offset, value.length)),
+    }
+    return result
+  }
+  function setOffset(cursor: number) {
+    liveDraftRef.current.cursor = cursor
+    props.onOffsetChange(cursor)
+  }
+  function readCursor() {
+    const { text, cursor } = liveDraftRef.current
+    return Cursor.fromText(text, props.columns, cursor)
+  }
 
   // inputFilter is applied once at the top of handleVimInput (not here) so
   // vim-handled paths that return without calling textInput.onInput still
   // run the filter — otherwise a stateful filter (e.g. lazy-space-after-
   // pill) stays armed across an Escape → NORMAL → INSERT round-trip.
-  const textInput = useTextInput({ ...props, inputFilter: undefined })
+  const textInput = useTextInput({
+    ...props,
+    onChange: changeText,
+    onOffsetChange: setOffset,
+    getInputBox: () => liveDraftRef.current,
+    inputFilter: undefined,
+  })
   const { onModeChange, inputFilter } = props
 
   const switchToInsertMode = useCallback(
@@ -67,17 +100,20 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       }
     }
 
-    // Vim behavior: move cursor left by 1 when exiting insert mode
+    // Vim behavior: move one whole grapheme left when exiting insert mode
     // (unless at beginning of line or at offset 0)
-    const offset = textInput.offset
-    if (offset > 0 && props.value[offset - 1] !== '\n') {
-      textInput.setOffset(offset - 1)
+    const { text, cursor: offset } = liveDraftRef.current
+    const normalized = text.normalize('NFC')
+    if (offset > 0 && normalized[offset - 1] !== '\n') {
+      textInput.setOffset(
+        offset - (offset > normalized.length ? 1 : lastGrapheme(normalized.slice(0, offset)).length),
+      )
     }
 
     vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
     setMode('NORMAL')
     onModeChange?.('NORMAL')
-  }, [onModeChange, textInput, props.value])
+  }, [onModeChange, textInput])
 
   function createOperatorContext(
     cursor: Cursor,
@@ -85,8 +121,8 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   ): OperatorContext {
     return {
       cursor,
-      text: props.value,
-      setText: (newText: string) => props.onChange(newText, textInput.offset),
+      text: cursor.text,
+      setText: (newText: string) => changeText(newText),
       setOffset: (offset: number) => textInput.setOffset(offset),
       enterInsert: (offset: number) => switchToInsertMode(offset),
       getRegister: () => persistentRef.current.register,
@@ -110,14 +146,14 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     const change = persistentRef.current.lastChange
     if (!change) return
 
-    const cursor = Cursor.fromText(props.value, props.columns, textInput.offset)
+    const cursor = readCursor()
     const ctx = createOperatorContext(cursor, true)
 
     switch (change.type) {
       case 'insert':
         if (change.text) {
           const newCursor = cursor.insert(change.text)
-          props.onChange(newCursor.text, newCursor.offset)
+          changeText(newCursor.text, newCursor.offset)
           textInput.setOffset(newCursor.offset)
         }
         break
@@ -172,16 +208,57 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     }
   }
 
+  function executeNormalInput(input: string, cursor = readCursor()): void {
+    const state = vimStateRef.current
+    if (state.mode !== 'NORMAL') return
+    const ctx: TransitionContext = {
+      ...createOperatorContext(cursor, false),
+      onUndo: props.onUndo,
+      onDotRepeat: replayLastChange,
+    }
+    const result = transition(state.command, input, ctx)
+    result.execute?.()
+    if (vimStateRef.current.mode === 'NORMAL') {
+      if (result.next) {
+        vimStateRef.current = { mode: 'NORMAL', command: result.next }
+      } else if (result.execute) {
+        vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
+      }
+    }
+  }
+
+  function executeNormalSequence(input: string): void {
+    const characters = [...input]
+    for (let index = 0; index < characters.length; index++) {
+      const state = vimStateRef.current
+      if (state.mode === 'INSERT') {
+        const remainder = characters.slice(index).join('')
+        const cursor = readCursor().insert(remainder)
+        changeText(cursor.text, cursor.offset)
+        textInput.setOffset(liveDraftRef.current.cursor)
+        vimStateRef.current = {
+          mode: 'INSERT',
+          insertedText: state.insertedText + remainder,
+        }
+        return
+      }
+      if (state.mode !== 'NORMAL') return
+      executeNormalInput(characters[index]!)
+    }
+  }
+
   function handleVimInput(rawInput: string, key: Key): void {
+    const inputBox = props.getInputBox?.()
+    if (inputBox) liveDraftRef.current = { ...inputBox }
     const state = vimStateRef.current
     // Run inputFilter in all modes so stateful filters disarm on any key,
     // but only apply the transformed input in INSERT — NORMAL-mode command
     // lookups expect single chars and a prepended space would break them.
     const filtered = inputFilter ? inputFilter(rawInput, key) : rawInput
     const input = state.mode === 'INSERT' ? filtered : rawInput
-    const cursor = Cursor.fromText(props.value, props.columns, textInput.offset)
+    const cursor = readCursor()
 
-    if (key.ctrl) {
+    if (key.ctrl || (key.meta && !key.escape)) {
       textInput.onInput(input, key)
       return
     }
@@ -232,20 +309,14 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       return
     }
 
-    // In idle state, delegate arrow keys to base handler for cursor movement
-    // and history fallback (upOrHistoryUp / downOrHistoryDown)
+    // Keep ordinary history arrows and the empty-draft left action in the
+    // base editor; other Normal arrows are Vim motions without edit relay.
     if (
-      state.command.type === 'idle' &&
-      (key.upArrow || key.downArrow || key.leftArrow || key.rightArrow)
+      state.command.type === 'idle' && !key.shift &&
+      (key.upArrow || key.downArrow || key.leftArrow && cursor.text === '')
     ) {
       textInput.onInput(input, key)
       return
-    }
-
-    const ctx: TransitionContext = {
-      ...createOperatorContext(cursor, false),
-      onUndo: props.onUndo,
-      onDotRepeat: replayLastChange,
     }
 
     // Backspace/Delete are only mapped in motion-expecting states. In
@@ -270,27 +341,15 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     else if (expectsMotion && state.command.type !== 'count' && key.delete)
       vimInput = 'x'
 
-    const result = transition(state.command, vimInput, ctx)
-
-    if (result.execute) {
-      result.execute()
-    }
-
-    // Update command state (only if execute didn't switch to INSERT)
-    if (vimStateRef.current.mode === 'NORMAL') {
-      if (result.next) {
-        vimStateRef.current = { mode: 'NORMAL', command: result.next }
-      } else if (result.execute) {
-        vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
-      }
-    }
+    if ([...vimInput].length > 1) executeNormalSequence(vimInput)
+    else executeNormalInput(vimInput, cursor)
 
     if (
       input === '?' &&
       state.mode === 'NORMAL' &&
       state.command.type === 'idle'
     ) {
-      props.onChange('?', textInput.offset)
+      changeText('?')
     }
   }
 

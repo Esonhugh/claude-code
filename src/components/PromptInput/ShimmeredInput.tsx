@@ -106,7 +106,12 @@ export function HighlightedInput({ text, highlights }: Props): React.ReactNode {
                 <Text
                   key={partIndex}
                   color={part.highlight?.color}
+                  backgroundColor={part.highlight?.backgroundColor}
                   dimColor={part.highlight?.dimColor}
+                  bold={part.highlight?.bold}
+                  italic={part.highlight?.italic}
+                  underline={part.highlight?.underline}
+                  strikethrough={part.highlight?.strikethrough}
                   inverse={part.highlight?.inverse}
                 >
                   <Ansi>{part.text}</Ansi>

@@ -106,6 +106,8 @@ export default function TextInput(props: Props): React.ReactNode {
   const textInputState = useTextInput({
     value: props.value,
     onChange: props.onChange,
+    onEdit: props.onEdit,
+    getInputBox: props.getInputBox,
     onSubmit: props.onSubmit,
     onExit: props.onExit,
     onExitMessage: props.onExitMessage,

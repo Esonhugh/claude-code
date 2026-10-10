@@ -1,4 +1,4 @@
-import type { PromptDecoration } from './promptEdit.js'
+import { normalizePromptDecorations, validatePromptDecorations, type PromptDecoration } from './promptEdit.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { ProcessUserInputBaseResult } from '../../utils/processUserInput/processUserInput.js'
 import type { ModDispatchOptions, ModSnapshot } from './runtime.js'
@@ -37,7 +37,7 @@ export type PromptFilled = PromptBox & PromptFillResult
 
 export type ModPromptHost = {
   read(): PromptBox
-  fill(input: { text: string; mode: PromptFillMode }): boolean
+  fill(input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>): boolean
   suggest?(text: string, owner: string): boolean | Promise<boolean>
   clearSuggestion?(owner: string): void
   canSuggest?(): boolean
@@ -68,18 +68,19 @@ export function validatePromptFillInput(
   origin: PromptFillInput['origin'],
 ): asserts value is PromptFillInput {
   if (
-    Object.keys(value).some(key => !['text', 'mode', 'origin'].includes(key)) ||
+    Object.keys(value).some(key => !['text', 'mode', 'origin', 'decorations'].includes(key)) ||
     typeof value.text !== 'string' ||
     !['replace', 'append', 'insert'].includes(value.mode as string)
   )
     throw new TypeError('prompt.fill requires text and replace, append or insert mode')
   if (!isDeepStrictEqual(value.origin, origin))
     throw new TypeError('prompt.fill cannot rewrite origin')
+  validatePromptDecorations(value.decorations)
 }
 
 export function applyPromptFill(
   host: ModPromptHost | undefined,
-  input: Pick<PromptFillInput, 'text' | 'mode'>,
+  input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>,
   blocked: boolean,
 ): PromptFillResult {
   if (!host || blocked) return { isFilled: false }
@@ -89,8 +90,10 @@ export function applyPromptFill(
 export function fillPromptBox(
   host: Pick<ModPromptHost, 'read'> & {
     set(text: string, cursor: number): void
+    setMode?(mode: 'prompt'): void
+    paint?(decorations: PromptDecoration[], text: string): void
   },
-  input: { text: string; mode: PromptFillMode },
+  input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>,
 ): boolean {
   const box = host.read()
   validatePromptBox(box)
@@ -102,7 +105,15 @@ export function fillPromptBox(
         : box.text.slice(0, box.cursor) + input.text + box.text.slice(box.cursor)
   const cursor =
     input.mode === 'insert' ? box.cursor + input.text.length : next.length
+  if (input.mode === 'replace') host.setMode?.('prompt')
   host.set(next, cursor)
+  const accepted = host.read()
+  validatePromptBox(accepted)
+  const at = input.mode === 'replace' ? 0 : input.mode === 'append' ? box.text.length : box.cursor
+  if (input.decorations !== undefined && input.text !== '' && accepted.text.startsWith(input.text, at)) {
+    const runs = normalizePromptDecorations(input.decorations, input.text)
+    host.paint?.(normalizePromptDecorations(runs.map(run => ({...run,start:run.start+at,end:run.end+at})), accepted.text), accepted.text)
+  }
   return true
 }
 

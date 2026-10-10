@@ -5,6 +5,7 @@ import type { PermissionResult } from '../entrypoints/agentSdkTypes.js'
 import type { Key } from '../ink.js'
 import type { PastedContent } from '../utils/config.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
+import type { PromptDecoration } from '../services/mods/promptEdit.js'
 import type { TextHighlight } from '../utils/textHighlighting.js'
 import type { AgentId } from './ids.js'
 import type { AssistantMessage, MessageOrigin } from './message.js'
@@ -29,12 +30,24 @@ export type InlineGhostText = {
 /**
  * Base props for text input components
  */
+export type PromptInputHandle = {
+  insert(text: string): void
+  setInputWithCursor(value: string, cursor: number): void
+  readonly text: string
+  readonly cursorOffset: number
+  paintDecorations(decorations: PromptDecoration[] | undefined, text: string): void
+  carryDecorations(edit: TextInputEdit): void
+}
+
+
 export type TextInputChangeResult =
   | string
   | { value: string; cursorOffset: number; accepted?: boolean }
   | void
 
 export type BaseTextInputProps = {
+  readonly onEdit?: (edit: TextInputEdit) => void
+  readonly getInputBox?: () => { text: string; cursor: number }
   /**
    * Optional callback for handling history navigation on up arrow at start of input
    */

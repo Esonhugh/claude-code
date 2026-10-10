@@ -6,7 +6,7 @@ type Props = {
   char: string
   index: number
   glimmerIndex: number
-  messageColor: keyof Theme
+  messageColor: React.ComponentProps<typeof Text>['color']
   shimmerColor: keyof Theme
 }
 

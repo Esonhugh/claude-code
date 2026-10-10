@@ -6,7 +6,7 @@ import { officialCoreCalls } from './coreCalls.js'
 import type { ModWorkerFault } from './protocol.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
 import { createModRemotePrompt } from './remoteUiPrompt.js'
-import { runModPromptEdit, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
+import { runModPromptEdit, validatePromptDecorations, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
 import { restorePromptAutocompleteInput, validatePromptAutocompleteInput, validatePromptAutocompleteResult } from './promptAutocomplete.js'
 import { modClientDataProblem } from './remoteUiClient.js'
 import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './matcher.js'
@@ -999,7 +999,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             typeof (input as ModInput).text !== 'string' ||
             ((input as ModInput).mode !== undefined && !['replace', 'append', 'insert'].includes((input as ModInput).mode as string)))
           throw new TypeError('prompt.fill takes { text, mode? }')
-        return { text: (input as ModInput).text, mode: (input as ModInput).mode ?? 'replace' }
+        validatePromptDecorations((input as ModInput).decorations)
+        return { text: (input as ModInput).text, mode: (input as ModInput).mode ?? 'replace',
+          ...((input as ModInput).decorations === undefined ? {} : {decorations:(input as ModInput).decorations}) }
       }
       case 'prompt.submit': {
         const input = args[0]

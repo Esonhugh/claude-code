@@ -21,6 +21,8 @@ export default function VimTextInput(props: Props): React.ReactNode {
   const vimInputState = useVimInput({
     value: props.value,
     onChange: props.onChange,
+    onEdit: props.onEdit,
+    getInputBox: props.getInputBox,
     onSubmit: props.onSubmit,
     onExit: props.onExit,
     onExitMessage: props.onExitMessage,

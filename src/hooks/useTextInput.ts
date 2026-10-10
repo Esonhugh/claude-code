@@ -7,6 +7,7 @@ import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
   TextInputChangeResult,
+  TextInputEdit,
   TextInputState,
 } from '../types/textInputTypes.js'
 import {
@@ -38,6 +39,8 @@ function mapInput(input_map: Array<[string, InputHandler]>): InputMapper {
 export type UseTextInputProps = {
   value: string
   onChange: (value: string, cursorOffset?: number) => TextInputChangeResult
+  onEdit?: (edit: TextInputEdit) => void
+  getInputBox?: () => { text: string; cursor: number }
   onSubmit?: (value: string) => void
   onExit?: () => void
   onExitMessage?: (show: boolean, key?: string) => void
@@ -73,6 +76,8 @@ export type UseTextInputProps = {
 export function useTextInput({
   value: originalValue,
   onChange,
+  onEdit,
+  getInputBox,
   onSubmit,
   onExit,
   onExitMessage,
@@ -469,7 +474,7 @@ export function useTextInput({
     return (key.ctrl || key.meta) && input === 'y'
   }
 
-  function onInput(input: string, key: Key): void {
+  function handleInput(input: string, key: Key): void {
     // Note: Image paste shortcut (chat:imagePaste) is handled via useKeybindings in PromptInput
 
     // Apply filter if provided
@@ -551,6 +556,24 @@ export function useTextInput({
         onSubmit?.(cursor.text)
       }
     }
+  }
+
+  function onInput(input: string, key: Key): void {
+    if (getInputBox) {
+      const box = getInputBox()
+      cursor = Cursor.fromText(box.text, columns, box.cursor)
+    }
+    const before = {text: cursor.text, cursor: cursor.offset}
+    handleInput(input, key)
+    if (!onEdit || key.return && !key.shift && !key.meta || before.text === cursor.text && before.cursor === cursor.offset) return
+    const name = key.leftArrow ? 'left' : key.rightArrow ? 'right' : key.upArrow ? 'up' : key.downArrow ? 'down'
+      : key.home ? 'home' : key.end ? 'end' : key.backspace ? 'backspace' : key.delete ? 'delete'
+      : key.return ? 'return' : key.escape ? 'escape' : key.tab ? 'tab' : undefined
+    const one = [...input].length === 1
+    const value = one ? input === ' ' ? 'space' : input : name
+    onEdit({before, after: {text: cursor.text, cursor: cursor.offset}, ...(value === undefined ? {} : {key: {
+      key: value, ...(key.ctrl ? {ctrl: true as const} : {}), ...(key.shift ? {shift: true as const} : {}), ...(key.meta ? {meta: true as const} : {}),
+    }})})
   }
 
   // Prepare ghost text for rendering - validate insertPosition matches current
