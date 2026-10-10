@@ -107,6 +107,10 @@ export function createModRemoteUIControl(options: {
     return renderer
   }
   return {
+    async capabilities(): Promise<string[]> {
+      await options.ready?.()
+      return options.runtime() ? ['ui_surface_v1'] : []
+    },
     connect(): void {
       const runtime = options.runtime()
       if (!runtime || subscriptions.has(runtime)) return

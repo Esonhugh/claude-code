@@ -52,6 +52,8 @@ export type SDKControlInitializeRequest = {
 }
 
 export type SDKControlInitializeResponse = {
+  /** Capabilities available on this initialized SDK connection. */
+  capabilities?: string[]
   commands: SlashCommand[]
   models: ModelInfo[]
   agents: AgentInfo[]

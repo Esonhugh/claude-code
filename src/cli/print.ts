@@ -3214,6 +3214,7 @@ function runHeadlessStreaming(
             options,
             agents,
             getAppState,
+            () => remoteUIControl.capabilities(),
           )
 
           // Enable prompt suggestions in AppState when SDK consumer opts in.
@@ -4950,6 +4951,7 @@ async function handleInitializeRequest(
   },
   agents: AgentDefinition[],
   getAppState: () => AppState,
+  getCapabilities: () => Promise<string[]>,
 ): Promise<void> {
   if (initialized) {
     output.enqueue({
@@ -5054,7 +5056,10 @@ async function handleInitializeRequest(
     // @ts-ignore - recovered code
     setInitJsonSchema(request.jsonSchema)
   }
+  const capabilities = await getCapabilities()
+  logForDebugging(`[ModsUI] initialize capabilities=${capabilities.join(',') || 'none'}`)
   const initResponse: SDKControlInitializeResponse = {
+    ...(capabilities.length ? { capabilities } : {}),
     commands: commands
       .filter(cmd => cmd.userInvocable !== false)
       .map(cmd => ({
