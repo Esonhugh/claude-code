@@ -40,7 +40,11 @@ export function wrapForMultiplexer(sequence: string): string {
     return `\x1bPtmux;${escaped}\x1b\\`
   }
   if (process.env['STY']) {
-    return `\x1bP${sequence}\x1b\\`
+    // Screen cannot nest ST inside DCS; terminate an inner OSC with BEL.
+    const payload = sequence.startsWith(OSC_PREFIX) && sequence.endsWith(ST)
+      ? sequence.slice(0, -ST.length) + BEL
+      : sequence
+    return `\x1bP${payload}\x1b\\`
   }
   return sequence
 }
@@ -247,6 +251,7 @@ export const OSC = {
   RESET_CURSOR_COLOR: 112,
   SEMANTIC_PROMPT: 133,
   GHOSTTY: 777, // Ghostty notification protocol
+  PROGRAM_STATUS: 7501,
   TAB_STATUS: 21337, // Tab status extension
 } as const
 
@@ -450,6 +455,20 @@ export const CLEAR_ITERM2_PROGRESS = `${OSC_PREFIX}${OSC.ITERM2};${ITERM2.PROGRE
  * Uses BEL terminator for cleanup — safe on all terminals.
  */
 export const CLEAR_TERMINAL_TITLE = `${OSC_PREFIX}${OSC.SET_TITLE_AND_ICON};${BEL}`
+
+export type ProgramStatus =
+  | { state: 'idle' | 'working' | 'done' | 'error' }
+  | { state: 'blocked'; kind: 'permission' | 'question' | 'auth' }
+
+// A process-owned record avoids replacing or clearing other programs' records.
+const PROGRAM_STATUS_ID = `claude-code-${process.pid}`
+
+export function programStatus(status: ProgramStatus): string {
+  const kind = status.state === 'blocked' ? `:kind=${status.kind}` : ''
+  return `${OSC_PREFIX}${OSC.PROGRAM_STATUS};state=${status.state}:id=${PROGRAM_STATUS_ID}:app=claude-code${kind}${ST}`
+}
+
+export const CLEAR_PROGRAM_STATUS = `${OSC_PREFIX}${OSC.PROGRAM_STATUS};state=clear:id=${PROGRAM_STATUS_ID}${ST}`
 
 /** Clear all three OSC 21337 tab-status fields. Used on exit. */
 export const CLEAR_TAB_STATUS = osc(

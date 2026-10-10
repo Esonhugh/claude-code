@@ -35,9 +35,12 @@ import {
   useTheme,
   useTerminalFocus,
   useTerminalTitle,
+  useProgramStatus,
   useTabStatus,
 } from '../ink.js'
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
+import type { ProgramStatus } from '../ink/termio/osc.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
 import * as React from 'react'
@@ -1777,6 +1780,27 @@ export function REPL({
   const showStatusInTerminalTab =
     tabStatusGateEnabled && (getGlobalConfig().showStatusInTerminalTab ?? false)
   useTabStatus(titleDisabled || !showStatusInTerminalTab ? null : sessionStatus)
+
+  const terminalProgramStatus: ProgramStatus =
+    sandboxPermissionRequestQueue.length > 0 ||
+    workerSandboxPermissions.queue.length > 0 ||
+    pendingSandboxRequest
+      ? { state: 'blocked', kind: 'permission' }
+      : toolUseConfirmQueue[0] || pendingWorkerRequest
+        ? {
+            state: 'blocked',
+            kind:
+              (toolUseConfirmQueue[0]?.tool.name ?? pendingWorkerRequest?.toolName) ===
+              ASK_USER_QUESTION_TOOL_NAME
+                ? 'question'
+                : 'permission',
+          }
+        : promptQueue.length > 0 ||
+            elicitation.queue.length > 0 ||
+            isShowingLocalJSXCommand
+          ? { state: 'blocked', kind: 'question' }
+          : { state: isLoading ? 'working' : 'idle' }
+  useProgramStatus(terminalProgramStatus)
 
   // Register the leader's setToolUseConfirmQueue for in-process teammates
   useEffect(() => {
