@@ -1,3 +1,4 @@
+import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
 import { createModUiAskRequest } from './uiAsk.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
@@ -163,6 +164,7 @@ export type ModDispatchOptions = {
 export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
 export type ModPromptSection = { result: Promise<{text:string | null}>; signal: AbortSignal }
 export type ModSnapshot = {
+  readonly toolNotices?: ModToolNotices
   readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
   readonly promptSections?: Map<string, ModPromptSection>
   readonly promptAttachments?: Map<string, ModPromptSection>
@@ -253,7 +255,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { ask: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notice: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -531,6 +533,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   })
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
   let activeHostCallbacks = 0
+  const toolNotices = createModToolNotices()
   const tools = createModTools({
     notify,
     pluginOf: owner => (owner as Activation).declaration.name,
@@ -1082,6 +1085,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const surface = input.surface ?? attachedSurfaces()[0]
         return {...input, ...(surface === undefined ? {} : {surface})}
       }
+      case 'ui.notice': return { tool_use_id: args[0], text: args[1] }
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.panes': return {}
@@ -1249,6 +1253,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
         toast(owner.declaration.name, input)
         return undefined
+      case 'ui.notice': {
+        if (typeof input.tool_use_id !== 'string' || input.tool_use_id === '')
+          throw new TypeError('$.ui.notice takes the tool_use_id of an open call')
+        if (input.text !== undefined && typeof input.text !== 'string')
+          throw new TypeError('$.ui.notice takes text or undefined')
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        const problem = toolNotices.set(input.tool_use_id, owner.declaration.name, input.text as string | undefined)
+        if (problem) throw new Error(`${owner.declaration.name}: $.ui.notice: ${input.tool_use_id} refused: ${problem}`)
+        return undefined
+      }
       case 'ui.log': case 'ui.status': {
         if (typeof input.text !== 'string' && !(op === 'ui.status' && input.text === undefined)) throw new Error(`${op} requires text`)
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
@@ -1566,6 +1580,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
+              toolNotices,
               dispatch: (event, eventInput, core, options) => {
                 if (!open) throw new Error('Mod prompt composition invocation settled')
                 return dispatch(event, eventInput, core, snapshot, table, {
@@ -1700,6 +1715,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
+              toolNotices,
               dispatch: (event, eventInput, core, options) => {
                 if (!open) throw new Error('Mod agent invocation settled')
                 return dispatch(event, eventInput, core, snapshot, table, {
@@ -1776,6 +1792,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             let open = true
             const callSnapshot: ModSnapshot = {
+              toolNotices,
               dispatch: (event, input, core, options) => {
                 if (!open) throw new Error('Mod tool invocation settled')
                 return dispatch(event, input, core, snapshot, table, {
@@ -3207,6 +3224,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     let released = false
     for (const owner of snapshot) owner.references++
     return {
+      toolNotices,
       toolOrigin: tool => toolOrigins.get(tool),
       get toolDescriptions() { return descriptions.value },
       get promptSections() { return sections },

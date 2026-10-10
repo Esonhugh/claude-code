@@ -34,6 +34,7 @@ import { logError } from '../../../utils/log.js'
 import { applyMarkdown } from '../../../utils/markdown.js'
 import { isPlanModeInterviewPhaseEnabled } from '../../../utils/planModeV2.js'
 import { getPlanFilePath } from '../../../utils/plans.js'
+import { ModToolNoticeLine } from '../ModToolNoticeLine.js'
 import type { PermissionRequestProps } from '../PermissionRequest.js'
 import { QuestionView } from './QuestionView.js'
 import { SubmitQuestionsView } from './SubmitQuestionsView.js'
@@ -522,6 +523,13 @@ Questions asked and answers provided:\n${questionsWithAnswers}`
     { context: 'Tabs', isActive: !(isInTextInput && !isInSubmitView) },
   )
 
+  const notice = (
+    <ModToolNoticeLine
+      notices={toolUseConfirm.toolUseContext.modsSnapshot?.toolNotices}
+      toolUseID={toolUseConfirm.toolUseID}
+    />
+  )
+
   if (currentQuestion) {
     return (
       <>
@@ -559,6 +567,7 @@ Questions asked and answers provided:\n${questionsWithAnswers}`
           }
           onRemoveImage={id => onRemoveImage(currentQuestion.question, id)}
         />
+        {notice}
       </>
     )
   }
@@ -575,6 +584,7 @@ Questions asked and answers provided:\n${questionsWithAnswers}`
           minContentHeight={globalContentHeight}
           onFinalResponse={handleFinalResponse}
         />
+        {notice}
       </>
     )
   }

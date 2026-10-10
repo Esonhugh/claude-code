@@ -538,6 +538,7 @@ function streamedCheckPermissionsAndCallTool(
   const context = snapshot
     ? { ...toolUseContext, modsSnapshot: snapshot }
     : toolUseContext
+  const closeNotice = snapshot?.toolNotices?.open(toolUseID, toolUseContext.modSpawnedBy)
   const wrapped = snapshot !== undefined &&
     (snapshot.hasHooks('tool.call') || toolUseContext.modToolCallResult !== undefined)
   const managedPass: ManagedPreToolUsePass = {}
@@ -777,6 +778,7 @@ function streamedCheckPermissionsAndCallTool(
       stream.error(error)
     })
     .finally(() => {
+      closeNotice?.()
       ownedSnapshot?.release()
       stream.done()
     })
