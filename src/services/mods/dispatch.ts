@@ -418,6 +418,8 @@ export async function dispatchModEvent(options: {
   const pinned = (
     options.event === 'tool.call'
       ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'telemetry.log'
+        ? ['to']
       : options.event === 'turn.complete'
         ? ['agentId']
       : options.event === 'plugin.register'
@@ -466,6 +468,7 @@ export async function dispatchModEvent(options: {
           skip.registrationId === registration.id)
       const matches =
         matchesModEventPattern(registration.event, options.event) &&
+        (!options.event.startsWith('telemetry.') || registration.event.startsWith('telemetry.') || tier === 'builtin' || tier === 'core') &&
         matchesModMatcher(registration.matcher ?? {}, input)
       if (matches && !skipRegistration) {
         if (!skipped.has(tier)) break
@@ -661,9 +664,9 @@ export async function dispatchModEvent(options: {
             : rewritten[key] === value
         if (!unchanged)
           return Promise.reject(
-            new Error(
-              `Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`,
-            ),
+            options.event === 'telemetry.log'
+              ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed to (pinned)`), {name:'HooksError'})
+              : new Error(`Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`),
           )
       }
       if (options.event === 'ui.render' && options.input.component === 'AssistantMessage') {

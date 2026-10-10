@@ -39,7 +39,11 @@ const supportedEvents = new Set([
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.copy',
   'mcp.connect',
   'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault',
+  'telemetry.log', 'telemetry.mark',
 ])
+const telemetryStreams = ['anthropic', 'collector']
+const telemetryStreamHint = '"to" is a string literal, or a list of them, from "anthropic", "collector", written in the call, so the streams a module\'s hooks stand on can be listed'
+
 const scanOnlyEvents = new Set([
   'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text',
   'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
@@ -77,6 +81,7 @@ function isFunction(node: Node): boolean {
 function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[]) {
   const events = new Set<string>()
   const calls = new Set<string>()
+  const telemetryRegistrations = new Map<Node, { event: string; matcher?: Node; path: string }>()
   const env = { reads: new Set<string>(), writes: new Set<string>() }
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
@@ -484,6 +489,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (node.optional) fail(path, 'optional registration is unsupported')
     if (node.arguments.length !== 2 && node.arguments.length !== 3) fail(path, 'on expects event, optional literal matcher, and inline handler')
     const event = eventName(node.arguments[0])
+    if (event.startsWith('telemetry.')) telemetryRegistrations.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), path })
     if (node.arguments.length === 3) matcher(node.arguments[1], scope)
     const handler = node.arguments.at(-1) as Node
     const resolved = isFunction(handler) ? undefined : resolveValue(handler, scope)
@@ -864,7 +870,31 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     path = module
     visit(program, [])
   }
-  return { events, calls, env, state, nextTiers }
+  // Official 2.1.292 lists the telemetry streams a module's hooks stand on from the
+  // literal "to" of each telemetry hook's matcher; no "to" stands on every stream.
+  function streamsOf(node: Node | undefined, event: string): string[] {
+    const refuse = (message: string): never => fail(path, `on("${event}") ${message}; ${telemetryStreamHint}: on("${event}", { to: "collector" }, hook)`)
+    if (node === undefined) return telemetryStreams
+    if (node.type === 'ArrayExpression') return node.elements.flatMap((item: Node | null) =>
+      item === null || item.type === 'SpreadElement' ? refuse('has a list of matchers with a hole or a spread') : streamsOf(item, event))
+    if (node.type !== 'ObjectExpression') return refuse('takes its matcher as something other than an object written in the call')
+    if (node.properties.some((item: Node) => item.type === 'SpreadElement' || item.computed || item.kind !== 'init'))
+      refuse('has a matcher with a spread, a computed key or an accessor, which may set "to" to anything')
+    const to = node.properties.filter((item: Node) => (item.key.type === 'Identifier' ? item.key.name : item.key.value) === 'to')
+    if (to.length > 1) refuse('names "to" twice in one matcher')
+    if (!to.length) return telemetryStreams
+    const value = to[0].value as Node
+    return (value.type === 'ArrayExpression' ? value.elements : [value]).map((item: Node | null) => {
+      if (item === null) return refuse('names its destinations as a list with a hole')
+      if (item.type !== 'Literal' || typeof item.value !== 'string') return refuse('names its destination as something other than a string literal')
+      if (!telemetryStreams.includes(item.value)) return refuse(`names the destination "${item.value}", which is no telemetry stream`)
+      return item.value as string
+    })
+  }
+  const registeredTelemetry = [...telemetryRegistrations.values()].filter(({ event }) => event.startsWith('telemetry.'))
+  const streams = new Set(registeredTelemetry.flatMap(({ event, matcher, path: registeredPath }) => { path = registeredPath; return streamsOf(matcher, event) }))
+  const telemetry = registeredTelemetry.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
+  return { events, calls, env, state, nextTiers, telemetry }
 }
 
 function within(root: string, path: string): boolean {
@@ -1111,6 +1141,8 @@ export async function loadModDeclaration(input: {
   for (const [key, value] of scanned.state.reads) state.reads.set(key, value)
   for (const [key, value] of scanned.state.writes) state.writes.set(key, value)
   for (const value of scanned.nextTiers) nextTiers.add(value)
+  if (scanned.telemetry?.includes('anthropic') && tier !== 'builtin' && tier !== 'core')
+    fail(root, 'hooks module not loaded; its hooks stand on the telemetry stream "anthropic" (a matcher names it, or a telemetry hook names no "to" and so stands on every stream), which is for the plugins built into the CLI; name the collector on each telemetry hook: on("telemetry.log", { to: "collector" }, hook) (policy/scan)')
   const relativePath = (path: string) => relative(root, path).split(sep).join('/')
   // Absolute installation locations are plumbing, not declaration identity.
   const fingerprint = createHash('sha256').update(JSON.stringify({

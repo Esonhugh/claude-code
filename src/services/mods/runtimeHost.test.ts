@@ -1631,6 +1631,7 @@ test('Worker tool.list uses each captured request catalog without crossing concu
 })
 
 test('tool.list has no fabricated empty catalog and respects host binding and noun withholding', async () => {
+  // Official 2.1.292 rejects user-tier core withholding; this fold models managed policy.
   const consumer = await plugin('catalog-access', `export function register(on) {
     on('tool.call', async ($) => {
       try { return {result:await $.tool.list()}; }
@@ -1645,7 +1646,7 @@ test('tool.list has no fabricated empty catalog and respects host binding and no
   await value.reconcile([consumer])
   const dispatch = () => value.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))
   expect(await dispatch()).toEqual({result:{error:'Tool catalog is unavailable on this host'}})
-  await value.reconcile([hidden, consumer])
+  await value.reconcile([{ ...hidden, tier: 'prepend' }, consumer])
   expect(diagnostics).toEqual([])
   const held = value.capture({toolCatalog:() => createToolCatalog([{name:'forbidden'}] as Tool[], async () => 'Not visible')})
   try {
@@ -2587,6 +2588,7 @@ test('session messages read a stable live getter and rebinding updates the actua
 })
 
 test('withholding a core noun prevents host side effects without removing other capabilities', async () => {
+  // Official 2.1.292 rejects user-tier core withholding; this fold models managed policy.
   const policy = await plugin('policy', `export function register(on) {
     on('engine.create', async ($, e, next) => { const below=await next(e); return {clock:below.clock, process:below.process, store:below.store, session:below.session, command:below.command}; });
   }`)
@@ -2595,7 +2597,7 @@ test('withholding a core noun prevents host side effects without removing other 
   }`)
   const { value, diagnostics } = runtime()
   await value.bind(binding(root))
-  await value.reconcile([policy, consumer])
+  await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
   expect(diagnostics).toEqual([])
   expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   expect(diagnostics).toEqual([expect.objectContaining({ plugin: 'write', message: expect.stringContaining('withheld') })])

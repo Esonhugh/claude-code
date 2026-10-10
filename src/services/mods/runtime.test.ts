@@ -213,12 +213,12 @@ describe('Mods lifecycle', () => {
     const logs: string[] = []
     const diagnostics: unknown[] = []
     const provider = await fixture(`export function register(on) {
-      on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, telemetry: { log: async ({message}) => built.ui.log('telemetry:' + message) } }; });
+      on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, telemetry: { log: async ({event}) => built.ui.log('telemetry:' + event) } }; });
     }`, 'provider')
     const consumer = await fixture(`export function register(on) {
       on('session.start', ($, e, next) => {
         $.ui.log('starting');
-        void Promise.resolve().then(() => $.telemetry.log({message:'started'})).catch(() => {});
+        void Promise.resolve().then(() => $.telemetry.log({event:'started'})).catch(() => {});
         return next(e);
       });
     }`, 'consumer')
@@ -228,7 +228,7 @@ describe('Mods lifecycle', () => {
     })
     cleanups.push(() => value.dispose())
     await value.bind({cwd:consumer.pluginRoot,surface:'terminal',isInteractive:true,sessionId:'detached-start'})
-    await value.reconcile([consumer, provider])
+    await value.reconcile([consumer, {...provider,tier:'builtin'}])
     await Promise.race([
       completed.promise,
       Bun.sleep(1000).then(() => { throw new Error(`detached session.start capability did not finish: ${JSON.stringify({logs,diagnostics})}`) }),
@@ -459,6 +459,7 @@ describe('Mods lifecycle', () => {
   })
 
   test('engine.create is lazy and preserves registration order within each plugin', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const outer = await fixture(`let order = []; export function register(on) {
       on('engine.create', async ($, e, next) => { order.push('first'); const built = await next(e); return { ...built }; });
       on('engine.create', () => { order.push('second'); return {}; });
@@ -469,13 +470,14 @@ describe('Mods lifecycle', () => {
       on('tool.call', { tool: 'Inner' }, () => ({ result: calls }));
     }`, 'inner')
     const { value, events } = runtime()
-    await value.reconcile([outer, inner])
+    await value.reconcile([{ ...outer, tier: 'prepend' }, { ...inner, tier: 'prepend' }])
     expect(events).toEqual([])
     expect(await value.dispatch('tool.call', { ...input, tool: 'Outer' }, async () => ({}))).toEqual({ result: ['first', 'second'] })
     expect(await value.dispatch('tool.call', { ...input, tool: 'Inner' }, async () => ({}))).toEqual({ result: 0 })
   })
 
   test('retains withheld noun ownership and rejects resurrection by an outer fold', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const revive = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, greeting: { read: () => 'resurrected' } }; });
     }`, 'revive')
@@ -489,13 +491,14 @@ describe('Mods lifecycle', () => {
       on('tool.call', async ($) => ({ result: await $.greeting.read() }));
     }`, 'consumer')
     const { value, events } = runtime()
-    await value.reconcile([revive, hide, consumer, provider])
+    await value.reconcile([{ ...revive, tier: 'prepend' }, { ...hide, tier: 'prepend' }, consumer, provider])
     expect(events.filter(event => event.stage === 'engine.create').map(event => event.plugin)).toEqual(['revive'])
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
     expect(events.some(event => event.plugin === 'consumer' && event.message.includes('withheld'))).toBe(true)
   })
 
   test('beneath clock bootstraps through the real bridge and captured calls respect final withholding', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return {}; });
     }`, 'policy')
@@ -509,7 +512,7 @@ describe('Mods lifecycle', () => {
     }`)
     const { value, events } = runtime()
     const start = Date.now()
-    await value.reconcile([policy, plugin])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, plugin])
     expect(events).toEqual([])
     const before = await value.dispatch('tool.call', { ...input, tool: 'Before' }, async () => ({ result: 0 })) as { result: number }
     expect(before.result).toBeGreaterThanOrEqual(start)
@@ -593,6 +596,7 @@ describe('Mods lifecycle', () => {
   })
 
   test('reload bootstrap inherits withholding until the declaring policy is removed', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return {}; });
     }`, 'policy')
@@ -605,9 +609,9 @@ describe('Mods lifecycle', () => {
       on('tool.call', () => ({ result: allowed }));
     }`, 'consumer')
     const { value, events } = runtime()
-    await value.reconcile([policy, consumer])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: true })
-    await value.reconcile([policy, { ...consumer, options: { changed: true } }])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, { ...consumer, options: { changed: true } }])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: false })
     await value.reconcile([consumer])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: true })
@@ -724,6 +728,7 @@ describe('Mods lifecycle', () => {
   })
 
   test('Worker recovery carries withholding into the recovered bootstrap', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {}; }); }`, 'policy')
     const consumer = await fixture(`let result; export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); try { await built.clock.now(); result = 'allowed'; } catch { result = 'withheld'; } return { ...built }; });
@@ -739,7 +744,7 @@ describe('Mods lifecycle', () => {
     try { value = createModsRuntime({ onDiagnostic: event => { if (event.stage === 'worker') died.resolve() } }) }
     finally { globalThis.Worker = RealWorker }
     cleanups.push(() => value.dispose())
-    await value.reconcile([policy, consumer])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 'allowed' })
     workers[0]!.terminate()
     await died.promise
@@ -763,6 +768,7 @@ describe('Mods lifecycle', () => {
   }, 1000)
 
   test('a crashed withholder that cannot reload stays effective while declared, then unload releases it', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {}; }); }`, 'policy')
     const consumer = await fixture(`export function register(on) { on('tool.call', async ($) => ({ result: await $.clock.now() })); }`, 'consumer')
     const RealWorker = globalThis.Worker
@@ -775,7 +781,7 @@ describe('Mods lifecycle', () => {
     try { value = createModsRuntime({ onDiagnostic: event => { if (event.stage === 'worker') died.resolve() } }) }
     finally { globalThis.Worker = RealWorker }
     cleanups.push(() => value.dispose())
-    await value.reconcile([policy, consumer])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
     await writeFile(policy.entrypoints[0]!, 'export function register(')
     workers[0]!.terminate()
     await died.promise
@@ -787,6 +793,7 @@ describe('Mods lifecycle', () => {
   })
 
   test('a cached provider cannot revive captured beneath after a later fold withholds it', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const wrapper = await fixture(`let read; export function register(on) {
       on('engine.create', async ($, e, next) => {
         const built = await next(e); if (!read) read = () => built.clock.now();
@@ -796,9 +803,9 @@ describe('Mods lifecycle', () => {
     }`, 'wrapper')
     const policy = await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {}; }); }`, 'policy')
     const { value, events } = runtime()
-    await value.reconcile([wrapper])
+    await value.reconcile([{ ...wrapper, tier: 'prepend' }])
     expect(typeof (await value.dispatch('tool.call', input, async () => ({})) as { result: unknown }).result).toBe('number')
-    await value.reconcile([wrapper, policy])
+    await value.reconcile([{ ...wrapper, tier: 'prepend' }, { ...policy, tier: 'prepend' }])
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
     expect(events.some(event => event.message.includes('withheld'))).toBe(true)
   })
@@ -824,26 +831,28 @@ describe('Mods lifecycle', () => {
   })
 
   test('final withholding prevents a bootstrap timer from entering its callback', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {}; }); }`, 'policy')
     const plugin = await fixture(`let called = false; export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); built.clock.after(30, () => { called = true; }); return { ...built }; });
       on('tool.call', () => ({ result: called }));
     }`)
     const { value, events } = runtime()
-    await value.reconcile([policy, plugin])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, plugin])
     await new Promise(resolve => setTimeout(resolve, 60))
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: false })
     expect(events.some(event => event.stage === 'async' && event.message.includes('withheld'))).toBe(true)
   })
 
   test('a withholder can use its own captured beneath while other modules are refused', async () => {
+    // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`let now; export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); now = () => built.clock.now(); return {}; });
       on('tool.call', { tool: 'Policy' }, async () => ({ result: await now() }));
     }`, 'policy')
     const consumer = await fixture(`export function register(on) { on('tool.call', async ($) => ({ result: await $.clock.now() })); }`, 'consumer')
     const { value } = runtime()
-    await value.reconcile([policy, consumer])
+    await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
     expect(typeof (await value.dispatch('tool.call', { ...input, tool: 'Policy' }, async () => ({})) as { result: unknown }).result).toBe('number')
     expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })

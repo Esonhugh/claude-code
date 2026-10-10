@@ -602,6 +602,7 @@ test('a recovered replacement start publishes the completed pane and its new cal
 })
 
 test('engine.create withholding revokes even a captured synchronous UI resolve bridge', async () => {
+  // Official 2.1.292 rejects user-tier core withholding; this fold models managed policy.
   const consumer = await plugin('ui-owner', `let saved; export function register(on) {
     on('tool.call', ($,e) => { saved ??= () => $.ui.resolve({surface:'terminal',component:'Pane'}).Text({children:'ok'}); return {result:saved()}; });
   }`)
@@ -613,7 +614,7 @@ test('engine.create withholding revokes even a captured synchronous UI resolve b
   expect(diagnostics).toEqual([])
   expect(initial).toMatchObject({result:{type:'Text'}})
   const oldGeneration = value.capture()
-  await value.reconcile([policy,consumer])
+  await value.reconcile([{ ...policy, tier: 'prepend' },consumer])
   expect(diagnostics).toEqual([])
   try {
     expect(await oldGeneration.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})

@@ -1,3 +1,4 @@
+import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
 import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
 import { createModUiAskRequest } from './uiAsk.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
@@ -238,6 +239,7 @@ const coreClock = Object.freeze({
 // Core noun identity is stable; the caller's activation selects its store and lifetime.
 const hostIdentity = () => { throw new Error('Host calls must use the environment bridge') }
 const coreHost: Nouns = {
+  telemetry: { log: hostIdentity, mark: hostIdentity },
   plugin: { name: hostIdentity, root: hostIdentity },
   fs: { read: hostIdentity, write: hostIdentity, list: hostIdentity, exists: hostIdentity, stat: hostIdentity, ancestors: hostIdentity },
   process: { run: hostIdentity, spawn: hostIdentity },
@@ -836,6 +838,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const provider = capabilityContext.getStore()
     const published = owner.engineScope
     const current = provider?.active ? provider.table : lease.building || lease.entries > 0 ? table : published?.table ?? nouns
+    // Telemetry is an event call, including when a legacy built-in supplies its sender.
+    if (noun === 'telemetry') return
     const state = interfaceStates.get(current)
     const withholders = new Set([...(state?.withheld.get(noun) ?? []), ...(lease.building ? state?.carried?.get(noun) ?? [] : [])].filter(plugin => plugin !== owner.declaration.name))
     if (withholders.size) throw new Error(`Module capability ${op} was withheld by ${[...withholders].join(', ')}`)
@@ -874,6 +878,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
 
   function hostInput(op: string, args: unknown[], plugin?: string): ModInput {
     switch (op) {
+      case 'telemetry.log': case 'telemetry.mark': return modTelemetryArgs(op, args[0], plugin)
       case 'agent.spawn': {
         const input = args[0]
         if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
@@ -1533,7 +1538,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const {snapshot,table,lease}=scope()
         const op = `${noun}.${method}`
         checkCall(owner, op, table, lease)
-        const fn=dynamic ? table[noun]![method]! : bound
+        const fn=noun === 'telemetry' ? hostIdentity : (dynamic ? table[noun]?.[method] : bound)!
         const ask = fn === hostIdentity && op === 'ui.ask' ? createModUiAskRequest(args, owner.declaration.name) : undefined
         const input = ask?.input ?? (fn === hostIdentity ? hostInput(op, args, owner.declaration.name) : args[0] ?? {})
         if (op === 'env.get' || op === 'env.set') {
@@ -1901,6 +1906,19 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               if (typeof result.deny === 'string') throw new Error(result.deny)
               return result.value
             } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && (op === 'telemetry.log' || op === 'telemetry.mark')) {
+            const origin = {plugin:owner.declaration.name,tier:owner.declaration.tier}
+            // The pinned 277 built-in publishes its sender as a noun; the public API remains core-owned.
+            const provider = snapshot.find(item => item.declaration.name === interfaceStates.get(table)?.owners.get('telemetry'))
+            const sender = provider?.declaration.tier === 'builtin' || provider?.declaration.tier === 'core' ? table.telemetry?.[method] : undefined
+            const result = await withReference(owner, () => dispatch(op, input as ModInput, async rewritten => {
+              const answer = modTelemetryCoreResult(origin)
+              if ('deny' in answer || !sender || rewritten.to === 'collector') return answer
+              await sender(rewritten)
+              return answer
+            }, snapshot, table, {origin,signal})) as {deny?:string}
+            return modTelemetryResult(op, result, owner.declaration.name)
           }
           if (fn === hostIdentity && op === 'session.compact') {
             if (binding && !binding.isInteractive)
@@ -2275,6 +2293,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   }
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
+    if (event === 'telemetry.log' || event === 'telemetry.mark') return validateModTelemetryResult(event, result)
     if (event === 'prompt.edit') return validatePromptEditResult(result)
     if (event === 'prompt.autocomplete') return validatePromptAutocompleteResult(result)
     if (event === 'prompt.compose') {
@@ -2632,6 +2651,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         },
         restoreInput: (value, received) => {
           if (event === 'session.measure') return received
+          if (event === 'telemetry.log' && !Object.hasOwn(value,'to')) return {...value,to:received.to}
           if (event === 'prompt.autocomplete') return restorePromptAutocompleteInput(value, received)
           if (event === 'prompt.edit') {
             const restored = {...value}
@@ -2747,7 +2767,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const entries = Object.entries(methods)
             if (!entries.every(([, fn]) => typeof fn === 'function')) throw new Error(`Noun ${noun} must contain callable methods`)
             const provider = state.owners.get(noun)
-            if (provider !== undefined && provider !== owner.declaration.name) {
+            const legacyTelemetry = noun === 'telemetry' && provider === 'engine' &&
+              (owner.declaration.tier === 'builtin' || owner.declaration.tier === 'core')
+            if (noun === 'telemetry' && !legacyTelemetry && provider !== owner.declaration.name)
+              throw Object.assign(new Error(`${owner.declaration.name}: engine.create replaced $.telemetry, added by core; to change what a method does, hook the method`), {name:'HooksError'})
+            if (provider !== undefined && provider !== owner.declaration.name && !legacyTelemetry) {
               const by = [...(state.withheld.get(noun) ?? []), ...(state.carried?.get(noun) ?? [])].at(-1) ?? state.endedBy
               throw new Error(`engine.create may not replace noun ${noun}, owned by ${provider}${by ? ` (withheld by ${by})` : ''}`)
             }
@@ -2766,6 +2790,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
           for (const [noun, methods] of Object.entries(before)) {
             if (Object.hasOwn(result, noun)) continue
+            if (noun === 'telemetry' && owner.declaration.tier === 'user')
+              throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.telemetry, added by core; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
             const withholders = state.withheld.get(noun) ?? new Set<string>()
             withholders.add(owner.declaration.name)
             state.withheld.set(noun, withholders)
