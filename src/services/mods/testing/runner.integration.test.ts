@@ -17,7 +17,10 @@ function failures(result: { file: string; tests: Array<{ name: string; failure?:
   ]
 }
 
-async function scenario(source: string, register?: string, manifest: Record<string, unknown> = {}) {
+async function scenario(
+  source: string, register?: string, manifest: Record<string, unknown> = {}, manualDeadline = false,
+) {
+  await mkdir(join(repository, '.claude-test-evidence'), {recursive:true})
   const root = await mkdtemp(join(repository, '.claude-test-evidence/runner-integration-'))
   await mkdir(join(root, 'hooks'))
   await mkdir(join(root, '.claude-plugin'))
@@ -34,7 +37,13 @@ async function scenario(source: string, register?: string, manifest: Record<stri
     });
   }`)
   await writeFile(join(root, 'probe.test.ts'), source)
-  const child = Bun.spawn([process.execPath, runner, '--child', root, join(root, 'probe.test.ts')], {
+  const command = manualDeadline ? [process.execPath, '-e', `
+    import {runPluginTestChild} from ${JSON.stringify(runner)};
+    import {ManualDeadlineClock} from ${JSON.stringify(join(import.meta.dir, 'fixtures/manualDeadlineClock.ts'))};
+    process.exitCode = await runPluginTestChild(${JSON.stringify(root)}, ${JSON.stringify(join(root, 'probe.test.ts'))},
+      {deadlineClock: new ManualDeadlineClock()});
+  `] : [process.execPath, runner, '--child', root, join(root, 'probe.test.ts')]
+  const child = Bun.spawn(command, {
     cwd: repository,
     env: { PATH: '/usr/bin:/bin', HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'home/config'), TMPDIR: root },
     stdin: 'ignore', stdout: 'pipe', stderr: 'pipe',
@@ -817,6 +826,7 @@ test('mounted redraw of identical props resolves without waiting for a nonexiste
 }, 20000)
 
 test('mounted UI rejects redraw after unmount without leaving a pending draw', async () => {
+  // Lifecycle assertions use a manual case clock; deadline.test.ts checks expiry separately.
   const {result} = await scenario(`import {test, expect} from 'claude-code/testing';
     test('disposed', {timeoutMs:200}, async ($, on) => {
       on('ui.render', () => ({type:'Text', props:{}, children:['ready']}));
@@ -826,7 +836,7 @@ test('mounted UI rejects redraw after unmount without leaving a pending draw', a
       await expect(ui.drawn()).rejects.toThrow('unmounted');
       await expect(ui.find({type:'Text'})).rejects.toThrow('unmounted');
       await expect(ui.findAll({})).rejects.toThrow('unmounted');
-    });`, `export function register(on) {}`)
+    });`, `export function register(on) {}`, {}, true)
   expect(failures(result)).toEqual([])
   expect(passed(result)).toBe(1)
 }, 20000)
@@ -1179,4 +1189,15 @@ test('mounted queries match whole text and all fields in document order without 
   expect(failures(result)).toEqual([])
   expect(passed(result)).toBe(1)
   expect(status).toBe(0)
+}, 20000)
+
+test('a synchronous author body cannot return successfully after its deadline', async () => {
+  const {result} = await scenario(`import {test} from 'claude-code/testing';
+    test('synchronous deadline', {timeoutMs:1}, () => {
+      const until = Date.now() + 25;
+      while (Date.now() < until) {}
+    });`, `export function register(on) {}`)
+  expect(passed(result)).toBe(0)
+  expect(failures(result)).toHaveLength(1)
+  expect(failures(result)[0]?.message).toContain('timed out after 1 ms')
 }, 20000)

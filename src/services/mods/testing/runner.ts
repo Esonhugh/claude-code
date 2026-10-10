@@ -14,6 +14,7 @@ import { createMock } from './mock.js'
 import { modStateLibrarySource } from '../stateLibrary.js'
 import { createModHookStream, createModProcessStream } from '../protocol.js'
 import { HOOK_EVENTS } from '../../../entrypoints/sdk/coreTypes.js'
+import { runWithDeadline, type DeadlineClock } from './deadline.js'
 
 export type PluginTestCaseResult = {
   name: string
@@ -500,7 +501,9 @@ function createEngine(
 
 }
 
-export async function runPluginTestFile(pluginRoot: string, file: string): Promise<PluginTestFileResult> {
+export async function runPluginTestFile(
+  pluginRoot: string, file: string, options: { deadlineClock?: DeadlineClock } = {},
+): Promise<PluginTestFileResult> {
   const root = await realpath(resolve(pluginRoot))
   const target = await realpath(resolve(file))
   const child = relative(root, target)
@@ -522,7 +525,6 @@ export async function runPluginTestFile(pluginRoot: string, file: string): Promi
     const asynchronous: unknown[] = []
     let registrationId = 0
     const mounts = new Set<MountedUi>()
-    let deadline: TimerHandle | undefined
     let initialization: Promise<void> | undefined
     const lifetime = new AbortController()
     const operations = new Set<Promise<unknown>>()
@@ -617,20 +619,15 @@ export async function runPluginTestFile(pluginRoot: string, file: string): Promi
           return next.event === 'ui.render' ? Promise.resolve(result).then(value => structuredClone(value)) : result
         })
       }
-      queueMicrotask(() => { started = true })
-      const body = Promise.resolve(item.body(engine, on))
-      await Promise.race([
-        body,
-        new Promise<never>((_, rejectTimeout) => {
-          deadline = setTimeout(() => rejectTimeout(new Error(`Test timed out after ${item.timeout}ms`)), item.timeout)
-        }),
-      ])
+      await runWithDeadline(() => {
+        queueMicrotask(() => { started = true })
+        return item.body(engine, on)
+      }, item.timeout, options.deadlineClock)
       if (registry.timers.size) throw new Error(`Test left ${registry.timers.size} timer(s) pending`)
       if (mounts.size) throw new Error(`Test left ${mounts.size} UI mount(s) active; call ui.unmount()`)
     } catch (error) {
       messages.push(failure(error))
     } finally {
-      if (deadline !== undefined) clearTimeout(deadline)
       try {
         for (const handle of registry.timers) { clearTimeout(handle); clearInterval(handle) }
         registry.timers.clear()
@@ -674,8 +671,10 @@ export async function runPluginTestFile(pluginRoot: string, file: string): Promi
   return { file: target, tests }
 }
 
-export async function runPluginTestChild(pluginRoot: string, file: string): Promise<number> {
-  const result = await runPluginTestFile(pluginRoot, file)
+export async function runPluginTestChild(
+  pluginRoot: string, file: string, options: { deadlineClock?: DeadlineClock } = {},
+): Promise<number> {
+  const result = await runPluginTestFile(pluginRoot, file, options)
   process.stdout.write(`${RESULT_MARKER}${JSON.stringify(result)}\n`)
   return result.loadFailure !== undefined || result.tests.some(test => test.failure !== undefined) ? 1 : 0
 }
