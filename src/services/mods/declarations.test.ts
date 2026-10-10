@@ -21,31 +21,62 @@ async function fixture(name: string): Promise<string> {
   return realpath(await mkdtemp(join(tmpdir(), `mods-declarations-${name}-`)))
 }
 
+const compilerOptions: ts.CompilerOptions = {
+  strict: true,
+  noEmit: true,
+  skipLibCheck: true,
+  target: ts.ScriptTarget.ES2023,
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  lib: ['lib.es2023.d.ts'],
+  types: [],
+  jsx: ts.JsxEmit.React,
+  jsxFactory: 'h',
+  jsxFragmentFactory: 'Fragment',
+}
+
+const librarySyntax = new Map<string, ts.SourceFile>()
+function withLibrarySyntax(host: ts.CompilerHost, options: ts.CompilerOptions, virtual: Readonly<Record<string, string>> = {}): ts.CompilerHost {
+  const libraryDirectory = dirname(ts.getDefaultLibFilePath(options))
+  const parserOptions = JSON.stringify({ ...options, skipLibCheck: undefined })
+  const parse = host.getSourceFile.bind(host)
+  host.getSourceFile = (file, languageVersion, onError, fresh) => {
+    if (Object.hasOwn(virtual, file) || dirname(file) !== libraryDirectory) return parse(file, languageVersion, onError, fresh)
+    const key = `${parserOptions}:${file}`
+    const cached = librarySyntax.get(key)
+    if (cached && !fresh) return cached
+    const parsed = parse(file, languageVersion, onError, fresh)
+    if (parsed) librarySyntax.set(key, parsed)
+    return parsed
+  }
+  return host
+}
+
+// The TypeScript builder invalidates changed author/declaration diagnostics while retaining unaffected libraries.
+const typecheckPrograms = new Map<string, ts.SemanticDiagnosticsBuilderProgram>()
+
 function diagnostics(files: Readonly<Record<string, string>>, roots: readonly string[], overrides: ts.CompilerOptions = {}): readonly ts.Diagnostic[] {
   const dependencies = { ...files }
-  const options: ts.CompilerOptions = {
-    strict: true,
-    noEmit: true,
-    skipLibCheck: true,
-    target: ts.ScriptTarget.ES2023,
-    module: ts.ModuleKind.ESNext,
-    moduleResolution: ts.ModuleResolutionKind.Bundler,
-    lib: ['lib.es2023.d.ts'],
-    types: [],
-    jsx: ts.JsxEmit.React,
-    jsxFactory: 'h',
-    jsxFragmentFactory: 'Fragment',
-    ...overrides,
-  }
+  const options: ts.CompilerOptions = { ...compilerOptions, ...overrides }
   const check = (input: Readonly<Record<string, string>>) => {
-    const host = ts.createCompilerHost(options)
+    const host = withLibrarySyntax(ts.createIncrementalCompilerHost(options), options, input)
     const read = host.readFile.bind(host)
     const exists = host.fileExists.bind(host)
     const directoryExists = host.directoryExists?.bind(host)
     host.directoryExists = directory => Object.keys(input).some(file => file.startsWith(`${directory}/`)) || directoryExists?.(directory) === true
     host.readFile = file => input[file] ?? read(file)
     host.fileExists = file => Object.hasOwn(input, file) || exists(file)
-    return ts.getPreEmitDiagnostics(ts.createProgram([...roots], options, host))
+    const key = JSON.stringify(options)
+    const program = ts.createSemanticDiagnosticsBuilderProgram([...roots], options, host, typecheckPrograms.get(key))
+    typecheckPrograms.set(key, program)
+    return ts.sortAndDeduplicateDiagnostics([
+      ...program.getConfigFileParsingDiagnostics(),
+      ...program.getOptionsDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+      ...((options.declaration ?? options.composite) ? program.getDeclarationDiagnostics() : []),
+    ])
   }
   const official = Object.fromEntries(Object.entries(dependencies).map(([path, text]) => [path, text.includes('// Claude Code function hooks:') ? officialDeclaration : text]))
   const result = check(dependencies)
