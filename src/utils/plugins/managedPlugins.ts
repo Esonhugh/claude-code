@@ -18,6 +18,21 @@ function sameDeclaredSource(a: MarketplaceSource, b: MarketplaceSource): boolean
   return isEqual(fields(a),fields(b))
 }
 
+/** A refused registration remains distinct from a missing or unreadable catalog. */
+export function getMarketplaceDeclarationRefusal(
+  source: MarketplaceSource | undefined,
+  declaration: MarketplaceSource | undefined,
+): { kind: 'declaration'; reason: string } | undefined {
+  if (source && source.source !== 'directory' && source.source !== 'file' &&
+      declaration && !sameDeclaredSource(source, declaration)) {
+    return {
+      kind: 'declaration',
+      reason: "its source doesn't match its extraKnownMarketplaces entry in user or managed settings",
+    }
+  }
+  return undefined
+}
+
 /** Read local marketplace content in place; trust belongs to its actual registered source. */
 export async function getInPlacePluginSource(
   pluginId: string,
@@ -33,8 +48,9 @@ export async function getInPlacePluginSource(
   if (registered && !registered.source) return undefined
   const source=registered?.source ?? declared
   if (!source) return undefined
-  if (registered && source.source !== 'directory' && source.source !== 'file' && declared && !sameDeclaredSource(source,declared)) {
-    throw new Error(`Marketplace "${marketplace}" is ignored everywhere: its source doesn't match its extraKnownMarketplaces entry in user or managed settings — re-add the marketplace from the source that entry lists, or change the entry.`)
+  const refusal = registered && getMarketplaceDeclarationRefusal(source, declared)
+  if (refusal) {
+    throw new Error(`Marketplace "${marketplace}" is ignored everywhere: ${refusal.reason} — re-add the marketplace from the source that entry lists, or change the entry.`)
   }
   if (source.source !== 'directory' || !isAbsolute(source.path)) return undefined
   const location=registered?.installLocation ?? source.path

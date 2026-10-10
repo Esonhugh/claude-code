@@ -163,6 +163,8 @@ export type PluginError =
       source: string
       marketplace: string
       availableMarketplaces: string[]
+      registrationHidden?: 'network-location' | 'source' | 'declaration'
+      registrationHiddenReason?: string
     }
   | {
       type: 'marketplace-load-failed'
@@ -303,6 +305,25 @@ export type PluginLoadResult = {
  * Helper function to get a display message from any PluginError
  * Useful for logging and simple error displays
  */
+const marketplaceRegistrationGuidance = {
+  'network-location': 're-add the marketplace (one added from a folder or file must be re-added from a copy on this computer), or, to trust a folder on a network drive, declare it under extraKnownMarketplaces in user or managed settings',
+  source: 're-add the marketplace with a supported source',
+  declaration: 're-add the marketplace from the source that entry lists, or change the entry',
+} as const
+
+type MissingMarketplaceError = Extract<PluginError, { type: 'marketplace-not-found' }>
+const capitalize = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
+export function getMarketplaceRegistrationReason(error: MissingMarketplaceError): string | undefined {
+  return error.registrationHiddenReason === undefined ? undefined : capitalize(error.registrationHiddenReason)
+}
+
+export function getMarketplaceRegistrationGuidance(error: MissingMarketplaceError): string | undefined {
+  if (error.registrationHidden === undefined) return undefined
+  return error.registrationHiddenReason === undefined ? 'Remove and re-add the marketplace' :
+    capitalize(marketplaceRegistrationGuidance[error.registrationHidden])
+}
+
 export function getPluginErrorMessage(error: PluginError): string {
   switch (error.type) {
     case 'generic-error':
@@ -321,8 +342,15 @@ export function getPluginErrorMessage(error: PluginError): string {
       return `Manifest validation failed: ${error.validationErrors.join(', ')}`
     case 'plugin-not-found':
       return `Plugin ${error.pluginId} not found in marketplace ${error.marketplace}`
-    case 'marketplace-not-found':
+    case 'marketplace-not-found': {
+      if (error.registrationHidden !== undefined) {
+        const message = `Marketplace ${error.marketplace} is added but ignored`
+        const reason = getMarketplaceRegistrationReason(error)
+        return reason === undefined ? `${message} (see the debug log)` :
+          `${message}. ${reason}. ${getMarketplaceRegistrationGuidance(error)}.`
+      }
       return `Marketplace ${error.marketplace} not found`
+    }
     case 'marketplace-load-failed':
       return `Marketplace ${error.marketplace} failed to load: ${error.reason}`
     case 'mcp-config-invalid':

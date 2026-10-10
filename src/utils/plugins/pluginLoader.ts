@@ -109,7 +109,7 @@ import {
   getInstalledPluginsFilePath,
   readInstalledPluginsForContractValidation,
 } from './installedPluginsManager.js'
-import { getInPlacePluginSource, getManagedPluginNames } from './managedPlugins.js'
+import { getInPlacePluginSource, getManagedPluginNames, getMarketplaceDeclarationRefusal } from './managedPlugins.js'
 import { areSideloadFlagsDisabled, getSideloadFlagsError } from './sideloadPolicy.js'
 import {
   formatSourceForDisplay,
@@ -2002,6 +2002,15 @@ async function loadPluginsFromMarketplaces({
     ? loadKnownMarketplacesConfig()
     : loadKnownMarketplacesForPluginLoading())
 
+  const declarations = settings.extraKnownMarketplaces
+  const marketplaceRefusals = new Map(
+    Object.entries(knownMarketplaces).flatMap(([name, registration]) => {
+      const refusal = getMarketplaceDeclarationRefusal(registration.source, declarations?.[name]?.source)
+      return refusal ? [[name, refusal] as const] : []
+    }),
+  )
+  const availableMarketplaces = Object.keys(knownMarketplaces).filter(name => !marketplaceRefusals.has(name))
+
   // Fail-closed guard for enterprise policy: if a policy IS configured and we
   // cannot resolve a marketplace's source (config returned {} due to corruption,
   // or entry missing), we must NOT silently skip the policy check and load the
@@ -2033,6 +2042,7 @@ async function loadPluginsFromMarketplaces({
   >()
   await Promise.all(
     [...uniqueMarketplaces].map(async name => {
+      if (marketplaceRefusals.has(name)) return
       if (contractOnly) {
         const config = knownMarketplaces[name]
         const declared = getSettingsWithErrors().settings.extraKnownMarketplaces?.[name]?.source
@@ -2086,6 +2096,24 @@ async function loadPluginsFromMarketplaces({
     marketplacePluginEntries.map(async ([pluginId, enabledValue]) => {
       const { name: pluginName, marketplace: marketplaceName } =
         parsePluginIdentifier(pluginId)
+
+      const refusal = marketplaceRefusals.get(marketplaceName!)
+      if (refusal) {
+        if (enabledValue === true || Array.isArray(enabledValue)) {
+          errors.push({
+            type: 'marketplace-not-found', source: pluginId, marketplace: marketplaceName!,
+            availableMarketplaces, registrationHidden: refusal.kind,
+            registrationHiddenReason: refusal.reason,
+          })
+          logForDebugging(
+            `plugin "${pluginId}" not loaded (hooks module, commands, skills, servers: none of it): its marketplace "${marketplaceName}" is recorded in known_marketplaces.json but refused this load (${refusal.kind}); ${refusal.reason}; re-add the marketplace from the source that entry lists, or change the entry`,
+            { level: 'warn' },
+          )
+        } else {
+          logForDebugging(`Skipping load-failure error for disabled plugin ${pluginId}`)
+        }
+        return null
+      }
 
       const inPlace = await getInPlacePluginSource(
         pluginId, getSettingsForSource('policySettings'), knownMarketplaces[marketplaceName!],
