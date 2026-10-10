@@ -1971,6 +1971,9 @@ function runHeadlessStreaming(
 
   // Interrupt urgent input and wake idle SDK sessions for channel messages.
   const unsubscribeCommandQueue = subscribeToCommandQueue(() => {
+    // QueryEngine-owned command receipts can enqueue again while turn.complete is settling.
+    // Keep draining them even after stdin closes; their hooks must finish before output closes.
+    if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
     if (abortController && getCommandsByMaxPriority('now').length > 0) {
       abortController.abort('interrupt')
     }
