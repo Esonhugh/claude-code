@@ -124,6 +124,7 @@ export type FsEntry = {
   name: string
   kind: 'file' | 'dir' | 'other'
   size: number
+  mtimeMs: number
   isLink: boolean
 }
 export type FsStatOptions = { resolve: boolean }
@@ -948,17 +949,18 @@ export function createModHostOperations({
         const entries = await readdir(target, { withFileTypes: true })
         signal.throwIfAborted()
         const result = await Promise.all(
-          entries.map(async (entry) => ({
-            name: entry.name,
-            kind: kind(entry),
-            isLink: entry.isSymbolicLink(),
-            size: entry.isFile()
-              ? await stat(resolve(target, entry.name)).then(
-                  (s) => s.size,
-                  () => 0,
-                )
-              : 0,
-          })),
+          entries.map(async (entry) => {
+            const metadata = entry.isFile()
+              ? await stat(resolve(target, entry.name)).catch(() => undefined)
+              : undefined
+            return {
+              name: entry.name,
+              kind: kind(entry),
+              size: metadata?.size ?? 0,
+              mtimeMs: metadata?.mtimeMs ?? 0,
+              isLink: entry.isSymbolicLink(),
+            }
+          }),
         )
         signal.throwIfAborted()
         return result.sort((a, b) => a.name.localeCompare(b.name))

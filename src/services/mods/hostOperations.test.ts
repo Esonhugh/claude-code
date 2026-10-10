@@ -1603,11 +1603,11 @@ describe('fs', () => {
     await symlink('dir', join(cwd, 'dir-link'))
     await symlink('missing', join(cwd, 'broken'))
     expect(await host.fs.list()).toEqual([
-      { name: 'broken', kind: 'other', size: 0, isLink: true },
-      { name: 'dir', kind: 'dir', size: 0, isLink: false },
-      { name: 'dir-link', kind: 'other', size: 0, isLink: true },
-      { name: 'file', kind: 'file', size: 3, isLink: false },
-      { name: 'link', kind: 'other', size: 0, isLink: true },
+      { name: 'broken', kind: 'other', size: 0, mtimeMs: 0, isLink: true },
+      { name: 'dir', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      { name: 'dir-link', kind: 'other', size: 0, mtimeMs: 0, isLink: true },
+      { name: 'file', kind: 'file', size: 3, mtimeMs: (await stat(join(cwd, 'file'))).mtimeMs, isLink: false },
+      { name: 'link', kind: 'other', size: 0, mtimeMs: 0, isLink: true },
     ])
   })
 
@@ -1665,9 +1665,9 @@ describe('fs', () => {
     await host.fs.write('nested/a', 'hello')
     await mkdir(join(cwd, 'nested', 'dir'))
     expect(await host.fs.list('nested')).toEqual([
-      { name: 'a', kind: 'file', size: 5, isLink: false },
-      { name: 'dir', kind: 'dir', size: 0, isLink: false },
-      { name: 'z', kind: 'file', size: 2, isLink: false },
+      { name: 'a', kind: 'file', size: 5, mtimeMs: (await stat(join(cwd, 'nested/a'))).mtimeMs, isLink: false },
+      { name: 'dir', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
+      { name: 'z', kind: 'file', size: 2, mtimeMs: (await stat(join(cwd, 'nested/z'))).mtimeMs, isLink: false },
     ])
     expect(await host.fs.stat('nested/z')).toEqual({
       kind: 'file',
@@ -1678,7 +1678,7 @@ describe('fs', () => {
     expect(await host.fs.exists('nested/z')).toBe(true)
     expect(await host.fs.exists('absent')).toBe(false)
     expect(await host.fs.list()).toEqual([
-      { name: 'nested', kind: 'dir', size: 0, isLink: false },
+      { name: 'nested', kind: 'dir', size: 0, mtimeMs: 0, isLink: false },
     ])
   })
 
@@ -1737,7 +1737,7 @@ describe('fs', () => {
       })
     }
     expect(await host.fs.list('../outside')).toEqual([
-      { name: 'file', kind: 'file', size: 7, isLink: false },
+      { name: 'file', kind: 'file', size: 7, mtimeMs: (await stat(join(root, 'outside/file'))).mtimeMs, isLink: false },
     ])
     expect(await host.fs.stat('outside-link', { resolve: true })).toMatchObject({
       kind: 'dir', isLink: true, realPath: join(root, 'outside'),
