@@ -325,7 +325,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         const call = ++nextCall;
         let cleanup;
         const result = new Promise((resolve, reject) => {
-          pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation, modelMethod:wire.modelMethod });
+          pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation, modelMethod:wire.modelMethod, mutableResult:wire.mutableResult });
           try {
             if (wire.storeMethod === 'set') {
               const text = JSON.stringify(args[1]);
@@ -411,7 +411,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env']);
     const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
       'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
-      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
       'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.copy',
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
       'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
@@ -596,7 +596,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
           if (result.errorName === 'HooksError') error.name = 'HooksError';
           if (result.errorRef !== undefined) hostErrors.set(error, result.errorRef);
           item.reject(error);
-        } else item.resolve(decode(result.value, item.invocation, item.modelMethod === 'complete' || item.modelMethod === 'fork'));
+        } else item.resolve(decode(result.value, item.invocation, item.mutableResult === true || item.modelMethod === 'complete' || item.modelMethod === 'fork'));
       } catch (error) { item.reject(error); }
     },
     trace(text) {

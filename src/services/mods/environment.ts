@@ -37,6 +37,11 @@ export function createModClockBridge(callbacks: ClockCallbacks): object {
 
 type RemoteRegistration = (ModRegistration & { catchId?: number })[]
 type HostFunction = (...args: unknown[]) => unknown
+const mutableResults = new WeakSet<HostFunction>()
+export function createModMutableResultBridge<T extends HostFunction>(call: T): T {
+  mutableResults.add(call)
+  return call
+}
 const stateMethods = new WeakMap<HostFunction, 'get' | 'set'>()
 export function createModStateBridge(method: 'get' | 'set', call: HostFunction): HostFunction {
   stateMethods.set(call, method)
@@ -311,7 +316,7 @@ export function createModEnvironmentHost({
       const storeMethod = storeMethods.get(value as HostFunction)
       const stateMethod = stateMethods.get(value as HostFunction)
       const modelMethod = modelMethods.get(value as HostFunction)
-      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}) }
+      return { type: 'host-function', id: hostHandle(environment, value as HostFunction), ...(mutableResults.has(value as HostFunction) ? {mutableResult:true} : {}), ...(storeMethod === undefined ? {} : { storeMethod }), ...(stateMethod === undefined ? {} : { stateMethod }), ...(streamBridges.has(value as HostFunction) ? { stream: true } : {}), ...(streamBridges.get(value as HostFunction) === 'environment' ? {streamLifetime:'environment' as const} : {}), ...(modelMethod ? {modelMethod} : {}) }
     }
     if (seen.has(value) || seen.size > 100) throw new Error('Unsupported module value')
     const ui = uiBridges.get(value)

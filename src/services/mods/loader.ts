@@ -34,7 +34,7 @@ const supportedEvents = new Set([
   'config.set', 'config.describe', 'session.authorize', 'http.fetch',
   'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn',
   'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
-  'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage',
+  'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version',
   'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.copy',
   'mcp.connect',

@@ -129,7 +129,7 @@ export type ModWireValue =
   | { type: 'object'; entries: [string, ModWireValue][] }
   | { type: 'engine'; id: number; value: ModWireValue }
   | { type: 'function'; id: number }
-  | { type: 'host-function'; id: number; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; streamLifetime?: 'environment'; modelMethod?: 'complete' | 'fork' | 'classify' }
+  | { type: 'host-function'; id: number; mutableResult?: true; storeMethod?: 'get' | 'set' | 'delete'; stateMethod?: 'get' | 'set'; stream?: boolean; streamLifetime?: 'environment'; modelMethod?: 'complete' | 'fork' | 'classify' }
   | { type: 'host-stream'; id: number; streamLifetime?: 'environment' }
   | { type: 'stream'; invocation: number }
   | { type: 'clock'; now: number; wait: number; cancel: number; run: number }

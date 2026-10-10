@@ -37,7 +37,7 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModModelBridge, createModStateBridge, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
+import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModModelBridge, createModStateBridge, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
@@ -250,7 +250,7 @@ const coreHost: Nouns = {
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, authorize: hostIdentity },
+  session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { register: hostIdentity, list: hostIdentity },
@@ -1108,6 +1108,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'ui.invalidate': return { event: args[0] }
       case 'ui.panes': return {}
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
+      case 'session.version': return {}
       case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'session.messages': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
@@ -1345,6 +1346,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           ...(plugin === undefined ? {} : { plugin }),
         }
       })
+      case 'session.version': {
+        const version = typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev'
+        // Match analytics' version_base and use the same embedded build stamp.
+        const base = version.match(/^\d+\.\d+\.\d+(?:-[a-z]+)?/)?.[0]
+        const builtAt = typeof MACRO !== 'undefined' ? MACRO.BUILD_TIME || undefined : undefined
+        return { version, ...(base === undefined ? {} : { base }), ...(builtAt === undefined ? {} : { builtAt }) }
+      }
       case 'session.cwd': case 'session.root': case 'session.id':
         if (!binding) throw new Error('Module session is not bound')
         return op === 'session.cwd' ? services.cwd?.() ?? binding.cwd
@@ -1988,7 +1996,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }
           if (typeof result.deny === 'string') {
-            if (fn === hostIdentity && (op === 'model.classify' || op === 'model.complete'))
+            if (fn === hostIdentity && (op === 'model.classify' || op === 'model.complete' || op === 'session.version'))
               throw Object.assign(new Error(`${owner.declaration.name}: $.${op}: ${result.deny}`), {name:'HooksError'})
             throw new Error(result.deny)
           }
@@ -2065,6 +2073,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (step) wrapped.step = step
       if (noun === 'model') for (const method of ['complete','fork','classify'] as const)
         if (methods[method] === hostIdentity && wrapped[method]) createModModelBridge(wrapped[method],method)
+      if (noun === 'session' && methods.version === hostIdentity && wrapped.version) createModMutableResultBridge(wrapped.version)
       if (noun === 'store') {
         for (const method of ['get', 'set', 'delete'] as const) {
           if (methods[method] === hostIdentity && wrapped[method])
