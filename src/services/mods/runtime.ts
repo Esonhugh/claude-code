@@ -1,3 +1,4 @@
+import { resolve } from 'node:path'
 import type { ModCommandRequest } from './commandRunQueue.js'
 import { randomUUID } from 'node:crypto'
 import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from './turnRegistry.js'
@@ -898,6 +899,18 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
   }
 
+  const fsPathEvents = new Set(['fs.read', 'fs.stat', 'fs.exists', 'fs.list', 'fs.write'])
+  function checkFsPath(event: string, input: ModInput, plugin?: string): ModInput {
+    if (typeof input.path !== 'string' || input.path === '')
+      throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}${event}: takes a path (host check)`), {name:'HooksError'})
+    return input
+  }
+  function raiseFsPath(input: ModInput, at: string): ModInput {
+    if (typeof input.path !== 'string' || input.path === '') return input
+    const path = resolve(at, input.path)
+    return path === input.path ? input : {...input, path}
+  }
+
   function hostInput(op: string, args: unknown[], plugin?: string): ModInput {
     switch (op) {
       case 'telemetry.log': case 'telemetry.mark': return modTelemetryArgs(op, args[0], plugin)
@@ -958,13 +971,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'fs.read': case 'fs.stat': {
         const options = args[1] === undefined ? {} : args[1]
         if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError(`${op} options must be an object`)
-        return op === 'fs.read'
+        return checkFsPath(op, op === 'fs.read'
           ? { path: args[0], as: (options as ModInput).as === undefined ? 'text' : (options as ModInput).as }
-          : { path: args[0], resolve: (options as ModInput).resolve === undefined ? false : (options as ModInput).resolve }
+          : { path: args[0], resolve: (options as ModInput).resolve === undefined ? false : (options as ModInput).resolve }, plugin)
       }
-      case 'fs.exists': return { path: args[0] }
-      case 'fs.list': return { path: args[0] ?? '.' }
-      case 'fs.write': return { path: args[0], text: args[1] }
+      case 'fs.exists': return checkFsPath(op, { path: args[0] }, plugin)
+      case 'fs.list': return checkFsPath(op, { path: args[0] ?? '.' }, plugin)
+      case 'fs.write': return checkFsPath(op, { path: args[0], text: args[1] }, plugin)
       case 'env.get': return { name: args[0] }
       case 'env.set': return { name: args[0], value: args[1] }
       case 'store.get': case 'store.delete': return { key: args[0] }
@@ -1139,6 +1152,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'env.get': return owner.operations.env.get(input.name as string)
       case 'env.set': return owner.operations.env.set(input.name as string, input.value as string | undefined)
       case 'fs.read': case 'fs.list': case 'fs.stat': case 'fs.exists': case 'fs.write': case 'fs.ancestors': case 'process.run': {
+        if (fsPathEvents.has(op)) checkFsPath(op, input)
         const combined = createCombinedAbortSignal(signal, {signalB:owner.controller.signal})
         try {
           switch (op) {
@@ -1163,6 +1177,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               }
             }
           }
+        } catch (error) {
+          if (combined.signal.aborted) throw error
+          const code = (error as NodeJS.ErrnoException | null)?.code
+          if (fsPathEvents.has(op) && typeof code === 'string')
+            throw Object.assign(new Error(`${owner.declaration.name}: $.${op}(${String(input.path)}) failed: ${code}`), {name:'HooksError'})
+          throw error
         } finally { combined.cleanup() }
       }
       case 'store.get': return store.get(input.key as string)
@@ -2675,6 +2695,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
+    // Official 2.1.292 raises entry and next() paths against the invocation's cwd.
+    const pathBase = fsPathEvents.has(event) ? services.cwd?.() ?? binding?.cwd ?? process.cwd() : undefined
+    if (pathBase !== undefined) input = raiseFsPath(input, pathBase)
     const context = capabilityContext.getStore()
     // Preserve the cancellation reason for every event, including nested host calls.
     const combined = combineModModelSignals(options.signal, controller.signal)
@@ -2727,6 +2750,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           options.validateInput?.(value, received)
         },
         restoreInput: (value, received) => {
+          if (pathBase !== undefined) return raiseFsPath(value, pathBase)
           if (event === 'session.measure') return received
           if (event === 'telemetry.log' && !Object.hasOwn(value,'to')) return {...value,to:received.to}
           if (event === 'prompt.autocomplete') return restorePromptAutocompleteInput(value, received)

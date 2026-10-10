@@ -1747,11 +1747,11 @@ test('session.start reads the host catalog while projected commands use their ca
 test('Worker fs options and hook rewrites reach the host without losing defaults', async () => {
   await writeFile(join(root, 'bytes.bin'), Buffer.from([0, 255, 128]))
   const policy = await plugin('fs-options-policy', `export function register(on) {
-    on('fs.read', ($, e, next) => e.path === 'rewrite' ? next({...e,path:'bytes.bin',as:'bytes'}) : next(e));
-    on('fs.stat', ($, e, next) => e.path === 'rewrite' ? next({...e,path:'bytes.bin',resolve:true}) : next(e));
-    on('fs.read', {path:'denied'}, () => ({deny:'read denied'}));
-    on('fs.read', {path:'defaults'}, ($, e) => ({value:e.as}));
-    on('fs.stat', {path:'defaults'}, ($, e) => ({value:e.resolve}));
+    on('fs.read', ($, e, next) => e.path === ${JSON.stringify(join(root, 'rewrite'))} ? next({...e,path:'bytes.bin',as:'bytes'}) : next(e));
+    on('fs.stat', ($, e, next) => e.path === ${JSON.stringify(join(root, 'rewrite'))} ? next({...e,path:'bytes.bin',resolve:true}) : next(e));
+    on('fs.read', {path:${JSON.stringify(join(root, 'denied'))}}, () => ({deny:'read denied'}));
+    on('fs.read', {path:${JSON.stringify(join(root, 'defaults'))}}, ($, e) => ({value:e.as}));
+    on('fs.stat', {path:${JSON.stringify(join(root, 'defaults'))}}, ($, e) => ({value:e.resolve}));
   }`)
   const consumer = await plugin('fs-options-consumer', `export function register(on) {
     on('tool.call', async ($) => {
@@ -2689,7 +2689,7 @@ test('capability calls run sibling hooks and skip only the currently calling reg
   await value.reconcile([consumer])
   expect(diagnostics).toEqual([])
   expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({
-    result:{text:'host text:actual.txt:sibling-reader',entries:1},
+    result:{text:`host text:${join(root, 'actual.txt')}:sibling-reader`,entries:1},
   })
   expect(diagnostics).toEqual([])
 })
