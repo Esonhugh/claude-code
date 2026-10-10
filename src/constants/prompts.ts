@@ -110,6 +110,8 @@ const skillSearchFeatureCheck = feature('EXPERIMENTAL_SKILL_SEARCH')
 import type { OutputStyleConfig } from './outputStyles.js'
 import { CYBER_RISK_INSTRUCTION } from './cyberRiskInstruction.js'
 import { isAnt } from 'src/utils/userType.js'
+import { shouldUseLeanPrompt } from '../utils/model/leanPrompt.js'
+import { getLeanPromptBody, getLeanCommunication, LEAN_ACTION_CAUTION, LEAN_PRONOUNS } from './leanPrompt.js'
 
 
 export const CLAUDE_CODE_DOCS_MAP_URL =
@@ -472,6 +474,7 @@ export async function getSystemPrompt(
     ], facts, recipe)
   }
 
+  const lean = shouldUseLeanPrompt(model)
   const cwd = getCwd()
   const [skillToolCommands, configuredOutputStyle, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
@@ -492,6 +495,7 @@ export async function getSystemPrompt(
     },
     traits: [
       ...steeringTraits,
+      ...(lean ? ['lean' as const] : []),
       ...(getIsNonInteractiveSession() ? ['print' as const] : []),
       ...(enabledTools.has(SKILL_TOOL_NAME) && skillToolCommands.length > 0 ? ['skills' as const] : []),
     ],
@@ -529,6 +533,11 @@ ${CYBER_RISK_INSTRUCTION}`,
   }
 
   const dynamicSections = [
+    ...(lean ? [
+      systemPromptSection('communication', () => getLeanCommunication(model)),
+      systemPromptSection('pronouns', () => LEAN_PRONOUNS),
+      systemPromptSection('action_caution', () => LEAN_ACTION_CAUTION),
+    ] : []),
     systemPromptSection('session_guidance', () =>
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, excludeDynamicSections),
     ),
@@ -602,7 +611,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     composition
       ? await Promise.all(dynamicSections.map(section => section.compute()))
       : await resolveSystemPromptSections(dynamicSections)
-  const sourceSections: PromptSection[] = [
+  const coreSections: PromptSection[] = lean ? [{ id: 'lean_body', layer: 'stable-core', content: getLeanPromptBody(outputStyleConfig, model) }] : [
     {
       id: 'identity',
       layer: 'stable-core',
@@ -642,6 +651,9 @@ ${CYBER_RISK_INSTRUCTION}`,
       layer: 'capability',
       content: getUsingYourToolsSection(enabledTools),
     },
+  ]
+  const sourceSections: PromptSection[] = [
+    ...coreSections,
     ...(excludeDynamicSections ? [{ id: 'memory_static', layer: 'capability' as const, content: loadStaticMemoryPrompt() }] : []),
     ...resolvedDynamicSections.map((content, index) => ({
       id: dynamicSections[index]!.name,

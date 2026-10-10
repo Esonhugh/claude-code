@@ -1615,7 +1615,12 @@ test('Mods named sections reach the actual SDK system field and invalidate on th
     })
     expect((await runSideQuestion({ question: 'side question', cacheSafeParams: fallback })).response).toBe('OK')
     expect(requests).toHaveLength(5)
-    for (const section of named) expect(wire(4)).toContain('SECTION_' + section.name + '_')
+    // Official 2.1.292: the fallback's own model selects lean sections, independently of the earlier query.
+    const fallbackNamed = getSystemPromptSections(fallback.systemPrompt)!.filter(section => 'name' in section)
+    expect(fallbackNamed).toContainEqual({ name: 'lean_body', text: expect.any(String), scope: 'shared' })
+    for (const section of fallbackNamed) expect(wire(4)).toContain('SECTION_' + section.name + '_')
+    expect(wire(4)).not.toContain('SECTION_identity_')
+    expect(wire(4)).not.toContain('SECTION_system_')
     expect(wire(4)).toContain('SIDE_APPEND_LITERAL')
     const { getCLISyspromptPrefix } = await import('../../constants/system.js')
     const sdkPrefix = getCLISyspromptPrefix({ isNonInteractive: true, hasAppendSystemPrompt: true })
