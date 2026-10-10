@@ -282,6 +282,7 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
   const setInputWithCursorCalls: unknown[] = []
   const insertTextRef = {
     current: {
+      get text() { return inputValueRef.current },
       cursorOffset: 3,
       insert: noop,
       setInputWithCursor: (text: string, cursor: number) => {
