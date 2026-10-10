@@ -41,8 +41,10 @@ await storage.flushSessionStorage();await storage.writeAgentMetadata(id,{agentTy
 state.agentNameRegistry.set(name,id)
 if(!variant.endsWith('evicted'))state.tasks[id]={id,type:'local_agent',status:'completed',description:'resume fixture',pendingMessages:[],notified:true}
 const {SendMessageTool}=await import(m.sender)
+const cancellationReason=new Error('parent interrupt')
 let returned=false
 const reply=SendMessageTool.call({to:variant==='raw'?id:name,message:'FOLLOW-UP'},context,permit,undefined).then(result=>{returned=true;return result})
+const received=variant==='abort'?assert.rejects(reply,error=>error===cancellationReason,'resume must propagate the original parent abort reason'):reply
 await started.promise
 assert.equal(executions.length,1);const params=executions[0]
 assert.equal(params.override.agentId,id);assert.equal(params.isAsync,true);if(!ordinary)assert.equal(params.resolvedModel,context.options.mainLoopModel)
@@ -51,14 +53,18 @@ assert.equal(params.promptMessages[0].message.content,'ORIGINAL-WORKER');assert.
 assert.equal(state.tasks[id].status,'running');assert.equal(state.runningSubagents,1)
 if(inline){await new Promise(resolve=>setImmediate(resolve));assert.equal(returned,false,'SendMessage returned before the inline report')}
 else {await reply;assert.equal(returned,true)}
-if(variant==='abort')context.abortController.abort('parent interrupt');else finish.resolve()
-const result=await reply
+if(variant==='abort')context.abortController.abort(cancellationReason);else finish.resolve()
+const result=await received
 for(let i=0;i<100&&state.tasks[id].status==='running';i++)await new Promise(resolve=>setImmediate(resolve))
 assert.equal(state.runningSubagents,0);if(ordinary)assert.match(params.effectiveModel,/^claude-haiku/)
 assert.equal(state.tasks[id].status,variant==='failure'?'failed':variant==='abort'?'killed':'completed')
 const {getCommandQueue}=await import(m.queue)
 if(inline){
  assert.equal(state.tasks[id].notified,true);assert.equal(getCommandQueue().filter(c=>c.mode==='task-notification').length,0)
+ if(variant==='abort'){
+  assert.equal(result,undefined)
+  assert.equal(context.abortController.signal.reason,cancellationReason)
+ }else{
  assert.equal(result.data.success,!['failure','abort'].includes(variant))
  if(result.data.success){
   assert.equal(result.data.message,'Resumed agent. Its final report is not in this message.')
@@ -76,6 +82,7 @@ if(inline){
    try{await new Promise(resolve=>setImmediate(resolve));assert.ok(frame.includes('Resumed agent '+displayName+'. Result:'));assert.ok(frame.includes('REPORT 中文'));assert.ok(!frame.includes('Its final report is not in this message'))}finally{app.unmount();stdin.destroy();stdout.destroy()}
   }
  }else assert.ok(result.data.message.includes(variant==='failure'?'controlled resume failure':'killed'))
+ }
 }else{
  assert.equal(result.data.inlineHandback,undefined);assert.equal(state.tasks[id].notified,true)
  assert.equal(getCommandQueue().filter(c=>c.mode==='task-notification').length,1)
