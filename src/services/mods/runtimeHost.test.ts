@@ -1401,7 +1401,8 @@ test('Worker fs.ancestors publishes admission, walks original root and consumes 
     cwd = nested
     expect(await run({names:[name]})).toEqual({result:{found:[outer,projectEntry],request:{names:[name]}}})
     const request = {names:[name],of:'not-created.ts',below:'..'}
-    expect(await run(request)).toEqual({result:{found:[{dir:nested,name,content:'nested',parts:[{path:join(nested,name),content:'nested'}]}],request}})
+    // Official 2.1.292 raises of before the admission hook, while below stays relative.
+    expect(await run(request)).toEqual({result:{found:[{dir:nested,name,content:'nested',parts:[{path:join(nested,name),content:'nested'}]}],request:{...request,of:join(nested,'not-created.ts')}}})
     expect(await value.dispatch('tool.call',{tool:'Read'},async () => ({result:'unexpected'}))).toEqual({result:'current cwd'})
     sessionRoot = elsewhere
     await value.bind({...binding(root),sessionId:'rebound'})

@@ -905,10 +905,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}${event}: takes a path (host check)`), {name:'HooksError'})
     return input
   }
-  function raiseFsPath(input: ModInput, at: string): ModInput {
-    if (typeof input.path !== 'string' || input.path === '') return input
-    const path = resolve(at, input.path)
-    return path === input.path ? input : {...input, path}
+  function raiseFsPath(input: ModInput, at: string, field: 'path' | 'of' = 'path'): ModInput {
+    const value = input[field]
+    if (typeof value !== 'string' || value === '') return input
+    const path = resolve(at, value)
+    return path === value ? input : {...input, [field]: path}
   }
 
   function hostInput(op: string, args: unknown[], plugin?: string): ModInput {
@@ -2695,9 +2696,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
-    // Official 2.1.292 raises entry and next() paths against the invocation's cwd.
-    const pathBase = fsPathEvents.has(event) ? services.cwd?.() ?? binding?.cwd ?? process.cwd() : undefined
-    if (pathBase !== undefined) input = raiseFsPath(input, pathBase)
+    // Official 2.1.292 raises filesystem entry paths against the invocation's cwd.
+    const pathField = event === 'fs.ancestors' ? 'of' : 'path'
+    const pathBase = fsPathEvents.has(event) || event === 'fs.ancestors' ? services.cwd?.() ?? binding?.cwd ?? process.cwd() : undefined
+    if (pathBase !== undefined) input = raiseFsPath(input, pathBase, pathField)
     const context = capabilityContext.getStore()
     // Preserve the cancellation reason for every event, including nested host calls.
     const combined = combineModModelSignals(options.signal, controller.signal)
@@ -2750,7 +2752,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           options.validateInput?.(value, received)
         },
         restoreInput: (value, received) => {
-          if (pathBase !== undefined) return raiseFsPath(value, pathBase)
+          // fs.ancestors forwards a rewritten of literally; path-based calls raise it again.
+          if (pathBase !== undefined && event !== 'fs.ancestors') return raiseFsPath(value, pathBase, pathField)
           if (event === 'session.measure') return received
           if (event === 'telemetry.log' && !Object.hasOwn(value,'to')) return {...value,to:received.to}
           if (event === 'prompt.autocomplete') return restorePromptAutocompleteInput(value, received)
