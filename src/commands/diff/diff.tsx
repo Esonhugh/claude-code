@@ -4,6 +4,10 @@ import { getIsGit } from '../../utils/git.js'
 import { MIN_DIFF_SIDEBAR_COLUMNS } from './index.js'
 
 export const call: LocalJSXCommandCall = async (onDone, context) => {
+  if (context.mods?.isDiffOwned?.()) {
+    onDone(undefined, {display:'skip'})
+    return null
+  }
   const current = context.getAppState()
   const presentation = context.modCommand?.presentation
   const hasVisibleModDock = context.mods?.ui
@@ -29,11 +33,18 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
     }))
   }
 
-  if (!context.diff && !(await getIsGit())) {
-    onDone('Diff is unavailable outside a git repository.', {
-      display: 'system',
-    })
-    return null
+  if (!context.diff) {
+    const isGit = await getIsGit()
+    if (context.mods?.isDiffOwned?.()) {
+      onDone(undefined, {display:'skip'})
+      return null
+    }
+    if (!isGit) {
+      onDone('Diff is unavailable outside a git repository.', {
+        display: 'system',
+      })
+      return null
+    }
   }
 
   if (sidebarCanRender) {
@@ -45,6 +56,7 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
     onDone('Diff panel shown', { display: 'system' })
     if (context.diff) {
       void context.diff.refresh().then(() => {
+        if (context.mods?.isDiffOwned?.()) return
         const data = context.diff?.getSnapshot().data
         const text = data?.outcome === 'no-repository'
           ? 'Diff is unavailable outside a git repository.'
@@ -65,6 +77,10 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
 
   if (context.diff) {
     await context.diff.refresh()
+    if (context.mods?.isDiffOwned?.()) {
+      onDone(undefined, {display:'skip'})
+      return null
+    }
     const data = context.diff.getSnapshot().data
     if (data.outcome !== 'data') {
       onDone(data.outcome === 'no-repository'
@@ -75,6 +91,10 @@ export const call: LocalJSXCommandCall = async (onDone, context) => {
   }
 
   const { DiffDialog } = await import('../../components/diff/DiffDialog.js')
+  if (context.mods?.isDiffOwned?.()) {
+    onDone(undefined, {display:'skip'})
+    return null
+  }
   if (hasVisibleModDock) {
     context.addNotification?.({
       key: 'diff-sidebar-mod-dock',
