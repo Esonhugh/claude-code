@@ -1676,11 +1676,14 @@ export const connectToServer = memoize(
       if (inProcessServer) {
         inProcessServer.close().catch(() => {})
       }
+      const message = errorMessage(error)
+      const prefix = error instanceof McpError ? `MCP error ${error.code}: ` : undefined
       return {
         name,
         type: 'failed' as const,
         config: serverRef,
-        error: errorMessage(error),
+        // Official 2.1.292 exposes the server's message, retaining its own text.
+        error: prefix && message.startsWith(prefix) ? message.slice(prefix.length) : message,
       }
     }
   },
