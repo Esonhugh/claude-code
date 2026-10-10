@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { getRootNode } from '../ink/focus.js'
+import { nodeCache } from '../ink/node-cache.js'
+import type { DOMElement } from '../ink/dom.js'
 import { Readable, Writable } from 'node:stream'
 import { describe, expect, test } from 'bun:test'
 import React, { createRef, useEffect, useRef, useState } from 'react'
@@ -139,6 +142,18 @@ async function mount({ focused = true, isActive = true } = {}) {
     transcriptScrolls,
     paneScrolls,
     domKeys,
+    paneWheelDown(): string {
+      const nodes: DOMElement[] = [getRootNode(scroll.getElement()!)]
+      for (const node of nodes) {
+        if (node !== scroll.getElement() && node.style.overflowY === 'scroll') {
+          const rect = nodeCache.get(node)
+          assert.ok(rect && rect.width > 0 && rect.height > 0)
+          return `\u001b[<65;${Math.floor(rect.x) + 1};${Math.floor(rect.y) + 1}M`
+        }
+        for (const child of node.childNodes) if (child.nodeName !== '#text') nodes.push(child)
+      }
+      throw new Error('Expected an actual mounted pane viewport')
+    },
     async input(sequence: string) {
       stdin.push(sequence)
       await settle()
@@ -235,8 +250,8 @@ describe('ScrollKeybindingHandler input routing', () => {
       expect(view.transcriptScrolls).toEqual([false])
       expect(view.paneScrolls).toEqual([])
       const top = view.scroll.getScrollTop()
-      // Row 12 is inside the pane body below the ten-row transcript.
-      await view.input('\u001b[<65;1;12M')
+      // Hit the actual body after inline border/padding and natural-height layout.
+      await view.input(view.paneWheelDown())
       expect(view.scroll.getScrollTop()).toBe(top)
       expect(view.transcriptScrolls).toEqual([false])
       expect(view.paneScrolls).toEqual([1])
