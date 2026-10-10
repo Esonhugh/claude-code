@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LocalJSXCommandContext } from '../../types/command.js'
+import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
 import type { ModUiCallback, ModUiInteraction, ModUiPane } from './ui.js'
 
 const sample = new URL('../../../examples/mods/mods-test-lab/', import.meta.url).pathname.replace(/\/$/, '')
@@ -51,6 +52,9 @@ if (!process.env[childFlag]) {
 } else {
   ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test' }
   const { createModsRuntime } = await import('./runtime.js')
+  const { createModCommandQueue } = await import('./commandRunQueue.js')
+  const { dequeue, resetCommandQueue } = await import('../../utils/messageQueueManager.js')
+  const { processSlashCommand } = await import('../../utils/processUserInput/processSlashCommand.js')
   const { loadModDeclaration } = await import('./loader.js')
   const { prepareModPlugins } = await import('./plugins.js')
   const { describeModTool } = await import('./toolCatalog.js')
@@ -105,7 +109,7 @@ if (!process.env[childFlag]) {
   })
 
   afterEach(async () => {
-    try { await runtime.dispose() }
+    try { resetCommandQueue(); await runtime.dispose() }
     finally {
       setInlinePlugins([])
       clearPluginCache()
@@ -141,7 +145,7 @@ if (!process.env[childFlag]) {
     return found
   }
 
-  async function run(args = '') {
+  async function runImmediate(args = '') {
     const command = runtime.commands.list().find(command => command.name === 'mods-test')!
     expect(command).toMatchObject({ type: 'local-jsx', immediate: true })
     if (command.type !== 'local-jsx') throw new Error('Expected immediate local command')
@@ -155,6 +159,36 @@ if (!process.env[childFlag]) {
     } as unknown as LocalJSXCommandContext, args)).toBeNull()
     expect(completions).toHaveLength(1)
     return completions[0]
+  }
+
+  async function run(args = '') {
+    const command = runtime.commands.list().find(command => command.name === 'mods-test')!
+    expect(command).toMatchObject({ type: 'local-jsx', immediate: true })
+    if (command.type !== 'local-jsx') throw new Error('Expected immediate local command')
+    const owner = Symbol('test-lab-command')
+    const origin = { kind: 'plugin', name: 'test-lab-caller' } as const
+    const abortController = new AbortController()
+    const pending = createModCommandQueue({ owner })({ command: command.name, args, origin, signal: abortController.signal })
+    const queued = dequeue(item => item.promptSubmitOwner === owner)!
+    expect(queued.value).toBe(args ? `/mods-test ${args}` : '/mods-test')
+    const execution = processSlashCommand(queued.value as string, [], [], [], {
+      abortController, messages: [],
+      options: { tools: [], commands: runtime.commands.list(), isNonInteractiveSession: true, mcpResources: {} },
+      getAppState: () => ({ sessionState: { sessionHooks: {} }, fileHistory: { snapshots: [] } }),
+      setAppState() {},
+      modCommand: { origin, presentation },
+    } as unknown as ProcessUserInputContext, () => {}).then(result => {
+      queued.commandRunReceipt!.admit(result)
+      return result
+    }, error => { queued.commandRunReceipt!.cancel(error); throw error })
+    const [result, receipt] = await Promise.all([execution, pending])
+    expect(result.shouldQuery).toBe(false)
+    expect(receipt).toEqual({ text: receipt.text })
+    // Official 2.1.292 native probe: attribution belongs to display, never to the author receipt.
+    const attributed = (result as { commandRunText?: string }).commandRunText
+    expect(result.resultText).toBe(attributed === undefined ? receipt.text : `mods-test-lab: ${receipt.text}`)
+    if (attributed !== undefined) expect(attributed).toBe(receipt.text)
+    return receipt.text
   }
 
   type Tree = { type: string; props?: Record<string, unknown>; children?: (Tree | string)[]; press?: ModUiCallback }
@@ -212,7 +246,7 @@ if (!process.env[childFlag]) {
 
   test('opens real Worker controls, focuses, scrolls, redraws purely at narrow width, and closes', async () => {
     await activate()
-    expect(await run()).toBeUndefined()
+    expect(await runImmediate()).toBeUndefined()
     const first = runtime.ui.getSnapshot()[0]!
     expect(first).toMatchObject({ id: 'mods-test-lab', visible: true, focused: true, placement: 'dock' })
     expect(text(first.tree)).toContain('- 旧行：你好世界')
@@ -247,14 +281,14 @@ if (!process.env[childFlag]) {
     expect(logs).toEqual([])
     await interact('close', 'press')
     expect(runtime.ui.getSnapshot()).toEqual([])
-    await run('background')
+    await runImmediate('background')
     expect(runtime.ui.getSnapshot()[0]).toMatchObject({
       id: 'mods-test-lab',
       focused: false,
     })
-    await run('close')
-    await run('open')
-    await run('close')
+    await runImmediate('close')
+    await runImmediate('open')
+    await runImmediate('close')
     expect(runtime.ui.getSnapshot()).toEqual([])
     expect(diagnostics).toEqual([])
   })
@@ -370,7 +404,7 @@ if (!process.env[childFlag]) {
     const other = storePath('other-plugin@inline')
     await mkdir(pluginDataDirPath('other-plugin@inline'), { recursive: true })
     await writeFile(other, '[["unrelated",17]]')
-    await run('open')
+    await runImmediate('open')
     await interact('input', 'input.change', 'x'.repeat(300))
     expect(control(runtime.ui.getSnapshot()[0]!, 'input').props?.value).toBe('x'.repeat(256))
     await interact('selection', 'select', 'cjk')
@@ -399,7 +433,7 @@ if (!process.env[childFlag]) {
 
   test('unchanged reload retains activation; real disable/enable retires UI and commands but keeps counters', async () => {
     const found = await activate()
-    await run('open')
+    await runImmediate('open')
     await interact('count', 'press')
     await run('context')
     const old = runtime.ui.getSnapshot()[0]!
@@ -430,7 +464,7 @@ if (!process.env[childFlag]) {
     expect(state(status).controls).toEqual({ button: 0, input: 0, submit: 0, select: 0 })
     expect(state(status).events).toBe('Events (2/20): activation, status')
     expect(status).toContain('context=idle')
-    await run('open')
+    await runImmediate('open')
     expect(runtime.ui.getSnapshot()[0]!.owner).not.toBe(old.owner)
     await expect(runtime.ui.interact(old.id, old.drawing!, control(old, 'count').press!, 'press', 'count')).rejects.toThrow(/stale/)
     await runtime.reconcile(found.inputs)
