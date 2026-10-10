@@ -86,6 +86,8 @@ export type ProcessUserInputBaseResult = {
   // Output text for non-interactive mode (e.g., forked commands)
   // When set, this is used as the result in -p mode instead of empty string
   resultText?: string
+  /** Raw author answer retained when command display includes plugin attribution. */
+  commandRunText?: string
   /** Final command hook status for the owning author receipt. */
   commandExitCode?: number
   /** Notes returned by the command, excluding transcript caveats. */

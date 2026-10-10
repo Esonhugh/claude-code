@@ -134,6 +134,7 @@ export type LocalJSXCommandOnDone = (
     nextInput?: string
     submitNextInput?: boolean
     commandExitCode?: number
+    commandRunText?: string
   },
 ) => void
 

@@ -74,7 +74,7 @@ function cleanControls(text: string): string {
   }).join('\n')
 }
 
-function displayName(name: string): string {
+export function formatPluginDisplayName(name: string): string {
   if (typeof name !== 'string') return 'unnamed'
   let clipped = name.slice(0, 256)
   const last = clipped.charCodeAt(clipped.length - 1)
@@ -154,5 +154,5 @@ export function formatPluginNotice(plugin: string, text: string): string {
     clean += unsafe && !allowed ? replacement : char
   }
   const line = cleanControls(boundInvisibleRuns(cleanControls(clean))).replace(/[\n\r\u2028\u2029]/g, replacement)
-  return `${displayName(plugin)}: ${line}`
+  return `${formatPluginDisplayName(plugin)}: ${line}`
 }

@@ -154,10 +154,11 @@ test('registered command consumers bind their current author tools and permissio
   } as unknown as import('../../types/command.js').LocalJSXCommandContext
   const command=runtime.commands.list().find(command=>command.name==='probe')!
   if(command.type!=='local-jsx') throw Error('Expected registered local command')
-  const completed: (string|undefined)[]=[]
-  await (await command.load()).call(text=>{completed.push(text)},context,'')
+  const completed: unknown[]=[]
+  await (await command.load()).call((text,options)=>{completed.push([text,options?.commandRunText])},context,'')
   expect(diagnostics).toEqual([])
-  expect(completed).toEqual(['current:command'])
+  // Official 2.1.292 attributes display text while preserving the raw receipt.
+  expect(completed).toEqual([['command-host: current:command','current:command']])
   expect(calls).toEqual(['command'])
   expect(permissions).toEqual(['current'])
 })

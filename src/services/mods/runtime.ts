@@ -178,6 +178,7 @@ export type ModSnapshot = {
   readonly promptContextBoundaries?: Map<string | undefined, string>
   pluginOrigin?(storageId: string): ModOrigin | undefined
   toolOrigin?(tool: Tool): ModOrigin | undefined
+  commandRunHooks?(command: string, origin?: ModOrigin): readonly ModOrigin[]
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
   stream?(event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
   hasHooks(event: string): boolean
@@ -607,6 +608,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         })
         return {
           text: result.resultText,
+          ...(result.commandRunText === undefined ? {} : {commandRunText:result.commandRunText}),
           ...(result.commandExitCode === undefined ? {} : {exitCode:result.commandExitCode}),
           context: result.messages.flatMap(message =>
             message.type === 'user' && message.isMeta && typeof message.message.content === 'string'
@@ -3326,6 +3328,19 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       pluginOrigin(storageId) {
         const owner = snapshot.find(value => value.declaration.storageId === storageId)
         return owner ? { plugin: owner.declaration.storageId, tier: owner.declaration.tier } : pluginOrigin?.(storageId)
+      },
+      commandRunHooks(command, origin) {
+        if (released) throw new Error('Mods snapshot released')
+        const context = capabilityContext.getStore()
+        const caller = context?.active && context.hook?.plugin === origin?.plugin ? context.hook : undefined
+        const matches = new Map<string, ModOrigin>()
+        for (const hook of hooksFor(snapshot, table)) {
+          if (caller?.plugin === hook.plugin && caller.registrationId === hook.registration.id) continue
+          if (!matchesModEventPattern(hook.registration.event, 'command.run') ||
+              !matchesRenderMatcher(hook.registration.matcher ?? {}, {command})) continue
+          if (!matches.has(hook.plugin)) matches.set(hook.plugin, {plugin:hook.plugin,tier:hook.tier})
+        }
+        return [...matches.values()]
       },
       dispatch: async (event, input, core, options) => {
         if (released) throw new Error('Mods snapshot released')

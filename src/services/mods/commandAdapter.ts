@@ -14,6 +14,7 @@ import type { ModSnapshot } from './runtime.js'
 import { createToolCatalogForContext } from './toolCatalog.js'
 import { createModToolHost } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
+import { formatPluginDisplayName } from './uiNoticeText.js'
 
 export async function describeModCommand(
   snapshot: ModSnapshot,
@@ -155,10 +156,13 @@ export async function runImmediateModCommand(
         message.type === 'user' && message.isMeta && typeof message.message.content === 'string'
           ? [message.message.content] : [],
       )
-      onDone(result.resultText, metaMessages.length ? {
+      const completion = metaMessages.length ? {
         ...result.completionOptions,
         metaMessages: [...(result.completionOptions?.metaMessages ?? []), ...metaMessages],
-      } : result.completionOptions)
+      } : result.completionOptions
+      onDone(result.resultText, result.commandRunText === undefined ? completion : {
+        ...completion, commandRunText: result.commandRunText,
+      })
       ready.resolve(null)
     } catch (error) {
       if (signal.aborted) {
@@ -194,6 +198,8 @@ export async function runModCommand({
   const initial = structuredClone(input)
   if (initial.command !== command.name)
     throw new Error('command.run requires a canonical command name')
+  const origin = initial.origin.kind === 'plugin' ? {plugin:initial.origin.name,tier:'user' as const} : undefined
+  const matched = snapshot.commandRunHooks?.(initial.command, origin) ?? []
   const runs: SlashCommandResult[] = []
   const pending: Promise<unknown>[] = []
   function validateResult(value: unknown, nextResults: readonly unknown[] = []): asserts value is CommandRunResult {
@@ -266,15 +272,23 @@ export async function runModCommand({
   signal?.throwIfAborted()
   validateResult(result)
   const host = result.ref === undefined ? runs.at(-1) : runs[result.ref - 1]
+  // Official 2.1.292 attributes answers to matching modules, even when a hook
+  // short-circuits before the inner modules run. Explicit unchanged refs keep
+  // the host's display; author receipts always retain the unprefixed answer.
+  const unchanged = result.text === undefined || (result.ref !== undefined && result.text === host?.resultText)
+  const displayText = !unchanged && matched.some(hook => hook.tier !== 'builtin')
+    ? `${matched.map(hook => formatPluginDisplayName(hook.plugin)).join('+')}: ${result.text}`
+    : result.text
+  const receipt = displayText === result.text ? {} : {commandRunText:result.text}
   const exitCode = result.exitCode
   if (host) host.commandExitCode = exitCode
   const commandContext = [...(host?.commandContext ?? []),...(result.context ?? [])]
   if (host) host.commandContext = commandContext
   const contextMessages = (result.context ?? []).map(content => createUserMessage({ content, isMeta: true }))
-  if (host && (result.text === undefined || result.text === host.resultText))
+  if (host && (displayText === undefined || displayText === host.resultText))
     return contextMessages.length ? { ...host, messages: [...host.messages, ...contextMessages] } : host
   if (host) {
-    const stdout = `<local-command-stdout>${result.text}</local-command-stdout>`
+    const stdout = `<local-command-stdout>${displayText}</local-command-stdout>`
     const isStdout = (text: string) =>
       host.resultText !== undefined &&
       text === `<local-command-stdout>${host.resultText}</local-command-stdout>`
@@ -308,12 +322,12 @@ export async function runModCommand({
         },
       }
     else messages.push(createCommandInputMessage(stdout))
-    return { ...host, messages: [...messages, ...contextMessages], resultText: result.text }
+    return { ...host, ...receipt, messages: [...messages, ...contextMessages], resultText: displayText }
   }
   return {
     command,
     messages: [
-      ...(result.text === undefined
+      ...(displayText === undefined
         ? []
         : [
             createCommandInputMessage(
@@ -323,14 +337,15 @@ export async function runModCommand({
               ),
             ),
             createCommandInputMessage(
-              `<local-command-stdout>${result.text}</local-command-stdout>`,
+              `<local-command-stdout>${displayText}</local-command-stdout>`,
             ),
           ]),
       ...contextMessages,
     ],
     shouldQuery: false,
     ...(exitCode === undefined ? {} : {commandExitCode:exitCode}),
-    resultText: result.text,
+    resultText: displayText,
+    ...receipt,
     commandContext,
   }
 }

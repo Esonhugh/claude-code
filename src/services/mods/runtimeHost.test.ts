@@ -1735,7 +1735,11 @@ test('session.start reads the host catalog while projected commands use their ca
     getAppState:()=>({toolPermissionContext:{}}),
   } as any
   const results: unknown[] = []
-  await (await command.load()).call(text=>results.push(JSON.parse(text!)),context,'')
+  // Official 2.1.292 native command probe: display is attributed; receipt text is raw.
+  await (await command.load()).call((text, options) => {
+    expect(text).toBe(`catalog-command: ${options?.commandRunText}`)
+    results.push(JSON.parse(options!.commandRunText!))
+  },context,'')
   expect(results).toEqual([{initial:[{name:'HostTool',description:'Host description',mcp:false}],current:[{name:'CallerTool',description:'Caller description',mcp:false}]}])
   expect(diagnostics).toEqual([])
 })
@@ -1786,8 +1790,8 @@ test('commands become visible after start, dispatch once, and retire with their 
   if (command.type !== 'local-jsx') throw Error('Expected JSX command')
   const completions: unknown[] = []
   const module = await command.load()
-  await module.call(text => { completions.push(text) }, {abortController:new AbortController()} as any, 'argument')
-  expect(completions).toEqual(['argument:1'])
+  await module.call((text, options) => { completions.push([text, options?.commandRunText]) }, {abortController:new AbortController()} as any, 'argument')
+  expect(completions).toEqual([['command: argument:1', 'argument:1']])
   await value.reconcile([])
   expect(value.commands.list()).toEqual([])
 })
@@ -1825,7 +1829,8 @@ test('a projected command preserves actual ingress metadata and dispatches only 
     modCommand:{origin:{kind:'sdk'}, presentation:{columns:96, isFullscreen:false}},
     options:{commands:value.commands.list(), isNonInteractiveSession:false},
   } as any, () => {})
-  expect(JSON.parse(result.resultText!)).toEqual({origin:{kind:'sdk'}, presentation:{columns:96, isFullscreen:false}, calls:1})
+  expect(result.resultText).toBe(`command-metadata: ${result.commandRunText}`)
+  expect(JSON.parse(result.commandRunText!)).toEqual({origin:{kind:'sdk'}, presentation:{columns:96, isFullscreen:false}, calls:1})
   expect(diagnostics).toEqual([])
 })
 
@@ -2119,8 +2124,8 @@ test('recovered replacement start publishes one new command and callable generat
   expect(diagnostics).toContainEqual(expect.objectContaining({stage:'session.start', message:'replacement failed'}))
   if (current.type !== 'local-jsx') throw Error('Expected JSX command')
   const result: unknown[] = []
-  await (await current.load()).call(text => result.push(text), {abortController:new AbortController()} as any, '')
-  expect(result).toEqual(['failed'])
+  await (await current.load()).call((text, options) => result.push([text, options?.commandRunText]), {abortController:new AbortController()} as any, '')
+  expect(result).toEqual([['replacement: failed', 'failed']])
 })
 
 test('successful replacement publishes one command snapshot with the new hook generation', async () => {

@@ -15,7 +15,7 @@ export function commandRunReceipt(
 ): CommandRunResult {
   const context = result.commandContext ?? [];
   return {
-    text: result.resultText,
+    text: result.commandRunText ?? result.resultText,
     ...(context.length ? { context } : {}),
     ...(result.commandExitCode === undefined
       ? {}
