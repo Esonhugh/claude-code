@@ -172,7 +172,10 @@ test('double Escape clears the latest same-chunk controlled value', async () => 
   )
 
   expect(result.changes).toEqual(['?', ''])
-  expect(result.cleared).toEqual([''])
+  // The preceding semantic key committed its controlled conversion. The
+  // clear callback runs before onChange(''), and must see that current value.
+  expect(result.cleared).toEqual(['converted'])
+  expect(result.value).toBe('')
 })
 
 test('Ctrl-D does not enter empty-input exit state after a same-chunk edit', async () => {
