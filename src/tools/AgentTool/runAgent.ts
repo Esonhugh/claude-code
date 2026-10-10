@@ -478,6 +478,29 @@ export async function* runAgent({
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
 
+  // Determine abortController:
+  // - Override takes precedence
+  // - Async agents get a new unlinked controller (runs independently)
+  // - Sync agents share parent's controller
+  const agentAbortController = override?.abortController
+    ? override.abortController
+    : isAsync
+      ? new AbortController()
+      : toolUseContext.abortController
+
+  const registeredTurn = toolUseContext.mods?.beginAgentTurn?.(agentId)
+  let primaryError: { value: unknown } | undefined
+  let runExitedNormally = false
+  let queryTerminalReason: string | undefined
+  const finishModTurn = () => registeredTurn?.finish({
+    aborted: agentAbortController.signal.aborted || (!runExitedNormally && primaryError === undefined),
+    failed: primaryError !== undefined,
+    terminal: { reason: queryTerminalReason },
+  })
+
+  // The producer owns registration across every setup await, not just query().
+  try {
+
   // Route this agent's transcript into a grouping subdirectory if requested
   // (e.g. workflow subagents write to subagents/workflows/<runId>/).
   if (transcriptSubdir) {
@@ -664,16 +687,6 @@ export async function* runAgent({
           baseSystemPrompt,
         ),
       )
-
-  // Determine abortController:
-  // - Override takes precedence
-  // - Async agents get a new unlinked controller (runs independently)
-  // - Sync agents share parent's controller
-  const agentAbortController = override?.abortController
-    ? override.abortController
-    : isAsync
-      ? new AbortController()
-      : toolUseContext.abortController
 
   // Execute SubagentStart hooks and collect additional context
   const additionalContexts: string[] = []
@@ -954,7 +967,6 @@ export async function* runAgent({
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
   let subagentStopStarted = false
-  let queryTerminalReason: string | undefined
   let queryIterator: ReturnType<typeof query> | undefined
   let queryIteratorDone = false
   const subagentMessages = [...initialMessages]
@@ -981,6 +993,7 @@ export async function* runAgent({
         break
       }
       const message = next.value
+      if (message.type === 'assistant' || message.type === 'stream_event') registeredTurn?.observe(message)
       if (
         process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING ===
           'after_query_start' &&
@@ -1061,9 +1074,27 @@ export async function* runAgent({
     if (isBuiltInAgent(agentDefinition) && agentDefinition.callback) {
       agentDefinition.callback()
     }
+    runExitedNormally = true
+  } catch (error) {
+    primaryError = { value: error }
+    throw error
   } finally {
+    let closeFailure: { value: unknown } | undefined
     if (!queryIteratorDone && queryIterator) {
-      await queryIterator.return(undefined)
+      try {
+        // QueryLoop may yield converted error frames from its catch during
+        // return(). Keep closing until its outer finally releases the lease.
+        let closed = await queryIterator.return(undefined)
+        while (!closed.done) closed = await queryIterator.return(undefined)
+        queryIteratorDone = true
+      }
+      catch (error) {
+        if (!primaryError) primaryError = closeFailure = { value: error }
+        else {
+          try { logForDebugging(`Mods agent query close failed for ${agentId}: ${error instanceof Error ? error.message : String(error)}`, {level:'error'}) }
+          catch { /* Preserve the original producer error if the logger also fails. */ }
+        }
+      }
     }
     if (
       !subagentStopStarted &&
@@ -1109,6 +1140,7 @@ export async function* runAgent({
         )
       }
     }
+    await finishModTurn()
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks
@@ -1152,6 +1184,13 @@ export async function* runAgent({
       )
     }
     /* eslint-enable @typescript-eslint/no-require-imports */
+    if (closeFailure) await Promise.reject(closeFailure.value)
+  }
+  } catch (error) {
+    primaryError ??= { value: error }
+    throw primaryError.value
+  } finally {
+    await finishModTurn()
   }
 }
 

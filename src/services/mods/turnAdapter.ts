@@ -93,6 +93,7 @@ export function createModTurnCompletion(turnId: string, agentId?: string) {
     aborted: boolean
     failed: boolean
     terminal?: { reason?: string }
+    signal?: AbortSignal
   }): Promise<{ input: ModInput; result: TurnCompleteResult }> {
     let answer = ''
     let usage: TurnUsage | undefined
@@ -142,6 +143,7 @@ export function createModTurnCompletion(turnId: string, agentId?: string) {
       // Completion is cleanup. Runtime dispatch still applies its own lifetime
       // signal; forwarding the interrupted query's signal would skip every hook.
       validateResult,
+      ...(end.signal === undefined ? {} : {signal:end.signal}),
     })
     validateResult(result)
     return { input, result }

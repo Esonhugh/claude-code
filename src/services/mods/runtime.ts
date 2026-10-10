@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto'
+import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from './turnRegistry.js'
+import { createModTurnCompletion } from './turnAdapter.js'
 import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
 import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
 import { createModUiAskRequest } from './uiAsk.js'
@@ -315,6 +318,16 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
   let publicTurn: { turnId: string; abort?: () => void } | undefined
+  const turns = createModTurnRegistry<ModRegisteredTurn>()
+  let turnEpoch = Symbol('mods session turn epoch')
+  let turnLifetime = new AbortController()
+  function retireTurns(): void {
+    turns.clear()
+    publicTurn = undefined
+    turnLifetime.abort(new Error('Mods turn session scope retired'))
+    turnLifetime = new AbortController()
+    turnEpoch = Symbol('mods session turn epoch')
+  }
   const attachedClients = new Map<string, AttachedClient>()
   const clientTransitions = new Map<string, Promise<void>>()
   let stopped = false
@@ -3301,11 +3314,63 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return measurements.request(captureUsage)
   }
 
+  function beginRegisteredTurn(turnId: string, agentId?: string, abort?: () => void): ModRegisteredTurn {
+    if (stopped) throw new Error('Mods runtime disposed')
+    const epoch = turnEpoch
+    const signal = turnLifetime.signal
+    const startedAt = performance.now()
+    const completion = createModTurnCompletion(turnId, agentId)
+    const publicIdentity = agentId === undefined ? { turnId, abort } : undefined
+    let lastQueryServices: ModRequestServices = {}
+    let released = false
+    let ended: Promise<Awaited<ReturnType<typeof completion.complete>> | undefined> | undefined
+    const turn: ModRegisteredTurn = {
+      turnId, ...(agentId === undefined ? {} : { agentId }),
+      observe: completion.observe,
+      rememberQueryServices(next) {
+        if (turns.current(agentId) === turn) lastQueryServices = next
+      },
+      release() {
+        if (released) return
+        released = true
+        turns.release(turn)
+        if (publicIdentity && publicTurn === publicIdentity) publicTurn = undefined
+      },
+      finish(end: ModTurnEnd) {
+        if (ended) return ended
+        turn.release()
+        // Assign the once promise before entering callbacks; completion forks
+        // cannot borrow the just-ended registration or a released query lease.
+        ended = Promise.resolve().then(async () => {
+          if (stopped || epoch !== turnEpoch || signal.aborted) return undefined
+          const snapshot = runtime.capture(lastQueryServices)
+          try {
+            if (stopped || epoch !== turnEpoch || signal.aborted || !snapshot.hasHooks('turn.complete')) return undefined
+            return await completion.complete(snapshot, {
+              ...end, durationMs: performance.now() - startedAt, signal,
+            })
+          } finally { snapshot.release() }
+        }).catch(error => {
+          try { diagnostic('engine', 'turn.complete', error) } catch { /* A diagnostic sink cannot replace a producer error. */ }
+          try {
+            logForDebugging(`Mods turn.complete failed for ${agentId ?? 'main'} turn ${turnId}: ${error instanceof Error ? error.message : String(error)}`, {level:'error'})
+          } catch { /* Completion cleanup must not mask body or iterator-close errors. */ }
+          return undefined
+        })
+        return ended
+      },
+    }
+    turns.admit(turn)
+    if (publicIdentity) publicTurn = publicIdentity
+    return turn
+  }
+
   let disposal: Promise<void> | undefined
   let ending: Promise<void> | undefined
   function endSession(reason: ExitReason, timeoutMs = 1500, sessionId?: string): Promise<void> {
     if (stopped || !binding || (sessionId !== undefined && binding.sessionId !== sessionId)) return Promise.resolve()
     if (ending) return ending
+    retireTurns()
     forkSnapshot = null
     forkGeneration++
     const input = { reason, sessionId: binding.sessionId, resume: { id: binding.sessionId } }
@@ -3329,7 +3394,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       })
     return ending
   }
-  return {
+  const runtime = {
     async settle() {
       await queue
       if (stopped) throw new Error('Mods runtime disposed')
@@ -3498,13 +3563,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     ui,
     renderHooks,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
+    currentTurn: (agentId?: string) => turns.current(agentId),
+    beginAgentTurn(agentId: string): ModRegisteredTurn | undefined {
+      if (stopped || ending || ![...hostHooks].some(hook => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
+          !active.some(owner => owner.environment.registrations.some(registration => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
+      return beginRegisteredTurn(randomUUID(), agentId)
+    },
     beginPublicTurn(turnId: string, abort?: () => void): () => void {
-      if (stopped) throw new Error('Mods runtime disposed')
-      const turn = { turnId, abort }
-      publicTurn = turn
-      return () => {
-        if (publicTurn === turn) publicTurn = undefined
-      }
+      return beginRegisteredTurn(turnId, undefined, abort).release
     },
     reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)).catch(error => {
       const recovery = error instanceof Error ? workerRecoveries.get(error) : undefined
@@ -3516,6 +3582,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         next[key as keyof ModBinding] === binding![key as keyof ModBinding],
       )) return
       if (ending || binding?.sessionId !== next.sessionId) {
+        retireTurns()
         forkSnapshot = null
         forkGeneration++
         await ending
@@ -3540,6 +3607,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true
+      retireTurns()
       publishRenderHooks()
       for (const owner of activations) commands.release(owner)
       publishDiffOwnership()
@@ -3560,6 +3628,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return disposal
     },
   }
+  return runtime
 }
 
 export type ModsRuntime = ReturnType<typeof createModsRuntime>

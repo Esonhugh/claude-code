@@ -7,13 +7,12 @@ import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
-import { createModTurnCompletion } from './services/mods/turnAdapter.js'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
 import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
+import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
-import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './services/mods/promptContext.js'
 import { getAPIProvider } from './utils/model/providers.js'
@@ -345,17 +344,18 @@ export async function* query(
       return { sections }
     }, { signal }) as PromptComposeResult
   }
-  const snapshot = catalogContext.mods?.capture({
+  const queryServices = {
     composePrompt,
     tools: () => catalogContext.options.tools,
     toolCatalog: () => createToolCatalogForContext(catalogContext),
     toolHost: () => createModToolHost(catalogContext, params.canUseTool),
     captureUsage: () => captureModSessionUsage(catalogContext),
     messages: () => projectModSessionMessages(catalogContext.messages),
-  })
+  }
+  const snapshot = catalogContext.mods?.capture(queryServices)
+  let registeredTurn = catalogContext.mods?.currentTurn?.(catalogContext.agentId)
   const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
   const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
-  const handlesComplete = snapshot?.hasHooks('turn.complete') === true
   const handlesMeasure = !params.toolUseContext.agentId &&
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
@@ -364,12 +364,12 @@ export async function* query(
   const handlesCompose = promptFacts !== undefined && snapshot?.hasHooks('prompt.compose') === true
   const handlesSections = snapshot?.hasHooks('prompt.section') === true
   const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
-  const handlesStep = snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
+  const handlesStep = (isPublicTurn || registeredTurn !== undefined) && snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
   const handlesCompact = snapshot?.hasHooks('session.compact') === true
   if (
     !isPublicTurn &&
     !handlesStart &&
-    !handlesComplete &&
+    !registeredTurn &&
     !handlesMeasure &&
     !handlesCatalog &&
     !handlesAgentOffer &&
@@ -389,11 +389,7 @@ export async function* query(
     return terminal
   }
 
-  const startedAt = performance.now()
-  const turnId = randomUUID()
-  const completion = handlesComplete
-    ? createModTurnCompletion(turnId, params.toolUseContext.agentId)
-    : undefined
+  const turnId = isPublicTurn ? randomUUID() : registeredTurn?.turnId
   const toolUseContext = {
     ...params.toolUseContext,
     modsSnapshot: snapshot,
@@ -406,9 +402,13 @@ export async function* query(
   let additionalText: string | undefined
   let endPublicTurn: (() => void) | undefined
   try {
-    if (isPublicTurn) endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(
-      turnId, () => params.toolUseContext.abortController.abort('turn-abort'),
-    )
+    if (isPublicTurn) {
+      endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(
+        turnId!, () => params.toolUseContext.abortController.abort('turn-abort'),
+      )
+      registeredTurn = params.toolUseContext.mods?.currentTurn?.()
+    }
+    registeredTurn?.rememberQueryServices(queryServices)
     if (handlesStart) {
       try {
         await snapshot!.dispatch(
@@ -440,7 +440,7 @@ export async function* query(
       params = { ...params, systemPrompt }
     }
     loopStarted = true
-    terminal = yield* queryLoop(params, consumedCommandUuids, completion?.observe,
+    terminal = yield* queryLoop(params, consumedCommandUuids, params.toolUseContext.agentId ? undefined : registeredTurn?.observe,
       context => { catalogContext = context }, handlesStep ? turnId : undefined,
       handlesCompose ? async (model, tools, signal) => {
         composeModel = model
@@ -464,24 +464,17 @@ export async function* query(
     throw error
   } finally {
     try {
-      try {
-        if (loopStarted && completion) {
-          const { input, result } = await completion.complete(snapshot!, {
-            durationMs: performance.now() - startedAt,
+      snapshot?.release()
+      if (isPublicTurn && registeredTurn) {
+        if (loopStarted) {
+          const completed = await registeredTurn.finish({
             aborted: params.toolUseContext.abortController.signal.aborted || (!returned && !failed),
-            failed,
-            terminal,
+            failed, terminal,
           })
-          if (returned && !params.toolUseContext.agentId &&
-            result.text.trim() && result.text !== input.answer) additionalText = result.text
-        }
-      } finally {
-        snapshot?.release()
+          if (returned && completed && completed.result.text.trim() && completed.result.text !== completed.input.answer)
+            additionalText = completed.result.text
+        } else registeredTurn.release()
       }
-    } catch (error) {
-      // Cleanup must never mask a query exception or its return completion.
-      logForDebugging(`Mods turn.complete failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
-      logError(new Error('Mods turn.complete failed', { cause: error }))
     } finally {
       endPublicTurn?.()
       try {
