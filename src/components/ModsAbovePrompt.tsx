@@ -67,6 +67,8 @@ export function ModsAbovePrompt({
     const timer = setTimeout(() => setSettledRows(availableRows), 150)
     return () => clearTimeout(timer)
   }, [availableRows, settledRows])
+  const committedSize = React.useRef(terminalSize)
+  React.useLayoutEffect(() => {committedSize.current = terminalSize})
   const [frame, setFrame] = React.useState<Frame>()
   const [focused, setFocused] = React.useState(false)
   const heldNow = React.useRef(false)
@@ -141,6 +143,10 @@ export function ModsAbovePrompt({
             return 'the focus moved meanwhile'
           hold(true, target)
         },
+      },
+      terminalSize: () => {
+        const size = committedSize.current
+        return size.global ?? {columns:size.columns,rows:size.rows,conversationColumns:size.columns}
       },
       render(tree, drawing, resolveEngine, clients) {
         if (!active) return

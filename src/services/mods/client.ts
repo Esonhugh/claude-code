@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { isProxy } from 'node:util/types'
+import { withTerminalClients } from './terminalClient.js'
+import type { ModTerminalClientHandle, ModTerminalSize } from './terminalClient.js'
 import { copyModClientData } from './clientRealm.js'
 export { copyModClientData } from './clientRealm.js'
 import type { ModUiCallback, ModUiInteraction, ModRenderSurface, ModRenderComponent } from './ui.js'
@@ -38,10 +40,13 @@ export type ModClientHandle = {
   post(data: unknown): Promise<void>
   advance(ms: number): Promise<void>
   settled?(): Promise<void>
+  threw?(error: unknown): void
   dispose(): Promise<void>
 }
 export type ModClients = {
-  mount(pane: ModClientSite, node: unknown, commit: (tree: unknown) => void, onError?: (error: unknown) => void): ModClientHandle
+  mount(pane: ModClientSite, node: unknown, commit: (tree: unknown) => void, onError?: (error: unknown) => void, onRendering?: () => void): ModClientHandle
+  invalidatePlugin?(plugin: string): void
+  acquire?(pane: ModClientSite, node: unknown, commit: (tree: unknown) => void, size: () => ModTerminalSize): ModTerminalClientHandle
   reconcile(panes: readonly ModClientSite[]): void
 }
 
@@ -53,6 +58,17 @@ export function findModClient(tree: unknown, plugin: string, key: string, module
     Array.isArray(node.children) && node.children.some(child => findModClient(child, plugin, key, module))
 }
 
+export function modClientReason(error: unknown, plugin: string, module: string): string {
+  let reason = error instanceof Error ? error.message.trim() !== '' ? error.message : error.name === 'Error' ? 'the module failed without a message' : error.name : 'the module failed without a message'
+  reason = reason.replace(new RegExp(String.raw`[\u0000-\u001f\u007f-\u009f\ud800-\udfff\u{10eeee}]`, 'gu'), ' ')
+  if (reason.length > 500) reason = reason.slice(0, reason.charCodeAt(499) >= 0xd800 && reason.charCodeAt(499) <= 0xdbff ? 499 : 500) + '…'
+  for (const prefix of [`${plugin}: `, `Client ${module}: `]) if (reason.startsWith(prefix)) reason = reason.slice(prefix.length)
+  if (reason.trim() === '') reason = 'the module failed without a message'
+  reason = reason.replace(/[\u2028\u2029]/g, ' ')
+  if (reason.length > 200) reason = reason.slice(0, reason.charCodeAt(198) >= 0xd800 && reason.charCodeAt(198) <= 0xdbff ? 198 : 199) + '…'
+  return reason
+}
+
 export function createModClients(options: {
   request(pane: ModClientSite, plugin: string, request: ModClientRequest): Promise<ModClientFrame>
   message(pane: ModClientSite, plugin: string, input: { element: string; module: string; data: unknown }): Promise<{ props?: unknown }>
@@ -61,7 +77,7 @@ export function createModClients(options: {
   let nextId = 0
   let currentPanes: readonly ModClientSite[] | undefined
   const mounted = new Set<{ pane: ModClientSite; node: ClientNode; dispose(): Promise<void> }>()
-  return {
+  return withTerminalClients({
     reconcile(panes) {
       currentPanes = panes
       for (const entry of mounted) {
@@ -70,7 +86,7 @@ export function createModClients(options: {
           void entry.dispose()
       }
     },
-    mount(pane, raw, commit, onError) {
+    mount(pane, raw, commit, onError, onRendering) {
       let node = raw as ClientNode
       if (currentPanes && !currentPanes.some(current => current.owner === pane.owner && current.id === pane.id &&
           current.visible && current.drawing === pane.drawing && findModClient(current.tree, node.group.plugin, node.props.key, node.props.module)))
@@ -140,6 +156,7 @@ export function createModClients(options: {
       const run = (request: ModClientRequest, stillCurrent: () => boolean = () => true): Promise<void> => {
         const operation = queue.then(async () => {
           if (disposed || !stillCurrent()) return
+          onRendering?.()
           const frame = await options.request(pane, plugin, request)
           if (stillCurrent()) deliver(frame)
         })
@@ -207,6 +224,7 @@ export function createModClients(options: {
           await Promise.race([Promise.all([...posts]), stopped.promise])
           await queue
         },
+        threw(error) { fail(error) },
         dispose() {
           if (disposePromise) return disposePromise
           disposed = true
@@ -225,5 +243,5 @@ export function createModClients(options: {
       void ready.catch(fail)
       return handle
     },
-  }
+  })
 }

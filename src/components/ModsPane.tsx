@@ -4,6 +4,8 @@ import { Cursor } from '../utils/Cursor.js'
 import { renderPlaceholder } from '../hooks/renderPlaceholder.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import React, { useMemo, useState } from 'react'
+import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
+import type { ModTerminalClientHandle, ModTerminalClientSnapshot } from '../services/mods/terminalClient.js'
 import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions, ModUiFocusTarget } from '../services/mods/ui.js'
 import { didModUiHostFocusMove } from '../services/mods/ui.js'
 import type { ModClientHandle } from '../services/mods/client.js'
@@ -2161,6 +2163,28 @@ function RenderElementNode({
   return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} />
 }
 
+const clientLoading: ModTerminalClientSnapshot = { status: 'loading' }
+const subscribeNoClient = () => () => {}
+const getNoClient = () => clientLoading
+class ModClientBoundary extends React.Component<{
+  snapshot: ModTerminalClientSnapshot
+  onError(error: unknown): void
+  children: React.ReactNode
+}, { failed: boolean; snapshot: ModTerminalClientSnapshot }> {
+  state = { failed: false, snapshot: this.props.snapshot }
+  static getDerivedStateFromError() { return { failed: true } }
+  static getDerivedStateFromProps(props: { snapshot: ModTerminalClientSnapshot }, state: { snapshot: ModTerminalClientSnapshot }) {
+    return Object.is(props.snapshot, state.snapshot) ? null : { failed: false, snapshot: props.snapshot }
+  }
+  componentDidCatch(error: unknown) { this.props.onError(error) }
+  render() { return this.state.failed ? <Text> </Text> : this.props.children }
+}
+
+function TerminalClientTree({tree, ...props}: {tree: unknown} & Omit<React.ComponentProps<typeof RenderElementNode>, 'node' | 'hoverBoxes'>) {
+  const frame = validateModRenderTree(tree)
+  return <RenderElementNode {...props} node={frame.tree} hoverBoxes={frame.hoverBoxes} />
+}
+
 /** Shared widget renderer without Pane chrome, scrolling, or a public Pane registration. */
 export function ModRenderTree({ tree, engineRefs, ...props }: {
   tree: unknown
@@ -2181,6 +2205,15 @@ function ModClient({
   onError?: Props['onError']
   hoverBoxes: ReadonlyMap<RenderElement, boolean>
 }): React.ReactNode {
+  const terminalSize = React.useContext(TerminalSizeContext)
+  const committedSize = React.useRef(terminalSize)
+  React.useLayoutEffect(() => { committedSize.current = terminalSize })
+  const readSize = React.useCallback(() => {
+    const size = committedSize.current
+    return size?.global ?? { columns: size?.columns ?? 0, rows: size?.rows ?? 0, conversationColumns: size?.columns ?? 0 }
+  }, [])
+  const [terminal, setTerminal] = React.useState<ModTerminalClientHandle>()
+  const clientSnapshot = React.useSyncExternalStore(terminal?.subscribe ?? subscribeNoClient, terminal?.getSnapshot ?? getNoClient)
   const inputAllowed = React.useContext(PersonInputContext)
   const reportMetrics = React.useContext(PaneLayoutContext)
   const props = node.props!
@@ -2207,14 +2240,19 @@ function ModClient({
 
   React.useLayoutEffect(() => {
     setFrame(undefined)
+    setTerminal(undefined)
     if (binding) {
       // Render sites own this instance; the terminal only owns its region and input.
-      handle.current = binding.handle
+      const bound = binding.handle as Partial<ModTerminalClientHandle>
+      const next = bound.retain?.(readSize) ?? binding.handle
+      handle.current = next
+      if ('getSnapshot' in next) setTerminal(next as ModTerminalClientHandle)
       lastSize.current = undefined
       return () => {
         handle.current = undefined
         lastSize.current = undefined
         releasePointer.current?.()
+        if (next !== binding.handle) void next.dispose().catch(error => latestError.current?.(error))
       }
     }
     if (!pane.clients) {
@@ -2224,7 +2262,7 @@ function ModClient({
     let active = true
     let next: ModClientHandle
     try {
-      next = pane.clients.mount(pane, node, tree => {
+      next = pane.clients.acquire ? pane.clients.acquire(pane,node,() => {},readSize) : pane.clients.mount(pane, node, tree => {
         if (!active) return
         try {
           const validated = validateModRenderTree(tree)
@@ -2259,6 +2297,7 @@ function ModClient({
       return
     }
     handle.current = next
+    if ('getSnapshot' in next) setTerminal(next as ModTerminalClientHandle)
     mounted.current = { pane, node }
     lastSize.current = undefined
     // The host owns failure reporting through the onError passed to mount.
@@ -2272,7 +2311,7 @@ function ModClient({
       }
       void next.dispose().catch(error => latestError.current?.(error))
     }
-  }, [pane.clients, pane.owner, plugin, key, module, binding?.handle])
+  }, [pane.clients, pane.owner, plugin, key, module, binding?.handle, readSize])
 
   React.useLayoutEffect(() => {
     const current = handle.current
@@ -2292,8 +2331,14 @@ function ModClient({
     lastSize.current = [columns, rows]
     void current.resize(columns, rows).catch(error => latestError.current?.(error))
   })
+  React.useEffect(() => {
+    if (terminal) terminal.drawnAgain()
+  }, [terminal, pane.drawing])
+  React.useLayoutEffect(() => {
+    if (terminal && clientSnapshot.status !== 'drawn') releasePointer.current?.()
+  }, [terminal, clientSnapshot])
   const renderedFrame = binding ? boundFrame : frame
-  React.useEffect(() => { reportMetrics?.() }, [renderedFrame, reportMetrics])
+  React.useEffect(() => { reportMetrics?.() }, [renderedFrame, clientSnapshot, reportMetrics])
 
   const run = (operation: Promise<unknown>) => {
     void operation.catch(error => latestError.current?.(error))
@@ -2394,7 +2439,13 @@ function ModClient({
     }}
     onKeyDown={keyDown}
   >
-    {renderedFrame && <RenderElementNode
+    {terminal ? <ModClientBoundary snapshot={clientSnapshot} onError={error => terminal.threw(error)}>
+      {clientSnapshot.status === 'failed' ? <Text dimColor wrap="truncate-end">{clientSnapshot.text}</Text>
+        : clientSnapshot.status === 'drawn' ? <TerminalClientTree
+          tree={clientSnapshot.tree} pane={pane} focusElements={focusElements} keyElements={keyElements}
+          onInteract={async () => {}} currentPane={() => pane} onFocus={async () => onFocus(pane,key)}
+          onError={onError} clientHandle={terminal} /> : null}
+    </ModClientBoundary> : renderedFrame && <RenderElementNode
       node={renderedFrame.tree}
       pane={pane}
       focusElements={focusElements}

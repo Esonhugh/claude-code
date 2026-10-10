@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util'
 import { logForDebugging } from '../../utils/debug.js'
 import type { ModInput } from './types.js'
+import type { ModTerminalSize } from './terminalClient.js'
 import type { ModClients, ModClientHandle, ModClientSite } from './client.js'
 
 export type ModRenderSurface = 'terminal' | 'desktop' | 'mobile' | 'vscode'
@@ -27,6 +28,7 @@ export type ModRenderConsumer = {
   signal?: AbortSignal
   /** Host binding is available before the first asynchronous drawing settles. */
   onMount?(site: ModRenderSite): void
+  terminalSize?(): ModTerminalSize
   retainClients?: boolean
   /** SDK clients execute their module bundle externally and own their transport attachment. */
   externalClients?: true
@@ -1114,13 +1116,17 @@ export function createModUi({
             else {
               const next = { node, handle: undefined as unknown as ModClientHandle, tree: undefined as unknown }
               instances.set(key, next)
-              next.handle = clients.mount(descriptor, node, output => {
+              const commit = (output: unknown) => {
                 if (disposed || instances.get(key) !== next) return
                 next.tree = output
                 if (!syncing) void paint().catch(() => site.dispose())
-              })
+              }
+              next.handle = consumer.surface === 'terminal' && consumer.retainClients && clients.acquire
+                ? clients.acquire(descriptor,node,commit,consumer.terminalSize ?? (() => ({columns:current?.viewport?.columns ?? 0,rows:current?.viewport?.rows ?? 0,conversationColumns:current?.viewport?.columns ?? 0})))
+                : clients.mount(descriptor,node,commit)
               await next.handle.ready
-              await next.handle.resize(current.viewport?.columns ?? 0, current.viewport?.rows ?? 0)
+              if (consumer.surface !== 'terminal' || !consumer.retainClients)
+                await next.handle.resize(current.viewport?.columns ?? 0, current.viewport?.rows ?? 0)
             }
           }
         } finally { syncing = false }

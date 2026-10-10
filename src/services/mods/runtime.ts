@@ -2995,7 +2995,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         for (const owner of active) owners.delete(owner.declaration.name)
         if (!owners.size) crashedWithholders.delete(noun)
       }
-      for (const owner of replaced) retire(owner)
+      for (const owner of replaced) {clients.invalidatePlugin?.(owner.declaration.name);retire(owner)}
       publishDiffOwnership()
       publishRenderHooks()
       if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
