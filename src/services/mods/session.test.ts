@@ -188,6 +188,7 @@ describe('Mods CLI session host', () => {
       manifest: { name: 'managed' },
       source: 'managed@marketplace',
       repository: 'managed@marketplace',
+      managedSource: true,
     }
     const previousInline = [...getInlinePlugins()]
     setInlinePlugins(['/existing/global-inline'])
@@ -979,7 +980,7 @@ describe('Mods CLI session host', () => {
     const declaration = await plugin(`export function register(on) {
       on('tool.describe', ($, e) => ({description:e.description+':'+e.provider.plugin+':'+e.provider.tier}));
     }`)
-    const provider = {...declaration, name:'mcp-only', manifest:{name:'mcp-only'}, source:'mcp-only@marketplace', repository:'mcp-only@marketplace', hookModules:undefined}
+    const provider = {...declaration, name:'mcp-only', manifest:{name:'mcp-only'}, source:'mcp-only@marketplace', repository:'mcp-only@marketplace', hookModules:undefined, managedSource:true}
     let current: PrepareModPluginsSettings = {...settings(), userSettings:{appendPlugins:['mcp-only@marketplace']}}
     const host = session({loadPlugins:async () => [declaration,provider],getSettings:() => current})
     await host.bind(binding)
@@ -1563,7 +1564,7 @@ describe('Mods CLI session host', () => {
   test('tier-only settings changes reseat live modules and policy presence suppresses user ordering', async () => {
     const make = async (name: string) => ({
       ...await plugin(`export function register(on) { on('tool.call', async ($, e, next) => { const result=await next(e); return {result:['${name}', ...result.result]}; }); }`),
-      name, manifest: {name}, source: `${name}@inline`, repository: `${name}@inline`,
+      name, manifest: {name}, source: `${name}@marketplace`, repository: `${name}@marketplace`, managedSource:true,
     })
     const first = await make('first')
     const second = await make('second')
@@ -1572,7 +1573,7 @@ describe('Mods CLI session host', () => {
     await host.bind(binding)
     const dispatch = () => host.runtime!.dispatch('tool.call', input, async () => ({result:[]}))
     expect(await dispatch()).toEqual({result:['first', 'second']})
-    current = {...current, userSettings: {prependPlugins:['second@inline']}}
+    current = {...current, userSettings: {prependPlugins:['second@marketplace']}}
     settingsChangeDetector.notifyChange('userSettings')
     await host.bind(binding)
     expect(await dispatch()).toEqual({result:['second', 'first']})
@@ -1581,15 +1582,15 @@ describe('Mods CLI session host', () => {
     await host.bind(binding)
     expect(await dispatch()).toEqual({result:['first', 'second']})
     current = {...current, policySettings: {
-      enabledPlugins: {'first@inline':true, 'second@inline':true},
-      appendPlugins:['first@inline'],
+      enabledPlugins: {'first@marketplace':true, 'second@marketplace':true},
+      appendPlugins:['first@marketplace'],
     }}
     settingsChangeDetector.notifyChange('policySettings')
     await host.bind(binding)
     expect(await dispatch()).toEqual({result:['second', 'first']})
     current = {...current, policySettings: {
-      enabledPlugins: {'first@inline':true, 'second@inline':true},
-      appendPlugins:['second@inline'],
+      enabledPlugins: {'first@marketplace':true, 'second@marketplace':true},
+      appendPlugins:['second@marketplace'],
     }}
     settingsChangeDetector.notifyChange('policySettings')
     await host.bind(binding)
