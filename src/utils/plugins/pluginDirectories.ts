@@ -11,7 +11,7 @@
 
 import { mkdirSync } from 'fs'
 import { readdir, rm, stat } from 'fs/promises'
-import { delimiter, join } from 'path'
+import { delimiter, isAbsolute, join, resolve, win32 } from 'path'
 import { getUseCoworkPlugins } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
@@ -87,6 +87,63 @@ export function getPluginSeedDirs(): string[] {
   const raw = process.env.CLAUDE_CODE_PLUGIN_SEED_DIR
   if (!raw) return []
   return raw.split(delimiter).filter(Boolean).map(expandTilde)
+}
+
+// Check before resolve(): normalizing /net/server/../.. first would hide
+// the network location that official 2.1.292 refuses to load from env.
+function isLocalPluginDirectory(path: string): boolean {
+  if (!isAbsolute(path)) return false
+  const hasTraversal = (value: string) => /(^|[\\/])\.{1,2}[. ]*([\\/]|$)/.test(value)
+  if (/^\\\\\?\\volume\{/i.test(path)) return !hasTraversal(path) && !path.includes('/')
+  const devicePrefix = /^[\\/]\?\?[\\/]/
+  if (devicePrefix.test(path) || (path.includes('??') && devicePrefix.test(win32.normalize(path)))) return false
+  const windowsPath = path.startsWith('\\\\?\\UNC\\')
+    ? '\\\\' + path.slice(8)
+    : path.startsWith('\\\\?\\') && path.length >= 7 && path[5] === ':' ? path.slice(4) : path
+  if (windowsPath !== path && (hasTraversal(windowsPath) || windowsPath.includes('/'))) return false
+  const wslShare = /^[\\/]{2}wsl(?:\$|\.localhost)[\\/]([^\\/]*)/i.exec(windowsPath)
+  const isWslShare = wslShare !== null && !/^\.{0,2}[. ]*$/.test(wslShare[1] ?? '')
+  if (/^[\\/]{2}/.test(windowsPath) && !isWslShare) return false
+
+  if (path.startsWith('/')) {
+    const parts: string[] = []
+    const fold = (part: string) => part.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '').toUpperCase().toLowerCase()
+    for (const part of path.split('/')) {
+      if (part === '' || part === '.') continue
+      if (part === '..') { parts.pop(); continue }
+      parts.push(part)
+      if (parts.length === 1 && parts[0]!.toLowerCase() === 'network') return false
+      if (parts.length === 2 && fold(parts[0]!) === 'net') return false
+      if (parts.length === 3 && fold(parts[0]!) === 'network' && fold(parts[1]!) === 'servers') return false
+    }
+  }
+  return true
+}
+
+export function getPluginDirsFromEnvironment(raw = process.env.CLAUDE_CODE_PLUGIN_DIRS): string[] {
+  const paths = (raw ?? '').split(delimiter).map(path => expandTilde(path.trim())).filter(Boolean)
+  const invalid = paths.filter(path => !isLocalPluginDirectory(path))
+  if (invalid.length > 0) {
+    logForDebugging(`CLAUDE_CODE_PLUGIN_DIRS: skipped ${invalid.join(', ')}: a plugin folder here is an absolute local path or starts with ~`, { level: 'warn' })
+  }
+  return paths.filter(isLocalPluginDirectory).map(path => resolve(path))
+}
+
+export function settlePluginDirsEnvironment(): string[] {
+  const paths = getPluginDirsFromEnvironment()
+  if (process.env.CLAUDE_CODE_PLUGIN_DIRS !== undefined) {
+    process.env.CLAUDE_CODE_PLUGIN_DIRS = paths.join(delimiter)
+  }
+  return paths
+}
+
+export function mergePluginDirectories(...groups: ReadonlyArray<ReadonlyArray<string>>): string[] {
+  const paths = new Map<string, string>()
+  for (const path of groups.flat()) {
+    const key = resolve(path)
+    if (!paths.has(key)) paths.set(key, path)
+  }
+  return [...paths.values()]
 }
 
 function sanitizePluginId(pluginId: string): string {

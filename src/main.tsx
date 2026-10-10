@@ -277,7 +277,7 @@ import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cache
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
 import { getGlobExclusionsForPluginCache } from './utils/plugins/orphanedPluginFilter.js'
-import { getPluginSeedDirs } from './utils/plugins/pluginDirectories.js'
+import { getPluginSeedDirs, mergePluginDirectories, settlePluginDirsEnvironment } from './utils/plugins/pluginDirectories.js'
 import { countFilesRoundedRg } from './utils/ripgrep.js'
 import {
   processSessionStartHooks,
@@ -1214,13 +1214,16 @@ async function run(): Promise<CommanderCommand> {
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
     const pluginDir = thisCommand.getOptionValue('pluginDir')
-    if (
-      Array.isArray(pluginDir) &&
-      pluginDir.length > 0 &&
-      pluginDir.every(p => typeof p === 'string')
-    ) {
-      setInlinePlugins(pluginDir)
-      clearPluginCache('preAction: --plugin-dir inline plugins')
+    const environmentPluginDirs = settlePluginDirsEnvironment()
+    const pluginDirs = mergePluginDirectories(
+      Array.isArray(pluginDir) && pluginDir.every(p => typeof p === 'string') ? pluginDir : [],
+      environmentPluginDirs,
+    )
+    if (pluginDirs.length > 0) {
+      setInlinePlugins(pluginDirs)
+      clearPluginCache(environmentPluginDirs.length > 0
+        ? 'preAction: CLAUDE_CODE_PLUGIN_DIRS inline plugins'
+        : 'preAction: --plugin-dir inline plugins')
     }
 
     runMigrations()
