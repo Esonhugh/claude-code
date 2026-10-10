@@ -5,6 +5,7 @@ import {
   type TextHighlight,
 } from '../../utils/textHighlighting.js'
 import { ShimmerChar } from '../Spinner/ShimmerChar.js'
+import { useSettings } from '../../hooks/useSettings.js'
 
 type Props = {
   text: string
@@ -73,8 +74,10 @@ export function HighlightedInput({ text, highlights }: Props): React.ReactNode {
     return { lines, hasShimmer, sweepStart, cycleLength }
   }, [text, highlights])
 
-  const [ref, time] = useAnimationFrame(hasShimmer ? 50 : null)
-  const glimmerIndex = hasShimmer
+  const settings = useSettings()
+  const animate = hasShimmer && !settings.prefersReducedMotion
+  const [ref, time] = useAnimationFrame(animate ? 50 : null)
+  const glimmerIndex = animate
     ? sweepStart + (Math.floor(time / 50) % cycleLength)
     : -100
 
