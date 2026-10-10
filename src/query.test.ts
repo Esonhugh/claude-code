@@ -1,10 +1,14 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import type { StopHookInput } from './entrypoints/agentSdkTypes.js'
 import type { QuerySource } from './constants/querySource.js'
 import type { ToolUseContext } from './Tool.js'
 import type { AssistantMessage, Message } from './types/message.js'
 import { query, type QueryParams } from './query.js'
-import { autoCompactIfNeeded } from './services/compact/autoCompact.js'
+import { autoCompactIfNeeded, getAutoCompactThreshold } from './services/compact/autoCompact.js'
+import * as config from './utils/config.js'
+import * as tokens from './utils/tokens.js'
+import * as compactMode from './services/compact/compactMode.js'
+import * as sessionMemory from './services/compact/sessionMemoryCompact.js'
 import { asSystemPrompt } from './utils/systemPromptType.js'
 import { createFileStateCacheWithSizeLimit } from './utils/fileStateCache.js'
 import { createAssistantMessage } from './utils/messages.js'
@@ -444,12 +448,21 @@ describe('query autocompact failures', () => {
   })
 
   test('autoCompactIfNeeded returns typed failure message and preserves failure count on catch', async () => {
-    const previousAutoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '1'
-
-    const toolUseContext = createToolUseContext()
+    const envKeys = ['CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'DISABLE_COMPACT', 'DISABLE_AUTO_COMPACT'] as const
+    const savedEnvironment = envKeys.map(key => process.env[key])
+    // Window values below 100k are rejected. Force the catch path through the
+    // measured-usage boundary, while keeping the real empty-message compactor.
+    process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '100000'
+    delete process.env.DISABLE_COMPACT
+    delete process.env.DISABLE_AUTO_COMPACT
+    const enabled = spyOn(config, 'getGlobalConfig').mockReturnValue({ ...config.getGlobalConfig(), autoCompactEnabled: true })
+    const measuredUsage = spyOn(tokens, 'tokenCountWithEstimation').mockReturnValue(190000)
+    const mode = spyOn(compactMode, 'getCompactMode').mockReturnValue('claude')
+    const memory = spyOn(sessionMemory, 'trySessionMemoryCompaction').mockResolvedValue(null)
 
     try {
+      const toolUseContext = createToolUseContext()
+      expect(190000).toBeGreaterThan(getAutoCompactThreshold(toolUseContext.options.mainLoopModel))
       const result = await autoCompactIfNeeded(
         [],
         toolUseContext,
@@ -474,12 +487,16 @@ describe('query autocompact failures', () => {
       expect(result.compactionFailure).toEqual({
         message: 'Not enough messages to compact.',
       })
+      expect(measuredUsage).toHaveBeenCalledWith([])
     } finally {
-      if (previousAutoCompactWindow === undefined) {
-        delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-      } else {
-        process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = previousAutoCompactWindow
-      }
+      enabled.mockRestore()
+      measuredUsage.mockRestore()
+      mode.mockRestore()
+      memory.mockRestore()
+      envKeys.forEach((key, index) => {
+        if (savedEnvironment[index] === undefined) delete process.env[key]
+        else process.env[key] = savedEnvironment[index]
+      })
     }
   })
 })
