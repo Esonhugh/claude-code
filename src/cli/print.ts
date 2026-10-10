@@ -1,3 +1,4 @@
+import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
@@ -2286,7 +2287,10 @@ function runHeadlessStreaming(
                 }
               ),
               onPromptAdmission: result => {
-                if (result.admission) cmd.promptSubmitReceipt?.admit(result.admission)
+                if (result.admission) {
+                  cmd.promptSubmitReceipt?.admit(result.admission)
+                }
+                cmd.commandRunReceipt?.admit(result)
               },
               skipSlashCommands: cmd.skipSlashCommands,
               skipAttachments: cmd.skipAttachments,
@@ -2383,7 +2387,10 @@ function runHeadlessStreaming(
               }
             }) // end runWithWorkload
           } catch (error) {
-            for (const queued of batch) queued.promptSubmitReceipt?.cancel(error)
+            for (const queued of batch) {
+              queued.promptSubmitReceipt?.cancel(error)
+              queued.commandRunReceipt?.cancel(error)
+            }
             throw error
           }
 
@@ -2814,6 +2821,9 @@ function runHeadlessStreaming(
         }
         suggestionState.abortController?.abort()
         suggestionState.abortController = null
+        // A turn.complete hook may still be waiting on a command it queued; let it settle first.
+        await options.modsSession?.runtime?.settleTurns()
+        if (running || peek(isMainThread) !== undefined) return
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
@@ -2923,6 +2933,7 @@ function runHeadlessStreaming(
         args,
         signal,
       ),
+    commandRun: createModCommandQueue({wake:()=>run()}),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
       let settled = false
       const finish = (settle: () => void) => {
@@ -4719,6 +4730,8 @@ function runHeadlessStreaming(
       }
       suggestionState.abortController?.abort()
       suggestionState.abortController = null
+      await options.modsSession?.runtime?.settleTurns()
+      if (running || peek(cmd => cmd.agentId === undefined) !== undefined) return
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()

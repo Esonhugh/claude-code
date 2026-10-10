@@ -560,10 +560,12 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
                 },
                 onPromptAdmission: admitted => {
                   if (admitted.admission) cmd.promptSubmitReceipt?.admit(admitted.admission)
+                  cmd.commandRunReceipt?.admit(admitted)
                 },
               })
           } catch (error) {
             cmd.promptSubmitReceipt?.cancel(error)
+            for (const queued of commands.slice(i)) queued.commandRunReceipt?.cancel(error)
             throw error
           }
         }

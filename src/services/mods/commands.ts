@@ -13,7 +13,7 @@ export type ModCommandSpec = {
 }
 
 export type ModCommandDescription = { description: string; argumentHint?: string; isHidden: boolean }
-export type ModCommandRunResult = { text?: string; context?: readonly string[] }
+export type ModCommandRunResult = { text?: string; context?: readonly string[]; exitCode?:number }
 export type ModCommandOwner = object
 
 export type ModCommands = {
@@ -147,8 +147,9 @@ export function createModCommands({
           if (result.text !== undefined && typeof result.text !== 'string')
             throw new TypeError('Mod command run text must be a string')
           const options = result.context?.length ? { metaMessages: [...result.context] } : undefined
-          if (result.text === undefined) onDone(undefined, { ...options, display: 'skip' })
-          else onDone(result.text, options)
+          const completion = result.exitCode === undefined ? options : {...options,commandExitCode:result.exitCode}
+          if (result.text === undefined) onDone(undefined, { ...completion, display: 'skip' })
+          else onDone(result.text, completion)
           return null
         },
       }),

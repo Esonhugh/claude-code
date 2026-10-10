@@ -1,3 +1,4 @@
+import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { getDefaultAppState } from '../state/AppStateStore.js'
 import { prepareConversationRewind, rewindConversationTo } from '../utils/conversationRewind.js'
@@ -101,8 +102,9 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
     'scope',
     'modMcpConnections',
     'getModHttpServices',
+    'createModCommandQueue',
     `with (scope) { ${js}; return extracted; }`,
-  )(scope, modMcpConnections, getModHttpServices)
+  )(scope, modMcpConnections, getModHttpServices, createModCommandQueue)
   }
 }
 
@@ -2165,6 +2167,70 @@ test('QueryEngine drains its own proactive prompt through real input admission',
     for (const mock of mocks) mock.mockRestore()
   }
 })
+
+test('QueryEngine settles a Mods command.run receipt when its queued slash command runs', async () => {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const queue = await import('../utils/messageQueueManager.js')
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  let receipt: Promise<unknown> | undefined
+  const inputs: unknown[] = []
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
+      inputs.push(args.input)
+      if (inputs.length === 1) {
+        receipt = services.commandRun({
+          command: 'hello', args: 'queued', origin: { kind: 'plugin', name: 'fixture' }, signal: new AbortController().signal,
+        })
+      } else {
+        // A slash command result carries no prompt admission.
+        args.onPromptAdmission?.({
+          messages: [], shouldQuery: false, allowedTools: [], resultText: 'COMMAND_OUTPUT queued',
+          commandExitCode: 7, commandContext: ['hidden-command-note'],
+        })
+      }
+      return { messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }
+    }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('initial', { skipAttachments: true })) void _message
+    expect(inputs).toEqual(['initial', '/hello queued'])
+    await expect(receipt!).resolves.toEqual({
+      text: 'COMMAND_OUTPUT queued', context: ['hidden-command-note'], exitCode: 7,
+    })
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {
+    queue.resetCommandQueue()
+    for (const mock of mocks) mock.mockRestore()
+  }
+})
+
 
 test('REPL binds Mods MCP calls to the current connection and forwards cancellation', async () => {
   const { callMCPToolForMod, findMCPConnectionForMod } = await import('../services/mcp/client.js')

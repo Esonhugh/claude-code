@@ -484,6 +484,8 @@ export async function processSlashCommand(
     effort,
     command: returnedCommand,
     resultText,
+    commandExitCode,
+    commandContext,
     nextInput,
     submitNextInput,
   } = slashResult
@@ -549,6 +551,9 @@ export async function processSlashCommand(
     return {
       messages: [],
       shouldQuery: false,
+      resultText,
+      commandExitCode,
+      commandContext,
 
       model,
       nextInput,
@@ -658,6 +663,8 @@ export async function processSlashCommand(
     model,
     effort,
     resultText,
+    commandExitCode,
+    commandContext,
     nextInput,
     submitNextInput,
   }
@@ -720,6 +727,7 @@ async function getMessagesForSlashCommand(
               additionalMessages?: AttachmentMessage[]
               nextInput?: string
               submitNextInput?: boolean
+              commandExitCode?: number
             },
           ) => {
             doneWasCalled = true
@@ -731,6 +739,8 @@ async function getMessagesForSlashCommand(
                 ),
                 shouldQuery: false,
                 command,
+                commandExitCode:options?.commandExitCode,
+                commandContext:options?.metaMessages,
                 nextInput: options?.nextInput,
                 submitNextInput: options?.submitNextInput,
               })
@@ -793,6 +803,8 @@ async function getMessagesForSlashCommand(
               shouldQuery: options?.shouldQuery ?? false,
               command,
               resultText: skipTranscript ? undefined : result,
+              commandExitCode:options?.commandExitCode,
+              commandContext:options?.metaMessages,
               nextInput: options?.nextInput,
               submitNextInput: options?.submitNextInput,
             })

@@ -368,6 +368,11 @@ export type QueuedCommand = {
    */
   origin?: MessageOrigin
   promptSubmitMetadata?: PromptSubmitMetadata
+  /** Host-owned receipt for an idle-queued author command. */
+  commandRunReceipt?: {
+    admit(result: ProcessUserInputBaseResult): void
+    cancel(reason: unknown): void
+  }
   /** Host-owned settlement for a plugin-submitted prompt. */
   promptSubmitReceipt?: {
     admit(result: PromptSubmitResult): void

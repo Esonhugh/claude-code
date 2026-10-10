@@ -1,3 +1,4 @@
+import { createModCommandQueue } from './services/mods/commandRunQueue.js'
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
@@ -255,6 +256,7 @@ export class QueryEngine {
       if (queued.mode !== 'prompt') {
         const error = new Error('only prompt commands are supported by QueryEngine')
         queued.promptSubmitReceipt?.cancel(error)
+        queued.commandRunReceipt?.cancel(error)
         throw error
       }
 
@@ -265,13 +267,17 @@ export class QueryEngine {
           origin: queued.origin,
           promptSubmitMetadata: queued.promptSubmitMetadata,
           onPromptAdmission: result => {
-            if (result.admission) queued.promptSubmitReceipt?.admit(result.admission)
+            if (result.admission) {
+              queued.promptSubmitReceipt?.admit(result.admission)
+            }
+            queued.commandRunReceipt?.admit(result)
           },
           skipSlashCommands: queued.skipSlashCommands,
           skipAttachments: queued.skipAttachments,
         })
       } catch (error) {
         queued.promptSubmitReceipt?.cancel(error)
+        queued.commandRunReceipt?.cancel(error)
         throw error
       }
     }
@@ -526,6 +532,7 @@ export class QueryEngine {
           args,
           signal,
         ),
+      commandRun: createModCommandQueue({owner:this.promptSubmitOwner}),
       submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
         let settled = false
         const finish = (settle: () => void) => {

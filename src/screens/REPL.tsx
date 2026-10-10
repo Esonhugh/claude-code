@@ -1,3 +1,4 @@
+import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
@@ -2013,6 +2014,7 @@ export function REPL({
     tools: () => modToolContextRef.current!().options.tools,
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     toolHost: () => createModToolHost(modToolContextRef.current!(), modCanUseToolRef.current!),
+    commandRun: createModCommandQueue(),
     submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
       let settled = false
       const finish = (settle: () => void) => {

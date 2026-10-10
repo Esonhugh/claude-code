@@ -56,7 +56,10 @@ const commandQueue: QueuedCommand[] = []
 
 function cancelCommands(commands: readonly QueuedCommand[], reason: string): void {
   const error = new Error(reason)
-  for (const command of commands) command.promptSubmitReceipt?.cancel(error)
+  for (const command of commands) {
+    command.promptSubmitReceipt?.cancel(error)
+    command.commandRunReceipt?.cancel(new Error('Queued command removed before execution'))
+  }
 }
 
 /** Frozen snapshot — recreated on every mutation for useSyncExternalStore. */
@@ -381,7 +384,7 @@ export function isPromptInputModeEditable(
  * the user's input.
  */
 export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
-  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta && !cmd.promptSubmitReceipt
+  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta && !cmd.promptSubmitReceipt && !cmd.commandRunReceipt
 }
 
 /**

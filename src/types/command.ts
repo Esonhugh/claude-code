@@ -133,6 +133,7 @@ export type LocalJSXCommandOnDone = (
     additionalMessages?: AttachmentMessage[]
     nextInput?: string
     submitNextInput?: boolean
+    commandExitCode?: number
   },
 ) => void
 

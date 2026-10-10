@@ -63,7 +63,7 @@ export type CommandRunInput = {
   presentation: CommandPresentation
   context?: readonly string[]
 }
-export type CommandRunResult = { text?: string; ref?: number; context?: readonly string[] }
+export type CommandRunResult = { text?: string; ref?: number; context?: readonly string[]; exitCode?:number }
 
 function validateContext(context: unknown): asserts context is readonly string[] | undefined {
   if (context === undefined) return
@@ -201,6 +201,7 @@ export async function runModCommand({
       throw new Error('command.run must return an object')
     const result = value as CommandRunResult
     validateContext(result.context)
+    if (result.exitCode !== undefined && (!Number.isInteger(result.exitCode) || result.exitCode < 0 || result.exitCode > 255)) throw new Error('command.run exitCode must be an integer from 0 to 255')
     for (const below of nextResults as readonly CommandRunResult[]) {
       if (result.ref === undefined || below.ref === result.ref)
         retainContext(result.context, below.context)
@@ -244,6 +245,7 @@ export async function runModCommand({
       },
       {
         signal,
+        ...(initial.origin.kind === 'plugin' ? {origin:{plugin:initial.origin.name,tier:'user' as const}} : {}),
         validateResult,
         restoreResult(result, previous, called) {
           if (called) return result
@@ -264,6 +266,10 @@ export async function runModCommand({
   signal?.throwIfAborted()
   validateResult(result)
   const host = result.ref === undefined ? runs.at(-1) : runs[result.ref - 1]
+  const exitCode = result.exitCode
+  if (host) host.commandExitCode = exitCode
+  const commandContext = [...(host?.commandContext ?? []),...(result.context ?? [])]
+  if (host) host.commandContext = commandContext
   const contextMessages = (result.context ?? []).map(content => createUserMessage({ content, isMeta: true }))
   if (host && (result.text === undefined || result.text === host.resultText))
     return contextMessages.length ? { ...host, messages: [...host.messages, ...contextMessages] } : host
@@ -323,6 +329,8 @@ export async function runModCommand({
       ...contextMessages,
     ],
     shouldQuery: false,
+    ...(exitCode === undefined ? {} : {commandExitCode:exitCode}),
     resultText: result.text,
+    commandContext,
   }
 }

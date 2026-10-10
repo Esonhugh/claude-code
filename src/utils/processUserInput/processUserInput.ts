@@ -86,6 +86,10 @@ export type ProcessUserInputBaseResult = {
   // Output text for non-interactive mode (e.g., forked commands)
   // When set, this is used as the result in -p mode instead of empty string
   resultText?: string
+  /** Final command hook status for the owning author receipt. */
+  commandExitCode?: number
+  /** Notes returned by the command, excluding transcript caveats. */
+  commandContext?: readonly string[]
   // When set, prefills or submits the next input after command completes
   // Used by /discover to chain into the selected feature's command
   nextInput?: string

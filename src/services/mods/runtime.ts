@@ -1,3 +1,4 @@
+import type { ModCommandRequest } from './commandRunQueue.js'
 import { randomUUID } from 'node:crypto'
 import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from './turnRegistry.js'
 import { createModTurnCompletion } from './turnAdapter.js'
@@ -104,6 +105,7 @@ export type ModBinding = {
   sessionId: string
 }
 export type ModRequestServices = {
+  commandRun?(request: ModCommandRequest): Promise<import('./commandAdapter.js').CommandRunResult>
   messages?(): readonly unknown[]
   agentSpawn?(
     input: ModInput,
@@ -253,7 +255,7 @@ const coreHost: Nouns = {
   session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
-  command: { register: hostIdentity, list: hostIdentity },
+  command: { run: hostIdentity, register: hostIdentity, list: hostIdentity },
   config: { list: hostIdentity, set: hostIdentity },
   model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
   prompt: { compose: hostIdentity, read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
@@ -321,6 +323,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const turns = createModTurnRegistry<ModRegisteredTurn>()
   let turnEpoch = Symbol('mods session turn epoch')
   let turnLifetime = new AbortController()
+  // Turns whose turn.complete hooks are still running; a hook that queues input ends its turn early
+  // and its completion settles later, with the input it queued (see settleTurns).
+  const completingTurns = new Set<() => void>()
+  const settlingTurns = new Set<Promise<unknown>>()
   function retireTurns(): void {
     turns.clear()
     publicTurn = undefined
@@ -601,6 +607,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         })
         return {
           text: result.resultText,
+          ...(result.commandExitCode === undefined ? {} : {exitCode:result.commandExitCode}),
           context: result.messages.flatMap(message =>
             message.type === 'user' && message.isMeta && typeof message.message.content === 'string'
               ? [message.message.content] : [],
@@ -892,6 +899,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   function hostInput(op: string, args: unknown[], plugin?: string): ModInput {
     switch (op) {
       case 'telemetry.log': case 'telemetry.mark': return modTelemetryArgs(op, args[0], plugin)
+      case 'command.run': {
+        const value = args[0] && typeof args[0] === 'object' && !Array.isArray(args[0]) ? args[0] as ModInput : undefined
+        if (typeof value?.command !== 'string' || value.command === '')
+          throw Object.assign(new Error(`${plugin}: $.command.run takes { command, args? } (the command's name without the slash)`),{name:'HooksError'})
+        return {command:value.command,args:value.args ?? ''}
+      }
       case 'agent.spawn': {
         const input = args[0]
         if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
@@ -1682,6 +1695,37 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               },
             )) as { isFilled: boolean }
             return { ...result, ...(await readPromptForCaller(owner, snapshot, table)) }
+          }
+          if (fn === hostIdentity && op === 'command.run') {
+            const event = context?.active ? context.next?.event : undefined
+            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
+            const prefix = `${owner.declaration.name}: $.command.run`
+            if (held) throw Object.assign(new Error(`${owner.declaration.name}: command.run: called from a ${held} hook, it would wait on the turn this hook is holding; ${held === 'command.run' ? 'answer { text } instead, or run it' : 'run it'} from a later event (turn.complete) (host check)`),{name:'HooksError'})
+            if (typeof (input as ModInput).args !== 'string') throw Object.assign(new Error(`${prefix} takes { command, args? } (the name without the slash)`),{name:'HooksError'})
+            const name = (input as ModInput).command as string
+            const lookup = () => commands.projection([...(services.commands?.() ?? [])]).find(command => command.userInvocable !== false && [command.name,getCommandName(command),...(command.aliases ?? [])].some(value => value.toLowerCase() === name.toLowerCase()))
+            let found = lookup()
+            // Outside a hook (e.g. a startup clock callback) the command may belong to a plugin whose
+            // session.start has not been published yet; let the in-flight load settle before deciding.
+            if (!found && event === undefined) {
+              await queue
+              found = lookup()
+            }
+            if (!found) throw Object.assign(new Error(`${prefix}: no command named /${name} in this session`),{name:'HooksError'})
+            const run = requestServices.getStore()?.commandRun ?? services.commandRun
+            if (!run) throw new Error('Command execution host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal,{signalB:owner.controller.signal})
+            try {
+              combined.signal.throwIfAborted()
+              logForDebugging(`[ModsCommand] plugin=${owner.declaration.name} command=${found.name} queued`)
+              const command = found
+              const receipt = withReference(owner,()=>run({command:command.name,args:(input as ModInput).args as string,origin:{kind:'plugin',name:owner.declaration.name},signal:combined.signal}))
+              if (event === 'turn.complete' && completingTurns.size) {
+                logForDebugging('[ModsCommand] a turn.complete hook queued input; the turn ends so it can run, and turn.complete settles with the turn that runs it')
+                for (const endTurn of [...completingTurns]) endTurn()
+              }
+              return await receipt
+            } finally {combined.cleanup()}
           }
           if (fn === hostIdentity && op === 'prompt.submit') {
             const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
@@ -3350,7 +3394,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         turn.release()
         // Assign the once promise before entering callbacks; completion forks
         // cannot borrow the just-ended registration or a released query lease.
-        ended = Promise.resolve().then(async () => {
+        let endTurn!: () => void
+        const queuedInput = new Promise<undefined>(resolve => { endTurn = () => { settlingTurns.add(completed); resolve(undefined) } })
+        completingTurns.add(endTurn)
+        const completed: Promise<Awaited<ReturnType<typeof completion.complete>> | undefined> = Promise.resolve().then(async () => {
           if (stopped || epoch !== turnEpoch || signal.aborted) return undefined
           const snapshot = runtime.capture(lastQueryServices)
           try {
@@ -3365,7 +3412,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             logForDebugging(`Mods turn.complete failed for ${agentId ?? 'main'} turn ${turnId}: ${error instanceof Error ? error.message : String(error)}`, {level:'error'})
           } catch { /* Completion cleanup must not mask body or iterator-close errors. */ }
           return undefined
-        })
+        }).finally(() => { completingTurns.delete(endTurn); settlingTurns.delete(completed) })
+        // A turn.complete hook waiting on input it queued cannot settle before this turn ends.
+        ended = Promise.race([completed, queuedInput])
         return ended
       },
     }
@@ -3573,6 +3622,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     renderHooks,
     get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
     currentTurn: (agentId?: string) => turns.current(agentId),
+    /** Resolves once turns ended early by a turn.complete hook's queued input have finished their completion. */
+    settleTurns: async (): Promise<void> => { await Promise.all([...settlingTurns]) },
     beginAgentTurn(agentId: string): ModRegisteredTurn | undefined {
       if (stopped || ending || ![...hostHooks].some(hook => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
           !active.some(owner => owner.environment.registrations.some(registration => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
