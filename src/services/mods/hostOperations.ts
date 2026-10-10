@@ -6,13 +6,51 @@ import { lock } from '../../utils/lockfile.js'
 import { getPluginDataDir } from '../../utils/plugins/pluginDirectories.js'
 import { atomicWriteToZipCache } from '../../utils/plugins/zipCache.js'
 import { appendFileSync, constants } from 'node:fs'
-import { lstat, mkdir, open, readdir, realpath, stat, writeFile } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { lstat, mkdir, open, readdir, readlink, stat, writeFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import treeKill from 'tree-kill'
 import { execFileNoThrowWithCwd } from '../../utils/execFileNoThrow.js'
 import { getInitialSettings, getSettingsForSource } from '../../utils/settings/settings.js'
 import { getAdditionalDirectoriesForClaudeMd } from '../../bootstrap/state.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
+
+// Resolve symbolic links component by component. Bun's realpath variants can
+// return another hard-link alias; Mods must preserve non-link path spellings.
+async function resolveRealPath(path: string, signal: AbortSignal): Promise<string> {
+  const split = (value: string) => value.split(sep === '\\' ? /[\\/]/ : /\//)
+  let placed = parse(path).root
+  let pending = split(path.slice(placed.length))
+  let links = 0
+  while (pending.length) {
+    signal.throwIfAborted()
+    const part = pending.shift()!
+    if (!part || part === '.') continue
+    if (part === '..') {
+      placed = dirname(placed)
+      continue
+    }
+    const next = join(placed, part)
+    const entry = await lstat(next)
+    signal.throwIfAborted()
+    if (entry.isSymbolicLink()) {
+      if (++links > 40)
+        throw Object.assign(new Error(`ELOOP: too many symbolic links encountered, realpath '${path}'`), { code: 'ELOOP', syscall: 'realpath', path })
+      const target = await readlink(next)
+      signal.throwIfAborted()
+      if (isAbsolute(target)) {
+        placed = parse(target).root
+        pending = [...split(target.slice(placed.length)), ...pending]
+      } else {
+        pending = [...split(target), ...pending]
+      }
+    } else {
+      if (pending.length && !entry.isDirectory())
+        throw Object.assign(new Error(`ENOTDIR: not a directory, realpath '${path}'`), { code: 'ENOTDIR', syscall: 'realpath', path })
+      placed = next
+    }
+  }
+  return placed
+}
 
 export type ModCredential = { kind: 'bearer' | 'api-key'; secret: string }
 export type ModAuthorization = { handle: string; kind: ModCredential['kind'] } | null
@@ -958,7 +996,7 @@ export function createModHostOperations({
         const result: FsStat = { kind: kind(info), size: info.size, mtimeMs: info.mtimeMs, isLink }
         if (options.resolve) {
           try {
-            result.realPath = await realpath(target)
+            result.realPath = await resolveRealPath(target, signal)
           } catch (error) {
             const code = (error as NodeJS.ErrnoException).code
             if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error

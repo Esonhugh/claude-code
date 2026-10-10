@@ -1639,7 +1639,8 @@ describe('fs', () => {
       expect(await host.fs.stat(path, { resolve: false })).toEqual(expected)
       expect(await host.fs.stat(path, { resolve: true })).toEqual({
         ...expected,
-        realPath: await realpath(join(cwd, target)),
+        // Official 2.1.292 keeps hard-link spellings; avoid Bun's unstable wrapper as the oracle.
+        realPath: join(cwd, target),
       })
     }
     for (const path of ['broken', 'broken-parent']) {
