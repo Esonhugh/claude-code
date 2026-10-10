@@ -36,7 +36,9 @@ import {
   addInstalledPlugin,
   getGitCommitSha,
   getInstalledPluginsReadRefusal,
+  loadInstalledPluginsFromDisk,
 } from './installedPluginsManager.js'
+import { findPluginFolderCollision, PluginFolderCollisionError } from './pluginFolderCollision.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import { getMarketplaceCacheOnly, getPluginById } from './marketplaceManager.js'
 import {
@@ -134,6 +136,8 @@ export async function cacheAndRegisterPlugin(
   projectPath?: string,
   localSourcePath?: string,
 ): Promise<string> {
+  const collision = findPluginFolderCollision([pluginId], loadInstalledPluginsFromDisk().plugins)
+  if (collision) throw new PluginFolderCollisionError(collision, pluginId)
   const source: PluginSource =
     typeof entry.source === 'string' && localSourcePath
       ? (localSourcePath as PluginSource)
@@ -321,11 +325,13 @@ export async function installResolvedPlugin({
   entry,
   scope,
   marketplaceInstallLocation,
+  collisionSurface = 'cli',
 }: {
   pluginId: string
   entry: PluginMarketplaceEntry
   scope: 'user' | 'project' | 'local'
   marketplaceInstallLocation?: string
+  collisionSurface?: 'cli' | 'ui'
 }): Promise<InstallCoreResult> {
   const settingSource = scopeToSettingSource(scope)
 
@@ -341,6 +347,9 @@ export async function installResolvedPlugin({
   if (recordRefusal) {
     throw new Error(`Plugin "${pluginId}" was not installed: ${recordRefusal}`)
   }
+  const installedPlugins = loadInstalledPluginsFromDisk().plugins
+  const rootCollision = findPluginFolderCollision([pluginId], installedPlugins)
+  if (rootCollision) throw new PluginFolderCollisionError(rootCollision, pluginId, collisionSurface)
 
   // ── Resolve dependency closure ──
   // depInfo caches marketplace lookups so the materialize loop doesn't
@@ -386,6 +395,10 @@ export async function installResolvedPlugin({
   if (!resolution.ok) {
     // @ts-ignore - recovered code
     return { ok: false, reason: 'resolution-failed', resolution }
+  }
+  const collision = findPluginFolderCollision(resolution.closure, installedPlugins)
+  if (collision) {
+    throw new PluginFolderCollisionError(collision, pluginId, collisionSurface, (installedPlugins[pluginId]?.length ?? 0) > 0)
   }
 
   // ── Policy guard for transitive dependencies ──
@@ -562,6 +575,7 @@ export async function installPluginFromMarketplace({
       entry,
       scope,
       marketplaceInstallLocation,
+      collisionSurface: 'ui',
     })
 
     if (!result.ok) {
@@ -635,6 +649,10 @@ export async function installPluginFromMarketplace({
       message: `✓ Installed ${entry.name}${result.depNote}. Run /reload-plugins to activate.`,
     }
   } catch (err) {
+    if (err instanceof PluginFolderCollisionError) {
+      logForDebugging(`Plugin installation refused for ${pluginId}: ${err.message}`, { level: 'warn' })
+      return { success: false, error: err.message }
+    }
     const errorMessage = err instanceof Error ? err.message : String(err)
     logError(toError(err))
     return { success: false, error: `Failed to install: ${errorMessage}` }

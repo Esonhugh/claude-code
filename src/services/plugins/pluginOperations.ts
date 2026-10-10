@@ -38,6 +38,7 @@ import {
   loadKnownMarketplacesConfig,
 } from '../../utils/plugins/marketplaceManager.js'
 import { deletePluginDataDir } from '../../utils/plugins/pluginDirectories.js'
+import { getPluginIdsForDataCleanup } from '../../utils/plugins/pluginFolderCollision.js'
 import {
   parsePluginIdentifier,
   scopeToSettingSource,
@@ -566,7 +567,7 @@ export async function uninstallPluginOp(
   if (isLastScope) {
     deletePluginOptions(pluginId)
     if (deleteDataDir) {
-      await deletePluginDataDir(pluginId)
+      await deletePluginDataDir(pluginId, getPluginIdsForDataCleanup())
     }
   }
 

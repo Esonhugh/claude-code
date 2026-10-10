@@ -55,6 +55,7 @@ import {
 import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
+import { getPluginIdsForDataCleanup } from './pluginFolderCollision.js'
 import {
   extractHostFromSource,
   formatSourceForDisplay,
@@ -2051,7 +2052,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
   }
   for (const pluginId of removedPluginIds) {
     deletePluginOptions(pluginId)
-    await deletePluginDataDir(pluginId)
+    await deletePluginDataDir(pluginId, getPluginIdsForDataCleanup())
   }
 
   logForDebugging(`Removed marketplace source: ${name}`)

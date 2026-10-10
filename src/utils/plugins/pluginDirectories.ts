@@ -90,6 +90,14 @@ export function getPluginSeedDirs(): string[] {
 }
 
 function sanitizePluginId(pluginId: string): string {
+  const npmName = pluginId.slice(0, -4)
+  if (pluginId.endsWith('@npm') && !npmName.includes('..') &&
+      /^(?:@[a-z0-9][a-z0-9-._]*\/)?[a-z0-9][a-z0-9-._]*$/.test(npmName)) {
+    return `${npmName.replace(/[^a-z0-9-]/gu, char => {
+      const code = char.codePointAt(0)!
+      return code <= 255 ? `_${code.toString(16).padStart(2, '0')}` : `__${code.toString(16)}_`
+    })}-npm`
+  }
   // Same character class as the install-cache sanitizer (pluginLoader.ts)
   return pluginId.replace(/[^a-zA-Z0-9\-_]/g, '-')
 }
@@ -165,8 +173,21 @@ export async function getPluginDataDirSize(
  * cleanup side-effect surfacing as "uninstall failed". Same rationale as
  * deletePluginOptions (pluginOptionsStorage.ts).
  */
-export async function deletePluginDataDir(pluginId: string): Promise<void> {
+export async function deletePluginDataDir(
+  pluginId: string,
+  remainingPluginIds: Iterable<string> | null,
+): Promise<void> {
   const dir = pluginDataDirPath(pluginId)
+  if (remainingPluginIds === null) {
+    logForDebugging(`Keeping plugin data dir ${dir}: installed plugin records cannot be read`, { level: 'warn' })
+    return
+  }
+  for (const other of remainingPluginIds) {
+    if (other !== pluginId && pluginDataDirPath(other).toLowerCase() === dir.toLowerCase()) {
+      logForDebugging(`Keeping plugin data dir ${dir}: still used by ${other}`)
+      return
+    }
+  }
   try {
     await rm(dir, { recursive: true, force: true })
   } catch (e) {
