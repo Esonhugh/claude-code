@@ -54,6 +54,7 @@ import {
   remove,
   subscribeToCommandQueue,
   getCommandsByMaxPriority,
+  getCommandQueueSnapshot,
 } from 'src/utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from 'src/utils/commandLifecycle.js'
 import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
@@ -136,6 +137,7 @@ import type {
   SDKControlInitializeRequest,
   SDKControlInitializeResponse,
   SDKControlRequest,
+  SDKControlInterruptResponse,
   SDKControlResponse,
   SDKControlMcpSetServersResponse,
   SDKControlMcpSetServersRequest,
@@ -3152,7 +3154,18 @@ function runHeadlessStreaming(
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
           suggestionState.pendingSuggestion = null
-          sendControlResponseSuccess(message)
+          // Snapshot synchronously with the abort, before the next turn drains
+          // these messages. The drain installs its controller without yielding
+          // after dequeueing, so no unarmed batch is held outside this queue.
+          const response = {
+            still_queued: getCommandQueueSnapshot()
+              .filter(command => command.agentId === undefined)
+              .flatMap(command => command.uuid === undefined ? [] : [command.uuid]),
+          } satisfies SDKControlInterruptResponse
+          logForDebugging(
+            `[print.ts] interrupt handled, stillQueued=${response.still_queued.length}`,
+          )
+          sendControlResponseSuccess(message, response)
         } else if (message.request.subtype === 'end_session') {
           logForDebugging(
             `[print.ts] end_session received, reason=${message.request.reason ?? 'unspecified'}`,

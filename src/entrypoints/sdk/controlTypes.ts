@@ -62,6 +62,11 @@ export type SDKControlInterruptRequest = {
   subtype: 'interrupt'
 }
 
+export type SDKControlInterruptResponse = {
+  /** UUIDs of this agent's queued messages that survive the interrupt. */
+  still_queued: string[]
+}
+
 export type SDKControlPermissionRequest = {
   subtype: 'can_use_tool'
   tool_name: string
