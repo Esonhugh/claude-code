@@ -27,6 +27,7 @@ function loadedPlugin(overrides: Partial<LoadedPlugin> = {}): LoadedPlugin {
     path,
     source: `${name}@marketplace`,
     repository: `${name}@marketplace`,
+    managedSource: true,
     enabled: true,
     hookModules: [
       { configPath: `${path}/hooks/hooks.json`, paths: ['./register.ts'] },

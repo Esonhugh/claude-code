@@ -61,6 +61,8 @@ export type LoadedPlugin = {
   repository: string // Repository identifier, usually same as source
   enabled?: boolean
   isBuiltin?: boolean // true for built-in plugins that ship with the CLI
+  /** Host-verified in-place source matching managed policy; never read from plugin.json. */
+  managedSource?: boolean
   sha?: string // Git commit SHA for version pinning (from marketplace entry source)
   commandsPath?: string
   commandsPaths?: string[] // Additional command paths from manifest

@@ -1,4 +1,5 @@
 import { dirname, resolve } from 'node:path'
+import { logForDebugging } from '../../utils/debug.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { markBuiltinModInput } from '../../plugins/builtinPlugins.js'
 import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
@@ -107,7 +108,7 @@ export function getModPluginOrigin(
   const storageId = getPluginStorageId(plugin)
   if (plugin.isBuiltin === true && storageId.endsWith('@builtin'))
     return { plugin: storageId, tier: 'builtin' }
-  const managed = settings.policySettings?.enabledPlugins?.[storageId] === true
+  const managed = plugin.managedSource === true && settings.policySettings?.enabledPlugins?.[storageId] === true
   const hasPolicy = settings.hasManagedSettings === true ||
     (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0)
   const ordering = hasPolicy ? settings.policySettings :
@@ -187,7 +188,13 @@ export function prepareModPlugins(
     }
     const trustedBuiltin =
       plugin.isBuiltin === true && storageId === `${plugin.name}@builtin`
-    const managed = policyEnabled?.[storageId] === true
+    const managed = plugin.managedSource === true && policyEnabled?.[storageId] === true
+    if (!trustedBuiltin && policyEnabled?.[storageId] === true && !managed) {
+      logForDebugging(
+        `[Mods] ${storageId}: enabled by managed settings without verified in-place directory provenance; hooks keep the user tier${managedOnly ? ' and are refused by managed-only policy' : ''}; loaded from ${plugin.path}`,
+        { level: 'warn' },
+      )
+    }
     if (!trustedBuiltin && allDisabled) {
       errors.push(
         diagnostic(
@@ -233,7 +240,7 @@ export function prepareModPlugins(
   }
 
   const eligible = (input: ModPluginInput) => input.tier !== 'builtin' &&
-    (hasPolicy ? policyEnabled?.[input.storageId] === true : policyEnabled?.[input.storageId] !== true)
+    (hasPolicy ? input.tier !== 'user' : policyEnabled?.[input.storageId] !== true)
   for (const [key, ids] of [['prependPlugins', prepend], ['appendPlugins', append]] as const) {
     for (const id of ids) {
       if (key === 'prependPlugins' && id === SEC_DEFAULT_ID && shouldSeatSecDefault(settings)) continue

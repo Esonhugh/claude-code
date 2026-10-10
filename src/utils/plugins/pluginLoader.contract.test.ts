@@ -126,6 +126,68 @@ if (!process.env.P7_CONTRACT_TEST_CHILD) {
           : readFileSync(join(dir, entry.name)).toString('base64'),
       ])
 
+  const { getModPluginOrigin } = await import('../../services/mods/plugins.js')
+  for (const variant of ['matched','conflicting-directory','remote-mismatch','remote-declared','no-declaration','user-only','unregistered','remote-plugin-entry','inconsistent-registration','trailing-declaration','missing-source'] as const) {
+    test(`292 directory source and managed origin: ${variant}`, async () => {
+      const a=join(root,'source-292-'+variant+'-a'),b=join(root,'source-292-'+variant+'-b'),cache=join(root,'source-292-'+variant+'-cache')
+      for (const [market,version] of [[a,'A'],[b,'B']] as const) {
+        const path=join(market,'plugins/example')
+        mkdirSync(join(market,'.claude-plugin'),{recursive:true});mkdirSync(join(path,'.claude-plugin'),{recursive:true})
+        write(join(path,'.claude-plugin/plugin.json'),{name:'example',version,managedSource:true})
+        write(join(market,'.claude-plugin/marketplace.json'),{name:'corp',owner:{name:'corp'},plugins:[{name:'example',source:'./plugins/example'}]})
+      }
+      mkdirSync(join(cache,'.claude-plugin'),{recursive:true});write(join(cache,'.claude-plugin/plugin.json'),{name:'example',version:'CACHE',managedSource:true})
+      const known=join(configDir,'known_marketplaces.json'),previousKnown=readFileSync(known)
+      let previousInstalled: Buffer | undefined
+      try {previousInstalled=readFileSync(installedPath)} catch (error) {if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error}
+      const remote=variant==='remote-mismatch'||variant==='remote-declared'
+      const registeredSource=remote?{source:'github' as const,repo:'fixture/corp'}:{source:'directory' as const,path:variant==='conflicting-directory'?b:a}
+      const registeredPath=variant==='conflicting-directory'||variant==='inconsistent-registration'?b:a
+      const declaration=variant==='remote-declared'?registeredSource:{source:'directory' as const,path:a+(variant==='trailing-declaration'?'/':'')}
+      const policy=variant==='user-only'?{}:{enabledPlugins:{'example@corp':true},...(variant==='no-declaration'?{}:{extraKnownMarketplaces:{corp:{source:declaration}}})}
+      if(variant==='remote-plugin-entry')write(join(a,'.claude-plugin/marketplace.json'),{name:'corp',owner:{name:'corp'},plugins:[{name:'example',source:{source:'github',repo:'fixture/example'}}]})
+      write(known,variant==='unregistered'?{}:{corp:{source:registeredSource,installLocation:registeredPath,lastUpdated:'2026-10-11T00:00:00.000Z'}})
+      if(variant==='missing-source') {const book=JSON.parse(readFileSync(known,'utf8'));delete book.corp.source;write(known,book)}
+      write(installedPath,{version:2,plugins:{'example@corp':[{scope:'user',installPath:cache,version:'1',installedAt:'2026-10-11T00:00:00.000Z',lastUpdated:'2026-10-11T00:00:00.000Z'}]}})
+      configure({'example@corp':true})
+      settingsCache.setCachedSettingsForSource('policySettings',policy as import('../settings/types.js').SettingsJson)
+      settingsCache.setSessionSettingsCache({settings:{enabledPlugins:{'example@corp':true},...policy},errors:[]})
+      const before=snapshot(root)
+      try {
+        const contract=await loader.loadPluginsForContractValidation()
+        // Strict validation still reports missing provenance; runtime keeps the legacy cache copy.
+        if(variant==='missing-source') {
+          expect(contract.complete).toBe(false);expect(contract.errors.length).toBeGreaterThan(0)
+          process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL = '0'
+          loader.loadAllPluginsCacheOnly.cache?.clear()
+          installed.clearInstalledPluginsCache()
+        }
+        const result=variant==='missing-source'?await loader.loadAllPluginsCacheOnly():contract
+        const loaded=result.enabled.find(plugin=>plugin.source==='example@corp')
+        // Official 2.1.292 SDK initialization: the registered folder supplies the content;
+        // only an in-place source vouched for by the policy directory gets managed authority.
+        if(variant==='remote-mismatch') {
+          expect(loaded).toBeUndefined();expect(result.errors.length).toBeGreaterThan(0)
+        } else {
+          const version=variant==='remote-declared'||variant==='remote-plugin-entry'||variant==='missing-source'?'CACHE':variant==='conflicting-directory'||variant==='inconsistent-registration'?'B':'A'
+          expect(loaded?.path).toBe(version==='CACHE'?cache:join(version==='B'?b:a,'plugins/example'))
+          expect(loaded?.manifest.version).toBe(version)
+          const managed=variant==='matched'||variant==='unregistered'||variant==='trailing-declaration'
+          expect(getModPluginOrigin(loaded!,{userSettings:null,flagSettings:null,policySettings:policy as import('../settings/types.js').SettingsJson,hookPolicy:{managedOnly:false,allDisabled:false}}).tier).toBe(managed?'prepend':'user')
+          if(!managed)expect(Reflect.get(loaded!,'managedSource')).not.toBe(true)
+          expect(result.errors).toEqual([])
+        }
+        expect(snapshot(root)).toEqual(before)
+      } finally {
+        writeFileSync(known,previousKnown)
+        if(previousInstalled===undefined)unlinkSync(installedPath);else writeFileSync(installedPath,previousInstalled)
+        process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL = '1'
+        configure({'example@test':true})
+      }
+    })
+  }
+
+
   test('contract-only discovery preserves recorded paths and never publishes partial context', async () => {
     record(recorded)
     const interactive=state.getIsInteractive()

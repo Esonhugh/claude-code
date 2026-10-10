@@ -46,7 +46,7 @@ import {
 } from 'fs/promises'
 import { publishDirectory } from './stagingDirectory.js'
 import memoize from 'lodash-es/memoize.js'
-import { basename, dirname, join, relative, resolve, sep } from 'path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
 import { readOfficialShippedDiffContract, isOfficialShippedDiffCatalogAllowed } from '../../plugins/builtinShippedMods.js'
 import { builtinModsArchive, builtinDiffArchive } from '../../plugins/bundled/index.js'
@@ -88,6 +88,7 @@ import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
 import {
   getSettings_DEPRECATED,
+  getSettingsForSource,
   getSettingsWithErrors,
 } from '../settings/settings.js'
 import {
@@ -108,7 +109,7 @@ import {
   getInstalledPluginsFilePath,
   readInstalledPluginsForContractValidation,
 } from './installedPluginsManager.js'
-import { getManagedPluginNames } from './managedPlugins.js'
+import { getInPlacePluginSource, getManagedPluginNames } from './managedPlugins.js'
 import { areSideloadFlagsDisabled, getSideloadFlagsError } from './sideloadPolicy.js'
 import {
   formatSourceForDisplay,
@@ -120,7 +121,7 @@ import {
 import {
   getMarketplaceCacheOnly,
   getPluginByIdCacheOnly,
-  loadKnownMarketplacesConfigSafe,
+  loadKnownMarketplacesForPluginLoading,
   loadKnownMarketplacesConfig,
   readCachedMarketplace,
 } from './marketplaceManager.js'
@@ -1999,7 +2000,7 @@ async function loadPluginsFromMarketplaces({
   // loading — this is a read-only path, so returning {} degrades gracefully.
   const knownMarketplaces = await (contractOnly
     ? loadKnownMarketplacesConfig()
-    : loadKnownMarketplacesConfigSafe())
+    : loadKnownMarketplacesForPluginLoading())
 
   // Fail-closed guard for enterprise policy: if a policy IS configured and we
   // cannot resolve a marketplace's source (config returned {} due to corruption,
@@ -2034,7 +2035,10 @@ async function loadPluginsFromMarketplaces({
     [...uniqueMarketplaces].map(async name => {
       if (contractOnly) {
         const config = knownMarketplaces[name]
-        if (!config) {
+        const declared = getSettingsWithErrors().settings.extraKnownMarketplaces?.[name]?.source
+        const installLocation = config?.installLocation ??
+          (declared?.source === 'directory' && isAbsolute(declared.path) ? declared.path : undefined)
+        if (!installLocation) {
           errors.push({
             type: 'generic-error',
             source: name,
@@ -2045,12 +2049,12 @@ async function loadPluginsFromMarketplaces({
         try {
           marketplaceCatalogs.set(
             name,
-            await readCachedMarketplace(config.installLocation),
+            await readCachedMarketplace(installLocation),
           )
         } catch (error) {
           errors.push({
             type: 'generic-error',
-            source: config.installLocation,
+            source: installLocation,
             error: errorMessage(error),
           })
         }
@@ -2083,6 +2087,20 @@ async function loadPluginsFromMarketplaces({
       const { name: pluginName, marketplace: marketplaceName } =
         parsePluginIdentifier(pluginId)
 
+      const inPlace = await getInPlacePluginSource(
+        pluginId, getSettingsForSource('policySettings'), knownMarketplaces[marketplaceName!],
+        getSettingsWithErrors().settings.extraKnownMarketplaces?.[marketplaceName!]?.source,
+      )
+      if (inPlace) {
+        logForDebugging(`[Mods] ${pluginId}: loading directory plugin in place from ${inPlace.path}; registered directory ${inPlace.source.path}; managed source ${inPlace.managedSource}`)
+        if (!isSourceAllowedByPolicy(inPlace.source)) throw new Error(`Managed marketplace ${marketplaceName} is blocked by marketplace policy`)
+        const plugin = await finishLoadingPluginFromPath(
+          inPlace.entry, pluginId, enabledValue === true || Array.isArray(enabledValue), errors, inPlace.path, contractOnly,
+        )
+        if (plugin) plugin.managedSource = inPlace.managedSource
+        return plugin
+      }
+
       // Check if marketplace source is allowed by enterprise policy
       const marketplaceConfig = knownMarketplaces[marketplaceName!]
 
@@ -2098,7 +2116,7 @@ async function loadPluginsFromMarketplaces({
       // with NO schema validation — if one entry is malformed enough to fail
       // our validation but readable enough for the raw cast, it would load
       // unchecked. Unverifiable source + active policy → block, always.
-      if (!marketplaceConfig && hasEnterprisePolicy) {
+      if (!marketplaceConfig?.source && hasEnterprisePolicy) {
         // We can't know whether the unverifiable source would actually be in
         // the blocklist or not in the allowlist — so pick the error variant
         // that matches whichever policy IS configured. If an allowlist exists,
@@ -2119,7 +2137,7 @@ async function loadPluginsFromMarketplaces({
       }
 
       if (
-        marketplaceConfig &&
+        marketplaceConfig?.source &&
         !isSourceAllowedByPolicy(marketplaceConfig.source)
       ) {
         // Check if explicitly blocked vs not in allowlist for better error context
