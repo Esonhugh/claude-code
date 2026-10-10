@@ -300,10 +300,11 @@ try {
   assert.equal(failed.diagnostics.length, 1)
 
   const aborted = new AbortController()
-  aborted.abort(new Error('skill prompt cancelled'))
+  const reason = new Error('skill prompt cancelled')
+  aborted.abort(reason)
   await assert.rejects(
     runSkillPrompt(`async ($, e, next) => next(e)`, aborted),
-    { name: 'AbortError' },
+    error => error === reason,
   )
 } finally {
   clearInvokedSkills()
