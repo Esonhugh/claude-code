@@ -3597,9 +3597,9 @@ async function run(): Promise<CommanderCommand> {
       // This host is created only after trust; its Worker remains lazy until
       // a local conversation binds with actual module declarations.
       const modsSession = createModsSession({
+        bare: isBareMode(),
         isTrusted: isNonInteractiveSession || checkHasTrustDialogAccepted(),
         getDisabledReason: () => {
-          if (isBareMode()) return 'Mods are unsupported in bare mode'
           if (typeof Bun === 'undefined') return 'Mods require the Bun CLI runtime; Node execution is unsupported'
           if (
             isSSHRemoteSession ||

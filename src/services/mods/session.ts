@@ -65,6 +65,8 @@ export class ModAuthoringPromptDismissedError extends Error {
 }
 
 export type ModsSessionOptions = {
+  /** Skip plugin discovery/execution while retaining the local SDK UI engine. */
+  bare?: boolean
   /** The CLI supplies this only after its trust gate (print mode has implicit trust). */
   isTrusted: boolean
   getDisabledReason?: () => string | undefined
@@ -552,13 +554,13 @@ export function createModsSession(options: ModsSessionOptions) {
     const disabled = options.getDisabledReason?.()
       ?? (policy?.allowManagedHooksOnly || policy?.strictPluginOnlyCustomization
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
-    const configured = plugins ?? (await loadPlugins())
-    const authoringErrors = deferAuthoring
+    const configured = options.bare ? [] : plugins ?? (await loadPlugins())
+    const authoringErrors = deferAuthoring || options.bare
       ? []
       : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
     if (stopped || isShuttingDown()) return
     const { plugins: loaded, errors: mergeErrors } = mergePluginSources({
-      session: [...authoringPlugins.values()],
+      session: options.bare ? [] : [...authoringPlugins.values()],
       marketplace: configured.filter(plugin => plugin.isBuiltin !== true),
       builtin: configured.filter(plugin => plugin.isBuiltin === true),
       managedNames: managedPluginNames(settings),
@@ -589,14 +591,14 @@ export function createModsSession(options: ModsSessionOptions) {
     ) {
       diagnostic({ plugin: 'host', stage: 'unsupported', message: disabled })
     }
-    const inputs = disabled ? [] : seatNativeModPlugins(prepared.inputs, settings)
+    const inputs = disabled || options.bare ? [] : seatNativeModPlugins(prepared.inputs, settings)
     const hasConfigRows = loaded.some(
       plugin =>
         plugin.enabled !== false &&
         !plugin.hookModules?.some(group => group.paths.length) &&
         Object.keys(plugin.manifest.userConfig ?? {}).length > 0,
     )
-    if (!runtime && !disabled && (inputs.length > 0 || hasConfigRows)) {
+    if (!runtime && !disabled && (options.bare || inputs.length > 0 || hasConfigRows)) {
       const created = (options.createRuntime ?? createModsRuntime)({
         onDiagnostic: diagnostic,
         services,
@@ -729,7 +731,7 @@ export function createModsSession(options: ModsSessionOptions) {
     ) => Promise<PromptResponse>,
     signal: AbortSignal,
   ): Promise<{ enabled: boolean; root?: string }> {
-    if (stopped || !options.isTrusted || options.getDisabledReason?.() || !binding?.isInteractive)
+    if (stopped || options.bare || !options.isTrusted || options.getDisabledReason?.() || !binding?.isInteractive)
       return { enabled: false }
     authoringPrompt = requestPrompt
     if (authoringEnabled && authoringRoot)
