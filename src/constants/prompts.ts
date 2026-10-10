@@ -25,7 +25,7 @@ import {
 } from '../utils/model/model.js'
 import { getSkillToolCommands } from 'src/commands.js'
 import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
-import { getAllOutputStyles, getOutputStyleConfig } from './outputStyles.js'
+import { getOutputStyleConfig } from './outputStyles.js'
 import type {
   MCPServerConnection,
   ConnectedMCPServer,
@@ -457,7 +457,7 @@ export async function getSystemPrompt(
   composition?: import('../services/mods/types.js').PromptComposeInput,
 ): Promise<string[]> {
   const recipe = (input: import('../services/mods/types.js').PromptComposeInput) =>
-    getSystemPrompt(tools, input.promptModel, additionalWorkingDirectories, mcpClients, input)
+    getSystemPrompt(tools, input.model, additionalWorkingDirectories, mcpClients, input)
   const excludeDynamicSections = composition?.traits.includes('sdk-preset') === true
   // Official 292: only these three rewrites steer generation; other traits
   // describe decisions made by the engine rather than flags a mod can force.
@@ -479,17 +479,11 @@ export async function getSystemPrompt(
     computeSimpleEnvInfo(model, additionalWorkingDirectories),
   ])
 
-  let outputStyleConfig = configuredOutputStyle
-  if (composition) {
-    const requested = composition.outputStyle
-    const style = requested ? (await getAllOutputStyles(cwd))[requested.name] : null
-    if (requested && !style) throw new Error(`Unknown output style: ${requested.name}`)
-    outputStyleConfig = style && requested
-      ? { ...style, keepCodingInstructions: requested.isKeepingCodingInstructions }
-      : null
-  }
+  // Official 292 recomposes from the engine's model and configured style; these facts are observational.
+  const outputStyleConfig = configuredOutputStyle
   const settings = getInitialSettings()
-  const enabledTools = new Set(composition?.tools ?? tools.map(_ => _.name))
+  const offeredTools = new Set(tools.map(tool => tool.name))
+  const enabledTools = new Set(composition ? composition.tools.filter(name => offeredTools.has(name)) : offeredTools)
   const facts: SystemPromptFacts = {
     promptModel: model,
     outputStyle: outputStyleConfig === null ? null : {

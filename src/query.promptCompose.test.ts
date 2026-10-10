@@ -77,7 +77,7 @@ test('real generation retains a rerender recipe through append and join', async 
       outputStyle: null, traits: ['bare', 'print'], surfaces: [],
     })
     expect(rendered.join('')).toBe(`before|${generated.join('')}|after`)
-    expect(getSystemPromptFacts(rendered)).toEqual({ promptModel: 'new-model', outputStyle: null, traits: ['bare', 'print'] })
+    expect(getSystemPromptFacts(rendered)).toEqual({ promptModel: 'request-model', outputStyle: null, traits: ['bare', 'print'] })
     expect(getSystemPromptFacts(generated)?.promptModel).toBe('old-model')
     const plan = getSystemPromptSections(rendered)!
     expect(plan).toEqual([{ sections: [
@@ -107,25 +107,25 @@ test('generation facts and explicit scopes survive joins without a cache boundar
   expect(getSystemPromptFacts(['unknown'])).toBeUndefined()
 })
 
-test('real generation rerenders model, output style and tool guidance without poisoning cached sections', async () => {
+test('real generation uses the request model and configured style and ignores unknown tools without poisoning cached sections', async () => {
   const { getSystemPrompt } = await import('./constants/prompts.js')
   const { renderSystemPrompt } = await import('./utils/systemPromptType.js')
   const generated = await getSystemPrompt([], 'claude-opus-4-6')
   const rendered = await renderSystemPrompt(generated, {
-    model: 'request-model', promptModel: 'claude-sonnet-4-6', tools: ['TaskCreate'],
+    model: 'claude-sonnet-4-6', promptModel: 'ignored-model', tools: ['TaskCreate'],
     outputStyle: { name: 'Explanatory', isKeepingCodingInstructions: false },
     traits: ['print'], surfaces: [],
   })
   const text = rendered.join('\n')
-  expect(text).toContain('# Explanatory Style Active')
-  expect(text).toContain('TaskCreate')
+  expect(text).not.toContain('# Explanatory Style Active')
+  expect(text).not.toContain('TaskCreate')
   expect(generated.join('\n')).not.toContain('TaskCreate')
-  expect(text).not.toContain('# Doing tasks')
+  expect(text).toContain('# Doing tasks')
   expect(text).toContain('The exact model ID is claude-sonnet-4-6')
   expect(text).toContain('August 2025')
   expect(text).not.toContain('The exact model ID is claude-opus-4-6')
   expect(text).not.toContain('suggest they type `! <command>`')
-  expect(getSystemPromptFacts(rendered)).toEqual({ promptModel: 'claude-sonnet-4-6', outputStyle: { name: 'Explanatory', isKeepingCodingInstructions: false }, traits: ['print'] })
+  expect(getSystemPromptFacts(rendered)).toEqual({ promptModel: 'claude-sonnet-4-6', outputStyle: null, traits: ['print'] })
   expect(await getSystemPrompt([], 'claude-opus-4-6')).toEqual(generated)
 })
 
@@ -136,8 +136,9 @@ test('generation keeps recipe errors and derives observational traits from the e
   const input = { model: 'request-model', promptModel: 'render-model', tools: [], outputStyle: null, traits: [], surfaces: [] } as const
   await expect(renderSystemPrompt(['custom text'], input)).rejects.toThrow('recipe is unavailable')
   await expect(renderSystemPrompt(withSystemPromptSections([{ name: 'identity', text: 'custom', scope: 'shared' }], input), input)).rejects.toThrow('recipe is unavailable')
-  await expect(renderSystemPrompt(generated, { ...input, outputStyle: { name: 'missing-style', isKeepingCodingInstructions: false } })).rejects.toThrow('Unknown output style')
   const baseline = await renderSystemPrompt(generated, input)
+  // Official 292 measured: an unknown observational outputStyle does not steer generation or throw.
+  expect(await renderSystemPrompt(generated, { ...input, outputStyle: { name: 'missing-style', isKeepingCodingInstructions: false } })).toEqual(baseline)
   // Official 292: these facts describe engine decisions; rewriting them does not steer next().
   for (const trait of ['bare', 'lean', 'print', 'skills', 'send-user-message', 'teammate', 'analysis'] as const) {
     const rewritten = await renderSystemPrompt(generated, { ...input, traits: [trait] })
@@ -179,7 +180,7 @@ test.each([false, true])('real query sends the prompt.compose replacement on eve
   const source = `export function register(on) {
     on('turn.start', async ($, e, next) => {
       const result = await $.prompt.compose(${recipe ? "{promptModel:'new-model', outputStyle:{name:'Explanatory',isKeepingCodingInstructions:false},traits:['print'],tools:['Bash']}" : ''});
-      if (${recipe ? "!result.sections.some(s => s.text.includes('# Explanatory Style Active'))" : "result.sections[0].text !== 'policy-1'"}) throw new Error('active compose did not reach adapter');
+      if (${recipe ? "result.sections.some(s => s.text.includes('# Explanatory Style Active') || s.text.includes('powered by the model new-model'))" : "result.sections[0].text !== 'policy-1'"}) throw new Error('active compose did not reach adapter');
       return next(e);
     });
   }`
@@ -256,13 +257,13 @@ test.each([false, true])('real query sends the prompt.compose replacement on eve
     expect(composed).toHaveLength(3)
     if (recipe) {
       expect(renderedCompositions).toHaveLength(3)
-      expect(renderedCompositions[0]).toContain('# Explanatory Style Active')
-      expect(renderedCompositions[0]).toContain('powered by the model new-model')
+      expect(renderedCompositions[0]).not.toContain('# Explanatory Style Active')
+      expect(renderedCompositions[0]).toContain('powered by the model claude-test')
       expect(composed[0]).toMatchObject({ promptModel: 'new-model', tools: ['Bash'], traits: ['print'] })
       expect(requests[0]![0]).toBe('before-generated')
       expect(requests[0]![1]).toStartWith('joined-prefix|')
       expect(requests[0]!.at(-1)).toBe('after-generated')
-      expect(requests[0]!.join('\n')).toContain('render-model')
+      expect(requests[0]!.join('\n')).toContain('claude-test')
       expect(requests[0]!.join('\n')).not.toContain('# Explanatory Style Active')
     } else {
       expect(composed[0]).toMatchObject({ model: 'claude-test', promptModel: 'render-model', tools: [], outputStyle: null, traits: [] })
@@ -289,7 +290,7 @@ test.each(['failed-rewrite', 'after-success', 'aborted'] as const)('per-request 
       compositions++
       if (mode === 'after-success' && compositions === 1) return {sections:[{id:'policy',text:'first composed policy',scope:'session'}]}
       if (mode === 'aborted') { controller.abort(reason); throw reason }
-      return next({...input, outputStyle:{name:'missing-style',isKeepingCodingInstructions:false}})
+      return next(input)
     },
   })
   const context = {
@@ -303,7 +304,10 @@ test.each(['failed-rewrite', 'after-success', 'aborted'] as const)('per-request 
     setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
     messages: [], mods: runtime,
   } as unknown as ToolUseContext
-  const generated = concatSystemPrompts(await (await import('./constants/prompts.js')).getSystemPrompt([], 'claude-sonnet-4-6'))
+  const original = concatSystemPrompts(await (await import('./constants/prompts.js')).getSystemPrompt([], 'claude-sonnet-4-6'))
+  const generated = withSystemPromptSections(getSystemPromptSections(original)!, getSystemPromptFacts(original), async () => {
+    throw new Error('fixture prompt generation failed')
+  })
   const prompts: string[][] = []
   const snapshots: string[][] = []
   let requestError: unknown
@@ -335,7 +339,7 @@ test.each(['failed-rewrite', 'after-success', 'aborted'] as const)('per-request 
       expect(prompts).toEqual(mode === 'after-success' ? [['first composed policy'], [...generated]] : [[...generated]])
       const diagnostics = messages.filter(text=>text.includes('[Mods] prompt.compose'))
       expect(diagnostics).toHaveLength(1)
-      expect(diagnostics[0]).toContain('Unknown output style: missing-style')
+      expect(diagnostics[0]).toContain('fixture prompt generation failed')
       expect(snapshots).toEqual(prompts)
     }
   } finally {await runtime.dispose();logging.mockRestore()}
