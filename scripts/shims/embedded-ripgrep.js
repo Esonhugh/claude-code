@@ -5,7 +5,7 @@ import builtinDiffArchivePath from __CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE__ with { t
 process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_PATH = embeddedRipgrepPath;
 process.env.CLAUDE_CODE_EMBEDDED_RIPGREP_VERSION = '__CLAUDE_CODE_RIPGREP_VERSION__';
 process.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE = builtinModsArchivePath;
-process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE = builtinDiffArchivePath;
+if (!process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE) process.env.CLAUDE_CODE_BUILTIN_DIFF_ARCHIVE = builtinDiffArchivePath;
 
 await import(__CLAUDE_CODE_EMBEDDED_SHARP__);
 await import('./cli.js');

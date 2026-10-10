@@ -42,25 +42,54 @@ export const shippedDiffProvenance = Object.freeze({
   metadataSha256: "865ed020c6db1a6b4924eaa47b85a7ba3478190e8ce19c3084f26d892ec72d5b",
 })
 
+export const shippedDiffArchiveSha256='67a4025549b14844f13e3d6a906b336306652f7cb62d61dcc32179acd5762340'
+// This immutable release is the fixed parity reference for the current batch.
+// Selecting a trusted archive does not let manifests supply builtin declarations.
+const referenceDiff292 = Object.freeze({
+  provenance: Object.freeze({
+  "version": "2.1.292",
+  "name": "cc-plugin-diff",
+  "binarySha256": "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
+  "moduleSha256": "6cd79b0d5118de9485b1268d64238019e3a41510c943eb17832b128fd976afd3",
+  "identityModule": "chunk-cnv756hy.js",
+  "identityModuleSha256": "86406ab18044de34edba1f7247b591268b86b1cff7522aaf07f1d67725f915c7",
+  "sourceStart": 12068,
+  "sourceEnd": 62473,
+  "sourceSha256": "ccafc3393958bc6e428f8909030d06af0e50e6db73f7308ec26ac286f27e97a4",
+  "metadataStart": 5666,
+  "metadataEnd": 6250,
+  "metadataSha256": "41ada677ee5d534b88f953e89e0b8261a7cc567d538b21678f41f7d3e45319ca"
+}),
+  archiveSha256: '745c46dae5714492d5fe0351df623579f82000d132db8df365bf690031d1cc65',
+  module: 'chunk-01whafa0.js',
+  registerExport: 'ym',
+})
+const trustedDiffArtifacts = [
+  {provenance: shippedDiffProvenance, archiveSha256: shippedDiffArchiveSha256, module: shippedDiffProvenance.module, registerExport: shippedDiffProvenance.registerExport},
+  referenceDiff292,
+] as const
+
 /** Host package initialization only; a manifest or caller-provided scan cannot issue a declaration. */
 export async function loadOfficialShippedDiffDefinition(modulePath:string, root:string): Promise<BuiltinPluginDefinition> {
   const bytes = await readFile(modulePath)
   const hash = (value:Uint8Array) => createHash('sha256').update(value).digest('hex')
-  if (hash(bytes) !== shippedDiffProvenance.moduleSha256) throw new Error('Official shipped diff module SHA-256 mismatch')
-  const identityBytes = await readFile(join(dirname(modulePath),shippedDiffProvenance.identityModule))
-  if (hash(identityBytes) !== shippedDiffProvenance.identityModuleSha256) throw new Error('Official shipped diff identity module SHA-256 mismatch')
-  const source = bytes.subarray(shippedDiffProvenance.sourceStart,shippedDiffProvenance.sourceEnd)
-  if (hash(source) !== shippedDiffProvenance.sourceSha256) throw new Error('Official shipped diff source SHA-256 mismatch')
-  const metadata = bytes.subarray(shippedDiffProvenance.metadataStart,shippedDiffProvenance.metadataEnd)
-  if (hash(metadata) !== shippedDiffProvenance.metadataSha256) throw new Error('Official shipped diff metadata SHA-256 mismatch')
+  const artifact = trustedDiffArtifacts.find(candidate => candidate.provenance.moduleSha256 === hash(bytes))
+  if (!artifact) throw new Error('Official shipped diff module SHA-256 mismatch')
+  const provenance = artifact.provenance
+  const identityBytes = await readFile(join(dirname(modulePath),provenance.identityModule))
+  if (hash(identityBytes) !== provenance.identityModuleSha256) throw new Error('Official shipped diff identity module SHA-256 mismatch')
+  const source = bytes.subarray(provenance.sourceStart,provenance.sourceEnd)
+  if (hash(source) !== provenance.sourceSha256) throw new Error('Official shipped diff source SHA-256 mismatch')
+  const metadata = bytes.subarray(provenance.metadataStart,provenance.metadataEnd)
+  if (hash(metadata) !== provenance.metadataSha256) throw new Error('Official shipped diff metadata SHA-256 mismatch')
   const entry = join(root,'hooks','register.js')
   const description='The diff panel as a plugin pane: /diff, the changed files and their hunks beside the transcript, refreshed as Claude edits'
-  const definition:BuiltinPluginDefinition = {name:shippedDiffProvenance.name,version:shippedDiffProvenance.version,description,
-    manifest:{name:shippedDiffProvenance.name,version:shippedDiffProvenance.version,description},path:root,defaultEnabled:true,
+  const definition:BuiltinPluginDefinition = {name:provenance.name,version:provenance.version,description,
+    manifest:{name:provenance.name,version:provenance.version,description},path:root,defaultEnabled:true,
     hookModules:[{configPath:join(root,'hooks','hooks.json'),paths:['./register.js']}],
   }
-  const declaration:ModDeclaration = {name:shippedDiffProvenance.name,storageId:`${shippedDiffProvenance.name}@builtin`,version:shippedDiffProvenance.version,pluginRoot:root,
-    entrypoints:[entry],modules:[{path:entry,source:`${new TextDecoder('utf-8',{fatal:true}).decode(source)}\nexport {${shippedDiffProvenance.registerExport} as register};\n`}],links:[],
+  const declaration:ModDeclaration = {name:provenance.name,storageId:`${provenance.name}@builtin`,version:provenance.version,pluginRoot:root,
+    entrypoints:[entry],modules:[{path:entry,source:`${new TextDecoder('utf-8',{fatal:true}).decode(source)}\nexport {${artifact.registerExport} as register};\n`}],links:[],
     // The module's original jn scan (bytes5744..6328), independently pinned above.
     events:['session.start','ui.render','command.run','ui.close','ui.focus','ui.scroll','tool.call','prompt.submit'],
     calls:['clock.after','clock.every','clock.now','command.register','env.get','fs.list','fs.read','fs.stat','process.run',
@@ -73,7 +102,6 @@ export async function loadOfficialShippedDiffDefinition(modulePath:string, root:
   return definition
 }
 
-export const shippedDiffArchiveSha256='67a4025549b14844f13e3d6a906b336306652f7cb62d61dcc32179acd5762340'
 const paneRequests=new Set<string>()
 const availabilityFacets=new WeakMap<BuiltinPluginDefinition,{callback:()=>boolean;read:()=>boolean}>()
 const contractFacets=new WeakMap<BuiltinPluginDefinition,{coordinates:string;callback:()=>boolean;read:()=>boolean}>()
@@ -106,13 +134,14 @@ function offeredNow(): boolean {
  const features=getAllGrowthBookFeatures()
  return Boolean(features.tengu_quiet_dolphin ?? getFeatureValue_CACHED_MAY_BE_STALE('tengu_quiet_dolphin',true))
 }
-async function readShippedArchive(archivePath:string):Promise<{bytes:Uint8Array;files:Record<string,Uint8Array>}> {
+async function readShippedArchive(archivePath:string):Promise<{bytes:Uint8Array;files:Record<string,Uint8Array>;artifact:(typeof trustedDiffArtifacts)[number]}> {
  const bytes=await readFile(archivePath)
- if(createHash('sha256').update(bytes).digest('hex')!==shippedDiffArchiveSha256)throw new Error('Official shipped diff archive SHA-256 mismatch')
+ const artifact=trustedDiffArtifacts.find(candidate=>candidate.archiveSha256===createHash('sha256').update(bytes).digest('hex'))
+ if(!artifact)throw new Error('Official shipped diff archive SHA-256 mismatch')
  const files=unzipArchive(bytes)
  const received=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(files['provenance.json']))
- if(!isDeepStrictEqual(received,shippedDiffProvenance))throw new Error('Official shipped diff package provenance mismatch')
- return {bytes,files}
+ if(!isDeepStrictEqual(received,artifact.provenance))throw new Error('Official shipped diff package provenance mismatch')
+ return {bytes,files,artifact}
 }
 export async function readOfficialShippedDiffContract(archivePath:string):Promise<{definition:BuiltinPluginDefinition;files:Record<string,Uint8Array>}> {
  const {files}=await readShippedArchive(archivePath)
@@ -128,16 +157,16 @@ export async function readOfficialShippedDiffContract(archivePath:string):Promis
  return {definition,files:contractFiles}
 }
 export async function initializeOfficialShippedDiff(archivePath:string,cacheRoot:string):Promise<void> {
- const {bytes}=await readShippedArchive(archivePath)
+ const {bytes,artifact}=await readShippedArchive(archivePath)
  const root=await materializeBuiltinModsArchive(archivePath,cacheRoot,{bytes})
- const definition=await loadOfficialShippedDiffDefinition(join(root,'official',shippedDiffProvenance.module),join(root,'cc-plugin-diff'))
+ const definition=await loadOfficialShippedDiffDefinition(join(root,'official',artifact.module),join(root,'cc-plugin-diff'))
  let pinned:boolean|undefined
  const available=()=>paneDrawable() && (pinned ??= offeredNow())
  definition.isAvailable=available
  availabilityFacets.set(definition,{callback:available,read:()=>paneDrawable() && (pinned ??= offeredNow())})
  registerBuiltinPlugin(definition)
  const offered=offeredNow()
- logForDebugging(`[ModsBuiltin] ${JSON.stringify({event:'package-registered',plugin:definition.name,version:definition.version,storageId:'cc-plugin-diff@builtin',archiveSha256:shippedDiffArchiveSha256,moduleSha256:shippedDiffProvenance.moduleSha256,offeredNow:offered})}`)
+ logForDebugging(`[ModsBuiltin] ${JSON.stringify({event:'package-registered',plugin:definition.name,version:definition.version,storageId:'cc-plugin-diff@builtin',archiveSha256:artifact.archiveSha256,moduleSha256:artifact.provenance.moduleSha256,offeredNow:offered})}`)
  if(offered){
   try{
    const host=createModHostOperations({cwd:()=>process.cwd(),storageId:'cc-plugin-diff@builtin',signal:new AbortController().signal})
