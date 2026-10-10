@@ -138,6 +138,7 @@ import type {
   SDKControlRequest,
   SDKControlResponse,
   SDKControlMcpSetServersResponse,
+  SDKControlMcpSetServersRequest,
   SDKControlReloadPluginsResponse,
 } from 'src/entrypoints/sdk/controlTypes.js'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
@@ -149,6 +150,7 @@ import reject from 'lodash-es/reject.js'
 import { isPolicyAllowed } from 'src/services/policyLimits/index.js'
 import type { ReplBridgeHandle } from 'src/bridge/replBridge.js'
 import { getRemoteSessionUrl } from 'src/constants/product.js'
+import { areSideloadFlagsDisabled, filterSideloadMcpServers } from 'src/utils/plugins/sideloadPolicy.js'
 import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
@@ -3523,10 +3525,18 @@ function runHeadlessStreaming(
           }
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'mcp_set_servers') {
-          const { response, sdkServersChanged } = await applyMcpServerChanges(
-            // @ts-ignore - recovered code
-            message.request.servers,
-          )
+          const remote = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
+          // The legacy control envelope is open; this subtype has a defined wire request.
+          const request = message.request as SDKControlMcpSetServersRequest
+          const sideload = filterSideloadMcpServers(request.servers, remote && areSideloadFlagsDisabled())
+          // A remote payload with no SDK transports does not replace transports
+          // already registered by the host's initialize request.
+          const servers = remote && !Object.values(sideload.servers).some(config => config.type === 'sdk')
+            ? { ...sdkMcpConfigs, ...sideload.servers } : sideload.servers
+          const { response, sdkServersChanged } = await applyMcpServerChanges(servers)
+          for (const name of sideload.dropped) {
+            response.errors[name] = 'Ignored: managed setting disableSideloadFlags forbids server-delivered MCP servers on this machine'
+          }
           sendControlResponseSuccess(message, response)
 
           // Connect SDK servers AFTER response to avoid deadlock

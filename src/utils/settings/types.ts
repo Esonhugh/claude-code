@@ -1165,6 +1165,10 @@ export const SettingsSchema = lazySchema(() =>
             'Only applies to User, Project, and Local memory types (Managed/policy files cannot be excluded). ' +
             'Examples: "/home/user/monorepo/AGENTS.md", "**/AGENTS.md", "**/code/CLAUDE.md", "**/some-dir/.claude/rules/**"',
         ),
+      disableSideloadFlags: z
+        .boolean()
+        .optional()
+        .describe('Administrator-managed restriction on sideloaded plugins, custom agents, and server-delivered MCP configurations. Only honored from managed settings.'),
       pluginTrustMessage: z
         .string()
         .optional()

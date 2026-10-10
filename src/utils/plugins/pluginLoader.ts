@@ -109,6 +109,7 @@ import {
   readInstalledPluginsForContractValidation,
 } from './installedPluginsManager.js'
 import { getManagedPluginNames } from './managedPlugins.js'
+import { areSideloadFlagsDisabled, getSideloadFlagsError } from './sideloadPolicy.js'
 import {
   formatSourceForDisplay,
   getBlockedMarketplaces,
@@ -3398,7 +3399,12 @@ async function assemblePluginLoadResult(
   // Load marketplace plugins and session-only plugins in parallel.
   // getInlinePlugins() is a synchronous state read with no dependency on
   // marketplace loading, so these two sources can be fetched concurrently.
-  const inlinePlugins = getInlinePlugins()
+  const restricted = areSideloadFlagsDisabled()
+  const configuredInlinePlugins = getInlinePlugins()
+  if (restricted && configuredInlinePlugins.length > 0) {
+    logForDebugging(`disableSideloadFlags: dropping @inline plugin specs at load time (parse-site gate should have caught this earlier): ${getSideloadFlagsError(['--plugin-dir', '--plugin-url'])}`, { level: 'warn' })
+  }
+  const inlinePlugins = restricted ? [] : configuredInlinePlugins
   const [marketplaceResult, sessionResult] = await Promise.all([
     marketplaceLoader(),
     inlinePlugins.length > 0

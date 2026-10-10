@@ -278,6 +278,7 @@ import { initializeVersionedPlugins } from './utils/plugins/installedPluginsMana
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
 import { getGlobExclusionsForPluginCache } from './utils/plugins/orphanedPluginFilter.js'
 import { getPluginSeedDirs, mergePluginDirectories, settlePluginDirsEnvironment } from './utils/plugins/pluginDirectories.js'
+import { areSideloadFlagsDisabled, filterSideloadMcpServers, getSideloadFlagsError, getSideloadStartupError } from './utils/plugins/sideloadPolicy.js'
 import { countFilesRoundedRg } from './utils/ripgrep.js'
 import {
   processSessionStartHooks,
@@ -377,6 +378,7 @@ import {
   getInitialMainLoopModel,
   getIsNonInteractiveSession,
   getSdkBetas,
+  getIsRemoteMode,
   getSessionId,
   getUserMsgOptIn,
   setAllowedChannels,
@@ -1174,7 +1176,7 @@ async function run(): Promise<CommanderCommand> {
 
   // Use preAction hook to run initialization only when executing a command,
   // not when displaying help. This avoids the need for env variable signaling.
-  program.hook('preAction', async thisCommand => {
+  program.hook('preAction', async (thisCommand, actionCommand) => {
     profileCheckpoint('preAction_start')
     // Await async subprocess loads started at module evaluation (lines 12-20).
     // Nearly free — subprocesses complete during the ~135ms of imports above.
@@ -1215,6 +1217,11 @@ async function run(): Promise<CommanderCommand> {
     // the collect accumulator + [] default guarantee string[] in practice.
     const pluginDir = thisCommand.getOptionValue('pluginDir')
     const environmentPluginDirs = settlePluginDirsEnvironment()
+    const sideloadError = getSideloadStartupError(thisCommand.opts(), environmentPluginDirs, actionCommand.opts())
+    if (sideloadError) {
+      process.stderr.write(`${sideloadError}\n`)
+      process.exit(1)
+    }
     const pluginDirs = mergePluginDirectories(
       Array.isArray(pluginDir) && pluginDir.every(p => typeof p === 'string') ? pluginDir : [],
       environmentPluginDirs,
@@ -2226,6 +2233,19 @@ async function run(): Promise<CommanderCommand> {
         }
 
         if (Object.keys(allConfigs).length > 0) {
+          const sideloadBlocked = areSideloadFlagsDisabled() && Object.values(allConfigs).some(config => config.type !== 'sdk')
+          const remote = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode()
+          if (sideloadBlocked && !remote) {
+            process.stderr.write(`${getSideloadFlagsError(['--mcp-config'])}\n`)
+            process.exit(1)
+          }
+          const sideload = filterSideloadMcpServers(allConfigs, sideloadBlocked && remote)
+          if (sideload.dropped.length > 0) {
+            logForDebugging(`--mcp-config: ${sideload.dropped.length} ${plural(sideload.dropped.length, 'server')} ignored (disableSideloadFlags policy): ${sideload.dropped.join(', ')}`, { level: 'warn' })
+            process.stderr.write(`Warning: managed setting disableSideloadFlags forbids --mcp-config on this machine; ignoring ${sideload.dropped.length} ${plural(sideload.dropped.length, 'server-delivered MCP server')}: ${sideload.dropped.join(', ')}\n`)
+          }
+          allConfigs = sideload.servers
+
           // SDK hosts (Nest/Desktop) own their server naming and may reuse
           // built-in names — skip reserved-name checks for type:'sdk'.
           const nonSdkConfigNames = Object.entries(allConfigs)
