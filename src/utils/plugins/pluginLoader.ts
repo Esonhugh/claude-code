@@ -45,6 +45,7 @@ import {
   symlink,
 } from 'fs/promises'
 import { publishDirectory } from './stagingDirectory.js'
+import { expandSessionPluginPaths, resolveSessionPluginPath } from './sessionPluginPaths.js'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
@@ -3181,7 +3182,9 @@ export async function loadSessionOnlyPlugins(
   const plugins: LoadedPlugin[] = []
   const errors: PluginError[] = []
 
-  for (const [index, pluginPath] of sessionPluginPaths.entries()) {
+  const expandedPaths = await expandSessionPluginPaths(sessionPluginPaths, noMcpPaths)
+  for (const [index, spec] of expandedPaths.entries()) {
+    const pluginPath = spec.path
     try {
       const resolvedPath = resolve(pluginPath)
 
@@ -3199,9 +3202,10 @@ export async function loadSessionOnlyPlugins(
         continue
       }
 
-      const dirName = basename(resolvedPath)
+      const resolved = await resolveSessionPluginPath(resolvedPath, index, contractOnly)
+      const dirName = resolved.fallbackName
       const { plugin, errors: pluginErrors } = await createPluginFromPath(
-        resolvedPath,
+        resolved.path,
         `${dirName}@inline`, // temporary, will be updated after we know the real name
         true, // Resolve settings after reading the manifest's plugin name.
         dirName,
@@ -3209,7 +3213,10 @@ export async function loadSessionOnlyPlugins(
         contractOnly,
       )
 
-      if (noMcpPaths.has(resolvedPath)) plugin.skipMcpDiscovery = true
+      if (spec.skipMcpDiscovery) {
+        plugin.skipMcpDiscovery = true
+        plugin.mcpServers = {}
+      }
 
       // Update source to use the actual plugin name from manifest
       plugin.source = `${plugin.name}@inline`

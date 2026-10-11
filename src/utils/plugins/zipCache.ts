@@ -331,8 +331,9 @@ async function collectFilesForZip(
 export async function extractZipToDirectory(
   zipPath: string,
   targetDir: string,
+  capturedBytes?: Buffer,
 ): Promise<void> {
-  const zipBuf = await getFsImplementation().readFileBytes(zipPath)
+  const zipBuf = capturedBytes ?? await getFsImplementation().readFileBytes(zipPath)
   const files = await unzipFile(zipBuf)
   // fflate doesn't surface external_attr — parse the central directory so
   // exec bits survive extraction (hooks/scripts need +x to run via `sh -c`).
