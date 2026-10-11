@@ -46,6 +46,7 @@ function fixture(hooks: boolean | undefined) {
     name: 'SchedulerFixture',
     inputSchema: z.object({ value: z.string() }),
     maxResultSizeChars: Infinity,
+    isReadOnly: () => false,
     isConcurrencySafe: () => {
       classifications++
       return true
