@@ -39,7 +39,7 @@ import {
   useTabStatus,
 } from '../ink.js'
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
-import { selectProgramStatus, programTurnEnd, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
+import { selectProgramStatus, programTurnEnd, programStatusAskText, programStatusBlockedText, programStatusProgress, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
@@ -1793,7 +1793,7 @@ export function REPL({
     sandboxPermissionRequestQueue.length > 0 || workerSandboxPermissions.queue.length > 0 || pendingSandboxRequest
       ? 'sandbox request'
       : toolUseConfirmQueue[0] || pendingWorkerRequest
-        ? (toolUseConfirmQueue[0]?.tool.name ?? pendingWorkerRequest?.toolName) === ASK_USER_QUESTION_TOOL_NAME
+        ? toolUseConfirmQueue[0]?.tool.name === ASK_USER_QUESTION_TOOL_NAME
           ? 'input needed'
           : toolUseConfirmQueue[0] ? 'permission prompt' : 'worker request'
         : elicitation.queue.length > 0
@@ -1805,6 +1805,14 @@ export function REPL({
     busy: isLoading && programBlockedOn === undefined,
     queued: queuedCommands.length > 0,
     blockedOn: programBlockedOn,
+    blockedText: programStatusBlockedText({
+      blockedOn: programBlockedOn,
+      askText: toolUseConfirmQueue[0] ? programStatusAskText(toolUseConfirmQueue[0].tool, toolUseConfirmQueue[0].input) : undefined,
+      sandboxHost: sandboxPermissionRequestQueue[0]?.hostPattern.host ?? workerSandboxPermissions.queue[0]?.host ?? pendingSandboxRequest?.host,
+      worker: pendingWorkerRequest ?? undefined,
+      elicitationServer: elicitation.queue[0]?.serverName,
+    }),
+    progress: programStatusProgress(tasksV2),
     lastTurnEnd: programTurn.end,
     signedInSinceLastTurn: programTurn.authVersion !== programAuthVersion,
   })
