@@ -2345,7 +2345,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           owner.references++
           let source: ModHookStream | undefined
           try {
-            await owner.environment.setUiAccess(uiAllowed(owner, table))
+            const resumeBudget = pauseModBudget(next)
+            try { await owner.environment.setUiAccess(uiAllowed(owner, table)) }
+            finally { resumeBudget?.() }
             source = run(() => owner.environment.invokeStream(catching ? registration.catchId! : registration.id, [engineFacade(owner, table, snapshot), input], next))
             let thrown: { error: unknown } | undefined
             for (;;) {
@@ -2367,7 +2369,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       invoke: (input, next, catching) => withReference(owner, async () => {
         const entered = { snapshot, table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         try {
-          if (next.event !== 'engine.create') await owner.environment.setUiAccess(uiAllowed(owner, table))
+          if (next.event !== 'engine.create') {
+            const resumeBudget = pauseModBudget(next)
+            try { await owner.environment.setUiAccess(uiAllowed(owner, table)) }
+            finally { resumeBudget?.() }
+          }
           if (drawing !== undefined) drawings.get(drawing)?.participants.add(owner)
           const origin = input.origin as { kind?: string } | undefined
           const parent = uiContext.getStore()

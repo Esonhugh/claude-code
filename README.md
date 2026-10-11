@@ -803,7 +803,7 @@ export const register: Register = on => {
 }
 ```
 
-装饰支持 `color/backgroundColor/dimColor/bold/italic/underline/strikethrough`，范围相对返回文本。编辑链使用官方 50ms 预算；同批编辑合并首个编辑前状态与最后编辑后状态，多项合并时省略 `key`。异步回复按期间输入重新计算，失效草稿和已卸载编辑器不接受旧绘制。插件 `prompt.fill` 不冒充人工编辑事件。这些路径已有真实 Worker 和挂载输入组件的源码测试，新制品与官方终端逐帧对照仍待验收。
+装饰支持 `color/backgroundColor/dimColor/bold/italic/underline/strikethrough`，范围相对返回文本。编辑链使用官方 50ms 自身预算；调用 hook 前准备 UI 访问权限的宿主等待不计入其中，完成后恢复计时。同批编辑合并首个编辑前状态与最后编辑后状态，多项合并时省略 `key`。异步回复按期间输入重新计算，失效草稿和已卸载编辑器不接受旧绘制。插件 `prompt.fill` 不冒充人工编辑事件。这些路径已有真实 Worker 和挂载输入组件的源码测试；普通/Vim 的 fill、编辑回执、50ms 默认预算与整条 composer ANSI 已与固定官方 2.1.292 实测一致，完整主题及 terminal/diff/browser Client 生命周期仍待验收。
 
 会话 hook 返回对应事件的回执，例如 session.start 返回 `{ cwd }`、session.end 返回 `{ sessionId }`；忽略 `register` 自身的返回值不等于可以从这些 hook 返回 `undefined`。`SessionContextBreakdown` 保留官方原始数组类型，传给 hook 的输入再应用 `Frozen`；旧 `UsageBreakdown` 接口仍保留现有定义。
 
