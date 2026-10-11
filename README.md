@@ -1430,7 +1430,7 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 作者 `$.tool.call({tool, ...args})` 返回最终工具消息的 `{result, text}`；普通工具执行失败带 `isError: true`，权限或插件拒绝返回 `{deny}`。错误文字即使包含“Permission denied”，也不会被误当成拒绝。合成结果同样通过工具 mapper 生成 `text`。`ref`、`isReadOnly` 和 model-only `context` 保留在 middleware 的 `next(e)` 回执中，作者公开调用不返回这些内部字段。 当前 session 不提供的工具会抛出 `HooksError`，消息为 `<插件名>: $.tool.call: no tool named "<工具名>" in this session`；`$.tool.check` 使用对应的方法名。错误中的插件名由宿主传入，不能通过工具参数改写。
 
-运行 `bun test ./src/services/mods/dispatch.test.ts`、`bun test ./src/services/mods/toolHost.test.ts`、`bun test ./src/services/mods/runtimeTools.test.ts`、`bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts`，检查匹配插件名单、真实 Worker 身份边界、作者入口、经典 Hook 生产路径及权限来源。`--debug-file /absolute/path/mods-debug.log` 中的 `[ModsToolCheck]` 记录工具、tool use ID、Agent ID、检查阶段、核心是否被调用、hook 裁决及匹配插件名，不打印参数或原因正文。固定官方 2.1.292 的十一组真实 CLI 场景中，权限查询、作者调用和插件事件记录逐项一致，覆盖多插件短路、重复注册、matcher、同裁决改写及空原因；不可用工具的三项错误对照也一致。另外四个真实 CLI 场景按调用 ID 核对了子 Agent 身份、公开查询、缺省元信息恢复及完整拒绝错误，均与官方一致；主／子任务调度顺序和额外完成请求仍有差异。connector ceiling 的策略数据源、取消和完整 Agent／工具生命周期继续独立验收。
+运行 `bun test ./src/services/mods/dispatch.test.ts`、`bun test ./src/services/mods/toolHost.test.ts`、`bun test ./src/services/mods/runtimeTools.test.ts`、`bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts`，检查匹配插件名单、真实 Worker 身份边界、作者入口、经典 Hook 生产路径及权限来源。`--debug-file /absolute/path/mods-debug.log` 中的 `[ModsToolCheck]` 记录工具、tool use ID、Agent ID、检查阶段、核心是否被调用、hook 裁决及匹配插件名，不打印参数或原因正文。固定官方 2.1.292 的十一组真实 CLI 场景中，权限查询、作者调用和插件事件记录逐项一致，覆盖多插件短路、重复注册、matcher、同裁决改写及空原因；不可用工具的三项错误对照也一致。另外四个真实 CLI 场景按调用 ID 核对了子 Agent 身份、公开查询、缺省元信息恢复及完整拒绝错误，均与官方一致；原始请求交错仍有差异；控制子任务返回时机后，官方和本地均会产生额外完成请求，因此不以请求次数单独判定流程失败。connector ceiling 的策略数据源、取消和完整 Agent／工具生命周期继续独立验收。
 
 ### Mod 子任务的完成通知
 
@@ -1439,6 +1439,14 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 此认领只用于公开 Mod spawn 对应的本地任务。普通 Agent 工具的后台完成通知继续送达；teammate 和 remote task 使用各自的生命周期。子任务上下文优先使用 `setAppStateForTasks` 写入根任务表，不改变当前权限视图。
 
 使用 `--debug --debug-file /absolute/path/debug.log` 查看 `[ModsAgent] claimed completion notification`，日志包含 task ID、agent ID 和插件名，不包含任务正文。运行 `bun test ./src/services/mods/toolHost.spawnNotifications.test.ts ./src/tasks/LocalAgentTask/LocalAgentTask.progress.test.ts` 检查通知归属、三种终态和普通通知控制组。完整错误／取消／嵌套及 Workflow 矩阵继续按 `mods-test.md` 验收。
+
+### Agent 启动回执与异步通知
+
+模型通过 Agent 工具启动后台任务时，`tool_result` 是内部启动信息，不能把原始回执或 Agent ID 直接展示给用户。续接 Agent 时，使用 `SendMessage` 的 `to` 和 `summary`。收到完成通知前，启动回执不提供任务结果；可以继续其他工作或回复用户，询问进度时说明任务仍在运行。
+
+调用者有 Read／Bash 且输出路径非空时，回执包含 `output_file`；该文件是完整子任务 JSONL，不应使用 Read 或 shell 读取／跟踪来查询进度，应等待完成通知。缺少读取工具或路径为空时，返回不含文件路径的说明。此工具回执与 `$.agent.spawn` 的身份回执分别验收，Mods 仍可通过真实工具 middleware 观察工具结果。
+
+运行 `bun test ./src/tools/AgentTool/AgentTool.receipt292.test.ts` 核对完整文字及空路径回退。固定官方 2.1.292 的两组真实 CLI 场景中，默认启动回执文字逐字一致，仅归一化实际子 Agent ID 和对应输出路径；Messages 的缓存字段、条件共享目录提示、其他结果分支与完整生命周期仍待独立验收。异步任务的请求交错受完成时机影响；延后子任务返回时，双方都需要再次处理完成通知，不能把单次运行的请求数量作为唯一判据。
 
 ### Mod 主动工具调用的入口
 
