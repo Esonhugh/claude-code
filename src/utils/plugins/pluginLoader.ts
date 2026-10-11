@@ -50,7 +50,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'pat
 import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
 import { readOfficialShippedDiffContract, isOfficialShippedDiffCatalogAllowed } from '../../plugins/builtinShippedMods.js'
 import { builtinModsArchive, builtinDiffArchive } from '../../plugins/bundled/index.js'
-import { getInlinePlugins } from '../../bootstrap/state.js'
+import { getInlinePlugins, getInlinePluginsNoMcp } from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
   getBuiltinPlugins,
@@ -3172,6 +3172,7 @@ export async function loadSessionOnlyPlugins(
   sessionPluginPaths: Array<string>,
   enabledPlugins = getSettings_DEPRECATED().enabledPlugins,
   contractOnly = false,
+  noMcpPaths: ReadonlySet<string> = new Set(),
 ): Promise<{ plugins: LoadedPlugin[]; errors: PluginError[] }> {
   if (sessionPluginPaths.length === 0) {
     return { plugins: [], errors: [] }
@@ -3207,6 +3208,8 @@ export async function loadSessionOnlyPlugins(
         true,
         contractOnly,
       )
+
+      if (noMcpPaths.has(resolvedPath)) plugin.skipMcpDiscovery = true
 
       // Update source to use the actual plugin name from manifest
       plugin.source = `${plugin.name}@inline`
@@ -3446,7 +3449,11 @@ async function assemblePluginLoadResult(
   // getInlinePlugins() is a synchronous state read with no dependency on
   // marketplace loading, so these two sources can be fetched concurrently.
   const restricted = areSideloadFlagsDisabled()
-  const configuredInlinePlugins = getInlinePlugins()
+  const regularPaths = getInlinePlugins()
+  const regularResolved = new Set(regularPaths.map(path => resolve(path)))
+  const noMcpPaths = new Set(getInlinePluginsNoMcp().map(path => resolve(path))
+    .filter(path => !regularResolved.has(path)))
+  const configuredInlinePlugins = [...regularPaths, ...noMcpPaths]
   if (restricted && configuredInlinePlugins.length > 0) {
     logForDebugging(`disableSideloadFlags: dropping @inline plugin specs at load time (parse-site gate should have caught this earlier): ${getSideloadFlagsError(['--plugin-dir', '--plugin-url'])}`, { level: 'warn' })
   }
@@ -3454,7 +3461,7 @@ async function assemblePluginLoadResult(
   const [marketplaceResult, sessionResult] = await Promise.all([
     marketplaceLoader(),
     inlinePlugins.length > 0
-      ? loadSessionOnlyPlugins(inlinePlugins, undefined, contractOnly)
+      ? loadSessionOnlyPlugins(inlinePlugins, undefined, contractOnly, noMcpPaths)
       : Promise.resolve({ plugins: [], errors: [] }),
   ])
   // 3. Load built-in plugins that ship with the CLI

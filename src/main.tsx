@@ -367,6 +367,7 @@ import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js'
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js'
 import { getStdinStream } from 'src/utils/stdin.js'
+import { captureLaunchInitialize } from './entrypoints/sdk/launchInitialize.js'
 import { setCwd } from 'src/utils/Shell.js'
 import {
   type ProcessedResume,
@@ -391,6 +392,7 @@ import {
   setFlagSettingsPath,
   setInitialMainLoopModel,
   setInlinePlugins,
+  setInlinePluginsNoMcp,
   setIsInteractive,
   setKairosActive,
   setOriginalCwd,
@@ -1117,7 +1119,9 @@ export async function main() {
 async function getInputPrompt(
   prompt: string,
   inputFormat: 'text' | 'stream-json',
+  launchInput?: AsyncIterable<string>,
 ): Promise<string | AsyncIterable<string>> {
+  if (launchInput && inputFormat === 'stream-json') return launchInput
   if (
     !process.stdin.isTTY &&
     // Input hijacking breaks MCP.
@@ -1177,10 +1181,19 @@ async function run(): Promise<CommanderCommand> {
     .enablePositionalOptions()
   profileCheckpoint('run_commander_initialized')
 
+  let launchInput: ReturnType<typeof captureLaunchInitialize> | undefined
+
   // Use preAction hook to run initialization only when executing a command,
   // not when displaying help. This avoids the need for env variable signaling.
   program.hook('preAction', async (thisCommand, actionCommand) => {
     profileCheckpoint('preAction_start')
+    if (thisCommand === actionCommand && thisCommand.getOptionValue('awaitInitialize') === true &&
+        thisCommand.getOptionValue('inputFormat') === 'stream-json' &&
+        thisCommand.getOptionValue('sdkUrl') === undefined && !process.stdin.isTTY) {
+      const stdin = getStdinStream()
+      stdin.setEncoding('utf8')
+      launchInput = captureLaunchInitialize(stdin)
+    }
     // Await async subprocess loads started at module evaluation (lines 12-20).
     // Nearly free — subprocesses complete during the ~135ms of imports above.
     // Must resolve before init() which triggers the first settings read
@@ -1218,15 +1231,23 @@ async function run(): Promise<CommanderCommand> {
     // before .option('--plugin-dir', ...) in the chain — extra-typings
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
+    const launch = await launchInput?.ready
+    if (launch?.kind === 'violation') {
+      process.stderr.write(`${launch.message}\n`)
+      process.exit(1)
+    }
+    const initializedPlugins = launch?.kind === 'applied' ? launch : undefined
+    logForDebugging(`[SDK] launch initialize=${launch?.kind ?? 'disabled'} plugins=${initializedPlugins?.pluginCount ?? 0}`)
     const pluginDir = thisCommand.getOptionValue('pluginDir')
     const environmentPluginDirs = settlePluginDirsEnvironment()
-    const sideloadError = getSideloadStartupError(thisCommand.opts(), environmentPluginDirs, actionCommand.opts())
+    const sideloadError = getSideloadStartupError(thisCommand.opts(), environmentPluginDirs, actionCommand.opts(), initializedPlugins?.pluginCount ?? 0)
     if (sideloadError) {
       process.stderr.write(`${sideloadError}\n`)
       process.exit(1)
     }
     const pluginDirs = mergePluginDirectories(
       Array.isArray(pluginDir) && pluginDir.every(p => typeof p === 'string') ? pluginDir : [],
+      initializedPlugins?.pluginDirs ?? [],
       environmentPluginDirs,
     )
     if (pluginDirs.length > 0) {
@@ -1234,6 +1255,12 @@ async function run(): Promise<CommanderCommand> {
       clearPluginCache(environmentPluginDirs.length > 0
         ? 'preAction: CLAUDE_CODE_PLUGIN_DIRS inline plugins'
         : 'preAction: --plugin-dir inline plugins')
+    }
+
+    const pluginDirsNoMcp = initializedPlugins?.pluginDirsNoMcp ?? []
+    if (pluginDirsNoMcp.length > 0) {
+      setInlinePluginsNoMcp(mergePluginDirectories(pluginDirsNoMcp))
+      clearPluginCache('preAction: initialize plugins without MCP discovery')
     }
 
     runMigrations()
@@ -1344,6 +1371,7 @@ async function run(): Promise<CommanderCommand> {
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
     )
+    .option('--await-initialize', 'Read launch-scoped plugins from the first initialize stdin line (requires --input-format=stream-json)')
     .addOption(
       new Option(
         '--input-format <format>',
@@ -2720,6 +2748,7 @@ async function run(): Promise<CommanderCommand> {
       let inputPrompt = await getInputPrompt(
         effectivePrompt,
         (inputFormat ?? 'text') as 'text' | 'stream-json',
+        launchInput?.input,
       )
       profileCheckpoint('action_after_input_prompt')
 

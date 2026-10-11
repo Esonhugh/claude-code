@@ -12,6 +12,7 @@ export function getSideloadStartupError(
   options: Readonly<Record<string, unknown>>,
   environmentPaths: readonly string[],
   actionOptions: Readonly<Record<string, unknown>> = {},
+  initializePluginCount = 0,
 ): string | undefined {
   if (!areSideloadFlagsDisabled()) return undefined
   const populated = (value: unknown) => Array.isArray(value)
@@ -23,6 +24,7 @@ export function getSideloadStartupError(
   ] as const) {
     if (populated(options[key]) || populated(actionOptions[key])) flags.push(flag)
   }
+  if (initializePluginCount > 0) flags.push('plugins (initialize request)')
   if (environmentPaths.length > 0) flags.push('CLAUDE_CODE_PLUGIN_DIRS')
   if (flags.length === 0) return undefined
   const error = getSideloadFlagsError(flags)

@@ -129,6 +129,7 @@ type State = {
   inMemoryErrorLog: Array<{ error: string; timestamp: string }>
   // Session-only plugins from --plugin-dir flag
   inlinePlugins: Array<string>
+  inlinePluginsNoMcp: Array<string>
   // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
   chromeFlagOverride: boolean | undefined
   // Use cowork_plugins directory instead of plugins (--cowork flag or env var)
@@ -355,6 +356,7 @@ function getInitialState(): State {
     inMemoryErrorLog: [],
     // Session-only plugins from --plugin-dir flag
     inlinePlugins: [],
+    inlinePluginsNoMcp: [],
     // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
     chromeFlagOverride: undefined,
     // Use cowork_plugins directory instead of plugins
@@ -1276,6 +1278,14 @@ export function preferThirdPartyAuthentication(): boolean {
 
 export function setInlinePlugins(plugins: Array<string>): void {
   STATE.inlinePlugins = plugins
+}
+
+export function setInlinePluginsNoMcp(plugins: Array<string>): void {
+  STATE.inlinePluginsNoMcp = plugins
+}
+
+export function getInlinePluginsNoMcp(): Array<string> {
+  return STATE.inlinePluginsNoMcp
 }
 
 export function getInlinePlugins(): Array<string> {

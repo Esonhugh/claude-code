@@ -52,6 +52,8 @@ export type PluginConfig = {
 }
 
 export type LoadedPlugin = {
+  /** This launch path supplies commands/hooks but skips all MCP discovery. */
+  skipMcpDiscovery?: boolean
   name: string
   manifest: PluginManifest
   path: string

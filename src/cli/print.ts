@@ -1,3 +1,5 @@
+import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
@@ -3222,7 +3224,7 @@ function runHeadlessStreaming(
           // SDK MCP server names from the initialize message
           // Populated by both browser and ProcessTransport sessions
           if (
-            message.request.sdkMcpServers &&
+            !initialized && message.request.sdkMcpServers &&
             // @ts-ignore - recovered code
             message.request.sdkMcpServers.length > 0
           ) {
@@ -3256,7 +3258,7 @@ function runHeadlessStreaming(
           // Enable prompt suggestions in AppState when SDK consumer opts in.
           // shouldEnablePromptSuggestion() returns false for non-interactive
           // sessions, but the SDK consumer explicitly requested suggestions.
-          if (message.request.promptSuggestions) {
+          if (!initialized && message.request.promptSuggestions) {
             setAppState(prev => {
               if (prev.promptSuggestionEnabled) return prev
               return { ...prev, promptSuggestionEnabled: true }
@@ -3264,7 +3266,7 @@ function runHeadlessStreaming(
           }
 
           if (
-            message.request.agentProgressSummaries &&
+            !initialized && message.request.agentProgressSummaries &&
             getFeatureValue_CACHED_MAY_BE_STALE('tengu_slate_prism', true)
           ) {
             setSdkAgentProgressSummariesEnabled(true)
@@ -4994,81 +4996,69 @@ async function handleInitializeRequest(
   getAppState: () => AppState,
   getCapabilities: () => Promise<string[]>,
 ): Promise<void> {
-  if (initialized) {
-    output.enqueue({
-      type: 'control_response',
-      response: {
-        subtype: 'error',
-        error: 'Already initialized',
-        request_id: requestId,
-        // @ts-ignore - recovered code
-        pending_permission_requests:
-          structuredIO.getPendingPermissionRequests(),
-      },
-    })
-    return
-  }
+  if (!initialized) {
+    // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
+    if (request.systemPrompt !== undefined) {
+      // @ts-ignore - recovered code
+      options.systemPrompt = request.systemPrompt
+    }
+    if (request.appendSystemPrompt !== undefined) {
+      // @ts-ignore - recovered code
+      options.appendSystemPrompt = request.appendSystemPrompt
+    }
+    if (request.promptSuggestions !== undefined) {
+      options.promptSuggestions = request.promptSuggestions
+    }
 
-  // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
-  if (request.systemPrompt !== undefined) {
-    // @ts-ignore - recovered code
-    options.systemPrompt = request.systemPrompt
-  }
-  if (request.appendSystemPrompt !== undefined) {
-    // @ts-ignore - recovered code
-    options.appendSystemPrompt = request.appendSystemPrompt
-  }
-  if (request.promptSuggestions !== undefined) {
-    options.promptSuggestions = request.promptSuggestions
-  }
+    // Merge agents from stdin to avoid ARG_MAX limits
+    if (request.agents) {
+      const stdinAgents = parseAgentsFromJson(request.agents, 'flagSettings')
+      agents.push(...stdinAgents)
+    }
 
-  // Merge agents from stdin to avoid ARG_MAX limits
-  if (request.agents) {
-    const stdinAgents = parseAgentsFromJson(request.agents, 'flagSettings')
-    agents.push(...stdinAgents)
-  }
+    // Re-evaluate main thread agent after SDK agents are merged
+    // This allows --agent to reference agents defined via SDK
+    if (options.agent) {
+      // If main.tsx already found this agent (filesystem-defined), it already
+      // applied systemPrompt/model/initialPrompt. Skip to avoid double-apply.
+      const alreadyResolved = getMainThreadAgentType() === options.agent
+      const mainThreadAgent = agents.find(a => a.agentType === options.agent)
+      if (mainThreadAgent && !alreadyResolved) {
+        // Update the main thread agent type in bootstrap state
+        setMainThreadAgentType(mainThreadAgent.agentType)
 
-  // Re-evaluate main thread agent after SDK agents are merged
-  // This allows --agent to reference agents defined via SDK
-  if (options.agent) {
-    // If main.tsx already found this agent (filesystem-defined), it already
-    // applied systemPrompt/model/initialPrompt. Skip to avoid double-apply.
-    const alreadyResolved = getMainThreadAgentType() === options.agent
-    const mainThreadAgent = agents.find(a => a.agentType === options.agent)
-    if (mainThreadAgent && !alreadyResolved) {
-      // Update the main thread agent type in bootstrap state
-      setMainThreadAgentType(mainThreadAgent.agentType)
-
-      // Apply the agent's system prompt if user hasn't specified a custom one
-      // SDK agents are always custom agents (not built-in), so getSystemPrompt() takes no args
-      if (!options.systemPrompt && !isBuiltInAgent(mainThreadAgent)) {
-        const agentSystemPrompt = mainThreadAgent.getSystemPrompt()
-        if (agentSystemPrompt) {
-          options.systemPrompt = agentSystemPrompt
+        // Apply the agent's system prompt if user hasn't specified a custom one
+        // SDK agents are always custom agents (not built-in), so getSystemPrompt() takes no args
+        if (!options.systemPrompt && !isBuiltInAgent(mainThreadAgent)) {
+          const agentSystemPrompt = mainThreadAgent.getSystemPrompt()
+          if (agentSystemPrompt) {
+            options.systemPrompt = agentSystemPrompt
+          }
         }
-      }
 
-      // Apply the agent's model if user didn't specify one and agent has a model
-      if (
-        !options.userSpecifiedModel &&
-        mainThreadAgent.model &&
-        mainThreadAgent.model !== 'inherit'
-      ) {
-        const agentModel = parseUserSpecifiedModel(mainThreadAgent.model)
-        setMainLoopModelOverride(agentModel)
-      }
+        // Apply the agent's model if user didn't specify one and agent has a model
+        if (
+          !options.userSpecifiedModel &&
+          mainThreadAgent.model &&
+          mainThreadAgent.model !== 'inherit'
+        ) {
+          const agentModel = parseUserSpecifiedModel(mainThreadAgent.model)
+          setMainLoopModelOverride(agentModel)
+        }
 
-      // SDK-defined agents arrive via init, so main.tsx's lookup missed them.
-      if (mainThreadAgent.initialPrompt) {
+        // SDK-defined agents arrive via init, so main.tsx's lookup missed them.
+        if (mainThreadAgent.initialPrompt) {
+          structuredIO.prependUserMessage(mainThreadAgent.initialPrompt)
+        }
+      } else if (mainThreadAgent?.initialPrompt) {
+        // Filesystem-defined agent (alreadyResolved by main.tsx). main.tsx
+        // handles initialPrompt for the string inputPrompt case, but when
+        // inputPrompt is an AsyncIterable (SDK stream-json), it can't
+        // concatenate — fall back to prependUserMessage here.
         structuredIO.prependUserMessage(mainThreadAgent.initialPrompt)
       }
-    } else if (mainThreadAgent?.initialPrompt) {
-      // Filesystem-defined agent (alreadyResolved by main.tsx). main.tsx
-      // handles initialPrompt for the string inputPrompt case, but when
-      // inputPrompt is an AsyncIterable (SDK stream-json), it can't
-      // concatenate — fall back to prependUserMessage here.
-      structuredIO.prependUserMessage(mainThreadAgent.initialPrompt)
     }
+
   }
 
   const settings = getSettings_DEPRECATED()
@@ -5077,7 +5067,7 @@ async function handleInitializeRequest(
 
   // Get account information
   const accountInfo = getAccountInformation()
-  if (request.hooks) {
+  if (!initialized && request.hooks) {
     const hooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {}
     for (const [event, matchers] of Object.entries(request.hooks)) {
       // @ts-ignore - recovered code
@@ -5093,13 +5083,15 @@ async function handleInitializeRequest(
     }
     registerHookCallbacks(hooks)
   }
-  if (request.jsonSchema) {
+  if (!initialized && request.jsonSchema) {
     // @ts-ignore - recovered code
     setInitJsonSchema(request.jsonSchema)
   }
   const capabilities = await getCapabilities()
   logForDebugging(`[ModsUI] initialize capabilities=${capabilities.join(',') || 'none'}`)
+  const pluginsApplied = getInitializePluginsApplied(request.plugins, getInlinePlugins(), getInlinePluginsNoMcp())
   const initResponse: SDKControlInitializeResponse = {
+    ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
     ...(capabilities.length ? { capabilities } : {}),
     commands: commands
       .filter(cmd => cmd.userInvocable !== false)

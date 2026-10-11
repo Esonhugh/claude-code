@@ -58,10 +58,19 @@ export const SDKHookCallbackMatcherSchema = lazySchema(() =>
 // Control Request Types
 // ============================================================================
 
+export const SDKLocalPluginSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('local'),
+    path: z.string(),
+    skipMcpDiscovery: z.boolean().optional(),
+  }),
+)
+
 export const SDKControlInitializeRequestSchema = lazySchema(() =>
   z
     .object({
       subtype: z.literal('initialize'),
+      plugins: z.array(SDKLocalPluginSchema()).optional(),
       hooks: z
         .record(HookEventSchema(), z.array(SDKHookCallbackMatcherSchema()))
         .optional(),
@@ -81,6 +90,7 @@ export const SDKControlInitializeRequestSchema = lazySchema(() =>
 export const SDKControlInitializeResponseSchema = lazySchema(() =>
   z
     .object({
+      plugins_applied: z.boolean().optional(),
       commands: z.array(SlashCommandSchema()),
       agents: z.array(AgentInfoSchema()),
       output_style: z.string(),

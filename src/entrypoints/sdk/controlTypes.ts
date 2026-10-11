@@ -36,8 +36,16 @@ export type SDKHookCallbackMatcher = {
 }
 
 // Control Request inner types - use `subtype` as discriminant (matches recovered code)
+export type SDKLocalPlugin = {
+  type: 'local'
+  path: string
+  skipMcpDiscovery?: boolean
+}
+
 export type SDKControlInitializeRequest = {
   subtype: 'initialize'
+  /** Launch-scoped; requires --await-initialize to load from stdin. */
+  plugins?: SDKLocalPlugin[]
   protocolVersion?: string
   hooks?: Record<string, unknown>
   mcpServers?: Record<string, McpServerConfigForProcessTransport>
@@ -52,6 +60,8 @@ export type SDKControlInitializeRequest = {
 }
 
 export type SDKControlInitializeResponse = {
+  /** Whether every listed plugin belongs to the process launch paths. */
+  plugins_applied?: boolean
   /** Capabilities available on this initialized SDK connection. */
   capabilities?: string[]
   commands: SlashCommand[]

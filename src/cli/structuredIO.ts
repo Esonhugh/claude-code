@@ -336,8 +336,8 @@ export class StructuredIO {
   private async processLine(
     line: string,
   ): Promise<StdinMessage | SDKMessage | undefined> {
-    // Skip empty lines (e.g. from double newlines in piped stdin)
-    if (!line) {
+    // Official stream-json accepts blank lines, including whitespace-only lines.
+    if (!line.trim()) {
       return undefined
     }
     try {
