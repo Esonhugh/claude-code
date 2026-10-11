@@ -813,9 +813,12 @@ async function validateHooksJson(
         entrypoints: [resolved],
       })
       notes.push(
-        `${modulePath} hooks: ${declaration.events.join(', ') || 'nothing'}`,
+        `${modulePath} hooks: ${(declaration.validation?.registrations ?? declaration.events).join(', ') || 'nothing'}`,
         `${modulePath} calls: ${[
-          ...declaration.calls.map(call => `$.${call}`),
+          ...declaration.calls.map(call => {
+            const via = declaration.validation?.helperCalls[call]
+            return `$.${call}${via === undefined ? '' : ` (via ${via.join(', ')})`}`
+          }),
           ...declaration.nextTiers.map(tier => `next.to:${tier}`),
         ].join(', ') || 'nothing on $'}`,
       )

@@ -78,6 +78,10 @@ export type ModDeclaration = {
   calls: string[]
   /** Static command names carried by an original shipped module scan. */
   runCommands?: string[]
+  validation?: {
+    registrations: readonly string[]
+    helperCalls: Readonly<Record<string, readonly string[]>>
+  }
   env?: { reads: string[]; writes: string[] }
   state?: { reads: ModStateReference[]; writes: ModStateReference[] }
   nextTiers: ModTier[]

@@ -82,6 +82,11 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const events = new Set<string>()
   const calls = new Set<string>()
   const telemetryRegistrations = new Map<Node, { event: string; matcher?: Node; path: string }>()
+  const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope }>()
+  const directCalls = new Set<string>()
+  const callsVia = new Map<string, Set<string>>()
+  const otherConstantReads = new Set<Binding>()
+  let helperName: string | undefined
   const env = { reads: new Set<string>(), writes: new Set<string>() }
   const state = { reads: new Map<string, ModStateReference>(), writes: new Map<string, ModStateReference>() }
   const nextTiers = new Set<ModTier>()
@@ -422,6 +427,77 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (!nested && !node.properties.length) return
   }
 
+  function diagnosticString(value: string, quoted = false): string {
+    if (!quoted && value.length <= 120 && /^(?!(?:true|false|null|undefined|NaN|Infinity)$)(?![-\d])[\w:@*!$#-]+$/.test(value)) return value
+    const prefix = value.slice(0, 120)
+    const text = JSON.stringify(prefix)
+      .replace(/[^\x20-\x7e]/g, char => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`)
+      .replace(/ {2,}/g, spaces => ` ${spaces.slice(1).replaceAll(' ', '\\u0020')}`)
+    return value.length === prefix.length ? text : `${text}[+${value.length - prefix.length} chars]`
+  }
+
+  function diagnosticNode(node: Node, scope: Scope, seen: Set<Binding>): { node: Node; scope: Scope; seen: Set<Binding> } | undefined {
+    if (node.type !== 'Identifier') return { node, scope, seen }
+    const binding = lookup(node.name, scope)
+    const alias = binding?.alias
+    if (!binding || !alias || alias.scope.length !== 1 || seen.has(binding)) return
+    const aggregate = ['ObjectExpression', 'ArrayExpression'].includes(alias.node.type) || alias.node.regex !== undefined
+    if (aggregate && otherConstantReads.has(binding)) return
+    return diagnosticNode(alias.node, alias.scope, new Set(seen).add(binding))
+  }
+
+  function diagnosticObject(node: Node, scope: Scope, seen: Set<Binding>): string {
+    const [only] = node.properties as Node[]
+    if (node.properties.length === 1 && only?.type === 'Property') {
+      const child = diagnosticNode(only.value, scope, seen)
+      if (child?.node.type === 'ObjectExpression')
+        return `.${diagnosticString(String(only.key.name ?? only.key.value))}${diagnosticObject(child.node, child.scope, child.seen)}`
+    }
+    return ` has {${diagnosticFields(node, scope, seen)}}`
+  }
+
+  function diagnosticFields(node: Node, scope: Scope, seen: Set<Binding>): string {
+    const keys = node.properties.map((property: Node) => property.type === 'Property' ? String(property.key.name ?? property.key.value) : undefined)
+    const lastSpread = keys.lastIndexOf(undefined)
+    return node.properties.flatMap((property: Node, index: number) => {
+      const key = keys[index]
+      if (key === undefined) return ['...?']
+      if (keys.includes(key, index + 1)) return []
+      const name = diagnosticString(key)
+      if (index < lastSpread) return [`${name}=?`]
+      const value = diagnosticNode(property.value, scope, seen)
+      return [value?.node.type === 'ObjectExpression'
+        ? `${name}${diagnosticObject(value.node, value.scope, value.seen)}`
+        : `${name}=${diagnosticMatcher(property.value, scope, seen)}`]
+    }).join(', ')
+  }
+
+  function diagnosticMatcher(node: Node, scope: Scope, seen = new Set<Binding>()): string {
+    const value = diagnosticNode(node, scope, seen)
+    if (!value) return '?'
+    node = value.node; scope = value.scope; seen = value.seen
+    if (node.type === 'Literal') {
+      if (node.regex) return `/${diagnosticString(node.regex.pattern, true)}/${node.regex.flags}`
+      return typeof node.value === 'string' ? diagnosticString(node.value) : node.bigint !== undefined ? '?' : String(node.value)
+    }
+    if (node.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis[0]?.value.cooked != null)
+      return diagnosticString(node.quasis[0].value.cooked)
+    if (node.type === 'ArrayExpression') return node.elements.map((item: Node | null) => item === null ? '' : diagnosticMatcher(item, scope, seen)).join('|')
+    if (node.type === 'ObjectExpression') return `{${diagnosticFields(node, scope, seen)}}`
+    return '?'
+  }
+
+  function recordCall(call: string) {
+    calls.add(call)
+    if (collecting) return
+    if (helperName === undefined) directCalls.add(call)
+    else {
+      const via = callsVia.get(call) ?? new Set<string>()
+      via.add(helperName)
+      callsVia.set(call, via)
+    }
+  }
+
   function eventName(node: Node): string {
     if (node.type !== 'Literal' || typeof node.value !== 'string') fail(path, 'event must be a literal pattern string')
     const event = node.value as string
@@ -497,6 +573,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (!isFunction(handler) && (!helper || helper.scope.length !== 1 || helper.node.type !== 'FunctionDeclaration'))
       fail(path, 'on handler must be an inline function or a function declared at the top of its file (possibly imported)')
     events.add(event)
+    if (!collecting) registrationDescriptions.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), scope })
     const callerPath = path
     try {
       if (helper) path = helper.path
@@ -654,6 +731,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
         }
         break
       case 'Identifier':
+        if (lookup(node.name, scope)) otherConstantReads.add(lookup(node.name, scope)!)
         if (!collecting && stateConstBindings.has(lookup(node.name, scope)!) && !stateConstReads.has(node)) {
           fail(path, `state reference const ${node.name} may only be used by state.get/state.set references or object spreads`)
         }
@@ -701,8 +779,8 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           if (access) {
             if (!collecting && !['engine', 'beneath'].includes(roleOf(node.arguments[0], scope) ?? ''))
               fail(path, 'state helper requires the engine as its first argument')
-            calls.add('state.get')
-            if (stateOperation === 'update') calls.add('state.set')
+            recordCall('state.get')
+            if (stateOperation === 'update') recordCall('state.set')
           }
           for (const argument of node.arguments.slice(access ? 1 : 0)) visit(argument, scope, event)
           return
@@ -749,17 +827,18 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
             activeHelpers.set(helper.node, active)
             active.add(signature)
             const callerPath = path
+            const priorHelper = helperName
+            helperName = callee.type === 'Identifier' ? callee.name : callee.property?.name
             path = helper.path
-            visitFunction(helper.node, helper.scope, argumentsRoles, event)
-            path = callerPath
-            active.delete(signature)
+            try { visitFunction(helper.node, helper.scope, argumentsRoles, event) }
+            finally { path = callerPath; helperName = priorHelper; active.delete(signature) }
           }
           return
         }
         const call = capability(callee, scope)
         if (call) {
           if (node.optional) fail(path, 'optional capability calls are unsupported')
-          calls.add(call)
+          recordCall(call)
           scanEnvironment(call, node)
           scanState(call, node, scope)
         } else if (roleOf(callee, scope) === 'next') {
@@ -894,7 +973,10 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   const registeredTelemetry = [...telemetryRegistrations.values()].filter(({ event }) => event.startsWith('telemetry.'))
   const streams = new Set(registeredTelemetry.flatMap(({ event, matcher, path: registeredPath }) => { path = registeredPath; return streamsOf(matcher, event) }))
   const telemetry = registeredTelemetry.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
-  return { events, calls, env, state, nextTiers, telemetry }
+  return { events, calls, env, state, nextTiers, telemetry, validation: {
+    registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
+    helperCalls: Object.fromEntries([...callsVia].filter(([call]) => !directCalls.has(call)).map(([call, via]) => [call, [...via].sort()])),
+  } }
 }
 
 function within(root: string, path: string): boolean {
@@ -1155,7 +1237,7 @@ export async function loadModDeclaration(input: {
     name: input.name, storageId: input.storageId, pluginRoot: root,
     ...(input.version === undefined ? {} : { version: input.version }),
     ...(input.isNative === true ? { isNative: true } : {}),
-    entrypoints, modules, links, ...(clients.length ? { clients } : {}), events: [...events], calls: [...calls].sort(),
+    entrypoints, modules, links, ...(clients.length ? { clients } : {}), events: [...events], calls: [...calls].sort(), validation: scanned.validation,
     ...(env.reads.size || env.writes.size ? { env: { reads: [...env.reads].sort(), writes: [...env.writes].sort() } } : {}),
     ...(state.reads.size || state.writes.size ? { state: {
       reads: [...state.reads.entries()].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, value]) => value),

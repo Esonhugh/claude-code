@@ -116,9 +116,10 @@ test.each(['token-weather', 'blast-radius', 'replay-theater'])(
       expect(output).toContain(`${name}.mjs state writes:`)
       expect(output).toContain(`${name}.mjs state reads:`)
     }
+    // Official 2.1.292: matcher and helper notes captured in validate-notes-official292.json.
     if (name === 'token-weather') {
-      expect(output).toContain('session.start, turn.complete, ui.render')
-      expect(output).toContain('$.session.usage, $.state.get, $.state.set, $.ui.resolve')
+      expect(output).toContain('session.start, turn.complete, ui.render{component=AbovePrompt}')
+      expect(output).toContain('$.session.usage (via takeReading), $.state.get, $.state.set (via takeReading), $.ui.resolve')
       expect(output).toContain('state writes: token-weather.readings')
       expect(output).toContain('state reads: token-weather.readings')
     }
