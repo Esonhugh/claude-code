@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import React, { act } from 'react'
 import { PassThrough } from 'node:stream'
 import render from '../root.js'
@@ -7,6 +7,7 @@ import { env } from '../../utils/env.js'
 import { getProgramStatusSupport, settleProgramStatusSupport } from '../terminal.js'
 import {
   CLEAR_ALL_PROGRAM_STATUS,
+  clearProgramStatus,
   programStatus,
   type ProgramStatus,
   wrapForMultiplexer,
@@ -15,6 +16,8 @@ import {
   TerminalWriteProvider,
   type TerminalWriter,
 } from '../useTerminalNotification.js'
+
+import * as analytics from '../../services/analytics/index.js'
 
 const savedTerminal = env.terminal
 const savedTmux = process.env.TMUX
@@ -37,8 +40,9 @@ afterEach(() => {
   else process.env.STY = savedScreen
 })
 
-function Status({ status }: { status: ProgramStatus }) {
-  useProgramStatus(status)
+type Child = ProgramStatus & { id: string }
+function Status({ status, childRecords, promptMarks }: { status: ProgramStatus; childRecords: readonly Child[]; promptMarks: number }) {
+  useProgramStatus(status, childRecords, promptMarks)
   return null
 }
 
@@ -57,9 +61,9 @@ async function mountStatus(isTTY: boolean) {
     isTTY: false,
     setRawMode() {},
   })
-  const tree = (status: ProgramStatus) => (
+  const tree = (status: ProgramStatus, children: readonly Child[] = [], promptMarks = 0) => (
     <TerminalWriteProvider value={terminal}>
-      <Status status={status} />
+      <Status status={status} childRecords={children} promptMarks={promptMarks} />
     </TerminalWriteProvider>
   )
   let instance!: Awaited<ReturnType<typeof render>>
@@ -74,9 +78,9 @@ async function mountStatus(isTTY: boolean) {
   })
   return {
     writes,
-    async update(status: ProgramStatus) {
+    async update(status: ProgramStatus, children: readonly Child[] = [], promptMarks = 0) {
       await act(async () => {
-        instance.rerender(tree(status))
+        instance.rerender(tree(status, children, promptMarks))
       })
     },
     async close() {
@@ -164,5 +168,64 @@ test('tmux and screen reports and cleanup use existing multiplexer passthrough',
       await app.close()
     }
     expect(app.writes.at(-1)).toBe(wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
+  }
+})
+
+
+test('diff sends only changed records, then clears removed children in one write', async () => {
+  const app = await mountStatus(true)
+  const root = { state: 'idle' } as const
+  const a: Child = { id: 'a', state: 'working', title: 'Alpha' }
+  const b: Child = { id: 'b', state: 'working', title: 'Beta' }
+  try {
+    await app.update(root, [a, b])
+    await app.update(root, [{ ...a }, { ...b }])
+    const changed: Child = { ...b, state: 'blocked', kind: 'question' }
+    await app.update(root, [a, changed])
+    await app.update({ state: 'done' }, [changed])
+    await app.update({ state: 'done' }, [])
+    expect(app.writes).toEqual([
+      programStatus(root),
+      programStatus(a) + programStatus(b),
+      programStatus(changed),
+      programStatus({ state: 'done' }) + clearProgramStatus('a'),
+      clearProgramStatus('b'),
+    ])
+  } finally {
+    await app.close()
+  }
+  expect(app.writes.at(-1)).toBe(CLEAR_ALL_PROGRAM_STATUS)
+})
+
+test('prompt mark change invalidates root and child cache once', async () => {
+  const app = await mountStatus(true)
+  const root = { state: 'working' } as const
+  const child: Child = { state: 'working', id: 'child' }
+  try {
+    await app.update(root, [child])
+    await app.update(root, [child], 1)
+    await app.update(root, [child], 1)
+    expect(app.writes).toEqual([
+      programStatus({ state: 'idle' }),
+      programStatus(root) + programStatus(child),
+      programStatus(root) + programStatus(child),
+    ])
+  } finally {
+    await app.close()
+  }
+})
+
+test('terminal_program_status analytics fires only once and contains no message payload', async () => {
+  const log = spyOn(analytics, 'logEvent').mockImplementation(() => {})
+  const app = await mountStatus(true)
+  try {
+    await app.update({ state: 'blocked', msg: 'approve Bash: echo private' })
+    await app.update({ state: 'working' }, [{ id: 'task', state: 'working' }])
+    expect(log.mock.calls.filter(([name]) => name === 'terminal_program_status')).toEqual([
+      ['terminal_program_status', {}],
+    ])
+  } finally {
+    await app.close()
+    log.mockRestore()
   }
 })
