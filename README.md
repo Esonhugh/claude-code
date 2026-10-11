@@ -1985,6 +1985,23 @@ on('turn.step', async function* ($, e, next) {
 
 ## Mods 远程客户端连接（stream-json）
 
+### 启动时传入插件
+
+由 SDK 父进程在启动时写入首条 `initialize` 请求，并启用 `--await-initialize`，即可在命令、Mods 和 MCP 发现之前登记本次会话的插件目录：
+
+```bash
+printf '%s\n' '{"type":"control_request","request_id":"init","request":{"subtype":"initialize","plugins":[{"type":"local","path":"/absolute/path/to/plugin","skipMcpDiscovery":true}]}}' |
+  ./built-claude -p --verbose --input-format=stream-json --output-format=stream-json --await-initialize
+```
+
+将示例路径替换为已有插件目录。每项必须为 `{type:"local", path:string, skipMcpDiscovery?:boolean}`；相对路径按启动工作目录解析。`skipMcpDiscovery:true` 跳过 `.mcp.json`、manifest 及 MCPB 的 MCP 发现，保留插件的其他内容。`--plugin-dir` 与初始化目录合并；同一路径同时以普通和跳过 MCP 的方式登记时，普通加载仍会发现 MCP。
+
+首条非空白行必须是完整的 initialize JSON，并以换行结束；其内容及后续输入会继续交给 SDK 处理。EOF 前没有换行时，不应用其中的启动插件，initialize 请求本身仍会被处理。此开关仅用于本地非 TTY 的 `stream-json` 输入，不用于远程 `--sdk-url` 传输。
+
+initialize 成功回执中的 `plugins_applied` 表示所列路径是否全部属于对应类别的启动来源；它不保证目录存在、插件有效或 MCP 握手成功。未列出插件或空数组时省略此字段。不启用开关时，`initialize.plugins` 不加载插件；重复 initialize 也只返回此状态，不会追加新插件。管理员的 `disableSideloadFlags` 策略同样拒绝这个启动入口。
+
+本项按固定官方 2.1.292 的本地 stdio 行为验收；完整 SDK 初始化字段、远程传输及 MCP 故障恢复生命周期继续单独验收。
+
 将以下 JSON 行保存为 `requests.jsonl`；每条请求的 `request_id` 应唯一：
 
 ```json
