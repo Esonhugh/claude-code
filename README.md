@@ -924,6 +924,10 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：已提供自动作者声明、`claude plugin validate`、`claude plugin test` 和 `/plugin-authoring`，但不宣称实现全部官方 API、模型流、桌面/远端 surface 或官方 binary 动态 parity。Node `dist/cli.js` 不是当前作者工具验收目标；跨平台、完整 release gate、逐帧 logical/physical 与未执行的官方 rollout 分支仍记为未覆盖。
 
+插件缓存由启动流程自动清理：普通孤立版本的 `.orphaned_at` 标记超过 14 天后才删除，已安装版本会清除过时标记，新临时目录按其命名时间获得保留期保护。安装记录读取失败时保留缓存；版本和标记链接不作为普通文件递归处理。本批真实启动对照限 macOS 普通文件系统，Windows/WSL 及其他存储后端仍单独验收。
+
+内置 guard 的排序只信任管理员策略及本次会话中服务器已验证的远程策略。未获验证的 `remote-settings.json` 磁盘缓存仍可提供普通 policy 值，但不能通过 `prependPlugins: []` 或省略 guard 的列表移除它。直接嵌入 Mods 宿主并自行提供策略的调用者保留原有排序契约。
+
 只允许组织 Mods、同时保留个人 settings hooks 时，可在 **managed settings** 设置宿主 guard 的选项；个人、项目或 `--settings` 中的同名选项不生效。若 managed `prependPlugins` 已显式配置，必须在列表中包含 `sec-default@builtin`，该选项才生效：
 
 ```json
@@ -951,7 +955,7 @@ Darwin native journal 另记录实际 child 的 `read/readv` 与两种 `NOCANCEL
 
 Native30 是历史记录；已封存的 Native35 完整矩阵仍为29项完成、23通过、6失败，准确范围见[Native35处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。零输出观察只有在实际raw区间为零且resize位于其start/end之间时，才与start的物理网格比较；仍回放全部resize并要求后续新尺寸帧。ACK在start前生效的旧快照继续失败，同步ACK的时序门禁也继续失败，详见[帧与验收记录](docs/research/mods-terminal-noack-validity-20261008.md)。
 
-Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；仍未接通生产宿主的11个公开方法包括 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run` 和 `telemetry.log/mark`；它们都需要补齐和验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.295 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
+Anthropic 的 [Mods overview](https://code.claude.com/docs/en/plugins/mods/overview)、[API reference](https://code.claude.com/docs/en/plugins/mods/reference)、[organization policy](https://code.claude.com/docs/en/plugins/mods/admin) 和 [官方示例源码](https://github.com/anthropics/claude-code/tree/main/mods) 可用于了解官方设计（2026-10-04 核对）。作者应以目标 binary 生成的声明与 `plugin validate` 为可调用 API 的依据；`ui.notice`、公开 telemetry 和 headless `command.run` 已分别提交生产路径修复；`ui.ask`、音频、MCP 与 session 操作等仍需按实际宿主和完整生命周期逐项验收。已存在同名方法也仍需检查参数、返回值、生产入口和 UI，不能仅凭名称认定兼容。源码已支持已准入且存活的 builtin/inline 官方 diff Mod 接管 `/diff`，同步暂停原生 sidebar 的自动打开与轮询，在卸载或失效后释放接管。普通 Mod 无法通过名称、manifest 或公开字段取得该身份。生产启动已加载独立的官方 2.1.295 diff 归档，并接入官方交互 surface、可用性开关和首次偏好恢复；`agents-md` 与 `telemetry` 仍保留 2.1.277。真实 startup、原样 Worker、接管及资源打包控制有源码验证。官方289和隔离新制品已在160×40全屏九文件 fixture 中完成 uncommitted 切换、列表翻页、选中文件、ask、直接输入及正常退出对照；两条真实 composer prompt 的准入结果一致，首条附加选中 diff，第二条不重复附加。只有本地64/93帧完成logical/physical核对；通知位置、辅助模型选择仍有差异，普通终端内联、resize、取消/丢弃、上下文预算和官方全帧仍待验收，详见 `mods-test.md`。
 
 ### 复制文本
 
