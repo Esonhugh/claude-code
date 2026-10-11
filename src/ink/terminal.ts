@@ -1,6 +1,7 @@
 import { coerce } from 'semver'
 import type { Writable } from 'stream'
 import { env } from '../utils/env.js'
+import { isEnvTruthy } from '../utils/envUtils.js'
 import { gte } from '../utils/semver.js'
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
@@ -127,6 +128,27 @@ export function isSynchronizedOutputSupported(): boolean {
 // App.tsx fires the query when raw mode enables; setXtversionName() is called
 // from the response handler. Readers should treat undefined as "not yet known"
 // and fall back to env-var detection.
+
+// Settled once by App's DA1-bounded startup probe. Disabled sessions never probe.
+let programStatusSupport: 'pending' | 'on' | 'off' =
+  isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE) ||
+  process.env.CLAUDE_CODE_SESSION_KIND === 'bg' ? 'off' : 'pending'
+const programStatusListeners = new Set<() => void>()
+
+export function getProgramStatusSupport(): 'pending' | 'on' | 'off' {
+  return programStatusSupport
+}
+
+export function settleProgramStatusSupport(on: boolean): void {
+  if (programStatusSupport !== 'pending') return
+  programStatusSupport = on ? 'on' : 'off'
+  for (const listener of programStatusListeners) listener()
+}
+
+export function subscribeProgramStatusSupport(listener: () => void): () => void {
+  programStatusListeners.add(listener)
+  return () => { programStatusListeners.delete(listener) }
+}
 
 let xtversionName: string | undefined
 

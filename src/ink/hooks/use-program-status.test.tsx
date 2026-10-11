@@ -4,6 +4,7 @@ import { PassThrough } from 'node:stream'
 import render from '../root.js'
 import { useProgramStatus } from './use-program-status.js'
 import { env } from '../../utils/env.js'
+import { getProgramStatusSupport, settleProgramStatusSupport } from '../terminal.js'
 import {
   CLEAR_ALL_PROGRAM_STATUS,
   programStatus,
@@ -86,6 +87,22 @@ async function mountStatus(isTTY: boolean) {
     },
   }
 }
+
+test('pending capability emits neither reports nor unmount clear, then reply enables reporting', async () => {
+  expect(getProgramStatusSupport()).toBe('pending')
+  const pending = await mountStatus(true)
+  await pending.close()
+  expect(pending.writes).toEqual([])
+  const app = await mountStatus(true)
+  try {
+    expect(app.writes).toEqual([])
+    await act(async () => { settleProgramStatusSupport(true) })
+    expect(app.writes).toEqual([wrapForMultiplexer(programStatus({ state: 'idle' }))])
+  } finally {
+    await app.close()
+  }
+  expect(app.writes.at(-1)).toBe(wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
+})
 
 test('TTY reports transitions once, removes stale kind, and clears all reported records on unmount', async () => {
   delete process.env.TMUX

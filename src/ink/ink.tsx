@@ -92,6 +92,7 @@ import {
   supportsExtendedKeys,
   type Terminal,
   writeDiffToTerminal,
+  getProgramStatusSupport,
 } from './terminal.js'
 import {
   CURSOR_HOME,
@@ -1905,7 +1906,8 @@ export default class Ink {
       writeSync(1, SHOW_CURSOR)
       // Clear iTerm2 progress bar
       writeSync(1, CLEAR_ITERM2_PROGRESS)
-      writeSync(1, wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
+      if (getProgramStatusSupport() === 'on')
+        writeSync(1, wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
       // Clear tab status (OSC 21337) so a stale dot doesn't linger
       if (supportsTabStatus())
         writeSync(1, wrapForMultiplexer(CLEAR_TAB_STATUS))

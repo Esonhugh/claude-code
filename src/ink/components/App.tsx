@@ -27,6 +27,8 @@ import {
 } from '../selection.js'
 import {
   isXtermJs,
+  getProgramStatusSupport,
+  settleProgramStatusSupport,
   setXtversionName,
   supportsExtendedKeys,
 } from '../terminal.js'
@@ -35,7 +37,7 @@ import {
   getTerminalFocusGainedAt,
   setTerminalFocused,
 } from '../terminal-focus-state.js'
-import { TerminalQuerier, xtversion } from '../terminal-querier.js'
+import { TerminalQuerier, xtversion, programStatusQuery } from '../terminal-querier.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -328,15 +330,21 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
+          const askProgramStatus = getProgramStatusSupport() === 'pending'
           void Promise.all([
             this.querier.send(xtversion()),
+            askProgramStatus ? this.querier.send(programStatusQuery()) : Promise.resolve(undefined),
             this.querier.flush(),
-          ]).then(([r]) => {
+          ]).then(([r, psp]) => {
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
             } else {
               logForDebugging('XTVERSION: no reply (terminal ignored query)')
+            }
+            if (askProgramStatus) {
+              settleProgramStatusSupport(psp !== undefined)
+              logForDebugging(psp ? 'probe: OSC 7501 reply' : 'probe: no reply to OSC 7501 ; ?')
             }
           })
         })

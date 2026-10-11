@@ -11,6 +11,7 @@ import {
   isSessionPersistenceDisabled,
 } from '../bootstrap/state.js'
 import instances from '../ink/instances.js'
+import { getProgramStatusSupport } from '../ink/terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -120,7 +121,8 @@ function cleanupTerminalModes(): void {
     // Clear iTerm2 progress bar - prevents lingering progress indicator
     // that can cause bell sounds when returning to the terminal tab
     writeSync(1, CLEAR_ITERM2_PROGRESS)
-    if (getIsInteractive()) writeSync(1, wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
+    if (getIsInteractive() && getProgramStatusSupport() === 'on')
+      writeSync(1, wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
     // Clear tab status (OSC 21337) so a stale dot doesn't linger
     if (supportsTabStatus()) writeSync(1, wrapForMultiplexer(CLEAR_TAB_STATUS))
     // Clear terminal title so the tab doesn't show stale session info.
