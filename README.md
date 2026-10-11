@@ -926,9 +926,9 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 
 插件缓存由启动流程自动清理：普通孤立版本的 `.orphaned_at` 标记超过 14 天后才删除，已安装版本会清除过时标记，新临时目录按其命名时间获得保留期保护。安装记录读取失败时保留缓存；版本和标记链接不作为普通文件递归处理。本批真实启动对照限 macOS 普通文件系统，Windows/WSL 及其他存储后端仍单独验收。
 
-内置 guard 的排序只信任管理员策略及本次会话中服务器已验证的远程策略。未获验证的 `remote-settings.json` 磁盘缓存仍可提供普通 policy 值，但不能通过 `prependPlugins: []` 或省略 guard 的列表移除它。直接嵌入 Mods 宿主并自行提供策略的调用者保留原有排序契约。
+内置 guard 的运行时名称为 `cc-plugin-sec-default`，存储 ID 为 `cc-plugin-sec-default@builtin`。排序配置也接受官方保留的旧名称 `sec-default@builtin`，两种名称均按大小写归一化处理。排序只信任管理员策略及本次会话中服务器已验证的远程策略。未获验证的 `remote-settings.json` 磁盘缓存仍可提供普通 policy 值，但不能通过 `prependPlugins: []` 或省略 guard 的列表移除它。直接嵌入 Mods 宿主并自行提供策略的调用者保留原有排序契约。
 
-只允许组织 Mods、同时保留个人 settings hooks 时，可在 **managed settings** 设置宿主 guard 的选项；个人、项目或 `--settings` 中的同名选项不生效。若 managed `prependPlugins` 已显式配置，必须在列表中包含 `sec-default@builtin`，该选项才生效：
+官方用于“仅允许组织 Mods，同时保留个人 settings hooks”的 **managed settings** 配置如下。本地该选项的准入及刷新仍待完成，暂不视为已交付功能。官方若显式配置 managed `prependPlugins`，需包含 `cc-plugin-sec-default@builtin` 或 `sec-default@builtin`；组织仍有改名前的官方版本时，排序列表应使用旧别名：
 
 ```json
 {
