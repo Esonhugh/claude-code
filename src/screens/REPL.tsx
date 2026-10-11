@@ -39,7 +39,7 @@ import {
   useTabStatus,
 } from '../ink.js'
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
-import type { ProgramStatus } from '../ink/termio/osc.js'
+import { selectProgramStatus } from './programStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
@@ -1781,25 +1781,18 @@ export function REPL({
     tabStatusGateEnabled && (getGlobalConfig().showStatusInTerminalTab ?? false)
   useTabStatus(titleDisabled || !showStatusInTerminalTab ? null : sessionStatus)
 
-  const terminalProgramStatus: ProgramStatus =
-    sandboxPermissionRequestQueue.length > 0 ||
-    workerSandboxPermissions.queue.length > 0 ||
-    pendingSandboxRequest
-      ? { state: 'blocked', kind: 'permission' }
-      : toolUseConfirmQueue[0] || pendingWorkerRequest
-        ? {
-            state: 'blocked',
-            kind:
-              (toolUseConfirmQueue[0]?.tool.name ?? pendingWorkerRequest?.toolName) ===
-              ASK_USER_QUESTION_TOOL_NAME
-                ? 'question'
-                : 'permission',
-          }
-        : promptQueue.length > 0 ||
-            elicitation.queue.length > 0 ||
-            isShowingLocalJSXCommand
-          ? { state: 'blocked', kind: 'question' }
-          : { state: isLoading ? 'working' : 'idle' }
+  const terminalProgramStatus = selectProgramStatus({
+    sandboxPending:
+      sandboxPermissionRequestQueue.length > 0 ||
+      workerSandboxPermissions.queue.length > 0 ||
+      Boolean(pendingSandboxRequest),
+    pendingTool: toolUseConfirmQueue[0]?.tool.name ?? pendingWorkerRequest?.toolName,
+    questionPending:
+      promptQueue.length > 0 ||
+      elicitation.queue.length > 0 ||
+      Boolean(isShowingLocalJSXCommand),
+    busy: isLoading,
+  })
   useProgramStatus(terminalProgramStatus)
 
   // Register the leader's setToolUseConfirmQueue for in-process teammates
