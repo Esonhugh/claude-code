@@ -1426,9 +1426,11 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 `tool.check` hook 调用 `next(e)` 后保持相同 decision 时，真实工具权限保留原裁决来源和已批准的输入；非空 `reason` 可以替换 ask／deny 的显示消息，空字符串不会清除原拒绝原因。未调用 `next(e)` 时，不采用核心尚未返回给插件的输入改写。hook 改变裁决时，拒绝显示 `Permission to use <工具名> denied by plugin <插件名>: <原因>`，审批显示 `<工具名> needs approval (asked by plugin <插件名>: <原因>)`。多个匹配插件使用 `plugins A, B`，包括因短路未执行的匹配 hook；同一插件只列一次，不匹配的 hook 和被排除的调用者不列入。省略 `reason` 不添加冒号，显式空字符串仍保留 `: `。
 
+真实调用的 `tool.check` 带本次 `tool_use_id`，子 Agent 循环中还带与 `tool.call` 相同的 `agentId`；主循环、插件主动工具调用和公开权限查询不携带 Agent 身份。调用 `next(e)` 时，省略 `tool_use_id`、`agentId` 或 `ceiling` 会恢复收到的值；显式改成不同值（包括把已有值设为 `undefined`）则拒绝。`tool` 和 `input` 同样固定，输入按内容比较，可以传入等值副本。拒绝抛出带实际 hook 插件名及被改字段名的 `HooksError`；插件不能借权限查询替换被检查的调用。
+
 作者 `$.tool.call({tool, ...args})` 返回最终工具消息的 `{result, text}`；普通工具执行失败带 `isError: true`，权限或插件拒绝返回 `{deny}`。错误文字即使包含“Permission denied”，也不会被误当成拒绝。合成结果同样通过工具 mapper 生成 `text`。`ref`、`isReadOnly` 和 model-only `context` 保留在 middleware 的 `next(e)` 回执中，作者公开调用不返回这些内部字段。 当前 session 不提供的工具会抛出 `HooksError`，消息为 `<插件名>: $.tool.call: no tool named "<工具名>" in this session`；`$.tool.check` 使用对应的方法名。错误中的插件名由宿主传入，不能通过工具参数改写。
 
-运行 `bun test ./src/services/mods/dispatch.test.ts`、`bun test ./src/services/mods/toolHost.test.ts`、`bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts`，检查匹配插件名单、作者入口、经典 Hook 生产路径及权限来源。`--debug-file /absolute/path/mods-debug.log` 中的 `[ModsToolCheck]` 记录工具、tool use ID、核心是否被调用、hook 裁决及匹配插件名，不打印参数或原因正文。固定官方 2.1.292 的十一组真实 CLI 场景中，权限查询、作者调用和插件事件记录逐项一致，覆盖多插件短路、重复注册、matcher、同裁决改写及空原因；不可用工具的三项错误对照也一致。connector ceiling、子 Agent 的检查上下文、取消与完整工具契约继续独立验收。
+运行 `bun test ./src/services/mods/dispatch.test.ts`、`bun test ./src/services/mods/toolHost.test.ts`、`bun test ./src/services/mods/runtimeTools.test.ts`、`bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts`，检查匹配插件名单、真实 Worker 身份边界、作者入口、经典 Hook 生产路径及权限来源。`--debug-file /absolute/path/mods-debug.log` 中的 `[ModsToolCheck]` 记录工具、tool use ID、Agent ID、检查阶段、核心是否被调用、hook 裁决及匹配插件名，不打印参数或原因正文。固定官方 2.1.292 的十一组真实 CLI 场景中，权限查询、作者调用和插件事件记录逐项一致，覆盖多插件短路、重复注册、matcher、同裁决改写及空原因；不可用工具的三项错误对照也一致。另外四个真实 CLI 场景按调用 ID 核对了子 Agent 身份、公开查询、缺省元信息恢复及完整拒绝错误，均与官方一致；主／子任务调度顺序和额外完成请求仍有差异。connector ceiling 的策略数据源、取消和完整 Agent／工具生命周期继续独立验收。
 
 ### Mod 子任务的完成通知
 
