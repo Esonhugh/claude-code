@@ -8,7 +8,7 @@ import {
   getOriginalCwd,
   getUseCoworkPlugins,
 } from '../../bootstrap/state.js'
-import { getRemoteManagedSettingsSyncFromCache } from '../../services/remoteManagedSettings/syncCacheState.js'
+import { getRemoteManagedSettingsSyncFromCache, isRemoteManagedSettingsVerified } from '../../services/remoteManagedSettings/syncCacheState.js'
 import { uniq } from '../array.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
@@ -371,10 +371,11 @@ function getValidatedRemotePolicySettings(): {
 
 function loadPolicySettings(
   remoteSettings = getValidatedRemotePolicySettings().settings,
+  includeUserWritable = true,
 ): SettingsJson | null {
   const mdmSettings = getMdmSettings().settings
   const fileSettings = loadManagedFileSettings().settings
-  const hkcuSettings = getHkcuSettings().settings
+  const hkcuSettings = includeUserWritable ? getHkcuSettings().settings : null
   const sources = [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
   const behavior = sources.find(
     settings => settings !== null &&
@@ -389,6 +390,12 @@ function loadPolicySettings(
     mergeWith(merged, settings, settingsMergeCustomizer)
   delete merged.managedSourcesBehavior
   return merged
+}
+
+/** Native guard ordering is authored by an admin or verified by the server. */
+export function getVouchedPolicySettings(): SettingsJson | null {
+  const remote = getValidatedRemotePolicySettings().settings
+  return loadPolicySettings(isRemoteManagedSettingsVerified() ? remote : null, false)
 }
 
 function getSettingsForSourceUncached(

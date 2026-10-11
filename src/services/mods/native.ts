@@ -97,19 +97,24 @@ export function getNativeModDeclaration(
   return seats.get(input)
 }
 
+function nativePrependList(settings: PrepareModPluginsSettings): string[] | undefined {
+  const list = settings.policyPluginOrdering === undefined
+    ? settings.policySettings?.prependPlugins
+    : settings.policyPluginOrdering?.prependPlugins
+  // Official 2.1.292 QV: a snapshot may add a seat after an admin tier omits it.
+  return list === undefined || list.includes(SEC_DEFAULT_ID)
+    ? list
+    : settings.policySettings?.prependPlugins
+}
+
 export function shouldSeatSecDefault(
   settings: PrepareModPluginsSettings,
 ): boolean {
-  if (
-    settings.hookPolicy.allDisabled ||
-    settings.policySettings?.disableAllHooks
-  )
-    return false
   const managed =
     settings.hasManagedSettings === true ||
     (settings.policySettings !== null &&
       Object.keys(settings.policySettings).length > 0)
-  const list = managed ? settings.policySettings?.prependPlugins : undefined
+  const list = managed ? nativePrependList(settings) : undefined
   return list !== undefined
     ? list.includes(SEC_DEFAULT_ID)
     : managed ||
@@ -128,7 +133,7 @@ export function seatNativeModPlugins(
   implementation: ModDeclaration = builtin,
 ): ModPluginInput[] {
   if (!shouldSeatSecDefault(settings)) return [...inputs]
-  const list = settings.policySettings?.prependPlugins
+  const list = nativePrependList(settings)
   const declaration: ModDeclaration = {
     ...implementation,
     name: 'sec-default',

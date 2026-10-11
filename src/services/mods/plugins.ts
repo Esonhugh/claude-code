@@ -15,6 +15,8 @@ export type PrepareModPluginsSettings = {
   userSettings: SettingsJson | null
   flagSettings: SettingsJson | null
   policySettings: SettingsJson | null
+  /** Vouched admin ordering; undefined means the embedding host supplied policy. */
+  policyPluginOrdering?: Pick<SettingsJson, 'prependPlugins' | 'appendPlugins'> | null
   /** Admin settings remain authoritative even when their contents failed validation. */
   hasManagedSettings?: boolean
   subscriptionType?: 'team' | 'enterprise' | 'pro' | 'max' | null

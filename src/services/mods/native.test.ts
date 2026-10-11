@@ -89,6 +89,8 @@ test('native seating honors managed ownership, explicit omission/position, and o
   for (const value of [
     settings({ policySettings: { enabledPlugins: {} } }),
     settings({ hasManagedSettings: true }),
+    settings({ policySettings: { disableAllHooks: true } }),
+    settings({ hasManagedSettings: true, hookPolicy: { managedOnly: false, allDisabled: true } }),
     settings({ subscriptionType: 'team' }),
     settings({ subscriptionType: 'enterprise' }),
     settings({
@@ -105,11 +107,6 @@ test('native seating honors managed ownership, explicit omission/position, and o
     settings({
       policySettings: { prependPlugins: [] },
       subscriptionType: 'enterprise',
-    }),
-    settings({ policySettings: { disableAllHooks: true } }),
-    settings({
-      hasManagedSettings: true,
-      hookPolicy: { managedOnly: false, allDisabled: true },
     }),
   ])
     expect(ids(value)).toEqual(inputs.map(input => input.storageId))

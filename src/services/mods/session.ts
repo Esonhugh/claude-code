@@ -32,6 +32,7 @@ import { getEnabledSettingSources } from '../../utils/settings/constants.js'
 import { getMdmSettings } from '../../utils/settings/mdm/settings.js'
 import {
   getSettingsForSource,
+  getVouchedPolicySettings,
   loadManagedFileSettings,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
@@ -200,6 +201,7 @@ export function createModsSession(options: ModsSessionOptions) {
       userSettings: getSettingsForSource('userSettings'),
       flagSettings: getSettingsForSource('flagSettings'),
       policySettings: getSettingsForSource('policySettings'),
+      policyPluginOrdering: getVouchedPolicySettings(),
       subscriptionType: getSubscriptionType(),
       hasManagedSettings: getMdmSettings().errors.length > 0 || loadManagedFileSettings().errors.length > 0,
       enabledOptionSources: {
@@ -394,6 +396,7 @@ export function createModsSession(options: ModsSessionOptions) {
       settings.hookPolicy,
       settings.subscriptionType,
       settings.enabledOptionSources,
+      settings.policyPluginOrdering,
       options.getDisabledReason?.(),
     ])).digest('hex')
   }

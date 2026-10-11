@@ -32,14 +32,22 @@ import { jsonParse } from '../../utils/slowOperations.js'
 const SETTINGS_FILENAME = 'remote-settings.json'
 
 let sessionCache: SettingsJson | null = null
+let verifiedPayload: SettingsJson | null = null
 let eligible: boolean | undefined
 
-export function setSessionCache(value: SettingsJson | null): void {
+export function setSessionCache(value: SettingsJson | null, verified = false): void {
   sessionCache = value
+  if (verified) verifiedPayload = value
+}
+
+/** Disk snapshots remain usable as policy, but cannot claim server validation. */
+export function isRemoteManagedSettingsVerified(): boolean {
+  return sessionCache !== null && sessionCache === verifiedPayload
 }
 
 export function resetSyncCache(): void {
   sessionCache = null
+  verifiedPayload = null
   eligible = undefined
 }
 
