@@ -13,6 +13,7 @@ import {
   executeSubagentStartHooks,
   executePermissionRequestHooks,
   executeUserPromptSubmitHooks,
+  getPreToolHookBlockingMessage,
   type AggregatedHookResult,
   type HookSourceScope,
 } from '../../utils/hooks.js'
@@ -464,7 +465,10 @@ export function createModClassicAdapter(options: ModClassicAdapterOptions) {
           if (item.updatedInput !== undefined)
             result.updatedInput = item.updatedInput
           if (item.blockingError)
-            blockingReason = item.blockingError.blockingError
+            blockingReason = getPreToolHookBlockingMessage(
+              `PreToolUse:${tool}`,
+              item.blockingError,
+            )
           if (item.blockingError || item.permissionBehavior === 'deny') {
             // Repeated executor decisions retain the winning hook's metadata.
             decision = {

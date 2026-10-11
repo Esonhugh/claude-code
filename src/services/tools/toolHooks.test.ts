@@ -316,7 +316,7 @@ describe('classic events at existing tool hook boundaries', () => {
         ?.hookPermissionResult,
     ).toMatchObject({
       behavior: 'deny',
-      message: 'policy refusal',
+      message: 'PreToolUse:ClassicFixture hook error: policy refusal',
       decisionReason: { hookSource: 'policySettings' },
     })
   })
@@ -1351,4 +1351,41 @@ describe('C17 native hook provenance from the real classic producer',()=>{
     const result=await createModToolHost(f.context,async()=>({behavior:'allow'})).check({tool:f.tool.name,input:{value:'read'}},f.context.abortController.signal)
     expect(result).toEqual({decision:behavior,...(behavior==='ask'?{reason:'Ask'}:behavior==='deny'?{reason:'Denied'}:{}),...(behavior==='deny'?{}:{rule:'ClassicFixture(x)'})})
   })
+})
+
+test('formatted classic blocks retain the real policy hook source', async () => {
+  const policy: Settings = {
+    hooks: { PreToolUse: [{ hooks: [{
+      type: 'command',
+      command: `printf '%s' '${JSON.stringify({ hookSpecificOutput: {
+        hookEventName: 'PreToolUse', permissionDecision: 'deny',
+        permissionDecisionReason: 'managed refusal',
+      } })}'`,
+    }] }] },
+  }
+  configure(policy)
+  const runtime = createModsRuntime()
+  try {
+    await runtime.reconcile(seatNativeModPlugins([], {
+      userSettings: null, flagSettings: null, policySettings: policy,
+      hookPolicy: { managedOnly: false, allDisabled: false },
+    }))
+    const f = fixture()
+    f.context.mods = runtime
+    const result = (await Array.fromAsync(pre(f))).find(
+      item => item.type === 'hookPermissionResult',
+    )
+    expect(result?.type === 'hookPermissionResult' && result.hookPermissionResult)
+      .toEqual({
+        behavior: 'deny',
+        message: 'PreToolUse:ClassicFixture hook error: managed refusal',
+        decisionReason: {
+          type: 'hook', hookName: 'PreToolUse:ClassicFixture',
+          hookSource: 'policySettings',
+          reason: 'PreToolUse:ClassicFixture hook error: managed refusal',
+        },
+      })
+  } finally {
+    await runtime.dispose()
+  }
 })

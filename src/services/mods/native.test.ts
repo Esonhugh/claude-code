@@ -533,7 +533,8 @@ for (const implementation of ['local', 'official'] as const) {
           ?.hookPermissionResult,
       ).toMatchObject({
         behavior: 'deny',
-        message: 'managed native veto',
+        // Official 2.1.292 formats command-hook blocks at the classic boundary.
+        message: 'PreToolUse:NativeFixture hook error: managed native veto',
         decisionReason: { hookSource: 'policySettings' },
       })
       expect(classicCalls).toBe(3)

@@ -373,8 +373,11 @@ async function* runClassicToolHooks(
           ) ??
           decisionObservations.findLast(
             item =>
-              item.blockingError?.blockingError === answer.deny &&
-              answer.deny !== undefined,
+              item.blockingError !== undefined &&
+              getPreToolHookBlockingMessage(
+                `PreToolUse:${tool.name}`,
+                item.blockingError,
+              ) === answer.deny,
           )
         folded.hookSource = stopped?.hookSource ?? origin?.hookSource
       } else {

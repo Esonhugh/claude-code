@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import ts from 'typescript'
 import type { ToolUseContext } from '../../Tool.js'
-import type { AggregatedHookResult } from '../../utils/hooks.js'
+import {
+  getPreToolHookBlockingMessage,
+  type AggregatedHookResult,
+} from '../../utils/hooks.js'
 import type { createModClassicAdapter } from './classicAdapter.js'
 
 const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME']
@@ -23,10 +26,9 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-// Execute the entire production adapter, replacing ONLY its existing classic
-// executor module at the import boundary. No CLI bootstrap, real settings,
-// hooks, processes, permission dialogs or model requests are imported/executed.
-// This tests orchestration, NOT the executor's parsing/matching/source selection.
+// Execute the entire production adapter with its classic executors replaced
+// at the import boundary. Keep the real blocking-message formatter; this tests
+// orchestration, not the executor's parsing/matching/source selection.
 function fixture(
   results: AggregatedHookResult[] = [],
   hooks: {
@@ -71,7 +73,8 @@ function fixture(
     createModClassicAdapter?: typeof createModClassicAdapter
   } = {}
   new Function('require', 'exports', code)((name: string) => {
-    if (name === '../../utils/hooks.js') return executors
+    if (name === '../../utils/hooks.js')
+      return { ...executors, getPreToolHookBlockingMessage }
     throw new Error(`Unexpected production dependency: ${name}`)
   }, exports)
   let context = {
@@ -306,7 +309,8 @@ describe('classic adapter executor boundary', () => {
     ])
     expect(
       await f.classic.PreToolUse({ tool: 'Read', tool_use_id: 'aggregate' }),
-    ).toEqual({ deny: 'policy block' })
+    // Official 2.1.292 includes the event/tool prefix for blocking errors.
+    ).toEqual({ deny: 'PreToolUse:Read hook error: policy block' })
   })
   test('a per-hook cancellation diagnostic is delivered without inventing a whole-turn abort', async () => {
     const diagnostic = {
@@ -806,7 +810,7 @@ describe('classic adapter executor boundary', () => {
         command: 'echo test',
       }),
     ).toEqual({
-      deny: 'managed refusal',
+      deny: 'PreToolUse:Bash hook error: managed refusal',
       additionalContext: ['first', 'same', 'same', 'last'],
     })
     expect(f.calls).toHaveLength(1)
