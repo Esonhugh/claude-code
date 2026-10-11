@@ -94,7 +94,10 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       const tool = findToolByName(tools, name)
       const refusal = authorCallRefusals.get(tool?.name ?? name)
       if (refusal && !(entry === 'ui.ask' && tool?.name === ASK_USER_QUESTION_TOOL_NAME)) throw new Error(`${spawnedBy ? `${spawnedBy}: ` : ''}tool.call: ${refusal} (host check)`)
-      if (!tool) throw new Error(`No such tool available: ${name}`)
+      if (!tool) {
+        logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${name} operation=call outcome=unavailable`)
+        throw Object.assign(new Error(`${spawnedBy === undefined ? '' : spawnedBy + ': '}$.tool.call: no tool named "${name}" in this session`), { name: 'HooksError' })
+      }
       const block = { type: 'tool_use' as const, caller: { type: 'direct' as const }, id: randomUUID(), name: tool.name, input: args }
       const assistant = createAssistantMessage({ content: [block] })
       // The executor's tools include query/Agent, which bind this host themselves.
@@ -153,7 +156,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }
     },
-    async check(input: { tool: string; input: unknown }, signal: AbortSignal) {
+    async check(input: { tool: string; input: unknown }, signal: AbortSignal, author?: string) {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
         typeof input.tool !== 'string' || !input.tool.trim() ||
         !Object.hasOwn(input, 'input'))
@@ -161,7 +164,10 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       signal.throwIfAborted()
       const tools = getTools()
       const tool = findToolByName(tools, input.tool)
-      if (!tool) throw new Error(`No such tool available: ${input.tool}`)
+      if (!tool) {
+        logForDebugging(`[ModsTool] author=${author ?? 'unknown'} tool=${input.tool} operation=check outcome=unavailable`)
+        throw Object.assign(new Error(`${author === undefined ? '' : author + ': '}$.tool.check: no tool named "${input.tool}" in this session`), { name: 'HooksError' })
+      }
       const args = tool.inputSchema.parse(input.input)
       const { checkModToolPermission, modToolCheckResult } = await import('../tools/toolHooks.js')
       const abortController = createAbortController()

@@ -332,7 +332,7 @@ describe('author tool host through the real executor', () => {
   test('rejects unknown tools and malformed envelopes before any hook or tool runs', async () => {
     const events: ModInput[] = []
     const f = fixture([hook('tool.call', async (event, next) => { events.push(event); return next(event) })])
-    await expect(f.host.call({ tool: 'Missing' }, f.snapshot, new AbortController().signal)).rejects.toThrow('No such tool available: Missing')
+    await expect(f.host.call({ tool: 'Missing' }, f.snapshot, new AbortController().signal, 'author')).rejects.toMatchObject({ name: 'HooksError', message: 'author: $.tool.call: no tool named "Missing" in this session' })
     for (const input of [null, [], {}, { tool: '' }, { tool: 1 }, { tool: f.tool.name, value: 'ok', consent: 1 }]) {
       await expect(f.host.call(input as ModInput, f.snapshot, new AbortController().signal)).rejects.toThrow()
     }
@@ -545,7 +545,7 @@ describe('author tool host through the real executor', () => {
     const f = fixture()
     for (const input of [null, [], {}, { tool: '' }, { tool: f.tool.name }, { tool: f.tool.name, input: { value: 1 } }])
       await expect(f.host.check(input as { tool: string; input: unknown }, new AbortController().signal)).rejects.toThrow()
-    await expect(f.host.check({ tool: 'Missing', input: {} }, new AbortController().signal)).rejects.toThrow('No such tool')
+    await expect(f.host.check({ tool: 'Missing', input: {} }, new AbortController().signal, 'author')).rejects.toMatchObject({ name: 'HooksError', message: 'author: $.tool.check: no tool named "Missing" in this session' })
     const controller = new AbortController()
     const entered = Promise.withResolvers<AbortSignal>()
     const finish = Promise.withResolvers<void>()

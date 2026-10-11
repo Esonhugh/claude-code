@@ -120,7 +120,7 @@ export type ModRequestServices = {
     tools?(): readonly Tool[]
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string } | { deny: string }>
     call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<unknown>
-    check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
+    check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
   composePrompt?(input: Partial<PromptComposeInput>, snapshot: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult>
@@ -1933,7 +1933,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             try {
               return await withReference(owner, () => dispatch(op, input as ModInput,
-                async (question, signal) => host.check(question, signal ?? combined.signal), snapshot, table, {
+                async (question, signal) => host.check(question, signal ?? combined.signal, owner.declaration.name), snapshot, table, {
                   origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
                   signal: combined.signal,
                 }))

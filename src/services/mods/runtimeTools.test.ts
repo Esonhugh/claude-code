@@ -462,8 +462,8 @@ test('author hosts do not execute retired dynamic tools retained in an older req
   try {
     const result=await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}
     expect(JSON.parse(result.text)).toEqual([
-      expect.stringContaining('No such tool available: mcp__retired__echo'),
-      expect.stringContaining('No such tool available: mcp__retired__echo'),
+      'HooksError: caller: $.tool.check: no tool named "mcp__retired__echo" in this session',
+      'HooksError: caller: $.tool.call: no tool named "mcp__retired__echo" in this session',
     ])
     expect(host.tools()).toEqual([])
     expect(context.options.tools).toHaveLength(1)
@@ -800,4 +800,40 @@ test('author tool.check crosses the Worker and dispatches a pinned permission qu
   expect(await runtime.dispatch('command.run',{},async () => ({}))).toEqual({text:JSON.stringify({decision:'ask',reason:'policy core'})})
   expect(inputs).toEqual([{tool:'Offline',input:{path:'file'}}])
   expect(diagnostics).toEqual([])
+})
+
+// Official 2.1.292 native missing-tool calls report HooksError with the serving plugin.
+test('Worker missing-tool errors use the host-owned author for check and call', async () => {
+  const caller = await plugin('missing-author', `export function register(on) {
+    on('command.run', async $ => {
+      const result = [];
+      for (const [op, invoke] of [
+        ['check', () => $.tool.check({tool:'Missing',input:{plugin:'forged',spawnedBy:'forged'}})],
+        ['call', () => $.tool.call({tool:'Missing',plugin:'forged',spawnedBy:'forged'})],
+      ]) {
+        try { await invoke(); }
+        catch (error) { result.push({op,name:error.name,message:error.message,string:String(error)}); }
+      }
+      return {text:JSON.stringify(result)};
+    });
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  const context = {
+    options: {tools: [], mcpClients: [], isNonInteractiveSession: true},
+    messages: [], abortController: new AbortController(),
+  } as unknown as ToolUseContext
+  await runtime.bind(binding)
+  await runtime.reconcile([caller])
+  const snapshot = runtime.capture({toolHost: () => createModToolHost(context, async () => {throw Error('unexpected permission request')})})
+  try {
+    const receipt = await snapshot.dispatch('command.run', {}, async () => ({})) as {text: string}
+    expect(JSON.parse(receipt.text)).toEqual(['check','call'].map(op => ({
+      op, name: 'HooksError',
+      message: `missing-author: $.tool.${op}: no tool named "Missing" in this session`,
+      string: `HooksError: missing-author: $.tool.${op}: no tool named "Missing" in this session`,
+    })))
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
 })
