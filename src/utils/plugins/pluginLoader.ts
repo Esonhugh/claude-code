@@ -902,7 +902,7 @@ export function generateTemporaryCacheNameForPlugin(
   source: PluginSource,
 ): string {
   const timestamp = Date.now()
-  const random = Math.random().toString(36).substring(2, 8)
+  const random = Math.random().toString(36).slice(2, 8).padEnd(1, '0')
 
   let prefix: string
 
@@ -914,7 +914,7 @@ export function generateTemporaryCacheNameForPlugin(
         prefix = 'npm'
         break
       case 'pip':
-        prefix = 'pip'
+        prefix = 'unknown'
         break
       case 'github':
         prefix = 'github'
