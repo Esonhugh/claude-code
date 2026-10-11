@@ -626,6 +626,7 @@ test('configured plugin MCP without a hook module still receives canonical setti
         source,
         repository: source,
         enabled: true,
+        managedSource: true,
       }
       return [source, getModPluginOrigin(plugin, {
         userSettings: null,
