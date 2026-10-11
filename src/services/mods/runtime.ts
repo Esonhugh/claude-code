@@ -120,7 +120,7 @@ export type ModRequestServices = {
     tools?(): readonly Tool[]
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string } | { deny: string }>
     call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<unknown>
-    check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string }>
+    check(input: ModInput, signal: AbortSignal): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
   composePrompt?(input: Partial<PromptComposeInput>, snapshot: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult>

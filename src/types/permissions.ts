@@ -176,6 +176,7 @@ export type PermissionAllowDecision<
   Input extends { [key: string]: unknown } = { [key: string]: unknown },
 > = {
   behavior: 'allow'
+  matchedAskRule?: PermissionRule
   updatedInput?: Input
   userModified?: boolean
   decisionReason?: PermissionDecisionReason
@@ -201,6 +202,7 @@ export type PermissionAskDecision<
   Input extends { [key: string]: unknown } = { [key: string]: unknown },
 > = {
   behavior: 'ask'
+  matchedAskRule?: PermissionRule
   message: string
   updatedInput?: Input
   decisionReason?: PermissionDecisionReason

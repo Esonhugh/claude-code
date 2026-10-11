@@ -30,6 +30,7 @@ import type { ModDispatchHook } from '../mods/types.js'
 import {
   checkModToolPermission,
   modToolCheckResult,
+  resolveHookPermissionDecision,
   runPreToolUseHooks,
   runPostToolUseHooks,
   runPostToolUseFailureHooks,
@@ -1283,5 +1284,71 @@ describe('classic events at existing tool hook boundaries', () => {
     await Array.fromAsync(pre(f))
     expect(executed).toBe(1)
     expect(f.captures()).toBe(0)
+  })
+})
+
+
+describe('C17 native permission provenance', () => {
+  test.each([
+    [{behavior:'allow',decisionReason:{type:'hook',hookName:'PreToolUse:Read',reason:'Allowed'}},{decision:'allow',reason:'Allowed',hook:'PreToolUse'}],
+    [{behavior:'deny',message:'Denied',decisionReason:{type:'hook',hookName:'PermissionRequest:Bash'}},{decision:'deny',reason:'Denied',hook:'PermissionRequest'}],
+    [{behavior:'ask',message:'Ask',decisionReason:{type:'hook',hookName:'tool.check'}},{decision:'ask',reason:'Ask'}],
+  ] as const)('C17 real permission projection derives hook from the decision source', (decision, expected) => {
+    expect(modToolCheckResult(decision as import('../../types/permissions.js').PermissionDecision)).toEqual(expected)
+  })
+  test('C17 hook ask floor is explicit and does not invent hook for ordinary asks',()=>{
+    const decision={behavior:'ask',message:'Ask'} as const
+    expect(modToolCheckResult(decision)).toEqual({decision:'ask',reason:'Ask'})
+    expect(modToolCheckResult(decision, 'PreToolUse')).toEqual({decision:'ask',reason:'Ask',hook:'PreToolUse'})
+  })
+})
+
+
+describe('C17 native permission result closure at host boundaries', () => {
+  test('C17 actual tool host suppresses invented permission-mode reasons', async()=>{
+    const f=fixture(); f.tool.checkPermissions=async()=>({behavior:'allow',decisionReason:{type:'mode',mode:'bypassPermissions'}})
+    const {createModToolHost}=await import('../mods/toolHost.js')
+    expect(await createModToolHost(f.context,async()=>({behavior:'allow'})).check({tool:f.tool.name,input:{value:'read'}},f.context.abortController.signal)).toEqual({decision:'allow'})
+  })
+  test('C17 actual tool host projects the first recursive rule matching its verdict', async()=>{
+    const f=fixture(); const rule={source:'userSettings',ruleBehavior:'ask',ruleValue:{toolName:'ClassicFixture',ruleContent:'x'}} as const
+    f.tool.checkPermissions=async()=>({behavior:'ask',message:'Approval',decisionReason:{type:'subcommandResults',reasons:new Map([['skip',{behavior:'deny',message:'Denied',decisionReason:{type:'rule',rule:{...rule,ruleBehavior:'deny'}}}],['nested',{behavior:'ask',message:'Nested',decisionReason:{type:'subcommandResults',reasons:new Map([['first',{behavior:'ask',message:'First',decisionReason:{type:'rule',rule}}]])}}]])}})
+    const {createModToolHost}=await import('../mods/toolHost.js')
+    expect(await createModToolHost(f.context,async()=>({behavior:'allow'})).check({tool:f.tool.name,input:{value:'read'}},f.context.abortController.signal)).toEqual({decision:'ask',reason:'Approval',rule:'ClassicFixture(x)'})
+  })
+  test('C17 empty reason is omitted by the real public host projection',async()=>{
+    const f=fixture();f.tool.checkPermissions=async()=>({behavior:'ask',message:''})
+    const {createModToolHost}=await import('../mods/toolHost.js')
+    expect(await createModToolHost(f.context,async()=>({behavior:'allow'})).check({tool:f.tool.name,input:{value:'read'}},f.context.abortController.signal)).toEqual({decision:'ask'})
+  })
+  test.each([true,false] as const)('C17 actual permission middleware exposes only the captured PreToolUse floor: %s',async(floor)=>{
+    const f=fixture();f.tool.checkPermissions=async()=>({behavior:'ask',message:'Rule approval'})
+    let projected:unknown
+    f.context.modsSnapshot={release:()=>{},hasHooks:event=>event==='tool.check',dispatch:(_event,input,core,options)=>dispatchModEvent({event:'tool.check',input,core,...options,hooks:[{plugin:'observer',tier:'user',registration:{id:1,event:'tool.check',hasCatch:false},invoke:async(e,next)=>{projected=await next(e);return projected}}]})}
+    if(floor)f.context.hookAskFloor=true
+    await resolveHookPermissionDecision(undefined,f.tool,{value:'read'},f.context,async()=>({behavior:'allow'}),createAssistantMessage({content:[]}), 'id')
+    expect(projected).toEqual({decision:'ask',reason:'Rule approval',...(floor?{hook:'PreToolUse'}:{})})
+  })
+})
+
+
+describe('C17 native hook provenance from the real classic producer',()=>{
+  test.each(['allow','ask','deny'] as const)('C17 actual classic PreToolUse producer survives tool.check next: %s',async(behavior)=>{
+    registerHookCallbacks({PreToolUse:[{hooks:[{type:'callback',callback:async()=>({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:behavior,permissionDecisionReason:'Producer decision'}})}]}]})
+    const f=fixture();f.tool.checkPermissions=async()=>({behavior:'allow'})
+    const produced=(await Array.fromAsync(pre(f))).find(x=>x.type==='hookPermissionResult')
+    expect(produced?.type).toBe('hookPermissionResult')
+    if(produced?.type!=='hookPermissionResult')throw new Error('Real classic producer did not publish its decision')
+    let projected:unknown
+    f.context.modsSnapshot={release:()=>{},hasHooks:event=>event==='tool.check',dispatch:(_event,input,core,options)=>dispatchModEvent({event:'tool.check',input,core,...options,hooks:[{plugin:'observer',tier:'user',registration:{id:1,event:'tool.check',hasCatch:false},invoke:async(e,next)=>{projected=await next(e);return projected}}]})}
+    await resolveHookPermissionDecision(produced.hookPermissionResult,f.tool,{value:'read'},f.context,async()=>({behavior:'allow'}),createAssistantMessage({content:[]}), 'id')
+    expect(projected).toMatchObject({decision:behavior,hook:'PreToolUse'})
+  })
+  test.each(['allow','ask','deny'] as const)('C17 matched ask rule fallback follows the real tool result: %s',async(behavior)=>{
+    const f=fixture();const rule={source:'userSettings',ruleBehavior:'ask',ruleValue:{toolName:'ClassicFixture',ruleContent:'x'}} as const
+    f.tool.checkPermissions=async()=>behavior==='allow'?{behavior,matchedAskRule:rule}:behavior==='ask'?{behavior,message:'Ask',matchedAskRule:rule}:{behavior,message:'Denied',decisionReason:{type:'other',reason:'Denied'},matchedAskRule:rule}
+    const {createModToolHost}=await import('../mods/toolHost.js')
+    const result=await createModToolHost(f.context,async()=>({behavior:'allow'})).check({tool:f.tool.name,input:{value:'read'}},f.context.abortController.signal)
+    expect(result).toEqual({decision:behavior,...(behavior==='ask'?{reason:'Ask'}:behavior==='deny'?{reason:'Denied'}:{}),...(behavior==='deny'?{}:{rule:'ClassicFixture(x)'})})
   })
 })

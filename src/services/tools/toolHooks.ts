@@ -23,7 +23,7 @@ import type {
   AttachmentMessage,
   ProgressMessage,
 } from '../../types/message.js'
-import type { PermissionDecision } from '../../types/permissions.js'
+import type { PermissionDecision, PermissionRule } from '../../types/permissions.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -57,6 +57,7 @@ export type ModToolCheckResult = {
   decision: 'allow' | 'ask' | 'deny'
   reason?: string
   rule?: string
+  hook?: string
 }
 
 /** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
@@ -93,11 +94,23 @@ export async function checkModToolPermission(
   return { ...checked, behavior: 'ask', message: createPermissionRequestMessage(tool.name, checked?.decisionReason) }
 }
 
-export function modToolCheckResult(decision: PermissionDecision): ModToolCheckResult {
+function modDecisionRule(reason: PermissionDecisionReason | undefined, behavior: PermissionDecision['behavior']): PermissionRule | undefined {
+  if (reason?.type !== 'subcommandResults') return undefined
+  for (const result of reason.reasons.values()) {
+    const why = result.behavior === behavior ? result.decisionReason : undefined
+    const rule = why?.type === 'rule' ? why.rule : modDecisionRule(why, behavior)
+    if (rule) return rule
+  }
+  return undefined
+}
+
+export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string): ModToolCheckResult {
   const why = decision.decisionReason
-  const rule = why?.type === 'rule' ? permissionRuleValueToString(why.rule.ruleValue) : undefined
+  const hook = (why?.type === 'hook' && why.hookName !== 'tool.check' ? why.hookName.split(':').at(0) : undefined) || hookAskFloor
+  const matchedRule = (why?.type === 'rule' ? why.rule : undefined) ?? modDecisionRule(why, decision.behavior) ??
+    (decision.behavior === 'deny' ? undefined : decision.matchedAskRule)
   const reason = decision.behavior === 'allow' ? why && 'reason' in why ? why.reason : undefined : decision.message
-  return { decision: decision.behavior, ...(reason ? { reason } : {}), ...(rule !== undefined ? { rule } : {}) }
+  return { decision: decision.behavior, ...(reason ? { reason } : {}), ...(matchedRule ? { rule:permissionRuleValueToString(matchedRule.ruleValue) } : {}), ...(hook ? { hook } : {}) }
 }
 
 type ClassicToolEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
@@ -820,10 +833,11 @@ export async function resolveHookPermissionDecision(
         !('decision' in value) || typeof value.decision !== 'string' ||
         !['allow', 'ask', 'deny'].includes(value.decision) ||
         ('reason' in value && value.reason !== undefined && typeof value.reason !== 'string') ||
-        ('rule' in value && value.rule !== undefined && typeof value.rule !== 'string'))
-        throw new Error('tool.check must return a decision and optional string reason/rule')
+        ('rule' in value && value.rule !== undefined && typeof value.rule !== 'string') ||
+        ('hook' in value && value.hook !== undefined && typeof value.hook !== 'string'))
+        throw new Error('tool.check must return a decision and optional string reason/rule/hook')
     }
-    const projected = modToolCheckResult(core)
+    const projected = modToolCheckResult(core, toolUseContext.hookAskFloor === true ? 'PreToolUse' : undefined)
     const coreUpdatedInput =
       core.behavior === 'allow' || core.behavior === 'ask'
         ? core.updatedInput

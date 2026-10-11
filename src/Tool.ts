@@ -190,6 +190,8 @@ export type ToolUseContext = {
   modToolCallResult?: (result: import('./services/mods/toolAdapter.js').ToolCallResult) => void
   /** Plugin that initiated an active host call, when the call came from Mods. */
   modSpawnedBy?: string
+  /** A classic PreToolUse ask still requires the permission decider. */
+  hookAskFloor?: true
   /** Resolves a Mods host spawn at AgentTool's internal launch boundary. */
   modAgentStarted?: (result: { model: string; agentId: string }) => void
   /** OpenAI Responses state shared only within one outer query turn. */
