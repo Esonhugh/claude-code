@@ -1798,3 +1798,43 @@ describe('ordinary mod dispatch', () => {
     never.resolve('late')
   })
 })
+
+// Official 2.1.292 uses the matching plugin roster, including short-circuited hooks.
+it('reports host-only matching plugin origins without changing the public receipt', async () => {
+  const entered: string[] = []
+  let roster: readonly {plugin: string; tier: ModTier}[] | undefined
+  const deny = {decision: 'deny', reason: 'Owned refusal'}
+  const result = await dispatchModEvent({
+    event: 'tool.check', input: {tool: 'Bash', input: {}}, origin: {plugin: 'driver', tier: 'user'},
+    hooks: [
+      hook('observer', async () => {entered.push('observer'); return deny}, {event: 'tool.check', id: 1}),
+      hook('observer', async () => {throw Error('not entered')}, {event: 'tool.check', id: 2}),
+      hook('tail', async () => {throw Error('not entered')}, {event: 'tool.check'}),
+      hook('unmatched', async () => {throw Error('wrong tool')}, {event: 'tool.check', matcher: {tool: 'Read'}}),
+      hook('driver', async () => {throw Error('excluded origin')}, {event: 'tool.check', tier: 'prepend'}),
+      hook('other-event', async () => {throw Error('wrong event')}),
+    ],
+    core: async () => {throw Error('short circuited')},
+    onHooks: hooks => {roster = hooks},
+  })
+  assert.deepEqual(roster, [{plugin: 'observer', tier: 'user'}, {plugin: 'tail', tier: 'user'}])
+  assert.deepEqual(entered, ['observer'])
+  assert.deepEqual(result, deny)
+  assert.equal(Object.isFrozen(roster), true)
+  assert.equal(Object.isFrozen(roster![0]), true)
+})
+
+it('matching plugin origins respect explicit registration exclusions and keep siblings', async () => {
+  let roster: readonly {plugin: string; tier: ModTier}[] | undefined
+  const result = await dispatchModEvent({
+    event: 'tool.check', input: {tool: 'Bash', input: {}},
+    origin: {plugin: 'driver', tier: 'user'}, skip: {plugin: 'driver', registrationId: 1},
+    hooks: [
+      hook('driver', async () => {throw Error('excluded registration')}, {event: 'tool.check', id: 1}),
+      hook('driver', async () => ({decision: 'deny'}), {event: 'tool.check', id: 2}),
+      hook('tail', async () => {throw Error('short circuited')}, {event: 'tool.check'}),
+    ], core: async () => ({}), onHooks: hooks => {roster = hooks},
+  })
+  assert.deepEqual(roster, [{plugin: 'driver', tier: 'user'}, {plugin: 'tail', tier: 'user'}])
+  assert.deepEqual(result, {decision: 'deny'})
+})

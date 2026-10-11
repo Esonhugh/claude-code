@@ -841,23 +841,36 @@ export async function resolveHookPermissionDecision(
         throw new Error('tool.check must return a decision and optional string reason/rule/hook')
     }
     const projected = modToolCheckResult(core, toolUseContext.hookAskFloor === true ? 'PreToolUse' : undefined)
-    const coreUpdatedInput =
-      core.behavior === 'allow' || core.behavior === 'ask'
-        ? core.updatedInput
-        : undefined
+    let coreWasCalled = false
+    let hooked: readonly string[] = []
     const verdict = await snapshot.dispatch('tool.check', event, async value => {
       validateInput(value)
+      coreWasCalled = true
       return { ...projected }
-    }, { signal: toolUseContext.abortController.signal, validateInput, validateResult })
+    }, { signal: toolUseContext.abortController.signal, validateInput, validateResult,
+      onHooks: hooks => { hooked = hooks.map(hook => hook.plugin) },
+    })
     toolUseContext.abortController.signal.throwIfAborted()
     validateResult(verdict)
-    let decision: PermissionDecision = isDeepStrictEqual(verdict, projected) ? core :
-      verdict.decision === 'allow' ? { behavior: 'allow', updatedInput: coreUpdatedInput } : {
-        behavior: verdict.decision,
-        message: verdict.reason ?? createPermissionRequestMessage(tool.name),
-        decisionReason: { type: 'hook', hookName: 'tool.check', reason: verdict.reason },
-        updatedInput: coreUpdatedInput,
+    let decision: PermissionDecision
+    if (coreWasCalled && verdict.decision === core.behavior) {
+      // A reason rewrite does not replace the evaluated permission source.
+      decision = core.behavior === 'allow' || !verdict.reason ? core : { ...core, message: verdict.reason }
+    } else {
+      const plugins = `${hooked.length === 1 ? 'plugin' : 'plugins'} ${hooked.join(', ')}`
+      const reason = verdict.reason === undefined ? '' : `: ${verdict.reason}`
+      const decisionReason: PermissionDecisionReason = {
+        type: 'hook', hookName: 'tool.check', hookSource: `plugin:${hooked.join('+')}`, reason: verdict.reason,
       }
+      const updatedInput = coreWasCalled && core.behavior !== 'deny'
+        ? core.updatedInput ?? declarative.input : declarative.input
+      switch (verdict.decision) {
+        case 'allow': decision = { behavior: 'allow', updatedInput, decisionReason }; break
+        case 'deny': decision = { behavior: 'deny', message: `Permission to use ${tool.name} denied by ${plugins}${reason}`, decisionReason }; break
+        case 'ask': decision = { behavior: 'ask', message: `${tool.name} needs approval (asked by ${plugins}${reason})`, updatedInput, decisionReason }; break
+      }
+      logForDebugging(`[ModsToolCheck] tool=${tool.name} toolUseId=${toolUseID} previous=${coreWasCalled ? core.behavior : 'unevaluated'} hookDecision=${verdict.decision} plugins=${JSON.stringify(hooked)}`)
+    }
     if (protectedDecision && core.behavior === 'ask' &&
       (decision.behavior === 'allow' ||
         (decision.behavior === 'ask' && requiresExplicitUserApproval(why)))) decision = core

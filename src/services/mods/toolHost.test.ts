@@ -407,7 +407,7 @@ describe('author tool host through the real executor', () => {
     expect(order).toEqual(['pre', 'check'])
     expect(f.calls).toEqual([])
     expect(f.permissions).toEqual([])
-    expect(result).toEqual({ deny: expect.stringContaining('Mod permission veto') })
+    expect(result).toEqual({ deny: 'Permission to use AuthorFixture denied by plugin observer: Mod permission veto' })
   })
 
   test('does not leak the author result callback into actual tools and nested invocations', async () => {
@@ -422,7 +422,7 @@ describe('author tool host through the real executor', () => {
       await f.host.call({ tool: f.tool.name, value: 'run' }, f.snapshot, new AbortController().signal)
       expect(f.calls).toHaveLength(1)
       expect(f.permissions).toHaveLength(decision === 'ask' ? 1 : 0)
-      if (decision === 'ask') expect(f.permissions[0]![5]).toMatchObject({ behavior: 'ask', message: 'Mod decision' })
+      if (decision === 'ask') expect(f.permissions[0]![5]).toMatchObject({ behavior: 'ask', message: 'AuthorFixture needs approval (asked by plugin observer: Mod decision)' })
     }
     const managed = fixture([hook('tool.check', async () => ({ decision: 'allow' }))])
     managed.state.toolPermissionContext = { ...managed.state.toolPermissionContext, alwaysDenyRules: { policySettings: [managed.tool.name] } }

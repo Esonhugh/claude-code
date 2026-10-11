@@ -1389,3 +1389,79 @@ test('formatted classic blocks retain the real policy hook source', async () => 
     await runtime.dispose()
   }
 })
+
+// Official 2.1.292 ezn/uft: evaluated verdicts keep provenance; changes name all matching plugins.
+describe('official tool.check permission folding', () => {
+  function checks(f: ReturnType<typeof fixture>, hooks: ModDispatchHook[]) {
+    f.context.modsSnapshot = {
+      release: () => {}, hasHooks: event => event === 'tool.check',
+      dispatch: (event, input, core, options) => dispatchModEvent({event, input, core, ...options, hooks}),
+    }
+  }
+  function checkHook(plugin: string, id: number, invoke: ModDispatchHook['invoke'], matcher?: ModDispatchHook['registration']['matcher']): ModDispatchHook {
+    return {plugin, tier: 'user', registration: {id, event: 'tool.check', hasCatch: false, matcher}, invoke}
+  }
+  function resolve(f: ReturnType<typeof fixture>, initial?: import('../../types/permissions.js').PermissionResult) {
+    return resolveHookPermissionDecision(initial, f.tool, {value: 'raw'}, f.context,
+      async (_tool, _input, _context, _assistant, _id, forced) => forced ?? {behavior: 'allow'},
+      createAssistantMessage({content: []}), 'owned-permission')
+  }
+  test.each([
+    ['single', ['observer'], false, 'observer', 'plugin observer'],
+    ['early return', ['observer', 'tail'], false, 'observer+tail', 'plugins observer, tail'],
+    ['duplicate registrations', ['observer', 'observer'], false, 'observer', 'plugin observer'],
+    ['unmatched sibling', ['observer', 'tail'], true, 'observer', 'plugin observer'],
+  ] as const)('changed deny names the matching roster: %s', async (_label, plugins, unmatched, source, display) => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    const entered: string[] = []
+    checks(f, plugins.map((plugin, i) => checkHook(plugin, i + 1, async () => {
+      entered.push(plugin); return {decision: 'deny', reason: 'Owned refusal'}
+    }, unmatched && i === 1 ? {tool: 'Other'} : undefined)))
+    const result = await resolve(f)
+    expect(entered).toEqual(['observer'])
+    expect(result.decision).toEqual({behavior: 'deny', message: `Permission to use ClassicFixture denied by ${display}: Owned refusal`,
+      decisionReason: {type: 'hook', hookName: 'tool.check', hookSource: `plugin:${source}`, reason: 'Owned refusal'}})
+    expect(Object.hasOwn(result.decision, 'updatedInput')).toBe(false)
+  })
+  test.each([undefined, ''] as const)('changed deny distinguishes absent and empty reasons: %s', async reason => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    checks(f, [checkHook('observer', 1, async () => ({decision: 'deny', ...(reason === undefined ? {} : {reason})}))])
+    const result = await resolve(f)
+    expect(result.decision).toMatchObject({behavior: 'deny', message: 'Permission to use ClassicFixture denied by plugin observer' + (reason === undefined ? '' : ': '),
+      decisionReason: {type: 'hook', hookName: 'tool.check', hookSource: 'plugin:observer'}})
+  })
+  test.each([undefined, '', 'Changed reason'] as const)('same evaluated deny keeps classic provenance: %s', async reason => {
+    const f = fixture()
+    const initial = {behavior: 'deny', message: 'Original classic denial', decisionReason: {
+      type: 'hook', hookName: 'PreToolUse', hookSource: 'userSettings', reason: 'Original source',
+    }} as const
+    checks(f, [checkHook('observer', 1, async (e, next) => ({...await next(e) as object, decision: 'deny', reason}))])
+    const result = await resolve(f, initial)
+    expect(result.decision).toEqual({...initial, message: reason || initial.message})
+    expect(result.decision.decisionReason).toBe(initial.decisionReason)
+    if (!reason) expect(result.decision).toBe(initial)
+  })
+  test('same evaluated allow keeps its decision reason and approved input', async () => {
+    const f = fixture(); const reason = {type: 'mode', mode: 'bypassPermissions'} as const
+    f.tool.checkPermissions = async () => ({behavior: 'allow', updatedInput: {value: 'approved'}, decisionReason: reason})
+    checks(f, [checkHook('observer', 1, async (e, next) => ({...await next(e) as object, reason: 'Changed allow reason'}))])
+    const result = await resolve(f)
+    expect(result.decision).toEqual({behavior: 'allow', updatedInput: {value: 'approved'}, decisionReason: reason})
+    expect(result.decision.decisionReason).toBe(reason)
+  })
+  test.each([false, true] as const)('only an evaluated core contributes an input rewrite: %s', async seen => {
+    const f = fixture()
+    f.tool.checkPermissions = async () => ({behavior: 'allow', updatedInput: {value: 'approved'}})
+    checks(f, [checkHook('observer', 1, async (e, next) => {if (seen) await next(e); return {decision: 'allow'}})])
+    const result = await resolve(f)
+    expect(result.decision.behavior).toBe('allow')
+    expect('updatedInput' in result.decision && result.decision.updatedInput).toEqual({value: seen ? 'approved' : 'raw'})
+  })
+  test('changed ask carries the roster through the actual mode decider', async () => {
+    const f = fixture(); f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    checks(f, [checkHook('observer', 1, async () => ({decision: 'ask', reason: 'Owned approval'}))])
+    const result = await resolve(f)
+    expect(result.decision).toEqual({behavior: 'ask', message: 'ClassicFixture needs approval (asked by plugin observer: Owned approval)',
+      updatedInput: {value: 'raw'}, decisionReason: {type: 'hook', hookName: 'tool.check', hookSource: 'plugin:observer', reason: 'Owned approval'}})
+  })
+})

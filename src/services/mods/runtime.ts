@@ -162,6 +162,8 @@ export type ModDispatchOptions = {
   origin?: ModOrigin
   signal?: AbortSignal
   caller?: { plugin: string; registrationId: number }
+  /** Host-only matching origins for non-stream dispatch. */
+  onHooks?: (hooks: readonly ModOrigin[]) => void
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
   validateInput?: (input: ModInput, received: ModInput) => void
   restoreInput?: (input: ModInput, received: ModInput) => ModInput
@@ -2720,6 +2722,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         signal: combined.signal, origin: options.origin,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
+        onHooks: options.onHooks,
         // A live callback excludes its scheduling frame; a settled one excludes its owner.
         ...(options.origin ? { skip: {
           plugin: options.origin.plugin,

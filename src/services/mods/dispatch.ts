@@ -399,6 +399,8 @@ export async function dispatchModEvent(options: {
   restoreInput?: (input: ModInput, received: ModInput) => ModInput
   restoreResult?: (result: unknown, previous: unknown, called: boolean) => unknown
   reportDirectCoreFailure?: boolean
+  /** Host-only matching origins, including hooks below a short circuit. */
+  onHooks?: (hooks: readonly ModOrigin[]) => void
   onFailure?: (plugin: string, error: unknown) => void
 }): Promise<unknown> {
   const budgetMs = options.budgetMs ?? 10_000
@@ -448,6 +450,19 @@ export async function dispatchModEvent(options: {
     ] as const,
   )
 
+  function matchesHook(hook: ModDispatchHook, input: ModInput): boolean {
+    const { registration, tier, plugin } = hook
+    const skipRegistration =
+      skip?.plugin === plugin &&
+      (skip.registrationId === undefined ||
+        skip.registrationId === registration.id)
+    const matches =
+      matchesModEventPattern(registration.event, options.event) &&
+      (!options.event.startsWith('telemetry.') || registration.event.startsWith('telemetry.') || tier === 'builtin' || tier === 'core') &&
+      matchesModMatcher(registration.matcher ?? {}, input)
+    return matches && !skipRegistration
+  }
+
   async function run(
     index: number,
     input: ModInput,
@@ -461,16 +476,8 @@ export async function dispatchModEvent(options: {
   ): Promise<unknown> {
     parent?.throwIfAborted()
     while (index < hooks.length) {
-      const { registration, tier, plugin } = hooks[index]!
-      const skipRegistration =
-        skip?.plugin === plugin &&
-        (skip.registrationId === undefined ||
-          skip.registrationId === registration.id)
-      const matches =
-        matchesModEventPattern(registration.event, options.event) &&
-        (!options.event.startsWith('telemetry.') || registration.event.startsWith('telemetry.') || tier === 'builtin' || tier === 'core') &&
-        matchesModMatcher(registration.matcher ?? {}, input)
-      if (matches && !skipRegistration) {
+      const { tier, plugin } = hooks[index]!
+      if (matchesHook(hooks[index]!, input)) {
         if (!skipped.has(tier)) break
         trace.push({
           entry: Object.freeze({
@@ -973,6 +980,14 @@ export async function dispatchModEvent(options: {
       lifetime.abort(new Error(`Mod ${hook.plugin} frame finished`))
       controller.abort(lifetime.signal.reason)
     }
+  }
+  if (options.onHooks) {
+    const selected = new Map<string, ModOrigin>()
+    for (const hook of hooks) {
+      if (matchesHook(hook, options.input) && !selected.has(hook.plugin))
+        selected.set(hook.plugin, Object.freeze({ plugin: hook.plugin, tier: hook.tier }))
+    }
+    options.onHooks(Object.freeze([...selected.values()]))
   }
   return run(0, options.input, options.signal)
 }
