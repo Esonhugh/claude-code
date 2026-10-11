@@ -703,7 +703,7 @@ test('author tool.check refuses identity rewrites and invalid decisions at the h
   expect(await runtime.dispatch('command.run',{},async () => ({}))).toEqual({text:JSON.stringify({decision:'deny',reason:'original'})})
   expect(questions).toEqual([{tool:'Offline',input:{path:'original'}}])
   expect(diagnostics.map(event => event.message)).toEqual([
-    'tool.check cannot rewrite tool, input or tool_use_id',
+    'policy: next() passed an argument with a changed input (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)',
     'tool.check must return { decision, reason?, rule? }',
   ])
 })
@@ -836,4 +836,65 @@ test('Worker missing-tool errors use the host-owned author for check and call', 
     })))
     expect(diagnostics).toEqual([])
   } finally {snapshot.release()}
+})
+
+// Official 2.1.292 real calls keep loop identity; author calls and queries are outside it.
+test.each([undefined, 'owned-child'] as const)('Worker keeps tool.check identity separate from author origin: %s', async agentId => {
+  const observer = await plugin('loop-observer', `let rows=[];export function register(on) {
+    on('tool.call',{tool:'Offline'},async($,e,next)=>{
+      rows.push({event:'call',agentId:e.agentId,id:e.tool_use_id});
+      await $.tool.call({tool:'Outside',value:'author'});
+      return next(e);
+    });
+    on('tool.check',{tool:'Offline'},async($,e,next)=>{
+      rows.push({event:'check',agentId:e.agentId,id:e.tool_use_id});
+      await $.tool.check({tool:'Outside',input:{value:'query'}});
+      return next(e);
+    });
+    on('command.run',{command:'loop-observer'},()=>({text:JSON.stringify(rows)}));
+  }`)
+  const audit = await plugin('loop-audit', `let rows=[];export function register(on) {
+    on('tool.call',{tool:'Outside'},async($,e,next)=>{
+      rows.push({event:'author-call',agentId:e.agentId,id:e.tool_use_id,origin:next.origin});return next(e);
+    });
+    on('tool.check',{tool:'Outside'},async($,e,next)=>{
+      rows.push({event:e.tool_use_id===undefined?'query':'author-check',agentId:e.agentId,id:e.tool_use_id,origin:next.origin});return next(e);
+    });
+    on('command.run',{command:'loop-audit'},()=>({text:JSON.stringify(rows)}));
+  }`)
+  const calls: string[] = [], diagnostics: unknown[] = []
+  const tool = (name: string) => buildTool({
+    name, inputSchema: z.object({value:z.string()}), maxResultSizeChars:1000,
+    description: async () => name, prompt: async () => name, renderToolUseMessage: () => null,
+    checkPermissions: async () => ({behavior:'allow'}),
+    call: async input => {calls.push(name+':'+input.value);return {data:input.value}},
+    mapToolResultToToolResultBlockParam: (data,id) => ({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime = createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([observer,audit])
+  const context = {
+    mods:runtime, options:{tools:[tool('Offline'),tool('Outside')],mcpClients:[],isNonInteractiveSession:true},
+    agentId, messages:[], abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{}, setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const block={type:'tool_use' as const,caller:{type:'direct' as const},id:'real-loop-call',name:'Offline',input:{value:'model'}}
+  await Array.fromAsync(runToolUse(block,createAssistantMessage({content:[block]}),async()=>({behavior:'allow'}),context))
+  // Read each module's own state through the real Worker, selecting by matcher below.
+  const captured=runtime.capture()
+  try {
+    const get=async(command:string)=>JSON.parse((await captured.dispatch('command.run',{command},async()=>({})) as {text:string}).text)
+    const own=await get('loop-observer')
+    expect(own).toEqual([{event:'call',id:block.id,...(agentId===undefined?{}:{agentId})},{event:'check',id:block.id,...(agentId===undefined?{}:{agentId})}])
+    const external=await get('loop-audit')
+    expect(external.map((row: {event:string})=>row.event)).toEqual(['author-call','author-check','query'])
+    for(const row of external)expect(Object.hasOwn(row,'agentId')).toBe(false)
+    expect(external[0].id).toBeString();expect(external[0].id).not.toBe(block.id)
+    expect(external[1].id).toBe(external[0].id);expect(Object.hasOwn(external[2],'id')).toBe(false)
+    for(const row of external)expect(row.origin).toEqual({plugin:'loop-observer',tier:'user'})
+  } finally {captured.release()}
+  expect(calls).toEqual(['Outside:author','Offline:model'])
+  expect(diagnostics).toEqual([])
 })

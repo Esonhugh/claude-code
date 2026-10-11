@@ -1465,3 +1465,50 @@ describe('official tool.check permission folding', () => {
       updatedInput: {value: 'raw'}, decisionReason: {type: 'hook', hookName: 'tool.check', hookSource: 'plugin:observer', reason: 'Owned approval'}})
   })
 })
+
+// Official 2.1.292 mft passes the real loop's agentId and pins the question.
+describe('tool.check loop identity', () => {
+  function snapshot(f: ReturnType<typeof fixture>, hooks: ModDispatchHook[], failures: unknown[] = []) {
+    f.context.modsSnapshot = {
+      release: () => {}, hasHooks: event => event === 'tool.check',
+      dispatch: (event, input, core, options) => dispatchModEvent({
+        event, input, core, ...options, hooks, onFailure: (_plugin, error) => { failures.push(error) },
+      }),
+    }
+  }
+  function hook(invoke: ModDispatchHook['invoke'], matcher?: ModDispatchHook['registration']['matcher']): ModDispatchHook {
+    return {plugin: 'observer', tier: 'user', registration: {id: 1, event: 'tool.check', hasCatch: false, matcher}, invoke}
+  }
+  function resolve(f: ReturnType<typeof fixture>) {
+    return resolveHookPermissionDecision(undefined, f.tool, {value: 'raw'}, f.context,
+      async () => ({behavior: 'allow'}), createAssistantMessage({content: []}), 'loop-tool-id')
+  }
+  test.each([undefined, 'owned-child', 'owned-teammate'] as const)('carries only the current loop identity: %s', async agentId => {
+    const f = fixture(); f.context.agentId = agentId as ToolUseContext['agentId']
+    f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    const seen: unknown[] = []
+    snapshot(f, [hook(async (event, next) => {seen.push(event); return next(event)})])
+    expect((await resolve(f)).decision.behavior).toBe('allow')
+    expect(seen).toEqual([{tool: 'ClassicFixture', input: {value: 'raw'}, tool_use_id: 'loop-tool-id',
+      ...(agentId === undefined ? {} : {agentId})}])
+  })
+  test('agentId matchers see the actual subagent permission question', async () => {
+    const f = fixture(); f.context.agentId = 'owned-child' as ToolUseContext['agentId']
+    f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    const entered: string[] = []
+    snapshot(f, [hook(async (event, next) => {entered.push(String(event.agentId)); return next(event)}, {agentId: 'owned-child'})])
+    await resolve(f)
+    expect(entered).toEqual(['owned-child'])
+  })
+  test.each([
+    [undefined, 'forged'], ['owned-child', 'forged'], ['owned-child', undefined],
+  ] as const)('refuses an agent identity rewrite from %s to %s before core', async (agentId, replacement) => {
+    const f = fixture(); f.context.agentId = agentId as ToolUseContext['agentId']
+    f.tool.checkPermissions = async () => ({behavior: 'allow'})
+    const failures: unknown[] = []
+    snapshot(f, [hook(async (event, next) => next({...event, agentId: replacement}))], failures)
+    expect((await resolve(f)).decision.behavior).toBe('allow')
+    expect(failures).toHaveLength(1)
+    expect(String(failures[0])).toBe('HooksError: observer: next() passed an argument with a changed agentId (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)')
+  })
+})

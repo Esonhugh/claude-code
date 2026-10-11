@@ -824,10 +824,13 @@ export async function resolveHookPermissionDecision(
       (why?.type === 'hook' && ['policySettings', 'flagSettings'].includes(why.hookSource ?? '')) ||
       why?.type === 'safetyCheck' || requiresExplicitUserApproval(why)
     if (protectedDecision && core.behavior === 'deny') return declarative
-    const event = { tool: tool.name, input: structuredClone(declarative.input), tool_use_id: toolUseID }
+    const event = { tool: tool.name, input: structuredClone(declarative.input), tool_use_id: toolUseID,
+      ...(toolUseContext.agentId === undefined ? {} : { agentId: toolUseContext.agentId }),
+    }
+    logForDebugging(`[ModsToolCheck] tool=${tool.name} toolUseId=${toolUseID} agentId=${toolUseContext.agentId ?? 'none'} phase=dispatch`)
     const pinned = structuredClone(event)
     const validateInput = (value: ModInput) => {
-      for (const key of ['tool', 'input', 'tool_use_id'] as const)
+      for (const key of ['tool', 'input', 'tool_use_id', 'agentId'] as const)
         if (!isDeepStrictEqual(value[key], pinned[key]))
           throw new Error(`tool.check cannot rewrite ${key}`)
     }
@@ -869,7 +872,7 @@ export async function resolveHookPermissionDecision(
         case 'deny': decision = { behavior: 'deny', message: `Permission to use ${tool.name} denied by ${plugins}${reason}`, decisionReason }; break
         case 'ask': decision = { behavior: 'ask', message: `${tool.name} needs approval (asked by ${plugins}${reason})`, updatedInput, decisionReason }; break
       }
-      logForDebugging(`[ModsToolCheck] tool=${tool.name} toolUseId=${toolUseID} previous=${coreWasCalled ? core.behavior : 'unevaluated'} hookDecision=${verdict.decision} plugins=${JSON.stringify(hooked)}`)
+      logForDebugging(`[ModsToolCheck] tool=${tool.name} toolUseId=${toolUseID} agentId=${toolUseContext.agentId ?? 'none'} previous=${coreWasCalled ? core.behavior : 'unevaluated'} hookDecision=${verdict.decision} plugins=${JSON.stringify(hooked)}`)
     }
     if (protectedDecision && core.behavior === 'ask' &&
       (decision.behavior === 'allow' ||

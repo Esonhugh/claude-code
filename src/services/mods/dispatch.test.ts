@@ -1838,3 +1838,59 @@ it('matching plugin origins respect explicit registration exclusions and keep si
   assert.deepEqual(roster, [{plugin: 'driver', tier: 'user'}, {plugin: 'tail', tier: 'user'}])
   assert.deepEqual(result, {decision: 'deny'})
 })
+
+// Official 2.1.292 pins every ToolCheckInput identity field before next().
+for (const field of ['tool', 'input', 'tool_use_id', 'agentId', 'ceiling'] as const) {
+  it(`rejects a tool.check ${field} rewrite with the official plugin-owned error`, async () => {
+    const question = {tool: 'Bash', input: {command: 'printf original'}, tool_use_id: 'real-call', agentId: 'child-loop', ceiling: 'ask'}
+    const replacement = field === 'input' ? {command: 'printf changed'} : 'changed'
+    let enteredCore = 0
+    let failure: {name:string;message:string} | undefined
+    const result = await dispatchModEvent({
+      event: 'tool.check', input: question,
+      hooks: [hook('observer', async (event, next) => {
+        try {return await next({...event, [field]: replacement})}
+        catch (error) {
+          assert(error instanceof Error)
+          failure = {name:error.name, message:error.message}
+          return {decision:'deny',reason:'identity refused'}
+        }
+      }, {event:'tool.check'})],
+      core: async () => {enteredCore++;return {decision:'allow'}},
+    })
+    assert.deepEqual(result, {decision:'deny',reason:'identity refused'})
+    assert.equal(enteredCore,0)
+    assert.deepEqual(failure, {name:'HooksError', message:`observer: next() passed an argument with a changed ${field} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`})
+  })
+}
+
+it('accepts a cloned unchanged tool.check input rather than pinning its object reference', async () => {
+  const question = {tool:'Bash',input:{command:'printf original',nested:[1,2]},tool_use_id:'real-call',agentId:'child-loop',ceiling:'ask'}
+  let enteredCore = 0
+  const failures: unknown[] = []
+  const result = await dispatchModEvent({
+    event:'tool.check',input:question,
+    hooks:[hook('observer',async(event,next)=>next(structuredClone(event)),{event:'tool.check'})],
+    core:async input=>{assert.deepEqual(input,question);enteredCore++;return {decision:'allow'}},
+    onFailure:(_plugin,error)=>{failures.push(error)},
+  })
+  assert.deepEqual(result,{decision:'allow'})
+  assert.equal(enteredCore,1)
+  assert.deepEqual(failures,[])
+})
+
+for (const field of ['tool_use_id','agentId','ceiling'] as const) {
+  it(`restores an omitted tool.check ${field} before checking identity`, async () => {
+    const question = {tool:'Bash',input:{command:'printf original'},tool_use_id:'real-call',agentId:'child-loop',ceiling:'ask'}
+    const entered: unknown[] = [], failures: unknown[] = []
+    const result = await dispatchModEvent({
+      event:'tool.check',input:question,
+      hooks:[hook('observer',async(event,next)=>{const copy={...event};delete copy[field];return next(copy)},{event:'tool.check'})],
+      core:async input=>{entered.push(input);return {decision:'allow'}},
+      onFailure:(_plugin,error)=>{failures.push(error)},
+    })
+    assert.deepEqual(result,{decision:'allow'})
+    assert.deepEqual(entered,[question])
+    assert.deepEqual(failures,[])
+  })
+}

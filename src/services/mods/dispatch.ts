@@ -420,6 +420,8 @@ export async function dispatchModEvent(options: {
   const pinned = (
     options.event === 'tool.call'
       ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'tool.check'
+        ? ['tool', 'input', 'tool_use_id', 'agentId', 'ceiling']
       : options.event === 'telemetry.log'
         ? ['to']
       : options.event === 'turn.complete'
@@ -446,7 +448,7 @@ export async function dispatchModEvent(options: {
   ).map(
     (key) => [
       key,
-      ['uses', 'origin', 'presentation', 'resume', 'viewport', 'props'].includes(key) ? structuredClone(options.input[key]) : options.input[key],
+      ['uses', 'origin', 'presentation', 'resume', 'viewport', 'props', 'input'].includes(key) ? structuredClone(options.input[key]) : options.input[key],
     ] as const,
   )
 
@@ -663,15 +665,24 @@ export async function dispatchModEvent(options: {
       if (['tool.call', 'turn.complete'].includes(options.event) && rewritten.agentId === undefined && input.agentId !== undefined) {
         rewritten = { ...rewritten, agentId: input.agentId }
       }
+      if (options.event === 'tool.check') {
+        // Official restores omitted engine metadata, but rejects explicit changes.
+        for (const key of ['tool_use_id', 'agentId', 'ceiling']) {
+          if (!Object.hasOwn(rewritten, key) && Object.hasOwn(input, key))
+            rewritten = { ...rewritten, [key]: input[key] }
+        }
+      }
       rewritten = options.restoreInput?.(rewritten, input) ?? rewritten
       for (const [key, value] of pinned) {
         const unchanged =
-          ['uses', 'origin', 'presentation', 'resume', 'viewport', 'props'].includes(key)
+          ['uses', 'origin', 'presentation', 'resume', 'viewport', 'props', 'input'].includes(key)
             ? isDeepStrictEqual(rewritten[key], value)
             : rewritten[key] === value
         if (!unchanged)
           return Promise.reject(
-            options.event === 'telemetry.log'
+            options.event === 'tool.check'
+              ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed ${key} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`), {name:'HooksError'})
+              : options.event === 'telemetry.log'
               ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed to (pinned)`), {name:'HooksError'})
               : new Error(`Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`),
           )

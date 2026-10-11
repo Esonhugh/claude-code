@@ -436,7 +436,7 @@ describe('author tool host through the real executor', () => {
     for (const patch of [{ tool: 'Other' }, { input: { value: 'forged' } }, { tool_use_id: 'forged' }]) {
       const f = fixture([hook('tool.check', (event, next) => next({ ...event, ...patch }))])
       const result = await f.host.call({ tool: f.tool.name, value: 'run' }, f.snapshot, new AbortController().signal)
-      expect(f.failures).toEqual([expect.stringContaining('cannot rewrite')])
+      expect(f.failures).toEqual([`HooksError: observer: next() passed an argument with a changed ${Object.keys(patch)[0]} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`])
       expect(result).toMatchObject({ result: { value: 'run' } })
       expect(f.calls.map(call => call.input)).toEqual([{ value: 'run' }])
       expect(f.permissions[0]![1]).toEqual({ value: 'run' })
