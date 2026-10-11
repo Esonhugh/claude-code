@@ -1422,7 +1422,9 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 公开 `$.tool.check({tool, input})` 返回权限决定；`reason` 只在底层决定提供实际原因时出现。bypass 模式的允许结果是 `{decision:"allow"}`；匹配规则通过 `rule` 提供，不重复生成原因文字。空原因省略，ask／deny 保留实际审批或拒绝原因，权限查询仍不会执行工具或弹出审批。
 
-运行 `bun test ./src/services/mods/toolCheckReason.test.ts` 验证公开 host 的决定、规则、原因和安全检查。完整 hook 来源、递归规则及最新事件字段仍按 `mods-test.md` 分批验收。
+`tool.check` hook 的 `next(e)` 还会返回权限来源：`rule` 保留设置中的规则原文，嵌套子命令按最终裁决寻找首条匹配规则；allow／ask 可回退到实际命中的 ask 规则，deny 不借用该规则。真实工具调用经过经典 Hook 时，`hook` 为 `PreToolUse`、`PermissionRequest` 等事件名；在经典 PreToolUse 的 ask 限制下产生的裁决也保留该来源。公开 `$.tool.check` 查询本身不运行经典 Hook，因此 core 的查询回执不带 `hook`。
+
+运行 `bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts` 验证公开 host、经典 Hook 生产路径、嵌套规则与来源字段。固定官方 2.1.292 的 allow／ask／deny／规则真实 CLI 场景已核对 `decision/rule/hook`；经典拒绝原因的错误前缀、作者 `$.tool.call` 的内部 ref 和拒绝回执仍有差异，完整工具契约继续验收。
 
 ### Mod 子任务的完成通知
 
