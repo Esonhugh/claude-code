@@ -6,7 +6,7 @@ __pycache__/
 /embedded-cli.js
 /embedded-sharp.js
 
-official-claude
+/official-claude*
 built-claude
 .claude-test-evidence/
 
