@@ -4,6 +4,7 @@
 
 import { Buffer } from 'buffer'
 import { env } from '../../utils/env.js'
+import { truncateUtf8Bytes } from '../../tools/TerminalTool/compressReadOutput.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
@@ -456,19 +457,47 @@ export const CLEAR_ITERM2_PROGRESS = `${OSC_PREFIX}${OSC.ITERM2};${ITERM2.PROGRE
  */
 export const CLEAR_TERMINAL_TITLE = `${OSC_PREFIX}${OSC.SET_TITLE_AND_ICON};${BEL}`
 
-export type ProgramStatus =
-  | { state: 'idle' | 'working' | 'done' | 'error' }
-  | { state: 'blocked'; kind: 'permission' | 'question' | 'auth' }
-
-// A process-owned record avoids replacing or clearing other programs' records.
-const PROGRAM_STATUS_ID = `claude-code-${process.pid}`
-
-export function programStatus(status: ProgramStatus): string {
-  const kind = status.state === 'blocked' ? `:kind=${status.kind}` : ''
-  return `${OSC_PREFIX}${OSC.PROGRAM_STATUS};state=${status.state}:id=${PROGRAM_STATUS_ID}:app=claude-code${kind}${ST}`
+export type ProgramStatus = {
+  state: 'idle' | 'working' | 'blocked' | 'done' | 'error'
+  kind?: 'permission' | 'question' | 'auth'
+  progress?: number
+  title?: string
+  msg?: string
+  /** Omitted for the root record; normalize child ids with programStatusId. */
+  id?: string
 }
 
-export const CLEAR_PROGRAM_STATUS = `${OSC_PREFIX}${OSC.PROGRAM_STATUS};state=clear:id=${PROGRAM_STATUS_ID}${ST}`
+// eslint-disable-next-line no-control-regex
+const PROGRAM_STATUS_CONTROL = /[\x00-\x1F\x7F-\x9F]/g
+
+export function programStatusId(raw: string): string | undefined {
+  const id = raw.replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 32)
+  return id.length > 0 ? id : undefined
+}
+
+function programStatusText(text: string, maxBytes: number): string {
+  return Buffer.from(truncateUtf8Bytes(text.replace(PROGRAM_STATUS_CONTROL, ' '), maxBytes)).toString('base64')
+}
+
+export function programStatus(status: ProgramStatus): string {
+  const fields = [`state=${status.state}`, 'app=claude-code']
+  if (status.id !== undefined) fields.push(`id=${status.id}`)
+  if (status.state === 'blocked' && status.kind) fields.push(`kind=${status.kind}`)
+  if ((status.state === 'working' || status.state === 'blocked') &&
+      status.progress !== undefined && Number.isFinite(status.progress)) {
+    fields.push(`progress=${Math.min(100, Math.max(0, Math.round(status.progress)))}`)
+  }
+  if (status.title) fields.push(`title=${programStatusText(status.title, 192)}`)
+  if (status.msg) fields.push(`msg=${programStatusText(status.msg, 2048)}`)
+  return osc(OSC.PROGRAM_STATUS, fields.join(':'))
+}
+
+/** Global exit clear always uses BEL, including on kitty. */
+export const CLEAR_ALL_PROGRAM_STATUS = `${OSC_PREFIX}${OSC.PROGRAM_STATUS};state=clear${BEL}`
+
+export function clearProgramStatus(id: string): string {
+  return osc(OSC.PROGRAM_STATUS, `state=clear:id=${id}`)
+}
 
 /** Clear all three OSC 21337 tab-status fields. Used on exit. */
 export const CLEAR_TAB_STATUS = osc(

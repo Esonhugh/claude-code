@@ -1,6 +1,6 @@
 import { useContext, useEffect } from 'react'
 import {
-  CLEAR_PROGRAM_STATUS,
+  CLEAR_ALL_PROGRAM_STATUS,
   programStatus,
   type ProgramStatus,
   wrapForMultiplexer,
@@ -18,6 +18,6 @@ export function useProgramStatus(status: ProgramStatus): void {
 
   useEffect(() => {
     if (!terminal?.isTTY) return
-    return () => terminal.write(wrapForMultiplexer(CLEAR_PROGRAM_STATUS))
+    return () => terminal.write(wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
   }, [terminal])
 }

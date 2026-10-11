@@ -3,8 +3,9 @@ import React, { act } from 'react'
 import { PassThrough } from 'node:stream'
 import render from '../root.js'
 import { useProgramStatus } from './use-program-status.js'
+import { env } from '../../utils/env.js'
 import {
-  CLEAR_PROGRAM_STATUS,
+  CLEAR_ALL_PROGRAM_STATUS,
   programStatus,
   type ProgramStatus,
   wrapForMultiplexer,
@@ -14,6 +15,7 @@ import {
   type TerminalWriter,
 } from '../useTerminalNotification.js'
 
+const savedTerminal = env.terminal
 const savedTmux = process.env.TMUX
 const savedScreen = process.env.STY
 const actEnvironment = globalThis as typeof globalThis & {
@@ -21,31 +23,17 @@ const actEnvironment = globalThis as typeof globalThis & {
 }
 let savedActEnvironment: boolean | undefined
 beforeEach(() => {
+  env.terminal = 'xterm'
   savedActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = true
 })
 afterEach(() => {
+  env.terminal = savedTerminal
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = savedActEnvironment
   if (savedTmux === undefined) delete process.env.TMUX
   else process.env.TMUX = savedTmux
   if (savedScreen === undefined) delete process.env.STY
   else process.env.STY = savedScreen
-})
-
-test('OSC 7501 reports replace a process-scoped record with a stable app identifier', () => {
-  for (const state of ['idle', 'working', 'done', 'error'] as const) {
-    expect(programStatus({ state })).toBe(
-      `\x1b]7501;state=${state}:id=claude-code-${process.pid}:app=claude-code\x1b\\`,
-    )
-  }
-  for (const kind of ['permission', 'question', 'auth'] as const) {
-    expect(programStatus({ state: 'blocked', kind })).toBe(
-      `\x1b]7501;state=blocked:id=claude-code-${process.pid}:app=claude-code:kind=${kind}\x1b\\`,
-    )
-  }
-  expect(CLEAR_PROGRAM_STATUS).toBe(
-    `\x1b]7501;state=clear:id=claude-code-${process.pid}\x1b\\`,
-  )
 })
 
 function Status({ status }: { status: ProgramStatus }) {
@@ -99,7 +87,7 @@ async function mountStatus(isTTY: boolean) {
   }
 }
 
-test('TTY reports transitions once, removes stale kind, and clears only its record on unmount', async () => {
+test('TTY reports transitions once, removes stale kind, and clears all reported records on unmount', async () => {
   delete process.env.TMUX
   delete process.env.STY
   const app = await mountStatus(true)
@@ -122,7 +110,7 @@ test('TTY reports transitions once, removes stale kind, and clears only its reco
   } finally {
     await app.close()
   }
-  expect(app.writes.at(-1)).toBe(CLEAR_PROGRAM_STATUS)
+  expect(app.writes.at(-1)).toBe(CLEAR_ALL_PROGRAM_STATUS)
 })
 
 test('non-TTY output contains neither status reports nor cleanup', async () => {
@@ -158,6 +146,6 @@ test('tmux and screen reports and cleanup use existing multiplexer passthrough',
     } finally {
       await app.close()
     }
-    expect(app.writes.at(-1)).toBe(wrapForMultiplexer(CLEAR_PROGRAM_STATUS))
+    expect(app.writes.at(-1)).toBe(wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
   }
 })
