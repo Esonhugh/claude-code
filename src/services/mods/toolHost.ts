@@ -109,8 +109,13 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       abort()
       try {
         abortController.signal.throwIfAborted()
-        let result: ToolCallResult | undefined
-        let coreResult: ToolCallResult | undefined
+        const started = Date.now()
+        logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${tool.name} inputKeys=${Object.keys(args).join(',')}`)
+        let found = false
+        let result: unknown
+        let text = ''
+        let isError = false
+        let denied = false
         for await (const update of runToolUse(block, assistant, canUseTool, {
           ...context,
           options: { ...context.options, tools },
@@ -119,32 +124,31 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
           modSpawnedBy: spawnedBy,
           messages: consent === undefined ? [...context.messages] : [...context.messages, createUserMessage({ content: consent as string })],
           modsSnapshot: snapshot,
-          modToolCallResult: value => { result = value },
+          // Keep the author execution wrapper, but project its final messages.
+          modToolCallResult: () => {},
         })) {
           abortController.signal.throwIfAborted()
           const message = update.message
           if (message.type === 'user' && Array.isArray(message.message.content)) {
             for (const item of message.message.content) {
               if (item.type !== 'tool_result' || item.tool_use_id !== block.id) continue
-              coreResult = {
-                ref: 1,
-                result: message.toolUseResult,
-                text: typeof item.content === 'string' ? item.content :
-                  Array.isArray(item.content) ? item.content.filter(part => part.type === 'text').map(part => part.text).join('\n') : '',
-                ...(item.is_error ? { isError: true } : {}),
-              }
+              found = true
+              text = typeof item.content === 'string' ? item.content :
+                Array.isArray(item.content) ? item.content.filter(part => part.type === 'text').map(part => part.text).join('\n') : ''
+              isError = item.is_error === true
+              denied = message.toolDenialKind !== undefined
             }
+            if (message.toolUseResult !== undefined && result === undefined)
+              result = message.toolUseResult
           }
         }
         abortController.signal.throwIfAborted()
-        // Managed Pre vetoes and executor catch paths can finish before dispatch.
-        result = coreResult?.isError && result?.deny === undefined && !result?.isError
-          ? coreResult : result ?? coreResult
-        if (!result) throw new Error('tool.call produced no result')
-        // The public author operation strips this engine observation. Hooks
-        // beneath it still see the marker on their next(e) receipt.
-        const { isReadOnly: _readOnly, ...authorResult } = result
-        return authorResult
+        if (!found) throw new Error('tool.call produced no result')
+        logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${tool.name} outcome=${denied ? 'deny' : isError ? 'error' : 'result'} characters=${text.length} durationMs=${Date.now() - started}`)
+        // Official author calls expose the final tool message. References,
+        // read-only observations and model-only reminders stay in middleware.
+        if (denied) return { deny: text.replace(/^<tool_use_error>|<\/tool_use_error>$/g, '') }
+        return { result, text, ...(isError ? { isError: true as const } : {}) }
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }

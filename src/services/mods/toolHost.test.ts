@@ -23,6 +23,7 @@ import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPur
 import { AgentTool } from '../../tools/AgentTool/AgentTool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { resetHooksConfigSnapshot } from '../../utils/hooks/hooksConfigSnapshot.js'
 
 const originalSettings = getSessionSettingsCache()
 setSessionSettingsCache({ settings: {}, errors: [] })
@@ -303,7 +304,7 @@ describe('author tool host through the real executor', () => {
     expect(f.calls[0]!.context.modSpawnedBy).toBe('author')
     expect(f.permissions).toHaveLength(1)
     expect(f.mapped).toEqual([{ value: 'real' }])
-    expect(result).toEqual({ ref: 1, result: { value: 'real' }, text: 'mapped:real' })
+    expect(result).toEqual({ result: { value: 'real' }, text: 'mapped:real' })
   })
 
   test('drops caller IDs and consent from args, creating independent main-loop calls with a human turn', async () => {
@@ -345,7 +346,7 @@ describe('author tool host through the real executor', () => {
     expect(await denied.host.call({ tool: denied.tool.name, value: 'x' }, denied.snapshot, new AbortController().signal)).toEqual({ deny: 'No author call' })
     expect(denied.calls).toEqual([])
     const f = fixture([hook('tool.call', async () => ({ result: { value: 'synthetic' }, context: ['a'.repeat(100_001)] }))])
-    expect(await f.host.call({ tool: f.tool.name, value: 'x' }, f.snapshot, new AbortController().signal)).toEqual({ result: { value: 'synthetic' }, context: ['a'.repeat(100_001)] })
+    expect(await f.host.call({ tool: f.tool.name, value: 'x' }, f.snapshot, new AbortController().signal)).toEqual({ result: { value: 'synthetic' }, text: 'mapped:synthetic' })
     expect(f.mapped).toEqual([{ value: 'synthetic' }])
     expect(f.calls).toEqual([])
     const updates = await runModToolCall({
@@ -406,7 +407,7 @@ describe('author tool host through the real executor', () => {
     expect(order).toEqual(['pre', 'check'])
     expect(f.calls).toEqual([])
     expect(f.permissions).toEqual([])
-    expect(result).toMatchObject({ ref: 1, isError: true, text: 'Mod permission veto', result: 'Error: Mod permission veto' })
+    expect(result).toEqual({ deny: expect.stringContaining('Mod permission veto') })
   })
 
   test('does not leak the author result callback into actual tools and nested invocations', async () => {
@@ -425,7 +426,7 @@ describe('author tool host through the real executor', () => {
     }
     const managed = fixture([hook('tool.check', async () => ({ decision: 'allow' }))])
     managed.state.toolPermissionContext = { ...managed.state.toolPermissionContext, alwaysDenyRules: { policySettings: [managed.tool.name] } }
-    expect(await managed.host.call({ tool: managed.tool.name, value: 'run' }, managed.snapshot, new AbortController().signal)).toMatchObject({ isError: true })
+    expect(await managed.host.call({ tool: managed.tool.name, value: 'run' }, managed.snapshot, new AbortController().signal)).toEqual({ deny: 'Permission to use AuthorFixture has been denied.' })
     expect(managed.calls).toEqual([])
     expect(managed.permissions).toEqual([])
     const safety = fixture([hook('tool.check', async () => ({ decision: 'allow' }))])
@@ -450,7 +451,7 @@ describe('author tool host through the real executor', () => {
     expect(invalid.mapped).toEqual([{ value: 'run' }])
     const failed = fixture([hook('tool.call', (event, next) => next(event))])
     failed.tool.call = async () => { throw new Error('real failure') }
-    expect(await failed.host.call({ tool: failed.tool.name, value: 'run' }, failed.snapshot, new AbortController().signal)).toMatchObject({ ref: 1, isError: true, text: expect.stringContaining('real failure') })
+    expect(await failed.host.call({ tool: failed.tool.name, value: 'run' }, failed.snapshot, new AbortController().signal)).toMatchObject({ isError: true, text: expect.stringContaining('real failure') })
   })
 
   test('author callback sees managed-reviewed context, never the pre-review content', async () => {
@@ -465,14 +466,19 @@ describe('author tool host through the real executor', () => {
     expect(captured).toEqual({ result: { value: 'synthetic' }, context: ['reviewed'] })
   })
 
-  test('preserves failed core ref and hook context after repeated executions', async () => {
+  test('author receipts omit internal references and reminder context after repeated failures', async () => {
+    const refs: unknown[] = []
     const f = fixture([hook('tool.call', async (event, next) => {
-      await next(event)
+      refs.push(await next(event))
       const result = await next(event) as object
+      refs.push(result)
       return { ...result, context: ['Keep failure context'] }
     })])
     f.tool.call = async () => { throw new Error('twice failed') }
-    expect(await f.host.call({ tool: f.tool.name, value: 'run' }, f.snapshot, new AbortController().signal)).toMatchObject({ ref: 2, isError: true, context: ['Keep failure context'] })
+    const result = await f.host.call({ tool: f.tool.name, value: 'run' }, f.snapshot, new AbortController().signal)
+    expect(refs).toMatchObject([{ ref: 1, isError: true }, { ref: 2, isError: true }])
+    expect(result).toMatchObject({ isError: true, text: expect.stringContaining('twice failed') })
+    expect(Object.keys(result).sort()).toEqual(['isError', 'result', 'text'])
   })
 
   test('consumes a hook mutating next verdict without losing the core identity', async () => {
@@ -491,7 +497,7 @@ describe('author tool host through the real executor', () => {
     const f = fixture()
     f.tool.validateInput = async () => { throw new Error('validator failed') }
     const result = await f.host.call({ tool: f.tool.name, value: 'run' }, f.snapshot, new AbortController().signal)
-    expect(result).toMatchObject({ ref: 1, isError: true, result: expect.stringContaining('validator failed'), text: expect.stringContaining('validator failed') })
+    expect(result).toMatchObject({ isError: true, result: expect.stringContaining('validator failed'), text: expect.stringContaining('validator failed') })
     expect(f.calls).toEqual([])
   })
 
@@ -514,7 +520,7 @@ describe('author tool host through the real executor', () => {
       hook('tool.check', async () => ({ decision: 'allow' })),
     ])
     f.state.toolPermissionContext = { ...f.state.toolPermissionContext, alwaysDenyRules: { policySettings: [f.tool.name] } }
-    expect(await f.host.call({ tool: f.tool.name, value: 'x' }, f.snapshot, new AbortController().signal)).toMatchObject({ isError: true })
+    expect(await f.host.call({ tool: f.tool.name, value: 'x' }, f.snapshot, new AbortController().signal)).toEqual({ deny: 'Permission to use AuthorFixture has been denied.' })
     expect(f.calls).toEqual([])
   })
 
@@ -573,4 +579,62 @@ describe('author tool host through the real executor', () => {
     expect(f.permissions).toEqual([])
     expect(f.calls).toEqual([])
   })
+})
+
+
+// Official 2.1.292 author calls project the executor's final message; only
+// middleware next(e) receipts carry internal refs, read-only markers or context.
+test('public author receipts omit core references and model-only context', async () => {
+  let core: unknown
+  const f = fixture([hook('tool.call', async (event, next) => {
+    core = await next(event)
+    return { ...(core as object), context: ['model-only reminder'] }
+  })])
+  f.tool.isReadOnly = () => true
+  const result = await f.host.call({ tool: f.tool.name, value: 'read' }, f.snapshot, new AbortController().signal)
+  expect(core).toMatchObject({ ref: 1, isReadOnly: true, result: { value: 'read' }, text: 'mapped:read' })
+  expect(result).toEqual({ result: { value: 'read' }, text: 'mapped:read' })
+  expect(Object.keys(result).sort()).toEqual(['result', 'text'])
+})
+
+test('an actual tool error mentioning permission denial is still an error receipt', async () => {
+  const f = fixture()
+  f.tool.call = async () => { throw new Error('Permission denied by the external service') }
+  const result = await f.host.call({ tool: f.tool.name, value: 'error' }, f.snapshot, new AbortController().signal)
+  expect(result).toMatchObject({ isError: true, text: expect.stringContaining('Permission denied by the external service') })
+  expect(Object.keys(result).sort()).toEqual(['isError', 'result', 'text'])
+  expect(f.calls).toEqual([])
+})
+
+test('module refusal receipts remove only the model error wrapper', async () => {
+  const denial = '<tool_use_error>keep the nested text</tool_use_error>'
+  const f = fixture([hook('tool.call', async () => ({ deny: denial }))])
+  const result = await f.host.call({ tool: f.tool.name, value: 'denied' }, f.snapshot, new AbortController().signal)
+  expect(result).toEqual({ deny: denial })
+  expect(f.calls).toEqual([])
+})
+
+
+test('managed command PreToolUse refusal reaches the author before user dispatch', async () => {
+  let dispatched = 0
+  const f = fixture([hook('tool.call', async () => {
+    dispatched++
+    return { result: { value: 'must not bypass managed refusal' } }
+  })])
+  const output = { hookSpecificOutput: { hookEventName: 'PreToolUse',
+    permissionDecision: 'deny', permissionDecisionReason: 'Owned policy refusal' } }
+  setCachedSettingsForSource('policySettings', { hooks: { PreToolUse: [{ hooks: [{
+    type: 'command', command: `printf '%s' '${JSON.stringify(output)}'`,
+  }] }] } })
+  resetHooksConfigSnapshot()
+  try {
+    const result = await f.host.call({ tool: f.tool.name, value: 'blocked' }, f.snapshot, new AbortController().signal)
+    expect(result).toEqual({ deny: 'PreToolUse:AuthorFixture hook error: Owned policy refusal' })
+    expect(dispatched).toBe(0)
+    expect(f.calls).toEqual([])
+    expect(f.permissions).toEqual([])
+  } finally {
+    setCachedSettingsForSource('policySettings', {})
+    resetHooksConfigSnapshot()
+  }
 })

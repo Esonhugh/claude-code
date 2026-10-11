@@ -474,6 +474,7 @@ export function createUserMessage({
   isCompactSummary,
   summarizeMetadata,
   toolUseResult,
+  toolDenialKind,
   mcpMeta,
   uuid,
   timestamp,
@@ -488,6 +489,7 @@ export function createUserMessage({
   isVirtual?: true
   isCompactSummary?: true
   toolUseResult?: unknown // Matches tool's `Output` type
+  toolDenialKind?: UserMessage['toolDenialKind']
   /** MCP protocol metadata to pass through to SDK consumers (never sent to model) */
   mcpMeta?: {
     _meta?: Record<string, unknown>
@@ -523,6 +525,7 @@ export function createUserMessage({
     uuid: (uuid as UUID | undefined) || randomUUID(),
     timestamp: timestamp ?? new Date().toISOString(),
     toolUseResult,
+    toolDenialKind,
     mcpMeta,
     imagePasteIds,
     sourceToolAssistantUUID,

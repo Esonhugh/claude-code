@@ -126,6 +126,8 @@ export interface UserMessage {
     direction?: PartialCompactDirection
   }
   toolUseResult?: unknown
+  /** Explicit refusal metadata; ordinary execution failures do not set it. */
+  toolDenialKind?: 'permission-rule' | 'user-rejected'
   mcpMeta?: {
     _meta?: Record<string, unknown>
     structuredContent?: Record<string, unknown>

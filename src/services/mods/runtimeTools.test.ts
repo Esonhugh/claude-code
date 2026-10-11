@@ -82,7 +82,7 @@ test('Worker author tools reach sibling middleware, executor, mapper and permiss
   const snapshot = runtime.capture({toolHost:() => createModToolHost(context,async () => {dialogs++;return {behavior:'allow'}})})
   try {
     const result = await snapshot.dispatch('command.run',{},async () => ({})) as {text:string}
-    expect(JSON.parse(result.text)).toEqual({check:{decision:'ask',reason:'policy'},call:{ref:1,result:{value:'run sibling rewritten'},text:'{"value":"run sibling rewritten"}'},entries:1})
+    expect(JSON.parse(result.text)).toEqual({check:{decision:'ask',reason:'policy'},call:{result:{value:'run sibling rewritten'},text:'{"value":"run sibling rewritten"}'},entries:1})
     expect(calls).toEqual([{value:'run sibling rewritten'}])
     expect(dialogs).toBe(0)
     expect(diagnostics).toEqual([])
@@ -492,7 +492,7 @@ test('a registered tool with no answering hook fails through the real author exe
   const snapshot = runtime.capture({toolHost:()=>createModToolHost(context,async()=>({behavior:'allow'}))})
   try {
     const result = await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}
-    expect(JSON.parse(result.text)).toMatchObject({ref:1,isError:true,text:expect.stringContaining('must be answered by a Mods tool.call hook')})
+    expect(JSON.parse(result.text)).toMatchObject({isError:true,text:expect.stringContaining('must be answered by a Mods tool.call hook')})
     expect(diagnostics).toEqual([])
   } finally {snapshot.release()}
 })

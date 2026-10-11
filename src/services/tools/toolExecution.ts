@@ -619,6 +619,7 @@ function streamedCheckPermissionsAndCallTool(
     const before: MessageUpdateLazy[] = []
     let args = input
     let stopped: string | undefined
+    let deniedByHook = false
     for await (const result of runPreToolUseHooks(
       context,
       tool,
@@ -636,9 +637,10 @@ function streamedCheckPermissionsAndCallTool(
           stream.enqueue(result.message)
         else before.push(result.message)
       } else if (result.type === 'hookPermissionResult') {
-        if (result.hookPermissionResult.behavior === 'deny')
+        if (result.hookPermissionResult.behavior === 'deny') {
           stopped = result.hookPermissionResult.message
-        else if ('updatedInput' in result.hookPermissionResult)
+          deniedByHook = true
+        } else if ('updatedInput' in result.hookPermissionResult)
           args = result.hookPermissionResult.updatedInput ?? args
       } else if (result.type === 'hookUpdatedInput') args = result.updatedInput
       else if (result.type === 'stopReason') stopped = result.stopReason
@@ -657,6 +659,7 @@ function streamedCheckPermissionsAndCallTool(
               content: stopped,
             }],
             toolUseResult: `Error: ${stopped}`,
+            toolDenialKind: deniedByHook ? 'permission-rule' : undefined,
             sourceToolAssistantUUID: assistantMessage.uuid,
           }),
         },
@@ -1304,6 +1307,7 @@ async function checkPermissionsAndCallTool(
         content: messageContent,
         imagePasteIds: rejectImageIds,
         toolUseResult: `Error: ${errorMessage}`,
+        toolDenialKind: permissionDecision.behavior === 'ask' ? 'user-rejected' : 'permission-rule',
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     })
