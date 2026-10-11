@@ -1,4 +1,6 @@
-import type { ProgramStatus } from '../ink/termio/osc.js'
+import { programStatusId, type ProgramStatus } from '../ink/termio/osc.js'
+import type { TaskState } from '../tasks/types.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { EXIT_PLAN_MODE_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
 
@@ -133,4 +135,26 @@ export function programStatusBlockedText(input: {
 export function programStatusProgress(tasks: readonly { status: string }[] | undefined): number | undefined {
   if (!tasks?.length) return undefined
   return 100 * tasks.filter(task => task.status === 'completed').length / tasks.length
+}
+
+
+/** Official 2.1.296 Yyo/Jyo: sorted agent records, excluding inactive tasks. */
+export function selectChildProgramStatuses(tasks: Readonly<Record<string, TaskState>>): (ProgramStatus & { id: string })[] {
+  const children: (ProgramStatus & { id: string })[] = []
+  for (const task of Object.values(tasks)) {
+    if (task.type !== 'local_agent' && task.type !== 'remote_agent' && task.type !== 'in_process_teammate' && task.type !== 'local_workflow') continue
+    if (isTerminalTaskStatus(task.status)
+      || (task.type === 'in_process_teammate' && task.isIdle)
+      || (task.type === 'remote_agent' && task.isLongRunning)
+      || ('agentType' in task && task.agentType === 'main-session')) continue
+    const id = programStatusId(task.id)
+    if (id === undefined) continue
+    let state: ProgramStatus = { state: 'working' }
+    if (task.type === 'remote_agent' && task.ultraplanPhase === 'needs_input') state = { state: 'blocked', kind: 'question' }
+    else if (task.type === 'remote_agent' && task.ultraplanPhase === 'plan_ready') state = { state: 'blocked', kind: 'permission' }
+    // Local workflows encode a pause as pending + pausedAt, not a new TaskStatus.
+    else if (task.type === 'local_workflow' && task.status === 'pending' && task.pausedAt !== undefined) state = { state: 'blocked' }
+    children.push({ id, title: task.description, ...state })
+  }
+  return children.sort((a, b) => a.id.localeCompare(b.id)).slice(0, 32)
 }

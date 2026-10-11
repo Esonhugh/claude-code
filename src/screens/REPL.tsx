@@ -39,7 +39,7 @@ import {
   useTabStatus,
 } from '../ink.js'
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
-import { selectProgramStatus, programTurnEnd, programStatusAskText, programStatusBlockedText, programStatusProgress, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
+import { selectProgramStatus, programTurnEnd, programStatusAskText, programStatusBlockedText, programStatusProgress, selectChildProgramStatuses, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
@@ -1816,7 +1816,7 @@ export function REPL({
     lastTurnEnd: programTurn.end,
     signedInSinceLastTurn: programTurn.authVersion !== programAuthVersion,
   })
-  useProgramStatus(terminalProgramStatus)
+  useProgramStatus(terminalProgramStatus, selectChildProgramStatuses(tasks))
 
   // Register the leader's setToolUseConfirmQueue for in-process teammates
   useEffect(() => {
