@@ -277,7 +277,7 @@ import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cache
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
 import { getGlobExclusionsForPluginCache } from './utils/plugins/orphanedPluginFilter.js'
-import { getPluginSeedDirs, mergePluginDirectories, settlePluginDirsEnvironment } from './utils/plugins/pluginDirectories.js'
+import { filterNoMcpEnvironmentPluginDirectories, getPluginSeedDirs, mergePluginDirectories, settlePluginDirsEnvironment } from './utils/plugins/pluginDirectories.js'
 import { areSideloadFlagsDisabled, filterSideloadMcpServers, getSideloadFlagsError, getSideloadStartupError } from './utils/plugins/sideloadPolicy.js'
 import { countFilesRoundedRg } from './utils/ripgrep.js'
 import {
@@ -368,6 +368,7 @@ import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js'
 import { getStdinStream } from 'src/utils/stdin.js'
 import { captureLaunchInitialize } from './entrypoints/sdk/launchInitialize.js'
+import { createPluginDirNoMcpOption } from './cli/pluginOptions.js'
 import { setCwd } from 'src/utils/Shell.js'
 import {
   type ProcessedResume,
@@ -1239,7 +1240,14 @@ async function run(): Promise<CommanderCommand> {
     const initializedPlugins = launch?.kind === 'applied' ? launch : undefined
     logForDebugging(`[SDK] launch initialize=${launch?.kind ?? 'disabled'} plugins=${initializedPlugins?.pluginCount ?? 0}`)
     const pluginDir = thisCommand.getOptionValue('pluginDir')
-    const environmentPluginDirs = settlePluginDirsEnvironment()
+    const pluginDirNoMcp = thisCommand.getOptionValue('pluginDirNoMcp')
+    const pluginDirsNoMcp = mergePluginDirectories(
+      Array.isArray(pluginDirNoMcp) && pluginDirNoMcp.every(p => typeof p === 'string') ? pluginDirNoMcp : [],
+      initializedPlugins?.pluginDirsNoMcp ?? [],
+    )
+    const environmentPluginDirs = filterNoMcpEnvironmentPluginDirectories(
+      settlePluginDirsEnvironment(), pluginDirsNoMcp,
+    )
     const sideloadError = getSideloadStartupError(thisCommand.opts(), environmentPluginDirs, actionCommand.opts(), initializedPlugins?.pluginCount ?? 0)
     if (sideloadError) {
       process.stderr.write(`${sideloadError}\n`)
@@ -1257,10 +1265,9 @@ async function run(): Promise<CommanderCommand> {
         : 'preAction: --plugin-dir inline plugins')
     }
 
-    const pluginDirsNoMcp = initializedPlugins?.pluginDirsNoMcp ?? []
     if (pluginDirsNoMcp.length > 0) {
-      setInlinePluginsNoMcp(mergePluginDirectories(pluginDirsNoMcp))
-      clearPluginCache('preAction: initialize plugins without MCP discovery')
+      setInlinePluginsNoMcp(pluginDirsNoMcp)
+      clearPluginCache('preAction: session plugins without MCP discovery')
     }
 
     runMigrations()
@@ -1667,6 +1674,7 @@ async function run(): Promise<CommanderCommand> {
       (val: string, prev: string[]) => [...prev, val],
       [] as string[],
     )
+    .addOption(createPluginDirNoMcpOption())
     .option('--disable-slash-commands', 'Disable all skills', () => true)
     .option('--chrome', 'Enable Claude in Chrome integration')
     .option('--no-chrome', 'Disable Claude in Chrome integration')

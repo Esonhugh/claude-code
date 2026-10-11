@@ -146,6 +146,15 @@ export function mergePluginDirectories(...groups: ReadonlyArray<ReadonlyArray<st
   return [...paths.values()]
 }
 
+/** Explicit no-MCP sources suppress overlapping environment paths, not regular CLI/SDK paths. */
+export function filterNoMcpEnvironmentPluginDirectories(
+  paths: readonly string[],
+  noMcpPaths: readonly string[],
+): string[] {
+  const excluded = new Set(noMcpPaths.map(path => resolve(path)))
+  return paths.filter(path => !excluded.has(resolve(path)))
+}
+
 function sanitizePluginId(pluginId: string): string {
   const npmName = pluginId.slice(0, -4)
   if (pluginId.endsWith('@npm') && !npmName.includes('..') &&
