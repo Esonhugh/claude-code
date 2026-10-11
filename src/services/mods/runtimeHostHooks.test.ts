@@ -1,6 +1,6 @@
 import { afterEach, expect, mock, spyOn, test } from 'bun:test'
 import { createModsRuntime } from './runtime.js'
-import { seatNativeModPlugins } from './native.js'
+import { seatNativeModPlugins, SEC_DEFAULT_NAME } from './native.js'
 import type { ModDispatchHook } from './types.js'
 
 const runtimes: ReturnType<typeof createModsRuntime>[] = []
@@ -154,9 +154,9 @@ test('session rebind fences a pending trusted callback state write', async () =>
 test('trusted callback state uses runtime storage, its own owner and CAS', async () => {
   const value = runtime({testing:true})
   const ref = {plugin:'claude-code/testing',key:'count',id:'one'}
-  const foreign = {plugin:'sec-default',key:'count'}
+  const foreign = {plugin:SEC_DEFAULT_NAME,key:'count'}
   await value.reconcile(plugin(`export function register(on) {
-    on('classic.probe', async ($) => $.state.set({plugin:'sec-default',key:'count'}, 7));
+    on('classic.probe', async ($) => $.state.set({plugin:'${SEC_DEFAULT_NAME}',key:'count'}, 7));
   }`, ['state.set'], {state:{writes:[foreign]}}))
   await value.dispatch('classic.probe', {}, async () => ({}))
   value.registerHostCallback({tier:'core',registration:{id:1,event:'testing.state',hasCatch:false}}, async ($: any) => {
@@ -470,10 +470,10 @@ test('trusted stream callback nested work pauses budget and inherits abort', asy
 test('testing terminal preserves lifecycle and runtime-owned state and rendering', async () => {
   const diagnostics: unknown[] = []
   const value = runtime({ testing: true, onDiagnostic: event => diagnostics.push(event) })
-  const ref = { plugin: 'sec-default', key: 'count' }
+  const ref = { plugin: SEC_DEFAULT_NAME, key: 'count' }
   await value.reconcile(plugin(`export function register(on) {
     on('classic.probe', async ($) => {
-      const ref = {plugin:'sec-default',key:'count'};
+      const ref = {plugin:'${SEC_DEFAULT_NAME}',key:'count'};
       await $.state.set(ref, 7);
       await $.ui.invalidate('ui.render');
       return await $.state.get(ref);

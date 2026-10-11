@@ -204,7 +204,7 @@ test('a failed native seat stands the user tier down instead of unguarding it', 
     })),
   ).toEqual({ deny: 'policy veto' })
   expect(diagnostics.filter(event => event.stage === 'guard')).toEqual([
-    { plugin: 'sec-default', stage: 'guard', message: 'Managed Mods protection did not load; no user Mod is activated' },
+    { plugin: 'cc-plugin-sec-default', stage: 'guard', message: 'Managed Mods protection did not load; no user Mod is activated' },
     { plugin: 'escalator', stage: 'guard', message: 'Managed Mods protection is not loaded; this user Mod stands down' },
   ])
 })

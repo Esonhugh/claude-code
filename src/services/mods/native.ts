@@ -3,7 +3,14 @@ import type { PrepareModPluginsSettings } from './plugins.js'
 import type { ModPluginInput } from './runtime.js'
 import type { ModDeclaration } from './types.js'
 
-export const SEC_DEFAULT_ID = 'sec-default@builtin'
+export const SEC_DEFAULT_NAME = 'cc-plugin-sec-default'
+export const SEC_DEFAULT_ID = `${SEC_DEFAULT_NAME}@builtin`
+
+/** Official 2.1.292 still reads the pre-rename settings alias. */
+export function isSecDefaultId(id: string): boolean {
+  const folded = id.normalize('NFC').toLowerCase()
+  return folded === SEC_DEFAULT_ID || folded === 'sec-default@builtin'
+}
 
 // Local implementation of the supported sec-default event contracts. This is
 // embedded source, not an installed plugin path, so packaged hosts own its code.
@@ -74,7 +81,7 @@ const events = [
 ]
 const entry = 'builtin:sec-default/register.js'
 const builtin: ModDeclaration = {
-  name: 'sec-default',
+  name: SEC_DEFAULT_NAME,
   storageId: SEC_DEFAULT_ID,
   isNative: true,
   pluginRoot: 'builtin:sec-default',
@@ -102,7 +109,7 @@ function nativePrependList(settings: PrepareModPluginsSettings): string[] | unde
     ? settings.policySettings?.prependPlugins
     : settings.policyPluginOrdering?.prependPlugins
   // Official 2.1.292 QV: a snapshot may add a seat after an admin tier omits it.
-  return list === undefined || list.includes(SEC_DEFAULT_ID)
+  return list === undefined || list.some(isSecDefaultId)
     ? list
     : settings.policySettings?.prependPlugins
 }
@@ -116,7 +123,7 @@ export function shouldSeatSecDefault(
       Object.keys(settings.policySettings).length > 0)
   const list = managed ? nativePrependList(settings) : undefined
   return list !== undefined
-    ? list.includes(SEC_DEFAULT_ID)
+    ? list.some(isSecDefaultId)
     : managed ||
         settings.subscriptionType === 'team' ||
         settings.subscriptionType === 'enterprise'
@@ -136,7 +143,7 @@ export function seatNativeModPlugins(
   const list = nativePrependList(settings)
   const declaration: ModDeclaration = {
     ...implementation,
-    name: 'sec-default',
+    name: SEC_DEFAULT_NAME,
     storageId: SEC_DEFAULT_ID,
     isNative: true,
     tier: 'prepend',
@@ -157,7 +164,7 @@ export function seatNativeModPlugins(
       : result.findIndex(candidate => {
           if (candidate.tier !== 'prepend') return true
           const index = list.indexOf(candidate.storageId)
-          return index === -1 || index > list.indexOf(SEC_DEFAULT_ID)
+          return index === -1 || index > list.findIndex(isSecDefaultId)
         })
   result.splice(position === -1 ? result.length : position, 0, input)
   return result

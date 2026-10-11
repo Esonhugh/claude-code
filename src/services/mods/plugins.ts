@@ -9,7 +9,7 @@ import type { ModDiagnostic, ModPluginInput } from './runtime.js'
 import {dependencyMatchesPlugin, qualifyDependency} from '../../utils/plugins/dependencyResolver.js'
 import type {ModTypeDependency} from './declarations.js'
 import type { ModOrigin } from './types.js'
-import { SEC_DEFAULT_ID, shouldSeatSecDefault } from './native.js'
+import { isSecDefaultId, SEC_DEFAULT_NAME, shouldSeatSecDefault } from './native.js'
 
 export type PrepareModPluginsSettings = {
   userSettings: SettingsJson | null
@@ -184,7 +184,7 @@ export function prepareModPlugins(
     if (entrypoints.length === 0) continue
 
     const storageId = getPluginStorageId(plugin)
-    if (shouldSeatSecDefault(settings) && (plugin.name === 'sec-default' || storageId === SEC_DEFAULT_ID)) {
+    if (shouldSeatSecDefault(settings) && (plugin.name === 'sec-default' || plugin.name === SEC_DEFAULT_NAME || isSecDefaultId(storageId))) {
       errors.push(diagnostic(plugin.name, 'native', 'sec-default is host-owned on this session; the external name collision is not loaded'))
       continue
     }
@@ -245,7 +245,7 @@ export function prepareModPlugins(
     (hasPolicy ? input.tier !== 'user' : policyEnabled?.[input.storageId] !== true)
   for (const [key, ids] of [['prependPlugins', prepend], ['appendPlugins', append]] as const) {
     for (const id of ids) {
-      if (key === 'prependPlugins' && id === SEC_DEFAULT_ID && shouldSeatSecDefault(settings)) continue
+      if (key === 'prependPlugins' && isSecDefaultId(id) && shouldSeatSecDefault(settings)) continue
       if (!inputs.some(input => input.storageId === id && eligible(input))) {
         errors.push(diagnostic('mods', 'ordering', `${key} names ${id}, which is not an enabled ${hasPolicy ? 'managed ' : ''}plugin with a hooks module; skipped`))
       }

@@ -225,7 +225,7 @@ describe('Mods CLI session host', () => {
           reconcile: async inputs => {
             loadedPlugins.push(
               inputs
-                .filter(input => input.name !== 'sec-default')
+                .filter(input => input.name !== 'cc-plugin-sec-default')
                 .map(input => ({ name: input.name, root: input.pluginRoot })),
             )
             await runtime.reconcile(inputs)
