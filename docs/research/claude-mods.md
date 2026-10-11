@@ -924,6 +924,14 @@ Worker 额外使用事件循环 ping/pong watchdog：未响应约 5 秒时终止
 
 本节自动化证据根：`/var/folders/4h/pgbsmxdx3wj12mb6mkj90gmh0000gp/T/claude-mods-repair-20260916.aHC2Z1mz`；关键索引为 `integration/author-target-contract-14.log`、`integration/fs-worker-cancel-red-10.log`、`integration/fs-worker-cancel-qualified-11.log`、`integration/official-target-types-08.log`、`integration/official-source-integrity-09.json` 和 `host-operations/official-interceptor-followup.txt`。这些中间测试不得与旧批次重复相加作为最终 unique test 数。
 
+### 15.4 官方289的真实turn生命周期（2026-10-05；源码专项）
+
+本轮参照固定官方2.1.289原始模块与完整内嵌声明，不用旧272/287结果推断新版native通过。main与agent登记由真实producer持有；内部model.fork即使获得新agentId，也不能自动成为turn或借用main登记。结束先释放登记再选择当前completion hooks；逻辑session变化、结束或卸载退役旧owner，共享Worker恢复epoch与此分开。
+
+ROOT迁入9路径，12实际文件分次526 pass/0 fail/4原skip、2725expect，types/lint0；canonical快照 `8ce0f406c2d3ee99c741c1e20a50e261385b8c91c473d2f65144b6d7257a9731`。真实QueryLoop、runAgent、两轮teammate及有界fork通过；complete调用使用fresh lease，实际query iterator关闭至done，避免其catch在return时yield错误帧而遗漏释放。原RED、14条旧fixture契约修订和官方关闭行为反证保留，详见根目录 `mods-test.md` 的PM1最终迁入节。
+
+这不是完整36入口或native验收。compact/settings hook_agent、普通父step fork、raw provider迟到finally与完整原样diff操作/物理效果仍缺；Privacy默认关闭保持。JS Mods共享Worker是官方机制，不能将每插件一个Worker作为自动兼容修复。重复broad pattern规则、焦点握手、GC/安装发布及其余公开方法继续分别验证。
+
 ## Sources
 
 - **[S1] 官方 Mods README，固定提交**：[定义、测试与 Early Access](https://github.com/anthropics/claude-code/blob/f96c3b49c4c8721685206aaab23609b2d399df4e/mods/README.md)
@@ -936,3 +944,27 @@ Worker 额外使用事件循环 ping/pong watchdog：未响应约 5 秒时终止
 - **[S8] 本轮下载产物的固定元数据**：[@anthropic-ai/claude-code-darwin-arm64/2.1.272](https://registry.npmjs.org/@anthropic-ai%2fclaude-code-darwin-arm64/2.1.272)
 
 第三方介绍仅用于发现讨论入口，未用作核心结论依据。报告未把讨论中的性能目标、未来计划或社区 bug 报告当作当前版本已验证事实。
+
+
+### 2026-10-05：ui.invalidate操作类型与插件缓存清理
+
+此前声明迁入后的ROOT源码为2845文件，`82fbe7716a51cb7fbbb2af555ccaab6c70422774e5da9d9b792bb47277ad0542`。独立6入口实际验证：声明七文件分次67 pass/0 fail/269 expect；插件P7子矩阵13/0/63（外层包装1/0/1）；全局TypeScript、lint和changelog exit0，30 releases/latest v2.1.280。结果 `/private/tmp/mods-align-m1scugg4/root-ui-invalidate-event-types-289-migration-r1/verification-r2.json` SHA `a4df07caaf486eef21b57704cc985f62afec89db6e5afff6b3cc3963aa78b468`；六自有PGID均退出，源与两保护binary不变。83私有封存记录逐SHA核验；未安装依赖、未build/提升版本/提交。当前结果不替代完整36入口或native。
+
+UI1正式AF01第一批新增实际RED：Input/Button/Select原3案0 pass/3 fail/5 filtered/15 expect，同test `7b36083e…`、source `6e2b7599…`、4.57s。唯一REPL onFocus AST及真实draw/layout/held commit均已通过，三案drawing2/revision3、DOM实际second、逻辑focusedElement absent、自身ui.focus receipt空；真正失败在first self-hook及committed landing屏障。raw输入/动作/caller详细断言未达到，不声称已验证拒绝或输入泄漏。原sandbox71仅初始化失败保留；同profile真实run自有86110已退出、source0漂移。日志 `/private/tmp/mods-align-m1scugg4/ui-autofocus-289-stage-r1/review/actual-first-drawn-r1/prepared-runs/02-first-drawn-escalated/log.txt`。AF原foundation保持原像，ROOT后续PL1两path及类型四path的偏差单列，不能整目录覆盖。
+
+公开void、hook包装回执、genericEngineCall和testingEngine方便方法分别核对；新operation表仅覆盖ui.invalidate，不代表完整Op类型已对齐。缓存清理A两path已迁入，B发布/C livepin及特殊平台仍未闭合。旧研究快照的判断保留，当前使用方法见README。
+
+
+UI1剩余同源原夹具的三组结果已核对：deny/withhold为0 pass/2 fail/12 expect，raw u真实进入second Input，作者change回执已到而自身focusCalls为0；rewrite两案0/2/8，own focus hook未进入，后续rewrite结果未达到。public caller原案0/1/3则是setup失败：作者写入autoFocus:false被构造函数拒绝，未进入公共调用。固定289构造源码及完整dts均只允许true或省略，单行省略false的夹具纠正与原断言分开保留；该纠正不算生产修复。三组自有92589/92981/93289已退出，45s总期限未触发，source6e2b7599前后零漂移。原件位于 ui-autofocus-289-stage-r1/review/actual-remaining-r1/prepared-runs/，不合并为八个已证明的产品缺陷。
+
+
+最新ROOT只再加入三个可维护GC测试文件，其他源码及共享binary不变：2848文件canonical `7b43f89e89c37c96b50d69a0f56b0e29236c445773118f48205f716616110591`。实际工作区复验原GC业务20 pass/0 fail/88 expect和原P7业务13/0/63；GC父20与P7父1的包装断言合计21/0/81，不能算额外业务case。全局TypeScript/lint/changelog均exit0，四自有PGID退出，源前后不变。结果 `/private/tmp/mods-align-m1scugg4/root-pl1-a20-maintainable-regression-289-migration-r1/verification-r1.json` SHA `bccbcbc10c2ee19846e902ccdbded8d82a66004195b9a3893eaea5a34bf143b5`；1278私有实际证据文件逐SHA核验，原20业务块a4448331字节与10s预算未变。Unix FIFO对照保留，Windows/WSL、B发布、C .in_use和完整36/native仍未通过。
+
+AF12只省略官方不允许的autoFocus:false后，独立实际1 pass/0 fail/22 expect，公共author/user来源、同插件sibling及nested当前registration排除、逻辑/DOM second和Enter动作均通过；七个automatic业务RED仍在。该次wrapper exit1：finally signal0被拒且未提前落child PID，exact childPID/PGID/exit/cleanup在恢复记录中均明确null；只读精确stage签名及pgrep无匹配，不能冒称精确资源审计全绿，也没有重跑抹掉异常。证据 ui-autofocus-289-stage-af12-r1/review/sealed-af12-corrected-r1/。
+
+RT7入口诊断仍为33/1/1between-error/58：同Worker第二load已发出错误响应并回复ping，但到退役前宿主连message.callback.entry也未出现；第一load及其他host正常。frontier缩至postMessage返回到宿主回调入口之间，不声称Bun根因、handler解绑或作者CPU culprit。原34/default5s/hard35s保留，owner26792及初始化26631已退出，sourceac196前后不变；临时日志仍只在私有副本，未迁ROOT。详见 rt7-host-message-diagnostic-execute-r1/report.md。
+
+
+### 2026-10-05：附件复核后的测试卫生修复
+
+声明测试规范化真实临时路径后16/0/126；重绘测试等待实际画面发布后38/0/461，含官方289完整声明检查。两处修复和示例八处void调用已迁入canonical f41d7dc8…；私有同源TypeScript及五文件lint通过。新版response的缺失方法数、文档大小和共享工作区范围需更正，旧快照全量数字不升级为当前结果；原正文与原失败保留，详见mods-test.md的T-1/T-2记录。
