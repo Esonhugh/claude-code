@@ -1788,6 +1788,36 @@ export const SDKSessionStateChangedMessageSchema = lazySchema(() =>
 )
 
 
+export const SDKActiveGoalMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('active_goal'),
+    value: z.object({
+      condition: z.string(),
+      iterations: z.number(),
+      set_at: z.number(),
+      tokens_at_start: z.number().optional(),
+      last_reason: z.string().optional(),
+    }).nullable(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKAutocompactStateMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('autocompact_state'),
+    value: z.object({
+      enabled: z.boolean(),
+      effective_window: z.number(),
+      threshold: z.number(),
+      enforced: z.boolean(),
+      source: z.enum(['env', 'settings', 'clientdata', 'experiment', 'model-default', 'unknown-model', 'auto']),
+    }),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
 export const SDKGoalStateChangedMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -1955,6 +1985,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKTaskProgressMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
     SDKGoalStateChangedMessageSchema(),
+    SDKActiveGoalMessageSchema(),
+    SDKAutocompactStateMessageSchema(),
     SDKFilesPersistedEventSchema(),
     SDKToolUseSummaryMessageSchema(),
     SDKRateLimitEventSchema(),

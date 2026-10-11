@@ -481,6 +481,32 @@ export type SDKSessionStateChangedMessage = {
   uuid: string
   session_id: string
 }
+export type SDKActiveGoalMessage = {
+  type: 'active_goal'
+  value: {
+    condition: string
+    iterations: number
+    set_at: number
+    tokens_at_start?: number
+    last_reason?: string
+  } | null
+  uuid: string
+  session_id: string
+}
+
+export type SDKAutocompactStateMessage = {
+  type: 'autocompact_state'
+  value: {
+    enabled: boolean
+    effective_window: number
+    threshold: number
+    enforced: boolean
+    source: 'env' | 'settings' | 'clientdata' | 'experiment' | 'model-default' | 'unknown-model' | 'auto'
+  }
+  uuid: string
+  session_id: string
+}
+
 export type SDKGoalStateChangedMessage = {
   type: 'system'
   subtype: 'goal_state_changed'
@@ -582,6 +608,8 @@ export type SDKMessage =
   | SDKTaskProgressMessage
   | SDKSessionStateChangedMessage
   | SDKGoalStateChangedMessage
+  | SDKActiveGoalMessage
+  | SDKAutocompactStateMessage
   | SDKFilesPersistedEvent
   | SDKToolUseSummaryMessage
   | SDKRateLimitEvent

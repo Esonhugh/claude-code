@@ -108,6 +108,8 @@ export type RemoteTaskProjection = {
 
 export type AppState = DeepImmutable<{
   settings: SettingsJson
+  /** Active compaction window; live settings changes do not overwrite this session choice. */
+  autoCompactWindow?: number
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
@@ -496,8 +498,10 @@ export function getDefaultAppState(): AppState {
       ? 'plan'
       : 'default'
 
+  const initialSettings = getInitialSettings()
   return {
-    settings: getInitialSettings(),
+    settings: initialSettings,
+    autoCompactWindow: initialSettings.autoCompactWindow,
     tasks: {},
     runningSubagents: 0,
     agentNameRegistry: new Map(),

@@ -148,3 +148,16 @@ export function notifySessionMetadataChanged(
 export function notifyPermissionModeChanged(mode: PermissionMode): void {
   permissionModeListener?.(mode)
 }
+
+
+const sessionInputsListeners = new Set<() => void>()
+
+/** Goal, model and settings changes share the headless stream's live snapshot. */
+export function subscribeSessionInputsChanged(listener: () => void): () => void {
+  sessionInputsListeners.add(listener)
+  return () => { sessionInputsListeners.delete(listener) }
+}
+
+export function notifySessionInputsChanged(): void {
+  for (const listener of sessionInputsListeners) listener()
+}

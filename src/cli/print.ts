@@ -1,3 +1,4 @@
+import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
@@ -984,6 +985,8 @@ export async function runHeadless(
           // @ts-ignore - recovered code
           message.subtype === 'post_turn_summary')
       ) &&
+      message.type !== 'active_goal' &&
+      message.type !== 'autocompact_state' &&
       message.type !== 'stream_event' &&
       message.type !== 'keep_alive' &&
       // @ts-ignore - recovered code
@@ -1329,6 +1332,24 @@ function runHeadlessStreaming(
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
+
+  const streamState = createSdkStreamState({
+    remote: Boolean(process.env.CLAUDE_CODE_REMOTE),
+    readInputs: () => ({
+      goal: getAppState().goalStatus,
+      model: activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
+      autoCompactWindow: getAppState().autoCompactWindow,
+    }),
+    enqueue: message => output.enqueue(message),
+    configurationReady: process.env.CLAUDE_CODE_REMOTE ? initializeGrowthBook() : Promise.resolve(),
+  })
+  const unregisterStreamStateCleanup = registerCleanup(async () => { streamState.dispose() })
+  async function finishOutput(): Promise<void> {
+    await streamState.ready
+    streamState.dispose()
+    unregisterStreamStateCleanup()
+    output.done()
+  }
 
   function injectModelSwitchBreadcrumbs(
     modelArg: string,
@@ -2060,6 +2081,7 @@ function runHeadlessStreaming(
       // into a single follow-up turn instead of N separate turns.
       const drainCommandQueue = async () => {
         while ((command = dequeue(isMainThread))) {
+          streamState.refresh()
           if (
             command.mode !== 'prompt' &&
             command.mode !== 'orphaned-permission' &&
@@ -2833,7 +2855,7 @@ function runHeadlessStreaming(
         unsubscribeCommandQueue()
         unregisterCommandQueueCleanup()
         statusListeners.delete(rateLimitListener)
-        output.done()
+        await finishOutput()
       }
     }
   }
@@ -3398,7 +3420,7 @@ function runHeadlessStreaming(
                     unsubscribeSkillChanges()
                     unsubscribeAuthStatus?.()
                     statusListeners.delete(rateLimitListener)
-                    output.done()
+                    await finishOutput()
                   }
                 }
               }
@@ -3431,6 +3453,7 @@ function runHeadlessStreaming(
           activeUserSpecifiedModel = model
           // @ts-ignore - recovered code
           setMainLoopModelOverride(model)
+          streamState.refresh()
           // @ts-ignore - recovered code
           notifySessionMetadataChanged({ model })
           // @ts-ignore - recovered code
@@ -4317,6 +4340,7 @@ function runHeadlessStreaming(
           const newModel = getMainLoopModel()
           if (newModel !== prevModel) {
             activeUserSpecifiedModel = newModel
+            streamState.refresh()
             // @ts-ignore - recovered code
             const modelArg = incoming.model ? String(incoming.model) : 'default'
             notifySessionMetadataChanged({ model: newModel })
@@ -4516,6 +4540,7 @@ function runHeadlessStreaming(
                       model === 'default' ? getDefaultMainLoopModel() : model
                     activeUserSpecifiedModel = resolved
                     setMainLoopModelOverride(resolved)
+                    streamState.refresh()
                   },
                   onSetMaxThinkingTokens(maxTokens) {
                     if (maxTokens === null) {
@@ -4741,7 +4766,7 @@ function runHeadlessStreaming(
       unsubscribeCommandQueue()
       unregisterCommandQueueCleanup()
       statusListeners.delete(rateLimitListener)
-      output.done()
+      await finishOutput()
     }
   })()
 

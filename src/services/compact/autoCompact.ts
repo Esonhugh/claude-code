@@ -1,3 +1,4 @@
+import type { SDKAutocompactStateMessage } from '../../entrypoints/agentSdkTypes.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { feature } from 'bun:bundle'
@@ -73,8 +74,10 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
 export function getAutoCompactThreshold(model: string): number {
-  const effectiveContextWindow = getEffectiveContextWindowSize(model)
+  return thresholdForWindow(getEffectiveContextWindowSize(model))
+}
 
+function thresholdForWindow(effectiveContextWindow: number): number {
   const autocompactThreshold =
     effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
 
@@ -91,6 +94,25 @@ export function getAutoCompactThreshold(model: string): number {
   }
 
   return autocompactThreshold
+}
+
+/** Official remote-stream projection; the threshold shares the engine calculation. */
+export function getAutoCompactState(
+  model: string,
+  settingsWindow: number | undefined,
+  reactiveCompact: boolean,
+): SDKAutocompactStateMessage['value'] {
+  const enabled = isAutoCompactEnabled()
+  const { source } = resolveContextWindow(model, settingsWindow)
+  const { window } = resolveContextWindow(model, enabled ? settingsWindow : undefined)
+  const effectiveWindow = window - Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+  return {
+    enabled,
+    effective_window: effectiveWindow,
+    threshold: thresholdForWindow(effectiveWindow),
+    enforced: !(reactiveCompact && source === 'auto'),
+    source,
+  }
 }
 
 export function calculateTokenWarningState(
