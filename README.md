@@ -549,6 +549,18 @@ Terminal task 详情会以 JSON 数组保留启动时的 `args`，并与 `comman
 
 `send-signal` 表达操作系统 signal；需要向前台程序发送键盘 `Ctrl+C` 时，应使用 `send-keys` 的 `CTRL_C`。
 
+### 终端程序状态（OSC 7501）
+
+交互式终端只有在启动探测确认支持 OSC 7501 后才会上报程序状态；未应答的终端不接收状态报告或退出清理。主记录使用协议 root，报告 `idle`、`working`、`blocked`、`done` 或 `error`，权限、问题和认证等待附带对应 `kind`。已完成回合的状态不会因焦点变化或普通按键消失；任务进度和后台任务子记录随真实状态更新，移除子记录及退出时清理终端记录。
+
+无需为支持该协议的终端额外配置。关闭终端标题和状态上报可使用：
+
+```bash
+CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1 ./built-claude
+```
+
+`CLAUDE_CODE_SESSION_KIND=bg` 同样关闭探测和上报。为匹配固定官方 2.1.296，等待提示的 `msg` 会包含完整 Bash 命令、文件路径或 URL；文字经过控制字符清理和 UTF-8 长度限制，Base64 是协议编码，不是脱敏。目前缺少官方回合结束摘要和活动文本的数据源，因此 `done` 的摘要 `msg`、`working` 的活动 `msg` 仍待接入。已验收的后台子记录不代表父子回合的完整时序已经等价。
+
 ### 调试日志
 
 使用 `--debug` 启用调试输出，可选 category filter；使用 `--debug-file` 将日志写入指定文件并隐式启用 debug mode：
@@ -635,7 +647,7 @@ Review $ARGUMENTS.
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
 - `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
 - `/reload-plugins`：应用 `/plugin manage` 中的安装、更新和启停变更，重新加载 plugin commands、skills、hooks、MCP 和 LSP；已安装插件使用本地安装缓存，不会因 reload 自动下载。
-- `/diff`：打开当前 Git working tree 的原生 diff。终端至少 110 列且没有可见 Mods dock 时使用右侧 sidebar，否则打开 dialog；sidebar 获得键盘所有权后可连续切换文件、进入详情，并在 resize、关闭和重新打开后保留一致的 selection/body identity。
+- `/diff`：由已加载且获准接管该命令的官方内置 diff Mod 处理；未接管时使用原生 Git diff。原生视图在终端至少 110 列且没有可见 Mods dock 时使用右侧 sidebar，否则打开 dialog。官方 Mod 的完整详情、刷新、滚动、关闭重开及终端/浏览器 Client 生命周期仍须完成验收。
 - `/workflows`：查看 Dynamic Workflow runs，不直接启动 workflow。
 - `/list-agents`（别名 `/peers`）：列出当前 messaging registry 中其他可发现的本地 Claude session。
 
@@ -647,7 +659,7 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 
 对齐目标包括官方 Mods 的函数、参数和回执、上下文传递、加载生命周期、作者测试及 UI 行为。除用户明确指定的 Privacy Mode 等差异外，现有本地行为不能自动视为例外。下文的未实现项是待完成工作；当前结果与分批修复顺序见 [兼容性清单](docs/research/mods-parity.md)，实际验收记录见 [mods-test.md](mods-test.md)。
 
-最新对照版本于2026-10-09通过[公开包登记处](https://registry.npmjs.org/@anthropic-ai/claude-code/latest)核实为官方 **2.1.295**。作者声明仍以 2.1.292 完整声明体为基线，本批仅投影已实现且逐块核对的 2.1.295 Button children 定义；不表示其他新增 API 或全部 UI 已完成迁移。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+当前 Mods/API 批次固定以官方 **2.1.292** 为基准；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不改变其余 API 的基线，也不表示全部 UI 已完成迁移。作者声明以 2.1.292 完整声明体为基础，只投影已核对的 2.1.295 Button children 定义。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 `Button` 可以持有字符串和嵌套 `Text` children，整段仍是一个可点击控件和一个焦点位置。例如在 `ui.render` 中使用 `const {Button, Text} = $.ui.resolve(event)`，返回 `Button({key:'save', label:'Save', children:['Save ', Text({dimColor:true, children:'2m'})], onPress:() => {}})`。`label` 是无 children 显示能力的 surface 使用的名称；仅单字符串 child 的旧写法继续默认以 label 为 key。其他元素会被拒绝；复合 children 应给出稳定 key。终端鼠标沿用官方的挂载后 300ms 点击稳定期和窗口激活处理，Enter/Space 不等待此稳定期。已接受的 press 绑定原 guest handle，重绘期间只要仍有 drawing 持有它就可继续；新 Button 即使复用 key 或函数也不能接管旧 guest。
 
@@ -685,6 +697,8 @@ export const register: Register = on => {
 ./built-claude plugin test /absolute/path/to/my-mod
 ```
 
+`plugin validate` 静态扫描 hook 模块，不执行模块的顶层代码。`hooks:` 按注册顺序列出每个事件及 matcher，重复事件的不同 matcher 分别保留；`calls:` 列出能力调用，仅在该能力没有直接调用时补充已排序的 helper 来源，例如 `$.fs.read (via alpha, zebra)`。matcher 中的正则、列表和嵌套字段保留结构；无法静态确定的值显示 `?`，诊断字符串进行转义并限制长度。这些输出已与固定官方 2.1.292 的七个真实 CLI 场景对照；gating-hook 警告及其他诊断尚未纳入本项兼容结论。回归入口为 `bun test ./src/services/mods/validateDescriptions.test.ts ./src/cli/handlers/plugins.validate.test.ts`。插件目录与 manifest 字段参考 [Anthropic plugin manifest reference](https://code.claude.com/docs/en/plugins-reference)。
+
 作者主声明采用官方 2.1.292 原生制品内的完整声明体作为基线：565 个主模块导出、51 个 testing 导出，以及完整事件、操作和全局定义。仅 ButtonProps 与 RenderElement 的 Button 分支追加固定 2.1.295 制品核对过的 children 定义；基线、增量和片段摘要均在生成前校验，文件头明确两者来源。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
 
 新增的 `PromptAutocompleteInput/Result/Suggestion`、`ModelTextBlock/ModelCompleteInput`、`AgentSpawnInput.workflow` 和 `HookFailure` 重入定义均来自官方原文。它们的运行时生产、分发和上下文仍须按功能验收；声明增量的历史差异见[声明专项](docs/research/mods-declarations-292-20261007.md)，本批 prompt.autocomplete 的实际实现与有限验收见[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)，不能仅凭类型检查通过推断其他功能支持。
@@ -703,7 +717,17 @@ bun ./node_modules/typescript/bin/tsc -p /absolute/path/to/my-mod/tsconfig.json 
 
 旧本地别名 `CAS`、`HookEvent`、`EventPattern`、`Surface` 分别改用官方的 `StateSetOptions`、`EventName`、`Pattern`、`RenderSurface`；`!*` 不属于官方 pattern。testing 挂载使用对象参数，显式给出 `plugin`、`surface`、`component` 和该组件的完整 `props`。
 
-完整声明不代表所有运行时能力已经接入。当前仍缺 `ui.notice/ask`、`audio.play/speak`、`mcp.connect`、`session.compact/send/append`、`command.run`和 `telemetry.log/mark` 的生产方法；新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需要继续对齐。依赖契约的直接和间接类型根已接入，详见上文的作者项目生成规则。官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 与实际运行时支持范围应一起核对；2026-10-07 的提交、生命周期和双端协议复核见[实现审查](docs/research/mods-implementation-audit-20261007.md)。
+完整声明与可加载能力不等于全部运行时行为已兼容。声明中的官方方法不再仅因缺少本地实现而阻止整个 Mod 加载；尚不可用的方法会返回可捕获的 `$.noun.method is not available in this build` 错误，这类回执仍属于待实现项。
+
+| 能力 | 已提交行为与验收边界 |
+| --- | --- |
+| `ui.notice` / `ui.ask` | 已有生产入口；notice 放在 AskUserQuestion 对话框底部。单选、多选、自由输入、取消及多插件归属仍须分别验收。 |
+| `command.run` | 已修复 headless `turn.complete` 中等待命令队列造成的死锁及未结算回执；交互式和嵌套命令流程仍待完整对照。 |
+| `telemetry.log` / `telemetry.mark` | 公开调用经过 hook 链，内置插件执行发送门控；Privacy Mode 保留。剩余 matcher 与多插件归属继续验收。 |
+| `mcp.connect` / `session.send` | 已有宿主入口；完整连接和跨会话生命周期不能由类型检查或入口存在推断。 |
+| `audio.play` / `audio.speak` / `session.compact` / `session.append` | 尚有生产接线或交互生命周期缺口，未宣告完整实现。 |
+
+新增 `prompt.mention`、server-tool 记录及权限 ceiling 的宿主流程也需继续对齐。依赖契约的直接和间接类型根已接入，详见上文的作者项目生成规则。[Anthropic Mods reference](https://code.claude.com/docs/en/plugins/mods/reference) 说明接口与事件；版本冲突时以固定版本实际生成的声明及实测行为为准。历史生命周期审查见[实现审查](docs/research/mods-implementation-audit-20261007.md)。
 
 `$.process.spawn(request)` 已接通真实子进程与流式 middleware。它同步返回 `HookStream`，不是 Promise；request 仅有 argv/cwd/env/input。公开结果是 `{code,signal}`，hook 的 `next(e).result` 是 `{value:{code,signal}}` 或 `{deny}`：
 

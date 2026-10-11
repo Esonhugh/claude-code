@@ -20,13 +20,18 @@
 
 ### 版本状态
 
-- 未发布；汇总 2026-09-30 至 2026-10-10 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
+- 未发布；汇总 2026-09-30 至 2026-10-11 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
 
 ### 关联提交
 
 - 累计范围为 `v2.1.219..HEAD`；逐批提交与验证细节见[历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。
 
 ### 变更内容
+
+- Mods 作者诊断：`plugin validate` 保留 hook 注册顺序和各自 matcher，展示正则、列表、嵌套字段及可追踪常量；仅在没有直接调用时列出排序、去重后的 helper 来源，静态扫描不执行模块代码。固定官方 2.1.292 的七个 CLI 场景中 hooks/calls 输出一致；其他警告和诊断仍待对齐。
+- 终端状态：按固定官方 2.1.296 探测 OSC 7501，使用 root 主记录、状态/等待种类、任务进度及后台任务子记录；仅发送变化，删除和退出时清理。无应答、禁用终端标题及后台会话不发送报告。等待消息包含完整命令、路径或 URL，与官方一致；缺少数据源的活动文本和回合结束摘要仍待接入。
+- 远程 SDK：发送 `active_goal` 与 `autocompact_state`，同步目标、模型及活动压缩窗口变化并去重，切换 session 后失效旧快照，退出释放订阅；普通本地会话不发送这两类帧。已核对六个固定官方 2.1.292 初始化场景；窗口简写解析和 `set_model` 校验回执差异仍待修复。
+- Mods 修复：公开 telemetry 调用恢复经过 hook 链和内置发送门控；notice 对齐 AskUserQuestion 底部位置；headless `turn.complete` 的 `command.run` 不再等待被当前 hook 持有的队列。保留 Privacy Mode，完整交互及多插件生命周期继续验收。
 
 - 修复 Mods Pane 已显示但快捷键尚未登记、或重绘后仍指向旧 drawing 的时序窗口；action 在 layout commit 同步登记和释放，保留可核对动作/代次/准入状态的调试日志。
 
@@ -119,6 +124,10 @@
 - 原生验收对零写入观察新增原始 marker/全部 syscall 前缀证明和明确的 pre-layout 比较边界；实际输出事务与 resize 重叠继续拒收。专项修正官方 Button 点击后的键盘焦点前置，增加关闭位置往返；本地焦点差异及完整发布仍未通过。
 
 ### 测试覆盖
+
+- 作者诊断：7 项定向测试由失败转为通过，CLI 旧预期依据官方实测改为精确 matcher/helper 输出；隔离 `--changed` 门禁、六个相邻文件、类型、lint 与构建通过。只验收 hooks/calls 文本，不宣告全部 `plugin validate` 输出兼容。
+- OSC 7501：四个定向文件 43 项通过；真实 PTY 对照包含权限、提问、完成、错误、焦点/按键、关闭开关和退出清理。后台子记录 working/title/clear 已对照，父子根时序及缺少数据源的两类 msg 不计为已通过。
+- 远程 SDK 状态流：5 项定向测试、隔离提交门禁及六个官方 CLI 初始化场景通过。共享工作区仍有 Vim、声明等测试失败；隔离提交通过不等于整个工作区、完整 Mods/UI、diff、浏览器 Client 或发布通过。
 
 - Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、workflow、workflow-retry-partial-failure、workflow-failure-detail 均通过最终验收；其余失败为 builtin-mods、terminal-canonical-diff、terminal-interaction。整体仍未通过。 完整源码回归和默认验收入口通过，子测试执行数量及日志保留；共享 WIP 的私有合并回归另验，不冒充同一 binary source。原生帧关联、输入 owner、终端时序与完整 Mods 发布继续保持未通过。
 

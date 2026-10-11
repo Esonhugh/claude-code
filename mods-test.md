@@ -2,6 +2,19 @@
 
 > **历史验收账本：** 本文冻结各轮当时的源码、官方版本、binary hash、证据路径、失败和未覆盖结论，不是当前能力矩阵。当前用法与支持范围见 `README.md`；当前 compiled builtin 专项以 release gate 的 `builtin-mods` target 及其本轮 evidence 为准，后续成功不会改写这里的历史结果。
 
+
+当前交付状态只更新下表；后文是原始历史记录，不由本表改写。
+
+| 功能 | 已提交范围 | 尚未验收或待实现 |
+| --- | --- | --- |
+| 作者诊断 | `8717027`：固定 2.1.292 的七个 CLI hooks/calls 场景一致，7 项定向测试及隔离门禁通过 | gating-hook 警告、其他验证输出 |
+| OSC 7501 | `cdaa1a9..b9250b8`：探测、编码、状态、消息/进度、子记录、差量发送与清理；定向 43/0 | working 活动 msg、done 摘要 msg、父子完整根时序 |
+| 远程 SDK 状态 | `23606e3`：目标/自动压缩状态流；5 项测试及六个固定 2.1.292 CLI 初始化场景 | 简写窗口解析、set_model 校验、非空 goal 的真实 CLI 生命周期 |
+| Mods 与官方 diff | 官方 Mod 来源和接管已接入，作者 API/类型以固定 2.1.292 为基线，既有 Button/Pane/diff 专项保留固定 2.1.295 | 完整 diff 操作、终端和浏览器 Client 生命周期及全部 API 行为 |
+| 共享工作区 | 各功能按干净候选独立验收和提交 | 最新整树门禁仍失败，Vim/声明等失败见 SDK 原始收据；完整兼容与发布未通过 |
+
+本批原件保留在 `/tmp/claude-test/mods-validation-notes-292-d2ah5r8r/acceptance.json`；OSC 与 SDK 原件分别在 `/tmp/claude-test/psp-296-g8yris_p/final-receipt.json`、`/tmp/claude-test/mods-sdk-stream-state-292-85k0a7lz/acceptance.json`。这些是本机证据路径，清理后无法代替重新验收。使用方法与数据边界见 [README](README.md)。
+
 第 1–7 节保留首轮修复及验收历史；后续输入链、Workflow 和 SSH 长路径修复见第 8 节；Mods UI/UX 修复与限定验收见第 9 节；可复用测试 Mod 与官方原件调试见第 10 节；输入、Pane reopen 与 builtin 让位修复见第 11 节；2.1.287 作者 API 的检查测试方案见第 12 节。历史失败不会由后续成功覆盖。
 
 ## 1. 范围和判定规则
