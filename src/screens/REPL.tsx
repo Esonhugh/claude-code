@@ -39,7 +39,7 @@ import {
   useTabStatus,
 } from '../ink.js'
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
-import { selectProgramStatus } from './programStatus.js'
+import { selectProgramStatus, programTurnEnd, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
@@ -341,6 +341,7 @@ import {
   getMessagesAfterCompactBoundary,
   createUserMessage,
   createAssistantMessage,
+  getAssistantMessageText,
   createTurnDurationMessage,
   createAgentsKilledMessage,
   createApiMetricsMessage,
@@ -1781,17 +1782,31 @@ export function REPL({
     tabStatusGateEnabled && (getGlobalConfig().showStatusInTerminalTab ?? false)
   useTabStatus(titleDisabled || !showStatusInTerminalTab ? null : sessionStatus)
 
+  const programAuthVersion = useAppState(s => s.authVersion)
+  const [programTurn, setProgramTurn] = useState<{ end: ProgramTurnEnd; authVersion: number }>(
+    () => ({ end: null, authVersion: programAuthVersion }),
+  )
+  const recordProgramTurnEnd = useCallback((end: ProgramTurnEnd) => {
+    setProgramTurn({ end, authVersion: store.getState().authVersion })
+  }, [store])
+  const programBlockedOn: ProgramBlockedOn | undefined =
+    sandboxPermissionRequestQueue.length > 0 || workerSandboxPermissions.queue.length > 0 || pendingSandboxRequest
+      ? 'sandbox request'
+      : toolUseConfirmQueue[0] || pendingWorkerRequest
+        ? (toolUseConfirmQueue[0]?.tool.name ?? pendingWorkerRequest?.toolName) === ASK_USER_QUESTION_TOOL_NAME
+          ? 'input needed'
+          : toolUseConfirmQueue[0] ? 'permission prompt' : 'worker request'
+        : elicitation.queue.length > 0
+          ? 'input needed'
+          : promptQueue.length > 0 || (isShowingLocalJSXCommand && !(isLoading && streamMode === 'responding'))
+            ? 'dialog open'
+            : undefined
   const terminalProgramStatus = selectProgramStatus({
-    sandboxPending:
-      sandboxPermissionRequestQueue.length > 0 ||
-      workerSandboxPermissions.queue.length > 0 ||
-      Boolean(pendingSandboxRequest),
-    pendingTool: toolUseConfirmQueue[0]?.tool.name ?? pendingWorkerRequest?.toolName,
-    questionPending:
-      promptQueue.length > 0 ||
-      elicitation.queue.length > 0 ||
-      Boolean(isShowingLocalJSXCommand),
-    busy: isLoading,
+    busy: isLoading && programBlockedOn === undefined,
+    queued: queuedCommands.length > 0,
+    blockedOn: programBlockedOn,
+    lastTurnEnd: programTurn.end,
+    signedInSinceLastTurn: programTurn.authVersion !== programAuthVersion,
   })
   useProgramStatus(terminalProgramStatus)
 
@@ -1825,6 +1840,7 @@ export function REPL({
       const next =
         typeof action === 'function' ? action(messagesRef.current) : action
       messagesRef.current = next
+      if (next.length === 0) recordProgramTurnEnd(null)
       if (next.length < userInputBaselineRef.current) {
         // Shrank (compact/rewind/clear) — clamp so placeholderText's length
         // check can't go stale.
@@ -1849,7 +1865,7 @@ export function REPL({
       }
       rawSetMessages(next)
     },
-    [],
+    [recordProgramTurnEnd],
   )
   // Capture the baseline message count alongside the placeholder text so
   // the render can hide it once displayedMessages grows past the baseline.
@@ -3449,6 +3465,7 @@ export function REPL({
       proactiveModule?.pauseProactive()
     }
 
+    if (queryGuard.isActive) recordProgramTurnEnd('stopped')
     queryGuard.forceEnd()
     skipIdleCheckRef.current = false
 
@@ -4809,6 +4826,14 @@ export function REPL({
         // running→idle. Returns false if a newer query owns the guard
         // (cancel+resubmit race where the stale finally fires as a microtask).
         if (queryGuard.end(thisGeneration)) {
+          if (didQuery) {
+            const last = messagesRef.current.at(-1)
+            recordProgramTurnEnd(programTurnEnd(
+              abortController.signal.aborted,
+              last,
+              last?.type === 'assistant' ? getAssistantMessageText(last) ?? '' : '',
+            ))
+          }
           setLastQueryCompletionTime(Date.now())
           skipIdleCheckRef.current = false
           // Always reset loading state in finally - this ensures cleanup even

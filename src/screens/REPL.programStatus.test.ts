@@ -1,31 +1,63 @@
 import { expect, test } from 'bun:test'
-import { selectProgramStatus, type ProgramStatusInput } from './programStatus.js'
-import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
+import * as status from './programStatus.js'
 
-function status(input: Partial<ProgramStatusInput> = {}) {
-  return selectProgramStatus({ sandboxPending: false, questionPending: false, busy: false, ...input })
+function select(input: Partial<status.ProgramStatusInput> = {}) {
+  return status.selectProgramStatus({ busy: false, queued: false, lastTurnEnd: null, signedInSinceLastTurn: false, ...input })
 }
 
-test('REPL reports idle at prompt/completion/cancellation and working while loading', () => {
-  expect(status()).toEqual({ state: 'idle' })
-  expect(status({ busy: true })).toEqual({ state: 'working' })
-  expect(status({ busy: false })).toEqual({ state: 'idle' })
+test('initial and stopped turns are idle; busy and queued idle inputs are working', () => {
+  expect(select()).toEqual({ state: 'idle' })
+  expect(select({ lastTurnEnd: 'stopped' })).toEqual({ state: 'idle' })
+  expect(select({ busy: true })).toEqual({ state: 'working' })
+  expect(select({ queued: true })).toEqual({ state: 'working' })
 })
 
-test('sandbox and foreground or worker tools override working', () => {
-  for (const input of [{ sandboxPending: true }, { pendingTool: 'Bash' }]) {
-    expect(status({ ...input, busy: true })).toEqual({ state: 'blocked', kind: 'permission' })
-    expect(status(input)).toEqual({ state: 'blocked', kind: 'permission' })
+for (const [blockedOn, kind] of [
+  ['permission prompt', 'permission'], ['sandbox request', 'permission'],
+  ['worker request', 'permission'], ['goal proposal', 'permission'],
+  ['input needed', 'question'], ['dialog open', undefined],
+] as const) {
+  test(`${blockedOn} maps to ${kind ?? 'no kind'} even with queued input`, () => {
+    expect(select({ blockedOn, queued: true })).toEqual({ state: 'blocked', ...(kind ? { kind } : {}) })
+  })
+}
+
+test('busy has official priority; caller excludes blocked UI from busy', () => {
+  expect(select({ busy: true, blockedOn: 'permission prompt' })).toEqual({ state: 'working' })
+  expect(select({ busy: false, blockedOn: 'permission prompt' })).toEqual({ state: 'blocked', kind: 'permission' })
+})
+
+test('completed turns remain done across unrelated prompt renders', () => {
+  for (let render = 0; render < 3; render++) expect(select({ lastTurnEnd: 'completed' })).toEqual({ state: 'done' })
+  expect(select({ lastTurnEnd: 'completed', busy: true })).toEqual({ state: 'working' })
+})
+
+test('API errors report their complete text, including unclassified errors', () => {
+  for (const errorKind of [undefined, 'invalid_request', 'rate_limit']) {
+    expect(select({ lastTurnEnd: { errorKind, failure: 'API Error: 400 forced failure' } })).toEqual({ state: 'error', msg: 'API Error: 400 forced failure' })
   }
 })
 
-test('questions and dialogs report question rather than permission', () => {
-  for (const input of [{ pendingTool: ASK_USER_QUESTION_TOOL_NAME }, { questionPending: true }]) {
-    expect(status({ ...input, busy: true })).toEqual({ state: 'blocked', kind: 'question' })
-  }
+for (const errorKind of ['authentication_failed', 'oauth_org_not_allowed', 'cloud_credential_error']) {
+  test(`${errorKind} blocks until a successful login since that turn`, () => {
+    const lastTurnEnd = { errorKind, failure: 'Please log in' }
+    expect(select({ lastTurnEnd })).toEqual({ state: 'blocked', kind: 'auth', msg: 'Please log in' })
+    expect(select({ lastTurnEnd, signedInSinceLastTurn: true })).toEqual({ state: 'idle' })
+  })
+}
+
+test('turn completion classifies cancellation before API error, then success', () => {
+  const last = { type: 'assistant', isApiErrorMessage: true, error: 'invalid_request' }
+  expect(status.programTurnEnd(true, last, 'failure')).toBe('stopped')
+  expect(status.programTurnEnd(false, last, 'failure')).toEqual({ errorKind: 'invalid_request', failure: 'failure' })
+  expect(status.programTurnEnd(false, { type: 'assistant' })).toBe('completed')
+  expect(status.programTurnEnd(false)).toBe('completed')
+  expect(status.programTurnEnd(false, { ...last, error: { kind: 'authentication_failed' } }, 'failure')).toEqual({ errorKind: undefined, failure: 'failure' })
 })
 
-test('sandbox and foreground tool permissions take precedence over question queues', () => {
-  expect(status({ pendingTool: 'Bash', questionPending: true })).toEqual({ state: 'blocked', kind: 'permission' })
-  expect(status({ sandboxPending: true, pendingTool: ASK_USER_QUESTION_TOOL_NAME })).toEqual({ state: 'blocked', kind: 'permission' })
+test('terminal failure uses the first non-empty line and unwraps the local SDK error envelope', () => {
+  const last = { type: 'assistant', isApiErrorMessage: true, error: 'invalid_request' }
+  expect(status.programTurnEnd(false, last, 'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"forced failure"}}')).toEqual({ errorKind: 'invalid_request', failure: 'API Error: 400 forced failure' })
+  expect(status.programTurnEnd(false, last, '\n  first line  \nsecond line')).toEqual({ errorKind: 'invalid_request', failure: 'first line' })
+  expect(status.programTurnEnd(false, last, 'API Error: 400 {broken')).toEqual({ errorKind: 'invalid_request', failure: 'API Error: 400 {broken' })
 })
