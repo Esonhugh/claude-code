@@ -1424,9 +1424,9 @@ JSONL cost-state 和项目汇总保持官方 wire 字段，运行时元数据不
 
 `tool.check` hook 的 `next(e)` 还会返回权限来源：`rule` 保留设置中的规则原文，嵌套子命令按最终裁决寻找首条匹配规则；allow／ask 可回退到实际命中的 ask 规则，deny 不借用该规则。真实工具调用经过经典 Hook 时，`hook` 为 `PreToolUse`、`PermissionRequest` 等事件名；在经典 PreToolUse 的 ask 限制下产生的裁决也保留该来源。公开 `$.tool.check` 查询本身不运行经典 Hook，因此 core 的查询回执不带 `hook`。经典命令 Hook 的阻止消息使用 `PreToolUse:<工具名> hook error: <原因>` 格式，格式化后仍保留实际策略来源。
 
-作者 `$.tool.call({tool, ...args})` 返回最终工具消息的 `{result, text}`；普通工具执行失败带 `isError: true`，权限或插件拒绝返回 `{deny}`。错误文字即使包含“Permission denied”，也不会被误当成拒绝。合成结果同样通过工具 mapper 生成 `text`。`ref`、`isReadOnly` 和 model-only `context` 保留在 middleware 的 `next(e)` 回执中，作者公开调用不返回这些内部字段。
+作者 `$.tool.call({tool, ...args})` 返回最终工具消息的 `{result, text}`；普通工具执行失败带 `isError: true`，权限或插件拒绝返回 `{deny}`。错误文字即使包含“Permission denied”，也不会被误当成拒绝。合成结果同样通过工具 mapper 生成 `text`。`ref`、`isReadOnly` 和 model-only `context` 保留在 middleware 的 `next(e)` 回执中，作者公开调用不返回这些内部字段。 当前 session 不提供的工具会抛出 `HooksError`，消息为 `<插件名>: $.tool.call: no tool named "<工具名>" in this session`；`$.tool.check` 使用对应的方法名。错误中的插件名由宿主传入，不能通过工具参数改写。
 
-运行 `bun test ./src/services/mods/toolHost.test.ts`、`bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts` 验证作者入口、经典 Hook 生产路径、嵌套规则与来源字段。固定官方 2.1.292 的四个经典／权限场景回执一致；八个有效作者回执结构一致，其中六个完整回执一致。另两个插件拒绝场景的归因文字，以及独立的不可用工具错误仍有差异；取消、Agent 和完整工具契约继续独立验收。
+运行 `bun test ./src/services/mods/toolHost.test.ts`、`bun test ./src/services/mods/toolCheckReason.test.ts` 和 `bun test ./src/services/tools/toolHooks.test.ts` 验证作者入口、经典 Hook 生产路径、嵌套规则与来源字段。固定官方 2.1.292 的四个经典／权限场景回执一致；八个有效作者回执结构一致，其中六个完整回执一致。另两个插件拒绝场景的归因文字仍有差异；不可用工具的三项错误对照一致；取消、Agent 和完整工具契约继续独立验收。
 
 ### Mod 子任务的完成通知
 
