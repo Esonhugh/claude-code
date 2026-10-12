@@ -5,6 +5,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { getSubscriptionType } from './auth.js'
 import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
+import { logForDebugging } from './debug.js'
 import { getFirstPartyModelCacheKey } from './model/firstPartyModelCacheKey.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
@@ -40,6 +41,28 @@ function parseCompactionWindow(value: unknown): number | undefined {
     result > MAX_COMPACTION_WINDOW
   ) return undefined
   return Math.round(result)
+}
+
+// Official 2.1.292 ld/fDe: environment values use integer prefixes, not k/m units.
+function parseEnvironmentCompactionWindow(value: string): number | undefined {
+  const normalized = value.trim()
+  let parsed: number
+  if (normalized.length <= 32 && /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(normalized)) {
+    const scientific = Number(normalized)
+    parsed = Number.isInteger(scientific) ? scientific : NaN
+  } else if (normalized.length <= 32 && /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/.test(normalized)) {
+    parsed = parseInt(normalized.replace(/[_,\u00A0\u202F ]/g, ''), 10)
+  } else {
+    parsed = parseInt(normalized, 10)
+  }
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    logForDebugging(`CLAUDE_CODE_AUTO_COMPACT_WINDOW Invalid value "${value}" (using default: ${MIN_COMPACTION_WINDOW})`)
+    return undefined
+  }
+  if (parsed > MAX_COMPACTION_WINDOW) {
+    logForDebugging(`CLAUDE_CODE_AUTO_COMPACT_WINDOW Capped from ${parsed} to ${MAX_COMPACTION_WINDOW}`)
+  }
+  return Math.min(MAX_COMPACTION_WINDOW, Math.max(MIN_COMPACTION_WINDOW, parsed))
 }
 
 function selectCompactionWindow(value: unknown): number | undefined {
@@ -244,7 +267,7 @@ export function resolveContextWindow(
   const configuredWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
 
   if (configuredWindow) {
-    const parsed = parseCompactionWindow(configuredWindow)
+    const parsed = parseEnvironmentCompactionWindow(configuredWindow)
     if (parsed !== undefined) {
       return { window: Math.min(modelWindow, parsed), source: 'env' }
     }

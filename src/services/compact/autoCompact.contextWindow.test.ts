@@ -11,7 +11,7 @@ const getSettings = spyOn(settings, 'getInitialSettings').mockReturnValue({
 const api = await import('../api/claude.js')
 // This test isolates window selection from provider/model output limits.
 const maxOutput = spyOn(api, 'getMaxOutputTokensForModel').mockReturnValue(4096)
-const { getEffectiveContextWindowSize } = await import('./autoCompact.js')
+const { getEffectiveContextWindowSize, getAutoCompactThreshold } = await import('./autoCompact.js')
 
 const previousAutoCompactWindow =
   process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
@@ -33,6 +33,10 @@ afterAll(() => {
 test('uses the configured auto compact window in the production threshold', () => {
   expect(getEffectiveContextWindowSize('custom-model')).toBe(145_904)
 
-  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '180k'
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '180000'
   expect(getEffectiveContextWindowSize('custom-model')).toBe(175_904)
+  // Official environment parsing takes the integer prefix, then clamps to 100K.
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '180k'
+  expect(getEffectiveContextWindowSize('custom-model')).toBe(95_904)
+  expect(getAutoCompactThreshold('custom-model')).toBe(82_904)
 })

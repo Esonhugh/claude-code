@@ -134,32 +134,43 @@ test('unknown and legacy models keep their existing limits', () => {
   })
 })
 
+// Fixed 2.1.292 wE/fDe/ld: environment integers and numeric prefixes differ
+// from command/settings suffix parsing; grouped/scientific forms use ld.
+test.each([
+  ["200k", 100000, "env"],
+  ["200000", 200000, "env"],
+  ["123.456k", 100000, "env"],
+  ["123.456k trailing", 100000, "env"],
+  ["99999", 100000, "env"],
+  ["1000001", 1000000, "env"],
+  ["0", 150000, "settings"],
+  ["-2", 150000, "settings"],
+  ["auto", 150000, "settings"],
+  ["garbage", 150000, "settings"],
+  ["0x30", 150000, "settings"],
+  ["200_000", 200000, "env"],
+  ["200,000", 200000, "env"],
+  ["200 000", 200000, "env"],
+  ["200\u00a0000", 200000, "env"],
+  ["200\u202f000", 200000, "env"],
+  ["2e5", 200000, "env"],
+  ["2.5e5", 250000, "env"],
+  ["2e-1", 150000, "settings"],
+  ["1e999", 150000, "settings"],
+  ["9999999999999999999999999999999999999999", 1000000, "env"],
+  ["00300000", 300000, "env"],
+  ["+200000", 200000, "env"],
+  ["250000garbage", 250000, "env"],
+  ["150.9", 100000, "env"],
+  ["1.5m", 100000, "env"],
+  ["200,00", 100000, "env"],
+  ["1,000_000", 100000, "env"],
+] as const)('environment window %s matches official integer parsing', (value, window, source) => {
+  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = value
+  expect(resolveContextWindow('claude-sonnet-4-6[1m]', 150_000)).toEqual({ window, source })
+})
+
 test('context window resolver reports real compaction sources', () => {
-  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '123.456k'
-
-  expect(resolveContextWindow('custom-model', 150_000)).toEqual({
-    window: 123_456,
-    source: 'env',
-  })
-
-  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '123.456k trailing'
-  expect(resolveContextWindow('custom-model', 150_000)).toEqual({
-    window: 150_000,
-    source: 'settings',
-  })
-
-  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '99999'
-  expect(resolveContextWindow('custom-model', 150_000)).toEqual({
-    window: 150_000,
-    source: 'settings',
-  })
-
-  process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = '1000001'
-  expect(resolveContextWindow('custom-model')).toEqual({
-    window: 200_000,
-    source: 'auto',
-  })
-
   delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   expect(resolveContextWindow('custom-model', 150_000)).toEqual({
     window: 150_000,
