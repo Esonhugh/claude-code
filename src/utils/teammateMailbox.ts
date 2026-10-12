@@ -135,7 +135,7 @@ export async function writeToMailbox(
   recipientName: string,
   message: Omit<TeammateMessage, 'read'>,
   teamName?: string,
-): Promise<void> {
+): Promise<boolean> {
   await ensureInboxDir(teamName)
 
   const inboxPath = getInboxPath(recipientName, teamName)
@@ -156,7 +156,7 @@ export async function writeToMailbox(
         `[TeammateMailbox] writeToMailbox: failed to create inbox file: ${error}`,
       )
       logError(error)
-      return
+      return false
     }
   }
 
@@ -181,12 +181,17 @@ export async function writeToMailbox(
     logForDebugging(
       `[TeammateMailbox] Wrote message to ${recipientName}'s inbox from ${message.from}`,
     )
+    return true
   } catch (error) {
     logForDebugging(`Failed to write to inbox for ${recipientName}: ${error}`)
     logError(error)
+    return false
   } finally {
     if (release) {
-      await release()
+      await release().catch(error => {
+        logForDebugging(`Failed to release inbox lock for ${recipientName}: ${error}`)
+        logError(error)
+      })
     }
   }
 }
