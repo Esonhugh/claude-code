@@ -103,8 +103,9 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
     'modMcpConnections',
     'getModHttpServices',
     'createModCommandQueue',
+    'beginModSelectionRun',
     `with (scope) { ${js}; return extracted; }`,
-  )(scope, modMcpConnections, getModHttpServices, createModCommandQueue)
+  )(scope, modMcpConnections, getModHttpServices, createModCommandQueue, () => () => {})
   }
 }
 

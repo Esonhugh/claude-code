@@ -1,3 +1,5 @@
+import { findModSelectionRow } from '../services/mods/uiSelection.js'
+import type { SelectionState } from '../ink/selection.js'
 import type { RefObject } from 'react'
 import * as React from 'react'
 import {
@@ -60,6 +62,7 @@ const STICKY_TEXT_CAP = 500
  *  HERE (renderableMessages indices are only valid inside this component —
  *  Messages.tsx filters and reorders, REPL can't compute externally). */
 export type JumpHandle = {
+  rowHoldingSelection?: (selection: SelectionState) => string | undefined
   jumpToIndex: (i: number) => void
   setSearchQuery: (q: string) => void
   nextMatch: () => void
@@ -653,6 +656,18 @@ export function VirtualMessageList({
   useImperativeHandle(
     jumpRef,
     () => ({
+      rowHoldingSelection: selection => {
+        const viewport = scrollRef.current
+        if (!viewport) return undefined
+        return findModSelectionRow(selection, viewport, () => jumpState.current.messages.flatMap((message, index) => {
+          const node = jumpState.current.getItemElement(index)
+          if (!node || !message.uuid) return []
+          const block = message.type === 'assistant' || message.type === 'user' ? message.message.content[0] : undefined
+          const requestId = typeof block === 'object' && block !== null && block.type === 'tool_use' ? block.id
+            : typeof block === 'object' && block !== null && block.type === 'tool_result' ? block.tool_use_id : message.uuid
+          return [{requestId,node}]
+        }))
+      },
       // Non-search jump (sticky header click, etc). No scan, no positions.
       jumpToIndex: (i: number) => {
         const s = scrollRef.current

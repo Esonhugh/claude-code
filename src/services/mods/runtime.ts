@@ -9,6 +9,7 @@ import { createModUiAskRequest } from './uiAsk.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
+import type { ModUiSelection } from './uiSelection.js'
 import { officialCoreCalls } from './coreCalls.js'
 import type { ModWorkerFault } from './protocol.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
@@ -150,6 +151,7 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   builtinCommands?(): readonly Command[]
   presentation?(): CommandPresentation
   uiPresentation?(): ModUiPresentation
+  uiSelection?(): ModUiSelection | undefined
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
   uiStatus?(plugin: string, text: string | undefined): void
@@ -266,7 +268,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { ask: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notice: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notice: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -1137,7 +1139,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       case 'ui.notice': return { tool_use_id: args[0], text: args[1] }
       case 'ui.status': return { text: args[0] }
       case 'ui.invalidate': return { event: args[0] }
-      case 'ui.panes': return {}
+      case 'ui.selection': case 'ui.panes': return {}
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
       case 'session.version': return {}
       case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'session.messages': case 'prompt.read': {
@@ -1358,6 +1360,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           return await services.uiCopy({text, surface}, plugin, combined.signal)
         } finally { combined.cleanup() }
       }
+      case 'ui.selection': return services.uiSelection?.()
       case 'ui.panes': return ui.panes(owner)
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')

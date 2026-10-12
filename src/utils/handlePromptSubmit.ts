@@ -77,6 +77,7 @@ type BaseExecutionParams = {
     publicTurn?: { text: string },
   ) => Promise<void>
   setAppState: (updater: (prev: AppState) => AppState) => void
+  onInputRun?: () => (() => void)
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
   canUseTool?: CanUseToolFn
   skipLocalContext?: boolean
@@ -172,6 +173,7 @@ export async function handlePromptSubmit(
       canUseTool,
       onInputChange,
       skipLocalContext: params.skipLocalContext,
+      onInputRun: params.onInputRun,
     })
     return
   }
@@ -428,6 +430,7 @@ export async function handlePromptSubmit(
     canUseTool,
     onInputChange,
     skipLocalContext: params.skipLocalContext,
+    onInputRun: params.onInputRun,
   })
 }
 
@@ -467,6 +470,8 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
   function makeContext(): ProcessUserInputContext {
     return getToolUseContext(messages, [], abortController, mainLoopModel)
   }
+
+  const finishInputRun = params.onInputRun?.()
 
   // Wrap in try-finally so the guard is released even if processUserInput
   // throws or onQuery is skipped. onQuery's finally calls queryGuard.end(),
@@ -680,5 +685,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // turn's resetLoadingState. Harmless when onQuery ran: setMessages grew
     // displayedMessages past the baseline, so REPL.tsx already hid it.
     setUserInputOnProcessing(undefined)
+    finishInputRun?.()
   }
 }

@@ -2,7 +2,9 @@ import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { createModUiSelectionTracker } from '../services/mods/uiSelection.js'
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
+import inkInstances from '../ink/instances.js'
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
@@ -2006,6 +2008,15 @@ export function REPL({
   const diffOwned = React.useSyncExternalStore(subscribeDiffOwnership, getDiffOwnership)
   const diffOwnershipRef = useRef(getDiffOwnership)
   diffOwnershipRef.current = getDiffOwnership
+  const modSelectionTracker = useMemo(() => createModUiSelectionTracker(
+    () => inkInstances.get(process.stdout),
+    selection => jumpRef.current?.rowHoldingSelection?.(selection),
+  ), [])
+  useEffect(() => modSelectionTracker.connect(), [modSelectionTracker])
+  const beginModSelectionRun = useCallback(() => {
+    const run = modSelectionTracker.beginRun()
+    return () => modSelectionTracker.endRun(run)
+  }, [modSelectionTracker])
   const modMcpConnections = useMemo(() => createModMcpConnections({
     getState: store.getState, setState: setAppState,
     policyReason: () => strictMcpConfig ? 'This session runs with --strict-mcp-config, which connects no plugin servers.'
@@ -2015,6 +2026,7 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
+    uiSelection: () => modSelectionTracker.read(),
     uiCopy: async (input, plugin) => input.surface === 'terminal'
       ? copyModTerminalText(input.text, plugin) : {isCopied: false, reason: 'no-clipboard'},
     captureUsage: () => captureModSessionUsage({
@@ -2174,7 +2186,7 @@ export function REPL({
         key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
       })
     },
-  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modMcpConnections])
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections])
 
   useEffect(() => {
     if (!modsSession) return
@@ -5452,7 +5464,8 @@ export function REPL({
               })
             }
           }
-          await executeImmediateCommand().catch(restoreOnError)
+          const finishSelectionRun = beginModSelectionRun()
+          try { await executeImmediateCommand().catch(restoreOnError) } finally { finishSelectionRun() }
           return // Always return early - don't add to history or queue
         }
       }
@@ -5631,6 +5644,7 @@ export function REPL({
       if (!isRemoteExecutionSession) await awaitPendingHooks().catch(restoreOnError)
 
       await handlePromptSubmit({
+        onInputRun: beginModSelectionRun,
         input,
         helpers,
         queryGuard,
@@ -5705,6 +5719,7 @@ export function REPL({
       awaitPendingHooks,
       modsSession,
       awaitMods,
+      beginModSelectionRun,
       repinScroll,
     ],
   )
@@ -6099,6 +6114,7 @@ export function REPL({
   const executeQueuedInput = useCallback(
     async (queuedCommands: QueuedCommand[]) => {
       await handlePromptSubmit({
+        onInputRun: beginModSelectionRun,
         helpers: {
           setCursorOffset: () => {},
           clearBuffer: () => {},
@@ -6142,6 +6158,7 @@ export function REPL({
       setAppState,
       onBeforeQuery,
       isRemoteExecutionSession,
+      beginModSelectionRun,
     ],
   )
 
