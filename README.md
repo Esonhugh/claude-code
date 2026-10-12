@@ -2069,6 +2069,18 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 
 本项验收覆盖不存在和存在的命令省略 `args`、完整控制回执、移除及退出。缺失可执行文件的系统错误路径文案仍与官方有差异；完整 MCP、Mods 及 SDK 生命周期继续单独验收。
 
+### SDK MCP 定义来源
+
+查询当前服务器时发送：
+
+```jsonl
+{"type":"control_request","request_id":"mcp-status-1","request":{"subtype":"mcp_status"}}
+```
+
+`mcpServers[].source` 是可选字符串，表示服务器定义来自何处：SDK 宿主注册的服务器为 `sdk`，插件提供的服务器为 `plugin`，普通配置返回其配置范围（如 `user`、`project`、`local`、`dynamic`）。`scope` 与 `source` 分开：插件和 SDK 服务器可以同属 `dynamic` 范围。读取来源应使用 `source`；服务器名称只是配置键，不能据其名称判定来源。兼容旧 CLI 未返回该字段的状态对象。
+
+固定官方 2.1.292 的用户配置、动态配置、插件和 SDK 四种真实来源通过对照，schema 与 TypeScript 定义保留该字段。SDK 服务器的 `serverInfo` 仍有独立差异；运行时 mod 注册服务器及完整 MCP/SDK 生命周期继续单独验收。
+
 ### SDK 模型切换校验
 
 在 stream-json 会话中发送 `set_model`，并等待相同 `request_id` 的 `control_response`：
