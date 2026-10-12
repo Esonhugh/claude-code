@@ -520,6 +520,34 @@ test('tool-based 1h cache markers add the extended TTL beta', async () => {
   }
 })
 
+test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
+  const {createModModelComplete}=await import('../mods/modelAdapter.js')
+  const {EFFORT_BETA_HEADER}=await import('../../constants/betas.js')
+  process.env.CLAUDE_CODE_EFFORT_LEVEL='max'
+  const complete=createModModelComplete(undefined,()=> 'claude-sonnet-4-6',()=>64000)
+  expect((await complete({model:'sonnet',prompt:'test',effort})).isAnswered).toBe(true)
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.output_config).toMatchObject({effort})
+  expect(requestBetaHeaders[0]).toContain(EFFORT_BETA_HEADER)
+})
+
+test('Mods completion omits unsupported effort and preserves default side-query requests', async () => {
+  const {createModModelComplete}=await import('../mods/modelAdapter.js')
+  const complete=createModModelComplete(undefined,()=> 'claude-haiku-4-5',()=>64000)
+  await complete({model:'haiku',prompt:'test',effort:'max'})
+  await complete({model:'haiku',prompt:'test'})
+  expect(requests).toHaveLength(2)
+  expect(requests[0]).not.toHaveProperty('output_config')
+  expect(requests[1]).not.toHaveProperty('output_config')
+})
+
+test('side-query effort preserves structured output configuration', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  const format={type:'json_schema' as const,schema:{type:'object'}}
+  await sideQuery({model:'claude-sonnet-4-6',messages:[{role:'user',content:'test'}],effort:'low',output_format:format,querySource:'mods_model_complete'})
+  expect(requests[0]?.output_config).toEqual({format,effort:'low'})
+})
+
 test('side queries inspect only real cache_control markers for extended TTL', async () => {
   const state = await import('../../bootstrap/state.js')
   const { sideQuery } = await import('../../utils/sideQuery.js')

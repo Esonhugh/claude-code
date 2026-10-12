@@ -1,6 +1,10 @@
+import { getAssistantMessageFromError } from '../api/errors.js'
 import {afterEach,beforeEach, expect, test } from 'bun:test'
 import { APIError } from '@anthropic-ai/sdk'
-import { createModModelComplete, createModModelClassify } from './modelAdapter.js'
+import { createModModelComplete, createModModelClassify, createModModelFork } from './modelAdapter.js'
+import { createAssistantMessage, createAssistantAPIErrorMessage } from '../../utils/messages.js'
+import { EMPTY_USAGE } from '../api/emptyUsage.js'
+import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import {mkdtemp,realpath,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
 import {join} from 'node:path'
@@ -71,4 +75,37 @@ test('classifier rejects each structured failure and reserves undefined for answ
   }
   const classify = createModModelClassify(async () => ({isAnswered:true,text:'other',usage}), () => 'test')
   expect(await classify('hello',['one','two'])).toBeUndefined()
+})
+
+test('fork distinguishes the cold and empty cases and retains measured usage', async () => {
+  let calls=0
+  const cold = createModModelFork(() => null, async () => {calls++;throw new Error('must not run')})
+  expect(await cold({prompt:'hello'})).toEqual({isAnswered:false,reason:'nothing-to-fork'})
+  expect(calls).toBe(0)
+  const empty = createModModelFork(() => ({forkContextMessages:[]} as unknown as CacheSafeParams), async () => ({messages:[],totalUsage:{...EMPTY_USAGE,...usage}}))
+  expect(await empty({prompt:'hello'})).toEqual({isAnswered:false,reason:'empty-reply',usage})
+})
+
+test('fork joins all non-error text blocks and projects exactly four usage counters', async () => {
+  const fork = createModModelFork(() => ({forkContextMessages:[]} as unknown as CacheSafeParams), async () => ({
+    messages:[createAssistantMessage({content:'one'}),createAssistantAPIErrorMessage({content:'FAKE_PRIVATE_BODY',error:'rate_limit'}),createAssistantMessage({content:[{type:'text',text:'two',citations:[]},{type:'text',text:'three',citations:[]} ]})],
+    totalUsage:{...EMPTY_USAGE,...usage},
+  }))
+  expect(await fork({prompt:'hello'})).toEqual({isAnswered:true,text:'one\ntwo\nthree',usage})
+})
+
+test('fork cooperates with cancellation and publishes the final API message status and category', async () => {
+  const stop=new AbortController(), entered=Promise.withResolvers<void>()
+  const fork=createModModelFork(()=>({forkContextMessages:[]} as unknown as CacheSafeParams),async params=>{
+    entered.resolve()
+    await new Promise<void>(resolve=>params.overrides!.abortController!.signal.addEventListener('abort',()=>resolve(),{once:true}))
+    return {messages:[],totalUsage:{...EMPTY_USAGE,...usage}}
+  })
+  const pending=fork({prompt:'hello'},stop.signal)
+  await entered.promise;stop.abort(new Error('FAKE_PRIVATE_ABORT_REASON'))
+  expect(await pending).toEqual({isAnswered:false,reason:'aborted',usage})
+  const failed=createModModelFork(()=>({forkContextMessages:[]} as unknown as CacheSafeParams),async()=>({
+    messages:[getAssistantMessageFromError(APIError.generate(529,{error:{type:'overloaded_error',message:'FAKE_PRIVATE_BODY'}},'FAKE_PRIVATE_DETAIL',new Headers()),'haiku')],totalUsage:{...EMPTY_USAGE,...usage},
+  }))
+  expect(await failed({prompt:'hello'})).toEqual({isAnswered:false,reason:'api-error',status:529,error:'server_error',usage})
 })
