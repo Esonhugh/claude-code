@@ -54,6 +54,18 @@ describe('VM-local Mods UI constructors', () => {
     ] })
   })
 
+  test('Button constructors validate variant and dismiss role before materializing every surface', () => {
+    const { run } = realm()
+    for (const surface of ['terminal', 'desktop', 'mobile', 'vscode']) {
+      for (const value of [`variant:'danger'`, `variant:null`, `role:'submit'`, `role:false`]) {
+        expect(() => run(`ui.resolve({surface:'${surface}',component:'Pane'}).Button({label:'Run',onPress:()=>{},${value}})`)).toThrow(/variant|role/i)
+      }
+      for (const variant of ['primary', 'secondary']) {
+        expect(run(`ui.resolve({surface:'${surface}',component:'Pane'}).Button({label:'Run',onPress:()=>{},variant:'${variant}',role:'dismiss'}).props`)).toMatchObject({ variant, role: 'dismiss' })
+      }
+    }
+  })
+
   test('callbacks remain private and receive their documented author arguments', async () => {
     const { run } = realm()
     const result = run(`(() => {

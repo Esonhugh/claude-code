@@ -1,8 +1,12 @@
 import { expect, test } from 'bun:test'
 import React, { useLayoutEffect, useState } from 'react'
 import { Readable, Writable } from 'node:stream'
-import { render, Text, useInput, useStdin } from '../../ink.js'
+import { render, Text, ThemeProvider, useInput, useStdin } from '../../ink.js'
 import type { PointerEvent } from '../events/pointer-event.js'
+import { AppStoreContext, getDefaultAppState } from '../../state/AppState.js'
+import { createStore } from '../../state/store.js'
+import TextInput from '../../components/TextInput.js'
+import type { TextInputEdit } from '../../types/textInputTypes.js'
 
 class Input extends Readable {
   isTTY = true
@@ -106,4 +110,23 @@ test('a burst beyond React nested-update depth commits each semantic event witho
     expect(h.reads.map(event=>event.count)).toEqual(Array.from({length:100},(_,i)=>i))
     expect(h.committed).toBe(100)
   }finally{h.close()}
+})
+
+test('actual ordinary TextInput focus props change before the next key in the same read',async()=>{
+  const stdin=new Input(),stdout=new Output(),edits:TextInputEdit[]=[]
+  let box={text:'',cursor:0}
+  function Probe(){
+    const [value,setValue]=useState(''),[cursor,setCursor]=useState(0),[focus,setFocus]=useState(true)
+    useInput(input=>{if(input==='a')setFocus(false)},{capture:true})
+    return <TextInput value={value} cursorOffset={cursor} focus={focus} showCursor columns={80}
+      onChange={text=>{box={...box,text};setValue(text);return text}}
+      onChangeCursorOffset={offset=>{box={...box,cursor:offset};setCursor(offset)}}
+      onEdit={edit=>edits.push(structuredClone(edit))} />
+  }
+  const instance=await render(<AppStoreContext value={createStore(getDefaultAppState())}><ThemeProvider><Probe /></ThemeProvider></AppStoreContext>,{stdin:stdin as never,stdout:stdout as never,patchConsole:false,exitOnCtrlC:false})
+  try {
+    await settle();stdin.push(a+b);await settle()
+    expect(box).toEqual({text:'a',cursor:1})
+    expect(edits).toEqual([{before:{text:'',cursor:0},after:{text:'a',cursor:1},key:{key:'a'}}])
+  }finally{instance.unmount();instance.cleanup()}
 })

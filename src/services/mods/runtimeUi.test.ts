@@ -969,6 +969,26 @@ test('ui.press rewrites never select a different plugin callback environment', a
   expect(diagnostics).toEqual([])
 })
 
+test('Button onPress receives the final ui.press argument after middleware in its real Worker', async () => {
+  const decorator = await plugin('press-decorator', `export function register(on) {
+    on('ui.press',($,e,next)=>next({...e,element:'rewritten-address'}));
+  }`)
+  const consumer = await plugin('press-owner', `export function register(on) {
+    on('session.start',async($,e,next)=>{await $.ui.open({id:'press-panel'});return next(e)});
+    on('ui.render',($,e)=>$.ui.resolve(e).Button({key:'original-address',label:'Run',onPress:press=>$.ui.status(JSON.stringify(press))}));
+  }`)
+  const {value,statuses,diagnostics} = fixture()
+  await value.bind(binding(root)); await value.reconcile([decorator,consumer])
+  const pane = value.ui.getSnapshot()[0]!
+  await value.ui.interact(pane.id,pane.drawing!,(pane.tree as any).press,'press','original-address')
+  expect(statuses).toHaveLength(1)
+  expect((statuses[0] as string[])[0]).toBe('press-owner')
+  expect(JSON.parse((statuses[0] as string[])[1]!)).toEqual({
+    component:'Pane',requestId:'press-panel',surface:'terminal',plugin:'press-owner',element:'rewritten-address',
+  })
+  expect(diagnostics).toEqual([])
+})
+
 test('ModsSession UI subscriptions are stable before runtime creation and notify on real activation', async () => {
   const consumer = await plugin('ui-owner',source('session'))
   const session = createModsSession({

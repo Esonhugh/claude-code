@@ -1997,6 +1997,48 @@ describe('ModsPane terminal hover', () => {
     }
   })
 
+  test.each(['primary', 'secondary'])('validates official Button %s variant and dismiss role on every surface', variant => {
+    for (const surface of ['terminal', 'desktop', 'mobile', 'vscode'] as const) {
+      const tree = { type: 'Button', props: { key: 'run', label: 'Run', variant, role: 'dismiss' }, press: { plugin: 'owner', handle: 1 } }
+      expect(validateModRenderTree(tree, surface).tree).toMatchObject({ props: { variant, role: 'dismiss' } })
+    }
+  })
+
+  test('rejects unsupported Button variants and roles', () => {
+    for (const props of [{ variant: 'danger' }, { variant: null }, { role: 'submit' }, { role: false }]) {
+      expect(() => validateModRenderTree({ ...fileButton('run'), props: { key: 'run', label: 'Run', ...props } })).toThrow(/variant|role/i)
+    }
+  })
+
+  test('primary Button uses accent while plain takes precedence', async () => {
+    const stdout = new Output()
+    const instance = await modsPane({
+      type: 'Box', props: { flexDirection: 'column' }, children: [
+        { type: 'Button', props: { key: 'primary', label: 'Primary', variant: 'primary' }, hover: { scope: 'primary', color: 'red', inverse: false }, press: { plugin: 'owner', handle: 1 } },
+        { type: 'Button', props: { key: 'secondary', label: 'Secondary', variant: 'secondary' }, press: { plugin: 'owner', handle: 2 } },
+        { type: 'Button', props: { key: 'plain', label: 'Plain', plain: true, variant: 'primary' }, press: { plugin: 'owner', handle: 3 } },
+        { type: 'Button', props: { key: 'plain-hotkey', label: 'Plain hotkey', plain: true, variant: 'primary', hotkey: 'r' }, press: { plugin: 'owner', handle: 4 } },
+      ],
+    }, stdout)
+    try {
+      await settle()
+      const accent = domElement(stdout, 'r', 'ink-virtual-text').textStyles?.color
+      expect(accent).toBeDefined()
+      expect(renderedElement(stdout, '[ Primary ]', 'ink-text').textStyles?.color).toBe(accent)
+      expect(renderedElement(stdout, '[ Secondary ]', 'ink-text').textStyles?.color).toBeUndefined()
+      expect(renderedElement(stdout, 'Plain', 'ink-text').textStyles?.color).toBeUndefined()
+      expect(renderedElement(stdout, 'r: Plain hotkey', 'ink-text').textStyles?.color).toBeUndefined()
+      const primary = renderedElement(stdout, '[ Primary ]', 'ink-text')
+      moveMouseTo(stdout, primary)
+      await settle()
+      expect(primary.textStyles?.color).not.toBe(accent)
+      expect(primary.textStyles?.inverse).toBeUndefined()
+      moveMouseTo(stdout, renderedElement(stdout, '[ Secondary ]', 'ink-text'))
+      await settle()
+      expect(primary.textStyles?.color).toBe(accent)
+    } finally { instance.unmount() }
+  })
+
   test('renders a plain Button hotkey as suggestion-colored inline text', async () => {
     const stdout = new Output()
     const instance = await modsPane({

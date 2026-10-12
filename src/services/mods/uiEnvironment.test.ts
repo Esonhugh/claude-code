@@ -20,6 +20,19 @@ async function fixture(source: string, event = 'ui.render') {
 
 const event = { surface: 'terminal', component: 'Pane', requestId: 'test' }
 
+test.each(['terminal', 'desktop', 'mobile', 'vscode'])('real Worker Button callback receives the final press on %s', async surface => {
+  const { environment, handle } = await fixture(`export function register(on) {
+    on('ui.render', ($, e) => $.ui.resolve(e).Button({key:'run',label:'Run',onPress:press => $.ui.status(JSON.stringify(press))}));
+  }`)
+  const statuses: unknown[] = []
+  const ui = createModUiBridge({ status: value => { statuses.push(value) } })
+  const input = { ...event, surface }
+  const tree = await environment.invoke(handle, [{ ui }, input], undefined, 1) as { press: { handle: number } }
+  const finalPress = { ...input, plugin: 'ui-owner', element: 'run' }
+  await environment.invokeDrawing(1, tree.press.handle, [finalPress])
+  expect(statuses).toEqual([JSON.stringify(finalPress)])
+})
+
 test('registers ui.toast middleware and forwards toast arguments through the VM bridge', async () => {
   const { environment, handle } = await fixture(`export function register(on) {
     on('ui.toast', async ($, e, next) => {

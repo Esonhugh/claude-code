@@ -30,6 +30,29 @@ function createContext(
 }
 
 describe('/diff', () => {
+  test('ownership gained during the native git probe prevents a delayed sidebar opening',async()=>{
+    const {context,getState}=createContext({columns:144,isFullscreen:true})
+    let owned=false
+    context.mods={isDiffOwned:()=>owned,ui:{getSnapshot:()=>[]}} as unknown as NonNullable<LocalJSXCommandContext['mods']>
+    const completions:Parameters<LocalJSXCommandOnDone>[]=[]
+    const pending=call((...args)=>completions.push(args),context,'')
+    owned=true
+    expect(await pending).toBeNull()
+    expect(getState().diffSidebarVisible).toBe(false)
+    expect(completions).toEqual([[undefined,{display:'skip'}]])
+  })
+  test('a previously selected native command yields when a live official Mod owns diff', async () => {
+    const {context,getState}=createContext({columns:144,isFullscreen:true})
+    context.mods={isDiffOwned:()=>true} as unknown as NonNullable<LocalJSXCommandContext['mods']>
+    let refreshes=0, preferences=0
+    context.diff={refresh:async()=>{refreshes++},setOpenPreference:()=>{preferences++}} as unknown as NonNullable<LocalJSXCommandContext['diff']>
+    const completions:Parameters<LocalJSXCommandOnDone>[]=[]
+    expect(await call((...args)=>completions.push(args),context,'')).toBeNull()
+    expect(getState().diffSidebarVisible).toBe(false)
+    expect(refreshes).toBe(0)
+    expect(preferences).toBe(0)
+    expect(completions).toEqual([[undefined,{display:'skip'}]])
+  })
   test('wide diff panels bypass the active turn queue in either renderer', () => {
     const fullscreen = createContext({ columns: 144, isFullscreen: true }).context
     const defaultRenderer = createContext({ columns: 144, isFullscreen: false }).context
