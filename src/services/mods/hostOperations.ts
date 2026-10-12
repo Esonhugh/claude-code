@@ -986,17 +986,19 @@ export function createModHostOperations({
         signal.throwIfAborted()
         const isLink = entry.isSymbolicLink()
         let info = entry
+        let canResolve = true
         if (isLink) {
           try {
             info = await stat(target)
           } catch (error) {
             const code = (error as NodeJS.ErrnoException).code
-            if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+            if (code !== 'ENOENT' && code !== 'ENOTDIR' && code !== 'ELOOP') throw error
+            canResolve = false
           }
           signal.throwIfAborted()
         }
         const result: FsStat = { kind: kind(info), size: info.size, mtimeMs: info.mtimeMs, isLink }
-        if (options.resolve) {
+        if (options.resolve && canResolve) {
           try {
             result.realPath = await resolveRealPath(target, signal)
           } catch (error) {

@@ -1744,9 +1744,30 @@ describe('fs', () => {
     })
   })
 
-  test('preserves OS refusal for cyclic links instead of treating them as dangling', async () => {
+  test('returns link metadata for cyclic targets while preserving traversal errors', async () => {
     await symlink('cycle', join(cwd, 'cycle'))
-    await expect(host.fs.stat('cycle')).rejects.toMatchObject({ code: 'ELOOP' })
-    await expect(host.fs.stat('cycle', { resolve: true })).rejects.toMatchObject({ code: 'ELOOP' })
+    await symlink('second', join(cwd, 'first'))
+    await symlink('first', join(cwd, 'second'))
+    // Official 2.1.292 retains lstat metadata when following the final link fails with ELOOP.
+    for (const path of ['cycle', 'first', 'second']) {
+      const link = await lstat(join(cwd, path))
+      const expected: FsStat = { kind: 'other', size: link.size, mtimeMs: link.mtimeMs, isLink: true }
+      expect(await host.fs.stat(path)).toEqual(expected)
+      expect(await host.fs.stat(path, { resolve: false })).toEqual(expected)
+      expect(await host.fs.stat(path, { resolve: true })).toEqual(expected)
+    }
+    await expect(host.fs.stat('cycle/child')).rejects.toMatchObject({ code: 'ELOOP' })
+    await expect(host.fs.stat('cycle/child', { resolve: true })).rejects.toMatchObject({ code: 'ELOOP' })
+  })
+
+  test('omits realPath after reaching the OS link traversal limit', async () => {
+    await writeFile(join(cwd, 'target'), 'owned target')
+    for (let index = 0; index < 45; index++)
+      await symlink(index === 44 ? 'target' : `chain${index + 1}`, join(cwd, `chain${index}`))
+    await expect(stat(join(cwd, 'chain0'))).rejects.toMatchObject({ code: 'ELOOP' })
+    const link = await lstat(join(cwd, 'chain0'))
+    const expected: FsStat = { kind: 'other', size: link.size, mtimeMs: link.mtimeMs, isLink: true }
+    expect(await host.fs.stat('chain0')).toEqual(expected)
+    expect(await host.fs.stat('chain0', { resolve: true })).toEqual(expected)
   })
 })
