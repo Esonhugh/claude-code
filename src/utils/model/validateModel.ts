@@ -10,6 +10,19 @@ import {
   AuthenticationError,
 } from '@anthropic-ai/sdk'
 import { getModelStrings } from './modelStrings.js'
+import { withTimeout } from '../sleep.js'
+
+export type ModelValidationErrorCode =
+  | 'catalog_unknown'
+  | 'restricted_by_org'
+  | 'auth_failed'
+  | 'check_failed'
+
+export type ModelValidationResult = {
+  valid: boolean
+  error?: string
+  errorCode?: ModelValidationErrorCode
+}
 
 // Cache valid models to avoid repeated API calls
 const validModelCache = new Map<string, boolean>()
@@ -19,7 +32,8 @@ const validModelCache = new Map<string, boolean>()
  */
 export async function validateModel(
   model: string,
-): Promise<{ valid: boolean; error?: string }> {
+  options: { deadlineMs?: number } = {},
+): Promise<ModelValidationResult> {
   const normalizedModel = model.trim()
 
   // Empty model is invalid
@@ -32,6 +46,7 @@ export async function validateModel(
     return {
       valid: false,
       error: `Model '${normalizedModel}' is not in the list of available models`,
+      errorCode: 'restricted_by_org',
     }
   }
 
@@ -51,13 +66,15 @@ export async function validateModel(
     return { valid: true }
   }
 
-
-  // Try to make an actual API call with minimal parameters
+  const controller = new AbortController()
+  const deadlineError = `Couldn't confirm model "${normalizedModel}" with the API. Try again, or run /model to see available models.`
+  // Try to make an actual API call with minimal parameters.
   try {
-    await sideQuery({
+    const probe = sideQuery({
       model: normalizedModel,
       max_tokens: 1,
       maxRetries: 0,
+      signal: controller.signal,
       querySource: 'model_validation',
       messages: [
         {
@@ -73,10 +90,17 @@ export async function validateModel(
       ],
     })
 
+    if (options.deadlineMs === undefined) await probe
+    else await withTimeout(probe, options.deadlineMs, deadlineError)
+
     // If we got here, the model is valid
     validModelCache.set(normalizedModel, true)
     return { valid: true }
   } catch (error) {
+    if (error instanceof Error && error.message === deadlineError) {
+      controller.abort()
+      return { valid: false, error: deadlineError, errorCode: 'check_failed' }
+    }
     return handleValidationError(error, normalizedModel)
   }
 }
@@ -84,7 +108,7 @@ export async function validateModel(
 function handleValidationError(
   error: unknown,
   modelName: string,
-): { valid: boolean; error: string } {
+): ModelValidationResult {
   // NotFoundError (404) means the model doesn't exist
   if (error instanceof NotFoundError) {
     const fallback = get3PFallbackSuggestion(modelName)
@@ -92,6 +116,7 @@ function handleValidationError(
     return {
       valid: false,
       error: `Model '${modelName}' not found${suggestion}`,
+      errorCode: 'catalog_unknown',
     }
   }
 
@@ -101,6 +126,7 @@ function handleValidationError(
       return {
         valid: false,
         error: 'Authentication failed. Please check your API credentials.',
+        errorCode: 'auth_failed',
       }
     }
 
@@ -108,6 +134,7 @@ function handleValidationError(
       return {
         valid: false,
         error: 'Network error. Please check your internet connection.',
+        errorCode: 'check_failed',
       }
     }
 
@@ -122,11 +149,21 @@ function handleValidationError(
       typeof errorBody.message === 'string' &&
       errorBody.message.includes('model:')
     ) {
-      return { valid: false, error: `Model '${modelName}' not found` }
+      return { valid: false, error: `Model '${modelName}' not found`, errorCode: 'catalog_unknown' }
     }
 
     // Generic API error
-    return { valid: false, error: `API error: ${error.message}` }
+    const body = error.error as { error?: { message?: unknown }; message?: unknown } | undefined
+    const detail = body?.error?.message ?? body?.message
+    const message = typeof detail === 'string' && error.status !== undefined
+      ? `${error.status} ${detail}`
+      : error.message
+    const retryable = error.status === undefined || error.status === 408 || error.status === 429 || error.status >= 500
+    return {
+      valid: false,
+      error: `API error: ${message.replace(/[.!?\u2026]+$/, '')} · model not changed`,
+      ...(retryable && { errorCode: 'check_failed' as const }),
+    }
   }
 
   // For unknown errors, be safe and reject
@@ -134,6 +171,7 @@ function handleValidationError(
   return {
     valid: false,
     error: `Unable to validate model: ${errorMessage}`,
+    errorCode: 'check_failed',
   }
 }
 

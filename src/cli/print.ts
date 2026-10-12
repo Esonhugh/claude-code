@@ -304,6 +304,7 @@ import {
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
+import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
   getSessionId,
@@ -3075,9 +3076,12 @@ function runHeadlessStreaming(
     })
   }
 
+  let pendingModelSwitches = Promise.resolve()
+
   const sendControlResponseError = function (
     message: SDKControlRequest,
     errorMessage: string,
+    errorCode?: import('../entrypoints/sdk/controlTypes.js').SDKControlErrorCode,
   ) {
     output.enqueue({
       type: 'control_response',
@@ -3085,6 +3089,7 @@ function runHeadlessStreaming(
         subtype: 'error',
         request_id: message.request_id,
         error: errorMessage,
+        ...(errorCode && { error_code: errorCode }),
       },
     })
   }
@@ -3447,21 +3452,36 @@ function runHeadlessStreaming(
           // now fired by onChangeAppState (with externalized mode name).
         } else if (message.request.subtype === 'set_model') {
           const requestedModel = message.request.model ?? 'default'
-          const model =
-            requestedModel === 'default'
-              ? getDefaultMainLoopModel()
-              : requestedModel
-          // @ts-ignore - recovered code
-          activeUserSpecifiedModel = model
-          // @ts-ignore - recovered code
-          setMainLoopModelOverride(model)
-          streamState.refresh()
-          // @ts-ignore - recovered code
-          notifySessionMetadataChanged({ model })
-          // @ts-ignore - recovered code
-          injectModelSwitchBreadcrumbs(requestedModel, model)
-
-          sendControlResponseSuccess(message)
+          if (typeof requestedModel !== 'string') {
+            sendControlResponseError(message, 'set_model: model must be a string', 'invalid_request')
+            continue
+          }
+          pendingModelSwitches = pendingModelSwitches.then(async () => {
+            if (!requestedModel.trim()) {
+              sendControlResponseError(message,
+                'Model "(unrecognized model name)" is not a recognized model id. Run /model to see available models.',
+                'catalog_unknown')
+              return
+            }
+            if (requestedModel !== 'default') {
+              const result = await validateModel(requestedModel, { deadlineMs: 5000 })
+              if (!result.valid) {
+                logForDebugging(`[SDK] set_model rejected: ${result.errorCode ?? 'api_error'}: ${result.error}`)
+                sendControlResponseError(message, result.error ?? 'set_model failed', result.errorCode)
+                return
+              }
+            }
+            const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
+            activeUserSpecifiedModel = model
+            setMainLoopModelOverride(model)
+            streamState.refresh()
+            notifySessionMetadataChanged({ model })
+            injectModelSwitchBreadcrumbs(requestedModel, model)
+            sendControlResponseSuccess(message)
+          }).catch(error => {
+            logError(error)
+            sendControlResponseError(message, 'set_model failed')
+          })
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
           if (message.request.max_thinking_tokens === null) {
             options.thinkingConfig = undefined
@@ -4744,6 +4764,7 @@ function runHeadlessStreaming(
       }
       void run()
     }
+    await pendingModelSwitches
     inputClosed = true
     await remoteUIControl.settle()
     inboundController.abort()

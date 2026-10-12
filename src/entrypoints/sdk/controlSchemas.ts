@@ -7,6 +7,7 @@
  * SDK consumers should use coreSchemas.ts instead.
  */
 
+import { SDK_CONTROL_ERROR_CODES } from './controlTypes.js'
 import { SDKControlUIRequestSchema } from './modsControlSchemas.js'
 export * from './modsControlSchemas.js'
 
@@ -710,6 +711,7 @@ export const ControlErrorResponseSchema = lazySchema(() =>
     subtype: z.literal('error'),
     request_id: z.string(),
     error: z.string(),
+    error_code: z.enum(SDK_CONTROL_ERROR_CODES).optional(),
     pending_permission_requests: z
       .array(z.lazy(() => SDKControlRequestSchema()))
       .optional(),

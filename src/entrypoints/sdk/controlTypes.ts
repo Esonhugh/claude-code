@@ -322,10 +322,41 @@ export type ControlResponse = {
   response?: Record<string, unknown>
 }
 
+export const SDK_CONTROL_ERROR_CODES = [
+  'invalid_request',
+  'catalog_unknown',
+  'restricted_by_org',
+  'unavailable_for_account',
+  'not_offered',
+  'alias_1m_disabled',
+  'alias_1m_unsupported',
+  'blocked_by_hook',
+  'check_failed',
+  'auth_failed',
+  'invalid_mode',
+  'bypass_restricted',
+  'bypass_disabled',
+  'bypass_not_launched',
+  'auto_mode_settings',
+  'auto_mode_circuit_breaker',
+  'auto_mode_fast_mode',
+  'auto_mode_model',
+  'auto_mode_unavailable',
+  'remote_control_auth',
+  'remote_control_terminal',
+  'remote_control_ended_elsewhere',
+  'remote_control_policy_disabled',
+  'workspace_diff_pending',
+  'stale_worker_epoch',
+  'invalid_worker_epoch',
+] as const
+export type SDKControlErrorCode = (typeof SDK_CONTROL_ERROR_CODES)[number]
+
 export type ControlErrorResponse = {
   subtype: 'error'
   request_id: string
   error: string
+  error_code?: SDKControlErrorCode
 }
 
 export type SDKControlResponse = {
