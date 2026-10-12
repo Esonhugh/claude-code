@@ -284,7 +284,7 @@ assert.deepEqual(getSystemPromptSections(observedSystemPrompt), [
     sections: [
       { name: 'identity', text: 'CORE_IDENTITY' },
       { name: 'language', text: null },
-      { text: TEAMMATE_SYSTEM_PROMPT_ADDENDUM },
+      { text: TEAMMATE_SYSTEM_PROMPT_ADDENDUM, scope: 'session' },
     ],
     separator: '\n',
   },
