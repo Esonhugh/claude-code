@@ -2056,6 +2056,20 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message` / `ui_client_fault` 及 `ui_invalidate` 推送；Pane/scroll 的控制与推送见下文专项；元素 focus、prompt 控制和 focus 推送见下文新专项。18类客户端控制有运行入口，五类 responder 尚待完成；23类协议定义不代表23类功能均已验收。完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 
+### SDK 模型切换校验
+
+在 stream-json 会话中发送 `set_model`，并等待相同 `request_id` 的 `control_response`：
+
+```jsonl
+{"type":"control_request","request_id":"model-1","request":{"subtype":"set_model","model":"claude-sonnet-4-6"}}
+```
+
+自定义模型先用最小 API 请求验证；验证成功才修改会话模型，同一进程的成功结果可复用。验证失败保留原模型，返回具体错误及可选 `error_code`：网络／可重试服务器失败为 `check_failed`，认证失败为 `auth_failed`，模型不存在为 `catalog_unknown`。普通 API 拒绝可以不带错误码，调用方应始终读取 `error`。错误码在类型定义和 schema 解析中保留。
+
+API 验证的期限为 5 秒，超时会取消请求并返回 `check_failed`；晚到结果不会进入成功缓存。模型切换按接收顺序处理，等待验证期间仍可处理 `interrupt` 等控制消息。空模型名被拒绝；`default` 使用当前默认模型。通用配置见 Anthropic 的[模型配置文档](https://code.claude.com/docs/en/model-config)。
+
+本项按固定官方 2.1.292 验收受控 API、缓存、错误回执、失败不改模型及等待期间的 `interrupt` 顺序。成功切换后的 `autocompact_state.source` 仍错误标为 `auto`，远程 Mods 提示也与官方不同；完整状态帧未通过。组织目录／授权覆盖、模型切换 Hook、`system_prompt` 和完整 SDK 生命周期仍需独立对齐与验收。
+
 ### 自动压缩窗口环境变量
 
 设置 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` 可将自动压缩窗口设为 200,000 tokens，再按模型窗口限制；实际触发阈值还会预留摘要输出和缓冲。环境值按固定官方 2.1.292 的整数规则解析，支持 `2e5`、`200_000` 等整值写法。`k` / `m` 后缀不作为单位：`200k` 只取整数前缀 200，随后限制为最低 100,000 tokens。建议直接写完整整数。
