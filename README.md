@@ -2056,6 +2056,12 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message` / `ui_client_fault` 及 `ui_invalidate` 推送；Pane/scroll 的控制与推送见下文专项；元素 focus、prompt 控制和 focus 推送见下文新专项。18类客户端控制有运行入口，五类 responder 尚待完成；23类协议定义不代表23类功能均已验收。完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 
+### 自动压缩窗口环境变量
+
+设置 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000` 可将自动压缩窗口设为 200,000 tokens，再按模型窗口限制；实际触发阈值还会预留摘要输出和缓冲。环境值按固定官方 2.1.292 的整数规则解析，支持 `2e5`、`200_000` 等整值写法。`k` / `m` 后缀不作为单位：`200k` 只取整数前缀 200，随后限制为最低 100,000 tokens。建议直接写完整整数。
+
+有效环境值优先于设置项，范围限制为 100,000–1,000,000 tokens，再受模型窗口限制；零、负数和无效值回退到原有设置与模型默认选择。`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` 按解析后的有效窗口计算。远程会话的 `autocompact_state` 使用同一窗口和阈值；普通本地会话不发送该状态帧。本项只对齐环境解析及状态投影，远程 Mods 不可用提示仍与官方有差异；完整压缩引擎与 SDK 生命周期继续单独验收。
+
 ### SDK 远程绘制与 Client 模块
 
 在已初始化的 stream-json 会话中发送绘制请求，读取对应 request_id 的 control_response：
