@@ -1,25 +1,64 @@
-import { afterEach, expect, spyOn, test } from 'bun:test'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { getSessionStartedAt } from '../../bootstrap/state.js'
+import { beforeEach, afterEach, expect, spyOn, test } from 'bun:test'
+import { mkdtemp, rm, writeFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsSession } from './session.js'
 import { captureModSessionUsage, type ModSessionUsage } from './sessionUsage.js'
 import { createAssistantMessage } from '../../utils/messages.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import {getSessionStartTime} from '../../bootstrap/state.js'
 import * as limits from '../claudeAiLimits.js'
 import * as cost from '../../cost-tracker.js'
 import * as auth from '../../utils/auth.js'
 import * as config from '../../utils/config.js'
 import * as rateMocking from '../rateLimitMocking.js'
 
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+
 const cleanups: (() => unknown | Promise<unknown>)[] = []
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+afterEach(async () => {
+  try {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  }
+})
 const binding = {cwd:'/tmp',sessionId:'measure-first',surface:null,isInteractive:false} as const
 const inspect = (host: ReturnType<typeof createModsSession>) => host.runtime!.dispatch('tool.call', {tool:'Inspect',tool_use_id:'inspect'}, async () => ({result:null})) as Promise<{result:any}>
 
 async function fixture(source: string, captureUsage: () => ReturnType<typeof captureModSessionUsage>) {
-  const root = await mkdtemp(join(tmpdir(), 'mods-measure-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-measure-')))
   cleanups.push(() => rm(root, {recursive:true,force:true}))
   await writeFile(join(root, 'register.ts'), source)
   const diagnostics: unknown[] = []
@@ -90,7 +129,7 @@ test('live rate headers push measurements below warning thresholds and disposal 
 })
 
 test('session.measure coalesces bursts, pins readonly input and cancels before end', async () => {
-  const usage: ModSessionUsage = {startedAt:0,context:{window:200000},rateLimits:[],cost:{usd:0}}
+  const usage: ModSessionUsage = {startedAt:1791080000123,context:{window:200000},rateLimits:[],cost:{usd:0}}
   let captures = 0
   const {host,diagnostics} = await fixture(`let events=[],release; export function register(on) {
     on('session.start', ($,e,next) => next(e));
@@ -130,7 +169,7 @@ test('session.measure coalesces bursts, pins readonly input and cancels before e
 })
 
 test.each(['end','dispose'] as const)('session.measure cancellation on %s interrupts active hooks and drops pending samples', async action => {
-  const usage: ModSessionUsage = {startedAt:0,context:{window:200000},rateLimits:[],cost:{usd:0}}
+  const usage: ModSessionUsage = {startedAt:1791080000123,context:{window:200000},rateLimits:[],cost:{usd:0}}
   let captures=0
   const {host,diagnostics} = await fixture(`let events=[]; export function register(on) {
     on('session.measure', async ($,e,next) => {
@@ -170,7 +209,7 @@ test('session.measure end cancels a stalled usage read without delaying the end 
 })
 
 test('session.measure compares against last raised reading, not each sample', async () => {
-  let usage: ModSessionUsage = {startedAt:0,context:{window:200000},rateLimits:[]}
+  let usage: ModSessionUsage = {startedAt:1791080000123,context:{window:200000},rateLimits:[]}
   const {host,diagnostics} = await fixture(recorder, () => async () => structuredClone(usage))
   expect(diagnostics).toEqual([])
   await host.runtime!.measure()
@@ -207,7 +246,7 @@ test('session.measure loads into the real host/Worker and observes captured usag
   const {host,diagnostics} = await fixture(recorder, () => captureModSessionUsage(context))
   expect(diagnostics).toEqual([])
   await host.runtime!.measure()
-  const usage = {startedAt:getSessionStartTime(),context:{window:200000,tokens:10000,percent:5},rateLimits:[{kind:'five_hour',percentUsed:23.5,resetsAt:'1970-01-01T00:02:03.000Z'}],cost:{usd:1.25}}
+  const usage = {startedAt:getSessionStartedAt(),context:{window:200000,tokens:10000,percent:5},rateLimits:[{kind:'five_hour',percentUsed:23.5,resetsAt:'1970-01-01T00:02:03.000Z'}],cost:{usd:1.25}}
   expect((await inspect(host)).result).toEqual(['start',{input:{...usage,changed:['context','rateLimits','cost']},usage,result:{changed:['context','rateLimits','cost']}}])
   await host.runtime!.measure()
   expect((await inspect(host)).result).toHaveLength(2)
