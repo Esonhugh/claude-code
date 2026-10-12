@@ -1,5 +1,6 @@
-import { afterEach, expect, spyOn, test } from 'bun:test'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { beforeEach, afterEach, expect, spyOn, test } from 'bun:test'
+import { mkdir, mkdtemp, writeFile, realpath, rm } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import ts from 'typescript'
 import figures from 'figures'
@@ -29,12 +30,37 @@ function compileFunction(name: string): string {
   }).outputText
 }
 
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+
+const fixtureRoots: string[] = []
+
 const compiled = compileFunction('printValidationResult')
 const evidenceRoot = tmpdir()
 
 async function pluginRoot(name: string): Promise<string> {
   await mkdir(evidenceRoot, { recursive: true })
-  const root = await mkdtemp(join(evidenceRoot, `plugin-handler-${name}-`))
+  const root = await realpath(await mkdtemp(join(evidenceRoot, `plugin-handler-${name}-`)))
+  fixtureRoots.push(root)
   await mkdir(join(root, '.claude-plugin'))
   await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name }))
   return root
@@ -71,8 +97,21 @@ async function runValidate(root: string): Promise<string> {
   return lines.join('\n')
 }
 
-afterEach(() => {
-  pluginLoader.loadAllPluginsCacheOnly.cache?.clear?.()
+afterEach(async () => {
+  try {
+    pluginLoader.loadAllPluginsCacheOnly.cache?.clear?.()
+    await Promise.all(fixtureRoots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  }
 })
 
 function print(result: ValidationResult): string {
