@@ -165,7 +165,8 @@ test('author calls expose read-only to observing hooks but strip it from the aut
   const f = fixture(hooks(async (e, next) => { observed = await next(e); return observed }))
   const result = await createModToolHost(f.context, f.canUseTool).call({ tool: f.tool.name, read: true }, f.snapshot, new AbortController().signal)
   expect(observed).toMatchObject({ ref: 1, result: { value: 'ran' }, isReadOnly: true })
-  expect(result).toMatchObject({ ref: 1, result: { value: 'ran' } })
+  expect(result).toEqual({ result: { value: 'ran' }, text: 'ran' })
+  expect(result).not.toHaveProperty('ref')
   expect(result).not.toHaveProperty('isReadOnly')
 })
 
