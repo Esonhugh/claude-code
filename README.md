@@ -2056,6 +2056,19 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 协议定义覆盖其余远程控制及 system pane/scroll/focus 消息，当前 CLI 接通 `ui_attach` / `ui_detach` / `ui_render` / `ui_press` / `ui_input` / `ui_select` / `ui_client_module` / `ui_client_press` / `ui_message` / `ui_client_fault` 及 `ui_invalidate` 推送；Pane/scroll 的控制与推送见下文专项；元素 focus、prompt 控制和 focus 推送见下文新专项。18类客户端控制有运行入口，五类 responder 尚待完成；23类协议定义不代表23类功能均已验收。完整 UI/diff 继续单独验收。官方原生回执、字段限制与验证范围见[SDK UI 协议专项](docs/research/mods-sdk-ui-protocol-292-20261007.md)。
 
 
+### SDK 动态 MCP stdio 参数
+
+`mcp_set_servers` 中的 stdio 配置应显式填写 `args`；没有命令行参数时也写 `[]`：
+
+```jsonl
+{"type":"control_request","request_id":"mcp-1","request":{"subtype":"mcp_set_servers","servers":{"example":{"type":"stdio","command":"node","args":["/absolute/path/server.mjs"]}}}}
+{"type":"control_request","request_id":"mcp-remove-1","request":{"subtype":"mcp_set_servers","servers":{}}}
+```
+
+省略 `args` 时，在创建连接前返回 `errors.example: "Spread syntax requires ...iterable not be null or undefined"`，与固定官方 2.1.292 一致。控制请求本身仍返回成功回执，并将服务器名称列入 `added`；调用方必须检查 `errors`。失败配置可通过后续空 `servers` 请求移除，移除回执的 `removed` 包含该名称。
+
+本项验收覆盖不存在和存在的命令省略 `args`、完整控制回执、移除及退出。缺失可执行文件的系统错误路径文案仍与官方有差异；完整 MCP、Mods 及 SDK 生命周期继续单独验收。
+
 ### SDK 模型切换校验
 
 在 stream-json 会话中发送 `set_model`，并等待相同 `request_id` 的 `control_response`：
