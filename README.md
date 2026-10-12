@@ -2079,7 +2079,9 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 
 `mcpServers[].source` 是可选字符串，表示服务器定义来自何处：SDK 宿主注册的服务器为 `sdk`，插件提供的服务器为 `plugin`，普通配置返回其配置范围（如 `user`、`project`、`local`、`dynamic`）。`scope` 与 `source` 分开：插件和 SDK 服务器可以同属 `dynamic` 范围。读取来源应使用 `source`；服务器名称只是配置键，不能据其名称判定来源。兼容旧 CLI 未返回该字段的状态对象。
 
-固定官方 2.1.292 的用户配置、动态配置、插件和 SDK 四种真实来源通过对照，schema 与 TypeScript 定义保留该字段。SDK 服务器的 `serverInfo` 仍有独立差异；运行时 mod 注册服务器及完整 MCP/SDK 生命周期继续单独验收。
+SDK 服务器连接成功后，`serverInfo` 来自 MCP initialize 响应的服务器实现信息，包含名称和版本；等待握手完成后再读取。`source: "sdk"` 表示定义来源，连接是否成功仍以 `status` 和实际握手结果为准。
+
+固定官方 2.1.292 的对照覆盖用户、动态和插件连接失败，以及 SDK 基本和完整 Implementation 元数据的成功握手；这些场景的完整状态、移除和退出回执相同。运行时 mod 注册服务器及完整 MCP/SDK 生命周期继续单独验收。
 
 ### SDK 模型切换校验
 
