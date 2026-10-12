@@ -882,6 +882,8 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 
 文件读取按官方重载声明：`$.fs.read(path)` 返回文本，`$.fs.read(path, { as: 'bytes' })` 返回 `{ base64 }`；使用 `FsReadOptions` 的一般重载返回 `string | FsBytes`，需要判断结果类型。显式 options 必须包含 `as`。`$.fs.stat(path)` 使用默认选项，传 options 时必须包含 `resolve: boolean`，例如 `$.fs.stat(path, { resolve: true })`；`realPath` 仍为可选字段。空对象会被运行时拒绝，也应被作者类型检查拒绝。
 
+`$.fs.stat` 遇到末端循环符号链接或超过系统链接跳转上限时，返回链接自身的 `kind/size/mtimeMs/isLink`，即使设置 `{ resolve: true }` 也省略 `realPath`。路径中间的目录经过循环链接时仍返回错误。此行为已与固定官方 2.1.292 在 macOS 的 13 组真实 CLI 回执逐字对照；完整文件 API、Mods 和 UI 兼容仍待验收。运行 `bun test ./src/services/mods/hostOperations.test.ts` 检查链接元数据、遍历错误和现有宿主操作。
+
 - 生命周期：扫描并固定模块声明 → 准入 → 加载候选模块并执行 register → `engine.create` → `session.start` barrier；首次输入等待初始化完成。`/clear`、resume 更新会话绑定，不重复启动同一 activation。
 - 作者模式：`/plugin-authoring` 的 Enable 只授权当前 session 的独立 `dev-mods` 目录；公开 turn 结束后才加载新模块，取消和迟到结果有 generation fencing。同一 session 的 resume 恢复该授权；`/clear` 和 fork 创建的新 session 不继承，需重新确认。
 - 重载与卸载：模块依赖变化可触发热重载，显式 reload 使用同一生命周期；技术加载失败保留旧 activation，禁用、移除、拒绝准入或接口构建失败撤下对应能力。相同声明及加载集合下不重复执行失败的 engine.create；声明、动态导入或集合变化时重新尝试。已进入调用持有原 generation，结束后释放；Worker 故障不自动重放已发生的宿主副作用。
