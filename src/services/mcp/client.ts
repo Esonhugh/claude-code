@@ -240,6 +240,24 @@ const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
  */
 const MAX_MCP_DESCRIPTION_LENGTH = 2048
 
+function getMcpServerInstructions(
+  instructions: string | undefined,
+  serverName: string,
+): string | undefined {
+  if (!instructions) return instructions
+  const rawLimit = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH?.trim()
+  const parsedLimit = rawLimit !== undefined && /^[+-]?\d+$/.test(rawLimit) ? Number(rawLimit) : NaN
+  const limit = Number.isFinite(parsedLimit) && parsedLimit >= 1
+    ? parsedLimit
+    : MAX_MCP_DESCRIPTION_LENGTH
+  if (instructions.length <= limit) return instructions
+
+  logMCPDebug(serverName, `Server instructions truncated from ${instructions.length} to ${limit} chars`)
+  const clipped = instructions.slice(0, limit)
+  const last = clipped.charCodeAt(clipped.length - 1)
+  return (last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped) + '… [truncated]'
+}
+
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
  * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to ~27.8 hours.
@@ -1203,19 +1221,7 @@ export const connectToServer = memoize(
 
       const capabilities = client.getServerCapabilities()
       const serverVersion = client.getServerVersion()
-      const rawInstructions = client.getInstructions()
-      let instructions = rawInstructions
-      if (
-        rawInstructions &&
-        rawInstructions.length > MAX_MCP_DESCRIPTION_LENGTH
-      ) {
-        instructions =
-          rawInstructions.slice(0, MAX_MCP_DESCRIPTION_LENGTH) + '… [truncated]'
-        logMCPDebug(
-          name,
-          `Server instructions truncated from ${rawInstructions.length} to ${MAX_MCP_DESCRIPTION_LENGTH} chars`,
-        )
-      }
+      const instructions = getMcpServerInstructions(client.getInstructions(), name)
 
       // Log successful connection details
       logMCPDebug(
@@ -3519,6 +3525,7 @@ export async function setupSdkMcpClients(
           name,
           capabilities: capabilities || {},
           serverInfo: client.getServerVersion(),
+          instructions: getMcpServerInstructions(client.getInstructions(), name),
           client,
           config: { ...config, scope: 'dynamic' as const },
           cleanup: async () => {

@@ -23,6 +23,8 @@ if (process.env[childFlag] !== '1') {
 } else {
   ;(globalThis as typeof globalThis & { MACRO: { VERSION: string } }).MACRO = { VERSION: 'test' }
   const { setupSdkMcpClients } = await import('./client.js')
+  const { getMcpInstructionsDelta } = await import('../../utils/mcpInstructionsDelta.js')
+  const { getMcpInstructionsDeltaAttachment } = await import('../../utils/attachments.js')
   const versions: Implementation[] = [
     { name: 'owned-sdk-fixture', version: '1.0.0' },
     { name: 'owned-sdk-metadata', version: '2.0.0', title: 'Owned SDK',
@@ -58,4 +60,54 @@ if (process.env[childFlag] !== '1') {
       }
     })
   }
+
+  const instructionCases: Array<{ name: string; input?: string; limit?: string; expected?: string }> = [
+    { name: 'absent' },
+    { name: 'empty', input: '', expected: '' },
+    { name: 'short', input: 'Use the owned tools in server order.', expected: 'Use the owned tools in server order.' },
+    { name: 'exact default limit', input: 'x'.repeat(2048), expected: 'x'.repeat(2048) },
+    { name: 'over default limit', input: 'x'.repeat(2049), expected: 'x'.repeat(2048) + '… [truncated]' },
+    { name: 'surrogate boundary', input: 'x'.repeat(2047) + '😀tail', expected: 'x'.repeat(2047) + '… [truncated]' },
+    { name: 'custom limit', input: 'abcdef', limit: '3', expected: 'abc… [truncated]' },
+    { name: 'signed padded limit', input: 'abcdef', limit: ' +3 ', expected: 'abc… [truncated]' },
+    ...['0', '-1', '3junk', '3.5', 'Infinity', ''].map(limit => ({ name: `invalid limit ${JSON.stringify(limit)}`, input: 'abcdef', limit, expected: 'abcdef' })),
+  ]
+  for (const { name, input, limit, expected } of instructionCases) {
+    test(`SDK initialize instructions reach context: ${name}`, async () => {
+      const priorLimit = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
+      if (limit === undefined) delete process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
+      else process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = limit
+      const result = await setupSdkMcpClients({ owned: { type: 'sdk', name: 'owned' } }, async (_, message) => {
+        if ('method' in message && message.method === 'initialize' && 'id' in message) {
+          return { jsonrpc: '2.0', id: message.id, result: {
+            protocolVersion: '2025-11-25', serverInfo: versions[0], capabilities: {},
+            ...(input === undefined ? {} : { instructions: input }),
+          } }
+        }
+        if ('id' in message) return { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not found' } }
+        return { jsonrpc: '2.0', method: 'notifications/owned-fixture' }
+      })
+      try {
+        expect(result.clients).toHaveLength(1)
+        const connection = result.clients[0]!
+        expect(connection.type).toBe('connected')
+        if (connection.type !== 'connected') throw new Error('Expected the actual SDK handshake to connect')
+        expect(connection.client.getInstructions()).toBe(input)
+        // Official 2.1.292 retains the processed instructions before either context consumer reads them.
+        expect(connection.instructions).toBe(expected)
+        expect(getMcpInstructionsDelta(result.clients, [], [])).toEqual(expected ? {
+          addedNames: ['owned'], addedBlocks: [`## owned\n${expected}`], removedNames: [],
+        } : null)
+        expect(getMcpInstructionsDeltaAttachment(result.clients, [], 'claude-sonnet-4-6', [])).toEqual(expected ? [{
+          type: 'mcp_instructions_delta', addedNames: ['owned'], addedBlocks: [`## owned\n${expected}`], removedNames: [],
+        }] : [])
+        expect(result.tools).toEqual([])
+      } finally {
+        await Promise.all(result.clients.map(c => c.type === 'connected' ? c.cleanup() : Promise.resolve()))
+        if (priorLimit === undefined) delete process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
+        else process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = priorLimit
+      }
+    })
+  }
+
 }

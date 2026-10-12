@@ -28,7 +28,6 @@ import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import { getOutputStyleConfig } from './outputStyles.js'
 import type {
   MCPServerConnection,
-  ConnectedMCPServer,
 } from '../services/mcp/types.js'
 import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
@@ -59,7 +58,6 @@ import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt, loadStaticMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
-import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 import {
   resolvePromptSections,
   type PromptSection,
@@ -171,13 +169,6 @@ function getOutputStyleSection(
 
   return `# Output Style: ${outputStyleConfig.name}
 ${outputStyleConfig.prompt}`
-}
-
-function getMcpInstructionsSection(
-  mcpClients: MCPServerConnection[] | undefined,
-): string | null {
-  if (!mcpClients || mcpClients.length === 0) return null
-  return getMcpInstructions(mcpClients)
 }
 
 export function prependBullets(items: Array<string | string[]>): string[] {
@@ -517,14 +508,7 @@ ${CYBER_RISK_INSTRUCTION}`,
       { name: 'memory', text: await loadMemoryPrompt() },
       { name: 'env_info_simple', text: envInfo },
       { name: 'language', text: getLanguageSection(settings.language) },
-      // When delta enabled, instructions are announced via persisted
-      // mcp_instructions_delta attachments (attachments.ts) instead.
-      {
-        name: 'mcp_instructions',
-        text: isMcpInstructionsDeltaEnabled()
-          ? null
-          : getMcpInstructionsSection(mcpClients),
-      },
+      { name: 'mcp_instructions', text: null },
       { name: 'scratchpad', text: getScratchpadInstructions() },
       { name: 'frc', text: getFunctionResultClearingSection(model) },
       { name: 'summarize_tool_results', text: SUMMARIZE_TOOL_RESULTS_SECTION },
@@ -554,19 +538,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     systemPromptSection('output_style', () =>
       getOutputStyleSection(outputStyleConfig),
     ),
-    // When delta enabled, instructions are announced via persisted
-    // mcp_instructions_delta attachments (attachments.ts) instead of this
-    // per-turn recompute, which busts the prompt cache on late MCP connect.
-    // Gate check inside compute (not selecting between section variants)
-    // so a mid-session gate flip doesn't read a stale cached value.
-    DANGEROUS_uncachedSystemPromptSection(
-      'mcp_instructions',
-      () =>
-        isMcpInstructionsDeltaEnabled()
-          ? null
-          : getMcpInstructionsSection(mcpClients),
-      'MCP servers connect/disconnect between turns',
-    ),
+    systemPromptSection('mcp_instructions', () => null),
     DANGEROUS_uncachedSystemPromptSection(
       'scratchpad',
       () => getScratchpadInstructions(),
@@ -695,33 +667,6 @@ ${CYBER_RISK_INSTRUCTION}`,
   ]
 
   return withSystemPromptSections(sections, facts, recipe)
-}
-
-function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
-  const connectedClients = mcpClients.filter(
-    (client): client is ConnectedMCPServer => client.type === 'connected',
-  )
-
-  const clientsWithInstructions = connectedClients.filter(
-    client => client.instructions,
-  )
-
-  if (clientsWithInstructions.length === 0) {
-    return null
-  }
-
-  const instructionBlocks = clientsWithInstructions
-    .map(client => {
-      return `## ${client.name}
-${client.instructions}`
-    })
-    .join('\n\n')
-
-  return `# MCP Server Instructions
-
-The following MCP servers have provided instructions for how to use their tools and resources:
-
-${instructionBlocks}`
 }
 
 export async function computeEnvInfo(
