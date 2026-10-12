@@ -168,6 +168,13 @@ export type ScopedMcpServerConfig = McpServerConfig & {
   pluginSource?: string
 }
 
+/** Definition origin for SDK status; names are untrusted configuration keys. */
+export function getMcpServerStatusSource(config: ScopedMcpServerConfig): string {
+  if (config.pluginSource !== undefined) return 'plugin'
+  if (config.type === 'sdk') return 'sdk'
+  return config.scope
+}
+
 export const McpJsonConfigSchema = lazySchema(() =>
   z.object({
     mcpServers: z.record(z.string(), McpServerConfigSchema()),

@@ -87,6 +87,7 @@ import {
   loadConversationForResume,
   type TurnInterruptionState,
 } from 'src/utils/conversationRecovery.js'
+import { getMcpServerStatusSource } from 'src/services/mcp/types.js'
 import type {
   MCPServerConnection,
   McpSdkServerConfig,
@@ -1831,6 +1832,7 @@ function runHeadlessStreaming(
         error: connection.type === 'failed' ? connection.error : undefined,
         config,
         scope: connection.config.scope,
+        source: getMcpServerStatusSource(connection.config),
         tools: serverTools,
         capabilities,
       }

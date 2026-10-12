@@ -196,6 +196,10 @@ export const McpServerStatusSchema = lazySchema(() =>
         .describe(
           'Configuration scope (e.g., project, user, local, claudeai, managed)',
         ),
+      source: z
+        .string()
+        .optional()
+        .describe('Definition origin: SDK host, plugin, or configuration scope. Use the origin rather than the configured name.'),
       tools: z
         .array(
           z.object({
