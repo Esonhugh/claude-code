@@ -132,7 +132,7 @@ describe('attribution.text projection', () => {
 
     const error = await projected.then(() => undefined, error => error)
     expect(error).toBeInstanceOf(Error)
-    expect((error as Error).name).toBe('AbortError')
+    expect(error).toBe(reason)
     expect(releases).toBe(1)
   })
 
