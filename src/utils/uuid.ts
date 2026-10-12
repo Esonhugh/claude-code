@@ -22,6 +22,7 @@ export function validateUuid(maybeUuid: unknown): UUID | null {
  * Example: aa3f2c1b4d5e6f7a8, acompact-a3f2c1b4d5e6f7a8
  */
 export function createAgentId(label?: string): AgentId {
+  if (label && !/^[\w-]{1,63}$/.test(label)) label = label.replace(/[^\w-]/g, '').slice(0, 63)
   const suffix = randomBytes(8).toString('hex')
   return (label ? `a${label}-${suffix}` : `a${suffix}`) as AgentId
 }
