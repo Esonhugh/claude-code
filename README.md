@@ -661,6 +661,8 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 
 当前 Mods/API 批次固定以官方 **2.1.292** 为基准；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不改变其余 API 的基线，也不表示全部 UI 已完成迁移。作者声明以 2.1.292 完整声明体为基础，只投影已核对的 2.1.295 Button children 定义。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
+本轮完成了终端选区读取与跟随、持有中的 VM 回调、作者声明覆盖和测试 runner 的临时文件清理。Client 故障次数与焦点恢复、session transcript 的公开接线、caller chain 的完整传播、Worker reload，以及 teammate 身份和恢复流程仍有未提交部分。官方 diff Mod 的完整终端效果和浏览器 Client 生命周期尚未验收通过。
+
 `Button` 可以持有字符串和嵌套 `Text` children，整段仍是一个可点击控件和一个焦点位置。例如在 `ui.render` 中使用 `const {Button, Text} = $.ui.resolve(event)`，返回 `Button({key:'save', label:'Save', children:['Save ', Text({dimColor:true, children:'2m'})], onPress:() => {}})`。`label` 是无 children 显示能力的 surface 使用的名称；仅单字符串 child 的旧写法继续默认以 label 为 key。其他元素会被拒绝；复合 children 应给出稳定 key。终端鼠标沿用官方的挂载后 300ms 点击稳定期和窗口激活处理，Enter/Space 不等待此稳定期。已接受的 press 绑定原 guest handle，重绘期间只要仍有 drawing 持有它就可继续；新 Button 即使复用 key 或函数也不能接管旧 guest。
 
 按钮移动或终端 resize 时，静止指针下的 hover 会在绘制后重新命中；为防止 hover 样式反复改变自身布局，连续四次变化后暂停跟随 1000ms，新的鼠标移动立即恢复。同一 Text 内两侧均有字符的空格仍属于该文本，跨 Text 或外侧的空白按空白处理。上述策略来自固定官方 2.1.295 的 Ink 实现，不新增 Mods 作者参数。专项脚本同时检查按钮在静止指针下移出/移回、两次额外 resize 的实际反色样式和关闭重开；可见 absolute 子树可以在父框之外命中，hidden/scroll 按对应轴裁剪；真实布局、重挂载与 hover 回归入口为 `bun test ./src/ink/hoverFollowsPaint295.test.tsx ./src/ink/hit-testAbsolute295.test.tsx`。
@@ -674,6 +676,10 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
   "modules": ["./register.ts"]
 }
 ```
+
+入口也可写为 `{"modules":["register.ts"]}`、`{"modules":["nested/register.ts"]}` 或 `{"modules":["../register.ts"]}`，路径均从 `hooks.json` 所在目录拼接。与固定官方 2.1.292 一致，前导 `/` 保留该目录锚点：`/register.ts` 指向 `hooks/register.ts`。解析后的路径和符号链接真实位置必须在插件目录内；这些字符串不提供 Node/npm 模块导入。
+
+十组真实 CLI 场景已核对上述模块准入、hook 回执及越界/符号链接拒绝；完整 `hooks.json`、Mods 和 UI 兼容仍待验收。回归入口为 `bun test ./src/utils/plugins/pluginModules.test.ts`、`bun test ./src/utils/plugins/validatePlugin.test.ts` 和 `bun test ./src/services/mods/plugins.test.ts`，分别运行。
 
 `register.ts` 导出 `register` 函数，可使用 `import type { Register } from 'claude-code'` 配合本次构建自动生成的类型。模块支持受限的静态相对导入；使用单入口，不假设支持动态导入、任意 npm/native 模块或 Node 全局对象。完整布局和示例见[研究报告](docs/research/claude-mods.md#73-最小示例)。例如在会话开始时注册一条本地命令：
 
@@ -761,7 +767,7 @@ Native36 完整门禁正常结束：30项 / 24通过 / 6失败，overall failed�
 /plugin enable my-mod
 ```
 
-`plugin test ./my-mod` 支持相对路径，子进程使用解析后的插件根目录。每个测试文件使用独立的临时 HOME；inline 测试插件保留在本次独立目录内，正常结束、失败或超时后，在子进程退出之后回收。runner 不扫删历史残留或其他并发运行的目录。
+`plugin test ./my-mod` 支持相对路径，子进程使用解析后的插件根目录。每个测试文件使用插件目录之外的独立临时 HOME；inline 测试插件保留在该次运行的独立目录内。正常结束、失败或超时后，runner 等待子进程退出，再清理自己创建的目录，保留其他并发运行的文件。临时声明文件仍可能生成在作者项目中。
 
 例如把以下测试保存为 `tests/hello.test.ts`。作者 runner 会在首次调用时自动启动测试 session；底层宿主调用需要由测试 hook 应答，不能直接调用真实 UI、进程或模型：
 
@@ -807,13 +813,13 @@ export const register: Register = on => {
 
 会话 hook 返回对应事件的回执，例如 session.start 返回 `{ cwd }`、session.end 返回 `{ sessionId }`；忽略 `register` 自身的返回值不等于可以从这些 hook 返回 `undefined`。`SessionContextBreakdown` 保留官方原始数组类型，传给 hook 的输入再应用 `Frozen`；旧 `UsageBreakdown` 接口仍保留现有定义。
 
-同一注册环境对每个原始事件 pattern 只允许一个不带 matcher 的注册；`*`、`namespace.*` 或 `!event` 等 broad pattern 即使带 matcher，也不能重复注册。精确事件可以有多个带 matcher 的 hook，包括 `{}`，并可以与一个不带 matcher 的 hook 共存；不同 pattern 独立计数。静态校验和实际 Worker 都会拒绝违规注册，错误包含 `registered twice`；静态错误附带编译后的位置。导入 helper 共享该注册环境，跨入口的官方分组语义仍待核对。
+同一注册环境对每个原始事件 pattern 只允许一个不带 matcher 的注册；`*`、`namespace.*` 或 `!event` 等模式即使带 matcher，也不能重复注册。精确事件可以有多个带 matcher 的 hook，包括 `{}`，并可以与一个不带 matcher 的 hook 共存；不同 pattern 独立计数。第二个精确事件 hook 可写为 `on('tool.call', {}, async ($, e, next) => next(e))`。
 
-原先依赖多个无 matcher hook 的顺序或兄弟调用示例，应给第二个精确事件注册加空 matcher，例如 `on('tool.call', {}, async ($, e, next) => next(e))`；空 matcher 保留对全部输入匹配的意图。2026-10-06 的官方2.1.289 CLI对12个真实夹具分别确认原写法拒绝、此写法接受；五个runtime测试保留原断言。运行 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/services/mods/runtime.test.ts` 等逐文件回归时，测试内部会隔离配置和占位认证；完整官方声明分支可通过 `CLAUDE_CODE_OFFICIAL_MOD_TYPES=/absolute/path/to/claude-code-2.1.289.d.ts` 启用。当前六文件ROOT复验289 pass/0 fail/4 skip，跳过的telemetry、旧官方diff命令和sec-default原件分支仍待补齐，不能作为完整门禁通过。
+`plugin validate` 不执行模块，检查可静态识别的注册；Worker 在实际注册时检查完整调用。同一个 helper 被调用两次时，固定官方 2.1.292 和本地静态校验都可能接受，但 Worker 会报告 `registered twice`。静态校验通过仍需运行插件测试。空模式 `!*` 不匹配任何事件；导入的合法 bare `on` helper 可以被识别。
 
 `toolAdapter.test.ts` 和 `runtimePromptCompose.test.ts` 中的下游 context/嵌套 compose 夹具也采用上述合法写法，原上下文及调用帧断言保留。两份原件由官方289逐一拒绝，加空 matcher 后逐一接受；两文件在用户仓库路径、调用方无凭据时分别50/0和5/0，无skip。可分别运行 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/services/mods/toolAdapter.test.ts` 和 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun test ./src/services/mods/runtimePromptCompose.test.ts`；测试内部隔离HOME/config/XDG并恢复环境。该55项上下文回归与前批六文件289项分别记录，不拼成完整门禁结果。
 
-额外的 `PromptInput.modsEdit.test.tsx` 已采用相同的内部认证和配置隔离，逐文件无需调用方key；`openai-compat.test.ts` 是含 `node:assert` 的模块级脚本，应检查其 `openai-compat.test.ts passed` 输出与退出码。它在 `bun test` 中注册0个case，不能将该统计解释为断言未执行或虚报为新增pass；也可用 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun ./src/services/api/openai-compat.test.ts` 直接执行。
+输入编辑测试仍随未提交的 UI 改动保留，不能作为当前提交的验收入口。`openai-compat.test.ts` 是含 `node:assert` 的模块级脚本，应检查其 `openai-compat.test.ts passed` 输出与退出码。它在 `bun test` 中注册0个case，不能将该统计解释为断言未执行或虚报为新增pass；也可用 `env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN bun ./src/services/api/openai-compat.test.ts` 直接执行。
 
 同批 Worker 按键夹具也应自行隔离 HOME/config/XDG、恢复环境，并使用测试内部占位认证；无需调用方提供真实 key。当前原4案已在实际工作区通过，尚未提交该新UI文件。
 
@@ -825,28 +831,23 @@ export const register: Register = on => {
 
 测试卫生已分批签名提交：`eb5e545` 处理两份上下文夹具，`265c3db` 处理 OpenAI 测试环境，`4e28238` 处理 compact 注册与请求准入夹具，`734480c` 处理 SendMessage 隔离，`d9cdbbe` 处理构建路径检查。每份实际暂存版本均在对应 HEAD 上独立检查后提交；其余功能与完整兼容门禁继续验证。 主请求测试应显式传入 `publicTurn`；复用冻结请求的内部 fork 应移除该准入，避免测试设置赋予额外 turn 所有权。
 
-作者测试的 `on` 可以在普通 `await`、timer 或读取 `$` 属性之后注册；首次实际 `$` 调用开始加载后，不能再添加 `on`。`$.turn.step(input)` 只构造流，第一次 `next()` 才开始加载；从未拉取的流先 `return()` 或 `throw()` 不会进入 hook，也不会结束注册准备。
-
-`on(...).catch(handler)` 返回 `undefined`，注册句柄本身冻结。测试 kit 在加载前保存最后一次附加的 handler；生产 Mod 的 `register` 中每个注册只能附加一次。catch 的 `next.error` 是冻结的 `{ kind: 'throw' | 'timeout', message?, budget }`，`next.called` 表示原 hook 是否已调用下层；这些字段只存在于 catch 中。已调用下层时，catch 的 `next` 重放原结算结果，不重复运行下层；返回 `undefined` 表示继续下层。流事件的 catch 使用 `async function*`，其 `undefined` 返回同样继续下层。
+当前已提交的测试 runner 要求在测试 body 的第一个 `await` 前完成 `on` 注册。测试 registrar 的 `.catch` 句柄、普通 `await` 后继续注册，以及惰性流的注册时序仍待合入。生产 Mod 的 `register` 与测试 body 使用不同的注册环境，不应把生产接口的支持情况直接套用到测试 runner。
 
 ```ts
 import { test, expect } from 'claude-code/testing'
 
-test('recovers an engine hook', async ($, on) => {
-  await Promise.resolve()
-  on('env.get', () => { throw new Error('temporary failure') })
-    .catch((_, event, next) => {
-      expect(next.error.kind).toBe('throw')
-      expect(next.called).toBe(false)
-      return { value: 'recovered' }
-    })
-  expect(await $.env.get({ name: 'example' })).toEqual({ value: 'recovered' })
+test('mocks an engine tool call', async ($, on) => {
+  on('tool.call', () => ({ result: 'fixture' }))
+  expect(await $.tool.call({ tool: 'Bash', command: 'printf fixture' }))
+    .toEqual({ result: 'fixture' })
 })
 ```
 
+测试 body 的 `$` 只提供声明中 `EventCalls` 的事件入口，例如 `$.tool.call`；生产接口的 `$.env.get` 不能直接用于官方 2.1.292 的测试 body。上例由 hook 返回结果，不会执行 Bash 命令。
+
 Hook 的宿主预算可以结束调用等待，不能立即抢占模块的同步 CPU 循环。取消后 5 秒仍未结算时，仅拒绝该请求；共享 Worker 的独立心跳负责识别无响应和退役。已归因的故障模块不会在自动恢复中重新加载，其他已准入模块按已固定的声明重建；旧 catch、句柄及在途调用不会迁移。连续第三次未归因 Worker 崩溃停用其 JS Mods，显式 reload 重置累计计数。卸载先撤销本地能力，不等待 guest 确认。debug log 记录故障原因、Worker 年龄、等待请求数量及可确认的模块和执行来源；已结算请求使用独立 ID，真实 callback 单独标记，未知来源保持未知。同样错误文字的不同崩溃分别记录，输入、选项和私密字段不序列化。custom 方法和 UI constructor 的调用者由宿主验证后传递，保留最先七项并在同步返回或抛错后恢复；无法确认祖先对应请求时不打印叶请求 ID。公开 Worker custom 方法 10 秒未回答时拒绝宿主 Promise，guest 的迟到结果被忽略；普通 hook 和 engine.create 不套用这一期限。严格 dispatch fallback、独立 nativeHost、全部等待类别及原生故障恢复仍在对齐中。
 
-catch 成功或测试已断言某个引擎调用的拒绝时，单独的 hook 诊断不会把已完成的测试改成失败。测试 body 实际抛错、未处理的拒绝、超时和卸载失败仍判为失败，并附带引擎诊断及原错误栈。这些行为已有源码入口验证，当前制品与官方原生执行的对照另行记录。
+当前测试 runner 会将引擎诊断计入测试失败；与官方“已完成测试仅附带诊断”的行为仍有差异。测试 body 抛错、未处理的拒绝、超时和卸载失败均保留非零退出码及错误信息。
 
 `register` 的返回值会被忽略，异步函数会等待完成；因此可以使用返回注册句柄的简写，例如 `export const register: Register = on => on('session.start', ($, event, next) => next(event))`。生成声明与实际 Worker 保持一致，返回句柄不会代替模块的 hooks 注册结果。
 
@@ -2101,9 +2102,9 @@ MCP 服务器可在 initialize 响应的 `result.instructions` 中返回使用�
 
 自定义模型先用最小 API 请求验证；验证成功才修改会话模型，同一进程的成功结果可复用。验证失败保留原模型，返回具体错误及可选 `error_code`：网络／可重试服务器失败为 `check_failed`，认证失败为 `auth_failed`，模型不存在为 `catalog_unknown`。普通 API 拒绝可以不带错误码，调用方应始终读取 `error`。错误码在类型定义和 schema 解析中保留。
 
-API 验证的期限为 5 秒，超时会取消请求并返回 `check_failed`；晚到结果不会进入成功缓存。模型切换按接收顺序处理，等待验证期间仍可处理 `interrupt` 等控制消息。空模型名被拒绝；`default` 使用当前默认模型。通用配置见 Anthropic 的[模型配置文档](https://code.claude.com/docs/en/model-config)。
+API 验证的期限为 5 秒，超时会取消请求并返回 `check_failed`；晚到结果不会进入成功缓存。模型切换按接收顺序处理，等待验证期间仍可处理 `interrupt` 等控制消息。紧随 `set_model` 的用户消息在队列中等待验证完成，再使用实际生效的模型；未显式配置 effort 时使用该模型的默认值。验证失败时继续使用原模型。空模型名被拒绝；`default` 使用当前默认模型。通用配置见 Anthropic 的[模型配置文档](https://code.claude.com/docs/en/model-config)。
 
-本项按固定官方 2.1.292 验收受控 API、缓存、错误回执、失败不改模型及等待期间的 `interrupt` 顺序。成功切换后的压缩状态来源见下节；远程 Mods 提示仍与官方不同。组织目录／授权覆盖、模型切换 Hook、`system_prompt` 和完整 SDK 生命周期仍需独立对齐与验收。
+本项按固定官方 2.1.292 验收受控 API、缓存、错误回执、失败不改模型及等待期间的 `interrupt` 顺序。延迟校验后立即发消息的模型与 effort 已完成三方对照；普通 Sonnet 请求仍省略官方显式发送的 `high`，保留为请求形状差异。成功切换后的压缩状态来源见下节；远程 Mods 提示仍与官方不同。组织目录／授权覆盖、模型切换 Hook、`system_prompt` 和完整 SDK 生命周期仍需独立对齐与验收。
 
 ### 自动压缩窗口来源与限制
 
