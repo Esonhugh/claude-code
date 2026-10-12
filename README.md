@@ -1996,6 +1996,8 @@ printf '%s\n' '{"type":"control_request","request_id":"init","request":{"subtype
 
 将示例路径替换为已有插件目录、父目录或 ZIP。每项必须为 `{type:"local", path:string, skipMcpDiscovery?:boolean}`；相对路径按启动工作目录解析。`skipMcpDiscovery:true` 跳过 `.mcp.json`、manifest 及 MCPB 的 MCP 发现，保留插件的其他内容。`--plugin-dir` 与初始化目录合并；同一路径同时以普通和跳过 MCP 的方式登记时，普通加载仍会发现 MCP。
 
+调用方已管理 MCP 连接时，也可用隐藏选项 `--plugin-dir-no-mcp <path>` 登记跳过 MCP 的会话来源；重复参数可登记多个路径，无需 `--await-initialize`。它与初始化请求中的跳过 MCP 来源合并。解析后相同的 `CLAUDE_CODE_PLUGIN_DIRS` 来源会被排除；显式普通 `--plugin-dir` 或 SDK 普通来源仍会发现 MCP。管理员的 `disableSideloadFlags` 同样拒绝此选项。
+
 会话路径支持单个插件目录、父目录和 ZIP（扩展名忽略大小写）。父目录按名称展开具有 `.claude-plugin/plugin.json` 的非隐藏直接子目录；根目录自身构成插件时优先加载该插件。ZIP 可包含一层包装目录，包装判断忽略 `__MACOSX` 和 `.DS_Store`。归档从本次会话的临时缓存加载，退出时清理；内容变化时整体替换，损坏或越界归档不会覆盖已有缓存。预览归档更新时使用独立目录，不替换运行中的版本。
 
 首条非空白行必须是完整的 initialize JSON，并以换行结束；其内容及后续输入会继续交给 SDK 处理。EOF 前没有换行时，不应用其中的启动插件，initialize 请求本身仍会被处理。此开关仅用于本地非 TTY 的 `stream-json` 输入，不用于远程 `--sdk-url` 传输。
