@@ -3618,7 +3618,7 @@ function walkChainBeforeParse(buf: Buffer): Buffer {
  */
 export async function loadTranscriptFile(
   filePath: string,
-  opts?: { keepAllLeaves?: boolean },
+  opts?: { keepAllLeaves?: boolean; buffer?: Buffer },
 ): Promise<{
   messages: Map<UUID, TranscriptMessage>
   summaries: Map<UUID, string>
@@ -3694,10 +3694,10 @@ export async function loadTranscriptFile(
     //
     // Pre-boundary metadata (agent-setting, mode, pr-link, etc.) is recovered
     // via a cheap byte-level forward scan of [0, boundary).
-    let buf: Buffer | null = null
+    let buf: Buffer | null = opts?.buffer ?? null
     let metadataLines: string[] | null = null
-    let hasPreservedSegment = false
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
+    let hasPreservedSegment = opts?.buffer !== undefined
+    if (buf === null && !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
       const { size } = await stat(filePath)
       if (size > SKIP_PRECOMPACT_THRESHOLD) {
         const scan = await readTranscriptForLoad(filePath, size)
