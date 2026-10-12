@@ -49,6 +49,9 @@ afterEach(() => {
   delete process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT
   delete process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   delete process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  delete process.env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT
+  delete process.env.DISABLE_AUTO_COMPACT
+  delete process.env.DISABLE_COMPACT
   if (originalEntrypoint === undefined) delete process.env.CLAUDE_CODE_ENTRYPOINT
   else process.env.CLAUDE_CODE_ENTRYPOINT = originalEntrypoint
   if (originalAnthropicBaseURL === undefined) delete process.env.ANTHROPIC_BASE_URL
@@ -178,7 +181,7 @@ test('context window resolver reports real compaction sources', () => {
   })
   expect(resolveContextWindow('custom-model')).toEqual({
     window: 200_000,
-    source: 'auto',
+    source: 'unknown-model',
   })
   expect(resolveContextWindow('claude-sonnet-4-6')).toEqual({
     window: 200_000,
@@ -312,13 +315,13 @@ test('experiment compaction window applies only to interactive Opus 4.8', () => 
   })
   expect(resolveContextWindow('custom-model')).toEqual({
     window: 200_000,
-    source: 'auto',
+    source: 'unknown-model',
   })
 
   interactive.mockReturnValue(false)
   expect(resolveContextWindow('claude-opus-4-8')).toEqual({
     window: 1_000_000,
-    source: 'auto',
+    source: 'model-default',
   })
 })
 
@@ -359,4 +362,46 @@ test('bootstrap model defaults retain official surface-aware fallback values', (
     window: 500_000,
     source: 'model-default',
   })
+})
+
+// Official 2.1.292 real remote CLI, isolated API-key config and no API traffic.
+test.each([
+  ['claude-sonnet-5-5', 1_000_000, 'model-default'],
+  ['claude-opus-5-5', 1_000_000, 'model-default'],
+  ['claude-opus-4-8', 1_000_000, 'model-default'],
+  ['claude-haiku-4-5', 200_000, 'auto'],
+  ['claude-sonnet-4-6[1m]', 1_000_000, 'auto'],
+  ['custom-model[1m]', 1_000_000, 'auto'],
+  ['custom-model', 200_000, 'unknown-model'],
+] as const)('default window provenance for %s', (model, window, source) => {
+  expect(resolveContextWindow(model)).toEqual({ window, source })
+})
+
+test('unknown-model protection can be disabled without changing the window', () => {
+  process.env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = '1'
+  expect(resolveContextWindow('custom-model')).toEqual({ window: 200_000, source: 'auto' })
+  process.env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT = '0'
+  expect(resolveContextWindow('custom-model')).toEqual({ window: 200_000, source: 'unknown-model' })
+})
+
+test.each(['DISABLE_AUTO_COMPACT', 'DISABLE_COMPACT', 'global'])(
+  'disabled auto compaction (%s) does not enforce implicit defaults', mode => {
+    if (mode === 'global') globalConfig.mockReturnValue({ autoCompactEnabled: false } as ReturnType<typeof config.getGlobalConfig>)
+    else process.env[mode] = '1'
+    expect(resolveContextWindow('custom-model')).toEqual({ window: 200_000, source: 'auto' })
+    expect(resolveContextWindow('claude-opus-5-5')).toEqual({ window: 1_000_000, source: 'auto' })
+    expect(resolveContextWindow('custom-model', 150_000)).toEqual({ window: 150_000, source: 'settings' })
+  },
+)
+
+test('disabling native 1M context still reports the enforced model default', () => {
+  process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1'
+  expect(resolveContextWindow('claude-opus-5-5')).toEqual({ window: 200_000, source: 'model-default' })
+})
+
+test('declared capabilities and unresolved inference profiles do not count as unknown models', () => {
+  capability.mockReturnValue({ id: 'custom-model', max_input_tokens: 300_000 })
+  expect(resolveContextWindow('custom-model')).toEqual({ window: 300_000, source: 'auto' })
+  capability.mockReturnValue(undefined)
+  expect(resolveContextWindow('arn:aws:bedrock:us-east-1:123:application-inference-profile/owned')).toEqual({ window: 200_000, source: 'auto' })
 })

@@ -7,13 +7,28 @@ import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { logForDebugging } from './debug.js'
 import { getFirstPartyModelCacheKey } from './model/firstPartyModelCacheKey.js'
-import { getCanonicalName } from './model/model.js'
+import { CANONICAL_MODEL_IDS } from './model/configs.js'
+import { firstPartyNameToCanonical, getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
 function isOpenAI1MModel(model: string): boolean {
   return /^(gpt-5\.6-(sol|terra|luna)|gpt-6-astra)(\[1m\])?$/i.test(model)
+}
+
+const recognizedModels = new Set<string>([
+  ...CANONICAL_MODEL_IDS.map(firstPartyNameToCanonical),
+  'claude-3-opus', 'claude-3-sonnet', 'claude-3-haiku', 'claude-mythos-preview',
+])
+
+function isNative1MModel(canonical: string): boolean {
+  return canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical === 'claude-mythos-preview' ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical === 'claude-opus-4-7' || canonical === 'claude-opus-4-8'
 }
 
 const MODEL_DEFAULT_COMPACTION_WINDOW = 200_000
@@ -278,7 +293,11 @@ export function resolveContextWindow(
   }
 
   const canonical = getCanonicalName(model)
-  const clientData = clientDataCompactionWindow(canonical)
+  const autoCompactEnabled = !isEnvTruthy(process.env.DISABLE_COMPACT) &&
+    !isEnvTruthy(process.env.DISABLE_AUTO_COMPACT) && getGlobalConfig().autoCompactEnabled
+  const clientData = autoCompactEnabled
+    ? clientDataCompactionWindow(canonical)
+    : { replacesDefault: false }
   if (clientData.window !== undefined) {
     return {
       window: Math.min(modelWindow, clientData.window),
@@ -294,7 +313,7 @@ export function resolveContextWindow(
     }
   }
 
-  if (modelWindow < 1_000_000 && modelSupports1M(model)) {
+  if (modelWindow < 1_000_000 && (modelSupports1M(model) || isNative1MModel(canonical))) {
     return {
       window: Math.min(modelWindow, MODEL_DEFAULT_COMPACTION_WINDOW),
       source: 'model-default',
@@ -317,6 +336,23 @@ export function resolveContextWindow(
         source: 'model-default',
       }
     }
+    if (autoCompactEnabled && modelWindow >= 1_000_000 &&
+      !is1mContextDisabled() && isNative1MModel(canonical)) {
+      return { window: modelWindow, source: 'model-default' }
+    }
+  }
+
+  // Official wE: an explicit 1M opt-in, believed capability, or unresolved
+  // application inference profile must not trigger unknown-model protection.
+  const declaredWindow = getModelCapability(model)?.max_input_tokens
+  const hasDeclaredWindow = declaredWindow !== undefined && declaredWindow === modelWindow
+  const optedIn = has1mContext(model) ||
+    (getSdkBetas()?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model))
+  if (autoCompactEnabled &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT) &&
+    !optedIn && !hasDeclaredWindow && !recognizedModels.has(canonical) &&
+    !model.includes('application-inference-profile')) {
+    return { window: modelWindow, source: 'unknown-model' }
   }
 
   return { window: modelWindow, source: 'auto' }
