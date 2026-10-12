@@ -3,7 +3,7 @@ import { parse } from 'acorn'
 import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
-import { isModEventPattern, normalizeModMatcher } from './matcher'
+import { EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
 import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
 // Deliberately a small authoring language, not the official parser or a security sandbox.
@@ -501,6 +501,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   function eventName(node: Node): string {
     if (node.type !== 'Literal' || typeof node.value !== 'string') fail(path, 'event must be a literal pattern string')
     const event = node.value as string
+    if (event === '!*') fail(path, EMPTY_MOD_EVENT_PATTERN_ERROR)
     if (!isModEventPattern(event)) fail(path, 'event must be *, noun.*, !pattern, or a literal noun.method')
     const selected = event.startsWith('!') ? event.slice(1) : event
     if (selected !== '*' && !selected.endsWith('.*')) {
@@ -611,8 +612,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
   function validateHelperRoles(roles: (Capability | undefined)[]) {
     for (const value of roles) {
       if (!value) continue
-      if (!['engine', 'beneath', 'next'].includes(value.role) || value.members.some(member => reserved.has(member)) ||
-        (value.role === 'next' ? !['', 'to', 'is'].includes(value.members.join('.')) : value.members.length > 2)) {
+      if (!['engine', 'beneath', 'next', 'on'].includes(value.role) || value.members.some(member => reserved.has(member)) ||
+        (value.role === 'on' ? value.members.length !== 0 :
+          value.role === 'next' ? !['', 'to', 'is'].includes(value.members.join('.')) : value.members.length > 2)) {
         fail(path, 'helpers require statically traceable capability members')
       }
     }
@@ -814,7 +816,7 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
           const value = resolveValue(callee, scope)
           const helper = value && !value.members.length && value.binding.fn
           if (!helper || value.binding.role || node.optional || node.arguments.some((argument: Node) => argument.type === 'SpreadElement') ||
-            argumentsRoles.some((argument: Capability | undefined) => argument && !['engine', 'beneath', 'next'].includes(argument.role))) {
+            argumentsRoles.some((argument: Capability | undefined) => argument && !['engine', 'beneath', 'next', 'on'].includes(argument.role))) {
             fail(path, `capability escape to unknown/dynamic helpers is unsupported (${callee.name ?? callee.type})`)
           }
           validateHelperRoles(argumentsRoles)

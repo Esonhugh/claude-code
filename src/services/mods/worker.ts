@@ -12,7 +12,7 @@ import { URL as HostURL, URLSearchParams as HostURLSearchParams } from 'node:url
 import { createModHookStream, createModProcessStream, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
 import { createModUiRealm } from './uiRealm.js'
 import { createModClientRealm, copyModClientData } from './clientRealm.js'
-import { isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
+import { EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 import { createModWebRealm } from './webRealm.js'
 import { modStateLibrarySource } from './stateLibrary.js'
 
@@ -31,6 +31,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
   const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData);
   const isModEventPattern = (${isModEventPattern.toString()});
+  const emptyEventPatternError = ${JSON.stringify(EMPTY_MOD_EVENT_PATTERN_ERROR)};
   const matchesModEventPattern = (${matchesModEventPattern.toString()});
   const normalizeModMatcher = (${normalizeModMatcher.toString()});
   const matcherWire = value => {
@@ -416,6 +417,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
       'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
       'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);
+    if (event === '!*') throw Error(emptyEventPatternError);
     if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
     checkHandler(event, handler);
     const selected = event.startsWith('!') ? event.slice(1) : event;

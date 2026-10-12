@@ -1,3 +1,5 @@
+export const EMPTY_MOD_EVENT_PATTERN_ERROR = "\"!*\" is not a pattern: it selects no event; $ is always spelled $.noun.event(...) at the call site, on is always on(\"<event>\", hook), and next.to always next.to(e, \"<tier>\")"
+
 export type ModMatcher =
   | string
   | number
@@ -71,7 +73,7 @@ export function matchesModMatcher(matcher: ModMatcher, value: unknown): boolean 
 }
 
 export function isModEventPattern(value: unknown): value is string {
-  if (typeof value !== 'string') return false
+  if (typeof value !== 'string' || value === '!*') return false
   const pattern = value.startsWith('!') ? value.slice(1) : value
   return pattern === '*' ||
     /^[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za-z0-9_]*$/.test(pattern) ||
