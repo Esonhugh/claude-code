@@ -159,20 +159,24 @@ test('invalid file deadlines fail before spawning children', async () => {
 test('child environment is explicit and does not inherit arbitrary credentials or preload options', async () => {
   const result = await scenario(`
     const spawn = Bun.spawn
-    let keys, isolatedHome
+    const {tmpdir} = await import('node:os')
+    const {join} = await import('node:path')
+    let keys, isolatedHome, isolatedScratch
     Bun.spawn = (command, options) => {
-      isolatedHome = options.env?.HOME?.startsWith(root + '/.claude-test-environment/home-')
+      isolatedHome = options.env?.HOME?.startsWith(join(tmpdir(), 'claude-plugin-test-'))
+      isolatedScratch = options.env?.CLAUDE_CODE_PLUGIN_TEST_DIRECTORY?.startsWith(root + '/.claude-test-environment/file-')
       keys = options.env ? Object.keys(options.env) : null
       return spawn(command, options)
     }
     await runPluginTests(root, {childCommand: file => [process.execPath, '-e',
       'console.log(${JSON.stringify(marker)} + JSON.stringify({file: ' + JSON.stringify(file) + ', tests: []}))'
     ]})
-    console.log(JSON.stringify({keys, isolatedHome}))
+    console.log(JSON.stringify({keys, isolatedHome, isolatedScratch}))
   `)
   expect(result.isolatedHome).toBe(true)
+  expect(result.isolatedScratch).toBe(true)
   expect(result.keys).not.toBeNull()
-  expect(result.keys.every((key: string) => ['PATH', 'HOME', 'CLAUDE_CONFIG_DIR', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'WINDIR', 'LANG', 'TZ'].includes(key))).toBe(true)
+  expect(result.keys.every((key: string) => ['PATH', 'HOME', 'CLAUDE_CONFIG_DIR', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'WINDIR', 'LANG', 'TZ', 'CLAUDE_CODE_PLUGIN_TEST_DIRECTORY'].includes(key))).toBe(true)
 })
 
 test('success cancels the deadline and uses no fixed 25ms grace timer', async () => {

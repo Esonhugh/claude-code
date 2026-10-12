@@ -1,4 +1,5 @@
-import { mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, rmdir, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { isNativeError, isRegExp } from 'node:util/types'
 import { pathToFileURL } from 'node:url'
@@ -526,6 +527,8 @@ export async function runPluginTestFile(
     let registrationId = 0
     const mounts = new Set<MountedUi>()
     let initialization: Promise<void> | undefined
+    let inlineRoot: string | undefined
+    let createdInlineDirectory = false
     const lifetime = new AbortController()
     const operations = new Set<Promise<unknown>>()
     const track = <T>(operation: () => Promise<T>): Promise<T> => {
@@ -584,9 +587,9 @@ export async function runPluginTestFile(
           }, () => ({}))
           const plugins = [await pluginInput(root, registry.tier, item.options.options)]
           if (item.options.plugins?.length) {
-            const directory = join(root, '.claude-test-environment')
-            await mkdir(directory, { recursive: true })
-            const inlineRoot = await mkdtemp(join(directory, 'inline-'))
+            const directory = process.env.CLAUDE_CODE_PLUGIN_TEST_DIRECTORY ?? join(root, '.claude-test-environment')
+            createdInlineDirectory = await mkdir(directory, { recursive: true }) !== undefined
+            inlineRoot = await mkdtemp(join(directory, 'inline-'))
             for (const [index, plugin] of item.options.plugins.entries()) {
               if (plugins.some(input => input.name === plugin.name)) throw new Error(`Duplicate test plugin: ${plugin.name}`)
               const entrypoint = join(inlineRoot, `${index}.ts`)
@@ -656,6 +659,14 @@ export async function runPluginTestFile(
         for (const error of asynchronous)
           messages.push(failure(error))
       } finally {
+        if (inlineRoot) {
+          try {
+            await rm(inlineRoot, {recursive:true, force:true})
+            if (createdInlineDirectory) await rmdir(dirname(inlineRoot)).catch(error => {
+              if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error
+            })
+          } catch (error) { messages.push(`cleanup: ${failure(error)}`) }
+        }
         process.off('unhandledRejection', reject)
         process.off('uncaughtException', crash)
       }
@@ -681,7 +692,7 @@ export async function runPluginTestChild(
 
 export async function runPluginTests(
   pluginRoot: string,
-  options: { childCommand?: (file: string, root: string) => string[]; fileTimeoutMs?: number } = {},
+  options: { childCommand?: (file: string, root: string) => string[]; fileTimeoutMs?: number; deadlineClock?: Pick<DeadlineClock, 'schedule'> } = {},
 ): Promise<PluginTestResult> {
   const fileTimeoutMs = options.fileTimeoutMs ?? 60_000
   if (!Number.isFinite(fileTimeoutMs) || fileTimeoutMs <= 0)
@@ -694,55 +705,73 @@ export async function runPluginTests(
   for (const file of files) {
     const command = options.childCommand?.(file, root) ?? [process.execPath, import.meta.path, '--child', root, file]
     // Do not inherit credentials, runtime preload flags, or arbitrary plugin environment.
-    const isolationRoot = join(root, '.claude-test-environment')
-    await mkdir(isolationRoot, { recursive: true })
-    const home = await mkdtemp(join(isolationRoot, 'home-'))
-    const env: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: join(home, 'config'), TMPDIR: home, TEMP: home, TMP: home }
-    for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'LANG', 'TZ']) {
-      const value = process.env[key]
-      if (value !== undefined) env[key] = value
-    }
-    const child = Bun.spawn(command, { cwd: root, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
-    let timedOut = false
-    const deadline = setTimeout(() => {
-      timedOut = true
-      child.kill('SIGKILL')
-    }, fileTimeoutMs)
-    let output: [string, string, number]
+    const home = await mkdtemp(join(tmpdir(), 'claude-plugin-test-'))
+    const testDirectory = join(root, '.claude-test-environment')
+    let createdTestDirectory = false
+    let scratch: string | undefined
     try {
-      output = await Promise.all([
-        new Response(child.stdout).text(),
-        new Response(child.stderr).text(),
-        child.exited,
-      ])
-    } finally {
-      clearTimeout(deadline)
-    }
-    const [stdout, stderr, status] = output
-    if (timedOut) {
-      results.push({ file, tests: [], loadFailure: `Plugin test file timed out after ${fileTimeoutMs}ms` })
-      continue
-    }
-    const line = stdout.split('\n').find(value => value.startsWith(RESULT_MARKER))
-    if (!line) {
-      results.push({ file, tests: [], loadFailure: stderr || stdout || `Child exited with status ${status}` })
-      continue
-    }
-    try {
-      const result = JSON.parse(line.slice(RESULT_MARKER.length)) as PluginTestFileResult
-      if (result.file !== file || !Array.isArray(result.tests) || result.tests.some(entry =>
-        !isRecord(entry) || typeof entry.name !== 'string' || typeof entry.durationMs !== 'number' ||
-        !Number.isFinite(entry.durationMs) || entry.durationMs < 0 ||
-        entry.failure !== undefined && typeof entry.failure !== 'string') ||
-        result.loadFailure !== undefined && typeof result.loadFailure !== 'string')
-        throw new Error('Invalid child test result')
-      if (status !== 0 && result.loadFailure === undefined && result.tests.every(test => test.failure === undefined)) {
-        result.tests = []
-        result.loadFailure = `Child exited with status ${status}${stderr ? `\n${stderr}` : ''}`
+      createdTestDirectory = await mkdir(testDirectory, {recursive:true}) !== undefined
+      scratch = await mkdtemp(join(testDirectory, 'file-'))
+      const env: Record<string, string> = { HOME: home, CLAUDE_CONFIG_DIR: join(home, 'config'), TMPDIR: home, TEMP: home, TMP: home, CLAUDE_CODE_PLUGIN_TEST_DIRECTORY: scratch }
+      for (const key of ['PATH', 'SystemRoot', 'WINDIR', 'LANG', 'TZ']) {
+        const value = process.env[key]
+        if (value !== undefined) env[key] = value
       }
-      results.push(result)
-    } catch (error) {
-      results.push({ file, tests: [], loadFailure: failure(error) })
+      const child = Bun.spawn(command, { cwd: root, env, stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' })
+      let timedOut = false
+      const expire = () => {
+        timedOut = true
+        child.kill('SIGKILL')
+      }
+      const cancelDeadline = options.deadlineClock?.schedule(fileTimeoutMs, expire) ?? (() => {
+        const timer = setTimeout(expire, fileTimeoutMs)
+        return () => clearTimeout(timer)
+      })()
+      let output: [string, string, number]
+      try {
+        output = await Promise.all([
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+          child.exited,
+        ])
+      } finally {
+        cancelDeadline()
+        if (child.exitCode === null) child.kill('SIGKILL')
+        await child.exited
+      }
+      const [stdout, stderr, status] = output
+      if (timedOut) {
+        results.push({ file, tests: [], loadFailure: `Plugin test file timed out after ${fileTimeoutMs}ms` })
+        continue
+      }
+      const line = stdout.split('\n').find(value => value.startsWith(RESULT_MARKER))
+      if (!line) {
+        results.push({ file, tests: [], loadFailure: stderr || stdout || `Child exited with status ${status}` })
+        continue
+      }
+      try {
+        const result = JSON.parse(line.slice(RESULT_MARKER.length)) as PluginTestFileResult
+        if (result.file !== file || !Array.isArray(result.tests) || result.tests.some(entry =>
+          !isRecord(entry) || typeof entry.name !== 'string' || typeof entry.durationMs !== 'number' ||
+          !Number.isFinite(entry.durationMs) || entry.durationMs < 0 ||
+          entry.failure !== undefined && typeof entry.failure !== 'string') ||
+          result.loadFailure !== undefined && typeof result.loadFailure !== 'string')
+          throw new Error('Invalid child test result')
+        if (status !== 0 && result.loadFailure === undefined && result.tests.every(test => test.failure === undefined)) {
+          result.tests = []
+          result.loadFailure = `Child exited with status ${status}${stderr ? `\n${stderr}` : ''}`
+        }
+        results.push(result)
+      } catch (error) {
+        results.push({ file, tests: [], loadFailure: failure(error) })
+      }
+    } finally {
+      try { await rm(home, {recursive:true, force:true}) } finally {
+        if (scratch) await rm(scratch, {recursive:true, force:true})
+        if (createdTestDirectory) await rmdir(testDirectory).catch(error => {
+          if (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY') throw error
+        })
+      }
     }
   }
   return {

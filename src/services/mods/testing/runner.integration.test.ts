@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { lstat, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
+import { join, relative, resolve } from 'node:path'
 import { HOOK_EVENTS } from '../../../entrypoints/sdk/coreTypes.js'
+import { runPluginTests } from './runner.js'
+import { ManualDeadlineClock } from './fixtures/manualDeadlineClock.js'
 
 const repository = resolve(import.meta.dir, '../../../..')
 const runner = join(import.meta.dir, 'runner.ts')
@@ -55,9 +57,157 @@ async function scenario(
     await writeFile(join(root, 'stderr.log'), stderr)
     const line = stdout.split('\n').find(line => line.startsWith('__CLAUDE_PLUGIN_TEST_RESULT__'))
     expect(line, stderr || stdout).toBeDefined()
-    return { result: JSON.parse(line!.slice('__CLAUDE_PLUGIN_TEST_RESULT__'.length)), status, stderr }
+    return { root, result: JSON.parse(line!.slice('__CLAUDE_PLUGIN_TEST_RESULT__'.length)), status, stderr }
   } finally { clearTimeout(watchdog) }
 }
+
+// Advance the existing file deadline only after the real child reports readiness.
+// The child still runs and is killed through Bun.spawn; CPU speed does not decide
+// whether the cleanup case tests success or timeout.
+async function runWithControlledDeadline(
+  root: string,
+  options: NonNullable<Parameters<typeof runPluginTests>[1]> & {fileTimeoutMs:number},
+  expireAfterReady: boolean,
+  beforeExpire?: (env: Record<string, string | undefined>) => Promise<void>,
+) {
+  const clock = new ManualDeadlineClock()
+  const spawn = Bun.spawn
+  const observers: Promise<void>[] = []
+  Bun.spawn = new Proxy(spawn, {apply(target, thisArg, args) {
+    const child = Reflect.apply(target, thisArg, args) as Bun.Subprocess
+    const childOptions = Array.isArray(args[0]) ? args[1] : args[0]
+    if (!(child.stdout instanceof ReadableStream)) return child
+    const [output, events] = child.stdout.tee()
+    const observing = (async () => {
+      const reader = events.getReader(), decoder = new TextDecoder()
+      let text = '', ready = false
+      try {
+        for (;;) {
+          const part = await reader.read()
+          if (part.done) break
+          text += decoder.decode(part.value, {stream:true})
+          if (!ready && text.includes('__RUNNER_READY__')) {
+            ready = true
+            if (expireAfterReady) {
+              expect(clock.pending).toBe(1)
+              await beforeExpire?.(childOptions?.env ?? {})
+              clock.advance(options.fileTimeoutMs)
+            }
+          }
+        }
+        expect(ready).toBe(true)
+      } finally { reader.releaseLock() }
+    })()
+    void observing.catch(() => {})
+    observers.push(observing)
+    return new Proxy(child, {get(target, key) {
+      if (key === 'stdout') return output
+      const value = Reflect.get(target, key, target)
+      return typeof value === 'function' ? value.bind(target) : value
+    }})
+  }})
+  try {
+    const result = await runPluginTests(root, {...options, deadlineClock:clock})
+    await Promise.all(observers)
+    expect(observers).toHaveLength(1)
+    expect(clock.pending).toBe(0)
+    return result
+  } finally { Bun.spawn = spawn }
+}
+
+test('parent runner gives child commands the canonical root for relative plugin paths', async () => {
+  const {root} = await scenario(`import {test} from 'claude-code/testing'; test('relative', () => {});`, `export function register(on) {}`)
+  const roots: string[] = []
+  const result = await runPluginTests(relative(process.cwd(), root), {
+    childCommand: (file, canonicalRoot) => {
+      roots.push(canonicalRoot)
+      return [process.execPath, runner, '--child', canonicalRoot, file]
+    },
+  })
+  expect(roots).toEqual([root])
+  expect(result.failed).toBe(0)
+  expect(result.passed).toBe(1)
+})
+
+test.each(['success', 'invalid result', 'timeout'] as const)('parent runner removes only its own test HOME after %s', async outcome => {
+  const {root} = await scenario(`import {test} from 'claude-code/testing'; test('owned', () => {});`, `export function register(on) {}`)
+  const shared = join(root, '.claude-test-environment')
+  const concurrent = join(shared, 'home-concurrent')
+  await mkdir(concurrent, {recursive:true})
+  await writeFile(join(concurrent, 'sentinel'), 'another activation')
+  const linked = join(root, 'concurrent-target')
+  await mkdir(linked)
+  await writeFile(join(linked, 'sentinel'), 'another linked activation')
+  await symlink(linked, join(shared, 'file-concurrent'), 'dir')
+  const linkBefore = await lstat(join(shared, 'file-concurrent'))
+  const homeRecord = join(root, 'child-home.json')
+  const code = outcome === 'timeout' ? `while(true){}` : outcome === 'invalid result' ? `process.stdout.write('invalid result')` : undefined
+  const result = await runWithControlledDeadline(root, {
+    childCommand: file => [process.execPath, '-e', `
+      import {writeFileSync} from 'node:fs';
+      writeFileSync(${JSON.stringify(homeRecord)},JSON.stringify(process.env.HOME));
+      console.log('__RUNNER_READY__');
+      ${code ?? `const {runPluginTestChild}=await import(${JSON.stringify(runner)}); process.exitCode=await runPluginTestChild(${JSON.stringify(root)},${JSON.stringify(file)});`}`],
+    fileTimeoutMs: 2000,
+  }, outcome === 'timeout')
+  // No home from this run may appear in the author's root, even on killed or malformed children.
+  expect((await readdir(shared)).sort()).toEqual(['file-concurrent', 'home-concurrent'])
+  expect(await readFile(join(concurrent, 'sentinel'), 'utf8')).toBe('another activation')
+  const linkAfter = await lstat(join(shared, 'file-concurrent'))
+  expect([linkAfter.dev,linkAfter.ino,linkAfter.mtimeMs]).toEqual([linkBefore.dev,linkBefore.ino,linkBefore.mtimeMs])
+  expect(await readFile(join(shared, 'file-concurrent', 'sentinel'), 'utf8')).toBe('another linked activation')
+  const home: string = JSON.parse(await readFile(homeRecord, 'utf8'))
+  expect(relative(root, home).startsWith('..')).toBe(true)
+  await expect(lstat(home)).rejects.toMatchObject({code:'ENOENT'})
+  expect(result.failed).toBe(outcome === 'success' ? 0 : 1)
+  expect(result.passed).toBe(outcome === 'success' ? 1 : 0)
+})
+
+test('child runner removes its inline plugins while preserving other activation directories', async () => {
+  const {root} = await scenario(`import {test} from 'claude-code/testing'; test('fixture',()=>{});`, `export function register(on) {}`)
+  const shared = join(root, '.claude-test-environment')
+  await mkdir(join(shared, 'inline-concurrent'), {recursive:true})
+  await writeFile(join(shared, 'inline-concurrent', 'sentinel'), 'another activation')
+  await writeFile(join(root, 'probe.test.ts'), `import {test,expect} from 'claude-code/testing';
+    test('inline', {plugins:[{name:'inline',register(on){on('env.get',()=>({value:'inline'}))}}]}, async $ => {
+      expect(await $.env.get({name:'PROBE'})).toEqual({value:'inline'});
+    });`)
+  const result = await runPluginTests(root)
+  expect(result.failed).toBe(0)
+  expect(result.passed).toBe(1)
+  expect(await readdir(shared)).toEqual(['inline-concurrent'])
+  expect(await readFile(join(shared, 'inline-concurrent', 'sentinel'), 'utf8')).toBe('another activation')
+})
+
+test('parent runner reclaims initialized inline plugins after a child is killed', async () => {
+  const {root} = await scenario(`import {test} from 'claude-code/testing'; test('fixture',()=>{});`, `export function register(on) {}`)
+  const shared = join(root, '.claude-test-environment')
+  await mkdir(join(shared, 'inline-concurrent'), {recursive:true})
+  await writeFile(join(shared, 'inline-concurrent', 'sentinel'), 'another activation')
+  const proof = join(root, 'inline-before-kill.json')
+  await writeFile(join(root, 'probe.test.ts'), `import {test,expect} from 'claude-code/testing';
+    test('stuck inline', {plugins:[{name:'inline',register(on){on('env.get',()=>({value:'initialized'}))}}]}, async $ => {
+      expect(await $.env.get({name:'PROBE'})).toEqual({value:'initialized'});
+      console.log('__RUNNER_READY__');
+      while(true){}
+    });`)
+  const result = await runWithControlledDeadline(root, {
+    fileTimeoutMs:3000,
+    childCommand:file=>[process.execPath,'-e',`
+      const {runPluginTestChild}=await import(${JSON.stringify(runner)});
+      process.exitCode=await runPluginTestChild(${JSON.stringify(root)},${JSON.stringify(file)});`],
+  }, true, async env => {
+    const directory = env.CLAUDE_CODE_PLUGIN_TEST_DIRECTORY ?? shared
+    const files = await readdir(directory, {recursive:true})
+    expect(files.some(file=>file.endsWith('/0.ts'))).toBe(true)
+    await writeFile(proof, JSON.stringify(files))
+  })
+  expect(JSON.parse(await readFile(proof,'utf8')).some((file:string)=>file.endsWith('/0.ts'))).toBe(true)
+  expect(result.failed).toBe(1)
+  expect(result.files[0]!.loadFailure).toContain('timed out after 3000ms')
+  expect(await readdir(shared)).toEqual(['inline-concurrent'])
+  expect(await readFile(join(shared,'inline-concurrent','sentinel'),'utf8')).toBe('another activation')
+},15000)
 
 test('normal completion settles fire-and-forget UI invalidation before disposal', async () => {
   const { result, status, stderr } = await scenario(`import {test} from 'claude-code/testing';
