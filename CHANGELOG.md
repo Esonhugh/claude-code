@@ -28,7 +28,7 @@
 
 ### 变更内容
 
-- MCP 指令上下文：SDK 连接保存 initialize 返回的 instructions，普通连接与 SDK 共用长度处理；对齐固定官方 2.1.292，将指令通过持久化消息传给模型。默认上限 2048 个 UTF-16 单元，可用 CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH 配置正整数；截断避免半个代理对并打印原长度和上限。
+- MCP 指令上下文：SDK 连接保存 initialize 返回的 instructions，普通连接与 SDK 共用长度处理；对齐固定官方 2.1.292，将指令通过消息传给模型。默认上限 2048 个 UTF-16 单元，可用 CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH 配置正整数；截断避免半个代理对并打印原长度和上限。 磁盘记录及恢复上下文尚未对齐。
 
 - SDK 动态 MCP：stdio 配置在创建连接前复制 `args`，省略参数数组时返回固定官方 2.1.292 的展开错误，失败结果仍可查询和移除；显式 `args: []` 可用。系统启动错误文案和完整 MCP 生命周期继续独立对齐。
 

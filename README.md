@@ -2081,11 +2081,11 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 
 SDK 服务器连接成功后，`serverInfo` 来自 MCP initialize 响应的服务器实现信息，包含名称和版本；等待握手完成后再读取。`source: "sdk"` 表示定义来源，连接是否成功仍以 `status` 和实际握手结果为准。
 
-MCP 服务器可在 initialize 响应的 `result.instructions` 中返回使用工具和资源的可选字符串。SDK 宿主也通过同一握手返回；等待连接完成后发送用户请求。非空指令通过持久化的 `system-reminder` 消息进入模型上下文，SDK 与普通连接使用同一路径。字段位置见 MCP 的[初始化规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)。
+MCP 服务器可在 initialize 响应的 `result.instructions` 中返回使用工具和资源的可选字符串。SDK 宿主也通过同一握手返回；等待连接完成后发送用户请求。非空指令通过 `system-reminder` 消息进入当前模型请求，SDK 与普通连接使用同一路径。字段位置见 MCP 的[初始化规范](https://modelcontextprotocol.io/specification/2025-11-25/basic/lifecycle)。
 
 指令默认最多保留 2048 个 UTF-16 单元。`CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` 可设置正整数上限，支持前后空格和正号；非法值回退默认值。超长时附加 `… [truncated]`，截断不会留下半个 Unicode 代理对。`--debug-file` 中会记录服务器名称、原始长度和上限。
 
-这条上下文路径按固定官方 2.1.292 对照了 9 个 SDK、3 个 stdio 场景，包括缺省、空、超长、Unicode 边界及有效／无效上限；实际模型请求中的完整指令段和消息位置、状态／移除／结束回执及退出结果一致。重连后的指令变化及完整 MCP/Mods/UI 生命周期继续单独验收。
+这条上下文路径按固定官方 2.1.292 对照了 9 个 SDK、3 个 stdio 场景，包括缺省、空、超长、Unicode 边界及有效／无效上限；实际模型请求中的完整指令段和消息位置、状态／移除／结束回执及退出结果一致。本地 stream-json 的磁盘 transcript 仍会过滤此 attachment，恢复后的上下文尚未与官方对齐；上述对照只覆盖新会话的当前请求。磁盘持久化、恢复、重连后的指令变化及完整 MCP/Mods/UI 生命周期继续单独验收。
 
 固定官方 2.1.292 的对照覆盖用户、动态和插件连接失败，以及 SDK 基本和完整 Implementation 元数据的成功握手；这些场景的完整状态、移除和退出回执相同。运行时 mod 注册服务器及完整 MCP/SDK 生命周期继续单独验收。
 
