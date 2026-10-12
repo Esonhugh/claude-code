@@ -3066,43 +3066,87 @@ describe('ModsPane input repair', () => {
   })
 
   test('restores host focus on deny and stay without a changed snapshot, serializing rapid arrows', async () => {
+    const painted = Promise.withResolvers<void>()
+    const rawMode = Promise.withResolvers<void>()
     const stdout = new Output()
-    const stdin = new Input()
+    const stdin = new class extends Input {
+      setRawMode(value: boolean) {
+        super.setRawMode(value)
+        if (value) rawMode.resolve()
+        return this
+      }
+    }()
+    type FocusReply = { focused: boolean; element: string; deny?: string }
+    type FocusCall = { key: string | undefined; release(): void; completed: Promise<FocusReply> }
+    const calls: Array<ReturnType<typeof Promise.withResolvers<FocusCall>>> = []
+    const callAt = (index: number) => calls[index] ??= Promise.withResolvers<FocusCall>()
+    const releases: Array<() => void> = []
     const requests: string[] = []
     let phase: 'deny' | 'stay' | 'allow' = 'deny'
     let activeRequests = 0
     let maxActive = 0
     let current = 'a'
+    let ready = false
+    let initialFocus = Promise.resolve<FocusReply>({ focused: true, element: current })
     const tree = { type: 'Box', props: { flexDirection: 'column' }, children: [fileButton('a'), fileButton('b'), fileButton('c')] }
     const instance = await render(<><EnableInput /><ModsPane pane={pane(tree, { focusedElement: 'a' })}
-      onFocus={async (_pane, key) => {
+      onFocus={(_pane, key) => {
+        if (!ready) {
+          initialFocus = Promise.resolve({ focused: true, element: current })
+          return initialFocus
+        }
+        const index = requests.length
         requests.push(key!)
         maxActive = Math.max(maxActive, ++activeRequests)
-        await new Promise(resolve => setTimeout(resolve, 10))
-        activeRequests--
-        if (phase === 'deny') return { deny: 'blocked', focused: true, element: current }
-        if (phase === 'allow') current = key!
-        return { focused: true, element: current }
+        const release = Promise.withResolvers<void>()
+        const requestedPhase = phase
+        const completed = release.promise.then((): FocusReply => {
+          activeRequests--
+          if (requestedPhase === 'deny') return { deny: 'blocked', focused: true, element: current }
+          if (requestedPhase === 'allow') current = key!
+          return { focused: true, element: current }
+        })
+        releases.push(release.resolve)
+        callAt(index).resolve({ key, release: release.resolve, completed })
+        return completed
       }} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
-    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false, onFrame: () => painted.resolve() })
+    const complete = async (index: number, key: string) => {
+      const call = await callAt(index).promise
+      expect(call.key).toBe(key)
+      call.release()
+      // ModsPane attaches its landing continuation before the input observer
+      // receives the call, so this waits for the actual reply and landing.
+      await call.completed
+    }
     try {
-      await settle()
-      requests.length = 0
+      await Promise.all([painted.promise, rawMode.promise])
+      await initialFocus
+      ready = true
       const first = renderedElement(stdout, '[ a ]', 'ink-text').parentNode!
+      expect(getFocusManager(first).activeElement).toBe(first)
       stdin.push('\u001b[B')
-      await settle()
+      await complete(0, 'b')
       expect(getFocusManager(first).activeElement).toBe(first)
       phase = 'stay'
       stdin.push('\u001b[B')
-      await settle()
+      await complete(1, 'b')
       expect(getFocusManager(first).activeElement).toBe(first)
       phase = 'allow'
       stdin.push('\u001b[B\u001b[B')
-      await settle()
+      const firstBurst = await callAt(2).promise
+      expect(firstBurst.key).toBe('b')
+      expect(requests).toEqual(['b', 'b', 'b'])
+      firstBurst.release()
+      await firstBurst.completed
+      await complete(3, 'c')
       expect(requests).toEqual(['b', 'b', 'b', 'c'])
       expect(maxActive).toBe(1)
       expect(getFocusManager(first).activeElement).toBe(renderedElement(stdout, '[ c ]', 'ink-text').parentNode!)
-    } finally { instance.unmount() }
+    } finally {
+      for (const release of releases) release()
+      instance.unmount()
+    }
   })
 
   test('Escape cancels queued focus moves and late landings cannot reacquire the composer', async () => {
