@@ -60,4 +60,18 @@ if (process.env[childFlag] !== '1') {
     } finally { connect.mockRestore();await clearServerCache('ordinary-error',config) }
   })
 
+  test.each(['/no/such/owned-mcp-command', process.execPath])('missing stdio args are rejected before connecting %s', async command => {
+    const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
+    const connect = spyOn(Client.prototype,'connect').mockRejectedValue(new Error('transport must not start'))
+    // The SDK control schema accepts omitted args; official 2.1.292 fails before spawning.
+    const config = {type:'stdio',command,scope:'dynamic'} as import('./types.js').ScopedMcpServerConfig
+    const name = 'missing-args-' + (command === process.execPath ? 'existing' : 'missing')
+    try {
+      const result = await connectToServer(name,config)
+      expect(result.type === 'failed' && result.error).toBe('Spread syntax requires ...iterable not be null or undefined')
+      expect(connect).not.toHaveBeenCalled()
+      expect(await connectToServer(name,config)).toBe(result)
+    } finally { connect.mockRestore();await clearServerCache(name,config) }
+  })
+
 }

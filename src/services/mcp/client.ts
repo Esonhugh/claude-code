@@ -989,7 +989,7 @@ export const connectToServer = memoize(
           process.env.CLAUDE_CODE_SHELL_PREFIX || serverRef.command
         const finalArgs = process.env.CLAUDE_CODE_SHELL_PREFIX
           ? [[serverRef.command, ...serverRef.args].join(' ')]
-          : serverRef.args
+          : [...serverRef.args]
         transport = new StdioClientTransport({
           command: finalCommand,
           args: finalArgs,
