@@ -1336,6 +1336,7 @@ function runHeadlessStreaming(
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
+  let pendingModelSwitches = Promise.resolve()
 
   const streamState = createSdkStreamState({
     remote: Boolean(process.env.CLAUDE_CODE_REMOTE),
@@ -2086,6 +2087,8 @@ function runHeadlessStreaming(
       // into a single follow-up turn instead of N separate turns.
       const drainCommandQueue = async () => {
         while ((command = dequeue(isMainThread))) {
+          // Keep stdin controls responsive while queued turns wait for model validation.
+          await pendingModelSwitches
           streamState.refresh()
           if (
             command.mode !== 'prompt' &&
@@ -3078,7 +3081,6 @@ function runHeadlessStreaming(
     })
   }
 
-  let pendingModelSwitches = Promise.resolve()
 
   const sendControlResponseError = function (
     message: SDKControlRequest,

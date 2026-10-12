@@ -127,6 +127,59 @@ if (process.env[childFlag] !== '1') {
       for (const mock of mocks) mock.mockRestore()
     }
   })
+  test('a user message immediately after set_model uses the validated model and its default effort', async () => {
+    const engine = await import('../QueryEngine.js')
+    const { resolveAppliedEffort } = await import('../utils/effort.js')
+    const { createAssistantMessage } = await import('../utils/messages.js')
+    const store = createStore(getDefaultAppState(), onChangeAppState)
+    const oldModel = bootstrap.getMainLoopModelOverride()
+    const requested = 'claude-opus-5-5'
+    const calls: { model: string | undefined; effort: unknown }[] = []
+    const frames: StdoutMessage[] = []
+    const mocks = [
+      spyOn(grove, 'isQualifiedForGrove').mockResolvedValue(false),
+      spyOn(growthbook, 'initializeGrowthBook').mockResolvedValue(undefined),
+      spyOn(env, 'isBareMode').mockReturnValue(true),
+      spyOn(shutdown, 'gracefulShutdownSync').mockImplementation(() => {}),
+      spyOn(processUtils, 'registerProcessOutputErrorHandlers').mockImplementation(() => {}),
+      spyOn(stdoutGuard, 'installStreamJsonStdoutGuard').mockImplementation(() => () => {}),
+      spyOn(modelStrings, 'ensureModelStringsInitialized').mockResolvedValue(undefined),
+      spyOn(toolPool, 'assembleToolPool').mockReturnValue([]),
+      spyOn(SandboxManager, 'getSandboxUnavailableReason').mockReturnValue(undefined),
+      spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(false),
+      spyOn(sideQuery, 'sideQuery').mockImplementation(async options => {
+        expect(options).toMatchObject({model: requested, max_tokens: 1, querySource: 'model_validation'})
+        // Model validation is deliberately slower than stdin delivery, as in the native regression.
+        await new Promise<void>(resolve => setTimeout(resolve, 1500))
+        return {content: [{type: 'text', text: 'ok'}]} as Awaited<ReturnType<typeof sideQuery.sideQuery>>
+      }),
+      spyOn(engine, 'ask').mockImplementation(async function* (options) {
+        calls.push({model: options.userSpecifiedModel,
+          effort: resolveAppliedEffort(options.userSpecifiedModel!, options.getAppState().effortValue)})
+        const assistant = createAssistantMessage({content: 'done'})
+        yield {type: 'assistant', message: assistant.message, parent_tool_use_id: null,
+          session_id: bootstrap.getSessionId(), uuid: assistant.uuid}
+      }),
+      spyOn(StructuredIO.prototype, 'write').mockImplementation(async message => { frames.push(message) }),
+    ]
+    async function* input() {
+      yield JSON.stringify({type: 'control_request', request_id: 'ordered-model',
+        request: {subtype: 'set_model', model: requested}}) + '\n'
+      yield JSON.stringify({type: 'user', message: {role: 'user', content: 'after model change'}}) + '\n'
+    }
+    try {
+      await runHeadless(input(), store.getState, store.setState, [], [], {}, [], {
+        outputFormat: 'stream-json', verbose: true, userSpecifiedModel: 'claude-sonnet-4-6',
+        sessionStartHooksPromise: Promise.resolve([]),
+      } as Parameters<typeof runHeadless>[7])
+      expect(calls).toEqual([{model: requested, effort: 'medium'}])
+      expect(frames.filter(frame => frame.type === 'control_response').map(frame => frame.response))
+        .toEqual([{subtype: 'success', request_id: 'ordered-model'}])
+    } finally {
+      bootstrap.setMainLoopModelOverride(oldModel)
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
   test('validation deadline aborts the probe and a late answer cannot enter the success cache', async () => {
     const { validateModel } = await import('../utils/model/validateModel.js')
     const probe = Promise.withResolvers<Awaited<ReturnType<typeof sideQuery.sideQuery>>>()
