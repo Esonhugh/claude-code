@@ -53,6 +53,7 @@ export type TextStyles = {
 }
 
 export type Styles = {
+  readonly selectionScope?: boolean
   readonly textWrap?:
     | 'wrap'
     | 'wrap-trim'

@@ -1,6 +1,6 @@
 import type { Cursor } from './cursor.js'
 import type { Size } from './layout/geometry.js'
-import type { ScrollHint } from './render-node-to-output.js'
+import type { ScrollHint, FollowScroll } from './render-node-to-output.js'
 import type { TerminalImage } from './dom.js'
 import type { TerminalEvidenceBoundary } from './terminalEvidence.js'
 import type { NativeTerminalFrameSpan } from './nativeTerminalJournal.js'
@@ -33,6 +33,7 @@ export type Frame = {
   readonly scrollHint?: ScrollHint | null
   /** A ScrollBox has remaining pendingScrollDelta — schedule another frame. */
   readonly scrollDrainPending?: boolean
+  readonly followScroll?: FollowScroll | null
 }
 
 export function emptyFrame(

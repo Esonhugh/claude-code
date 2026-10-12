@@ -6,7 +6,11 @@ import {
 } from '../hooks/useCopyOnSelect.js'
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
 import { useSelection } from '../ink/hooks/use-selection.js'
-import type { FocusMove, SelectionState } from '../ink/selection.js'
+import {
+  isSelectionOffscreen,
+  type FocusMove,
+  type SelectionState,
+} from '../ink/selection.js'
 import { isXtermJs } from '../ink/terminal.js'
 import { getClipboardPath } from '../ink/termio/osc.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- Esc needs conditional propagation based on selection state
@@ -425,57 +429,12 @@ export function ScrollKeybindingHandler({
     if (text) showCopiedToast(text)
   }
 
-  // Translate selection to track a keyboard page jump. Selection coords are
-  // screen-buffer-local; a scrollTo that moves content by N rows must also
-  // shift anchor+focus by N so the highlight stays on the same text (native
-  // terminal behavior: selection moves with content, clips at viewport
-  // edges). Rows that scroll out of the viewport are captured into
-  // scrolledOffAbove/Below before the scroll so getSelectedText still
-  // returns the full text. Wheel scroll (scroll:lineUp/Down via scrollBy)
-  // still clears — its async pendingScrollDelta drain means the actual
-  // delta isn't known synchronously (follow-up).
-  function translateSelectionForJump(s: ScrollBoxHandle, delta: number): void {
-    const sel = selection.getState()
-    if (!sel?.anchor || !sel.focus) return
-    const top = s.getViewportTop()
-    const bottom = top + s.getViewportHeight() - 1
-    // Only translate if the selection is ON scrollbox content. Selections
-    // in the footer/prompt/StickyPromptHeader are on static text — the
-    // scroll doesn't move what's under them. Same guard as ink.tsx's
-    // auto-follow translate (commit 36a8d154).
-    if (sel.anchor.row < top || sel.anchor.row > bottom) return
-    // Cross-boundary: anchor in scrollbox, focus in footer/header. Mirror
-    // ink.tsx's Flag-3 guard — fall through without shifting OR capturing.
-    // The static endpoint pins the selection; shifting would teleport it
-    // into scrollbox content.
-    if (sel.focus.row < top || sel.focus.row > bottom) return
-    const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
-    const cur = s.getScrollTop() + s.getPendingDelta()
-    // Actual scroll distance after boundary clamp. jumpBy may call
-    // scrollToBottom when target >= max but the view can't move past max,
-    // so the selection shift is bounded here.
-    const actual = Math.max(0, Math.min(max, cur + delta)) - cur
-    if (actual === 0) return
-    if (actual > 0) {
-      // Scrolling down: content moves up. Rows at the TOP leave viewport.
-      // Anchor+focus shift -actual so they track the content that moved up.
-      selection.captureScrolledRows(top, top + actual - 1, 'above')
-      selection.shiftSelection(-actual, top, bottom)
-    } else {
-      // Scrolling up: content moves down. Rows at the BOTTOM leave viewport.
-      const a = -actual
-      selection.captureScrolledRows(bottom - a + 1, bottom, 'below')
-      selection.shiftSelection(a, top, bottom)
-    }
-  }
-
   useKeybindings(
     {
       'scroll:pageUp': () => {
         const s = scrollRef.current
         if (!s) return
         const d = -Math.max(1, Math.floor(s.getViewportHeight() / 2))
-        translateSelectionForJump(s, d)
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
@@ -483,31 +442,18 @@ export function ScrollKeybindingHandler({
         const s = scrollRef.current
         if (!s) return
         const d = Math.max(1, Math.floor(s.getViewportHeight() / 2))
-        translateSelectionForJump(s, d)
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
       'scroll:top': () => {
         const s = scrollRef.current
         if (!s) return
-        translateSelectionForJump(s, -(s.getScrollTop() + s.getPendingDelta()))
         s.scrollTo(0)
         onScroll?.(false, s)
       },
       'scroll:bottom': () => {
         const s = scrollRef.current
         if (!s) return
-        const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
-        translateSelectionForJump(
-          s,
-          max - (s.getScrollTop() + s.getPendingDelta()),
-        )
-        // scrollTo(max) eager-writes scrollTop so the render-phase sticky
-        // follow computes followDelta=0. Without this, scrollToBottom()
-        // alone leaves scrollTop stale → followDelta=max-stale →
-        // shiftSelectionForFollow applies the SAME shift we already did
-        // above, 2× offset. scrollToBottom() then re-enables sticky.
-        s.scrollTo(max)
         s.scrollToBottom()
         onScroll?.(true, s)
       },
@@ -518,10 +464,6 @@ export function ScrollKeybindingHandler({
   useKeybindings(
     {
       'scroll:lineUp': () => {
-        // Wheel: scrollBy accumulates into pendingScrollDelta, drained async
-        // by the renderer. captureScrolledRows can't read the outgoing rows
-        // before they leave (drain is non-deterministic). Clear for now.
-        selection.clearSelection()
         const s = scrollRef.current
         // Return false (not consumed) when the ScrollBox content fits —
         // scroll would be a no-op. Lets a child component's handler take
@@ -533,7 +475,6 @@ export function ScrollKeybindingHandler({
         onScroll?.(false, s)
       },
       'scroll:lineDown': () => {
-        selection.clearSelection()
         const s = scrollRef.current
         if (!s || s.getScrollHeight() <= s.getViewportHeight()) return false
         wheelAccel.current ??= initAndLogWheelAccel()
@@ -556,7 +497,6 @@ export function ScrollKeybindingHandler({
         const s = scrollRef.current
         if (!s) return
         const d = -Math.max(1, Math.floor(s.getViewportHeight() / 2))
-        translateSelectionForJump(s, d)
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
@@ -564,7 +504,6 @@ export function ScrollKeybindingHandler({
         const s = scrollRef.current
         if (!s) return
         const d = Math.max(1, Math.floor(s.getViewportHeight() / 2))
-        translateSelectionForJump(s, d)
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
@@ -572,7 +511,6 @@ export function ScrollKeybindingHandler({
         const s = scrollRef.current
         if (!s) return
         const d = -Math.max(1, s.getViewportHeight())
-        translateSelectionForJump(s, d)
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
@@ -580,7 +518,6 @@ export function ScrollKeybindingHandler({
         const s = scrollRef.current
         if (!s) return
         const d = Math.max(1, s.getViewportHeight())
-        translateSelectionForJump(s, d)
         const sticky = jumpBy(s, d)
         onScroll?.(sticky, s)
       },
@@ -608,14 +545,61 @@ export function ScrollKeybindingHandler({
     (input, key, event) => {
       const s = scrollRef.current
       if (!s) return
-      const sticky = applyModalPagerAction(s, modalPagerAction(input, key), d =>
-        translateSelectionForJump(s, d),
-      )
+      const sticky = applyModalPagerAction(s, modalPagerAction(input, key))
       if (sticky === null) return
       onScroll?.(sticky, s)
       event.stopImmediatePropagation()
     },
     { isActive: isActive && isKeyboardActive && isModal },
+  )
+
+  function extendSelectionFocus(move: FocusMove): void | false {
+    if (!selection.hasSelection()) return false
+    const sel = selection.getState()
+    if (!sel || isSelectionOffscreen(sel)) return
+    if (move === 'up' || move === 'down') {
+      const s = scrollRef.current
+      if (
+        s &&
+        (!sel.scope?.node || sel.scope.node === s.getElement()) &&
+        sel.anchor &&
+        sel.focus
+      ) {
+        const top = s.getViewportTop()
+        const bottom = top + s.getViewportHeight() - 1
+        const anchorInside = sel.anchor.row >= top && sel.anchor.row <= bottom
+        const above = anchorInside && move === 'up' && sel.focus.row <= top
+        const below = anchorInside && move === 'down' && sel.focus.row >= bottom
+        if (above || below) {
+          const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
+          const canScroll = above
+            ? s.getScrollTop() > 0
+            : s.getScrollTop() < max
+          if (s.getPendingDelta() === 0 && canScroll) {
+            autoCopy.invalidate()
+            sel.focus = { col: sel.focus.col, row: above ? top : bottom }
+            sel.virtualFocusRow = above ? top - 1 : bottom + 1
+            sel.virtualFocusCol = undefined
+            s.scrollBy(above ? -1 : 1)
+            onScroll?.(false, s)
+          }
+          return
+        }
+      }
+    }
+    selection.moveFocus(move)
+  }
+
+  useKeybindings(
+    {
+      'selection:extendLeft': () => extendSelectionFocus('left'),
+      'selection:extendRight': () => extendSelectionFocus('right'),
+      'selection:extendUp': () => extendSelectionFocus('up'),
+      'selection:extendDown': () => extendSelectionFocus('down'),
+      'selection:extendLineStart': () => extendSelectionFocus('lineStart'),
+      'selection:extendLineEnd': () => extendSelectionFocus('lineEnd'),
+    },
+    { context: 'Scroll', isActive },
   )
 
   // Esc clears selection; any other keystroke also clears it (matches
@@ -638,13 +622,17 @@ export function ScrollKeybindingHandler({
         return
       }
       if (key.ctrl && !key.shift && !key.meta && input === 'c') {
-        copyAndToast()
+        const copied = autoCopy.peek()
+        if (copied !== null) {
+          selection.clearSelection()
+          showCopiedToast(copied)
+        } else copyAndToast()
         event.stopImmediatePropagation()
         return
       }
       const move = selectionFocusMoveForKey(key)
       if (move) {
-        selection.moveFocus(move)
+        extendSelectionFocus(move)
         event.stopImmediatePropagation()
         return
       }
@@ -656,24 +644,13 @@ export function ScrollKeybindingHandler({
   )
 
   useDragToScroll(scrollRef, selection, isActive, onScroll)
-  useCopyOnSelect(selection, isActive, showCopiedToast)
+  const autoCopy = useCopyOnSelect(selection, isActive, showCopiedToast)
   useSelectionBgColor(selection)
 
   return null
 }
 
-/**
- * Auto-scroll the ScrollBox when the user drags a selection past its top or
- * bottom edge. The anchor is shifted in the opposite direction so it stays
- * on the same content (content that was at viewport row N is now at row N±d
- * after scrolling by d). Focus stays at the mouse position (edge row).
- *
- * Selection coords are screen-buffer-local, so the anchor is clamped to the
- * viewport bounds once the original content scrolls out. To preserve the full
- * selection, rows about to scroll out are captured into scrolledOffAbove/
- * scrolledOffBelow before each scroll step and joined back in by
- * getSelectedText.
- */
+/** Scroll requests are translated by Ink after their actual painted distance is known. */
 function useDragToScroll(
   scrollRef: RefObject<ScrollBoxHandle | null>,
   selection: ReturnType<typeof useSelection>,
@@ -720,34 +697,12 @@ function useDragToScroll(
         stop()
         return
       }
-      // scrollBy accumulates into pendingScrollDelta; the screen buffer
-      // doesn't update until the next render drains it. If a previous
-      // tick's scroll hasn't drained yet, captureScrolledRows would read
-      // stale content (same rows as last tick → duplicated in the
-      // accumulator AND missing the rows that actually scrolled out).
-      // Skip this tick; the 50ms interval will retry after Ink's 16ms
-      // render catches up. Also prevents shiftAnchor from desyncing.
       if (s.getPendingDelta() !== 0) return
-      const top = s.getViewportTop()
-      const bottom = top + s.getViewportHeight() - 1
-      // Clamp anchor within [top, bottom]. Not [0, bottom]: the ScrollBox
-      // padding row at 0 would produce a blank line between scrolledOffAbove
-      // and the on-screen content in getSelectedText. The padding-row
-      // highlight was a minor visual nicety; text correctness wins.
       if (dir < 0) {
         if (s.getScrollTop() <= 0) {
           stop()
           return
         }
-        // Scrolling up: content moves down in viewport, so anchor row +N.
-        // Clamp to actual scroll distance so anchor stays in sync when near
-        // the top boundary (renderer clamps scrollTop to 0 on drain).
-        const actual = Math.min(AUTOSCROLL_LINES, s.getScrollTop())
-        // Capture rows about to scroll out the BOTTOM before scrollBy
-        // overwrites them. Only rows inside the selection are captured
-        // (captureScrolledRows intersects with selection bounds).
-        selection.captureScrolledRows(bottom - actual + 1, bottom, 'below')
-        selection.shiftAnchor(actual, 0, bottom)
         s.scrollBy(-AUTOSCROLL_LINES)
       } else {
         const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
@@ -755,13 +710,6 @@ function useDragToScroll(
           stop()
           return
         }
-        // Scrolling down: content moves up in viewport, so anchor row -N.
-        // Clamp to actual scroll distance so anchor stays in sync when near
-        // the bottom boundary (renderer clamps scrollTop to max on drain).
-        const actual = Math.min(AUTOSCROLL_LINES, max - s.getScrollTop())
-        // Capture rows about to scroll out the TOP.
-        selection.captureScrolledRows(top, top + actual - 1, 'above')
-        selection.shiftAnchor(-actual, top, bottom)
         s.scrollBy(AUTOSCROLL_LINES)
       }
       onScrollRef.current?.(false, s)
@@ -799,9 +747,14 @@ function useDragToScroll(
         stop()
         return
       }
+      const sel = selection.getState()
+      if (sel?.scope?.node && sel.scope.node !== s.getElement()) {
+        lastScrolledDirRef.current = 0
+        stop()
+        return
+      }
       const top = s.getViewportTop()
       const bottom = top + s.getViewportHeight() - 1
-      const sel = selection.getState()
       // Pass the LAST-scrolled direction (not dirRef) so the anchor guard is
       // bypassed after shiftAnchor has clamped anchor toward row 0. Using
       // lastScrolledDirRef (survives stop()) lets autoscroll resume after a
@@ -904,10 +857,6 @@ export function jumpBy(s: ScrollBoxHandle, delta: number): boolean {
   const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
   const target = s.getScrollTop() + s.getPendingDelta() + delta
   if (target >= max) {
-    // Eager-write scrollTop so follow-scroll sees followDelta=0. Callers
-    // that ran translateSelectionForJump already shifted; scrollToBottom()
-    // alone would double-shift via the render-phase sticky follow.
-    s.scrollTo(max)
     s.scrollToBottom()
     return true
   }
@@ -1046,14 +995,11 @@ export function modalPagerAction(
 /**
  * Applies a modal pager action to a ScrollBox. Returns the resulting sticky
  * state, or null if the action was null (nothing to do — caller should fall
- * through). Calls onBeforeJump(delta) before scrolling so the caller can
- * translate the text selection by the scroll delta (capture outgoing rows,
- * shift anchor+focus) instead of clearing it. Exported for testing.
+ * through). Selection follows the actual painted scroll in Ink.
  */
 export function applyModalPagerAction(
   s: ScrollBoxHandle,
   act: ModalPagerAction | null,
-  onBeforeJump: (delta: number) => void,
 ): boolean | null {
   switch (act) {
     case null:
@@ -1061,33 +1007,24 @@ export function applyModalPagerAction(
     case 'lineUp':
     case 'lineDown': {
       const d = act === 'lineDown' ? 1 : -1
-      onBeforeJump(d)
       return jumpBy(s, d)
     }
     case 'halfPageUp':
     case 'halfPageDown': {
       const half = Math.max(1, Math.floor(s.getViewportHeight() / 2))
       const d = act === 'halfPageDown' ? half : -half
-      onBeforeJump(d)
       return jumpBy(s, d)
     }
     case 'fullPageUp':
     case 'fullPageDown': {
       const page = Math.max(1, s.getViewportHeight())
       const d = act === 'fullPageDown' ? page : -page
-      onBeforeJump(d)
       return jumpBy(s, d)
     }
     case 'top':
-      onBeforeJump(-(s.getScrollTop() + s.getPendingDelta()))
       s.scrollTo(0)
       return false
     case 'bottom': {
-      const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
-      onBeforeJump(max - (s.getScrollTop() + s.getPendingDelta()))
-      // Eager-write scrollTop before scrollToBottom — same double-shift
-      // fix as scroll:bottom and jumpBy's max branch.
-      s.scrollTo(max)
       s.scrollToBottom()
       return true
     }

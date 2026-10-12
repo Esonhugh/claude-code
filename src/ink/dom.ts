@@ -88,6 +88,7 @@ export type DOMElement = {
   // the clamp releases). Undefined = no clamp (sticky-scroll, cold start).
   scrollClampMin?: number
   scrollClampMax?: number
+  scrollTopRendered?: number
   scrollHeight?: number
   scrollViewportHeight?: number
   scrollViewportTop?: number

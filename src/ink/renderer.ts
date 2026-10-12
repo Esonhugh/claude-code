@@ -8,6 +8,8 @@ import renderNodeToOutput, {
   getScrollHint,
   resetLayoutShifted,
   resetScrollDrainNode,
+  resetFollowScroll,
+  consumeFollowScroll,
   resetScrollHint,
 } from './render-node-to-output.js'
 import { createScreen, type StylePool } from './screen.js'
@@ -35,7 +37,7 @@ export default function createRenderer(
   // Reuse Output across frames so charCache (tokenize + grapheme clustering)
   // persists — most lines don't change between renders.
   let output: Output | undefined
-  return options => {
+  return (options) => {
     const { frontFrame, backFrame, isTTY, terminalWidth, terminalRows } =
       options
     const prevScreen = frontFrame.screen
@@ -114,6 +116,7 @@ export default function createRenderer(
     resetLayoutShifted()
     resetScrollHint()
     resetScrollDrainNode()
+    resetFollowScroll()
 
     // prevFrameContaminated: selection overlay mutated the returned screen
     // buffer post-render (in ink.tsx), resetFramesForAltScreen() replaced it
@@ -146,6 +149,7 @@ export default function createRenderer(
     return {
       scrollHint: options.altScreen ? getScrollHint() : null,
       scrollDrainPending: drainNode !== null,
+      followScroll: consumeFollowScroll(),
       terminalImages: output.terminalImages.slice(),
       screen: renderedScreen,
       viewport: {

@@ -83,20 +83,20 @@ export function getScrollDrainNode(): DOMElement | null {
   return scrollDrainNode
 }
 
-// At-bottom follow scroll event this frame. When streaming content
-// triggers scrollTop = maxScroll, the ScrollBox records the delta +
-// viewport bounds here. ink.tsx consumes it post-render to translate any active
-// text selection by -delta so the highlight stays anchored to the TEXT
-// (native terminal behavior — the selection walks up the screen as content
-// scrolls, eventually clipping at the top). The frontFrame screen buffer
-// still holds the old content at that point — captureScrolledRows reads
-// from it before the front/back swap to preserve the text for copy.
+// Actual painted scroll this frame; Ink captures departing rows from the
+// previous screen before moving the selection by the signed distance.
 export type FollowScroll = {
   delta: number
   viewportTop: number
   viewportBottom: number
+  viewportLeft: number
+  viewportRight: number
 }
 let followScroll: FollowScroll | null = null
+
+export function resetFollowScroll(): void {
+  followScroll = null
+}
 
 export function consumeFollowScroll(): FollowScroll | null {
   const f = followScroll
@@ -565,7 +565,7 @@ function renderNodeToOutput(
       )
 
       // First, get plain text to check if wrapping is needed
-      const plainText = segments.map(s => s.text).join('')
+      const plainText = segments.map((s) => s.text).join('')
 
       if (plainText.length > 0) {
         // Upstream Ink uses getMaxWidth(yogaNode) unclamped here. That
@@ -590,7 +590,7 @@ function renderNodeToOutput(
           softWrap = w.softWrap
           text = w.wrapped
             .split('\n')
-            .map(line => {
+            .map((line) => {
               let styled = applyTextStyles(line, segment.styles)
               // Apply OSC 8 hyperlink per-line so each line is independently
               // clickable. output.ts splits on newlines and tokenizes each
@@ -621,7 +621,7 @@ function renderNodeToOutput(
         } else {
           // No wrapping needed: apply styles directly
           text = segments
-            .map(segment => {
+            .map((segment) => {
               let styledText = applyTextStyles(segment.text, segment.styles)
               if (segment.hyperlink) {
                 styledText = wrapWithOsc8Link(styledText, segment.hyperlink)
@@ -711,9 +711,9 @@ function renderNodeToOutput(
             yogaNode.getComputedPadding(LayoutEdge.Bottom),
         )
 
-        const content = node.childNodes.find(c => (c as DOMElement).yogaNode) as
-          | DOMElement
-          | undefined
+        const content = node.childNodes.find(
+          (c) => (c as DOMElement).yogaNode,
+        ) as DOMElement | undefined
         const contentYoga = content?.yogaNode
         // scrollHeight is the intrinsic height of the content wrapper.
         // Do NOT add getComputedTop() — that's the wrapper's offset
@@ -776,9 +776,7 @@ function renderNodeToOutput(
         const grew = scrollHeight >= prevScrollHeight
         const atBottom =
           sticky ||
-          (grew &&
-            prevMaxScroll > 0 &&
-            scrollTopBeforeFollow >= prevMaxScroll)
+          (grew && prevMaxScroll > 0 && scrollTopBeforeFollow >= prevMaxScroll)
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined
@@ -797,15 +795,6 @@ function renderNodeToOutput(
             scrollTopBeforeFollow >= prevMaxScroll
           ) {
             node.stickyScroll = true
-          }
-        }
-        const followDelta = (node.scrollTop ?? 0) - scrollTopBeforeFollow
-        if (followDelta > 0) {
-          const vpTop = node.scrollViewportTop ?? 0
-          followScroll = {
-            delta: followDelta,
-            viewportTop: vpTop,
-            viewportBottom: vpTop + innerHeight - 1,
           }
         }
         // Drain pendingScrollDelta. Native terminals (proportional burst
@@ -863,6 +852,18 @@ function renderNodeToOutput(
         if (scrollTop !== cur) node.pendingScrollDelta = undefined
         if (node.pendingScrollDelta !== undefined) scrollDrainNode = node
         scrollTop = clamped
+        const paintedDelta = scrollTop - (node.scrollTopRendered ?? scrollTop)
+        if (paintedDelta !== 0) {
+          const top = node.scrollViewportTop ?? 0
+          followScroll = {
+            delta: paintedDelta,
+            viewportLeft: Math.floor(x),
+            viewportRight: Math.floor(x + width) - 1,
+            viewportTop: top,
+            viewportBottom: top + innerHeight - 1,
+          }
+        }
+        node.scrollTopRendered = scrollTop
 
         recordPaintedScrollTop(node, scrollTop)
 
@@ -892,9 +893,8 @@ function renderNodeToOutput(
             if (
               cached?.y === y &&
               cached.height === height &&
-              Math.floor(
-                x + yogaNode.getComputedBorder(LayoutEdge.Left),
-              ) === 0 &&
+              Math.floor(x + yogaNode.getComputedBorder(LayoutEdge.Left)) ===
+                0 &&
               Math.ceil(
                 x + width - yogaNode.getComputedBorder(LayoutEdge.Right),
               ) === output.width &&
@@ -963,7 +963,9 @@ function renderNodeToOutput(
             // pass clears dirty flags, and edge-spanning children would be
             // missed by the second pass without this snapshot.
             const dirtyChildren = content.dirty
-              ? new Set(content.childNodes.filter(c => (c as DOMElement).dirty))
+              ? new Set(
+                  content.childNodes.filter((c) => (c as DOMElement).dirty),
+                )
               : null
             renderScrolledChildren(
               content,
@@ -1478,8 +1480,10 @@ function renderScrolledChildren(
 
 function subtreeHasTerminalImage(node: DOMElement): boolean {
   if (node.terminalImage) return true
-  return node.childNodes.some(child =>
-    child.nodeName !== '#text' && subtreeHasTerminalImage(child as DOMElement),
+  return node.childNodes.some(
+    (child) =>
+      child.nodeName !== '#text' &&
+      subtreeHasTerminalImage(child as DOMElement),
   )
 }
 

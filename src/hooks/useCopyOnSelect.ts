@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTheme } from '../components/design-system/ThemeProvider.js'
 import type { useSelection } from '../ink/hooks/use-selection.js'
 import { getGlobalConfig } from '../utils/config.js'
@@ -27,12 +27,17 @@ export function useCopyOnSelect(
   selection: Selection,
   isActive: boolean,
   onCopied?: (text: string) => void,
-): void {
+): { peek: () => string | null; invalidate: () => void } {
   // Tracks whether the *previous* notification had a visible selection with
   // isDragging=false (i.e., we already auto-copied it). Without this, the
   // finish→clear transition would look like a fresh selection-gone-idle
   // event and we'd toast twice for a single drag.
   const copiedRef = useRef(false)
+  const copiedTextRef = useRef<string | null>(null)
+  const [cache] = useState(() => ({
+    peek: () => copiedTextRef.current,
+    invalidate: () => { copiedTextRef.current = null },
+  }))
   // onCopied is a fresh closure each render; read through a ref so the
   // effect doesn't re-subscribe (which would reset copiedRef via unmount).
   const onCopiedRef = useRef(onCopied)
@@ -48,17 +53,22 @@ export function useCopyOnSelect(
       // that ends on the same range still triggers a fresh copy.
       if (sel?.isDragging) {
         copiedRef.current = false
+        copiedTextRef.current = null
         return
       }
       // No selection (cleared, or click-without-drag) — reset.
       if (!has) {
         copiedRef.current = false
+        copiedTextRef.current = null
         return
       }
       // Selection settled (drag finished OR multi-click). Already copied
       // this one — the only way to get here again without going through
       // isDragging or !has is a spurious notify (shouldn't happen, but safe).
-      if (copiedRef.current) return
+      if (copiedRef.current) {
+        copiedTextRef.current = null
+        return
+      }
 
       // Default true: macOS users expect cmd+c to work. It can't — the
       // terminal's Edit > Copy intercepts it before the pty sees it, and
@@ -76,10 +86,12 @@ export function useCopyOnSelect(
         return
       }
       copiedRef.current = true
+      copiedTextRef.current = text
       onCopiedRef.current?.(text)
     })
     return unsubscribe
   }, [isActive, selection])
+  return cache
 }
 
 /**

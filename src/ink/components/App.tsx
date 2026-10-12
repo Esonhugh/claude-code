@@ -90,6 +90,7 @@ type Props = {
   // so the handler is always wired but dormant until tracking is on.
   readonly selection: SelectionState
   readonly onSelectionChange: () => void
+  readonly onSelectionStart?: (col: number, row: number) => void
   // Dispatch a click at (col, row) — hit-tests the DOM tree and bubbles
   // onClick handlers. Returns true if a DOM handler consumed the click.
   // No-op (returns false) outside fullscreen mode (Ink.dispatchClick
@@ -792,7 +793,8 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       app.props.onMultiClick(col, row, count)
       return
     }
-    startSelection(sel, col, row)
+    if (app.props.onSelectionStart) app.props.onSelectionStart(col, row)
+    else startSelection(sel, col, row)
     // SGR bit 0x08 = alt (xterm.js wires altKey here, not metaKey — see
     // comment at the hyperlink-open guard below). On macOS xterm.js,
     // receiving alt means macOptionClickForcesSelection is OFF (otherwise
