@@ -5,24 +5,23 @@ import type { ModDispatchOptions, ModSnapshot } from './runtime.js'
 import type { ModInput } from './types.js'
 
 export type PromptOrigin =
-  | {
-      kind:
-        | 'composer'
-        | 'bridge'
-        | 'sdk'
-        | 'task-notification'
-        | 'scheduled-trigger'
-        | 'peer-send-message'
-        | 'projects-relay'
-        | 'observer'
-        | 'observer-activity'
-        | 'auto-continuation'
-        | 'unclassified'
-        | 'slack-ping'
-    }
+  | { kind: 'composer' }
+  | { kind: 'bridge' }
+  | { kind: 'sdk' }
+  | { kind: 'task-notification' }
+  | { kind: 'scheduled-trigger' }
+  | { kind: 'peer' }
+  | { kind: 'peer-send-message' }
+  | { kind: 'projects-relay' }
+  | { kind: 'coordinator' }
+  | { kind: 'observer' }
+  | { kind: 'observer-activity' }
+  | { kind: 'auto-continuation' }
+  | { kind: 'unclassified' }
+  | { kind: 'slack-ping' }
   | {kind:'peer'|'coordinator';plugin?:string;teammate?:string;isVerified?:boolean}
   | { kind: 'channel'; server: string }
-  | { kind: 'plugin'; name: string }
+  | { kind: 'plugin'; name: string; asUser?: true }
 
 export type PromptBox = { text: string; cursor: number }
 export type PromptFillMode = 'replace' | 'append' | 'insert'

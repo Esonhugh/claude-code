@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto'
 import { describe, expect, test } from 'bun:test'
 import { cp, lstat, mkdir, mkdtemp, readFile, realpath, stat, symlink, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
+import { readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import legacyDeclarations from './fixtures/legacy280-declarations.json'
 import ts from 'typescript'
@@ -52,13 +53,13 @@ function withLibrarySyntax(host: ts.CompilerHost, options: ts.CompilerOptions, v
   return host
 }
 
-// The TypeScript builder invalidates changed author/declaration diagnostics while retaining unaffected libraries.
+// Keep local and reference builders separate: swapping global declarations invalidates cached library diagnostics.
 const typecheckPrograms = new Map<string, ts.SemanticDiagnosticsBuilderProgram>()
 
 function diagnostics(files: Readonly<Record<string, string>>, roots: readonly string[], overrides: ts.CompilerOptions = {}): readonly ts.Diagnostic[] {
   const dependencies = { ...files }
   const options: ts.CompilerOptions = { ...compilerOptions, ...overrides }
-  const check = (input: Readonly<Record<string, string>>) => {
+  const check = (input: Readonly<Record<string, string>>, variant: 'local' | 'official') => {
     const host = withLibrarySyntax(ts.createIncrementalCompilerHost(options), options, input)
     const read = host.readFile.bind(host)
     const exists = host.fileExists.bind(host)
@@ -66,7 +67,7 @@ function diagnostics(files: Readonly<Record<string, string>>, roots: readonly st
     host.directoryExists = directory => Object.keys(input).some(file => file.startsWith(`${directory}/`)) || directoryExists?.(directory) === true
     host.readFile = file => input[file] ?? read(file)
     host.fileExists = file => Object.hasOwn(input, file) || exists(file)
-    const key = JSON.stringify(options)
+    const key = `${variant}:${JSON.stringify(options)}`
     const program = ts.createSemanticDiagnosticsBuilderProgram([...roots], options, host, typecheckPrograms.get(key))
     typecheckPrograms.set(key, program)
     return ts.sortAndDeduplicateDiagnostics([
@@ -79,8 +80,8 @@ function diagnostics(files: Readonly<Record<string, string>>, roots: readonly st
     ])
   }
   const official = Object.fromEntries(Object.entries(dependencies).map(([path, text]) => [path, text.includes('// Claude Code function hooks:') ? officialDeclaration : text]))
-  const result = check(dependencies)
-  expect(messages(result)).toBe(messages(check(official)))
+  const result = check(dependencies, 'local')
+  expect(messages(result)).toBe(messages(check(official, 'official')))
   return result
 }
 
@@ -89,6 +90,527 @@ function messages(items: readonly ts.Diagnostic[]): string {
 }
 
 describe('generated Mods declarations', () => {
+  test('types official fs.read overloads and required stat option fields', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/fs-options.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type {EngineInterface,FsBytes,FsReadAs,FsReadCall,FsReadBytesOptions,FsReadOptions,FsStat,FsStatOptions} from 'claude-code';
+        declare const $:EngineInterface;
+        declare const as:FsReadAs;
+        const read:FsReadCall=$.fs.read;
+        const bytesOptions:FsReadBytesOptions={as:'bytes'};
+        const options:FsReadOptions={as};
+        const statOptions:FsStatOptions={resolve:false};
+        const text:Promise<string>=read('file');
+        const bytes:Promise<FsBytes>=read('file',bytesOptions);
+        const either:Promise<string|FsBytes>=read('file',options);
+        const explicitText:Promise<string|FsBytes>=read('file',{as:'text'});
+        const stat:Promise<FsStat>=$.fs.stat('file');
+        const statWithOptions:Promise<FsStat>=$.fs.stat('file',statOptions);
+        // @ts-expect-error Explicit options must carry the representation.
+        $.fs.read('file',{});
+        // @ts-expect-error Explicit options must carry resolve.
+        $.fs.stat('file',{});
+        // @ts-expect-error The official general overload remains a union even for explicit text.
+        const textOnly:Promise<string>=$.fs.read('file',{as:'text'});
+        // @ts-expect-error Raw bytes return a base64 receipt, not text.
+        const bytesAsText:Promise<string>=$.fs.read('file',{as:'bytes'});
+        void [text,bytes,either,explicitText,stat,statWithOptions,textOnly,bytesAsText];`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin], {skipLibCheck:false}))).toBe('')
+  })
+
+  test('preserves each official PromptOrigin branch for author Extract types', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const localDeclaration = '/virtual/local-origin.ts'
+    const plugin = '/virtual/prompt-origin-branches.ts'
+    const kinds = ['composer', 'bridge', 'sdk', 'task-notification', 'scheduled-trigger', 'peer', 'peer-send-message', 'projects-relay', 'coordinator', 'observer', 'observer-activity', 'auto-continuation', 'unclassified', 'slack-ping']
+    const adapter = ts.createSourceFile('promptAdapter.ts', readFileSync(new URL('./promptAdapter.ts', import.meta.url), 'utf8'), ts.ScriptTarget.Latest, true)
+    const alias = adapter.statements.find(node => ts.isTypeAliasDeclaration(node) && node.name.text === 'PromptOrigin')!
+    const local = ts.createPrinter().printNode(ts.EmitHint.Unspecified, alias, adapter)
+    const checks = ['PromptOrigin', 'LocalPromptOrigin'].flatMap(type => kinds.map((kind, index) => `const ${type}_${index}: Extract<${type}, {kind:'${kind}'}> = {kind:'${kind}'};`)).join('\n')
+    const files = {
+      [declaration]: source(),
+      [localDeclaration]: local,
+      [plugin]: `import type {PromptOrigin} from 'claude-code';
+        import type {PromptOrigin as LocalPromptOrigin} from './local-origin';
+        ${checks}
+        const pluginOrigin: Extract<PromptOrigin,{kind:'plugin'}>={kind:'plugin',name:'fixture',asUser:true};
+        const channelOrigin: Extract<PromptOrigin,{kind:'channel'}>={kind:'channel',server:'fixture'};
+        // @ts-expect-error Composer cannot acquire another origin's fields.
+        const forged: Extract<PromptOrigin,{kind:'composer'}>={kind:'composer',server:'foreign'};
+        // @ts-expect-error Plugin origin requires its name.
+        const unnamed: Extract<PromptOrigin,{kind:'plugin'}>={kind:'plugin'};
+        void [pluginOrigin,channelOrigin,forged,unnamed];`,
+    }
+    expect(messages(diagnostics(files, [declaration, localDeclaration, plugin], { skipLibCheck: false }))).toBe('')
+  })
+
+  test('types prompt submit provenance, asUser and precise hook and call receipts', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/prompt-submit.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type {Register,PromptOrigin,PromptSubmitArgs,PromptSubmitAttachment,PromptSubmitInput,PromptSubmitResult} from 'claude-code';
+        const origin:PromptOrigin={kind:'plugin',name:'fixture',asUser:true};
+        const image:PromptSubmitAttachment={type:'image',mediaType:'image/png',filename:'shot.png'};
+        const input:PromptSubmitInput={text:'words',origin,wait:false,attachments:[image]};
+        const args:PromptSubmitArgs={text:'words',asUser:true,attachments:[image]};
+        // @ts-expect-error Runtime accepts false as absence, but the official author type accepts only true.
+        const no:PromptSubmitArgs={text:'words',asUser:false};
+        // @ts-expect-error Public callers do not set provenance.
+        const forged:PromptSubmitArgs={text:'words',origin};
+        // @ts-expect-error A plugin origin requires its real name.
+        const unnamed:PromptOrigin={kind:'plugin',asUser:true};
+        export const register:Register=on=>{
+          on('session.start',async($,e,next)=>{
+            const result:PromptSubmitResult=await $.prompt.submit(args);
+            if(result.drop===undefined){const text:string=result.text;const o:PromptOrigin|undefined=result.origin;void [text,o];}
+            else{const reason:string=result.drop;void reason;}
+            return next(e);
+          });
+          on('prompt.submit',async(_,e,next)=>{
+            const text:string=e.text;const wait:boolean=e.wait;const o:PromptOrigin=e.origin;
+            const receipt:PromptSubmitResult=await next({...e,text});
+            // @ts-expect-error The event text is a string.
+            const bad:number=e.text;
+            void [input,wait,o,bad];return receipt;
+          });
+        };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin], { noUncheckedIndexedAccess: true }))).toBe('')
+  })
+
+  test('types official Button props and the complete press event delivered to its closure', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/button.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type {Register,ButtonProps,UiPressArgument,PressedLink,RenderSurface,TextHoverProps} from 'claude-code';
+        const hover:TextHoverProps={scope:'save',color:'suggestion',backgroundColor:'black',bold:true};
+        const link:PressedLink={href:'https://example.com'};
+        const props:ButtonProps={label:'Save',hotkey:'s',action:'app:cycleDiffBase',variant:'primary',role:'dismiss',autoFocus:true,hover,onPress:e=>{
+          const surface:RenderSurface=e.surface;
+          const identity:string=e.plugin+e.element+e.component+e.requestId;
+          const href:string|undefined=e.link?.href;
+          void [surface,identity,href,link];
+        }};
+        const press:UiPressArgument={plugin:'owner',element:'save',component:'Pane',requestId:'panel',surface:'terminal'};
+        // @ts-expect-error Invalid Button variants are refused.
+        const badVariant:ButtonProps={...props,variant:'danger'};
+        // @ts-expect-error Only the dismiss role is defined.
+        const badRole:ButtonProps={...props,role:'submit'};
+        // @ts-expect-error The event identifies its originating surface.
+        const missingSurface:UiPressArgument={plugin:'owner',element:'save',component:'Pane',requestId:'panel'};
+        export const register:Register=on=>on('ui.render',($,e)=>{
+          const {Button}=$.ui.resolve(e);
+          return Button({...props,onPress:received=>{const event:UiPressArgument=received;void event;}});
+        });
+        void [press,badVariant,badRole,missingSurface];`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin], { skipLibCheck: false }))).toBe('')
+  })
+
+  test('types official file modification times and independent process truncation flags', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/host-results.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type {Register,FsEntry,ProcessRunResult} from 'claude-code';
+        const file:FsEntry={name:'file',kind:'file',size:2,mtimeMs:123,isLink:false};
+        const done:ProcessRunResult={exitCode:0,stdout:'',stderr:'',isStdoutTruncated:false,isStderrTruncated:false};
+        // @ts-expect-error Every directory entry must carry mtimeMs too.
+        const incomplete:FsEntry={name:'dir',kind:'dir',size:0,isLink:false};
+        // @ts-expect-error Process results must describe both pipes.
+        const missingPipe:ProcessRunResult={exitCode:0,stdout:'',stderr:'',isStdoutTruncated:false};
+        export const register:Register=on=>on('tool.call',async($)=>{
+          const entries:readonly FsEntry[]=await $.fs.list();
+          const result:ProcessRunResult=await $.process.run(['echo','hello']);
+          const times:number[]=entries.map(e=>e.mtimeMs);
+          const clipped:boolean=result.isStdoutTruncated || result.isStderrTruncated;
+          return {result:{times,clipped,file,done}};
+        });`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin], { skipLibCheck: false }))).toBe('')
+  })
+
+  test('permits the ignored registration results of concise and asynchronous authors', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/concise-register.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register } from 'claude-code';
+        export const concise: Register = on => on('session.start', (_, event, next) => next(event));
+        export const asynchronous: Register = async on => on('session.start', (_, event, next) => next(event));
+        export const ignoredValue: Register = on => { on('session.start', (_, event, next) => next(event)); return 123; };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin], { skipLibCheck: false }))).toBe('')
+  })
+  test('types named transcript and normalized API-form overloads without widening main reads', () => {
+    const declaration='/virtual/claude-code.d.ts', plugin='/virtual/session-options.ts'
+    const files={
+      [declaration]:source(),
+      [plugin]:`import type {Register,SessionMessage,ApiMessage,SessionMessagesArgs,SessionMessagesValue,ToolUseSummary} from 'claude-code';
+        const args:SessionMessagesArgs={agentId:'child',as:'api'};
+        const use:ToolUseSummary={tool_use_id:'id',tool:'Agent',input:{},agentId:'child',durationMs:120};
+        export const register:Register=on=>{
+          on('tool.call',async ($)=>{
+            const rows:readonly SessionMessage[]=await $.session.messages();
+            const main:readonly ApiMessage[]=await $.session.messages({as:'api'});
+            const child:SessionMessagesValue=await $.session.messages(args);
+            if(Array.isArray(child)) { const role:'user'|'assistant'=child[0]?.role ?? 'user'; }
+            // @ts-expect-error Named reads can deny and must be narrowed first.
+            const unchecked:readonly SessionMessage[]=await $.session.messages({agentId:'child'});
+            // @ts-expect-error Only the api representation is supported.
+            $.session.messages({as:'text'});
+            // @ts-expect-error No unknown request fields are admitted.
+            $.session.messages({sessionId:'foreign'});
+            return {result:{rows,main,child}};
+          });
+          on('session.messages',(_,e,next)=>{
+            const agent:string|undefined=e.agentId;
+            const form:'api'|undefined=e.as;
+            return next(e);
+          });
+          // @ts-expect-error A transcript hook must return its value/deny envelope.
+          on('session.messages',()=>({value:'legacy string'}));
+        };`,
+    }
+    expect(messages(diagnostics(files,[declaration,plugin],{skipLibCheck:false}))).toBe('')
+  })
+  test('types per-call model effort, deadlines and local signal options', () => {
+    const declaration='/virtual/claude-code.d.ts', plugin='/virtual/model-options.ts'
+    const files={
+      [declaration]:source(),
+      [plugin]:`import type {Register,ModelEffort,ModelCompleteRequest,ModelCompleteOptions} from 'claude-code';
+        const levels:ModelEffort[]=['low','medium','high','xhigh','max'];
+        const ask:ModelCompleteRequest={model:'haiku',prompt:'data',effort:'low',timeoutMs:100};
+        const options:ModelCompleteOptions={signal:new AbortController().signal};
+        export const register:Register=on=>{
+          on('tool.call',async ($)=>({result:await $.model.complete(ask,options)}));
+          on('model.complete',(_,e,next)=>{
+            const effort:ModelEffort|undefined=e.effort;
+            const timeout:number|undefined=e.timeoutMs;
+            // @ts-expect-error Local options are not request event fields.
+            e.signal;
+            return next(e);
+          });
+          // @ts-expect-error Middleware must return the structured result envelope.
+          on('model.complete',()=>({value:'legacy reply'}));
+        };
+        // @ts-expect-error Only the five public effort levels are admitted.
+        const bad:ModelCompleteRequest={model:'haiku',prompt:'data',effort:'ultra'};
+        // @ts-expect-error Only a signal belongs in call options.
+        const badOptions:ModelCompleteOptions={timeoutMs:100};`,
+    }
+    expect(messages(diagnostics(files,[declaration,plugin],{skipLibCheck:false}))).toBe('')
+  })
+  test('types structured model results and narrows every result branch', () => {
+    const declaration='/virtual/claude-code.d.ts', plugin='/virtual/model.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type {Register,ModelCompleteRequest,ModelCompleteResult,ModelForkResult,ModelApiError,ModelUsage} from 'claude-code';
+        const usage:ModelUsage={input_tokens:1,output_tokens:2,cache_read_input_tokens:3,cache_creation_input_tokens:4};
+        const kinds:ModelApiError[]=['overloaded','oauth_org_not_allowed','account_on_hold','verification_required','model_not_found','cloud_credential_error'];
+        export const register:Register=on => {
+          on('tool.call',async ($) => {
+            const ask:ModelCompleteRequest={model:'haiku',prompt:'hello'};
+            const result:ModelCompleteResult=await $.model.complete(ask);
+            if(result.isAnswered) { const text:string=result.text; const cost:number=result.usage.output_tokens; }
+            else if(result.reason==='api-error') { const status:number|null=result.status; const kind:ModelApiError=result.error; }
+            else { const cost:ModelUsage=result.usage; }
+            const fork:ModelForkResult=await $.model.fork({prompt:'hello'});
+            if(!fork.isAnswered && fork.reason==='nothing-to-fork') {
+              // @ts-expect-error No request was made in the cold branch.
+              fork.usage;
+            }
+            // @ts-expect-error No successful reply is known before narrowing.
+            result.text;
+            // @ts-expect-error The model is required.
+            $.model.complete({prompt:'hello'});
+            return {result};
+          });
+        };`,
+    }
+    expect(messages(diagnostics(files,[declaration,plugin]))).toBe('')
+  })
+
+  test('types the testing event driver namespaces without production call signatures', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/tests/events.test.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import { test } from 'claude-code/testing';
+        import type { HookStream, TurnStepChunk, TurnStepResult } from 'claude-code';
+        test('current metadata events', async ($, on) => {
+          on('session.cwd', () => ({value:'fixture'}));
+          // @ts-expect-error Metadata is a production operation, not a testing Engine convenience.
+          const cwd: unknown = await $.session.cwd();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.root();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.model();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.turns();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.id();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.repo();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.surface();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.surfaces();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.messages();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.authorize();
+          // @ts-expect-error Metadata is outside the official EventCalls surface.
+          await $.session.version();
+          // @ts-expect-error HTTP operations are outside the official EventCalls surface.
+          const http: unknown = await $.http.fetch({url:'https://example.invalid'});
+          const result: import('claude-code').CommandRunResult = await $.command.run({command:'hello',args:'',origin:{kind:'composer'},presentation:{columns:120,isFullscreen:true}});
+          const stream: HookStream<TurnStepChunk, TurnStepResult> = $.turn.step({model:'test',index:0,turnId:'test',messageCount:0});
+          // @ts-expect-error Known namespaces do not expose unsupported methods.
+          $.session.unimplemented();
+          // @ts-expect-error HTTP operations are absent regardless of argument spelling.
+          $.http.fetch('https://example.invalid');
+        });`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin], {noUncheckedIndexedAccess:true}))).toBe('')
+  })
+
+  test('types all admitted session and HTTP hook names and negated patterns', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/hooks.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register, EventName, Pattern } from 'claude-code';
+        const events = ['session.cwd','session.root','session.model','session.turns',
+          'session.id','session.repo','session.surface','session.surfaces','session.messages',
+          'session.authorize','http.fetch'] as const satisfies readonly EventName[];
+        // @ts-expect-error The official negation excludes the universal wildcard.
+        const allButAll: Pattern = '!*';
+        export const register: Register = on => {
+          // Literal patterns preserve the official On overload's contextual types.
+          on('session.cwd', (_, e, next) => next(e));
+          on('session.root', (_, e, next) => next(e));
+          on('session.model', (_, e, next) => next(e));
+          on('session.turns', (_, e, next) => next(e));
+          on('session.id', (_, e, next) => next(e));
+          on('session.repo', (_, e, next) => next(e));
+          on('session.surface', (_, e, next) => next(e));
+          on('session.surfaces', (_, e, next) => next(e));
+          on('session.messages', (_, e, next) => next(e));
+          on('session.authorize', (_, e, next) => next(e));
+          on('http.fetch', (_, e, next) => next(e));
+          on('session.cwd', (_, e, next) => next(e));
+          on('!http.fetch', (_, e, next) => next(e));
+          // @ts-expect-error No official pattern negates every event.
+          on('!*', (_, e, next) => next(e));
+          // @ts-expect-error Unsupported core methods are not admitted hook events.
+          on('session.unimplemented', (_, e, next) => next(e));
+        };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+
+  test('types trace inputs, results and optional stream counts without making data writable', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/trace.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Next, TraceEntry, TraceOutcome } from 'claude-code';
+        declare module 'claude-code' { interface EngineInterface { greeting: {read(input:{text:string}):Promise<string>} } }
+        declare const next: Next;
+        const entry = next.trace[0];
+        const received: unknown = entry.received;
+        const returned: unknown = entry.returned;
+        const chunks: number | undefined = entry.chunks;
+        const outcome: TraceOutcome = entry.outcome;
+        const typed: TraceEntry<'greeting.read', {text:string}, {value:string}> = {
+          index:0, plugin:'greeting', tier:'user', event:'greeting.read', outcome:'returned',
+          ms:1, received:{text:'hello'}, returned:{value:'hello'},
+        };
+        const text: string = typed.received.text;
+        const answer: string | undefined = typed.returned?.value;
+        // @ts-expect-error Trace metadata is immutable.
+        entry.chunks = 1;
+        // @ts-expect-error The dispatcher has a finite set of outcomes.
+        const invalid: TraceOutcome = 'success';`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+
+  test('types engine construction and custom noun hooks from an augmented interface', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/custom.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register, EngineCreateInput, EngineCreateResult, EngineInterfaceBuilt, NounEventOf } from 'claude-code';
+        declare module 'claude-code' {
+          interface EngineInterface {
+            greeting: { read(input:{text:string}): Promise<string>; reset(): void; label?: string };
+          }
+        }
+        const args: NounEventOf['greeting.read'] = {text:'hello'};
+        export const register: Register = on => {
+          on('engine.create', async ($, e, next) => {
+            const input: EngineCreateInput = e;
+            const names: readonly string[] = input.plugins;
+            const beneath: EngineInterfaceBuilt = await next(e);
+            const belowCore: EngineInterfaceBuilt = await next.to(e, 'core');
+            // @ts-expect-error The engine is not built during engine.create.
+            $.clock.now();
+            const result: EngineCreateResult = {...beneath,greeting:{
+              read:async (input:{text:string}) => input.text,
+              reset:() => {},
+            }};
+            return result;
+          });
+          on('greeting.read', async ($, e, next) => {
+            const text: string = e.text;
+            const result = await next({...e,text:text+':middleware'});
+            if ('deny' in result) return result;
+            const value: string = result.value;
+            const recorded: string | undefined = next.trace[0]?.returned && 'value' in next.trace[0].returned
+              ? next.trace[0].returned.value : undefined;
+            return {value};
+          });
+          on('greeting.reset', (_, e, next) => next(e));
+          // @ts-expect-error Only function members become hook events.
+          on('greeting.label', (_, e, next) => next(e));
+          // @ts-expect-error A missing custom method is not a hook event.
+          on('greeting.missing', (_, e, next) => next(e));
+          // @ts-expect-error Custom middleware must return the declared value or deny.
+          on('greeting.read', () => ({value:1}));
+          // @ts-expect-error A custom invocation retains its declared object input.
+          on('greeting.read', (_, e, next) => next({text:1}));
+        };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+
+  test('types the implemented repository and transcript projections', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/session.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { EngineInterface, SessionRepo, SessionMessage, ToolUseSummary, ToolResultSummary } from 'claude-code';
+        declare const $: EngineInterface;
+        async function inspect() {
+          const repo: SessionRepo | null = await $.session.repo();
+          const root: string | undefined = repo?.root;
+          const remote: string | null | undefined = repo?.remote;
+          const internal: boolean | undefined = repo?.internal;
+          const name: string | null | undefined = repo?.name;
+          const rows: readonly SessionMessage[] = await $.session.messages();
+          const text: string = rows[0].text;
+          const use: ToolUseSummary = rows[0].toolUses[0];
+          const result: ToolResultSummary | undefined = rows[0].toolResults?.[0];
+          const error: true | undefined = use.isError;
+          const failed: boolean | undefined = result?.isError;
+          // @ts-expect-error A named read can deny and must be narrowed before use as rows.
+          const named:readonly SessionMessage[] = await $.session.messages({agentId:'another'});
+          // @ts-expect-error Repository roots retain their official string type.
+          repo!.root = 7;
+        }`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+
+  test('types prompt box reads, filled drafts and suggestion receipts', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/prompt.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register, PromptBox, PromptFillArgs, PromptFilled, PromptSuggestArgs, PromptSuggestResult } from 'claude-code';
+        export const register: Register = on => {
+          on('tool.call', async ($, e, next) => {
+            const box: PromptBox = await $.prompt.read();
+            const text: string = box.text;
+            const cursor: number = box.cursor;
+            const input: PromptFillArgs = {text,mode:'insert'};
+            const filled: PromptFilled = await $.prompt.fill(input);
+            const changed: boolean = filled.isFilled;
+            const after: string = filled.text;
+            const offset: number = filled.cursor;
+            const suggestion: PromptSuggestArgs = {text:'continue'};
+            const receipt: PromptSuggestResult = await $.prompt.suggest(suggestion);
+            const shown: boolean = receipt.isShown;
+            // @ts-expect-error The draft is a box with text and cursor, not a string.
+            const bare: string = await $.prompt.read();
+            return next(e);
+          });
+        };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+  test('types clock cancellation handles and abortable sleep', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/clock.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register, Timer, TimerCall, SleepOptions } from 'claude-code';
+        export const register: Register = on => {
+          on('tool.call', async ($, e, next) => {
+            const options: SleepOptions = {signal:next.signal};
+            await $.clock.sleep(10, options);
+            const after: TimerCall = $.clock.after;
+            const timer: Timer = after(100, () => {});
+            const interval: Timer = $.clock.every(100, async () => {});
+            const cancelled: void = timer.cancel();
+            interval.cancel();
+            // @ts-expect-error Timers are synchronous cancellation handles.
+            const pending: Promise<unknown> = timer;
+            return next(e);
+          });
+        };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+  test('types session version metadata and its observable event', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/version.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register, SessionVersion, EventName } from 'claude-code';
+        const event: EventName = 'session.version';
+        export const register: Register = on => {
+          on(event, ($, e, next) => next(e));
+          on('tool.call', async $ => {
+            const version: SessionVersion = await $.session.version();
+            const full: string = version.version;
+            const base: string | undefined = version.base;
+            const builtAt: string | undefined = version.builtAt;
+            // @ts-expect-error Version reads have no arguments.
+            $.session.version({});
+            return {result:{full,base,builtAt}};
+          });
+        };`,
+    }
+    expect(messages(diagnostics(files, [declaration, plugin]))).toBe('')
+  })
+  test('plugin identity is string metadata rather than host methods', () => {
+    const declaration = '/virtual/claude-code.d.ts'
+    const plugin = '/virtual/identity.ts'
+    const files = {
+      [declaration]: source(),
+      [plugin]: `import type { Register } from 'claude-code';
+        export const register: Register = on => {
+          on('tool.call', ($) => {
+            const name: string = $.plugin.name;
+            const root: string = $.plugin.root;
+            // @ts-expect-error Identity is metadata, not a callable capability.
+            $.plugin.name();
+            // @ts-expect-error The official identity definition requires string metadata.
+            $.plugin.root = 7;
+            return {result:{name,root}};
+          });
+        };`,
+    }
+    expect(messages(diagnostics(files,[declaration,plugin]))).toBe('')
+  })
   test('typechecks the unchanged official-compatible author examples', async () => {
     for (const name of ['token-weather', 'blast-radius', 'replay-theater']) {
       const base = join(repository, 'examples/mods', name)
