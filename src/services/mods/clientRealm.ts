@@ -72,7 +72,6 @@ export function createModClientRealm(ui: {
   function render(instance: Instance): ModClientFrame {
     instance.dirty = false
     try {
-      instance.callbacks.clear()
       const tree = ui.materialize(instance.draw(instance.props, instance.surface), callback => {
         const handle = ++nextCallback
         instance.callbacks.set(handle, callback)
@@ -138,6 +137,10 @@ export function createModClientRealm(ui: {
         }
         const instance = instances.get(input.id)
         if (!instance) return { stopped: true }
+        if (input.op === 'release') {
+          for (const handle of input.handles ?? []) instance.callbacks.delete(handle)
+          return {}
+        }
         if (input.op === 'update') { instance.loops = 0; instance.props = propsOf(input.props); return render(instance) }
         if (input.op === 'frame') {
           instance.now = input.now ?? instance.now

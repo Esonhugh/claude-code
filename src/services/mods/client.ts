@@ -18,7 +18,7 @@ export type ModClientSite = {
 }
 
 export type ModClientRequest = {
-  op: 'mount' | 'update' | 'frame' | 'pointer' | 'key' | 'press' | 'resize' | 'dispose'
+  op: 'mount' | 'update' | 'frame' | 'pointer' | 'key' | 'press' | 'resize' | 'release' | 'dispose'
   id: number
   element?: string
   module?: string
@@ -28,6 +28,7 @@ export type ModClientRequest = {
   columns?: number
   rows?: number
   handle?: number
+  handles?: readonly number[]
 }
 export type ModClientFrame = { tree?: unknown; post?: unknown; stopped?: boolean; active?: boolean; nextDue?: number }
 export type ModClientHandle = {
@@ -129,6 +130,14 @@ export function createModClients(options: {
         void handle.dispose()
         onError?.(error)
       }
+      const callbacks = (tree: unknown): number[] => {
+        if (!tree || typeof tree !== 'object') return []
+        const node = tree as { press?: ModUiCallback; children?: unknown[] }
+        return [
+          ...(node.press?.plugin === plugin ? [node.press.handle] : []),
+          ...(Array.isArray(node.children) ? node.children.flatMap(callbacks) : []),
+        ]
+      }
       const deliver = (frame: ModClientFrame) => {
         if (disposed) return
         nextDue = frame.nextDue
@@ -136,8 +145,12 @@ export function createModClients(options: {
         if (frame.stopped) { void handle.dispose(); return }
         if (frame.tree !== undefined) {
           options.validate(frame.tree)
+          const nextCallbacks = new Set(callbacks(frame.tree))
+          const released = callbacks(lastTree).filter(handle => !nextCallbacks.has(handle))
           lastTree = frame.tree
           commit(frame.tree)
+          // Already admitted input is ahead of this release in the same queue.
+          if (released.length) void run({ op: 'release', id, handles: released }).catch(() => {})
         }
         if (frame.active) schedule()
         if (Object.hasOwn(frame, 'post')) void post(frame.post).catch(() => {})
@@ -156,9 +169,14 @@ export function createModClients(options: {
       const run = (request: ModClientRequest, stillCurrent: () => boolean = () => true): Promise<void> => {
         const operation = queue.then(async () => {
           if (disposed || !stillCurrent()) return
-          onRendering?.()
+          if (request.op !== 'release') onRendering?.()
           const frame = await options.request(pane, plugin, request)
+          if (request.op === 'release') return
           if (stillCurrent()) deliver(frame)
+          else {
+            const released = callbacks(frame.tree)
+            if (released.length) void run({ op: 'release', id, handles: released }).catch(() => {})
+          }
         })
         queue = operation.catch(() => {})
         void operation.catch(fail)
@@ -194,7 +212,7 @@ export function createModClients(options: {
             plugin, surface: pane.surface ?? 'terminal', component: pane.component ?? 'Pane', requestId: pane.id,
             element, ...(value === undefined ? {} : { value }),
             ...(kind === 'input.change' ? { kind: 'change' } : kind === 'input.submit' ? { kind: 'submit' } : {}),
-          } }, () => contains(lastTree))
+          } })
         },
         async post(data) {
           await post(copyModClientData(data, isProxy))

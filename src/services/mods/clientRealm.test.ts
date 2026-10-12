@@ -80,6 +80,7 @@ test('Client posts last plain data per frame, revokes old callbacks and stops re
   realm.request({op:'press',id:1,handle:first.tree.press.handle,event:{}})
   expect(realm.request({op:'frame',id:1,now:48}).post).toEqual({presses:1})
   realm.request({op:'update',id:1,props:{}})
+  realm.request({op:'release',id:1,handles:[first.tree.press.handle]})
   expect(() => realm.request({op:'press',id:1,handle:first.tree.press.handle,event:{}})).toThrow(/stale/)
   realm.request({op:'dispose',id:1})
   expect(realm.request({op:'press',id:1,handle:first.tree.press.handle,event:{}})).toEqual({stopped:true})

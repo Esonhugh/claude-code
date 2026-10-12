@@ -205,7 +205,7 @@ test('Client ui.message props queued behind a request cannot overwrite a newer d
   } finally {await current.dispose()}
 })
 
-test('Client stale control press queued behind a redraw does not stop the current instance', async () => {
+test('Client stale control press after a published redraw does not stop the current instance', async () => {
   const blocked = Promise.withResolvers<ModClientFrame>()
   const entered = Promise.withResolvers<void>()
   const requests: string[] = []
@@ -226,10 +226,9 @@ test('Client stale control press queued behind a redraw does not stop the curren
     await current.ready
     const redraw = current.update({...pane,drawing:2},node)
     await entered.promise
-    const pressed = current.press({plugin:'owner',handle:1},'press','press')
     blocked.resolve({tree:tree(2)})
     await redraw
-    await pressed
+    await expect(current.press({plugin:'owner',handle:1},'press','press')).rejects.toThrow('Client callback is stale')
     expect(requests).not.toContain('press')
     expect(requests).not.toContain('dispose')
     expect(errors).toEqual([])
