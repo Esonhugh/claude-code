@@ -7,6 +7,7 @@ import {
   readFileSync,
   unlinkSync,
   rmdirSync,
+  realpathSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -37,7 +38,7 @@ if (!process.env.P7_CONTRACT_TEST_CHILD) {
   }, 30000)
 } else {
   // Run only in an isolated process: no application imports before HOME is replaced.
-  const root = mkdtempSync(join(tmpdir(), 'p7-contract-loader-'))
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'p7-contract-loader-')))
   process.env.HOME = root
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
   process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL = '1'
@@ -126,6 +127,29 @@ if (!process.env.P7_CONTRACT_TEST_CHILD) {
           : readFileSync(join(dir, entry.name)).toString('base64'),
       ])
 
+  test('managed directory marketplace loads in place without trusting the installed cache', async () => {
+    const market = join(root,'managed-market')
+    const path = join(market,'plugins','example')
+    mkdirSync(join(market,'.claude-plugin'),{recursive:true})
+    mkdirSync(join(path,'.claude-plugin'),{recursive:true})
+    write(join(path,'.claude-plugin/plugin.json'),{name:'example',version:'managed-in-place'})
+    write(join(market,'.claude-plugin/marketplace.json'),{name:'corp',owner:{name:'corp'},plugins:[{name:'example',source:'./plugins/example'}]})
+    configure({})
+    const policy = {
+      enabledPlugins:{'example@corp':true},extraKnownMarketplaces:{corp:{source:{source:'directory',path:market}}},
+    } as const
+    settingsCache.setCachedSettingsForSource('policySettings',policy)
+    settingsCache.setSessionSettingsCache({settings:policy,errors:[]})
+    const before = snapshot(root)
+    try {
+      const result = await loader.loadPluginsForContractValidation()
+      expect(result.errors).toEqual([])
+      expect(result.complete).toBe(true)
+      expect(result.enabled.find(plugin => plugin.source === 'example@corp')).toMatchObject({path,managedSource:true,manifest:{version:'managed-in-place'}})
+      expect(snapshot(root)).toEqual(before)
+    } finally { configure({'example@test':true}) }
+  })
+
   const { getModPluginOrigin } = await import('../../services/mods/plugins.js')
   for (const variant of ['matched','conflicting-directory','remote-mismatch','remote-mismatch-disabled','remote-declared','no-declaration','user-only','unregistered','remote-plugin-entry','inconsistent-registration','trailing-declaration','missing-source'] as const) {
     test(`292 directory source and managed origin: ${variant}`, async () => {
@@ -192,7 +216,6 @@ if (!process.env.P7_CONTRACT_TEST_CHILD) {
       }
     })
   }
-
 
   test('contract-only discovery preserves recorded paths and never publishes partial context', async () => {
     record(recorded)
