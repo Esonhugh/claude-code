@@ -483,12 +483,14 @@ test('surface invalidation redraws the mounted consumer and releases the superse
     on('ui.render', ($,e) => $.ui.resolve(e).Button({key:'count',label:String(count),onPress:async()=>{count++;await $.ui.invalidate('ui.render')}}));
   }`)
   const frames: any[]=[]
+  const redrawn=Promise.withResolvers<void>()
   const site=await runtime.ui.mount({surface:'desktop',component:'AbovePrompt',requestId:'counter',props:{}}, {
-    surface:'desktop',render:(tree,drawing)=>{frames.push({...tree as object,drawing})},unmount:()=>{},
+    surface:'desktop',render:(tree,drawing)=>{frames.push({...tree as object,drawing});if(frames.length===2)redrawn.resolve()},unmount:()=>{},
   })
   try {
     const old=frames[0]
     await site.interact(old.drawing,old.press,'press','count')
+    await redrawn.promise
     expect(frames.map(tree=>tree.props.label)).toEqual(['0','1'])
     await expect(site.interact(old.drawing,old.press,'press','count')).rejects.toThrow(/stale/)
     expect(diagnostics).toEqual([])
