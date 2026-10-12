@@ -2068,7 +2068,15 @@ bun test --no-env-file ./src/entrypoints/sdk/controlSchemas.mods.test.ts ./src/e
 
 API 验证的期限为 5 秒，超时会取消请求并返回 `check_failed`；晚到结果不会进入成功缓存。模型切换按接收顺序处理，等待验证期间仍可处理 `interrupt` 等控制消息。空模型名被拒绝；`default` 使用当前默认模型。通用配置见 Anthropic 的[模型配置文档](https://code.claude.com/docs/en/model-config)。
 
-本项按固定官方 2.1.292 验收受控 API、缓存、错误回执、失败不改模型及等待期间的 `interrupt` 顺序。成功切换后的 `autocompact_state.source` 仍错误标为 `auto`，远程 Mods 提示也与官方不同；完整状态帧未通过。组织目录／授权覆盖、模型切换 Hook、`system_prompt` 和完整 SDK 生命周期仍需独立对齐与验收。
+本项按固定官方 2.1.292 验收受控 API、缓存、错误回执、失败不改模型及等待期间的 `interrupt` 顺序。成功切换后的压缩状态来源见下节；远程 Mods 提示仍与官方不同。组织目录／授权覆盖、模型切换 Hook、`system_prompt` 和完整 SDK 生命周期仍需独立对齐与验收。
+
+### 自动压缩窗口来源与限制
+
+远程 stream-json 会话的 `autocompact_state` 包含 `enabled`、`effective_window`、`threshold`、`enforced` 和 `source`。窗口与阈值来自共享压缩解析器。原生 1M 模型默认来源为 `model-default`；未知模型启用自动压缩时为 `unknown-model`，保护其保守窗口。显式 `[1m]`、已知旧模型以及关闭自动压缩时可以返回 `auto`，不能把所有默认窗口都视为同一种来源。
+
+`CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT=1` 关闭未知模型的隐式窗口保护，保留原窗口大小；`0` 不关闭。环境值与显式窗口设置仍优先。声明且被接受的模型窗口、显式 1M 选择和未解析的 Bedrock application inference profile 不按未知模型处理。来源还参与 reactive 模式的限制判定：`auto` 可以不强制窗口，`unknown-model` 和 `model-default` 保留限制。
+
+固定官方 2.1.292 的 16 种真实 CLI 初始状态、4 种显式启用 reactive 开关的状态，以及模型切换后的完整压缩状态值通过对照；限制选择另有生产函数回归。本地远程实验开关仍遵循 Privacy Mode 设置。API 超限后的实际 reactive 压缩、组织模型目录与完整压缩生命周期仍需独立验收。
 
 ### 自动压缩窗口环境变量
 
