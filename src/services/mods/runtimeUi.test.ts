@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { createModsRuntime, type ModHostServices } from './runtime.js'
 import { createModsSession } from './session.js'
 import { createModUi, didModUiHostFocusMove, withModUiPaneFocus, withModUiHostFocusOutcome, type ModUiPresentation } from './ui.js'
@@ -974,7 +974,7 @@ test('ModsSession UI subscriptions are stable before runtime creation and notify
   const session = createModsSession({
     isTrusted:true,
     getSettings: () => ({userSettings:{},flagSettings:{},policySettings:{},hookPolicy:{managedOnly:false,allDisabled:false}}),
-    loadPlugins: async () => [{name:consumer.name,source:consumer.storageId,path:consumer.pluginRoot,enabled:true,manifest:{name:consumer.name},repository:consumer.storageId,hookModules:[{configPath:join(consumer.pluginRoot,'hooks.json'),paths:consumer.entrypoints}]}] as any,
+    loadPlugins: async () => [{name:consumer.name,source:consumer.storageId,path:consumer.pluginRoot,enabled:true,manifest:{name:consumer.name},repository:consumer.storageId,hookModules:[{configPath:join(consumer.pluginRoot,'hooks.json'),paths:consumer.entrypoints.map(entry => relative(consumer.pluginRoot,entry))}]}] as any,
   })
   const empty = session.ui.getSnapshot()
   expect(session.ui.getSnapshot()).toBe(empty)

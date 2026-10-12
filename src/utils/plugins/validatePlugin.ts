@@ -804,7 +804,7 @@ async function validateHooksJson(
   }
 
   for (const [index, modulePath] of (result.data.modules ?? []).entries()) {
-    const resolved = path.resolve(path.dirname(filePath), modulePath)
+    const resolved = path.join(path.dirname(filePath), modulePath)
     try {
       const declaration = await loadModDeclaration({
         name: owner,

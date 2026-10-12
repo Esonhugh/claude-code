@@ -111,9 +111,15 @@ describe('plugin module declarations', () => {
     expect(PluginHooksSchema().parse(input)).toEqual(input)
     expect(PluginHooksSchema().parse({ hooks: {} })).toEqual({ hooks: {} })
   })
-  test('rejects an empty declaration and non-relative module paths', () => {
+  test.each(['register.ts', 'nested/register.ts'])('accepts a relative filename without a dot prefix: %s', path => {
+    expect(PluginHooksSchema().parse({ modules: [path] })).toEqual({ modules: [path] })
+  })
+  test.each(['/outside.ts', 'node:fs'])('retains a path string for directory-aware module validation: %s', path => {
+    // Official 2.1.292 declares string paths; module loading checks their resolved directory.
+    expect(PluginHooksSchema().parse({ modules: [path] })).toEqual({ modules: [path] })
+  })
+  test('rejects an empty declaration and more than one module', () => {
     expect(PluginHooksSchema().safeParse({}).success).toBe(false)
-    expect(PluginHooksSchema().safeParse({ modules: ['/outside.ts'] }).success).toBe(false)
-    expect(PluginHooksSchema().safeParse({ modules: ['node:fs'] }).success).toBe(false)
+    expect(PluginHooksSchema().safeParse({ modules: ['./first.ts', './second.ts'] }).success).toBe(false)
   })
 })

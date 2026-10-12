@@ -1,4 +1,4 @@
-import { dirname, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { logForDebugging } from '../../utils/debug.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { markBuiltinModInput } from '../../plugins/builtinPlugins.js'
@@ -177,7 +177,7 @@ export function prepareModPlugins(
     const entrypoints = [
       ...new Set(
         (plugin.hookModules ?? []).flatMap((group) =>
-          group.paths.map((path) => resolve(dirname(group.configPath), path)),
+          group.paths.map((path) => join(dirname(group.configPath), path)),
         ),
       ),
     ]

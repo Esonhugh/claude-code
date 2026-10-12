@@ -256,6 +256,18 @@ describe('prepareModPlugins', () => {
     expect(result.inputs[0]?.isNative).not.toBe(true)
   })
 
+  test('keeps a leading slash anchored at the declaring hooks directory', () => {
+    const plugin = loadedPlugin({ hookModules: [{
+      configPath: '/plugins/example/hooks/hooks.json',
+      paths: ['/register.ts', 'nested/register.ts', '../shared.ts'],
+    }] })
+    expect(prepareModPlugins([plugin], settings()).inputs[0]?.entrypoints).toEqual([
+      '/plugins/example/hooks/register.ts',
+      '/plugins/example/hooks/nested/register.ts',
+      '/plugins/example/shared.ts',
+    ])
+  })
+
   test('resolves every module next to its declaring hooks config', () => {
     const plugin = loadedPlugin({
       hookModules: [

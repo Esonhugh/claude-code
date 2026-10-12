@@ -360,10 +360,7 @@ export const PluginHooksSchema = lazySchema(() =>
       .describe(
         'The hooks provided by the plugin, in the same format as the one used for settings',
       ),
-    modules: z.array(z.string().refine(
-      value => value.startsWith('./') || value.startsWith('../'),
-      'Hooks modules must use relative paths',
-    )).max(1, 'Hooks configuration supports at most one module').optional(),
+    modules: z.array(z.string()).max(1, 'Hooks configuration supports at most one module').optional(),
   }).refine(value => value.hooks !== undefined || value.modules !== undefined, {
     message: 'Hooks configuration must declare hooks or modules',
   }),

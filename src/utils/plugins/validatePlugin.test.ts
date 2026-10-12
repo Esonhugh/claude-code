@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, symlink, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import {
@@ -79,6 +79,50 @@ describe('plugin types validation', () => {
 })
 
 describe('hooks module author validation', () => {
+  test.each(['register.mjs', 'nested/register.mjs', '../register.mjs'])('resolves a module filename from hooks.json: %s', async modulePath => {
+    const root = await pluginRoot()
+    try {
+      await mkdir(join(root, 'hooks', 'nested'), { recursive: true })
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'owner' }))
+      await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: [modulePath] }))
+      await writeFile(join(root, 'hooks', modulePath), `export function register(on) { on('session.start', ($, event, next) => next(event)); }`)
+      const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
+      expect(hooks?.success).toBe(true)
+      expect(hooks?.notes).toEqual([
+        `${modulePath} hooks: session.start`,
+        `${modulePath} calls: nothing on $`,
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test('rejects module paths and symlinks outside the plugin after resolving their directory', async () => {
+    const root = await pluginRoot()
+    const outside = await pluginRoot()
+    try {
+      await mkdir(join(root, 'hooks'))
+      await writeFile(join(root, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'owner' }))
+      await writeFile(join(outside, 'register.mjs'), 'export function register(on) {}')
+      await symlink(join(outside, 'register.mjs'), join(root, 'hooks', 'outside.mjs'))
+      for (const [modulePath, message] of [
+        [join('..', '..', basename(outside), 'register.mjs'), 'path is outside plugin root'],
+        [join(outside, 'register.mjs'), 'ENOENT'],
+        ['outside.mjs', 'realpath is outside plugin root'],
+      ] as const) {
+        await writeFile(join(root, 'hooks', 'hooks.json'), JSON.stringify({ modules: [modulePath] }))
+        const hooks = (await validatePluginContents(root)).find(result => result.fileType === 'hooks')
+        expect(hooks?.success).toBe(false)
+        expect(hooks?.errors).toHaveLength(1)
+        expect(hooks?.errors[0]?.path).toBe('modules[0]')
+        expect(hooks?.errors[0]?.message).toContain(message)
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+      await rm(outside, { recursive: true, force: true })
+    }
+  })
+
   test('reports discovered hooks, calls and state without hiding clean modules', async () => {
     const root = await pluginRoot()
     await mkdir(join(root, 'hooks'))
