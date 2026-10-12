@@ -3518,6 +3518,7 @@ export async function setupSdkMcpClients(
           type: 'connected',
           name,
           capabilities: capabilities || {},
+          serverInfo: client.getServerVersion(),
           client,
           config: { ...config, scope: 'dynamic' as const },
           cleanup: async () => {
