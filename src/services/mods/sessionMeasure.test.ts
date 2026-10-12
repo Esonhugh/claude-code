@@ -101,7 +101,7 @@ test('session.measure coalesces bursts, pins readonly input and cancels before e
       events.push(['exit',e.cost.usd,result.changed]);
       return {changed:[]};
     });
-    on('session.measure', ($,e,next) => {events.push(['inner',e.context.window]);return next(e)});
+    on('session.measure', {}, ($,e,next) => {events.push(['inner',e.context.window]);return next(e)});
     on('session.end', ($,e,next) => {events.push(['end']);return next(e)});
     on('tool.call', ($,e) => {if(e.tool==='Release')release();return {result:events}});
   }`, () => {captures++;const value=structuredClone(usage);return async () => value})

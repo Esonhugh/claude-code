@@ -72,6 +72,10 @@ export function matchesModMatcher(matcher: ModMatcher, value: unknown): boolean 
   return value === matcher
 }
 
+export function isModBroadEventPattern(pattern: string): boolean {
+  return pattern === '*' || pattern.endsWith('.*') || pattern.startsWith('!')
+}
+
 export function isModEventPattern(value: unknown): value is string {
   if (typeof value !== 'string' || value === '!*') return false
   const pattern = value.startsWith('!') ? value.slice(1) : value

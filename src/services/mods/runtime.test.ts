@@ -462,7 +462,7 @@ describe('Mods lifecycle', () => {
     // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const outer = await fixture(`let order = []; export function register(on) {
       on('engine.create', async ($, e, next) => { order.push('first'); const built = await next(e); return { ...built }; });
-      on('engine.create', () => { order.push('second'); return {}; });
+      on('engine.create', {}, () => { order.push('second'); return {}; });
       on('tool.call', { tool: 'Outer' }, () => ({ result: order }));
     }`, 'outer')
     const inner = await fixture(`let calls = 0; export function register(on) {
@@ -577,7 +577,7 @@ describe('Mods lifecycle', () => {
     const source = `export function register(on) {
       on('tool.call', async ($, e, next) => { await $.clock.sleep(0); await $.clock.now(); return next(e); });
       on('session.start', ($, e, next) => next(e));
-      on('tool.call', ($, e, next) => next(e));
+      on('tool.call', {}, ($, e, next) => next(e));
     }`
     const plugin = await fixture(source)
     const moved = await fixture(source)
@@ -1198,7 +1198,7 @@ describe('Mods lifecycle', () => {
   test('clock op envelopes are rewritten and unwrapped across real Workers', async () => {
     const policy = await fixture(`export function register(on) {
       on('clock.now', async ($, e, next) => { const result=await next(e); return {value:result.value+1}; });
-      on('clock.now', () => ({value:123}));
+      on('clock.now', {}, () => ({value:123}));
       on('clock.sleep', () => ({deny:'sleep denied'}));
       on('clock.after', () => ({deny:'after denied'}));
       on('clock.every', () => ({deny:'every denied'}));

@@ -3,7 +3,7 @@ import { parse } from 'acorn'
 import { createHash } from 'node:crypto'
 import { open, realpath, stat } from 'node:fs/promises'
 import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
-import { EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
+import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, normalizeModMatcher } from './matcher'
 import type { ModDeclaration, ModInput, ModRegistration, ModStateReference, ModTier } from './types'
 
 // Deliberately a small authoring language, not the official parser or a security sandbox.
@@ -81,8 +81,8 @@ function isFunction(node: Node): boolean {
 function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entrypoints: string[]) {
   const events = new Set<string>()
   const calls = new Set<string>()
-  const telemetryRegistrations = new Map<Node, { event: string; matcher?: Node; path: string }>()
   const registrationDescriptions = new Map<Node, { event: string; matcher?: Node; scope: Scope }>()
+  const firstRegistrations = new Map<string, { path: string; line?: number }>()
   const directCalls = new Set<string>()
   const callsVia = new Map<string, Set<string>>()
   const otherConstantReads = new Set<Binding>()
@@ -566,7 +566,13 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
     if (node.optional) fail(path, 'optional registration is unsupported')
     if (node.arguments.length !== 2 && node.arguments.length !== 3) fail(path, 'on expects event, optional literal matcher, and inline handler')
     const event = eventName(node.arguments[0])
-    if (event.startsWith('telemetry.')) telemetryRegistrations.set(node, { event, ...(node.arguments.length === 3 ? { matcher: node.arguments[1] } : {}), path })
+    if (!collecting && !registrationDescriptions.has(node) &&
+      (node.arguments.length === 2 || isModBroadEventPattern(event))) {
+      const first = firstRegistrations.get(event)
+      const line = node.loc?.start.line
+      if (first) fail(path, `on("${event}") registered twice${line === undefined ? '' : ` (compiled line ${line})`}; first at ${first.path}${first.line === undefined ? '' : ` (compiled line ${first.line})`}`)
+      firstRegistrations.set(event, { path, ...(line === undefined ? {} : { line }) })
+    }
     if (node.arguments.length === 3) matcher(node.arguments[1], scope)
     const handler = node.arguments.at(-1) as Node
     const resolved = isFunction(handler) ? undefined : resolveValue(handler, scope)
@@ -972,9 +978,9 @@ function scan(programs: Map<string, Node>, links: ModDeclaration['links'], entry
       return item.value as string
     })
   }
-  const registeredTelemetry = [...telemetryRegistrations.values()].filter(({ event }) => event.startsWith('telemetry.'))
-  const streams = new Set(registeredTelemetry.flatMap(({ event, matcher, path: registeredPath }) => { path = registeredPath; return streamsOf(matcher, event) }))
-  const telemetry = registeredTelemetry.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
+  const telemetryRegistrations = [...registrationDescriptions.values()].filter(({ event }) => event.startsWith('telemetry.'))
+  const streams = new Set(telemetryRegistrations.flatMap(({ event, matcher }) => streamsOf(matcher, event)))
+  const telemetry = telemetryRegistrations.length ? telemetryStreams.filter(stream => streams.has(stream)) : undefined
   return { events, calls, env, state, nextTiers, telemetry, validation: {
     registrations: [...registrationDescriptions.values()].map(({ event, matcher, scope }) => matcher === undefined ? event : `${event}${diagnosticMatcher(matcher, scope)}`),
     helperCalls: Object.fromEntries([...callsVia].filter(([call]) => !directCalls.has(call)).map(([call, via]) => [call, [...via].sort()])),
@@ -1131,7 +1137,7 @@ export async function loadModDeclaration(input: {
       const extension = extname(path)
       const syntax = extension === '.tsx' || extension === '.jsx' ? 'tsx' : 'ts'
       compiled = transpilers[syntax].transformSync(source, syntax)
-      program = parse(compiled, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as Node
+      program = parse(compiled, { ecmaVersion: 'latest', sourceType: 'module', locations: true }) as unknown as Node
     } catch (error) { fail(path, `cannot parse/transpile module: ${error instanceof Error ? error.message : String(error)}`) }
     function clientSpecifier(node: Node): Node | undefined {
       if (node.type !== 'CallExpression') return
@@ -1212,7 +1218,7 @@ export async function loadModDeclaration(input: {
   }
   for (const path of hookPaths) {
     const source = modules.find(module => module.path === path)!.source
-    programs.set(path, parse(source, { ecmaVersion: 'latest', sourceType: 'module' }) as unknown as Node)
+    programs.set(path, parse(source, { ecmaVersion: 'latest', sourceType: 'module', locations: true }) as unknown as Node)
   }
   for (const link of links) {
     if (awaits.has(link.to)) fail(link.to, 'top-level await in imported files is unsupported')

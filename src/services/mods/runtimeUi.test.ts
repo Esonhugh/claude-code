@@ -410,7 +410,7 @@ test('Client ui.message pins the envelope and permits only data rewrites', async
       }
       return next({...e,data:'rewritten'});
     });
-    on('ui.message',($,e)=>({props:e.data}));
+    on('ui.message',{},($,e)=>({props:e.data}));
   }`)
   await writeFile(join(consumer.pluginRoot, 'counter.ts'), `export default function Counter(props,s) {
     if(s.state===undefined){s.setState(1);s.post('original')}

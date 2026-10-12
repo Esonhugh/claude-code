@@ -212,7 +212,7 @@ test('a Worker can throw into a downstream generator that catches and completes 
       const r=yield* stream;
       return {...r,answer:(await stream.result).answer};
     });
-    on('turn.step',async function* ($,e,next) { return yield* next(e); });
+    on('turn.step',{}, async function* ($,e,next) { return yield* next(e); });
   }`)
   let closed=0
   const stream=value.stream('turn.step',input,async function* () {
@@ -253,7 +253,7 @@ test('$.turn.step is a synchronous stream and skips only its calling registratio
       const r = yield* stream;
       return { ...r, answer: (await stream.result).answer };
     });
-    on('turn.step', async function* ($, e, next) {
+    on('turn.step', {}, async function* ($, e, next) {
       for await (const c of next(e)) yield {...c, text: c.text + '!'};
     });
   }`)

@@ -12,7 +12,7 @@ import { URL as HostURL, URLSearchParams as HostURLSearchParams } from 'node:url
 import { createModHookStream, createModProcessStream, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
 import { createModUiRealm } from './uiRealm.js'
 import { createModClientRealm, copyModClientData } from './clientRealm.js'
-import { EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
+import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
 import { createModWebRealm } from './webRealm.js'
 import { modStateLibrarySource } from './stateLibrary.js'
 
@@ -30,6 +30,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
   const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
   const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData);
+  const isModBroadEventPattern = (${isModBroadEventPattern.toString()});
   const isModEventPattern = (${isModEventPattern.toString()});
   const emptyEventPatternError = ${JSON.stringify(EMPTY_MOD_EVENT_PATTERN_ERROR)};
   const matchesModEventPattern = (${matchesModEventPattern.toString()});
@@ -65,6 +66,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   const abortErrors = new WeakSet();
   const signals = new Map();
   const registrations = [];
+  const singleRegistrations = new Set();
   const timers = new Map();
   const streams = new Map();
   const streamHandles = new Map();
@@ -440,6 +442,10 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
       };
       check(matcher);
       checkedMatcher = matcherWire(normalizeModMatcher(matcher));
+    }
+    if (matcher === undefined || isModBroadEventPattern(event)) {
+      if (singleRegistrations.has(event)) throw Error(plugin + ': on("' + event + '") registered twice');
+      singleRegistrations.add(event);
     }
     const id = encode(handler).id;
     const registration = { id, event, matcher: checkedMatcher, hasCatch: false };

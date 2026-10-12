@@ -690,7 +690,7 @@ test('author tool.check refuses identity rewrites and invalid decisions at the h
   }`)
   const policy = await plugin('policy', `export function register(on) {
     on('tool.check', ($,e,next) => next({...e,input:{path:'rewritten'}}));
-    on('tool.check', () => ({decision:'yes'}));
+    on('tool.check', {}, () => ({decision:'yes'}));
   }`)
   const questions: unknown[] = []
   const diagnostics: {message:string}[] = []

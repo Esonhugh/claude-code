@@ -1248,7 +1248,7 @@ describe('Mods CLI session host', () => {
         await $.fs.write('./pinned.json', JSON.stringify(failures));
         return next(e);
       });
-      on('session.end', () => ({invalid:true})).catch(async ($, e, next) => {
+      on('session.end', {}, () => ({invalid:true})).catch(async ($, e, next) => {
         await $.fs.write('./caught', next.error.message);
         return next(e);
       });

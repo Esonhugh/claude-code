@@ -2069,7 +2069,7 @@ test.each([
 ])('ordinary session.start failure recovers without unloading the module: $body', async ({body,message}) => {
   const consumer=await plugin('recover-start',`let starts=0; export function register(on) {
     on('session.start',async ($,e,next)=>{${body}});
-    on('session.start',($,e,next)=>{starts++;return next(e)});
+    on('session.start',{}, ($,e,next)=>{starts++;return next(e)});
     on('tool.call',()=>({result:starts}));
   }`)
   const {value,diagnostics}=runtime()
@@ -2663,7 +2663,7 @@ test('settings.read remains hookable for rewrite, deny and same-event reentry', 
       if (e.source === 'local') return {deny:'settings denied'};
       return {value:await $.settings.read({source:'user'})};
     });
-    on('settings.read', async ($, e, next) => ({value:{...(await next(e)).value, source:e.source}}));
+    on('settings.read', {}, async ($, e, next) => ({value:{...(await next(e)).value, source:e.source}}));
   }`)
   const consumer = await plugin('settings-consumer', `export function register(on) {
     on('tool.call', async ($) => {
@@ -2683,7 +2683,7 @@ test('capability calls run sibling hooks and skip only the currently calling reg
   const consumer = await plugin('sibling-reader', `let entries=0; export function register(on) {
     on('tool.call', async ($) => ({result:{text:await $.fs.read('alias.txt'),entries}}));
     on('fs.read', async ($, e) => { entries++; return {value:await $.fs.read('actual.txt')}; });
-    on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+e.path+':'+next.origin.plugin}));
+    on('fs.read', {}, async ($, e, next) => ({value:(await next(e)).value+':'+e.path+':'+next.origin.plugin}));
   }`)
   const { value, diagnostics } = runtime()
   await value.bind(binding(root))
