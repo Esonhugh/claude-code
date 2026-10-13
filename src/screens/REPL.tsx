@@ -1,10 +1,11 @@
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
-// biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { createModUiSelectionTracker } from '../services/mods/uiSelection.js'
 import {copyModTerminalText} from '../services/mods/uiCopy.js'
 import inkInstances from '../ink/instances.js'
+import { copyModCallerChain } from '../services/mods/callerChain.js'
+// biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
@@ -418,6 +419,7 @@ import {
   type ModsSession,
 } from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
@@ -2026,9 +2028,11 @@ export function REPL({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(messagesRef.current),
+    rawMessages: () => messagesRef.current,
     uiSelection: () => modSelectionTracker.read(),
     uiCopy: async (input, plugin) => input.surface === 'terminal'
       ? copyModTerminalText(input.text, plugin) : {isCopied: false, reason: 'no-clipboard'},
+    agentMessages: readModBoundAgentMessages,
     captureUsage: () => captureModSessionUsage({
       ...modToolContextRef.current!(),
       messages: messagesRef.current,
@@ -2068,7 +2072,8 @@ export function REPL({
     toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
     toolHost: () => createModToolHost(modToolContextRef.current!(), modCanUseToolRef.current!),
     commandRun: createModCommandQueue(),
-    submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+    submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
+      const uuid = randomUUID()
       let settled = false
       const finish = (settle: () => void) => {
         if (settled) return
@@ -2077,23 +2082,33 @@ export function REPL({
         settle()
       }
       const cancel = () => {
-        finish(() => reject(signal.reason))
+        finish(() => {
+          logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=aborted`)
+          reject(signal.reason)
+        })
         remove([queued])
       }
       const queued = enqueueTracked({
         value: text,
         mode: 'prompt',
         priority: 'later',
+        uuid,
+        origin,
+        promptSubmitCallerChain: copyModCallerChain(callerChain),
         promptSubmitMetadata: {
           origin,
           wait: false,
           ...(attachments === undefined ? {} : { attachments }),
         },
         promptSubmitReceipt: {
-          admit: result => finish(() => resolve(result)),
+          admit: result => finish(() => {
+            logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=${result.drop === undefined ? 'admitted' : 'dropped'}`)
+            resolve(result)
+          }),
           cancel: reason => finish(() => reject(reason)),
         },
       })
+      logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=terminal asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
       signal.addEventListener('abort', cancel, { once: true })
       if (signal.aborted) cancel()
     }),

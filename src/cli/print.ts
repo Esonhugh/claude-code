@@ -4,9 +4,11 @@ import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
 import { createModMcpConnections } from '../services/mods/mcpConnect.js'
 import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
+import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
+import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname } from 'path'
 import {
@@ -66,6 +68,7 @@ import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import {
   getSessionState,
@@ -2300,6 +2303,7 @@ function runHeadlessStreaming(
           // const-capture: TS loses `while ((command = dequeue()))` narrowing
           // inside the closure.
           const cmd = command
+          let promptAdmitted = false
           try {
             await runWithWorkload(cmd.workload ?? options.workload, async () => {
               for await (const message of ask({
@@ -2319,8 +2323,10 @@ function runHeadlessStreaming(
                   wait: false,
                 }
               ),
+              promptSubmitCallerChain: cmd.promptSubmitCallerChain,
               onPromptAdmission: result => {
                 if (result.admission) {
+                  promptAdmitted = true
                   cmd.promptSubmitReceipt?.admit(result.admission)
                 }
                 cmd.commandRunReceipt?.admit(result)
@@ -2420,11 +2426,11 @@ function runHeadlessStreaming(
               }
             }) // end runWithWorkload
           } catch (error) {
-            for (const queued of batch) {
-              queued.promptSubmitReceipt?.cancel(error)
-              queued.commandRunReceipt?.cancel(error)
-            }
+            for (const queued of batch) queued.commandRunReceipt?.cancel(error)
+            for (const queued of batch.slice(1)) queued.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
             throw error
+          } finally {
+            if (!promptAdmitted) cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
           }
 
           for (const uuid of batchUuids) {
@@ -2918,6 +2924,8 @@ function runHeadlessStreaming(
     cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
   }, setAppState, {
     messages: () => projectModSessionMessages(mutableMessages),
+    rawMessages: () => mutableMessages,
+    agentMessages: readModBoundAgentMessages,
     captureUsage: () => captureModSessionUsage(getModToolContext()),
     model: () => activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
     turns: () => mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual && message.toolUseResult === undefined).length,
@@ -2967,7 +2975,8 @@ function runHeadlessStreaming(
         signal,
       ),
     commandRun: createModCommandQueue({wake:()=>run()}),
-    submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+    submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
+      const uuid = randomUUID()
       let settled = false
       const finish = (settle: () => void) => {
         if (settled) return
@@ -2976,23 +2985,33 @@ function runHeadlessStreaming(
         settle()
       }
       const cancel = () => {
-        finish(() => reject(signal.reason))
+        finish(() => {
+          logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=aborted`)
+          reject(signal.reason)
+        })
         remove([queued])
       }
       const queued = enqueueTracked({
         value: text,
         mode: 'prompt',
         priority: 'later',
+        uuid,
+        origin,
+        promptSubmitCallerChain: copyModCallerChain(callerChain),
         promptSubmitMetadata: {
           origin,
           wait: false,
           ...(attachments === undefined ? {} : { attachments }),
         },
         promptSubmitReceipt: {
-          admit: result => finish(() => resolve(result)),
+          admit: result => finish(() => {
+            logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=${result.drop === undefined ? 'admitted' : 'dropped'}`)
+            resolve(result)
+          }),
           cancel: reason => finish(() => reject(reason)),
         },
       })
+      logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=headless asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
       signal.addEventListener('abort', cancel, { once: true })
       if (signal.aborted) cancel()
       else void run()

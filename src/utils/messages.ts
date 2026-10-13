@@ -21,6 +21,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
 import type { AgentId } from 'src/types/ids.js'
+import { formatPluginPrompt } from '../services/mods/pluginPrompt.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
@@ -3935,9 +3936,16 @@ Read the team config to discover your teammates' names. Check the task list peri
       // hardcoded isMeta:true, which hid user-typed messages in brief mode
       // (filterForBriefTool) and in normal mode (shouldShowUserMessage).
       const metaProp =
-        origin !== undefined || attachment.isMeta
+        (origin !== undefined && origin.kind !== 'human') || attachment.isMeta
           ? ({ isMeta: true } as const)
           : {}
+
+      // Official queued input escapes a closing reminder tag before sender
+      // framing. asUser changes the sender label, not the plugin provenance.
+      const commandText = (text: string): string =>
+        (origin === undefined || origin.kind === 'human') && attachment.isMeta !== true
+          ? text
+          : text.replaceAll(/<\s*\/\s*system-reminder\s*>/gi, '&lt;/system-reminder&gt;')
 
       if (Array.isArray(attachment.prompt)) {
         // Handle content blocks (may include images)
@@ -3953,7 +3961,7 @@ Read the team config to discover your teammates' names. Check the task list peri
         const content: ContentBlockParam[] = [
           {
             type: 'text',
-            text: wrapCommandText(textContent, origin),
+            text: wrapCommandText(commandText(textContent), origin),
           },
           ...imageBlocks,
         ]
@@ -3971,7 +3979,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       // String prompt
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: wrapCommandText(String(attachment.prompt), origin),
+          content: wrapCommandText(commandText(String(attachment.prompt)), origin),
           ...metaProp,
           origin,
           uuid: attachment.source_uuid,
@@ -5104,12 +5112,15 @@ function hasOnlyWhitespaceTextContent(
  */
 export function filterWhitespaceOnlyAssistantMessages(
   messages: (UserMessage | AssistantMessage)[],
+  options?: { mergeAdjacentUsers?: boolean },
 ): (UserMessage | AssistantMessage)[]
 export function filterWhitespaceOnlyAssistantMessages(
   messages: Message[],
+  options?: { mergeAdjacentUsers?: boolean },
 ): Message[]
 export function filterWhitespaceOnlyAssistantMessages(
   messages: Message[],
+  options?: { mergeAdjacentUsers?: boolean },
 ): Message[] {
   let hasChanges = false
 
@@ -5139,6 +5150,8 @@ export function filterWhitespaceOnlyAssistantMessages(
   if (!hasChanges) {
     return messages
   }
+
+  if (options?.mergeAdjacentUsers === false) return filtered
 
   // Removing assistant messages may leave adjacent user messages that need
   // merging (the API requires alternating user/assistant roles).
@@ -5750,6 +5763,8 @@ export function wrapCommandText(
 ): string {
   // @ts-ignore - recovered code
   switch (origin?.kind) {
+    case 'plugin':
+      return formatPluginPrompt(raw, origin, true)
     case 'task-notification':
       return `A background agent completed a task:\n${raw}`
     case 'coordinator':

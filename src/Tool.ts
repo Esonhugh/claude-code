@@ -193,7 +193,7 @@ export type ToolUseContext = {
   /** A classic PreToolUse ask still requires the permission decider. */
   hookAskFloor?: true
   /** Resolves a Mods host spawn at AgentTool's internal launch boundary. */
-  modAgentStarted?: (result: { model: string; agentId: string }) => void
+  modAgentStarted?: (result: { model: string; agentId: string; teammateId?: string }) => void
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {

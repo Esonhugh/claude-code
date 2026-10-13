@@ -54,10 +54,9 @@ function logOperation(operation: QueueOperation, content?: string): void {
 
 const commandQueue: QueuedCommand[] = []
 
-function cancelCommands(commands: readonly QueuedCommand[], reason: string): void {
-  const error = new Error(reason)
+function settleRemovedCommands(commands: readonly QueuedCommand[]): void {
   for (const command of commands) {
-    command.promptSubmitReceipt?.cancel(error)
+    command.promptSubmitReceipt?.admit({drop:'the prompt was removed from the queue before it ran'})
     command.commandRunReceipt?.cancel(new Error('Queued command removed before execution'))
   }
 }
@@ -307,7 +306,7 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
 
   if (removed.length) notifySubscribers()
 
-  cancelCommands(removed, 'Queued prompt removed before admission')
+  settleRemovedCommands(removed)
   for (const _cmd of removed) {
     logOperation('remove')
   }
@@ -329,7 +328,7 @@ export function removeByFilter(
 
   if (removed.length > 0) {
     notifySubscribers()
-    cancelCommands(removed, 'Queued prompt removed before admission')
+    settleRemovedCommands(removed)
     for (const _cmd of removed) {
       logOperation('remove')
     }
@@ -348,7 +347,7 @@ export function clearCommandQueue(): void {
   }
   const removed = commandQueue.splice(0)
   notifySubscribers()
-  cancelCommands(removed, 'Queued prompt cleared before admission')
+  settleRemovedCommands(removed)
 }
 
 /**
@@ -358,7 +357,7 @@ export function clearCommandQueue(): void {
 export function resetCommandQueue(): void {
   const removed = commandQueue.splice(0)
   snapshot = Object.freeze([])
-  cancelCommands(removed, 'Queued prompt reset before admission')
+  settleRemovedCommands(removed)
 }
 
 // ============================================================================

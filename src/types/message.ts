@@ -10,6 +10,7 @@ export type PartialCompactDirection = 'back' | 'forward' | 'from' | 'up_to'
 export type MessageOrigin =
   | { kind: 'human' | 'task-notification' | 'coordinator' }
   | { kind: 'channel'; server: string }
+  | { kind: 'plugin'; name: string; asUser?: true }
   | {
       kind: 'peer'
       from: string

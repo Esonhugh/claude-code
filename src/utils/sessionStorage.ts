@@ -10,8 +10,8 @@ import {
   open as fsOpen,
   mkdir,
   readdir,
-  rename,
   readFile,
+  rename,
   stat,
   unlink,
   writeFile,
@@ -274,9 +274,13 @@ export type AgentMetadata = {
   agentType: string
   /** Durable user cancellation; absent on older metadata. */
   stoppedByUser?: boolean
-  /** Name retained for SendMessage routing when a background skill resumes. */
+  /** Persisted teammate identity used to route stopped or evicted agents. */
+  taskKind?: 'in_process_teammate'
   name?: string
-  /** Effective model retained when the same agent resumes a later turn. */
+  teamName?: string
+  color?: string
+  planModeRequired?: boolean
+  customAgentType?: string
   model?: string
   effort?: import('./effort.js').EffortValue
   /** Worktree path if the agent was spawned with isolation: "worktree" */

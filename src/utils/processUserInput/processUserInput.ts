@@ -1,3 +1,4 @@
+import type { ModCallerChain } from '../../services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
@@ -14,6 +15,7 @@ import {
   type PromptSubmitResult,
 } from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
+import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
 import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
 import { createModToolHost } from '../../services/mods/toolHost.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
@@ -118,6 +120,7 @@ export async function processUserInput({
   skipAttachments,
   skipHooks,
   promptSubmitMetadata,
+  promptSubmitCallerChain,
   onPromptAdmission,
   deferCommands,
 }: {
@@ -160,6 +163,7 @@ export async function processUserInput({
   skipHooks?: boolean
   /** Stamped at ingress and retained while queued; unstamped is unclassified. */
   promptSubmitMetadata?: PromptSubmitMetadata
+  promptSubmitCallerChain?: ModCallerChain
   onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
   deferCommands?: boolean
 }): Promise<ProcessUserInputBaseResult> {
@@ -191,8 +195,8 @@ export async function processUserInput({
     mode,
     setToolJSX,
     context,
-    pastedContents,
-    ideSelection,
+    promptSubmitMetadata?.origin.kind === 'plugin' ? undefined : pastedContents,
+    promptSubmitMetadata?.origin.kind === 'plugin' ? undefined : ideSelection,
     messages,
     uuid,
     isAlreadyProcessing,
@@ -202,13 +206,14 @@ export async function processUserInput({
     skipSlashCommands,
     bridgeOrigin,
     isMeta,
-    skipAttachments || isRemoteShellInput,
+    skipAttachments || isRemoteShellInput || promptSubmitMetadata?.origin.kind === 'plugin',
     preExpansionInput,
     deferCommands,
   )
   queryCheckpoint('query_process_user_input_base_end')
 
   if (!result.shouldQuery || isRemoteShellInput || skipHooks) {
+    applyPluginPromptOrigin(result)
     if (!result.deferred) onPromptAdmission?.(result)
     return result
   }
@@ -271,6 +276,7 @@ export async function processUserInput({
     const { outcome, submissions } = await runModPromptSubmit({
       snapshot,
       admit: admitPrompt,
+      callerChain: promptSubmitCallerChain,
       signal: context.abortController.signal,
       input: {
         text,
@@ -343,6 +349,14 @@ export async function processUserInput({
     const messages = submissions.flatMap(submitted => submitted.messages)
     if (outcome.drop !== undefined)
       messages.push(createSystemMessage(outcome.drop, 'warning'))
+    if (!last) {
+      const admission = outcome.drop !== undefined
+        ? outcome
+        : { drop: 'a hook answered without passing the prompt on' }
+      const refused = { ...result, messages, shouldQuery: false, admission }
+      admitPrompt(refused)
+      return refused
+    }
     return {
       ...(last ?? result),
       messages,
@@ -359,7 +373,36 @@ export async function processUserInput({
     const ask = pendingAsks.get(settled.messages)
     pendingAsks.delete(settled.messages)
     ask?.finish(settled.shouldQuery)
+    applyPluginPromptOrigin(settled)
     onPromptAdmission?.(settled)
+  }
+
+  function applyPluginPromptOrigin(settled: ProcessUserInputBaseResult): void {
+    const origin = settled.admission?.origin ?? promptSubmitMetadata?.origin
+    if (!isRegularPrompt || !settled.shouldQuery || origin?.kind !== 'plugin') return
+    const index = settled.messages.findIndex(message => message.type === 'user')
+    const message = settled.messages[index]
+    if (message?.type !== 'user') return
+    let content = message.message.content
+    if (!origin.asUser) {
+      const text = typeof content === 'string' ? content : content.flatMap(block =>
+        block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
+      ).join('\n')
+      const framed = formatPluginPrompt(text, origin)
+      if (typeof content === 'string') content = framed
+      else {
+        let written = false
+        content = content.flatMap(block => {
+          if (block.type !== 'text') return [block]
+          if (written) return []
+          written = true
+          return [{ ...block, text: framed }]
+        })
+        if (!written) content = [{ type: 'text', text: framed }, ...content]
+      }
+    }
+    settled.messages = [...settled.messages]
+    settled.messages[index] = { ...message, origin, message: { ...message.message, content } }
   }
 
   async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {

@@ -9,14 +9,18 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises'
 import { beforeEach, afterEach, expect, spyOn, test } from 'bun:test'
 import memoize from 'lodash-es/memoize.js'
 import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { logForDebugging } from '../utils/debug.js'
+import { copyModCallerChain } from '../services/mods/callerChain.js'
 import ts from 'typescript'
 import * as React from 'react'
 import { PassThrough } from 'node:stream'
 import { render } from '../ink.js'
 import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuffer.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
-import { fillPromptBox } from '../services/mods/promptAdapter.js'
+import { fillPromptBox, FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { getModHttpServices } from '../services/mods/hostOperations.js'
+import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
 import {
   createModsSession,
   ModAuthoringPromptDismissedError,
@@ -29,6 +33,7 @@ import {
   getUserContextInstructionFiles,
   withUserContextInstructionFiles,
 } from '../context.js'
+
 
 const testEnvKeys = [
   'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
@@ -103,9 +108,15 @@ function extract(path: string, name: string, kind: 'callback' | 'function' | 'ef
     'modMcpConnections',
     'getModHttpServices',
     'createModCommandQueue',
+    'readModBoundAgentMessages',
+    'FAILED_PROMPT_BATCH_DROP',
+    'UNSUBMITTED_PROMPT_DROP',
+    'randomUUID',
+    'logForDebugging',
+    'copyModCallerChain',
     'beginModSelectionRun',
     `with (scope) { ${js}; return extracted; }`,
-  )(scope, modMcpConnections, getModHttpServices, createModCommandQueue, () => () => {})
+  )(scope, modMcpConnections, getModHttpServices, createModCommandQueue, readModBoundAgentMessages, FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP, randomUUID, logForDebugging, copyModCallerChain, () => () => {})
   }
 }
 
@@ -278,21 +289,25 @@ test('production tool context exposes Mod authoring consent while generic hook p
   expect(noHost.requestModAuthoringConsent).toBeUndefined()
 })
 
-test('Mods prompt host reads and fills the live mounted PromptInput bridge', async () => {
+test('REPL Mods prompt host reads the live PromptInput handle before React commits', async () => {
   let services: any
-  const inputValueRef = { current: 'A😀B' }
+  const inputValueRef = { current: 'stale React input' }
+  let draft = 'A😀B'
   const modPromptBlockedRef = { current: false }
   const setInputWithCursorCalls: unknown[] = []
+  const modes: unknown[] = [], paints: unknown[] = []
   const insertTextRef = {
     current: {
-      get text() { return inputValueRef.current },
+      get text() { return draft },
       cursorOffset: 3,
       insert: noop,
       setInputWithCursor: (text: string, cursor: number) => {
-        inputValueRef.current = text
+        draft = text
         insertTextRef.current.cursorOffset = cursor
         setInputWithCursorCalls.push([text, cursor])
       },
+      paintDecorations: (decorations: unknown, text: string) => paints.push([decorations, text]),
+      carryDecorations: noop,
     },
   }
   const awaitMods = extract('./REPL.tsx', 'awaitMods')({
@@ -311,6 +326,7 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
     insertTextRef,
     modPromptBlockedRef,
     fillPromptBox,
+    setInputMode: (mode: string) => modes.push(mode),
   })
   await awaitMods()
   const prompt = services.prompt()
@@ -318,6 +334,14 @@ test('Mods prompt host reads and fills the live mounted PromptInput bridge', asy
   expect(prompt.fill({ text: 'x', mode: 'insert' })).toBe(true)
   expect(setInputWithCursorCalls).toEqual([['A😀xB', 4]])
   expect(prompt.read()).toEqual({ text: 'A😀xB', cursor: 4 })
+  expect(inputValueRef.current).toBe('stale React input')
+  expect(modes).toEqual([])
+  const decorations = [{ start: 0, end: 3, color: 'green' }]
+  expect(prompt.fill({ text: 'new', mode: 'replace', decorations })).toBe(true)
+  expect(setInputWithCursorCalls).toEqual([['A😀xB', 4], ['new', 3]])
+  expect(prompt.read()).toEqual({ text: 'new', cursor: 3 })
+  expect(modes).toEqual(['prompt'])
+  expect(paints).toEqual([[ [{ start: 0, end: 3, color: '#46a758' }], 'new' ]])
   modPromptBlockedRef.current = true
   expect(prompt.isBlocked()).toBe(true)
 })
@@ -508,6 +532,103 @@ test('successful edits reach the transcript and auto-open diff without a Mods ru
   }
 })
 
+test('live diff ownership suppresses native edit observations and fences a pending sidebar open', async () => {
+  let owned = false
+  let state = { diffSidebarVisible: false }
+  let messages: any[] = []
+  const surfaces: unknown[] = []
+  const errors: unknown[] = []
+  const pending = deferred()
+  const diff = new DiffController({ cwd: '/synthetic' })
+  const observe = spyOn(diff, 'observeMessage')
+  diff.autoOpen = async surface => { surfaces.push(surface); await pending.promise; return true }
+  const onEvent = extract('./REPL.tsx', 'onQueryEvent')({
+    handleMessageFromStream: (event: any, append: any) => append(event),
+    diffController: diff, store: { getState: () => state },
+    getDiffOwnership: () => owned,
+    modsSession: { runtime: undefined, ui: { getSnapshot: () => [] } },
+    getSessionId: () => 'synthetic-session', process: { stdout: { columns: 144 } },
+    isFullscreenEnvEnabled: () => true, fileHistoryEnabled: () => true,
+    MIN_DIFF_SIDEBAR_COLUMNS: 110, logError: (error: unknown) => errors.push(error),
+    setAppState: (fn: any) => { state = fn(state) },
+    setMessages: (fn: any) => { messages = fn(messages) },
+    isCompactBoundaryMessage: () => false, feature: () => false,
+    setResponseLength: noop, setStreamMode: noop, setStreamingToolUses: noop,
+    setStreamingThinking: noop, onStreamingText: undefined,
+  })
+  const edit = (id: string) => {
+    onEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Edit', input: {} }] } })
+    onEvent({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'done' }] } })
+  }
+  try {
+    edit('pending')
+    expect(surfaces).toHaveLength(1)
+    expect(observe).toHaveBeenCalledTimes(2)
+    owned = true
+    pending.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(state.diffSidebarVisible).toBe(false)
+    edit('taken-over')
+    expect(observe).toHaveBeenCalledTimes(2)
+    expect(surfaces).toHaveLength(1)
+    expect(messages).toHaveLength(4)
+    owned = false
+    edit('restored')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(observe).toHaveBeenCalledTimes(4)
+    expect(surfaces).toHaveLength(2)
+    expect(state.diffSidebarVisible).toBe(true)
+    expect(messages).toHaveLength(6)
+    expect(errors).toEqual([])
+  } finally {
+    observe.mockRestore()
+    diff.dispose()
+  }
+})
+
+test('the REPL native controller reads current ownership before probes and preference writes', async () => {
+  let owned = false
+  let probes = 0
+  let config: any = {}
+  class ObservedController extends DiffController {
+    constructor(options: ConstructorParameters<typeof DiffController>[0]) {
+      super({ ...options, createBackend: async () => ({
+        root: '/synthetic',
+        fetch: async () => { probes++; return { kind: 'unavailable', reason: 'fixture' } },
+        fetchBody: async () => ({ status: 'no-body', hunks: [] }),
+        headKey: async () => null,
+      }) })
+    }
+  }
+  const diff = extract('./REPL.tsx', '[diffController]')({
+    isRemoteExecutionSession: false, DiffController: ObservedController,
+    diffOwnershipRef: { current: () => owned },
+    getCwd: () => '/synthetic', addNotification: noop,
+    getGlobalConfig: () => config,
+    saveGlobalConfig: (fn: any) => { config = fn(config) },
+  })() as DiffController
+  try {
+    await diff.refresh()
+    expect(probes).toBe(1)
+    diff.setOpenPreference(false)
+    expect(config.diffSidebarOpen).toBe(false)
+    owned = true
+    await diff.refresh()
+    diff.setOpenPreference(true)
+    expect(probes).toBe(1)
+    expect(config.diffSidebarOpen).toBe(false)
+    owned = false
+    await diff.refresh()
+    diff.setOpenPreference(true)
+    expect(probes).toBe(2)
+    expect(config.diffSidebarOpen).toBe(true)
+  } finally {
+    diff.dispose()
+  }
+})
+
 test('diff open preference is global while base stays repository scoped', async () => {
   let config: any = { diffPreferences: { '/repo-a': { mode: 'branch' }, '/repo-b': { mode: 'uncommitted' } } }
   let cwd = '/repo-a'
@@ -608,6 +729,14 @@ test('diff hands an open sidebar to a dialog when layout narrows and respects an
     showBashesDialog: false, exitFlow: null,
   }
   const presentation = () => evaluate(scope) as { sidebar: boolean; dialog: boolean }
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
+  scope.diffOwned = true
+  for (const columns of [109, 110, 144]) {
+    scope.modTerminalSize.columns = columns
+    expect(presentation()).toEqual({ sidebar: false, dialog: false })
+    expect(state.diffSidebarVisible).toBe(true)
+  }
+  scope.diffOwned = false
   expect(presentation()).toEqual({ sidebar: true, dialog: false })
   scope.modTerminalSize.columns = 109
   expect(presentation()).toEqual({ sidebar: false, dialog: true })
@@ -1951,20 +2080,22 @@ test('concurrent submissions wait for Mods without early reservation and dispatc
   expect(h.draft.text).toBe('')
 })
 
-test('tracked queue commands cancel exactly once and stay out of editable input', async () => {
+test('tracked queue commands settle removal exactly once and stay out of editable input', async () => {
   const queue = await import('../utils/messageQueueManager.js')
   let cancellations = 0
+  const admissions: unknown[] = []
   const command = queue.enqueueTracked({
     mode: 'prompt',
     value: 'plugin follow-up',
     priority: 'later',
-    promptSubmitReceipt: { admit: noop, cancel: () => { cancellations++ } },
+    promptSubmitReceipt: { admit: result=>{admissions.push(result)}, cancel: () => { cancellations++ } },
   })
   try {
     expect(queue.popAllEditable('draft', 0)).toBeUndefined()
     queue.remove([command])
     queue.remove([command])
-    expect(cancellations).toBe(1)
+    expect(cancellations).toBe(0)
+    expect(admissions).toEqual([{drop:'the prompt was removed from the queue before it ran'}])
     expect(queue.getCommandQueue()).toEqual([])
   } finally {
     queue.resetCommandQueue()
@@ -2057,9 +2188,11 @@ test('Mods proactive prompt uses the REPL queue and settles on admission', async
       signal: new AbortController().signal,
     })
     const [command] = queue.getCommandQueue()
+    expect(command!.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
     expect(command).toMatchObject({
       value: 'follow up',
       priority: 'later',
+      origin: { kind: 'plugin', name: 'fixture' },
       promptSubmitMetadata: {
         origin: { kind: 'plugin', name: 'fixture' },
         wait: false,
@@ -2097,6 +2230,76 @@ test('Mods proactive prompt abort removes the exact REPL queue entry', async () 
   }
 })
 
+test.each(['remove','clear','reset'] as const)('Mods queued prompt %s resolves the official drop receipt', async operation => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let services: any
+  const awaitMods = extract('./REPL.tsx','awaitMods')({
+    modsSession:{bind:async (_binding:unknown,_set:unknown,host:unknown)=>{services=host}},
+    getCwd:()=>'/repo',getOriginalCwd:()=>'/repo',getSessionId:()=> 'session',
+    setAppState:noop,messagesRef:{current:[]},modToolContextRef:{current:noop},
+    enqueueTracked:queue.enqueueTracked,remove:queue.remove,
+  })
+  try {
+    await awaitMods()
+    const pending = services.submitPrompt({text:'queued',origin:{kind:'plugin',name:'fixture',asUser:true},signal:new AbortController().signal})
+    const handled = pending.then((value:unknown)=>({value}), (error:unknown)=>({error}))
+    const [command] = queue.getCommandQueue()
+    if (operation === 'remove') {queue.remove([command!]);queue.remove([command!])}
+    else if (operation === 'clear') queue.clearCommandQueue()
+    else queue.resetCommandQueue()
+    expect(await handled).toEqual({value:{drop:'the prompt was removed from the queue before it ran'}})
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {queue.resetCommandQueue()}
+})
+
+test('REPL settles a failed queued prompt and every unprocessed batch follower', async () => {
+  const h = harness({active:false})
+  const receipts: unknown[] = [], cancellations: unknown[] = []
+  const commands = ['first','second','third'].map(value=>({mode:'prompt',value,priority:'later',
+    promptSubmitReceipt:{admit:(result:unknown)=>receipts.push([value,result]),cancel:(reason:unknown)=>cancellations.push([value,reason])},
+  }))
+  const failure = new Error('first input failed')
+  h.lowerScope.processUserInput = async()=>{throw failure}
+  await expect(h.lowerScope.executeUserInput({...h.scope,messages:[],querySource:'repl_main',queuedCommands:commands})).rejects.toBe(failure)
+  expect(receipts).toEqual([
+    ['first',{drop:'the prompt did not go through prompt.submit (a command, bash mode, an input that did not query, or a failed pass)'}],
+    ['second',{drop:'an earlier prompt in the batch failed'}],
+    ['third',{drop:'an earlier prompt in the batch failed'}],
+  ])
+  expect(cancellations).toEqual([])
+  expect(h.guard.isActive).toBe(false)
+})
+
+test('REPL settles a queued prompt that never enters prompt.submit', async () => {
+  const h = harness({active:false})
+  const receipts: unknown[] = []
+  h.lowerScope.processUserInput = async()=>({messages:[],shouldQuery:false,resultText:'command output'})
+  await h.lowerScope.executeUserInput({...h.scope,messages:[],querySource:'repl_main',queuedCommands:[{
+    mode:'prompt',value:'not admitted',promptSubmitReceipt:{admit:(result:unknown)=>receipts.push(result),cancel:noop},
+  }]})
+  expect(receipts).toEqual([{drop:'the prompt did not go through prompt.submit (a command, bash mode, an input that did not query, or a failed pass)'}])
+})
+
+test('terminal dequeue forwards each member caller history independently across a batch', async () => {
+  const h = harness({ active: false })
+  const received: any[] = []
+  h.lowerScope.processUserInput = async (args: unknown) => {
+    received.push(args)
+    return { messages: [], shouldQuery: false, allowedTools: [], resultText: 'handled' }
+  }
+  const first = ['first', { plugin: 'p', registration: 1 }]
+  const second = ['second', { plugin: 'q', registration: 2 }]
+  await h.lowerScope.executeUserInput({ ...h.scope, messages: [], querySource: 'repl_main', queuedCommands: [
+    { mode: 'prompt', value: 'one', priority: 'later', promptSubmitCallerChain: first },
+    { mode: 'prompt', value: 'two', priority: 'later', promptSubmitCallerChain: second },
+  ] })
+  expect(received.map(args => args.promptSubmitCallerChain)).toEqual([first, second])
+  expect(received.map(args => args.promptSubmitMetadata)).toEqual([
+    { origin: { kind: 'unclassified' }, wait: false },
+    { origin: { kind: 'unclassified' }, wait: false },
+  ])
+})
+
 
 test('QueryEngine drains its own proactive prompt through real input admission', async () => {
   const { QueryEngine } = await import('../QueryEngine.js')
@@ -2114,6 +2317,8 @@ test('QueryEngine drains its own proactive prompt through real input admission',
   let submitted: Promise<unknown> | undefined
   const inputs: unknown[] = []
   const metadata: unknown[] = []
+  const callerChains: unknown[] = []
+  const produced: any[] = []
   const mocks = [
     spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
     spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
@@ -2121,11 +2326,13 @@ test('QueryEngine drains its own proactive prompt through real input admission',
     spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
       inputs.push(args.input)
       metadata.push(args.promptSubmitMetadata)
+      callerChains.push(args.promptSubmitCallerChain)
       if (inputs.length === 1) {
         submitted = services.submitPrompt({
           text: 'plugin follow-up',
           attachments: [{ type: 'document', mediaType: 'application/pdf', filename: 'notes.pdf' }],
           origin: { kind: 'plugin', name: 'fixture' },
+          callerChain: ['earlier', { plugin: 'fixture', registration: 7 }],
           signal: new AbortController().signal,
         })
       } else {
@@ -2134,7 +2341,9 @@ test('QueryEngine drains its own proactive prompt through real input admission',
           admission: { text: 'plugin follow-up', origin: { kind: 'plugin', name: 'fixture' } },
         })
       }
-      return { messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }
+      const message = {type:'user' as const,uuid:`fixture-${inputs.length}`,message:{role:'user' as const,content:String(args.input)}}
+      produced.push(message)
+      return { messages: [message] as any, shouldQuery: false, allowedTools: [], resultText: 'done' }
     }),
     spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
     spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
@@ -2159,9 +2368,11 @@ test('QueryEngine drains its own proactive prompt through real input admission',
       origin: { kind: 'plugin', name: 'fixture' }, wait: false,
       attachments: [{ type: 'document', mediaType: 'application/pdf', filename: 'notes.pdf' }],
     })
+    expect(callerChains).toEqual([undefined, ['earlier', { plugin: 'fixture', registration: 7 }]])
     await expect(submitted!).resolves.toEqual({
       text: 'plugin follow-up', origin: { kind: 'plugin', name: 'fixture' },
     })
+    expect(produced[1].origin).toEqual({kind:'plugin',name:'fixture'})
     expect(queue.getCommandQueue()).toEqual([])
   } finally {
     queue.resetCommandQueue()
@@ -2231,7 +2442,6 @@ test('QueryEngine settles a Mods command.run receipt when its queued slash comma
     for (const mock of mocks) mock.mockRestore()
   }
 })
-
 
 test('REPL binds Mods MCP calls to the current connection and forwards cancellation', async () => {
   const { callMCPToolForMod, findMCPConnectionForMod } = await import('../services/mcp/client.js')

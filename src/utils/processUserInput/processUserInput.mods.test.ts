@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import ts from 'typescript'
 import { dispatchModEvent } from '../../services/mods/dispatch.js'
 import { runModPromptSubmit } from '../../services/mods/promptAdapter.js'
+import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
 import type { ModDispatchHook } from '../../services/mods/types.js'
 
 // Execute the production functions, including processUserInputBase and
@@ -125,6 +126,7 @@ function fixture(
             .filter((block: any) => block.type === 'text')
             .map((block: any) => block.text)
             .join('\n'),
+    formatPluginPrompt,
     queryCheckpoint: () => {},
     logEvent: () => {},
     feature: () => false,
@@ -396,7 +398,8 @@ describe('processUserInput Diff Ask admission', () => {
     const admissions: any[] = []
     const dropped = await f.run({ onPromptAdmission: (settled: any) => admissions.push(settled) })
     expect(dropped.shouldQuery).toBe(false)
-    expect(admissions).toEqual([])
+    expect(admissions).toEqual([dropped])
+    expect(dropped.admission).toEqual({ drop: 'not admitted' })
     expect(ask.budgets).toEqual([])
     expect(ask.finishes).toEqual([])
     drop = false
@@ -598,6 +601,26 @@ describe('processUserInput Diff Ask admission', () => {
 })
 
 describe('processUserInput prompt.submit', () => {
+  test('dequeued host history excludes full plugins and exact frames without entering the public prompt metadata', async () => {
+    const called: number[] = []
+    const f = fixture([0, 1, 2].map(index => async (event, next) => {
+      called.push(index)
+      expect(event).not.toHaveProperty('callerChain')
+      expect(event).not.toHaveProperty('promptSubmitCallerChain')
+      return next({ ...event, text: event.text + '|remaining' })
+    }))
+    const origin = { kind: 'plugin', name: 'sender', asUser: true }
+    const result = await f.run({
+      promptSubmitMetadata: { origin, wait: false },
+      promptSubmitCallerChain: ['fixture-0', { plugin: 'fixture-1', registration: 2 }],
+    })
+    expect(called).toEqual([2])
+    expect(userTexts(result)).toEqual(['original|remaining'])
+    expect(result.admission).toEqual({ text: 'original|remaining', origin })
+    expect(f.events).toEqual([{ text: 'original', origin, wait: false }])
+    expect(f.diagnostics).toEqual([])
+  })
+
   test('a drop without next does not submit or run classic hooks', async () => {
     const f = fixture([async () => ({ drop: 'not now' })])
     const result = await f.run()
@@ -749,6 +772,7 @@ describe('processUserInput prompt.submit', () => {
     expect(result.shouldQuery).toBe(false)
     expect(result.messages).toEqual([])
     expect(f.classicInputs).toEqual([])
+    expect(result.admission).toEqual({ drop: 'a hook answered without passing the prompt on' })
   })
 
   test.each(['text', 'context', 'mutated context'])(
@@ -954,6 +978,84 @@ describe('processUserInput prompt.submit', () => {
       wait: true,
       turnId: 'turn-in-flight',
     })
+  })
+
+  test.each([false,true])('plugin prompt keeps origin but changes model framing with asUser=%s after hook rewrite',async asUser=>{
+    const origin={kind:'plugin',name:'fixture',...(asUser?{asUser:true}:{})}
+    const f=fixture([async(event,next)=>next({...event,text:'final hook text'})])
+    const result=await f.run({input:'original',promptSubmitMetadata:{origin,wait:false}})
+    const expected=asUser?'final hook text':"The fixture plugin sent a message:\nfinal hook text\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above."
+    expect(userTexts(result)).toEqual([expected])
+    expect(result.messages.find((message:any)=>message.type==='user').origin).toEqual(origin)
+    expect(result.admission).toEqual({text:'final hook text',origin})
+    expect(f.events[0]?.origin).toEqual(origin)
+    expect(f.events[0]?.wait).toBe(false)
+    expect(f.events[0]).not.toHaveProperty('turnId')
+    expect(f.classicInputs).toEqual(['final hook text'])
+  })
+
+  test.each([false,true])('plugin origin suppresses @file attachment expansion even without prompt hooks (asUser=%s)',async asUser=>{
+    const origin={kind:'plugin',name:'fixture',...(asUser?{asUser:true}:{})}
+    const f=fixture()
+    f.attachmentMessages.push({type:'attachment',attachment:{type:'directory',path:'/fixture/should-not-be-loaded'}})
+    const result=await f.run({input:'@file words',promptSubmitMetadata:{origin,wait:false}})
+    expect(result.messages.filter((message:any)=>message.type==='attachment')).toEqual([])
+    const expected=asUser?'@file words':"The fixture plugin sent a message:\n@file words\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above."
+    expect(userTexts(result)).toEqual([expected])
+    expect(result.messages.find((message:any)=>message.type==='user').origin).toEqual(origin)
+    expect(result.admission).toEqual({text:'@file words',origin})
+  })
+
+  test.each([
+    ['', 'unnamed'],
+    ['  ', 'unnamed'],
+    ['ｅ', 'ｅ'],
+    ['x'.repeat(25), 'x'.repeat(23) + '…'],
+    ['界'.repeat(13), '界'.repeat(11) + '…'],
+    ['x'.repeat(24) + '\nrest', 'x'.repeat(23) + '…'],
+    ['a\tb', 'a' + ' '.repeat(7) + 'b'],
+    ['\u001b[31mred\u001b[0m', '�[31mred�[0m'],
+    ['a\u200db', 'a�b'],
+    ['👩\u200d💻', '👩\u200d💻'],
+    ['a' + '\u0301'.repeat(9), 'a' + '\u0301'.repeat(8) + '�'],
+    ['\ud800', '�'],
+    ['already…  ', 'unnamed'],
+  ])('plugin model frame sanitizes display name %j without changing provenance', async (name, displayed) => {
+    const origin = {kind:'plugin',name}
+    const f = fixture()
+    const result = await f.run({input:'raw text',promptSubmitMetadata:{origin,wait:false}})
+    expect(userTexts(result)).toEqual([`The ${displayed} plugin sent a message:\nraw text\n\nThis is how Claude Code surfaces a prompt a plugin submits between turns — it starts this turn in the user's place. Address the message above.`])
+    expect(result.messages.find((message:any)=>message.type==='user').origin).toEqual(origin)
+    expect(result.admission).toEqual({text:'raw text',origin})
+    expect(f.classicInputs).toEqual(['raw text'])
+  })
+
+  test.each([false,true])('plugin input never expands local pasted images (asUser=%s)', async asUser => {
+    let stores = 0
+    const origin = {kind:'plugin',name:'fixture',...(asUser?{asUser:true}:{})}
+    const f = fixture([],false,{storeImages:async()=>{stores++;return new Map()}})
+    const result = await f.run({input:'[Image #1]',promptSubmitMetadata:{origin,wait:false},pastedContents:{
+      1:{id:1,type:'image',content:'local-bytes',mediaType:'image/png',filename:'private.png'},
+    }})
+    const user = result.messages.find((message:any)=>message.type==='user')
+    expect(user.message.content).toBeString()
+    expect(JSON.stringify(result.messages)).not.toContain('local-bytes')
+    expect(stores).toBe(0)
+    expect(result.admission).toEqual({text:'[Image #1]',origin})
+  })
+
+  test('a plugin prompt dropped without next settles its admission exactly once', async () => {
+    const origin = { kind: 'plugin', name: 'fixture', asUser: true }
+    const f = fixture([async () => ({ drop: 'policy refused' })])
+    const admissions: unknown[] = []
+    const result = await f.run({
+      promptSubmitMetadata: { origin, wait: false },
+      onPromptAdmission: (admitted: any) => admissions.push(admitted.admission),
+    })
+    expect(result.shouldQuery).toBe(false)
+    expect(result.admission).toEqual({ drop: 'policy refused' })
+    expect(admissions).toEqual([{ drop: 'policy refused' }])
+    expect(f.classicInputs).toEqual([])
   })
 
   test('uses proactive prompt attachment descriptors when no binary blocks exist', async () => {

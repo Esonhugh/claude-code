@@ -12,6 +12,7 @@ import type { AppState } from '../state/AppState.js'
 import type { SetToolJSXFn } from '../Tool.js'
 import { isCommandImmediate, type LocalJSXCommandOnDone } from '../types/command.js'
 import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
+import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import type { Message } from '../types/message.js'
 import { createUserMessage } from './messages.js'
 import {
@@ -118,6 +119,7 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
   hasInterruptibleToolInProgress?: boolean
   uuid?: UUID
   promptSubmitMetadata?: QueuedCommand['promptSubmitMetadata']
+  promptSubmitCallerChain?: QueuedCommand['promptSubmitCallerChain']
   onPromptAdmitted?: () => void
   /**
    * When true, input starting with `/` is treated as plain text.
@@ -343,6 +345,7 @@ export async function handlePromptSubmit(
       skipSlashCommands,
       uuid,
       promptSubmitMetadata: params.promptSubmitMetadata,
+      promptSubmitCallerChain: params.promptSubmitCallerChain,
     }
     // Commands still execute after the turn; only ordinary prompts are admitted
     // now. Never borrow or replace the running turn's abort controller/editor.
@@ -384,6 +387,7 @@ export async function handlePromptSubmit(
       skipAttachments: params.skipLocalContext,
       skipHooks: params.skipLocalContext,
       promptSubmitMetadata: cmd.promptSubmitMetadata,
+      promptSubmitCallerChain: cmd.promptSubmitCallerChain,
       deferCommands: true,
       onPromptAdmission: admit,
     })
@@ -410,6 +414,7 @@ export async function handlePromptSubmit(
     skipSlashCommands,
     uuid,
     promptSubmitMetadata: params.promptSubmitMetadata,
+    promptSubmitCallerChain: params.promptSubmitCallerChain,
   }
 
   await executeUserInput({
@@ -557,22 +562,28 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
                 promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
                   origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
                     cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
+                    cmd.origin?.kind === 'plugin' ? cmd.origin :
                     cmd.origin?.kind === 'human' ? { kind: 'composer' } :
                     cmd.origin ? { kind: cmd.origin.kind } :
                     cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
                     { kind: 'unclassified' },
                   wait: false,
                 },
+                promptSubmitCallerChain: cmd.promptSubmitCallerChain,
                 onPromptAdmission: admitted => {
                   if (admitted.admission) cmd.promptSubmitReceipt?.admit(admitted.admission)
                   cmd.commandRunReceipt?.admit(admitted)
                 },
               })
           } catch (error) {
-            cmd.promptSubmitReceipt?.cancel(error)
             for (const queued of commands.slice(i)) queued.commandRunReceipt?.cancel(error)
+            cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
+            for (const follower of commands.slice(i + 1))
+              follower.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
             throw error
           }
+          if (!result.admission)
+            cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
         }
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.

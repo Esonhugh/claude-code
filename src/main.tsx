@@ -3648,7 +3648,6 @@ async function run(): Promise<CommanderCommand> {
           ) {
             return 'Mods are unsupported in remote/SSH sessions'
           }
-          if (getInitialSettings().disableAllHooks) return 'Mods are disabled by disableAllHooks'
           return undefined
         },
       })

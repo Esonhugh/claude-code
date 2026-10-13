@@ -1,7 +1,9 @@
 import { createModCommandQueue } from './services/mods/commandRunQueue.js'
+import { copyModCallerChain, type ModCallerChain } from './services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
+import { logForDebugging } from './utils/debug.js'
 import last from 'lodash-es/last.js'
 import {
   getOriginalCwd,
@@ -50,8 +52,9 @@ import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { ModsSession } from './services/mods/session.js'
-import type { PromptSubmitMetadata } from './services/mods/promptAdapter.js'
+import { UNSUBMITTED_PROMPT_DROP, type PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
+import { readModBoundAgentMessages } from './services/mods/sessionTranscript.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
@@ -239,6 +242,7 @@ export class QueryEngine {
       isMeta?: boolean
       origin?: MessageOrigin
       promptSubmitMetadata?: PromptSubmitMetadata
+      promptSubmitCallerChain?: ModCallerChain
       onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
       skipSlashCommands?: boolean
       skipAttachments?: boolean
@@ -255,19 +259,21 @@ export class QueryEngine {
       const queued = command
       if (queued.mode !== 'prompt') {
         const error = new Error('only prompt commands are supported by QueryEngine')
-        queued.promptSubmitReceipt?.cancel(error)
-        queued.commandRunReceipt?.cancel(error)
+        queued.promptSubmitReceipt?.cancel(error); queued.commandRunReceipt?.cancel(error)
         throw error
       }
 
+      let admitted = false
       try {
         yield* this.submitTurn(queued.value, {
           uuid: queued.uuid,
           isMeta: queued.isMeta,
           origin: queued.origin,
           promptSubmitMetadata: queued.promptSubmitMetadata,
+          promptSubmitCallerChain: queued.promptSubmitCallerChain,
           onPromptAdmission: result => {
             if (result.admission) {
+              admitted = true
               queued.promptSubmitReceipt?.admit(result.admission)
             }
             queued.commandRunReceipt?.admit(result)
@@ -276,9 +282,10 @@ export class QueryEngine {
           skipAttachments: queued.skipAttachments,
         })
       } catch (error) {
-        queued.promptSubmitReceipt?.cancel(error)
         queued.commandRunReceipt?.cancel(error)
         throw error
+      } finally {
+        if (!admitted) queued.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
       }
     }
   }
@@ -290,6 +297,7 @@ export class QueryEngine {
       isMeta?: boolean
       origin?: MessageOrigin
       promptSubmitMetadata?: PromptSubmitMetadata
+      promptSubmitCallerChain?: ModCallerChain
       onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
       skipSlashCommands?: boolean
       skipAttachments?: boolean
@@ -505,6 +513,8 @@ export class QueryEngine {
       cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
     }, setAppState, {
       messages: () => projectModSessionMessages(this.mutableMessages),
+      rawMessages: () => this.mutableMessages,
+      agentMessages: readModBoundAgentMessages,
       captureUsage: () => captureModSessionUsage(getModToolContext()),
       cwd: getCwd,
       root: getOriginalCwd,
@@ -533,7 +543,8 @@ export class QueryEngine {
           signal,
         ),
       commandRun: createModCommandQueue({owner:this.promptSubmitOwner}),
-      submitPrompt: ({ text, attachments, origin, signal }) => new Promise((resolve, reject) => {
+    submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
+        const uuid = randomUUID()
         let settled = false
         const finish = (settle: () => void) => {
           if (settled) return
@@ -542,24 +553,34 @@ export class QueryEngine {
           settle()
         }
         const cancel = () => {
-          finish(() => reject(signal.reason))
+          finish(() => {
+            logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=aborted`)
+            reject(signal.reason)
+          })
           remove([queued])
         }
         const queued = enqueueTracked({
           value: text,
           mode: 'prompt',
           priority: 'later',
+          uuid,
+          origin,
           promptSubmitOwner: this.promptSubmitOwner,
+          promptSubmitCallerChain: copyModCallerChain(callerChain),
           promptSubmitMetadata: {
             origin,
             wait: false,
             ...(attachments === undefined ? {} : { attachments }),
           },
           promptSubmitReceipt: {
-            admit: result => finish(() => resolve(result)),
+            admit: result => finish(() => {
+              logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=${result.drop === undefined ? 'admitted' : 'dropped'}`)
+              resolve(result)
+            }),
             cancel: reason => finish(() => reject(reason)),
           },
         })
+        logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=engine asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
         signal.addEventListener('abort', cancel, { once: true })
         if (signal.aborted) cancel()
       }),
@@ -614,9 +635,11 @@ export class QueryEngine {
       skipHooks: options?.origin?.kind === 'peer',
       promptSubmitMetadata: options?.promptSubmitMetadata ?? {
         origin: options?.origin?.kind === 'channel' ? { kind: 'channel', server: options.origin.server } :
+          options?.origin?.kind === 'plugin' ? options.origin :
           options?.origin && options.origin.kind !== 'human' ? { kind: options.origin.kind } : { kind: 'sdk' },
         wait: false,
       },
+      promptSubmitCallerChain: options?.promptSubmitCallerChain,
       onPromptAdmission: options?.onPromptAdmission,
       querySource: 'sdk',
       canUseTool: wrappedCanUseTool,
@@ -1445,6 +1468,7 @@ export async function* ask({
   isMeta,
   origin,
   promptSubmitMetadata,
+  promptSubmitCallerChain,
   onPromptAdmission,
   skipSlashCommands,
   skipAttachments,
@@ -1483,6 +1507,7 @@ export async function* ask({
   isMeta?: boolean
   origin?: MessageOrigin
   promptSubmitMetadata?: PromptSubmitMetadata
+  promptSubmitCallerChain?: ModCallerChain
   onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
   skipSlashCommands?: boolean
   skipAttachments?: boolean
@@ -1559,6 +1584,7 @@ export async function* ask({
       isMeta,
       origin,
       promptSubmitMetadata,
+      promptSubmitCallerChain,
       onPromptAdmission,
       skipSlashCommands,
       skipAttachments,

@@ -17,6 +17,7 @@ import {
   setOriginalCwd,
   setProjectRoot,
   switchSession,
+  getSessionStartedAt,
 } from './bootstrap/state.js'
 import { getCommands } from './commands.js'
 import { initSessionMemory } from './services/SessionMemory/sessionMemory.js'
@@ -129,7 +130,7 @@ export async function setup(
 
   // Set custom session ID if provided
   if (customSessionId) {
-    switchSession(asSessionId(customSessionId))
+    switchSession(asSessionId(customSessionId), null, getSessionStartedAt())
   }
 
   // --bare / SIMPLE: skip UDS messaging server and teammate snapshot.

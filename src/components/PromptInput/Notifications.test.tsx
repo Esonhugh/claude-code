@@ -35,16 +35,33 @@ function paneFixture() {
   return { owner, ui, shownToast }
 }
 
-test('shown pane holds toast; hidden pane and close restore unchanged toast', async () => {
+test('placed pane keeps holding toast after narrowing; close restores unchanged toast', async () => {
   const { owner, ui, shownToast } = paneFixture()
   await ui.open(owner, { id: 'hold', holdToasts: true }, { kind: 'plugin' }, wide)
   await ui.commit(owner)
   assert.equal(ui.getSnapshot()[0]!.shown, true)
   assert.equal(shownToast(), null)
   await ui.render({ ...wide, columns: 80 })
+  assert.equal(ui.getSnapshot()[0]!.visible, true)
+  assert.equal(ui.getSnapshot()[0]!.shown, true)
+  assert.equal(shownToast(), null)
+  await ui.render(wide)
+  assert.equal(shownToast(), null)
+  await ui.close(owner, 'hold', { kind: 'person' })
+  assert.equal(shownToast(), transient)
+})
+
+test('a pane opened below the placement threshold leaves the original toast visible', async () => {
+  const { owner, ui, shownToast } = paneFixture()
+  const placed = await ui.open(owner, { id: 'hold', holdToasts: true }, { kind: 'plugin' }, { ...wide, columns: 80 })
+  await ui.commit(owner)
+  assert.deepEqual(placed, { isPlaced: false, reason: 'Pane is waiting for sufficient terminal width (80 columns)' })
   assert.equal(ui.getSnapshot()[0]!.visible, false)
+  assert.equal(ui.getSnapshot()[0]!.shown, false)
   assert.equal(shownToast(), transient)
   await ui.render(wide)
+  assert.equal(ui.getSnapshot()[0]!.visible, true)
+  assert.equal(ui.getSnapshot()[0]!.shown, true)
   assert.equal(shownToast(), null)
   await ui.close(owner, 'hold', { kind: 'person' })
   assert.equal(shownToast(), transient)

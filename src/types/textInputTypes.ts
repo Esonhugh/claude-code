@@ -1,3 +1,4 @@
+import type { ModCallerChain } from '../services/mods/callerChain.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { UUID } from 'crypto'
 import type React from 'react'
@@ -30,6 +31,12 @@ export type InlineGhostText = {
 /**
  * Base props for text input components
  */
+export type TextInputEdit = {
+  before: {text: string; cursor: number}
+  after: {text: string; cursor: number}
+  key?: {key: string; ctrl?: true; shift?: true; meta?: true}
+}
+
 export type PromptInputHandle = {
   insert(text: string): void
   setInputWithCursor(value: string, cursor: number): void
@@ -38,7 +45,6 @@ export type PromptInputHandle = {
   paintDecorations(decorations: PromptDecoration[] | undefined, text: string): void
   carryDecorations(edit: TextInputEdit): void
 }
-
 
 export type TextInputChangeResult =
   | string
@@ -368,6 +374,8 @@ export type QueuedCommand = {
    */
   origin?: MessageOrigin
   promptSubmitMetadata?: PromptSubmitMetadata
+  /** Host-only recursion history, never part of public prompt metadata. */
+  promptSubmitCallerChain?: ModCallerChain
   /** Host-owned receipt for an idle-queued author command. */
   commandRunReceipt?: {
     admit(result: ProcessUserInputBaseResult): void
@@ -431,10 +439,4 @@ export function getImagePasteIds(
 export type OrphanedPermission = {
   permissionResult: PermissionResult
   assistantMessage: AssistantMessage
-}
-
-export type TextInputEdit = {
-  before: {text:string;cursor:number}
-  after: {text:string;cursor:number}
-  key?: {key:string;ctrl?:true;shift?:true;meta?:true}
 }
