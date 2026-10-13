@@ -23,17 +23,25 @@ import type {
   PendingMCPServer,
 } from '../mcp/types.js'
 
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
 let root: string
 const runtimes: ReturnType<typeof createModsRuntime>[] = []
-const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS', 'ANTHROPIC_API_KEY', 'MODS_CONTRACT_VALUE', 'MODS_CONTRACT_REDIRECT']
+const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS', 'ANTHROPIC_API_KEY', 'MODS_CONTRACT_VALUE', 'MODS_CONTRACT_REDIRECT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR']
 let saved: (string | undefined)[]
 beforeEach(async () => {
-  root = await mkdtemp(join(tmpdir(), 'mods-runtime-host-'))
+  root = await realpath(await mkdtemp(join(tmpdir(), 'mods-runtime-host-')))
   saved = envKeys.map(key => process.env[key])
   process.env.HOME = root
   process.env.USERPROFILE = root
   process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
   process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = join(root, 'config', 'plugins')
+  process.env.XDG_CONFIG_HOME = join(root, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(root, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(root, 'xdg-state')
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
   process.env.ANTHROPIC_API_KEY = 'test-api-key'
   delete process.env.CLAUDE_CODE_USE_COWORK_PLUGINS
   resetSettingsCache()
@@ -246,9 +254,9 @@ test('Worker mcp.call cancels its actual SDK request with the parent invocation'
   expect(callSignal?.aborted).toBe(true)
 })
 
-test('Worker prompt.submit pins plugin origin, preserves attachment descriptors and waits for host admission', async () => {
+test('Worker prompt.submit pins plugin origin, ignores public attachment fields and waits for host admission', async () => {
   const mod = await plugin('submit-caller', `export function register(on) {
-    on('tool.call', async $ => ({result:await $.prompt.submit({
+    on('ui.press', async $ => ({result:await $.prompt.submit({
       text:'queued prompt',
       attachments:[{type:'image',mediaType:'image/png',filename:'shot.png'}]
     })}));
@@ -265,12 +273,12 @@ test('Worker prompt.submit pins plugin origin, preserves attachment descriptors 
   } })
   runtimes.push(value)
   await value.reconcile([mod])
-  const pending = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  const pending = value.dispatch('ui.press', {}, async () => ({ result: 'core' }))
   await entered.promise
   expect(submissions).toEqual([{
     text: 'queued prompt',
-    attachments: [{type:'image',mediaType:'image/png',filename:'shot.png'}],
     origin: { kind: 'plugin', name: 'submit-caller' },
+    callerChain: [{ plugin: 'submit-caller', registration: 1 }],
     signal: expect.any(AbortSignal),
   }])
   let settled = false
@@ -291,7 +299,7 @@ test('Worker prompt.submit rejects unsafe input and turn-holding calls', async (
       catch (error) { return {drop:error.message} }
       return next(e)
     });
-    on('tool.call', async ($,e) => {
+    on('ui.press', async ($,e) => {
       try { return {result:await $.prompt.submit(e.input)} }
       catch (error) { return {result:{error:error.message}} }
     });
@@ -306,17 +314,14 @@ test('Worker prompt.submit rejects unsafe input and turn-holding calls', async (
     { text: '   ' },
     { text: '/status' },
     { text: '  /status' },
-    { text: 'hello', attachments: [{type:'binary'}] },
-    { text: 'hello', attachments: [{type:'image',data:'secret'}] },
-    { text: 'hello', origin: { kind: 'composer' } },
   ]) {
-    const result = await value.dispatch('tool.call', { input }, async () => ({ result: 'core' }))
+    const result = await value.dispatch('ui.press', { input }, async () => ({ result: 'core' }))
     expect((result as {result:{error:string}}).result.error).toBeString()
   }
   expect(await value.dispatch('prompt.submit', {
     text: 'original', origin: {kind:'composer'}, wait: false,
   }, async input => ({text:input.text,origin:input.origin}))).toEqual({
-    drop: expect.stringContaining('turn-holding'),
+    drop: 'prompt.submit called from a prompt.submit hook, it would wait on the turn this hook is holding; answer { text } or next(e) instead, or submit from a later event (turn.complete)',
   })
 })
 
@@ -817,8 +822,10 @@ test('config caches descriptions until invalidation or reload, preserves pins an
   expect((await list())[0]!.label).toBe('Mode1')
   let notifications = 0
   const unsubscribe = value.config.subscribe(() => {notifications++})
-  await value.dispatch('tool.call',{invalidate:true},async () => ({result:'core'}))
-  expect((await list())[0]!.label).toBe('Mode3')
+  const callerRows = await value.dispatch('tool.call',{invalidate:true},async () => ({result:'core'}))
+  expect(callerRows).toMatchObject({result:[{label:'Mode3'},{label:'Dialog4'}]})
+  expect((await list())[0]!.label).toBe('Mode5')
+  expect((await list())[0]!.label).toBe('Mode5')
   expect(notifications).toBe(1)
   expect(await value.config.set({key:'mode',value:'deny'},{kind:'composer'})).toEqual({deny:'policy refused'})
   expect(await value.config.set({key:'mode',value:'pin'},{kind:'bridge'})).toEqual({deny:expect.stringContaining('Invalid value')})
@@ -986,14 +993,14 @@ test('Worker session.usage captures request data before hooks and consumes rewri
       const tokens = live
       return async args => {
         inputs.push(args)
-        return {startedAt:0,context:{tokens,window:200000,percent:0},rateLimits:[],cost:{usd:0}}
+        return {startedAt:1791080000123,context:{tokens,window:200000,percent:0},rateLimits:[],cost:{usd:0}}
       }
     },
     toolCatalog: () => {live=99;return createToolCatalog([],async () => '')},
   })
   try {
     expect(await snapshot.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({
-      result:{startedAt:0,context:{tokens:17,window:200000,percent:0},rateLimits:[],cost:{usd:0}},
+      result:{startedAt:1791080000123,context:{tokens:17,window:200000,percent:0},rateLimits:[],cost:{usd:0}},
     })
     expect(captures).toBe(1)
     expect(inputs).toEqual([{columns:79}])
@@ -1015,7 +1022,7 @@ test('Worker session.usage validates caller arguments and malformed results at t
   }`)
   const inputs: unknown[] = []
   const diagnostics: unknown[] = []
-  const expected = {startedAt:0,context:{window:200000},rateLimits:[],cost:{usd:0}}
+  const expected = {startedAt:1791080000123,context:{window:200000},rateLimits:[],cost:{usd:0}}
   const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
     captureUsage: () => async args => {inputs.push(args);return expected},
   }})
@@ -1103,7 +1110,7 @@ test('Worker usage denial never invokes its reader and invalid rewrites recover 
     }).catch(($,e,next) => next(e));
   }`)
   const inputs: unknown[] = [], diagnostics: unknown[] = []
-  const expected = {startedAt:0,context:{window:200000},rateLimits:[]}
+  const expected = {startedAt:1791080000123,context:{window:200000},rateLimits:[]}
   const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
     captureUsage: () => async args => {inputs.push(args);return expected},
   }})
@@ -1126,7 +1133,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
     ${mode === 'branch' ? `on('session.usage', async ($,e,next) => {
       const pending=next(e); pending.catch(() => {});
       await $.tool.list();
-      return {value:{startedAt:0,context:{window:200000},rateLimits:[]}};
+      return {value:{startedAt:1791080000123,context:{window:200000},rateLimits:[]}};
     });` : ''}
   }`)
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
@@ -1142,7 +1149,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
       try {
         await release.promise
         signal?.throwIfAborted()
-        return {startedAt:0,context:{window:200000},rateLimits:[]}
+        return {startedAt:1791080000123,context:{window:200000},rateLimits:[]}
       } finally {signal?.removeEventListener('abort',cancelled)}
     },
     toolCatalog: () => ({...createToolCatalog([],async () => ''),list:async () => {await entered.promise;return []}}),
@@ -1159,7 +1166,7 @@ test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader
     if (mode === 'parent') controller.abort(reason)
     const result = await pending
     if (mode === 'parent') expect(result).toBe(reason)
-    else expect(result).toEqual({result:{startedAt:0,context:{window:200000},rateLimits:[]}})
+    else expect(result).toEqual({result:{startedAt:1791080000123,context:{window:200000},rateLimits:[]}})
     expect(readerSignal!.aborted).toBe(true)
     expect(stopped).toBe(true)
     expect(diagnostics).toEqual([])
@@ -1412,6 +1419,103 @@ test('Worker fs.ancestors publishes admission, walks original root and consumes 
     approval.mockRestore()
   }
 })
+
+test('Worker session version answers build metadata without a session or surface', async () => {
+  const consumer = await plugin('session-version', `export function register(on) {
+    on('tool.call', async $ => {
+      const version = await $.session.version();
+      return {result:{version,frozen:Object.isFrozen(version)}};
+    });
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.calls).toEqual(['session.version'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  const globals = globalThis as typeof globalThis & { MACRO?: MacroGlobals }
+  const original = globals.MACRO
+  const cases: [MacroGlobals | undefined, Record<string, string>][] = [
+    [undefined, { version: '0.0.0-dev', base: '0.0.0-dev' }],
+    [{ VERSION: '2.1.287', BUILD_TIME: '2026-09-20T10:15:00Z' }, { version: '2.1.287', base: '2.1.287', builtAt: '2026-09-20T10:15:00Z' }],
+    [{ VERSION: '2.1.287-dev.20260920.t101500.sha1a2b3c4' }, { version: '2.1.287-dev.20260920.t101500.sha1a2b3c4', base: '2.1.287-dev' }],
+    [{ VERSION: 'local-build' }, { version: 'local-build' }],
+  ]
+  try {
+    for (const [macro, expected] of cases) {
+      if (macro === undefined) delete globals.MACRO
+      else globals.MACRO = macro
+      expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
+        .toEqual({ result: { version: expected, frozen: false } })
+    }
+    await value.bind({ ...binding(root), surface: null, isInteractive: false })
+    expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
+      .toEqual({ result: { version: { version: 'local-build' }, frozen: false } })
+    await value.bind(binding(root))
+    expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
+      .toEqual({ result: { version: { version: 'local-build' }, frozen: false } })
+    expect(diagnostics).toEqual([])
+  } finally {
+    if (original === undefined) delete globals.MACRO
+    else globals.MACRO = original
+  }
+})
+
+test('Worker session version stays available through an engine.create continuation', async () => {
+  const consumer = await plugin('version-continuation', `export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const beneath = await next(e);
+      return {...beneath,versionReader:{read:async () => beneath.session.version()}};
+    });
+    on('tool.call', async $ => ({result:await $.versionReader.read()}));
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.calls).toEqual(['session.version', 'versionReader.read'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  const result = await value.dispatch('tool.call', {}, async () => ({ result: 'core' })) as { result: { version: string } }
+  expect(result.result.version).toBe(typeof MACRO === 'undefined' ? '0.0.0-dev' : MACRO.VERSION)
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker session version rejects arguments before dispatch and preserves middleware denial', async () => {
+  const consumer = await plugin('version-denied', `export function register(on) {
+    let calls = 0;
+    on('session.version', ($, e) => ({deny:'Version denied '+(++calls)+' '+Object.keys(e).length}));
+    on('tool.call', async ($, e) => {
+      try {return {result:await $.session.version(...e.extra)}}
+      catch(error) {return {result:error.message}}
+    });
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.events).toEqual(['session.version', 'tool.call'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  const run = (extra: unknown[]) => value.dispatch('tool.call', { extra }, async () => ({ result: 'core' }))
+  expect(await run([])).toEqual({ result: 'version-denied: $.session.version: Version denied 1 0' })
+  expect(await run([{}])).toEqual({ result: 'version-denied: $.session.version: Version denied 2 0' })
+  expect(await run([undefined])).toEqual({ result: 'version-denied: $.session.version: Version denied 3 0' })
+  expect(await run([])).toEqual({ result: 'version-denied: $.session.version: Version denied 4 0' })
+  expect(diagnostics).toEqual([])
+})
+
+test.each([{}, { value: null }, { value: { version: 123 } },
+  { value: { version: 'plugin', base: 123 } }, { value: { version: 'plugin', builtAt: null } }])(
+  'Worker session version recovers from malformed middleware metadata: %j', async result => {
+    const consumer = await plugin('version-malformed', `export function register(on) {
+      on('session.version', () => (${JSON.stringify(result)}));
+      on('tool.call', async $ => ({result:await $.session.version()}));
+    }`)
+    const { value, diagnostics } = runtime()
+    await value.reconcile([consumer])
+    const answer = await value.dispatch('tool.call', {}, async () => ({ result: 'core' })) as { result: unknown }
+    if ('value' in result) {
+      expect(answer.result).toEqual(result.value)
+      expect(diagnostics).toEqual([])
+    } else {
+      expect(answer.result).toEqual(expect.objectContaining({version:typeof MACRO === 'undefined' ? '0.0.0-dev' : MACRO.VERSION}))
+      expect(diagnostics).toEqual([expect.objectContaining({ stage: 'session.version', message: expect.stringContaining('session.version') })])
+    }
+  },
+)
 
 test('Worker session reads track live host state and distinguish cwd, root and headless surfaces', async () => {
   const consumer = await plugin('session-reads', `export function register(on) {
@@ -2318,7 +2422,7 @@ test.skipIf(!officialTypes)('an author plugin compiles against the complete targ
   const value = createModsRuntime({services:{
     uiPresentation:() => ({columns:160,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false}),
     uiLog:(plugin,text,to)=>logs.push([plugin,text,to]),
-    captureUsage:() => async () => ({startedAt:0,context:{window:200000},rateLimits:[],cost:{usd:0}}),
+    captureUsage:() => async () => ({startedAt:1791080000123,context:{window:200000},rateLimits:[],cost:{usd:0}}),
   }, onDiagnostic:event => diagnostics.push(event)})
   runtimes.push(value)
   await value.bind(binding(root))
@@ -2540,7 +2644,7 @@ test('Worker prompt.read and prompt.fill reach the mounted prompt box with calle
   })
   hasDialog = true
   expect(await value.dispatch('tool.call', {text:'ignored', mode:'append'}, async () => ({result:'core'}))).toEqual({
-    result:{isFilled:false, text:'A😀[x]B', cursor:6},
+    result:{isFilled:false, refusal:'dialog', text:'A😀[x]B', cursor:6},
   })
   expect(draft).toEqual({text:'A😀[x]B', cursor:6})
 
@@ -2563,7 +2667,7 @@ test('Worker prompt.read and prompt.fill reach the mounted prompt box with calle
     result:{text:'', cursor:0},
   })
   expect(await value.dispatch('tool.call', {text:'headless', mode:'replace'}, async () => ({result:'core'}))).toEqual({
-    result:{isFilled:false, text:'', cursor:0},
+    result:{isFilled:false, refusal:'no_composer', text:'', cursor:0},
   })
   expect(draft).toEqual({text:'A😀[x]B!?', cursor:9})
   expect(diagnostics).toEqual([])
@@ -2591,6 +2695,46 @@ test('session messages read a stable live getter and rebinding updates the actua
   await value.bind({ ...binding(next), sessionId: 'resumed' })
   const second = await value.dispatch('tool.call', input, async () => ({ result: 'core' })) as any
   expect(second.result).toEqual({ cwd: next, id: 'resumed', messages, text: 'second' })
+})
+
+test('session messages keep the live main getter across a captured child request and rebinding', async () => {
+  const consumer = await plugin('main-messages', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.session.messages()}));
+  }`)
+  let messages = [{role:'user',text:'main before',toolUses:[]}]
+  const {value, diagnostics} = runtime(() => messages)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  // A legacy embedder's extra field must not change the main-session contract.
+  const childServices = {tools:() => [], messages:() => [{role:'user',text:'child only',toolUses:[]}]}
+  const snapshot = value.capture(childServices)
+  try {
+    expect(await snapshot.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:messages})
+    messages = [{role:'user',text:'main after resume',toolUses:[]}]
+    await value.bind({...binding(root),sessionId:'resumed'})
+    expect(await snapshot.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:messages})
+    expect(diagnostics).toEqual([])
+  } finally { snapshot.release() }
+})
+
+test('session messages reject an unavailable main getter instead of falling back to a child request', async () => {
+  const consumer = await plugin('unavailable-messages', `export function register(on) {
+    on('tool.call', async $ => {
+      try { return {result:await $.session.messages()}; }
+      catch (error) { return {result:error.message}; }
+    });
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const childServices = {tools:() => [], messages:() => [{role:'user',text:'child only',toolUses:[]}]}
+  const snapshot = value.capture(childServices)
+  try {
+    expect(await snapshot.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'Session messages are unavailable on this host'})
+    expect(diagnostics).toEqual([])
+  } finally { snapshot.release() }
 })
 
 test('withholding a core noun prevents host side effects without removing other capabilities', async () => {
@@ -2737,6 +2881,25 @@ test('clock callbacks exclude the whole owning plugin after the original hook re
   } while (Date.now() < deadline)
   // Official 2.1.292 native: the original receipt is settled before Release.
   expect(result).toEqual({result:'callback text'})
+  expect(diagnostics).toEqual([])
+})
+
+test('clock callbacks preserve a live original registration and run its same-plugin siblings', async () => {
+  await writeFile(join(root, 'callback-live.txt'), 'live text')
+  const consumer = await plugin('callback-live', `export function register(on) {
+    on('tool.call', ($) => new Promise(resolve => {
+      $.clock.after(0, async () => {
+        try { resolve({result:await $.fs.read('callback-live.txt')}); }
+        catch (error) { resolve({result:{error:error.message}}); }
+      });
+    }));
+    on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+next.origin.plugin}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'})))
+    .toEqual({result:'live text:callback-live'})
   expect(diagnostics).toEqual([])
 })
 

@@ -37,9 +37,9 @@ async function fixture(run: (input: {
   try {
     const environment = await host.load(declaration)
     const clients = createModClients({
-      async request(_site, _plugin, request) {
+      async request(_site, _plugin, request, onFault) {
         requests.push(request)
-        return environment.client(request)
+        return environment.client(request, onFault)
       },
       message: async () => ({}), validate() {},
     })

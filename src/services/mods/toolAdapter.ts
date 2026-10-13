@@ -31,15 +31,9 @@ export type ModToolExecutionRecord = {
   isReadOnly?: true
 }
 
-export type ToolCallResult = {
-  result?: unknown
-  deny?: string
-  ref?: number
-  text?: string
-  isError?: true
-  isReadOnly?: true
-  context?: readonly string[]
-}
+export type ToolCallResult =
+  | { deny: string; result?: undefined; ref?: undefined; text?: undefined; isError?: undefined; isReadOnly?: undefined; context?: undefined }
+  | { result: unknown; deny?: undefined; ref?: number; text?: string; isError?: true; isReadOnly?: true; context?: readonly string[] }
 
 export async function runModToolCall({
   snapshot,
@@ -125,6 +119,8 @@ export async function runModToolCall({
     if (result.deny !== undefined) {
       if (typeof result.deny !== 'string')
         throw new Error('tool.call deny must be a string')
+      if (Object.hasOwn(result, 'result'))
+        throw new Error('tool.call cannot return deny beside result')
       return
     }
     if (!('result' in result))
@@ -275,7 +271,7 @@ export async function runModToolCall({
   }
   toolUseContext.modToolCallResult?.(
     finalResult.deny === undefined && (finalResult.context !== undefined || context.length)
-      ? { ...finalResult, context }
+      ? { ...(finalResult as Extract<ToolCallResult, { result: unknown }>), context }
       : finalResult,
   )
   async function additionalContext(): Promise<MessageUpdateLazy[]> {

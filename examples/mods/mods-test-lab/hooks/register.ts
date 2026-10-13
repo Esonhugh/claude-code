@@ -99,7 +99,7 @@ export function register(on: On) {
     if (action === 'open') await $.ui.open({ id: paneId, title: 'Mods test lab', focus: true, closeOnEscape: true })
     if (action === 'background') await $.ui.open({ id: paneId, title: 'Mods test lab', closeOnEscape: true })
     if (action === 'close') await $.ui.close({ id: paneId })
-    await $.ui.invalidate('ui.render')
+    $.ui.invalidate('ui.render')
     if (action === 'status' || action === 'reset') return { text: summary() }
     if (action === 'context') return { text: 'Mods test lab: fixed context armed for the next prompt only.' }
     return {}
@@ -117,7 +117,7 @@ export function register(on: On) {
     persistent.tool++
     record('tool')
     await $.store.set('counters', persistent)
-    await $.ui.invalidate('ui.render')
+    $.ui.invalidate('ui.render')
     if (e.tool === 'ToolSearch' && pendingToolSearch) {
       const nonce = pendingToolSearch
       const expected = `select:mcp__mods-test-lab__dynamic_${nonce}`
@@ -146,7 +146,7 @@ export function register(on: On) {
     persistent.prompt++
     record(attach ? 'prompt.context' : 'prompt')
     await $.store.set('counters', persistent)
-    await $.ui.invalidate('ui.render')
+    $.ui.invalidate('ui.render')
     return next(attach ? { ...e, context: [...(e.context ?? []), contextMarker] } : e)
   })
 
@@ -159,7 +159,7 @@ export function register(on: On) {
     }
     record('turn')
     await $.store.set('counters', persistent)
-    await $.ui.invalidate('ui.render')
+    $.ui.invalidate('ui.render')
     return next(e)
   })
 
@@ -172,20 +172,20 @@ export function register(on: On) {
       Button({ key: 'count', autoFocus: true, label: `Count: ${controls.button}`, onPress: async () => {
         controls.button++
         record('button')
-        await $.ui.invalidate('ui.render')
+        $.ui.invalidate('ui.render')
       } }),
       Input({ key: 'input', label: 'Local input', placeholder: 'Not logged or persisted (max 256)', value: input,
         onInput: async value => {
           input = value.slice(0, 256)
           controls.input++
           record('input')
-          await $.ui.invalidate('ui.render')
+          $.ui.invalidate('ui.render')
         },
         onSubmit: async value => {
           input = value.slice(0, 256)
           controls.submit++
           record('submit')
-          await $.ui.invalidate('ui.render')
+          $.ui.invalidate('ui.render')
         },
       }),
       Select({ key: 'selection', label: 'Diff labels', value: selection,
@@ -195,7 +195,7 @@ export function register(on: On) {
           selection = value
           controls.select++
           record('select')
-          await $.ui.invalidate('ui.render')
+          $.ui.invalidate('ui.render')
         },
       }),
       Button({ key: 'close', label: 'Close panel', onPress: async () => {

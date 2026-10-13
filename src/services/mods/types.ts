@@ -105,9 +105,9 @@ export type ModTraceEntry = {
   returned: unknown
 }
 
-export type ModNext = {
-  (input: ModInput): Promise<unknown>
-  to(input: ModInput, tier: ModTier): Promise<unknown>
+export type ModNext<Result = Promise<unknown>> = {
+  (input: ModInput): Result
+  to(input: ModInput, tier: ModTier): Result
   is(event: string, input: unknown): boolean
   signal: AbortSignal
   event: string
@@ -118,10 +118,13 @@ export type ModNext = {
   called?: boolean
 }
 
+export type ModStreamNext = ModNext<ModHookStream>
+export type ModContinuation = ModNext | ModStreamNext
+
 export type ModDispatchHook = {
   plugin: string
   tier: ModTier
   registration: ModRegistration
   invoke(input: ModInput, next: ModNext, catching: boolean): Promise<unknown>
-  invokeStream?(input: ModInput, next: ModNext, catching: boolean): AsyncGenerator<unknown, unknown>
+  invokeStream?(input: ModInput, next: ModStreamNext, catching: boolean): AsyncGenerator<unknown, unknown>
 }

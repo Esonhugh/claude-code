@@ -1,8 +1,12 @@
-import { normalizePromptDecorations, validatePromptDecorations, type PromptDecoration } from './promptEdit.js'
+import { copyModCallerChain, type ModCallerChain } from './callerChain.js'
 import { isDeepStrictEqual } from 'node:util'
 import type { ProcessUserInputBaseResult } from '../../utils/processUserInput/processUserInput.js'
 import type { ModDispatchOptions, ModSnapshot } from './runtime.js'
 import type { ModInput } from './types.js'
+import { normalizePromptDecorations, validatePromptDecorations, type PromptDecoration } from './promptEdit.js'
+
+export const UNSUBMITTED_PROMPT_DROP = 'the prompt did not go through prompt.submit (a command, bash mode, an input that did not query, or a failed pass)'
+export const FAILED_PROMPT_BATCH_DROP = 'an earlier prompt in the batch failed'
 
 export type PromptOrigin =
   | { kind: 'composer' }
@@ -26,12 +30,12 @@ export type PromptOrigin =
 export type PromptBox = { text: string; cursor: number }
 export type PromptFillMode = 'replace' | 'append' | 'insert'
 export type PromptFillInput = {
-  decorations?: PromptDecoration[]
   text: string
   mode: PromptFillMode
+  decorations?: PromptDecoration[]
   origin: { kind: 'engine' } | { kind: 'plugin'; name: string }
 }
-export type PromptFillResult = { isFilled: boolean }
+export type PromptFillResult = { isFilled: boolean; refusal?: 'no_composer' | 'dialog' }
 export type PromptFilled = PromptBox & PromptFillResult
 
 export type ModPromptHost = {
@@ -80,9 +84,10 @@ export function validatePromptFillInput(
 export function applyPromptFill(
   host: ModPromptHost | undefined,
   input: Pick<PromptFillInput, 'text' | 'mode' | 'decorations'>,
-  blocked: boolean,
+  refusal?: PromptFillResult['refusal'],
 ): PromptFillResult {
-  if (!host || blocked) return { isFilled: false }
+  if (!host) return { isFilled: false, refusal: 'no_composer' }
+  if (refusal !== undefined) return { isFilled: false, refusal }
   return { isFilled: host.fill(input) }
 }
 
@@ -186,12 +191,14 @@ export async function runModPromptSubmit({
   input,
   core,
   signal,
+  callerChain,
   admit,
 }: {
   snapshot: ModSnapshot
   input: PromptSubmitInput
   core: (input: PromptSubmitInput) => Promise<ProcessUserInputBaseResult>
   signal: AbortSignal
+  callerChain?: ModCallerChain
   admit?: (result: ProcessUserInputBaseResult) => void
 }): Promise<{
   outcome: PromptSubmitResult
@@ -203,6 +210,7 @@ export async function runModPromptSubmit({
   const receipts: PromptSubmitResult[] = []
   const options: PromptSubmitDispatchOptions = {
     signal,
+    ...(callerChain === undefined ? {} : { callerChain: copyModCallerChain(callerChain) }),
     restoreInput(rewritten, received) {
       const restored = { ...rewritten }
       for (const key of ['origin', 'attachments', 'turnId', 'wait']) {

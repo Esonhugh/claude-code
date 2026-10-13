@@ -29,7 +29,12 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
   };
   const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
   const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
-  const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData);
+  let clientRequestId;
+  const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData, phase => {
+    if (clientRequestId !== undefined) bridge(JSON.stringify({type:'client-phase',id:clientRequestId,phase}));
+  }, (id, error, unmounted) => {
+    bridge(JSON.stringify({type:'client-fault',instance:id,error,unmounted}));
+  });
   const isModBroadEventPattern = (${isModBroadEventPattern.toString()});
   const isModEventPattern = (${isModEventPattern.toString()});
   const emptyEventPatternError = ${JSON.stringify(EMPTY_MOD_EVENT_PATTERN_ERROR)};
@@ -200,12 +205,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     }
     if (wire.type === 'ui') {
       const methods = Object.fromEntries(wire.methods.map(([key,value]) => [key, decode(value, invocation)]));
-      const panes = methods.panes;
-      if (panes) methods.panes = Object.freeze(async () =>
-        decode(encode(await panes()), invocation, true));
       const scroll = methods.scroll;
       const focus = methods.focus;
       const blit = methods.blit;
+      const invalidate = methods.invalidate;
+      const panes = methods.panes;
       const notice = methods.notice;
       const log = methods.log;
       const status = methods.status;
@@ -224,6 +228,11 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
         toast(String(text), {...typeof options.timeoutMs === 'number' && {timeoutMs: options.timeoutMs}}).catch(error => report(error, 'ui.toast'));
       });
       if (copy) methods.copy = Object.freeze(input => copy({text:input?.text,...input?.surface !== undefined && {surface:input.surface}}));
+      if (panes) methods.panes = Object.freeze(async () =>
+        decode(encode(await panes()), invocation, true));
+      if (invalidate) methods.invalidate = Object.freeze(event => {
+        invalidate(event).catch(error => report(error, 'ui.invalidate'));
+      });
       if (scroll) methods.scroll = input => scroll({
         to: input?.to,
         ...(input?.in !== undefined && {in:input.in}),
@@ -628,7 +637,21 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     getUiTables() { return uiTablesText; },
     setUiTables(text) { uiTables = new Map(JSON.parse(text).map(([key, wire]) => [key, decode(wire)])); uiTablesText = text; },
     registerClient(path, draw) { clients.register(path, draw); },
-    client(text) { return JSON.stringify(encode(clients.request(JSON.parse(text)))); },
+    client(text, requestId) {
+      clientRequestId=requestId;
+      try { return JSON.stringify({value:encode(clients.request(JSON.parse(text)))}); }
+      catch (error) {
+        const safe = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error);
+        const message = safe ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined;
+        let errorName;
+        for (let prototype = safe ? error : undefined, depth = 0; prototype && depth < 32 && !isProxy(prototype); depth++) {
+          const name = Object.getOwnPropertyDescriptor(prototype, 'name')?.value;
+          if (typeof name === 'string') {errorName=name;break;}
+          prototype=Object.getPrototypeOf(prototype);
+        }
+        return JSON.stringify({error:typeof message === 'string' ? message : 'Module invocation failed',clientFaultPhase:clients.errorPhase(error) ?? 'run',errorName});
+      } finally {clientRequestId=undefined;}
+    },
     releaseDrawing(drawing) {
       const handles = drawings.get(drawing);
       drawings.delete(drawing);
@@ -672,7 +695,7 @@ type Environment = {
     getUiTables(): string
     setUiTables(text: string): void
     registerClient(path: string, draw: unknown): void
-    client(text: string): string
+    client(text: string, requestId: number): string
     releaseDrawing(drawing: number): void
     dispose(): void
   }
@@ -681,6 +704,8 @@ type Environment = {
 const environments = new Map<number, Environment>()
 const invocations = new AsyncLocalStorage<number>()
 const callbacks = new AsyncLocalStorage<boolean>()
+const serving = new AsyncLocalStorage<{ id: number; callers: readonly number[] } | undefined>()
+const servingLive = new Set<number>()
 const attribution = workerData?.stamp instanceof SharedArrayBuffer ? new Int32Array(workerData.stamp) : undefined
 function stamped<T>(environment: number, request: number, call: () => T, callback = false): T {
   if (!attribution) return call()
@@ -704,6 +729,22 @@ function stamped<T>(environment: number, request: number, call: () => T, callbac
       Atomics.store(attribution, 5, previousCallback)
     }
   }
+}
+function servingCall() {
+  const call = serving.getStore()
+  return call && servingLive.has(call.id) ? call : undefined
+}
+function callerFrame<T>(callers: readonly number[], call: () => T): T {
+  if (!attribution) return call()
+  const previous = Array.from({ length: 7 }, (_, index) => Atomics.load(attribution, 6 + index))
+  for (let index = 0; index < 7; index++) Atomics.store(attribution, 6 + index, callers[index] ?? 0)
+  try { return call() }
+  finally { for (let index = 0; index < 7; index++) Atomics.store(attribution, 6 + index, previous[index]!) }
+}
+function uiCallerFrame<T>(resolver: number, call: () => T): T {
+  const previous = attribution ? [1, 3, 5].map(index => Atomics.load(attribution, index)) : []
+  try { return callerFrame([...(servingCall()?.callers ?? []), resolver], call) }
+  finally { if (attribution) for (const [offset, index] of [1, 3, 5].entries()) Atomics.store(attribution, index, previous[offset]!) }
 }
 const budgetClocks = new Map<number, BigInt64Array>()
 const promiseRealms = new WeakMap<object, Environment['lifetime']>()
@@ -770,7 +811,7 @@ function createEnvironment(id: number, plugin: string): Environment {
   }, plugin) as {dispose():void}
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
-    reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id, ...(callbacks.getStore() && {callback:true}) })
+    reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id, serving: servingCall()?.id, ...(callbacks.getStore() && {callback:true}) })
   }, (wireText: string, props: string) => {
     const wire = JSON.parse(wireText) as {
       type?: unknown
@@ -801,10 +842,10 @@ function createEnvironment(id: number, plugin: string): Environment {
     const drawing = entries.get('drawing') as { type?: unknown; value?: unknown } | undefined
     const input = entries.get('props')
     if (!input) throw new Error('Invalid UI constructor input')
-    if (drawing?.type === 'undefined') return target.api.invokeUi(wire.id, JSON.stringify(input))
+    if (drawing?.type === 'undefined') return uiCallerFrame(id, () => stamped(targetId, invocations.getStore() ?? 0, () => target.api.invokeUi(wire.id as number, JSON.stringify(input))))
     if (drawing?.type !== 'value' || !Number.isSafeInteger(drawing.value) || (drawing.value as number) <= 0)
       throw new Error('Invalid UI constructor input')
-    return target.api.invokeUiForDrawing(drawing.value as number, wire.id, JSON.stringify(input))
+    return uiCallerFrame(id, () => stamped(targetId, invocations.getStore() ?? 0, () => target.api.invokeUiForDrawing(drawing.value as number, wire.id as number, JSON.stringify(input))))
   }, isProxy, isPromise, plugin, id, (invocation: number, remaining: boolean) => {
     const clock = budgetClocks.get(invocation)
     if (!clock) return remaining ? Infinity : 0
@@ -930,8 +971,12 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       if (!environment) throw new Error('Module environment unloaded')
       // The host owns this instance's one-second watchdog and terminates its
       // Worker on failure. VM timeouts can poison Bun's Worker message loop.
-      const value = JSON.parse(environment.api.client(JSON.stringify(request.request)))
-      reply({ type: 'result', id: request.id, value })
+      const result = JSON.parse(environment.api.client(JSON.stringify(request.request), request.id))
+      reply({ ...result, type: 'result', id: request.id })
+      // Acknowledge this turn after its already queued realm rejection reactions.
+      // This never awaits the Client's returned value or keeps its instance live.
+      await Promise.resolve()
+      reply({ type: 'client-turn-complete', environment: request.environment, id: request.id })
       return
     }
     if (request.type === 'unload') {
@@ -955,10 +1000,18 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       const environment = environments.get(request.environment)
       if (!environment) throw new Error('Module environment unloaded')
       if (request.next?.budget) budgetClocks.set(request.id, new BigInt64Array(request.next.budget))
+      const call = request.callers === undefined ? undefined : { id: request.id, callers: request.callers }
+      if (call) servingLive.add(call.id)
+      const timeout = call ? setTimeout(() => servingLive.delete(call.id), 10000) : undefined
+      timeout?.unref?.()
       try {
-        const value = JSON.parse(await invocations.run(request.id, () => stamped(request.environment, request.id, () => environment.api.invoke(JSON.stringify(request)))))
+        const value = JSON.parse(await serving.run(call, () => invocations.run(request.id, () => callerFrame(call?.callers ?? [], () => stamped(request.environment, request.id, () => environment.api.invoke(JSON.stringify(request)))))))
         reply({ type: 'result', id: request.id, value })
-      } finally { if (!environment.api.hasStream(request.id)) budgetClocks.delete(request.id) }
+      } finally {
+        clearTimeout(timeout)
+        if (call) servingLive.delete(call.id)
+        if (!environment.api.hasStream(request.id)) budgetClocks.delete(request.id)
+      }
       return
     }
     if (request.type === 'stream-pull') {
@@ -1033,6 +1086,16 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
     )))
     reply({ type: 'result', id: request.id, registrations })
   } catch (error) {
+    const clientFaultPhase = request.type === 'load-client' ? 'load' : request.type === 'client' ? 'run' : undefined
+    let errorName: string | undefined
+    if (clientFaultPhase) {
+      let prototype = error
+      for (let depth = 0; depth < 32 && prototype && (typeof prototype === 'object' || typeof prototype === 'function') && !isProxy(prototype); depth++) {
+        const name = Object.getOwnPropertyDescriptor(prototype, 'name')?.value
+        if (typeof name === 'string') { errorName = name; break }
+        prototype = Object.getPrototypeOf(prototype)
+      }
+    }
     if (request.type === 'load' || request.type === 'load-client') {
       const environment = environments.get(request.environment)
       if (environment) {
@@ -1046,6 +1109,6 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       : undefined
     const errorRef = request.type === 'invoke' || request.type === 'stream-pull' ? environments.get(request.environment)?.api.errorReference(error) : undefined
     const aborted = request.type === 'stream-pull' && environments.get(request.environment)?.api.isAbortError(error)
-    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef, ...(aborted ? {aborted:true} : {}) })
+    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef, ...(aborted ? {aborted:true} : {}), ...(clientFaultPhase ? {clientFaultPhase,errorName} : {}) })
   }
 }

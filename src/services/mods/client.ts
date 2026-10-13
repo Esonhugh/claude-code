@@ -17,6 +17,23 @@ export type ModClientSite = {
   clock?: 'manual'
 }
 
+export type ModClientFaultPhase = 'load' | 'render' | 'run'
+export type ModClientFault = {
+  surface: ModRenderSurface
+  component: ModRenderComponent
+  requestId: string
+  element: string
+  module: string
+  phase: ModClientFaultPhase
+  reason: string
+}
+export class ModClientError extends Error {
+  constructor(message: string, readonly phase: ModClientFaultPhase, name = 'Error', readonly timeoutMs?: number) {
+    super(message)
+    this.name = name
+  }
+}
+
 export type ModClientRequest = {
   op: 'mount' | 'update' | 'frame' | 'pointer' | 'key' | 'press' | 'resize' | 'release' | 'dispose'
   id: number
@@ -61,6 +78,7 @@ export function findModClient(tree: unknown, plugin: string, key: string, module
 
 export function modClientReason(error: unknown, plugin: string, module: string): string {
   let reason = error instanceof Error ? error.message.trim() !== '' ? error.message : error.name === 'Error' ? 'the module failed without a message' : error.name : 'the module failed without a message'
+  if (error instanceof ModClientError && error.timeoutMs !== undefined && error.phase !== 'load') reason = `ran longer than its ${error.timeoutMs}ms budget`
   reason = reason.replace(new RegExp(String.raw`[\u0000-\u001f\u007f-\u009f\ud800-\udfff\u{10eeee}]`, 'gu'), ' ')
   if (reason.length > 500) reason = reason.slice(0, reason.charCodeAt(499) >= 0xd800 && reason.charCodeAt(499) <= 0xdbff ? 499 : 500) + '…'
   for (const prefix of [`${plugin}: `, `Client ${module}: `]) if (reason.startsWith(prefix)) reason = reason.slice(prefix.length)
@@ -71,9 +89,10 @@ export function modClientReason(error: unknown, plugin: string, module: string):
 }
 
 export function createModClients(options: {
-  request(pane: ModClientSite, plugin: string, request: ModClientRequest): Promise<ModClientFrame>
+  request(pane: ModClientSite, plugin: string, request: ModClientRequest, onFault?: (error: ModClientError) => void): Promise<ModClientFrame>
   message(pane: ModClientSite, plugin: string, input: { element: string; module: string; data: unknown }): Promise<{ props?: unknown }>
   validate(tree: unknown): void
+  fault?(pane: ModClientSite, plugin: string, input: ModClientFault, id: number): void
 }): ModClients {
   let nextId = 0
   let currentPanes: readonly ModClientSite[] | undefined
@@ -121,13 +140,18 @@ export function createModClients(options: {
           const finish = finishFrame!
           scheduledFrame = undefined
           finishFrame = undefined
-          void run({ op: 'frame', id, now: performance.now() }).catch(fail).finally(finish)
+          void run({ op: 'frame', id, now: performance.now() }).catch(() => {}).finally(finish)
         }, 16)
         timer.unref?.()
       }
-      const fail = (error: unknown) => {
+      const fail = (error: unknown, phase: ModClientFaultPhase = 'run') => {
         if (disposed) return
         void handle.dispose()
+        const reason = modClientReason(error, plugin, node.props.module)
+        options.fault?.(pane, plugin, {
+          surface: pane.surface ?? 'terminal', component: pane.component ?? 'Pane', requestId: pane.id,
+          element: node.props.key, module: node.props.module, phase: error instanceof ModClientError ? error.phase : phase, reason,
+        }, id)
         onError?.(error)
       }
       const callbacks = (tree: unknown): number[] => {
@@ -144,13 +168,18 @@ export function createModClients(options: {
         needsFrame = frame.active === true
         if (frame.stopped) { void handle.dispose(); return }
         if (frame.tree !== undefined) {
-          options.validate(frame.tree)
-          const nextCallbacks = new Set(callbacks(frame.tree))
-          const released = callbacks(lastTree).filter(handle => !nextCallbacks.has(handle))
-          lastTree = frame.tree
-          commit(frame.tree)
-          // Already admitted input is ahead of this release in the same queue.
-          if (released.length) void run({ op: 'release', id, handles: released }).catch(() => {})
+          try {
+            options.validate(frame.tree)
+            const nextCallbacks = new Set(callbacks(frame.tree))
+            const released = callbacks(lastTree).filter(handle => !nextCallbacks.has(handle))
+            lastTree = frame.tree
+            commit(frame.tree)
+            // Already admitted input is ahead of this release in the same queue.
+            if (released.length) void run({ op: 'release', id, handles: released }).catch(() => {})
+          } catch (error) {
+            fail(error, 'render')
+            throw error
+          }
         }
         if (frame.active) schedule()
         if (Object.hasOwn(frame, 'post')) void post(frame.post).catch(() => {})
@@ -170,7 +199,7 @@ export function createModClients(options: {
         const operation = queue.then(async () => {
           if (disposed || !stillCurrent()) return
           if (request.op !== 'release') onRendering?.()
-          const frame = await options.request(pane, plugin, request)
+          const frame = await options.request(pane, plugin, request, error => fail(error))
           if (request.op === 'release') return
           if (stillCurrent()) deliver(frame)
           else {
@@ -179,7 +208,7 @@ export function createModClients(options: {
           }
         })
         queue = operation.catch(() => {})
-        void operation.catch(fail)
+        void operation.catch(error => fail(error, request.op === 'mount' ? 'load' : 'run'))
         return operation
       }
       const props = (value: unknown) => value === undefined ? undefined : copyModClientData(value, isProxy)
@@ -242,7 +271,7 @@ export function createModClients(options: {
           await Promise.race([Promise.all([...posts]), stopped.promise])
           await queue
         },
-        threw(error) { fail(error) },
+        threw(error) { fail(error, 'render') },
         dispose() {
           if (disposePromise) return disposePromise
           disposed = true
@@ -258,7 +287,7 @@ export function createModClients(options: {
           return disposePromise
         },
       }
-      void ready.catch(fail)
+      void ready.catch(() => {})
       return handle
     },
   })

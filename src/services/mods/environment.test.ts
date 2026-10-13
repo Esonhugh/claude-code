@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { createModClockBridge, createModEnvironmentHost, createModStreamBridge } from './environment.js'
-import type { ModDeclaration, ModNext } from './types.js'
-import { dispatchModEvent, dispatchModStream } from './dispatch.js'
+import type { ModDeclaration, ModNext, ModStreamNext } from './types.js'
+import { createModHookStream, dispatchModEvent, dispatchModStream } from './dispatch.js'
 import { loadModDeclaration } from './loader.js'
 
 const hosts: ReturnType<typeof createModEnvironmentHost>[] = []
@@ -22,11 +22,21 @@ function declaration(source: string): ModDeclaration {
   }
 }
 function host() { const value = createModEnvironmentHost(); hosts.push(value); return value }
-function next(call: (input: Record<string, unknown>) => Promise<unknown>): ModNext {
+function next<Result>(call: (input: Record<string, unknown>) => Result): ModNext<Result> {
   return Object.assign(call, {
     to: call, is: (event: string) => event === 'tool.call', signal: new AbortController().signal, event: 'tool.call',
     origin: { plugin: 'engine', tier: 'core' as const }, trace: [], budget: {ms:0,remainingMs:Infinity},
   })
+}
+
+function streamNext(call: (input: Record<string, unknown>) => AsyncGenerator<unknown, unknown>): ModStreamNext {
+  const frame = next(input => createModHookStream(call(input)))
+  frame.event = 'turn.step'
+  return frame
+}
+function emptyStreamNext(): ModStreamNext {
+  // eslint-disable-next-line require-yield -- These cases must never enter the unused continuation.
+  return streamNext(async function* () { throw new Error('Unexpected stream continuation') })
 }
 
 describe('Mods disposal failures', () => {
@@ -109,11 +119,11 @@ describe('Mods Worker environment', () => {
       });
     }`), events:['turn.step']})
     let pulls = 0
-    const frame = next((() => (async function* () {
+    const frame = streamNext(() => (async function* () {
       pulls++; yield {text:'one'};
       pulls++; yield {text:'two'};
       pulls++; return {answer:'done'};
-    })()) as any)
+    })())
     frame.event = 'turn.step'
     const stream = environment.invokeStream(environment.registrations[0]!.id, [{}, {}], frame)
     expect((stream as any).then).toBeUndefined()
@@ -188,7 +198,7 @@ describe('Mods Worker environment', () => {
       on('turn.step', async function* ($, e, next) { return yield* next(e); });
     }`), events:['turn.step']})
     const failure = new Error('stream beneath failed')
-    const frame = next((() => (async function* () { yield 1; throw failure })()) as any)
+    const frame = streamNext(() => (async function* () { yield 1; throw failure })())
     frame.event = 'turn.step'
     const stream = environment.invokeStream(environment.registrations[0]!.id,[{},{}],frame)
     expect(await stream.next()).toEqual({done:false,value:1})
@@ -201,12 +211,12 @@ describe('Mods Worker environment', () => {
       on('turn.step', async function* ($, e, next) { return yield* next(e); });
     }`), events:['turn.step']})
     let closed = 0
-    const frame = next((() => (async function* () {
+    const frame = streamNext(() => (async function* () {
       try {
         try { yield 'first'; } catch (error) { yield 'caught:' + (error as Error).message; }
         return 'complete';
       } finally { closed++; }
-    })()) as any)
+    })())
     frame.event = 'turn.step'
     const first = environment.invokeStream(environment.registrations[0]!.id, [{}, {}], frame)
     expect(await first.next()).toEqual({done:false,value:'first'})
@@ -230,7 +240,7 @@ describe('Mods Worker environment', () => {
         finally { await $.finalize(); }
       });
     }`), events:['turn.step']})
-    const frame = next(async () => ({})); frame.event = 'turn.step'
+    const frame = emptyStreamNext()
     const stream = environment.invokeStream(environment.registrations[0]!.id, [{
       finalize: () => { entered.resolve(); return release.promise },
     }, {}], frame)
@@ -257,7 +267,7 @@ describe('Mods Worker environment', () => {
         finally { await $.finalize(); }
       });
     }`), events:['turn.step']})
-    const frame = next(async () => ({})); frame.event = 'turn.step'
+    const frame = emptyStreamNext()
     const stream = environment.invokeStream(environment.registrations[0]!.id, [{
       hold: () => { entered.resolve(); return new Promise(() => {}) },
       finalize: async () => {
@@ -293,7 +303,7 @@ describe('Mods Worker environment', () => {
       });
     }`), events:['turn.step']})
     const controller = new AbortController()
-    const frame = next(async () => ({})); frame.event = 'turn.step'; frame.signal = controller.signal
+    const frame = emptyStreamNext(); frame.signal = controller.signal
     const stream = environment.invokeStream(environment.registrations[0]!.id, [{
       hold: () => { entered.resolve(); return new Promise(() => {}) },
       released: () => released.resolve(),
@@ -317,7 +327,7 @@ describe('Mods Worker environment', () => {
         return yield* beneath;
       });
     }`), events:['turn.step']})
-    const frame = next(async () => ({})); frame.event = 'turn.step'
+    const frame = emptyStreamNext()
     const step = createModStreamBridge(() => (async function* () {
       try { yield 'first'; yield 'never'; } finally { released.resolve(); }
     })())

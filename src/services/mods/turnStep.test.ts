@@ -1,5 +1,6 @@
-import { afterEach, expect, test } from 'bun:test'
-import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { beforeEach, afterEach, expect, test } from 'bun:test'
+import { mkdtemp, writeFile, rm, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime } from './runtime.js'
@@ -7,12 +8,50 @@ import { dispatchModStream } from './dispatch.js'
 import { createModEnvironmentHost } from './environment.js'
 import type { ModDispatchHook, ModHookStream, ModInput } from './types.js'
 
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+
 const cleanups: (() => Promise<unknown>)[] = []
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+afterEach(async () => {
+  try {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  }
+})
 const input = { turnId: 'turn', index: 0, model: 'fake', messageCount: 1 }
 const result = { turnId: 'turn', index: 0, answer: 'hello', toolUses: [], stopReason: 'end_turn', usage: null }
 async function fixture(source: string) {
-  const root = await mkdtemp(join(tmpdir(), 'mods-turn-step-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-turn-step-')))
   cleanups.push(() => rm(root, { recursive: true, force: true }))
   const entry = join(root, 'register.ts')
   await writeFile(entry, source)
@@ -362,6 +401,36 @@ test('abort interrupts a pending Worker pull and closes the model iterator', asy
   await source.return(undefined)
   expect(closed).toBe(true)
   expect(await value.dispatch('tool.call', {tool:'probe',tool_use_id:'probe'}, async () => ({result:false}))).toEqual({result:true})
+  expect(events).toEqual([])
+})
+
+test.each(['abort', 'return'])('pending Worker %s retains asynchronous finally failure', async mode => {
+  const { value, events } = await fixture(`export function register(on) {
+    on('turn.step', async function* ($, e, next) {
+      try { return yield* next(e); }
+      finally { await Promise.resolve(); throw new Error('Worker cleanup failed'); }
+    });
+  }`)
+  const abort = new AbortController()
+  const started = Promise.withResolvers<void>()
+  let closed = false
+  const source = value.stream('turn.step', input, async function* (_request, signal) {
+    try {
+      started.resolve()
+      await new Promise<void>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), {once:true}))
+      yield {kind:'text',index:0,text:'unreachable'}
+      return result
+    } finally { closed = true }
+  }, {signal:abort.signal})
+  const pending = source.next().then(() => undefined, error => error)
+  const outcome = source.result.then(() => undefined, error => error)
+  await started.promise
+  if (mode === 'abort') abort.abort(new Error('test interrupted'))
+  const closing = source.return(undefined).then(() => undefined, error => error)
+  expect((await pending)?.message).toContain(mode === 'abort' ? 'test interrupted' : 'closed')
+  expect((await outcome)?.message).toContain(mode === 'abort' ? 'test interrupted' : 'closed')
+  expect((await closing)?.message).toBe('Worker cleanup failed')
+  expect(closed).toBe(true)
   expect(events).toEqual([])
 })
 

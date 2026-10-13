@@ -209,3 +209,71 @@ test('hook cancellation carries its reason, permits final debug logging and retu
   expect(logs).toEqual(['entered',JSON.stringify({aborted:true,name:'HooksError',message:'OWNED_CANCEL'})])
   expect(calls).toBe(0)
 })
+
+test.each(['complete','classify','fork'] as const)('turn.step parent abort reaches pending model.%s and runs Worker finally',async method => {
+  const started=Promise.withResolvers<void>()
+  let providerSignal:AbortSignal|undefined
+  let providerClosed=false
+  const measured={input_tokens:11,output_tokens:4,cache_read_input_tokens:3,cache_creation_input_tokens:2}
+  const pendingProvider=async (_request:unknown,signal?:AbortSignal,onUsage?:(value:typeof usage)=>void)=>{
+    providerSignal=signal
+    onUsage?.(measured)
+    started.resolve()
+    try {
+      await new Promise<void>((_resolve,reject)=>{
+        if(signal?.aborted)reject(signal.reason)
+        else signal?.addEventListener('abort',()=>reject(signal.reason),{once:true})
+      }).catch(error=>{if(error!==signal?.reason)throw error})
+      return {isAnswered:false as const,reason:'aborted' as const,usage:method === 'fork' ? measured : usage}
+    } finally {providerClosed=true}
+  }
+  const runtime=createModsRuntime({services:{modelComplete:pendingProvider,modelFork:pendingProvider}})
+  await bind(runtime)
+  const call=method==='classify'
+    ? `$.model.classify('held',['YES','NO'],{model:'haiku'})`
+    : method==='fork' ? `$.model.fork({prompt:'held'})` : `$.model.complete({model:'haiku',prompt:'held'})`
+  const consumer=await plugin('consumer',`let ended=false,outcome;export function register(on) {
+    on('turn.step',async function*($,e,next){try{try{outcome=await ${call};}catch(error){outcome={error:error.message};}return yield*next(e);}finally{ended=true;}});
+    on('tool.call',async()=>({result:{ended,outcome}}));
+  }`)
+  await runtime.reconcile([consumer])
+  const stop=new AbortController()
+  const stream=runtime.stream('turn.step',{turnId:'turn',index:0,model:'haiku',messageCount:1},async function*(){
+    yield {kind:'text',index:0,text:'unexpected'}
+    return {turnId:'turn',index:0,answer:'unexpected',toolUses:[],stopReason:'end_turn',usage:null}
+  },{signal:stop.signal})
+  const pulling=stream.next().then(()=>undefined,error=>error)
+  const result=stream.result.then(()=>undefined,error=>error)
+  await started.promise
+  stop.abort(new Error('parent cancelled'))
+  expect((await pulling)?.message).toContain('parent cancelled')
+  expect((await result)?.message).toContain('parent cancelled')
+  await stream.return(undefined)
+  expect(providerSignal?.aborted).toBe(true)
+  expect(providerClosed).toBe(true)
+  const probe=await runtime.dispatch('tool.call',{},async()=>({result:false})) as {result:{ended:boolean,outcome:unknown}}
+  expect(probe.result.ended).toBe(true)
+  if(method==='classify')expect(probe.result.outcome).toEqual({error:'consumer: $.model.classify: the request was aborted'})
+  else expect(probe.result.outcome).toEqual(method==='fork'?{...aborted,usage:measured}:aborted)
+})
+
+test('invalid signals reject while unused local options are ignored',async()=>{
+  let calls=0
+  const runtime=createModsRuntime({services:{modelComplete:async()=>{calls++;return {isAnswered:true,text:'unexpected',usage}}}})
+  await bind(runtime)
+  const consumer=await plugin('consumer',`export function register(on){
+    on('tool.call',async $=>{
+      const failures=[];
+      for(const options of [null,[],{extra:true},{signal:{}},{signal:null}]){
+        try{await $.model.complete({model:'haiku',prompt:'bad'},options);failures.push('answered');}
+        catch(error){failures.push(error.message);}
+      }
+      return {result:failures};
+    });
+  }`)
+  await runtime.reconcile([consumer])
+  const outcome=await runtime.dispatch('tool.call',{},async()=>({result:'core'})) as {result:string[]}
+  expect(outcome.result).toHaveLength(5)
+  expect(outcome.result).toEqual(['answered','answered','answered','consumer: options.signal must be an AbortSignal','answered'])
+  expect(calls).toBe(4)
+})

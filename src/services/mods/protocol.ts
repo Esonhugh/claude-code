@@ -165,6 +165,7 @@ export type ModWorkerRequest =
       drawing?: number
       callbackDrawing?: number
       stream?: boolean
+      callers?: number[]
       next?: {
         call: number
         to: number
@@ -209,6 +210,9 @@ export type ModWorkerRequest =
 
 export type ModWorkerReply =
   | { type: 'pong'; n: number }
+  | { type: 'client-turn-complete'; environment: number; id: number }
+  | { type: 'client-fault'; environment: number; instance: number; error: string; unmounted: boolean }
+  | { type: 'client-phase'; id: number; phase: import('./client.js').ModClientFaultPhase }
   | { type: 'settled'; id: number }
   | { type: 'async-error'; environment: number; error: string }
   | {
@@ -218,12 +222,15 @@ export type ModWorkerReply =
       value?: ModWireValue
       registrations?: (Omit<ModRegistration, 'matcher'> & { matcher?: ModWireValue; catchId?: number })[]
       error?: string
+      clientFaultPhase?: import('./client.js').ModClientFaultPhase
+      errorName?: string
       errorRef?: number
       aborted?: true
     }
   | {
       type: 'host-call'
       callback?: true
+      serving?: number
       environment: number
       invocation: number
       call: number

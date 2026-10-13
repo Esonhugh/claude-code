@@ -151,9 +151,12 @@ export function prepareModPlugins(
   const allDisabled =
     settings.hookPolicy.allDisabled ||
     settings.policySettings?.disableAllHooks === true
+  const guardOption = settings.policySettings?.pluginConfigs?.['cc-plugin-sec-default@builtin']?.options?.allowManagedModsOnly
+  const managedModsOnly = shouldSeatSecDefault(settings) && guardOption !== undefined && guardOption !== false
   const managedOnly =
     settings.hookPolicy.managedOnly ||
     settings.policySettings?.allowManagedHooksOnly === true ||
+    managedModsOnly ||
     settings.userSettings?.disableAllHooks === true ||
     settings.flagSettings?.disableAllHooks === true
 
@@ -212,7 +215,9 @@ export function prepareModPlugins(
         diagnostic(
           plugin.name,
           'policy',
-          'Hooks modules are restricted to managed plugins',
+          managedModsOnly
+            ? 'Hooks modules are restricted to managed plugins by allowManagedModsOnly'
+            : 'Hooks modules are restricted to managed plugins',
         ),
       )
       continue

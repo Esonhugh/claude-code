@@ -705,6 +705,34 @@ describe('prepareModPlugins', () => {
     expect(result.errors[0]?.plugin).toBe('example')
   })
 
+  test('the managed guard option excludes ordinary modules before evaluation and cannot be set by users', () => {
+    const option = (value: unknown) => source({ pluginConfigs: {
+      'cc-plugin-sec-default@builtin': { options: { allowManagedModsOnly: value } },
+    } } as SettingsJson)
+    const managed = loadedPlugin({ name: 'managed', manifest: { name: 'managed' } })
+    const builtin = loadedPlugin({ name: 'host', manifest: { name: 'host' }, source: 'host@builtin', repository: 'host@builtin', isBuiltin: true })
+    // Official 2.1.292 sec-default accepts every configured value except literal false.
+    for (const value of [true, 'true', 1, 0, 'false', '']) {
+      const result = prepareModPlugins([loadedPlugin(), managed, builtin], settings({
+        policySettings: { ...option(value), enabledPlugins: { 'managed@marketplace': true } },
+      }))
+      expect(result.inputs.map(input => input.name)).toEqual(['managed', 'host'])
+      expect(result.errors).toEqual([expect.objectContaining({ plugin: 'example', stage: 'policy', message: expect.stringContaining('allowManagedModsOnly') })])
+    }
+    for (const overrides of [
+      { userSettings: option(true) }, { flagSettings: option(true) },
+      { policySettings: option(false) },
+      { policySettings: { ...option(true), prependPlugins: [] } },
+    ]) expect(prepareModPlugins([loadedPlugin()], settings(overrides)).inputs).toHaveLength(1)
+  })
+
+  test('a remote cached plugin enabled by policy cannot acquire managed Mod authority', () => {
+    const remote = loadedPlugin({managedSource:false})
+    const value = settings({policySettings:{enabledPlugins:{'example@marketplace':true},prependPlugins:['example@marketplace'],allowManagedHooksOnly:true}})
+    expect(getModPluginOrigin(remote,value).tier).toBe('user')
+    expect(prepareModPlugins([remote],value).inputs).toEqual([])
+  })
+
   test('external source names cannot promote their tier to builtin or core', () => {
     const builtinSpoof = loadedPlugin({
       name: 'builtin-spoof',

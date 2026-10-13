@@ -223,6 +223,7 @@ export type ModUi = {
   }): Promise<unknown>
   invalidate(owner: ModUiOwner, event: string): Promise<void>
   invalidateInstance(instance: Pick<ModRenderInput, 'surface' | 'component' | 'requestId'>): Promise<void>
+  redrawForFault(site: ModClientSite): Promise<void>
   render(presentation?: ModUiPresentation, options?: { nativeSites?: boolean }): Promise<void>
   scroll(
     owner: ModUiOwner,
@@ -418,8 +419,8 @@ export function createModUi({
   remotePlacement = () => ({ isPlaced: true }),
   clients,
 }: {
-  asked?: readonly { plugin: string; id: string }[]
-  onAskedChange?(plugin: string, id: string, asked: boolean): void
+  asked?: readonly {plugin:string;id:string}[]
+  onAskedChange?(plugin:string,id:string,asked:boolean):void
   notify?: (listener: () => void) => void
   pluginOf(owner: ModUiOwner): string
   dispatch: ModUiDispatch
@@ -443,7 +444,7 @@ export function createModUi({
   const closing = new Set<string>()
   let focusRequestedId: string | null = null
   const listeners = new Set<() => void>()
-  const personRequested = new Set(asked.map(pane => `${pane.plugin}\0${pane.id}`))
+  const personRequested = new Set(asked.map(pane=>`${pane.plugin}\0${pane.id}`))
   const openGenerations = new Map<string, number>()
   const pendingDraws = new WeakMap<PaneState, Promise<void>>()
   const paneRedraws = new WeakMap<PaneState, RedrawSchedule>()
@@ -455,6 +456,7 @@ export function createModUi({
   const clientSites = new Map<ModUiOwner, ModClientSite>()
   const reconcileClients = () => clients?.reconcile([...snapshot, ...clientSites.values()])
   const siteInputs = new WeakMap<ModRenderSite, ModRenderInput>()
+  const faultRuns = new Map<string, {versions:Set<number>;redrawing:boolean}>()
   const heldSites = new Map<ModUiOwner, { drawing: number; tree: unknown }>()
   const sites = new Map<ModUiOwner, ModRenderSite & {
     focusPlugin(owner: ModUiOwner, element: string, origin: Extract<ModUiOrigin, { kind: 'plugin' }>): Promise<unknown>
@@ -504,7 +506,7 @@ export function createModUi({
 
   function visibleOf(pane: PaneState): boolean {
     if (pane.presentation.headless) return pane.visible || remotePlacement().isPlaced
-    if (pane.personInitiated) return true
+    if (pane.personInitiated || pane.visible) return true
     const threshold = personRequested.has(askedKey(pane.owner, pane.id)) ? 110 : 144
     return pane.presentation.columns >= threshold
   }
@@ -754,6 +756,7 @@ export function createModUi({
   async function drawPane(pane: PaneState): Promise<void> {
     if (pane.presentation.headless) return
     const generation = ++pane.drawGeneration
+    logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'draw-start', plugin: pane.plugin, id: pane.id, generation, visible: pane.visible, columns: pane.presentation.columns, rows: pane.presentation.rows })}`)
     if (!pane.visible) {
       const hadDrawing = pane.drawing !== undefined
       await releaseLease(pane).catch(() => {})
@@ -777,6 +780,7 @@ export function createModUi({
       pane.drawGeneration !== generation ||
       !pane.visible
     ) {
+      logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'draw-stale', plugin: pane.plugin, id: pane.id, drawing, generation, currentGeneration: pane.drawGeneration, visible: pane.visible, active: active.get(pane.id) === pane })}`)
       await releaseDrawing(pane.owner, drawing).catch(() => {})
       return
     }
@@ -1472,18 +1476,21 @@ export function createModUi({
       validateOwner(owner)
       const requested = copyOpen(input)
       const presentation = validatePresentation(rawPresentation)
+      logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'open-request', plugin: pluginOf(owner), id: requested.id, origin: origin.kind, focus: requested.focus, columns: presentation.columns, rows: presentation.rows, isFullscreen: presentation.isFullscreen })}`)
       return dispatch(
         owner,
         'ui.open',
         requested as ModInput,
         async rewritten => {
           const spec = copyOpen(rewritten as ModUiOpenArgs, requested.id)
-          if (origin.kind === 'person') {
+          if (origin.kind === 'person'){
             personRequested.add(askedKey(owner, spec.id))
-            onAskedChange?.(pluginOf(owner), spec.id, true)
+            onAskedChange?.(pluginOf(owner),spec.id,true)
           }
           const committed = activeOwners.has(owner)
-          const store = committed ? active : candidatePanes(owner)
+          const store = committed
+            ? active
+            : candidatePanes(owner)
           const existing = store.get(spec.id)
           if (!committed) {
             const pane = openState(owner, existing, spec, origin, presentation)
@@ -1565,6 +1572,7 @@ export function createModUi({
       validateOwner(owner)
       if (typeof id !== 'string' || !idPattern.test(id))
         throw new TypeError('Mod UI pane id is invalid')
+      logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'close-request', plugin: pluginOf(owner), id, origin: origin.kind })}`)
       const committed = activeOwners.has(owner)
       const store = committed ? active : candidatePanes(owner)
       const pane = store?.get(id)
@@ -1587,10 +1595,11 @@ export function createModUi({
           if (origin.kind === 'unload') return undefined
           if (store?.get(id) !== pane) return undefined
           store.delete(id)
-          if (origin.kind === 'person') {
+          if (origin.kind === 'person'){
             personRequested.delete(askedKey(pane.owner, id))
-            onAskedChange?.(pane.plugin, id, false)
+            onAskedChange?.(pane.plugin,id,false)
           }
+          logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'close-applied', plugin: pane.plugin, id, origin: origin.kind, personRequested: personRequested.has(askedKey(pane.owner, id)) })}`)
           pane.drawGeneration++
           if (committed) publish()
           await releaseLease(pane).catch(() => {})
@@ -1684,6 +1693,26 @@ export function createModUi({
         origin: { kind: 'plugin', name: plugin },
         restoreInput: (rewritten, original) => ({ ...original, ...rewritten }),
       })
+    },
+
+    async redrawForFault(failed) {
+      const site = ui.getClientSite(failed.owner, failed.id)
+      if (!site || !site.visible || !site.id || site.drawing === undefined || failed.drawing === undefined) return
+      const key = `${site.surface ?? 'terminal'}\0${site.component ?? 'Pane'}\0${site.id}`
+      const previous = faultRuns.get(key)
+      if (previous?.redrawing || previous?.versions.has(failed.drawing) && previous.versions.has(site.drawing)) return
+      const entry = {versions:previous?.versions.has(site.drawing) ? previous.versions : new Set<number>(),redrawing:true}
+      entry.versions.add(site.drawing)
+      faultRuns.delete(key)
+      faultRuns.set(key, entry)
+      if (faultRuns.size > 4096) faultRuns.delete(faultRuns.keys().next().value!)
+      try {
+        await ui.invalidateInstance({surface:site.surface ?? 'terminal',component:site.component ?? 'Pane',requestId:site.id})
+      } finally {
+        const current = ui.getClientSite(failed.owner, failed.id)
+        if (current?.drawing !== undefined) entry.versions.add(current.drawing)
+        entry.redrawing = false
+      }
     },
 
     async invalidateInstance(instance) {

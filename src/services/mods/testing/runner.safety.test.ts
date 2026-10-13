@@ -269,15 +269,15 @@ test('records every case name and observed duration', async () => {
   expect(result.tests.every((entry: any) => Number.isFinite(entry.durationMs))).toBe(true)
 })
 
-test('aggregates teardown diagnostics into one failed case', async () => {
+test('a teardown diagnostic alone leaves a fulfilled author case successful', async () => {
   const result = await scenario(`
     globalThis.lateDiagnostic = true
     console.log(JSON.stringify(await runPluginTestFile(root, root + '/one.test.ts')))
   `, { 'one.test.ts': registered })
   expect(result.tests).toHaveLength(1)
   expect(result.tests[0].name).toBe('case')
-  expect(result.tests[0].failure).toContain('late diagnostic')
-  expect(result.tests.filter((entry: any) => entry.failure !== undefined)).toHaveLength(1)
+  expect(result.tests[0].failure).toBeUndefined()
+  expect(result.tests.filter((entry: any) => entry.failure !== undefined)).toHaveLength(0)
 })
 
 test('reports file loading errors separately from test cases', async () => {

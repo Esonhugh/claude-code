@@ -4,7 +4,7 @@ import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContex
 import { createModToolHost } from './toolHost.js'
 import { runModSessionCompact } from './compactAdapter.js'
 import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, writeFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime, type ModsRuntime } from './runtime.js'
@@ -15,21 +15,53 @@ import { runPreToolUseHooks } from '../tools/toolHooks.js'
 import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
 import { createAssistantMessage } from '../../utils/messages.js'
 
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+
 const roots: string[] = []
 const runtimes: ModsRuntime[] = []
-beforeEach(() => {
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
   resetSettingsCache()
   setSessionSettingsCache({settings:{},errors:[]})
   for (const source of ['userSettings','projectSettings','localSettings','flagSettings','policySettings'] as const)
     setCachedSettingsForSource(source,{})
 })
 afterEach(async () => {
-  await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose()))
-  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
-  resetSettingsCache()
+  try {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose()))
+    await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  }
 })
 async function plugin(name: string, source: string) {
-  const root = await mkdtemp(join(tmpdir(), 'mods-tool-host-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-tool-host-')))
   roots.push(root)
   const pluginRoot = join(root, name)
   await mkdir(pluginRoot)
@@ -38,6 +70,32 @@ async function plugin(name: string, source: string) {
   return { name, storageId: name + '@test', pluginRoot, entrypoints: [entry] }
 }
 const binding = { cwd: '/tmp', surface: null, isInteractive: false, sessionId: 'offline' } as const
+
+test('agent.spawn recovers a deny beside model through the Worker result boundary', async () => {
+  const mod = await plugin('spawn-mixed', `export function register(on) { on('agent.spawn', () => ({deny:'No',model:'forged'})) }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  let calls = 0
+  expect(await runtime.dispatch('agent.spawn', {prompt:'Read fixture'}, async () => { calls++; return {model:'core',agentId:'agent-core'} })).toEqual({model:'core',agentId:'agent-core'})
+  expect(calls).toBe(1)
+  expect(diagnostics).toHaveLength(1)
+})
+
+test('tool.check rejects a non-string classic hook and projects only verdict fields', async () => {
+  const invalid = await plugin('check-invalid', `export function register(on) { on('tool.check', () => ({decision:'allow',hook:7})) }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  runtimes.push(runtime)
+  await runtime.reconcile([invalid])
+  expect(await runtime.dispatch('tool.check',{tool:'FixtureRead',input:{file_path:'a'}},async () => ({decision:'ask',reason:'core'}))).toEqual({decision:'ask',reason:'core'})
+  expect(diagnostics).toHaveLength(1)
+  const valid = await plugin('check-valid', `export function register(on) { on('tool.check', () => ({decision:'allow',hook:'PreToolUse',extra:'discard'})) }`)
+  await runtime.reconcile([valid])
+  expect(await runtime.dispatch('tool.check',{tool:'FixtureRead',input:{file_path:'a'}},async () => ({decision:'ask'}))).toEqual({decision:'allow',hook:'PreToolUse'})
+})
 
 test('Worker author tools reach sibling middleware, executor, mapper and permission consumer with pinned identities', async () => {
   const caller = await plugin('caller',`let entries=0; export function register(on) {
@@ -704,7 +762,7 @@ test('author tool.check refuses identity rewrites and invalid decisions at the h
   expect(questions).toEqual([{tool:'Offline',input:{path:'original'}}])
   expect(diagnostics.map(event => event.message)).toEqual([
     'policy: next() passed an argument with a changed input (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)',
-    'tool.check must return { decision, reason?, rule? }',
+    'tool.check must return { decision, reason?, rule?, hook? }',
   ])
 })
 

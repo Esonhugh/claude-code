@@ -1,19 +1,59 @@
-import { afterEach, describe, expect, test } from 'bun:test'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { beforeEach, afterEach, describe, expect, test } from 'bun:test'
+import { mkdir, mkdtemp, writeFile, realpath, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import { createModsRuntime } from './runtime.js'
 import type { ModTier } from './types.js'
 
 const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
-const evidenceRoot = fileURLToPath(new URL('../../../.claude-test-evidence/', import.meta.url))
+const evidenceRoot = tmpdir()
+
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
 
 const cleanups: (() => Promise<unknown>)[] = []
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
+afterEach(async () => {
+  try {
+    for (const cleanup of cleanups.splice(0).reverse()) await cleanup()
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  }
+})
 
 async function fixture(source: string, name = 'fixture') {
   await mkdir(evidenceRoot, { recursive: true })
-  const root = await mkdtemp(join(evidenceRoot, 'mods-runtime-'))
+  const root = await realpath(await mkdtemp(join(evidenceRoot, 'mods-runtime-')))
+  cleanups.push(() => rm(root, { recursive: true, force: true }))
   const entry = join(root, 'register.ts')
   await writeFile(entry, source)
   return { name, storageId: name + '@inline', pluginRoot: root, entrypoints: [entry] }
@@ -569,6 +609,44 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: 'ready' })
   })
 
+  test('admission conveys scanned state reads and writes beside calls and environment uses', async () => {
+    const judge = await fixture(`let seen; export function register(on) {
+      on('plugin.register', ($, e, next) => { if(e.name === 'candidate') seen = e.uses; return next(e); });
+      on('tool.call', () => ({ result: seen }));
+    }`, 'judge')
+    const candidate = await fixture(`export function register(on) {
+      on('session.start', async ($) => {
+        await $.state.get({plugin:'candidate',key:'z'});
+        await $.state.get({plugin:'reader',key:'a'});
+        await $.state.get({plugin:'candidate',key:'z',id:'member'});
+        await $.state.set({plugin:'candidate',key:'write'}, {value:1});
+        await $.env.get('MODS_ADMISSION_FIXTURE');
+      });
+    }`, 'candidate')
+    const { value, events } = runtime()
+    await value.reconcile([{ ...judge, tier: 'prepend' }, candidate])
+    expect(events).toEqual([])
+    expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: {
+      events: ['session.start'], calls: ['env.get', 'state.get', 'state.set'],
+      env: { reads: ['MODS_ADMISSION_FIXTURE'], writes: [] },
+      state: { reads: [{plugin:'candidate',key:'z'}, {plugin:'reader',key:'a'}], writes: [{plugin:'candidate',key:'write'}] },
+    } })
+  })
+
+  test('state admission policy can refuse a declared writer before module evaluation', async () => {
+    const judge = await fixture(`export function register(on) {
+      on('plugin.register', ($, e, next) => e.uses.state?.writes.some(ref => ref.key === 'blocked')
+        ? {refuse:'state writer refused'} : next(e));
+    }`, 'judge')
+    const candidate = await fixture(`throw Error('must not evaluate'); export function register(on) {
+      on('session.start', async ($) => { await $.state.set({plugin:'candidate',key:'blocked'}, {value:1}); });
+    }`, 'candidate')
+    const { value, events } = runtime()
+    await value.reconcile([{ ...judge, tier: 'prepend' }, candidate])
+    expect(events).toEqual([{plugin:'candidate',stage:'admission',message:'state writer refused'}])
+    expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  })
+
   test('version, name and root changes re-admit even with unchanged source fingerprint', async () => {
     const judge = await fixture(`let seen = []; export function register(on) {
       on('plugin.register', ($, e, next) => { seen.push({ name: e.name, version: e.version, root: e.root, uses: e.uses }); return next(e); });
@@ -833,14 +911,26 @@ describe('Mods lifecycle', () => {
   test('final withholding prevents a bootstrap timer from entering its callback', async () => {
     // Official 2.1.292 rejects user-tier core withholding; these folds model managed policy.
     const policy = await fixture(`export function register(on) { on('engine.create', async ($, e, next) => { const built = await next(e); return {}; }); }`, 'policy')
-    const plugin = await fixture(`let called = false; export function register(on) {
-      on('engine.create', async ($, e, next) => { const built = await next(e); built.clock.after(30, () => { called = true; }); return { ...built }; });
-      on('tool.call', () => ({ result: called }));
+    const plugin = await fixture(`let called = false, started, release;
+      const began = new Promise(resolve => { started = resolve; });
+      const hold = new Promise(resolve => { release = resolve; });
+      export function register(on) {
+      on('engine.create', async ($, e, next) => { const built = await next(e); built.clock.after(0, () => { called = true; }); await began; return { ...built }; });
+      on('clock.after', async ($, e, next) => { started(); await hold; return next(e); });
+      on('tool.call', { command: 'release-timer' }, () => { release(); return { result: 'released' }; });
+      on('tool.call', { command: 'read-timer' }, () => ({ result: called }));
     }`)
-    const { value, events } = runtime()
+    const stopped = Promise.withResolvers<void>()
+    const events: { plugin: string; stage: string; message: string }[] = []
+    const value = createModsRuntime({ onDiagnostic(event) {
+      events.push(event)
+      if (event.stage === 'async' && event.message.includes('withheld')) stopped.resolve()
+    } })
+    cleanups.push(() => value.dispose())
     await value.reconcile([{ ...policy, tier: 'prepend' }, plugin])
-    await new Promise(resolve => setTimeout(resolve, 60))
-    expect(await value.dispatch('tool.call', input, async () => ({}))).toEqual({ result: false })
+    expect(await value.dispatch('tool.call', { ...input, command: 'release-timer' }, async () => ({}))).toEqual({ result: 'released' })
+    await stopped.promise
+    expect(await value.dispatch('tool.call', { ...input, command: 'read-timer' }, async () => ({}))).toEqual({ result: false })
     expect(events.some(event => event.stage === 'async' && event.message.includes('withheld'))).toBe(true)
   })
 
@@ -1001,7 +1091,7 @@ describe('Mods lifecycle', () => {
     expect(await value.dispatch('tool.call', { ...input, tool: 'Count' }, async () => ({ result: 'core' }))).toEqual({ result: 0 })
   })
 
-  test('rebuilds the old noun interface when a replacement fold fails', async () => {
+  test('unloads the previous noun interface when its replacement fold fails', async () => {
     const plugin = await fixture(`export function register(on) {
       on('engine.create', async ($, e, next) => { const built = await next(e); return { ...built, greeting: { read: () => 'old' } }; });
       on('tool.call', async ($) => ({ result: await $.greeting.read() }));
@@ -1015,7 +1105,8 @@ describe('Mods lifecycle', () => {
     }`)
     await value.reconcile([plugin])
     expect(events.some(event => event.stage === 'engine.create')).toBe(true)
-    expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'old' })
+    expect(value.hasHooks('tool.call')).toBe(false)
+    expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
   })
 
   test('engine.create receives no capabilities and can withhold the core clock', async () => {

@@ -1,14 +1,13 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { LocalJSXCommandContext } from '../../types/command.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
 import type { ModUiCallback, ModUiInteraction, ModUiPane } from './ui.js'
 
-const sample = new URL('../../../examples/mods/mods-test-lab/', import.meta.url).pathname.replace(/\/$/, '')
-const entry = join(sample, 'hooks/register.ts')
+const sourceSample = new URL('../../../examples/mods/mods-test-lab/', import.meta.url).pathname.replace(/\/$/, '')
 const pluginId = 'mods-test-lab@inline'
 const marker = '[mods-test-lab: one-shot context]'
 const childFlag = 'CLAUDE_CODE_MODS_TEST_LAB_CHILD'
@@ -68,6 +67,8 @@ if (!process.env[childFlag]) {
   const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR']
   let saved: (string | undefined)[]
   let root: string
+  let sample: string
+  let entry: string
   let runtime: ReturnType<typeof createModsRuntime>
   let diagnostics: unknown[]
   let logs: unknown[]
@@ -76,6 +77,9 @@ if (!process.env[childFlag]) {
 
   beforeEach(async () => {
     root = await mkdtemp(join(home, 'case-'))
+    sample = join(root, 'mods-test-lab')
+    entry = join(sample, 'hooks/register.ts')
+    await cp(sourceSample, sample, { recursive: true })
     saved = envKeys.map(key => process.env[key])
     process.env.HOME = root
     process.env.USERPROFILE = root
@@ -206,6 +210,18 @@ if (!process.env[childFlag]) {
     const pane = runtime.ui.getSnapshot()[0]!
     await runtime.ui.interact(pane.id, pane.drawing!, control(pane, key).press!, kind, key, value)
   }
+  async function painted(ready: (pane: ModUiPane) => boolean) {
+    const completed = Promise.withResolvers<void>()
+    const observe = () => {
+      const pane = runtime.ui.getSnapshot()[0]
+      if (pane && ready(pane)) completed.resolve()
+    }
+    const unsubscribe = runtime.ui.subscribe(observe)
+    try {
+      observe()
+      await completed.promise
+    } finally { unsubscribe() }
+  }
   function state(summary: string) {
     const json = (label: string) => JSON.parse(summary.split('\n').find(line => line.startsWith(label))!.slice(label.length))
     return {
@@ -254,13 +270,17 @@ if (!process.env[childFlag]) {
     expect(text(first.tree)).toContain('Row 60 | fixed scroll fixture')
     expect((first.tree as Tree).children!.filter(node => typeof node === 'object' && text(node).startsWith('Row '))).toHaveLength(60)
     await interact('count', 'press')
+    await painted(pane => control(pane, 'count').props?.label === 'Count: 1')
     expect(control(runtime.ui.getSnapshot()[0]!, 'count').props?.label).toBe('Count: 1')
     await expect(runtime.ui.interact(first.id, first.drawing!, control(first, 'count').press!, 'press', 'count')).rejects.toThrow(/stale/)
     const pane = runtime.ui.getSnapshot()[0]!
     expect(await runtime.ui.focus(pane.owner, { requestId: pane.id, element: 'input', origin: { kind: 'person' } }, presentation)).toMatchObject({ focused: true, element: 'input' })
     await interact('input', 'input.change', 'CANARY-INPUT')
+    await painted(pane => control(pane, 'input').props?.value === 'CANARY-INPUT')
     await interact('input', 'input.submit', 'CANARY-INPUT')
+    await painted(pane => state(text(pane.tree)).controls.submit === 1)
     await interact('selection', 'select', 'cjk')
+    await painted(pane => control(pane, 'selection').props?.value === 'cjk')
     const current = runtime.ui.getSnapshot()[0]!
     expect(control(current, 'input').props?.value).toBe('CANARY-INPUT')
     expect(control(current, 'selection').props?.value).toBe('cjk')
@@ -406,9 +426,14 @@ if (!process.env[childFlag]) {
     await writeFile(other, '[["unrelated",17]]')
     await runImmediate('open')
     await interact('input', 'input.change', 'x'.repeat(300))
+    await painted(pane => control(pane, 'input').props?.value === 'x'.repeat(256))
     expect(control(runtime.ui.getSnapshot()[0]!, 'input').props?.value).toBe('x'.repeat(256))
     await interact('selection', 'select', 'cjk')
-    for (let i = 0; i < 25; i++) await interact('count', 'press')
+    await painted(pane => control(pane, 'selection').props?.value === 'cjk')
+    for (let i = 0; i < 25; i++) {
+      await interact('count', 'press')
+      await painted(pane => control(pane, 'count').props?.label === `Count: ${i + 1}`)
+    }
     const status = (await run('status'))!
     expect(state(status).events).toBe(`Events (20/20): ${[...Array(19).fill('button'), 'status'].join(', ')}`)
     expect(state(status).controls).toEqual({ button: 25, input: 1, submit: 0, select: 1 })
@@ -422,6 +447,8 @@ if (!process.env[childFlag]) {
     })
     expect(reset).toContain('Input length=0/256 | selection=ascii | context=idle')
     expect(reset).toContain('Last turn: none')
+    await painted(pane => control(pane, 'count').props?.label === 'Count: 0' &&
+      control(pane, 'input').props?.value === '' && control(pane, 'selection').props?.value === 'ascii')
     expect(control(runtime.ui.getSnapshot()[0]!, 'input').props?.value).toBe('')
     expect(control(runtime.ui.getSnapshot()[0]!, 'selection').props?.value).toBe('ascii')
     expect(control(runtime.ui.getSnapshot()[0]!, 'count').props?.label).toBe('Count: 0')
@@ -435,6 +462,7 @@ if (!process.env[childFlag]) {
     const found = await activate()
     await runImmediate('open')
     await interact('count', 'press')
+    await painted(pane => control(pane, 'count').props?.label === 'Count: 1')
     await run('context')
     const old = runtime.ui.getSnapshot()[0]!
     const command = runtime.commands.list()[0]!

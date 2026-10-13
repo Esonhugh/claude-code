@@ -663,12 +663,17 @@ test('turn.step preserves model fallback errors and increments the retry step', 
   } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
 })
 
-test('turn.step session.messages reads its own concurrent query rather than the main host transcript', async () => {
+test('turn.step session.messages reads the live main transcript in concurrent main and child queries', async () => {
   const root = await mkdtemp(join(tmpdir(), 'mods-step-messages-'))
   const diagnostics: unknown[] = []
+  let mainMessages = [{role: 'user', text: 'HOST_ONLY', toolUses: []}]
+  const ready = Promise.withResolvers<void>()
+  const released = Promise.withResolvers<void>()
+  let entered = 0
+  const requests = new Map<string, unknown>()
   const runtime = createModsRuntime({
     onDiagnostic: event => diagnostics.push(event),
-    services: { messages: () => [{role: 'user', text: 'HOST_ONLY', toolUses: []}] },
+    services: { messages: () => mainMessages },
   })
   try {
     const entry = join(root, 'register.ts')
@@ -683,12 +688,20 @@ test('turn.step session.messages reads its own concurrent query rather than the 
     }`)
     await runtime.reconcile([{name:'messages',storageId:'messages@inline',pluginRoot:root,entrypoints:[entry]}])
     const queries = ['main', 'child'].map(name => {
-      const h = harness(async function* () { yield* streamedResponse(name, `${name} reply`) })
+      const h = harness(async function* (request) {
+        requests.set(name, request.messages)
+        if (++entered === 2) ready.resolve()
+        await released.promise
+        yield* streamedResponse(name, `${name} reply`)
+      })
       h.context.mods = runtime
       if (name === 'child') h.context.agentId = asAgentId('child')
       h.params.messages = [createUserMessage({content: `${name} question`})]
       return drain(registeredQuery(h))
     })
+    await ready.promise
+    mainMessages = [...mainMessages, {role: 'assistant', text: 'HOST_REPLY', toolUses: []}]
+    released.resolve()
     const runs = await Promise.all(queries)
     expect(runs.map(run => run.terminal.reason)).toEqual(['completed', 'completed'])
     const {result: seen} = await runtime.dispatch('tool.call', {}, async () => ({result: []})) as {
@@ -697,11 +710,12 @@ test('turn.step session.messages reads its own concurrent query rather than the 
     expect(seen).toHaveLength(2)
     for (const name of ['main', 'child']) {
       const observation = seen.find(item => item.agentId === (name === 'child' ? name : undefined))!
-      expect(observation.before.map(message => message.text)).toEqual([`${name} question`])
-      expect(observation.after.map(message => message.text)).toEqual([`${name} question`, `${name} reply`])
+      expect(observation.before.map(message => message.text)).toEqual(['HOST_ONLY'])
+      expect(observation.after.map(message => message.text)).toEqual(['HOST_ONLY', 'HOST_REPLY'])
+      expect(requests.get(name)).toMatchObject([{type:'user',message:{role:'user',content:`${name} question`}}])
     }
     expect(diagnostics).toEqual([])
-  } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+  } finally { released.resolve(); await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
 })
 
 test('turn.step hook can call $.turn.step inside the active real query request', async () => {

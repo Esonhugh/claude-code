@@ -404,6 +404,30 @@ describe('mod command projection', () => {
     }
   })
 
+  test('host description refresh starts a fresh chain while public command.list retains its caller', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mods-command-origins-'))
+    const caller = join(root, 'caller.ts')
+    const observer = join(root, 'observer.ts')
+    const builtin = command('sample')
+    const runtime = createModsRuntime({ services: { commands: () => [builtin] } })
+    try {
+      await writeFile(caller, `export function register(on) {
+        on('command.describe', ($, e, next) => ({description:'description:'+next.origin.plugin+':'+next.origin.tier,isHidden:false}));
+        on('tool.call', async $ => ({result:await $.command.list()}));
+      }`)
+      await writeFile(observer, `export function register(on) {
+        on('command.list', async ($, e, next) => {const result=await next(e);return {...result,value:result.value.map(row => ({...row,description:row.description+' list:'+next.origin.plugin+':'+next.origin.tier}))}});
+      }`)
+      await runtime.reconcile([
+        { name:'caller', storageId:'caller@test', pluginRoot:root, entrypoints:[caller] },
+        { name:'observer', storageId:'observer@test', pluginRoot:root, entrypoints:[observer] },
+      ])
+      expect(await runtime.dispatch('tool.call', {}, async () => ({result:'core'}))).toEqual({
+        result:[{name:'sample',description:'description:engine:core list:caller:user',source:'builtin'}],
+      })
+    } finally { await runtime.dispose(); await rm(root, {recursive:true,force:true}) }
+  })
+
   test('rotates Worker description cache on hook reload and session change', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mods-command-lifecycle-'))
     const entry = join(root, 'register.ts')

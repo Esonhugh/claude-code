@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, spyOn, test } from 'bun:test'
 import { z } from 'zod/v4'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createModsRuntime } from './runtime.js'
@@ -234,42 +234,42 @@ describe('author tool host through the real executor', () => {
   })
 
   test('spawn registers a real background agent and returns once it starts', async () => {
-    const f = fixture()
-    f.context.options.mainLoopModel = 'claude-sonnet-4-6'
-    f.context.options.agentDefinitions = {
-      activeAgents: [GENERAL_PURPOSE_AGENT],
-      allAgents: [GENERAL_PURPOSE_AGENT],
-      allowedAgentTypes: undefined,
+    const childFlag = 'CLAUDE_CODE_TOOL_HOST_BACKGROUND_TEST_CHILD'
+    if (process.env[childFlag] === '1') {
+      await realBackgroundSpawnAssertions()
+      console.log('toolHost real background assertions passed')
+      return
     }
-    let state = {
-      ...getDefaultAppState(),
-      ...f.state,
-      mcp: { ...getDefaultAppState().mcp, clients: [], tools: [] },
-      tasks: {},
-      agentNameRegistry: new Map(),
-    }
-    f.context.getAppState = () => state as never
-    f.context.setAppState = updater => {
-      state = typeof updater === 'function' ? updater(state as never) as never : updater as never
-    }
-    const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
-    expect(result).toEqual({ model: expect.any(String), agentId: expect.any(String) })
-    if ('deny' in result) throw new Error(result.deny)
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
-      expect(state.tasks[result.agentId!]).toMatchObject({
-        type: 'local_agent', status: 'running', prompt: 'Review changes', agentType: 'general-purpose', spawnedBy: 'author', isBackgrounded: true,
-      })
-      expect(state.tasks[result.agentId!]!.parentAgentId).toBeUndefined()
-    }
-
-    f.context.agentId = 'nested-parent' as ToolUseContext['agentId']
-    f.context.options.subagentDepth = 1
-    const nested = await f.host.spawn({ prompt: 'Nested review', subagentType: 'general-purpose' }, f.snapshot, new AbortController().signal, 'nested-author')
-    if ('deny' in nested) throw new Error(nested.deny)
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
-      expect(state.tasks[nested.agentId!]).toMatchObject({
-        parentAgentId: 'nested-parent', spawnedBy: 'nested-author', spawnDepth: 2,
-      })
+    const root = await mkdtemp(join(tmpdir(), 'tool-host-background-child-'))
+    for (const name of ['home', 'config', 'tmp']) await mkdir(join(root, name))
+    const child = Bun.spawn([
+      process.execPath, 'test', '--timeout', '5000', '--test-name-pattern',
+      '^author tool host through the real executor spawn registers a real background agent and returns once it starts$',
+      import.meta.path,
+    ], {
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'en_US.UTF-8', NODE_ENV: 'test',
+        HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'config'), TMPDIR: join(root, 'tmp'),
+        CLAUDE_CODE_TMPDIR: join(root, 'tmp'), BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
+        DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1', CLAUDE_CODE_MAX_RETRIES: '0',
+        ANTHROPIC_API_KEY: 'mods-test-dummy-source-only', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
+        OPENAI_API_KEY: 'mods-test-dummy-source-only', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
+        [childFlag]: '1',
+      },
+      stdout: 'pipe', stderr: 'pipe', timeout: 4500,
+    })
+    try {
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ])
+      if (code !== 0) throw Error(`Isolated real background assertions failed (${code})\n${stdout}\n${stderr}`)
+      expect(`${stdout}\n${stderr}`).toContain('toolHost real background assertions passed')
+      expect(code).toBe(0)
+    } finally {
+      if (child.exitCode === null) { child.kill(); await child.exited }
+      await rm(root, { recursive: true, force: true })
     }
   })
 
@@ -580,6 +580,46 @@ describe('author tool host through the real executor', () => {
     expect(f.calls).toEqual([])
   })
 })
+
+async function realBackgroundSpawnAssertions() {
+    const f = fixture()
+    f.context.options.mainLoopModel = 'claude-sonnet-4-6'
+    f.context.options.agentDefinitions = {
+      activeAgents: [GENERAL_PURPOSE_AGENT],
+      allAgents: [GENERAL_PURPOSE_AGENT],
+      allowedAgentTypes: undefined,
+    }
+    let state = {
+      ...getDefaultAppState(),
+      ...f.state,
+      mcp: { ...getDefaultAppState().mcp, clients: [], tools: [] },
+      tasks: {},
+      agentNameRegistry: new Map(),
+    }
+    f.context.getAppState = () => state as never
+    f.context.setAppState = updater => {
+      state = typeof updater === 'function' ? updater(state as never) as never : updater as never
+    }
+    const result = await f.host.spawn({ prompt: 'Review changes' }, f.snapshot, new AbortController().signal, 'author')
+    expect(result).toEqual({ model: expect.any(String), agentId: expect.any(String) })
+    if ('deny' in result) throw new Error(result.deny)
+    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+      expect(state.tasks[result.agentId!]).toMatchObject({
+        type: 'local_agent', status: 'running', prompt: 'Review changes', agentType: 'general-purpose', spawnedBy: 'author', isBackgrounded: true,
+      })
+      expect(state.tasks[result.agentId!]!.parentAgentId).toBeUndefined()
+    }
+
+    f.context.agentId = 'nested-parent' as ToolUseContext['agentId']
+    f.context.options.subagentDepth = 1
+    const nested = await f.host.spawn({ prompt: 'Nested review', subagentType: 'general-purpose' }, f.snapshot, new AbortController().signal, 'nested-author')
+    if ('deny' in nested) throw new Error(nested.deny)
+    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+      expect(state.tasks[nested.agentId!]).toMatchObject({
+        parentAgentId: 'nested-parent', spawnedBy: 'nested-author', spawnDepth: 2,
+      })
+    }
+}
 
 
 // Official 2.1.292 author calls project the executor's final message; only

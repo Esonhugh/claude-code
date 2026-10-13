@@ -41,6 +41,7 @@ export async function describeModCommand(
     ...(value.argumentHint === undefined ? {} : { argumentHint: value.argumentHint }),
     isHidden: value.isHidden,
   }), {
+    callerChain: [],
     validateInput: value => {
       validateDescription(value)
       for (const key of ['command', 'immediate', 'provider'] as const) {

@@ -1,4 +1,5 @@
 import { restoreToolCallReadOnly } from './toolCallReadOnly.js'
+import { excludesModCaller, type ModCallerChain } from './callerChain.js'
 import { isDeepStrictEqual } from 'node:util'
 import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
 import { createAbortController } from '../../utils/abortController.js'
@@ -8,14 +9,17 @@ import type {
   ModHookStream,
   ModInput,
   ModNext,
+  ModContinuation,
+  ModStreamNext,
   ModOrigin,
   ModTier,
   ModTraceEntry,
 } from './types.js'
 
 type TraceNode = { entry?: ModTraceEntry; below: TraceNode[] }
-const traces = new WeakMap<ModNext, Set<() => void>>()
-// A frame's continuation ends on return; calls it already started follow cancellation.
+const traces = new WeakMap<ModContinuation, Set<() => void>>()
+// A continuation expires when its frame returns. A host operation already
+// started by that frame instead follows real cancellation and failure.
 const capabilitySignals = new WeakMap<AbortSignal, AbortSignal>()
 // Public streaming hooks receive cancellation before their bounded settlement
 // completes. Explicit iterator close remains immediate.
@@ -31,10 +35,10 @@ export function isModStreamCancellation(error: unknown, signal: AbortSignal): bo
   return error.name === 'HooksError' && error.message ===
     (signal.reason instanceof Error ? signal.reason.message : String(signal.reason))
 }
-export function getModCapabilitySignal(next: Pick<ModNext, 'signal'>): AbortSignal {
+export function getModCapabilitySignal(next: ModContinuation): AbortSignal {
   return capabilitySignals.get(next.signal) ?? next.signal
 }
-export function subscribeModTrace(next: ModNext, changed: () => void): () => void {
+export function subscribeModTrace(next: ModContinuation, changed: () => void): () => void {
   const listeners = traces.get(next)
   listeners?.add(changed)
   return () => { listeners?.delete(changed) }
@@ -42,11 +46,11 @@ export function subscribeModTrace(next: ModNext, changed: () => void): () => voi
 
 // Host-only metering state; the Worker reads it without exposing shared memory
 // or a host object to the plugin realm. Values are microseconds, except ms.
-const budgets = new WeakMap<ModNext, { clock: BigInt64Array; pause(): () => void }>()
-export function getModBudgetClock(next: ModNext): SharedArrayBuffer | undefined {
+const budgets = new WeakMap<ModContinuation, { clock: BigInt64Array; pause(): () => void }>()
+export function getModBudgetClock(next: ModContinuation): SharedArrayBuffer | undefined {
   return budgets.get(next)?.clock.buffer as SharedArrayBuffer | undefined
 }
-export function pauseModBudget(next: ModNext | undefined): (() => void) | undefined {
+export function pauseModBudget(next: ModContinuation | undefined): (() => void) | undefined {
   return next && budgets.get(next)?.pause()
 }
 
@@ -96,6 +100,7 @@ export function dispatchModStream(options: {
   signal?: AbortSignal
   origin?: ModOrigin
   skip?: { plugin: string; registrationId?: number }
+  callerChain?: ModCallerChain
   budgetMs?: number
   catchGraceMs?: number
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
@@ -122,7 +127,9 @@ export function dispatchModStream(options: {
       let index = start
       while (index < hooks.length) {
         const hook = hooks[index]!
-        if (!skipped.has(hook.tier) && !(skip?.plugin === hook.plugin && (skip.registrationId === undefined || skip.registrationId === hook.registration.id)) &&
+        if (!skipped.has(hook.tier) && !(options.callerChain !== undefined
+          ? excludesModCaller(options.callerChain, hook.plugin, hook.registration.id)
+          : skip?.plugin === hook.plugin && (skip.registrationId === undefined || skip.registrationId === hook.registration.id)) &&
           matchesModEventPattern(hook.registration.event, options.event) && matchesModMatcher(hook.registration.matcher ?? {}, input)) break
         index++
       }
@@ -221,7 +228,7 @@ export function dispatchModStream(options: {
         })
         return branch
       }
-      function nextFor(catching: boolean, failure?: ModNext['error']): ModNext {
+      function nextFor(catching: boolean, failure?: ModStreamNext['error']): ModStreamNext {
         const own = controller
         capabilitySignals.set(own.signal, AbortSignal.any([operationSignal, operationController.signal]))
         const call = (rewritten: ModInput, target?: ModTier) => {
@@ -264,7 +271,7 @@ export function dispatchModStream(options: {
           trace: { get: () => traceEntries(node.below) },
           budget: { value: Object.freeze({ ms: allowance, get remainingMs() { return Math.max(0, remaining - (timer === undefined ? 0 : performance.now() - started)) } }) },
           ...(catching ? { error: { value: failure }, called: { value: last !== undefined } } : {}),
-        }) as unknown as ModNext
+        }) as ModStreamNext
         if (options.settleAfterAbort) settlingStreams.add(next)
         budgets.set(next, { clock: clock!, pause })
         traces.set(next, listeners)
@@ -295,6 +302,7 @@ export function dispatchModStream(options: {
             finally { working = false; stop() }
             thrown = undefined
             if (item.done) {
+              if (catching && item.value === undefined) return undefined
               if (item.value === undefined && !lastResolved)
                 throw new Error(`${options.event} returned no result (and read no next() stream to its end)`)
               const result = item.value === undefined ? lastResult : item.value
@@ -344,8 +352,8 @@ export function dispatchModStream(options: {
           if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
           if (hook.registration.hasCatch) {
             try {
-              const result = yield* invoke(true, { kind: timedOut ? 'timeout' : 'throw', ...(timedOut ? {} : { message: error instanceof Error ? error.message : String(error) }), budget: options.catchGraceMs ?? 1000 })
-              record('caught', result); return result
+              const result = yield* invoke(true, Object.freeze({ kind: timedOut ? 'timeout' : 'throw', ...(timedOut ? {} : { message: error instanceof Error ? error.message : String(error) }), budget: options.catchGraceMs ?? 1000 }))
+              if (result !== undefined) { record('caught', result); return result }
             } catch (error) {
               if (isModStreamCancellation(error, lifetime.signal)) throw error
               if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
@@ -392,6 +400,7 @@ export async function dispatchModEvent(options: {
   signal?: AbortSignal
   origin?: ModOrigin
   skip?: { plugin: string; registrationId?: number }
+  callerChain?: ModCallerChain
   budgetMs?: number
   catchGraceMs?: number
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
@@ -455,11 +464,13 @@ export async function dispatchModEvent(options: {
   function matchesHook(hook: ModDispatchHook, input: ModInput): boolean {
     const { registration, tier, plugin } = hook
     const skipRegistration =
-      skip?.plugin === plugin &&
-      (skip.registrationId === undefined ||
-        skip.registrationId === registration.id)
+      options.callerChain !== undefined
+        ? excludesModCaller(options.callerChain, plugin, registration.id)
+        : skip?.plugin === plugin &&
+          (skip.registrationId === undefined || skip.registrationId === registration.id)
     const matches =
       matchesModEventPattern(registration.event, options.event) &&
+      // A telemetry event is hooked by name: `*` and negations select none for an installed plugin.
       (!options.event.startsWith('telemetry.') || registration.event.startsWith('telemetry.') || tier === 'builtin' || tier === 'core') &&
       matchesModMatcher(registration.matcher ?? {}, input)
     return matches && !skipRegistration

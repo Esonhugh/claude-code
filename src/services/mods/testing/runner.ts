@@ -1,19 +1,20 @@
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, rmdir, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { isNativeError, isRegExp } from 'node:util/types'
+import { tmpdir } from 'node:os'
+import { isNativeError, isRegExp, isProxy } from 'node:util/types'
 import { pathToFileURL } from 'node:url'
 import { SourceTextModule, SyntheticModule, createContext, type Module } from 'node:vm'
 import { createPluginFromPath } from '../../../utils/plugins/pluginLoader.js'
 import { validateUserConfig, type UserConfigValues } from '../../../utils/plugins/mcpbHandler.js'
 import { errorMessage } from '../../../utils/errors.js'
 import { createModsRuntime, type ModDiagnostic, type ModPluginInput } from '../runtime.js'
-import type { ModInput, ModNext, ModTier, ModRegistration } from '../types.js'
+import type { ModInput, ModContinuation, ModTier, ModRegistration } from '../types.js'
 import type { ModRenderComponent, ModRenderInput, ModRenderSite, ModRenderSurface, ModUiCallback } from '../ui.js'
 import { expect } from './expect.js'
 import { createMock } from './mock.js'
 import { modStateLibrarySource } from '../stateLibrary.js'
 import { createModHookStream, createModProcessStream } from '../protocol.js'
+import { isModEventPattern, normalizeModMatcher } from '../matcher.js'
 import { HOOK_EVENTS } from '../../../entrypoints/sdk/coreTypes.js'
 import { runWithDeadline, type DeadlineClock } from './deadline.js'
 
@@ -43,12 +44,43 @@ type TestHook = {
   matcher: NonNullable<ModRegistration['matcher']>
   handler: (engine: Record<string, unknown>, input: ModInput, next: TestNext) => unknown
 }
-type TestNext = ModNext
-type TestOn = (
-  event: string,
-  matcherOrHandler: TestHook['matcher'] | TestHook['handler'],
-  handler?: TestHook['handler'],
-) => void
+type TestNext = ModContinuation
+type TestClause = { event: string; rest: unknown[]; caught?: unknown }
+type TestRegistration = Readonly<{ catch: (handler: unknown) => void }>
+type TestOn = (event: string, ...rest: unknown[]) => TestRegistration
+
+// The kit stores clauses during preparation; the production registrar checks them at load.
+function replayTestClause(runtime: ReturnType<typeof createModsRuntime>, clause: TestClause, id: number): void {
+  const {event, rest, caught} = clause
+  const held = (handler:unknown):unknown => typeof handler === 'function' && Object.prototype.toString.call(handler) !== '[object AsyncGeneratorFunction]'
+    ? async (engine:Record<string,unknown>, input:ModInput, next:TestNext) => await (handler as TestHook['handler'])(engine,input,next)
+    : handler
+  const callback = held(rest.at(-1))
+  const checkHandler = (handler: unknown, catching: boolean): TestHook['handler'] => {
+    if (typeof handler !== 'function' || isProxy(handler))
+      throw new TypeError(catching ? 'Invalid hook catch registration: takes a function' : 'Invalid hook registration: takes a function')
+    const tag = Object.prototype.toString.call(handler)
+    if ((event === 'turn.step' || event === 'process.spawn') ? tag !== '[object AsyncGeneratorFunction]' : tag === '[object AsyncGeneratorFunction]' || tag === '[object GeneratorFunction]')
+      throw new TypeError(catching ? 'Invalid hook catch registration: generator hooks require exact turn.step or process.spawn' : 'Invalid hook registration: generator hooks require exact turn.step or process.spawn')
+    return handler as TestHook['handler']
+  }
+  if (!isModEventPattern(event)) throw new TypeError('Invalid hook registration event')
+  const hook = checkHandler(callback, false)
+  const matcher = rest.length === 1 || rest[0] === undefined ? {} : normalizeModMatcher(structuredClone(rest[0]))
+  if (!matcher || typeof matcher !== 'object' || Array.isArray(matcher) || matcher instanceof RegExp)
+    throw new TypeError('Invalid registration matcher')
+  if (caught !== undefined && event === 'engine.create')
+    throw new TypeError('Invalid hook catch registration: engine.create has no budget')
+  const catcher = caught === undefined ? undefined : checkHandler(held(caught), true)
+  const wrap = (callback: TestHook['handler']): TestHook['handler'] => (engine, input, next) => {
+    const result = callback(engine, input, next)
+    // Render validation requires host-realm plain data, not VM prototypes.
+    return next.event === 'ui.render' ? Promise.resolve(result).then(value => structuredClone(value)) : result
+  }
+  runtime.registerHostCallback({
+    tier:'core', registration:{id, event, matcher:matcher as TestHook['matcher'], hasCatch:catcher !== undefined},
+  }, wrap(hook), catcher && wrap(catcher))
+}
 
 type TimerHandle = ReturnType<typeof setTimeout>
 type TestRegistry = {
@@ -480,7 +512,9 @@ function createEngine(
 
   function capability(event: string) {
     if (event === 'turn.step' || event === 'process.spawn') return (input: ModInput = {}) => {
-      const pending = track(async () => {
+      let pending: Promise<ReturnType<typeof runtime.stream>> | undefined
+      let closedBeforeStart = false
+      const start = () => pending ??= track(async () => {
         await initialize()
         signal.throwIfAborted()
         return runtime.stream(event, input,
@@ -489,9 +523,20 @@ function createEngine(
           { origin: {plugin:'engine', tier:'core'}, signal },
         )
       })
-      void pending.catch(() => {})
       const wrap = event === 'process.spawn' ? createModProcessStream : createModHookStream
-      return wrap(async (method, value) => (await pending)[method](value))
+      const stream = wrap(async (method, value) => {
+        // Like the kit's async generator, return/throw before next never enter its body.
+        if (!pending) {
+          closedBeforeStart = true
+          if (method === 'throw') throw value
+          return {done:true, value}
+        }
+        return (await pending)[method](value)
+      })
+      const next = stream.next.bind(stream)
+      // An async generator enters synchronously at first next(), before its first await.
+      stream.next = value => { if (!closedBeforeStart) start(); return next(value) }
+      return stream
     }
     return (input: ModInput = {}) => track(async () => {
       await initialize()
@@ -576,10 +621,12 @@ export async function runPluginTestFile(
     process.on('uncaughtException', crash)
     try {
       let started = false
+      const clauses: TestClause[] = []
       const initialize = () => {
         lifetime.signal.throwIfAborted()
         started = true
         return initialization ??= (async () => {
+          for (const clause of clauses) replayTestClause(runtime, clause, ++registrationId)
           // No settings shell hooks run in tests; an unhandled classic chain is empty.
           runtime.registerHostCallback({
             tier: 'core',
@@ -609,23 +656,16 @@ export async function runPluginTestFile(
         })()
       }
       const engine = createEngine(runtime, initialize, mounts, session, lifetime.signal, track)
-      const on: TestOn = (event, matcherOrHandler, handler) => {
-        if (started) throw new Error('on() must be called synchronously before the first await in a plugin test')
-        const callback = typeof matcherOrHandler === 'function' ? matcherOrHandler : handler
-        if (typeof callback !== 'function') throw new TypeError('on requires a hook callback')
-        runtime.registerHostCallback({
-          tier: 'core',
-          registration: { id: ++registrationId, event, matcher: typeof matcherOrHandler === 'function' ? {} : matcherOrHandler, hasCatch: false },
-        }, (engine, input, next) => {
-          const result = callback(engine, input, next)
-          // Render validation requires host-realm plain data, not VM prototypes.
-          return next.event === 'ui.render' ? Promise.resolve(result).then(value => structuredClone(value)) : result
-        })
+      const on: TestOn = (event, ...rest) => {
+        if (started) throw new TypeError('on() must be called before the test first called $')
+        if (typeof event !== 'string' || rest.length < 1 || rest.length > 2)
+          throw new TypeError('on(event, hook) or on(event, matcher, hook)')
+        const clause: TestClause = {event, rest}
+        clauses.push(clause)
+        // The author kit permits replacement before replay and returns no chaining value.
+        return Object.freeze({catch:(handler:unknown) => { clause.caught = handler }})
       }
-      await runWithDeadline(() => {
-        queueMicrotask(() => { started = true })
-        return item.body(engine, on)
-      }, item.timeout, options.deadlineClock)
+      await runWithDeadline(() => item.body(engine, on), item.timeout, options.deadlineClock)
       if (registry.timers.size) throw new Error(`Test left ${registry.timers.size} timer(s) pending`)
       if (mounts.size) throw new Error(`Test left ${mounts.size} UI mount(s) active; call ui.unmount()`)
     } catch (error) {
@@ -654,10 +694,7 @@ export async function runPluginTestFile(
         await Promise.allSettled(pendingOperations)
         // Flush this turn's rejection notifications after teardown, not a timed grace period.
         await new Promise<void>(resolve => setImmediate(resolve))
-        for (const event of diagnostics)
-          messages.push(`${event.plugin} ${event.stage}: ${event.message}`)
-        for (const error of asynchronous)
-          messages.push(failure(error))
+        for (const error of asynchronous) messages.push(failure(error))
       } finally {
         if (inlineRoot) {
           try {
@@ -671,6 +708,9 @@ export async function runPluginTestFile(
         process.off('uncaughtException', crash)
       }
     }
+    // A fulfilled kit case has failure:null; engine reports only explain an actual failure.
+    if (messages.length) for (const event of diagnostics)
+      messages.push(`${event.plugin} ${event.stage}: ${event.message}`)
     tests.push({
       name: item.name,
       durationMs: performance.now() - startedAt,

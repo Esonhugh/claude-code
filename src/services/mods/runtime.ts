@@ -1,31 +1,35 @@
 import { resolve } from 'node:path'
-import type { ModCommandRequest } from './commandRunQueue.js'
-import { randomUUID } from 'node:crypto'
-import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from './turnRegistry.js'
-import { createModTurnCompletion } from './turnAdapter.js'
 import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
-import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
+import type { ModCommandRequest } from './commandRunQueue.js'
 import { createModUiAskRequest } from './uiAsk.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
-import type { ModUiSelection } from './uiSelection.js'
+import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
 import { officialCoreCalls } from './coreCalls.js'
-import type { ModWorkerFault } from './protocol.js'
 import { createModRemoteFocus } from './remoteUiFocus.js'
 import { createModRemotePrompt } from './remoteUiPrompt.js'
-import { runModPromptEdit, validatePromptDecorations, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
+import { runModPromptEdit } from './promptEdit.js'
 import { restorePromptAutocompleteInput, validatePromptAutocompleteInput, validatePromptAutocompleteResult } from './promptAutocomplete.js'
 import { modClientDataProblem } from './remoteUiClient.js'
 import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './matcher.js'
 import { combineModModelSignals } from './modelAbort.js'
-import {validateModModelCompleteInput} from './modelTextBlocks.js'
-import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
-import { isEffortLevel } from '../../utils/effort.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
 import { setTimeout as delay } from 'node:timers/promises'
+import {getFeatureValue_CACHED_MAY_BE_STALE} from '../analytics/growthbook.js'
+import { randomUUID } from 'node:crypto'
+import { isEffortLevel } from '../../utils/effort.js'
+import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from './turnRegistry.js'
+import { createModTurnCompletion } from './turnAdapter.js'
+import {sanitizePromptFillInput} from './promptFillUnicode.js'
+import type { ModUiSelection } from './uiSelection.js'
+import {validateModModelCompleteInput} from './modelTextBlocks.js'
+import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
+import { validatePromptDecorations, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
+import type { ModContinuation, ModStreamNext } from './types.js'
+import { appendModCallerChain, copyModCallerChain, type ModCallerChain } from './callerChain.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, PromptComposeInput, PromptComposeResult } from './types.js'
+import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, ModModelUsage, PromptComposeInput, PromptComposeResult } from './types.js'
 import { createModAgents, listModAgents } from './agents.js'
 import type { AppState } from '../../state/AppState.js'
 import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
@@ -40,16 +44,17 @@ import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog 
 import { createModToolHost } from './toolHost.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModModelBridge, createModStateBridge, createModStoreBridge, createModUiBridge, createModUiCoreTable, type ModEnvironment } from './environment.js'
+import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, type ModEnvironment } from './environment.js'
+import type { ModWorkerFault } from './protocol.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
 import { buildModClientBundle } from './clientBundle.js'
 import { getNativeModDeclaration } from './native.js'
 import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
-import { getOfficialShippedPaneRequests, updateOfficialShippedPaneRequest } from '../../plugins/builtinShippedMods.js'
+import {getOfficialShippedPaneRequests,updateOfficialShippedPaneRequest} from '../../plugins/builtinShippedMods.js'
 import builtinDiff from '../../commands/diff/index.js'
-import { matchesModEventPattern } from './matcher.js'
+import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
 import { createModHostOperations, ModProcessTimeoutError, ModProcessTerminationError, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
 import { createModTools, type ModToolSpec } from './tools.js'
@@ -61,6 +66,8 @@ import { createModProcessStream } from './protocol.js'
 import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
 import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
 import { createModSessionMeasure } from './sessionMeasure.js'
+import type { Message } from '../../types/message.js'
+import { projectModApiMessages, projectModSessionMessages, validateModSessionMessagesArgs, type ModApiMessage, type ModSessionMessage } from './sessionMessages.js'
 import { validateModCompactInput, validateModCompactResult } from './compactAdapter.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -80,6 +87,7 @@ import {
   type ModPromptHost,
   type PromptAttachment,
   type PromptFillInput,
+  type PromptFillResult,
   type PromptSubmitResult,
 } from './promptAdapter.js'
 import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier, ModHookStream } from './types.js'
@@ -107,26 +115,25 @@ export type ModBinding = {
   sessionId: string
 }
 export type ModRequestServices = {
-  commandRun?(request: ModCommandRequest): Promise<import('./commandAdapter.js').CommandRunResult>
-  messages?(): readonly unknown[]
+  commandRun?(request:ModCommandRequest):Promise<import('./commandAdapter.js').CommandRunResult>
   agentSpawn?(
     input: ModInput,
     snapshot: ModSnapshot,
     signal: AbortSignal,
     spawnedBy?: string,
     leftRunning?: (agentId: string) => void,
-  ): Promise<{ model: string; agentId?: string } | { deny: string }>
+  ): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
   tools?(): readonly Tool[]
   toolHost?(): {
     tools?(): readonly Tool[]
-    spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string } | { deny: string }>
+    spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
     call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<unknown>
     check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
   composePrompt?(input: Partial<PromptComposeInput>, snapshot: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult>
   captureUsage?(): ModUsageReader
-  modelFork?(request: ModModelForkRequest, signal?: AbortSignal): Promise<ModModelForkResult>
+  modelFork?(request: ModModelForkRequest, signal?: AbortSignal, onUsage?: (usage: ModModelUsage) => void): Promise<ModModelForkResult>
   modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<ModModelCompleteResult>
   mcpConnect?(plugin: LoadedPlugin | undefined, server: string, signal: AbortSignal): Promise<ModMcpConnectResult>
   mcpRelease?(source: string): Promise<void>
@@ -134,11 +141,15 @@ export type ModRequestServices = {
   submitPrompt?(input: {
     text: string
     attachments?: readonly PromptAttachment[]
-    origin: { kind: 'plugin'; name: string }
+    origin: { kind: 'plugin'; name: string; asUser?: true }
+    callerChain: ModCallerChain
     signal: AbortSignal
   }): Promise<PromptSubmitResult>
 }
 export type ModHostServices = ModRequestServices & ModHttpServices & {
+  messages?(): readonly unknown[]
+  rawMessages?(): readonly Message[]
+  agentMessages?(agentId:string,sessionId:string): Promise<readonly Message[] | undefined>
   tasks?(): AppState['tasks']
   agentNames?(): AppState['agentNameRegistry']
   configRows?(): readonly ModConfigRowProvider[] | Promise<readonly ModConfigRowProvider[]>
@@ -164,6 +175,8 @@ export type ModDispatchOptions = {
   origin?: ModOrigin
   signal?: AbortSignal
   caller?: { plugin: string; registrationId: number }
+  /** Host-owned history across deferred queues, separate from public input. */
+  callerChain?: ModCallerChain
   /** Host-only matching origins for non-stream dispatch. */
   onHooks?: (hooks: readonly ModOrigin[]) => void
   validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
@@ -219,6 +232,14 @@ type Activation = {
   uiRelease?: Promise<void>
   dispose?: Promise<void>
 }
+// A failed fold is retried when its actual declaration or surrounding set changes.
+type FailedBuildStep = { declaration: ModDeclaration; order: readonly string[] }
+function sameModDeclaration(previous: ModDeclaration, current: ModDeclaration): boolean {
+  if (current.modules.some(module => /\bimport\s*\(/.test(module.source))) return false
+  // Fingerprint is a local cache hint, not part of the author's actual arguments.
+  return isDeepStrictEqual({ ...previous, fingerprint: undefined }, { ...current, fingerprint: undefined })
+}
+
 type DrawingLease = {
   instance: string
   owner: ModUiOwner
@@ -249,6 +270,8 @@ const coreClock = Object.freeze({
 
 // Core noun identity is stable; the caller's activation selects its store and lifetime.
 const hostIdentity = () => { throw new Error('Host calls must use the environment bridge') }
+const invalidatableEvents = ['ui.render', 'prompt.section', 'prompt.context', 'prompt.attachment', 'tool.describe', 'command.describe', 'config.describe']
+const invalidationError = 'ui.invalidate takes "ui.render", "prompt.section", "prompt.context", "prompt.attachment", "tool.describe", "command.describe" or "config.describe"'
 const coreHost: Nouns = {
   telemetry: { log: hostIdentity, mark: hostIdentity },
   plugin: { name: hostIdentity, root: hostIdentity },
@@ -268,7 +291,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { ask: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notice: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -325,6 +348,60 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let contextBoundaries = new Map<string | undefined, string>()
   let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
+  type Conversation = {
+    messages?: () => readonly Message[]
+    rows?: ModSessionMessage[]
+    api?: ModApiMessage[]
+    toolUseId?: string
+    persistent?: boolean
+  }
+  const conversations = new Map<string, Conversation>()
+  const excludedConversations = new Set<string>()
+
+  function trackedAgents(): Map<string, string> {
+    return new Map([...conversations].flatMap(([agentId, entry]) =>
+      entry.toolUseId ? [[entry.toolUseId, agentId] as const] : [],
+    ))
+  }
+
+  function trackConversation(input: {
+    agentId: string
+    sessionId: string
+    messages: () => readonly Message[]
+    toolUseId?: string
+    workflow?: boolean
+    parentAgentId?: string
+    persistent?: boolean
+  }): () => void {
+    if (stopped || ending || !binding || binding.sessionId !== input.sessionId) return () => {}
+    if (input.workflow || (input.parentAgentId !== undefined && excludedConversations.has(input.parentAgentId))) {
+      excludedConversations.add(input.agentId)
+      return () => {}
+    }
+    if (excludedConversations.has(input.agentId)) return () => {}
+    // A teammate's outer producer includes all turns; a single query's copy does not.
+    if (conversations.get(input.agentId)?.persistent && !input.persistent) return () => {}
+    const entry: Conversation = {
+      messages: input.messages,
+      toolUseId: input.toolUseId,
+      persistent: input.persistent,
+    }
+    conversations.set(input.agentId, entry)
+    return () => {
+      if (conversations.get(input.agentId) !== entry || !entry.messages) return
+      try {
+        const messages = entry.messages()
+        entry.rows = projectModSessionMessages(messages, 4096, trackedAgents())
+        entry.api = projectModApiMessages(messages, [...(services.tools?.() ?? [])])
+      } catch (error) {
+        conversations.delete(input.agentId)
+        diagnostic('engine', 'session.messages', error)
+      } finally {
+        entry.messages = undefined
+        entry.persistent = false
+      }
+    }
+  }
   let publicTurn: { turnId: string; abort?: () => void } | undefined
   const turns = createModTurnRegistry<ModRegisteredTurn>()
   let turnEpoch = Symbol('mods session turn epoch')
@@ -345,20 +422,18 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   let stopped = false
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
-  const knownArgs = new Map<string, ModDeclaration>()
-  let unattributedCrashes = 0
-  let workerError: Error | undefined
-  const workerRecoveries = new WeakMap<Error, Promise<void>>()
   let recovering = false
   let recoveryRequested = false
   let currentRecovery: Promise<void> | undefined
+  let workerError: Error | undefined
+  const workerRecoveries = new WeakMap<Error, Promise<void>>()
   let hostEpoch = 0
   let activationId = 0
   let hostDead = false
   const activations = new Set<Activation>()
   const retired = new Set<Activation>()
   const interfaceStates = new WeakMap<Nouns, InterfaceState>()
-  const capabilityContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; active: boolean; callbackOwner?: string; hook?: { plugin: string; registrationId: number }; next?: ModNext }>()
+  const capabilityContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; active: boolean; callerChain?: ModCallerChain; callbackOwner?: string; hook?: { plugin: string; registrationId: number }; next?: ModContinuation }>()
   const invocationSignal = new AsyncLocalStorage<AbortSignal>()
   const turnStepCore = new AsyncLocalStorage<(input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>>()
   const requestServices = new AsyncLocalStorage<ModRequestServices>()
@@ -430,7 +505,31 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   const clientOwners = new Map<number, { participant: Activation; owner: object; requestId: string }>()
   const clients = createModClients({
     validate: tree => { validateModRenderTree(tree) },
-    request: async (pane, plugin, request) => {
+    fault: (pane, plugin, input, id) => {
+      const client = clientOwners.get(id)
+      const current = ui.getClientSite(pane.owner, pane.id)
+      const original = pane.drawing === undefined ? undefined : drawings.get(pane.drawing)
+      // React may reject the old frame before its parent commits the new site.
+      // Only that same live numeric owner can borrow the current drawing lease.
+      const lease = original ?? (client?.owner === pane.owner && client.requestId === pane.id &&
+        current?.drawing !== undefined && findModClient(current.tree, plugin, input.element, input.module)
+        ? drawings.get(current.drawing) : undefined)
+      const participant = [...(lease?.participants ?? [])].find(item => item === client?.participant && item.declaration.name === plugin)
+      if (!participant || participant.state !== 'active') return
+      const heard = participant.environment.registrations.some(registration => {
+        if (!matchesModEventPattern(registration.event, 'ui.fault')) return false
+        try { return matchesModMatcher(registration.matcher ?? {}, input) }
+        catch (error) { diagnostic(plugin, 'ui.fault.matcher', error); return true }
+      })
+      const started = performance.now()
+      void dispatch('ui.fault', input, async () => ({}), lease!.snapshot, lease!.table, {only:participant,callerChain:[]})
+        .finally(async () => {
+          logForDebugging(`[ModsUI] ${JSON.stringify({event:'ui.fault',plugin,...input,settledMs:performance.now()-started})}`)
+          if (heard && findModClient(ui.getClientSite(pane.owner, pane.id)?.tree, plugin, input.element, input.module))
+            await ui.redrawForFault(pane)
+        }).catch(error => diagnostic(plugin, 'ui.fault', error))
+    },
+    request: async (pane, plugin, request, onFault) => {
       if (request.op === 'mount') {
         const lease = pane.drawing === undefined ? undefined : drawings.get(pane.drawing)
         const participant = [...(lease?.participants ?? [])].find(item => item.declaration.name === plugin)
@@ -444,7 +543,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         throw new Error('Client instance belongs to another drawing')
       if (request.op === 'dispose') clientOwners.delete(request.id)
       if (entry.participant.state !== 'active') { clientOwners.delete(request.id); return { stopped: true } }
-      return withReference(entry.participant, () => entry.participant.environment.client(request))
+      return withReference(entry.participant, () => entry.participant.environment.client(request, onFault))
     },
     message: async (pane, plugin, message) => {
       const current = ui.getClientSite(pane.owner, pane.id)
@@ -496,7 +595,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return wrapped ? { value } : value
       }, snapshot, table, {
         origin,
-        ...(automaticFocus ? { signal: options.signal } : {}),
+        ...(automaticFocus ? { callerChain: [], signal: options.signal } : {}),
         skipOwner: options.skipOwner as Activation | undefined,
         validateInput: options.validateInput,
         restoreInput: options.restoreInput,
@@ -517,7 +616,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       let invalidTree = false
       const validatedTrees = new WeakSet<object>()
       const result = await dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, {
-        drawing, signal,
+        drawing, callerChain: [], signal,
         validateRenderTree: tree => {
           try {
             if (validateRenderTree) validateRenderTree(tree)
@@ -554,6 +653,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
   })
   let lastInterface: InterfaceState = { owners: new Map(['clock', ...Object.keys(coreHost)].map(noun => [noun, 'engine'])), withheld: new Map() }
   const crashedWithholders = new Map<string, Set<string>>()
+  const knownArgs = new Map<string, ModDeclaration>()
+  const unloadedSteps = new Map<string, FailedBuildStep>()
+  let unattributedCrashes = 0
   const controller = new AbortController()
   const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault) => onDiagnostic?.({
     plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}),
@@ -926,24 +1028,25 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return {command:value.command,args:value.args ?? ''}
       }
       case 'agent.spawn': {
-        const input = args[0]
-        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
-            typeof (input as ModInput).prompt !== 'string' || !(input as ModInput).prompt ||
-            ((input as ModInput).description !== undefined && typeof (input as ModInput).description !== 'string') ||
-            ((input as ModInput).subagentType !== undefined && typeof (input as ModInput).subagentType !== 'string') ||
-            ((input as ModInput).model !== undefined && typeof (input as ModInput).model !== 'string') ||
-            ((input as ModInput).effort !== undefined && !(typeof (input as ModInput).effort === 'string' && isEffortLevel((input as ModInput).effort as string) || typeof (input as ModInput).effort === 'number' && Number.isInteger((input as ModInput).effort))) ||
-            ((input as ModInput).name !== undefined && typeof (input as ModInput).name !== 'string') ||
-            ((input as ModInput).cwd !== undefined && typeof (input as ModInput).cwd !== 'string') ||
-            Object.keys(input).some(key => !['prompt', 'description', 'subagentType', 'model', 'effort', 'name', 'cwd'].includes(key)))
-          throw new TypeError('agent.spawn takes a prompt and optional description, subagentType, model, effort, name and cwd')
-        return input as ModInput
+        const value = args[0]
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            typeof (value as ModInput).prompt !== 'string' || !(value as ModInput & {prompt:string}).prompt.trim())
+          throw new TypeError('agent.spawn takes a non-empty prompt')
+        const input = value as ModInput
+        if (input.effort !== undefined && !(typeof input.effort === 'string' && isEffortLevel(input.effort) || typeof input.effort === 'number' && Number.isInteger(input.effort)))
+          throw new TypeError('agent.spawn takes a valid effort level or integer')
+        return Object.fromEntries(['prompt', 'description', 'subagentType', 'model', 'effort', 'name', 'cwd']
+          .filter(key => input[key] !== undefined).map(key => [key, input[key]]))
       }
       case 'agent.register': {
-        const input = args[0]
-        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input))
-          throw new TypeError('agent.register takes an agent specification')
-        return input as ModInput
+        const value = args[0]
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            typeof (value as ModInput).name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test((value as ModInput).name as string))
+          throw new TypeError('agent.register takes a short name of letters, digits, _ or - (up to 64)')
+        const input = value as ModInput
+        return Object.fromEntries(['name', 'description', 'prompt', 'tools', 'disallowedTools', 'model', 'effort',
+          'permissionMode', 'mcpServers', 'hooks', 'maxTurns', 'skills', 'initialPrompt', 'memory', 'background', 'omitClaudeMd', 'isolation']
+          .filter(key => input[key] !== undefined).map(key => [key, Array.isArray(input[key]) ? [...input[key]] : input[key]]))
       }
       case 'tool.register': {
         const input = args[0]
@@ -1059,30 +1162,18 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       case 'prompt.submit': {
         const input = args[0]
-        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
-            typeof (input as ModInput).text !== 'string' ||
-            Object.keys(input).some(key => key !== 'text' && key !== 'attachments'))
-          throw new TypeError('prompt.submit takes { text, attachments? }')
+        if (!input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string')
+          throw new TypeError('prompt.submit takes { text, asUser? }')
+        if ((input as ModInput).asUser !== undefined && typeof (input as ModInput).asUser !== 'boolean')
+          throw new TypeError('prompt.submit asUser must be a boolean')
         const text = (input as ModInput).text as string
         if (!text.trim()) throw new TypeError('prompt.submit requires a non-empty prompt')
         if (text.trimStart().startsWith('/'))
           throw new TypeError('prompt.submit cannot run slash commands; use command.run')
-        const attachments = (input as ModInput).attachments
-        if (attachments !== undefined) {
-          if (!Array.isArray(attachments))
-            throw new TypeError('prompt.submit attachments must be a list')
-          for (const attachment of attachments) {
-            if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment) ||
-                !['image', 'audio', 'document'].includes((attachment as ModInput).type as string) ||
-                ((attachment as ModInput).mediaType !== undefined && typeof (attachment as ModInput).mediaType !== 'string') ||
-                ((attachment as ModInput).filename !== undefined && typeof (attachment as ModInput).filename !== 'string') ||
-                Object.keys(attachment).some(key => key !== 'type' && key !== 'mediaType' && key !== 'filename'))
-              throw new TypeError('prompt.submit attachment is invalid')
-          }
-        }
         return {
           text,
-          ...(attachments === undefined ? {} : { attachments }),
+          ...((input as ModInput).asUser === true ? { asUser: true } : {}),
         }
       }
       case 'prompt.suggest': {
@@ -1138,11 +1229,19 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       case 'ui.notice': return { tool_use_id: args[0], text: args[1] }
       case 'ui.status': return { text: args[0] }
-      case 'ui.invalidate': return { event: args[0] }
+      case 'ui.invalidate':
+        if (!invalidatableEvents.includes(args[0] as string)) throw new TypeError(invalidationError)
+        return { event: args[0] }
       case 'ui.selection': case 'ui.panes': return {}
       case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
+      case 'session.messages': {
+        if (args.length > 1) throw new TypeError('session.messages takes at most one argument')
+        const input = args[0] === undefined ? {} : args[0]
+        validateModSessionMessagesArgs(input)
+        return {...input}
+      }
       case 'session.version': return {}
-      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'session.messages': case 'prompt.read': {
+      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
       }
@@ -1281,6 +1380,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       case 'ui.invalidate':
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (!invalidatableEvents.includes(input.event as string)) throw new TypeError(invalidationError)
         if (input.event === 'config.describe') {
           config.invalidate()
           return undefined
@@ -1306,8 +1406,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           contextBoundaries = new Map()
           return undefined
         }
-        if (input.event !== 'ui.render') throw new Error(`Unsupported UI invalidation ${String(input.event)}`)
-        return ui.invalidate(owner, input.event)
+        void ui.invalidate(owner, input.event as string).catch(error => diagnostic(owner.declaration.name, 'ui.invalidate', error))
+        return undefined
       case 'ui.toast':
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
         toast(owner.declaration.name, input)
@@ -1422,7 +1522,29 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return undefined
       }
       case 'session.messages': {
-        const messages = requestServices.getStore()?.messages ?? services.messages
+        validateModSessionMessagesArgs(input)
+        if (input.agentId !== undefined) {
+          const denied = {deny:`No readable conversation for agent ${input.agentId} in this session`}
+          const entry = !excludedConversations.has(input.agentId) && conversations.get(input.agentId)
+          if (!entry) {
+            if (excludedConversations.has(input.agentId) || !binding || ending || stopped) return denied
+            const current = binding
+            const saved = await services.agentMessages?.(input.agentId,current.sessionId)
+            if (!saved || binding !== current || ending || stopped) return denied
+            return input.as === 'api'
+              ? projectModApiMessages(saved,[...(services.tools?.() ?? [])])
+              : projectModSessionMessages(saved,4096,trackedAgents())
+          }
+          if (entry.messages) return input.as === 'api'
+            ? projectModApiMessages(entry.messages(),[...(services.tools?.() ?? [])])
+            : projectModSessionMessages(entry.messages(),4096,trackedAgents())
+          return structuredClone(input.as === 'api' ? entry.api ?? [] : entry.rows ?? [])
+        }
+        if (services.rawMessages) return input.as === 'api'
+          ? projectModApiMessages(services.rawMessages(),[...(services.tools?.() ?? [])])
+          : projectModSessionMessages(services.rawMessages(),4096,trackedAgents())
+        if (input.as === 'api') throw new Error('Raw session messages are unavailable on this host')
+        const messages = services.messages
         if (!messages) throw new Error('Session messages are unavailable on this host')
         return messages()
       }
@@ -1528,6 +1650,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         lease.entries++
         const parent = capabilityContext.getStore()
         const entered={snapshot,table,active:true,
+          get callerChain() { return parent?.active ? parent.callerChain : undefined },
           get hook() { return parent?.active && parent.hook?.plugin === owner.declaration.name ? parent.hook : undefined },
           get callbackOwner() { return parent?.active && parent.hook?.plugin === owner.declaration.name ? undefined : owner.declaration.name },
           get next() { return parent?.active ? parent.next : undefined },
@@ -1627,16 +1750,22 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const context = capabilityContext.getStore()
         const caller = context?.active ? context.hook : undefined
         const callbackOwner = context?.active ? context.callbackOwner : undefined
+        const callerChain = appendModCallerChain(context?.active ? context.callerChain : undefined,
+          caller?.plugin === owner.declaration.name
+            ? { plugin: caller.plugin, registration: caller.registrationId }
+            : owner.declaration.name)
         const invocation = invocationSignal.getStore()
         // Logging and the operation that cancels the turn must acknowledge
         // completion even after that turn's cancellation reaches this frame.
         const signal = ['ui.log', 'turn.abort'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
           ? getModCapabilitySignal(context.next)
           : context?.active && !invocation?.aborted ? invocation : undefined
+        signal?.throwIfAborted()
         const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
-        const modelInvocation = op === 'model.complete' && fn === hostIdentity
-          ? combineModModelSignals(signal, (args[1] as {signal?:AbortSignal} | undefined)?.signal)
+        const modelAbort = op === 'model.complete' && fn === hostIdentity
+          ? combineModModelSignals((args[1] as {signal?:AbortSignal} | undefined)?.signal)
           : undefined
+        const modelInvocation = modelAbort ? combineModModelSignals(signal, modelAbort.signal) : undefined
         try {
           // State and drawing belong to this runtime, not to production host providers.
           if (testTerminal(op)) {
@@ -1689,13 +1818,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const run = (event: string, eventInput: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) =>
               dispatch(event, eventInput, core, snapshot, table, {
                 ...(options ?? {}), signal,
-                ...(op === 'config.set' ? {
-                  origin:{plugin:owner.declaration.name,tier:owner.declaration.tier},
-                  ...(caller ? {caller} : {}),
-                } : {}),
+                origin:{plugin:owner.declaration.name,tier:owner.declaration.tier},
+                ...(caller ? {caller} : {}),
               })
             if (op === 'config.list')
-              return await withReference(owner, () => config.list(run, table))
+              // Caller projections do not reuse the engine menu's description cache.
+              return await withReference(owner, () => config.list(run, {}))
             return await withReference(owner, () => config.set(
               input as {key:string;value:ModConfigValue},
               {kind:'plugin',name:owner.declaration.name},
@@ -1713,9 +1841,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               eventInput,
               async rewritten => applyPromptFill(
                 prompt,
-                rewritten as PromptFillInput,
-                !binding || binding.surface !== 'terminal' || !binding.isInteractive ||
-                  prompt?.isBlocked?.() === true,
+                sanitizePromptFillInput(rewritten as PromptFillInput, getFeatureValue_CACHED_MAY_BE_STALE('tengu_tranquil_cloud', true)),
+                !binding || binding.surface !== 'terminal' || !binding.isInteractive
+                  ? 'no_composer' : prompt?.isBlocked?.() === true ? 'dialog' : undefined,
               ),
               snapshot,
               table,
@@ -1723,9 +1851,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                 signal,
                 origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
                 validateInput: value => validatePromptFillInput(value, origin),
-                restoreInput: (value, received) => Object.hasOwn(value, 'origin')
-                  ? value
-                  : { ...value, origin: received.origin },
+                restoreInput: (value, received) => {
+                  const restored = {...value}
+                  for (const key of ['origin', 'mode']) if (!Object.hasOwn(restored, key)) restored[key] = received[key]
+                  return restored
+                },
               },
             )) as { isFilled: boolean }
             return { ...result, ...(await readPromptForCaller(owner, snapshot, table)) }
@@ -1764,9 +1894,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (fn === hostIdentity && op === 'prompt.submit') {
             const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
             if (!submit) throw new Error('Prompt submission host is unavailable on this host')
-            if (context?.active && (context.next?.event === 'prompt.submit' || publicTurn))
-              throw new Error('prompt.submit cannot wait from a turn-holding hook')
-            const origin = { kind: 'plugin' as const, name: owner.declaration.name }
+            const held = context?.active ? context.next?.event : undefined
+            const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
+              ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
+                'prompt.attachment', 'prompt.compose', 'tool.describe', 'command.run',
+                'command.describe', 'config.describe', 'config.set'].includes(held) ||
+              (held.startsWith('classic.') && !['classic.SessionStart', 'classic.Setup', 'classic.SessionEnd'].includes(held))
+            ))
+            if (holdsTurn) {
+              const holding = held?.startsWith('classic.') && held !== 'classic.PreToolUse' ? 'may be holding' : 'is holding'
+              const advice = held === 'prompt.submit' ? 'answer { text } or next(e) instead, or ' : ''
+              throw new Error(`prompt.submit called from a ${held} hook, it would wait on the turn this hook ${holding}; ${advice}submit from a later event (turn.complete)`)
+            }
+            const origin = { kind: 'plugin' as const, name: owner.declaration.name,
+              ...((input as ModInput).asUser === true ? { asUser: true as const } : {}) }
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             try {
               combined.signal.throwIfAborted()
@@ -1776,6 +1917,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ? {}
                   : { attachments: (input as ModInput).attachments as PromptAttachment[] }),
                 origin,
+                callerChain,
                 signal: combined.signal,
               }))
             } finally { combined.cleanup() }
@@ -2061,11 +2203,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               ) }
             }
             const entered = capabilityContext.getStore()
-            const provider = { snapshot, table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true }
+            const provider = { snapshot, table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true, callerChain }
             try {
               if (fn === hostIdentity)
-                return { value: await capabilityContext.run(provider, () => hostCall(owner, op, rewritten, signal)) }
-              return { value: await capabilityContext.run(provider, () => fn(rewritten)) }
+                return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => hostCall(owner, op, rewritten, signal))) }
+              return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => fn(rewritten))) }
             } finally { provider.active = false }
           }, snapshot, table, {
             origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
@@ -2079,8 +2221,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             throw new Error(result.deny)
           }
           return result.value
-        } finally { modelInvocation?.cleanup(); resumeBudget?.() }
+        } finally { modelInvocation?.cleanup(); modelAbort?.cleanup(); resumeBudget?.() }
       }
+      for (const [method, fn] of Object.entries(methods))
+        if (fn !== hostIdentity) createModInterfaceBridge(wrapped[method]!, `${noun}.${method}`)
       if (noun === 'process' && methods.spawn === hostIdentity) wrapped.spawn = createModStreamBridge((request: unknown) => {
         const args = request && typeof request === 'object' && !Array.isArray(request) ? request as Record<string, unknown> : undefined
         const input = args ? {
@@ -2177,8 +2321,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       'prompt.suggest', 'prompt.compose', 'config.set', 'state.get', 'state.set'].includes(op) ? result : result.value
   }
 
-  function hostCallbackFacade(next: import('./types.js').ModNext, snapshot: readonly Activation[], table: Nouns,
+  function hostCallbackFacade(next: ModContinuation, snapshot: readonly Activation[], table: Nouns,
     origin: ModOrigin, lifetime: AbortSignal, alive: () => boolean): Record<string, unknown> {
+    const frame = capabilityContext.getStore()
+    const callerChain = appendModCallerChain(frame?.active ? frame.callerChain : undefined,
+      frame?.active && frame.hook?.plugin === origin.plugin
+        ? { plugin: origin.plugin, registration: frame.hook.registrationId }
+        : origin.plugin)
     const call = async (op: string, input: ModInput, signal?: AbortSignal) => {
       if (!alive() || stopped) throw new Error('Host callback invocation ended')
       next.signal.throwIfAborted()
@@ -2187,10 +2336,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       const resume = pauseModBudget(next)
       try {
         const result = op === 'state.get' || op === 'state.set'
-          ? await dispatchState(op, input, snapshot, table, { origin, signal: combined.signal })
+          ? await dispatchState(op, input, snapshot, table, { origin, callerChain, signal: combined.signal })
           : await dispatch(op, input, async () => {
             throw new Error(`Unhandled plugin test event: ${op}`)
-          }, snapshot, table, { origin, signal: combined.signal }) as {value?:unknown;deny?:string}
+          }, snapshot, table, { origin, callerChain, signal: combined.signal }) as {value?:unknown;deny?:string}
         return capabilityResult(op, result)
       } finally { combined.cleanup(); invocation.cleanup(); resume?.() }
     }
@@ -2307,11 +2456,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         .some(name => name !== owner.declaration.name)
   }
 
-  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation): ModDispatchHook[] {
+  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation, callerChain?: ModCallerChain): ModDispatchHook[] {
     const trusted = [...hostHooks].map(hook => ({
       ...hook,
-      ...(hook.invokeStream ? { invokeStream: (input: ModInput, next: ModNext, catching: boolean) => {
-        const entered = { snapshot, table, active: true, hook: {plugin:hook.plugin,registrationId:hook.registration.id}, next }
+      ...(hook.invokeStream ? { invokeStream: (input: ModInput, next: ModStreamNext, catching: boolean) => {
+        const entered = { snapshot, table, active: true, callerChain, hook: {plugin:hook.plugin,registrationId:hook.registration.id}, next }
         const run = <T>(call: () => T) => invocationSignal.run(next.signal, () => capabilityContext.run(entered, call))
         return (async function* () {
           let source: AsyncGenerator<unknown, unknown> | undefined
@@ -2331,7 +2480,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         })()
       } } : {}),
       invoke: async (input: ModInput, next: import('./types.js').ModNext, catching: boolean) => {
-        const entered = { snapshot, table, active: true, hook: {plugin:hook.plugin,registrationId:hook.registration.id}, next }
+        const entered = { snapshot, table, active: true, callerChain, hook: {plugin:hook.plugin,registrationId:hook.registration.id}, next }
         try {
           return await invocationSignal.run(next.signal, () => capabilityContext.run(entered, () => hook.invoke(input, next, catching)))
         } finally { entered.active = false }
@@ -2342,7 +2491,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       tier: owner.declaration.tier,
       registration,
       invokeStream: (input, next, catching) => {
-        const entered = { snapshot, table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
+        const entered = { snapshot, table, active: true, callerChain, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         const run = <T>(call: () => T) => invocationSignal.run(next.signal, () => capabilityContext.run(entered, call))
         return (async function* () {
           owner.references++
@@ -2370,7 +2519,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         })()
       },
       invoke: (input, next, catching) => withReference(owner, async () => {
-        const entered = { snapshot, table, active: true, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
+        const entered = { snapshot, table, active: true, callerChain, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         try {
           if (next.event !== 'engine.create') {
             const resumeBudget = pauseModBudget(next)
@@ -2450,8 +2599,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (event === 'tool.check') {
       if (!result || typeof result !== 'object' || Array.isArray(result) ||
           !['allow', 'ask', 'deny'].includes((result as ModInput).decision as string) ||
-          ['reason', 'rule'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string'))
-        throw new TypeError('tool.check must return { decision, reason?, rule? }')
+          ['reason', 'rule', 'hook'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string'))
+        throw new TypeError('tool.check must return { decision, reason?, rule?, hook? }')
       return
     }
     if (event === 'config.describe') {
@@ -2566,10 +2715,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       return
     }
     if (event === 'agent.spawn') {
-      if (typeof value.model !== 'string' && typeof value.deny !== 'string') throw new Error('agent.spawn must return model or deny')
+      if (value.deny !== undefined
+        ? typeof value.deny !== 'string' || typeof value.model === 'string'
+        : typeof value.model !== 'string') throw new Error('agent.spawn must return model or deny, never both')
       return
     }
-    if (event === 'tool.call' && !('result' in value) && typeof value.deny !== 'string') throw new Error('tool.call must return result or deny')
+    if (event === 'tool.call' && (value.deny !== undefined
+      ? typeof value.deny !== 'string' || Object.hasOwn(value, 'result')
+      : !Object.hasOwn(value, 'result'))) throw new Error('tool.call must return result or deny, never both')
     if (event === 'plugin.register' && value.allow !== true && typeof value.refuse !== 'string') throw new Error('plugin.register must allow or refuse')
     if (event === 'session.measure') {
       if (!Array.isArray(value.changed) || !value.changed.every(unit => ['context', 'rateLimits', 'cost'].includes(unit)))
@@ -2588,6 +2741,30 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (!['tool.call', 'plugin.register', 'session.start', 'engine.create', 'command.run', 'turn.start', 'turn.complete', 'prompt.submit'].includes(event) && !('value' in value) && typeof value.deny !== 'string') {
       throw new Error(`${event} must return value or deny`)
     }
+  }
+
+  function dispatchCallerChain(
+    options: ModDispatchOptions,
+    context: ReturnType<typeof capabilityContext.getStore>,
+    creating = false,
+  ): ModCallerChain {
+    if (options.callerChain !== undefined) return copyModCallerChain(options.callerChain)
+    const prior = context?.active ? context.callerChain : undefined
+    if (!options.origin || creating) return copyModCallerChain(prior)
+    const caller = options.caller ?? (context?.active ? context.hook : undefined)
+    return appendModCallerChain(prior, caller?.plugin === options.origin.plugin
+      ? { plugin: caller.plugin, registration: caller.registrationId }
+      : options.origin.plugin)
+  }
+
+  function dispatchCallerOrigin(chain: ModCallerChain, snapshot: readonly Activation[], fallback?: ModOrigin): ModOrigin | undefined {
+    const last = chain.at(-1)
+    if (last === undefined) return fallback
+    const plugin = typeof last === 'string' ? last : last.plugin
+    const tier = snapshot.find(owner => owner.declaration.name === plugin)?.declaration.tier
+      ?? [...hostHooks].find(hook => hook.plugin === plugin)?.tier
+      ?? (fallback?.plugin === plugin ? fallback.tier : undefined) ?? 'user'
+    return { plugin, tier }
   }
 
   function stream(event: 'turn.step' | 'process.spawn', input: ModInput,
@@ -2617,8 +2794,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     combined.signal.addEventListener('abort', abort, { once: true })
     if (combined.signal.aborted) abort()
     const context = capabilityContext.getStore()
-    const caller = context?.active ? context.hook : undefined
-    const callbackOwner = context?.active ? context.callbackOwner : undefined
+    const callerChain = dispatchCallerChain(options, context)
+    const origin = dispatchCallerOrigin(callerChain, snapshot, options.origin)
     const services = requestServices.getStore()
     for (const owner of snapshot) owner.references++
     let entered = false
@@ -2632,8 +2809,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const output = createModHookStream((async function* () {
       entered = true
       try {
-        source = dispatchModStream({ event, input, core, settleAfterAbort: true, hooks: hooksFor(snapshot, table), signal: cancellation.signal, origin: options.origin,
-          ...(options.origin ? { skip: { plugin: options.origin.plugin, registrationId: callbackOwner === options.origin.plugin ? undefined : caller?.plugin === options.origin.plugin ? caller.registrationId : -1 } } : {}),
+        source = dispatchModStream({ event, input, core, settleAfterAbort: true, hooks: hooksFor(snapshot, table, undefined, undefined, undefined, callerChain), signal: cancellation.signal, origin, callerChain,
           validateInput: (value, received) => {
             if (event === 'turn.step') validateTurnStepInput(value)
             else validateModProcessSpawnRequest(value)
@@ -2714,29 +2890,22 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const context = capabilityContext.getStore()
     // Preserve the cancellation reason for every event, including nested host calls.
     const combined = combineModModelSignals(options.signal, controller.signal)
-    const caller = options.caller ?? (context?.active ? context.hook : undefined)
-    const callbackOwner = context?.active ? context.callbackOwner : undefined
+    const callerChain = dispatchCallerChain(options, context, event === 'engine.create')
+    const origin = dispatchCallerOrigin(callerChain, snapshot, options.origin)
     const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
     const provider = pinsProvider ? structuredClone(input.provider) : undefined
     for (const owner of snapshot) owner.references++
-    const dispatchServices = event === 'session.compact'
-      ? {...requestServices.getStore(), messages: services.messages}
-      : requestServices.getStore() ?? {}
+    const dispatchServices = requestServices.getStore() ?? {}
     try {
       if (testTerminal(event))
         core = async () => { throw new Error(`Unhandled plugin test event: ${event}`) }
       const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
-        event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner)
-          .filter(hook => !['ui.message', 'ui.fault'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
-        signal: combined.signal, origin: options.origin,
+        event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner, callerChain)
+          .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
+        signal: combined.signal, origin, callerChain,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
         onHooks: options.onHooks,
-        // A live callback excludes its scheduling frame; a settled one excludes its owner.
-        ...(options.origin ? { skip: {
-          plugin: options.origin.plugin,
-          registrationId: callbackOwner === options.origin.plugin ? undefined : caller?.plugin === options.origin.plugin ? caller.registrationId : -1,
-        } } : {}),
         validateResult: (result, nextResults) => {
           if (event === 'ui.render' && options.validateRenderTree) options.validateRenderTree(result)
           else validateResult(event, result, input)
@@ -2744,9 +2913,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           options.validateResult?.(result, nextResults)
         },
         validateInput: (value, received) => {
+          if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'ui.copy') validateModUiCopyArgs(value)
           if (event === 'prompt.edit') validatePromptEditInput(value, received)
-          if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
           if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
             throw new TypeError('model.fork takes only {prompt: string}')
@@ -2789,12 +2958,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             ? (_result: unknown, previous: unknown) => ({
                 changed: structuredClone((previous as ModInput).changed),
               })
-            : event === 'prompt.context'
-              ? (result: unknown, previous: unknown) => {
-                  validatePromptContext(previous)
-                  return reconcilePromptContext(result, previous)
+            : event === 'prompt.fill'
+              ? (result: unknown, previous: unknown, called: boolean) => {
+                  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+                  const {refusal, ...filled} = result as PromptFillResult
+                  const below = previous as PromptFillResult | undefined
+                  return called && filled.isFilled === false && below?.isFilled === false &&
+                    refusal !== undefined && refusal === below.refusal ? {...filled,refusal} : filled
                 }
-              : options.restoreResult,
+              : event === 'prompt.context'
+                ? (result: unknown, previous: unknown) => {
+                    validatePromptContext(previous)
+                    return reconcilePromptContext(result, previous)
+                  }
+                : event === 'tool.check'
+                  ? (result: unknown) => {
+                      if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+                      const value = result as ModInput
+                      return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
+                    }
+                  : options.restoreResult,
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
       }))
       if (event === 'ui.render') {
@@ -2815,6 +2998,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     snapshot: Activation[],
     replacements = new Map<Activation, Activation>(),
     refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
+    order: readonly string[] = snapshot.map(owner => owner.declaration.storageId),
   ): Promise<{ modules: Activation[]; table: Nouns }> {
     const previousTable = refresh?.table ?? nouns
     const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
@@ -2924,16 +3108,20 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           onFailure: (plugin, error) => {
             if (failed) return
             failed = modules.find(item => item.declaration.name === plugin)
+            // engine.create has no hook budget: a live hook failure is threw/shape.
+            // Worker death instead abandons this fold and must never become a gate.
+            if (failed && !hostDead && !controller.signal.aborted)
+              unloadedSteps.set(failed.declaration.storageId, { declaration: failed.declaration, order: [...order] })
             diagnostic(plugin, 'engine.create', error)
           },
         }) as Nouns
-        if (!failed) return { modules, table }
+        if (!failed) {
+          for (const owner of modules) unloadedSteps.delete(owner.declaration.storageId)
+          return { modules, table }
+        }
       } catch (error) { if (!failed) throw error }
       finally { for (const lease of leases) lease.building = false }
-      const previous = replacements.get(failed!)
-      modules = previous
-        ? modules.map(owner => owner === failed ? previous : owner)
-        : modules.filter(owner => owner !== failed)
+      modules = modules.filter(owner => owner !== failed)
       if (!active.includes(failed!)) await disposeActivation(failed!)
     }
   }
@@ -2978,7 +3166,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const result = await dispatch('plugin.register', {
       name: candidate.name, tier: candidate.tier, root: candidate.pluginRoot, provenance: candidate.storageId,
       ...(candidate.version === undefined ? {} : { version: candidate.version }),
-      uses: { events: candidate.events, calls: candidate.calls, ...(candidate.env ? { env: candidate.env } : {}) },
+      uses: {
+        events: candidate.events, calls: candidate.calls,
+        ...(candidate.env ? { env: candidate.env } : {}),
+        ...(candidate.state ? { state: candidate.state } : {}),
+      },
     }, async () => ({ allow: true }), judges, table) as { allow?: true; refuse?: string }
     return result.refuse
   }
@@ -3122,7 +3314,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       if (hostEpoch !== epoch) throw workerError ?? new Error('Mods Worker generation changed during reload')
     }
     const wanted = new Set(inputs.map(input => input.storageId))
-    for (const id of knownArgs.keys()) if (!wanted.has(id)) knownArgs.delete(id)
+    const previouslyKnown = [...knownArgs.keys()]
+    for (const id of knownArgs.keys()) if (!wanted.has(id)) { knownArgs.delete(id); unloadedSteps.delete(id) }
     const removed = previous.filter(owner => !wanted.has(owner.declaration.storageId))
     active = previous.filter(owner => wanted.has(owner.declaration.storageId))
     for (const owner of removed) retire(owner)
@@ -3133,7 +3326,6 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!
     const cold = previous.length === 0
     const scanned = new Map<ModPluginInput, ModDeclaration>()
-    let loading = inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))
     let bootstrap: { modules: Activation[]; table: Nouns } | undefined
     // A native seat holds the user tier out of the privileged events it wraps.
     // Its own failure must not leave user Mods running unguarded, so the whole
@@ -3150,22 +3342,44 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       active = active.filter(other => other !== owner)
       retire(owner)
     }
-    if (cold) {
-      for (const input of loading) {
-        try {
-          const declaration = recoveringOwners ? knownArgs.get(input.storageId)
-            : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
-          if (!declaration) continue
-          scanned.set(input, declaration)
-          if (!recoveringOwners) knownArgs.set(input.storageId, declaration)
-        } catch (error) {
-          ensureLive()
-          failGuard(input)
-          diagnostic(input.name, 'load', error)
+    for (const input of inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))) {
+      try {
+        const declaration = recoveringOwners
+          ? knownArgs.get(input.storageId)
+          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+        if (!declaration) continue
+        scanned.set(input, declaration)
+        if (!recoveringOwners) {
+          knownArgs.delete(input.storageId)
+          knownArgs.set(input.storageId, declaration)
         }
+      } catch (error) {
+        ensureLive()
+        const old = active.find(owner => owner.declaration.storageId === input.storageId)
+        if (!old) failGuard(input)
+        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }
+    }
+    const ordered = [...scanned.keys()].sort((a, b) => seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
+    const foldOrder = ordered.map(input => input.storageId)
+    const gated = new Set(ordered.flatMap(input => {
+      const failed = unloadedSteps.get(input.storageId), declaration = scanned.get(input)!
+      return failed && sameModDeclaration(failed.declaration, declaration) &&
+        (recoveringOwners || isDeepStrictEqual(failed.order, foldOrder.filter(id => failed.order.includes(id))))
+        ? [input.storageId] : []
+    }))
+    if (!recoveringOwners) {
+      const pending = ordered.filter(input => !gated.has(input.storageId))
+      const kept = active.filter(owner => !gated.has(owner.declaration.storageId))
+      const unchanged = !releasedWithholding && previouslyKnown.every(id => wanted.has(id)) &&
+        pending.length === kept.length && pending.every((input, index) =>
+          input.storageId === kept[index]!.declaration.storageId && sameModDeclaration(kept[index]!.declaration, scanned.get(input)!))
+      if (!unchanged) gated.clear()
+    }
+    const loading = ordered.filter(input => !gated.has(input.storageId))
+    if (cold) {
       const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
-      loading = [...scanned.keys()].sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
+      loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
     }
     async function buildBootstrap() {
       const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
@@ -3174,7 +3388,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       for (const owner of changed) owner.state = 'candidate'
       bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
         previous: bootstrap.modules, changed, table: bootstrap.table,
-      })
+      }, foldOrder)
       ensureLive()
       candidates = [...bootstrap.modules]
       for (const owner of candidates) owner.state = 'active'
@@ -3188,10 +3402,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       let suggestionSuspended = false
       try {
-        const declaration = scanned.get(input) ?? (recoveringOwners ? knownArgs.get(input.storageId)
-          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input))
-        if (!declaration) continue
-        if (!recoveringOwners) knownArgs.set(input.storageId, declaration)
+        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
         const refreshDeclarations = async () => {
           if (declaration.isNative || declaration.tier === 'builtin') return
           try {
@@ -3206,10 +3417,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
         }
         ensureLive()
-        if (old && old.declaration.fingerprint === declaration.fingerprint &&
-          isDeepStrictEqual(old.declaration.options, declaration.options) &&
-          old.declaration.name === declaration.name && old.declaration.version === declaration.version &&
-          old.declaration.pluginRoot === declaration.pluginRoot && old.declaration.isNative === declaration.isNative) {
+        if (old && sameModDeclaration(old.declaration, declaration)) {
           await refreshDeclarations()
           ensureLive()
           continue
@@ -3230,6 +3438,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (refusal !== undefined) {
             if (old) withdraw(old)
             failGuard(input)
+            knownArgs.delete(input.storageId)
+            unloadedSteps.delete(input.storageId)
             diagnostic(declaration.name, 'admission', refusal)
             continue
           }
@@ -3276,7 +3486,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const changed = new Set(candidates.filter(owner => !previous.includes(owner)))
     const refresh = previous.length ? { previous, changed } : undefined
     if (cold) await buildBootstrap()
-    const built = cold ? bootstrap! : await build(candidates, replacements, refresh)
+    const built = cold ? bootstrap! : await build(candidates, replacements, refresh, foldOrder)
     ensureLive()
     for (const owner of built.modules) owner.state = 'active'
     await publish(built, replacements, previous)
@@ -3297,7 +3507,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       for (const id of knownArgs.keys()) if (!native.has(id)) disabled.add(id)
       diagnostic('engine', 'worker.disable', `Worker Mods are off after ${unattributedCrashes} unattributed crashes; withholdings remain until reload or disable`)
     }
-    for (const id of disabled) { knownArgs.delete(id) }
+    for (const id of disabled) { knownArgs.delete(id); unloadedSteps.delete(id) }
     hostEpoch++
     hostDead = true
     for (const [noun, owners] of lastInterface.withheld) crashedWithholders.set(noun, new Set(owners))
@@ -3533,25 +3743,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
     },
     registerHostCallback(hook: Pick<ModDispatchHook, 'tier' | 'registration'>,
-      callback: (engine: Record<string, unknown>, input: ModInput, next: import('./types.js').ModNext) => unknown): () => void {
+      callback: (engine: Record<string, unknown>, input: ModInput, next: ModContinuation) => unknown,
+      catcher?: (engine: Record<string, unknown>, input: ModInput, next: ModContinuation) => unknown): () => void {
       if (stopped) throw new Error('Mods runtime disposed')
       const origin: ModOrigin = {plugin:'claude-code/testing',tier:hook.tier}
       const registered: ModDispatchHook = {
         ...origin, registration: structuredClone(hook.registration),
-        invokeStream: async function* (input, next) {
+        invokeStream: async function* (input, next, catching) {
           const context = capabilityContext.getStore()!
           const lifetime = new AbortController()
           const engine = hostCallbackFacade(next, context.snapshot, context.table, origin, lifetime.signal,
             () => context.active && !lifetime.signal.aborted)
           try {
-            const source = callback(engine, input, next) as AsyncGenerator<unknown, unknown> | undefined
+            const source = (catching ? catcher! : callback)(engine, input, next) as AsyncGenerator<unknown, unknown> | undefined
             if (!source || typeof source[Symbol.asyncIterator] !== 'function' ||
                 typeof source.next !== 'function' || typeof source.return !== 'function' || typeof source.throw !== 'function')
               throw new TypeError(`${next.event} requires an async generator hook`)
             return yield* source
           } finally { lifetime.abort() }
         },
-        invoke: async (input, next) => {
+        invoke: async (input, next, catching) => {
           const context = capabilityContext.getStore()!
           const lifetime = new AbortController()
           const engine = hostCallbackFacade(next, context.snapshot, context.table, origin, lifetime.signal,
@@ -3565,7 +3776,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
           next.signal.addEventListener('abort', release, { once: true })
           if (next.signal.aborted) release()
-          try { return await callback(engine, input, next) }
+          try { return await (catching ? catcher! : callback)(engine, input, next) }
           finally {
             release()
             next.signal.removeEventListener('abort', release)
@@ -3589,6 +3800,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
     },
     capture,
+    trackConversation,
     invalidatePromptContext,
     measure,
     endSession,
@@ -3707,6 +3919,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       )) return
       if (ending || binding?.sessionId !== next.sessionId) {
         retireTurns()
+        conversations.clear()
+        excludedConversations.clear()
         forkSnapshot = null
         forkGeneration++
         await ending
@@ -3731,10 +3945,12 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true
-      retireTurns()
       publishRenderHooks()
+      retireTurns()
       for (const owner of activations) commands.release(owner)
       publishDiffOwnership()
+      conversations.clear()
+      excludedConversations.clear()
       hostHooks.clear()
       publicTurn = undefined
       forkSnapshot = null

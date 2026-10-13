@@ -417,6 +417,28 @@ describe('Mods CLI session host', () => {
     }, new AbortController().signal)).toEqual({ enabled: false })
   })
 
+  test('headless module watching is opt-in through CLAUDE_CODE_PLUGIN_DIR_WATCH', async () => {
+    const previous = process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+    cleanups.push(() => {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+      else process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH = previous
+    })
+    const declaration = await plugin()
+    const watching = watchEvents()
+    delete process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+    const host = session({loadPlugins: async () => [declaration]})
+    await host.bind({...binding, isInteractive:false})
+    expect(watching.watchers).toHaveLength(0)
+    process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH = '1'
+    await host.refresh()
+    expect(watching.watchers).toHaveLength(1)
+    await Promise.all(watching.ready)
+    delete process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH
+    await host.refresh()
+    expect(watching.watchers[0]!.closed).toBe(true)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:1})
+  })
+
   test('restores consent only for the exact current session authoring path', async () => {
     const root = '/repo-local/dev-mods/first'
     let asks = 0
@@ -1091,18 +1113,36 @@ describe('Mods CLI session host', () => {
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
   })
 
-  test.each(['strictPluginOnlyCustomization', 'allowManagedHooksOnly'] as const)('managed %s still blocks external evaluation before Worker creation', async restriction => {
+  test('strictPluginOnlyCustomization still blocks unsupported external evaluation before Worker creation', async () => {
     const declaration = await plugin('throw Error("must not evaluate"); export function register(on) {}')
     const events: string[] = []
     const host = session({
       loadPlugins: async () => [declaration],
-      getSettings: () => ({ ...settings(), policySettings: { [restriction]: true } }),
+      getSettings: () => ({ ...settings(), policySettings: { strictPluginOnlyCustomization: true } }),
       createRuntime: () => { throw Error('must not create Worker') },
       onDiagnostic: event => events.push(event.message),
     })
     await host.bind(binding)
     expect(host.runtime).toBeUndefined()
     expect(events.some(message => message.includes('Managed Mods protection'))).toBe(true)
+  })
+
+  test.each(['allowManagedHooksOnly', 'disableAllHooks'] as const)('managed %s preserves host-owned modules without evaluating ordinary code', async restriction => {
+    const ordinary = await plugin('throw Error("ordinary module must not evaluate"); export function register(on) {}')
+    const builtin = await plugin(`export function register(on) { on('tool.call', () => ({result:'host-owned-active'})); }`)
+    Object.assign(builtin, { name:'host', manifest:{name:'host'}, source:'host@builtin', repository:'host@builtin', isBuiltin:true })
+    const events: string[] = []
+    const host = session({
+      loadPlugins: async () => [ordinary, builtin],
+      getSettings: () => ({...settings(), policySettings:{[restriction]:true}}),
+      onDiagnostic: event => events.push(event.message),
+    })
+    await host.bind(binding)
+    expect(host.runtime).toBeDefined()
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({result:'host-owned-active'})
+    expect(events.some(message => message.includes('must not evaluate'))).toBe(false)
+    expect(events.some(message => message.includes('Hooks modules are'))).toBe(true)
+    expect(await host.runtime!.dispatch('classic.PreToolUse', input, async () => ({deny:'managed'}))).toEqual({deny:'managed'})
   })
 
   test('managed sessions seat a host-owned sec-default before user settings interceptors', async () => {

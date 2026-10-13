@@ -16,6 +16,28 @@ const initial: PromptSubmitInput = {
   ],
 }
 
+test('host caller history is carried in dispatch options and never added to public prompt input or receipt', async () => {
+  const chain = ['earlier', { plugin: 'fixture', registration: 7 }]
+  const result = await runModPromptSubmit({
+    input: initial,
+    callerChain: chain,
+    signal: new AbortController().signal,
+    snapshot: {
+      hasHooks: () => true,
+      release: () => {},
+      dispatch: async (_event, input, core, options) => {
+        expect(options?.callerChain).toEqual(chain)
+        expect(Object.isFrozen(options?.callerChain)).toBe(true)
+        expect(input).toEqual(initial)
+        return core(input)
+      },
+    },
+    core: async () => ({ shouldQuery: true, messages: [] }),
+  } as Parameters<typeof runModPromptSubmit>[0])
+  expect(result.outcome).toEqual({ text: initial.text, origin: initial.origin })
+  expect(result.outcome).not.toHaveProperty('callerChain')
+})
+
 // This is the adapter/runtime boundary contract, NOT another dispatcher.
 // Real dispatch traversal is covered by processUserInput.mods.test.ts.
 async function inspectContract(

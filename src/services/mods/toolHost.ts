@@ -37,13 +37,11 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       try {
         abortController.signal.throwIfAborted()
         const prompt = input.prompt as string
-        const started = Promise.withResolvers<{ model: string; agentId: string }>()
+        const started = Promise.withResolvers<{ model: string; agentId: string; teammateId?: string }>()
         const parentMessage = getLastAssistantMessage(context.messages)
         const completion = AgentTool.call({
           prompt,
-          description: typeof input.description === 'string' && input.description.trim()
-            ? input.description
-            : prompt.replace(/\s+/g, ' ').trim().slice(0, 80),
+          description: (input.description as string | undefined) ?? prompt.split(/\s+/).slice(0, 5).join(' '),
           ...(input.subagentType === undefined ? {} : { subagent_type: input.subagentType as string }),
           ...(input.model === undefined ? {} : { model: input.model as string }),
           ...(input.effort === undefined ? {} : { effort: input.effort as EffortValue }),

@@ -123,6 +123,28 @@ function resultMessage(value: unknown, isError = false) {
   }
 }
 
+test('tool.call recovers a deny beside a result without accepting a mixed receipt', async () => {
+  let calls = 0
+  let receipt: unknown
+  const original = resultMessage({ value: 'core' })
+  const messages = await runModToolCall({
+    snapshot: snapshot(async () => ({ deny: 'No', result: { value: 'forged' } })),
+    tool, toolUseID: 'call-1', input: {},
+    toolUseContext: { ...context, modToolCallResult: result => { receipt = result } },
+    assistantMessage: assistant,
+    core: async (_input, record) => {
+      calls++
+      record.hasResult = true
+      record.result = { value: 'core' }
+      return [original]
+    },
+  })
+  expect(calls).toBe(1)
+  expect(messages[0]).toBe(original)
+  expect(receipt).toMatchObject({ result: { value: 'core' }, ref: 1 })
+  expect(receipt).not.toHaveProperty('deny')
+})
+
 describe('reviewed tool.call context persistence', () => {
   let root: string
   beforeEach(async () => {

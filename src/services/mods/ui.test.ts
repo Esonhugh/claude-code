@@ -688,6 +688,81 @@ describe('mod UI ownership and pane policy', () => {
     expect(ui.getSnapshot().every(pane => pane.visible)).toBe(true)
   })
 
+  test('person close revokes autonomous placement eligibility until the official width threshold', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    const presentation = { ...wide, columns: 120 }
+    await ui.open(owner, { id: 'asked' }, { kind: 'person' }, presentation)
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true })
+    await ui.close(owner, 'asked', { kind: 'person' })
+    await ui.open(owner, { id: 'asked' }, { kind: 'plugin' }, presentation)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: false })
+    await ui.render({ ...presentation, columns: 143 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: false })
+    await ui.render({ ...presentation, columns: 144 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true })
+    await ui.release(owner)
+  })
+
+  test('an autonomous Pane admitted at 144 remains placed when it shrinks, until it is actually closed', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'sticky' }, { kind: 'plugin' }, { ...wide, columns: 120 })
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: false })
+    await ui.render({ ...wide, columns: 143 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: false })
+    await ui.render({ ...wide, columns: 144 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, placement: 'dock' })
+    await ui.render({ ...wide, columns: 120 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, placement: 'dock' })
+    await ui.render({ ...wide, columns: 96 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, placement: 'inline' })
+    await ui.close(owner, 'sticky', { kind: 'plugin' })
+    await ui.open(owner, { id: 'sticky' }, { kind: 'plugin' }, { ...wide, columns: 120 })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: false })
+    await ui.release(owner)
+  })
+
+  test.each([[110,39],[120,49],[144,63],[160,71],[200,89],[240,89]])('default dock at %s columns exposes %s body columns after its grip', async (columns, bodyColumns) => {
+    const owner = { plugin: 'fixture' }
+    const { ui, draws } = fixture()
+    await ui.open(owner, { id: 'width' }, { kind: 'person' }, { ...wide, columns })
+    await ui.commit(owner)
+    expect(ui.getSnapshot()[0]).toMatchObject({ bodyColumns })
+    expect(draws.at(-1)!.input.props).toMatchObject({ bodyColumns })
+    await ui.release(owner)
+  })
+
+  test('plugin close preserves the person-opened eligibility on autonomous reopen', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    const presentation = { ...wide, columns: 120 }
+    await ui.open(owner, { id: 'asked' }, { kind: 'person' }, presentation)
+    await ui.commit(owner)
+    await ui.close(owner, 'asked', { kind: 'plugin' })
+    await ui.open(owner, { id: 'asked' }, { kind: 'plugin' }, presentation)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true })
+    await ui.release(owner)
+  })
+
+  test('denied person close preserves eligibility and the original drawing', async () => {
+    const owner = { plugin: 'fixture' }
+    const dispatch: ModUiDispatch = async (_owner, event, input, core) =>
+      event === 'ui.close' ? { deny: 'keep open' } : core(input)
+    const { ui } = fixture({ dispatch })
+    const presentation = { ...wide, columns: 120 }
+    await ui.open(owner, { id: 'asked' }, { kind: 'person' }, presentation)
+    await ui.commit(owner)
+    const drawing = ui.getSnapshot()[0]!.drawing
+    expect(await ui.close(owner, 'asked', { kind: 'person' })).toEqual({ deny: 'keep open' })
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true, drawing })
+    await ui.open(owner, { id: 'asked' }, { kind: 'plugin' }, presentation)
+    expect(ui.getSnapshot()[0]).toMatchObject({ visible: true })
+    await ui.release(owner)
+  })
+
   test('keeps a person-opened pane visible through plugin resize and reopen at 96 columns', async () => {
     const owner = { plugin: 'fixture' }
     const { ui } = fixture()
@@ -729,7 +804,9 @@ describe('mod UI ownership and pane policy', () => {
       await ui.open(nextOwner, { id: 'asked' }, { kind: 'plugin' }, narrow)
       if (end !== 'close') await ui.commit(nextOwner, end === 'reload' ? owner : undefined)
       expect(ui.getSnapshot()).toHaveLength(1)
-      expect(ui.getSnapshot()[0]).toMatchObject({ owner: nextOwner, visible: end === 'reload', focused: end === 'reload' })
+      expect(ui.getSnapshot()[0]).toMatchObject({
+        owner: nextOwner, visible: end === 'reload', focused: end === 'reload',
+      })
       expect(ui.getSnapshot()[0]!.focusedElement).toBeUndefined()
     })
   }
@@ -844,6 +921,25 @@ describe('mod UI ownership and pane policy', () => {
         requestId: 'pane', element: 'run', origin: { kind: 'plugin', name: 'fixture' },
       })).resolves.toEqual({ deny: 'site does not hold the keyboard' })
     }
+  })
+
+  test('canonical Pane holds only its unchanged nonempty draft when person focus supplies a fresh presentation', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    const draft = { ...wide, composerEmpty: false, composerValue: 'draft' }
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, draft)
+    await ui.commit(owner)
+    expect(ui.cyclePaneFocus('draft')).toBe(true)
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, draft)).resolves.toEqual({ focused: true, element: 'run' })
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'person' },
+    }, { ...draft, composerValue: 'changed' })).resolves.toMatchObject({ focused: false, deny: expect.any(String) })
+    expect(ui.getSnapshot()[0]!.focused).toBe(false)
+    await expect(ui.focus(owner, {
+      requestId: 'pane', element: 'run', origin: { kind: 'plugin', name: 'fixture' },
+    })).resolves.toEqual({ deny: 'site does not hold the keyboard' })
   })
 
   test('plugin focus still cannot acquire keyboard ownership from the composer or another pane', async () => {
@@ -1301,7 +1397,7 @@ describe('mod UI dispatch and drawing lifetime', () => {
     })
   }
 
-  for (const cancellation of ['hidden', 'close', 'replacement', 'unload'] as const) {
+  for (const cancellation of ['resize', 'dialog', 'close', 'replacement', 'unload'] as const) {
     test(`person focus finishes on ${cancellation} before the pending draw rejects`, async () => {
       const owner = { plugin: 'fixture' }
       const nextOwner = { plugin: 'fixture' }
@@ -1327,7 +1423,8 @@ describe('mod UI dispatch and drawing lifetime', () => {
       try {
         await new Promise<void>(resolve => setImmediate(resolve))
         expect(finished).toBe(false)
-        if (cancellation === 'hidden') await ui.render({ ...wide, columns: 100 })
+        if (cancellation === 'resize') await ui.render({ ...wide, columns: 100 })
+        else if (cancellation === 'dialog') await ui.render({ ...wide, hasDialog: true })
         else if (cancellation === 'close') await ui.close(owner, 'pane', { kind: 'person' })
         else if (cancellation === 'unload') await ui.release(owner)
         else {
@@ -1336,8 +1433,12 @@ describe('mod UI dispatch and drawing lifetime', () => {
         }
         await new Promise<void>(resolve => setImmediate(resolve))
         expect(finished).toBe(true)
-        await expect(focusing).resolves.toEqual({ result: { focused: false } })
+        await expect(focusing).resolves.toEqual({ result: cancellation === 'resize'
+          ? { focused: true, element: 'run' }
+          : { focused: false } })
         const landed = ui.getSnapshot()
+        if (cancellation === 'replacement')
+          expect(landed[0]).toMatchObject({ owner: nextOwner, focused: true, focusedElement: 'run' })
         pending.reject(failure)
         expect(await rendering).toBe(failure)
         expect(released).toContain(2)

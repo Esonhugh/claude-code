@@ -165,7 +165,7 @@ export function createModsSession(options: ModsSessionOptions) {
   const emptyCommands: Command[] = []
   let unsubscribeCommands: (() => void) | undefined
   const commands = {
-    getSnapshot: () => runtime?.commands.getSnapshot() ?? emptyCommands,
+    getSnapshot: () => stopped ? emptyCommands : runtime?.commands.getSnapshot() ?? emptyCommands,
     subscribe(listener: () => void) {
       commandListeners.add(listener)
       return () => { commandListeners.delete(listener) }
@@ -424,7 +424,8 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   async function watchPlugins(plugins: readonly LoadedPlugin[]) {
-    const nextRoots = [
+    const watchEnabled = binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1'
+    const nextRoots = watchEnabled ? [
       ...new Set([
         ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
         ...plugins
@@ -436,7 +437,7 @@ export function createModsSession(options: ModsSessionOptions) {
           )
           .map(plugin => plugin.path),
       ]),
-    ].sort()
+    ].sort() : []
     if (
       nextRoots.length === roots.length &&
       nextRoots.every((root, index) => root === roots[index])
@@ -555,7 +556,7 @@ export function createModsSession(options: ModsSessionOptions) {
     settingsKey = relevantSettings(settings)
     const policy = settings.policySettings
     const disabled = options.getDisabledReason?.()
-      ?? (policy?.allowManagedHooksOnly || policy?.strictPluginOnlyCustomization
+      ?? (policy?.strictPluginOnlyCustomization
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
     const configured = options.bare ? [] : plugins ?? (await loadPlugins())
     const authoringErrors = deferAuthoring || options.bare
@@ -698,7 +699,7 @@ export function createModsSession(options: ModsSessionOptions) {
             plugin: 'host',
             stage: 'refresh',
             message:
-              'Unable to refresh Mods; the current runtime is retained. Use /reload-plugins to retry.',
+              'Unable to refresh Mods. Use /reload-plugins to retry.',
           })
         throw error
       }

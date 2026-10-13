@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { createModsRuntime, type ModHostServices } from './runtime.js'
 import { createModsSession } from './session.js'
-import { createModUi, didModUiHostFocusMove, withModUiPaneFocus, withModUiHostFocusOutcome, type ModUiPresentation } from './ui.js'
+import { createModUi, didModUiHostFocusMove, withModUiPaneFocus, withModUiHostFocusOutcome, type ModUiPane, type ModUiPresentation } from './ui.js'
 import ts from 'typescript'
 import { readFileSync } from 'node:fs'
 import React from 'react'
@@ -44,6 +44,16 @@ function fixture(overrides: ModHostServices = {}) {
   })
   runtimes.push(value)
   return { value, statuses, logs, diagnostics }
+}
+async function afterPaneRedraw(value: ReturnType<typeof createModsRuntime>, before: ModUiPane, action: () => Promise<unknown>): Promise<void> {
+  const published = Promise.withResolvers<void>()
+  const unsubscribe = value.ui.subscribe(() => {
+    const current = value.ui.getSnapshot().find(pane => pane.owner === before.owner && pane.id === before.id)
+    if (current?.drawing !== undefined && current.drawing !== before.drawing) published.resolve()
+  })
+  const timeout = setTimeout(() => published.reject(new Error('Queued pane drawing did not publish within 1000ms')), 1000)
+  try { await Promise.all([action(), published.promise]) }
+  finally { clearTimeout(timeout); unsubscribe() }
 }
 const source = (label: string, fail = false) => `let count=0; export function register(on) {
   on('session.start', async ($,e,next) => { await $.ui.open({id:'panel',title:'${label}',focus:true}); ${fail ? "throw Error('failed UI start');" : 'return next(e);'} });
@@ -326,7 +336,7 @@ test('Client keyed redraw keeps independent state, cancels pending posts and cle
     expect(ticks).toBeGreaterThan(0)
     expect(frames[0]!.filter(tree => tree.children[0]==='a:2')).toHaveLength(1)
     expect(frames[1]!.at(-1).children).toEqual(['b:0'])
-    await value.dispatch('command.run',{command:'redraw',args:''},async () => ({}))
+    await afterPaneRedraw(value, pane, () => value.dispatch('command.run',{command:'redraw',args:''},async () => ({})))
     pane = value.ui.getSnapshot()[0]!
     await Promise.all(handles.map((handle: any,index: number) => handle.update(pane,(pane.tree as any).children[index])))
     expect(frames[0]!.at(-1).children).toEqual(['new:2'])
@@ -549,7 +559,7 @@ test('real Worker session.start opens a pane, redraws after a leased callback, c
   const first = value.ui.getSnapshot()[0]!
   expect(first).toMatchObject({ id:'panel', title:'old', visible:true, placement:'dock' })
   const tree = first.tree as any
-  await value.ui.interact(first.id, first.drawing!, tree.children[1].press, 'press', 'run')
+  await afterPaneRedraw(value, first, () => value.ui.interact(first.id, first.drawing!, tree.children[1].press, 'press', 'run'))
   expect(statuses).toEqual([['ui-owner','old:1']])
   expect(logs).toEqual([['ui-owner','clicked']])
   const second = value.ui.getSnapshot()[0]!
@@ -729,9 +739,9 @@ test('Worker wheel middleware receives body-relative pointers and consumes a vir
   const pane = value.ui.getSnapshot()[0]!
   await value.ui.reportMetrics(pane.id, { bodyRows: 4, contentRows: 4 })
   for (const [by, row] of [[3, 3], [-1, 2]] as const) {
-    await value.ui.scroll(pane.owner, {
+    await afterPaneRedraw(value, value.ui.getSnapshot()[0]!, () => value.ui.scroll(pane.owner, {
       requestId: pane.id, by, pointer: { column: 2, row: 1 }, origin: { kind: 'person' },
-    })
+    }))
     expect(value.ui.getSnapshot()[0]).toMatchObject({ focused: false, scrollOffset: 0 })
     expect((value.ui.getSnapshot()[0]!.tree as any).children).toEqual([`row:${row}`])
   }
@@ -879,7 +889,7 @@ test('a render decorator can invalidate panes opened by another plugin', async (
   const before = value.ui.getSnapshot()[0]!
   expect(JSON.stringify(before.tree)).toContain('decorator:0')
 
-  await value.dispatch('command.run',{command:'refresh',args:'',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:true}},async () => ({}))
+  await afterPaneRedraw(value, before, () => value.dispatch('command.run',{command:'refresh',args:'',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:true}},async () => ({})))
 
   const current = value.ui.getSnapshot()[0]!
   expect(current.drawing).not.toBe(before.drawing)

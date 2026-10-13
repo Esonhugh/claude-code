@@ -34,7 +34,7 @@ export function copyModClientData(value: unknown, isProxy: (value: unknown) => b
 export function createModClientRealm(ui: {
   resolve(input: Record<string, unknown>): Readonly<Record<string, (props?: Record<string, unknown>) => unknown>>
   materialize(value: unknown, keep: (callback: (event: Record<string, unknown>) => unknown) => number): unknown
-}, copyData: typeof copyModClientData = copyModClientData) {
+}, copyData: typeof copyModClientData = copyModClientData, onPhase?: (phase: 'load' | 'render' | 'run') => void, onFault?: (id: number, reason: string, unmounted: boolean) => void) {
   type Draw = (props: unknown, surface: any) => unknown
   type Instance = {
     id: number; draw: Draw; props: unknown; surface: object; state: unknown
@@ -58,6 +58,7 @@ export function createModClientRealm(ui: {
   let nextCallback = 0
   const modules = new Map<string, Draw>()
   const instances = new Map<number, Instance>()
+  const errors = new WeakMap<object, 'load' | 'render' | 'run'>()
   function dispose(id: number) {
     const instance = instances.get(id)
     if (!instance) return
@@ -69,10 +70,31 @@ export function createModClientRealm(ui: {
     instance.post = undefined
     instance.pointer = instance.key = undefined
   }
+  const resolvePromise = Promise.resolve.bind(Promise)
+  const then = Promise.prototype.then
+  const heard = (instance: Instance, out: unknown): unknown => {
+    if ((typeof out !== 'object' || out === null) && typeof out !== 'function') return out
+    const faulted = (error: unknown) => {
+      let reason: string
+      try {
+        const message = error && typeof error === 'object' ? (error as { message?: unknown }).message : error
+        reason = typeof message === 'string' ? message : String(message)
+      } catch { reason = 'a rejection that could not be read' }
+      const unmounted = !instance.mounted || instances.get(instance.id) !== instance
+      if (!unmounted) dispose(instance.id)
+      if (!onFault) throw error
+      onFault(instance.id, reason, unmounted)
+    }
+    try { then.call(resolvePromise(out), undefined, faulted) }
+    catch (error) { faulted(error) }
+    return out
+  }
   function render(instance: Instance): ModClientFrame {
+    onPhase?.('render')
     instance.dirty = false
     try {
-      const tree = ui.materialize(instance.draw(instance.props, instance.surface), callback => {
+      const draw = instance.draw
+      const tree = ui.materialize(heard(instance, draw(instance.props, instance.surface)), callback => {
         const handle = ++nextCallback
         instance.callbacks.set(handle, callback)
         return handle
@@ -84,15 +106,24 @@ export function createModClientRealm(ui: {
         for (const child of node.children ?? []) check(child)
       }
       check(tree)
-      if (instance.dirty && ++instance.loops >= 3) throw new Error('Client render loop')
+      if (instance.dirty && ++instance.loops >= 3) {
+        const error = new Error('Client render loop')
+        errors.set(error, 'run')
+        throw error
+      }
       if (!instance.dirty) instance.loops = 0
       return { tree, active: instance.dirty || instance.timers.size > 0 || instance.post !== undefined }
-    } catch (error) { dispose(instance.id); throw error }
+    } catch (error) {
+      if (error && (typeof error === 'object' || typeof error === 'function') && !errors.has(error)) errors.set(error, 'render')
+      dispose(instance.id)
+      throw error
+    }
   }
   const realm = {
     register(path: string, draw: Draw) { modules.set(path, draw) },
     request(input: ModClientRequest): ModClientFrame {
       try {
+        if (input.op !== 'dispose') onPhase?.(input.op === 'mount' ? 'load' : 'run')
         if (input.op === 'dispose') { dispose(input.id); return {} }
         if (input.op === 'mount') {
           const draw = modules.get(input.module!)
@@ -148,24 +179,31 @@ export function createModClientRealm(ui: {
             if (!instance.timers.has(timer) || timer.due > instance.now) continue
             timer.due = instance.now + timer.ms
             instance.loops = 0
-            timer.fn()
+            const fn = timer.fn
+            heard(instance, fn())
           }
           const frame = instance.dirty ? render(instance) : {}
           if (instance.post !== undefined) { frame.post = instance.post; instance.post = undefined }
           frame.active = instance.dirty || instance.timers.size > 0 || instance.post !== undefined
           return frame
         }
-        if (input.op === 'pointer') { instance.loops = 0; instance.pointer?.(input.event); return { active: instance.dirty || instance.post !== undefined } }
+        if (input.op === 'pointer') {
+          instance.loops = 0
+          const listener = instance.pointer
+          if (listener) heard(instance, listener(input.event))
+          return { active: instance.dirty || instance.post !== undefined }
+        }
         if (input.op === 'key') {
           instance.loops = 0
-          if ((input.event as { key?: string })?.key !== 'escape') instance.key?.(input.event)
+          const listener = instance.key
+          if ((input.event as { key?: string })?.key !== 'escape' && listener) heard(instance, listener(input.event))
           return { active: instance.dirty || instance.post !== undefined }
         }
         if (input.op === 'press') {
           const callback = instance.callbacks.get(input.handle!)
           if (!callback) throw new Error('Client callback is stale')
           instance.loops = 0
-          callback(input.event as Record<string, unknown>)
+          heard(instance, callback(input.event as Record<string, unknown>))
           return { active: instance.dirty || instance.post !== undefined }
         }
         if (input.op === 'resize') {
@@ -175,12 +213,19 @@ export function createModClientRealm(ui: {
           return render(instance)
         }
         throw new Error('Unknown Client operation')
-      } catch (error) { dispose(input.id); throw error }
+      } catch (error) {
+        if (error && (typeof error === 'object' || typeof error === 'function') && !errors.has(error)) errors.set(error, input.op === 'mount' ? 'load' : 'run')
+        dispose(input.id)
+        throw error
+      }
     },
     dispose() { for (const id of instances.keys()) dispose(id); modules.clear() },
   }
   return {
     ...realm,
+    errorPhase(error: unknown) {
+      return error && (typeof error === 'object' || typeof error === 'function') ? errors.get(error) : undefined
+    },
     request(input: ModClientRequest): ModClientFrame {
       const frame = realm.request(input)
       const instance = instances.get(input.id)

@@ -9,7 +9,6 @@ import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
 import { randomUUID } from 'crypto'
 import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
 import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
-import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
@@ -350,7 +349,6 @@ export async function* query(
     toolCatalog: () => createToolCatalogForContext(catalogContext),
     toolHost: () => createModToolHost(catalogContext, params.canUseTool),
     captureUsage: () => captureModSessionUsage(catalogContext),
-    messages: () => projectModSessionMessages(catalogContext.messages),
   }
   const snapshot = catalogContext.mods?.capture(queryServices)
   let registeredTurn = catalogContext.mods?.currentTurn?.(catalogContext.agentId)
