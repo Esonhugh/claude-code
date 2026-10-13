@@ -85,6 +85,8 @@ export type SpawnOutput = {
   plan_mode_required?: boolean
 }
 
+type SpawnResult = { data: SpawnOutput; loopAgentId?: string }
+
 export type SpawnTeammateConfig = {
   name: string
   prompt: string
@@ -243,7 +245,7 @@ function releaseTeammateName(teamName: string, name: string): void {
 async function handleSpawnSplitPane(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const { setAppState, getAppState } = context
   const {
     name,
@@ -428,6 +430,8 @@ async function handleSpawnSplitPane(
     insideTmux,
     backendType: detectionResult.backend.type,
     toolUseId: context.toolUseId,
+    spawnedWith:{description:input.description,agentType:agent_type,parentAgentId:context.agentId},
+    spawnedBy:context.modSpawnedBy,
   })
 
   // Register agent in the team file
@@ -484,7 +488,7 @@ async function handleSpawnSplitPane(
 async function handleSpawnSeparateWindow(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const { setAppState, getAppState } = context
   const {
     name,
@@ -643,6 +647,8 @@ async function handleSpawnSeparateWindow(
     insideTmux: false,
     backendType: 'tmux',
     toolUseId: context.toolUseId,
+    spawnedWith:{description:input.description,agentType:agent_type,parentAgentId:context.agentId},
+    spawnedBy:context.modSpawnedBy,
   })
 
   // Register agent in the team file
@@ -712,6 +718,8 @@ function registerOutOfProcessTeammateTask(
     insideTmux,
     backendType,
     toolUseId,
+    spawnedWith,
+    spawnedBy,
   }: {
     teammateId: string
     sanitizedName: string
@@ -725,6 +733,8 @@ function registerOutOfProcessTeammateTask(
     insideTmux: boolean
     backendType: BackendType
     toolUseId?: string
+    spawnedWith:NonNullable<InProcessTeammateTaskState['spawnedWith']>
+    spawnedBy?: string
   },
 ): void {
   const taskId = generateTaskId('in_process_teammate')
@@ -740,6 +750,8 @@ function registerOutOfProcessTeammateTask(
       toolUseId,
     ),
     type: 'in_process_teammate',
+    spawnedWith,
+    ...(spawnedBy === undefined ? {} : {spawnedBy}),
     status: 'running',
     identity: {
       agentId: teammateId,
@@ -786,7 +798,7 @@ function registerOutOfProcessTeammateTask(
 async function handleSpawnInProcess(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const { setAppState, getAppState } = context
   const {
     name,
@@ -850,6 +862,9 @@ async function handleSpawnInProcess(
     name: sanitizedName,
     teamName,
     prompt,
+    description:input.description,
+    agentType:agent_type,
+    parentAgentId:context.agentId,
     color: teammateColor,
     planModeRequired: plan_mode_required ?? false,
     permissionMode: effectivePermissionMode,
@@ -868,16 +883,9 @@ async function handleSpawnInProcess(
   )
 
   // Start the agent execution loop (fire-and-forget)
-  if (result.taskId && result.teammateContext && result.abortController) {
+  if (result.identity && result.taskId && result.teammateContext && result.abortController) {
     startInProcessTeammate({
-      identity: {
-        agentId: teammateId,
-        agentName: sanitizedName,
-        teamName,
-        color: teammateColor,
-        planModeRequired: plan_mode_required ?? false,
-        parentSessionId: result.teammateContext.parentSessionId,
-      },
+      identity: result.identity,
       taskId: result.taskId,
       prompt,
       description: input.description,
@@ -970,6 +978,7 @@ async function handleSpawnInProcess(
   // Sending via both paths would cause duplicate welcome messages.
 
   return {
+    loopAgentId: result.identity?.resumableAgentId,
     data: {
       teammate_id: teammateId,
       agent_id: teammateId,
@@ -996,7 +1005,7 @@ async function handleSpawnInProcess(
 async function handleSpawn(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   // Check if in-process mode is enabled via feature flag
   if (isInProcessEnabled()) {
     return handleSpawnInProcess(input, context)
@@ -1044,7 +1053,7 @@ async function handleSpawn(
 export async function spawnTeammate(
   config: SpawnTeammateConfig,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const appState = context.getAppState()
   const teamName = config.team_name || appState.teamContext?.teamName
   const definition = context.options.agentDefinitions.activeAgents.find(

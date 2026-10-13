@@ -106,7 +106,7 @@ import {
   writeToMailbox,
 } from '../teammateMailbox.js'
 import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfettoTracing.js'
-import { createContentReplacementState } from '../toolResultStorage.js'
+import { createContentReplacementState, type ContentReplacementState } from '../toolResultStorage.js'
 import { TEAM_LEAD_NAME } from './constants.js'
 import {
   getLeaderSetToolPermissionContext,
@@ -511,6 +511,9 @@ export type InProcessRunnerConfig = {
   /** request_id of the API call that spawned this teammate, for lineage
    *  tracing on tengu_api_* events. */
   invokingRequestId?: string
+  initialFrom?: string
+  resumeMessages?: Message[]
+  resumeReplacementState?: ContentReplacementState
 }
 
 /**
@@ -1017,10 +1020,11 @@ export async function runInProcessTeammate(
   }
 
   // All messages across all prompts
-  const allMessages: Message[] = []
+  const allMessages: Message[] = config.resumeMessages?.slice() ?? []
+  const recordedUuids = new Set(allMessages.map(message => message.uuid))
   // Wrap initial prompt with XML for proper styling in transcript view
   const wrappedInitialPrompt = formatAsTeammateMessage(
-    'team-lead',
+    config.initialFrom ?? 'team-lead',
     prompt,
     undefined,
     description,
@@ -1033,6 +1037,10 @@ export async function runInProcessTeammate(
   // Use parentSessionId as the task list ID since the leader creates tasks
   // under its session ID, not the team name.
   await tryClaimNextTask(identity.parentSessionId, identity.agentName)
+
+  const finishModConversation = toolUseContext.mods?.trackConversation({
+    agentId: identity.resumableAgentId ?? identity.agentId, sessionId: identity.parentSessionId, messages: () => allMessages, persistent: true,
+  })
 
   try {
     // Add initial prompt to task.messages for display (wrapped with XML)
@@ -1056,9 +1064,9 @@ export async function runInProcessTeammate(
     // and makes holistic replace-globally-largest decisions, diverging from
     // earlier iterations' incremental frozen-first decisions → wire prefix
     // differs → cache miss. Gated on parent to inherit feature-flag-off.
-    let teammateReplacementState = toolUseContext.contentReplacementState
+    let teammateReplacementState = config.resumeReplacementState ?? (toolUseContext.contentReplacementState
       ? createContentReplacementState()
-      : undefined
+      : undefined)
 
     // Main teammate loop - runs until abort or shutdown approved
     while (!abortController.signal.aborted && !shouldExit) {
@@ -1213,8 +1221,23 @@ export async function runInProcessTeammate(
             querySource: 'agent:custom',
             override: {
               abortController: currentWorkAbortController,
-              agentId: asAgentId(identity.agentId),
+              agentId: asAgentId(identity.resumableAgentId ?? identity.agentId),
             },
+            ...(identity.resumableAgentId && {
+              recordedUuids,
+              name: identity.agentName,
+              description,
+              parentAgentId: toolUseContext.agentId,
+              extraMetadata: {
+                taskKind: 'in_process_teammate' as const,
+                teamName: identity.teamName,
+                color: identity.color,
+                planModeRequired: identity.planModeRequired,
+                ...(agentDefinition && { customAgentType: agentDefinition.agentType }),
+                ...(model && { model }),
+                permissionMode: currentPermissionMode,
+              },
+            }),
             resolvedModel: model,
             preserveToolUseResults: true,
             availableTools: toolUseContext.options.tools,
@@ -1569,6 +1592,8 @@ export async function runInProcessTeammate(
       error: errorMessage,
       messages: allMessages,
     }
+  } finally {
+    finishModConversation?.()
   }
 }
 

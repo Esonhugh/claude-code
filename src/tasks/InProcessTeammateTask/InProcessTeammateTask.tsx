@@ -117,7 +117,7 @@ export function findTeammateTaskByAgentId(
 ): InProcessTeammateTaskState | undefined {
   let fallback: InProcessTeammateTaskState | undefined
   for (const task of Object.values(tasks)) {
-    if (isInProcessTeammateTask(task) && task.identity.agentId === agentId) {
+    if (isInProcessTeammateTask(task) && (task.identity.agentId === agentId || task.identity.resumableAgentId === agentId)) {
       // Prefer running tasks in case old killed tasks still exist in AppState
       // alongside new running ones with the same agentId
       if (task.status === 'running') {

@@ -225,6 +225,7 @@ async function runCase(
   agentDefinition?: AgentDefinition,
   agentId = 'researcher@retention-team',
   followUp?: string,
+  useSpawnedIdentity = false,
 ) {
   const [agentName = 'researcher', teamName = 'retention-team'] =
     agentId.split('@')
@@ -241,8 +242,10 @@ async function runCase(
     spawned.setState,
   )
   parentToolUseContext.agentId = parentAgentId
+  const producedTask = spawned.getState().tasks[spawned.taskId]
   const result = await runInProcessTeammate({
-    identity: {
+    identity: useSpawnedIdentity && producedTask?.type === 'in_process_teammate'
+      ? producedTask.identity : {
       agentId,
       agentName,
       teamName,
@@ -438,4 +441,17 @@ test('keeps teammate identity across turns and isolates teammates from their par
     observedOverrides[2]?.agentId,
   )
   assert.equal(isolatedConversation.parentToolUseContext.agentId, isolatedConversation.parentAgentId)
+})
+
+test('C17 real teammate loop uses the constructor-produced logical ID across turns while keeping mailbox context', async () => {
+  observedOverrides = []
+  const conversation = await runCase('complete', true, undefined, 'reviewer@logical-loop-team', 'second turn', true)
+  assert.equal(conversation.result.success, true)
+  const task = conversation.task
+  assert.equal(task?.type, 'in_process_teammate')
+  if (task?.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+  assert.match(task.identity.resumableAgentId!, /^areviewer-[0-9a-f]{16}$/)
+  assert.deepEqual(observedOverrides.map(override => override.agentId), [task.identity.resumableAgentId, task.identity.resumableAgentId])
+  assert.equal(task.identity.agentId, 'reviewer@logical-loop-team')
+  assert.equal(conversation.parentToolUseContext.agentId, conversation.parentAgentId)
 })

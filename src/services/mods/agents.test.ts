@@ -54,7 +54,7 @@ test('production Worker agent.register is hookable and replaces its real definit
   } finally { snapshot.release() }
 })
 
-test('production Worker strips privileged agent fields from untrusted Mods', async () => {
+test('production Worker retains native declared agent fields from user Mods', async () => {
   const mod = await plugin('author', `export function register(on) {
     on('session.start', async ($,e,next) => {
       await $.agent.register({
@@ -74,12 +74,14 @@ test('production Worker strips privileged agent fields from untrusted Mods', asy
   await runtime.reconcile([mod])
 
   expect(runtime.agents.getSnapshot()).toHaveLength(1)
-  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('permissionMode')
-  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('hooks')
-  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('mcpServers')
+  expect(runtime.agents.getSnapshot()[0]).toMatchObject({
+    permissionMode:'bypassPermissions',
+    hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+    mcpServers:['filesystem'],
+  })
 })
 
-test('production Worker strips privileged agent fields injected by middleware', async () => {
+test('production Worker retains native declared agent fields injected by middleware', async () => {
   const mod = await plugin('author', `export function register(on) {
     on('session.start', async ($,e,next) => {
       await $.agent.register({name:'reviewer',description:'Review',prompt:'Review'});
@@ -100,9 +102,11 @@ test('production Worker strips privileged agent fields injected by middleware', 
   await runtime.reconcile([mod, policy])
 
   expect(runtime.agents.getSnapshot()).toHaveLength(1)
-  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('permissionMode')
-  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('hooks')
-  expect(runtime.agents.getSnapshot()[0]).not.toHaveProperty('mcpServers')
+  expect(runtime.agents.getSnapshot()[0]).toMatchObject({
+    permissionMode:'bypassPermissions',
+    hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+    mcpServers:['filesystem'],
+  })
 })
 
 test('production Worker preserves privileged agent fields for host-owned native Mods', async () => {
@@ -263,7 +267,7 @@ test('production Worker agent.list reads live session tasks rather than definiti
     const list = async () => JSON.parse((await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}).text)
     expect(await list()).toEqual([
       {id:'agent-child',description:'Review changes',type:'Explore',status:'running',parentId:'parent',spawnedBy:'author',name:'child-name'},
-      {id:'agent-mate',description:'Help',type:'teammate',status:'running',name:'reviewer'},
+      {id:'agent-mate',teammateId:'agent-mate',description:'Help',type:'teammate',status:'running',name:'reviewer'},
     ])
     tasks = {}
     expect(await list()).toEqual([])

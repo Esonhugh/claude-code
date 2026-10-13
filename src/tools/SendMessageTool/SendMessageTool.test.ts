@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, mock, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, realpath, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
@@ -205,6 +205,43 @@ if (process.env[childFlag] !== '1') {
     expect(result.data.success).toBe(true)
     expect(resumeAgentBackground).toHaveBeenCalledTimes(1)
     expect(resolvePeerSession).not.toHaveBeenCalled()
+  })
+
+  test('C17 produced live teammate routes by logical ID and registered name using its own mailbox team', async () => {
+    const { spawnInProcessTeammate } = await import('../../utils/swarm/spawnInProcess.js')
+    const produced = await spawnInProcessTeammate({name:'produced-reviewer',teamName:'produced-routing-team',prompt:'Review',planModeRequired:false,permissionMode:'default'},context)
+    const task = state.tasks[produced.taskId!]
+    expect(task.type).toBe('in_process_teammate')
+    if (task.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+    try {
+      const logicalId = task.identity.resumableAgentId!
+      expect(logicalId).toMatch(/^aproduced-reviewer-[0-9a-f]{16}$/)
+      for (const to of [logicalId,'produced-reviewer']) {
+        const result = await SendMessageTool.call({to,message:'private fixture hello'},context,async()=>({behavior:'allow'}),undefined)
+        expect(result.data.success).toBe(true)
+      }
+      expect((await readMailbox('produced-reviewer','produced-routing-team')).map(row=>row.text)).toEqual(['private fixture hello','private fixture hello'])
+      expect(resumeAgentBackground).not.toHaveBeenCalled()
+      expect(resolvePeerSession).not.toHaveBeenCalled()
+      expect(sendToUdsSocket).not.toHaveBeenCalled()
+    } finally { task.unregisterCleanup?.(); task.abortController?.abort() }
+  })
+
+  test('C17 logical teammate inbox failure reports no queue without resuming or routing to peers', async () => {
+    const { spawnInProcessTeammate } = await import('../../utils/swarm/spawnInProcess.js')
+    const produced = await spawnInProcessTeammate({name:'blocked-reviewer',teamName:'blocked-routing-team',prompt:'Review',planModeRequired:false,permissionMode:'default'},context)
+    const task = state.tasks[produced.taskId!]
+    if (task.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+    try {
+      const inbox = getInboxPath(task.identity.agentName, task.identity.teamName)
+      await mkdir(inbox,{recursive:true}); await writeFile(join(inbox,'block'),'private fixture')
+      const result = await SendMessageTool.call({to:task.identity.resumableAgentId!,message:'private fixture hello'},context,async()=>({behavior:'allow'}),undefined)
+      expect(result.data.success).toBe(false)
+      expect(result.data.message).toContain('nothing was queued')
+      expect(resumeAgentBackground).not.toHaveBeenCalled()
+      expect(resolvePeerSession).not.toHaveBeenCalled()
+      expect(sendToUdsSocket).not.toHaveBeenCalled()
+    } finally { task.unregisterCleanup?.(); task.abortController?.abort() }
   })
 
   test('real Teams context routes members before peer resolution', async () => {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { mock } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { expect, mock, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
@@ -20,718 +20,775 @@ import {
 import { GENERAL_PURPOSE_AGENT } from '../AgentTool/built-in/generalPurposeAgent.js'
 import type { AgentDefinition } from '../AgentTool/loadAgentsDir.js'
 
-const startedInProcessConfigs: InProcessRunnerConfig[] = []
-let useInProcessBackend = true
-let spawnedPaneCommand: string | undefined
-let envAfterDetection: string | undefined
-mock.module('../../utils/execFileNoThrow.js', () => ({
-  execFileNoThrow: async (_command: string, args: string[]) => {
-    if (args[0] === 'send-keys') spawnedPaneCommand = args[3]
-    return { code: 0, stdout: args[0] === 'new-window' ? '%separate-test-pane' : '', stderr: '' }
-  },
-}))
-mock.module('../../utils/swarm/inProcessRunner.js', () => ({
-  startInProcessTeammate(config: InProcessRunnerConfig) {
-    startedInProcessConfigs.push(config)
-  },
-}))
-mock.module('../../utils/swarm/backends/registry.js', () => ({
-  isInProcessEnabled: () => useInProcessBackend,
-  detectAndGetBackend: async () => {
-    if (envAfterDetection) process.env.CLAUDE_CODE_SUBAGENT_MODEL = envAfterDetection
-    return { backend: { type: 'tmux' }, needsIt2Setup: false }
-  },
-  getBackendByType: () => ({ killPane: async () => {} }),
-  markInProcessFallback: () => {},
-  resetBackendDetection: () => {},
-}))
-mock.module('../../utils/swarm/teammateLayoutManager.js', () => ({
-  assignTeammateColor: () => 'blue',
-  createTeammatePaneInSwarmView: async () => ({
-    paneId: '%test-pane',
-    isFirstTeammate: false,
-  }),
-  enablePaneBorderStatus: async () => {},
-  isInsideTmux: async () => false,
-  sendCommandToPane: async (_paneId: string, command: string) => {
-    spawnedPaneCommand = command
-  },
-}))
+const isolatedChild = 'CLAUDE_CODE_SPAWN_MULTI_AGENT_TEST_CHILD'
+if (process.env[isolatedChild] === '1') {
+  await isolatedAssertions()
+} else {
+  test('shared spawn production assertions (isolated)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'spawn-multi-agent-child-'))
+    for (const name of ['home', 'config', 'tmp']) mkdirSync(join(root, name))
+    const child = Bun.spawn([process.execPath, 'test', '--timeout', '5000', import.meta.path], {
+      cwd: import.meta.dir,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin', LANG: 'en_US.UTF-8', NODE_ENV: 'test',
+        HOME: join(root, 'home'), CLAUDE_CONFIG_DIR: join(root, 'config'), TMPDIR: join(root, 'tmp'),
+        CLAUDE_CODE_TMPDIR: join(root, 'tmp'), BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
+        DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1', CLAUDE_CODE_MAX_RETRIES: '0',
+        ANTHROPIC_API_KEY: 'mods-test-dummy-source-only', ANTHROPIC_BASE_URL: 'http://127.0.0.1:9',
+        OPENAI_API_KEY: 'mods-test-dummy-source-only', OPENAI_BASE_URL: 'http://127.0.0.1:9/v1',
+        [isolatedChild]: '1',
+      },
+      stdout: 'pipe', stderr: 'pipe', timeout: 4500,
+    })
+    try {
+      const [code, stdout, stderr] = await Promise.all([
+        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+      ])
+      if (code !== 0) throw Error(`Isolated shared spawn assertions failed (${code})\n${stdout}\n${stderr}`)
+      expect(`${stdout}\n${stderr}`).toContain('spawnMultiAgent.test.ts passed')
+      expect(code).toBe(0)
+    } finally {
+      if (child.exitCode === null) { child.kill(); await child.exited }
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
 
-const { spawnTeammate } = await import('./spawnMultiAgent.js')
+async function isolatedAssertions() {
+  const startedInProcessConfigs: InProcessRunnerConfig[] = []
+  let useInProcessBackend = true
+  let spawnedPaneCommand: string | undefined
+  let envAfterDetection: string | undefined
+  mock.module('../../utils/execFileNoThrow.js', () => ({
+    execFileNoThrow: async (_command: string, args: string[]) => {
+      if (args[0] === 'send-keys') spawnedPaneCommand = args[3]
+      return { code: 0, stdout: args[0] === 'new-window' ? '%separate-test-pane' : '', stderr: '' }
+    },
+  }))
+  mock.module('../../utils/swarm/inProcessRunner.js', () => ({
+    startInProcessTeammate(config: InProcessRunnerConfig) {
+      startedInProcessConfigs.push(config)
+    },
+  }))
+  mock.module('../../utils/swarm/backends/registry.js', () => ({
+    isInProcessEnabled: () => useInProcessBackend,
+    detectAndGetBackend: async () => {
+      if (envAfterDetection) process.env.CLAUDE_CODE_SUBAGENT_MODEL = envAfterDetection
+      return { backend: { type: 'tmux' }, needsIt2Setup: false }
+    },
+    getBackendByType: () => ({ killPane: async () => {} }),
+    markInProcessFallback: () => {},
+    resetBackendDetection: () => {},
+  }))
+  mock.module('../../utils/swarm/teammateLayoutManager.js', () => ({
+    assignTeammateColor: () => 'blue',
+    createTeammatePaneInSwarmView: async () => ({
+      paneId: '%test-pane',
+      isFirstTeammate: false,
+    }),
+    enablePaneBorderStatus: async () => {},
+    isInsideTmux: async () => false,
+    sendCommandToPane: async (_paneId: string, command: string) => {
+      spawnedPaneCommand = command
+    },
+  }))
 
-const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
-const configDir = mkdtempSync(join(tmpdir(), 'spawn-multi-agent-test-'))
-process.env.CLAUDE_CONFIG_DIR = configDir
+  const { spawnTeammate } = await import('./spawnMultiAgent.js')
 
-await writeTeamFileAsync('concurrent-team', {
-  name: 'concurrent-team',
-  createdAt: Date.now(),
-  leadAgentId: 'team-lead@concurrent-team',
-  members: [],
-})
+  const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
+  const configDir = mkdtempSync(join(tmpdir(), 'spawn-multi-agent-test-'))
+  process.env.CLAUDE_CONFIG_DIR = configDir
 
-await Promise.all([
-  appendOrUpdateTeamMemberAsync('concurrent-team', {
-    agentId: 'alpha@concurrent-team',
-    name: 'alpha',
-    agentType: 'general-purpose',
-    model: 'claude-sonnet-4-6',
-    prompt: 'inspect alpha',
-    color: 'blue',
-    planModeRequired: false,
-    mode: 'default' as const,
-    joinedAt: Date.now(),
-    tmuxPaneId: 'pane-alpha',
-    cwd: '/tmp',
-    subscriptions: [] as string[],
-    backendType: 'in-process' as const,
-  }),
-  appendOrUpdateTeamMemberAsync('concurrent-team', {
-    agentId: 'beta@concurrent-team',
-    name: 'beta',
-    agentType: 'general-purpose',
-    model: 'claude-sonnet-4-6',
-    prompt: 'inspect beta',
-    color: 'blue',
-    planModeRequired: false,
-    mode: 'default' as const,
-    joinedAt: Date.now(),
-    tmuxPaneId: 'pane-beta',
-    cwd: '/tmp',
-    subscriptions: [] as string[],
-    backendType: 'in-process' as const,
-  }),
-])
+  await writeTeamFileAsync('concurrent-team', {
+    name: 'concurrent-team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@concurrent-team',
+    members: [],
+  })
 
-const concurrentTeamFile = await readTeamFileAsync('concurrent-team')
-assert.deepEqual(
-  concurrentTeamFile?.members.map(member => member.name).sort(),
-  ['alpha', 'beta'],
-)
-
-await writeTeamFileAsync('concurrent-dedupe-team', {
-  name: 'concurrent-dedupe-team',
-  createdAt: Date.now(),
-  leadAgentId: 'team-lead@concurrent-dedupe-team',
-  members: [],
-})
-
-await Promise.all([
-  appendOrUpdateTeamMemberAsync('concurrent-dedupe-team', {
-    agentId: 'alpha@concurrent-dedupe-team',
-    name: 'alpha',
-    agentType: 'general-purpose',
-    model: 'claude-sonnet-4-6',
-    prompt: 'inspect alpha once',
-    color: 'blue',
-    planModeRequired: false,
-    mode: 'default' as const,
-    joinedAt: Date.now(),
-    tmuxPaneId: 'pane-alpha-1',
-    cwd: '/tmp',
-    subscriptions: [] as string[],
-    backendType: 'in-process' as const,
-  }),
-  appendOrUpdateTeamMemberAsync('concurrent-dedupe-team', {
-    agentId: 'alpha@concurrent-dedupe-team',
-    name: 'alpha',
-    agentType: 'general-purpose',
-    model: 'claude-sonnet-4-6',
-    prompt: 'inspect alpha twice',
-    color: 'blue',
-    planModeRequired: false,
-    mode: 'default' as const,
-    joinedAt: Date.now(),
-    tmuxPaneId: 'pane-alpha-2',
-    cwd: '/tmp',
-    subscriptions: [] as string[],
-    backendType: 'in-process' as const,
-  }),
-])
-
-const concurrentDedupeTeamFile = await readTeamFileAsync('concurrent-dedupe-team')
-assert.equal(concurrentDedupeTeamFile?.members.length, 1)
-assert.deepEqual(concurrentDedupeTeamFile?.members.map(member => member.agentId), [
-  'alpha@concurrent-dedupe-team',
-])
-
-await writeTeamFileAsync('concurrent-add-remove-team', {
-  name: 'concurrent-add-remove-team',
-  createdAt: Date.now(),
-  leadAgentId: 'team-lead@concurrent-add-remove-team',
-  members: [
-    {
-      agentId: 'alpha@concurrent-add-remove-team',
+  await Promise.all([
+    appendOrUpdateTeamMemberAsync('concurrent-team', {
+      agentId: 'alpha@concurrent-team',
       name: 'alpha',
+      agentType: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      prompt: 'inspect alpha',
+      color: 'blue',
+      planModeRequired: false,
+      mode: 'default' as const,
       joinedAt: Date.now(),
       tmuxPaneId: 'pane-alpha',
       cwd: '/tmp',
-      subscriptions: [],
-    },
-  ],
-})
-
-await Promise.all([
-  appendOrUpdateTeamMemberAsync('concurrent-add-remove-team', {
-    agentId: 'beta@concurrent-add-remove-team',
-    name: 'beta',
-    agentType: 'general-purpose',
-    model: 'claude-sonnet-4-6',
-    prompt: 'inspect beta',
-    color: 'blue',
-    planModeRequired: false,
-    mode: 'default' as const,
-    joinedAt: Date.now(),
-    tmuxPaneId: 'pane-beta',
-    cwd: '/tmp',
-    subscriptions: [] as string[],
-    backendType: 'in-process' as const,
-  }),
-  mutateTeamFileAsync('concurrent-add-remove-team', {
-    mutation: 'testRemoveMemberByAgentId',
-    agentId: 'alpha@concurrent-add-remove-team',
-    mutate(teamFile) {
-      const memberIndex = teamFile.members.findIndex(
-        member => member.agentId === 'alpha@concurrent-add-remove-team',
-      )
-      assert.notEqual(memberIndex, -1)
-      teamFile.members.splice(memberIndex, 1)
-      return { result: undefined, changed: true }
-    },
-  }),
-])
-
-const concurrentAddRemoveTeamFile = await readTeamFileAsync(
-  'concurrent-add-remove-team',
-)
-assert.deepEqual(
-  concurrentAddRemoveTeamFile?.members.map(member => member.name).sort(),
-  ['beta'],
-)
-
-setCliTeammateModeOverride('in-process')
-
-let setAppStateCalls = 0
-const context = {
-  options: {
-    agentDefinitions: {
-      activeAgents: [GENERAL_PURPOSE_AGENT],
-      inactiveAgents: [],
-      allowedAgentTypes: undefined,
-    },
-  },
-  toolUseId: 'toolu_spawn_test',
-  getAppState: () => ({
-    mainLoopModel: 'claude-sonnet-4-6',
-    toolPermissionContext: getEmptyToolPermissionContext(),
-    teamContext: { teamName: 'default' },
-  }),
-  setAppState: () => {
-    setAppStateCalls += 1
-  },
-} as never
-
-let missingTeamError: unknown
-try {
-  await spawnTeammate(
-    {
-      name: 'worker',
-      prompt: 'do it',
-    },
-    context,
-  )
-} catch (error) {
-  missingTeamError = error
-}
-
-assert.ok(missingTeamError instanceof Error)
-assert.equal(
-  missingTeamError.message,
-  'Team "default" does not exist. Call spawnTeam first to create the team.',
-)
-assert.equal(setAppStateCalls, 0)
-
-await writeTeamFileAsync('concurrent-spawn-team', {
-  name: 'concurrent-spawn-team',
-  createdAt: Date.now(),
-  leadAgentId: 'team-lead@concurrent-spawn-team',
-  members: [
-    {
-      agentId: 'team-lead@concurrent-spawn-team',
-      name: 'team-lead',
-      joinedAt: Date.now(),
-      tmuxPaneId: '',
-      cwd: '/tmp',
-      subscriptions: [],
-    },
-  ],
-})
-
-let concurrentSpawnState = {
-  ...getDefaultAppState(),
-  mainLoopModel: 'claude-sonnet-4-6' as const,
-  toolPermissionContext: getEmptyToolPermissionContext(),
-  teamContext: {
-    teamName: 'concurrent-spawn-team',
-    teamFilePath: '',
-    leadAgentId: 'team-lead@concurrent-spawn-team',
-    teammates: {},
-  },
-}
-const concurrentSpawnContext = {
-  options: {
-    tools: [],
-    agentDefinitions: {
-      activeAgents: [GENERAL_PURPOSE_AGENT],
-      inactiveAgents: [],
-      allowedAgentTypes: undefined,
-    },
-  },
-  toolUseId: 'toolu_concurrent_spawn_test',
-  getAppState: () => concurrentSpawnState,
-  setAppState: (
-    updater: (prev: typeof concurrentSpawnState) => typeof concurrentSpawnState,
-  ) => {
-    concurrentSpawnState = updater(concurrentSpawnState)
-  },
-} as unknown as ToolUseContext
-
-await Promise.all([
-  spawnTeammate(
-    {
-      name: 'alpha',
-      prompt: 'inspect alpha',
-      team_name: 'concurrent-spawn-team',
-    },
-    concurrentSpawnContext,
-  ),
-  spawnTeammate(
-    {
+      subscriptions: [] as string[],
+      backendType: 'in-process' as const,
+    }),
+    appendOrUpdateTeamMemberAsync('concurrent-team', {
+      agentId: 'beta@concurrent-team',
       name: 'beta',
+      agentType: 'general-purpose',
+      model: 'claude-sonnet-4-6',
       prompt: 'inspect beta',
-      team_name: 'concurrent-spawn-team',
+      color: 'blue',
+      planModeRequired: false,
+      mode: 'default' as const,
+      joinedAt: Date.now(),
+      tmuxPaneId: 'pane-beta',
+      cwd: '/tmp',
+      subscriptions: [] as string[],
+      backendType: 'in-process' as const,
+    }),
+  ])
+
+  const concurrentTeamFile = await readTeamFileAsync('concurrent-team')
+  assert.deepEqual(
+    concurrentTeamFile?.members.map(member => member.name).sort(),
+    ['alpha', 'beta'],
+  )
+
+  await writeTeamFileAsync('concurrent-dedupe-team', {
+    name: 'concurrent-dedupe-team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@concurrent-dedupe-team',
+    members: [],
+  })
+
+  await Promise.all([
+    appendOrUpdateTeamMemberAsync('concurrent-dedupe-team', {
+      agentId: 'alpha@concurrent-dedupe-team',
+      name: 'alpha',
+      agentType: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      prompt: 'inspect alpha once',
+      color: 'blue',
+      planModeRequired: false,
+      mode: 'default' as const,
+      joinedAt: Date.now(),
+      tmuxPaneId: 'pane-alpha-1',
+      cwd: '/tmp',
+      subscriptions: [] as string[],
+      backendType: 'in-process' as const,
+    }),
+    appendOrUpdateTeamMemberAsync('concurrent-dedupe-team', {
+      agentId: 'alpha@concurrent-dedupe-team',
+      name: 'alpha',
+      agentType: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      prompt: 'inspect alpha twice',
+      color: 'blue',
+      planModeRequired: false,
+      mode: 'default' as const,
+      joinedAt: Date.now(),
+      tmuxPaneId: 'pane-alpha-2',
+      cwd: '/tmp',
+      subscriptions: [] as string[],
+      backendType: 'in-process' as const,
+    }),
+  ])
+
+  const concurrentDedupeTeamFile = await readTeamFileAsync('concurrent-dedupe-team')
+  assert.equal(concurrentDedupeTeamFile?.members.length, 1)
+  assert.deepEqual(concurrentDedupeTeamFile?.members.map(member => member.agentId), [
+    'alpha@concurrent-dedupe-team',
+  ])
+
+  await writeTeamFileAsync('concurrent-add-remove-team', {
+    name: 'concurrent-add-remove-team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@concurrent-add-remove-team',
+    members: [
+      {
+        agentId: 'alpha@concurrent-add-remove-team',
+        name: 'alpha',
+        joinedAt: Date.now(),
+        tmuxPaneId: 'pane-alpha',
+        cwd: '/tmp',
+        subscriptions: [],
+      },
+    ],
+  })
+
+  await Promise.all([
+    appendOrUpdateTeamMemberAsync('concurrent-add-remove-team', {
+      agentId: 'beta@concurrent-add-remove-team',
+      name: 'beta',
+      agentType: 'general-purpose',
+      model: 'claude-sonnet-4-6',
+      prompt: 'inspect beta',
+      color: 'blue',
+      planModeRequired: false,
+      mode: 'default' as const,
+      joinedAt: Date.now(),
+      tmuxPaneId: 'pane-beta',
+      cwd: '/tmp',
+      subscriptions: [] as string[],
+      backendType: 'in-process' as const,
+    }),
+    mutateTeamFileAsync('concurrent-add-remove-team', {
+      mutation: 'testRemoveMemberByAgentId',
+      agentId: 'alpha@concurrent-add-remove-team',
+      mutate(teamFile) {
+        const memberIndex = teamFile.members.findIndex(
+          member => member.agentId === 'alpha@concurrent-add-remove-team',
+        )
+        assert.notEqual(memberIndex, -1)
+        teamFile.members.splice(memberIndex, 1)
+        return { result: undefined, changed: true }
+      },
+    }),
+  ])
+
+  const concurrentAddRemoveTeamFile = await readTeamFileAsync(
+    'concurrent-add-remove-team',
+  )
+  assert.deepEqual(
+    concurrentAddRemoveTeamFile?.members.map(member => member.name).sort(),
+    ['beta'],
+  )
+
+  setCliTeammateModeOverride('in-process')
+
+  let setAppStateCalls = 0
+  const context = {
+    options: {
+      agentDefinitions: {
+        activeAgents: [GENERAL_PURPOSE_AGENT],
+        inactiveAgents: [],
+        allowedAgentTypes: undefined,
+      },
     },
-    concurrentSpawnContext,
-  ),
-])
+    toolUseId: 'toolu_spawn_test',
+    getAppState: () => ({
+      mainLoopModel: 'claude-sonnet-4-6',
+      toolPermissionContext: getEmptyToolPermissionContext(),
+      teamContext: { teamName: 'default' },
+    }),
+    setAppState: () => {
+      setAppStateCalls += 1
+    },
+  } as never
 
-const concurrentSpawnTeamFile = await readTeamFileAsync('concurrent-spawn-team')
-assert.deepEqual(
-  concurrentSpawnTeamFile?.members.map(member => member.name).sort(),
-  ['alpha', 'beta', 'team-lead'],
-)
+  let missingTeamError: unknown
+  try {
+    await spawnTeammate(
+      {
+        name: 'worker',
+        prompt: 'do it',
+      },
+      context,
+    )
+  } catch (error) {
+    missingTeamError = error
+  }
 
-await writeTeamFileAsync('same-name-spawn-team', {
-  name: 'same-name-spawn-team',
-  createdAt: Date.now(),
-  leadAgentId: 'team-lead@same-name-spawn-team',
-  members: [],
-})
-const sameNameResults = await Promise.all([
-  spawnTeammate(
+  assert.ok(missingTeamError instanceof Error)
+  assert.equal(
+    missingTeamError.message,
+    'Team "default" does not exist. Call spawnTeam first to create the team.',
+  )
+  assert.equal(setAppStateCalls, 0)
+
+  await writeTeamFileAsync('concurrent-spawn-team', {
+    name: 'concurrent-spawn-team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@concurrent-spawn-team',
+    members: [
+      {
+        agentId: 'team-lead@concurrent-spawn-team',
+        name: 'team-lead',
+        joinedAt: Date.now(),
+        tmuxPaneId: '',
+        cwd: '/tmp',
+        subscriptions: [],
+      },
+    ],
+  })
+
+  let concurrentSpawnState = {
+    ...getDefaultAppState(),
+    mainLoopModel: 'claude-sonnet-4-6' as const,
+    toolPermissionContext: getEmptyToolPermissionContext(),
+    teamContext: {
+      teamName: 'concurrent-spawn-team',
+      teamFilePath: '',
+      leadAgentId: 'team-lead@concurrent-spawn-team',
+      teammates: {},
+    },
+  }
+  const concurrentSpawnContext = {
+    options: {
+      tools: [],
+      agentDefinitions: {
+        activeAgents: [GENERAL_PURPOSE_AGENT],
+        inactiveAgents: [],
+        allowedAgentTypes: undefined,
+      },
+    },
+    toolUseId: 'toolu_concurrent_spawn_test',
+    getAppState: () => concurrentSpawnState,
+    setAppState: (
+      updater: (prev: typeof concurrentSpawnState) => typeof concurrentSpawnState,
+    ) => {
+      concurrentSpawnState = updater(concurrentSpawnState)
+    },
+  } as unknown as ToolUseContext
+
+  await Promise.all([
+    spawnTeammate(
+      {
+        name: 'alpha',
+        prompt: 'inspect alpha',
+        team_name: 'concurrent-spawn-team',
+      },
+      concurrentSpawnContext,
+    ),
+    spawnTeammate(
+      {
+        name: 'beta',
+        prompt: 'inspect beta',
+        team_name: 'concurrent-spawn-team',
+      },
+      concurrentSpawnContext,
+    ),
+  ])
+
+  const concurrentSpawnTeamFile = await readTeamFileAsync('concurrent-spawn-team')
+  assert.deepEqual(
+    concurrentSpawnTeamFile?.members.map(member => member.name).sort(),
+    ['alpha', 'beta', 'team-lead'],
+  )
+
+  await writeTeamFileAsync('same-name-spawn-team', {
+    name: 'same-name-spawn-team',
+    createdAt: Date.now(),
+    leadAgentId: 'team-lead@same-name-spawn-team',
+    members: [],
+  })
+  const sameNameResults = await Promise.all([
+    spawnTeammate(
+      {
+        name: 'reviewer',
+        prompt: 'inspect first',
+        team_name: 'same-name-spawn-team',
+      },
+      concurrentSpawnContext,
+    ),
+    spawnTeammate(
+      {
+        name: 'reviewer',
+        prompt: 'inspect second',
+        team_name: 'same-name-spawn-team',
+      },
+      concurrentSpawnContext,
+    ),
+  ])
+  for (const result of sameNameResults) {
+    const task = Object.values(concurrentSpawnState.tasks).find(task => task.type === 'in_process_teammate' && task.identity.agentId === result.data.teammate_id)
+    assert.equal(task?.type, 'in_process_teammate')
+    if (task?.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+    assert.match(result.loopAgentId!, /^areviewer(?:-2)?-[0-9a-f]{16}$/)
+    assert.equal(result.loopAgentId, task.identity.resumableAgentId)
+    assert.deepEqual(startedInProcessConfigs.find(config => config.taskId === task.id)?.identity, task.identity)
+    assert.equal(result.data.agent_id, task.identity.agentId)
+  }
+  assert.deepEqual(
+    sameNameResults.map(result => result.data.name).sort(),
+    ['reviewer', 'reviewer-2'],
+  )
+  const { InProcessBackend } = await import('../../utils/swarm/backends/InProcessBackend.js')
+  const identityBackend = new InProcessBackend()
+  identityBackend.setContext(concurrentSpawnContext)
+  const backendResult = await identityBackend.spawn({name:'backend-reviewer',teamName:'backend-identity-team',prompt:'Review',cwd:'/tmp',parentSessionId:'fixture-session',permissionMode:'default'})
+  assert.equal(backendResult.success, true)
+  const backendTask = concurrentSpawnState.tasks[backendResult.taskId!]
+  assert.equal(backendTask?.type, 'in_process_teammate')
+  if (backendTask?.type !== 'in_process_teammate') throw Error('Missing backend-produced teammate')
+  assert.match(backendTask.identity.resumableAgentId!, /^abackend-reviewer-[0-9a-f]{16}$/)
+  assert.deepEqual(startedInProcessConfigs.find(config => config.taskId === backendTask.id)?.identity, backendTask.identity)
+
+  const sameNameSpawnTeamFile = await readTeamFileAsync('same-name-spawn-team')
+  assert.deepEqual(
+    sameNameSpawnTeamFile?.members.map(member => member.name).sort(),
+    ['reviewer', 'reviewer-2'],
+  )
+
+  setMainLoopModelOverride('gpt-5.6-sol')
+  concurrentSpawnState.effortValue = 'xhigh'
+  const inheritedParentResult = await spawnTeammate(
+    { name: 'parent-model-worker', prompt: 'inspect', team_name: 'concurrent-spawn-team' },
     {
-      name: 'reviewer',
-      prompt: 'inspect first',
-      team_name: 'same-name-spawn-team',
+      ...concurrentSpawnContext,
+      options: { ...concurrentSpawnContext.options, mainLoopModel: 'gpt-5.6-sol' },
     },
-    concurrentSpawnContext,
-  ),
-  spawnTeammate(
-    {
-      name: 'reviewer',
-      prompt: 'inspect second',
-      team_name: 'same-name-spawn-team',
-    },
-    concurrentSpawnContext,
-  ),
-])
-assert.deepEqual(
-  sameNameResults.map(result => result.data.name).sort(),
-  ['reviewer', 'reviewer-2'],
-)
-const sameNameSpawnTeamFile = await readTeamFileAsync('same-name-spawn-team')
-assert.deepEqual(
-  sameNameSpawnTeamFile?.members.map(member => member.name).sort(),
-  ['reviewer', 'reviewer-2'],
-)
+  )
+  assert.equal(inheritedParentResult.data.model, 'gpt-5.6-sol')
+  assert.equal(startedInProcessConfigs.at(-1)?.model, 'gpt-5.6-sol')
+  assert.equal(startedInProcessConfigs.at(-1)?.effort, 'xhigh')
+  concurrentSpawnState.effortValue = undefined
+  assert.equal(
+    (await readTeamFileAsync('concurrent-spawn-team'))?.members.find(member => member.name === 'parent-model-worker')?.model,
+    'gpt-5.6-sol',
+  )
+  setMainLoopModelOverride(undefined)
 
-setMainLoopModelOverride('gpt-5.6-sol')
-concurrentSpawnState.effortValue = 'xhigh'
-const inheritedParentResult = await spawnTeammate(
-  { name: 'parent-model-worker', prompt: 'inspect', team_name: 'concurrent-spawn-team' },
-  {
-    ...concurrentSpawnContext,
-    options: { ...concurrentSpawnContext.options, mainLoopModel: 'gpt-5.6-sol' },
-  },
-)
-assert.equal(inheritedParentResult.data.model, 'gpt-5.6-sol')
-assert.equal(startedInProcessConfigs.at(-1)?.model, 'gpt-5.6-sol')
-assert.equal(startedInProcessConfigs.at(-1)?.effort, 'xhigh')
-concurrentSpawnState.effortValue = undefined
-assert.equal(
-  (await readTeamFileAsync('concurrent-spawn-team'))?.members.find(member => member.name === 'parent-model-worker')?.model,
-  'gpt-5.6-sol',
-)
-setMainLoopModelOverride(undefined)
+  const specializedSpawnBaseline = startedInProcessConfigs.length
 
-const specializedSpawnBaseline = startedInProcessConfigs.length
-
-await writeTeamFileAsync('definition-team', {
-  name: 'definition-team',
-  createdAt: Date.now(),
-  leadAgentId: 'team-lead@definition-team',
-  members: [],
-})
-
-const specializedDefinitions: AgentDefinition[] = [
-  {
-    ...GENERAL_PURPOSE_AGENT,
-    agentType: 'built-in-restricted-agent',
-    tools: ['Read(example.txt)'],
-    disallowedTools: ['Bash'],
-  },
-  {
-    agentType: 'custom-restricted-agent',
-    model: 'Definition/Custom-ID',
-      effort: 'medium',
-    whenToUse: 'Test custom definition propagation',
-    tools: ['Read(custom.txt)'],
-    disallowedTools: ['Write'],
-    source: 'projectSettings',
-    getSystemPrompt: () => 'Custom restricted prompt',
-  },
-  {
-    agentType: 'plugin-restricted-agent',
-    whenToUse: 'Test plugin definition propagation',
-    tools: ['Read(plugin.txt)'],
-    disallowedTools: ['Edit'],
-    source: 'plugin',
-    plugin: 'test-plugin',
-    getSystemPrompt: () => 'Plugin restricted prompt',
-  },
-]
-let definitionState = {
-  ...getDefaultAppState(),
-  mainLoopModel: 'claude-sonnet-4-6' as const,
-  toolPermissionContext: getEmptyToolPermissionContext(),
-  teamContext: {
-    teamName: 'definition-team',
-    teamFilePath: '',
+  await writeTeamFileAsync('definition-team', {
+    name: 'definition-team',
+    createdAt: Date.now(),
     leadAgentId: 'team-lead@definition-team',
-    teammates: {},
-  },
-}
-const definitionContext = {
-  options: {
-    tools: [],
-    agentDefinitions: {
-      activeAgents: specializedDefinitions,
-      inactiveAgents: [],
-      allowedAgentTypes: undefined,
-    },
-  },
-  toolUseId: 'toolu_definition_spawn_test',
-  getAppState: () => definitionState,
-  setAppState: (updater: (prev: typeof definitionState) => typeof definitionState) => {
-    definitionState = updater(definitionState)
-  },
-} as never
+    members: [],
+  })
 
-for (const definition of specializedDefinitions) {
+  const specializedDefinitions: AgentDefinition[] = [
+    {
+      ...GENERAL_PURPOSE_AGENT,
+      agentType: 'built-in-restricted-agent',
+      tools: ['Read(example.txt)'],
+      disallowedTools: ['Bash'],
+    },
+    {
+      agentType: 'custom-restricted-agent',
+      model: 'Definition/Custom-ID',
+      effort: 'medium',
+      whenToUse: 'Test custom definition propagation',
+      tools: ['Read(custom.txt)'],
+      disallowedTools: ['Write'],
+      source: 'projectSettings',
+      getSystemPrompt: () => 'Custom restricted prompt',
+    },
+    {
+      agentType: 'plugin-restricted-agent',
+      whenToUse: 'Test plugin definition propagation',
+      tools: ['Read(plugin.txt)'],
+      disallowedTools: ['Edit'],
+      source: 'plugin',
+      plugin: 'test-plugin',
+      getSystemPrompt: () => 'Plugin restricted prompt',
+    },
+  ]
+  let definitionState = {
+    ...getDefaultAppState(),
+    mainLoopModel: 'claude-sonnet-4-6' as const,
+    toolPermissionContext: getEmptyToolPermissionContext(),
+    teamContext: {
+      teamName: 'definition-team',
+      teamFilePath: '',
+      leadAgentId: 'team-lead@definition-team',
+      teammates: {},
+    },
+  }
+  const definitionContext = {
+    options: {
+      tools: [],
+      agentDefinitions: {
+        activeAgents: specializedDefinitions,
+        inactiveAgents: [],
+        allowedAgentTypes: undefined,
+      },
+    },
+    toolUseId: 'toolu_definition_spawn_test',
+    getAppState: () => definitionState,
+    setAppState: (updater: (prev: typeof definitionState) => typeof definitionState) => {
+      definitionState = updater(definitionState)
+    },
+  } as never
+
+  for (const definition of specializedDefinitions) {
+    await spawnTeammate(
+      {
+        name: `${definition.agentType}-worker`,
+        prompt: 'inspect only',
+        team_name: 'definition-team',
+        agent_type: definition.agentType,
+        permissionMode: 'bypassPermissions',
+        permissions: definition.tools,
+        model: 'claude-sonnet-4-6',
+      },
+      definitionContext,
+    )
+    const startedConfig = startedInProcessConfigs.at(-1)
+    assert.equal(startedConfig?.agentDefinition, definition)
+    assert.equal(startedConfig?.effort, definition.effort)
+    assert.deepEqual(startedConfig?.agentDefinition?.tools, definition.tools)
+    assert.deepEqual(
+      startedConfig?.agentDefinition?.disallowedTools,
+      definition.disallowedTools,
+    )
+    assert.deepEqual(startedConfig?.allowedTools, definition.tools)
+    if (definition.source === 'built-in') {
+      assert.match(
+        definition.getSystemPrompt({ toolUseContext: definitionContext }),
+        /You are an agent for Claude Code/,
+      )
+    } else {
+      assert.match(definition.getSystemPrompt(), /restricted prompt/i)
+    }
+    const spawnedTask = startedConfig
+      ? definitionState.tasks[startedConfig.taskId]
+      : undefined
+    assert.equal(
+      spawnedTask?.type === 'in_process_teammate'
+        ? spawnedTask.permissionMode
+        : undefined,
+      'bypassPermissions',
+    )
+    startedConfig?.abortController.abort()
+  }
+  assert.equal(
+    startedInProcessConfigs.length - specializedSpawnBaseline,
+    specializedDefinitions.length,
+  )
+
+  useInProcessBackend = false
+  spawnedPaneCommand = undefined
   await spawnTeammate(
     {
-      name: `${definition.agentType}-worker`,
+      name: 'process-restricted-worker',
       prompt: 'inspect only',
       team_name: 'definition-team',
-      agent_type: definition.agentType,
-      permissionMode: 'bypassPermissions',
-      permissions: definition.tools,
+      agent_type: 'custom-restricted-agent',
+      permissionMode: 'default',
+      permissions: ['Read(custom.txt)'],
       model: 'claude-sonnet-4-6',
     },
     definitionContext,
   )
-  const startedConfig = startedInProcessConfigs.at(-1)
-  assert.equal(startedConfig?.agentDefinition, definition)
-    assert.equal(startedConfig?.effort, definition.effort)
-  assert.deepEqual(startedConfig?.agentDefinition?.tools, definition.tools)
-  assert.deepEqual(
-    startedConfig?.agentDefinition?.disallowedTools,
-    definition.disallowedTools,
-  )
-  assert.deepEqual(startedConfig?.allowedTools, definition.tools)
-  if (definition.source === 'built-in') {
-    assert.match(
-      definition.getSystemPrompt({ toolUseContext: definitionContext }),
-      /You are an agent for Claude Code/,
-    )
-  } else {
-    assert.match(definition.getSystemPrompt(), /restricted prompt/i)
-  }
-  const spawnedTask = startedConfig
-    ? definitionState.tasks[startedConfig.taskId]
-    : undefined
-  assert.equal(
-    spawnedTask?.type === 'in_process_teammate'
-      ? spawnedTask.permissionMode
-      : undefined,
-    'bypassPermissions',
-  )
-  startedConfig?.abortController.abort()
-}
-assert.equal(
-  startedInProcessConfigs.length - specializedSpawnBaseline,
-  specializedDefinitions.length,
-)
+  assert.ok(spawnedPaneCommand)
+  assert.match(spawnedPaneCommand, /--agent-type custom-restricted-agent(?:\s|$)/)
+  assert.match(spawnedPaneCommand, /--permission-mode default(?:\s|$)/)
+  assert.match(spawnedPaneCommand, /--allowedTools Read\\\(custom\.txt\\\)/)
+  useInProcessBackend = true
 
-useInProcessBackend = false
-spawnedPaneCommand = undefined
-await spawnTeammate(
-  {
-    name: 'process-restricted-worker',
-    prompt: 'inspect only',
-    team_name: 'definition-team',
-    agent_type: 'custom-restricted-agent',
-    permissionMode: 'default',
-    permissions: ['Read(custom.txt)'],
-    model: 'claude-sonnet-4-6',
-  },
-  definitionContext,
-)
-assert.ok(spawnedPaneCommand)
-assert.match(spawnedPaneCommand, /--agent-type custom-restricted-agent(?:\s|$)/)
-assert.match(spawnedPaneCommand, /--permission-mode default(?:\s|$)/)
-assert.match(spawnedPaneCommand, /--allowedTools Read\\\(custom\.txt\\\)/)
-useInProcessBackend = true
-
-const modelEnvKeys = [
-  'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_OPENAI', 'OPENAI_BASE_URL',
-  'CLAUDE_CODE_EFFORT_LEVEL',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-] as const
-const savedModelEnv = Object.fromEntries(modelEnvKeys.map(key => [key, process.env[key]]))
-try {
-  setMainLoopModelOverride('parent model with spaces')
-  process.env.CLAUDE_CODE_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'https://example.invalid/v1'
-  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'high'
-  process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'Gateway/Opus'
-  process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'Gateway/Sonnet'
-  process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'Gateway/Haiku'
-  for (const backend of ['in-process', 'split-pane', 'separate-window']) {
-    useInProcessBackend = backend === 'in-process'
-    envAfterDetection = undefined
-    delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
-    const definitionResult = await spawnTeammate({
-      name: `definition-${backend}`, prompt: 'inspect', team_name: 'definition-team',
-      agent_type: 'custom-restricted-agent', use_splitpane: backend !== 'separate-window',
-    }, definitionContext)
-    assert.equal(definitionResult.data.model, 'Definition/Custom-ID')
-    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'Gateway/Snapshot'
-    envAfterDetection = 'env-changed-after-selection'
-    spawnedPaneCommand = undefined
-    const result = await spawnTeammate({
-      name: `model-${backend}`, prompt: 'inspect', team_name: 'definition-team',
-      model: 'tool-model', agent_type: 'custom-restricted-agent',
+  const modelEnvKeys = [
+    'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CODE_USE_OPENAI', 'OPENAI_BASE_URL',
+    'CLAUDE_CODE_EFFORT_LEVEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  ] as const
+  const savedModelEnv = Object.fromEntries(modelEnvKeys.map(key => [key, process.env[key]]))
+  try {
+    setMainLoopModelOverride('parent model with spaces')
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.OPENAI_BASE_URL = 'https://example.invalid/v1'
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'high'
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'Gateway/Opus'
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'Gateway/Sonnet'
+    process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'Gateway/Haiku'
+    for (const backend of ['in-process', 'split-pane', 'separate-window']) {
+      useInProcessBackend = backend === 'in-process'
+      envAfterDetection = undefined
+      delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+      const definitionResult = await spawnTeammate({
+        name: `definition-${backend}`, prompt: 'inspect', team_name: 'definition-team',
+        agent_type: 'custom-restricted-agent', use_splitpane: backend !== 'separate-window',
+      }, definitionContext)
+      assert.equal(definitionResult.data.model, 'Definition/Custom-ID')
+      process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'Gateway/Snapshot'
+      envAfterDetection = 'env-changed-after-selection'
+      spawnedPaneCommand = undefined
+      const result = await spawnTeammate({
+        name: `model-${backend}`, prompt: 'inspect', team_name: 'definition-team',
+        model: 'tool-model', agent_type: 'custom-restricted-agent',
         effort: 'low',
-      use_splitpane: backend !== 'separate-window',
-    }, definitionContext)
-    assert.equal(result.data.model, 'Gateway/Snapshot')
-    const task = Object.values(definitionState.tasks).find(task =>
-      task.type === 'in_process_teammate' && task.identity.agentId === result.data.agent_id,
-    )
-    assert.equal(task?.type === 'in_process_teammate' ? task.model : undefined, 'Gateway/Snapshot')
-    assert.equal((await readTeamFileAsync('definition-team'))?.members.find(member => member.agentId === result.data.agent_id)?.model, 'Gateway/Snapshot')
-    if (backend === 'in-process') {
-      assert.equal(startedInProcessConfigs.at(-1)?.model, 'Gateway/Snapshot')
+        use_splitpane: backend !== 'separate-window',
+      }, definitionContext)
+      assert.equal(result.data.model, 'Gateway/Snapshot')
+      const task = Object.values(definitionState.tasks).find(task =>
+        task.type === 'in_process_teammate' && task.identity.agentId === result.data.agent_id,
+      )
+      assert.equal(task?.type === 'in_process_teammate' ? task.model : undefined, 'Gateway/Snapshot')
+      assert.equal((await readTeamFileAsync('definition-team'))?.members.find(member => member.agentId === result.data.agent_id)?.model, 'Gateway/Snapshot')
+      if (backend === 'in-process') {
+        assert.equal(startedInProcessConfigs.at(-1)?.model, 'Gateway/Snapshot')
         assert.equal(startedInProcessConfigs.at(-1)?.effort, 'low')
-    } else {
-      assert.ok(spawnedPaneCommand)
-      assert.equal(spawnedPaneCommand.match(/--model\b/g)?.length, 1)
+      } else {
+        assert.ok(spawnedPaneCommand)
+        assert.equal(spawnedPaneCommand.match(/--model\b/g)?.length, 1)
         assert.equal(spawnedPaneCommand.match(/--effort\b/g)?.length, 1)
         assert.match(spawnedPaneCommand, /--effort low(?:\s|$)/)
-      assert.match(spawnedPaneCommand, /--model Gateway\/Snapshot(?:\s|$)/)
-      assert.doesNotMatch(spawnedPaneCommand, /model with spaces|env-changed-after-selection/)
-      for (const key of modelEnvKeys.filter(key => key !== 'CLAUDE_CODE_SUBAGENT_MODEL')) {
-        assert.ok(spawnedPaneCommand.includes(`${key}=`), `${key} should reach ${backend}`)
+        assert.match(spawnedPaneCommand, /--model Gateway\/Snapshot(?:\s|$)/)
+        assert.doesNotMatch(spawnedPaneCommand, /model with spaces|env-changed-after-selection/)
+        for (const key of modelEnvKeys.filter(key => key !== 'CLAUDE_CODE_SUBAGENT_MODEL')) {
+          assert.ok(spawnedPaneCommand.includes(`${key}=`), `${key} should reach ${backend}`)
+        }
+        assert.doesNotMatch(spawnedPaneCommand, /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|AUTH_TOKEN|ACCESS_TOKEN)=/)
       }
-      assert.doesNotMatch(spawnedPaneCommand, /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|AUTH_TOKEN|ACCESS_TOKEN)=/)
+    }
+  } finally {
+    envAfterDetection = undefined
+    useInProcessBackend = true
+    setMainLoopModelOverride(undefined)
+    for (const key of modelEnvKeys) {
+      if (savedModelEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedModelEnv[key]
     }
   }
-} finally {
-  envAfterDetection = undefined
-  useInProcessBackend = true
-  setMainLoopModelOverride(undefined)
-  for (const key of modelEnvKeys) {
-    if (savedModelEnv[key] === undefined) delete process.env[key]
-    else process.env[key] = savedModelEnv[key]
-  }
-}
 
-const extractPermissionFlags = (flags: string) =>
-  flags
-    .split(' ')
-    .filter(Boolean)
-    .filter(
-      (flag, index, parts) =>
-        flag === '--dangerously-skip-permissions' ||
-        flag === '--permission-mode' ||
-        parts[index - 1] === '--permission-mode',
-    )
+  const extractPermissionFlags = (flags: string) =>
+    flags
+      .split(' ')
+      .filter(Boolean)
+      .filter(
+        (flag, index, parts) =>
+          flag === '--dangerously-skip-permissions' ||
+          flag === '--permission-mode' ||
+          parts[index - 1] === '--permission-mode',
+      )
 
-setSessionBypassPermissionsMode(false)
-assert.match(buildInheritedCliFlags({ effort: 0 }), /--effort 0(?:\s|$)/)
-assert.doesNotMatch(buildInheritedCliFlags(), /--effort/)
-assert.deepEqual(
-  extractPermissionFlags(
-    buildInheritedCliFlags({ permissionMode: 'bypassPermissions' }),
-  ),
-  ['--dangerously-skip-permissions'],
-)
-for (const permissionMode of [
-  'default',
-  'acceptEdits',
-  'dontAsk',
-  'auto',
-] as const) {
+  setSessionBypassPermissionsMode(false)
+  assert.match(buildInheritedCliFlags({ effort: 0 }), /--effort 0(?:\s|$)/)
+  assert.doesNotMatch(buildInheritedCliFlags(), /--effort/)
   assert.deepEqual(
-    extractPermissionFlags(buildInheritedCliFlags({ permissionMode })),
-    ['--permission-mode', permissionMode],
+    extractPermissionFlags(
+      buildInheritedCliFlags({ permissionMode: 'bypassPermissions' }),
+    ),
+    ['--dangerously-skip-permissions'],
   )
-}
-assert.deepEqual(
-  extractPermissionFlags(
-    buildInheritedCliFlags({
-      planModeRequired: true,
-      permissionMode: 'bypassPermissions',
-    }),
-  ),
-  ['--permission-mode', 'plan'],
-)
-assert.match(
-  buildInheritedCliFlags({
-    permissionMode: 'default',
-    allowedTools: ['Read(example.txt)', 'Bash(npm test)'],
-  }),
-  /--allowedTools 'Read\(example\.txt\),Bash\(npm test\)'/,
-)
-assert.doesNotMatch(
-  buildInheritedCliFlags({ permissionMode: 'default', allowedTools: [] }),
-  /--allowedTools/,
-)
-
-setSessionBypassPermissionsMode(true)
-try {
-  assert.deepEqual(extractPermissionFlags(buildInheritedCliFlags()), [
-    '--dangerously-skip-permissions',
-  ])
   for (const permissionMode of [
     'default',
     'acceptEdits',
     'dontAsk',
+    'auto',
   ] as const) {
     assert.deepEqual(
       extractPermissionFlags(buildInheritedCliFlags({ permissionMode })),
       ['--permission-mode', permissionMode],
     )
   }
-} finally {
-  setSessionBypassPermissionsMode(false)
-}
+  assert.deepEqual(
+    extractPermissionFlags(
+      buildInheritedCliFlags({
+        planModeRequired: true,
+        permissionMode: 'bypassPermissions',
+      }),
+    ),
+    ['--permission-mode', 'plan'],
+  )
+  assert.match(
+    buildInheritedCliFlags({
+      permissionMode: 'default',
+      allowedTools: ['Read(example.txt)', 'Bash(npm test)'],
+    }),
+    /--allowedTools 'Read\(example\.txt\),Bash\(npm test\)'/,
+  )
+  assert.doesNotMatch(
+    buildInheritedCliFlags({ permissionMode: 'default', allowedTools: [] }),
+    /--allowedTools/,
+  )
 
-for (const permissionMode of [
-  'bypassPermissions',
-  'acceptEdits',
-  'default',
-] as const) {
-  let spawnedState = getDefaultAppState()
-  const spawnResult = await spawnInProcessTeammate(
+  setSessionBypassPermissionsMode(true)
+  try {
+    assert.deepEqual(extractPermissionFlags(buildInheritedCliFlags()), [
+      '--dangerously-skip-permissions',
+    ])
+    for (const permissionMode of [
+      'default',
+      'acceptEdits',
+      'dontAsk',
+    ] as const) {
+      assert.deepEqual(
+        extractPermissionFlags(buildInheritedCliFlags({ permissionMode })),
+        ['--permission-mode', permissionMode],
+      )
+    }
+  } finally {
+    setSessionBypassPermissionsMode(false)
+  }
+
+  for (const permissionMode of [
+    'bypassPermissions',
+    'acceptEdits',
+    'default',
+  ] as const) {
+    let spawnedState = getDefaultAppState()
+    const spawnResult = await spawnInProcessTeammate(
+      {
+        name: `${permissionMode}-worker`,
+        teamName: 'permission-team',
+        prompt: 'inspect only',
+        planModeRequired: false,
+        permissionMode,
+      },
+      {
+        setAppState: updater => {
+          spawnedState = updater(spawnedState)
+        },
+      },
+    )
+    assert.equal(spawnResult.success, true)
+    const spawnedTask = spawnResult.taskId
+      ? spawnedState.tasks[spawnResult.taskId]
+      : undefined
+    assert.equal(
+      spawnedTask?.type === 'in_process_teammate'
+        ? spawnedTask.permissionMode
+        : undefined,
+      permissionMode,
+    )
+    spawnResult.abortController?.abort()
+  }
+
+  let planSpawnState = getDefaultAppState()
+  const planSpawnResult = await spawnInProcessTeammate(
     {
-      name: `${permissionMode}-worker`,
+      name: 'plan-worker',
       teamName: 'permission-team',
       prompt: 'inspect only',
-      planModeRequired: false,
-      permissionMode,
+      planModeRequired: true,
+      permissionMode: 'plan',
     },
     {
       setAppState: updater => {
-        spawnedState = updater(spawnedState)
+        planSpawnState = updater(planSpawnState)
       },
     },
   )
-  assert.equal(spawnResult.success, true)
-  const spawnedTask = spawnResult.taskId
-    ? spawnedState.tasks[spawnResult.taskId]
+  const planSpawnTask = planSpawnResult.taskId
+    ? planSpawnState.tasks[planSpawnResult.taskId]
     : undefined
   assert.equal(
-    spawnedTask?.type === 'in_process_teammate'
-      ? spawnedTask.permissionMode
+    planSpawnTask?.type === 'in_process_teammate'
+      ? planSpawnTask.permissionMode
       : undefined,
-    permissionMode,
+    'plan',
   )
-  spawnResult.abortController?.abort()
-}
-
-let planSpawnState = getDefaultAppState()
-const planSpawnResult = await spawnInProcessTeammate(
-  {
-    name: 'plan-worker',
-    teamName: 'permission-team',
-    prompt: 'inspect only',
-    planModeRequired: true,
-    permissionMode: 'bypassPermissions',
-  },
-  {
-    setAppState: updater => {
+  if (!planSpawnResult.taskId) {
+    throw new Error('Expected plan teammate task ID')
+  }
+  handlePlanApprovalResponse(
+    planSpawnResult.taskId,
+    {
+      type: 'plan_approval_response',
+      requestId: 'plan-request',
+      approved: true,
+      timestamp: new Date().toISOString(),
+      permissionMode: 'bypassPermissions',
+    },
+    updater => {
       planSpawnState = updater(planSpawnState)
     },
-  },
-)
-const planSpawnTask = planSpawnResult.taskId
-  ? planSpawnState.tasks[planSpawnResult.taskId]
-  : undefined
-assert.equal(
-  planSpawnTask?.type === 'in_process_teammate'
-    ? planSpawnTask.permissionMode
-    : undefined,
-  'plan',
-)
-if (!planSpawnResult.taskId) {
-  throw new Error('Expected plan teammate task ID')
-}
-handlePlanApprovalResponse(
-  planSpawnResult.taskId,
-  {
-    type: 'plan_approval_response',
-    requestId: 'plan-request',
-    approved: true,
-    timestamp: new Date().toISOString(),
-    permissionMode: 'bypassPermissions',
-  },
-  updater => {
-    planSpawnState = updater(planSpawnState)
-  },
-)
-const approvedPlanTask = planSpawnState.tasks[planSpawnResult.taskId]
-assert.equal(
-  approvedPlanTask?.type === 'in_process_teammate'
-    ? approvedPlanTask.permissionMode
-    : undefined,
-  'bypassPermissions',
-)
-assert.equal(
-  approvedPlanTask?.type === 'in_process_teammate'
-    ? approvedPlanTask.awaitingPlanApproval
-    : undefined,
-  false,
-)
-planSpawnResult.abortController?.abort()
+  )
+  const approvedPlanTask = planSpawnState.tasks[planSpawnResult.taskId]
+  assert.equal(
+    approvedPlanTask?.type === 'in_process_teammate'
+      ? approvedPlanTask.permissionMode
+      : undefined,
+    'bypassPermissions',
+  )
+  assert.equal(
+    approvedPlanTask?.type === 'in_process_teammate'
+      ? approvedPlanTask.awaitingPlanApproval
+      : undefined,
+    false,
+  )
+  planSpawnResult.abortController?.abort()
 
-if (originalConfigDir === undefined) {
-  delete process.env.CLAUDE_CONFIG_DIR
-} else {
-  process.env.CLAUDE_CONFIG_DIR = originalConfigDir
-}
-rmSync(configDir, { recursive: true, force: true })
+  if (originalConfigDir === undefined) {
+    delete process.env.CLAUDE_CONFIG_DIR
+  } else {
+    process.env.CLAUDE_CONFIG_DIR = originalConfigDir
+  }
+  rmSync(configDir, { recursive: true, force: true })
 
-console.log('spawnMultiAgent.test.ts passed')
+  console.log('spawnMultiAgent.test.ts passed')
+}

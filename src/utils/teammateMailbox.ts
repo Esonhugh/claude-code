@@ -7,7 +7,8 @@
  * Note: Inboxes are keyed by agent name within a team.
  */
 
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
@@ -1088,6 +1089,7 @@ export function isStructuredProtocolMessage(messageText: string): boolean {
       type === 'sandbox_permission_request' ||
       type === 'sandbox_permission_response' ||
       type === 'shutdown_request' ||
+      type === 'shutdown_response' ||
       type === 'shutdown_approved' ||
       type === 'team_permission_update' ||
       type === 'mode_set_request' ||
@@ -1096,6 +1098,35 @@ export function isStructuredProtocolMessage(messageText: string): boolean {
     )
   } catch {
     return false
+  }
+}
+
+/** Drop read messages and matching stale protocol frames before teammate resume. */
+export async function dropMailboxMessagesByPredicate(
+  agentName: string,
+  predicate: (message: TeammateMessage) => boolean,
+  teamName?: string,
+): Promise<boolean> {
+  const path = getInboxPath(agentName, teamName)
+  let release: (() => Promise<void>) | undefined
+  let temporary: string | undefined
+  try {
+    release = await lockfile.lock(path, { lockfilePath: `${path}.lock`, ...LOCK_OPTIONS })
+    const messages = jsonParse(await readFile(path, 'utf8')) as TeammateMessage[]
+    const kept = messages.filter(message => !message.read && !predicate(message))
+    if (kept.length === messages.length) return true
+    temporary = `${path}.${randomUUID()}.tmp`
+    await writeFile(temporary, jsonStringify(kept, null, 2), { encoding: 'utf8', flag: 'wx' })
+    await rename(temporary, path)
+    temporary = undefined
+    return true
+  } catch (error) {
+    if (getErrnoCode(error) === 'ENOENT') return true
+    logForDebugging(`[TeammateMailbox] Failed to drop stale frames for ${agentName}: ${error}`)
+    return false
+  } finally {
+    if (temporary) await unlink(temporary).catch(() => {})
+    if (release) await release().catch(error => logForDebugging(`[TeammateMailbox] Failed to release drop lock for ${agentName}: ${error}`))
   }
 }
 

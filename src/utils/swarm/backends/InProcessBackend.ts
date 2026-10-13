@@ -104,6 +104,7 @@ export class InProcessBackend implements TeammateExecutor {
     // If spawn succeeded, start the agent execution loop
     if (
       result.success &&
+      result.identity &&
       result.taskId &&
       result.teammateContext &&
       result.abortController
@@ -111,14 +112,7 @@ export class InProcessBackend implements TeammateExecutor {
       // Start the agent loop in the background (fire-and-forget)
       // The prompt is passed through the task state and config
       startInProcessTeammate({
-        identity: {
-          agentId: result.agentId,
-          agentName: config.name,
-          teamName: config.teamName,
-          color: config.color,
-          planModeRequired: config.planModeRequired ?? false,
-          parentSessionId: result.teammateContext.parentSessionId,
-        },
+        identity: result.identity,
         taskId: result.taskId,
         prompt: config.prompt,
         teammateContext: result.teammateContext,

@@ -75,6 +75,8 @@ import { getCanonicalName } from '../../utils/model/model.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
+  isLoggableMessage,
+  type AgentMetadata,
   setAgentTranscriptSubdir,
   writeAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -368,6 +370,8 @@ export async function* runAgent({
   onMcpServersBlocked,
   transcriptSubdir,
   onQueryProgress,
+  recordedUuids,
+  extraMetadata,
 }: {
   agentDefinition: AgentDefinition
   /** Host-built named sections, before per-agent environment enhancement. */
@@ -453,6 +457,10 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
+  /** UUIDs already persisted for a teammate's accumulating conversation. */
+  recordedUuids?: Set<UUID>
+  /** Host-owned teammate metadata; merged after the normal agent fields. */
+  extraMetadata?: Partial<AgentMetadata>
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
@@ -940,36 +948,49 @@ export async function* runAgent({
   // Record initial messages before the query loop starts, plus the agentType
   // so resume can route correctly when subagent_type is omitted. Both writes
   // are fire-and-forget — persistence failure shouldn't block the agent.
-  void recordSidechainTranscript(initialMessages, agentId).catch((_err) =>
+  const lastRecordedIndex = recordedUuids === undefined ? -1
+    : initialMessages.findLastIndex(message => recordedUuids.has(message.uuid))
+  const newInitialMessages = initialMessages.slice(lastRecordedIndex + 1)
+  const recordedParent = initialMessages.slice(0, lastRecordedIndex + 1)
+    .findLast(message => recordedUuids?.has(message.uuid) && isLoggableMessage(message))?.uuid ?? null
+  void recordSidechainTranscript(newInitialMessages, agentId, recordedParent).catch((_err) =>
     logForDebugging(`Failed to record sidechain transcript: ${_err}`),
   )
   void writeAgentMetadata(
     agentId,
     {
       ...buildAgentMetadataForTesting({
-      agentType: agentDefinition.agentType,
-      description,
-      worktreePath,
-      worktreeBranch,
-      cwd,
-      name,
-      toolUseId,
-      permissionMode,
-      parentAgentId,
+        agentType: agentDefinition.agentType,
+        description,
+        worktreePath,
+        worktreeBranch,
+        cwd,
+        name,
+        toolUseId,
+        permissionMode,
+        parentAgentId,
         effort: agentGetAppState().effortValue,
-      spawnDepth:
-        spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
+        spawnDepth:
+          spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
       }),
+      ...extraMetadata,
       model: resolvedAgentModel,
     },
   ).catch((_err) => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity
-  let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
+  let lastRecordedUuid: UUID | null = newInitialMessages.findLast(isLoggableMessage)?.uuid ?? recordedParent
+  for (const message of newInitialMessages) {
+    if (isLoggableMessage(message)) recordedUuids?.add(message.uuid)
+  }
   let subagentStopStarted = false
   let queryIterator: ReturnType<typeof query> | undefined
   let queryIteratorDone = false
   const subagentMessages = [...initialMessages]
+  const finishModConversation = toolUseContext.mods?.trackConversation({
+    agentId, sessionId: getSessionId(), messages: () => subagentMessages,
+    toolUseId, workflow: transcriptSubdir !== undefined, parentAgentId: toolUseContext.agentId,
+  })
 
   try {
     queryIterator = query({
@@ -1059,6 +1080,7 @@ export async function* runAgent({
           logForDebugging(`Failed to record sidechain transcript: ${err}`),
         )
         if (message.type !== 'progress') {
+          recordedUuids?.add(message.uuid)
           lastRecordedUuid = message.uuid
           subagentMessages.push(message)
         }
@@ -1129,6 +1151,7 @@ export async function* runAgent({
               logForDebugging(`Failed to record sidechain transcript: ${err}`),
             )
             if (fallbackMessage.type !== 'progress') {
+              recordedUuids?.add(fallbackMessage.uuid)
               lastRecordedUuid = fallbackMessage.uuid
               subagentMessages.push(fallbackMessage)
             }
@@ -1141,6 +1164,7 @@ export async function* runAgent({
       }
     }
     await finishModTurn()
+    finishModConversation?.()
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks

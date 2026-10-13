@@ -93,6 +93,7 @@ const AgentJsonSchema = lazySchema(() =>
     initialPrompt: z.string().optional(),
     memory: z.enum(['user', 'project', 'local']).optional(),
     background: z.boolean().optional(),
+    omitClaudeMd: z.boolean().optional(),
     isolation: (isAnt()
       ? z.enum(['worktree', 'remote'])
       : z.enum(['worktree'])
@@ -448,9 +449,11 @@ export function parseAgentFromJson(
   name: string,
   definition: unknown,
   source: SettingSource = 'flagSettings',
+  options?: { modSpec?: true },
 ): CustomAgentDefinition | null {
   try {
-    const parsed = AgentJsonSchema().parse(definition)
+    const schema = options?.modSpec ? AgentJsonSchema().extend({isolation:z.enum(['worktree','remote']).optional()}) : AgentJsonSchema()
+    const parsed = schema.parse(definition)
 
     let tools = parseAgentToolsFromFrontmatter(parsed.tools)
 
@@ -504,6 +507,7 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.initialPrompt ? { initialPrompt: parsed.initialPrompt } : {}),
       ...(parsed.background ? { background: parsed.background } : {}),
+      ...(parsed.omitClaudeMd ? { omitClaudeMd: parsed.omitClaudeMd } : {}),
       ...(parsed.memory ? { memory: parsed.memory } : {}),
       ...(parsed.isolation ? { isolation: parsed.isolation } : {}),
     }

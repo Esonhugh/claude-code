@@ -88,6 +88,7 @@ mock.module('../shared/spawnMultiAgent.js', () => ({
         tmux_window_name: 'test',
         tmux_pane_id: 'test',
       },
+      ...(config.name === 'parity-logical' ? {loopAgentId:'aparity-logical-0123456789abcdef'} : {}),
     }
   },
 }))
@@ -363,7 +364,7 @@ for (const background of [false, true]) {
   controlledCompletion = undefined
 }
 
-for (const key of ['tool_use_id', 'name', 'fork', 'parentModel', 'permissionMode', 'parentAgentId', 'provider']) {
+for (const key of ['tool_use_id', 'name', 'fork', 'isTeammate', 'parentModel', 'permissionMode', 'parentAgentId', 'provider']) {
   const context = createContext(0) as typeof deniedSpawnContext
   context.modsSnapshot = {
     hasHooks: event => event === 'agent.spawn',
@@ -1463,3 +1464,59 @@ if (originalAgentTeamsFlag === undefined) {
 }
 
 console.log('AgentTool.nesting.test.ts passed')
+
+
+const parityTeamName='c17-real-agent-'+Date.now()
+await writeTeamFileAsync(parityTeamName,{name:parityTeamName,createdAt:Date.now(),leadAgentId:'lead',members:[]})
+const parityContext=createContext(0) as TestContext & {
+  modsSnapshot: import('../../services/mods/runtime.js').ModSnapshot
+  modAgentStarted: NonNullable<import('../../Tool.js').ToolUseContext['modAgentStarted']>
+}
+parityContext.setAppState((prev:ReturnType<TestContext['getAppState']>)=>({...prev,teamContext:{teamName:parityTeamName,teamFilePath:'fixture',leadAgentId:'lead',teammates:{}}}))
+let parityFrame:Record<string,unknown>|undefined
+let parityLaunch:Parameters<typeof parityContext.modAgentStarted>[0]|undefined
+parityContext.modAgentStarted=launch=>{parityLaunch=launch}
+parityContext.modsSnapshot={
+  hasHooks:event=>event==='agent.spawn',
+  dispatch:async(_event,input,core,options)=>{parityFrame=input;options?.validateInput?.(input,input);return core(input)},
+  release:()=>{},
+}
+await AgentTool.call({name:'parity-worker',description:'Real teammate launch',prompt:'Review',subagent_type:'general-purpose'},parityContext as never,async()=>({behavior:'allow'}),{message:{id:'msg_c17'}} as never)
+const directParityFrame=parityFrame
+const directParityLaunch=parityLaunch
+test('C17 actual AgentTool marks the host-owned teammate frame before middleware',()=>{
+  expect(directParityFrame).toMatchObject({isTeammate:true,background:true,name:'parity-worker'})
+})
+test('C17 actual AgentTool carries both logical and teammate ids through the started sink',()=>{
+  expect(directParityLaunch).toMatchObject({agentId:'parity-worker@'+parityTeamName,teammateId:'parity-worker@'+parityTeamName})
+})
+const {createModToolHost}=await import('../../services/mods/toolHost.js')
+const parityHost=createModToolHost(parityContext as never,async()=>({behavior:'allow'}))
+const publicLaunch=await parityHost.spawn({name:'parity-public',description:'Public launch',prompt:'Review',subagentType:'general-purpose'},parityContext.modsSnapshot,new AbortController().signal,'author')
+test('C17 real Mods tool host preserves teammate launch ids for the public caller',()=>{
+  expect(publicLaunch).toMatchObject({agentId:'parity-public@'+parityTeamName,teammateId:'parity-public@'+parityTeamName})
+})
+
+const logicalLaunch=await parityHost.spawn({name:'parity-logical',description:'Logical launch',prompt:'Review',subagentType:'general-purpose'},parityContext.modsSnapshot,new AbortController().signal,'author')
+test('C17 actual AgentTool and public host use loop identity independently from teammate address',()=>{
+  expect(logicalLaunch).toMatchObject({agentId:'aparity-logical-0123456789abcdef',teammateId:'parity-logical@'+parityTeamName})
+})
+
+let restoredParityError:unknown
+let restoredParityConfig:SpawnTeammateConfig|undefined
+parityContext.modsSnapshot={hasHooks:event=>event==='agent.spawn',release:()=>{},dispatch:async(_event,input,core,options)=>{
+  const rewritten:import('../../services/mods/types.js').ModInput={...input,background:false,cwd:'/tmp/spoof'};delete rewritten.provider;delete rewritten.parentAgentId;delete rewritten.isTeammate
+  const restored=options?.restoreInput?.(rewritten,input)??rewritten
+  options?.validateInput?.(restored,input)
+  return core(restored)
+}}
+try{await AgentTool.call({name:'parity-restored',description:'Restored teammate launch',prompt:'Review',subagent_type:'general-purpose'},parityContext as never,async()=>({behavior:'allow'}),{message:{id:'msg_c17_restored'}} as never);restoredParityConfig=controlledSpawnTeammateConfig}catch(error){restoredParityError=error}
+test('C17 real AgentTool restores omitted pinned fields and ignores teammate cwd/background rewrites',()=>{
+  expect(restoredParityError).toBeUndefined()
+  expect(restoredParityConfig).toMatchObject({name:'parity-restored',team_name:parityTeamName})
+  expect(restoredParityConfig).not.toHaveProperty('cwd')
+})
+
+const descriptionHost=createModToolHost(createContext(0) as never,async()=>({behavior:'allow'}))
+const descriptionLaunch=await descriptionHost.spawn({prompt:'one two three four five six'}, {hasHooks:()=>false,release:()=>{},dispatch:async(_event,input,core)=>core(input)},new AbortController().signal,'author')
+test('C17 real public agent host uses the native five-word default description',()=>{expect(descriptionLaunch).toHaveProperty('agentId');expect(controlledSpawnParams?.description).toBe('one two three four five')})

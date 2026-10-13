@@ -21,7 +21,7 @@ import {
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
-import { isDeepStrictEqual } from 'node:util'
+import { restoreModAgentSpawnInput, validateModAgentSpawnInput } from '../../services/mods/agents.js'
 import { isAgentOffered, providerForAgent } from '../../services/mods/agentOffer.js'
 import type { ModInput } from '../../services/mods/types.js'
 import {
@@ -60,11 +60,11 @@ import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { EFFORT_LEVELS, getDefaultEffortForModel, isEffortLevel, type EffortValue } from '../../utils/effort.js'
+import { EFFORT_LEVELS, getDefaultEffortForModel, type EffortValue } from '../../utils/effort.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { AbortError, errorMessage, toError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
 import {
   createUserMessage,
   extractTextContent,
@@ -716,6 +716,18 @@ export const AgentTool = buildTool({
     ) {
       throw new Error(PLAN_MODE_DISABLED_MESSAGE)
     }
+    let teamName = appState.teamContext?.teamName
+    let shouldSpawnTeammate = Boolean(
+      teamName && name && !isForkPath && !isolation && !cwd,
+    )
+    if (teamName && shouldSpawnTeammate) {
+      const teamFile = await readTeamFileAsync(teamName)
+      if (!teamFile) {
+        teamName = undefined
+        shouldSpawnTeammate = false
+      }
+    }
+
     // Resolve the same mode for execution, telemetry and the agent.spawn hook.
     // Omitted background defaults to async for ordinary callers. In-process
     // teammates retain synchronous children because they share the leader's
@@ -741,9 +753,9 @@ export const AgentTool = buildTool({
       )
     }
 
-    const started = Promise.withResolvers<{ model: string; agentId: string }>()
+    const started = Promise.withResolvers<{ model: string; agentId: string; teammateId?: string }>()
     let launchNotified = false
-    const notifyStarted = (launch: { model: string; agentId: string }) => {
+    const notifyStarted = (launch: { model: string; agentId: string; teammateId?: string }) => {
       started.resolve(launch)
       if (launchNotified) return
       launchNotified = true
@@ -759,18 +771,6 @@ export const AgentTool = buildTool({
       : permissionMode === appState.toolPermissionContext.mode
         ? appState.toolPermissionContext
         : { ...appState.toolPermissionContext, mode: permissionMode }
-
-    let teamName = appState.teamContext?.teamName
-    let shouldSpawnTeammate = Boolean(
-      teamName && name && !isForkPath && !isolation && !cwd,
-    )
-    if (teamName && shouldSpawnTeammate) {
-      const teamFile = await readTeamFileAsync(teamName)
-      if (!teamFile) {
-        teamName = undefined
-        shouldSpawnTeammate = false
-      }
-    }
 
     // Check if this is a multi-agent spawn request.
     // Match recover 201: named teammates route from live team context, excluding
@@ -811,7 +811,8 @@ export const AgentTool = buildTool({
 
       const launch = {
         model: result.data.model ?? getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode),
-        agentId: result.data.agent_id,
+        agentId: result.loopAgentId ?? result.data.teammate_id,
+        teammateId: result.data.teammate_id,
       }
       notifyStarted(launch)
       const spawnResult: TeammateSpawnedOutput = {
@@ -2259,7 +2260,8 @@ export const AgentTool = buildTool({
       provider: providerForAgent(selectedAgent, snapshot),
       parentModel: toolUseContext.options.mainLoopModel,
       permissionMode,
-      background: shouldRunInBackground(),
+      background: shouldSpawnTeammate || shouldRunInBackground(),
+      ...(shouldSpawnTeammate && { isTeammate: true }),
       fork: isForkPath,
       ...(name !== undefined && { name }),
       ...(model !== undefined && { model }),
@@ -2267,25 +2269,7 @@ export const AgentTool = buildTool({
       ...(cwd !== undefined && { cwd }),
       ...(toolUseContext.agentId !== undefined && { parentAgentId: toolUseContext.agentId }),
     }
-    const validateInput = (value: ModInput) => {
-      for (const key of ['tool_use_id', 'name', 'fork', 'parentModel', 'permissionMode', 'parentAgentId', 'provider']) {
-        if (!isDeepStrictEqual(value[key], input[key])) {
-          throw new Error(`agent.spawn cannot rewrite ${key}`)
-        }
-      }
-      for (const key of ['prompt', 'description', 'subagentType']) {
-        if (typeof value[key] !== 'string') throw new Error(`agent.spawn requires ${key}`)
-      }
-      for (const key of ['model', 'cwd']) {
-        if (value[key] !== undefined && typeof value[key] !== 'string') {
-          throw new Error(`agent.spawn invalid ${key}`)
-        }
-      }
-      if (value.effort !== undefined && !(typeof value.effort === 'string' && isEffortLevel(value.effort) || typeof value.effort === 'number' && Number.isInteger(value.effort))) {
-        throw new Error('agent.spawn invalid effort')
-      }
-      if (typeof value.background !== 'boolean') throw new Error('agent.spawn invalid background')
-    }
+    const validateInput = (value: ModInput) => validateModAgentSpawnInput(value, input)
     let completion: ReturnType<typeof execute> | undefined
     const result = await snapshot.dispatch('agent.spawn', input, async value => {
       validateInput(value)
@@ -2318,7 +2302,7 @@ export const AgentTool = buildTool({
       completion = execute()
       void completion.catch(started.reject)
       return started.promise
-    }, { signal: toolUseContext.abortController.signal, validateInput }) as { deny?: string }
+    }, { signal: toolUseContext.abortController.signal, validateInput, restoreInput: restoreModAgentSpawnInput }) as { deny?: string }
     if (result.deny !== undefined) throw new Error(result.deny)
     if (!completion) throw new Error('agent.spawn did not start an agent')
     return completion

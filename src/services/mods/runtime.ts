@@ -30,7 +30,7 @@ import type { ModContinuation, ModStreamNext } from './types.js'
 import { appendModCallerChain, copyModCallerChain, type ModCallerChain } from './callerChain.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, ModModelUsage, PromptComposeInput, PromptComposeResult } from './types.js'
-import { createModAgents, listModAgents } from './agents.js'
+import { createModAgents, listModAgents, restoreModAgentSpawnInput, validateModAgentSpawnInput } from './agents.js'
 import type { AppState } from '../../state/AppState.js'
 import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
 import { AsyncLocalStorage } from 'node:async_hooks'
@@ -2916,6 +2916,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'ui.copy') validateModUiCopyArgs(value)
           if (event === 'prompt.edit') validatePromptEditInput(value, received)
+          if (event === 'agent.spawn') validateModAgentSpawnInput(value, received)
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
           if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
             throw new TypeError('model.fork takes only {prompt: string}')
@@ -2943,6 +2944,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             for (const key of ['origin', 'key']) if (!Object.hasOwn(restored, key) && Object.hasOwn(received, key)) restored[key] = received[key]
             return restored
           }
+          if (event === 'agent.spawn') return restoreModAgentSpawnInput(options.restoreInput?.(value, received) ?? value, received)
           const restored = options.restoreInput?.(value, received) ?? value
           if (event === 'session.compact' && restored.agentId === undefined && received.agentId !== undefined)
             return { ...restored, agentId: received.agentId }

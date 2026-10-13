@@ -228,6 +228,7 @@ export type LocalAgentTaskState = TaskStateBase & {
   forkedSkillName?: string
   resuming?: boolean
   spawnedBy?: string
+  isIdle?: boolean
   finalizing?: boolean
   keepaliveReasons?: Set<string>
   spawnDepth: number

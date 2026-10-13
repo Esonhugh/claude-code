@@ -9,6 +9,7 @@
  */
 
 import type { UUID } from 'crypto'
+import { getSessionId } from '../bootstrap/state.js'
 import { randomUUID } from 'crypto'
 import type { CommandBase, PromptCommand } from '../commands.js'
 import { captureModSkillPromptSnapshot, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
@@ -109,6 +110,8 @@ export type ForkedAgentParams = {
   maxTurns?: number
   /** Optional callback invoked for each message as it arrives (for streaming UI) */
   onMessage?: (message: Message) => void
+  /** Live accumulated response usage, including a reply interrupted mid-stream. */
+  onUsage?: (usage: NonNullableUsage) => void
   /** Skip sidechain transcript recording (e.g., for ephemeral work like speculation) */
   skipTranscript?: boolean
   /** Skip writing new prompt cache entries on the last message. For
@@ -554,6 +557,7 @@ export async function runForkedAgent({
   maxOutputTokens,
   maxTurns,
   onMessage,
+  onUsage,
   skipTranscript,
   skipCacheWrite,
   toolChoice,
@@ -561,6 +565,14 @@ export async function runForkedAgent({
   const startTime = Date.now()
   const outputMessages: Message[] = []
   let totalUsage: NonNullableUsage = { ...EMPTY_USAGE }
+  const responseUsage = new Map<string, NonNullableUsage>()
+  let currentResponse: string | undefined
+  let anonymousResponses = 0
+  const recordUsage = (id: string, usage: Parameters<typeof updateUsage>[1]) => {
+    responseUsage.set(id, updateUsage(responseUsage.get(id) ?? EMPTY_USAGE, usage))
+    totalUsage = [...responseUsage.values()].reduce(accumulateUsage, { ...EMPTY_USAGE })
+    onUsage?.(totalUsage)
+  }
 
   const {
     systemPrompt,
@@ -600,6 +612,9 @@ export async function runForkedAgent({
         : null
   }
 
+  const finishModConversation = agentId ? toolUseContext.mods?.trackConversation({
+    agentId, sessionId: getSessionId(), messages: () => [...initialMessages,...outputMessages], parentAgentId: toolUseContext.agentId,
+  }) : undefined
   // Run the query loop with isolated context (cache-safe params preserved)
   try {
     for await (const message of query({
@@ -616,18 +631,22 @@ export async function runForkedAgent({
       skipCacheWrite,
       toolChoice,
     })) {
-      // Extract real usage from message_delta stream events (final usage per API call)
       if (message.type === 'stream_event') {
-        if (
-          'event' in message &&
-          // @ts-ignore - recovered code
-          message.event?.type === 'message_delta' &&
-          // @ts-ignore - recovered code
-          message.event.usage
-        ) {
-          // @ts-ignore - recovered code
-          const turnUsage = updateUsage({ ...EMPTY_USAGE }, message.event.usage)
-          totalUsage = accumulateUsage(totalUsage, turnUsage)
+        if (forkLabel === 'plugin_model_fork') {
+          const delta = message.event as {type?:string;usage?:Parameters<typeof updateUsage>[1]}
+          if (delta.type === 'message_delta' && delta.usage) {
+            totalUsage = accumulateUsage(totalUsage, updateUsage({...EMPTY_USAGE}, delta.usage))
+            onUsage?.(totalUsage)
+          }
+          continue
+        }
+        const event = message.event as {type?:string;message?:{id?:string;usage?:Parameters<typeof updateUsage>[1]};usage?:Parameters<typeof updateUsage>[1]}
+        if (event?.type === 'message_start') {
+          currentResponse = event.message?.id ?? `anonymous-${++anonymousResponses}`
+          if (event.message?.usage) recordUsage(currentResponse, event.message.usage)
+        } else if (event?.type === 'message_delta' && event.usage) {
+          currentResponse ??= `anonymous-${++anonymousResponses}`
+          recordUsage(currentResponse, event.usage)
         }
         continue
       }
@@ -640,6 +659,15 @@ export async function runForkedAgent({
       )
 
       outputMessages.push(message as Message)
+      if (forkLabel !== 'plugin_model_fork' && message.type === 'assistant' && !message.isApiErrorMessage && !message.isVirtual && message.message.usage) {
+        recordUsage(message.message.id, {
+          ...message.message.usage,
+          cache_creation_input_tokens:message.message.usage.cache_creation_input_tokens ?? null,
+          cache_read_input_tokens:message.message.usage.cache_read_input_tokens ?? null,
+          iterations:message.message.usage.iterations ?? null,
+          server_tool_use:message.message.usage.server_tool_use ?? null,
+        })
+      }
       onMessage?.(message as Message)
 
       // Record transcript for recordable message types (same pattern as runAgent.ts)
@@ -662,6 +690,7 @@ export async function runForkedAgent({
       }
     }
   } finally {
+    finishModConversation?.()
     // Release cloned file state cache memory (same pattern as runAgent.ts)
     isolatedToolUseContext.readFileState.clear()
     // Release the cloned fork context messages

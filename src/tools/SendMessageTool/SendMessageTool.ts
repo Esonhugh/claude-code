@@ -14,7 +14,9 @@ import {
   queuePendingMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isMainSessionTask } from '../../tasks/LocalMainSessionTask.js'
-import { toAgentId } from '../../types/ids.js'
+import { asAgentId, toAgentId } from '../../types/ids.js'
+import { readAgentMetadata } from '../../utils/sessionStorage.js'
+import { resumeInProcessTeammate } from '../../utils/swarm/resumeInProcessTeammate.js'
 import { generateRequestId } from '../../utils/agentId.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -51,6 +53,8 @@ import { bindSubagentRecipient, resolveSubagentRecipient, type SendMessagePin } 
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+
+const pendingTeammateResumes = new WeakMap<ToolUseContext['setAppState'], Map<string, Promise<string | null>>>()
 
 const StructuredMessage = lazySchema(() =>
   z.discriminatedUnion('type', [
@@ -165,14 +169,15 @@ async function handleMessage(
   content: string,
   summary: string | undefined,
   context: ToolUseContext,
+  teamNameOverride?: string,
 ): Promise<{ data: MessageOutput }> {
   const appState = context.getAppState()
-  const teamName = getTeamName(appState.teamContext)
+  const teamName = teamNameOverride ?? getTeamName(appState.teamContext)
   const senderName =
     getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME)
   const senderColor = getTeammateColor()
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     recipientName,
     {
       from: senderName,
@@ -183,6 +188,7 @@ async function handleMessage(
     },
     teamName,
   )
+  if (delivered === false) return {data:{success:false,message:`Writing to ${recipientName}'s inbox failed; nothing was queued.`}}
 
   const recipientColor = findTeammateColor(appState, recipientName)
 
@@ -840,6 +846,51 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
         const agentId = resolved?.recipient.id
         const recipientName = resolved?.recipient.name ?? input.to
         if (agentId) {
+          const teammate = findTeammateTaskByAgentId(agentId, appState.tasks)
+          if (teammate?.status === 'running') {
+            try {
+              return await handleMessage(teammate.identity.agentName, input.message, input.summary, context, teammate.identity.teamName)
+            } catch (error) {
+              return {data:{success:false,message:`Teammate "${input.to}" is running, but writing to its inbox failed; nothing was queued. ${errorMessage(error)}`}}
+            }
+          }
+          const rootWriter = context.setAppStateForTasks ?? context.setAppState
+          let pending = pendingTeammateResumes.get(rootWriter)
+          if (!pending) { pending = new Map(); pendingTeammateResumes.set(rootWriter, pending) }
+          const previous = pending.get(agentId)
+          if (previous) {
+            const id = await previous
+            const resumed = id ? context.getAppState().tasks[id] : undefined
+            if (resumed?.type === 'in_process_teammate' && resumed.status === 'running') {
+              return handleMessage(resumed.identity.agentName, input.message, input.summary, context, resumed.identity.teamName)
+            }
+          }
+          const deferred = Promise.withResolvers<string | null>()
+          pending.set(agentId, deferred.promise)
+          let teammateResume = false
+          try {
+            const metadata = await readAgentMetadata(asAgentId(agentId))
+            if (metadata?.taskKind === 'in_process_teammate') {
+              teammateResume = true
+              const name = metadata.name ?? input.to
+              const teamName = metadata.teamName ?? getTeamName(context.getAppState().teamContext)
+              const running = Object.values(context.getAppState().tasks).find(task => task.type === 'in_process_teammate' && task.status === 'running' && (task.identity.resumableAgentId === agentId || (task.identity.agentName === name && task.identity.teamName === teamName)))
+              if (running?.type === 'in_process_teammate') {
+                deferred.resolve(running.id)
+                return handleMessage(running.identity.agentName, input.message, input.summary, context, running.identity.teamName)
+              }
+              const result = await resumeInProcessTeammate({ resumableAgentId: agentId, prompt: input.message, senderName: getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME), meta: metadata, fallbackName: input.to, toolUseContext: context })
+              deferred.resolve(result.taskId)
+              return { data: { success: true, message: (result.resumedMessageCount > 0
+                ? `Teammate "${input.to}" was not running; resumed it as an in-process teammate with ${result.resumedMessageCount} prior messages and your message as its next prompt.`
+                : `Teammate "${input.to}" was not running; resumed it as an in-process teammate (no prior transcript) with your message as its next prompt.`) + (result.definitionNotice ? ` ${result.definitionNotice}` : '') } }
+            }
+          } catch (error) {
+            return { data: { success: false, message: `Failed to resume ${teammateResume ? 'teammate' : 'agent'} "${input.to}": ${errorMessage(error)}` } }
+          } finally {
+            deferred.resolve(null)
+            if (pending.get(agentId) === deferred.promise) pending.delete(agentId)
+          }
           const task = context.getAppState().tasks[agentId]
           const shouldBind = !isMainSessionTask(task) && !(isLocalAgentTask(task) && task.status !== 'running' && task.stoppedByUser)
           const binding = shouldBind && resolved?.kind === 'one'
