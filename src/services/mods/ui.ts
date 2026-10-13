@@ -430,6 +430,7 @@ export function createModUi({
     drawing: number,
     handle: number,
     args: unknown[],
+    retarget?: () => { owner: ModUiOwner; drawing: number } | undefined,
   ): Promise<unknown>
   releaseDrawing(owner: ModUiOwner, drawing: number): Promise<void>
   validateTree?: (tree: unknown, input?: ModRenderInput, engineRefs?: ReadonlySet<number>) => void
@@ -1424,7 +1425,7 @@ export function createModUi({
           return dispatch(owner, kind === 'press' || kind === 'link.press' ? 'ui.press' : kind === 'select' ? 'ui.select' : 'ui.input', input, async rewritten => {
             const held = heldDrawing(callback)
             if (!held) throw new Error('Mod UI drawing callback is stale')
-            await invokeDrawing(held.owner, held.drawing, callback.handle, [rewritten])
+            await invokeDrawing(held.owner, held.drawing, callback.handle, [rewritten], () => heldDrawing(callback))
             return kind === 'press' || kind === 'link.press' ? {element: rewritten.element} : {element: rewritten.element, value: rewritten.value}
           }, {origin: {kind:'person'}, drawing: lease})
         },
@@ -2104,7 +2105,7 @@ export function createModUi({
         logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'interaction-core', id, drawing, currentDrawing: pane.drawing, active: active.get(id) === pane, plugin: callback.plugin, handle: callback.handle, kind, element })}`)
         const held = heldDrawing(callback)
         if (!held) throw new Error('Mod UI drawing callback is stale')
-        await invokeDrawing(held.owner, held.drawing, callback.handle, [rewritten])
+        await invokeDrawing(held.owner, held.drawing, callback.handle, [rewritten], () => heldDrawing(callback))
         logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'interaction-invoked', id, drawing, plugin: callback.plugin, handle: callback.handle, kind, element })}`)
         return kind === 'press' || kind === 'link.press'
           ? { element: rewritten.element }
