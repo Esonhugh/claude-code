@@ -39,7 +39,7 @@ describe('interactive custom system prompt characterization', () => {
     expect(getSystemPromptSections(prompt)).toEqual([
       { name: 'identity', text: 'identity text' },
       { name: 'optional', text: null },
-      { text: 'append text' },
+      { text: 'append text', scope: 'session' },
     ])
   })
 

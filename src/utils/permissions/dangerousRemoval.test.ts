@@ -212,7 +212,11 @@ if (process.env[childFlag] !== '1') {
         async () => { throw new Error('An explicit deny must not request approval') },
         undefined as never, 'plugin-denied-removal',
       )
-      expect(result.decision).toMatchObject({ behavior: 'deny', message: 'Plugin refused' })
+      expect(result.decision).toMatchObject({
+        behavior: 'deny',
+        decisionReason: { type: 'hook', hookName: 'tool.check', reason: 'Plugin refused' },
+      })
+      expect((result.decision as { message: string }).message).toEndWith(': Plugin refused')
     }
   })
 

@@ -5,7 +5,7 @@ import * as React from 'react'
 import ts from 'typescript'
 import { Box, Text, ThemeProvider, render, useInput } from '../ink.js'
 import { ModsPane } from '../components/ModsPane.js'
-import { createModUi, type ModUiPresentation } from '../services/mods/ui.js'
+import { createModUi, withModUiHostFocusOutcome, withModUiPaneFocus, type ModUiPresentation } from '../services/mods/ui.js'
 import { getViewedAgentTask } from '../state/selectors.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
@@ -160,6 +160,7 @@ test('REPL child-view pane keeps stdin focus while selection and Escape retain n
     modTerminalSize: { columns: 160, rows: 40 }, isFullscreenEnvEnabled: () => true,
     pastedContents: {}, focusedInputDialog: undefined, toolJSX: undefined,
     showBashesDialog: false, exitFlow: undefined, isSearchingHistory: false, isHelpOpen: false,
+    showResponsiveDiffDialog: false, isLoading: false, withModUiPaneFocus, withModUiHostFocusOutcome,
     cursor: null, logError: (error: unknown) => { errors.push(error) },
   }
   let composerValue = ''

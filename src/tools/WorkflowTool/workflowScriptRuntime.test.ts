@@ -9,6 +9,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import { setIsInteractive } from '../../bootstrap/state.js'
 import { dequeue, dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
+import { setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import { runWorkflowScript } from './workflowScriptRuntime.js'
@@ -24,6 +25,9 @@ import {
 
 await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
 await import('./WorkflowTool.js')
+
+// Agents below request mode "plan"; plan mode is opt-in through settings.
+setSessionSettingsCache({ settings: { planModeAvailable: true }, errors: [] })
 
 assert.equal(
   classifyWorkflowAgentError(new Error('Concurrency limit exceeded for user fakeadmin')),
