@@ -4,9 +4,9 @@ import { Cursor } from '../utils/Cursor.js'
 import { renderPlaceholder } from '../hooks/renderPlaceholder.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import React, { useMemo, useState } from 'react'
+import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions, ModUiFocusTarget } from '../services/mods/ui.js'
 import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import type { ModTerminalClientHandle, ModTerminalClientSnapshot } from '../services/mods/terminalClient.js'
-import type { ModRenderSurface, ModUiCallback, ModUiInteraction, ModUiKeyRow, ModUiPane, ModUiOrigin, ModUiHostFocusOptions, ModUiFocusTarget } from '../services/mods/ui.js'
 import { didModUiHostFocusMove } from '../services/mods/ui.js'
 import type { ModClientHandle } from '../services/mods/client.js'
 import { copyModClientData } from '../services/mods/client.js'
@@ -807,6 +807,10 @@ export function validateModRenderTree(value: unknown, surface: ModRenderSurface 
       const action = stringProp(props, 'action', { singleLine: true, max: 128 })
       if (action !== undefined && !(KEYBINDING_ACTIONS as readonly string[]).includes(action))
         throw new TypeError('Unsupported Button action')
+      if (props.variant !== undefined && props.variant !== 'primary' && props.variant !== 'secondary')
+        throw new TypeError('Button variant must be primary or secondary')
+      if (props.role !== undefined && props.role !== 'dismiss')
+        throw new TypeError('Button role must be dismiss')
       trueProp(props, 'plain')
       trueProp(props, 'autoFocus')
       hasAutoFocus ||= props.autoFocus === true
@@ -1680,6 +1684,7 @@ export function ModsPane({
           focusedElement: pane.focusedElement, focusedPlugin: pane.focusedPlugin },
         geometry: () => ({ viewport: scrollRef.current?.getElement(), controls: navigable() }),
       } : undefined}
+      selectionScope
       flexDirection="column"
       width={pane.placement === 'dock' ? pane.bodyColumns : '100%'}
       height={!shown ? 0 : undefined}
@@ -1700,7 +1705,7 @@ export function ModsPane({
       }}
       onKeyDown={handleKeyDown}
     >
-      <Box flexDirection="column" flexShrink={0}
+      <Box flexDirection="column" flexShrink={0} selectionScope
         height={pane.placement === 'dock' ? dockHostRows : undefined}
         borderStyle={chrome === 'frame' && pane.placement === 'inline' ? 'round' : undefined}
         borderDimColor={!pane.focused}
@@ -2158,7 +2163,7 @@ function RenderElementNode({
     return <ModButton node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} active={active} handlers={canHeatGroup ? groupHover.handlers : {}}>{children}</ModButton>
   }
   if (node.type === 'Select') {
-    return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} />
+    return <ModSelect node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} />
   }
   return <ModInput node={node} pane={pane} focusElements={focusElements} keyElements={keyElements} onInteract={interact} currentPane={currentPane} onFocus={onFocus} onError={onError} client={clientHandle !== undefined} />
 }
@@ -2663,7 +2668,7 @@ function ModButton({
         tabIndex={client && pane.focused ? 0 : -1}
         flexShrink={0}
         alignSelf="flex-start"
-        autoFocus={false}
+        autoFocus={client && pane.focused && props.autoFocus === true}
         onFocus={event => { if (client && inputAllowed) reportElementFocus(event, pane, key, onFocus, onError) }}
       >
         {({ focused, hovered }) => {
@@ -2672,8 +2677,8 @@ function ModButton({
             <Text
               inverse={chrome}
               bold={!plain}
-              color={!plain && props.variant === 'primary' ? 'suggestion' : undefined}
               dimColor={props.dimColor === true && !chrome}
+              color={!plain && props.variant === 'primary' ? 'suggestion' : undefined}
               {...style as React.ComponentProps<typeof Text>}
             >
               {plain && props.hotkey
@@ -2799,7 +2804,7 @@ function ModSelect({
       flexDirection="column"
       flexShrink={0}
       tabIndex={pane.focused ? 0 : -1}
-      autoFocus={false}
+      autoFocus={client && pane.focused && props.autoFocus === true}
       onFocus={event => {
         setFocused(true)
         indexRef.current = Math.max(0, options.findIndex(option => option.value === pickedRef.current))
@@ -3004,7 +3009,7 @@ function ModInput({
     <Box
       ref={elementRef}
       tabIndex={pane.focused ? 0 : -1}
-      autoFocus={false}
+      autoFocus={client && pane.focused && props.autoFocus === true}
       onFocus={event => {
         setFocused(true)
         cursorRef.current = valueRef.current.length

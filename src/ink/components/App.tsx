@@ -207,6 +207,7 @@ export default class App extends PureComponent<Props, State> {
         value={{
           columns: this.props.terminalColumns,
           rows: this.props.terminalRows,
+          global: {columns:this.props.terminalColumns,rows:this.props.terminalRows,conversationColumns:this.props.terminalColumns},
         }}
       >
         <AppContext.Provider
@@ -410,11 +411,8 @@ export default class App extends PureComponent<Props, State> {
     const [keys, newState] = parseMultipleKeypresses(this.keyParseState, input)
     this.keyParseState = newState
 
-    // Process ALL keys in a SINGLE discreteUpdates call to prevent
-    // "Maximum update depth exceeded" error when many keys arrive at once
-    // (e.g., from paste operations or holding keys rapidly).
-    // This batches all state updates from handleInput and all useInput
-    // listeners together within one high-priority update context.
+    // Keep one priority scope for this read. The dispatcher commits between
+    // semantic inputs so later keys see updated handlers and focus.
     if (keys.length > 0) {
       reconciler.discreteUpdates(
         processKeysInBatch,
@@ -594,8 +592,7 @@ function flushInputUpdates(): void {
   reconciler.flushSyncWork()
 }
 
-// Helper to process all keys within a single discrete update context.
-// discreteUpdates expects (fn, a, b, c, d) -> fn(a, b, c, d)
+// discreteUpdates keeps the whole read in one priority scope.
 function processKeysInBatch(
   app: App,
   items: ParsedInput[],
@@ -621,11 +618,13 @@ function processKeysInBatch(
 
   const flushBetweenInputs = items.filter(isSemanticInput).length > 1
   let processedSemanticInput = false
+
   for (const item of items) {
     if (isSemanticInput(item)) {
       if (flushBetweenInputs && processedSemanticInput) flushInputUpdates()
       processedSemanticInput = true
     }
+
     // Terminal responses (DECRPM, DA1, OSC replies, etc.) are not user
     // input — route them to the querier to resolve pending promises.
     if (item.kind === 'response') {
@@ -696,6 +695,7 @@ function processKeysInBatch(
       app.props.dispatchKeyboardEvent(item)
     }
   }
+
   if (flushBetweenInputs && processedSemanticInput) flushInputUpdates()
 }
 
