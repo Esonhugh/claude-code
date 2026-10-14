@@ -22,6 +22,7 @@ import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
 } from '../../utils/model/providers.js'
+import { fetchServedModelCatalog } from '../../utils/model/servedModelCatalog.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 
@@ -143,7 +144,27 @@ export async function fetchBootstrapData(): Promise<void> {
   }
   // Gateway discovery keeps its own on-disk cache, so it is an independent leg
   // next to the bootstrap: either one failing must not skip the other.
-  await Promise.all([fetchGatewayModels(), fetchBootstrapCaches()])
+  const servedCatalogRefresh = fetchServedModelCatalog()
+  await Promise.all([
+    fetchGatewayModels(),
+    fetchBootstrapCaches(),
+    waitForServedCatalogStartup(servedCatalogRefresh),
+  ])
+}
+
+async function waitForServedCatalogStartup(refresh: Promise<unknown>): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      refresh,
+      new Promise<void>(resolve => {
+        timeout = setTimeout(resolve, 1000)
+        timeout.unref?.()
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
 }
 
 /**
