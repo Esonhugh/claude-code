@@ -402,9 +402,16 @@ export default class App extends PureComponent<Props, State> {
       return
     }
 
-    // Process incomplete as a flush operation (input=null)
-    // This reuses all existing parsing logic
-    this.processInput(null)
+    // A render that blocked the loop past the timeout leaves the rest of the
+    // sequence in the kernel buffer, where readableLength cannot see it. Flush
+    // only after this loop turn's I/O poll has had a chance to read it.
+    setImmediate(() => {
+      if (this.incompleteEscapeTimer) return
+      if (!this.keyParseState.incomplete && this.keyParseState.mode === 'NORMAL') return
+      // Process incomplete as a flush operation (input=null)
+      // This reuses all existing parsing logic
+      this.processInput(null)
+    })
   }
 
   // Process input through the parser and handle the results
