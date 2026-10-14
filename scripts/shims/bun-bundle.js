@@ -4,6 +4,7 @@ const defaultRecoverFeatures = [
   'SSH_REMOTE',
   'UDS_INBOX',
   'KAIROS_CHANNELS',
+  'TRANSCRIPT_CLASSIFIER',
 ];
 
 const enabled = new Set([

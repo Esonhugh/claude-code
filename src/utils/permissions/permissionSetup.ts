@@ -13,6 +13,7 @@ import type {
 } from '../../Tool.js'
 import { getCwd } from '../cwd.js'
 import { isEnvTruthy } from '../envUtils.js'
+import { isApproveForMeAvailable } from './approveForMe.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import type { SettingSource } from '../settings/constants.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
@@ -1341,6 +1342,8 @@ export type AutoModeEnabledState = 'enabled' | 'disabled' | 'opt-in'
 const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'disabled'
 
 function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
+  // The GrowthBook rollout gates first-party auto mode; Approve for me is this build's own offer.
+  if (isApproveForMeAvailable()) return 'enabled'
   if (value === 'enabled' || value === 'disabled' || value === 'opt-in') {
     return value
   }

@@ -43,6 +43,7 @@ import {
 } from './classifierShared.js'
 import { getClaudeTempDir } from './filesystem.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isApproveForMeAvailable } from './approveForMe.js'
 
 
 // Dead code elimination: conditional imports for auto mode classifier prompts.
@@ -87,6 +88,7 @@ function isUsingExternalPermissions(): boolean {
 export type AutoModeRules = {
   allow: string[]
   soft_deny: string[]
+  hard_deny: string[]
   environment: string[]
 }
 
@@ -102,21 +104,104 @@ export type AutoModeRules = {
 export function getDefaultExternalAutoModeRules(): AutoModeRules {
   return {
     allow: extractTaggedBullets('user_allow_rules_to_replace'),
-    soft_deny: extractTaggedBullets('user_deny_rules_to_replace'),
+    soft_deny: extractTaggedBullets('user_soft_deny_rules_to_replace'),
+    hard_deny: extractTaggedBullets('user_hard_deny_rules_to_replace'),
     environment: extractTaggedBullets('user_environment_to_replace'),
   }
 }
 
+// Mirrors the official 2.1.292 parser: a rule may continue on following non-bullet lines.
 function extractTaggedBullets(tagName: string): string[] {
   const match = EXTERNAL_PERMISSIONS_TEMPLATE.match(
     new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`),
   )
   if (!match) return []
-  return (match[1] ?? '')
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.startsWith('- '))
-    .map(line => line.slice(2))
+  const rules: string[] = []
+  for (const raw of (match[1] ?? '').split('\n')) {
+    const line = raw.replace(/\r$/, '').trimEnd()
+    if (line.startsWith('- ')) rules.push(line.slice(2))
+    else if (rules.length > 0 && line.trim().length > 0) rules[rules.length - 1] += `\n${line}`
+  }
+  return rules
+}
+
+type AutoModeSlotRules = {
+  allow: string[]
+  soft_deny: string[]
+  hard_deny: string[]
+  environment: string[]
+}
+
+const AUTO_MODE_SLOTS = {
+  user_allow_rules_to_replace: 'allow',
+  user_soft_deny_rules_to_replace: 'soft_deny',
+  user_hard_deny_rules_to_replace: 'hard_deny',
+  user_environment_to_replace: 'environment',
+} as const
+const SETTINGS_DENY_RULES_SLOT = '<settings_deny_rules>'
+
+/**
+ * Fills the permissions template slots the way the official 2.1.292 classifier does:
+ * an empty rule list keeps the slot's default text, a non-empty list replaces it
+ * (`$defaults` re-inserts the defaults), and <settings_deny_rules> takes the deny block.
+ */
+function fillAutoModeSlots(prompt: string, rules: AutoModeSlotRules, settingsDenyBlock: string): string {
+  let out = ''
+  for (let at = 0; at < prompt.length;) {
+    let start = -1, end = -1, inner = '', slot: keyof typeof AUTO_MODE_SLOTS | null = null
+    for (const name of Object.keys(AUTO_MODE_SLOTS) as (keyof typeof AUTO_MODE_SLOTS)[]) {
+      const open = `<${name}>`, close = `</${name}>`
+      const found = prompt.indexOf(open, at)
+      if (found === -1 || (start !== -1 && found > start)) continue
+      const closed = prompt.indexOf(close, found + open.length)
+      if (closed === -1) continue
+      start = found
+      end = closed + close.length
+      inner = prompt.slice(found + open.length, closed)
+      slot = name
+    }
+    const deny = prompt.indexOf(SETTINGS_DENY_RULES_SLOT, at)
+    if (deny !== -1 && (start === -1 || deny < start)) {
+      start = deny
+      end = deny + SETTINGS_DENY_RULES_SLOT.length
+      slot = null
+    }
+    if (start === -1) {
+      out += prompt.slice(at)
+      break
+    }
+    out += prompt.slice(at, start)
+    if (slot === null) out += settingsDenyBlock
+    else {
+      const list = rules[AUTO_MODE_SLOTS[slot]]
+      const defaults = inner.length > 0 ? [inner] : []
+      const lines: string[] = []
+      let expanded = false
+      for (const rule of list) {
+        if (rule === '$defaults') {
+          if (!expanded) lines.push(...defaults)
+          expanded = true
+        } else lines.push(`- ${rule}`)
+      }
+      out += (list.length ? lines : defaults).join('\n')
+    }
+    at = end
+  }
+  return out
+}
+
+function settingsDenyRulesBlock(rules: string[]): string {
+  if (rules.length === 0) return ''
+  return `- User Deny Rules: The user has configured these permission deny rules: ${rules.map(rule => `\`${rule}\``).join(', ')}. Each rule names a tool and (optionally) an argument pattern that is already hard-blocked for that tool. ` +
+    'Block the action if it accomplishes the same effect via a different tool \u2014 e.g. using Bash with ' +
+    '`python -c`, `sed -i`, `cat >`, heredocs, or similar to write or edit a file that an Edit/Write/MultiEdit deny rule covers, or otherwise routing around a deny rule by switching tools. The named tool itself is enforced separately; your job here is to catch circumvention.'
+}
+
+function composeAutoModeSystemPrompt(template: string, rules: AutoModeSlotRules, settingsDenyBlock: string): string {
+  const prompt = BASE_PROMPT
+    .replace('<permissions_template>', () => `<cc_automode_permissions>\n${template}\n</cc_automode_permissions>`)
+  return fillAutoModeSlots(prompt, rules, settingsDenyBlock)
+    .replace('<cross_session_messages_rule>', () => '')
 }
 
 /**
@@ -125,22 +210,11 @@ function extractTaggedBullets(tagName: string): string[] {
  * classifier sees its instructions.
  */
 export function buildDefaultExternalSystemPrompt(): string {
-  return BASE_PROMPT.replace(
-    '<permissions_template>',
-    () => EXTERNAL_PERMISSIONS_TEMPLATE,
+  return composeAutoModeSystemPrompt(
+    EXTERNAL_PERMISSIONS_TEMPLATE,
+    { allow: [], soft_deny: [], hard_deny: [], environment: [] },
+    '',
   )
-    .replace(
-      /<user_allow_rules_to_replace>([\s\S]*?)<\/user_allow_rules_to_replace>/,
-      (_m, defaults: string) => defaults,
-    )
-    .replace(
-      /<user_deny_rules_to_replace>([\s\S]*?)<\/user_deny_rules_to_replace>/,
-      (_m, defaults: string) => defaults,
-    )
-    .replace(
-      /<user_environment_to_replace>([\s\S]*?)<\/user_environment_to_replace>/,
-      (_m, defaults: string) => defaults,
-    )
 }
 
 function getAutoModeDumpDir(): string {
@@ -491,12 +565,6 @@ export async function buildYoloSystemPrompt(
   context: ToolPermissionContext,
 ): Promise<string> {
   const usingExternal = isUsingExternalPermissions()
-  const systemPrompt = BASE_PROMPT.replace('<permissions_template>', () =>
-    usingExternal
-      ? EXTERNAL_PERMISSIONS_TEMPLATE
-      : ANTHROPIC_PERMISSIONS_TEMPLATE,
-  )
-
   const autoMode = getAutoModeConfig()
   const includeBashPromptRules = feature('BASH_CLASSIFIER')
     ? !usingExternal
@@ -514,35 +582,17 @@ export async function buildYoloSystemPrompt(
     ...(autoMode?.soft_deny ?? []),
   ]
 
-  // All three sections use the same <foo_to_replace>...</foo_to_replace>
-  // delimiter pattern. The external template wraps its defaults inside the
-  // tags, so user-provided values REPLACE the defaults entirely. The
-  // anthropic template keeps its defaults outside the tags and uses an empty
-  // tag pair at the end of each section, so user-provided values are
-  // strictly ADDITIVE.
-  const userAllow = allowDescriptions.length
-    ? allowDescriptions.map(d => `- ${d}`).join('\n')
-    : undefined
-  const userDeny = denyDescriptions.length
-    ? denyDescriptions.map(d => `- ${d}`).join('\n')
-    : undefined
-  const userEnvironment = autoMode?.environment?.length
-    ? autoMode.environment.map(e => `- ${e}`).join('\n')
-    : undefined
-
-  return systemPrompt
-    .replace(
-      /<user_allow_rules_to_replace>([\s\S]*?)<\/user_allow_rules_to_replace>/,
-      (_m, defaults: string) => userAllow ?? defaults,
-    )
-    .replace(
-      /<user_deny_rules_to_replace>([\s\S]*?)<\/user_deny_rules_to_replace>/,
-      (_m, defaults: string) => userDeny ?? defaults,
-    )
-    .replace(
-      /<user_environment_to_replace>([\s\S]*?)<\/user_environment_to_replace>/,
-      (_m, defaults: string) => userEnvironment ?? defaults,
-    )
+  const settingsDenyRules = Object.values(context.alwaysDenyRules ?? {}).flat()
+  return composeAutoModeSystemPrompt(
+    usingExternal ? EXTERNAL_PERMISSIONS_TEMPLATE : ANTHROPIC_PERMISSIONS_TEMPLATE,
+    {
+      allow: allowDescriptions,
+      soft_deny: denyDescriptions,
+      hard_deny: [],
+      environment: autoMode?.environment ?? [],
+    },
+    settingsDenyRulesBlock(settingsDenyRules),
+  )
 }
 // ============================================================================
 // 2-Stage XML Classifier
@@ -835,6 +885,7 @@ async function classifyYoloActionXml(
           return {
             shouldBlock: true,
             reason: 'Classifier stage 1 unparseable - blocking for safety',
+        unparseable: true,
             model,
             usage: stage1Usage,
             durationMs: stage1DurationMs,
@@ -906,6 +957,7 @@ async function classifyYoloActionXml(
       return {
         shouldBlock: true,
         reason: 'Classifier stage 2 unparseable - blocking for safety',
+        unparseable: true,
         model,
         usage: totalUsage,
         durationMs: totalDurationMs,
@@ -1209,6 +1261,7 @@ export async function classifyYoloAction(
       return {
         shouldBlock: true,
         reason: 'Classifier returned no tool use block - blocking for safety',
+        unparseable: true,
         model,
         usage,
         durationMs,
@@ -1233,6 +1286,7 @@ export async function classifyYoloAction(
       return {
         shouldBlock: true,
         reason: 'Invalid classifier response - blocking for safety',
+        unparseable: true,
         model,
         usage,
         durationMs,
@@ -1367,6 +1421,8 @@ function resolveTwoStageClassifier():
     if (isEnvTruthy(env)) return true
     if (isEnvDefinedFalsy(env)) return false
   }
+  // Approve for me uses the official prompt, whose output contract is XML.
+  if (isApproveForMeAvailable()) return true
   const config = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_auto_mode_config',
     {} as AutoModeConfig,

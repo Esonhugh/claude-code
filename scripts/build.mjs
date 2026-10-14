@@ -81,6 +81,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'SSH_REMOTE',
     'UDS_INBOX',
     'KAIROS_CHANNELS',
+    'TRANSCRIPT_CLASSIFIER',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

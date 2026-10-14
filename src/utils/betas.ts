@@ -24,6 +24,7 @@ import {
 } from '../constants/betas.js'
 import { OAUTH_BETA_HEADER } from '../constants/oauth.js'
 import { isClaudeAISubscriber } from './auth.js'
+import { isApproveForMeAvailable } from './permissions/approveForMe.js'
 import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
@@ -168,6 +169,9 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model if it supports auto mode (specifically PI probes) — ask in #proj-claude-code-safety-research.
 export function modelSupportsAutoMode(model: string): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
+    // userType() is always 'external' in this fork, so the ant-only paths below never run:
+    // auto mode is offered only as "Approve for me" (OpenAI mode with ChatGPT OAuth).
+    if (!isAnt()) return isApproveForMeAvailable()
     const m = getCanonicalName(model)
     // External: firstParty-only at launch (PI probes not wired for
     // Bedrock/Vertex/Foundry yet). Checked before allowModels so the GB

@@ -23,9 +23,9 @@ import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js'
 import {
   isDefaultMode,
   permissionModeSymbol,
-  permissionModeTitle,
   getModeColor,
 } from '../../utils/permissions/PermissionMode.js'
+import { getPermissionModeFooterLabel } from '../../utils/permissions/approveForMe.js'
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js'
 import { isBackgroundTask } from '../../tasks/types.js'
 import { isViewableTeammate } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
@@ -383,7 +383,7 @@ function ModeIndicator({
     currentMode && hasActiveMode && !getIsRemoteMode() ? (
       <Text color={getModeColor(currentMode)} key="mode">
         {permissionModeSymbol(currentMode)}{' '}
-        {permissionModeTitle(currentMode).toLowerCase()} on
+        {getPermissionModeFooterLabel(currentMode)} on
         {shouldShowModeHint && (
           <Text dimColor>
             {' '}

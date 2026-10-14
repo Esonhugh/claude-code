@@ -106,6 +106,7 @@ import {
   formatActionForClassifier,
 } from './yoloClassifier.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isApproveForMeAvailable } from './approveForMe.js'
 
 
 const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
@@ -837,6 +838,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         // the tengu_iron_gate_closed gate.
         if (classifierResult.unavailable) {
           if (
+            !isApproveForMeAvailable() &&
             getFeatureValue_CACHED_WITH_REFRESH(
               'tengu_iron_gate_closed',
               true,
@@ -863,6 +865,15 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           // Fail open: fall back to normal permission handling
           logForDebugging(
             'Auto mode classifier unavailable, falling back to normal permission handling (fail open)',
+            { level: 'warn' },
+          )
+          return result
+        }
+
+        // Approve for me never turns a reviewer it cannot read into a decision; the person decides.
+        if (classifierResult.unparseable && isApproveForMeAvailable()) {
+          logForDebugging(
+            'Approve for me reviewer answer was unparseable, falling back to normal permission handling',
             { level: 'warn' },
           )
           return result

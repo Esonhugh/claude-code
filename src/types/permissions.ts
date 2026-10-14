@@ -357,6 +357,8 @@ export type YoloClassifierResult = {
    * callers should fall back to normal prompting rather than retry/fail-closed.
    */
   transcriptTooLong?: boolean
+  /** The classifier answered but its decision could not be parsed. */
+  unparseable?: boolean
   /** The model used for this classifier call */
   model: string
   /** Token usage from the classifier API call (for overhead telemetry) */
