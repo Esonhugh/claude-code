@@ -1,12 +1,22 @@
-import { expect, test } from 'bun:test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { afterAll, afterEach, expect, test } from 'bun:test'
+import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve, join } from 'node:path'
 
-// Retained, repository-local fixtures only. The stub prevents real runtime/config IO.
+// The stub prevents real runtime/config IO; all fixtures are disposable.
 const repository = resolve(import.meta.dir, '../../../..')
 const runner = join(import.meta.dir, 'runner.ts')
 const marker = '__CLAUDE_PLUGIN_TEST_RESULT__'
-const fixture = await mkdtemp(join(repository, '.claude-test-evidence/runner-safety-'))
+const fixture = await realpath(await mkdtemp(join(tmpdir(), 'runner-safety-')))
+const cases: string[] = []
+afterEach(async () => {
+  for (const root of cases.splice(0)) {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+afterAll(async () => {
+  await rm(fixture, { recursive: true, force: true })
+})
 const stub = join(fixture, 'stub.ts')
 await writeFile(stub, `
 import { mock } from 'bun:test'
@@ -34,7 +44,8 @@ mock.module(${JSON.stringify(resolve(import.meta.dir, '../runtime.js'))}, () => 
 `)
 
 async function scenario(source: string, files: Record<string, string> = { 'one.test.ts': '' }) {
-  const root = await mkdtemp(join(fixture, 'case-'))
+  const root = await realpath(await mkdtemp(join(fixture, 'case-')))
+  cases.push(root)
   for (const [name, content] of Object.entries(files)) await writeFile(join(root, name), content)
   const script = join(root, 'harness.ts')
   await writeFile(script, `import {runPluginTests, runPluginTestFile} from ${JSON.stringify(runner)}\nconst root = ${JSON.stringify(root)}\n${source}`)

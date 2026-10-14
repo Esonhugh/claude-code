@@ -3,6 +3,7 @@ import * as fs from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { tmpdir } from 'node:os'
 import {
   cleanupPluginPublicationEntry,
   publishDirectory,
@@ -18,7 +19,7 @@ afterEach(async () => {
 
 async function fixture() {
   const root = await fs.realpath(
-    await fs.mkdtemp('/private/tmp/claude-test/pl4-publish-'),
+    await fs.mkdtemp(join(tmpdir(), 'claude-test-pl4-publish-')),
   )
   roots.push(root)
   return { root, final: join(root, '3.0.0') }

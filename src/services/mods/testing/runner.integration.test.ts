@@ -1,5 +1,6 @@
-import { expect, test } from 'bun:test'
-import { lstat, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
+import { afterEach, expect, test } from 'bun:test'
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import { HOOK_EVENTS } from '../../../entrypoints/sdk/coreTypes.js'
 import { runPluginTests } from './runner.js'
@@ -7,6 +8,13 @@ import { ManualDeadlineClock } from './fixtures/manualDeadlineClock.js'
 
 const repository = resolve(import.meta.dir, '../../../..')
 const runner = join(import.meta.dir, 'runner.ts')
+const fixtures: string[] = []
+
+afterEach(async () => {
+  for (const root of fixtures.splice(0)) {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 function passed(result: { tests: Array<{ failure?: string }> }): number {
   return result.tests.filter(test => test.failure === undefined).length
@@ -22,8 +30,8 @@ function failures(result: { file: string; tests: Array<{ name: string; failure?:
 async function scenario(
   source: string, register?: string, manifest: Record<string, unknown> = {}, manualDeadline = false,
 ) {
-  await mkdir(join(repository, '.claude-test-evidence'), {recursive:true})
-  const root = await mkdtemp(join(repository, '.claude-test-evidence/runner-integration-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'runner-integration-')))
+  fixtures.push(root)
   await mkdir(join(root, 'hooks'))
   await mkdir(join(root, '.claude-plugin'))
   await mkdir(join(root, 'home'))

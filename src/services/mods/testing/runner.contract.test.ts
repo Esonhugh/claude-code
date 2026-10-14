@@ -1,13 +1,21 @@
-import { expect, test } from 'bun:test'
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { afterEach, expect, test } from 'bun:test'
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 const repository = resolve(import.meta.dir, '../../../..')
 const runner = join(import.meta.dir, 'runner.ts')
+const fixtures: string[] = []
+
+afterEach(async () => {
+  for (const root of fixtures.splice(0)) {
+    await rm(root, { recursive: true, force: true })
+  }
+})
 
 async function author(source: string) {
-  await mkdir(join(repository, '.claude-test-evidence'), { recursive: true })
-  const root = await mkdtemp(join(repository, '.claude-test-evidence/author-contract-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'author-contract-')))
+  fixtures.push(root)
   await mkdir(join(root, '.claude-plugin')); await mkdir(join(root, 'hooks')); await mkdir(join(root, 'home'))
   await writeFile(join(root, '.claude-plugin/plugin.json'), JSON.stringify({ name: 'author-contract', version: '1.0.0' }))
   await writeFile(join(root, 'hooks/hooks.json'), JSON.stringify({ modules: ['../register.ts'] }))

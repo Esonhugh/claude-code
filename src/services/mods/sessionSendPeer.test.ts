@@ -10,6 +10,7 @@ import {
 import { createServer, type Server } from "node:net";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
 import {
   formatPeerAddress,
   formatPeerMessage,
@@ -41,7 +42,7 @@ const keys = [
 let saved: (string | undefined)[];
 beforeEach(async () => {
   saved = keys.map((k) => process.env[k]);
-  root = await realpath(await mkdtemp("/private/tmp/claude-test/sp-"));
+  root = await realpath(await mkdtemp(join(tmpdir(), "claude-test-sp-")));
   process.env.HOME = root;
   process.env.CLAUDE_CONFIG_DIR = join(root, "config");
   process.env.ANTHROPIC_API_KEY = "sk-send-peer-placeholder";

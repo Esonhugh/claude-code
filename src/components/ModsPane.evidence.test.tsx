@@ -1,5 +1,8 @@
 import { expect, test } from 'bun:test'
 import React from 'react'
+import { realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { Box, Text, ThemeProvider, createRoot } from '../ink.js'
 import type { FrameEvent } from '../ink/frame.js'
@@ -47,6 +50,8 @@ type Witness = {
 }
 
 type Cleanup = () => void | Promise<void>
+const canonicalTmpDir = await realpath(tmpdir())
+
 async function withFrameEvidence(
   path: string,
   run: (defer: (cleanup: Cleanup) => void) => Promise<void>,
@@ -84,7 +89,7 @@ async function withFrameEvidence(
 
 test('terminal evidence retains an empty action Button as the actual focus landing', async () => {
   await withFrameEvidence(
-    '/private/tmp/unused-empty-action-evidence-unit',
+    join(canonicalTmpDir, 'unused-empty-action-evidence-unit'),
     async defer => {
       const owner = {}
       const presentation = {
@@ -191,7 +196,7 @@ test('terminal evidence retains an empty action Button as the actual focus landi
 
 test('terminal evidence follows committed Pane props and painted geometry through resize, close and reopen', async () => {
   await withFrameEvidence(
-    '/private/tmp/unused-pane-frame-evidence-unit',
+    join(canonicalTmpDir, 'unused-pane-frame-evidence-unit'),
     async defer => {
       const owner = {}
       const presentation = {

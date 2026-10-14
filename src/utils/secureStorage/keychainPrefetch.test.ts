@@ -1,4 +1,7 @@
 import { expect, test } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // Each scenario owns its module mocks and prefetch singleton in a fresh process.
 // No security executable, user configuration, or real credentials are accessed.
@@ -95,26 +98,33 @@ for (const scenario of scenarios) {
       await eval(`(async () => { ${script} })()`)
       return
     }
-    const result = Bun.spawnSync([process.execPath, 'test', import.meta.path], {
-      cwd: import.meta.dir,
-      env: {
-        PATH: process.env.PATH,
-        HOME: import.meta.dir,
-        USER: 'prefetch-test',
-        KEYCHAIN_PREFETCH_TEST_SCENARIO: scenario,
-      },
-      stdout: 'pipe',
-      stderr: 'pipe',
-      timeout: 10_000,
-    })
-    expect({
-      exitCode: result.exitCode,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString(),
-    }).toEqual({
-      exitCode: 0,
-      stdout: expect.stringContaining('scenario passed\n'),
-      stderr: expect.stringContaining('1 pass'),
-    })
+    const home = await mkdtemp(join(tmpdir(), 'keychain-prefetch-'))
+    try {
+      const result = Bun.spawnSync([process.execPath, 'test', import.meta.path], {
+        cwd: home,
+        env: {
+          PATH: process.env.PATH,
+          HOME: home,
+          BUN_INSTALL_CACHE_DIR: join(home, 'bun-cache'),
+          TMPDIR: home,
+          USER: 'prefetch-test',
+          KEYCHAIN_PREFETCH_TEST_SCENARIO: scenario,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+        timeout: 10_000,
+      })
+      expect({
+        exitCode: result.exitCode,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+      }).toEqual({
+        exitCode: 0,
+        stdout: expect.stringContaining('scenario passed\n'),
+        stderr: expect.stringContaining('1 pass'),
+      })
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
   })
 }
