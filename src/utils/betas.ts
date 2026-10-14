@@ -169,9 +169,18 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model if it supports auto mode (specifically PI probes) — ask in #proj-claude-code-safety-research.
 export function modelSupportsAutoMode(model: string): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
-    // userType() is always 'external' in this fork, so the ant-only paths below never run:
-    // auto mode is offered only as "Approve for me" (OpenAI mode with ChatGPT OAuth).
-    if (!isAnt()) return isApproveForMeAvailable()
+    // userType() is always 'external' in this fork, so the ant-only paths below never run.
+    // OpenAI mode reviews with the ChatGPT login ("Approve for me"); every other provider
+    // follows official 2.1.292: models older than claude-opus-4-6 are out, and third-party
+    // providers also leave out the 4-6 models and Haiku.
+    if (!isAnt()) {
+      if (getAPIProvider() === 'openai') return isApproveForMeAvailable()
+      const canonical = getCanonicalName(model)
+      if (canonical.includes('claude-3-') || ['claude-opus-4-0', 'claude-sonnet-4-0', 'claude-opus-4-1',
+        'claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-5'].includes(canonical)) return false
+      return getAPIProvider() === 'firstParty' || !(canonical === 'claude-opus-4-6' ||
+        canonical === 'claude-sonnet-4-6' || canonical.includes('haiku'))
+    }
     const m = getCanonicalName(model)
     // External: firstParty-only at launch (PI probes not wired for
     // Bedrock/Vertex/Foundry yet). Checked before allowModels so the GB

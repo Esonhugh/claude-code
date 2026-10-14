@@ -14,6 +14,7 @@ import type {
 import { getCwd } from '../cwd.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { isApproveForMeAvailable } from './approveForMe.js'
+import { getAPIProvider } from '../model/providers.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import type { SettingSource } from '../settings/constants.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
@@ -731,8 +732,10 @@ export function initialPermissionModeFromCLI({
   // AutoModeOptInDialog from showing in showSetupScreens() when auto can't
   // actually be entered. autoModeFlagCli still carries intent through to
   // verifyAutoModeGateAccess, which notifies the user why.
+  // OpenAI mode has auto only as Approve for me, which needs the ChatGPT login.
   const autoModeCircuitBrokenSync = feature('TRANSCRIPT_CLASSIFIER')
-    ? getAutoModeEnabledStateIfCached() === 'disabled'
+    ? getAPIProvider() === 'openai' && !isApproveForMeAvailable() ||
+      getAutoModeEnabledStateIfCached() === 'disabled'
     : false
 
   // Modes in order of priority
@@ -1339,7 +1342,8 @@ export function getAutoModeUnavailableReason(): AutoModeUnavailableReason | null
  */
 export type AutoModeEnabledState = 'enabled' | 'disabled' | 'opt-in'
 
-const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'disabled'
+// Official 2.1.292 treats a missing rollout value as enabled.
+const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'enabled'
 
 function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
   // The GrowthBook rollout gates first-party auto mode; Approve for me is this build's own offer.
@@ -1352,7 +1356,7 @@ function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
 
 /**
  * Reads the `enabled` field from tengu_auto_mode_config (cached, may be stale).
- * Defaults to 'disabled' if GrowthBook is unavailable or the field is unset.
+ * Defaults to 'enabled' if GrowthBook is unavailable or the field is unset.
  * Other surfaces (IDE, Desktop) should call this to decide whether to surface
  * auto mode in their mode pickers.
  */

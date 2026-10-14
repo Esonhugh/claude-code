@@ -30,13 +30,15 @@ if (process.env[childFlag] !== '1') {
 const { getChatGPTOAuthInfo, getOpenAIAuthInfo } = await import('../auth.js')
 const { modelSupportsAutoMode } = await import('../betas.js')
 const { getPermissionModeFooterLabel, isApproveForMeAvailable } = await import('./approveForMe.js')
-const { getAutoModeEnabledState } = await import('./permissionSetup.js')
+const { getAutoModeEnabledState, initialPermissionModeFromCLI } = await import('./permissionSetup.js')
 
 const saved = {
   HOME: process.env.HOME,
   CLAUDE_CODE_USE_OPENAI: process.env.CLAUDE_CODE_USE_OPENAI,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_AUTH_TOKEN: process.env.OPENAI_AUTH_TOKEN,
+  CLAUDE_CODE_USE_BEDROCK: process.env.CLAUDE_CODE_USE_BEDROCK,
+  ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 }
 let home: string
 
@@ -53,6 +55,7 @@ beforeEach(() => {
   delete process.env.OPENAI_API_KEY
   delete process.env.OPENAI_AUTH_TOKEN
   delete process.env.CLAUDE_CODE_USE_OPENAI
+  delete process.env.CLAUDE_CODE_USE_BEDROCK
   getOpenAIAuthInfo.cache.clear?.()
   getChatGPTOAuthInfo.cache.clear?.()
 })
@@ -86,21 +89,45 @@ test('an OpenAI API key or token is not an OAuth login', () => {
   expect(isApproveForMeAvailable()).toBe(false)
 })
 
-test('auto mode model support follows Approve for me availability only', () => {
-  expect(modelSupportsAutoMode('claude-opus-5-5')).toBe(false)
-  expect(modelSupportsAutoMode('gpt-5.6-sol')).toBe(false)
+test('auto mode model support follows official outside OpenAI mode and Approve for me inside it', () => {
+  expect(modelSupportsAutoMode('claude-opus-5-5')).toBe(true)
+  expect(modelSupportsAutoMode('claude-opus-4-6')).toBe(true)
+  expect(modelSupportsAutoMode('claude-opus-4-5')).toBe(false)
+  expect(modelSupportsAutoMode('claude-3-5-sonnet-20241022')).toBe(false)
+
+  process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+  expect(modelSupportsAutoMode('claude-opus-4-6')).toBe(false)
+  expect(modelSupportsAutoMode('claude-haiku-5')).toBe(false)
+  expect(modelSupportsAutoMode('claude-opus-4-7')).toBe(true)
+  delete process.env.CLAUDE_CODE_USE_BEDROCK
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  useAuthFile({ OPENAI_API_KEY: 'sk-file' })
+  expect(modelSupportsAutoMode('gpt-5.6-sol')).toBe(false)
   useAuthFile({ auth_mode: 'chatgpt', tokens: { access_token: 'oauth-access' } })
   expect(modelSupportsAutoMode('gpt-5.6-sol')).toBe(true)
 })
 
-test('Approve for me offers auto mode without the GrowthBook rollout gate', () => {
-  expect(getAutoModeEnabledState()).toBe('disabled')
+test('a Claude API key gets auto mode like a Claude login', () => {
+  process.env.ANTHROPIC_API_KEY = 'sk-ant-test-not-real'
+  expect(modelSupportsAutoMode('claude-opus-5-5')).toBe(true)
+  expect(initialPermissionModeFromCLI({ permissionModeCli: 'auto', dangerouslySkipPermissions: false }).mode).toBe('auto')
+})
+
+test('a missing rollout value leaves auto mode enabled like official', () => {
+  expect(getAutoModeEnabledState()).toBe('enabled')
+})
+
+test('--permission-mode auto starts in auto except in OpenAI mode without the ChatGPT login', () => {
+  const start = () => initialPermissionModeFromCLI({ permissionModeCli: 'auto', dangerouslySkipPermissions: false }).mode
+  expect(start()).toBe('auto')
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
+  useAuthFile({ OPENAI_API_KEY: 'sk-file' })
+  expect(start()).toBe('default')
+
   useAuthFile({ auth_mode: 'chatgpt', tokens: { access_token: 'oauth-access' } })
-  expect(getAutoModeEnabledState()).toBe('enabled')
+  expect(start()).toBe('auto')
 })
 
 test('the footer names auto mode "auto (Approve for me)" and leaves other modes unchanged', () => {
