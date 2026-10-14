@@ -171,10 +171,11 @@ export function UserTextMessage({
   if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
     if (param.text.includes('<channel source="')) {
       /* eslint-disable @typescript-eslint/no-require-imports */
-      const { UserChannelMessage } =
+      const { UserChannelMessage, parseChannelMessage } =
         require('./UserChannelMessage.js') as typeof import('./UserChannelMessage.js')
       /* eslint-enable @typescript-eslint/no-require-imports */
-      return <UserChannelMessage addMargin={addMargin} param={param} />
+      const message = parseChannelMessage(param.text)
+      if (message) return <UserChannelMessage addMargin={addMargin} message={message} />
     }
   }
 
