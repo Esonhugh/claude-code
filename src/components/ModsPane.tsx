@@ -1673,6 +1673,37 @@ export function ModsPane({
       else manager.focusNext(getRootNode(root))
     }
   }, { capture: true, isActive: chrome !== 'band' && pane.focused && pane.visible && shown })
+  // Clicking the pane body takes the keyboard like official; controls keep their own clicks,
+  // and the click still counts as unhandled so selection and links behave as before.
+  const takeFocusOnBodyClick = (event: ClickEvent) => {
+    const root = rootRef.current
+    if (!root || chrome === 'band' || pane.focused || !pane.visible || !shown) return
+    let hit: DOMElement | undefined = hitTest(getRootNode(root), event.col, event.row) ?? undefined
+    while (hit && hit !== root) {
+      if (typeof hit.attributes.tabIndex === 'number' || hit._eventHandlers?.onClick) return
+      hit = hit.parentNode
+    }
+    event.allowDefault()
+    run(requestFocus(undefined, { kind: 'person' }, { engine: true }))
+  }
+  // Pressing anywhere outside a focused pane hands the keyboard back, like official.
+  React.useEffect(() => {
+    if (!internal_eventEmitter || chrome === 'band') return
+    const release = (event: PointerEvent) => {
+      const current = latest.current
+      const root = rootRef.current
+      if (event.type !== 'down' || !root || !current.pane.focused || !current.pane.visible) return
+      let hit: DOMElement | undefined = hitTest(getRootNode(root), event.col, event.row) ?? undefined
+      while (hit && hit !== root) hit = hit.parentNode
+      if (hit === root) return
+      focusGeneration.current++
+      focusCommit.current?.resolve()
+      focusCommit.current = undefined
+      void current.onFocus(current.pane).catch(error => current.onError?.(error))
+    }
+    internal_eventEmitter.on('pointer', release)
+    return () => { internal_eventEmitter.removeListener('pointer', release) }
+  }, [internal_eventEmitter, chrome])
   const terminalIdentity = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH ? getModUiTerminalIdentity(pane) : undefined
   return (
     <Box
@@ -1704,6 +1735,7 @@ export function ModsPane({
         event.stopPropagation()
       }}
       onKeyDown={handleKeyDown}
+      onClick={takeFocusOnBodyClick}
     >
       <Box flexDirection="column" flexShrink={0} selectionScope
         height={pane.placement === 'dock' ? dockHostRows : undefined}

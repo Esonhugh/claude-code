@@ -5108,3 +5108,75 @@ describe('ModsPane Ink interaction', () => {
     }
   })
 })
+
+describe('ModsPane person pointer and Escape like official', () => {
+  test('clicking the body of an unfocused pane takes the keyboard while controls keep their clicks', async () => {
+    const stdout = new Output()
+    const focuses: unknown[][] = []
+    const presses: string[] = []
+    const instance = await render(<ModsPane canFocus
+      pane={pane({ type: 'Box', props: { flexDirection: 'column' }, children: [
+        { type: 'Text', children: ['diff body'] },
+        { type: 'Button', props: { key: 'run', label: 'Run' }, press: { plugin: 'fixture', handle: 9 } },
+      ] }, { focused: false, placement: 'dock' })}
+      onFocus={async (...args) => { focuses.push(args.slice(1)); return {} }}
+      onInteract={async (_pane, _drawing, _callback, _kind, element) => { presses.push(element) }}
+      onClose={async () => {}} onScroll={async () => {}}
+    />, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      const button = nodeCache.get(renderedElement(stdout, '[ Run ]', 'ink-text'))!
+      dispatchClick(ink.rootNode, button.x, button.y)
+      await settle()
+      expect(focuses.some(([, , options]) => (options as { engine?: true } | undefined)?.engine)).toBe(false)
+      const body = nodeCache.get(renderedElement(stdout, 'diff body', 'ink-text'))!
+      // The body click is not consumed, so selection and links keep working.
+      expect(dispatchClick(ink.rootNode, body.x, body.y)).toBe(false)
+      await settle()
+      expect(focuses.at(-1)).toEqual([undefined, { kind: 'person' }, { engine: true }])
+    } finally { instance.unmount() }
+  })
+
+  test('a focused pane ignores body clicks', async () => {
+    const stdout = new Output()
+    const focuses: unknown[] = []
+    const instance = await render(<ModsPane canFocus
+      pane={pane({ type: 'Text', children: ['focused body'] }, { placement: 'dock' })}
+      onFocus={async (...args) => { focuses.push(args); return {} }}
+      onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+    />, { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const before = focuses.length
+      const ink = instances.get(stdout as never) as unknown as InkInstance
+      const body = nodeCache.get(renderedElement(stdout, 'focused body', 'ink-text'))!
+      dispatchClick(ink.rootNode, body.x, body.y)
+      await settle()
+      expect(focuses).toHaveLength(before)
+    } finally { instance.unmount() }
+  })
+
+  test('pressing outside a focused pane hands the keyboard back; pressing inside keeps it', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const focuses: unknown[][] = []
+    const instance = await render(<Box flexDirection="column"><EnableInput /><Text>transcript line</Text><ModsPane
+      pane={pane({ type: 'Text', children: ['held body'] }, { placement: 'dock' })}
+      onFocus={async (...args) => { focuses.push(args.slice(1)); return {} }}
+      onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+    /></Box>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const before = focuses.length
+      const body = nodeCache.get(renderedElement(stdout, 'held body', 'ink-text'))!
+      stdin.push(`\u001b[<0;${body.x + 1};${body.y + 1}M\u001b[<0;${body.x + 1};${body.y + 1}m`)
+      await settle()
+      expect(focuses).toHaveLength(before)
+      const outside = nodeCache.get(renderedElement(stdout, 'transcript line', 'ink-text'))!
+      stdin.push(`\u001b[<0;${outside.x + 1};${outside.y + 1}M\u001b[<0;${outside.x + 1};${outside.y + 1}m`)
+      await settle()
+      expect(focuses.slice(before)).toEqual([[]])
+    } finally { instance.unmount() }
+  })
+})
