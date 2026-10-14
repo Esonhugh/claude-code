@@ -869,7 +869,9 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
           pending.set(agentId, deferred.promise)
           let teammateResume = false
           try {
-            const metadata = await readAgentMetadata(asAgentId(agentId))
+            // Like official, only an evicted agent's identity comes from disk; a
+            // local agent still in state routes without reading its metadata.
+            const metadata = isLocalAgentTask(context.getAppState().tasks[agentId]) ? null : await readAgentMetadata(asAgentId(agentId))
             if (metadata?.taskKind === 'in_process_teammate') {
               teammateResume = true
               const name = metadata.name ?? input.to

@@ -194,6 +194,27 @@ if (process.env[childFlag] !== '1') {
     expect(sendToUdsSocket).not.toHaveBeenCalled()
   })
 
+  test('running local agents still queue when their metadata cannot be read', async () => {
+    const { getAgentTranscriptPath } = await import('../../utils/sessionStorage.js')
+    const agentId = 'a00112233445566778'
+    const metadataPath = getAgentTranscriptPath(agentId as never).replace(/\.jsonl$/, '.meta.json')
+    await mkdir(join(metadataPath, '..'), { recursive: true })
+    await writeFile(metadataPath, '{not json')
+    state = {
+      ...state,
+      agentNameRegistry: new Map([['meta-broken', agentId]]),
+      tasks: { [agentId]: { id: agentId, type: 'local_agent', status: 'running', pendingMessages: [] } },
+    } as unknown as typeof state
+    const result = await SendMessageTool.call(
+      { to: 'meta-broken', message: 'still deliver' },
+      context,
+      async () => ({ behavior: 'allow' }),
+      undefined,
+    )
+    expect(result.data.success).toBe(true)
+    expect(state.tasks[agentId]).toMatchObject({ pendingMessages: ['still deliver'] })
+  })
+
   test('evicted registered agents still resume before peer resolution', async () => {
     state.agentNameRegistry.set(peer.name, 'a0123456789abcdef' as never)
     const result = await SendMessageTool.call(
