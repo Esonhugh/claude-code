@@ -388,6 +388,9 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
     case getModelStrings().sonnet50:
     case getModelStrings().sonnet50 + '[1m]':
       return 'Sonnet 5'
+    case 'claude-haiku-5-5':
+    case 'claude-haiku-5-5[1m]':
+      return 'Haiku 5.5'
     case getModelStrings().opus48:
     case getModelStrings().opus48 + '[1m]':
       return 'Opus 4.8'
@@ -604,6 +607,7 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical === 'claude-opus-5') return 'Opus 5'
   if (canonical === 'claude-sonnet-5-5') return 'Sonnet 5.5'
   if (canonical === 'claude-sonnet-5') return 'Sonnet 5'
+  if (canonical === 'claude-haiku-5-5') return 'Haiku 5.5'
   if (canonical.includes('claude-opus-4-8')) {
     return has1m ? 'Opus 4.8 (with 1M context)' : 'Opus 4.8'
   }
