@@ -3,7 +3,6 @@ import { basename, dirname, resolve } from 'node:path'
 import type { ToolUseContext } from '../../Tool.js'
 import { isAgentOffered } from '../../services/mods/agentOffer.js'
 import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
-import { isBuiltInAgent } from '../../tools/AgentTool/loadAgentsDir.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { asAgentId, toAgentId } from '../../types/ids.js'
 import { getGlobalConfig } from '../config.js'
@@ -111,7 +110,7 @@ export async function resumeInProcessTeammate({
   let agentDefinition: AgentDefinition | undefined
   let definitionNotice: string | undefined
   if (meta.customAgentType) {
-    const candidate = toolUseContext.options.agentDefinitions.activeAgents.find(agent => agent.agentType === meta.customAgentType && !isBuiltInAgent(agent))
+    const candidate = toolUseContext.options.agentDefinitions.activeAgents.find(agent => agent.agentType === meta.customAgentType)
     const allowedTypes = toolUseContext.options.agentDefinitions.allowedAgentTypes
     const withheld = candidate !== undefined && (
       (allowedTypes !== undefined && !allowedTypes.includes(candidate.agentType)) ||

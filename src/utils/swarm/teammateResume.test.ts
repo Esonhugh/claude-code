@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { QueryParams } from '../../query.js'
 import type { ToolUseContext } from '../../Tool.js'
+import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
 
 const childEnv = 'CLAUDE_CODE_TEAMMATE_RESUME_TEST_CHILD'
 if (process.env[childEnv] !== '1') {
@@ -83,6 +84,7 @@ async function isolatedTests() {
   const { runInProcessTeammate } = await import('./inProcessRunner.js')
   const { readAgentMetadata, getAgentTranscript, getAgentTranscriptPath, flushSessionStorage, writeAgentMetadata } = await import('../sessionStorage.js')
   const { parseAgentsFromJson, parseAgentFromMarkdown } = await import('../../tools/AgentTool/loadAgentsDir.js')
+  const { GENERAL_PURPOSE_AGENT } = await import('../../tools/AgentTool/built-in/generalPurposeAgent.js')
   const { SendMessageTool } = await import('../../tools/SendMessageTool/SendMessageTool.js')
   const { BashTool } = await import('../../tools/BashTool/BashTool.js')
   const { readMailbox, writeToMailbox, getInboxPath } = await import('../teammateMailbox.js')
@@ -98,9 +100,8 @@ async function isolatedTests() {
   function definition(prompt = 'ORIGINAL_CUSTOM_INSTRUCTIONS') {
     return parseAgentsFromJson({ 'custom-reviewer': { description: 'Review current code', prompt, tools: ['*'] } })[0]!
   }
-  function makeContext() {
+  function makeContext(active: AgentDefinition = definition()) {
     let state = getDefaultAppState()
-    const active = definition()
     const context: ToolUseContext = {
       options: {
         commands: [], debug: false, mainLoopModel: 'claude-sonnet-4-6', tools: [SendMessageTool, BashTool], verbose: false,
@@ -378,6 +379,16 @@ async function isolatedTests() {
       expect(params.toolUseContext.options.tools.map(tool => tool.name)).toEqual(['SendMessage'])
       expect(await snapshot.dispatch('command.run', {}, async () => ({}))).toEqual({ text: JSON.stringify({ agent: 'custom-reviewer', description: 'Review current code', source: 'flagSettings', provider: { plugin: 'flagSettings', tier: 'user' } }) })
     } finally { snapshot.release(); await runtime.dispose(); context.modsSnapshot = undefined }
+  })
+  test('a default general-purpose teammate keeps its full tool set after resume', async () => {
+    const context = makeContext(GENERAL_PURPOSE_AGENT), produced = await produce(context)
+    expect((await readAgentMetadata(produced.id))?.customAgentType).toBe('general-purpose')
+    const before = observed.length
+    const result = await send(context, produced.name)
+    expect(result.data.success).toBe(true)
+    expect(result.data.message).not.toContain('definition was not restored')
+    const params = await finishResume(context, produced.id, before)
+    expect(params.toolUseContext.options.tools.map(tool => tool.name)).toEqual(['SendMessage', 'Bash'])
   })
   test('real metadata description uses native Unicode/ANSI cleanup and preserves ZWJ and UTF-16 boundaries', async () => {
     for (const [description, expected] of [
