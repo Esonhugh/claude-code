@@ -2794,7 +2794,7 @@ function PromptInput({
       })
       setShowModelPicker(false)
       const effectiveFastMode = (isFastMode ?? false) && !wasFastModeDisabled
-      let message = `Model set to ${modelDisplayString(model)}`
+      let message = `Model set to ${modelDisplayString(model)} and saved as your default for new sessions`
       if (
         isBilledAsExtraUsage(model, effectiveFastMode, isOpus1mMergeEnabled())
       ) {

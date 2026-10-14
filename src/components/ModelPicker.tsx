@@ -1,4 +1,3 @@
-import capitalize from 'lodash-es/capitalize.js'
 import * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
 import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKeybindings.js'
@@ -29,8 +28,13 @@ import {
   modelDisplayString,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js'
-import { getModelOptions, type ModelOption } from '../utils/model/modelOptions.js'
+import {
+  getModelOptions,
+  resolveServedModelAliasForPersistence,
+  type ModelOption,
+} from '../utils/model/modelOptions.js'
 import { getAPIProvider } from '../utils/model/providers.js'
+import { capitalize } from '../utils/stringUtils.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -139,7 +143,8 @@ export function ModelPicker({
     [selectOptions, initialValue],
   )
   const visibleCount = Math.min(maxVisible, selectOptions.length)
-  const hiddenCount = Math.max(0, selectOptions.length - visibleCount)
+  const [visibleToIndex, setVisibleToIndex] = useState(visibleCount)
+  const hiddenCount = getHiddenModelCount(selectOptions.length, visibleToIndex)
 
   const focusedModelName = selectOptions.find(
     opt => opt.value === focusedValue,
@@ -171,6 +176,13 @@ export function ModelPicker({
       }
     },
     [effortValue, hasToggledEffort, selectOptions],
+  )
+
+  const handleVisibleRangeChange = useCallback(
+    ({ visibleToIndex: nextVisibleToIndex }: { visibleFromIndex: number; visibleToIndex: number }) => {
+      setVisibleToIndex(nextVisibleToIndex)
+    },
+    [],
   )
 
   // Effort level cycling keybindings
@@ -239,7 +251,10 @@ export function ModelPicker({
       onSelect(null, selectedEffort)
       return
     }
-    onSelect(value, selectedEffort)
+    onSelect(
+      resolveServedModelAliasForPersistence(value as ModelSetting),
+      selectedEffort,
+    )
   }
 
   const content = (
@@ -269,13 +284,14 @@ export function ModelPicker({
               options={selectOptions}
               onChange={handleSelect}
               onFocus={handleFocus}
+              onVisibleRangeChange={handleVisibleRangeChange}
               onCancel={onCancel ?? (() => {})}
               visibleOptionCount={visibleCount}
             />
           </Box>
           {hiddenCount > 0 && (
             <Box paddingLeft={3}>
-              <Text dimColor>and {hiddenCount} more…</Text>
+              <Text dimColor>… +{hiddenCount} models</Text>
             </Box>
           )}
         </Box>
@@ -285,7 +301,7 @@ export function ModelPicker({
             {focusedSupportsEffort ? (
             <Text dimColor>
               <EffortLevelIndicator effort={displayEffort} />{' '}
-              {capitalize(displayEffort)} effort
+              {formatEffortLevel(displayEffort)} effort
               {displayEffort === focusedDefaultEffort ? ` (default)` : ``}{' '}
               <Text color="subtle">← → to adjust</Text>
             </Text>
@@ -376,6 +392,15 @@ export function resolveInitialPickerValue(
   if (options.some(option => option.value === initial)) return initial
   const resolved = parseUserSpecifiedModel(initial)
   return options.some(option => option.value === resolved) ? resolved : initial
+}
+
+export function getHiddenModelCount(totalCount: number, visibleToIndex: number): number {
+  return Math.max(0, totalCount - visibleToIndex)
+}
+
+export function formatEffortLevel(level: EffortLevel | undefined): string {
+  if (level === undefined) return ''
+  return level === 'xhigh' ? 'xHigh' : capitalize(level)
 }
 
 function EffortLevelIndicator({

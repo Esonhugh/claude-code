@@ -364,9 +364,28 @@ function resolveServedModelAlias(model: ModelSetting): ModelSetting {
       return `${getDefaultSonnetModel()}[1m]`
     case 'haiku':
       return getDefaultHaikuModel()
+    case 'fable':
+      return getDefaultFableModel()
     default:
       return model
   }
+}
+
+export function resolveServedModelAliasForPersistence(
+  model: ModelSetting,
+): ModelSetting {
+  if (model === null) return model
+  const catalog = getServedModelCatalog()
+  if (!catalog) return model
+  for (const alias of ['opus', 'sonnet', 'haiku', 'fable'] as const) {
+    if (
+      resolveServedModelAlias(alias) === model &&
+      catalog.config.models.some(row => row.id === model)
+    ) {
+      return alias
+    }
+  }
+  return model
 }
 
 function getModelOptionsBase(fastMode = false): ModelOption[] {

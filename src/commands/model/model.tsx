@@ -72,7 +72,7 @@ function ModelPickerWrapper({
       mainLoopModelForSession: null,
     }))
 
-    let message = `Set model to ${chalk.bold(renderModelLabel(model))}`
+    let message = `Set model to ${chalk.bold(renderModelLabel(model))} and saved as your default for new sessions`
     if (effort !== undefined) {
       message += ` with ${chalk.bold(effort)} effort`
     }
@@ -212,7 +212,7 @@ function SetModelAndClose({
         mainLoopModel: modelValue,
         mainLoopModelForSession: null,
       }))
-      let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))}`
+      let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))} and saved as your default for new sessions`
 
       let wasFastModeToggledOn = undefined
       if (isFastModeEnabled()) {

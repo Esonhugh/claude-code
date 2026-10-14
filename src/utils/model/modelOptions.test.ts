@@ -76,7 +76,7 @@ mock.module('../modelCost.js', () => ({
   formatModelPricing: (cost: string) => cost,
   getModelPricingString: (model: string) => names[model] ? `pricing:${model}` : undefined,
 }))
-const { getModelOptions } = await import('./modelOptions.js')
+const { getModelOptions, resolveServedModelAliasForPersistence } = await import('./modelOptions.js')
 beforeEach(() => {
   for (const key of aliasEnvKeys) delete process.env[key]
   provider = 'firstParty'
@@ -163,6 +163,38 @@ test('served catalog resolves an alias to its existing full-id row instead of ap
     'claude-sonnet-5-5',
     'claude-haiku-4-5-20251001',
   ])
+})
+
+test('served catalog persists the family alias when a current family row is selected', () => {
+  servedCatalog = {
+    surface: 'cc',
+    config: {
+      id: 'cc',
+      models: [
+        { id: 'claude-opus-5-5', name: 'Opus 5.5', section: 'main' },
+        { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', section: 'main' },
+        { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', section: 'overflow' },
+        { id: 'claude-fable-5-1', name: 'Fable 5.1', section: 'main' },
+      ],
+    },
+  }
+
+  expect(resolveServedModelAliasForPersistence('claude-opus-5-5')).toBe('opus')
+  expect(resolveServedModelAliasForPersistence('claude-sonnet-5-5')).toBe('sonnet')
+  expect(resolveServedModelAliasForPersistence('claude-haiku-4-5-20251001')).toBe('haiku')
+  expect(resolveServedModelAliasForPersistence('claude-fable-5-1')).toBe('fable')
+  expect(resolveServedModelAliasForPersistence('claude-sonnet-5')).toBe('claude-sonnet-5')
+
+  servedCatalog = {
+    surface: 'cc',
+    config: {
+      id: 'cc',
+      models: [{ id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', section: 'main' }],
+    },
+  }
+  expect(resolveServedModelAliasForPersistence('claude-opus-5-5')).toBe(
+    'claude-opus-5-5',
+  )
 })
 
 test('subscriber catalog also offers both new families without PAYG pricing', () => {
