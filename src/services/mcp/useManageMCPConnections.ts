@@ -528,6 +528,7 @@ export function useManageMCPConnections(
                       // @ts-ignore - recovered code
                       origin: { kind: 'channel', server: client.name },
                       skipSlashCommands: true,
+                      skipAttachments: true,
                     })
                   },
                 )

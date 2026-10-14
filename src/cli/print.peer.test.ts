@@ -354,6 +354,7 @@ if (process.env[childFlag] !== '1') {
           origin: expectedOrigin,
           isMeta: true,
           skipSlashCommands: true,
+          skipAttachments: true,
         } : {
           prompt: command.value,
           promptUuid: command.uuid,

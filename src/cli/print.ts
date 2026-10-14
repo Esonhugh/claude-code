@@ -5452,6 +5452,7 @@ function handleChannelEnable(
         // @ts-ignore - recovered code
         origin: { kind: 'channel', server: serverName },
         skipSlashCommands: true,
+        skipAttachments: true,
       })
     },
   )
@@ -5529,6 +5530,7 @@ function reregisterChannelHandlerAfterReconnect(
         // @ts-ignore - recovered code
         origin: { kind: 'channel', server: connection.name },
         skipSlashCommands: true,
+        skipAttachments: true,
       })
     },
   )
