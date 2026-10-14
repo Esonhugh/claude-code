@@ -19,8 +19,13 @@ let discovered: unknown[] | undefined
 let discoveredCacheKey: string | undefined
 let firstPartyCacheKey: string | null = 'anthropic:first-party:test'
 let gatewayOptions: Array<{ value: string; label: string; description: string }> = []
+let servedCatalog: unknown
 const modelStrings = {
-  opus41: 'backend/opus-4-1', opus46: 'backend/opus-4-6', sonnet46: 'backend/sonnet-4-6', haiku45: 'backend/haiku-4-5',
+  opus41: 'backend/opus-4-1', opus46: 'backend/opus-4-6', sonnet46: 'backend/sonnet-4-6', haiku45: 'claude-haiku-4-5-20251001',
+  opus55: 'claude-opus-5-5', fable51: 'claude-fable-5-1', sonnet55: 'claude-sonnet-5-5', opus46Canonical: 'claude-opus-4-6',
+  sonnet50: 'claude-sonnet-5', opus50: 'claude-opus-5', fable50: 'claude-fable-5',
+  opus48: 'claude-opus-4-8', opus47: 'claude-opus-4-7', sonnet46Canonical: 'claude-sonnet-4-6',
+  mythos51: 'claude-mythos-5-1',
 }
 mock.module('./providers.js', () => ({ getAPIProvider: () => provider }))
 mock.module('../auth.js', () => ({
@@ -43,6 +48,9 @@ mock.module('./openaiModelOptions.js', () => ({
     provider === 'openai' ? 'openai:test' : null,
   getOpenAIModelOptions: () => [],
   getGatewayModelOptions: () => gatewayOptions,
+}))
+mock.module('./servedModelCatalog.js', () => ({
+  getServedModelCatalog: () => servedCatalog,
 }))
 mock.module('./modelAllowlist.js', () => ({ isModelAllowed: () => true }))
 mock.module('./modelStrings.js', () => ({ getModelStrings: () => modelStrings }))
@@ -79,6 +87,7 @@ beforeEach(() => {
   discoveredCacheKey = undefined
   firstPartyCacheKey = 'anthropic:first-party:test'
   gatewayOptions = []
+  servedCatalog = undefined
 })
 
 test('first-party catalog offers current aliases without gated Mythos models', () => {
@@ -90,6 +99,70 @@ test('first-party catalog offers current aliases without gated Mythos models', (
   expect(options.find(option => option.value === 'fable')?.description).toContain('Fable 5.1')
   expect(options.some(option => /mythos/i.test(`${option.value} ${option.label} ${option.description}`))).toBe(false)
   expect(options.some(option => /4\.6|old-price/.test(option.description))).toBe(false)
+})
+
+test('served catalog replaces compiled first-party rows and marks uncompiled rows', () => {
+  servedCatalog = {
+    surface: 'cc',
+    config: {
+      id: 'cc',
+      models: [
+        { id: 'claude-opus-5-5', name: 'Opus 5.5', section: 'main', description: 'For complex work and everyday tasks', thinking: { effort_options: [{ id: 'low' }, { id: 'medium', badge: { message: 'Recommended' } }, { id: 'max' }] } },
+        { id: 'claude-fable-5-1', name: 'Fable 5.1', section: 'main' },
+        { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', section: 'main' },
+        { id: 'claude-haiku-5-5', name: 'Haiku 5.5', section: 'main', description: 'Fastest for quick answers' },
+        { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', section: 'overflow' },
+        { id: 'claude-sonnet-5', name: 'Sonnet 5', section: 'overflow' },
+        { id: 'claude-opus-5', name: 'Opus 5', section: 'overflow' },
+        { id: 'claude-fable-5', name: 'Fable 5', section: 'overflow' },
+        { id: 'claude-opus-4-8', name: 'Opus 4.8', section: 'overflow' },
+        { id: 'claude-opus-4-7', name: 'Opus 4.7', section: 'overflow' },
+        { id: 'claude-opus-4-6', name: 'Opus 4.6', section: 'overflow' },
+        { id: 'claude-sonnet-4-6', name: 'Sonnet 4.6', section: 'overflow' },
+        { id: 'claude-mythos-5-1', name: 'Mythos 5.1', section: 'overflow' },
+      ],
+    },
+  }
+
+  const options = getModelOptions()
+  expect(options.map(option => option.value)).toEqual([
+    null,
+    'claude-opus-5-5', 'claude-fable-5-1', 'claude-sonnet-5-5',
+    'claude-haiku-4-5-20251001', 'claude-sonnet-5', 'claude-opus-5',
+    'claude-fable-5', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
+    'claude-sonnet-4-6', 'claude-mythos-5-1', 'claude-haiku-5-5',
+  ])
+  expect(options.at(-1)).toMatchObject({
+    label: 'Haiku 5.5',
+    description: 'Update Claude Code to use this model',
+    disabled: true,
+  })
+  expect(options.at(-1)?.effortOptions).toBeUndefined()
+  expect(options[1]).toMatchObject({ effortOptions: ['low', 'medium', 'max'], defaultEffort: 'medium' })
+})
+
+test('served catalog resolves an alias to its existing full-id row instead of appending a duplicate', () => {
+  servedCatalog = {
+    surface: 'cc',
+    config: {
+      id: 'cc',
+      models: [
+        { id: 'claude-opus-5-5', name: 'Opus 5.5', section: 'main' },
+        { id: 'claude-sonnet-5-5', name: 'Sonnet 5.5', section: 'main' },
+        { id: 'claude-haiku-4-5-20251001', name: 'Haiku 4.5', section: 'overflow' },
+      ],
+    },
+  }
+  currentModel = 'opus'
+
+  const options = getModelOptions()
+
+  expect(options.map(option => option.value)).toEqual([
+    null,
+    'claude-opus-5-5',
+    'claude-sonnet-5-5',
+    'claude-haiku-4-5-20251001',
+  ])
 })
 
 test('subscriber catalog also offers both new families without PAYG pricing', () => {

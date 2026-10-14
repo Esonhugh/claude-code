@@ -36,6 +36,8 @@ import {
   getModelDiscoveryCacheKey,
   getOpenAIModelOptions,
 } from './openaiModelOptions.js'
+import { getServedModelCatalog, type ServedModelRow } from './servedModelCatalog.js'
+import type { EffortLevel } from '../effort.js'
 
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
@@ -45,6 +47,9 @@ export type ModelOption = {
   label: string
   description: string
   descriptionForModel?: string
+  disabled?: boolean
+  effortOptions?: EffortLevel[]
+  defaultEffort?: EffortLevel
 }
 
 export function getDefaultOptionForUser(fastMode = false): ModelOption {
@@ -263,8 +268,110 @@ function getCachedModelOptions(): ModelOption[] | undefined {
     : undefined
 }
 
+const SERVED_EFFORT_LEVELS = new Set<EffortLevel>([
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+  'ultracode',
+])
+
+function getServedEffortMetadata(row: ServedModelRow): Pick<ModelOption, 'effortOptions' | 'defaultEffort'> {
+  const effortOptions = row.thinking?.effort_options
+    ?.map(option => option.id)
+    .filter((id): id is EffortLevel => typeof id === 'string' && SERVED_EFFORT_LEVELS.has(id as EffortLevel))
+  if (!effortOptions || effortOptions.length === 0) return {}
+  const recommended = row.thinking?.effort_options?.find(option => {
+    if (option.recommended) return true
+    const badge = option.badge
+    return Boolean(
+      badge &&
+      typeof badge === 'object' &&
+      'message' in badge &&
+      (badge as { message?: unknown }).message === 'Recommended',
+    )
+  })?.id
+  const runtimeDefault =
+    row.runtime && typeof row.runtime === 'object' && 'default_effort' in row.runtime
+      ? (row.runtime as { default_effort?: unknown }).default_effort
+      : undefined
+  const defaultEffort = recommended ?? runtimeDefault
+  return {
+    effortOptions,
+    ...(typeof defaultEffort === 'string' && SERVED_EFFORT_LEVELS.has(defaultEffort as EffortLevel)
+      ? { defaultEffort: defaultEffort as EffortLevel }
+      : {}),
+  }
+}
+
+function getServedDescription(row: ServedModelRow, compiled: boolean): string {
+  if (!compiled) return 'Update Claude Code to use this model'
+  if (row.description) return row.description
+  const id = row.id.toLowerCase()
+  if (id.includes('haiku-4-5')) return 'Fastest for quick answers'
+  if (id.includes('sonnet-')) return 'Efficient for routine tasks'
+  if (id.includes('fable-5')) return 'Most capable for your hardest and longest-running tasks'
+  if (id.includes('opus-')) return 'Best for everyday, complex tasks'
+  return ''
+}
+
+function getServedModelOptions(fastMode = false): ModelOption[] | undefined {
+  const catalog = getServedModelCatalog()
+  if (!catalog) return undefined
+
+  // The server can advertise a model before this binary can run it. Official
+  // builds show compiled rows first and retain newer/uncompiled rows at the end.
+  const compiledIds = new Set(Object.values(getModelStrings()).map(model => model.replace(/\[(?:1|2)m\]$/i, '')))
+  const isCompiled = (row: ServedModelRow): boolean => compiledIds.has(row.id)
+  const rows = [
+    ...catalog.config.models.filter(row => row.section === 'main' && isCompiled(row)),
+    ...catalog.config.models.filter(row => row.section !== 'main' && isCompiled(row)),
+    ...catalog.config.models.filter(row => !isCompiled(row)),
+  ]
+
+  return [
+    getDefaultOptionForUser(fastMode),
+    ...rows.map(row => {
+      const compiled = isCompiled(row)
+      const effort = getServedEffortMetadata(row)
+      return {
+        value: row.id,
+        label: row.name,
+        description: getServedDescription(row, compiled),
+        descriptionForModel: row.description ?? row.name,
+        ...(compiled ? effort : {}),
+        ...(!compiled ? { disabled: true } : {}),
+      }
+    }),
+  ]
+}
+
+function resolveServedModelAlias(model: ModelSetting): ModelSetting {
+  if (getAPIProvider() !== 'firstParty' || !getServedModelCatalog()) {
+    return model
+  }
+  switch (model) {
+    case 'opus':
+      return getDefaultOpusModel()
+    case 'opus[1m]':
+      return `${getDefaultOpusModel()}[1m]`
+    case 'sonnet':
+      return getDefaultSonnetModel()
+    case 'sonnet[1m]':
+      return `${getDefaultSonnetModel()}[1m]`
+    case 'haiku':
+      return getDefaultHaikuModel()
+    default:
+      return model
+  }
+}
+
 function getModelOptionsBase(fastMode = false): ModelOption[] {
   const options = getProviderModelOptions(fastMode)
+  if (getAPIProvider() === 'firstParty' && getServedModelCatalog()) return options
   // Gateway discovery has its own cache, so its models are appended to the
   // picker instead of replacing whatever the provider already offers.
   const gatewayOptions = getGatewayModelOptions()
@@ -310,6 +417,9 @@ function getProviderModelOptions(fastMode: boolean): ModelOption[] {
   }
 
   if (getAPIProvider() === 'firstParty') {
+    const servedOptions = getServedModelOptions(fastMode)
+    if (servedOptions) return servedOptions
+
     const options = [
       getDefaultOptionForUser(fastMode),
       getFirstPartyOption('fable'),
@@ -471,7 +581,8 @@ export function getModelOptions(fastMode = false): ModelOption[] {
   } else if (initialMainLoopModel !== null) {
     customModel = initialMainLoopModel
   }
-  if (customModel === null || options.some(opt => opt.value === customModel)) {
+  const modelToMatch = resolveServedModelAlias(customModel)
+  if (customModel === null || options.some(opt => opt.value === modelToMatch)) {
     return filterModelOptionsByAllowlist(options)
   } else if (customModel === 'opusplan') {
     return filterModelOptionsByAllowlist([...options, getOpusPlanOption()])

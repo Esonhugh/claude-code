@@ -11,6 +11,7 @@ import {
 } from '@anthropic-ai/sdk'
 import { getModelStrings } from './modelStrings.js'
 import { withTimeout } from '../sleep.js'
+import { hasServedModel } from './servedModelCatalog.js'
 
 export type ModelValidationErrorCode =
   | 'catalog_unknown'
@@ -58,6 +59,13 @@ export async function validateModel(
 
   // Check if it matches ANTHROPIC_CUSTOM_MODEL_OPTION (pre-validated by the user)
   if (normalizedModel === process.env.ANTHROPIC_CUSTOM_MODEL_OPTION) {
+    return { valid: true }
+  }
+
+  // A Claude.ai OAuth served catalog is authoritative for models advertised by
+  // the organization, including models this binary does not compile into its
+  // static picker. Other providers and auth modes return false here.
+  if (hasServedModel(normalizedModel)) {
     return { valid: true }
   }
 
