@@ -1909,8 +1909,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const held = context?.active ? context.next?.event : undefined
             const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
               ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
-                'prompt.attachment', 'prompt.compose', 'tool.describe', 'command.run',
-                'command.describe', 'config.describe', 'config.set'].includes(held) ||
+                'prompt.attachment', 'prompt.mention', 'prompt.compose', 'tool.describe', 'command.run',
+                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step'].includes(held) ||
               (held.startsWith('classic.') && !['classic.SessionStart', 'classic.Setup', 'classic.SessionEnd'].includes(held))
             ))
             if (holdsTurn) {
@@ -1923,7 +1923,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
             try {
               combined.signal.throwIfAborted()
-              return await withReference(owner, () => submit({
+              const receipt = withReference(owner, () => submit({
                 text: (input as ModInput).text as string,
                 ...((input as ModInput).attachments === undefined
                   ? {}
@@ -1932,6 +1932,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                 callerChain,
                 signal: combined.signal,
               }))
+              if (held === 'turn.complete' && completingTurns.size) {
+                logForDebugging('[ModsPrompt] a turn.complete hook submitted a prompt; the turn ends so it can run, and turn.complete settles with the turn that runs it')
+                for (const endTurn of [...completingTurns]) endTurn()
+              }
+              return await receipt
             } finally { combined.cleanup() }
           }
           if (fn === hostIdentity && op === 'prompt.suggest') {
