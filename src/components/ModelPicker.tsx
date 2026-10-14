@@ -34,7 +34,7 @@ import {
   type ModelOption,
 } from '../utils/model/modelOptions.js'
 import { getAPIProvider } from '../utils/model/providers.js'
-import { capitalize } from '../utils/stringUtils.js'
+import { capitalize, plural } from '../utils/stringUtils.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -291,7 +291,7 @@ export function ModelPicker({
           </Box>
           {hiddenCount > 0 && (
             <Box paddingLeft={3}>
-              <Text dimColor>… +{hiddenCount} models</Text>
+              <Text dimColor>… +{hiddenCount} {plural(hiddenCount, 'model')}</Text>
             </Box>
           )}
         </Box>

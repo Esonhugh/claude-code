@@ -397,6 +397,9 @@ export async function fetchServedModelCatalog(
     logForDebugging(
       `[servedCatalog] fetch (org) ok: ${catalog.config.models.length} rows`,
     )
+    logForDebugging(
+      `[servedCatalog] primary: using served rows (${catalog.config.models.length} rows via ${cached ? 'stale cache: refreshed (fetch:ok)' : 'fetch'} over the org route); the served list replaces the compiled picker for this session`,
+    )
 
     const responseBody = response.data && typeof response.data === 'object'
       ? response.data as Record<string, unknown>
