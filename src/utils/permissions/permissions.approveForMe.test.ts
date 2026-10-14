@@ -1,4 +1,4 @@
-import { expect, mock, test } from 'bun:test'
+import { expect, mock, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -39,9 +39,13 @@ if (process.env[childFlag] !== '1') {
 
   // Drive the real classifier through its model call: text replies or an API error.
   let reply: string | Error = '<block>no</block>'
+  const requests: { model?: string; thinking?: unknown }[] = []
+  let failingModel: string | undefined
   mock.module('../sideQuery.js', () => ({
-    sideQuery: async () => {
+    sideQuery: async (options: { model?: string; thinking?: unknown }) => {
+      requests.push(options)
       if (reply instanceof Error) throw reply
+      if (options.model === failingModel) throw new Error(`${failingModel} is not available`)
       return {
         id: 'msg_classifier', type: 'message', role: 'assistant', model: 'gpt-test',
         content: [{ type: 'text', text: reply }], stop_reason: 'end_turn', stop_sequence: null,
@@ -103,6 +107,88 @@ if (process.env[childFlag] !== '1') {
     const result = await check('blocked')
     expect(result.behavior).toBe('deny')
     expect(result.decisionReason).toMatchObject({ type: 'classifier', reason: '[Code from External] pipes a remote script into sh' })
+  })
+
+  test('a classifier model that rejects disabled thinking keeps adaptive thinking', async () => {
+    useOpenAIOAuth(false)
+    reply = '<block>no</block>'
+    try {
+      process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+      process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = 'claude-mythos-5'
+      requests.length = 0
+      expect((await check('adaptive')).behavior).toBe('allow')
+      expect(requests.length).toBeGreaterThan(0)
+      expect(requests.every(request => request.model === 'claude-mythos-5' && request.thinking === undefined)).toBe(true)
+
+      process.env.ANTHROPIC_MODEL = 'claude-sonnet-4-6'
+      requests.length = 0
+      await check('disabled')
+      expect(requests.length).toBeGreaterThan(0)
+      expect(requests.every(request => request.model === 'claude-sonnet-4-6' && request.thinking === false)).toBe(true)
+    } finally {
+      delete process.env.ANTHROPIC_MODEL
+      delete process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+    }
+  })
+
+  test('like official, Claude mode classifies with Sonnet 5 unless the main model is a smaller one', async () => {
+    useOpenAIOAuth(false)
+    reply = '<block>no</block>'
+    try {
+      for (const [main, classifier] of [
+        ['claude-opus-5-5', 'claude-sonnet-5'],
+        ['claude-sonnet-5-5', 'claude-sonnet-5'],
+        ['claude-haiku-4-5', 'claude-haiku-4-5'],
+        ['claude-haiku-5-5', 'claude-haiku-5-5'],
+        ['claude-sonnet-4-6', 'claude-sonnet-4-6'],
+      ] as const) {
+        process.env.ANTHROPIC_MODEL = main
+        requests.length = 0
+        expect((await check(`model-${main}`)).behavior).toBe('allow')
+        expect(requests.map(request => request.model)).toEqual(requests.map(() => classifier))
+      }
+    } finally { delete process.env.ANTHROPIC_MODEL }
+  })
+
+  test('a rollout map from main model to classifier model takes precedence, like official', async () => {
+    useOpenAIOAuth(false)
+    reply = '<block>no</block>'
+    const growthbook = await import('../../services/analytics/growthbook.js')
+    const original = growthbook.getFeatureValue_CACHED_MAY_BE_STALE
+    const gate = spyOn(growthbook, 'getFeatureValue_CACHED_MAY_BE_STALE').mockImplementation(((key: string, fallback: unknown) =>
+      key === 'tengu_auto_mode_config'
+        ? { modelByMainModel: { 'claude-opus-5-5': 'claude-sonnet-5[1m]' } }
+        : original(key, fallback)) as typeof original)
+    try {
+      process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+      requests.length = 0
+      expect((await check('by-main-model')).behavior).toBe('allow')
+      expect(requests.length).toBeGreaterThan(0)
+      expect(requests.every(request => request.model === 'claude-sonnet-5[1m]')).toBe(true)
+    } finally {
+      gate.mockRestore()
+      delete process.env.ANTHROPIC_MODEL
+    }
+  })
+
+  // The demotion lasts for the rest of the session, so later tests see the main model.
+  test('a failing Sonnet 5 default demotes the classifier to the main model for the session', async () => {
+    useOpenAIOAuth(false)
+    reply = '<block>no</block>'
+    failingModel = 'claude-sonnet-5'
+    try {
+      process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+      requests.length = 0
+      expect((await check('demote')).behavior).toBe('allow')
+      expect(requests[0]?.model).toBe('claude-sonnet-5')
+      expect(requests.slice(1).every(request => request.model === 'claude-opus-5-5')).toBe(true)
+      requests.length = 0
+      expect((await check('after-demote')).behavior).toBe('allow')
+      expect(requests.every(request => request.model === 'claude-opus-5-5')).toBe(true)
+    } finally {
+      failingModel = undefined
+      delete process.env.ANTHROPIC_MODEL
+    }
   })
 
   test('outside Approve for me an unavailable reviewer still fails closed', async () => {

@@ -204,6 +204,8 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-opus-5')) return 'claude-opus-5'
   if (name.includes('claude-sonnet-5-5')) return 'claude-sonnet-5-5'
   if (name.includes('claude-sonnet-5')) return 'claude-sonnet-5'
+  if (name.includes('claude-haiku-5-5')) return 'claude-haiku-5-5'
+  if (name.includes('claude-haiku-5')) return 'claude-haiku-5'
   // Special cases for Claude 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-8 before 4)
   if (name.includes('claude-opus-4-8')) {

@@ -169,6 +169,8 @@ describe('provider defaults and explicit model selection', () => {
     expect(getCanonicalName('claude-opus-5-5')).toBe('claude-opus-5-5')
     expect(getCanonicalName('anthropic.claude-sonnet-5-5')).toBe('claude-sonnet-5-5')
     expect(getCanonicalName('claude-fable-5-1')).toBe('claude-fable-5-1')
+    expect(getCanonicalName('claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    expect(getCanonicalName('claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5')
     expect(ALL_MODEL_CONFIGS.mythos51).toEqual({
       firstParty: 'claude-mythos-5-1',
       bedrock: 'anthropic.claude-mythos-5-1',

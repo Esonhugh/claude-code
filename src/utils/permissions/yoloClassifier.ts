@@ -28,7 +28,10 @@ import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { extractTextContent } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
-import { getMainLoopModel } from '../model/model.js'
+import { getCanonicalName, getDefaultOpusModel, getMainLoopModel } from '../model/model.js'
+import { getModelStrings } from '../model/modelStrings.js'
+import { getAPIProvider } from '../model/providers.js'
+import { requiresAlwaysOnAdaptiveThinking } from '../thinking.js'
 import { getAutoModeConfig } from '../settings/settings.js'
 import { sideQuery } from '../sideQuery.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -744,9 +747,12 @@ function getClassifierTemperature(): number {
 function getClassifierThinkingConfig(
   model: string,
 ): [false | undefined, number] {
+  // Like official 2.1.292, any model that rejects disabled thinking gets the adaptive
+  // headroom, not only ant overrides.
   if (
     isAnt() &&
-    resolveAntModel(model)?.alwaysOnThinking
+    resolveAntModel(model)?.alwaysOnThinking ||
+    requiresAlwaysOnAdaptiveThinking(model)
   ) {
     return [undefined, 2048]
   }
@@ -1174,7 +1180,7 @@ export async function classifyYoloAction(
 
   // Dispatch to 2-stage XML classifier if enabled via GrowthBook
   if (isTwoStageClassifierEnabled()) {
-    return classifyYoloActionXml(
+    const classify = (model: string) => classifyYoloActionXml(
       prefixMessages,
       systemPrompt,
       userPrompt,
@@ -1192,6 +1198,13 @@ export async function classifyYoloAction(
       },
       getTwoStageMode(),
     )
+    const result = await classify(model)
+    const fallback = getFallbackClassifierModel(getMainLoopModel())
+    if (!result.unavailable || signal.aborted || sonnet5ClassifierDemoted ||
+        model !== getDefaultSonnet5Classifier(getMainLoopModel()) || model === fallback) return result
+    sonnet5ClassifierDemoted = true
+    logForDebugging(`Got error trying Sonnet 5 as auto mode classifier, using ${fallback}`, { level: 'warn' })
+    return classify(fallback)
   }
   const [disableThinking, thinkingPadding] = getClassifierThinkingConfig(model)
   try {
@@ -1377,6 +1390,8 @@ type TwoStageMode = 'both' | 'fast' | 'thinking'
 
 type AutoModeConfig = {
   model?: string
+  /** Classifier model per main-loop model (raw ID or canonical name); takes precedence over `model`. */
+  modelByMainModel?: Record<string, string>
   /**
    * Enable XML classifier. `true` runs both stages; `'fast'` and `'thinking'`
    * run only that stage; `false`/undefined uses the tool_use classifier.
@@ -1394,10 +1409,33 @@ type AutoModeConfig = {
   jsonlTranscript?: boolean
 }
 
+// Official 2.1.292 tries Sonnet 5 as the default classifier once per session; if that
+// first call fails (other than an abort), it falls back to the main-loop-based model.
+let sonnet5ClassifierDemoted = false
+
+function getDefaultSonnet5Classifier(mainModel: string): string | undefined {
+  const canonical = getCanonicalName(mainModel)
+  if (canonical === 'claude-sonnet-4-6' || canonical === 'claude-sonnet-4-5' || canonical.startsWith('claude-haiku-'))
+    return undefined
+  const configured = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  // These are too large to serve as the classifier; official uses the Sonnet 5 default instead.
+  if (configured && !['claude-sonnet-5-5', 'claude-opus-5-5'].includes(getCanonicalName(configured)))
+    return configured
+  return getModelStrings().sonnet50
+}
+
+function getFallbackClassifierModel(mainModel: string): string {
+  const canonical = getCanonicalName(mainModel)
+  return canonical.startsWith('claude-fable-') || canonical.startsWith('claude-mythos-')
+    ? getDefaultOpusModel()
+    : mainModel
+}
+
 /**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then GrowthBook JSON config override,
- * then the main loop model.
+ * Ant-only env var takes precedence, then the GrowthBook per-main-model and
+ * global overrides, then (outside OpenAI mode) the Sonnet 5 default, then the
+ * main-loop-based model.
  */
 function getClassifierModel(): string {
   if (isAnt()) {
@@ -1408,10 +1446,15 @@ function getClassifierModel(): string {
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
   )
+  const mainModel = getMainLoopModel()
+  const byMainModel = config?.modelByMainModel?.[mainModel] ?? config?.modelByMainModel?.[getCanonicalName(mainModel)]
+  if (byMainModel) return byMainModel
   if (config?.model) {
     return config.model
   }
-  return getMainLoopModel()
+  if (getAPIProvider() === 'openai') return mainModel
+  const sonnet5 = sonnet5ClassifierDemoted ? undefined : getDefaultSonnet5Classifier(mainModel)
+  return sonnet5 ?? getFallbackClassifierModel(mainModel)
 }
 
 /**
