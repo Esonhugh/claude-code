@@ -605,7 +605,7 @@ import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExp
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js'
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js'
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js'
-import { AUTO_MODE_DESCRIPTION } from 'src/components/AutoModeOptInDialog.js'
+import { AUTO_MODE_DESCRIPTION } from 'src/constants/messages.js'
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js'
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js'
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js'

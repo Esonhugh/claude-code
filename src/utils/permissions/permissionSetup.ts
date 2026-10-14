@@ -728,10 +728,9 @@ export function initialPermissionModeFromCLI({
     growthBookDisableBypassPermissionsMode ||
     settingsDisableBypassPermissionsMode
 
-  // Sync circuit-breaker check (cached GB read). Prevents the
-  // AutoModeOptInDialog from showing in showSetupScreens() when auto can't
-  // actually be entered. autoModeFlagCli still carries intent through to
-  // verifyAutoModeGateAccess, which notifies the user why.
+  // Sync circuit-breaker check (cached GB read) so startup does not land in
+  // an auto mode that can't actually be entered. autoModeFlagCli still carries
+  // intent through to verifyAutoModeGateAccess, which notifies the user why.
   // OpenAI mode has auto only as Approve for me, which needs the ChatGPT login.
   const autoModeCircuitBrokenSync = feature('TRANSCRIPT_CLASSIFIER')
     ? getAPIProvider() === 'openai' && !isApproveForMeAvailable() ||
@@ -750,7 +749,7 @@ export function initialPermissionModeFromCLI({
     if (feature('TRANSCRIPT_CLASSIFIER') && parsedMode === 'auto') {
       if (autoModeCircuitBrokenSync) {
         logForDebugging(
-          'auto mode circuit breaker active (cached) — falling back to default',
+          'auto mode unavailable at startup (cached circuit breaker, or OpenAI mode without the ChatGPT login) — falling back to default',
           { level: 'warn' },
         )
       } else {
@@ -781,7 +780,7 @@ export function initialPermissionModeFromCLI({
     else if (feature('TRANSCRIPT_CLASSIFIER') && settingsMode === 'auto') {
       if (autoModeCircuitBrokenSync) {
         logForDebugging(
-          'auto mode circuit breaker active (cached) — falling back to default',
+          'auto mode unavailable at startup (cached circuit breaker, or OpenAI mode without the ChatGPT login) — falling back to default',
           { level: 'warn' },
         )
       } else {

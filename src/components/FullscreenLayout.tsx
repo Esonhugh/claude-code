@@ -770,7 +770,7 @@ function SuggestionsOverlay(): React.ReactNode {
   )
 }
 
-// Dialog portaled from PromptInput (AutoModeOptInDialog) — same clip-escape
+// Dialog portaled from the prompt — same clip-escape
 // pattern as SuggestionsOverlay. Renders later in tree order so it paints
 // over suggestions if both are ever up (they shouldn't be).
 function DialogOverlay(): React.ReactNode {

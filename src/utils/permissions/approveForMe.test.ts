@@ -31,6 +31,8 @@ const { getChatGPTOAuthInfo, getOpenAIAuthInfo } = await import('../auth.js')
 const { modelSupportsAutoMode } = await import('../betas.js')
 const { getPermissionModeFooterLabel, isApproveForMeAvailable } = await import('./approveForMe.js')
 const { getAutoModeEnabledState, initialPermissionModeFromCLI } = await import('./permissionSetup.js')
+const { getNextPermissionMode } = await import('./getNextPermissionMode.js')
+const { getDefaultAppState } = await import('../../state/AppStateStore.js')
 
 const saved = {
   HOME: process.env.HOME,
@@ -112,6 +114,12 @@ test('a Claude API key gets auto mode like a Claude login', () => {
   process.env.ANTHROPIC_API_KEY = 'sk-ant-test-not-real'
   expect(modelSupportsAutoMode('claude-opus-5-5')).toBe(true)
   expect(initialPermissionModeFromCLI({ permissionModeCli: 'auto', dangerouslySkipPermissions: false }).mode).toBe('auto')
+})
+
+test('Shift+Tab moves from accept edits straight into auto mode, with no opt-in step', () => {
+  const context = { ...getDefaultAppState().toolPermissionContext, mode: 'acceptEdits' as const, isAutoModeAvailable: true }
+  expect(getNextPermissionMode(context)).toBe('auto')
+  expect(getNextPermissionMode({ ...context, mode: 'auto' })).toBe('default')
 })
 
 test('a missing rollout value leaves auto mode enabled like official', () => {
