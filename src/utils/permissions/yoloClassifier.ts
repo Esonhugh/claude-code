@@ -43,7 +43,6 @@ import {
 } from './classifierShared.js'
 import { getClaudeTempDir } from './filesystem.js'
 import { isAnt } from 'src/utils/userType.js'
-import { isApproveForMeAvailable } from './approveForMe.js'
 
 
 // Dead code elimination: conditional imports for auto mode classifier prompts.
@@ -1421,13 +1420,12 @@ function resolveTwoStageClassifier():
     if (isEnvTruthy(env)) return true
     if (isEnvDefinedFalsy(env)) return false
   }
-  // Approve for me uses the official prompt, whose output contract is XML.
-  if (isApproveForMeAvailable()) return true
   const config = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
   )
-  return config?.twoStageClassifier
+  // The official prompt's output contract is XML; official 2.1.292 defaults to it without a rollout value.
+  return config?.twoStageClassifier ?? true
 }
 
 /**
