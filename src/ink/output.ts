@@ -482,9 +482,18 @@ export default class Output {
             }
 
             if (clipHorizontally) {
-              lines = lines.map(line => {
+              // Rows the vertical clip drops are never painted, except that a
+              // soft-wrapped first visible row measures the clipped row above.
+              let firstRow = clipVertically && y < clip.y1! ? clip.y1! - y : 0
+              if (softWrap?.[firstRow] === true) firstRow--
+              const endRow = clipVertically && y + lines.length > clip.y2!
+                ? clip.y2! - y
+                : lines.length
+              lines = lines.map((line, row) => {
+                if (row < firstRow || row >= endRow) return line
                 const from = x < clip.x1! ? clip.x1! - x : 0
                 const width = stringWidth(line)
+                if (from === 0 && x + width <= clip.x2!) return line
                 const to = x + width > clip.x2! ? clip.x2! - x : width
                 let sliced = sliceAnsi(line, from, to)
                 // Wide chars (CJK, emoji) occupy 2 cells. When `to` lands
