@@ -356,7 +356,7 @@ export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
 // Logs detected mode once so --debug users can verify SSH detection worked.
 // The renderer also calls isXtermJsHost() (in render-node-to-output) to
 // select the drain algorithm — no state to pass through.
-function initAndLogWheelAccel(): WheelAccelState {
+export function initAndLogWheelAccel(): WheelAccelState {
   const xtermJs = isXtermJs()
   const base = readScrollSpeedBase()
   logForDebugging(

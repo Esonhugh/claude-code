@@ -1224,6 +1224,8 @@ describe('ModsPane Client consumer', () => {
       onScroll={async(_pane,by)=>{scrolls.push(by)}} /></>, {
       stdout:stdout as never,stdin:stdin as never,patchConsole:false,exitOnCtrlC:false,
     })
+    const terminal = process.env.TERM_PROGRAM
+    delete process.env.TERM_PROGRAM
     try {
       await settle()
       const rect=nodeCache.get(renderedElement(stdout,'blur canvas','ink-text'))!
@@ -1233,7 +1235,11 @@ describe('ModsPane Client consumer', () => {
       await settle()
       expect(host.calls.pointers).toEqual([{type:'down',x:0,y:0,button:'left'}])
       expect(scrolls).toEqual([1])
-    } finally {instance.unmount()}
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+    }
   })
 
   test('reports real Client hover boundaries and only present pointer modifiers', async () => {
@@ -3951,6 +3957,8 @@ describe('ModsPane input repair', () => {
       onFocus={async () => { throw new Error('wheel stole focus') }} onClose={async () => {}} onInteract={async () => {}}
       onScroll={async (_pane, by, pointer) => { wheels.push({ by, pointer }) }}
     />{covered && <Box position="absolute" top={1} left={0} width={80} height={5}><Text>cover</Text></Box>}</Box>
+    const terminal = process.env.TERM_PROGRAM
+    delete process.env.TERM_PROGRAM
     const instance = await render(draw(), { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
     try {
       await settle()
@@ -3958,6 +3966,9 @@ describe('ModsPane input repair', () => {
       const detail = nodeCache.get(renderedElement(stdout, 'detail region', 'ink-text'))!
       const wheel = (row: number, up = false) => stdin.push(`\u001b[<${up ? 64 : 65};3;${row + 1}M`)
       wheel(list.y)
+      await settle()
+      // Like official, the first tick after a reversal is held as a possible bounce.
+      wheel(detail.y, true)
       await settle()
       wheel(detail.y, true)
       await settle()
@@ -3977,7 +3988,11 @@ describe('ModsPane input repair', () => {
       await settle()
       expect(wheels).toHaveLength(2)
       expect(outside).toEqual(['down', 'down', 'up'])
-    } finally { instance.unmount() }
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+    }
   })
 
   test('wheel hits the visible body before earlier transcript listeners even without overflow', async () => {
@@ -3998,6 +4013,8 @@ describe('ModsPane input repair', () => {
       onFocus={async () => ({})} onClose={async () => {}} onInteract={async () => {}}
       onScroll={async (_pane, by, pointer) => { wheels.push({ by, pointer }) }}
     /></Box>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    const terminal = process.env.TERM_PROGRAM
+    delete process.env.TERM_PROGRAM
     try {
       await settle()
       const body = nodeCache.get(renderedElement(stdout, 'virtual list', 'ink-text'))!
@@ -4005,11 +4022,17 @@ describe('ModsPane input repair', () => {
       await settle()
       stdin.push(`\u001b[<64;${body.x + 1};${body.y + 1}M`)
       await settle()
+      stdin.push(`\u001b[<64;${body.x + 1};${body.y + 1}M`)
+      await settle()
       stdin.push('\u001b[<65;1;1M')
       await settle()
       expect(wheels).toEqual([{ by: 1, pointer: { column: 0, row: 0 } }, { by: -1, pointer: { column: 0, row: 0 } }])
       expect(transcript).toEqual(['down'])
-    } finally { instance.unmount() }
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+    }
   })
 })
 
@@ -5178,5 +5201,34 @@ describe('ModsPane person pointer and Escape like official', () => {
       await settle()
       expect(focuses.slice(before)).toEqual([[]])
     } finally { instance.unmount() }
+  })
+
+  test('fast wheel ticks accelerate like the transcript wheel', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const scrolls: number[] = []
+    const terminal = process.env.TERM_PROGRAM
+    delete process.env.TERM_PROGRAM
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={pane({ type: 'Text', children: ['wheel body'] }, { focused: false, placement: 'dock' })}
+      onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}}
+      onScroll={async (_pane, by) => { scrolls.push(by) }}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const body = nodeCache.get(renderedElement(stdout, 'wheel body', 'ink-text'))!
+      // A real mouse wheel: steady ticks well apart, then a quick run.
+      for (let i = 0; i < 10; i++) {
+        stdin.push(`\u001b[<65;${body.x + 1};${body.y + 1}M`)
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      await settle()
+      expect(scrolls[0]).toBe(1)
+      expect(scrolls.reduce((sum, by) => sum + by, 0)).toBeGreaterThan(10)
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+    }
   })
 })

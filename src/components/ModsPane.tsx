@@ -24,6 +24,7 @@ import { nodeCache } from '../ink/node-cache.js'
 import type { InputEvent } from '../ink/events/input-event.js'
 import { useOptionalKeybindingContext, useRegisterKeybindingContext } from '../keybindings/KeybindingContext.js'
 import { useKeybinding } from '../keybindings/useKeybinding.js'
+import { computeWheelStep, initAndLogWheelAccel, type WheelAccelState } from './ScrollKeybindingHandler.js'
 import { KEYBINDING_ACTIONS } from '../keybindings/schema.js'
 import { logForDebugging } from '../utils/debug.js'
 import type { Color } from '../ink/styles.js'
@@ -1396,6 +1397,7 @@ export function ModsPane({
     focusCommit.current = undefined
   }, [pane.owner])
 
+  const wheelAccel = React.useRef<WheelAccelState | null>(null)
   // Capture coordinates before transcript useInput subscribers consume the wheel.
   React.useEffect(() => {
     const capture = (event: InputEvent) => {
@@ -1409,7 +1411,11 @@ export function ModsPane({
       const rect = nodeCache.get(viewport)
       if (!hit || !rect) return
       event.stopImmediatePropagation()
-      void current.onScroll(current.pane, event.key.wheelUp ? -1 : 1, {
+      wheelAccel.current ??= initAndLogWheelAccel()
+      // A zero step is an absorbed bounce or reversal, like the transcript wheel.
+      const by = computeWheelStep(wheelAccel.current, event.key.wheelUp ? -1 : 1, performance.now())
+      if (by === 0) return
+      void current.onScroll(current.pane, event.key.wheelUp ? -by : by, {
         column: pointer.column - rect.x, row: pointer.row - rect.y,
       }).catch(error => current.onError?.(error))
     }

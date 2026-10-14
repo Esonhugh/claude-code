@@ -242,6 +242,9 @@ describe('ScrollKeybindingHandler input routing', () => {
   })
 
   test('keeps outside wheel scrolling active while the pane owns keyboard input', async () => {
+    // Pin the native wheel curve so the first pane tick is one row in any terminal.
+    const terminal = process.env.TERM_PROGRAM
+    delete process.env.TERM_PROGRAM
     const view = await mount()
     try {
       // SGR coordinates are one-based; row 1 is inside the transcript.
@@ -257,6 +260,8 @@ describe('ScrollKeybindingHandler input routing', () => {
       expect(view.paneScrolls).toEqual([1])
     } finally {
       view.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
     }
   })
 
