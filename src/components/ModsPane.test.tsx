@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { isProxy } from 'node:util/types'
 import { createModUiRealm } from '../services/mods/uiRealm.js'
 import { resolveKeyWithChordState } from '../keybindings/resolver.js'
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import React, { useEffect, useSyncExternalStore } from 'react'
 import stripAnsi from 'strip-ansi'
 import chalk from 'chalk'
@@ -32,6 +32,7 @@ import type { ModClientHandle, ModClients, ModClientSite } from '../services/mod
 import createRenderer from '../ink/renderer.js'
 import { CharPool, charInCellAt, createScreen, HyperlinkPool, StylePool } from '../ink/screen.js'
 import type { Frame } from '../ink/frame.js'
+import { ColorDiff } from '../native-ts/color-diff/index.js'
 
 class Output extends Writable {
   columns = 80
@@ -2632,6 +2633,36 @@ describe('ModsPane input repair', () => {
         expect(widths.reduce((sum, width) => sum + width, 0)).toBe(bodyColumns)
       }
     } finally { instance.unmount() }
+  })
+
+  test('a diff block that moves up a slot on scroll reuses its highlighted rows', async () => {
+    const stdout = new Output()
+    stdout.columns = 160
+    const store = createStore(getDefaultAppState())
+    const block = (line: number) => ({ type: 'Code', props: {
+      source: `@@ -${line},2 +${line},2 @@\n-old ${line}\n+new ${line}\n same ${line}\n`, format: 'diff', path: 'long.txt',
+    } })
+    // A plugin that scrolls its own rows redraws the window one block further down.
+    const draw = (first: number) => <AppStoreContext.Provider value={store}><Box width={80}>
+      <ModsPane pane={pane({ type: 'Box', props: { flexDirection: 'column' }, children: [first, first + 20, first + 40].map(block) },
+        { placement: 'dock', bodyColumns: 76, bodyRows: 20 })}
+        onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}} onScroll={async () => {}}
+      />
+    </Box></AppStoreContext.Provider>
+    const highlights = spyOn(ColorDiff.prototype, 'render')
+    const instance = await render(draw(20), { stdout: stdout as never, stdin: new Input() as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      expect(highlights.mock.calls.length).toBeGreaterThan(0)
+      highlights.mockClear()
+      instance.rerender(<ThemeProvider>{draw(40)}</ThemeProvider>)
+      await settle()
+      // Only the block entering the window is highlighted; the two that moved up a slot are reused.
+      expect(highlights).toHaveBeenCalledTimes(1)
+    } finally {
+      instance.unmount()
+      highlights.mockRestore()
+    }
   })
 
   test('diff respects a nested padded Code container instead of using the whole pane', async () => {

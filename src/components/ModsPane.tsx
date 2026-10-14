@@ -1,4 +1,4 @@
-import { parsePatch } from 'diff'
+import { parsePatch, type StructuredPatchHunk } from 'diff'
 import chalk from 'chalk'
 import { Cursor } from '../utils/Cursor.js'
 import { renderPlaceholder } from '../hooks/renderPlaceholder.js'
@@ -2553,6 +2553,23 @@ function ModCode({ source, language, path, startLine, wrap }: {
   </Box>
 }
 
+// Scrolling Mods redraw the same diff blocks into other slots; sharing parsed
+// hunks by source keeps StructuredDiff's per-hunk highlight cache warm.
+const parsedDiffs = new Map<string, StructuredPatchHunk[]>()
+const MAX_PARSED_DIFFS = 256
+
+function parseDiffHunks(source: string): StructuredPatchHunk[] {
+  let hunks = parsedDiffs.get(source)
+  if (hunks) {
+    parsedDiffs.delete(source)
+  } else {
+    hunks = parsePatch(source).flatMap(file => file.hunks)
+    if (parsedDiffs.size >= MAX_PARSED_DIFFS) parsedDiffs.delete(parsedDiffs.keys().next().value!)
+  }
+  parsedDiffs.set(source, hunks)
+  return hunks
+}
+
 function ModDiff({ source, path, wrap, bodyColumns }: {
   source: string
   path?: string
@@ -2564,7 +2581,7 @@ function ModDiff({ source, path, wrap, bodyColumns }: {
   const ref = React.useRef<DOMElement>(null)
   const [columns, setColumns] = useState(bodyColumns)
   const reportMetrics = React.useContext(PaneLayoutContext)
-  const patches = useMemo(() => parsePatch(source).flatMap(file => file.hunks), [source])
+  const patches = useMemo(() => parseDiffHunks(source), [source])
   const truncated = useMemo(() => {
     if (wrap !== 'truncate-end') return undefined
     const ColorDiff = settings.syntaxHighlightingDisabled ? null : expectColorDiff()
