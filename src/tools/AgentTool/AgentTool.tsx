@@ -53,7 +53,7 @@ import {
   registerRemoteAgentTask,
 } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js'
 import { assembleToolPool } from '../../tools.js'
-import { asAgentId } from '../../types/ids.js'
+import { asAgentId, toAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
 import { assertSubagentCapacity, takeSubagentConcurrencySlot } from '../../utils/subagentConcurrency.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -241,8 +241,12 @@ const baseInputSchema = lazySchema(() =>
 const fullInputSchema = lazySchema(() => {
   // Multi-agent parameters
   const multiAgentInputSchema = z.object({
+    // Same rule as official: resumeInProcessTeammate only restores names in
+    // this shape, so spawn refuses the rest. An empty name still means none.
     name: z
       .string()
+      .regex(/^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$/, { message: 'name must start with a letter or digit and contain only letters, digits, underscores, or hyphens (max 64 chars)' })
+      .refine(name => !['main', 'team-lead', 'user', 'system'].includes(name.toLowerCase()) && toAgentId(name.toLowerCase()) === null, { message: 'name must not be a reserved name ("main", "team-lead", "user" or "system", in any spelling) or have the shape of an agent id — those already address an agent directly' })
       .optional()
       .describe(
         'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',

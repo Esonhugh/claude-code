@@ -54,6 +54,14 @@ assert.match(
   /bypassPermissions caller always remains bypassPermissions/,
 )
 
+for (const name of ['worker', 'Worker_2', 'a-b', '']) {
+  assert.equal(inputSchema().safeParse({ description: 'd', prompt: 'p', name }).success, true, name)
+}
+// Resume only accepts names matching the official teammate-name rule, so spawn must refuse the rest.
+for (const name of ['two words', 'a.b', '-lead', 'x'.repeat(65), 'main', 'Team-Lead', 'user', 'system', 'a0123456789abcdef']) {
+  assert.equal(inputSchema().safeParse({ description: 'd', prompt: 'p', name }).success, false, name)
+}
+
 const params = buildAgentLaunchDebugParams({
   requestedType: 'general purpose',
   selectedAgentType: 'general-purpose',
