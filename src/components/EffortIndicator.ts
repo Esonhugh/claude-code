@@ -3,6 +3,7 @@ import {
   EFFORT_LOW,
   EFFORT_MAX,
   EFFORT_MEDIUM,
+  EFFORT_XHIGH,
 } from '../constants/figures.js'
 import {
   type EffortLevel,
@@ -23,7 +24,7 @@ export function getEffortNotificationText(
   if (!modelSupportsEffort(model)) return undefined
   const applied = resolveAppliedEffort(model, effortValue)
   const level = convertEffortValueToLevel(applied ?? 'high')
-  return `${effortLevelToSymbol(level)} ${applied ?? level} · /effort`
+  return `${effortLevelToSymbol(applied === 'xhigh' ? 'xhigh' : level)} ${applied ?? level} · /effort`
 }
 
 export function effortLevelToSymbol(level: EffortLevel): string {
@@ -35,6 +36,8 @@ export function effortLevelToSymbol(level: EffortLevel): string {
       return EFFORT_MEDIUM
     case 'high':
       return EFFORT_HIGH
+    case 'xhigh':
+      return EFFORT_XHIGH
     case 'max':
       return EFFORT_MAX
     default:
