@@ -198,13 +198,16 @@ export class InputEvent extends Event {
   readonly keypress: ParsedKey
   readonly key: Key
   readonly input: string
+  /** performance.now() when stdin was read, before rendering between earlier inputs delayed it. */
+  readonly receivedAt: number
 
-  constructor(keypress: ParsedKey) {
+  constructor(keypress: ParsedKey, receivedAt = performance.now()) {
     super()
     const [key, input] = parseKey(keypress)
 
     this.keypress = keypress
     this.key = key
     this.input = input
+    this.receivedAt = receivedAt
   }
 }

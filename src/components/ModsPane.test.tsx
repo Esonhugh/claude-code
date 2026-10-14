@@ -5234,6 +5234,37 @@ describe('ModsPane person pointer and Escape like official', () => {
     } finally { instance.unmount() }
   })
 
+  test('wheel ticks read together still accelerate when drawing blocks between them', async () => {
+    const stdout = new Output()
+    const stdin = new Input()
+    const scrolls: number[] = []
+    const terminal = process.env.TERM_PROGRAM
+    delete process.env.TERM_PROGRAM
+    const instance = await render(<><EnableInput /><ModsPane
+      pane={pane({ type: 'Text', children: ['blocked body'] }, { focused: false, placement: 'dock' })}
+      onFocus={async () => ({})} onInteract={async () => {}} onClose={async () => {}}
+      onScroll={async (_pane, by) => {
+        scrolls.push(by)
+        // A synchronous redraw longer than the acceleration window.
+        const until = performance.now() + 60
+        while (performance.now() < until) { /* block like a slow draw */ }
+      }}
+    /></>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+    try {
+      await settle()
+      const body = nodeCache.get(renderedElement(stdout, 'blocked body', 'ink-text'))!
+      const tick = `\u001b[<65;${body.x + 1};${body.y + 1}M`
+      for (let i = 0; i < 10; i++) stdin.push(tick)
+      await new Promise(resolve => setTimeout(resolve, 900))
+      // The uninterrupted native curve, as official logs for ten quick ticks.
+      expect(scrolls).toEqual([1, 1, 1, 1, 2, 2, 2, 3, 3, 3])
+    } finally {
+      instance.unmount()
+      if (terminal === undefined) delete process.env.TERM_PROGRAM
+      else process.env.TERM_PROGRAM = terminal
+    }
+  })
+
   test('fast wheel ticks accelerate like the transcript wheel', async () => {
     const stdout = new Output()
     const stdin = new Input()

@@ -1413,7 +1413,7 @@ export function ModsPane({
       event.stopImmediatePropagation()
       wheelAccel.current ??= initAndLogWheelAccel()
       // A zero step is an absorbed bounce or reversal, like the transcript wheel.
-      const by = computeWheelStep(wheelAccel.current, event.key.wheelUp ? -1 : 1, performance.now())
+      const by = computeWheelStep(wheelAccel.current, event.key.wheelUp ? -1 : 1, event.receivedAt)
       if (by === 0) return
       void current.onScroll(current.pane, event.key.wheelUp ? -by : by, {
         column: pointer.column - rect.x, row: pointer.row - rect.y,

@@ -195,6 +195,8 @@ export default class App extends PureComponent<Props, State> {
   // ssh reconnect, laptop wake) and trigger terminal mode re-assert.
   // Initialized to now so startup doesn't false-trigger.
   lastStdinTime = Date.now()
+  // When the stdin read that produced the current input batch happened.
+  inputReceivedAt = performance.now()
 
   // Determines if TTY is supported on the provided stdin
   isRawModeSupported(): boolean {
@@ -406,10 +408,11 @@ export default class App extends PureComponent<Props, State> {
   }
 
   // Process input through the parser and handle the results
-  processInput = (input: string | Buffer | null): void => {
+  processInput = (input: string | Buffer | null, receivedAt = performance.now()): void => {
     // Parse input using our state machine
     const [keys, newState] = parseMultipleKeypresses(this.keyParseState, input)
     this.keyParseState = newState
+    this.inputReceivedAt = receivedAt
 
     // Keep one priority scope for this read. The dispatcher commits between
     // semantic inputs so later keys see updated handlers and focus.
@@ -460,12 +463,15 @@ export default class App extends PureComponent<Props, State> {
       this.props.onStdinResume?.()
     }
     this.lastStdinTime = now
+    // Every chunk in this read was already waiting; render work between chunks must not
+    // count as time between them (wheel acceleration measures that gap).
+    const receivedAt = performance.now()
     try {
       let chunk
       while ((chunk = this.props.stdin.read() as string | null) !== null) {
         recordEvidenceInputRead(chunk)
         // Process the input chunk
-        this.processInput(chunk)
+        this.processInput(chunk, receivedAt)
       }
     } catch (error) {
       // In Bun, an uncaught throw inside a stream 'readable' handler can
@@ -686,7 +692,7 @@ function processKeysInBatch(
     }
 
     app.handleInput(sequence)
-    const event = new InputEvent(item)
+    const event = new InputEvent(item, app.inputReceivedAt)
     app.internal_eventEmitter.emit('input', event)
 
     // A legacy handler may already own this key (including Tab's default
