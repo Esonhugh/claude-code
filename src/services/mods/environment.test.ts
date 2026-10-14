@@ -832,6 +832,33 @@ describe('Mods Worker environment', () => {
     await closed[1]
   })
 
+  test('a Client load failure terminates its Worker promptly and still reports the load fault', async () => {
+    const fixture = declaration(`export function register(on) {on('tool.call', () => 'alive')}`)
+    fixture.modules.push({path:'/fixture/broken.js',source:`throw new TypeError('broken client'); export default function Surface() {}`})
+    fixture.clients = [{path:'/fixture/broken.js',module:'broken.js'}]
+    const environment = await host().load(fixture)
+    const RealWorker = globalThis.Worker
+    const closed: Promise<void>[] = []
+    globalThis.Worker = class extends RealWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options)
+        closed.push(new Promise(resolve => this.addEventListener('close', () => resolve(), {once:true})))
+      }
+    } as typeof Worker
+    let failure: Promise<unknown>
+    try { failure = environment.client({op:'mount',id:1,module:'broken.js'}).then(() => null, error => error) }
+    finally { globalThis.Worker = RealWorker }
+    expect(await failure).toMatchObject({message:'broken client',phase:'load',name:'TypeError'})
+    expect(closed).toHaveLength(1)
+    let timeout: ReturnType<typeof setTimeout>
+    const exited = await Promise.race([
+      closed[0]!.then(() => 'closed'),
+      new Promise(resolve => { timeout = setTimeout(() => resolve('still running'), 2000) }),
+    ]).finally(() => clearTimeout(timeout))
+    expect(exited).toBe('closed')
+    expect(await environment.invoke(environment.registrations[0]!.id,[])).toBe('alive')
+  })
+
   test('worker exit rejects pending calls and disposal remains idempotent', async () => {
     const RealWorker = globalThis.Worker
     const natives: Worker[] = []

@@ -437,7 +437,7 @@ export function createModEnvironmentHost({
     const drawing = new Worker(workerUrl)
     let stopped: Error | undefined
     let retiring: { id: number; timer: ReturnType<typeof setTimeout> } | undefined
-    let pending: { id: number; phase: import('./client.js').ModClientFaultPhase; resolve(value: Result): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
+    let pending: { id: number; turn: boolean; phase: import('./client.js').ModClientFaultPhase; resolve(value: Result): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined
     const stop = (error: Error, turn?: number) => {
       if (stopped) {
         if (retiring) {
@@ -451,7 +451,8 @@ export function createModEnvironmentHost({
       stopped = error
       if (state.clients.get(input.id) === instance) state.clients.delete(input.id)
       if (pending) {
-        if (pending.id === turn) {
+        // Only a run turn acknowledges client-turn-complete; a failed load has nothing to drain.
+        if (pending.id === turn && pending.turn) {
           retiring = { id: turn, timer: pending.timer }
           state.retiringClients.set(input.id, instance)
         }
@@ -467,7 +468,7 @@ export function createModEnvironmentHost({
         const id = ++nextRequest
         const ms = message.type === 'load-client' ? 10000 : 1000
         const timer = setTimeout(() => stop(new ModClientError(`Script execution timed out after ${ms}ms`, pending?.phase ?? 'run', 'Error', ms)), ms)
-        pending = { id, phase: message.type === 'load-client' ? 'load' : 'run', resolve, reject, timer }
+        pending = { id, turn: message.type === 'client', phase: message.type === 'load-client' ? 'load' : 'run', resolve, reject, timer }
         try { drawing.postMessage({ ...message, id }) }
         catch (error) { stop(new Error(errorMessage(error, 'Client Worker request failed'))) }
       })
