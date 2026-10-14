@@ -1710,6 +1710,15 @@ export function ModsPane({
     internal_eventEmitter.on('pointer', release)
     return () => { internal_eventEmitter.removeListener('pointer', release) }
   }, [internal_eventEmitter, chrome])
+  // Esc with an empty composer closes an unfocused pane; the pane's own ui.close hook may keep it open.
+  useKeybinding('chat:cancel', () => {
+    run(closeByPerson(pane))
+  }, {
+    context: 'Chat',
+    capture: true,
+    isActive: chrome !== 'band' && Boolean(pane.closeOnEscape && onClose) && !pane.focused &&
+      pane.visible && shown && canFocus && !isWorking,
+  })
   const terminalIdentity = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH ? getModUiTerminalIdentity(pane) : undefined
   return (
     <Box

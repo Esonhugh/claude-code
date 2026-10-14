@@ -5180,6 +5180,37 @@ describe('ModsPane person pointer and Escape like official', () => {
     } finally { instance.unmount() }
   })
 
+  test('Escape with an empty composer closes an unfocused closeOnEscape pane', async () => {
+    for (const [changes, canFocus, isWorking, closes] of [
+      [{}, true, false, 1],
+      [{}, false, false, 0],
+      [{}, true, true, 0],
+      [{ closeOnEscape: false }, true, false, 0],
+    ] as const) {
+      const stdout = new Output()
+      const stdin = new Input()
+      const closed: string[] = []
+      const after: string[] = []
+      function Composer() {
+        useInput((_input, key) => { if (key.escape) after.push('composer') })
+        return null
+      }
+      const instance = await render(<Bindings context="Chat" bindings={{ escape: 'chat:cancel' }}><EnableInput /><Composer /><ModsPane
+        canFocus={canFocus} isWorking={isWorking}
+        pane={pane({ type: 'Text', children: ['escape body'] }, { focused: false, closeOnEscape: true, ...changes })}
+        onFocus={async () => ({})} onInteract={async () => {}} onScroll={async () => {}}
+        onClose={async current => { closed.push(current.id) }}
+      /></Bindings>, { stdout: stdout as never, stdin: stdin as never, patchConsole: false, exitOnCtrlC: false })
+      try {
+        await settle()
+        stdin.push('\u001b')
+        await settle()
+        expect(closed).toHaveLength(closes)
+        expect(after).toHaveLength(closes ? 0 : 1)
+      } finally { instance.unmount() }
+    }
+  })
+
   test('pressing outside a focused pane hands the keyboard back; pressing inside keeps it', async () => {
     const stdout = new Output()
     const stdin = new Input()
