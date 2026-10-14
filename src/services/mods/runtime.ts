@@ -641,19 +641,18 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return { lease, participant }
       }
       const { lease, participant } = admit(owner, drawing)
-      return withReference(participant, () => uiContext.run({ snapshot: lease.snapshot, table: lease.table, person: true }, async () => {
-        await participant.environment.setUiAccess(uiAllowed(participant, lease.table))
-        // An admitted interaction waits for UI access; a redraw meanwhile may release its drawing
-        // while another drawing still holds the same callback.
-        const moved = drawings.has(drawing) ? undefined : retarget?.()
-        if (!moved || moved.drawing === drawing) return participant.environment.invokeDrawing(drawing, handle, args)
-        const next = admit(moved.owner, moved.drawing)
-        if (next.participant !== participant) throw new Error('Mod UI drawing callback is stale or belongs to an unknown plugin')
-        return uiContext.run({ snapshot: next.lease.snapshot, table: next.lease.table, person: true }, async () => {
-          await participant.environment.setUiAccess(uiAllowed(participant, next.lease.table))
-          return participant.environment.invokeDrawing(moved.drawing, handle, args)
+      // An admitted interaction waits for UI access; a redraw meanwhile may release its drawing
+      // while another drawing still holds the same callback. Re-check after every wait.
+      const run = (drawing: number, lease: DrawingLease): Promise<unknown> =>
+        uiContext.run({ snapshot: lease.snapshot, table: lease.table, person: true }, async () => {
+          await participant.environment.setUiAccess(uiAllowed(participant, lease.table))
+          const moved = drawings.has(drawing) ? undefined : retarget?.()
+          if (!moved || moved.drawing === drawing) return participant.environment.invokeDrawing(drawing, handle, args)
+          const next = admit(moved.owner, moved.drawing)
+          if (next.participant !== participant) throw new Error('Mod UI drawing callback is stale or belongs to an unknown plugin')
+          return run(moved.drawing, next.lease)
         })
-      }))
+      return withReference(participant, () => run(drawing, lease))
     },
     releaseDrawing: async (owner, drawing) => {
       const lease = drawings.get(drawing)
