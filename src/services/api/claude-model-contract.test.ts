@@ -548,6 +548,36 @@ test('side-query effort preserves structured output configuration', async () => 
   expect(requests[0]?.output_config).toEqual({format,effort:'low'})
 })
 
+test('side queries send a temperature only to models older than claude-opus-4-7, like official', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  for (const model of ['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-5-5', 'gpt-5.6-sol'])
+    await sideQuery({model,messages:[{role:'user',content:'test'}],temperature:1,querySource:'auto_mode'})
+  expect(requests.map(request => request.temperature)).toEqual([1, undefined, undefined, undefined])
+})
+
+test('classifier side queries keep the attribution header for OAuth when the env opts out, like official', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  const subscriber = spyOn(auth, 'isClaudeAISubscriber')
+  const previous = process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
+  process.env.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'
+  const header = (request: MessageCreateParams | undefined) =>
+    JSON.stringify(request?.system ?? '').includes('x-anthropic-billing-header')
+  try {
+    const query = (forceAttributionHeader: boolean) => sideQuery({model:'claude-sonnet-5',messages:[{role:'user',content:'test'}],
+      skipSystemPromptPrefix:true,forceAttributionHeader,querySource:'auto_mode'})
+    subscriber.mockReturnValue(true)
+    await query(true)
+    await query(false)
+    subscriber.mockReturnValue(false)
+    await query(true)
+    expect(requests.map(header)).toEqual([true, false, false])
+  } finally {
+    subscriber.mockReturnValue(false)
+    if (previous === undefined) delete process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
+    else process.env.CLAUDE_CODE_ATTRIBUTION_HEADER = previous
+  }
+})
+
 test('side queries inspect only real cache_control markers for extended TTL', async () => {
   const state = await import('../../bootstrap/state.js')
   const { sideQuery } = await import('../../utils/sideQuery.js')

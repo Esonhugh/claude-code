@@ -27,7 +27,7 @@ import { isClaudeAISubscriber } from './auth.js'
 import { isApproveForMeAvailable } from './permissions/approveForMe.js'
 import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import { getCanonicalName } from './model/model.js'
+import { getCanonicalName, isModelOlderThan } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
@@ -176,8 +176,7 @@ export function modelSupportsAutoMode(model: string): boolean {
     if (!isAnt()) {
       if (getAPIProvider() === 'openai') return isApproveForMeAvailable()
       const canonical = getCanonicalName(model)
-      if (canonical.includes('claude-3-') || ['claude-opus-4-0', 'claude-sonnet-4-0', 'claude-opus-4-1',
-        'claude-sonnet-4-5', 'claude-haiku-4-5', 'claude-opus-4-5'].includes(canonical)) return false
+      if (isModelOlderThan(canonical, 'claude-opus-4-6')) return false
       return getAPIProvider() === 'firstParty' || !(canonical === 'claude-opus-4-6' ||
         canonical === 'claude-sonnet-4-6' || canonical.includes('haiku'))
     }

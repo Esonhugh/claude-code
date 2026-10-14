@@ -25,7 +25,9 @@ import {
 import { getAnthropicClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'
-import { normalizeModelStringForAPI } from './model/model.js'
+import { getCanonicalName, isModelOlderThan, normalizeModelStringForAPI } from './model/model.js'
+import { getAPIProvider } from './model/providers.js'
+import { isClaudeAISubscriber } from './auth.js'
 
 type MessageParam = Anthropic.MessageParam
 type TextBlockParam = Anthropic.TextBlockParam
@@ -63,6 +65,11 @@ export type SideQueryOptions = {
   signal?: AbortSignal
   /** Skip CLI system prompt prefix (keeps attribution header for OAuth). For internal classifiers that provide their own prompt. */
   skipSystemPromptPrefix?: boolean
+  /**
+   * Keep the attribution header even when CLAUDE_CODE_ATTRIBUTION_HEADER opts out, for first-party
+   * OAuth requests that carry no CLI prefix either; like official, the server rejects those.
+   */
+  forceAttributionHeader?: boolean
   /** Honor provider/model cache settings for explicitly marked author blocks. */
   dropCacheControlWhenCachingDisabled?: boolean
   /** Temperature override */
@@ -128,6 +135,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     maxRetries = 2,
     signal,
     skipSystemPromptPrefix,
+    forceAttributionHeader,
     temperature,
     thinking,
     stop_sequences,
@@ -162,7 +170,8 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
 
   // Compute fingerprint for OAuth attribution
   const fingerprint = computeFingerprint(messageText, MACRO.VERSION)
-  const attributionHeader = getAttributionHeader(fingerprint)
+  const attributionHeader = getAttributionHeader(fingerprint, forceAttributionHeader === true &&
+    getAPIProvider() === 'firstParty' && isClaudeAISubscriber() && !process.env.ANTHROPIC_UNIX_SOCKET)
 
   // Build system as array to keep attribution header in its own block
   // (prevents server-side parsing from including system content in cc_entrypoint)
@@ -223,7 +232,8 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
       ...(tools && { tools }),
       ...(tool_choice && { tool_choice }),
       ...(Object.keys(outputConfig).length > 0 && { output_config: outputConfig }),
-      ...(temperature !== undefined && { temperature }),
+      // Like official 2.1.292, only models older than claude-opus-4-7 accept a sampling temperature.
+      ...(temperature !== undefined && isModelOlderThan(getCanonicalName(model), 'claude-opus-4-7') && { temperature }),
       ...(stop_sequences && { stop_sequences }),
       ...(thinkingConfig && { thinking: thinkingConfig }),
       ...(betas.length > 0 && { betas }),

@@ -718,6 +718,12 @@ function replaceOutputFormatWithXml(systemPrompt: string): string {
   return systemPrompt.replace(toolUseLine, xmlFormat)
 }
 
+// Official 2.1.292 samples the classifier at temperature 1 unless overridden.
+function getClassifierTemperature(): number {
+  const value = Number(process.env.CLAUDE_CODE_AUTO_MODE_TEMPERATURE)
+  return Number.isFinite(value) ? value : 1
+}
+
 /**
  * Thinking config for classifier calls. The classifier wants short text-only
  * responses — API thinking blocks are ignored by extractTextContent() and waste tokens.
@@ -836,7 +842,8 @@ async function classifyYoloActionXml(
         max_tokens: (mode === 'fast' ? 256 : 64) + thinkingPadding,
         system: systemBlocks,
         skipSystemPromptPrefix: true,
-        temperature: 0,
+        forceAttributionHeader: true,
+        temperature: getClassifierTemperature(),
         thinking: disableThinking,
         messages: [
           ...prefixMessages,
@@ -924,7 +931,8 @@ async function classifyYoloActionXml(
       max_tokens: 4096 + thinkingPadding,
       system: systemBlocks,
       skipSystemPromptPrefix: true,
-      temperature: 0,
+      forceAttributionHeader: true,
+      temperature: getClassifierTemperature(),
       thinking: disableThinking,
       messages: [
         ...prefixMessages,
@@ -1199,7 +1207,8 @@ export async function classifyYoloAction(
         },
       ],
       skipSystemPromptPrefix: true,
-      temperature: 0,
+      forceAttributionHeader: true,
+      temperature: getClassifierTemperature(),
       thinking: disableThinking,
       messages: [
         ...prefixMessages,

@@ -272,6 +272,16 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   return name
 }
 
+// Official 2.1.292 model order for capability cut-offs; unknown and newer models are never older.
+const MODEL_RELEASE_ORDER = ['claude-opus-4-0', 'claude-sonnet-4-0', 'claude-opus-4-1', 'claude-sonnet-4-5',
+  'claude-haiku-4-5', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8']
+
+export function isModelOlderThan(canonical: string, than: string): boolean {
+  if (canonical.includes('claude-3-')) return true
+  const index = MODEL_RELEASE_ORDER.indexOf(canonical)
+  return index !== -1 && index < MODEL_RELEASE_ORDER.indexOf(than)
+}
+
 /**
  * Maps a full model string to a shorter canonical version that's unified across 1P and 3P providers.
  * For example, 'claude-3-5-haiku-20241022' and 'us.anthropic.claude-3-5-haiku-20241022-v1:0'
