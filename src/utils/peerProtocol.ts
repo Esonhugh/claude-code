@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import { isAbsolute, resolve } from 'path'
 import type { SettingSource } from './settings/constants.js'
+import { escapeClosingTag } from './xml.js'
 
 export type PeerPermissionClass = 'bypass' | 'prompting'
 export type PeerInboundPolicy = 'accept' | 'hold' | 'refuse'
@@ -22,18 +23,6 @@ const addressChars = 'A-Za-z0-9%:_/.\\\\-'
 const sessionPattern = '[A-Za-z0-9_-]{1,80}'
 const hopPattern = '[0-9a-f]{24}(?:,[0-9a-f]{24}){0,31}'
 const wrapperPattern = new RegExp(`^<cross-session-message(?: from="([${addressChars}]+)")?(?: from-session="(${sessionPattern})")?(?: hop-chain="(${hopPattern})")?(?: from-name="([^"<>\\n\\r]+)")?(?: from-mode="(bypass|prompting)")?(?: from-plugin="([^"<>\\n\\r]+)")?>\\n([\\s\\S]*)\\n</cross-session-message>$`)
-
-// Match the official closing-tag escape, including invisible separators and
-// bracket/slash lookalikes. Escaped '<\\' is intentionally left unchanged.
-const invisible = '\\u00ad\\u034f\\u0600-\\u0605\\u061c\\u06dd\\u070f\\u0890\\u0891\\u08e2\\u115f\\u1160\\u17b4\\u17b5\\u180b-\\u180f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\u3164\\ufe00-\\ufe0f\\ufeff\\uffa0\\ufff0-\\ufffb\\u{110bd}\\u{110cd}\\u{13430}-\\u{1343f}\\u{1bca0}-\\u{1bca3}\\u{1d173}-\\u{1d17a}\\u{e0000}-\\u{e0fff}'
-const marks = '\\u0300-\\u0344\\u0346-\\u036f\\u0483-\\u0489\\u0591-\\u05bd\\u05bf\\u05c1\\u05c2\\u05c4\\u05c5\\u05c7\\u0610-\\u061a\\u064b-\\u065f\\u0670\\u06d6-\\u06dc\\u06df-\\u06e4\\u06e7\\u06e8\\u06ea-\\u06ed\\u1ab0-\\u1aff\\u1dc0-\\u1dff\\u20d0-\\u20ff\\u3099\\u309a\\ufe20-\\ufe2f'
-const separators = `[${invisible}${marks}\\x00-\\x08\\x0b\\x0c\\x0e-\\x1f\\x7f-\\x9f\\u2028\\u2029]*`
-const opening = '<\uFF1C\uFE64\u2329\u27E8\u3008\u2039\u02C2\u1438\u276C\u276E\u2770\u29FC\u226E\u227A\u22D6'
-const closing = '>\uFF1E\uFE65\u232A\u27E9\u3009\u203A\u02C3\u1433\u276D\u276F\u2771\u29FD\u226F\u227B\u22D7'
-const filler = `[^A-Za-z0-9_\\-${opening}${closing}]*`
-// Each combining mark is an individual separator, not a composed character.
-// eslint-disable-next-line no-misleading-character-class
-const closingTag = new RegExp(`[${opening}](?!\\\\)(?=${filler}[/\uFF0F\u2215\u2044]${filler}${[...'cross-session-message'].join(separators)}(?:[^A-Za-z0-9_\\-]|$))`, 'giu')
 
 export function cleanPeerName(name: string): string {
   const cleaned = name.replace(/["<>\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu, '').trim()
@@ -80,7 +69,7 @@ export function formatPeerMessage(body: string, metadata: PeerMessageMetadata): 
   if (metadata.fromMode) attrs.push(`from-mode="${metadata.fromMode}"`)
   const plugin = metadata.fromPlugin && cleanPeerName(metadata.fromPlugin)
   if (plugin) attrs.push(`from-plugin="${plugin}"`)
-  return `<cross-session-message${attrs.length ? ` ${attrs.join(' ')}` : ''}>\n${body.replace(closingTag, '<\\')}\n</cross-session-message>`
+  return `<cross-session-message${attrs.length ? ` ${attrs.join(' ')}` : ''}>\n${escapeClosingTag(body, 'cross-session-message')}\n</cross-session-message>`
 }
 
 export function parsePeerMessage(content: string): (PeerMessageMetadata & { body: string }) | undefined {

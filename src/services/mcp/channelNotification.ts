@@ -22,7 +22,7 @@ import { getSubscriptionType } from '../../utils/auth.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
-import { escapeXmlAttr } from '../../utils/xml.js'
+import { escapeClosingTag, escapeXmlAttr } from '../../utils/xml.js'
 import {
   getEffectiveChannelAllowlist,
   isChannelsEnabled,
@@ -105,7 +105,7 @@ export function wrapChannelMessage(
     .filter(([k]) => k !== 'source' && SAFE_META_KEY.test(k))
     .map(([k, v]) => ` ${k}="${escapeXmlAttr(v)}"`)
     .join('')
-  return `<${CHANNEL_TAG} source="${escapeXmlAttr(serverName)}"${attrs}>\n${content}\n</${CHANNEL_TAG}>`
+  return `<${CHANNEL_TAG} source="${escapeXmlAttr(serverName)}"${attrs}>\n${escapeClosingTag(content, CHANNEL_TAG)}\n</${CHANNEL_TAG}>`
 }
 
 /**
