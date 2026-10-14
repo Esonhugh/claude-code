@@ -9,7 +9,6 @@ import {
   type PermissionMode,
 } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 // Re-export for backwards compatibility
@@ -86,7 +85,7 @@ const PERMISSION_MODE_CONFIG: Partial<
           shortTitle: 'Auto',
           symbol: '⏵⏵',
           color: 'warning' as ModeColorKey,
-          external: 'default' as ExternalPermissionMode,
+          external: 'auto' as ExternalPermissionMode,
         },
       }
     : {}),
@@ -94,16 +93,12 @@ const PERMISSION_MODE_CONFIG: Partial<
 
 /**
  * Type guard to check if a PermissionMode is an ExternalPermissionMode.
- * auto is ant-only and excluded from external modes.
+ * Official 2.1.292 reports every mode except bubble, auto included.
  */
 export function isExternalPermissionMode(
   mode: PermissionMode,
 ): mode is ExternalPermissionMode {
-  // External users can't have auto, so always true for them
-  if (!isAnt()) {
-    return true
-  }
-  return mode !== 'auto' && mode !== 'bubble'
+  return mode !== 'bubble'
 }
 
 function getModeConfig(mode: PermissionMode): PermissionModeConfig {
