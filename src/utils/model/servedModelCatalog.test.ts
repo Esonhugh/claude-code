@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, expect, spyOn, test } from 'bun:test'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +9,7 @@ import {
   parseServedModelCatalog,
   type ServedModelCatalogScope,
 } from './servedModelCatalog.js'
+import * as debug from '../debug.js'
 
 const tempDirs: string[] = []
 
@@ -101,6 +102,50 @@ test('fetches the OAuth organization catalog and writes an identity-scoped cache
   })
   expect(cachePath).toContain('org-a')
   expect(getServedModelCatalogCachePath({ ...scope, organizationUUID: 'org-b' }, cacheDir)).not.toBe(cachePath)
+})
+
+test('logs official status lines for a fresh cache, a 304, and a successful fetch', async () => {
+  const cacheDir = await mkdtemp(join(tmpdir(), 'served-model-catalog-'))
+  tempDirs.push(cacheDir)
+  const logs: string[] = []
+  const logging = spyOn(debug, 'logForDebugging').mockImplementation(message => {
+    logs.push(message)
+  })
+
+  try {
+    await fetchServedModelCatalog({
+      scope,
+      accessToken: 'token-a',
+      cacheDir,
+      now: () => 1_000,
+      request: async () => ({ status: 200, data: { catalog, staleAt: 5_000 }, headers: { etag: 'etag-a' } }),
+    })
+    expect(logs).toContain('[servedCatalog] fetch (org) ok: 1 rows')
+
+    logs.length = 0
+    await fetchServedModelCatalog({
+      scope,
+      accessToken: 'token-b',
+      cacheDir,
+      now: () => 2_000,
+      request: async () => { throw new Error('must use fresh cache') },
+    })
+    expect(logs).toContain(
+      '[servedCatalog] primary: using served rows (1 rows via cache over the org route, fetched 1s ago); the served list replaces the compiled picker for this session',
+    )
+
+    logs.length = 0
+    await fetchServedModelCatalog({
+      scope,
+      accessToken: 'token-c',
+      cacheDir,
+      now: () => 6_000,
+      request: async () => ({ status: 304, data: undefined, headers: {} }),
+    })
+    expect(logs).toContain('[servedCatalog] fetch (org): not modified')
+  } finally {
+    logging.mockRestore()
+  }
 })
 
 test('uses fresh cache, refreshes stale cache, and falls back to stale data on failure', async () => {

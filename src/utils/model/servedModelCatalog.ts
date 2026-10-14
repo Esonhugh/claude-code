@@ -315,6 +315,9 @@ export async function fetchServedModelCatalog(
   const cached = await readCache(cachePath)
   const currentTime = now()
   if (cached && currentTime < cached.staleAt) {
+    logForDebugging(
+      `[servedCatalog] primary: using served rows (${cached.catalog.config.models.length} rows via cache over the org route, fetched ${Math.max(0, Math.round((currentTime - cached.fetchedAt) / 1000))}s ago); the served list replaces the compiled picker for this session`,
+    )
     latestCatalog = { scope, catalog: cached.catalog }
     return cached.catalog
   }
@@ -364,6 +367,7 @@ export async function fetchServedModelCatalog(
     }
     if (response.status === 304) {
       if (!cached) return undefined
+      logForDebugging('[servedCatalog] fetch (org): not modified')
       const refreshedCache: ServedModelCatalogCache = {
         ...cached,
         fetchedAt: currentTime,
@@ -389,6 +393,10 @@ export async function fetchServedModelCatalog(
       if (cached) latestCatalog = { scope, catalog: cached.catalog }
       return cached?.catalog
     }
+
+    logForDebugging(
+      `[servedCatalog] fetch (org) ok: ${catalog.config.models.length} rows`,
+    )
 
     const responseBody = response.data && typeof response.data === 'object'
       ? response.data as Record<string, unknown>
