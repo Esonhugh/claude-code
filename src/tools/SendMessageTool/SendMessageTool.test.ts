@@ -307,6 +307,42 @@ if (process.env[childFlag] !== '1') {
     expect(existsSync(getInboxPath('missing-member', teamName))).toBe(false)
   })
 
+  test('protocol messages report failure when the inbox write fails', async () => {
+    const teamName = 'blocked-protocol-team'
+    await writeTeamFileAsync(teamName, {
+      name: teamName, createdAt: 1, leadAgentId: 'lead',
+      members: ['blocked-member', 'team-lead'].map(name => ({ name, agentId: `${name}@team`, joinedAt: 1, cwd: '/tmp', tmuxPaneId: '', subscriptions: [] })),
+    })
+    state.teamContext = { teamName, leadAgentId: 'lead', teamFilePath: '', teammates: {} }
+    for (const [name, team] of [['blocked-member', teamName], ['team-lead', undefined]] as const) {
+      const inbox = getInboxPath(name, team)
+      await mkdir(inbox, { recursive: true }); await writeFile(join(inbox, 'block'), 'private fixture')
+    }
+    process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+    try {
+      for (const message of [
+        { type: 'shutdown_request' },
+        { type: 'plan_approval_response', request_id: 'plan-1', approve: true },
+        { type: 'plan_approval_response', request_id: 'plan-1', approve: false, feedback: 'redo' },
+        { type: 'shutdown_response', request_id: 'shutdown-1', approve: false, reason: 'busy' },
+      ]) {
+        const result = await SendMessageTool.call(
+          { to: message.type === 'shutdown_response' ? 'team-lead' : 'blocked-member', message } as never,
+          context,
+          async () => ({ behavior: 'allow' }),
+          undefined,
+        )
+        expect(result.data.success, message.type).toBe(false)
+        expect(result.data.message).toContain('nothing was sent')
+      }
+      const broadcast = await SendMessageTool.call({ to: '*', message: 'all hands' }, context, async () => ({ behavior: 'allow' }), undefined)
+      expect(broadcast.data.success).toBe(false)
+      expect(broadcast.data.message).toContain('nothing was queued for them: blocked-member')
+    } finally {
+      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+    }
+  })
+
   test('ambiguous peers return actionable resolver errors without mailbox fallback', async () => {
     resolvePeerSession.mockRejectedValueOnce(
       new Error(

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import { expect, mock, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
 import { setMainLoopModelOverride, setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
 import { handlePlanApprovalResponse } from '../../utils/inProcessTeammateHelpers.js'
+import { getInboxPath } from '../../utils/teammateMailbox.js'
 import { buildInheritedCliFlags } from '../../utils/swarm/spawnUtils.js'
 import { spawnInProcessTeammate } from '../../utils/swarm/spawnInProcess.js'
 import { setCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
@@ -558,6 +559,17 @@ async function isolatedAssertions() {
   assert.match(spawnedPaneCommand, /--agent-type custom-restricted-agent(?:\s|$)/)
   assert.match(spawnedPaneCommand, /--permission-mode default(?:\s|$)/)
   assert.match(spawnedPaneCommand, /--allowedTools Read\\\(custom\.txt\\\)/)
+  for (const use_splitpane of [true, false]) {
+    const name = `blocked-inbox-${use_splitpane ? 'split' : 'window'}`
+    const inbox = getInboxPath(name, 'definition-team')
+    mkdirSync(inbox, { recursive: true }); writeFileSync(join(inbox, 'block'), 'fixture')
+    spawnedPaneCommand = undefined
+    await assert.rejects(
+      spawnTeammate({ name, prompt: 'inspect', team_name: 'definition-team', use_splitpane }, definitionContext),
+      new RegExp(`Failed to write initial instructions to ${name}'s inbox`),
+    )
+    assert.equal(spawnedPaneCommand, undefined, 'a teammate must not launch without its instructions')
+  }
   useInProcessBackend = true
 
   const modelEnvKeys = [

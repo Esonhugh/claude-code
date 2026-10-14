@@ -384,6 +384,21 @@ async function handleSpawnSplitPane(
   const envStr = buildInheritedEnvVars()
   const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
 
+  // Send initial instructions via mailbox before launching; the teammate's inbox
+  // poller submits them as its first turn, so it must not start without them.
+  const instructionsWritten = await writeToMailbox(
+    sanitizedName,
+    {
+      from: TEAM_LEAD_NAME,
+      text: prompt,
+      timestamp: new Date().toISOString(),
+    },
+    teamName,
+  )
+  if (!instructionsWritten) {
+    throw new Error(`Failed to write initial instructions to ${sanitizedName}'s inbox — spawn aborted`)
+  }
+
   // Send the command to the new pane
   // Use swarm socket when running outside tmux (external swarm session)
   await sendCommandToPane(paneId, spawnCommand, !insideTmux)
@@ -450,18 +465,6 @@ async function handleSpawnSplitPane(
     subscriptions: [],
     backendType: detectionResult.backend.type,
   })
-
-  // Send initial instructions to teammate via mailbox
-  // The teammate's inbox poller will pick this up and submit it as their first turn
-  await writeToMailbox(
-    sanitizedName,
-    {
-      from: TEAM_LEAD_NAME,
-      text: prompt,
-      timestamp: new Date().toISOString(),
-    },
-    teamName,
-  )
 
   return {
     data: {
@@ -594,6 +597,21 @@ async function handleSpawnSeparateWindow(
   const envStr = buildInheritedEnvVars()
   const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
 
+  // Send initial instructions via mailbox before launching; the teammate's inbox
+  // poller submits them as its first turn, so it must not start without them.
+  const instructionsWritten = await writeToMailbox(
+    sanitizedName,
+    {
+      from: TEAM_LEAD_NAME,
+      text: prompt,
+      timestamp: new Date().toISOString(),
+    },
+    teamName,
+  )
+  if (!instructionsWritten) {
+    throw new Error(`Failed to write initial instructions to ${sanitizedName}'s inbox — spawn aborted`)
+  }
+
   // Send the command to the new window
   const sendKeysResult = await execFileNoThrow(TMUX_COMMAND, [
     'send-keys',
@@ -667,18 +685,6 @@ async function handleSpawnSeparateWindow(
     subscriptions: [],
     backendType: 'tmux', // This handler always uses tmux directly
   })
-
-  // Send initial instructions to teammate via mailbox
-  // The teammate's inbox poller will pick this up and submit it as their first turn
-  await writeToMailbox(
-    sanitizedName,
-    {
-      from: TEAM_LEAD_NAME,
-      text: prompt,
-      timestamp: new Date().toISOString(),
-    },
-    teamName,
-  )
 
   return {
     data: {

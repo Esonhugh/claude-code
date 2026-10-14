@@ -255,8 +255,9 @@ async function handleBroadcast(
     }
   }
 
+  const failed: string[] = []
   for (const recipientName of recipients) {
-    await writeToMailbox(
+    const delivered = await writeToMailbox(
       recipientName,
       {
         from: senderName,
@@ -267,13 +268,15 @@ async function handleBroadcast(
       },
       teamName,
     )
+    if (!delivered) failed.push(recipientName)
   }
+  const sent = recipients.filter(name => !failed.includes(name))
 
   return {
     data: {
-      success: true,
-      message: `Message broadcast to ${recipients.length} teammate(s): ${recipients.join(', ')}`,
-      recipients,
+      success: failed.length === 0,
+      message: `Message broadcast to ${sent.length} teammate(s): ${sent.join(', ')}` + (failed.length > 0 ? `. Writing to these inboxes failed, nothing was queued for them: ${failed.join(', ')}` : ''),
+      recipients: sent,
       routing: {
         sender: senderName,
         senderColor,
@@ -301,7 +304,7 @@ async function handleShutdownRequest(
     reason,
   })
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     targetName,
     {
       from: senderName,
@@ -311,6 +314,16 @@ async function handleShutdownRequest(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: `Failed to write the shutdown request to ${targetName}'s inbox — nothing was sent.`,
+        request_id: requestId,
+        target: targetName,
+      },
+    }
+  }
 
   return {
     data: {
@@ -354,7 +367,7 @@ async function handleShutdownApproval(
     backendType: ownBackendType,
   })
 
-  await writeToMailbox(
+  const confirmed = await writeToMailbox(
     TEAM_LEAD_NAME,
     {
       from: agentName,
@@ -412,7 +425,7 @@ async function handleShutdownApproval(
   return {
     data: {
       success: true,
-      message: `Shutdown approved. Sent confirmation to team-lead. Agent ${agentName} is now exiting.`,
+      message: `Shutdown approved. ${confirmed ? 'Sent confirmation to team-lead.' : "The confirmation could not be written to team-lead's inbox."} Agent ${agentName} is now exiting.`,
       request_id: requestId,
     },
   }
@@ -431,7 +444,7 @@ async function handleShutdownRejection(
     reason,
   })
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     TEAM_LEAD_NAME,
     {
       from: agentName,
@@ -441,6 +454,15 @@ async function handleShutdownRejection(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: "Failed to write the shutdown rejection to team-lead's inbox — nothing was sent. Try again.",
+        request_id: requestId,
+      },
+    }
+  }
 
   return {
     data: {
@@ -476,7 +498,7 @@ async function handlePlanApproval(
     permissionMode: modeToInherit,
   }
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     recipientName,
     {
       from: TEAM_LEAD_NAME,
@@ -485,6 +507,15 @@ async function handlePlanApproval(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: `Failed to write the plan approval to ${recipientName}'s inbox — nothing was sent. Try again.`,
+        request_id: requestId,
+      },
+    }
+  }
 
   return {
     data: {
@@ -518,7 +549,7 @@ async function handlePlanRejection(
     timestamp: new Date().toISOString(),
   }
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     recipientName,
     {
       from: TEAM_LEAD_NAME,
@@ -527,6 +558,15 @@ async function handlePlanRejection(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: `Failed to write the plan rejection to ${recipientName}'s inbox — nothing was sent. Try again.`,
+        request_id: requestId,
+      },
+    }
+  }
 
   return {
     data: {
