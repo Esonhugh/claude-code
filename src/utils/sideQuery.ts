@@ -220,7 +220,7 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
 
   const normalizedModel = normalizeModelStringForAPI(model)
   const outputConfig: Parameters<typeof configureEffortParams>[1] = output_format ? {format:output_format} : {}
-  configureEffortParams(effort, outputConfig, {}, betas)
+  configureEffortParams(effort, outputConfig, {}, betas, model)
   const start = Date.now()
   // biome-ignore lint/plugin: this IS the wrapper that handles OAuth attribution
   const response = await client.beta.messages.create(

@@ -73,6 +73,7 @@ import {
 } from '../../utils/context.js'
 import {
   type EffortValue,
+  modelSupportsEffort,
   resolveAppliedEffort,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -501,8 +502,13 @@ export function configureEffortParams(
   outputConfig: BetaOutputConfig,
   extraBodyParams: Record<string, unknown>,
   betas: string[],
+  model: string,
 ): void {
   if ('effort' in outputConfig) {
+    return
+  }
+  // Like official, a model that takes no effort parameter gets none; others get the configured value unchanged.
+  if (!modelSupportsEffort(model)) {
     return
   }
   if (
@@ -1766,6 +1772,7 @@ async function* queryModel(
       outputConfig,
       extraBodyParams,
       betasParams,
+      options.model,
     )
 
     configureTaskBudgetParams(

@@ -58,7 +58,8 @@ export function modelSupportsEffort(model: string): boolean {
     m.includes('opus-4-7') ||
     m.includes('opus-4-6') ||
     m.includes('sonnet-5') ||
-    m.includes('sonnet-4-6')
+    m.includes('sonnet-4-6') ||
+    m.includes('haiku-5')
   ) {
     return true
   }

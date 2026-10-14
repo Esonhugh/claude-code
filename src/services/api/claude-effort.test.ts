@@ -145,6 +145,7 @@ try {
     xhighOutputConfig,
     {},
     xhighBetas,
+    'claude-opus-4-6',
   )
 
   assert.equal((xhighOutputConfig as { effort?: string }).effort, 'xhigh')
@@ -158,6 +159,7 @@ try {
     unsetOutputConfig,
     {},
     unsetBetas,
+    'claude-opus-4-6',
   )
   assert.equal(unsetOutputConfig.effort, undefined)
   assert.equal(unsetBetas.length, 0)
@@ -165,27 +167,39 @@ try {
 
   const outputConfig: BetaOutputConfig = {}
   const betas: string[] = []
-  configureEffortParams(undefined, outputConfig, {}, betas)
+  configureEffortParams(undefined, outputConfig, {}, betas, 'claude-opus-4-6')
 
   assert.equal(outputConfig.effort, undefined)
   assert.equal(betas.length, 0)
 
   const explicitOutputConfig: BetaOutputConfig = {}
   const explicitBetas: string[] = []
-  configureEffortParams('medium', explicitOutputConfig, {}, explicitBetas)
+  configureEffortParams('medium', explicitOutputConfig, {}, explicitBetas, 'claude-opus-4-6')
 
   assert.equal(explicitOutputConfig.effort, 'medium')
   assert.ok(explicitBetas.length > 0)
 
   const minimalOutputConfig: BetaOutputConfig = {}
   const minimalBetas: string[] = []
-  configureEffortParams('minimal', minimalOutputConfig, {}, minimalBetas)
+  configureEffortParams('minimal', minimalOutputConfig, {}, minimalBetas, 'claude-opus-4-6')
 
   assert.equal(
     (minimalOutputConfig as { effort?: string }).effort,
     'minimal',
   )
   assert.ok(minimalBetas.length > 0)
+
+  // A model that takes no effort parameter gets none, even when one is configured.
+  for (const model of ['claude-haiku-4-5', 'claude-3-5-haiku-20241022']) {
+    const noEffortOutputConfig: BetaOutputConfig = {}
+    const noEffortBetas: string[] = []
+    configureEffortParams(resolveAppliedEffort(model, 'ultracode'), noEffortOutputConfig, {}, noEffortBetas, model)
+    assert.equal(noEffortOutputConfig.effort, undefined)
+    assert.equal(noEffortBetas.length, 0)
+  }
+  const haiku55OutputConfig: BetaOutputConfig = {}
+  configureEffortParams('high', haiku55OutputConfig, {}, [], 'claude-haiku-5-5')
+  assert.equal(haiku55OutputConfig.effort, 'high')
 
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   assert.equal(resolveAppliedEffort('gpt-5.5', 'none'), 'none')
@@ -195,7 +209,7 @@ try {
 
   const openAIOutputConfig: BetaOutputConfig = {}
   const openAIBetas: string[] = []
-  configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas)
+  configureEffortParams(undefined, openAIOutputConfig, {}, openAIBetas, 'gpt-5.5')
 
   assert.equal(openAIOutputConfig.effort, undefined)
   assert.equal(openAIBetas.length, 0)
@@ -207,6 +221,7 @@ try {
     ultracodeOutputConfig,
     {},
     ultracodeBetas,
+    'gpt-5.5',
   )
 
   assert.equal(ultracodeOutputConfig.effort, 'xhigh')
@@ -218,7 +233,7 @@ try {
   process.env.CLAUDE_CODE_USE_BEDROCK = '1'
   const bedrockOutputConfig: BetaOutputConfig = {}
   const bedrockBetas: string[] = []
-  configureEffortParams(undefined, bedrockOutputConfig, {}, bedrockBetas)
+  configureEffortParams(undefined, bedrockOutputConfig, {}, bedrockBetas, 'claude-opus-4-6')
 
   assert.equal(bedrockOutputConfig.effort, undefined)
 } finally {
