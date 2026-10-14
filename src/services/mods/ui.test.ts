@@ -1761,6 +1761,35 @@ describe('mod UI dispatch and drawing lifetime', () => {
     })).resolves.toEqual({ deny: 'no element of its own is drawn under that key' })
   })
 
+  test('moving key rows alone updates scroll targets without publishing a pane snapshot', async () => {
+    const owner = { plugin: 'fixture' }
+    const { ui } = fixture()
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await ui.reportMetrics('pane', {
+      bodyRows: 4,
+      contentRows: 12,
+      keyRows: [{ plugin: 'fixture', key: 'row', top: 6, bottom: 7 }],
+    })
+    const published: unknown[] = []
+    const unsubscribe = ui.subscribe(() => published.push(ui.getSnapshot()))
+    // A plugin that scrolls its own rows reports the same geometry with shifted keys on every wheel tick.
+    await ui.reportMetrics('pane', {
+      bodyRows: 4,
+      contentRows: 12,
+      keyRows: [{ plugin: 'fixture', key: 'row', top: 2, bottom: 3 }],
+    })
+    expect(published).toEqual([])
+    await ui.reveal(owner, {
+      requestId: 'pane',
+      key: 'row',
+      block: 'start',
+      origin: { kind: 'plugin', name: 'fixture' },
+    })
+    expect(ui.getSnapshot()[0]!.scrollOffset).toBe(2)
+    unsubscribe()
+  })
+
   test('preserves input change versus submit and avoids no-op metric publications', async () => {
     const owner = { plugin: 'fixture' }
     const observed: unknown[] = []

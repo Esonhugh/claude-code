@@ -2144,9 +2144,12 @@ export function createModUi({
       if (
         !bodyChanged &&
         pane.contentRows === metrics.contentRows &&
-        pane.scrollOffset === scrollOffset &&
-        sameKeyRows
-      ) return
+        pane.scrollOffset === scrollOffset
+      ) {
+        // Key rows stay host-side (scrollTo lookups), so moving them changes no snapshot.
+        if (!sameKeyRows) pane.keyRows = keyRows
+        return
+      }
       logForDebugging(`[ModsUI] ${JSON.stringify({ event: 'metrics', plugin: pane.plugin, id, drawing: pane.drawing, placement: pane.placement, bodyRows: metrics.bodyRows, contentRows: metrics.contentRows, scrollOffset })}`)
       pane.bodyRows = metrics.bodyRows
       pane.contentRows = metrics.contentRows
