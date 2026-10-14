@@ -11,6 +11,7 @@ import renderNodeToOutput, {
   resetFollowScroll,
   consumeFollowScroll,
   resetScrollHint,
+  setOverlayActive,
 } from './render-node-to-output.js'
 import { createScreen, type StylePool } from './screen.js'
 
@@ -26,6 +27,8 @@ export type RenderOptions = {
   // or reset to 0×0 (forceRedraw). Blitting from such a prevScreen would
   // copy stale inverted cells, blanks, or nothing. When false, blit is safe.
   prevFrameContaminated: boolean
+  // A selection overlay is painted over this frame after rendering.
+  overlayActive?: boolean
 }
 
 export type Renderer = (options: RenderOptions) => Frame
@@ -117,6 +120,7 @@ export default function createRenderer(
     resetScrollHint()
     resetScrollDrainNode()
     resetFollowScroll()
+    setOverlayActive(options.overlayActive ?? false)
 
     // prevFrameContaminated: selection overlay mutated the returned screen
     // buffer post-render (in ink.tsx), resetFramesForAltScreen() replaced it

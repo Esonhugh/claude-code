@@ -249,6 +249,10 @@ export default class Ink {
   // one full-render frame; steady-state frames after clear it and regain
   // the blit + narrow-damage fast path.
   private prevFrameContaminated = false
+  // Selection overlay painted into frontFrame ('' when none). Repainting the
+  // same overlay over blitted cells is idempotent, so only a change in it
+  // makes the previous frame unsafe to blit.
+  private paintedSelectionOverlay = ''
   // Set by handleResize: prepend ERASE_SCREEN to the next onRender's patches
   // INSIDE the BSU/ESU block so clear+paint is atomic. Writing ERASE_SCREEN
   // synchronously in handleResize would leave the screen blank for the ~80ms
@@ -581,6 +585,7 @@ export default class Ink {
 
     const nativeTerminalEvidence = beginNativeTerminalFrame(this.evidenceRendererId, this.evidenceRootEpoch, terminalWidth, terminalRows)
 
+    const selectionOverlay = this.selectionOverlaySignature(terminalWidth)
     const frame = this.renderer({
       frontFrame: this.frontFrame,
       backFrame: this.backFrame,
@@ -588,7 +593,10 @@ export default class Ink {
       terminalWidth,
       terminalRows,
       altScreen: this.altScreenActive,
-      prevFrameContaminated: this.prevFrameContaminated,
+      prevFrameContaminated:
+        this.prevFrameContaminated ||
+        selectionOverlay !== this.paintedSelectionOverlay,
+      overlayActive: selectionOverlay !== '',
     })
     const rendererMs = performance.now() - renderStart
     for (const listener of this.rootNode.frameListeners ?? []) listener()
@@ -925,10 +933,14 @@ export default class Ink {
     recordTerminalEvidenceFrame({ durationMs: writeMs, frame, physicalCursor: this.displayCursor ?? frame.cursor, terminalBuffer: this.altScreenActive ? 'alternate' : 'normal', terminalViewport, terminalPanes, terminalUiRevision, terminalEvidence, nativeTerminalEvidence, nativeTerminalRootReset: prevFrame.screen.height === 0, nativeTerminalCursorVisible: getEvidenceCursorVisible(), flickers })
 
     // Update blit safety for the NEXT frame. The frame just rendered
-    // becomes frontFrame (= next frame's prevScreen). If we applied the
-    // selection overlay, that buffer has inverted cells. selActive/hlActive
-    // are only ever true in alt-screen; in main-screen this is false→false.
-    this.prevFrameContaminated = selActive || hlActive
+    // becomes frontFrame (= next frame's prevScreen). Search highlights
+    // contaminate it; the selection overlay only does when it changes
+    // (recorded after followScroll moved it). selActive/hlActive are only
+    // ever true in alt-screen; in main-screen this is false→false.
+    this.prevFrameContaminated = hlActive
+    this.paintedSelectionOverlay = selActive
+      ? this.selectionOverlaySignature(terminalWidth)
+      : ''
 
     // A ScrollBox has pendingScrollDelta left to drain — schedule the next
     // frame. MUST NOT call this.scheduleRender() here: we're inside a
@@ -1558,6 +1570,18 @@ export default class Ink {
   subscribeToSelectionChange(cb: () => void): () => void {
     this.selectionListeners.add(cb)
     return () => this.selectionListeners.delete(cb)
+  }
+
+  private selectionOverlaySignature(width: number): string {
+    const { anchor, focus, scope } = this.selection
+    if (
+      !this.altScreenActive ||
+      !anchor ||
+      !focus ||
+      isSelectionOffscreen(this.selection)
+    )
+      return ''
+    return `${anchor.row},${anchor.col},${focus.row},${focus.col}|${scope?.x1},${scope?.x2}|${width}`
   }
 
   private notifySelectionChange(): void {

@@ -42,6 +42,15 @@ export function didLayoutShift(): boolean {
   return layoutShifted
 }
 
+// Per-frame: a selection overlay will be repainted over this frame. Its cells
+// in prevScreen sit at screen positions, so blitting them in place is safe but
+// shifting a scroll region would carry them onto other content.
+let overlayActive = false
+
+export function setOverlayActive(active: boolean): void {
+  overlayActive = active
+}
+
 // DECSTBM scroll optimization hint. When a ScrollBox's scrollTop changes
 // between frames (and nothing else moved), log-update.ts can emit a
 // hardware scroll (DECSTBM + SU/SD) instead of rewriting the whole
@@ -939,7 +948,7 @@ function renderNodeToOutput(
           // the DECSTBM shift — emitting DECSTBM leaves stale rows (seen as
           // content bleeding through during scroll-up + streaming). Clear it.
           if (!safeForFastPath) scrollHint = null
-          if (hint && prevScreen && safeForFastPath) {
+          if (hint && prevScreen && safeForFastPath && !overlayActive) {
             const { top, bottom, delta } = hint
             const w = Math.floor(width)
             output.blit(prevScreen, Math.floor(x), top, w, bottom - top + 1)
