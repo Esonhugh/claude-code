@@ -13,6 +13,9 @@ import { getCommandQueue } from '../../utils/messageQueueManager.js'
 import { AgentTool } from './AgentTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 
+// The subagent tool pool asks the Workflow tool for its plan default, which reads the subscription.
+process.env.ANTHROPIC_API_KEY ??= 'test-only-not-a-real-key'
+
 const makeAssistantMessage = (
   id: string,
   content: Array<Record<string, unknown>>,
