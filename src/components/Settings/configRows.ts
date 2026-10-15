@@ -30,7 +30,7 @@ import { hasAccessToIDEExtensionDiffFeature, isSupportedTerminal } from '../../u
 import { modelDisplayString } from '../../utils/model/model.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type PermissionMode } from '../../utils/permissions/PermissionMode.js'
-import { getAutoModeEnabledState, hasAutoModeOptInAnySource, transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
+import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'
 import type { EditableSettingSource } from '../../utils/settings/constants.js'
@@ -63,9 +63,6 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       ? normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY)
       : undefined
   )
-  const showAutoMode = feature('TRANSCRIPT_CLASSIFIER')
-    ? hasAutoModeOptInAnySource() || getAutoModeEnabledState() === 'enabled'
-    : false
   const showDefaultView = feature('KAIROS') || feature('KAIROS_BRIEF')
     ? (require('../../tools/BriefTool/BriefTool.js') as typeof import('../../tools/BriefTool/BriefTool.js')).isBriefEntitled()
     : false
@@ -85,7 +82,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
 
   const permissionOptions: PermissionMode[] = ['default', 'plan']
   for (const mode of feature('TRANSCRIPT_CLASSIFIER') ? PERMISSION_MODES : EXTERNAL_PERMISSION_MODES) {
-    if (!permissionOptions.includes(mode) && mode !== 'bypassPermissions' && (mode !== 'auto' || showAutoMode)) {
+    if (!permissionOptions.includes(mode) && mode !== 'bypassPermissions' && (mode !== 'auto' || feature('TRANSCRIPT_CLASSIFIER'))) {
       permissionOptions.push(mode)
     }
   }
@@ -153,7 +150,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         writeSettings('userSettings', { permissions: { defaultMode: value as (typeof PERMISSION_MODES)[number] } })
       },
     },
-    ...(showAutoMode ? [{
+    ...(feature('TRANSCRIPT_CLASSIFIER') ? [{
       key: 'useAutoModeDuringPlan', label: 'Use auto mode during plan', kind: 'boolean' as const,
       value: settings.useAutoModeDuringPlan ?? true,
       set(value: ModConfigValue) {

@@ -313,6 +313,7 @@ import {
 } from '../utils/permissions/PermissionUpdate.js'
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js'
 import {
+  shouldShowAutoModeEntryWarning,
   stripDangerousPermissionsForAutoMode,
   transitionPermissionMode,
 } from '../utils/permissions/permissionSetup.js'
@@ -2695,10 +2696,10 @@ export function REPL({
     }
   }, [hasRunningTeammates, setMessages])
 
-  // Show auto permissions warning when entering auto mode
-  // (either via Shift+Tab toggle or on startup). Debounced to avoid
-  // flashing when the user is cycling through modes quickly.
-  // Only shown 3 times total across sessions.
+  // Show the auto mode description when entering auto mode (either via
+  // Shift+Tab toggle or on startup). Debounced to avoid flashing when the
+  // user is cycling through modes quickly. Like official 2.1.292 it is shown
+  // once, unless trusted settings already skip it (skipAutoPermissionPrompt).
   const safeYoloMessageShownRef = useRef(false)
   useEffect(() => {
     if (feature('TRANSCRIPT_CLASSIFIER')) {
@@ -2707,20 +2708,16 @@ export function REPL({
         return
       }
       if (safeYoloMessageShownRef.current) return
-      const config = getGlobalConfig()
-      const count = config.autoPermissionsNotificationCount ?? 0
-      if (count >= 3) return
+      if (!shouldShowAutoModeEntryWarning()) return
       const timer = setTimeout(
         (ref, setMessages) => {
           ref.current = true
-          saveGlobalConfig(prev => {
-            const prevCount = prev.autoPermissionsNotificationCount ?? 0
-            if (prevCount >= 3) return prev
-            return {
-              ...prev,
-              autoPermissionsNotificationCount: prevCount + 1,
-            }
-          })
+          saveGlobalConfig(prev =>
+            prev.hasSeenAutoModeEntryWarning
+              ? prev
+              : { ...prev, hasSeenAutoModeEntryWarning: true },
+          )
+          logEvent('tengu_auto_mode_entry_warning_shown', {})
           setMessages(prev => [
             ...prev,
             createSystemMessage(AUTO_MODE_DESCRIPTION, 'warning'),

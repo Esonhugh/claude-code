@@ -40,11 +40,7 @@ import {
   type ExternalPermissionMode,
   type PermissionMode,
 } from '../../utils/permissions/PermissionMode.js'
-import {
-  getAutoModeEnabledState,
-  hasAutoModeOptInAnySource,
-  transitionPlanAutoMode,
-} from '../../utils/permissions/permissionSetup.js'
+import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
 import { logError } from '../../utils/log.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
@@ -259,12 +255,6 @@ export function Config({
     isFastModeEnabled() ? s.fastMode : false,
   )
   const promptSuggestionEnabled = useAppState(s => s.promptSuggestionEnabled)
-  // Show auto in the default-mode dropdown when the user has opted in OR the
-  // config is fully 'enabled' — even if currently circuit-broken ('disabled'),
-  // an opted-in user should still see it in settings (it's a temporary state).
-  const showAutoInDefaultModePicker = feature('TRANSCRIPT_CLASSIFIER')
-    ? hasAutoModeOptInAnySource() || getAutoModeEnabledState() === 'enabled'
-    : false
   // Chat/Transcript view picker is visible to entitled users (pass the GB
   // gate) even if they haven't opted in this session — it IS the persistent
   // opt-in. 'chat' written here is read at next startup by main.tsx which
@@ -687,9 +677,6 @@ export function Config({
           ? PERMISSION_MODES
           : EXTERNAL_PERMISSION_MODES
         const excluded: PermissionMode[] = ['bypassPermissions']
-        if (feature('TRANSCRIPT_CLASSIFIER') && !showAutoInDefaultModePicker) {
-          excluded.push('auto')
-        }
         return [
           ...priorityOrder,
           ...allModes.filter(
@@ -737,7 +724,7 @@ export function Config({
         })
       },
     },
-    ...(feature('TRANSCRIPT_CLASSIFIER') && showAutoInDefaultModePicker
+    ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
           {
             id: 'useAutoModeDuringPlan',

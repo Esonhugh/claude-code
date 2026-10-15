@@ -2193,7 +2193,7 @@ async function run(): Promise<CommanderCommand> {
         // is auto, OR settings defaultMode is auto but the gate denied it
         // (permissionMode resolved to default with no explicit CLI override).
         // Used by verifyAutoModeGateAccess to decide whether to notify on
-        // auto-unavailable, and by tengu_auto_mode_config opt-in carousel.
+        // auto-unavailable.
         if (
           (options as { enableAutoMode?: boolean }).enableAutoMode ||
           permissionModeCli === 'auto' ||

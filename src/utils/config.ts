@@ -554,8 +554,8 @@ export type GlobalConfig = {
   // undefined = no cache, null = extra usage enabled, string = disabled reason.
   cachedExtraUsageDisabledReason?: string | null
 
-  // Auto permissions notification tracking (ant-only)
-  autoPermissionsNotificationCount?: number // Number of times the auto permissions notification has been shown
+  // Whether the one-time auto mode description has been shown
+  hasSeenAutoModeEntryWarning?: boolean
 
   // Speculation configuration (ant-only)
   speculationEnabled?: boolean // Whether speculation is enabled (default: true)

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -27,12 +27,24 @@ if (process.env[childFlag] !== '1') {
     }
   }, 120_000)
 } else {
+const React = await import('react')
 const { getChatGPTOAuthInfo, getOpenAIAuthInfo } = await import('../auth.js')
 const { modelSupportsAutoMode } = await import('../betas.js')
 const { getPermissionModeFooterLabel, isApproveForMeAvailable } = await import('./approveForMe.js')
-const { getAutoModeEnabledState, initialPermissionModeFromCLI } = await import('./permissionSetup.js')
+const {
+  getAutoModeEnabledState, initialPermissionModeFromCLI, shouldPlanUseAutoMode, shouldShowAutoModeEntryWarning,
+  verifyAutoModeGateAccess,
+} = await import('./permissionSetup.js')
 const { getNextPermissionMode } = await import('./getNextPermissionMode.js')
 const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+const { AppStoreContext } = await import('../../state/AppState.js')
+const { createStore } = await import('../../state/store.js')
+const { render } = await import('../../ink.js')
+const { useAutoModeUnavailableNotification } = await import('../../hooks/notifs/useAutoModeUnavailableNotification.js')
+const growthbook = await import('../../services/analytics/growthbook.js')
+const { saveGlobalConfig } = await import('../config.js')
+const { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } = await import('../settings/settingsCache.js')
+type SettingsJson = import('../settings/types.js').SettingsJson
 
 const saved = {
   HOME: process.env.HOME,
@@ -41,6 +53,8 @@ const saved = {
   OPENAI_AUTH_TOKEN: process.env.OPENAI_AUTH_TOKEN,
   CLAUDE_CODE_USE_BEDROCK: process.env.CLAUDE_CODE_USE_BEDROCK,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  ANTHROPIC_MODEL: process.env.ANTHROPIC_MODEL,
+  CLAUDE_CODE_REMOTE: process.env.CLAUDE_CODE_REMOTE,
 }
 let home: string
 
@@ -62,7 +76,19 @@ beforeEach(() => {
   getChatGPTOAuthInfo.cache.clear?.()
 })
 
+const sources = ['userSettings', 'projectSettings', 'localSettings', 'flagSettings', 'policySettings'] as const
+// Per-source settings plus their merge in precedence order, like getInitialSettings.
+function useSettings(bySource: Partial<Record<(typeof sources)[number], SettingsJson>>) {
+  const merged: SettingsJson = {}
+  for (const source of sources) {
+    setCachedSettingsForSource(source, bySource[source] ?? null)
+    Object.assign(merged, bySource[source])
+  }
+  setSessionSettingsCache({ settings: merged, errors: [] })
+}
+
 afterEach(() => {
+  resetSettingsCache()
   for (const [key, value] of Object.entries(saved)) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -149,5 +175,97 @@ test('the footer names auto mode "auto (Approve for me)" and leaves other modes 
   useAuthFile({ auth_mode: 'chatgpt', tokens: { access_token: 'oauth-access' } })
   expect(getPermissionModeFooterLabel('auto')).toBe('auto (Approve for me)')
   expect(getPermissionModeFooterLabel('bypassPermissions')).toBe('bypass permissions')
+})
+
+// Official 2.1.292 ignores an "auto" defaultMode from project or local settings: both are repo-controllable.
+test('only policy, user and flag settings may start a session in auto mode', () => {
+  const start = () => initialPermissionModeFromCLI({ permissionModeCli: undefined, dangerouslySkipPermissions: false }).mode
+  const auto: SettingsJson = { permissions: { defaultMode: 'auto' } }
+  const acceptEdits: SettingsJson = { permissions: { defaultMode: 'acceptEdits' } }
+  // Remote sessions restrict settings modes on their own; this is about local sessions.
+  delete process.env.CLAUDE_CODE_REMOTE
+
+  useSettings({ projectSettings: auto })
+  expect(start()).toBe('default')
+  useSettings({ localSettings: auto })
+  expect(start()).toBe('default')
+  useSettings({ userSettings: acceptEdits, projectSettings: auto })
+  expect(start()).toBe('default')
+
+  useSettings({ userSettings: auto })
+  expect(start()).toBe('auto')
+  useSettings({ flagSettings: auto })
+  expect(start()).toBe('auto')
+  useSettings({ userSettings: auto, projectSettings: auto })
+  expect(start()).toBe('auto')
+  // Only the value "auto" is source-restricted; a repo may still pin another mode over the user's auto.
+  useSettings({ userSettings: auto, projectSettings: acceptEdits })
+  expect(start()).toBe('acceptEdits')
+})
+
+test('plan mode keeps auto semantics with no opt-in, and useAutoModeDuringPlan still turns it off', () => {
+  process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+  useSettings({})
+  expect(shouldPlanUseAutoMode()).toBe(true)
+  useSettings({ userSettings: { useAutoModeDuringPlan: false } })
+  expect(shouldPlanUseAutoMode()).toBe(false)
+})
+
+test('the Shift+Tab carousel offers auto whenever it can be entered, even in the opt-in rollout', async () => {
+  process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+  useSettings({})
+  const original = growthbook.getDynamicConfig_BLOCKS_ON_INIT
+  const config = spyOn(growthbook, 'getDynamicConfig_BLOCKS_ON_INIT').mockImplementation((async (key: string, fallback: unknown) =>
+    key === 'tengu_auto_mode_config' ? { enabled: 'opt-in' } : original(key, fallback as never)) as typeof original)
+  try {
+    const context = { ...getDefaultAppState().toolPermissionContext, isAutoModeAvailable: false }
+    const { updateContext } = await verifyAutoModeGateAccess(context)
+    expect(updateContext(context).isAutoModeAvailable).toBe(true)
+  } finally {
+    config.mockRestore()
+  }
+})
+
+test('cycling past an unavailable auto mode says why, with no opt-in', async () => {
+  useSettings({ userSettings: { permissions: { disableAutoMode: 'disable' } } })
+  const initial = getDefaultAppState()
+  const store = createStore<typeof initial>({
+    ...initial,
+    toolPermissionContext: { ...initial.toolPermissionContext, mode: 'acceptEdits', isAutoModeAvailable: false },
+  })
+  function Probe() {
+    useAutoModeUnavailableNotification()
+    return null
+  }
+  const { Readable, Writable } = await import('node:stream')
+  const stdin = Object.assign(new Readable({ read() {} }), { isTTY: true, setRawMode() { return stdin }, ref() { return stdin }, unref() { return stdin } })
+  const stdout = Object.assign(new Writable({ write(_chunk, _encoding, done) { done() } }), { columns: 80, rows: 24, isTTY: false })
+  const instance = await render(React.createElement(AppStoreContext, { value: store }, React.createElement(Probe)), {
+    stdin: stdin as never, stdout: stdout as never, patchConsole: false, exitOnCtrlC: false,
+  })
+  try {
+    store.setState(prev => ({ ...prev, toolPermissionContext: { ...prev.toolPermissionContext, mode: 'default' } }))
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const { current, queue } = store.getState().notifications
+    expect([current, ...queue].map(notification => notification?.key)).toContain('auto-mode-unavailable')
+  } finally {
+    instance.unmount()
+    instance.cleanup()
+  }
+})
+
+test('the auto mode description shows once, unless policy, user or flag settings skip it', () => {
+  useSettings({})
+  expect(shouldShowAutoModeEntryWarning()).toBe(true)
+  useSettings({ localSettings: { skipAutoPermissionPrompt: true }, projectSettings: { skipAutoPermissionPrompt: true } })
+  expect(shouldShowAutoModeEntryWarning()).toBe(true)
+  for (const source of ['userSettings', 'flagSettings', 'policySettings'] as const) {
+    useSettings({ [source]: { skipAutoPermissionPrompt: true } })
+    expect(shouldShowAutoModeEntryWarning()).toBe(false)
+  }
+
+  useSettings({})
+  saveGlobalConfig(current => ({ ...current, hasSeenAutoModeEntryWarning: true }))
+  expect(shouldShowAutoModeEntryWarning()).toBe(false)
 })
 }
