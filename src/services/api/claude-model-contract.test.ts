@@ -555,6 +555,16 @@ test('side queries send a temperature only to models older than claude-opus-4-7,
   expect(requests.map(request => request.temperature)).toEqual([1, undefined, undefined, undefined])
 })
 
+test('side queries turn thinking off with each model\'s accepted form', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  for (const model of ['claude-sonnet-5', 'claude-sonnet-5-5', 'claude-opus-5-5'])
+    await sideQuery({model,messages:[{role:'user',content:'test'}],thinking:false,querySource:'auto_mode'})
+  await sideQuery({model:'claude-sonnet-5-5',messages:[{role:'user',content:'test'}],thinking:false,effort:'max',querySource:'auto_mode'})
+  // claude-sonnet-5-5 rejects disabled thinking (between_tools is its off switch, also
+  // rejected at xhigh/max); claude-opus-5-5 thinks on every request.
+  expect(requests.map(request => request.thinking as unknown)).toEqual([{type:'disabled'}, {type:'between_tools'}, {type:'adaptive'}, {type:'adaptive'}])
+})
+
 test('classifier side queries keep the attribution header for OAuth when the env opts out, like official', async () => {
   const {sideQuery}=await import('../../utils/sideQuery.js')
   const subscriber = spyOn(auth, 'isClaudeAISubscriber')
