@@ -1634,6 +1634,16 @@ function PromptInput({
             clearBuffer()
             resetHistory()
             return
+          } else if ((result as { error?: string }).error === 'write_failed') {
+            // Keep the draft: the inbox write failed, and the message must not go to the model.
+            addNotification({
+              key: 'direct-message-failed',
+              text: `Could not deliver to @${directMessage.recipientName} — the message is still in the prompt`,
+              color: 'error',
+              priority: 'immediate',
+              timeoutMs: 5000,
+            })
+            return
           } else if ((result as { error?: string }).error === 'no_team_context') {
             // No team context - fall through to normal prompt submission
           } else {

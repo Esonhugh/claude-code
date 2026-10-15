@@ -230,7 +230,7 @@ export class PaneBackendExecutor implements TeammateExecutor {
 
     const { agentName, teamName } = parsed
 
-    await writeToMailbox(
+    const written = await writeToMailbox(
       agentName,
       {
         text: message.text,
@@ -240,6 +240,7 @@ export class PaneBackendExecutor implements TeammateExecutor {
       },
       teamName,
     )
+    if (!written) throw new Error(`Failed to write the message to ${agentName}'s inbox`)
 
     logForDebugging(
       `[PaneBackendExecutor] sendMessage() completed for ${agentId}`,
@@ -275,7 +276,7 @@ export class PaneBackendExecutor implements TeammateExecutor {
       reason,
     }
 
-    await writeToMailbox(
+    const written = await writeToMailbox(
       agentName,
       {
         from: 'team-lead',
@@ -284,6 +285,12 @@ export class PaneBackendExecutor implements TeammateExecutor {
       },
       teamName,
     )
+    if (!written) {
+      logForDebugging(
+        `[PaneBackendExecutor] terminate() failed: shutdown request not written for ${agentId}`,
+      )
+      return false
+    }
 
     logForDebugging(
       `[PaneBackendExecutor] terminate() sent shutdown request to ${agentId}`,

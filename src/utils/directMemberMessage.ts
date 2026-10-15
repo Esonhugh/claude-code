@@ -23,7 +23,7 @@ export type DirectMessageResult =
   | { success: true; recipientName: string }
   | {
       success: false
-      error: 'no_team_context' | 'unknown_recipient'
+      error: 'no_team_context' | 'unknown_recipient' | 'write_failed'
       recipientName?: string
     }
 
@@ -55,7 +55,7 @@ export async function sendDirectMemberMessage(
     return { success: false, error: 'unknown_recipient', recipientName }
   }
 
-  await writeToMailbox(
+  const written = await writeToMailbox(
     recipientName,
     {
       from: 'user',
@@ -64,6 +64,9 @@ export async function sendDirectMemberMessage(
     },
     teamContext.teamName,
   )
+  if (written === false) {
+    return { success: false, error: 'write_failed', recipientName }
+  }
 
   return { success: true, recipientName }
 }
