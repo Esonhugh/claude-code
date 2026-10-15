@@ -13,6 +13,8 @@ const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 process.env.HOME = home
 process.env.CLAUDE_CONFIG_DIR = home
 process.env.NODE_ENV = 'test'
+// Config reads the subscription for the Dynamic workflows default.
+process.env.ANTHROPIC_API_KEY ??= 'test-only-not-a-real-key'
 const originalFetch = globalThis.fetch
 globalThis.fetch = Object.assign(
   () => { throw new Error('Unexpected network request') },

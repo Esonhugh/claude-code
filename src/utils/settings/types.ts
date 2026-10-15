@@ -804,7 +804,17 @@ export const SettingsSchema = lazySchema(() =>
       enableWorkflows: z
         .boolean()
         .optional()
-        .describe('Enable dynamic Workflow tools. Default: false.'),
+        .describe('Enable or disable dynamic Workflow tools. Unset = on, except on the Pro plan.'),
+      disableWorkflows: z
+        .boolean()
+        .optional()
+        .describe('Disable dynamic Workflow tools, overriding enableWorkflows.'),
+      workflowSizeGuideline: z
+        .enum(['unrestricted', 'small', 'medium', 'large'])
+        .optional()
+        .describe(
+          'Advisory size guideline for the dynamic workflows Claude writes: "small" aims for fewer than 5 agents, "medium" fewer than 10, "large" fewer than 50, and "unrestricted" sends no guideline. Unset defaults to "medium", or "small" on Pro plans. A value here takes precedence over the "Dynamic workflow size" choice in /config. This is a guideline, not an enforced limit.',
+        ),
       advisorModel: z
         .string()
         .optional()

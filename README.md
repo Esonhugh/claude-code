@@ -376,19 +376,20 @@ Plan mode 默认不可新进入，需要显式启用：
 
 本地 Workflow 以**与官方模式兼容（official-compatible）**为目标，兼容 official-style facade、script parser/runtime 和运行生命周期，但不宣称是 Anthropic 官方实现或与任意未来官方版本完全相同。
 
-Workflow 默认关闭，启用只需要一个正式 setting：
+与官方 2.1.292 一致，Workflow 默认开启（Pro 计划默认关闭），也可在 `/config` 的 "Dynamic workflows" 中切换。关闭方式任选其一：`"enableWorkflows": false`、`"disableWorkflows": true`，或环境变量 `CLAUDE_CODE_DISABLE_WORKFLOWS=1`：
 
 ```json
 {
-  "enableWorkflows": true
+  "enableWorkflows": false
 }
 ```
+
+Workflow 工具提示会附带建议性的规模指引：默认 `medium`（少于 10 个 agent，Pro 计划为 `small`），可在 `/config` 的 "Dynamic workflow size" 中选择，或用 setting `workflowSizeGuideline`（`unrestricted`、`small`、`medium`、`large`）覆盖。它只是指引，不是硬上限；运行时的硬上限是每次运行 1000 次 `agent()` 调用。
 
 关键词触发默认开启；正式 schema-backed setting `ultracodeKeywordTrigger` 可控制兼容关键词：
 
 ```json
 {
-  "enableWorkflows": true,
   "ultracodeKeywordTrigger": false
 }
 ```

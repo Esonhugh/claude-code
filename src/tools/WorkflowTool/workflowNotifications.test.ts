@@ -63,7 +63,8 @@ for (const entry of ['plan', 'script'] as const) {
         options: { tools: [agentTool], mainLoopModel: 'claude-sonnet-4-6', workflowRunInForeground: true },
         abortController: new AbortController(), toolUseId: 'toolu_terminal',
       } as unknown as ToolUseContext
-      const script = 'export const meta = { name: "notification", description: "Description <safe>", phases: [{title: "root", detail: "One worker"}] }; phase("root"); return await agent("Reply once");'
+      // A failed agent returns null; like official, only the script's own throw fails the run.
+      const script = 'export const meta = { name: "notification", description: "Description <safe>", phases: [{title: "root", detail: "One worker"}] }; phase("root"); const reply = await agent("Reply once"); if (reply === null) throw new Error("terminal <failure>"); return reply;'
       const plan: WorkflowDryRunPlan = {
         name: 'notification', description: 'Description <safe>',
         defaults: { maxConcurrency: 1, maxAgents: 1, maxRetries: 0, fanout: 1, concurrency: 1, review: 'none', permissionMode: 'bypassPermissions', execution: 'agent' },

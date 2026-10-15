@@ -8,6 +8,7 @@ import type {
   WorkflowReviewMode,
   WorkflowSpec,
 } from './workflowSpec.js'
+import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
 
 const SUPPORTED_REVIEW_MODES = new Set<WorkflowReviewMode>([
   'none',
@@ -186,6 +187,36 @@ function assertGlobalConcurrencyLimit(
 export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
   assertNonEmptyString(spec.name, 'Workflow name is required')
   assertNonEmptyString(spec.description, 'Workflow description is required')
+
+  // Like official 2.1.292, a meta script is planned from meta.phases alone: the runtime
+  // schedules its agents, so the fanout/concurrency/DAG rules below do not apply.
+  if (spec.meta && spec.runScriptSnapshot && hasWorkflowScriptMeta(spec.runScriptSnapshot)) {
+    const phaseIds = new Set<string>()
+    return {
+      name: spec.name.trim(),
+      description: spec.description.trim(),
+      requiresInput: spec.requiresInput,
+      defaults: normalizeDefaults(undefined),
+      phases: spec.phases.flatMap<WorkflowDryRunPhase>(phase => {
+        if (phaseIds.has(phase.id)) return []
+        phaseIds.add(phase.id)
+        return [{
+          id: phase.id,
+          description: phase.description,
+          prompt: phase.prompt,
+          dependsOn: [],
+          fanout: 0,
+          concurrency: 1,
+          review: 'none',
+        }]
+      }),
+      totalAgents: 0,
+      runtime: spec.runtime,
+      sourcePath: spec.sourcePath,
+      runScriptSnapshot: spec.runScriptSnapshot,
+      meta: spec.meta,
+    }
+  }
 
   if (!Array.isArray(spec.phases) || spec.phases.length === 0) {
     throw new Error('Workflow must include at least one phase')

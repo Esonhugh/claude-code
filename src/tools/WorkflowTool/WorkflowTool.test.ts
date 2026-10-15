@@ -186,7 +186,11 @@ await writeFile(
 
 const context = { getCwd: () => tempRoot } as never
 
+// The plan default needs a resolvable login; tests have no OAuth plan, so it is "not Pro".
+process.env.ANTHROPIC_API_KEY ??= 'test-only-not-a-real-key'
 setSessionSettingsCache({ settings: {}, errors: [] })
+assert.equal(WorkflowTool.isEnabled(), true)
+setSessionSettingsCache({ settings: { enableWorkflows: false }, errors: [] })
 assert.equal(WorkflowTool.isEnabled(), false)
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 assert.equal(WorkflowTool.isEnabled(), true)
@@ -194,6 +198,9 @@ setSessionSettingsCache({ settings: { enableWorkflows: true, planModeAvailable: 
 assert.equal(WorkflowTool.shouldDefer, true)
 const workflowPrompt = await WorkflowTool.prompt()
 assert.match(workflowPrompt, /Explicit opt-in requirement/)
+assert.match(workflowPrompt, /ONLY call this tool when the user has explicitly opted into multi-agent orchestration/)
+assert.match(workflowPrompt, /a task that would merely benefit from a workflow does not count/)
+assert.match(workflowPrompt, /default workflow size guideline: medium/)
 assert.match(workflowPrompt, /Ultracode/)
 assert.match(workflowPrompt, /Prefer WorkflowTool for broad, workflow-scale orchestration/)
 assert.match(workflowPrompt, /For focused tasks, use direct tools or a small number of subagents/)

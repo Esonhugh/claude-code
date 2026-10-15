@@ -74,40 +74,25 @@ assert.notEqual(
   createAgentCallIdentity({ index: 0, phase: 'Scan', prompt: 'Find files', opts: { label: 'scan' } }),
   createAgentCallIdentity({ index: 0, phase: 'Scan', prompt: 'Find changed files', opts: { label: 'scan' } }),
 )
+// Like official 2.1.292, label and phase are display-only: changing them replays the cache.
+assert.equal(
+  createWorkflowScriptAgentChainIdentity({ previousKey: '', prompt: 'same prompt' }),
+  createWorkflowScriptAgentChainIdentity({ previousKey: '', prompt: 'same prompt', opts: {} }),
+)
 assert.notEqual(
-  createWorkflowScriptAgentChainIdentity({
-    previousKey: '',
-    prompt: 'same prompt',
-    opts: { label: 'old-label', phase: 'Scan' },
-  }),
-  createWorkflowScriptAgentChainIdentity({
-    previousKey: '',
-    prompt: 'same prompt',
-    opts: { label: 'new-label', phase: 'Scan' },
-  }),
+  createWorkflowScriptAgentChainIdentity({ previousKey: '', prompt: 'same prompt' }),
+  createWorkflowScriptAgentChainIdentity({ previousKey: '', prompt: 'same prompt', opts: { model: 'opus' } }),
 )
 assert.notEqual(
   createWorkflowScriptAgentChainIdentity({
     previousKey: '',
     prompt: 'same prompt',
-    opts: { label: 'worker', phase: 'Scan' },
+    opts: { mode: 'bypassPermissions' },
   }),
   createWorkflowScriptAgentChainIdentity({
     previousKey: '',
     prompt: 'same prompt',
-    opts: { label: 'worker', phase: 'Verify' },
-  }),
-)
-assert.notEqual(
-  createWorkflowScriptAgentChainIdentity({
-    previousKey: '',
-    prompt: 'same prompt',
-    opts: { label: 'worker', phase: 'Scan', mode: 'bypassPermissions' },
-  }),
-  createWorkflowScriptAgentChainIdentity({
-    previousKey: '',
-    prompt: 'same prompt',
-    opts: { label: 'worker', phase: 'Scan', mode: 'plan' },
+    opts: { mode: 'plan' },
   }),
 )
 

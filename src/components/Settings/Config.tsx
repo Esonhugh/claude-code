@@ -41,6 +41,13 @@ import {
   type PermissionMode,
 } from '../../utils/permissions/PermissionMode.js'
 import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
+import {
+  defaultWorkflowSizeGuideline,
+  shouldEnableWorkflows,
+  WORKFLOW_SIZE_GUIDELINES,
+  workflowsDefaultOn,
+  type WorkflowSizeGuideline,
+} from '../../tools/WorkflowTool/workflowFeatureFlags.js'
 import { logError } from '../../utils/log.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
@@ -753,6 +760,41 @@ export function Config({
                 ...prev,
                 'Use auto mode during plan': useAutoModeDuringPlan,
               }))
+            },
+          },
+        ]
+      : []),
+    {
+      id: 'workflows',
+      label: 'Dynamic workflows',
+      value: shouldEnableWorkflows(settingsData),
+      type: 'boolean' as const,
+      onChange(enabled: boolean) {
+        // Like official, choosing the plan default stores no value so the default keeps applying.
+        const enableWorkflows = enabled === workflowsDefaultOn() ? undefined : enabled
+        updateSettingsForSource('userSettings', { enableWorkflows, disableWorkflows: undefined })
+        setSettingsData(prev => ({ ...prev, enableWorkflows, disableWorkflows: undefined }))
+        setChanges(prev => ({ ...prev, 'Dynamic workflows': enabled }))
+      },
+    },
+    // Hidden while a settings file provides workflowSizeGuideline, which takes precedence.
+    ...(shouldEnableWorkflows(settingsData) && settingsData?.workflowSizeGuideline === undefined
+      ? [
+          {
+            id: 'workflowSizeGuideline',
+            label: 'Dynamic workflow size',
+            value: globalConfig.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(),
+            options: [...WORKFLOW_SIZE_GUIDELINES],
+            type: 'enum' as const,
+            onChange(value: string) {
+              const workflowSizeGuideline = value as WorkflowSizeGuideline
+              saveGlobalConfig(current =>
+                current.workflowSizeGuideline === workflowSizeGuideline
+                  ? current
+                  : { ...current, workflowSizeGuideline },
+              )
+              setGlobalConfig({ ...getGlobalConfig(), workflowSizeGuideline })
+              setChanges(prev => ({ ...prev, 'Dynamic workflow size': value }))
             },
           },
         ]

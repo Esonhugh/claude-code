@@ -4,7 +4,7 @@ import { basename, dirname, extname, join, parse, resolve } from 'node:path'
 import { isENOENT } from '../../utils/errors.js'
 
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
-import { loadWorkflowScriptSpec, type WorkflowScriptLoadOptions } from './workflowDsl.js'
+import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { getBundledWorkflowSpecs } from './bundled/index.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 
@@ -27,7 +27,7 @@ export type WorkflowDiscoveryResult = {
 
 const PROJECT_WORKFLOW_DIRS = [join('docs', 'workflows'), join('.claude', 'workflows')]
 
-type WorkflowDiscoveryOptions = WorkflowScriptLoadOptions & {
+type WorkflowDiscoveryOptions = {
   home?: string
 }
 
@@ -93,10 +93,9 @@ async function listWorkflowFiles(dir: string): Promise<string[]> {
 async function loadWorkflowFile(
   filePath: string,
   args?: WorkflowArgs,
-  options: WorkflowScriptLoadOptions = {},
 ): Promise<WorkflowSpec> {
   if (filePath.endsWith('.js')) {
-    return loadWorkflowScriptSpec(filePath, args, options)
+    return loadWorkflowScriptSpec(filePath, args)
   }
   return JSON.parse(await readFile(filePath, 'utf8')) as WorkflowSpec
 }
@@ -159,7 +158,7 @@ export async function discoverWorkflowSpecs(
 
     for (const filePath of files) {
       try {
-        const spec = await loadWorkflowFile(filePath, args, { ...options, cwd })
+        const spec = await loadWorkflowFile(filePath, args)
         const plan = validateWorkflowSpec(spec)
         const commandName = workflowNameToCommandName(plan.name, filePath)
         workflowsByCommandName.set(commandName, {

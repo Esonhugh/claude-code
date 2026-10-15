@@ -116,7 +116,6 @@ assert.deepEqual(officialSession.resumeCacheEntries[0], {
   identity: createWorkflowScriptAgentChainIdentity({
     previousKey: '',
     prompt: 'Reply exactly: workflow-ok',
-    opts: { label: 'portable-agent', phase: 'Run' },
   }),
   phase: 'Run',
   label: 'portable-agent',

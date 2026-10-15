@@ -450,7 +450,8 @@ await runWorkflowScript({
   resumeFromRunId: 'wf_inherited_mode_source',
   resumeJournalEntries: await readWorkflowJournalCacheEntries(inheritedModeTranscriptDirMatch[1]),
 })
-assert.equal(inheritedModeAgentCallCount, 2)
+// Like official, the session's permission mode is not part of the cache key.
+assert.equal(inheritedModeAgentCallCount, 1)
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 let queuedDefaultModeState = {
@@ -999,11 +1000,16 @@ const unawaitedChildTask = Object.values(state.tasks).find(
     task.workflowRunId === 'wf_unawaited_child_test',
 )
 assert.ok(unawaitedChildTask)
-assert.equal(unawaitedChildTask.status, 'failed')
-assert.match(unawaitedChildTask.error ?? '', /unawaited-child-agent.*agent failed intentionally/)
+// Like official, a failed agent is reported under <failures> and the run still completes.
+assert.equal(unawaitedChildTask.status, 'completed')
 const unawaitedChildNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(unawaitedChildNotification)
-assert.match(String(unawaitedChildNotification.value), /status>failed/)
+assert.match(String(unawaitedChildNotification.value), /status>completed/)
+assert.match(String(unawaitedChildNotification.value), /<result>parent-returned<\/result>/)
+assert.match(
+  String(unawaitedChildNotification.value),
+  /<failures>\[unawaited-child-agent\] failed: agent failed intentionally<\/failures>/,
+)
 
 const unawaitedNestedChildPath = join(
   childVmDir,
@@ -1051,18 +1057,16 @@ const unawaitedNestedTask = Object.values(state.tasks).find(
     task.type === 'local_workflow' &&
     task.workflowRunId === 'wf_unawaited_nested_workflow_test',
 )
-assert.equal(unawaitedNestedTask?.status, 'failed')
-assert.match(
-  unawaitedNestedTask?.error ?? '',
-  /workflow\(\) cannot be called from within a child workflow/,
-)
+// Like official, an unawaited rejection (here the refused nested workflow()) does not fail
+// the run; only an error the script throws does.
+assert.equal(unawaitedNestedTask?.status, 'completed')
 const unawaitedNestedNotification = dequeue(
   command => command.mode === 'task-notification',
 )
 assert.ok(unawaitedNestedNotification)
 assert.match(
   String(unawaitedNestedNotification.value),
-  /workflow\(\) cannot be called from within a child workflow/,
+  /<result>unexpected-child-success<\/result>/,
 )
 
 const multipleRuntimeFailureScript = `export const meta = {
@@ -1095,26 +1099,14 @@ const multipleRuntimeFailureTask = Object.values(state.tasks).find(
     task.type === 'local_workflow' &&
     task.workflowRunId === 'wf_multiple_runtime_failure_test',
 )
-assert.equal(multipleRuntimeFailureTask?.status, 'failed')
-assert.match(
-  multipleRuntimeFailureTask?.error ?? '',
-  /missing-runtime-child-a\.js/,
-)
-assert.match(
-  multipleRuntimeFailureTask?.error ?? '',
-  /missing-runtime-child-b\.js/,
-)
+assert.equal(multipleRuntimeFailureTask?.status, 'completed')
 const multipleRuntimeFailureNotification = dequeue(
   command => command.mode === 'task-notification',
 )
 assert.ok(multipleRuntimeFailureNotification)
 assert.match(
   String(multipleRuntimeFailureNotification.value),
-  /missing-runtime-child-a\.js/,
-)
-assert.match(
-  String(multipleRuntimeFailureNotification.value),
-  /missing-runtime-child-b\.js/,
+  /<result>unexpected-success<\/result>/,
 )
 
 const registrationFailureCwd = await mkdtemp(
@@ -2282,7 +2274,7 @@ const invalidSchemaResult = await runWorkflowScript({
 const invalidSchemaTask = Object.values(invalidSchemaState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(invalidSchemaTask?.status, 'failed')
+assert.equal(invalidSchemaTask?.status, 'completed')
 assert.equal(invalidSchemaTask?.phases[0]?.completedAgentIds.length, 0)
 assert.equal(invalidSchemaTask?.phases[0]?.failedAgentIds.length, 1)
 const invalidSchemaTranscriptDir = invalidSchemaResult.match(/Transcript dir: (.+)/)?.[1]
@@ -2332,7 +2324,7 @@ await runWorkflowScript({
 const missingSchemaTask = Object.values(missingSchemaState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(missingSchemaTask?.status, 'failed')
+assert.equal(missingSchemaTask?.status, 'completed')
 assert.equal(missingSchemaTask?.phases[0]?.completedAgentIds.length, 0)
 assert.equal(missingSchemaTask?.phases[0]?.failedAgentIds.length, 1)
 
@@ -2437,7 +2429,7 @@ const missingSchemaUsageResult = await runWorkflowScript({
 const missingSchemaUsageTask = Object.values(missingSchemaUsageState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(missingSchemaUsageTask?.status, 'failed')
+assert.equal(missingSchemaUsageTask?.status, 'completed')
 assert.equal(missingSchemaUsageTask?.phases[0]?.failedAgentIds.length, 1)
 assert.deepEqual({
   tokenCount: missingSchemaUsageTask?.tokenCount,
@@ -2453,7 +2445,7 @@ const missingSchemaUsageSdkTermination = missingSchemaUsageEvents.find(
     event.task_id === missingSchemaUsageTask?.id,
 )
 assert.equal(missingSchemaUsageSdkTermination?.subtype, 'task_notification')
-assert.equal(missingSchemaUsageSdkTermination.status, 'failed')
+assert.equal(missingSchemaUsageSdkTermination.status, 'completed')
 assert.ok(missingSchemaUsageSdkTermination.output_file)
 assert.equal(missingSchemaUsageResult.includes('runtime-missing-schema-usage-workflow'), true)
 const missingSchemaUsageOutput = await readFile(
@@ -2467,9 +2459,15 @@ assert.deepEqual({
   sdkTokens: 42,
   sdkToolUses: 2,
 })
+assert.match(missingSchemaUsageOutput, /"result": null/)
+const missingSchemaUsageNotification = dequeue(
+  command =>
+    command.mode === 'task-notification' &&
+    String(command.value).includes(missingSchemaUsageTask?.id ?? ''),
+)
 assert.match(
-  missingSchemaUsageOutput,
-  /missing-schema-usage-agent.*did not return structured output/,
+  String(missingSchemaUsageNotification?.value),
+  /<failures>\[missing-schema-usage-agent\] failed: [^<]*did not return structured output<\/failures>/,
 )
 
 dequeueAllMatching(command => command.mode === 'task-notification')
@@ -2793,14 +2791,13 @@ assert.deepEqual(failedTask?.agentAttempts.map(attempt => ({
   { agentId: 'failed-agent-a', attempt: 0, status: 'failed' },
   { agentId: 'failed-agent-b', attempt: 0, status: 'failed' },
 ])
-assert.equal(failedTask?.status, 'failed')
-assert.match(failedTask?.error ?? '', /failed-agent-a.*agent failed intentionally/)
-assert.match(failedTask?.error ?? '', /failed-agent-b.*agent failed intentionally/)
+// Like official, failed agents return null and the run completes with <failures>.
+assert.equal(failedTask?.status, 'completed')
 const failedSession = await loadWorkflowRunSession({
   cwd: scriptCwd,
   workflowRunId: failedWorkflowRunId,
 })
-assert.equal(failedSession?.status, 'failed')
+assert.equal(failedSession?.status, 'completed')
 assert.equal(failedSession?.results.filter(result => result.status === 'failed').length, 2)
 const failedNotification = dequeue(
   command =>
@@ -2808,7 +2805,10 @@ const failedNotification = dequeue(
     String(command.value).includes(failedTask?.id ?? ''),
 )
 assert.ok(failedNotification)
-assert.match(String(failedNotification.value), /<status>failed<\/status>/)
+assert.match(String(failedNotification.value), /<status>completed<\/status>/)
+assert.match(String(failedNotification.value), /<result>\[\n {2}null,\n {2}null\n\]<\/result>/)
+assert.match(String(failedNotification.value), /\[failed-agent-a\] failed: agent failed intentionally/)
+assert.match(String(failedNotification.value), /\[failed-agent-b\] failed: agent failed intentionally/)
 const failedSdkNotification = drainSdkEvents().find(
   event => event.subtype === 'task_notification' && event.task_id === failedTask?.id,
 )
@@ -2816,7 +2816,7 @@ assert.equal(
   failedSdkNotification?.subtype === 'task_notification'
     ? failedSdkNotification.status
     : undefined,
-  'failed',
+  'completed',
 )
 
 const promptTooLongScript = `export const meta = {
@@ -2860,7 +2860,7 @@ const promptTooLongTask = Object.values(state.tasks).find(
     task.type === 'local_workflow' && task.workflowRunId === promptTooLongWorkflowRunId,
 )
 assert.ok(promptTooLongTask)
-assert.equal(promptTooLongTask.status, 'failed')
+assert.equal(promptTooLongTask.status, 'completed')
 assert.equal(promptTooLongTask.retryCount, 0)
 assert.equal(promptTooLongTask.tokenCount, 173_379)
 assert.equal(promptTooLongTask.toolUseCount, 12)
@@ -2898,7 +2898,7 @@ const promptTooLongSession = await loadWorkflowRunSession({
   cwd: scriptCwd,
   workflowRunId: promptTooLongWorkflowRunId,
 })
-assert.equal(promptTooLongSession?.status, 'failed')
+assert.equal(promptTooLongSession?.status, 'completed')
 assert.equal(promptTooLongSession?.results.length, 1)
 assert.deepEqual(promptTooLongSession?.results[0], promptTooLongTask.results[0])
 assert.equal(promptTooLongSession?.results[0]?.prompt, 'prompt-too-long-agent')
@@ -3085,7 +3085,7 @@ assert.equal(stalledParallelSettledAfterAbort, true)
 const stalledParallelTask = Object.values(stalledParallelState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(stalledParallelTask?.status, 'failed')
+assert.equal(stalledParallelTask?.status, 'completed')
 assert.deepEqual(
   stalledParallelTask?.results
     .map(result => ({ agentId: result.agentId, status: result.status }))
@@ -3099,7 +3099,7 @@ const stalledParallelSession = await loadWorkflowRunSession({
   cwd: scriptCwd,
   workflowRunId: stalledParallelWorkflowRunId,
 })
-assert.equal(stalledParallelSession?.status, 'failed')
+assert.equal(stalledParallelSession?.status, 'completed')
 assert.deepEqual(
   stalledParallelSession?.results
     .map(result => ({ agentId: result.agentId, status: result.status }))
@@ -3115,7 +3115,8 @@ const stalledParallelNotification = dequeue(
     String(command.value).includes(stalledParallelTask?.id ?? ''),
 )
 assert.ok(stalledParallelNotification)
-assert.match(String(stalledParallelNotification.value), /<status>failed<\/status>/)
+assert.match(String(stalledParallelNotification.value), /<status>completed<\/status>/)
+assert.match(String(stalledParallelNotification.value), /<failures>\[stalled-agent\] failed: /)
 const stalledParallelSdkNotification = drainSdkEvents().find(
   event =>
     event.subtype === 'task_notification' &&
@@ -3125,7 +3126,7 @@ assert.equal(
   stalledParallelSdkNotification?.subtype === 'task_notification'
     ? stalledParallelSdkNotification.status
     : undefined,
-  'failed',
+  'completed',
 )
 releaseStalledAgent?.()
 await Promise.resolve()
@@ -3203,14 +3204,14 @@ await runWorkflowScript({
 const unawaitedFailureTask = Object.values(unawaitedFailureState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(unawaitedFailureTask?.status, 'failed')
+assert.equal(unawaitedFailureTask?.status, 'completed')
 assert.equal(unawaitedFailureTask?.results[0]?.status, 'failed')
 assert.equal(
   (await loadWorkflowRunSession({
     cwd: scriptCwd,
     workflowRunId: unawaitedFailureWorkflowRunId,
   }))?.status,
-  'failed',
+  'completed',
 )
 
 drainSdkEvents()
@@ -3287,7 +3288,7 @@ await runWorkflowScript({
 const chainedUnawaitedFailureTask = Object.values(chainedUnawaitedFailureState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(chainedUnawaitedFailureTask?.status, 'failed')
+assert.equal(chainedUnawaitedFailureTask?.status, 'completed')
 assert.deepEqual(
   chainedUnawaitedFailureTask?.results
     .map(result => ({ agentId: result.agentId, status: result.status }))
@@ -3302,7 +3303,7 @@ assert.equal(
     cwd: scriptCwd,
     workflowRunId: chainedUnawaitedFailureWorkflowRunId,
   }))?.status,
-  'failed',
+  'completed',
 )
 
 drainSdkEvents()
@@ -3379,14 +3380,23 @@ await runWorkflowScript({
 const parallelBudgetFailureTask = Object.values(parallelBudgetFailureState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(parallelBudgetFailureTask?.status, 'failed')
-assert.match(parallelBudgetFailureTask?.error ?? '', /WorkflowBudgetExceededError/)
+// Like official, a branch dropped for the budget becomes null and is counted in <failures>.
+assert.equal(parallelBudgetFailureTask?.status, 'completed')
 assert.equal(
   (await loadWorkflowRunSession({
     cwd: scriptCwd,
     workflowRunId: parallelBudgetFailureWorkflowRunId,
   }))?.status,
-  'failed',
+  'completed',
+)
+const parallelBudgetFailureNotification = dequeue(
+  command =>
+    command.mode === 'task-notification' &&
+    String(command.value).includes(parallelBudgetFailureTask?.id ?? ''),
+)
+assert.match(
+  String(parallelBudgetFailureNotification?.value),
+  /<failures>parallel: 1 slot dropped — token budget exceeded<\/failures>/,
 )
 
 drainSdkEvents()
@@ -3452,15 +3462,7 @@ await runWorkflowScript({
 const mixedFailureTask = Object.values(mixedFailureState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(mixedFailureTask?.status, 'failed')
-assert.match(
-  mixedFailureTask?.error ?? '',
-  /recorded-failure-agent.*agent failed intentionally/,
-)
-assert.match(
-  mixedFailureTask?.error ?? '',
-  /WorkflowBudgetExceededError/,
-)
+assert.equal(mixedFailureTask?.status, 'completed')
 assert.deepEqual(
   mixedFailureTask?.results
     .map(result => ({
@@ -3477,18 +3479,14 @@ const mixedFailureSession = await loadWorkflowRunSession({
   cwd: scriptCwd,
   workflowRunId: mixedFailureWorkflowRunId,
 })
-assert.equal(mixedFailureSession?.status, 'failed')
-assert.match(
-  mixedFailureSession?.error ?? '',
-  /recorded-failure-agent.*WorkflowBudgetExceededError/,
-)
+assert.equal(mixedFailureSession?.status, 'completed')
 const mixedFailureNotification = dequeue(
   command => command.mode === 'task-notification',
 )
 assert.ok(mixedFailureNotification)
 assert.match(
   String(mixedFailureNotification.value),
-  /recorded-failure-agent.*WorkflowBudgetExceededError/,
+  /<failures>\[recorded-failure-agent\] failed: agent failed intentionally\nparallel: 1 slot dropped — token budget exceeded<\/failures>/,
 )
 
 drainSdkEvents()
@@ -3571,7 +3569,7 @@ await Promise.resolve()
 const asyncChainedFailureTask = Object.values(asyncChainedFailureState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(asyncChainedFailureTask?.status, 'failed')
+assert.equal(asyncChainedFailureTask?.status, 'completed')
 assert.deepEqual(
   asyncChainedFailureTask?.results
     .map(result => ({ agentId: result.agentId, status: result.status }))
@@ -3586,7 +3584,7 @@ assert.equal(
     cwd: scriptCwd,
     workflowRunId: asyncChainedFailureWorkflowRunId,
   }))?.status,
-  'failed',
+  'completed',
 )
 
 drainSdkEvents()
@@ -3812,11 +3810,13 @@ await runWorkflowScript({
   workflowRunId: `wf_script_large_fanout_${process.pid}`,
   scriptPath: '/tmp/runtime-large-fanout-workflow.js',
 })
-assert.equal(largeFanoutCalls, largeFanoutCount)
+// Like official, the 1001st agent() call hits the 1000-call cap and parallel turns it into null.
+assert.equal(largeFanoutCalls, largeFanoutCount - 1)
 assert.equal(maxActiveLargeFanoutCalls <= 16, true)
 const largeFanoutTask = Object.values(largeFanoutState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
-assert.equal(largeFanoutTask?.agentCount, largeFanoutCount)
+assert.equal(largeFanoutTask?.status, 'completed')
+assert.equal(largeFanoutTask?.agentCount, largeFanoutCount - 1)
 
 console.log('workflowScriptRuntime.test.ts passed')

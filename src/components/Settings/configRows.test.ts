@@ -12,6 +12,8 @@ process.env.HOME = home
 process.env.CLAUDE_CONFIG_DIR = home
 process.env.NODE_ENV = 'test'
 delete process.env.ANTHROPIC_API_KEY
+// The Dynamic workflows rows read the subscription; an env OAuth token has none (default on).
+process.env.CLAUDE_CODE_OAUTH_TOKEN = 'test-only-not-a-real-token'
 process.env.CLAUDE_CODE_DISABLE_FAST_MODE = '1'
 process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
 process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING = '0'
@@ -59,7 +61,7 @@ test('exposes real built-in config rows in menu order, including dialog-only row
     'autoCompact', 'tips', 'prefersReducedMotion',
     'thinkingEnabled', 'fileCheckpointingEnabled', 'verbose',
     'terminalProgressBarEnabled', 'showTurnDuration', 'defaultPermissionMode',
-    'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
+    'workflows', 'workflowSizeGuideline', 'respectGitignore', 'copyFullResponse', 'autoUpdatesChannel', 'theme',
     'notifChannel', 'outputStyle', 'language', 'editorMode', 'prStatusFooterEnabled',
     'model', 'claudeInChromeDefaultEnabled',
   ]
@@ -82,13 +84,14 @@ test('policySettings supplies the effective value and locks aliases at the write
   const context = { getAppState: () => state, setAppState: (update: (state: AppState) => AppState) => { state = update(state) } }
   try {
     const stale = getConfigRows(context).find(row => row.key === 'thinkingEnabled')!
-    writeFileSync(policyFile, JSON.stringify({ alwaysThinkingEnabled: false, permissions: { defaultMode: 'acceptEdits' }, spinnerTipsEnabled: false }))
+    writeFileSync(policyFile, JSON.stringify({ alwaysThinkingEnabled: false, permissions: { defaultMode: 'acceptEdits' }, spinnerTipsEnabled: false, disableWorkflows: true }))
     resetSettingsCache()
     expect(settings.getSettingsForSource('policySettings')?.alwaysThinkingEnabled).toBe(false)
     expect(getConfigRows(context).find(row => row.key === 'thinkingEnabled')).toMatchObject({ value: false, isLocked: true })
     expect(getConfigRows(context).find(row => row.key === 'defaultPermissionMode')).toMatchObject({ value: 'acceptEdits', isLocked: true })
     expect(() => stale.set!(false)).toThrow('locked by policySettings')
     expect(getConfigRows(context).find(row => row.key === 'tips')?.isLocked).toBe(true)
+    expect(getConfigRows(context).find(row => row.key === 'workflows')).toMatchObject({ value: false, isLocked: true })
     expect(getConfigRows(context).find(row => row.key === 'verbose')?.isLocked).toBe(false)
   } finally {
     rmSync(policyFile, { force: true })
@@ -261,6 +264,33 @@ test('global boolean and choice writers preserve unrelated config on disk', asyn
   await getConfigRows(context).find(row => row.key === 'editorMode')!.set!('vim')
   await getConfigRows(context).find(row => row.key === 'notifChannel')!.set!('notifications_disabled')
   expect(JSON.parse(readFileSync(getGlobalClaudeFile(), 'utf8'))).toMatchObject({ editorMode: 'vim', preferredNotifChannel: 'notifications_disabled', theme: 'light-ansi' })
+})
+
+test('Dynamic workflows rows write the same settings as the Config dialog', async () => {
+  const { getConfigRows } = await import('./configRows.js')
+  const config = await import('../../utils/config.js')
+  const settings = await import('../../utils/settings/settings.js')
+  let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = {
+    getAppState: () => state,
+    setAppState: (update: (state: AppState) => AppState) => { state = update(state) },
+  }
+  const row = (key: string) => getConfigRows(context).find(row => row.key === key)
+  expect(row('workflows')).toMatchObject({ label: 'Dynamic workflows', kind: 'boolean', value: true, isLocked: false })
+  expect(row('workflowSizeGuideline')).toMatchObject({
+    label: 'Dynamic workflow size', kind: 'choice', value: 'medium', options: ['unrestricted', 'small', 'medium', 'large'],
+  })
+  await row('workflowSizeGuideline')!.set!('large')
+  expect(config.getGlobalConfig().workflowSizeGuideline).toBe('large')
+  expect(row('workflowSizeGuideline')?.value).toBe('large')
+  await row('workflows')!.set!(false)
+  expect(settings.getSettingsForSource('userSettings')?.enableWorkflows).toBe(false)
+  expect(row('workflows')?.value).toBe(false)
+  expect(row('workflowSizeGuideline')).toBeUndefined()
+  // Choosing the plan default stores no value, like official.
+  await row('workflows')!.set!(true)
+  expect(settings.getSettingsForSource('userSettings')?.enableWorkflows).toBeUndefined()
+  expect(row('workflows')?.value).toBe(true)
 })
 
 test('/config without Mods uses production writers and rejects unknown, invalid and dialog-only writes', async () => {

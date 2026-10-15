@@ -50,6 +50,7 @@ import {
   appendWorkflowRunEvent,
   completeWorkflowRunSession,
   failWorkflowRunSession,
+  loadWorkflowRunSession,
   tryStartWorkflowRunSession,
   updateWorkflowRunSessionProgress,
   updateWorkflowRunSessionStatus,
@@ -71,7 +72,10 @@ import { getProjectTempDir } from '../../utils/permissions/filesystem.js'
 import {
   appendWorkflowJournalResult,
   appendWorkflowJournalStarted,
+  readWorkflowJournalCacheEntries,
+  readWorkflowJournalEntries,
 } from './workflowJournal.js'
+import { TASK_STOP_TOOL_NAME } from '../TaskStopTool/prompt.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
@@ -85,6 +89,8 @@ const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const MAX_LOGS = 1000
 const SYNC_TIMEOUT_MS = 5000
 const MAX_CONCURRENCY = Math.min(16, Math.max(2, availableParallelism() - 2))
+const MAX_AGENT_CALLS = 1000
+const AGENT_CAP_MESSAGE = `Workflow agent() call cap reached (${MAX_AGENT_CALLS}). This usually means a loop using budget.remaining() never terminates because no token budget was set — remaining() returns Infinity when budget.total is null. Add a hard iteration cap to the loop, or pass a token budget.`
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
 
 function workflowRetryBudget(maxRetries: number | undefined): number {
@@ -182,9 +188,14 @@ class Semaphore {
 }
 
 // --- Journal (Resume Cache) ---
+// Like official 2.1.292, the longest unchanged prefix of agent() calls replays from the
+// journal: after the first call without a cached result, every later call runs live,
+// except that an agent the previous run started but never finished respawns alone.
 class WorkflowJournal {
   private entriesByIdentity = new Map<string, WorkflowResumeCacheEntry[]>()
   private recordedEntries: WorkflowResumeCacheEntry[] = []
+  private interruptedIdentities = new Set<string>()
+  private live = false
   record(identity: string, result: unknown, input: { index: number; phase?: string; label?: string; completedAt?: number }): void {
     this.recordedEntries.push({
       index: input.index,
@@ -196,15 +207,16 @@ class WorkflowJournal {
     })
   }
   lookup(identity: string): { hit: true; result: unknown } | { hit: false } {
-    const entries = this.entriesByIdentity.get(identity)
-    const entry = entries?.shift()
+    const entry = this.live ? undefined : this.entriesByIdentity.get(identity)?.shift()
     if (entry) return { hit: true, result: entry.result }
+    if (!this.interruptedIdentities.has(identity)) this.live = true
     return { hit: false }
   }
   entries(): WorkflowResumeCacheEntry[] {
     return this.recordedEntries
   }
-  loadFrom(entries: WorkflowResumeCacheEntry[]): void {
+  loadFrom(entries: WorkflowResumeCacheEntry[], interruptedIdentities: Iterable<string> = []): void {
+    this.interruptedIdentities = new Set(interruptedIdentities)
     for (const entry of entries) {
       const matches = this.entriesByIdentity.get(entry.identity) ?? []
       matches.push(entry)
@@ -362,6 +374,7 @@ async function enqueueWorkflowNotification({
   summary,
   outputFile,
   resultText,
+  failures = [],
   usage,
   setAppState,
 }: {
@@ -371,6 +384,7 @@ async function enqueueWorkflowNotification({
   summary: string
   outputFile: string
   resultText: string
+  failures?: string[]
   usage: { total_tokens: number; tool_uses: number; duration_ms: number }
   setAppState: ToolUseContext['setAppState']
 }): Promise<void> {
@@ -393,7 +407,7 @@ async function enqueueWorkflowNotification({
 <${OUTPUT_FILE_TAG}>${escapeXmlText(outputFile)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
-<result>${truncatedResult}</result>
+<result>${truncatedResult}</result>${failures.length > 0 ? `\n<failures>${escapeXmlText(failures.join('\n'))}</failures>` : ''}
 <usage><total_tokens>${usage.total_tokens}</total_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
   await enqueuePendingNotification({ value: message, mode: 'task-notification' })
@@ -410,6 +424,41 @@ function workflowAbortStatus(reason: unknown): 'paused' | 'killed' | undefined {
   return undefined
 }
 
+export type WorkflowScriptResume = {
+  entries: WorkflowResumeCacheEntry[]
+  interruptedIdentities: Set<string>
+}
+
+// Like official 2.1.292: a run that is still running cannot be resumed (two copies would
+// share one journal), and a run without a journal has nothing to resume.
+export async function loadWorkflowScriptResume({
+  cwd,
+  workflowRunId,
+  context,
+}: {
+  cwd: string
+  workflowRunId: string
+  context: ToolUseContext
+}): Promise<WorkflowScriptResume> {
+  for (const [taskId, task] of Object.entries(context.getAppState().tasks)) {
+    if (task.type === 'local_workflow' && task.workflowRunId === workflowRunId && task.status === 'running') {
+      throw new Error(`Workflow ${workflowRunId} is still running (task ${taskId}). Stop it first with ${TASK_STOP_TOOL_NAME}({taskId: "${taskId}"}) before resuming.`)
+    }
+  }
+  const session = await loadWorkflowRunSession({ cwd, workflowRunId })
+  const journal = session?.transcriptDir ? await readWorkflowJournalEntries(session.transcriptDir) : []
+  if (!session || (journal.length === 0 && session.resumeCacheEntries.length === 0)) {
+    throw new Error(`No journal found for workflow run ${workflowRunId}, so there is nothing to resume. To run the workflow from the start, call Workflow again without resumeFromRunId.`)
+  }
+  const finished = new Set(journal.flatMap(entry => entry.type === 'result' && (entry.status === 'completed' || entry.status === 'failed') ? [entry.key] : []))
+  return {
+    entries: session.transcriptDir
+      ? await readWorkflowJournalCacheEntries(session.transcriptDir)
+      : session.resumeCacheEntries,
+    interruptedIdentities: new Set(journal.flatMap(entry => entry.type === 'started' && !finished.has(entry.key) ? [entry.key] : [])),
+  }
+}
+
 // --- Main Runtime ---
 export async function runWorkflowScript({
   script,
@@ -423,6 +472,7 @@ export async function runWorkflowScript({
   budgetTotal,
   resumeFromRunId,
   resumeJournalEntries,
+  resumeInterruptedIdentities,
 }: {
   script: string
   plan: WorkflowDryRunPlan
@@ -435,6 +485,7 @@ export async function runWorkflowScript({
   budgetTotal?: number | null
   resumeFromRunId?: string
   resumeJournalEntries?: WorkflowResumeCacheEntry[]
+  resumeInterruptedIdentities?: Iterable<string>
 }): Promise<string> {
   const agentTool = findAgentTool(context.options.tools)
   if (!agentTool) throw new Error('Workflow script execution requires the Agent tool')
@@ -495,7 +546,7 @@ export async function runWorkflowScript({
   const semaphore = new Semaphore(MAX_CONCURRENCY)
   const journal = new WorkflowJournal()
   if (resumeJournalEntries) {
-    journal.loadFrom(resumeJournalEntries)
+    journal.loadFrom(resumeJournalEntries, resumeInterruptedIdentities)
     logForDebugging(
       workflowRetryDebugMessage({
         event: 'workflow_session_loaded',
@@ -511,7 +562,9 @@ export async function runWorkflowScript({
   }
   const scriptAgentResults: WorkflowAgentResult[] = []
   const pendingRuntimeCalls = new Set<Promise<unknown>>()
-  const runtimeCallErrors: unknown[] = []
+  // Like official, agent failures are reported to the caller and the run still completes;
+  // only an error thrown by the script itself fails the run.
+  const failures: string[] = []
   let runtimeCallGeneration = 0
   const countedFailedAttemptIds = new Set<string>()
   const agentLabelOccurrences = new Map<string, number>()
@@ -582,15 +635,19 @@ export async function runWorkflowScript({
       throw new Error('WorkflowBudgetExceededError: token budget exhausted')
     }
   }
+  // Like official, branches dropped for the budget are counted once per call.
+  function isBudgetError(error: unknown): boolean {
+    return error instanceof Error && error.message.startsWith('WorkflowBudgetExceededError')
+  }
+  function recordBudgetDrops(call: 'parallel' | 'pipeline', dropped: number) {
+    if (dropped > 0) failures.push(`${call}: ${dropped} ${dropped === 1 ? 'slot' : 'slots'} dropped — token budget exceeded`)
+  }
   function trackRuntimeCall<T>(call: Promise<T>): Promise<T> {
     runtimeCallGeneration++
     pendingRuntimeCalls.add(call)
     void call.then(
       () => pendingRuntimeCalls.delete(call),
-      error => {
-        pendingRuntimeCalls.delete(call)
-        runtimeCallErrors.push(error)
-      },
+      () => pendingRuntimeCalls.delete(call),
     )
     return call
   }
@@ -609,6 +666,7 @@ export async function runWorkflowScript({
   ): Promise<unknown> {
     if (abortController.signal.aborted) return null
     checkBudget()
+    if (agentCount >= MAX_AGENT_CALLS) throw new Error(AGENT_CAP_MESSAGE)
 
     const requestedAgentId = opts?.label || `agent-${agentCount + 1}`
     let labelOccurrence = agentLabelOccurrences.get(requestedAgentId) ?? 0
@@ -638,14 +696,14 @@ export async function runWorkflowScript({
         model: opts?.model,
         isolation: opts?.isolation,
         agentType: opts?.agentType,
-        label: logicalAgentId,
-        mode: agentLaunch.identityMode,
-        phase,
+        mode: opts?.mode,
       },
     })
     if (identityScope) identityScope.seed = identityKey
     else workflowAgentIdentitySeed = identityKey
     agentCount++
+    // Look up before any await so the journal sees calls in launch order.
+    const cached = journal.lookup(identityKey)
 
     startWorkflowPhase(workflowTask.id, phase, setAppState)
 
@@ -662,7 +720,6 @@ export async function runWorkflowScript({
     })
 
     // Journal cache hit
-    const cached = journal.lookup(identityKey)
     if (cached.hit) {
       recordWorkflowAgentStarted({
         taskId: workflowTask.id,
@@ -1025,6 +1082,7 @@ export async function runWorkflowScript({
         }
         countFailedAttemptUsage(attemptId, scriptFailedResult)
         scriptAgentResults.push(scriptFailedResult)
+        failures.push(`[${agentId}] failed: ${msg}`)
         await appendWorkflowJournalResult(transcriptDir, {
           key: identityKey,
           agentId: attemptAgentId,
@@ -1360,17 +1418,25 @@ export async function runWorkflowScript({
     if (abortController.signal.aborted) return thunks.map(() => null)
     checkBudget()
     const parentSeed = workflowAgentIdentityScope.getStore()?.seed ?? workflowAgentIdentitySeed
-    return mapWithConcurrency(thunks, (thunk, index) =>
+    let budgetDropped = 0
+    const results = await mapWithConcurrency(thunks, (thunk, index) =>
       workflowAgentIdentityScope.run({ seed: parentSeed }, async () => {
         try {
           return await thunk()
         } catch (error) {
+          if (isBudgetError(error)) {
+            budgetDropped++
+            return null
+          }
           const msg = error instanceof Error ? error.message : String(error)
           logs.push(`parallel[${index}] failed: ${msg}`)
+          failures.push(`parallel[${index}] failed: ${msg}`)
           return null
         }
       }),
     )
+    recordBudgetDrops('parallel', budgetDropped)
+    return results
   }
 
   // --- pipeline(): no barrier between stages, per-item ---
@@ -1378,17 +1444,24 @@ export async function runWorkflowScript({
     if (abortController.signal.aborted) return items.map(() => null)
     checkBudget()
     const parentSeed = workflowAgentIdentityScope.getStore()?.seed ?? workflowAgentIdentitySeed
-    return mapWithConcurrency(items, (item, index) =>
+    let budgetDropped = 0
+    const results = await mapWithConcurrency(items, (item, index) =>
       workflowAgentIdentityScope.run({ seed: parentSeed }, async () => {
         let value: unknown = item
         for (const stage of stages) {
           if (value === null) break
           try { value = await stage(value, item, index) }
-          catch { value = null }
+          catch (error) {
+            if (isBudgetError(error)) budgetDropped++
+            else failures.push(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`)
+            value = null
+          }
         }
         return value
       }),
     )
+    recordBudgetDrops('pipeline', budgetDropped)
+    return results
   }
 
   function childWorkflowNestingError(): Error {
@@ -1397,12 +1470,12 @@ export async function runWorkflowScript({
 
   async function loadChildWorkflow(ref: string | { scriptPath: string }, subArgs?: WorkflowArgs): Promise<{ plan: WorkflowDryRunPlan; script?: string }> {
     if (typeof ref === 'string') {
-      const workflow = await loadWorkflowSpecByNameOrPath(cwd, ref, subArgs, { childWorkflowDepth: 1 })
+      const workflow = await loadWorkflowSpecByNameOrPath(cwd, ref, subArgs)
       return { plan: workflow.plan, script: workflow.spec.runScriptSnapshot }
     }
     const childCwd = scriptPath ? dirname(scriptPath) : cwd
     const childScriptPath = await resolveWorkflowScriptPath({ cwd: childCwd, scriptPath: ref.scriptPath })
-    const spec = await loadWorkflowScriptSpec(childScriptPath, subArgs, { childWorkflowDepth: 1, cwd })
+    const spec = await loadWorkflowScriptSpec(childScriptPath, subArgs)
     return { plan: validateWorkflowSpec(spec), script: spec.runScriptSnapshot }
   }
 
@@ -1613,24 +1686,6 @@ export async function runWorkflowScript({
       throw new Error('Workflow aborted')
     }
 
-    const failedAgents = scriptAgentResults.filter(result => result.status === 'failed')
-    const terminalErrors = [
-      failedAgents.length > 0
-        ? `Workflow agents failed: ${failedAgents
-            .map(result => `${result.agentId}: ${result.error ?? 'unknown error'}`)
-            .join('; ')}`
-        : undefined,
-      ...runtimeCallErrors.map(error =>
-        workflowErrorMessage(
-          error,
-          'Workflow runtime call failed without error details',
-        ),
-      ),
-    ].filter((message): message is string => message !== undefined)
-    if (terminalErrors.length > 0) {
-      throw new Error([...new Set(terminalErrors)].join('; '))
-    }
-
     syncRuntimeUsageFromWorkflowTask()
     const resultText = serializeWorkflowScriptResult(
       scriptResult,
@@ -1659,6 +1714,7 @@ export async function runWorkflowScript({
       summary,
       outputFile,
       resultText,
+      failures,
       setAppState,
       usage: {
         total_tokens: completedUsage.tokenCount,

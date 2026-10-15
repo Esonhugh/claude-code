@@ -14,10 +14,9 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
 import { runWorkflowPlan } from './runWorkflow.js'
-import { runWorkflowScript } from './workflowScriptRuntime.js'
-import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
+import { loadWorkflowScriptResume, runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan, WorkflowProgressEvent, WorkflowSpec } from './workflowSpec.js'
-import { loadWorkflowRunSession, updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
+import { updateWorkflowRunSessionStatus } from './workflowRunSessions.js'
 import {
   discoverWorkflowSpecs,
   loadWorkflowSpecByNameOrPath,
@@ -25,7 +24,8 @@ import {
 import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
-import { shouldEnableWorkflows } from './workflowFeatureFlags.js'
+import { shouldEnableWorkflows, workflowSizeGuidelinePrompt } from './workflowFeatureFlags.js'
+import { getGlobalConfig } from '../../utils/config.js'
 
 const WORKFLOW_TOOL_PROMPT = `Use this tool to inspect or execute validated dynamic workflow specs. Workflows orchestrate multiple subagents deterministically through phase-grouped execution, recording LocalWorkflowTask state. The tool does not directly perform shell or filesystem work — agents launched by the workflow do, under normal tool permissions and hooks.
 
@@ -44,14 +44,15 @@ Do not treat /workflows text arguments as the launcher. /workflows is display an
 
 ## Explicit opt-in requirement
 
-Only execute action="run" when the user has explicitly opted into workflow-scale orchestration. Explicit opt-in includes:
+ONLY call this tool when the user has explicitly opted into multi-agent orchestration (the inspect actions list, show, dry-run and status are always fine). Workflows can spawn dozens of agents and consume a large amount of tokens; the user must request that scale, not have it inferred. Explicit opt-in means one of:
 
-- The user asks for a dynamic workflow, workflow, ultracode-style orchestration, multi-agent orchestration, fan-out, broad audit, migration, deep research, or cross-checking.
-- The user asks to run a named or saved workflow.
-- A loaded skill or command instruction explicitly tells you to call this tool.
-- A system reminder says ultracode or dynamic workflow mode is active for the turn.
+- The user included the keyword "ultracode" in their prompt (you'll see a system-reminder confirming it).
+- Ultracode is on for the session (a system-reminder confirms it).
+- The user directly asked you to run a workflow or use multi-agent orchestration in their own words ("use a workflow", "run a workflow", "fan out agents", "orchestrate this with subagents"). The ask must be in the user's words — a task that would merely benefit from a workflow does not count.
+- The user invoked a skill or slash command whose instructions tell you to call this tool.
+- The user asked you to run a specific named or saved workflow.
 
-If a task merely could benefit from a workflow but the user did not opt in, do not silently run one. Use normal tools or briefly explain what a workflow would do and ask before running one.
+For any other task — even one that would clearly benefit from parallelism — do NOT run a workflow. Use the Agent tool (if available) for individual subagents, or briefly describe what a multi-agent workflow could do and how much it would roughly cost, and ask the user whether to run it. Mention they can ask for one with "use a workflow" in a future message to skip the ask.
 
 ## Ultracode
 
@@ -149,6 +150,7 @@ const inputSchema = lazySchema(() =>
       .describe('User-supplied workflow run input/context'),
     resumeFromRunId: z
       .string()
+      .regex(/^wf_[a-z0-9-]{6,}$/)
       .optional()
       .describe('Run ID of a prior workflow invocation to resume from'),
   }),
@@ -271,10 +273,10 @@ export const WorkflowTool = buildTool({
   maxResultSizeChars: 100_000,
   shouldDefer: true,
   async description() {
-    return WORKFLOW_TOOL_PROMPT
+    return WORKFLOW_TOOL_PROMPT + workflowSizeGuidelinePrompt(getInitialSettings(), getGlobalConfig().workflowSizeGuideline)
   },
   async prompt() {
-    return WORKFLOW_TOOL_PROMPT
+    return WORKFLOW_TOOL_PROMPT + workflowSizeGuidelinePrompt(getInitialSettings(), getGlobalConfig().workflowSizeGuideline)
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -381,11 +383,11 @@ export const WorkflowTool = buildTool({
     }
 
     if (action === 'run') {
-      const priorSession = resumeFromRunId
-        ? await loadWorkflowRunSession({ cwd, workflowRunId: resumeFromRunId })
-        : undefined
       // Use script runtime for script-based workflows
       if (isExecutableWorkflowScript(workflow.spec)) {
+        const resume = resumeFromRunId
+          ? await loadWorkflowScriptResume({ cwd, workflowRunId: resumeFromRunId, context })
+          : undefined
         return {
           data: await runWorkflowScript({
             script: workflow.spec.runScriptSnapshot,
@@ -395,10 +397,10 @@ export const WorkflowTool = buildTool({
             canUseTool,
             assistantMessage,
             scriptPath: workflow.path,
+            ...(resume ? { workflowRunId: resumeFromRunId } : {}),
             resumeFromRunId,
-            resumeJournalEntries: priorSession?.transcriptDir
-              ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
-              : priorSession?.resumeCacheEntries,
+            resumeJournalEntries: resume?.entries,
+            resumeInterruptedIdentities: resume?.interruptedIdentities,
           }),
         }
       }

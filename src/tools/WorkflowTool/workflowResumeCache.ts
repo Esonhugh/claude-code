@@ -10,15 +10,15 @@ type WorkflowScriptAgentOpts = {
   schema?: object
 }
 
+// Like official 2.1.292, label and phase are display-only and do not change the key; mode
+// is this build's own agent() option.
 export type WorkflowScriptIdentityOpts = {
   schema?: object
   model?: string
   effort?: string
   isolation?: 'worktree' | 'remote'
   agentType?: string
-  label?: string
   mode?: string
-  phase?: string
 }
 
 export type WorkflowResumeCacheEntry = {
@@ -91,11 +91,9 @@ export function createWorkflowScriptAgentChainIdentity(input: {
     effort: input.opts?.effort,
     isolation: input.opts?.isolation,
     agentType: input.opts?.agentType,
-    label: input.opts?.label,
     mode: input.opts?.mode === 'default' ? undefined : input.opts?.mode,
-    phase: input.opts?.phase,
   }))
-  return `v3:${h.digest('hex')}`
+  return `v4:${h.digest('hex')}`
 }
 
 export function recordResumeCacheEntry(input: {

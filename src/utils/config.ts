@@ -31,6 +31,7 @@ import { normalizePathForConfigKey } from './path.js'
 import { getEssentialTrafficOnlyReason } from './privacyLevel.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import type { ThemeSetting } from './theme.js'
+import type { WorkflowSizeGuideline } from '../tools/WorkflowTool/workflowFeatureFlags.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -556,6 +557,9 @@ export type GlobalConfig = {
 
   // Whether the one-time auto mode description has been shown
   hasSeenAutoModeEntryWarning?: boolean
+
+  // "Dynamic workflow size" chosen in /config; settings.workflowSizeGuideline overrides it
+  workflowSizeGuideline?: WorkflowSizeGuideline
 
   // Speculation configuration (ant-only)
   speculationEnabled?: boolean // Whether speculation is enabled (default: true)

@@ -32,6 +32,13 @@ import { getAPIProvider } from '../../utils/model/providers.js'
 import { EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
+import {
+  defaultWorkflowSizeGuideline,
+  shouldEnableWorkflows,
+  WORKFLOW_SIZE_GUIDELINES,
+  workflowsDefaultOn,
+  type WorkflowSizeGuideline,
+} from '../../tools/WorkflowTool/workflowFeatureFlags.js'
 import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'
 import type { EditableSettingSource } from '../../utils/settings/constants.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
@@ -158,6 +165,17 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         context.setAppState(current => ({ ...current, toolPermissionContext: transitionPlanAutoMode(current.toolPermissionContext) }))
       },
     }] : []),
+    {
+      key: 'workflows', label: 'Dynamic workflows', kind: 'boolean', value: shouldEnableWorkflows(settings),
+      set(value) {
+        writeSettings('userSettings', { enableWorkflows: value === workflowsDefaultOn() ? undefined : value as boolean, disableWorkflows: undefined })
+      },
+    },
+    ...(shouldEnableWorkflows(settings) && settings.workflowSizeGuideline === undefined ? [{
+      key: 'workflowSizeGuideline', label: 'Dynamic workflow size', kind: 'choice' as const,
+      value: global.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(), options: [...WORKFLOW_SIZE_GUIDELINES],
+      set(value: ModConfigValue) { saveGlobalConfig(current => ({ ...current, workflowSizeGuideline: value as WorkflowSizeGuideline })) },
+    }] : []),
     globalBoolean('respectGitignore', 'Respect .gitignore in file picker', global.respectGitignore),
     globalBoolean('copyFullResponse', 'Always copy full response (skip /copy picker)', global.copyFullResponse),
     ...(isFullscreenEnvEnabled() ? [globalBoolean('copyOnSelect', 'Copy on select', global.copyOnSelect ?? true)] : []),
@@ -271,6 +289,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     if (key === 'defaultPermissionMode') return policy?.permissions?.defaultMode
     if (key === 'thinkingEnabled') return policy?.alwaysThinkingEnabled
     if (key === 'notifChannel') return policy?.preferredNotifChannel
+    if (key === 'workflows') return policy?.disableWorkflows === true ? false : policy?.enableWorkflows
     return policy?.[key]
   }
 

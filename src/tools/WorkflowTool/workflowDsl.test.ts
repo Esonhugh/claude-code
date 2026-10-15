@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
+import { hasWorkflowScriptMeta } from './workflowScriptParser.js'
+import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-dsl-test-'))
 await mkdir(join(tempRoot, 'docs', 'workflows'), { recursive: true })
@@ -194,159 +196,74 @@ assert.deepEqual(orchestrationSpec.phases.map(phase => phase.id), [
 assert.equal(orchestrationSpec.phases[2]!.review, 'cross-check')
 assert.equal(orchestrationSpec.runtime?.kind, 'javascript-worker')
 
+// Official 2.1.292 launches a meta script after parsing its meta and compiling the body;
+// only the runtime runs the body, so loading never calls agent() or derives phases from it.
 const officialScriptPath = join(tempRoot, 'docs', 'workflows', 'official-meta.js')
-await writeFile(
-  officialScriptPath,
-  `export const meta = {
-    name: 'official-meta-workflow',
-    description: 'Official-style metadata workflow',
-    phases: [{ title: 'Scan', detail: 'Find files' }],
-  }
+const officialSource = `export const meta = {
+  name: 'official-meta-workflow',
+  description: 'Official-style metadata workflow',
+  phases: [{ title: 'Scan', detail: 'Find files' }, { title: 'Check' }],
+}
 
-  phase('Scan')
-  await agent('Find files for ' + args.topic, { label: 'scan', schema: { type: 'object' } })
-  log('scan registered')
-  `,
-)
+throw new Error('the script body ran while loading')
+`
+await writeFile(officialScriptPath, officialSource)
 
 const officialSpec = await loadWorkflowScriptSpec(officialScriptPath, { topic: 'runtime' })
 assert.equal(officialSpec.name, 'official-meta-workflow')
 assert.equal(officialSpec.description, 'Official-style metadata workflow')
-assert.equal(officialSpec.phases[0]?.id, 'Scan')
-assert.equal(officialSpec.phases[0]?.prompt, 'Find files for runtime')
-assert.deepEqual(officialSpec.phases[0]?.agentLabels, ['scan'])
-assert.deepEqual(officialSpec.meta?.phases, [{ title: 'Scan', detail: 'Find files' }])
+assert.deepEqual(officialSpec.meta?.phases, [{ title: 'Scan', detail: 'Find files' }, { title: 'Check' }])
+assert.equal(officialSpec.runScriptSnapshot, officialSource)
 assert.equal(officialSpec.runtime?.kind, 'javascript-worker')
-
-const officialModeVariantsPath = join(tempRoot, 'docs', 'workflows', 'official-mode-variants.js')
-await writeFile(
-  officialModeVariantsPath,
-  `export const meta = {
-    name: 'official-mode-variants',
-    description: 'Official-style workflow with permission mode variants',
-    phases: [{ title: 'Modes', detail: 'Run mode variants' }],
-  }
-
-  phase('Modes')
-  await agent('bypass prompt', { label: 'bypass', mode: 'bypassPermissions' })
-  await agent('dont ask prompt', { label: 'dont-ask', mode: 'dontAsk' })
-  `,
+const officialPlan = validateWorkflowSpec(officialSpec)
+assert.deepEqual(
+  officialPlan.phases.map(phase => ({ id: phase.id, description: phase.description, fanout: phase.fanout })),
+  [
+    { id: 'Scan', description: 'Find files', fanout: 0 },
+    { id: 'Check', description: 'Check', fanout: 0 },
+  ],
 )
-const officialModeVariantsSpec = await loadWorkflowScriptSpec(officialModeVariantsPath)
-assert.equal(officialModeVariantsSpec.phases[0]?.permissionMode, 'bypassPermissions')
-assert.equal(officialModeVariantsSpec.phases[1]?.permissionMode, 'dontAsk')
+assert.equal(officialPlan.totalAgents, 0)
 
-const officialParallelPath = join(tempRoot, 'docs', 'workflows', 'official-parallel.js')
-await writeFile(
-  officialParallelPath,
-  `export const meta = {
-    name: 'official-parallel-workflow',
-    description: 'Official-style workflow with grouped parallel agents',
-    phases: [
-      { title: 'Fanout', detail: 'Launch fanout agents' },
-      { title: 'After', detail: 'Run after fanout' },
-    ],
-  }
+// Valid official scripts the old dry run rejected: a wide phase, a multi-stage pipeline
+// alternating phases, a schema-less agent() result used as a string, and no meta phases.
+for (const [name, meta, body] of [
+  ['wide-phase', `phases: [{ title: 'Scan' }]`, `phase('Scan')
+await parallel(Array.from({ length: 20 }, (_, i) => () => agent('scan ' + i, { label: 'scan-' + i })))`],
+  ['alternating-pipeline', `phases: [{ title: 'Scan' }, { title: 'Check' }]`, `return pipeline(['a', 'b', 'c'],
+  item => agent('scan ' + item, { phase: 'Scan' }),
+  found => agent('check ' + found, { phase: 'Check' }))`],
+  ['string-result', `phases: [{ title: 'Count' }]`, `const text = await agent('list four words')
+return { words: text.split(' ').length }`],
+  ['no-meta-phases', ``, `return agent('one agent')`],
+] as const) {
+  const path = join(tempRoot, 'docs', 'workflows', `official-${name}.js`)
+  await writeFile(path, `export const meta = { name: '${name}', description: 'Loads without running', ${meta} }\n${body}\n`)
+  const plan = validateWorkflowSpec(await loadWorkflowScriptSpec(path))
+  assert.equal(plan.name, name)
+  assert.equal(plan.totalAgents, 0)
+  assert.deepEqual(plan.phases.map(phase => phase.id), name === 'alternating-pipeline' ? ['Scan', 'Check'] : name === 'no-meta-phases' ? [] : [name === 'wide-phase' ? 'Scan' : 'Count'])
+}
 
-  phase('Fanout')
-  await parallel([1, 2, 3].map(i => () =>
-    agent('fanout prompt ' + i, { label: 'fanout-' + i, phase: 'Fanout' })
-  ))
-  phase('After')
-  await agent('after prompt', { label: 'after', phase: 'After' })
-  `,
-)
+// Like official, comments may precede the meta export.
+const commentedSource = `// Reviews the repository.
+/* Leading block comment. */
+export const meta = { name: 'commented-meta', description: 'Leading comments are allowed' }
+return 1
+`
+assert.equal(hasWorkflowScriptMeta(commentedSource), true)
+const commentedPath = join(tempRoot, 'docs', 'workflows', 'official-commented.js')
+await writeFile(commentedPath, commentedSource)
+assert.equal((await loadWorkflowScriptSpec(commentedPath)).meta?.name, 'commented-meta')
 
-const officialParallelSpec = await loadWorkflowScriptSpec(officialParallelPath)
-assert.equal(officialParallelSpec.phases.length, 2)
-assert.equal(officialParallelSpec.phases[0]?.id, 'Fanout')
-assert.equal(officialParallelSpec.phases[0]?.fanout, 3)
-assert.equal(officialParallelSpec.phases[0]?.concurrency, 3)
-assert.deepEqual(officialParallelSpec.phases[0]?.agentLabels, ['fanout-1', 'fanout-2', 'fanout-3'])
-assert.deepEqual(officialParallelSpec.phases[0]?.agentPrompts, ['fanout prompt 1', 'fanout prompt 2', 'fanout prompt 3'])
-assert.equal(officialParallelSpec.phases[1]?.id, 'After')
-assert.deepEqual(officialParallelSpec.phases[1]?.dependsOn, ['Fanout'])
-assert.deepEqual(officialParallelSpec.phases[1]?.agentLabels, ['after'])
-
-const officialUrlPath = join(tempRoot, 'docs', 'workflows', 'official-url.js')
-await writeFile(
-  officialUrlPath,
-  `export const meta = {
-    name: 'official-url-workflow',
-    description: 'Official-style workflow with URL normalization',
-    phases: [{ title: 'Normalize', detail: 'Normalize source URL' }],
-  }
-
-  phase('Normalize')
-  const host = new URL('https://www.example.com/path/').hostname.replace(/^www\\./, '')
-  await agent('host=' + host, { label: 'normalize' })
-  `,
-)
-
-const officialUrlSpec = await loadWorkflowScriptSpec(officialUrlPath)
-assert.equal(officialUrlSpec.phases[0]?.prompt, 'host=example.com')
-
-const childWorkflowPath = join(tempRoot, 'docs', 'workflows', 'official-child.js')
-await writeFile(
-  childWorkflowPath,
-  `export const meta = {
-    name: 'official-child-workflow',
-    description: 'Official child workflow',
-    phases: [{ title: 'Child', detail: 'Run child agent' }],
-  }
-
-  phase('Child')
-  await agent('child topic=' + args.topic, { label: 'child-agent' })
-  `,
-)
-const parentWorkflowPath = join(tempRoot, 'docs', 'workflows', 'official-parent.js')
-await writeFile(
-  parentWorkflowPath,
-  `export const meta = {
-    name: 'official-parent-workflow',
-    description: 'Official parent workflow',
-    phases: [{ title: 'Parent', detail: 'Run child workflow' }],
-  }
-
-  phase('Parent')
-  await workflow('official-child-workflow')
-  await agent('parent after child', { label: 'parent-agent' })
-  `,
-)
-const parentWorkflowSpec = await loadWorkflowScriptSpec(parentWorkflowPath, { topic: 'nested' })
-assert.deepEqual(parentWorkflowSpec.phases.map(phase => phase.id), ['Child', 'Parent'])
-assert.equal(parentWorkflowSpec.phases[0]?.prompt, 'child topic=nested')
-assert.deepEqual(parentWorkflowSpec.phases[0]?.agentLabels, ['child-agent'])
-assert.equal(parentWorkflowSpec.phases[1]?.prompt, 'parent after child')
-assert.deepEqual(parentWorkflowSpec.phases[1]?.agentLabels, ['parent-agent'])
-
-const nestedChildPath = join(tempRoot, 'docs', 'workflows', 'official-nested-child.js')
-await writeFile(
-  nestedChildPath,
-  `export const meta = {
-    name: 'official-nested-child-workflow',
-    description: 'Nested child workflow',
-    phases: [{ title: 'Nested', detail: 'Attempt nested child' }],
-  }
-
-  await workflow('official-child-workflow')
-  `,
-)
-const nestedParentPath = join(tempRoot, 'docs', 'workflows', 'official-nested-parent.js')
-await writeFile(
-  nestedParentPath,
-  `export const meta = {
-    name: 'official-nested-parent-workflow',
-    description: 'Nested parent workflow',
-    phases: [{ title: 'Parent', detail: 'Attempt nested child' }],
-  }
-
-  await workflow({ scriptPath: 'official-nested-child.js' })
-  `,
-)
+// A body that parses as a module but cannot compile as a workflow is not launched.
+const uncompilablePath = join(tempRoot, 'docs', 'workflows', 'official-uncompilable.js')
+await writeFile(uncompilablePath, `export const meta = { name: 'uncompilable', description: 'Exports from the body' }
+export const later = 1
+`)
 await assert.rejects(
-  () => loadWorkflowScriptSpec(nestedParentPath),
-  /workflow\(\) cannot be called from within a child workflow/,
+  () => loadWorkflowScriptSpec(uncompilablePath),
+  /Workflow script has a syntax error and was not launched:/,
 )
 
 console.log('workflowDsl.test.ts passed')
