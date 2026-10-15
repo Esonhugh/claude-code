@@ -40,12 +40,10 @@ if (process.env[childFlag] !== '1') {
   // Drive the real classifier through its model call: text replies or an API error.
   let reply: string | Error = '<block>no</block>'
   const requests: { model?: string; thinking?: unknown }[] = []
-  let failingModel: string | undefined
   mock.module('../sideQuery.js', () => ({
     sideQuery: async (options: { model?: string; thinking?: unknown }) => {
       requests.push(options)
       if (reply instanceof Error) throw reply
-      if (options.model === failingModel) throw new Error(`${failingModel} is not available`)
       return {
         id: 'msg_classifier', type: 'message', role: 'assistant', model: 'gpt-test',
         content: [{ type: 'text', text: reply }], stop_reason: 'end_turn', stop_sequence: null,
@@ -171,25 +169,7 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
-  // The demotion lasts for the rest of the session, so later tests see the main model.
-  test('a failing Sonnet 5 default demotes the classifier to the main model for the session', async () => {
-    useOpenAIOAuth(false)
-    reply = '<block>no</block>'
-    failingModel = 'claude-sonnet-5'
-    try {
-      process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
-      requests.length = 0
-      expect((await check('demote')).behavior).toBe('allow')
-      expect(requests[0]?.model).toBe('claude-sonnet-5')
-      expect(requests.slice(1).every(request => request.model === 'claude-opus-5-5')).toBe(true)
-      requests.length = 0
-      expect((await check('after-demote')).behavior).toBe('allow')
-      expect(requests.every(request => request.model === 'claude-opus-5-5')).toBe(true)
-    } finally {
-      failingModel = undefined
-      delete process.env.ANTHROPIC_MODEL
-    }
-  })
+  // Sonnet 5 classifier demotion is covered per session in yoloClassifier.sonnet5Probe.test.ts.
 
   test('outside Approve for me an unavailable reviewer still fails closed', async () => {
     useOpenAIOAuth(false)

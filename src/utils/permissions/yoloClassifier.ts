@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import type Anthropic from '@anthropic-ai/sdk'
+import { APIError } from '@anthropic-ai/sdk'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages.js'
 import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
@@ -1050,6 +1051,7 @@ async function classifyYoloActionXml(
           : 'Classifier unavailable - blocking for safety',
       model,
       unavailable: stage1Usage === undefined,
+      unauthorized: error instanceof APIError && error.status === 401,
       transcriptTooLong: Boolean(tooLong),
       stage: stage1Usage ? 'thinking' : undefined,
       durationMs: Date.now() - overallStart,
@@ -1199,10 +1201,16 @@ export async function classifyYoloAction(
       getTwoStageMode(),
     )
     const result = await classify(model)
+    if (sonnet5ClassifierProbe !== 'unprobed' || signal.aborted ||
+        model !== getDefaultSonnet5Classifier(getMainLoopModel())) return result
+    if (!result.unavailable) {
+      sonnet5ClassifierProbe = 'confirmed'
+      return result
+    }
+    if (result.unauthorized) return result
+    sonnet5ClassifierProbe = 'demoted'
     const fallback = getFallbackClassifierModel(getMainLoopModel())
-    if (!result.unavailable || signal.aborted || sonnet5ClassifierDemoted ||
-        model !== getDefaultSonnet5Classifier(getMainLoopModel()) || model === fallback) return result
-    sonnet5ClassifierDemoted = true
+    if (model === fallback) return result
     logForDebugging(`Got error trying Sonnet 5 as auto mode classifier, using ${fallback}`, { level: 'warn' })
     return classify(fallback)
   }
@@ -1409,9 +1417,10 @@ type AutoModeConfig = {
   jsonlTranscript?: boolean
 }
 
-// Official 2.1.292 tries Sonnet 5 as the default classifier once per session; if that
-// first call fails (other than an abort), it falls back to the main-loop-based model.
-let sonnet5ClassifierDemoted = false
+// Official 2.1.292 probes Sonnet 5 as the default classifier on the session's first
+// classification: an answer confirms it for the session, while a failure (other than an
+// abort or a 401) demotes it to the main-loop-based model. Later failures fail closed.
+let sonnet5ClassifierProbe: 'unprobed' | 'confirmed' | 'demoted' = 'unprobed'
 
 function getDefaultSonnet5Classifier(mainModel: string): string | undefined {
   const canonical = getCanonicalName(mainModel)
@@ -1453,7 +1462,7 @@ function getClassifierModel(): string {
     return config.model
   }
   if (getAPIProvider() === 'openai') return mainModel
-  const sonnet5 = sonnet5ClassifierDemoted ? undefined : getDefaultSonnet5Classifier(mainModel)
+  const sonnet5 = sonnet5ClassifierProbe === 'demoted' ? undefined : getDefaultSonnet5Classifier(mainModel)
   return sonnet5 ?? getFallbackClassifierModel(mainModel)
 }
 
