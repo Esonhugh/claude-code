@@ -452,6 +452,7 @@ export function createModUi({
   const siteRedraws = new WeakMap<ModRenderSite, RedrawSchedule>()
   const pendingBlits = new Map<string, BlitFrame>()
   const serializedBlits = new Map<string, Promise<void>>()
+  const serializedScrolls = new WeakMap<PaneState, Promise<void>>()
   const blitGenerations = new Map<string, number>()
   const focusWaiters = new Set<() => void>()
   const clientSites = new Map<ModUiOwner, ModClientSite>()
@@ -1761,53 +1762,60 @@ export function createModUi({
         throw new TypeError('Mod UI scroll distance must be finite')
       if (request.origin.kind === 'plugin' && !ownsPane(owner, pane))
         return { deny: 'site belongs to another plugin' }
-      const max = Math.max(0, pane.contentRows - pane.bodyRows)
-      const offset = Math.max(0, Math.min(max, pane.scrollOffset + request.by))
-      const input: ModInput = Object.freeze({
-        component: 'Pane',
-        requestId: pane.id,
-        offset,
-        by: request.by,
-        bodyRows: pane.bodyRows,
-        contentRows: pane.contentRows,
-        origin: request.origin,
-        ...(request.pointer === undefined ? {} : { pointer: request.pointer }),
-      })
-      return dispatch(owner, 'ui.scroll', input, async rewritten => {
-        if (active.get(pane.id) !== pane) return { deny: 'the window moved meanwhile' }
-        for (const key of [
-          'component', 'requestId', 'by', 'bodyRows', 'contentRows', 'pointer',
-        ] as const) {
-          const unchanged = key === 'pointer'
-            ? isDeepStrictEqual(rewritten[key], input[key])
-            : rewritten[key] === input[key]
-          if (Object.hasOwn(rewritten, key) && !unchanged)
-            throw new TypeError(`Mod UI scroll cannot rewrite ${key}`)
-        }
-        const receivedOrigin = rewritten.origin as ModUiOrigin | undefined
-        if (!receivedOrigin || receivedOrigin.kind !== request.origin.kind ||
-            receivedOrigin.kind === 'plugin' &&
-            receivedOrigin.name !== (request.origin as Extract<ModUiOrigin, { kind: 'plugin' }>).name)
-          throw new TypeError('Mod UI scroll cannot rewrite origin')
-        if (!Number.isInteger(rewritten.offset) || (rewritten.offset as number) < 0)
-          throw new TypeError('Mod UI scroll offset must be a non-negative whole row')
-        pane.scrollOffset = Math.min(max, rewritten.offset as number)
-        publish()
-        return {}
-      }, {
-        origin: request.origin,
-        restoreInput: (rewritten, received) => {
-          const restored = { ...rewritten }
+      // Overlapping ticks (a wheel burst while middleware runs) each start from the
+      // offset the previous one applied, instead of all reading the same stale offset.
+      const work = (serializedScrolls.get(pane) ?? Promise.resolve()).then(() => {
+        if (active.get(pane.id) !== pane) return { deny: 'site is not open' }
+        const max = Math.max(0, pane.contentRows - pane.bodyRows)
+        const offset = Math.max(0, Math.min(max, pane.scrollOffset + request.by))
+        const input: ModInput = Object.freeze({
+          component: 'Pane',
+          requestId: pane.id,
+          offset,
+          by: request.by,
+          bodyRows: pane.bodyRows,
+          contentRows: pane.contentRows,
+          origin: request.origin,
+          ...(request.pointer === undefined ? {} : { pointer: request.pointer }),
+        })
+        return dispatch(owner, 'ui.scroll', input, async rewritten => {
+          if (active.get(pane.id) !== pane) return { deny: 'the window moved meanwhile' }
           for (const key of [
-            'component', 'requestId', 'by', 'bodyRows', 'contentRows', 'origin',
-            'pointer',
-          ]) {
-            if (!Object.hasOwn(restored, key) && Object.hasOwn(received, key))
-              restored[key] = received[key]
+            'component', 'requestId', 'by', 'bodyRows', 'contentRows', 'pointer',
+          ] as const) {
+            const unchanged = key === 'pointer'
+              ? isDeepStrictEqual(rewritten[key], input[key])
+              : rewritten[key] === input[key]
+            if (Object.hasOwn(rewritten, key) && !unchanged)
+              throw new TypeError(`Mod UI scroll cannot rewrite ${key}`)
           }
-          return restored
-        },
+          const receivedOrigin = rewritten.origin as ModUiOrigin | undefined
+          if (!receivedOrigin || receivedOrigin.kind !== request.origin.kind ||
+              receivedOrigin.kind === 'plugin' &&
+              receivedOrigin.name !== (request.origin as Extract<ModUiOrigin, { kind: 'plugin' }>).name)
+            throw new TypeError('Mod UI scroll cannot rewrite origin')
+          if (!Number.isInteger(rewritten.offset) || (rewritten.offset as number) < 0)
+            throw new TypeError('Mod UI scroll offset must be a non-negative whole row')
+          pane.scrollOffset = Math.min(max, rewritten.offset as number)
+          publish()
+          return {}
+        }, {
+          origin: request.origin,
+          restoreInput: (rewritten, received) => {
+            const restored = { ...rewritten }
+            for (const key of [
+              'component', 'requestId', 'by', 'bodyRows', 'contentRows', 'origin',
+              'pointer',
+            ]) {
+              if (!Object.hasOwn(restored, key) && Object.hasOwn(received, key))
+                restored[key] = received[key]
+            }
+            return restored
+          },
+        })
       })
+      serializedScrolls.set(pane, work.then(() => {}, () => {}))
+      return work
     },
 
     cyclePaneFocus(composerValue) {

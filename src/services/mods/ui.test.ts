@@ -1685,6 +1685,30 @@ describe('mod UI dispatch and drawing lifetime', () => {
     expect(ui.getSnapshot()[0]!.scrollOffset).toBe(3)
   })
 
+  test('overlapping wheel ticks add up instead of overwriting each other', async () => {
+    const owner = { plugin: 'fixture' }
+    const offsets: unknown[] = []
+    const { ui } = fixture({
+      dispatch: async (_owner, event, input, core) => {
+        if (event === 'ui.scroll') {
+          offsets.push(input.offset)
+          // Like the Worker round trip: the core runs after the next ticks arrive.
+          await new Promise(resolve => setTimeout(resolve, 5))
+        }
+        return core(input)
+      },
+    })
+    await ui.open(owner, { id: 'pane' }, { kind: 'person' }, wide)
+    await ui.commit(owner)
+    await ui.reportMetrics('pane', { bodyRows: 5, contentRows: 40 })
+
+    await Promise.all([1, 1, 1, 2].map(by =>
+      ui.scroll(owner, { requestId: 'pane', by, origin: { kind: 'person' } })))
+    expect(offsets).toEqual([1, 2, 3, 5])
+    expect(ui.getSnapshot()[0]!.scrollOffset).toBe(5)
+    await ui.dispose()
+  })
+
   test('applies only valid offset rewrites, restores omissions and pins the rest of ui.scroll input', async () => {
     const owner = { plugin: 'fixture' }
     let rewrite: Record<string, unknown> = {}
