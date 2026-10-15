@@ -396,6 +396,8 @@ async function handleSpawnSplitPane(
     teamName,
   )
   if (!instructionsWritten) {
+    // Close the pane created above so the aborted spawn leaves no empty pane behind.
+    await detectionResult.backend.killPane(paneId, !insideTmux).catch(() => false)
     throw new Error(`Failed to write initial instructions to ${sanitizedName}'s inbox — spawn aborted`)
   }
 
@@ -609,6 +611,8 @@ async function handleSpawnSeparateWindow(
     teamName,
   )
   if (!instructionsWritten) {
+    // Close the window created above so the aborted spawn leaves no empty window behind.
+    await execFileNoThrow(TMUX_COMMAND, ['kill-window', '-t', `${SWARM_SESSION_NAME}:${windowName}`])
     throw new Error(`Failed to write initial instructions to ${sanitizedName}'s inbox — spawn aborted`)
   }
 

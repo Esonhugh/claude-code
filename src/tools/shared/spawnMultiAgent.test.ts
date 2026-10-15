@@ -61,9 +61,11 @@ async function isolatedAssertions() {
   let useInProcessBackend = true
   let spawnedPaneCommand: string | undefined
   let envAfterDetection: string | undefined
+  const closedTargets: string[] = []
   mock.module('../../utils/execFileNoThrow.js', () => ({
     execFileNoThrow: async (_command: string, args: string[]) => {
       if (args[0] === 'send-keys') spawnedPaneCommand = args[3]
+      if (args[0] === 'kill-window') closedTargets.push(args[2]!)
       return { code: 0, stdout: args[0] === 'new-window' ? '%separate-test-pane' : '', stderr: '' }
     },
   }))
@@ -76,7 +78,7 @@ async function isolatedAssertions() {
     isInProcessEnabled: () => useInProcessBackend,
     detectAndGetBackend: async () => {
       if (envAfterDetection) process.env.CLAUDE_CODE_SUBAGENT_MODEL = envAfterDetection
-      return { backend: { type: 'tmux' }, needsIt2Setup: false }
+      return { backend: { type: 'tmux', killPane: async (paneId: string) => { closedTargets.push(paneId); return true } }, needsIt2Setup: false }
     },
     getBackendByType: () => ({ killPane: async () => {} }),
     markInProcessFallback: () => {},
@@ -564,11 +566,14 @@ async function isolatedAssertions() {
     const inbox = getInboxPath(name, 'definition-team')
     mkdirSync(inbox, { recursive: true }); writeFileSync(join(inbox, 'block'), 'fixture')
     spawnedPaneCommand = undefined
+    closedTargets.length = 0
     await assert.rejects(
       spawnTeammate({ name, prompt: 'inspect', team_name: 'definition-team', use_splitpane }, definitionContext),
       new RegExp(`Failed to write initial instructions to ${name}'s inbox`),
     )
     assert.equal(spawnedPaneCommand, undefined, 'a teammate must not launch without its instructions')
+    // The pane or window created for it is closed instead of being left empty.
+    assert.deepEqual(closedTargets, [use_splitpane ? '%test-pane' : `claude-swarm:teammate-${name}`])
   }
   useInProcessBackend = true
 
