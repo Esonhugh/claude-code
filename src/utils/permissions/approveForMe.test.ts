@@ -96,8 +96,11 @@ test('auto mode model support follows official outside OpenAI mode and Approve f
   expect(modelSupportsAutoMode('claude-opus-4-6')).toBe(true)
   expect(modelSupportsAutoMode('claude-opus-4-5')).toBe(false)
   expect(modelSupportsAutoMode('claude-3-5-sonnet-20241022')).toBe(false)
+  for (const model of ['claude-opus-4-20250514', 'claude-sonnet-4-20250514', 'claude-opus-4-0', 'claude-sonnet-4-0'])
+    expect(modelSupportsAutoMode(model)).toBe(false)
 
   process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+  expect(modelSupportsAutoMode('us.anthropic.claude-sonnet-4-20250514-v1:0')).toBe(false)
   expect(modelSupportsAutoMode('claude-opus-4-6')).toBe(false)
   expect(modelSupportsAutoMode('claude-haiku-5')).toBe(false)
   expect(modelSupportsAutoMode('claude-opus-4-7')).toBe(true)

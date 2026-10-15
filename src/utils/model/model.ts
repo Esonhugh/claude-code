@@ -275,7 +275,8 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
 }
 
 // Official 2.1.292 model order for capability cut-offs; unknown and newer models are never older.
-const MODEL_RELEASE_ORDER = ['claude-opus-4-0', 'claude-sonnet-4-0', 'claude-opus-4-1', 'claude-sonnet-4-5',
+// Entries are getCanonicalName results, which name the 4.0 models claude-opus-4 and claude-sonnet-4.
+const MODEL_RELEASE_ORDER = ['claude-opus-4', 'claude-sonnet-4', 'claude-opus-4-1', 'claude-sonnet-4-5',
   'claude-haiku-4-5', 'claude-opus-4-5', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-opus-4-7', 'claude-opus-4-8']
 
 export function isModelOlderThan(canonical: string, than: string): boolean {
