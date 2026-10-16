@@ -26,6 +26,21 @@ export type UsageLimit = {
   extraSubtext?: string
 }
 
+// One row of the usage endpoint's `limits[]`: the server classifies a row by
+// `kind` ('session', 'weekly_all', 'weekly_scoped'); a scoped row names its
+// model or surface in `scope`.
+export type UsageLimitRow = {
+  kind: string
+  group?: string
+  percent: number
+  resets_at: string | null
+  scope?: {
+    model?: { display_name: string } | null
+    surface?: { display_name: string } | null
+  } | null
+  severity?: string
+}
+
 export type ChatGPTUsageCredits = {
   has_credits?: boolean
   unlimited?: boolean
@@ -77,6 +92,7 @@ export type Utilization = {
   seven_day_oauth_apps?: RateLimit | null
   seven_day_opus?: RateLimit | null
   seven_day_sonnet?: RateLimit | null
+  limits?: UsageLimitRow[] | null
   extra_usage?: ExtraUsage | null
   source?: 'claude' | 'chatgpt'
   plan_type?: string | null

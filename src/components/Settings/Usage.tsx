@@ -16,6 +16,7 @@ import {
   type ExtraUsage,
   fetchUtilization,
   fetchRateLimitResetCredits,
+  getModelScopedUsageLimits,
   type OpenAIAccount,
   type RateLimit,
   type RateLimitResetCreditsDetails,
@@ -402,6 +403,7 @@ export function Usage({
               },
             ]
           : []),
+        ...getModelScopedUsageLimits(utilization.limits),
       ]
   const accountLine = formatOpenAIAccountLine(utilization.openai_account)
 

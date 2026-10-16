@@ -23,8 +23,10 @@ export type {
   RateLimitResetCreditsDetails,
   RateLimitResetResult,
   UsageLimit,
+  UsageLimitRow,
   Utilization,
 } from './usage-types.js'
+export { getModelScopedUsageLimits } from './usage-claude.js'
 
 export function isOpenAIActivityAvailable(): boolean {
   return isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) &&

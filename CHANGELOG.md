@@ -29,6 +29,7 @@
 
 ### 变更内容
 
+- 用量面板：对齐固定官方 2.1.292，读取 usage 接口 `limits[]` 中按模型划分的周窗口，在 `/usage` 的 Sonnet 行之后显示 `Current week (Fable)` 等允许列表内模型的用量；允许列表取 `tengu_usage_overage_included_models`，缺省为 Fable 系列，surface 行和其他模型不显示。响应头 `7d_oi` 窗口进入原始用量，`seven_day_overage_included` 限额文案为 `Fable limit`，SDK 限额类型同步。达到 Fable 限额后的 usage credits 确认对话仍未实现。
 - 终端选区：选区滚动、输入跟随与复制去重已合入；`$.ui.selection()` 读取当前选中文字，存在可确定的消息归属时附带 `requestId`，并保留已持有的 VM 回调。完整 terminal/diff/browser Client 生命周期仍未通过验收。
 - Mods 注册与类型：空模式 `!*` 不匹配事件，校验器识别合法 bare `on` helper；Worker 限制同一原始模式的重复注册。静态校验不执行 helper，重复调用的动态检查仍由 Worker 负责。声明测试复用各自的本地/官方编译缓存，保持原有期限与类型断言。
 - 作者测试：每个文件的 HOME 放在作者目录之外；成功、失败和终止后只回收本次运行创建的 HOME 与内联插件目录，保留并发运行文件。测试 registrar 的异步注册、catch 和惰性流行为仍未合入，README 示例按当前可用入口修正。
@@ -162,6 +163,7 @@
 
 ### 测试覆盖
 
+- 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。
 - 各提交在纯 HEAD 加候选补丁中通过类型检查、lint、对应测试及提交门禁。runner 的清理场景在真实子进程中连续五轮通过；相同成功/失败场景的三端 CLI 结果一致，候选清理范围更接近官方。
 - 模型切换回归先在 HEAD 源码和二进制中复现；校验延迟 1.5 秒的三方对照确认候选使用新模型和 `medium` effort，其余场景没有新增差异。该受控 API 验证不代替完整 UI 或真实模型质量评估。
 - 模型结果补充原有 SDK effort、fork 回执、Worker classifier 和不透明 provider 值测试；mailbox 使用真实文件及注入的解锁错误验证确认结果。被阻塞的新测试保留在工作区，未作为通过项提交。
