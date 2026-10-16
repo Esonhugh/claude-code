@@ -482,7 +482,7 @@ test('1h cache markers add the extended TTL beta once and 5m markers do not', as
   }
 })
 
-test('tool-based 1h cache markers add the extended TTL beta', async () => {
+test('inline MCP tools keep 1h cache markers on the system prompt, never on tools', async () => {
   const state = await import('../../bootstrap/state.js')
   const { z } = await import('zod/v4')
   state.setPromptCache1hEligible(true)
@@ -507,12 +507,12 @@ test('tool-based 1h cache markers add the extended TTL beta', async () => {
         cache_control: expect.objectContaining({ scope: 'global' }),
       }),
     )
-    expect(request.tools).toContainEqual(
+    expect(request.system).toContainEqual(
       expect.objectContaining({
-        name: tool.name,
-        cache_control: { type: 'ephemeral', ttl: '1h' },
+        cache_control: expect.objectContaining({ type: 'ephemeral', ttl: '1h' }),
       }),
     )
+    expect(request.tools?.every(tool => !('cache_control' in tool))).toBe(true)
     expect(requestBetaHeaders[0]).toContain('extended-cache-ttl-2025-04-11')
   } finally {
     state.setPromptCache1hAllowlist(null)
@@ -520,7 +520,7 @@ test('tool-based 1h cache markers add the extended TTL beta', async () => {
   }
 })
 
-test('tool-based cache marker skips deferred tools loaded through ToolSearch', async () => {
+test('deferred tools loaded through ToolSearch never carry cache_control', async () => {
   const { z } = await import('zod/v4')
   const { ToolSearchTool } =
     await import('../../tools/ToolSearchTool/ToolSearchTool.js')
@@ -584,16 +584,23 @@ test('tool-based cache marker skips deferred tools loaded through ToolSearch', a
       },
     })
     expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
-    const tools = requests.at(-1)!.tools ?? []
+    const request = requests.at(-1)!
+    const tools = request.tools ?? []
     expect(tools.map(tool => ('name' in tool ? tool.name : undefined))).toEqual(
       ['ToolSearch', pinned.name, discovered.name],
     )
     expect(tools.at(-1)).toMatchObject({ defer_loading: true })
-    expect(tools.at(-1)).not.toHaveProperty('cache_control')
-    expect(tools[1]).toMatchObject({
-      name: pinned.name,
-      cache_control: expect.objectContaining({ type: 'ephemeral' }),
-    })
+    expect(tools.every(tool => !('cache_control' in tool))).toBe(true)
+    expect(request.system).toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ type: 'ephemeral' }),
+      }),
+    )
+    expect(request.system).not.toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ scope: 'global' }),
+      }),
+    )
   } finally {
     clearToolSchemaCache()
     if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH

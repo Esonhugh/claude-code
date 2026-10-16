@@ -1342,31 +1342,17 @@ async function* queryModel(
   filteredTools = catalog.tools
   const toolSchemas = catalog.schemas
 
-  // MCP tools are per-user → dynamic tool section → can't globally cache.
-  // Only gate when an MCP tool will actually render (not defer_loading).
-  const needsToolBasedCacheMarker =
+  // MCP tools are per-user → dynamic tool section → the system prompt behind
+  // them can't be globally cached, so it falls back to org-scoped markers.
+  // Tools never carry cache_control themselves: the system prompt markers
+  // already cover the tool prefix, and deferred tools (defer_loading: true)
+  // reject cache_control with a 400. Only gate when an MCP tool will actually
+  // render (not defer_loading).
+  const hasLoadedMcpTools =
     useGlobalCacheFeature &&
     filteredTools.some(t => t.isMcp === true && !willDefer(t))
   const enablePromptCaching =
     options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
-  if (
-    enablePromptCaching &&
-    needsToolBasedCacheMarker &&
-    toolSchemas.length > 0
-  ) {
-    // Deferred tools discovered through ToolSearch stay in the array with
-    // defer_loading: true, and the API rejects cache_control on them. Mark the
-    // last loaded tool instead; the API strips deferred ones from the prefix.
-    const markerIndex = toolSchemas.findLastIndex(
-      schema => !('defer_loading' in schema && schema.defer_loading),
-    )
-    if (markerIndex >= 0) {
-      toolSchemas[markerIndex] = {
-        ...toolSchemas[markerIndex]!,
-        cache_control: getCacheControl({ querySource: options.querySource }),
-      }
-    }
-  }
 
   // Ensure prompt_caching_scope beta header is present when global cache is enabled.
   if (
@@ -1378,7 +1364,7 @@ async function* queryModel(
 
   // Determine global cache strategy for logging
   const globalCacheStrategy: GlobalCacheStrategy = useGlobalCacheFeature
-    ? needsToolBasedCacheMarker
+    ? hasLoadedMcpTools
       ? 'none'
       : 'system_prompt'
     : 'none'
@@ -1567,7 +1553,7 @@ async function* queryModel(
   logAPIPrefix(systemPrompt)
 
   let system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
-    skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
+    skipGlobalCacheForSystemPrompt: hasLoadedMcpTools,
     querySource: options.querySource,
   })
   // Build minimal context for detailed tracing (when beta tracing is enabled)
@@ -1576,8 +1562,8 @@ async function* queryModel(
   const extraToolSchemas = [...(options.extraToolSchemas ?? [])]
   if (advisorModel) {
     // Server tools must be in the tools array by API contract. Appended after
-    // toolSchemas (which carries the cache_control marker) so toggling /advisor
-    // only churns the small suffix, not the cached prefix.
+    // toolSchemas so toggling /advisor only churns the small suffix, not the
+    // cached prefix.
     extraToolSchemas.push({
       type: 'advisor_20260301',
       name: 'advisor',
@@ -1969,7 +1955,7 @@ async function* queryModel(
       )
       systemPrompt = withSystemPrefix(prompt)
       system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
-        skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
+        skipGlobalCacheForSystemPrompt: hasLoadedMcpTools,
         querySource: options.querySource,
       })
     }
