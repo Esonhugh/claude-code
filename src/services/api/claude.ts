@@ -1354,10 +1354,17 @@ async function* queryModel(
     needsToolBasedCacheMarker &&
     toolSchemas.length > 0
   ) {
-    const markerIndex = toolSchemas.length - 1
-    toolSchemas[markerIndex] = {
-      ...toolSchemas[markerIndex]!,
-      cache_control: getCacheControl({ querySource: options.querySource }),
+    // Deferred tools discovered through ToolSearch stay in the array with
+    // defer_loading: true, and the API rejects cache_control on them. Mark the
+    // last loaded tool instead; the API strips deferred ones from the prefix.
+    const markerIndex = toolSchemas.findLastIndex(
+      schema => !('defer_loading' in schema && schema.defer_loading),
+    )
+    if (markerIndex >= 0) {
+      toolSchemas[markerIndex] = {
+        ...toolSchemas[markerIndex]!,
+        cache_control: getCacheControl({ querySource: options.querySource }),
+      }
     }
   }
 

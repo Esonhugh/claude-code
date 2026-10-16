@@ -520,6 +520,87 @@ test('tool-based 1h cache markers add the extended TTL beta', async () => {
   }
 })
 
+test('tool-based cache marker skips deferred tools loaded through ToolSearch', async () => {
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { createAssistantMessage } = await import('../../utils/messages.js')
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  process.env.ENABLE_TOOL_SEARCH = 'true'
+  clearToolSchemaCache()
+  const pinned = {
+    name: 'mcp__corp__pinned',
+    isMcp: true,
+    alwaysLoad: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'pinned lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  const discovered = {
+    ...pinned,
+    name: 'mcp__corp__discovered',
+    alwaysLoad: false,
+  }
+  try {
+    const result = await queryModelWithoutStreaming({
+      messages: [
+        createUserMessage({ content: 'test' }),
+        createAssistantMessage({
+          content: [
+            {
+              type: 'tool_use',
+              id: 'search-1',
+              name: 'ToolSearch',
+              input: { query: 'corp', max_results: 5 },
+            },
+          ],
+        }),
+        createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'search-1',
+              content: [{ type: 'tool_reference', tool_name: discovered.name }],
+            },
+          ] as unknown as Parameters<typeof createUserMessage>[0]['content'],
+        }),
+      ],
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools: [ToolSearchTool, pinned, discovered],
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: [pinned, discovered],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+    expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+    const tools = requests.at(-1)!.tools ?? []
+    expect(tools.map(tool => ('name' in tool ? tool.name : undefined))).toEqual(
+      ['ToolSearch', pinned.name, discovered.name],
+    )
+    expect(tools.at(-1)).toMatchObject({ defer_loading: true })
+    expect(tools.at(-1)).not.toHaveProperty('cache_control')
+    expect(tools[1]).toMatchObject({
+      name: pinned.name,
+      cache_control: expect.objectContaining({ type: 'ephemeral' }),
+    })
+  } finally {
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
+
 test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
   const {createModModelComplete}=await import('../mods/modelAdapter.js')
   const {EFFORT_BETA_HEADER}=await import('../../constants/betas.js')
