@@ -6,6 +6,11 @@ import type { ModelSetting } from './model.js'
 let modelOverride: ModelSetting | undefined
 let settings: { model?: string; availableModels?: string[] } = {}
 let modelOverrides: Record<string, string> = {}
+let servedDefault: { model: string; orgConfigured: boolean } | undefined
+
+mock.module('./servedModelCatalog.js', () => ({
+  getServedDefaultModel: () => servedDefault,
+}))
 
 mock.module('../../bootstrap/state.js', () => ({
   getMainLoopModelOverride: () => modelOverride,
@@ -57,6 +62,7 @@ const {
   getPublicModelDisplayName,
   getMarketingNameForModel,
   renderDefaultModelSetting,
+  getClaudeAiUserDefaultModelDescription,
 } = await import('./model.js')
 
 const envKeys = [
@@ -71,6 +77,7 @@ beforeEach(() => {
   modelOverride = undefined
   settings = {}
   modelOverrides = {}
+  servedDefault = undefined
   for (const key of envKeys) delete process.env[key]
 })
 afterEach(() => {
@@ -92,6 +99,40 @@ describe('provider defaults and explicit model selection', () => {
     for (const model of ['claude-opus-4-20250514', 'claude-opus-4-1', 'Gateway/Custom-ID']) {
       expect(parseUserSpecifiedModel(model)).toBe(model)
     }
+  })
+
+  test('served default model replaces the tier default when this build can run it', () => {
+    servedDefault = { model: 'claude-mythos-5-1', orgConfigured: false }
+    expect(getDefaultMainLoopModel()).toBe('claude-mythos-5-1')
+    expect(getMainLoopModel()).toBe('claude-mythos-5-1')
+    expect(getClaudeAiUserDefaultModelDescription()).toBe('Mythos 5.1')
+
+    servedDefault = { model: 'claude-opus-5-5', orgConfigured: false }
+    expect(getClaudeAiUserDefaultModelDescription()).toBe('Opus 5.5 · Best for everyday, complex tasks')
+
+    servedDefault = { model: 'claude-mythos-5-1', orgConfigured: true }
+    expect(getClaudeAiUserDefaultModelDescription()).toBe('Mythos 5.1 · Org default')
+
+    settings = { model: 'sonnet' }
+    expect(getMainLoopModel()).toBe('claude-sonnet-5-5')
+  })
+
+  test('served default yields to env overrides, aliases and models this build cannot run', () => {
+    expect(getClaudeAiUserDefaultModelDescription()).toBe('Opus 5.5 · Best for everyday, complex tasks')
+
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = 'custom-opus'
+    servedDefault = { model: 'claude-mythos-5-1', orgConfigured: false }
+    expect(getDefaultMainLoopModel()).toBe('custom-opus')
+    delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+
+    for (const model of ['sonnet', 'claude-haiku-9-9']) {
+      servedDefault = { model, orgConfigured: false }
+      expect(getDefaultMainLoopModel()).toBe('claude-opus-5-5')
+    }
+
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+    servedDefault = { model: 'claude-mythos-5-1', orgConfigured: false }
+    expect(getDefaultMainLoopModel()).not.toBe('claude-mythos-5-1')
   })
 
   test('OpenAI defaults and role aliases resolve before transport', () => {

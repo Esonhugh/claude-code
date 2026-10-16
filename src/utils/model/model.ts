@@ -22,6 +22,7 @@ import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
+import { getServedDefaultModel } from './servedModelCatalog.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -178,7 +179,23 @@ export function getRuntimeMainLoopModel(params: {
 
 /** Provider fallback only; explicit session, environment and settings win. */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
-  return getDefaultOpusModel()
+  return getUsableServedDefaultModel()?.model ?? getDefaultOpusModel()
+}
+
+// Official builds take the served default unless an env override pins the
+// default family or the served model is an alias this build cannot vet.
+function getUsableServedDefaultModel():
+  | { model: ModelName; orgConfigured: boolean }
+  | undefined {
+  if (getAPIProvider() !== 'firstParty') return undefined
+  if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) return undefined
+  const served = getServedDefaultModel()
+  if (!served || isModelAlias(served.model.toLowerCase())) return undefined
+  const compiled = new Set<string>(Object.values(getModelStrings()))
+  if (!compiled.has(served.model) || !isModelAllowed(served.model)) {
+    return undefined
+  }
+  return served
 }
 
 /**
@@ -306,7 +323,16 @@ export function getClaudeAiUserDefaultModelDescription(
   const fastPricing = model === getModelStrings().opus55 && fastMode
     ? getOpusPricingSuffix(true)
     : ''
-  return `${renderModelName(model)} · For complex coding and agent work${fastPricing}`
+  if (getUsableServedDefaultModel()?.orgConfigured) {
+    return `${renderModelName(model)} · Org default`
+  }
+  const canonical = getCanonicalName(model)
+  const family = canonical.includes('opus')
+    ? ' · Best for everyday, complex tasks'
+    : canonical.includes('sonnet')
+      ? ' · Efficient for routine tasks'
+      : ''
+  return `${renderModelName(model)}${family}${fastPricing}`
 }
 
 export function renderDefaultModelSetting(

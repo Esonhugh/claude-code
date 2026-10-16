@@ -456,3 +456,27 @@ export function hasServedModel(model: string): boolean {
   const baseModel = model.replace(/\[(?:1|2)m\]$/i, '')
   return catalog.config.models.some(row => row.id === baseModel)
 }
+
+/**
+ * The account's default model as served in the selector state. An org-enforced
+ * default wins over the user's claude.ai selection.
+ */
+export function getServedDefaultModel():
+  | { model: string; orgConfigured: boolean }
+  | undefined {
+  const state = getServedModelCatalog()?.state
+  if (!state) return undefined
+  const enforced =
+    typeof state.org_enforced_default_model === 'string'
+      ? state.org_enforced_default_model.trim()
+      : ''
+  if (enforced) return { model: enforced, orgConfigured: true }
+  const model = typeof state.model === 'string' ? state.model.trim() : ''
+  if (!model) return undefined
+  return {
+    model,
+    orgConfigured:
+      state.selection_source === 'org_configuration' ||
+      state.selection_source === 'custom_role_configuration',
+  }
+}
