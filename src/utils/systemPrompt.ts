@@ -8,11 +8,21 @@ import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
 import { isEnvTruthy } from './envUtils.js'
-import { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
+import {
+  concatSystemPrompts,
+  type SystemPrompt,
+} from './systemPromptType.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
-export { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
+export {
+  asSystemPrompt,
+  concatSystemPrompts,
+  getSystemPromptSections,
+  withSystemPromptSections,
+  type SystemPrompt,
+  type SystemPromptSection,
+} from './systemPromptType.js'
 
 // Dead code elimination: conditional import for proactive mode.
 // Same pattern as prompts.ts — lazy require to avoid pulling the module
@@ -53,12 +63,12 @@ export function buildEffectiveSystemPrompt({
   toolUseContext: Pick<ToolUseContext, 'options'> &
     Partial<Pick<ToolUseContext, 'getAppState'>>
   customSystemPrompt: string | undefined
-  defaultSystemPrompt: string[]
+  defaultSystemPrompt: readonly string[]
   appendSystemPrompt: string | undefined
   overrideSystemPrompt?: string | null
 }): SystemPrompt {
   if (overrideSystemPrompt) {
-    return asSystemPrompt([overrideSystemPrompt])
+    return concatSystemPrompts([overrideSystemPrompt])
   }
   // Coordinator mode: use coordinator prompt instead of default
   // Use inline env check instead of coordinatorModule to avoid circular
@@ -72,10 +82,10 @@ export function buildEffectiveSystemPrompt({
     const { getCoordinatorSystemPrompt } =
       // eslint-disable-next-line @typescript-eslint/no-require-imports
       require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js')
-    return asSystemPrompt([
-      getCoordinatorSystemPrompt(),
-      ...(appendSystemPrompt ? [appendSystemPrompt] : []),
-    ])
+    return concatSystemPrompts(
+      [getCoordinatorSystemPrompt()],
+      appendSystemPrompt ? [appendSystemPrompt] : [],
+    )
   }
 
   const agentSystemPrompt = mainThreadAgentDefinition
@@ -108,24 +118,24 @@ export function buildEffectiveSystemPrompt({
     (feature('PROACTIVE') || feature('KAIROS')) &&
     isProactiveActive_SAFE_TO_CALL_ANYWHERE()
   ) {
-    return asSystemPrompt([
-      ...defaultSystemPrompt,
-      `\n# Custom Agent Instructions\n${agentSystemPrompt}`,
-      ...(appendSystemPrompt ? [appendSystemPrompt] : []),
-    ])
+    return concatSystemPrompts(
+      defaultSystemPrompt,
+      [`\n# Custom Agent Instructions\n${agentSystemPrompt}`],
+      appendSystemPrompt ? [appendSystemPrompt] : [],
+    )
   }
 
   const proactiveInstructions = customSystemPrompt
     ? getProactiveSection()
     : null
 
-  return asSystemPrompt([
-    ...(agentSystemPrompt
+  return concatSystemPrompts(
+    agentSystemPrompt
       ? [agentSystemPrompt]
       : customSystemPrompt
         ? [customSystemPrompt]
-        : defaultSystemPrompt),
-    ...(proactiveInstructions ? [proactiveInstructions] : []),
-    ...(appendSystemPrompt ? [appendSystemPrompt] : []),
-  ])
+        : defaultSystemPrompt,
+    proactiveInstructions ? [proactiveInstructions] : [],
+    appendSystemPrompt ? [appendSystemPrompt] : [],
+  )
 }

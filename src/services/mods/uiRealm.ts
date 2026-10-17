@@ -1,0 +1,221 @@
+// Executed inside each Mod VM: constructors and closures never become host globals.
+export function createModUiRealm(plugin: string, isProxy: (value: unknown) => boolean) {
+  type Props = Record<string, unknown>
+  type Node = { type: string; props?: Props; children?: unknown[]; [key: string]: unknown }
+  type Callback = (event: Props) => unknown
+  type Constructor = (props?: Props) => Node
+  const callbacks = new WeakMap<object, Callback>()
+
+  function ownProps(value: unknown): Props {
+    if (value === null || value === undefined) return {}
+    if (typeof value !== 'object' || isProxy(value) || Array.isArray(value)) throw new Error('Element props must be a non-proxy object')
+    const result: Props = {}
+    for (const key of Object.keys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)
+      if (!descriptor || !('value' in descriptor)) throw new Error('Element accessors are unsupported')
+      Object.defineProperty(result, key, { value: descriptor.value, enumerable: true, configurable: true, writable: true })
+    }
+    return result
+  }
+
+  function childrenOf(value: unknown, path = new Set<object>()): unknown[] {
+    if (isProxy(value)) throw new Error('UI proxies are unsupported')
+    if (value === null || value === undefined || typeof value === 'boolean') return []
+    if (Array.isArray(value)) {
+      if (path.has(value) || path.size >= 100) throw new Error('Cyclic or excessive UI children')
+      path.add(value)
+      const children: unknown[] = []
+      for (let index = 0; index < value.length; index++) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, index)
+        if (descriptor && !('value' in descriptor)) throw new Error('Element accessors are unsupported')
+        children.push(...childrenOf(descriptor?.value, path))
+      }
+      path.delete(value)
+      return children
+    }
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) throw new Error('Invalid element child')
+      return [String(value)]
+    }
+    if (typeof value !== 'string' && typeof value !== 'object') throw new Error('Invalid element child')
+    return [value]
+  }
+
+  function buttonText(children: unknown[], path = new Set<object>()): string {
+    let text = ''
+    for (const child of children) {
+      if (typeof child === 'string') {
+        text += child
+        continue
+      }
+      const node = ownProps(child)
+      if (node.type !== 'Text') throw new TypeError('Button children must be strings or Text')
+      if (path.has(child as object) || path.size >= 100) throw new Error('Cyclic or excessive Button children')
+      path.add(child as object)
+      if (Array.isArray(node.children)) text += buttonText(node.children, path)
+      path.delete(child as object)
+    }
+    return text
+  }
+
+  function validateSvg(props: Props): void {
+    const allowed = new Set(['source', 'alt', 'width', 'height', 'isInteractive'])
+    for (const key of Object.keys(props)) {
+      if (!allowed.has(key)) throw new Error(`Unsupported Svg prop ${key}`)
+    }
+    if (typeof props.source !== 'string') throw new Error('Svg source must be a string')
+    if (props.source.length > 131_072) throw new Error('Svg source exceeds 131072 characters')
+    const source = props.source.trim()
+    if (!/^<svg(?:\s[^<>]*?)?>[\s\S]*<\/svg>$/.test(source))
+      throw new Error('Svg source must be a complete SVG document')
+    if (/<\s*(?:script|foreignObject|iframe|object|embed)(?:\s|>)/i.test(source) ||
+        /\son[a-z][a-z0-9:_-]*\s*=/i.test(source) ||
+        /(?:href|src)\s*=\s*(['"])\s*(?:javascript:|data\s*:\s*text\/html)/i.test(source) ||
+        /<\s*style(?:\s|>)[\s\S]*(?:@import|url\s*\()/i.test(source))
+      throw new Error('Svg source contains active content')
+    if (typeof props.alt !== 'string') throw new Error('Svg alt must be a string')
+    for (const key of ['width', 'height']) {
+      const value = props[key]
+      if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value <= 0))
+        throw new Error(`Svg ${key} must be positive finite CSS pixels`)
+    }
+    if (props.isInteractive !== undefined && typeof props.isInteractive !== 'boolean')
+      throw new Error('Svg isInteractive must be a boolean')
+  }
+
+  function element(type: string): Constructor {
+    return Object.freeze((value: Props = {}) => {
+      const props = ownProps(value)
+      if (type === 'Svg') validateSvg(props)
+      const children = childrenOf(props.children)
+      if (type === 'Svg' && props.children !== undefined) throw new Error('Svg is a leaf element')
+      const hover = props.hover
+      const handlers = {
+        press: props.onPress,
+        input: props.onInput,
+        submit: props.onSubmit,
+        select: props.onSelect,
+        link: props.onLinkPress,
+      }
+      delete props.children
+      delete props.hover
+      delete props.onPress
+      delete props.onInput
+      delete props.onSubmit
+      delete props.onSelect
+      delete props.onLinkPress
+      let buttonChildren: unknown[] | undefined
+      let callback: Callback | undefined
+      if (type === 'Button') {
+        if (props.variant !== undefined && props.variant !== 'primary' && props.variant !== 'secondary')
+          throw new TypeError('Button variant must be primary or secondary')
+        if (props.role !== undefined && props.role !== 'dismiss')
+          throw new TypeError('Button role must be dismiss')
+        const text = buttonText(children)
+        buttonChildren = props.label === undefined && children.length === 1 && typeof children[0] === 'string'
+          ? [] : children
+        const label = props.label ?? (children.length === 0 ? undefined : text)
+        const key = props.key ?? (buttonChildren.length === 0 ? label : props.label)
+        if (typeof label !== 'string') throw new Error('Button requires a label or strings and Text')
+        if (typeof key !== 'string' || key === '') throw new Error('Button children require a non-empty key or explicit label')
+        props.label = label
+        props.key = key
+        if (typeof handlers.press !== 'function') throw new Error('Button requires an onPress callback')
+        const press = handlers.press as Callback
+        callback = event => press(event)
+      } else if (type === 'Select') {
+        if (typeof handlers.select !== 'function') throw new Error('Select requires an onSelect callback')
+        const select = handlers.select as (value: unknown, event: Props) => unknown
+        callback = event => select(event.value, event)
+      } else if (type === 'Input') {
+        if ((handlers.input !== undefined && typeof handlers.input !== 'function') ||
+          typeof handlers.submit !== 'function') throw new Error('Input requires onSubmit and callable callbacks')
+        const input = handlers.input as ((value: unknown, event: Props) => unknown) | undefined
+        const submit = handlers.submit as (value: unknown, event: Props) => unknown
+        callback = event => event.kind === 'submit'
+          ? submit(event.value, event)
+          : input?.(event.value, event)
+      } else if (type === 'Markdown' && handlers.link !== undefined) {
+        if (typeof handlers.link !== 'function') throw new Error('Markdown onLinkPress must be a callback')
+        if (typeof props.key !== 'string' || props.key.length === 0)
+          throw new Error('Markdown requires a non-empty key with onLinkPress')
+        const link = handlers.link as (link: unknown, event: Props) => unknown
+        callback = event => link(event.link, event)
+      }
+      const node: Node = { type, props: Object.freeze(props) }
+      if (type === 'Box' || type === 'Text' || (type === 'Link' && children.some(child => child !== '')))
+        node.children = Object.freeze(children) as unknown as unknown[]
+      if (type === 'Button' && buttonChildren?.length)
+        node.children = Object.freeze(buttonChildren) as unknown as unknown[]
+      if (hover !== undefined) node.hover = Object.freeze(ownProps(hover))
+      if (props.key !== undefined || callback ||
+          (node.hover as Props | undefined)?.scope !== undefined)
+        node.group = Object.freeze({ plugin })
+      if (callback) {
+        node.press = Object.freeze({ plugin, handle: 0 })
+        callbacks.set(node, callback)
+      }
+      return Object.freeze(node)
+    })
+  }
+
+  const terminal = Object.freeze(Object.fromEntries(
+    ['Box', 'Text', 'Button', 'Input', 'Select', 'Link', 'Code', 'Client', 'Markdown', 'Raster', 'Image'].map(name => [name, element(name)]),
+  )) as Readonly<Record<string, Constructor>>
+  const remote = Object.freeze({ ...terminal, Svg: element('Svg') })
+  const Fragment = Object.freeze((props: Props = {}) => terminal.Box!({ flexDirection: 'column', children: props.children }))
+  const h = Object.freeze((tag: unknown, props: unknown, ...children: unknown[]) => {
+    if (typeof tag !== 'function') throw new Error('JSX requires an element constructor')
+    const input = ownProps(props)
+    return tag({ ...input, ...(children.length ? { children } : {}) })
+  })
+
+  // Only a drawing owns callback handles. Cached, undrawn trees hold no host
+  // resources; forwarding a downstream drawing preserves its existing handles.
+  function materialize(value: unknown, keep: (callback: Callback) => number): unknown {
+    const drawn = new WeakMap<object, unknown>()
+    const path = new Set<object>()
+    function visit(value: unknown): unknown {
+      if (isProxy(value)) throw new Error('UI proxies are unsupported')
+      if (!value || typeof value !== 'object') return value
+      if (path.has(value)) throw new Error('Cyclic UI drawing')
+      if (path.size >= 100) throw new Error('Excessive UI drawing depth')
+      if (drawn.has(value)) return drawn.get(value)
+      path.add(value)
+      const array = Array.isArray(value)
+      const result: Record<string, unknown> | unknown[] = array ? [] : {}
+      let changed = false
+      for (const key of Object.keys(value)) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, key)
+        if (!descriptor || !('value' in descriptor)) throw new Error('Element accessors are unsupported')
+        const child = visit(descriptor.value)
+        changed ||= child !== descriptor.value
+        Object.defineProperty(result, key, { value: child, enumerable: true, configurable: true })
+      }
+      if (array) (result as unknown[]).length = value.length
+      const callback = callbacks.get(value)
+      if (callback) {
+        Object.defineProperty(result, 'press', { value: Object.freeze({ plugin, handle: keep(callback) }), enumerable: true })
+        changed = true
+      }
+      path.delete(value)
+      const output = changed ? Object.freeze(result) : value
+      drawn.set(value, output)
+      return output
+    }
+    return visit(value)
+  }
+
+  return Object.freeze({
+    h, Fragment, materialize,
+    resolve: Object.freeze((input: Props) => {
+      if (input.surface === 'terminal') return terminal
+      if (input.surface === 'desktop' || input.surface === 'vscode' || input.surface === 'mobile')
+        return Object.freeze(Object.fromEntries(Object.entries(remote).filter(([name]) =>
+          (input.surface === 'desktop' || name !== 'Client') &&
+          (input.surface !== 'mobile' || (name !== 'Input' && name !== 'Select')) &&
+          !['Raster', 'Image'].includes(name))))
+      throw new Error('Unknown UI surface')
+    }),
+  })
+}

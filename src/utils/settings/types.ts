@@ -264,6 +264,17 @@ export const SettingsSchema = lazySchema(() =>
         .enum(['accept', 'hold', 'refuse'])
         .optional()
         .describe('Admission policy for local peer messages. By default, matching permission classes are accepted; mismatches are held.'),
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(100_000)
+        .max(1_000_000)
+        .optional()
+        .describe('Context token window at which automatic compaction begins'),
+      managedSourcesBehavior: z
+        .enum(['first-wins', 'merge'])
+        .optional()
+        .describe('Controls whether lower-priority managed settings sources are merged.'),
       apiKeyHelper: z
         .string()
         .optional()
@@ -604,6 +615,20 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enabled plugins using plugin-id@marketplace-id format. Example: { "formatter@anthropic-tools": true }. Also supports extended format with version constraints.',
         ),
+      prependPlugins: z
+        .array(z.string())
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Mods whose hooks run outermost, in listed order. Only managed settings may order managed plugins; without managed settings, user settings may order their own plugins. Project, local, and flag sources are ignored.',
+        ),
+      appendPlugins: z
+        .array(z.string())
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Mods whose hooks run after user plugins and before builtins, in listed order. Uses the same source rules as prependPlugins; an ID in both lists is prepended.',
+        ),
       favoritePlugins: z
         .array(z.string())
         .optional()
@@ -687,6 +712,10 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Path to a script that outputs OpenTelemetry headers'),
+      tui: z
+        .enum(['default', 'fullscreen'])
+        .optional()
+        .describe('Terminal UI renderer. Changing this setting requires a restart.'),
       outputStyle: z
         .string()
         .optional()
@@ -734,6 +763,9 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Override spinner tips. tips: array of tip strings. excludeDefault: if true, only show custom tips (default: false).',
         ),
+      maxProseWidth: z.number().int().min(40).optional().catch(undefined).describe(
+        'Maximum terminal width of response prose. Minimum 40; tables and code keep the full width. Unset uses the full terminal width.',
+      ),
       syntaxHighlightingDisabled: z
         .boolean()
         .optional()
@@ -769,14 +801,40 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Enable the "ultracode" keyword trigger. Default: true.'),
+      workflowKeywordTriggerEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable the workflow keyword trigger. Default: true. Takes precedence over ultracodeKeywordTrigger.',
+        ),
+      skipWorkflowUsageWarning: z
+        .boolean()
+        .optional()
+        .describe('Skip the usage warning shown before a dynamic workflow runs. Default: false.'),
       enableWorkflows: z
         .boolean()
         .optional()
-        .describe('Enable dynamic Workflow tools. Default: false.'),
+        .describe('Enable or disable dynamic Workflow tools. Unset = on, except on the Pro plan.'),
+      disableWorkflows: z
+        .boolean()
+        .optional()
+        .describe('Disable dynamic Workflow tools, overriding enableWorkflows.'),
+      workflowSizeGuideline: z
+        .enum(['unrestricted', 'small', 'medium', 'large'])
+        .optional()
+        .describe(
+          'Advisory size guideline for the dynamic workflows Claude writes: "small" aims for fewer than 5 agents, "medium" fewer than 10, "large" fewer than 50, and "unrestricted" sends no guideline. Unset defaults to "medium", or "small" on Pro plans. A value here takes precedence over the "Dynamic workflow size" choice in /config. This is a guideline, not an enforced limit.',
+        ),
       advisorModel: z
         .string()
         .optional()
         .describe('Advisor model for the server-side advisor tool.'),
+      daybreak: z
+        .enum(['blue', 'red', 'off'])
+        .optional()
+        .describe(
+          'OpenAI Daybreak access program for Responses requests. Use off to explicitly select standard access.',
+        ),
       fastMode: z
         .boolean()
         .optional()
@@ -965,8 +1023,8 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe(
-          'Teams/Enterprise opt-in for channel notifications (MCP servers with the ' +
-            'claude/channel capability pushing inbound messages). Default off. ' +
+          'Managed-installation opt-in for channel notifications (MCP servers with the ' +
+            'claude/channel capability pushing inbound messages). Required when managed settings exist or on Team/Enterprise. ' +
             'Set true to allow; users then select servers via --channels.',
         ),
       // Org-level channel plugin allowlist. When set, REPLACES the
@@ -982,7 +1040,7 @@ export const SettingsSchema = lazySchema(() =>
         )
         .optional()
         .describe(
-          'Teams/Enterprise allowlist of channel plugins. When set, ' +
+          'Managed allowlist of channel plugins. When set, ' +
             'replaces the default Anthropic allowlist — admins decide which ' +
             'plugins may push inbound messages. Undefined falls back to the default. ' +
             'Requires channelsEnabled: true.',
@@ -1122,11 +1180,15 @@ export const SettingsSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe(
-          'Glob patterns or absolute paths of CLAUDE.md files to exclude from loading. ' +
+          'Glob patterns or absolute paths of instruction files to exclude from loading, including AGENTS.md, CLAUDE.md, CLAUDE.local.md, rules, and imported files. ' +
             'Patterns are matched against absolute file paths using picomatch. ' +
             'Only applies to User, Project, and Local memory types (Managed/policy files cannot be excluded). ' +
-            'Examples: "/home/user/monorepo/CLAUDE.md", "**/code/CLAUDE.md", "**/some-dir/.claude/rules/**"',
+            'Examples: "/home/user/monorepo/AGENTS.md", "**/AGENTS.md", "**/code/CLAUDE.md", "**/some-dir/.claude/rules/**"',
         ),
+      disableSideloadFlags: z
+        .boolean()
+        .optional()
+        .describe('Administrator-managed restriction on sideloaded plugins, custom agents, and server-delivered MCP configurations. Only honored from managed settings.'),
       pluginTrustMessage: z
         .string()
         .optional()

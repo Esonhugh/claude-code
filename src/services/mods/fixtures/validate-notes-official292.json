@@ -1,0 +1,31 @@
+{
+  "officialVersion": "2.1.292",
+  "officialBinarySha256": "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
+  "source": "Fresh official native plugin validate on unchanged author examples; hooks and calls notes only, excluding warnings and other validation output.",
+  "examples": [
+    {
+      "name": "token-weather",
+      "notes": [
+        "./token-weather.mjs hooks: session.start, turn.complete, ui.render{component=AbovePrompt}",
+        "./token-weather.mjs calls: $.session.usage (via takeReading), $.state.get, $.state.set (via takeReading), $.ui.resolve"
+      ],
+      "capturedStdoutSha256": "1fbb09da4a7d64c753b02bff6400fbd5266a13c989dd1e4c4d9765c632bcc6c8"
+    },
+    {
+      "name": "blast-radius",
+      "notes": [
+        "./blast-radius.mjs hooks: tool.call{tool=Bash}, ui.render{component=Pane, requestId=blast-radius}, ui.render{component=AbovePrompt}",
+        "./blast-radius.mjs calls: $.process.run, $.session.cwd, $.ui.close, $.ui.invalidate, $.ui.open, $.ui.resolve"
+      ],
+      "capturedStdoutSha256": "0b61d2b7d5c356083826f076c0f17b076204d8d88068d7f2156a4a7d8ee9b3bf"
+    },
+    {
+      "name": "replay-theater",
+      "notes": [
+        "./replay-theater.mjs hooks: tool.call, turn.start, turn.complete, session.start, command.run{command=replay}, ui.render{component=AbovePrompt}, ui.render{component=Pane, requestId=replay-theater}",
+        "./replay-theater.mjs calls: $.command.register, $.fs.read (via stepsFor), $.state.get, $.state.set, $.ui.close, $.ui.open (via openReplay), $.ui.resolve"
+      ],
+      "capturedStdoutSha256": "9ec002c77f0bbd1f8381c6fa385390c271798783f6f26410e5febebab6dd32e8"
+    }
+  ]
+}

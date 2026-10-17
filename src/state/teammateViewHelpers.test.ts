@@ -4,7 +4,14 @@ import { getDefaultAppState } from './AppStateStore.js'
 import { canEvictTerminalTask } from '../utils/task/retention.js'
 import { applyTaskOffsetsAndEvictions, evictTerminalTask, generateTaskAttachments, PANEL_GRACE_MS } from '../utils/task/framework.js'
 import { createUserMessage } from '../utils/messages.js'
-import { enterTeammateView, exitTeammateView } from './teammateViewHelpers.js'
+import { getViewableTeammatesSorted } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
+import {
+  enterTeammateView,
+  exitTeammateView,
+  dismissTerminalAgent,
+} from './teammateViewHelpers.js'
 
 let state = getDefaultAppState()
 state = {
@@ -43,6 +50,91 @@ state = {
 const setState = (updater: (prev: typeof state) => typeof state): void => {
   state = updater(state)
 }
+
+const localAbortController = new AbortController()
+const localAgent: LocalAgentTaskState = {
+  id: 'agent-1',
+  type: 'local_agent',
+  status: 'running',
+  description: 'Inspect lifecycle',
+  prompt: 'Inspect lifecycle',
+  startTime: 1,
+  outputFile: '.claude/tasks/agent-1.output',
+  outputOffset: 0,
+  notified: false,
+  agentId: 'agent-1',
+  agentType: 'general-purpose',
+  spawnDepth: 1,
+  abortController: localAbortController,
+  retrieved: false,
+  lastReportedToolCount: 0,
+  lastReportedTokenCount: 0,
+  isBackgrounded: true,
+  pendingMessages: [],
+  retain: false,
+  diskLoaded: false,
+}
+const siblingAgent: LocalAgentTaskState = {
+  ...localAgent,
+  id: 'agent-2',
+  agentId: 'agent-2',
+  description: 'Remain untouched',
+  prompt: 'Remain untouched',
+  abortController: new AbortController(),
+}
+state = {
+  ...state,
+  tasks: {
+    ...state.tasks,
+    [localAgent.id]: localAgent,
+    [siblingAgent.id]: siblingAgent,
+  },
+}
+const siblingBeforeStop = state.tasks[siblingAgent.id]
+dismissTerminalAgent(localAgent.id, setState)
+assert.equal(state.tasks[localAgent.id]?.status, 'running')
+assert.equal(localAbortController.signal.aborted, false)
+assert.equal(state.tasks[siblingAgent.id], siblingBeforeStop)
+
+state = {
+  ...state,
+  tasks: {
+    ...state.tasks,
+    [localAgent.id]: {
+      ...localAgent,
+      status: 'killed',
+      endTime: 2,
+      retain: true,
+    },
+  },
+  viewingAgentTaskId: localAgent.id,
+  viewSelectionMode: 'viewing-agent',
+}
+dismissTerminalAgent(localAgent.id, setState)
+assert.equal((state.tasks[localAgent.id] as LocalAgentTaskState).evictAfter, 0)
+assert.equal(state.viewingAgentTaskId, undefined)
+assert.equal(state.viewSelectionMode, 'none')
+assert.equal(state.tasks[siblingAgent.id], siblingBeforeStop)
+
+state = {
+  ...state,
+  viewingAgentTaskId: 'teammate-1',
+  viewSelectionMode: 'viewing-agent',
+}
+const teammateTranscript = (
+  state.tasks['teammate-1'] as InProcessTeammateTaskState
+).messages
+dismissTerminalAgent('teammate-1', setState)
+const dismissedTeammate = state.tasks[
+  'teammate-1'
+] as InProcessTeammateTaskState
+assert.equal(dismissedTeammate.evictAfter, 0)
+assert.equal(dismissedTeammate.retain, false)
+assert.equal(dismissedTeammate.messages, teammateTranscript)
+assert.deepEqual(getViewableTeammatesSorted(state.tasks), [])
+assert.equal(state.viewingAgentTaskId, undefined)
+assert.equal(state.viewSelectionMode, 'none')
+assert.equal(state.tasks[siblingAgent.id], siblingBeforeStop)
 
 const teammate = state.tasks['teammate-1']!
 assert.equal(teammate.type, 'in_process_teammate')

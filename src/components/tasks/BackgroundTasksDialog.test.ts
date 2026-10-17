@@ -7,11 +7,13 @@ import stripAnsi from 'strip-ansi'
 
 import type { TaskStateBase } from '../../Task.js'
 import type { ToolUseContext } from '../../Tool.js'
+import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import type { TerminalTaskState } from '../../tasks/TerminalTask.js'
 import type { LocalShellTaskState } from '../../tasks/LocalShellTask/guards.js'
 import { render } from '../../ink.js'
 import { getDefaultAppState } from '../../state/AppState.js'
 import { AppStateProvider } from '../../state/AppState.js'
+import type { AppState } from '../../state/AppStateStore.js'
 import { getBackgroundTasksDialogInitialState } from './backgroundTasksDialogState.js'
 
 function createTaskBase(id: string, description: string, startTime: number): TaskStateBase {
@@ -198,7 +200,7 @@ const retainedTeammate = {
 assert.deepEqual(getBackgroundTasksDialogInitialState({ tasks: { worker: retainedTeammate } }).viewState,
   { mode: 'list' })
 
-const { isViewableTeammate, getViewableTeammatesSorted } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
+const { injectUserMessageToTeammate, isViewableTeammate, getViewableTeammatesSorted } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
 for (const status of ['pending', 'running', 'completed', 'failed', 'killed'] as const) {
   for (const retention of [{}, { retain: true }, { retain: false, evictAfter: Date.now() + 30_000 }]) {
     const task = { ...retainedTeammate, retain: undefined, status, ...retention }
@@ -207,6 +209,40 @@ for (const status of ['pending', 'running', 'completed', 'failed', 'killed'] as 
 }
 const zTeammate = { ...retainedTeammate, id: 'z', identity: { ...retainedTeammate.identity, agentName: 'z' } }
 assert.deepEqual(getViewableTeammatesSorted({ z: zTeammate, a: retainedTeammate }).map(t => t.id), ['worker', 'z'])
+
+for (const status of ['completed', 'failed', 'killed'] as const) {
+  let terminalState: AppState = {
+    ...getDefaultAppState(),
+    tasks: { worker: { ...retainedTeammate, status, pendingUserMessages: [] } },
+  }
+  const injected = injectUserMessageToTeammate(
+    'worker',
+    `${status} unsent input`,
+    updater => { terminalState = updater(terminalState) },
+  )
+  const task = terminalState.tasks.worker as InProcessTeammateTaskState
+  assert.equal(injected, false)
+  assert.deepEqual(task.pendingUserMessages, [])
+  assert.equal(task.messages, retainedMessages, 'rejected input must not appear as a sent transcript message')
+}
+
+let runningState: AppState = {
+  ...getDefaultAppState(),
+  tasks: { worker: { ...retainedTeammate, status: 'running' as const, pendingUserMessages: [] } },
+}
+assert.equal(injectUserMessageToTeammate(
+  'worker',
+  'live input',
+  updater => { runningState = updater(runningState) },
+), true)
+const runningTask = runningState.tasks.worker as InProcessTeammateTaskState
+assert.deepEqual(runningTask.pendingUserMessages, ['live input'])
+const runningMessage = runningTask.messages?.at(-1)
+assert.equal(runningMessage?.type, 'user')
+assert.equal(
+  runningMessage?.type === 'user' ? runningMessage.message.content : undefined,
+  'live input',
+)
 
 const { useAppState, useSetAppState } = await import('../../state/AppState.js')
 const { useBackgroundTaskNavigation } = await import('../../hooks/useBackgroundTaskNavigation.js')
@@ -312,6 +348,7 @@ chalk.level = previousColorLevel
 const { default: PromptInput } = await import('../PromptInput/PromptInput.js')
 const onShowMessageSelector = mock(() => {})
 let promptInputValue = ''
+let setLocalJSXCommandActive: (active: boolean) => void
 function PromptHarness() {
   liveState = useAppState(s => s)
   updateState = useSetAppState()
@@ -319,12 +356,14 @@ function PromptHarness() {
   const [input, setInput] = React.useState('')
   promptInputValue = input
   const [helpOpen, setHelpOpen] = React.useState(false)
+  const [isLocalJSXCommandActive, setIsLocalJSXCommandActive] = React.useState(false)
+  setLocalJSXCommandActive = setIsLocalJSXCommandActive
   return React.createElement(PromptInput, {
     debug: false, ideSelection: undefined,
     toolPermissionContext: liveState.toolPermissionContext,
     setToolPermissionContext: () => {}, apiKeyStatus: 'valid',
     commands: [], agents: [], enableLocalIOCompletions: false,
-    isLoading: false, verbose: false, messages: retainedMessages,
+    isLoading: false, isAssistantResponding: false, verbose: false, messages: retainedMessages,
     onAutoUpdaterResult: () => {}, autoUpdaterResult: null,
     input, onInputChange: setInput, mode: 'prompt', onModeChange: () => {},
     stashedPrompt: undefined, setStashedPrompt: () => {}, submitCount: 0,
@@ -334,6 +373,7 @@ function PromptHarness() {
     getToolUseContext: () => { throw new Error('Unexpected tool execution') },
     onSubmit: async () => { throw new Error('Unexpected prompt submission') },
     isSearchingHistory: false, setIsSearchingHistory: () => {}, helpOpen, setHelpOpen,
+    isLocalJSXCommandActive,
   })
 }
 test('PromptInput footer keeps completed teammate pills through Escape and grace-period reopening', async () => {
@@ -404,8 +444,24 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     assert.equal(liveState.footerSelection, null, 'selecting main clears footer selection')
     await pressPromptKey('\x1b')
     assert.equal(onShowMessageSelector.mock.calls.length, 0, 'teammate Escape must not arm the first main Escape')
+    await new Promise(resolve => setTimeout(resolve, 850))
+    promptIn.push('\x1b\x1b')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    await flush()
+    assert.equal(onShowMessageSelector.mock.calls.length, 1, 'rapid main double Escape still opens Rewind')
+
+    onShowMessageSelector.mockClear()
+    setLocalJSXCommandActive!(true)
+    await flush()
     await pressPromptKey('\x1b')
-    assert.equal(onShowMessageSelector.mock.calls.length, 1, 'normal main double Escape still opens Rewind')
+    await pressPromptKey('\x1b')
+    assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not open Rewind')
+    setLocalJSXCommandActive!(false)
+    await flush()
+    await pressPromptKey('\x1b')
+    assert.equal(onShowMessageSelector.mock.calls.length, 0, 'pane-owned Escape must not arm the first composer Escape')
+    await pressPromptKey('\x1b')
+    assert.equal(onShowMessageSelector.mock.calls.length, 1, 'second composer-owned Escape opens Rewind once')
 
     await pressPromptKey('\x1b[1;2B')
     await pressPromptKey('\x1b[1;2B')
@@ -478,4 +534,51 @@ test('PromptInput footer keeps completed teammate pills through Escape and grace
     disposeKeybindingWatcher()
   }
 })
+test.each(['running', 'completed', 'failed', 'killed'] as const)(
+  'viewed %s local agent does not leave an empty footer segment',
+  async status => {
+    const { PromptInputFooterLeftSide } = await import('../PromptInput/PromptInputFooterLeftSide.js')
+    const state = getDefaultAppState()
+    const localAgent: import('../../tasks/LocalAgentTask/LocalAgentTask.js').LocalAgentTaskState = {
+      id: 'local-footer', type: 'local_agent', status,
+      description: 'Footer probe', prompt: 'Footer probe',
+      startTime: 1, endTime: status === 'running' ? undefined : 2,
+      outputFile: '', outputOffset: 0, notified: true,
+      agentId: 'local-footer', agentType: 'general-purpose', spawnDepth: 1,
+      abortController: new AbortController(), retrieved: false,
+      lastReportedToolCount: 0, lastReportedTokenCount: 0,
+      isBackgrounded: true, pendingMessages: [], retain: true, diskLoaded: false,
+    }
+    const toolPermissionContext = { ...state.toolPermissionContext, mode: 'bypassPermissions' as const }
+    const footerOut = new TestStdout()
+    const footer = await render(React.createElement(AppStateProvider,
+      { initialState: {
+        ...state, toolPermissionContext, tasks: { [localAgent.id]: localAgent },
+        viewingAgentTaskId: localAgent.id, viewSelectionMode: 'viewing-agent',
+      } } as unknown as React.ComponentProps<typeof AppStateProvider>,
+      React.createElement(KeybindingSetup, null, React.createElement(PromptInputFooterLeftSide, {
+        exitMessage: { show: false }, vimMode: undefined, mode: 'prompt',
+        toolPermissionContext, suppressHint: false, isLoading: false,
+        tasksSelected: false, teamsSelected: false, tmuxSelected: false,
+        isSearching: false, historyQuery: '', setHistoryQuery: () => {}, historyFailedMatch: false,
+      }))), {
+      stdout: footerOut as unknown as NodeJS.WriteStream,
+      stdin: new TestStdin() as unknown as NodeJS.ReadStream,
+      patchConsole: false, exitOnCtrlC: false,
+    })
+    try {
+      await flush()
+      const output = stripAnsi(footerOut.output)
+      assert.match(output, /bypass permissions on/)
+      assert.match(output, /↓ to manage/)
+      assert.doesNotMatch(output, /·\s*·/)
+      if (status !== 'running') assert.doesNotMatch(output, /\bagents?\b/)
+    } finally {
+      footer.unmount()
+      footer.cleanup()
+      const { disposeKeybindingWatcher } = await import('../../keybindings/loadUserBindings.js')
+      disposeKeybindingWatcher()
+    }
+  },
+)
 console.log('BackgroundTasksDialog.test.ts passed')

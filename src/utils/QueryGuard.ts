@@ -100,6 +100,10 @@ export class QueryGuard {
     return this._status !== 'idle'
   }
 
+  get isDispatching(): boolean {
+    return this._status === 'dispatching'
+  }
+
   get generation(): number {
     return this._generation
   }

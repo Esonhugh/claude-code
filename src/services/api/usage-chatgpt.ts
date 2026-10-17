@@ -1,5 +1,6 @@
 import { randomUUID } from 'crypto'
 import axios from 'axios'
+import { z } from 'zod'
 import {
   formatOpenAIPlanName,
   getChatGPTOAuthInfo,
@@ -11,6 +12,7 @@ import type {
   ChatGPTMonthlyCreditLimit,
   ChatGPTUsageCredits,
   RateLimit,
+  RateLimitResetCreditsDetails,
   RateLimitResetResult,
   UsageLimit,
   Utilization,
@@ -46,6 +48,22 @@ export function setAuthoritativeChatGPTPlanTypeForTest(
 ): void {
   authoritativePlanType = planType
 }
+
+const rateLimitResetCreditsDetailsSchema = z.object({
+  available_count: z.number(),
+  credits: z.array(
+    z.object({
+      id: z.string(),
+      reset_type: z.string(),
+      status: z.string(),
+      granted_at: z.string(),
+      expires_at: z.string().nullable().optional(),
+      title: z.string().nullable().optional(),
+      redeemed_at: z.string().nullable().optional(),
+    }),
+  ),
+  total_earned_count: z.number().nullable().optional(),
+})
 
 type ChatGPTUsageResponse = {
   plan_type?: string | null
@@ -123,13 +141,28 @@ export async function fetchChatGPTUtilization(): Promise<Utilization | null> {
   return mapChatGPTUsageToUtilization(data)
 }
 
-export async function consumeChatGPTRateLimitResetCredit(): Promise<RateLimitResetResult | null> {
-  const redeemRequestId = randomUUID()
+export async function fetchChatGPTRateLimitResetCredits(): Promise<RateLimitResetCreditsDetails | null> {
+  return requestWithChatGPTOAuth(async headers => {
+    const response = await axios.get<unknown>(
+      'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits',
+      { headers, timeout: 5000 },
+    )
+    return rateLimitResetCreditsDetailsSchema.parse(response.data)
+  })
+}
+
+export async function consumeChatGPTRateLimitResetCredit(
+  creditId?: string,
+): Promise<RateLimitResetResult | null> {
+  const body = {
+    redeem_request_id: randomUUID(),
+    ...(creditId === undefined ? {} : { credit_id: creditId }),
+  }
 
   return requestWithChatGPTOAuth(async headers => {
     const response = await axios.post<RateLimitResetResult>(
       'https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume',
-      { redeem_request_id: redeemRequestId },
+      body,
       {
         headers,
         timeout: 5000,

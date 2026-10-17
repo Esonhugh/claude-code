@@ -6,7 +6,9 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isMouseClicksDisabled } from '../../utils/fullscreen.js'
 import { logError } from '../../utils/log.js'
 import { EventEmitter } from '../events/emitter.js'
+import type { ClickDisposition, ClickModifiers } from '../events/click-event.js'
 import { InputEvent } from '../events/input-event.js'
+import { PointerEvent } from '../events/pointer-event.js'
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js'
 import {
   INITIAL_STATE,
@@ -16,6 +18,7 @@ import {
   parseMultipleKeypresses,
 } from '../parse-keypress.js'
 import reconciler from '../reconciler.js'
+import { recordEvidenceInputRead, setEvidenceCursorVisible } from '../terminalEvidence.js'
 import {
   finishSelection,
   hasSelection,
@@ -24,14 +27,17 @@ import {
 } from '../selection.js'
 import {
   isXtermJs,
+  getProgramStatusSupport,
+  settleProgramStatusSupport,
   setXtversionName,
   supportsExtendedKeys,
 } from '../terminal.js'
 import {
   getTerminalFocused,
+  getTerminalFocusGainedAt,
   setTerminalFocused,
 } from '../terminal-focus-state.js'
-import { TerminalQuerier, xtversion } from '../terminal-querier.js'
+import { TerminalQuerier, xtversion, programStatusQuery } from '../terminal-querier.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -84,15 +90,17 @@ type Props = {
   // so the handler is always wired but dormant until tracking is on.
   readonly selection: SelectionState
   readonly onSelectionChange: () => void
+  readonly onSelectionStart?: (col: number, row: number) => void
   // Dispatch a click at (col, row) — hit-tests the DOM tree and bubbles
   // onClick handlers. Returns true if a DOM handler consumed the click.
   // No-op (returns false) outside fullscreen mode (Ink.dispatchClick
   // gates on altScreenActive).
-  readonly onClickAt: (col: number, row: number) => boolean
+  readonly onClickAt: (col: number, row: number, isWindowActivation?: boolean, mods?: ClickModifiers) => boolean | ClickDisposition
   // Dispatch hover (onMouseEnter/onMouseLeave) as the pointer moves over
   // DOM elements. Called for mode-1003 motion events with no button held.
   // No-op outside fullscreen (Ink.dispatchHover gates on altScreenActive).
   readonly onHoverAt: (col: number, row: number) => void
+  readonly onHoverLost?: () => void
   // Look up the OSC 8 hyperlink at (col, row) synchronously at click
   // time. Returns the URL or undefined. The browser-open is deferred by
   // MULTI_CLICK_TIMEOUT_MS so double-click can cancel it.
@@ -169,6 +177,9 @@ export default class App extends PureComponent<Props, State> {
   lastClickCol = -1
   lastClickRow = -1
   clickCount = 0
+  pressIsWindowActivation = false
+  windowActivationClickArmed = true
+  lastActivationInputTime = Number.NEGATIVE_INFINITY
   // Deferred hyperlink-open timer — cancelled if a second click arrives
   // within MULTI_CLICK_TIMEOUT_MS (so double-clicking a hyperlink selects
   // the word without also opening the browser). DOM onClick dispatch is
@@ -184,6 +195,8 @@ export default class App extends PureComponent<Props, State> {
   // ssh reconnect, laptop wake) and trigger terminal mode re-assert.
   // Initialized to now so startup doesn't false-trigger.
   lastStdinTime = Date.now()
+  // When the stdin read that produced the current input batch happened.
+  inputReceivedAt = performance.now()
 
   // Determines if TTY is supported on the provided stdin
   isRawModeSupported(): boolean {
@@ -196,6 +209,7 @@ export default class App extends PureComponent<Props, State> {
         value={{
           columns: this.props.terminalColumns,
           rows: this.props.terminalRows,
+          global: {columns:this.props.terminalColumns,rows:this.props.terminalRows,conversationColumns:this.props.terminalColumns},
         }}
       >
         <AppContext.Provider
@@ -241,12 +255,14 @@ export default class App extends PureComponent<Props, State> {
       !isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)
     ) {
       this.props.stdout.write(HIDE_CURSOR)
+      setEvidenceCursorVisible(false)
     }
   }
 
   override componentWillUnmount() {
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR)
+      setEvidenceCursorVisible(true)
     }
 
     // Clear any pending timers
@@ -318,15 +334,21 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
+          const askProgramStatus = getProgramStatusSupport() === 'pending'
           void Promise.all([
             this.querier.send(xtversion()),
+            askProgramStatus ? this.querier.send(programStatusQuery()) : Promise.resolve(undefined),
             this.querier.flush(),
-          ]).then(([r]) => {
+          ]).then(([r, psp]) => {
             if (r) {
               setXtversionName(r.name)
               logForDebugging(`XTVERSION: terminal identified as "${r.name}"`)
             } else {
               logForDebugging('XTVERSION: no reply (terminal ignored query)')
+            }
+            if (askProgramStatus) {
+              settleProgramStatusSupport(psp !== undefined)
+              logForDebugging(psp ? 'probe: OSC 7501 reply' : 'probe: no reply to OSC 7501 ; ?')
             }
           })
         })
@@ -355,8 +377,14 @@ export default class App extends PureComponent<Props, State> {
     // Clear the timer reference
     this.incompleteEscapeTimer = null
 
-    // Only proceed if we have incomplete sequences
-    if (!this.keyParseState.incomplete) return
+    // Only proceed if there is neither an incomplete sequence nor an open
+    // bracketed paste. A paste start is itself a complete token, so its payload
+    // can be buffered while `incomplete` is empty.
+    if (
+      !this.keyParseState.incomplete &&
+      this.keyParseState.mode === 'NORMAL'
+    )
+      return
 
     // Fullscreen: if stdin has data waiting, it's almost certainly the
     // continuation of the buffered sequence (e.g. `[<64;74;16M` after a
@@ -374,22 +402,27 @@ export default class App extends PureComponent<Props, State> {
       return
     }
 
-    // Process incomplete as a flush operation (input=null)
-    // This reuses all existing parsing logic
-    this.processInput(null)
+    // A render that blocked the loop past the timeout leaves the rest of the
+    // sequence in the kernel buffer, where readableLength cannot see it. Flush
+    // only after this loop turn's I/O poll has had a chance to read it.
+    setImmediate(() => {
+      if (this.incompleteEscapeTimer) return
+      if (!this.keyParseState.incomplete && this.keyParseState.mode === 'NORMAL') return
+      // Process incomplete as a flush operation (input=null)
+      // This reuses all existing parsing logic
+      this.processInput(null)
+    })
   }
 
   // Process input through the parser and handle the results
-  processInput = (input: string | Buffer | null): void => {
+  processInput = (input: string | Buffer | null, receivedAt = performance.now()): void => {
     // Parse input using our state machine
     const [keys, newState] = parseMultipleKeypresses(this.keyParseState, input)
     this.keyParseState = newState
+    this.inputReceivedAt = receivedAt
 
-    // Process ALL keys in a SINGLE discreteUpdates call to prevent
-    // "Maximum update depth exceeded" error when many keys arrive at once
-    // (e.g., from paste operations or holding keys rapidly).
-    // This batches all state updates from handleInput and all useInput
-    // listeners together within one high-priority update context.
+    // Keep one priority scope for this read. The dispatcher commits between
+    // semantic inputs so later keys see updated handlers and focus.
     if (keys.length > 0) {
       reconciler.discreteUpdates(
         processKeysInBatch,
@@ -400,18 +433,30 @@ export default class App extends PureComponent<Props, State> {
       )
     }
 
-    // If we have incomplete escape sequences, set a timer to flush them
-    if (this.keyParseState.incomplete) {
-      // Cancel any existing timer first
-      if (this.incompleteEscapeTimer) {
-        clearTimeout(this.incompleteEscapeTimer)
+    // Flush incomplete escape sequences and unterminated bracketed pastes.
+    // Paste start is a complete token, so an open paste may have no tokenizer
+    // buffer even though all subsequent input is still being withheld.
+    if (
+      this.keyParseState.incomplete ||
+      this.keyParseState.mode !== 'NORMAL'
+    ) {
+      // Once an unterminated paste has released its first payload, keep the
+      // recovery deadline fixed. Otherwise a steady stream of ordinary input
+      // can postpone the second flush forever and keep swallowing controls.
+      if (
+        this.keyParseState.mode !== 'RECOVERING_PASTE' ||
+        !this.incompleteEscapeTimer
+      ) {
+        if (this.incompleteEscapeTimer) {
+          clearTimeout(this.incompleteEscapeTimer)
+        }
+        this.incompleteEscapeTimer = setTimeout(
+          this.flushIncomplete,
+          this.keyParseState.mode !== 'NORMAL'
+            ? this.PASTE_TIMEOUT
+            : this.NORMAL_TIMEOUT,
+        )
       }
-      this.incompleteEscapeTimer = setTimeout(
-        this.flushIncomplete,
-        this.keyParseState.mode === 'IN_PASTE'
-          ? this.PASTE_TIMEOUT
-          : this.NORMAL_TIMEOUT,
-      )
     }
   }
 
@@ -425,11 +470,15 @@ export default class App extends PureComponent<Props, State> {
       this.props.onStdinResume?.()
     }
     this.lastStdinTime = now
+    // Every chunk in this read was already waiting; render work between chunks must not
+    // count as time between them (wheel acceleration measures that gap).
+    const receivedAt = performance.now()
     try {
       let chunk
       while ((chunk = this.props.stdin.read() as string | null) !== null) {
+        recordEvidenceInputRead(chunk)
         // Process the input chunk
-        this.processInput(chunk)
+        this.processInput(chunk, receivedAt)
       }
     } catch (error) {
       // In Bun, an uncaught throw inside a stream 'readable' handler can
@@ -477,7 +526,16 @@ export default class App extends PureComponent<Props, State> {
   handleTerminalFocus = (isFocused: boolean): void => {
     // setTerminalFocused notifies subscribers: TerminalFocusProvider (context)
     // and Clock (interval speed) — no App setState needed.
+    if (!isFocused || Date.now() - this.lastActivationInputTime >= 400)
+      this.windowActivationClickArmed = true
     setTerminalFocused(isFocused)
+  }
+
+  consumeWindowActivationLatch(now: number): boolean {
+    this.lastActivationInputTime = now
+    if (!this.windowActivationClickArmed) return false
+    this.windowActivationClickArmed = false
+    return true
   }
 
   handleSuspend = (): void => {
@@ -500,6 +558,7 @@ export default class App extends PureComponent<Props, State> {
     // shell prompt while suspended.
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR + DFE + DISABLE_MOUSE_TRACKING)
+      setEvidenceCursorVisible(true)
     }
 
     // Emit suspend event for Claude Code to handle. Mostly just has a notification
@@ -518,6 +577,7 @@ export default class App extends PureComponent<Props, State> {
       if (this.props.stdout.isTTY) {
         if (!isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
           this.props.stdout.write(HIDE_CURSOR)
+          setEvidenceCursorVisible(false)
         }
         // Re-enable focus reporting to restore terminal state
         this.props.stdout.write(EFE)
@@ -534,8 +594,18 @@ export default class App extends PureComponent<Props, State> {
   }
 }
 
-// Helper to process all keys within a single discrete update context.
-// discreteUpdates expects (fn, a, b, c, d) -> fn(a, b, c, d)
+function isSemanticInput(item: ParsedInput): boolean {
+  if (item.kind === 'response') return false
+  if (item.kind === 'mouse') return (item.button & 0x20) === 0
+  return !['wheelup', 'wheeldown', 'mouse'].includes(item.name)
+}
+
+function flushInputUpdates(): void {
+  // @ts-ignore flushSyncWork exists in react-reconciler but not in its types
+  reconciler.flushSyncWork()
+}
+
+// discreteUpdates keeps the whole read in one priority scope.
 function processKeysInBatch(
   app: App,
   items: ParsedInput[],
@@ -559,7 +629,15 @@ function processKeysInBatch(
     updateLastInteractionTime()
   }
 
+  const flushBetweenInputs = items.filter(isSemanticInput).length > 1
+  let processedSemanticInput = false
+
   for (const item of items) {
+    if (isSemanticInput(item)) {
+      if (flushBetweenInputs && processedSemanticInput) flushInputUpdates()
+      processedSemanticInput = true
+    }
+
     // Terminal responses (DECRPM, DA1, OSC replies, etc.) are not user
     // input — route them to the querier to resolve pending promises.
     if (item.kind === 'response') {
@@ -571,6 +649,8 @@ function processKeysInBatch(
     // Terminal sends 1-indexed col/row; convert to 0-indexed for the
     // screen buffer. Button bit 0x20 = drag (motion while button held).
     if (item.kind === 'mouse') {
+      if (item.action === 'press' && !((item.button & 0x20) !== 0 && (item.button & 3) === 3) && !getTerminalFocused())
+        app.handleTerminalFocus(true)
       handleMouseEvent(app, item)
       continue
     }
@@ -580,12 +660,14 @@ function processKeysInBatch(
     // Handle terminal focus events (DECSET 1004)
     if (sequence === FOCUS_IN) {
       app.handleTerminalFocus(true)
+      if (flushBetweenInputs) flushInputUpdates()
       const event = new TerminalFocusEvent('terminalfocus')
       app.internal_eventEmitter.emit('terminalfocus', event)
       continue
     }
     if (sequence === FOCUS_OUT) {
       app.handleTerminalFocus(false)
+      if (flushBetweenInputs) flushInputUpdates()
       // Defensive: if we lost the release event (mouse released outside
       // terminal window — some emulators drop it rather than capturing the
       // pointer), focus-out is the next observable signal that the drag is
@@ -603,7 +685,11 @@ function processKeysInBatch(
     // Failsafe: if we receive input, the terminal must be focused
     if (!getTerminalFocused()) {
       setTerminalFocused(true)
+      if (isSemanticInput(item)) flushInputUpdates()
     }
+
+    if (item.isPasted || !['wheelup', 'wheeldown', 'mouse'].includes(item.name ?? ''))
+      app.consumeWindowActivationLatch(Date.now())
 
     // Handle Ctrl+Z (suspend) using parsed key to support both raw (\x1a) and
     // CSI u format (\x1b[122;5u) from Kitty keyboard protocol terminals
@@ -613,16 +699,25 @@ function processKeysInBatch(
     }
 
     app.handleInput(sequence)
-    const event = new InputEvent(item)
+    const event = new InputEvent(item, app.inputReceivedAt)
     app.internal_eventEmitter.emit('input', event)
 
-    // Also dispatch through the DOM tree so onKeyDown handlers fire.
-    app.props.dispatchKeyboardEvent(item)
+    // A legacy handler may already own this key (including Tab's default
+    // traversal). Do not activate a second DOM target for the same input.
+    if (!event.didStopImmediatePropagation() && !event.didDispatchKeyboardEvent()) {
+      app.props.dispatchKeyboardEvent(item)
+    }
   }
+
+  if (flushBetweenInputs && processedSemanticInput) flushInputUpdates()
 }
 
 /** Exported for testing. Mutates app.props.selection and click/hover state. */
 export function handleMouseEvent(app: App, m: ParsedMouse): void {
+  const event = new PointerEvent(m)
+  app.internal_eventEmitter.emit('pointer', event)
+  if (event.didStopImmediatePropagation()) return
+
   // Allow disabling click handling while keeping wheel scroll (which goes
   // through the keybinding system as 'wheelup'/'wheeldown', not here).
   if (isMouseClicksDisabled()) return
@@ -632,6 +727,12 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   const col = m.col - 1
   const row = m.row - 1
   const baseButton = m.button & 0x03
+  const hoverMotion = m.action === 'press' && (m.button & 0x20) !== 0 && baseButton === 3
+  if (!hoverMotion && app.lastHoverCol !== -1 && (col !== app.lastHoverCol || row !== app.lastHoverRow)) {
+    app.lastHoverCol = -1
+    app.lastHoverRow = -1
+    app.props.onHoverLost?.()
+  }
 
   if (m.action === 'press') {
     if ((m.button & 0x20) !== 0 && baseButton === 3) {
@@ -657,6 +758,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     if (baseButton !== 0) {
       // Non-left press breaks the multi-click chain.
       app.clickCount = 0
+      if ((m.button & 0x20) === 0) app.consumeWindowActivationLatch(Date.now())
       return
     }
     if ((m.button & 0x20) !== 0) {
@@ -684,10 +786,14 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       now - app.lastClickTime < MULTI_CLICK_TIMEOUT_MS &&
       Math.abs(col - app.lastClickCol) <= MULTI_CLICK_DISTANCE &&
       Math.abs(row - app.lastClickRow) <= MULTI_CLICK_DISTANCE
-    app.clickCount = nearLast ? app.clickCount + 1 : 1
-    app.lastClickTime = now
-    app.lastClickCol = col
-    app.lastClickRow = row
+    app.pressIsWindowActivation = app.consumeWindowActivationLatch(now) && now - getTerminalFocusGainedAt() < 400
+    if (app.pressIsWindowActivation) app.clickCount = 0
+    else {
+      app.clickCount = nearLast ? app.clickCount + 1 : 1
+      app.lastClickTime = now
+      app.lastClickCol = col
+      app.lastClickRow = row
+    }
     if (app.clickCount >= 2) {
       // Cancel any pending hyperlink-open from the first click — this is
       // a double-click, not a single-click on a link.
@@ -700,7 +806,8 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
       app.props.onMultiClick(col, row, count)
       return
     }
-    startSelection(sel, col, row)
+    if (app.props.onSelectionStart) app.props.onSelectionStart(col, row)
+    else startSelection(sel, col, row)
     // SGR bit 0x08 = alt (xterm.js wires altKey here, not metaKey — see
     // comment at the hyperlink-open guard below). On macOS xterm.js,
     // receiving alt means macOptionClickForcesSelection is OFF (otherwise
@@ -739,7 +846,10 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
     // Single click: dispatch DOM click immediately (cursor repositioning
     // etc. are latency-sensitive). If no DOM handler consumed it, defer
     // the hyperlink check so a second click can cancel it.
-    if (!app.props.onClickAt(col, row)) {
+    const result = app.props.onClickAt(col, row, app.pressIsWindowActivation,
+      { shift: (m.button & 4) !== 0, alt: (m.button & 8) !== 0, ctrl: (m.button & 16) !== 0 })
+    if (result === 'stray' || result === 'repeat') { app.clickCount = 0; app.lastClickTime = 0 }
+    if ((result === false || result === 'unhandled') && !app.pressIsWindowActivation) {
       // Resolve the hyperlink URL synchronously while the screen buffer
       // still reflects what the user clicked — deferring only the
       // browser-open so double-click can cancel it.

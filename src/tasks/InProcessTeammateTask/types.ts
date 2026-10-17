@@ -11,6 +11,7 @@ import type { AgentProgress } from '../LocalAgentTask/LocalAgentTask.js'
  * TeammateContext is for AsyncLocalStorage; this is for AppState persistence.
  */
 export type TeammateIdentity = {
+  resumableAgentId?: string
   agentId: string // e.g., "researcher@my-team"
   agentName: string // e.g., "researcher"
   teamName: string
@@ -21,6 +22,8 @@ export type TeammateIdentity = {
 
 export type InProcessTeammateTaskState = TaskStateBase & {
   type: 'in_process_teammate'
+  spawnedWith?: { description?: string; agentType?: string; parentAgentId?: string }
+  spawnedBy?: string
 
   // Identity as sub-object (matches TeammateContext shape for consistency)
   // Stored as plain data in AppState, NOT a reference to AsyncLocalStorage

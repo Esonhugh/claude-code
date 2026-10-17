@@ -36,8 +36,16 @@ export type SDKHookCallbackMatcher = {
 }
 
 // Control Request inner types - use `subtype` as discriminant (matches recovered code)
+export type SDKLocalPlugin = {
+  type: 'local'
+  path: string
+  skipMcpDiscovery?: boolean
+}
+
 export type SDKControlInitializeRequest = {
   subtype: 'initialize'
+  /** Launch-scoped; requires --await-initialize to load from stdin. */
+  plugins?: SDKLocalPlugin[]
   protocolVersion?: string
   hooks?: Record<string, unknown>
   mcpServers?: Record<string, McpServerConfigForProcessTransport>
@@ -52,6 +60,10 @@ export type SDKControlInitializeRequest = {
 }
 
 export type SDKControlInitializeResponse = {
+  /** Whether every listed plugin belongs to the process launch paths. */
+  plugins_applied?: boolean
+  /** Capabilities available on this initialized SDK connection. */
+  capabilities?: string[]
   commands: SlashCommand[]
   models: ModelInfo[]
   agents: AgentInfo[]
@@ -60,6 +72,11 @@ export type SDKControlInitializeResponse = {
 
 export type SDKControlInterruptRequest = {
   subtype: 'interrupt'
+}
+
+export type SDKControlInterruptResponse = {
+  /** UUIDs of this agent's queued messages that survive the interrupt. */
+  still_queued: string[]
 }
 
 export type SDKControlPermissionRequest = {
@@ -283,7 +300,10 @@ export type SDKControlElicitationResponse = {
   success: boolean
 }
 
-// Union of all control request inner types
+export type * from './modsControlTypes.js'
+
+// Legacy envelope remains open for recovered non-UI controls.
+// Mods consumers use the finite SDKControlUIRequest family and typed response map.
 export type SDKControlRequestInner = {
   subtype: string
   [key: string]: unknown
@@ -302,10 +322,41 @@ export type ControlResponse = {
   response?: Record<string, unknown>
 }
 
+export const SDK_CONTROL_ERROR_CODES = [
+  'invalid_request',
+  'catalog_unknown',
+  'restricted_by_org',
+  'unavailable_for_account',
+  'not_offered',
+  'alias_1m_disabled',
+  'alias_1m_unsupported',
+  'blocked_by_hook',
+  'check_failed',
+  'auth_failed',
+  'invalid_mode',
+  'bypass_restricted',
+  'bypass_disabled',
+  'bypass_not_launched',
+  'auto_mode_settings',
+  'auto_mode_circuit_breaker',
+  'auto_mode_fast_mode',
+  'auto_mode_model',
+  'auto_mode_unavailable',
+  'remote_control_auth',
+  'remote_control_terminal',
+  'remote_control_ended_elsewhere',
+  'remote_control_policy_disabled',
+  'workspace_diff_pending',
+  'stale_worker_epoch',
+  'invalid_worker_epoch',
+] as const
+export type SDKControlErrorCode = (typeof SDK_CONTROL_ERROR_CODES)[number]
+
 export type ControlErrorResponse = {
   subtype: 'error'
   request_id: string
   error: string
+  error_code?: SDKControlErrorCode
 }
 
 export type SDKControlResponse = {

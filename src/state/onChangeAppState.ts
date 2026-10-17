@@ -14,6 +14,7 @@ import {
 } from '../utils/permissions/PermissionMode.js'
 import {
   notifyPermissionModeChanged,
+  notifySessionInputsChanged,
   notifySessionMetadataChanged,
   type SessionExternalMetadata,
 } from '../utils/sessionState.js'
@@ -170,4 +171,12 @@ export function onChangeAppState({
       logError(toError(error))
     }
   }
+  if (newState.goalStatus !== oldState.goalStatus ||
+      newState.autoCompactWindow !== oldState.autoCompactWindow ||
+      newState.mainLoopModel !== oldState.mainLoopModel ||
+      newState.mainLoopModelForSession !== oldState.mainLoopModelForSession ||
+      newState.settings !== oldState.settings) {
+    notifySessionInputsChanged()
+  }
+
 }

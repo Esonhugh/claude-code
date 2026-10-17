@@ -445,7 +445,7 @@ async function fetchAndLoadRemoteManagedSettings(): Promise<SettingsJson | null>
     // Handle 304 Not Modified - cached settings are still valid
     if (result.settings === null && cachedSettings) {
       logForDebugging('Remote settings: Cache still valid (304 Not Modified)')
-      setSessionCache(cachedSettings)
+      setSessionCache(cachedSettings, true)
       return cachedSettings
     }
 
@@ -467,7 +467,7 @@ async function fetchAndLoadRemoteManagedSettings(): Promise<SettingsJson | null>
         return cachedSettings
       }
 
-      setSessionCache(newSettings)
+      setSessionCache(newSettings, true)
       await saveSettings(newSettings)
       logForDebugging('Remote settings: Applied new settings successfully')
       return newSettings
@@ -475,7 +475,7 @@ async function fetchAndLoadRemoteManagedSettings(): Promise<SettingsJson | null>
 
     // Empty settings (404 response) - delete cached file if it exists
     // This ensures stale settings don't persist when a user's remote settings are removed
-    setSessionCache(newSettings)
+    setSessionCache(newSettings, true)
     try {
       const path = getSettingsPath()
       await unlink(path)

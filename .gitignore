@@ -6,6 +6,10 @@ __pycache__/
 /embedded-cli.js
 /embedded-sharp.js
 
-official-claude
+/official-claude*
 built-claude
 .claude-test-evidence/
+
+# Mod type declarations written by Claude Code on load (build-specific)
+examples/mods/*/.claude-plugin/types/
+examples/mods/*/.claude-test-environment/

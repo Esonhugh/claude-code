@@ -31,6 +31,7 @@ type RateLimitType =
   | 'seven_day'
   | 'seven_day_opus'
   | 'seven_day_sonnet'
+  | 'seven_day_overage_included'
   | 'overage'
 
 export type { RateLimitType }
@@ -81,6 +82,7 @@ const RATE_LIMIT_DISPLAY_NAMES: Record<RateLimitType, string> = {
   seven_day: 'weekly limit',
   seven_day_opus: 'Opus limit',
   seven_day_sonnet: 'Sonnet limit',
+  seven_day_overage_included: 'Fable limit',
   overage: 'extra usage limit',
 }
 
@@ -154,6 +156,7 @@ type RawWindowUtilization = {
 type RawUtilization = {
   five_hour?: RawWindowUtilization
   seven_day?: RawWindowUtilization
+  seven_day_overage_included?: RawWindowUtilization
 }
 let rawUtilization: RawUtilization = {}
 
@@ -166,6 +169,7 @@ function extractRawUtilization(headers: globalThis.Headers): RawUtilization {
   for (const [key, abbrev] of [
     ['five_hour', '5h'],
     ['seven_day', '7d'],
+    ['seven_day_overage_included', '7d_oi'],
   ] as const) {
     const util = headers.get(
       `anthropic-ratelimit-unified-${abbrev}-utilization`,
@@ -180,10 +184,19 @@ function extractRawUtilization(headers: globalThis.Headers): RawUtilization {
 
 type StatusChangeListener = (limits: ClaudeAILimits) => void
 export const statusListeners: Set<StatusChangeListener> = new Set()
+const usageListeners = new Set<() => void>()
+export function subscribeRateLimitUsage(listener: () => void): () => void {
+  usageListeners.add(listener)
+  return () => { usageListeners.delete(listener) }
+}
+function emitUsageChange() {
+  for (const listener of usageListeners) listener()
+}
 
 export function emitStatusChange(limits: ClaudeAILimits) {
   currentLimits = limits
   statusListeners.forEach(listener => listener(limits))
+  emitUsageChange()
   const hoursTillReset = Math.round(
     (limits.resetsAt ? limits.resetsAt - Date.now() / 1000 : 0) / (60 * 60),
   )
@@ -467,7 +480,7 @@ export function extractQuotaStatusFromHeaders(
         isUsingOverage: false,
       }
       emitStatusChange(defaultLimits)
-    }
+    } else emitUsageChange()
     return
   }
 
@@ -481,7 +494,7 @@ export function extractQuotaStatusFromHeaders(
 
   if (!isEqual(currentLimits, newLimits)) {
     emitStatusChange(newLimits)
-  }
+  } else emitUsageChange()
 }
 
 export function extractQuotaStatusFromError(error: APIError): void {
@@ -508,7 +521,7 @@ export function extractQuotaStatusFromError(error: APIError): void {
 
     if (!isEqual(currentLimits, newLimits)) {
       emitStatusChange(newLimits)
-    }
+    } else emitUsageChange()
   } catch (e) {
     logError(e as Error)
   }

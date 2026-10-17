@@ -17,6 +17,7 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { getPlansDirectory } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
 import { saveWorktreeState } from '../../utils/sessionStorage.js'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
 import {
   cleanupWorktree,
   getCurrentWorktreeSession,
@@ -134,9 +135,10 @@ function restoreSessionToOriginalCwd(
   // identity" contract.
   if (projectRootIsWorktree) {
     setProjectRoot(originalCwd)
-    // setup.ts's --worktree block called updateHooksConfigSnapshot() to re-read
-    // hooks from the worktree. Restore symmetrically. (Mid-session
-    // EnterWorktreeTool never touched the snapshot, so no-op there.)
+    // setup.ts's --worktree block re-read hooks from the worktree. Restore
+    // symmetrically. (Mid-session EnterWorktreeTool never touched the snapshot,
+    // so no-op there.)
+    resetSettingsCache()
     updateHooksConfigSnapshot()
   }
   saveWorktreeState(null)

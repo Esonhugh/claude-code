@@ -61,6 +61,8 @@ type State = {
   turnHookCount: number
   turnClassifierCount: number
   startTime: number
+  // First launch epoch, independent of the accumulated cost-duration clock.
+  sessionStartedAt: number | undefined
   lastInteractionTime: number
   totalLinesAdded: number
   totalLinesRemoved: number
@@ -127,6 +129,7 @@ type State = {
   inMemoryErrorLog: Array<{ error: string; timestamp: string }>
   // Session-only plugins from --plugin-dir flag
   inlinePlugins: Array<string>
+  inlinePluginsNoMcp: Array<string>
   // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
   chromeFlagOverride: boolean | undefined
   // Use cowork_plugins directory instead of plugins (--cowork flag or env var)
@@ -276,6 +279,7 @@ function getInitialState(): State {
       resolvedCwd = rawCwd.normalize('NFC')
     }
   }
+  const startedAt = Date.now()
   const state: State = {
     originalCwd: resolvedCwd,
     projectRoot: resolvedCwd,
@@ -289,7 +293,8 @@ function getInitialState(): State {
     turnToolCount: 0,
     turnHookCount: 0,
     turnClassifierCount: 0,
-    startTime: Date.now(),
+    startTime: startedAt,
+    sessionStartedAt: startedAt,
     lastInteractionTime: Date.now(),
     totalLinesAdded: 0,
     totalLinesRemoved: 0,
@@ -351,6 +356,7 @@ function getInitialState(): State {
     inMemoryErrorLog: [],
     // Session-only plugins from --plugin-dir flag
     inlinePlugins: [],
+    inlinePluginsNoMcp: [],
     // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
     chromeFlagOverride: undefined,
     // Use cowork_plugins directory instead of plugins
@@ -430,6 +436,27 @@ function getInitialState(): State {
 // AND ESPECIALLY HERE
 const STATE: State = getInitialState()
 
+export function getSessionStartedAt(): number | undefined {
+  return STATE.sessionStartedAt
+}
+
+export function getSessionStartTime(): number {
+  return STATE.sessionStartedAt ?? STATE.startTime
+}
+
+export function isSessionStartEpoch(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+/** Restore only metadata belonging to the active session; legacy absence stays unknown. */
+export function restoreSessionStartedAt(sessionId: string, startedAt: unknown): void {
+  if (sessionId === STATE.sessionId) {
+    STATE.sessionStartedAt = isSessionStartEpoch(startedAt)
+      ? Math.min(startedAt, STATE.startTime)
+      : undefined
+  }
+}
+
 export function getSessionId(): SessionId {
   return STATE.sessionId
 }
@@ -447,6 +474,7 @@ export function regenerateSessionId(
   // Regenerated sessions live in the current project: reset projectDir to
   // null so getTranscriptPath() derives from originalCwd.
   STATE.sessionId = randomUUID() as SessionId
+  STATE.sessionStartedAt = Date.now()
   STATE.sessionProjectDir = null
   return STATE.sessionId
 }
@@ -470,11 +498,15 @@ export function getParentSessionId(): SessionId | undefined {
 export function switchSession(
   sessionId: SessionId,
   projectDir: string | null = null,
+  startedAt?: number,
 ): void {
   // Drop the outgoing session's plan-slug entry so the Map stays bounded
   // across repeated /resume. Only the current session's slug is ever read
   // (plans.ts getPlanSlug defaults to getSessionId()).
   STATE.planSlugCache.delete(STATE.sessionId)
+  if (sessionId !== STATE.sessionId) {
+    STATE.sessionStartedAt = isSessionStartEpoch(startedAt) ? startedAt : undefined
+  }
   STATE.sessionId = sessionId
   STATE.sessionProjectDir = projectDir
   sessionSwitched.emit(sessionId)
@@ -574,7 +606,7 @@ export function getTotalAPIDuration(): number {
 }
 
 export function getTotalDuration(): number {
-  return Date.now() - STATE.startTime
+  return Math.max(0, Date.now() - STATE.startTime)
 }
 
 export function getTotalAPIDurationWithoutRetries(): number {
@@ -888,7 +920,9 @@ export function setCostStateForRestore({
   totalLinesAdded,
   totalLinesRemoved,
   lastDuration,
+  startTime,
   modelUsage,
+  hasUnknownModelCost: restoredUnknownModelCost,
 }: {
   totalCostUSD: number
   totalAPIDuration: number
@@ -897,7 +931,9 @@ export function setCostStateForRestore({
   totalLinesAdded: number
   totalLinesRemoved: number
   lastDuration: number | undefined
+  startTime?: number
   modelUsage: { [modelName: string]: ModelUsage } | undefined
+  hasUnknownModelCost?: boolean
 }): void {
   STATE.totalCostUSD = totalCostUSD
   STATE.totalAPIDuration = totalAPIDuration
@@ -908,10 +944,14 @@ export function setCostStateForRestore({
 
   // Restore per-model usage breakdown, clearing stale usage for legacy records.
   STATE.modelUsage = modelUsage ?? {}
+  STATE.hasUnknownModelCost = restoredUnknownModelCost ?? false
 
   // Adjust startTime to make wall duration accumulate
-  if (lastDuration) {
+  if (lastDuration !== undefined) {
     STATE.startTime = Date.now() - lastDuration
+  }
+  if (typeof startTime === 'number' && Number.isFinite(startTime) && startTime >= 0) {
+    STATE.sessionStartedAt = Math.min(startTime, STATE.startTime)
   }
 }
 
@@ -1238,6 +1278,14 @@ export function preferThirdPartyAuthentication(): boolean {
 
 export function setInlinePlugins(plugins: Array<string>): void {
   STATE.inlinePlugins = plugins
+}
+
+export function setInlinePluginsNoMcp(plugins: Array<string>): void {
+  STATE.inlinePluginsNoMcp = plugins
+}
+
+export function getInlinePluginsNoMcp(): Array<string> {
+  return STATE.inlinePluginsNoMcp
 }
 
 export function getInlinePlugins(): Array<string> {
@@ -1759,4 +1807,3 @@ export function setPromptId(id: string | null): void {
 export function isReplBridgeActive(): boolean {
   return false
 }
-

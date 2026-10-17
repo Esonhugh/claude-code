@@ -2,6 +2,7 @@ import * as React from 'react'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { Box, Text } from '../../ink.js'
+import { expandTabs } from '../../ink/tabstops.js'
 import { env } from '../../utils/env.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 
@@ -19,7 +20,9 @@ export function getCustomClawd(): string[] | null {
         'utf-8',
       )
       if (content.trim()) {
-        customClawdLines = content.split('\n')
+        const lines = content.split('\n')
+        while (lines.at(-1) === '') lines.pop()
+        customClawdLines = lines
       }
     } catch {
       // file doesn't exist or unreadable
@@ -37,6 +40,7 @@ export type ClawdPose =
 
 type Props = {
   pose?: ClawdPose
+  maxWidth?: number
 }
 
 // Standard-terminal pose fragments. Each row is split into segments so we can
@@ -77,59 +81,69 @@ const APPLE_EYES: Record<ClawdPose, string> = {
   'arms-up': ' ▗   ▖ ',
 }
 
-export function Clawd({ pose = 'default' }: Props = {}): React.ReactNode {
+export function Clawd({ pose = 'default', maxWidth }: Props = {}): React.ReactNode {
   const custom = getCustomClawd()
   if (custom) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" width={maxWidth}>
         {custom.map((line, i) => (
-          <Text key={i} color="clawd_body">{line}</Text>
+          <Text key={i} color="clawd_body" wrap="truncate-end">
+            {expandTabs(line)}
+          </Text>
         ))}
       </Box>
     )
   }
   if (env.terminal === 'Apple_Terminal') {
-    return <AppleTerminalClawd pose={pose} />
+    return <AppleTerminalClawd pose={pose} maxWidth={maxWidth} />
   }
   const p = POSES[pose]
   return (
-    <Box flexDirection="column">
-      <Text>
+    <Box flexDirection="column" width={maxWidth}>
+      <Text wrap="truncate-end">
         <Text color="clawd_body">{p.r1L}</Text>
         <Text color="clawd_body" backgroundColor="clawd_background">
           {p.r1E}
         </Text>
         <Text color="clawd_body">{p.r1R}</Text>
       </Text>
-      <Text>
+      <Text wrap="truncate-end">
         <Text color="clawd_body">{p.r2L}</Text>
         <Text color="clawd_body" backgroundColor="clawd_background">
           █████
         </Text>
         <Text color="clawd_body">{p.r2R}</Text>
       </Text>
-      <Text color="clawd_body">
+      <Text color="clawd_body" wrap="truncate-end">
         {'  '}▘▘ ▝▝{'  '}
       </Text>
     </Box>
   )
 }
 
-function AppleTerminalClawd({ pose }: { pose: ClawdPose }): React.ReactNode {
+function AppleTerminalClawd({
+  pose,
+  maxWidth,
+}: {
+  pose: ClawdPose
+  maxWidth?: number
+}): React.ReactNode {
   // Apple's Terminal renders vertical space between chars by default.
   // It does NOT render vertical space between background colors
   // so we use background color to draw the main shape.
   return (
-    <Box flexDirection="column" alignItems="center">
-      <Text>
+    <Box flexDirection="column" alignItems="center" width={maxWidth}>
+      <Text wrap="truncate-end">
         <Text color="clawd_body">▗</Text>
         <Text color="clawd_background" backgroundColor="clawd_body">
           {APPLE_EYES[pose]}
         </Text>
         <Text color="clawd_body">▖</Text>
       </Text>
-      <Text backgroundColor="clawd_body">{' '.repeat(7)}</Text>
-      <Text color="clawd_body">▘▘ ▝▝</Text>
+      <Text backgroundColor="clawd_body" wrap="truncate-end">
+        {' '.repeat(7)}
+      </Text>
+      <Text color="clawd_body" wrap="truncate-end">▘▘ ▝▝</Text>
     </Box>
   )
 }

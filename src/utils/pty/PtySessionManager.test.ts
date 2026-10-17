@@ -408,4 +408,30 @@ describe('PtySessionManager', () => {
 
     assert.throws(() => manager.status(session.sessionId), /Unknown PTY session/)
   })
+
+  it('closeAll terminates every session, clears reap timers and is idempotent', () => {
+    const driver = new FakePtyDriver()
+    const manager = new PtySessionManager({ driver, exitedSessionTtlMs: 100 })
+    const running = manager.open({ cwd: '/tmp/project' })
+    const closed = manager.open({ cwd: '/tmp/project' })
+    manager.close(closed.sessionId)
+    assert.equal(manager['reapTimers'].size, 1)
+
+    manager.closeAll()
+
+    assert.deepEqual(driver.killedSignals, [
+      { sessionId: running.sessionId, signal: 'SIGTERM' },
+    ])
+    assert.deepEqual(
+      [...driver.disposedSessions].sort(),
+      [running.sessionId, closed.sessionId].sort(),
+    )
+    assert.equal(manager['reapTimers'].size, 0)
+    assert.deepEqual(manager.list(), [])
+
+    manager.closeAll()
+
+    assert.equal(driver.killedSignals.length, 1)
+    assert.equal(driver.disposedSessions.length, 2)
+  })
 })

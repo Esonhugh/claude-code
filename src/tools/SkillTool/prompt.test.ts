@@ -1,8 +1,21 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Command } from 'src/commands.js'
-import { getIsInteractive, setIsInteractive } from 'src/bootstrap/state.js'
+import { clearCommandsCache } from 'src/commands.js'
+import {
+  clearInvokedSkills,
+  getInvokedSkillsForAgent,
+  getIsInteractive,
+  getProjectRoot,
+  setIsInteractive,
+  setProjectRoot,
+} from 'src/bootstrap/state.js'
 import { getDefaultAppState } from 'src/state/AppStateStore.js'
 import type { ToolUseContext } from 'src/Tool.js'
+import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
+import { createModsRuntime } from '../../services/mods/runtime.js'
 import { SkillTool } from './SkillTool.js'
 import { formatCommandsWithinBudget, getPrompt } from './prompt.js'
 
@@ -39,6 +52,102 @@ describe('SkillTool prompt', () => {
     expect(prompt).toContain('<command-name>')
     expect(prompt).not.toContain('- Examples:')
     expect(prompt.length).toBeLessThan(1_100)
+  })
+
+  test('routes model-invoked skills through skill.prompt', async () => {
+    const originalProjectRoot = getProjectRoot()
+    const originalApiKey = process.env.ANTHROPIC_API_KEY
+    const originalDisableAttachments = process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+    const root = await mkdtemp(join(tmpdir(), 'skill-tool-prompt-'))
+    const skillDir = join(root, '.claude', 'skills', 'rewrite-skill')
+    const modDir = join(root, 'mod')
+    const entry = join(modDir, 'register.ts')
+    const runtime = createModsRuntime()
+    try {
+      process.env.ANTHROPIC_API_KEY = 'test'
+      process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = '1'
+      await mkdir(skillDir, { recursive: true })
+      await mkdir(modDir, { recursive: true })
+      await writeFile(
+        join(skillDir, 'SKILL.md'),
+        '---\nname: rewrite-skill\ndescription: rewrite the prompt\n---\nOriginal skill body',
+      )
+      await writeFile(
+        entry,
+        `export function register(on) {
+          on('skill.prompt', { skill: 'rewrite-skill' }, async ($, e, next) => {
+            const core = await next(e);
+            return { text: core.text + '\\n\\nRewritten by Skill tool' };
+          });
+        }`,
+      )
+      await runtime.reconcile([
+        {
+          name: 'rewrite-skill',
+          storageId: 'rewrite-skill@tool-test',
+          pluginRoot: modDir,
+          entrypoints: [entry],
+        },
+      ])
+      setProjectRoot(root)
+      clearCommandsCache()
+      clearInvokedSkills()
+
+      const appState = getDefaultAppState()
+      const context = {
+        options: {
+          commands: [],
+          debug: false,
+          mainLoopModel: 'claude-sonnet-4-6',
+          tools: [],
+          verbose: false,
+          thinkingConfig: { type: 'disabled' },
+          mcpClients: [],
+          mcpResources: {},
+          isNonInteractiveSession: false,
+          agentDefinitions: {
+            activeAgents: [],
+            allAgents: [],
+            allowedAgentTypes: undefined,
+          },
+        },
+        abortController: new AbortController(),
+        readFileState: createFileStateCacheWithSizeLimit(10),
+        getAppState: () => appState,
+        setAppState: () => {},
+        setInProgressToolUseIDs: () => {},
+        setResponseLength: () => {},
+        updateFileHistoryState: () => {},
+        updateAttributionState: () => {},
+        messages: [],
+        mods: runtime,
+      } as ToolUseContext
+      const result = await SkillTool.call(
+        { skill: 'rewrite-skill' },
+        context,
+        async input => ({ behavior: 'allow', updatedInput: input }),
+        { type: 'assistant', message: { content: [] } } as never,
+      )
+
+      expect(JSON.stringify(result.newMessages)).toContain(
+        'Rewritten by Skill tool',
+      )
+      expect(
+        getInvokedSkillsForAgent(null).get(':rewrite-skill')?.content,
+      ).toContain('Rewritten by Skill tool')
+    } finally {
+      clearInvokedSkills()
+      setProjectRoot(originalProjectRoot)
+      clearCommandsCache()
+      await runtime.dispose()
+      await rm(root, { recursive: true, force: true })
+      if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+      else process.env.ANTHROPIC_API_KEY = originalApiKey
+      if (originalDisableAttachments === undefined)
+        delete process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS
+      else
+        process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS = originalDisableAttachments
+    }
   })
 
   test('rejects model invocation of the non-interactive goal command', async () => {

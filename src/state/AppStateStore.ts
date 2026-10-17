@@ -21,6 +21,7 @@ import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js'
 import type { AllowedPrompt } from '../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
 import type { AgentId } from '../types/ids.js'
+import type { SendMessagePins } from '../utils/sendMessagePins.js'
 import type { Message, UserMessage } from '../types/message.js'
 import type { LoadedPlugin, PluginError } from '../types/plugin.js'
 import type { DeepImmutable } from '../types/utils.js'
@@ -107,12 +108,15 @@ export type RemoteTaskProjection = {
 
 export type AppState = DeepImmutable<{
   settings: SettingsJson
+  /** Active compaction window; live settings changes do not overwrite this session choice. */
+  autoCompactWindow?: number
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
   statusLineText: string | undefined
   goalStatus: GoalStatus
   expandedView: 'none' | 'tasks' | 'teammates'
+  diffSidebarVisible: boolean
   isBriefOnly: boolean
   // Optional - only present when ENABLE_AGENT_SWARMS is true (for dead code elimination)
   showTeammateMessagePreview?: boolean
@@ -183,9 +187,12 @@ export type AppState = DeepImmutable<{
 }> & {
   // Unified task state - excluded from DeepImmutable because TaskState contains function types
   tasks: { [taskId: string]: TaskState }
+  runningSubagents: number
   // Name → AgentId registry populated by Agent tool when `name` is provided.
   // Latest-wins on collision. Used by SendMessage to route by name.
   agentNameRegistry: Map<string, AgentId>
+  // Conversation-scoped identity bindings for SendMessage receipts.
+  sendMessagePins: SendMessagePins
   // Task ID that has been foregrounded - its messages are shown in main view
   foregroundedTaskId?: string
   // Task ID of in-process teammate whose transcript is being viewed (undefined = leader's view)
@@ -247,6 +254,7 @@ export type AppState = DeepImmutable<{
   notifications: {
     current: Notification | null
     queue: Notification[]
+    pinned: Notification[]
   }
   elicitation: {
     queue: ElicitationRequestEvent[]
@@ -490,10 +498,14 @@ export function getDefaultAppState(): AppState {
       ? 'plan'
       : 'default'
 
+  const initialSettings = getInitialSettings()
   return {
-    settings: getInitialSettings(),
+    settings: initialSettings,
+    autoCompactWindow: initialSettings.autoCompactWindow,
     tasks: {},
+    runningSubagents: 0,
     agentNameRegistry: new Map(),
+    sendMessagePins: {},
     verbose: false,
     mainLoopModel: null, // alias, full name (as with --model or env var), or null (default)
     mainLoopModelForSession: null,
@@ -502,6 +514,7 @@ export function getDefaultAppState(): AppState {
       active: false,
     },
     expandedView: 'none',
+    diffSidebarVisible: false,
     isBriefOnly: false,
     showTeammateMessagePreview: false,
     selectedIPAgentIndex: -1,
@@ -562,6 +575,7 @@ export function getDefaultAppState(): AppState {
     notifications: {
       current: null,
       queue: [],
+      pinned: [],
     },
     elicitation: {
       queue: [],

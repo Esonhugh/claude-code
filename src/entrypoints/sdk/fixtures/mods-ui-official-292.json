@@ -1,0 +1,388 @@
+{
+  "source": {
+    "version": "2.1.292",
+    "binarySHA256": "97a01e5bc74a199e67189435d0331ea3a24eac2e07db4b76d9148c5b0386138f",
+    "driverSHA256": "18fc09dbaa1d72a1242a5d8903450f386ea8f1f2f10756bbd23ebb00e614c65d",
+    "scope": "isolated official stream-json CLI; inactive callbacks and pane/client resources, Text render fixture; no model requests"
+  },
+  "receipts": [
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-0-ui_render",
+        "request": {
+          "subtype": "ui_render",
+          "surface": "desktop",
+          "component": "ToolUse",
+          "instance_id": "tool:1",
+          "props": {
+            "output": "small"
+          },
+          "on_screen": null,
+          "bench": {
+            "seq": -1,
+            "t0": 0.5
+          }
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-0-ui_render",
+        "response": {
+          "tree": {
+            "type": "Text",
+            "children": [
+              "OWNED_REMOTE_TEXT"
+            ]
+          },
+          "props": {
+            "output": "small",
+            "tool_use_id": "tool:1",
+            "onScreen": null
+          },
+          "rewritten": false,
+          "hooked": true,
+          "bench": {
+            "seq": -1,
+            "t0": 0.5
+          }
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-1-ui_press",
+        "request": {
+          "subtype": "ui_press",
+          "plugin": "absent",
+          "handle": -1
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-1-ui_press",
+        "response": {
+          "handled": false
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-2-ui_input",
+        "request": {
+          "subtype": "ui_input",
+          "plugin": "absent",
+          "handle": -1,
+          "kind": "change",
+          "value": ""
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-2-ui_input",
+        "response": {
+          "handled": false
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-3-ui_select",
+        "request": {
+          "subtype": "ui_select",
+          "plugin": "absent",
+          "handle": -1,
+          "value": ""
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-3-ui_select",
+        "response": {
+          "handled": false
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-4-ui_prompt_edit",
+        "request": {
+          "subtype": "ui_prompt_edit",
+          "text": "draft",
+          "cursor": 99
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-4-ui_prompt_edit",
+        "response": {
+          "text": "draft",
+          "cursor": 5
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-5-ui_prompt_autocomplete",
+        "request": {
+          "subtype": "ui_prompt_autocomplete",
+          "text": "/unknown",
+          "cursor": 8
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-5-ui_prompt_autocomplete",
+        "response": {
+          "suggestions": [],
+          "start": 0
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-6-ui_panes",
+        "request": {
+          "subtype": "ui_panes"
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-6-ui_panes",
+        "response": {
+          "panes": [],
+          "shown_id": null,
+          "focused_id": null,
+          "focus_requested_id": null
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-7-ui_pane_show",
+        "request": {
+          "subtype": "ui_pane_show",
+          "id": "absent"
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-7-ui_pane_show",
+        "response": {
+          "shown_id": null
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-8-ui_pane_focus",
+        "request": {
+          "subtype": "ui_pane_focus",
+          "id": null
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-8-ui_pane_focus",
+        "response": {
+          "focused_id": null
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-9-ui_close",
+        "request": {
+          "subtype": "ui_close",
+          "id": "absent"
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-9-ui_close",
+        "response": {
+          "closed": true
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-10-ui_scroll",
+        "request": {
+          "subtype": "ui_scroll",
+          "component": "Pane",
+          "instance_id": "absent",
+          "offset": 0,
+          "by": -2,
+          "body_rows": 0,
+          "content_rows": 0,
+          "pointer": {
+            "column": -1,
+            "row": -1
+          }
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-10-ui_scroll",
+        "response": {
+          "moved": false,
+          "offset": 0,
+          "deny": "no such site"
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-11-ui_focus",
+        "request": {
+          "subtype": "ui_focus",
+          "component": "Pane",
+          "instance_id": "absent",
+          "is_held": false
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-11-ui_focus",
+        "response": {
+          "moved": false,
+          "element": null,
+          "deny": "no such site"
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-12-ui_client_module",
+        "request": {
+          "subtype": "ui_client_module",
+          "plugin": "absent"
+        }
+      },
+      "response": {
+        "subtype": "error",
+        "request_id": "oracle-12-ui_client_module",
+        "error": "ui_client_module: plugin absent is not loaded or its hooks module names no surface module"
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-13-ui_client_press",
+        "request": {
+          "subtype": "ui_client_press",
+          "plugin": "owned-duration-owner",
+          "component": "Pane",
+          "instance_id": "absent",
+          "client": "view",
+          "module": "hooks/surface.ts",
+          "element": "absent",
+          "event": {
+            "type": "press"
+          }
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-13-ui_client_press",
+        "response": {
+          "handled": false
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-14-ui_message",
+        "request": {
+          "subtype": "ui_message",
+          "plugin": "owned-duration-owner",
+          "component": "Pane",
+          "instance_id": "absent",
+          "client": "view",
+          "module": "hooks/surface.ts"
+        }
+      },
+      "response": {
+        "subtype": "error",
+        "request_id": "oracle-14-ui_message",
+        "error": "ui_message: plugin, instance_id, client and module must be strings, component a render site name, and data present (plain JSON)"
+      },
+      "requestValid": false
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-15-ui_message",
+        "request": {
+          "subtype": "ui_message",
+          "plugin": "owned-duration-owner",
+          "component": "Pane",
+          "instance_id": "absent",
+          "client": "view",
+          "module": "hooks/surface.ts",
+          "data": null
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-15-ui_message",
+        "response": {
+          "handled": false
+        }
+      },
+      "requestValid": true
+    },
+    {
+      "request": {
+        "type": "control_request",
+        "request_id": "oracle-16-ui_client_fault",
+        "request": {
+          "subtype": "ui_client_fault",
+          "plugin": "owned-duration-owner",
+          "component": "Pane",
+          "instance_id": "absent",
+          "client": "view",
+          "module": "hooks/surface.ts",
+          "phase": "render",
+          "reason": ""
+        }
+      },
+      "response": {
+        "subtype": "success",
+        "request_id": "oracle-16-ui_client_fault",
+        "response": {
+          "handled": false
+        }
+      },
+      "requestValid": true
+    }
+  ]
+}

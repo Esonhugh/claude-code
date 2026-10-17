@@ -1,5 +1,5 @@
 
-VERSION := 2.1.219
+VERSION := 2.1.280
 FILE := ./dist/release/claude-code-v$(VERSION)-darwin-arm64
 CLAUDE_NPM_PACKAGE := @anthropic-ai/claude-code
 CLAUDE_VERSION ?= latest
@@ -9,11 +9,15 @@ CLAUDE_PLATFORM_PACKAGE ?= auto
 CLAUDE_BINARY_OUT ?= official-claude
 CLAUDE_KEEP_PACK ?= 0
 
-.PHONY: build linux-baseline test release-check download-claude clean-download-claude
+.PHONY: build linux-baseline test release-check check-mods-control-types download-claude clean-download-claude
 
 build:
+ifneq ($(strip $(CLAUDE_CODE_BUILD_DIR)),)
+	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BUILD_DIR="$(CLAUDE_CODE_BUILD_DIR)" bun package:binary
+else
 	CLAUDE_CODE_VERSION=$(VERSION) bun package:binary
 	mv $(FILE) ./built-claude
+endif
 
 linux-baseline:
 	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BINARY_TARGET=bun-linux-x64-baseline bun package:binary
@@ -25,10 +29,15 @@ release-check:
 	node -e "const p=require('./package.json'); if (p.version !== '0.0.0-dev') { console.error('package.json version must stay 0.0.0-dev, got ' + p.version); process.exit(1); }"
 	bun run check:changelog $(VERSION)
 	bun run test:changelog
+	bun ./scripts/check-readme-test-paths.mjs
 	bunx tsc --noEmit --pretty false
+	$(MAKE) check-mods-control-types
 	bun run lint
 	bun run audit:missing
 	git diff --check
+
+check-mods-control-types:
+	bun ./scripts/check-mods-control-types.mjs
 
 download-claude:
 	mkdir -p $(CLAUDE_PACK_DIR)

@@ -8,7 +8,7 @@ import {
   getPathsForPermissionCheck,
   safeResolvePath,
 } from '../fsOperations.js'
-import { containsPathTraversal } from '../path.js'
+import { containsPathTraversal, expandTilde } from '../path.js'
 import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import { containsVulnerableUncPath } from '../shell/readOnlyCommandValidation.js'
 import {
@@ -71,21 +71,6 @@ export function getGlobBaseDirectory(path: string): string {
   if (lastSepIndex === -1) return '.'
 
   return beforeGlob.substring(0, lastSepIndex) || '/'
-}
-
-/**
- * Expands tilde (~) at the start of a path to the user's home directory.
- * Note: ~username expansion is not supported for security reasons.
- */
-export function expandTilde(path: string): string {
-  if (
-    path === '~' ||
-    path.startsWith('~/') ||
-    (process.platform === 'win32' && path.startsWith('~\\'))
-  ) {
-    return homedir() + path.slice(1)
-  }
-  return path
 }
 
 /**
@@ -328,7 +313,8 @@ const WINDOWS_DRIVE_CHILD_REGEX = /^[A-Za-z]:\/[^/]+$/
  * - Wildcard '*' (removes all files in directory)
  * - Any path ending with '/*' or '\*' (e.g., /path/to/dir/*, C:\foo\*)
  * - Root directory (/)
- * - Home directory (~)
+ * - Home directory (~), ~/.config and ~/.codex (including their contents)
+ * - ~/.bashrc, ~/.zshrc and their .bak backups
  * - Direct children of root (/usr, /tmp, /etc, etc.)
  * - Windows drive root (C:\, D:\) and direct children (C:\Windows, C:\Users)
  */
@@ -354,6 +340,20 @@ export function isDangerousRemovalPath(resolvedPath: string): boolean {
 
   const normalizedHome = homedir().replace(/[\\/]+/g, '/')
   if (normalizedPath === normalizedHome) {
+    return true
+  }
+  const homeRelativePath = normalizedPath
+    .toLowerCase()
+    .startsWith(`${normalizedHome.toLowerCase()}/`)
+    ? normalizedPath.slice(normalizedHome.length + 1).toLowerCase()
+    : undefined
+  if (
+    homeRelativePath &&
+    (['.config', '.codex'].some(
+      dir => homeRelativePath === dir || homeRelativePath.startsWith(`${dir}/`),
+    ) ||
+      ['.bashrc', '.bashrc.bak', '.zshrc', '.zshrc.bak'].includes(homeRelativePath))
+  ) {
     return true
   }
 

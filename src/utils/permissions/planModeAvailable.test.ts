@@ -96,6 +96,7 @@ describe('Plan mode opt-in', () => {
         options: { tools: merged },
         getAppState: () => ({ mcp: { clients: [] }, toolPermissionContext: context }),
       } as never,
+      async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
     )
     expect(result.data.matches).toEqual([])
     const active = { ...context, mode: 'plan' as const }
@@ -161,6 +162,36 @@ describe('Plan mode opt-in', () => {
     expect(getToolSchemaCache().size).toBe(6)
   })
 
+  test('ToolSearch uses the refreshed tool pool after runtime tools change', async () => {
+    configure({ planModeAvailable: false })
+    const permissionContext = getEmptyToolPermissionContext()
+    const refreshedName = 'mcp__plugin_fixture_server__probe_v2'
+    const stale = { name: 'stale' } as never
+    const refreshed = {
+      name: refreshedName,
+      isMcp: true,
+    } as never
+
+    const result = await ToolSearchTool.call(
+      { query: `select:${refreshedName}`, max_results: 5 },
+      {
+        options: {
+          tools: [stale],
+          refreshTools: () => [refreshed],
+          agentDefinitions: { activeAgents: [] },
+        },
+        getAppState: () => ({
+          mcp: { clients: [] },
+          toolPermissionContext: permissionContext,
+        }),
+        abortController: new AbortController(),
+      } as never,
+      async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    )
+
+    expect(result.data.matches).toEqual([refreshedName])
+  })
+
   test('filters disabled Plan tools when ToolSearch reads a stale startup pool', async () => {
     configure({ planModeAvailable: true })
     const context = getEmptyToolPermissionContext()
@@ -179,6 +210,7 @@ describe('Plan mode opt-in', () => {
             toolPermissionContext: context,
           }),
         } as never,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
       )
 
     expect(
@@ -198,6 +230,7 @@ describe('Plan mode opt-in', () => {
           toolPermissionContext: active,
         }),
       } as never,
+      async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
     )
     expect(activeResult.data.matches).toEqual(['ExitPlanMode'])
   })
@@ -317,18 +350,20 @@ describe('Plan mode opt-in', () => {
     })).not.toThrow()
   })
 
-  test('rejects new Plan entries through CLI, defaults, and permission transitions', async () => {
+  test('rejects new Plan entries through CLI and permission transitions, degrading settings defaults', async () => {
     const context = getEmptyToolPermissionContext()
     const actionable = /Plan mode is disabled.*"planModeAvailable": true.*settings\.json/
     expect(() => initialPermissionModeFromCLI({
       permissionModeCli: 'plan',
       dangerouslySkipPermissions: false,
     })).toThrow(actionable)
+    // A repo's permissions.defaultMode "plan" must not make claude unstartable:
+    // like a disabled bypass mode it degrades to default with a notification.
     configure({ permissions: { defaultMode: 'plan' } })
-    expect(() => initialPermissionModeFromCLI({
+    expect(initialPermissionModeFromCLI({
       permissionModeCli: undefined,
       dangerouslySkipPermissions: false,
-    })).toThrow(actionable)
+    })).toEqual({ mode: 'default', notification: expect.stringMatching(actionable) })
     expect(initialPermissionModeFromCLI({
       permissionModeCli: 'default',
       dangerouslySkipPermissions: false,

@@ -18,6 +18,8 @@ import { extractTextContent } from './messages.js'
 import { objectGroupBy } from './objectGroupBy.js'
 import { recordQueueOperation } from './sessionStorage.js'
 import { createSignal } from './signal.js'
+import { enqueueInboundMessage } from './inboundMessageQueue.js'
+import { logForDebugging } from './debug.js'
 
 export type SetAppState = (f: (prev: AppState) => AppState) => void
 
@@ -51,6 +53,14 @@ function logOperation(operation: QueueOperation, content?: string): void {
 // ============================================================================
 
 const commandQueue: QueuedCommand[] = []
+
+function settleRemovedCommands(commands: readonly QueuedCommand[]): void {
+  for (const command of commands) {
+    command.promptSubmitReceipt?.admit({drop:'the prompt was removed from the queue before it ran'})
+    command.commandRunReceipt?.cancel(new Error('Queued command removed before execution'))
+  }
+}
+
 /** Frozen snapshot — recreated on every mutation for useSyncExternalStore. */
 let snapshot: readonly QueuedCommand[] = Object.freeze([])
 const queueChanged = createSignal()
@@ -125,13 +135,24 @@ export function recheckCommandQueue(): void {
  * Used for user-initiated commands (prompt, bash, orphaned-permission).
  * Defaults priority to 'next' (processed before task notifications).
  */
-export function enqueue(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'next' })
+function enqueueCommand(command: QueuedCommand): QueuedCommand {
+  const queued = { ...command, priority: command.priority ?? 'next' }
+  commandQueue.push(queued)
   notifySubscribers()
   logOperation(
     'enqueue',
     typeof command.value === 'string' ? command.value : undefined,
   )
+  return queued
+}
+
+export function enqueue(command: QueuedCommand): void {
+  enqueueCommand(command)
+}
+
+/** Enqueue and return the stored object for identity-based cancellation. */
+export function enqueueTracked(command: QueuedCommand): QueuedCommand {
+  return enqueueCommand(command)
 }
 
 /**
@@ -139,13 +160,14 @@ export function enqueue(command: QueuedCommand): void {
  * Convenience wrapper that defaults priority to 'later' so user input
  * is never starved by system messages.
  */
-export function enqueuePendingNotification(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'later' })
-  notifySubscribers()
-  logOperation(
-    'enqueue',
-    typeof command.value === 'string' ? command.value : undefined,
-  )
+export function enqueuePendingNotification(command: QueuedCommand): void | Promise<void> {
+  const pending: QueuedCommand = { ...command, priority: command.priority ?? 'later' }
+  if (command.mode === 'task-notification' && command.agentId === undefined) {
+    return enqueueInboundMessage(pending, { kind: 'task-notification' }).then(() => {}, () => {
+      logForDebugging('[Mods] task notification receive interrupted before enqueue')
+    })
+  }
+  enqueue(pending)
 }
 
 const PRIORITY_ORDER: Record<QueuePriority, number> = {
@@ -275,18 +297,17 @@ export function remove(commandsToRemove: QueuedCommand[]): void {
     return
   }
 
-  const before = commandQueue.length
+  const removed: QueuedCommand[] = []
   for (let i = commandQueue.length - 1; i >= 0; i--) {
     if (commandsToRemove.includes(commandQueue[i]!)) {
-      commandQueue.splice(i, 1)
+      removed.unshift(commandQueue.splice(i, 1)[0]!)
     }
   }
 
-  if (commandQueue.length !== before) {
-    notifySubscribers()
-  }
+  if (removed.length) notifySubscribers()
 
-  for (const _cmd of commandsToRemove) {
+  settleRemovedCommands(removed)
+  for (const _cmd of removed) {
     logOperation('remove')
   }
 }
@@ -307,6 +328,7 @@ export function removeByFilter(
 
   if (removed.length > 0) {
     notifySubscribers()
+    settleRemovedCommands(removed)
     for (const _cmd of removed) {
       logOperation('remove')
     }
@@ -323,8 +345,9 @@ export function clearCommandQueue(): void {
   if (commandQueue.length === 0) {
     return
   }
-  commandQueue.length = 0
+  const removed = commandQueue.splice(0)
   notifySubscribers()
+  settleRemovedCommands(removed)
 }
 
 /**
@@ -332,8 +355,9 @@ export function clearCommandQueue(): void {
  * Used for test cleanup.
  */
 export function resetCommandQueue(): void {
-  commandQueue.length = 0
+  const removed = commandQueue.splice(0)
   snapshot = Object.freeze([])
+  settleRemovedCommands(removed)
 }
 
 // ============================================================================
@@ -359,7 +383,7 @@ export function isPromptInputModeEditable(
  * the user's input.
  */
 export function isQueuedCommandEditable(cmd: QueuedCommand): boolean {
-  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta
+  return isPromptInputModeEditable(cmd.mode) && !cmd.isMeta && !cmd.promptSubmitReceipt && !cmd.commandRunReceipt
 }
 
 /**

@@ -764,13 +764,15 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
   // skips the config JSON parse and is what onGrowthBookRefresh subscribers
   // depend on to read fresh values the instant they're notified.
   if (remoteEvalFeatureValues.has(feature)) {
-    return remoteEvalFeatureValues.get(feature) as T
+    const value = remoteEvalFeatureValues.get(feature)
+    return value === null ? defaultValue : (value as T)
   }
+  if (remoteEvalFeatureValues.size > 0) return defaultValue
 
   // Fall back to disk cache (survives across process restarts)
   try {
     const cached = getGlobalConfig().cachedGrowthBookFeatures?.[feature]
-    return cached !== undefined ? (cached as T) : defaultValue
+    return cached !== undefined && cached !== null ? (cached as T) : defaultValue
   } catch {
     return defaultValue
   }

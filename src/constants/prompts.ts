@@ -28,7 +28,6 @@ import { SKILL_TOOL_NAME } from '../tools/SkillTool/constants.js'
 import { getOutputStyleConfig } from './outputStyles.js'
 import type {
   MCPServerConnection,
-  ConnectedMCPServer,
 } from '../services/mcp/types.js'
 import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
@@ -57,11 +56,19 @@ import {
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
-import { loadMemoryPrompt } from '../memdir/memdir.js'
+import { loadMemoryPrompt, loadStaticMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
-import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
-import { resolvePromptSections } from '../utils/promptLayers.js'
+import {
+  resolvePromptSections,
+  type PromptSection,
+} from '../utils/promptLayers.js'
 import { shouldIncludeGitInstructions } from '../utils/gitSettings.js'
+import {
+  concatSystemPrompts,
+  withSystemPromptSections,
+  type SystemPromptSection,
+  type SystemPromptFacts,
+} from '../utils/systemPromptType.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -101,6 +108,8 @@ const skillSearchFeatureCheck = feature('EXPERIMENTAL_SKILL_SEARCH')
 import type { OutputStyleConfig } from './outputStyles.js'
 import { CYBER_RISK_INSTRUCTION } from './cyberRiskInstruction.js'
 import { isAnt } from 'src/utils/userType.js'
+import { shouldUseLeanPrompt } from '../utils/model/leanPrompt.js'
+import { getLeanPromptBody, getLeanCommunication, LEAN_ACTION_CAUTION, LEAN_PRONOUNS } from './leanPrompt.js'
 
 
 export const CLAUDE_CODE_DOCS_MAP_URL =
@@ -160,13 +169,6 @@ function getOutputStyleSection(
 
   return `# Output Style: ${outputStyleConfig.name}
 ${outputStyleConfig.prompt}`
-}
-
-function getMcpInstructionsSection(
-  mcpClients: MCPServerConnection[] | undefined,
-): string | null {
-  if (!mcpClients || mcpClients.length === 0) return null
-  return getMcpInstructions(mcpClients)
 }
 
 export function prependBullets(items: Array<string | string[]>): string[] {
@@ -350,10 +352,11 @@ function getDiscoverSkillsGuidance(): string | null {
 function getSessionSpecificGuidanceSection(
   enabledTools: Set<string>,
   skillToolCommands: Command[],
+  excludeDynamicSections = false,
 ): string | null {
   const hasAskUserQuestionTool = enabledTools.has(ASK_USER_QUESTION_TOOL_NAME)
   const hasSkills =
-    skillToolCommands.length > 0 && enabledTools.has(SKILL_TOOL_NAME)
+    !excludeDynamicSections && skillToolCommands.length > 0 && enabledTools.has(SKILL_TOOL_NAME)
   const hasAgentTool = enabledTools.has(AGENT_TOOL_NAME)
   const searchTools = hasEmbeddedSearchTools()
     ? `\`find\` or \`grep\` via the ${BASH_TOOL_NAME} tool`
@@ -444,58 +447,90 @@ export async function getSystemPrompt(
   model: string,
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
+  composition?: import('../services/mods/types.js').PromptComposeInput,
 ): Promise<string[]> {
+  const recipe = (input: import('../services/mods/types.js').PromptComposeInput) =>
+    getSystemPrompt(tools, input.model, additionalWorkingDirectories, mcpClients, input)
+  const excludeDynamicSections = composition?.traits.includes('sdk-preset') === true
+  // Official 292: only these three rewrites steer generation; other traits
+  // describe decisions made by the engine rather than flags a mod can force.
+  const steeringTraits = composition?.traits.filter(trait =>
+    trait === 'sdk-preset' || trait === 'teammate' || trait === 'analysis') ?? []
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
-    return [
-      `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
-    ]
+    const facts: SystemPromptFacts = { promptModel: model, outputStyle: null,
+      traits: ['bare', ...(getIsNonInteractiveSession() ? ['print' as const] : []), ...steeringTraits] }
+    return withSystemPromptSections(excludeDynamicSections ? [] : [
+      { name: 'identity', scope: 'session',
+        text: `You are Claude Code, Anthropic's official CLI for Claude.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}` },
+    ], facts, recipe)
   }
 
+  const lean = shouldUseLeanPrompt(model)
   const cwd = getCwd()
-  const [skillToolCommands, outputStyleConfig, envInfo] = await Promise.all([
+  const [skillToolCommands, configuredOutputStyle, envInfo] = await Promise.all([
     getSkillToolCommands(cwd),
     getOutputStyleConfig(),
     computeSimpleEnvInfo(model, additionalWorkingDirectories),
   ])
 
+  // Official 292 recomposes from the engine's model and configured style; these facts are observational.
+  const outputStyleConfig = configuredOutputStyle
   const settings = getInitialSettings()
-  const enabledTools = new Set(tools.map(_ => _.name))
+  const offeredTools = new Set(tools.map(tool => tool.name))
+  const enabledTools = new Set(composition ? composition.tools.filter(name => offeredTools.has(name)) : offeredTools)
+  const facts: SystemPromptFacts = {
+    promptModel: model,
+    outputStyle: outputStyleConfig === null ? null : {
+      name: outputStyleConfig.name,
+      isKeepingCodingInstructions: outputStyleConfig.keepCodingInstructions === true,
+    },
+    traits: [
+      ...steeringTraits,
+      ...(lean ? ['lean' as const] : []),
+      ...(getIsNonInteractiveSession() ? ['print' as const] : []),
+      ...(enabledTools.has(SKILL_TOOL_NAME) && skillToolCommands.length > 0 ? ['skills' as const] : []),
+    ],
+  }
 
   if (
     (feature('PROACTIVE') || feature('KAIROS')) &&
     proactiveModule?.isProactiveActive()
   ) {
     logForDebugging(`[SystemPrompt] path=simple-proactive`)
-    return [
-      `\nYou are an autonomous agent. Use the available tools to do useful work.
+    return withSystemPromptSections([
+      {
+        name: 'identity',
+        text: `\nYou are an autonomous agent. Use the available tools to do useful work.
 
 ${CYBER_RISK_INSTRUCTION}`,
-      getSystemRemindersSection(),
-      await loadMemoryPrompt(),
-      envInfo,
-      getLanguageSection(settings.language),
-      // When delta enabled, instructions are announced via persisted
-      // mcp_instructions_delta attachments (attachments.ts) instead.
-      isMcpInstructionsDeltaEnabled()
-        ? null
-        : getMcpInstructionsSection(mcpClients),
-      getScratchpadInstructions(),
-      getFunctionResultClearingSection(model),
-      SUMMARIZE_TOOL_RESULTS_SECTION,
-      getProactiveSection(),
-    ].filter(s => s !== null)
+      },
+      { name: 'system_reminders', text: getSystemRemindersSection() },
+      { name: 'memory', text: await loadMemoryPrompt() },
+      { name: 'env_info_simple', text: envInfo },
+      { name: 'language', text: getLanguageSection(settings.language) },
+      { name: 'mcp_instructions', text: null },
+      { name: 'scratchpad', text: getScratchpadInstructions() },
+      { name: 'frc', text: getFunctionResultClearingSection(model) },
+      { name: 'summarize_tool_results', text: SUMMARIZE_TOOL_RESULTS_SECTION },
+      { name: 'proactive', text: getProactiveSection() },
+    ].map(section => ({ ...section, scope: 'session' as const })), facts, recipe)
   }
 
   const dynamicSections = [
+    ...(lean ? [
+      systemPromptSection('communication', () => getLeanCommunication(model)),
+      systemPromptSection('pronouns', () => LEAN_PRONOUNS),
+      systemPromptSection('action_caution', () => LEAN_ACTION_CAUTION),
+    ] : []),
     systemPromptSection('session_guidance', () =>
-      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
+      getSessionSpecificGuidanceSection(enabledTools, skillToolCommands, excludeDynamicSections),
     ),
-    systemPromptSection('memory', () => loadMemoryPrompt()),
+    ...(excludeDynamicSections ? [] : [systemPromptSection('memory', () => loadMemoryPrompt())]),
     systemPromptSection('ant_model_override', () =>
       getAntModelOverrideSection(),
     ),
-    systemPromptSection('env_info_simple', () =>
-      computeSimpleEnvInfo(model, additionalWorkingDirectories),
+    systemPromptSection(excludeDynamicSections ? 'env_info_static' : 'env_info_simple', () =>
+      computeSimpleEnvInfo(model, additionalWorkingDirectories, excludeDynamicSections),
     ),
     systemPromptSection('language', () =>
       getLanguageSection(settings.language),
@@ -503,19 +538,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     systemPromptSection('output_style', () =>
       getOutputStyleSection(outputStyleConfig),
     ),
-    // When delta enabled, instructions are announced via persisted
-    // mcp_instructions_delta attachments (attachments.ts) instead of this
-    // per-turn recompute, which busts the prompt cache on late MCP connect.
-    // Gate check inside compute (not selecting between section variants)
-    // so a mid-session gate flip doesn't read a stale cached value.
-    DANGEROUS_uncachedSystemPromptSection(
-      'mcp_instructions',
-      () =>
-        isMcpInstructionsDeltaEnabled()
-          ? null
-          : getMcpInstructionsSection(mcpClients),
-      'MCP servers connect/disconnect between turns',
-    ),
+    systemPromptSection('mcp_instructions', () => null),
     DANGEROUS_uncachedSystemPromptSection(
       'scratchpad',
       () => getScratchpadInstructions(),
@@ -557,8 +580,10 @@ ${CYBER_RISK_INSTRUCTION}`,
   ]
 
   const resolvedDynamicSections =
-    await resolveSystemPromptSections(dynamicSections)
-  const promptSections = resolvePromptSections([
+    composition
+      ? await Promise.all(dynamicSections.map(section => section.compute()))
+      : await resolveSystemPromptSections(dynamicSections)
+  const coreSections: PromptSection[] = lean ? [{ id: 'lean_body', layer: 'stable-core', content: getLeanPromptBody(outputStyleConfig, model) }] : [
     {
       id: 'identity',
       layer: 'stable-core',
@@ -598,12 +623,17 @@ ${CYBER_RISK_INSTRUCTION}`,
       layer: 'capability',
       content: getUsingYourToolsSection(enabledTools),
     },
+  ]
+  const sourceSections: PromptSection[] = [
+    ...coreSections,
+    ...(excludeDynamicSections ? [{ id: 'memory_static', layer: 'capability' as const, content: loadStaticMemoryPrompt() }] : []),
     ...resolvedDynamicSections.map((content, index) => ({
       id: dynamicSections[index]!.name,
       layer: 'task-dynamic' as const,
       content,
     })),
-  ])
+  ]
+  const promptSections = resolvePromptSections(sourceSections)
   const dynamicStart = promptSections.findIndex(
     section => section.layer === 'task-dynamic',
   )
@@ -611,40 +641,32 @@ ${CYBER_RISK_INSTRUCTION}`,
     dynamicStart === -1 ? promptSections : promptSections.slice(0, dynamicStart)
   const taskDynamicSections =
     dynamicStart === -1 ? [] : promptSections.slice(dynamicStart)
-
-  return [
-    ...staticSections.map(section => section.content),
+  const selectedStaticContentByName = new Map(
+    staticSections.map(section => [section.id, section.content]),
+  )
+  const selectedDynamicContentByName = new Map(
+    taskDynamicSections.map(section => [section.id, section.content]),
+  )
+  const sections: SystemPromptSection[] = [
+    ...sourceSections
+      .filter(section => section.layer !== 'task-dynamic')
+      .map(section => ({
+        name: section.id,
+        scope: 'shared' as const,
+        text: selectedStaticContentByName.get(section.id) ?? null,
+      })),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
-    ...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
-    ...taskDynamicSections.map(section => section.content),
+    ...(shouldUseGlobalCacheScope()
+      ? [{ text: SYSTEM_PROMPT_DYNAMIC_BOUNDARY }]
+      : []),
+    ...dynamicSections.map(section => ({
+      name: section.name,
+      scope: 'session' as const,
+      text: selectedDynamicContentByName.get(section.name) ?? null,
+    })),
   ]
-}
 
-function getMcpInstructions(mcpClients: MCPServerConnection[]): string | null {
-  const connectedClients = mcpClients.filter(
-    (client): client is ConnectedMCPServer => client.type === 'connected',
-  )
-
-  const clientsWithInstructions = connectedClients.filter(
-    client => client.instructions,
-  )
-
-  if (clientsWithInstructions.length === 0) {
-    return null
-  }
-
-  const instructionBlocks = clientsWithInstructions
-    .map(client => {
-      return `## ${client.name}
-${client.instructions}`
-    })
-    .join('\n\n')
-
-  return `# MCP Server Instructions
-
-The following MCP servers have provided instructions for how to use their tools and resources:
-
-${instructionBlocks}`
+  return withSystemPromptSections(sections, facts, recipe)
 }
 
 export async function computeEnvInfo(
@@ -691,6 +713,7 @@ ${modelDescription}${knowledgeCutoffMessage}`
 export async function computeSimpleEnvInfo(
   modelId: string,
   additionalWorkingDirectories?: string[],
+  staticOnly = false,
 ): Promise<string> {
   const [isGit, unameSR] = await Promise.all([getIsGit(), getUnameSR()])
 
@@ -714,6 +737,7 @@ export async function computeSimpleEnvInfo(
   const isWorktree = getCurrentWorktreeSession() !== null
 
   const envItems = [
+    ...(staticOnly ? [] : [
     `Primary working directory: ${cwd}`,
     isWorktree
       ? `This is a git worktree — an isolated copy of the repository. Run all commands from this directory. Do NOT \`cd\` to the original repository root.`
@@ -730,13 +754,14 @@ export async function computeSimpleEnvInfo(
     `OS Version: ${unameSR}`,
     modelDescription,
     knowledgeCutoffMessage,
+    ]),
     isAnt() && isUndercover()
       ? null
       : `The most recent Claude model family is Claude 4.5/4.6. Model IDs — Opus 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.opus}', Sonnet 4.6: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_4_5_OR_4_6_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     isAnt() && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
-    isAnt() && isUndercover()
+    staticOnly || (isAnt() && isUndercover())
       ? null
       : `Fast mode for Claude Code uses the same ${FRONTIER_MODEL_NAME} model with faster output. It does NOT switch to a different model. It can be toggled with /fast.`,
   ].filter(item => item !== null)
@@ -797,7 +822,7 @@ export function getUnameSR(): string {
 export const DEFAULT_AGENT_PROMPT = `You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.`
 
 export async function enhanceSystemPromptWithEnvDetails(
-  existingSystemPrompt: string[],
+  existingSystemPrompt: readonly string[],
   model: string,
   additionalWorkingDirectories?: string[],
   enabledToolNames?: ReadonlySet<string>,
@@ -821,12 +846,12 @@ export async function enhanceSystemPromptWithEnvDetails(
       ? getDiscoverSkillsGuidance()
       : null
   const envInfo = await computeEnvInfo(model, additionalWorkingDirectories)
-  return [
-    ...existingSystemPrompt,
-    notes,
-    ...(discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : []),
-    envInfo,
-  ]
+  return concatSystemPrompts(
+    existingSystemPrompt,
+    [notes],
+    discoverSkillsGuidance !== null ? [discoverSkillsGuidance] : [],
+    [envInfo],
+  )
 }
 
 /**

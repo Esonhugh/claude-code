@@ -12,7 +12,6 @@ import {
   useSetAppState,
 } from '../state/AppState.js'
 import { findToolByName } from '../Tool.js'
-import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js'
 import { getAllBaseTools } from '../tools.js'
 import type { PermissionUpdate } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -36,11 +35,8 @@ import type { PaneBackendType } from '../utils/swarm/backends/types.js'
 import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js'
 import { getLeaderToolUseConfirmQueue } from '../utils/swarm/leaderPermissionBridge.js'
 import { sendPermissionResponseViaMailbox } from '../utils/swarm/permissionSync.js'
-import {
-  removeTeammateFromTeamFile,
-  setMemberMode,
-} from '../utils/swarm/teamHelpers.js'
-import { unassignTeammateTasks } from '../utils/tasks.js'
+import { setMemberMode } from '../utils/swarm/teamHelpers.js'
+import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
 import {
   getAgentName,
   isPlanModeRequired,
@@ -591,7 +587,7 @@ export function useInboxPoller({
         const teamName = currentAppState.teamContext?.teamName
         const agentName = getAgentName()
         if (teamName && agentName) {
-          setMemberMode(teamName, agentName, targetMode)
+          await setMemberMode(teamName, agentName, targetMode)
         }
       }
     }
@@ -635,7 +631,7 @@ export function useInboxPoller({
           teamName,
         )
         if (teamName) {
-          setMemberMode(teamName, m.from, modeToInherit)
+          await setMemberMode(teamName, m.from, modeToInherit)
         }
 
         // Update in-process teammate task state if applicable
@@ -724,56 +720,16 @@ export function useInboxPoller({
           ).find(([, t]) => t.name === teammateToRemove)?.[0]
 
           if (teammateId) {
-            // Remove from team file (leader owns team file mutations)
-            const teamName = currentAppState.teamContext?.teamName
-            if (teamName) {
-              removeTeammateFromTeamFile(teamName, {
-                agentId: teammateId,
-                name: teammateToRemove,
+            const { notificationMessage, removed } =
+              await handleTeammateShutdownApproved({
+                teamName: currentAppState.teamContext?.teamName,
+                teammateId,
+                teammateName: teammateToRemove,
+                setAppState,
               })
-            }
-
-            // Unassign tasks and build notification message
-            const { notificationMessage } = teamName
-              ? await unassignTeammateTasks(
-                  teamName,
-                  teammateId,
-                  teammateToRemove,
-                  'shutdown',
-                )
-              : { notificationMessage: `${teammateToRemove} has shut down.` }
-
-            setAppState(prev => {
-              if (!prev.teamContext?.teammates) return prev
-              if (!(teammateId in prev.teamContext.teammates)) return prev
-              const { [teammateId]: _, ...remainingTeammates } =
-                prev.teamContext.teammates
-
-              // Mark the teammate's task as completed so hasRunningTeammates
-              // becomes false and the spinner stops. Without this, out-of-process
-              // (tmux) teammate tasks stay status:'running' forever because
-              // only in-process teammates have a runner that sets 'completed'.
-              const updatedTasks = { ...prev.tasks }
-              for (const [tid, task] of Object.entries(updatedTasks)) {
-                if (
-                  isInProcessTeammateTask(task) &&
-                  task.identity.agentId === teammateId
-                ) {
-                  updatedTasks[tid] = {
-                    ...task,
-                    status: 'completed' as const,
-                    endTime: Date.now(),
-                  }
-                }
-              }
-
-              return {
+            if (removed) {
+              setAppState(prev => ({
                 ...prev,
-                tasks: updatedTasks,
-                teamContext: {
-                  ...prev.teamContext,
-                  teammates: remainingTeammates,
-                },
                 inbox: {
                   messages: [
                     ...prev.inbox.messages,
@@ -789,11 +745,11 @@ export function useInboxPoller({
                     },
                   ],
                 },
-              }
-            })
-            logForDebugging(
-              `[InboxPoller] Removed ${teammateToRemove} (${teammateId}) from teamContext`,
-            )
+              }))
+              logForDebugging(
+                `[InboxPoller] Removed ${teammateToRemove} (${teammateId}) from teamContext`,
+              )
+            }
           }
         }
 

@@ -27,8 +27,13 @@ import {
 } from '../../utils/abortController.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { getToolSearchOrReadInfo } from '../../utils/collapseReadSearch.js'
-import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
-import { getAgentTranscriptPath } from '../../utils/sessionStorage.js'
+import {
+  dequeueAllMatching,
+  enqueuePendingNotification,
+} from '../../utils/messageQueueManager.js'
+import { getAgentTranscriptPath, markAgentMetadataStoppedByUser } from '../../utils/sessionStorage.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { escapeXml } from '../../utils/xml.js'
 import {
   evictTaskOutput,
   getTaskOutputPath,
@@ -214,11 +219,22 @@ export function createActivityDescriptionResolver(
 
 export type LocalAgentTaskState = TaskStateBase & {
   type: 'local_agent'
+  /** Set only by an explicit user stop, never by a model/system abort. */
+  stoppedByUser?: boolean
   agentId: string
   prompt: string
   selectedAgent?: AgentDefinition
   agentType: string
   parentAgentId?: string
+  /** Agent whose turn receives this task's notifications; separate from transcript lineage. */
+  ownerAgentId?: string
+  /** Saved fork skill identity corroborates permission scoping on resume. */
+  forkedSkillName?: string
+  resuming?: boolean
+  spawnedBy?: string
+  isIdle?: boolean
+  finalizing?: boolean
+  keepaliveReasons?: Set<string>
   spawnDepth: number
   model?: string
   abortController?: AbortController
@@ -256,6 +272,19 @@ export function isLocalAgentTask(task: unknown): task is LocalAgentTaskState {
     'type' in task &&
     task.type === 'local_agent'
   )
+}
+
+export function isLiveLocalAgentTask(task: unknown): task is LocalAgentTaskState {
+  return isLocalAgentTask(task) && (task.status === 'running' ||
+    task.status === 'completed' && (task.keepaliveReasons?.size ?? 0) > 0)
+}
+
+function retainAgentForChild(ownerId: string | undefined, childId: string, setAppState: SetAppState): void {
+  if (!ownerId || ownerId === childId) return
+  updateTaskState<LocalAgentTaskState>(ownerId, setAppState, task => {
+    if (!isLiveLocalAgentTask(task)) return task
+    return {...task, keepaliveReasons: new Set(task.keepaliveReasons).add(`agent:${childId}`), evictAfter: undefined}
+  })
 }
 
 /**
@@ -313,6 +342,10 @@ export function drainPendingMessages(
   return drained
 }
 
+// Task ids whose terminal notification is being enqueued (see enqueueAgentNotification).
+const notificationsInFlight = new Set<string>()
+const NOTIFICATION_RESULT_MAX_CHARS = 8000
+
 /**
  * Enqueue an agent notification to the message queue.
  */
@@ -344,21 +377,22 @@ export function enqueueAgentNotification({
   worktreeBranch?: string
 }): void {
   // Check whether another terminal path already delivered this notification.
-  // The flag is set only after queue insertion succeeds so a transient enqueue
-  // failure remains retryable instead of permanently suppressing delivery.
+  // `notified` is set only after the enqueue settles successfully so a failed
+  // enqueue stays retryable; the in-flight set dedupes concurrent terminal
+  // paths synchronously while that enqueue is pending.
   let shouldEnqueue = false
   let routedAgentId: AgentId | undefined
   setAppState(prev => {
     const task = prev.tasks[taskId]
-    if (!isLocalAgentTask(task) || task.notified) {
+    if (!isLocalAgentTask(task) || task.notified || notificationsInFlight.has(taskId)) {
       return prev
     }
 
     shouldEnqueue = true
-    if (task.parentAgentId) {
-      const parentTask = prev.tasks[task.parentAgentId]
-      if (isLocalAgentTask(parentTask) && parentTask.status === 'running') {
-        routedAgentId = asAgentId(task.parentAgentId)
+    if (task.ownerAgentId) {
+      const parentTask = prev.tasks[task.ownerAgentId]
+      if (isLiveLocalAgentTask(parentTask)) {
+        routedAgentId = asAgentId(task.ownerAgentId)
       }
     }
 
@@ -372,41 +406,76 @@ export function enqueueAgentNotification({
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState)
 
-  const summary =
+  const summary = escapeXml(
     status === 'completed'
       ? `Agent "${description}" completed`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
-        : `Agent "${description}" was stopped`
+        : `Agent "${description}" was stopped`,
+  )
 
   const outputPath = getTaskOutputPath(taskId)
   const toolUseIdLine = toolUseId
-    ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>`
+    ? `\n<${TOOL_USE_ID_TAG}>${escapeXml(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
-  const resultSection = finalMessage ? `\n<result>${finalMessage}</result>` : ''
+  const escapedResult = finalMessage ? escapeXml(finalMessage) : ''
+  const truncatedResult = escapedResult.length > NOTIFICATION_RESULT_MAX_CHARS
+    ? `${escapedResult.slice(0, NOTIFICATION_RESULT_MAX_CHARS)}\n... (truncated ${escapedResult.length - NOTIFICATION_RESULT_MAX_CHARS} chars, full result in ${escapeXml(outputPath)})`
+    : escapedResult
+  const resultSection = finalMessage ? `\n<result>${truncatedResult}</result>` : ''
   const usageSection = usage
     ? `\n<usage><total_tokens>${usage.totalTokens}</total_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>`
     : ''
   const worktreeSection = worktreePath
-    ? `\n<${WORKTREE_TAG}><${WORKTREE_PATH_TAG}>${worktreePath}</${WORKTREE_PATH_TAG}>${worktreeBranch ? `<${WORKTREE_BRANCH_TAG}>${worktreeBranch}</${WORKTREE_BRANCH_TAG}>` : ''}</${WORKTREE_TAG}>`
+    ? `\n<${WORKTREE_TAG}><${WORKTREE_PATH_TAG}>${escapeXml(worktreePath)}</${WORKTREE_PATH_TAG}>${worktreeBranch ? `<${WORKTREE_BRANCH_TAG}>${escapeXml(worktreeBranch)}</${WORKTREE_BRANCH_TAG}>` : ''}</${WORKTREE_TAG}>`
     : ''
 
   const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
-<${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
+<${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
+<${OUTPUT_FILE_TAG}>${escapeXml(outputPath)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
-  enqueuePendingNotification({
+  const markNotified = () =>
+    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
+      ...task,
+      notified: true,
+    }))
+  const pending = enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
     agentId: routedAgentId,
+    taskId,
   })
-  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
-    ...task,
-    notified: true,
-  }))
+  if (!pending) {
+    markNotified()
+    return
+  }
+  notificationsInFlight.add(taskId)
+  void pending
+    .then(markNotified, error => {
+      logForDebugging(
+        `[AgentLifecycle] notification_enqueue_failed agent_id=${taskId}: ${error}`,
+        { level: 'warn' },
+      )
+    })
+    .finally(() => {
+      notificationsInFlight.delete(taskId)
+    })
+}
+
+/**
+ * Hand notifications addressed to a no-longer-live owner to the main thread.
+ * Nothing else drains owner-addressed commands once the owner stops.
+ */
+function rerouteOwnedNotifications(taskId: string): void {
+  const owned = dequeueAllMatching(
+    cmd => cmd.mode === 'task-notification' && cmd.agentId === taskId,
+  )
+  for (const command of owned) {
+    void enqueuePendingNotification({ ...command, agentId: undefined })
+  }
 }
 
 /**
@@ -427,43 +496,57 @@ export const LocalAgentTask: Task = {
 /**
  * Kill an agent task. No-op if already killed/completed.
  */
-export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
+export function killAsyncAgent(
+  taskId: string,
+  setAppState: SetAppState,
+  source: 'system' | 'user' = 'system',
+): void {
   let killed = false
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
-    if (task.status !== 'running') {
+    if (!isLiveLocalAgentTask(task)) {
       return task
     }
     killed = true
+    if (source === 'user') {
+      void markAgentMetadataStoppedByUser(asAgentId(taskId), task.agentType).catch(error => {
+        logForDebugging(`[AgentCancellation] failed to persist user stop agent_id=${taskId}: ${error}`, { level: 'warn' })
+      })
+      logForDebugging(`[AgentCancellation] user_stopped agent_id=${taskId}`)
+    }
     task.abortController?.abort()
     task.unregisterCleanup?.()
     return {
       ...task,
       status: 'killed',
+      ...(source === 'user' && { stoppedByUser: true }),
       endTime: Date.now(),
       evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
       abortController: undefined,
       unregisterCleanup: undefined,
       selectedAgent: undefined,
+      keepaliveReasons: new Set(),
     }
   })
   if (killed) {
     void evictTaskOutput(taskId)
   }
+  rerouteOwnedNotifications(taskId)
 }
 
 /**
- * Kill all running agent tasks.
+ * Kill all live agent tasks, including completed owners parked for children.
  * Used by ESC cancellation in coordinator mode to stop all subagents.
+ * Returns the tasks it killed so the caller can report exactly those.
  */
 export function killAllRunningAgentTasks(
   tasks: Record<string, TaskState>,
   setAppState: SetAppState,
-): void {
-  for (const [taskId, task] of Object.entries(tasks)) {
-    if (task.type === 'local_agent' && task.status === 'running') {
-      killAsyncAgent(taskId, setAppState)
-    }
+): LocalAgentTaskState[] {
+  const killed = Object.values(tasks).filter(isLiveLocalAgentTask)
+  for (const task of killed) {
+    killAsyncAgent(task.id, setAppState, 'user')
   }
+  return killed
 }
 
 /**
@@ -590,20 +673,24 @@ export function completeAgentTask(
       return task
     }
 
-    task.unregisterCleanup?.()
+    const waiting = task.isBackgrounded && (task.keepaliveReasons?.size ?? 0) > 0
+    if (!waiting) task.unregisterCleanup?.()
 
     return {
       ...task,
       status: 'completed',
       result,
       endTime: Date.now(),
-      evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
-      abortController: undefined,
-      unregisterCleanup: undefined,
-      selectedAgent: undefined,
+      evictAfter: task.retain || waiting ? undefined : Date.now() + PANEL_GRACE_MS,
+      abortController: waiting ? task.abortController : undefined,
+      unregisterCleanup: waiting ? task.unregisterCleanup : undefined,
+      selectedAgent: waiting ? task.selectedAgent : undefined,
     }
   })
-  void evictTaskOutput(taskId)
+  // Keep the output cache available while owned work can resume this task.
+  let waiting = false
+  setAppState(prev => { waiting = isLiveLocalAgentTask(prev.tasks[taskId]); return prev })
+  if (!waiting) void evictTaskOutput(taskId)
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
 
@@ -640,6 +727,7 @@ export function failAgentTask(
     return {
       ...task,
       status: 'failed',
+      keepaliveReasons: new Set(),
       error,
       endTime: Date.now(),
       evictAfter: task.retain ? undefined : Date.now() + PANEL_GRACE_MS,
@@ -649,6 +737,7 @@ export function failAgentTask(
     }
   })
   void evictTaskOutput(taskId)
+  rerouteOwnedNotifications(taskId)
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
 
@@ -669,6 +758,9 @@ export function registerAsyncAgent({
   parentAbortController,
   toolUseId,
   parentAgentId,
+  ownerAgentId,
+  spawnedBy,
+  forkedSkillName,
   spawnDepth,
 }: {
   agentId: string
@@ -679,6 +771,9 @@ export function registerAsyncAgent({
   parentAbortController?: AbortController
   toolUseId?: string
   parentAgentId?: string
+  ownerAgentId?: string
+  spawnedBy?: string
+  forkedSkillName?: string
   spawnDepth: number
 }): LocalAgentTaskState {
   void initTaskOutputAsSymlink(
@@ -700,6 +795,9 @@ export function registerAsyncAgent({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     parentAgentId,
+    ownerAgentId,
+    spawnedBy,
+    forkedSkillName,
     spawnDepth,
     abortController,
     retrieved: false,
@@ -709,6 +807,7 @@ export function registerAsyncAgent({
     pendingMessages: [],
     retain: false,
     diskLoaded: false,
+    keepaliveReasons: new Set(),
   }
 
   // Register cleanup handler
@@ -720,6 +819,7 @@ export function registerAsyncAgent({
 
   // Register task in AppState
   registerTask(taskState, setAppState)
+  retainAgentForChild(ownerAgentId, agentId, setAppState)
 
   return taskState
 }
@@ -742,6 +842,7 @@ export function registerAgentForeground({
   autoBackgroundMs,
   toolUseId,
   parentAgentId,
+  ownerAgentId,
   spawnDepth,
 }: {
   agentId: string
@@ -752,6 +853,7 @@ export function registerAgentForeground({
   autoBackgroundMs?: number
   toolUseId?: string
   parentAgentId?: string
+  ownerAgentId?: string
   spawnDepth: number
 }): {
   taskId: string
@@ -778,6 +880,7 @@ export function registerAgentForeground({
     selectedAgent,
     agentType: selectedAgent.agentType ?? 'general-purpose',
     parentAgentId,
+    ownerAgentId,
     spawnDepth,
     abortController,
     unregisterCleanup,
@@ -788,6 +891,7 @@ export function registerAgentForeground({
     pendingMessages: [],
     retain: false,
     diskLoaded: false,
+    keepaliveReasons: new Set(),
   }
 
   // Create background signal promise
@@ -818,6 +922,7 @@ export function registerAgentForeground({
             },
           }
         })
+        retainAgentForChild(ownerAgentId, agentId, setAppState)
         const resolver = backgroundSignalResolvers.get(agentId)
         if (resolver) {
           resolver()
@@ -867,6 +972,8 @@ export function backgroundAgentTask(
       },
     }
   })
+
+  retainAgentForChild(task.ownerAgentId, taskId, setAppState)
 
   // Resolve the background signal to interrupt the agent loop
   const resolver = backgroundSignalResolvers.get(taskId)

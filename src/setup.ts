@@ -17,6 +17,7 @@ import {
   setOriginalCwd,
   setProjectRoot,
   switchSession,
+  getSessionStartedAt,
 } from './bootstrap/state.js'
 import { getCommands } from './commands.js'
 import { initSessionMemory } from './services/SessionMemory/sessionMemory.js'
@@ -46,6 +47,7 @@ import { lockCurrentVersion } from './utils/nativeInstaller/index.js'
 import type { PermissionMode } from './utils/permissions/PermissionMode.js'
 import { getPlanSlug } from './utils/plans.js'
 import { saveWorktreeState } from './utils/sessionStorage.js'
+import { resetSettingsCache } from './utils/settings/settingsCache.js'
 import { profileCheckpoint } from './utils/startupProfiler.js'
 import {
   createTmuxSessionForWorktree,
@@ -128,7 +130,7 @@ export async function setup(
 
   // Set custom session ID if provided
   if (customSessionId) {
-    switchSession(asSessionId(customSessionId))
+    switchSession(asSessionId(customSessionId), null, getSessionStartedAt())
   }
 
   // --bare / SIMPLE: skip UDS messaging server and teammate snapshot.
@@ -342,6 +344,7 @@ export async function setup(
     // Settings cache was populated in init() (via applySafeConfigEnvironmentVariables)
     // and again at captureHooksConfigSnapshot() above, both from the original dir's
     // .claude/settings.json. Re-read from the worktree and re-capture hooks.
+    resetSettingsCache()
     updateHooksConfigSnapshot()
   }
 

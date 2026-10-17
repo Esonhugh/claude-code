@@ -55,6 +55,7 @@ import {
 import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
+import { getPluginIdsForDataCleanup } from './pluginFolderCollision.js'
 import {
   extractHostFromSource,
   formatSourceForDisplay,
@@ -84,6 +85,8 @@ import {
   type KnownMarketplace,
   type KnownMarketplacesFile,
   KnownMarketplacesFileSchema,
+  KnownMarketplaceSchema,
+  MarketplaceSourceSchema,
   type MarketplaceSource,
   type PluginMarketplace,
   type PluginMarketplaceEntry,
@@ -321,6 +324,22 @@ export async function loadKnownMarketplacesConfigSafe(): Promise<KnownMarketplac
   } catch {
     // Inner function already logged via logForDebugging. Don't logError here —
     // corrupted user config isn't a Claude Code bug, shouldn't hit the error file.
+    return {}
+  }
+}
+
+/** Read-only startup compatibility for legacy registrations lacking provenance. */
+export async function loadKnownMarketplacesForPluginLoading(): Promise<Record<string, Omit<KnownMarketplace, 'source'> & { source?: MarketplaceSource }>> {
+  try {
+    const content = await getFsImplementation().readFile(getKnownMarketplacesFile(), { encoding: 'utf-8' })
+    const schema = KnownMarketplaceSchema().extend({ source: MarketplaceSourceSchema().optional() })
+    const entries = jsonParse(content)
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return {}
+    const result: Record<string, Omit<KnownMarketplace, 'source'> & { source?: MarketplaceSource }> = Object.create(null)
+    for (const [name, value] of Object.entries(entries)) result[name] = schema.parse(value)
+    return result
+  } catch (error) {
+    if (!isENOENT(error)) logForDebugging(`Failed to read marketplace registrations for plugin loading: ${errorMessage(error)}`, { level: 'error' })
     return {}
   }
 }
@@ -2051,7 +2070,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
   }
   for (const pluginId of removedPluginIds) {
     deletePluginOptions(pluginId)
-    await deletePluginDataDir(pluginId)
+    await deletePluginDataDir(pluginId, getPluginIdsForDataCleanup())
   }
 
   logForDebugging(`Removed marketplace source: ${name}`)
@@ -2064,7 +2083,7 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
  * @returns The marketplace object
  * @throws If marketplace file not found or invalid
  */
-async function readCachedMarketplace(
+export async function readCachedMarketplace(
   installLocation: string,
 ): Promise<PluginMarketplace> {
   // For git-sourced directories, the manifest lives at .claude-plugin/marketplace.json.

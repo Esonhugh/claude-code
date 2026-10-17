@@ -2,12 +2,15 @@ import type { RefObject } from 'react'
 import {
   useCallback,
   useDeferredValue,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
 } from 'react'
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js'
+import { FRAME_INTERVAL_MS } from '../ink/constants.js'
 import type { DOMElement } from '../ink/dom.js'
 
 /**
@@ -315,11 +318,11 @@ export function useVirtualScroll(
   let end: number
 
   if (frozenRange) {
-    // Column just changed. Keep the pre-resize range to avoid mount churn.
-    // Clamp to n in case messages were removed (/clear, compaction).
+    // Keep existing mounts stable, but don't hide appended messages while
+    // following the bottom. Clamp for removals (/clear, compaction).
     ;[start, end] = frozenRange
     start = Math.min(start, n)
-    end = Math.min(end, n)
+    end = isSticky ? n : Math.min(end, n)
   } else if (viewportH === 0 || scrollTop < 0) {
     // Cold start: ScrollBox hasn't laid out yet. Render the tail — sticky
     // scroll pins to the bottom on first Ink render, so these are the items
@@ -590,10 +593,39 @@ export function useVirtualScroll(
       : Math.max(effTopSpacer, offsets[effEnd]! - viewportH) + listOrigin
   useLayoutEffect(() => {
     if (isSticky) {
-      scrollRef.current?.setClampBounds(undefined, undefined)
+      // Keep the floor while sticky. scrollTop is pinned to maxScroll, which
+      // already sits above it, so the sticky paint itself is unchanged — but
+      // an imperative scrollTo/scrollBy that breaks stickiness (a wheel burst
+      // reaching the top takes scrollUp's scrollTo(0) branch) paints before
+      // this effect reruns. With no floor that frame lands above the mounted
+      // range and the viewport shows bare spacer. The ceiling stays unbounded
+      // so a streaming tail is never clamped out of view.
+      scrollRef.current?.setClampBounds(clampMin, Infinity)
     } else {
       scrollRef.current?.setClampBounds(clampMin, clampMax)
     }
+  })
+
+  // Drain keeps scrollTop + pendingDelta constant, so the store snapshot
+  // cannot wake us after a capped range falls behind. Retry only while the
+  // destination lacks mounted coverage, yielding between commits.
+  const [, retryCoverage] = useState(0)
+  useEffect(() => {
+    const needsCoverage = () => {
+      const s = scrollRef.current
+      if (!s || s.isSticky() || s.getViewportHeight() === 0) return false
+      const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
+      const target = Math.max(
+        0,
+        Math.min(s.getScrollTop() + s.getPendingDelta(), max),
+      )
+      return target < clampMin || target > clampMax
+    }
+    if (!needsCoverage()) return
+    const timer = setTimeout(() => {
+      if (needsCoverage()) retryCoverage(n => n + 1)
+    }, FRAME_INTERVAL_MS)
+    return () => clearTimeout(timer)
   })
 
   // Measure heights from the PREVIOUS Ink render. Runs every commit (no

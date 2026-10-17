@@ -23,6 +23,7 @@ import {
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
+import { requiresExplicitUserApproval } from './PermissionResult.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -105,6 +106,7 @@ import {
   formatActionForClassifier,
 } from './yoloClassifier.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isApproveForMeAvailable } from './approveForMe.js'
 
 
 const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
@@ -519,6 +521,17 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         message: DONT_ASK_REJECT_MESSAGE(tool.name),
       }
     }
+    if (requiresExplicitUserApproval(result.decisionReason)) {
+      if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
+        return {
+          behavior: 'deny',
+          message: result.message,
+          decisionReason: result.decisionReason!,
+        }
+      }
+      return { ...result, pendingClassifierCheck: undefined }
+    }
+
     // Apply auto mode: use AI classifier instead of prompting user
     // Check this BEFORE shouldAvoidPermissionPrompts so classifiers work in headless mode
     if (
@@ -527,29 +540,6 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         (appState.toolPermissionContext.mode === 'plan' &&
           (autoModeStateModule?.isAutoModeActive() ?? false)))
     ) {
-      // Non-classifier-approvable safetyCheck decisions stay immune to ALL
-      // auto-approve paths: the acceptEdits fast-path, the safe-tool allowlist,
-      // and the classifier. Step 1g only guards bypassPermissions; this guards
-      // auto. classifierApprovable safetyChecks (sensitive-file paths) fall
-      // through to the classifier — the fast-paths below naturally don't fire
-      // because the tool's own checkPermissions still returns 'ask'.
-      if (
-        result.decisionReason?.type === 'safetyCheck' &&
-        !result.decisionReason.classifierApprovable
-      ) {
-        if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
-          return {
-            behavior: 'deny',
-            message: result.message,
-            decisionReason: {
-              type: 'asyncAgent',
-              reason:
-                'Safety check requires interactive approval and permission prompts are not available in this context',
-            },
-          }
-        }
-        return result
-      }
       if (tool.requiresUserInteraction?.() && result.behavior === 'ask') {
         return result
       }
@@ -848,6 +838,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         // the tengu_iron_gate_closed gate.
         if (classifierResult.unavailable) {
           if (
+            !isApproveForMeAvailable() &&
             getFeatureValue_CACHED_WITH_REFRESH(
               'tengu_iron_gate_closed',
               true,
@@ -874,6 +865,15 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           // Fail open: fall back to normal permission handling
           logForDebugging(
             'Auto mode classifier unavailable, falling back to normal permission handling (fail open)',
+            { level: 'warn' },
+          )
+          return result
+        }
+
+        // Approve for me never turns a reviewer it cannot read into a decision; the person decides.
+        if (classifierResult.unparseable && isApproveForMeAvailable()) {
+          logForDebugging(
+            'Approve for me reviewer answer was unparseable, falling back to normal permission handling',
             { level: 'warn' },
           )
           return result
@@ -1092,7 +1092,8 @@ export async function checkRuleBasedPermissions(
     }
   }
 
-  // 1b. Entire tool has an ask rule
+  // 1b. Defer the whole-tool ask until tool denies and mandatory asks are checked.
+  let wholeToolAsk: PermissionAskDecision | undefined
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
     const canSandboxAutoAllow =
@@ -1102,7 +1103,7 @@ export async function checkRuleBasedPermissions(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
-      return {
+      wholeToolAsk = {
         behavior: 'ask',
         decisionReason: {
           type: 'rule',
@@ -1134,6 +1135,14 @@ export async function checkRuleBasedPermissions(
   if (toolPermissionResult?.behavior === 'deny') {
     return toolPermissionResult
   }
+
+  if (
+    toolPermissionResult?.behavior === 'ask' &&
+    requiresExplicitUserApproval(toolPermissionResult.decisionReason)
+  ) {
+    return toolPermissionResult
+  }
+  if (wholeToolAsk) return wholeToolAsk
 
   // 1f. Content-specific ask rules from tool.checkPermissions
   // (e.g. Bash(npm publish:*) → {ask, type:'rule', ruleBehavior:'ask'})
@@ -1184,7 +1193,8 @@ async function hasPermissionsToUseToolInner(
     }
   }
 
-  // 1b. Check if the entire tool should always ask for permission
+  // 1b. Defer the whole-tool ask until tool denies and mandatory asks are checked.
+  let wholeToolAsk: PermissionAskDecision | undefined
   const askRule = getAskRuleForTool(appState.toolPermissionContext, tool)
   if (askRule) {
     // When autoAllowBashIfSandboxed is on, sandboxed commands skip the ask rule and
@@ -1197,7 +1207,7 @@ async function hasPermissionsToUseToolInner(
       shouldUseSandbox(input)
 
     if (!canSandboxAutoAllow) {
-      return {
+      wholeToolAsk = {
         behavior: 'ask',
         decisionReason: {
           type: 'rule',
@@ -1230,6 +1240,14 @@ async function hasPermissionsToUseToolInner(
   if (toolPermissionResult?.behavior === 'deny') {
     return toolPermissionResult
   }
+
+  if (
+    toolPermissionResult?.behavior === 'ask' &&
+    requiresExplicitUserApproval(toolPermissionResult.decisionReason)
+  ) {
+    return toolPermissionResult
+  }
+  if (wholeToolAsk) return wholeToolAsk
 
   // 1e. Tool requires user interaction even in bypass mode
   if (

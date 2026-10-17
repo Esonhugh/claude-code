@@ -9,17 +9,16 @@ import type { MessageParam as APIUserMessage } from '@anthropic-ai/sdk/resources
 export type ModelUsage = {
   inputTokens: number
   outputTokens: number
+  thinkingTokens?: number
   cacheReadInputTokens: number
   cacheCreationInputTokens: number
   webSearchRequests: number
   costUSD: number
   contextWindow: number
   maxOutputTokens: number
-  // snake_case aliases used in recovered code
-  input_tokens: number
-  output_tokens: number
-  cache_read_input_tokens: number
-  cache_creation_input_tokens: number
+  canonicalModel?: string
+  provider?: string
+  costBasis?: 'list' | 'managed' | 'unknown'
 }
 
 // Output Format
@@ -76,6 +75,7 @@ export type McpServerStatus = {
   error?: string
   config?: McpServerStatusConfig
   scope?: string
+  source?: string
   tools?: Array<{
     name: string
     description?: string
@@ -113,7 +113,7 @@ export type PermissionDecisionClassification = 'user_temporary' | 'user_permanen
 export type PermissionResult =
   | { behavior: 'allow'; updatedInput?: Record<string, unknown>; updatedPermissions?: PermissionUpdate[]; toolUseID?: string; decisionClassification?: PermissionDecisionClassification }
   | { behavior: 'deny'; message: string; interrupt?: boolean; toolUseID?: string; decisionClassification?: PermissionDecisionClassification }
-export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk'
+export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
 // Hook Types
 export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Notification' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged'
@@ -164,7 +164,7 @@ export type UserPromptSubmitHookSpecificOutput = { hookEventName: 'UserPromptSub
 export type SessionStartHookSpecificOutput = { hookEventName: 'SessionStart'; additionalContext?: string; initialUserMessage?: string; watchPaths?: string[] }
 export type SetupHookSpecificOutput = { hookEventName: 'Setup'; additionalContext?: string }
 export type SubagentStartHookSpecificOutput = { hookEventName: 'SubagentStart'; additionalContext?: string }
-export type PostToolUseHookSpecificOutput = { hookEventName: 'PostToolUse'; additionalContext?: string; updatedMCPToolOutput?: unknown }
+export type PostToolUseHookSpecificOutput = { hookEventName: 'PostToolUse'; additionalContext?: string; updatedToolOutput?: unknown; updatedMCPToolOutput?: unknown }
 export type PostToolUseFailureHookSpecificOutput = { hookEventName: 'PostToolUseFailure'; additionalContext?: string }
 export type PermissionDeniedHookSpecificOutput = { hookEventName: 'PermissionDenied'; retry?: boolean }
 export type NotificationHookSpecificOutput = { hookEventName: 'Notification'; additionalContext?: string }
@@ -231,7 +231,7 @@ export type SDKStatus = 'compacting' | null
 export type SDKRateLimitInfo = {
   status: 'allowed' | 'allowed_warning' | 'rejected'
   resetsAt?: number
-  rateLimitType?: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'overage'
+  rateLimitType?: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet' | 'seven_day_overage_included' | 'overage'
   utilization?: number
   overageStatus?: 'allowed' | 'allowed_warning' | 'rejected'
   overageResetsAt?: number
@@ -299,6 +299,14 @@ export type SDKSystemMessage = {
   skills: string[]
   plugins: Array<{ name: string; path: string; source?: string }>
   fast_mode_state?: FastModeState
+  uuid: string
+  session_id: string
+}
+export type SDKUILogMessage = {
+  type: 'system'
+  subtype: 'ui_log'
+  plugin: string
+  text: string
   uuid: string
   session_id: string
 }
@@ -474,6 +482,32 @@ export type SDKSessionStateChangedMessage = {
   uuid: string
   session_id: string
 }
+export type SDKActiveGoalMessage = {
+  type: 'active_goal'
+  value: {
+    condition: string
+    iterations: number
+    set_at: number
+    tokens_at_start?: number
+    last_reason?: string
+  } | null
+  uuid: string
+  session_id: string
+}
+
+export type SDKAutocompactStateMessage = {
+  type: 'autocompact_state'
+  value: {
+    enabled: boolean
+    effective_window: number
+    threshold: number
+    enforced: boolean
+    source: 'env' | 'settings' | 'clientdata' | 'experiment' | 'model-default' | 'unknown-model' | 'auto'
+  }
+  uuid: string
+  session_id: string
+}
+
 export type SDKGoalStateChangedMessage = {
   type: 'system'
   subtype: 'goal_state_changed'
@@ -544,12 +578,22 @@ export type SDKSessionInfo = {
 }
 
 // Union of all SDK messages
+export type SDKUIFocusMessage = import('./modsControlTypes.js').SDKUIFocusMessage
+export type SDKUIScrollMessage = import('./modsControlTypes.js').SDKUIScrollMessage
+export type SDKUIPanesMessage = import('./modsControlTypes.js').SDKUIPanesMessage
+export type SDKUIInvalidateMessage = import('./modsControlTypes.js').SDKUIInvalidateMessage
+
 export type SDKMessage =
+  | SDKUIInvalidateMessage
+  | SDKUIPanesMessage
+  | SDKUIScrollMessage
+  | SDKUIFocusMessage
   | SDKAssistantMessage
   | SDKUserMessage
   | SDKUserMessageReplay
   | SDKResultMessage
   | SDKSystemMessage
+  | SDKUILogMessage
   | SDKPartialAssistantMessage
   | SDKCompactBoundaryMessage
   | SDKStatusMessage
@@ -565,6 +609,8 @@ export type SDKMessage =
   | SDKTaskProgressMessage
   | SDKSessionStateChangedMessage
   | SDKGoalStateChangedMessage
+  | SDKActiveGoalMessage
+  | SDKAutocompactStateMessage
   | SDKFilesPersistedEvent
   | SDKToolUseSummaryMessage
   | SDKRateLimitEvent

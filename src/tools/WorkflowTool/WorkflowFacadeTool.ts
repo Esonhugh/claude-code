@@ -3,22 +3,21 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getCwd } from '../../utils/cwd.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getGlobalConfig } from '../../utils/config.js'
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
 import { loadWorkflowScriptSpec } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript } from './workflowScriptParser.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
 import { runWorkflowPlan } from './runWorkflow.js'
-import { runWorkflowScript } from './workflowScriptRuntime.js'
+import { loadWorkflowScriptResume, runWorkflowScript } from './workflowScriptRuntime.js'
 import { workflowPermissionPreviewInput } from './workflowPermissionPreviewInput.js'
 import {
   createWorkflowRunId,
   persistWorkflowScript,
   resolveWorkflowScriptPath,
 } from './workflowScriptPersistence.js'
-import { loadWorkflowRunSession } from './workflowRunSessions.js'
-import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
-import { shouldEnableWorkflows } from './workflowFeatureFlags.js'
+import { shouldEnableWorkflows, workflowSizeGuidelinePrompt } from './workflowFeatureFlags.js'
 
 export type WorkflowFacadeInput =
   | string
@@ -78,7 +77,7 @@ const inputSchema = lazySchema(() =>
     script: z.string().optional(),
     scriptPath: z.string().optional(),
     args: workflowArgsSchema.optional(),
-    resumeFromRunId: z.string().optional(),
+    resumeFromRunId: z.string().regex(/^wf_[a-z0-9-]{6,}$/).optional(),
     plan: z.unknown().optional(),
     description: z.string().optional(),
     title: z.string().optional(),
@@ -204,7 +203,14 @@ return reports
 
 Do not comment out the meta export. Without it, the script is treated as the legacy workflow DSL, where official-style globals and top-level await/return semantics do not apply.
 
-Use this facade only for workflow-scale orchestration or when the user explicitly asks to run a workflow/script/plan. For focused tasks, use direct tools or a small number of subagents instead. If the user asks to avoid workflow orchestration, do not call this tool.`
+ONLY call this tool when the user has explicitly opted into multi-agent orchestration. Workflows can spawn dozens of agents and consume a large amount of tokens; the user must request that scale, not have it inferred. Explicit opt-in means one of:
+- The user included the keyword "ultracode" in their prompt (you'll see a system-reminder confirming it).
+- Ultracode is on for the session (a system-reminder confirms it).
+- The user directly asked you to run a workflow or use multi-agent orchestration in their own words ("use a workflow", "run a workflow", "fan out agents", "orchestrate this with subagents"). The ask must be in the user's words — a task that would merely benefit from a workflow does not count.
+- The user invoked a skill or slash command whose instructions tell you to call Workflow.
+- The user asked you to run a specific named or saved workflow.
+
+For any other task — even one that would clearly benefit from parallelism — do NOT call this tool. Use the Agent tool (if available) for individual subagents, or briefly describe what a multi-agent workflow could do and how much it would roughly cost, and ask the user whether to run it. Mention they can ask for one with "use a workflow" in a future message to skip the ask. If the user asks to avoid workflow orchestration, do not call this tool.${workflowSizeGuidelinePrompt(getInitialSettings(), getGlobalConfig().workflowSizeGuideline)}`
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -297,7 +303,13 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
         normalized.selector,
         normalized.args,
       )
-      const workflowRunId = normalized.script ? createWorkflowRunId() : undefined
+      const resumeScript = normalized.script ?? workflow.spec.runScriptSnapshot
+      const resume = normalized.resumeFromRunId && resumeScript && hasWorkflowScriptMeta(resumeScript)
+        ? await loadWorkflowScriptResume({ cwd, workflowRunId: normalized.resumeFromRunId, context })
+        : undefined
+      const workflowRunId = resume
+        ? normalized.resumeFromRunId
+        : normalized.script ? createWorkflowRunId() : undefined
       const scriptPath = normalized.script
         ? await persistWorkflowScript({
             cwd,
@@ -307,7 +319,7 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
           })
         : workflow.path
       const spec = normalized.script
-        ? await loadWorkflowScriptSpec(scriptPath, normalized.args, { cwd })
+        ? await loadWorkflowScriptSpec(scriptPath, normalized.args)
         : workflow.spec
       const plan = normalized.script
         ? validateWorkflowSpec(spec) as WorkflowDryRunPlan
@@ -315,12 +327,6 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
       if (plan.requiresInput && !normalizeWorkflowRunArgs(normalized.args)) {
         throw new Error(`Workflow ${workflow.commandName} requires workflow input`)
       }
-      const priorSession = normalized.resumeFromRunId
-        ? await loadWorkflowRunSession({ cwd, workflowRunId: normalized.resumeFromRunId })
-        : undefined
-      const resumeJournalEntries = priorSession?.transcriptDir
-        ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
-        : priorSession?.resumeCacheEntries
       // Use script runtime for script-based workflows
       if (isExecutableWorkflowScript(spec)) {
         return {
@@ -334,7 +340,8 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
             workflowRunId,
             scriptPath,
             resumeFromRunId: normalized.resumeFromRunId,
-            resumeJournalEntries,
+            resumeJournalEntries: resume?.entries,
+            resumeInterruptedIdentities: resume?.interruptedIdentities,
           }),
         }
       }
@@ -353,7 +360,12 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
       }
     }
 
-    const workflowRunId = createWorkflowRunId()
+    // Checked before the script is persisted, so a refused resume leaves nothing behind.
+    const resume = normalized.resumeFromRunId &&
+      (normalized.kind === 'script-path' || hasWorkflowScriptMeta(normalized.script))
+      ? await loadWorkflowScriptResume({ cwd, workflowRunId: normalized.resumeFromRunId, context })
+      : undefined
+    const workflowRunId = resume ? normalized.resumeFromRunId! : createWorkflowRunId()
     const scriptPath =
       normalized.kind === 'script-path'
         ? await resolveWorkflowScriptPath({ cwd, scriptPath: normalized.scriptPath })
@@ -363,14 +375,8 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
             name: inlineWorkflowName(normalized.script) ?? 'workflow',
             script: normalized.script,
           })
-    const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args, { cwd })
+    const spec = await loadWorkflowScriptSpec(scriptPath, normalized.args)
     const plan = validateWorkflowSpec(spec) as WorkflowDryRunPlan
-    const priorSession = normalized.resumeFromRunId
-      ? await loadWorkflowRunSession({ cwd, workflowRunId: normalized.resumeFromRunId })
-      : undefined
-    const resumeJournalEntries = priorSession?.transcriptDir
-      ? await readWorkflowJournalCacheEntries(priorSession.transcriptDir)
-      : priorSession?.resumeCacheEntries
     // Use script runtime for script-based workflows
     if (spec.runScriptSnapshot && hasWorkflowScriptMeta(spec.runScriptSnapshot)) {
       return {
@@ -384,7 +390,8 @@ Use this facade only for workflow-scale orchestration or when the user explicitl
           workflowRunId,
           scriptPath,
           resumeFromRunId: normalized.resumeFromRunId,
-          resumeJournalEntries,
+          resumeJournalEntries: resume?.entries,
+          resumeInterruptedIdentities: resume?.interruptedIdentities,
         }),
       }
     }

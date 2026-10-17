@@ -22,7 +22,7 @@
 
 import type { TerminalResponse } from './parse-keypress.js'
 import { csi } from './termio/csi.js'
-import { osc } from './termio/osc.js'
+import { osc, OSC } from './termio/osc.js'
 
 /** A terminal query: an outbound request sequence paired with a matcher
  *  that recognizes the expected inbound response. Built by `decrqm()`,
@@ -97,6 +97,15 @@ export function oscColor(code: number): TerminalQuery<OscResponse> {
   return {
     request: osc(code, '?'),
     match: (r): r is OscResponse => r.type === 'osc' && r.code === code,
+  }
+}
+
+/** OSC 7501 feature query; replies must retain the probe marker. */
+export function programStatusQuery(): TerminalQuery<OscResponse> {
+  return {
+    request: osc(OSC.PROGRAM_STATUS, '?'),
+    match: (r): r is OscResponse =>
+      r.type === 'osc' && r.code === OSC.PROGRAM_STATUS && r.data.startsWith('?'),
   }
 }
 

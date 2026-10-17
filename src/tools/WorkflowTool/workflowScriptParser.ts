@@ -26,7 +26,8 @@ export class WorkflowScriptParseError extends Error {
   }
 }
 
-const META_ASSIGNMENT = /^\s*export\s+const\s+meta\s*=/
+// Like official, whitespace and comments may precede the meta export.
+const META_ASSIGNMENT = /^(?:\s|\/\/[^\n\r\u2028\u2029]*(?:[\n\r\u2028\u2029]|$)|\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/)*export\s+const\s+meta\s*=/
 const BODY_PREFIX = /^[;\s]*\n/
 const RESERVED_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
 

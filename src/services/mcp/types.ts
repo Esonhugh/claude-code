@@ -88,7 +88,7 @@ export const McpWebSocketIDEServerConfigSchema = lazySchema(() =>
 
 export const McpHTTPServerConfigSchema = lazySchema(() =>
   z.object({
-    type: z.literal('http'),
+    type: z.enum(['http', 'streamable-http']).transform(() => 'http' as const),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),
@@ -166,6 +166,13 @@ export type ScopedMcpServerConfig = McpServerConfig & {
   // (e.g. 'slack@anthropic'). Stashed at config-build time so the channel
   // gate doesn't have to race AppState.plugins.enabled hydration.
   pluginSource?: string
+}
+
+/** Definition origin for SDK status; names are untrusted configuration keys. */
+export function getMcpServerStatusSource(config: ScopedMcpServerConfig): string {
+  if (config.pluginSource !== undefined) return 'plugin'
+  if (config.type === 'sdk') return 'sdk'
+  return config.scope
 }
 
 export const McpJsonConfigSchema = lazySchema(() =>

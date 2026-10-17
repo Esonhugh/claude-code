@@ -1,3 +1,4 @@
+import { SDKUIInvalidateMessageSchema, SDKUIPanesMessageSchema, SDKUIScrollMessageSchema, SDKUIFocusMessageSchema } from './modsControlSchemas.js'
 /**
  * SDK Core Schemas - Zod schemas for serializable SDK data types.
  *
@@ -16,14 +17,18 @@ import { lazySchema } from '../../utils/lazySchema.js'
 
 export const ModelUsageSchema = lazySchema(() =>
   z.object({
-    inputTokens: z.number(),
-    outputTokens: z.number(),
-    cacheReadInputTokens: z.number(),
-    cacheCreationInputTokens: z.number(),
-    webSearchRequests: z.number(),
+    inputTokens: z.number().int(),
+    outputTokens: z.number().int(),
+    thinkingTokens: z.number().int().optional(),
+    cacheReadInputTokens: z.number().int(),
+    cacheCreationInputTokens: z.number().int(),
+    webSearchRequests: z.number().int(),
     costUSD: z.number(),
-    contextWindow: z.number(),
-    maxOutputTokens: z.number(),
+    contextWindow: z.number().int(),
+    maxOutputTokens: z.number().int(),
+    canonicalModel: z.string().optional(),
+    provider: z.string().optional(),
+    costBasis: z.enum(['list', 'managed', 'unknown']).optional(),
   }),
 )
 
@@ -191,6 +196,10 @@ export const McpServerStatusSchema = lazySchema(() =>
         .describe(
           'Configuration scope (e.g., project, user, local, claudeai, managed)',
         ),
+      source: z
+        .string()
+        .optional()
+        .describe('Definition origin: SDK host, plugin, or configuration scope. Use the origin rather than the configured name.'),
       tools: z
         .array(
           z.object({
@@ -336,14 +345,15 @@ export const PermissionResultSchema = lazySchema(() =>
 
 export const PermissionModeSchema = lazySchema(() =>
   z
-    .enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk'])
+    .enum(['default', 'acceptEdits', 'bypassPermissions', 'plan', 'dontAsk', 'auto'])
     .describe(
       'Permission mode for controlling how tool executions are handled. ' +
         "'default' - Standard behavior, prompts for dangerous operations. " +
         "'acceptEdits' - Auto-accept file edit operations. " +
         "'bypassPermissions' - Bypass all permission checks (requires allowDangerouslySkipPermissions). " +
         "'plan' - Planning mode, no actual tool execution. " +
-        "'dontAsk' - Don't prompt for permissions, deny if not pre-approved.",
+        "'dontAsk' - Don't prompt for permissions, deny if not pre-approved. " +
+        "'auto' - Use a model classifier to approve/deny permission prompts.",
     ),
 )
 
@@ -847,6 +857,7 @@ export const PostToolUseHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PostToolUse'),
     additionalContext: z.string().optional(),
+    updatedToolOutput: z.unknown().optional(),
     updatedMCPToolOutput: z.unknown().optional(),
   }),
 )
@@ -1337,6 +1348,7 @@ export const SDKRateLimitInfoSchema = lazySchema(() =>
           'seven_day',
           'seven_day_opus',
           'seven_day_sonnet',
+          'seven_day_overage_included',
           'overage',
         ])
         .optional(),
@@ -1512,6 +1524,17 @@ export const SDKSystemMessageSchema = lazySchema(() =>
       }),
     ),
     fast_mode_state: FastModeStateSchema().optional(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKUILogMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('ui_log'),
+    plugin: z.string(),
+    text: z.string(),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -1771,6 +1794,36 @@ export const SDKSessionStateChangedMessageSchema = lazySchema(() =>
 )
 
 
+export const SDKActiveGoalMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('active_goal'),
+    value: z.object({
+      condition: z.string(),
+      iterations: z.number(),
+      set_at: z.number(),
+      tokens_at_start: z.number().optional(),
+      last_reason: z.string().optional(),
+    }).nullable(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKAutocompactStateMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('autocompact_state'),
+    value: z.object({
+      enabled: z.boolean(),
+      effective_window: z.number(),
+      threshold: z.number(),
+      enforced: z.boolean(),
+      source: z.enum(['env', 'settings', 'clientdata', 'experiment', 'model-default', 'unknown-model', 'auto']),
+    }),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
 export const SDKGoalStateChangedMessageSchema = lazySchema(() =>
   z.object({
     type: z.literal('system'),
@@ -1918,6 +1971,11 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKUserMessageReplaySchema(),
     SDKResultMessageSchema(),
     SDKSystemMessageSchema(),
+    SDKUILogMessageSchema(),
+    SDKUIInvalidateMessageSchema(),
+    SDKUIPanesMessageSchema(),
+    SDKUIScrollMessageSchema(),
+    SDKUIFocusMessageSchema(),
     SDKPartialAssistantMessageSchema(),
     SDKCompactBoundaryMessageSchema(),
     SDKStatusMessageSchema(),
@@ -1933,6 +1991,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKTaskProgressMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
     SDKGoalStateChangedMessageSchema(),
+    SDKActiveGoalMessageSchema(),
+    SDKAutocompactStateMessageSchema(),
     SDKFilesPersistedEventSchema(),
     SDKToolUseSummaryMessageSchema(),
     SDKRateLimitEventSchema(),

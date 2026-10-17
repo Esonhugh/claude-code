@@ -1,3 +1,7 @@
+import { randomUUID } from 'node:crypto'
+import { createAssistantMessage } from '../../utils/messages.js'
+import { isEqual } from 'lodash-es'
+import { runModSessionSend, sessionSendToolResult } from '../../services/mods/sessionSend.js'
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
 import { isReplBridgeActive } from '../../bootstrap/state.js'
@@ -10,7 +14,9 @@ import {
   queuePendingMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isMainSessionTask } from '../../tasks/LocalMainSessionTask.js'
-import { toAgentId } from '../../types/ids.js'
+import { asAgentId, toAgentId } from '../../types/ids.js'
+import { readAgentMetadata } from '../../utils/sessionStorage.js'
+import { resumeInProcessTeammate } from '../../utils/swarm/resumeInProcessTeammate.js'
 import { generateRequestId } from '../../utils/agentId.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -40,9 +46,15 @@ import {
 } from '../../utils/teammateMailbox.js'
 import { getUdsMessagingSocketPath } from '../../utils/udsMessaging.js'
 import { resumeAgentBackground } from '../AgentTool/resumeAgent.js'
+import { frameSubagentHandback, displaySubagentHandback, RESUMED_AGENT_MESSAGE, RESUMED_AGENT_FRAMED_MESSAGE, type SubagentHandback } from '../../utils/subagentHandback.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
+import { AgentStoppedByUserError, cancelledAgentMessage } from '../../utils/agentCancellation.js'
+import { bindSubagentRecipient, resolveSubagentRecipient, type SendMessagePin } from '../../utils/sendMessagePins.js'
 import { SEND_MESSAGE_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, getPrompt } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
+
+const pendingTeammateResumes = new WeakMap<ToolUseContext['setAppState'], Map<string, Promise<string | null>>>()
 
 const StructuredMessage = lazySchema(() =>
   z.discriminatedUnion('type', [
@@ -105,6 +117,9 @@ export type MessageOutput = {
   success: boolean
   message: string
   routing?: MessageRouting
+  pin?: SendMessagePin
+  display?: string
+  inlineHandback?: SubagentHandback & { displayName: string }
 }
 
 export type BroadcastOutput = {
@@ -154,14 +169,15 @@ async function handleMessage(
   content: string,
   summary: string | undefined,
   context: ToolUseContext,
+  teamNameOverride?: string,
 ): Promise<{ data: MessageOutput }> {
   const appState = context.getAppState()
-  const teamName = getTeamName(appState.teamContext)
+  const teamName = teamNameOverride ?? getTeamName(appState.teamContext)
   const senderName =
     getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME)
   const senderColor = getTeammateColor()
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     recipientName,
     {
       from: senderName,
@@ -172,6 +188,7 @@ async function handleMessage(
     },
     teamName,
   )
+  if (delivered === false) return {data:{success:false,message:`Writing to ${recipientName}'s inbox failed; nothing was queued.`}}
 
   const recipientColor = findTeammateColor(appState, recipientName)
 
@@ -238,8 +255,9 @@ async function handleBroadcast(
     }
   }
 
+  const failed: string[] = []
   for (const recipientName of recipients) {
-    await writeToMailbox(
+    const delivered = await writeToMailbox(
       recipientName,
       {
         from: senderName,
@@ -250,13 +268,15 @@ async function handleBroadcast(
       },
       teamName,
     )
+    if (!delivered) failed.push(recipientName)
   }
+  const sent = recipients.filter(name => !failed.includes(name))
 
   return {
     data: {
-      success: true,
-      message: `Message broadcast to ${recipients.length} teammate(s): ${recipients.join(', ')}`,
-      recipients,
+      success: failed.length === 0,
+      message: `Message broadcast to ${sent.length} teammate(s): ${sent.join(', ')}` + (failed.length > 0 ? `. Writing to these inboxes failed, nothing was queued for them: ${failed.join(', ')}` : ''),
+      recipients: sent,
       routing: {
         sender: senderName,
         senderColor,
@@ -284,7 +304,7 @@ async function handleShutdownRequest(
     reason,
   })
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     targetName,
     {
       from: senderName,
@@ -294,6 +314,16 @@ async function handleShutdownRequest(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: `Failed to write the shutdown request to ${targetName}'s inbox — nothing was sent.`,
+        request_id: requestId,
+        target: targetName,
+      },
+    }
+  }
 
   return {
     data: {
@@ -337,7 +367,7 @@ async function handleShutdownApproval(
     backendType: ownBackendType,
   })
 
-  await writeToMailbox(
+  const confirmed = await writeToMailbox(
     TEAM_LEAD_NAME,
     {
       from: agentName,
@@ -395,7 +425,7 @@ async function handleShutdownApproval(
   return {
     data: {
       success: true,
-      message: `Shutdown approved. Sent confirmation to team-lead. Agent ${agentName} is now exiting.`,
+      message: `Shutdown approved. ${confirmed ? 'Sent confirmation to team-lead.' : "The confirmation could not be written to team-lead's inbox."} Agent ${agentName} is now exiting.`,
       request_id: requestId,
     },
   }
@@ -414,7 +444,7 @@ async function handleShutdownRejection(
     reason,
   })
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     TEAM_LEAD_NAME,
     {
       from: agentName,
@@ -424,6 +454,15 @@ async function handleShutdownRejection(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: "Failed to write the shutdown rejection to team-lead's inbox — nothing was sent. Try again.",
+        request_id: requestId,
+      },
+    }
+  }
 
   return {
     data: {
@@ -459,7 +498,7 @@ async function handlePlanApproval(
     permissionMode: modeToInherit,
   }
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     recipientName,
     {
       from: TEAM_LEAD_NAME,
@@ -468,6 +507,15 @@ async function handlePlanApproval(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: `Failed to write the plan approval to ${recipientName}'s inbox — nothing was sent. Try again.`,
+        request_id: requestId,
+      },
+    }
+  }
 
   return {
     data: {
@@ -501,7 +549,7 @@ async function handlePlanRejection(
     timestamp: new Date().toISOString(),
   }
 
-  await writeToMailbox(
+  const delivered = await writeToMailbox(
     recipientName,
     {
       from: TEAM_LEAD_NAME,
@@ -510,6 +558,15 @@ async function handlePlanRejection(
     },
     teamName,
   )
+  if (!delivered) {
+    return {
+      data: {
+        success: false,
+        message: `Failed to write the plan rejection to ${recipientName}'s inbox — nothing was sent. Try again.`,
+        request_id: requestId,
+      },
+    }
+  }
 
   return {
     data: {
@@ -715,19 +772,32 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
     },
 
     mapToolResultToToolResultBlockParam(data, toolUseID) {
+      const { display: _display, ...modelData } = data as SendMessageToolOutput & { display?: string }
+      if ('inlineHandback' in modelData && modelData.inlineHandback) {
+        const { inlineHandback, ...rest } = modelData
+        const framed = process.env.CLAUDE_CODE_HANDBACK_PROVENANCE === undefined || isEnvTruthy(process.env.CLAUDE_CODE_HANDBACK_PROVENANCE)
+        return {
+          tool_use_id: toolUseID,
+          type: 'tool_result' as const,
+          content: [{ type: 'text' as const, text: framed
+            ? jsonStringify({success:true,message:RESUMED_AGENT_FRAMED_MESSAGE}) + '\n' + frameSubagentHandback(inlineHandback.content, inlineHandback)
+            : jsonStringify({...rest,message:displaySubagentHandback(inlineHandback.displayName,inlineHandback.content)}) }],
+        }
+      }
       return {
         tool_use_id: toolUseID,
         type: 'tool_result' as const,
         content: [
           {
             type: 'text' as const,
-            text: jsonStringify(data),
+            text: jsonStringify(modelData),
           },
         ],
       }
     },
 
     async call(input, context, canUseTool, assistantMessage) {
+      const send = async (input: z.infer<InputSchema>): Promise<{data:SendMessageToolOutput}> => {
       if (feature('UDS_INBOX') && typeof input.message === 'string') {
         const addr = parseAddress(input.to)
         if (addr.scheme === 'bridge') {
@@ -778,6 +848,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
           try {
             const permissions = context.getAppState().toolPermissionContext
             await sendToUdsSocket(addr.target, input.message, {
+                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
+                ...(context.abortController ? {signal:context.abortController.signal} : {}),
               fromMode:
                 permissions.mode === 'bypassPermissions' ||
                 (permissions.mode === 'plan' && permissions.isBypassPermissionsModeAvailable)
@@ -806,10 +878,72 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       // through to ambient-team resolution. Stopped agents are auto-resumed.
       if (typeof input.message === 'string' && input.to !== '*') {
         const appState = context.getAppState()
-        const registered = appState.agentNameRegistry.get(input.to)
-        const agentId = registered ?? toAgentId(input.to)
+        const resolved = resolveSubagentRecipient(appState, input.to)
+        if (resolved?.kind === 'ambiguous') {
+          return { data: { success: false, message: `Recipient "${input.to}" is ambiguous. Re-send with a full name and ref:
+${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`).join('\n')}` } }
+        }
+        const agentId = resolved?.recipient.id
+        const recipientName = resolved?.recipient.name ?? input.to
         if (agentId) {
-          const task = appState.tasks[agentId]
+          const teammate = findTeammateTaskByAgentId(agentId, appState.tasks)
+          if (teammate?.status === 'running') {
+            try {
+              return await handleMessage(teammate.identity.agentName, input.message, input.summary, context, teammate.identity.teamName)
+            } catch (error) {
+              return {data:{success:false,message:`Teammate "${input.to}" is running, but writing to its inbox failed; nothing was queued. ${errorMessage(error)}`}}
+            }
+          }
+          const rootWriter = context.setAppStateForTasks ?? context.setAppState
+          let pending = pendingTeammateResumes.get(rootWriter)
+          if (!pending) { pending = new Map(); pendingTeammateResumes.set(rootWriter, pending) }
+          const previous = pending.get(agentId)
+          if (previous) {
+            const id = await previous
+            const resumed = id ? context.getAppState().tasks[id] : undefined
+            if (resumed?.type === 'in_process_teammate' && resumed.status === 'running') {
+              return handleMessage(resumed.identity.agentName, input.message, input.summary, context, resumed.identity.teamName)
+            }
+          }
+          const deferred = Promise.withResolvers<string | null>()
+          pending.set(agentId, deferred.promise)
+          let teammateResume = false
+          try {
+            // Like official, only an evicted agent's identity comes from disk; a
+            // local agent still in state routes without reading its metadata.
+            const metadata = isLocalAgentTask(context.getAppState().tasks[agentId]) ? null : await readAgentMetadata(asAgentId(agentId))
+            if (metadata?.taskKind === 'in_process_teammate') {
+              teammateResume = true
+              const name = metadata.name ?? input.to
+              const teamName = metadata.teamName ?? getTeamName(context.getAppState().teamContext)
+              const running = Object.values(context.getAppState().tasks).find(task => task.type === 'in_process_teammate' && task.status === 'running' && (task.identity.resumableAgentId === agentId || (task.identity.agentName === name && task.identity.teamName === teamName)))
+              if (running?.type === 'in_process_teammate') {
+                deferred.resolve(running.id)
+                return handleMessage(running.identity.agentName, input.message, input.summary, context, running.identity.teamName)
+              }
+              const result = await resumeInProcessTeammate({ resumableAgentId: agentId, prompt: input.message, senderName: getAgentName() || (isTeammate() ? 'teammate' : TEAM_LEAD_NAME), meta: metadata, fallbackName: input.to, toolUseContext: context })
+              deferred.resolve(result.taskId)
+              return { data: { success: true, message: (result.resumedMessageCount > 0
+                ? `Teammate "${input.to}" was not running; resumed it as an in-process teammate with ${result.resumedMessageCount} prior messages and your message as its next prompt.`
+                : `Teammate "${input.to}" was not running; resumed it as an in-process teammate (no prior transcript) with your message as its next prompt.`) + (result.definitionNotice ? ` ${result.definitionNotice}` : '') } }
+            }
+          } catch (error) {
+            return { data: { success: false, message: `Failed to resume ${teammateResume ? 'teammate' : 'agent'} "${input.to}": ${errorMessage(error)}` } }
+          } finally {
+            deferred.resolve(null)
+            if (pending.get(agentId) === deferred.promise) pending.delete(agentId)
+          }
+          const task = context.getAppState().tasks[agentId]
+          const shouldBind = !isMainSessionTask(task) && !(isLocalAgentTask(task) && task.status !== 'running' && task.stoppedByUser)
+          const binding = shouldBind && resolved?.kind === 'one'
+            ? bindSubagentRecipient(input.to, resolved.recipient, context.getAppState(), context.setAppStateForTasks ?? context.setAppState)
+            : { kind: 'proceed' as const, pin: undefined }
+          if (binding.kind === 'rebound') {
+            logForDebugging(`[SendMessage] pin_rebound name=${recipientName} agent_id=${agentId}`, { level: 'warn' })
+            return { data: { success: false, message: binding.message, display: binding.display } }
+          }
+          const pinReceipt = binding.pin ? { pin: binding.pin } : {}
+          if (binding.pin) logForDebugging(`[SendMessage] pin_bound name=${binding.pin.name} agent_id=${binding.pin.id} ref=${binding.pin.ref}`)
           if (isLocalAgentTask(task) && !isMainSessionTask(task)) {
             if (task.status === 'running') {
               queuePendingMessage(
@@ -820,11 +954,16 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               return {
                 data: {
                   success: true,
-                  message: `Message queued for delivery to ${input.to} at its next tool round.`,
+                  message: `Message queued for delivery to ${recipientName} at its next tool round.`,
+                  ...pinReceipt,
                 },
               }
             }
-            // task exists but stopped — auto-resume
+            if (task.stoppedByUser) {
+              logForDebugging(`[AgentCancellation] message_refused agent_id=${agentId} source=live`, { level: 'warn' })
+              return { data: { success: false, message: cancelledAgentMessage(input.to) } }
+            }
+            // Completed, failed and system-interrupted tasks remain resumable.
             try {
               const result = await resumeAgentBackground({
                 agentId,
@@ -832,18 +971,21 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 toolUseContext: context,
                 canUseTool,
                 invokingRequestId: assistantMessage?.requestId,
+                delivery: 'reply',
               })
               return {
                 data: {
                   success: true,
-                  message: `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  ...pinReceipt,
+                  ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" was stopped (${task.status}); resumed it in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
                 },
               }
             } catch (e) {
               return {
                 data: {
                   success: false,
-                  message: `Agent "${input.to}" is stopped (${task.status}) and could not be resumed: ${errorMessage(e)}`,
+                  message: e instanceof AgentStoppedByUserError ? e.message : `Agent "${input.to}" is stopped (${task.status}) and could not be resumed: ${errorMessage(e)}`,
                 },
               }
             }
@@ -859,18 +1001,21 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 toolUseContext: context,
                 canUseTool,
                 invokingRequestId: assistantMessage?.requestId,
+                delivery: 'reply',
               })
               return {
                 data: {
                   success: true,
-                  message: `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
+                  ...pinReceipt,
+                  ...(result.inlineHandback && { inlineHandback: { displayName: toAgentId(input.to) ? input.to.slice(0, 7) : input.to, ...result.inlineHandback } }),
+                  message: result.inlineHandback ? RESUMED_AGENT_MESSAGE : `Agent "${input.to}" had no active task; resumed from transcript in the background with your message. You'll be notified when it finishes. Output: ${result.outputFile}`,
                 },
               }
             } catch (e) {
               return {
                 data: {
                   success: false,
-                  message: `Agent "${input.to}" is registered but has no transcript to resume. It may have been cleaned up. (${errorMessage(e)})`,
+                  message: e instanceof AgentStoppedByUserError ? e.message : `Agent "${input.to}" is registered but has no transcript to resume. It may have been cleaned up. (${errorMessage(e)})`,
                 },
               }
             }
@@ -912,6 +1057,8 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
                 }
               }
               await sendToUdsSocket(peer.messagingSocketPath, input.message, {
+                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
+                ...(context.abortController ? {signal:context.abortController.signal} : {}),
                 fromMode:
                   appState.toolPermissionContext.mode === 'bypassPermissions' ||
                   (appState.toolPermissionContext.mode === 'plan' &&
@@ -974,6 +1121,57 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
             context,
           )
       }
+      }
+      if (typeof input.message !== 'string') return send(input)
+      const owned = context.modsSnapshot ? undefined : context.mods?.capture()
+      const snapshot = context.modsSnapshot ?? owned
+      const signal = context.abortController?.signal ?? new AbortController().signal
+      let receipt: {data:SendMessageToolOutput} | undefined
+      try {
+        const result = await runModSessionSend(snapshot, {
+          to:input.to,text:input.message,
+          origin:context.modSpawnedBy ? {kind:'plugin',name:context.modSpawnedBy} : {kind:'model'},
+          ...(context.agentId ? {agentId:context.agentId} : {}),
+        }, async (value, branch) => {
+          branch?.throwIfAborted()
+          let rewritten: z.infer<InputSchema> = {...input,to:value.to,message:value.text}
+          if (value.text !== input.message) delete rewritten.summary
+          if (value.to !== input.to || value.text !== input.message) {
+            const parsed = SendMessageTool.inputSchema.safeParse(rewritten)
+            const validation = parsed.success ? await SendMessageTool.validateInput!(parsed.data,context) : undefined
+            if (!parsed.success || validation?.result === false) {
+              receipt = {data:{success:false,message:`A plugin hook rewrote this send into one the tool refuses (${validation?.result === false ? validation.message : 'a shape SendMessage does not accept'}); nothing was sent.`}}
+              return sessionSendToolResult({result:receipt.data})
+            }
+            rewritten = parsed.data
+          }
+          if (value.to !== input.to) {
+            if (typeof canUseTool !== 'function') {
+              receipt = {data:{success:false,message:`A plugin hook readdressed this send to '${value.to}' and no permission check can run here; nothing was sent.`}}
+              return sessionSendToolResult({result:receipt.data})
+            }
+            const approval = await canUseTool(SendMessageTool,rewritten,context,assistantMessage ?? createAssistantMessage({content:[]}),randomUUID())
+            branch?.throwIfAborted()
+            if (approval.behavior !== 'allow') {
+              receipt = {data:{success:false,message:approval.behavior === 'deny' && approval.message ? approval.message : `Sending to '${value.to}' (a plugin hook readdressed this send) was not approved; nothing was sent.`}}
+              return sessionSendToolResult({result:receipt.data})
+            }
+            if (approval.updatedInput !== undefined) {
+              const narrowed = SendMessageTool.inputSchema.safeParse(approval.updatedInput)
+              if (!narrowed.success) {
+                receipt = {data:{success:false,message:'The permission handler narrowed the input to a shape SendMessage does not accept — nothing was sent.'}}
+                return sessionSendToolResult({result:receipt.data})
+              }
+              rewritten = narrowed.data
+            }
+          }
+          receipt = await send(rewritten)
+          branch?.throwIfAborted()
+          return sessionSendToolResult({result:receipt.data})
+        }, signal)
+        if (receipt && isEqual(sessionSendToolResult({result:receipt.data}),result)) return receipt
+        return {data:{success:result.isDelivered,message:result.isDelivered ? 'Message delivered' : `Not sent: a plugin hook refused it (${result.reason}).`}}
+      } finally {owned?.release()}
     },
 
     renderToolUseMessage,

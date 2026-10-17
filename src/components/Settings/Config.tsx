@@ -18,6 +18,7 @@ import figures from 'figures'
 import {
   type GlobalConfig,
   saveGlobalConfig,
+  saveCurrentProjectConfig,
   getCurrentProjectConfig,
   type OutputStyle,
 } from '../../utils/config.js'
@@ -39,11 +40,14 @@ import {
   type ExternalPermissionMode,
   type PermissionMode,
 } from '../../utils/permissions/PermissionMode.js'
+import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
 import {
-  getAutoModeEnabledState,
-  hasAutoModeOptInAnySource,
-  transitionPlanAutoMode,
-} from '../../utils/permissions/permissionSetup.js'
+  defaultWorkflowSizeGuideline,
+  shouldEnableWorkflows,
+  WORKFLOW_SIZE_GUIDELINES,
+  workflowsDefaultOn,
+  type WorkflowSizeGuideline,
+} from '../../tools/WorkflowTool/workflowFeatureFlags.js'
 import { logError } from '../../utils/log.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import {
@@ -91,6 +95,7 @@ import {
 import {
   getInitialSettings,
   getSettingsForSource,
+  getUseAutoModeDuringPlan,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
 import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js'
@@ -106,7 +111,7 @@ import {
   getCliTeammateModeOverride,
   clearCliTeammateModeOverride,
 } from '../../utils/swarm/backends/teammateModeSnapshot.js'
-import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
+import { getModelOptions } from '../../utils/model/modelOptions.js'
 import { useSearchInput } from '../../hooks/useSearchInput.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import {
@@ -120,6 +125,8 @@ import {
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { isAnt } from 'src/utils/userType.js'
+import type { ModConfigRow, ModConfigValue } from '../../services/mods/config.js'
+import TextInput from '../TextInput.js'
 
 
 type Props = {
@@ -144,7 +151,7 @@ type SettingBase =
       searchText: string
     }
 
-type Setting =
+type Setting = (
   | (SettingBase & {
       value: boolean
       onChange(value: boolean): void
@@ -163,6 +170,10 @@ type Setting =
       onChange(value: string): void
       type: 'managedEnum'
     })
+
+) & { description?: string; isLocked?: boolean; configRow?: ModConfigRow }
+
+const AUTO_TEAMMATE_MODEL = Symbol('auto-teammate-model')
 
 type SubMenu =
   | 'Theme'
@@ -196,6 +207,44 @@ export function Config({
     settingsData?.language,
   )
   const initialLanguage = React.useRef(currentLanguage)
+  const [configRows, setConfigRows] = useState<ModConfigRow[]>([])
+  const [configError, setConfigError] = useState<{key:string;message:string} | null>(null)
+  const [editingConfig, setEditingConfig] = useState<ModConfigRow | null>(null)
+  const [configText, setConfigText] = useState('')
+  const [configCursorOffset, setConfigCursorOffset] = useState(0)
+  const modsConfig = context.mods?.config
+  const store = useAppStateStore()
+  React.useEffect(() => {
+    if (!modsConfig) return
+    let revision = 0
+    let active = true
+    const refresh = () => {
+      const current = ++revision
+      void modsConfig.list().then(rows => {
+        if (active && current === revision) {
+          setConfigRows(rows)
+          setConfigError(error => error?.key === '' ? null : error)
+        }
+      }, error => { if (active && current === revision) setConfigError({key:'',message:String(error)}) })
+    }
+    const unsubscribe = modsConfig.subscribe(refresh)
+    const unsubscribeState = store.subscribe(refresh)
+    refresh()
+    return () => { active = false; unsubscribe(); unsubscribeState() }
+  }, [modsConfig, store])
+  const changeConfig = async (key: string, value: ModConfigValue, dialogWriter?: (value: ModConfigValue) => void) => {
+    if (!modsConfig) return
+    try {
+      const result = await modsConfig.set({key,value},{kind:'composer'},undefined,dialogWriter)
+      setConfigError(result.deny === undefined ? null : {key,message:result.deny})
+      if (result.deny === undefined) {
+        setConfigRows(await modsConfig.list())
+        setGlobalConfig(getGlobalConfig())
+        setSettingsData(getInitialSettings())
+        if (key === 'theme') setTheme(result.value as Parameters<typeof setTheme>[0])
+      }
+    } catch (error) { setConfigError({key,message:error instanceof Error ? error.message : String(error)}) }
+  }
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [scrollOffset, setScrollOffset] = useState(0)
   const [isSearchMode, setIsSearchMode] = useState(true)
@@ -214,12 +263,6 @@ export function Config({
     isFastModeEnabled() ? s.fastMode : false,
   )
   const promptSuggestionEnabled = useAppState(s => s.promptSuggestionEnabled)
-  // Show auto in the default-mode dropdown when the user has opted in OR the
-  // config is fully 'enabled' — even if currently circuit-broken ('disabled'),
-  // an opted-in user should still see it in settings (it's a temporary state).
-  const showAutoInDefaultModePicker = feature('TRANSCRIPT_CLASSIFIER')
-    ? hasAutoModeOptInAnySource() || getAutoModeEnabledState() === 'enabled'
-    : false
   // Chat/Transcript view picker is visible to entitled users (pass the GB
   // gate) even if they haven't opted in this session — it IS the persistent
   // opt-in. 'chat' written here is read at next startup by main.tsx which
@@ -249,7 +292,6 @@ export function Config({
   )
   const initialThemeSetting = React.useRef(themeSetting)
   // AppState fields Config may modify — snapshot once at mount.
-  const store = useAppStateStore()
   const [initialAppState] = useState(() => {
     const s = store.getState()
     return {
@@ -276,12 +318,37 @@ export function Config({
   const isDirty = React.useRef(false)
   const [showThinkingWarning, setShowThinkingWarning] = useState(false)
   const [showSubmenu, setShowSubmenu] = useState<SubMenu | null>(null)
+  const teammateModelOptions = React.useMemo(() => {
+    if (showSubmenu !== 'TeammateModel') return []
+    const models = getModelOptions().filter(option => option.value !== null)
+    const current = globalConfig.teammateDefaultModel
+    if (current && !models.some(option => option.value === current)) {
+      models.push({
+        value: current,
+        label: modelDisplayString(current),
+        description: 'Current model',
+      })
+    }
+    return [
+      {
+        value: AUTO_TEAMMATE_MODEL,
+        label: teammateModelDisplayString(undefined),
+        description: 'Use automatic teammate model selection',
+      },
+      {
+        value: null,
+        label: teammateModelDisplayString(null),
+        description: 'Always inherit the current effective leader model',
+      },
+      ...models,
+    ]
+  }, [showSubmenu, globalConfig.teammateDefaultModel])
   const {
     query: searchQuery,
     setQuery: setSearchQuery,
     cursorOffset: searchCursorOffset,
   } = useSearchInput({
-    isActive: isSearchMode && showSubmenu === null && !headerFocused,
+    isActive: isSearchMode && showSubmenu === null && editingConfig === null && !headerFocused,
     onExit: () => setIsSearchMode(false),
     onExitUp: focusHeader,
     // Ctrl+C/D must reach Settings' useExitOnCtrlCD; 'd' also avoids
@@ -386,6 +453,11 @@ export function Config({
         setSettingsData(prev => ({
           ...prev,
           spinnerTipsEnabled,
+        }))
+        // Sync to AppState so the spinner reacts immediately
+        setAppState(prev => ({
+          ...prev,
+          settings: { ...prev.settings, spinnerTipsEnabled },
         }))
         logEvent('tengu_tips_setting_changed', {
           enabled: spinnerTipsEnabled,
@@ -618,9 +690,6 @@ export function Config({
           ? PERMISSION_MODES
           : EXTERNAL_PERMISSION_MODES
         const excluded: PermissionMode[] = ['bypassPermissions']
-        if (feature('TRANSCRIPT_CLASSIFIER') && !showAutoInDefaultModePicker) {
-          excluded.push('auto')
-        }
         return [
           ...priorityOrder,
           ...allModes.filter(
@@ -635,11 +704,10 @@ export function Config({
         const validatedMode = isExternalPermissionMode(parsedMode)
           ? toExternalPermissionMode(parsedMode)
           : parsedMode
+        // Write only defaultMode: settingsData is the merged view, so spreading
+        // its permissions would copy project/policy rules into the user file.
         const result = updateSettingsForSource('userSettings', {
-          permissions: {
-            ...settingsData?.permissions,
-            defaultMode: validatedMode as ExternalPermissionMode,
-          },
+          permissions: { defaultMode: validatedMode as ExternalPermissionMode },
         })
 
         if (result.error) {
@@ -668,14 +736,18 @@ export function Config({
         })
       },
     },
-    ...(feature('TRANSCRIPT_CLASSIFIER') && showAutoInDefaultModePicker
+    ...(feature('TRANSCRIPT_CLASSIFIER')
       ? [
           {
             id: 'useAutoModeDuringPlan',
             label: 'Use auto mode during plan',
-            value:
-              (settingsData as { useAutoModeDuringPlan?: boolean } | undefined)
-                ?.useAutoModeDuringPlan ?? true,
+            // The runtime value: project settings are ignored and any trusted
+            // source set to false wins, so a policy/flag false locks the row.
+            value: getUseAutoModeDuringPlan(),
+            isLocked: (['policySettings', 'flagSettings'] as const).some(
+              source =>
+                getSettingsForSource(source)?.useAutoModeDuringPlan === false,
+            ),
             type: 'boolean' as const,
             onChange(useAutoModeDuringPlan: boolean) {
               updateSettingsForSource('userSettings', {
@@ -697,6 +769,41 @@ export function Config({
                 ...prev,
                 'Use auto mode during plan': useAutoModeDuringPlan,
               }))
+            },
+          },
+        ]
+      : []),
+    {
+      id: 'workflows',
+      label: 'Dynamic workflows',
+      value: shouldEnableWorkflows(settingsData),
+      type: 'boolean' as const,
+      onChange(enabled: boolean) {
+        // Like official, choosing the plan default stores no value so the default keeps applying.
+        const enableWorkflows = enabled === workflowsDefaultOn() ? undefined : enabled
+        updateSettingsForSource('userSettings', { enableWorkflows, disableWorkflows: undefined })
+        setSettingsData(prev => ({ ...prev, enableWorkflows, disableWorkflows: undefined }))
+        setChanges(prev => ({ ...prev, 'Dynamic workflows': enabled }))
+      },
+    },
+    // Hidden while a settings file provides workflowSizeGuideline, which takes precedence.
+    ...(shouldEnableWorkflows(settingsData) && settingsData?.workflowSizeGuideline === undefined
+      ? [
+          {
+            id: 'workflowSizeGuideline',
+            label: 'Dynamic workflow size',
+            value: globalConfig.workflowSizeGuideline ?? defaultWorkflowSizeGuideline(),
+            options: [...WORKFLOW_SIZE_GUIDELINES],
+            type: 'enum' as const,
+            onChange(value: string) {
+              const workflowSizeGuideline = value as WorkflowSizeGuideline
+              saveGlobalConfig(current =>
+                current.workflowSizeGuideline === workflowSizeGuideline
+                  ? current
+                  : { ...current, workflowSizeGuideline },
+              )
+              setGlobalConfig({ ...getGlobalConfig(), workflowSizeGuideline })
+              setChanges(prev => ({ ...prev, 'Dynamic workflow size': value }))
             },
           },
         ]
@@ -1264,17 +1371,24 @@ export function Config({
       : []),
   ]
 
+  const displayedSettings: Setting[] = modsConfig ? configRows.map(row => {
+    const base = {id:row.key,label:row.label,description:row.description,isLocked:row.isLocked,configRow:row}
+    if (row.kind === 'boolean') return {...base,type:'boolean',value:row.value as boolean,onChange:() => {}}
+    if (row.kind === 'choice') return {...base,type:'enum',value:row.value as string,options:[...(row.options ?? [])],onChange:() => {}}
+    return {...base,type:'managedEnum',value:String(row.value),onChange:() => {}}
+  }) : settingsItems
+
   // Filter settings based on search query
   const filteredSettingsItems = React.useMemo(() => {
-    if (!searchQuery) return settingsItems
+    if (!searchQuery) return displayedSettings
     const lowerQuery = searchQuery.toLowerCase()
-    return settingsItems.filter(setting => {
+    return displayedSettings.filter(setting => {
       if (setting.id.toLowerCase().includes(lowerQuery)) return true
       const searchableText =
         'searchText' in setting ? setting.searchText : setting.label
       return searchableText.toLowerCase().includes(lowerQuery)
     })
-  }, [settingsItems, searchQuery])
+  }, [displayedSettings, searchQuery])
 
   // Adjust selected index when filtered list shrinks, and keep the selected
   // item visible when maxVisible changes (e.g., terminal resize).
@@ -1527,16 +1641,12 @@ export function Config({
       // ThemePicker's Ctrl+T writes this key directly — include it so the
       // disk state reverts along with the in-memory AppState.settings restore.
       syntaxHighlightingDisabled: iu?.syntaxHighlightingDisabled,
-      // permissions: the defaultMode onChange (above) spreads the MERGED
-      // settingsData.permissions into userSettings — project/policy allow/deny
-      // arrays can leak to disk. Spread the full initial snapshot so the
-      // mergeWith array-customizer (settings.ts:375) replaces leaked arrays.
-      // Explicitly include defaultMode so undefined triggers the customizer's
-      // delete path even when iu.permissions lacks that key.
+      // permissions: the defaultMode onChange (above) writes only defaultMode,
+      // so restoring that one key (undefined deletes it) is enough.
       permissions:
         iu?.permissions === undefined
           ? undefined
-          : { ...iu.permissions, defaultMode: iu.permissions.defaultMode },
+          : { defaultMode: iu.permissions.defaultMode },
     })
     // AppState: batch-restore all possibly-touched fields.
     const ia = initialAppState
@@ -1588,13 +1698,13 @@ export function Config({
   // wins — otherwise Escape in search would jump straight to revert+close.
   useKeybinding('confirm:no', handleEscape, {
     context: 'Settings',
-    isActive: showSubmenu === null && !isSearchMode && !headerFocused,
+    isActive: showSubmenu === null && editingConfig === null && !isSearchMode && !headerFocused,
   })
   // Save-and-close fires on Enter only when not in search mode (Enter there
   // exits search to the list — see the isSearchMode branch in handleKeyDown).
   useKeybinding('settings:close', handleSaveAndClose, {
     context: 'Settings',
-    isActive: showSubmenu === null && !isSearchMode && !headerFocused,
+    isActive: showSubmenu === null && editingConfig === null && !isSearchMode && !headerFocused,
   })
 
   // Settings navigation and toggle actions via configurable keybindings.
@@ -1602,6 +1712,28 @@ export function Config({
   const toggleSetting = useCallback(() => {
     const setting = filteredSettingsItems[selectedIndex]
     if (!setting || !setting.onChange) {
+      return
+    }
+
+    const dialogRows = ['model','teammateDefaultModel','outputStyle','language','showExternalIncludesDialog','autoUpdatesChannel']
+    if (setting.configRow && !dialogRows.includes(setting.id)) {
+      const row = setting.configRow
+      if (row.kind === 'boolean') void changeConfig(row.key, !row.value)
+      else if (row.kind === 'choice' && row.options?.length) {
+        setEditingConfig(row)
+        setTabsHidden(true)
+      } else {
+        const text = Array.isArray(row.value) ? JSON.stringify(row.value) : String(row.value)
+        setEditingConfig(row)
+        setConfigText(text)
+        setConfigCursorOffset(text.length)
+        setTabsHidden(true)
+      }
+      return
+    }
+
+    // Built-in rows locked by a non-user source are read-only.
+    if (!setting.configRow && setting.isLocked) {
       return
     }
 
@@ -1672,6 +1804,14 @@ export function Config({
         setTabsHidden(true)
       } else {
         // Switching to latest - just do it and clear minimumVersion
+        if (modsConfig) {
+          void changeConfig('autoUpdatesChannel','latest',value => {
+            if (value !== 'latest' && value !== 'stable') throw new Error('Invalid auto-update channel')
+            const result = updateSettingsForSource('userSettings',{autoUpdatesChannel:value,minimumVersion:undefined})
+            if (result.error) throw result.error
+          })
+          return
+        }
         isDirty.current = true
         updateSettingsForSource('userSettings', {
           autoUpdatesChannel: 'latest',
@@ -1744,7 +1884,7 @@ export function Config({
     },
     {
       context: 'Settings',
-      isActive: showSubmenu === null && !isSearchMode && !headerFocused,
+      isActive: showSubmenu === null && editingConfig === null && !isSearchMode && !headerFocused,
     },
   )
 
@@ -1753,7 +1893,7 @@ export function Config({
   // first (their own handlers own input), then search vs. list.
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (showSubmenu !== null) return
+      if (showSubmenu !== null || editingConfig !== null) return
       if (headerFocused) return
       // Search mode: Esc clears then exits, Enter/↓ moves to the list.
       if (isSearchMode) {
@@ -1796,6 +1936,7 @@ export function Config({
     },
     [
       showSubmenu,
+      editingConfig,
       headerFocused,
       isSearchMode,
       searchQuery,
@@ -1812,7 +1953,37 @@ export function Config({
       autoFocus
       onKeyDown={handleKeyDown}
     >
-      {showSubmenu === 'Theme' ? (
+      {editingConfig ? (
+        <Dialog title={editingConfig.label} onCancel={() => {setEditingConfig(null);setTabsHidden(false)}}>
+          {editingConfig.kind === 'choice' ? <Select
+            options={(editingConfig.options ?? []).map(value => ({ label: value, value }))}
+            defaultValue={editingConfig.value as string}
+            defaultFocusValue={editingConfig.value as string}
+            onChange={value => {
+              void changeConfig(editingConfig.key, value)
+              setEditingConfig(null)
+              setTabsHidden(false)
+            }}
+          /> : <TextInput
+            value={configText}
+            onChange={setConfigText}
+            columns={80}
+            cursorOffset={configCursorOffset}
+            onChangeCursorOffset={setConfigCursorOffset}
+            onSubmit={() => {
+              let value: ModConfigValue = configText
+              if (editingConfig.kind === 'number') value = configText.trim() === '' ? Number.NaN : Number(configText)
+              else if (Array.isArray(editingConfig.value)) {
+                try { value = JSON.parse(configText) } catch {setConfigError({key:editingConfig.key,message:'Enter a JSON list of strings'});return}
+              }
+              void changeConfig(editingConfig.key,value)
+              setEditingConfig(null)
+              setTabsHidden(false)
+            }}
+          />}
+          {configError?.key === editingConfig.key && <Text color="error">{configError.message}</Text>}
+        </Dialog>
+      ) : showSubmenu === 'Theme' ? (
         <>
           <ThemePicker
             onThemeSelect={setting => {
@@ -1847,8 +2018,11 @@ export function Config({
           <ModelPicker
             initial={mainLoopModel}
             onSelect={(model, _effort) => {
-              isDirty.current = true
-              onChangeMainModelConfig(model)
+              if (modsConfig) void changeConfig('model',model ?? 'Default (recommended)',value => onChangeMainModelConfig(value === 'Default (recommended)' ? null : value as string))
+              else {
+                isDirty.current = true
+                onChangeMainModelConfig(model)
+              }
               setShowSubmenu(null)
               setTabsHidden(false)
             }}
@@ -1878,28 +2052,48 @@ export function Config({
         </>
       ) : showSubmenu === 'TeammateModel' ? (
         <>
-          <ModelPicker
-            initial={globalConfig.teammateDefaultModel ?? null}
-            skipSettingsWrite
-            headerText="Default model for newly spawned teammates. The leader can override via the tool call's model parameter."
-            onSelect={(model, _effort) => {
+          <Text dimColor>
+            Default for newly spawned teammates. Environment, tool and Agent definition model overrides take precedence.
+          </Text>
+          <Select<string | null | symbol>
+            options={teammateModelOptions}
+            defaultValue={
+              globalConfig.teammateDefaultModel === undefined
+                ? AUTO_TEAMMATE_MODEL
+                : globalConfig.teammateDefaultModel
+            }
+            defaultFocusValue={
+              globalConfig.teammateDefaultModel === undefined
+                ? AUTO_TEAMMATE_MODEL
+                : globalConfig.teammateDefaultModel
+            }
+            onChange={selected => {
               setShowSubmenu(null)
               setTabsHidden(false)
-              // First-open-then-Enter from unset: picker highlights "Default"
-              // (initial=null) and confirming would write null, silently
-              // switching Opus-fallback → follow-leader. Treat as no-op.
-              if (
-                globalConfig.teammateDefaultModel === undefined &&
-                model === null
-              ) {
+              const model = typeof selected === 'symbol' ? undefined : selected
+              if (globalConfig.teammateDefaultModel === model) return
+              if (modsConfig) {
+                const selectedValue = model === undefined ? 'auto' : model === null ? 'inherit' : model
+                void changeConfig('teammateDefaultModel',selectedValue,value => {
+                  const nextModel = value === 'auto' ? undefined : value === 'inherit' ? null : value as string
+                  saveGlobalConfig(current => {
+                    if (nextModel === undefined) {
+                      const {teammateDefaultModel:_previous,...rest} = current
+                      return rest
+                    }
+                    return {...current,teammateDefaultModel:nextModel}
+                  })
+                })
                 return
               }
               isDirty.current = true
-              saveGlobalConfig(current =>
-                current.teammateDefaultModel === model
-                  ? current
-                  : { ...current, teammateDefaultModel: model },
-              )
+              saveGlobalConfig(current => {
+                if (model === undefined) {
+                  const { teammateDefaultModel: _previous, ...rest } = current
+                  return rest
+                }
+                return { ...current, teammateDefaultModel: model }
+              })
               setGlobalConfig({
                 ...getGlobalConfig(),
                 teammateDefaultModel: model,
@@ -1932,13 +2126,22 @@ export function Config({
         </>
       ) : showSubmenu === 'ExternalIncludes' ? (
         <>
-          <ClaudeMdExternalIncludesDialog
+          {modsConfig ? <Dialog title="Allow external AGENTS.md / CLAUDE.md file imports?" onCancel={() => {setShowSubmenu(null);setTabsHidden(false)}}>
+            <Select options={[{label:'Yes, allow external imports',value:'true'},{label:'No, disable external imports',value:'false'}]} onChange={selected => {
+              void changeConfig('showExternalIncludesDialog',selected,value => {
+                if (value !== 'true' && value !== 'false') throw new Error('Invalid external includes setting')
+                saveCurrentProjectConfig(current => ({...current,hasClaudeMdExternalIncludesApproved:value === 'true',hasClaudeMdExternalIncludesWarningShown:true}))
+              })
+              setShowSubmenu(null)
+              setTabsHidden(false)
+            }} />
+          </Dialog> : <ClaudeMdExternalIncludesDialog
             onDone={() => {
               setShowSubmenu(null)
               setTabsHidden(false)
             }}
             externalIncludes={getExternalClaudeMdIncludes(memoryFiles)}
-          />
+          />}
           <Text dimColor>
             <Byline>
               <KeyboardShortcutHint shortcut="Enter" action="confirm" />
@@ -1956,6 +2159,16 @@ export function Config({
           <OutputStylePicker
             initialStyle={currentOutputStyle}
             onComplete={style => {
+              if (modsConfig) {
+                void changeConfig('outputStyle',style ?? DEFAULT_OUTPUT_STYLE_NAME,value => {
+                  const result = updateSettingsForSource('localSettings',{outputStyle:value as string})
+                  if (result.error) throw result.error
+                  setCurrentOutputStyle(value as string)
+                })
+                setShowSubmenu(null)
+                setTabsHidden(false)
+                return
+              }
               isDirty.current = true
               setCurrentOutputStyle(style ?? DEFAULT_OUTPUT_STYLE_NAME)
               setShowSubmenu(null)
@@ -1997,6 +2210,16 @@ export function Config({
           <LanguagePicker
             initialLanguage={currentLanguage}
             onComplete={language => {
+              if (modsConfig) {
+                void changeConfig('language',language ?? '',value => {
+                  const result = updateSettingsForSource('userSettings',{language:value === '' ? undefined : value as string})
+                  if (result.error) throw result.error
+                  setCurrentLanguage(value === '' ? undefined : value as string)
+                })
+                setShowSubmenu(null)
+                setTabsHidden(false)
+                return
+              }
               isDirty.current = true
               setCurrentLanguage(language)
               setShowSubmenu(null)
@@ -2068,6 +2291,17 @@ export function Config({
                 },
               ]}
               onChange={(channel: string) => {
+                if (modsConfig) {
+                  void changeConfig('autoUpdatesChannel',channel,value => {
+                    if (value !== 'latest' && value !== 'stable') throw new Error('Invalid auto-update channel')
+                    const result = updateSettingsForSource('userSettings',{autoUpdatesChannel:value,minimumVersion:undefined})
+                    if (result.error) throw result.error
+                    saveGlobalConfig(current => ({...current,autoUpdates:true}))
+                  })
+                  setShowSubmenu(null)
+                  setTabsHidden(false)
+                  return
+                }
                 isDirty.current = true
                 setShowSubmenu(null)
                 setTabsHidden(false)
@@ -2107,6 +2341,14 @@ export function Config({
               return
             }
 
+            if (modsConfig) {
+              void changeConfig('autoUpdatesChannel','stable',value => {
+                if (value !== 'latest' && value !== 'stable') throw new Error('Invalid auto-update channel')
+                const result = updateSettingsForSource('userSettings',{autoUpdatesChannel:value,minimumVersion:choice === 'stay' && value === 'stable' ? MACRO.VERSION : undefined})
+                if (result.error) throw result.error
+              })
+              return
+            }
             isDirty.current = true
             // Switch to stable channel
             const newSettings: {
@@ -2173,7 +2415,7 @@ export function Config({
                           <Box width={44}>
                             <Text color={isSelected ? 'suggestion' : undefined}>
                               {isSelected ? figures.pointer : ' '}{' '}
-                              {setting.label}
+                              {setting.label}{setting.isLocked ? ' (locked)' : ''}
                             </Text>
                           </Box>
                           <Box key={isSelected ? 'selected' : 'unselected'}>
@@ -2255,6 +2497,8 @@ export function Config({
               </>
             )}
           </Box>
+          {filteredSettingsItems[selectedIndex]?.description && <Text dimColor>{filteredSettingsItems[selectedIndex]!.description}</Text>}
+          {configError && <Text color="error">{configError.key ? `${configError.key}: ` : ''}{configError.message}</Text>}
           {headerFocused ? (
             <Text dimColor>
               <Byline>
@@ -2320,9 +2564,9 @@ export function Config({
 
 function teammateModelDisplayString(value: string | null | undefined): string {
   if (value === undefined) {
-    return modelDisplayString(getHardcodedTeammateModelFallback())
+    return 'Auto (explicit leader model, otherwise provider default)'
   }
-  if (value === null) return "Default (leader's model)"
+  if (value === null) return "Inherit leader's model"
   return modelDisplayString(value)
 }
 

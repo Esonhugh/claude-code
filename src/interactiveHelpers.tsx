@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
-import { appendFileSync } from 'fs'
+import { appendFileSync, writeFileSync } from 'fs'
+import { Buffer } from 'node:buffer'
 import React from 'react'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
@@ -20,10 +21,11 @@ import { getSystemContext } from './context.js'
 import { initializeTelemetryAfterTrust } from './entrypoints/init.js'
 import { isSynchronizedOutputSupported } from './ink/terminal.js'
 import type { RenderOptions, Root, TextProps } from './ink.js'
+import { serializeValidationFrame } from './ink/terminalEvidence.js'
+import { nativeTerminalJournalRequested } from './ink/nativeTerminalJournal.js'
 import { KeybindingSetup } from './keybindings/KeybindingProviderSetup.js'
 import { startDeferredPrefetches } from './main.js'
 import {
-  checkGate_CACHED_OR_BLOCKING,
   initializeGrowthBook,
   resetGrowthBook,
 } from './services/analytics/growthbook.js'
@@ -52,10 +54,7 @@ import { shouldShowOpenAIAutoLogin } from './utils/openaiAutoLogin.js'
 import type { PermissionMode } from './utils/permissions/PermissionMode.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
 import { getSettingsWithAllErrors } from './utils/settings/allErrors.js'
-import {
-  hasAutoModeOptIn,
-  hasSkipDangerousModePermissionPrompt,
-} from './utils/settings/settings.js'
+import { hasSkipDangerousModePermissionPrompt } from './utils/settings/settings.js'
 
 export function completeOnboarding(): void {
   saveGlobalConfig(current => ({
@@ -316,66 +315,31 @@ export async function showSetupScreens(
     ))
   }
 
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
-    // Only show the opt-in dialog if auto mode actually resolved — if the
-    // gate denied it (org not allowlisted, settings disabled), showing
-    // consent for an unavailable feature is pointless. The
-    // verifyAutoModeGateAccess notification will explain why instead.
-    if (permissionMode === 'auto' && !hasAutoModeOptIn()) {
-      const { AutoModeOptInDialog } = await import(
-        './components/AutoModeOptInDialog.js'
-      )
-      await showSetupDialog(root, done => (
-        <AutoModeOptInDialog
-          onAccept={done}
-          onDecline={() => gracefulShutdownSync(1)}
-          declineExits
-        />
-      ))
-    }
-  }
-
   // --dangerously-load-development-channels confirmation. On accept, append
   // dev channels to any --channels list already set in main.tsx. Org policy
   // is NOT bypassed — gateChannelServer() still runs; this flag only exists
   // to sidestep the --channels approved-server allowlist.
   if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
-    // gateChannelServer and ChannelsNotice read tengu_harbor after this
-    // function returns. A cold disk cache (fresh install, or first run after
-    // the flag was added server-side) defaults to false and silently drops
-    // channel notifications for the whole session — gh#37026.
-    // checkGate_CACHED_OR_BLOCKING returns immediately if disk already says
-    // true; only blocks on a cold/stale-false cache (awaits the same memoized
-    // initializeGrowthBook promise fired earlier). Also warms the
-    // isChannelsEnabled() check in the dev-channels dialog below.
-    if (getAllowedChannels().length > 0 || (devChannels?.length ?? 0) > 0) {
-      await checkGate_CACHED_OR_BLOCKING('tengu_harbor')
-    }
-
     if (devChannels && devChannels.length > 0) {
-      const [{ isChannelsEnabled }, { getClaudeAIOAuthTokens }] =
-        await Promise.all([
-          import('./services/mcp/channelAllowlist.js'),
-          import('./utils/auth.js'),
-        ])
-      // Skip the dialog when channels are blocked (tengu_harbor off or no
-      // OAuth) — accepting then immediately seeing "not available" in
+      const { isChannelsEnabled } =
+        await import('./services/mcp/channelAllowlist.js')
+      // Skip the dialog when channels are disabled locally — accepting
+      // then immediately seeing "disabled" in
       // ChannelsNotice is worse than no dialog. Append entries anyway so
       // ChannelsNotice renders the blocked branch with the dev entries
       // named. dev:true here is for the flag label in ChannelsNotice
       // (hasNonDev check); the allowlist bypass it also grants is moot
       // since the gate blocks upstream.
-      if (!isChannelsEnabled() || !getClaudeAIOAuthTokens()?.accessToken) {
+      if (!isChannelsEnabled()) {
         setAllowedChannels([
           ...getAllowedChannels(),
-          ...devChannels.map(c => ({ ...c, dev: true })),
+          ...devChannels.map((c) => ({ ...c, dev: true })),
         ])
         setHasDevChannels(true)
       } else {
-        const { DevChannelsDialog } = await import(
-          './components/DevChannelsDialog.js'
-        )
-        await showSetupDialog(root, done => (
+        const { DevChannelsDialog } =
+          await import('./components/DevChannelsDialog.js')
+        await showSetupDialog(root, (done) => (
           <DevChannelsDialog
             channels={devChannels}
             onAccept={() => {
@@ -383,7 +347,7 @@ export async function showSetupScreens(
               // to --channels entries when both flags are passed.
               setAllowedChannels([
                 ...getAllowedChannels(),
-                ...devChannels.map(c => ({ ...c, dev: true })),
+                ...devChannels.map((c) => ({ ...c, dev: true })),
               ])
               setHasDevChannels(true)
               void done()
@@ -410,6 +374,7 @@ export async function showSetupScreens(
   return onboardingShown
 }
 
+
 export function getRenderContext(exitOnCtrlC: boolean): {
   renderOptions: RenderOptions
   getFpsMetrics: () => FpsMetrics | undefined
@@ -432,6 +397,22 @@ export function getRenderContext(exitOnCtrlC: boolean): {
   // render pipeline (yoga → screen buffer → diff → optimize → stdout)
   // so perf work on any phase can be validated against real user flows.
   const frameTimingLogPath = process.env.CLAUDE_CODE_FRAME_TIMING_LOG
+  const frameEvidencePath = process.env.CLAUDE_CODE_FRAME_EVIDENCE_PATH
+  let frameId = 0
+  let pendingOutput = Buffer.alloc(0)
+  let originalStdoutWrite: typeof process.stdout.write | undefined
+  if (frameEvidencePath && !nativeTerminalJournalRequested() && !process.env.CLAUDE_CODE_FRAME_BROKER_DIR) {
+    writeFileSync(frameEvidencePath, '', { mode: 0o600 })
+    originalStdoutWrite = process.stdout.write.bind(process.stdout)
+    process.stdout.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+      const bytes =
+        typeof chunk === 'string'
+          ? Buffer.from(chunk)
+          : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+      pendingOutput = Buffer.concat([pendingOutput, bytes])
+      return originalStdoutWrite!(chunk as never, ...(args as never[]))
+    }) as typeof process.stdout.write
+  }
   return {
     getFpsMetrics: () => fpsTracker.getMetrics(),
     stats,
@@ -440,6 +421,24 @@ export function getRenderContext(exitOnCtrlC: boolean): {
       onFrame: event => {
         fpsTracker.record(event.durationMs)
         stats.observe('frame_duration_ms', event.durationMs)
+        if (frameEvidencePath && !nativeTerminalJournalRequested() && event.frame && !event.terminalEvidence) {
+          frameId++
+          appendFileSync(
+            frameEvidencePath,
+            JSON.stringify({
+              frameId,
+              timestamp: Date.now(),
+              outputBase64: pendingOutput.toString('base64'),
+              frameBase64: serializeValidationFrame(
+                event.frame,
+                event.physicalCursor,
+                event.terminalBuffer,
+                event.terminalViewport,
+              ),
+            }) + '\n',
+          )
+          pendingOutput = Buffer.alloc(0)
+        }
         if (frameTimingLogPath && event.phases) {
           // Bench-only env-var-gated path: sync write so no frames dropped
           // on abrupt exit. ~100 bytes at ≤60fps is negligible. rss/cpu are

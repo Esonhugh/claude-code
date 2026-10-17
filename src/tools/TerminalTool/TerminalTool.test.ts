@@ -7,6 +7,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { AssistantMessage } from '../../types/message.js'
+import { runCleanupFunctions } from '../../utils/cleanupRegistry.js'
 import { FileStateCache } from '../../utils/fileStateCache.js'
 import { FakePtyDriver } from '../../utils/pty/__fixtures__/FakePtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
@@ -181,6 +182,20 @@ test('resetTerminalManagerForTesting clears open terminal panes', async () => {
     TEST_ASSISTANT_MESSAGE,
   )
   assert.equal((listed.data as { count: number }).count, 0)
+})
+
+test('getTerminalManager registers one shutdown cleanup that closes every pane', async () => {
+  resetTerminalManagerForTesting()
+  const manager = getTerminalManager()
+  assert.equal(getTerminalManager(), manager)
+  let closeAllCalls = 0
+  manager.closeAll = () => {
+    closeAllCalls++
+  }
+
+  await runCleanupFunctions()
+
+  assert.equal(closeAllCalls, 1)
 })
 
 test('rejects send-keys action without target and text or key', async () => {

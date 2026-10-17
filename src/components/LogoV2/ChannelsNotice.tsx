@@ -12,13 +12,13 @@ import {
   getHasDevChannels,
 } from '../../bootstrap/state.js'
 import { Box, Text } from '../../ink.js'
-import { isChannelsEnabled } from '../../services/mcp/channelAllowlist.js'
-import { getEffectiveChannelAllowlist } from '../../services/mcp/channelNotification.js'
-import { getMcpConfigsByScope } from '../../services/mcp/config.js'
 import {
-  getClaudeAIOAuthTokens,
-  getSubscriptionType,
-} from '../../utils/auth.js'
+  getEffectiveChannelAllowlist,
+  isChannelsEnabled,
+} from '../../services/mcp/channelAllowlist.js'
+import { isChannelPolicyBlocked } from '../../services/mcp/channelNotification.js'
+import { getMcpConfigsByScope } from '../../services/mcp/config.js'
+import { getSubscriptionType } from '../../utils/auth.js'
 import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsManager.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
 
@@ -27,37 +27,34 @@ export function ChannelsNotice(): React.ReactNode {
   // after the logo; any re-render past that point forces a full terminal
   // reset. getAllowedChannels (bootstrap state), getSettingsForSource
   // (session cache updated by background polling / /login), and
-  // isChannelsEnabled (GrowthBook 5-min refresh) must be captured once
+  // isChannelsEnabled (local opt-out) must be captured once
   // so a later re-render cannot flip branches.
-  const [{ channels, disabled, noAuth, policyBlocked, list, unmatched }] =
-    useState(() => {
+  const [{ channels, disabled, policyBlocked, list, unmatched }] = useState(
+    () => {
       const ch = getAllowedChannels()
       if (ch.length === 0)
         return {
           channels: ch,
           disabled: false,
-          noAuth: false,
           policyBlocked: false,
           list: '',
           unmatched: [] as Unmatched[],
         }
       const l = ch.map(formatEntry).join(', ')
       const sub = getSubscriptionType()
-      const managed = sub === 'team' || sub === 'enterprise'
       const policy = getSettingsForSource('policySettings')
       const allowlist = getEffectiveChannelAllowlist(
-        sub,
         policy?.allowedChannelPlugins,
       )
       return {
         channels: ch,
         disabled: !isChannelsEnabled(),
-        noAuth: !getClaudeAIOAuthTokens()?.accessToken,
-        policyBlocked: managed && policy?.channelsEnabled !== true,
+        policyBlocked: isChannelPolicyBlocked(policy, sub),
         list: l,
         unmatched: findUnmatched(ch, allowlist),
       }
-    })
+    },
+  )
   if (channels.length === 0) return null
 
   // When both flags are passed, the list mixes entries and a single flag
@@ -76,20 +73,7 @@ export function ChannelsNotice(): React.ReactNode {
         <Text color="error">
           {flag} ignored ({list})
         </Text>
-        <Text dimColor>Channels are not currently available</Text>
-      </Box>
-    )
-  }
-
-  if (noAuth) {
-    return (
-      <Box paddingLeft={2} flexDirection="column">
-        <Text color="error">
-          {flag} ignored ({list})
-        </Text>
-        <Text dimColor>
-          Channels require claude.ai authentication · run /login, then restart
-        </Text>
+        <Text dimColor>Channels disabled by CLAUDE_CODE_DISABLE_CHANNELS</Text>
       </Box>
     )
   }
@@ -165,9 +149,7 @@ function findUnmatched(
 
   // Plugin-kind allowlist check: same {marketplace, plugin} test as the
   // gate at channelNotification.ts. entry.dev bypasses (dev flag opts out
-  // of the allowlist). Org list replaces ledger when set (team/enterprise).
-  // GrowthBook _CACHED_MAY_BE_STALE — cold cache yields [] so every plugin
-  // entry warns; same tradeoff the gate already accepts.
+  // of the allowlist). Managed settings replace the default when configured.
   const { entries: allowed, source } = allowlist
 
   // Independent ifs — a plugin entry that's both uninstalled AND

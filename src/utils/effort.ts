@@ -50,6 +50,7 @@ export function modelSupportsEffort(model: string): boolean {
   }
   // Supported by current Claude effort-capable model families.
   if (
+    m.includes('opus-5') ||
     m.includes('fable-5') ||
     m.includes('mythos-5') ||
     m.includes('mythos-preview') ||
@@ -57,7 +58,8 @@ export function modelSupportsEffort(model: string): boolean {
     m.includes('opus-4-7') ||
     m.includes('opus-4-6') ||
     m.includes('sonnet-5') ||
-    m.includes('sonnet-4-6')
+    m.includes('sonnet-4-6') ||
+    m.includes('haiku-5')
   ) {
     return true
   }
@@ -89,6 +91,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
   }
   const m = model.toLowerCase()
   if (
+    m.includes('opus-5') ||
     m.includes('fable-5') ||
     m.includes('mythos-5') ||
     m.includes('mythos-preview') ||
@@ -110,6 +113,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
 export function modelSupportsXHighEffort(model: string): boolean {
   const m = model.toLowerCase()
   return (
+    m.includes('opus-5') ||
     m.includes('fable-5') ||
     m.includes('mythos-5') ||
     m.includes('opus-4-8') ||
@@ -401,6 +405,17 @@ export function getDefaultEffortForModel(
   // IMPORTANT: Do not change the default effort level without notifying
   // the model launch DRI and research. Default effort is a sensitive setting
   // that can greatly affect model quality and bashing.
+
+  const normalizedModel = model.toLowerCase()
+  if (normalizedModel.includes('opus-5-5')) return 'medium'
+  if (
+    normalizedModel.includes('fable-5') ||
+    normalizedModel.includes('mythos-5') ||
+    normalizedModel.includes('mythos-preview') ||
+    normalizedModel.includes('sonnet-5-5')
+  ) {
+    return 'high'
+  }
 
   // Default effort on Opus 4.6 to medium for Pro.
   // Max/Team also get medium when the tengu_grey_step2 config is enabled.

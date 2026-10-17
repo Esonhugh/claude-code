@@ -26,6 +26,9 @@ import {
 } from '../../utils/proxy.js'
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import type { OpenAITurnScope } from './openai-turn-scope.js'
+import { normalizeModelStringForAPI } from '../../utils/model/model.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
+import { HttpResponseError } from '../../utils/errors.js'
 
 // --- Auth config ---
 
@@ -67,14 +70,6 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
     })
   }
   return headers
-}
-
-// --- Model mapping: Anthropic model names → OpenAI model slugs ---
-
-const DEFAULT_OPENAI_MODEL = 'gpt-5.6-luna'
-
-function mapModel(model: string): string {
-  return model.startsWith('claude-') ? DEFAULT_OPENAI_MODEL : model
 }
 
 // OpenAI Responses API requires function_call IDs to start with 'fc_'
@@ -183,10 +178,11 @@ function anthropicMessagesToResponsesInput(
       if (typeof msg.content === 'string') {
         input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: msg.content }] })
       } else {
-        const parts: any[] = []
         for (const block of msg.content) {
           if (block.type === 'text') {
-            parts.push({ type: 'output_text', text: block.text })
+            input.push({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: block.text }] })
+          } else if (block.type === 'thinking' && 'openAIReasoning' in block) {
+            input.push(block.openAIReasoning)
           } else if (block.type === 'tool_use') {
             const b = block as any
             const fcId = ensureFcId(b.id)
@@ -198,9 +194,6 @@ function anthropicMessagesToResponsesInput(
               arguments: typeof b.input === 'string' ? b.input : JSON.stringify(b.input),
             })
           }
-        }
-        if (parts.length > 0) {
-          input.push({ type: 'message', role: 'assistant', content: parts })
         }
       }
     }
@@ -237,6 +230,8 @@ function anthropicToolsToResponsesTools(tools?: BetaToolUnion[]): any[] | undefi
       name: tool.name,
       description: tool.description || '',
       parameters: tool.input_schema || { type: 'object', properties: {} },
+      // Responses may otherwise normalize optional properties into required fields.
+      strict: false,
     }]
   })
 }
@@ -558,7 +553,7 @@ async function fetchResponsesWithRetry(
       if (resp.ok) return resp
 
       const errText = await resp.text()
-      lastError = new Error(`OpenAI API ${resp.status}: ${errText}`)
+      lastError = new HttpResponseError(resp.status, `OpenAI API ${resp.status}: ${errText}`)
       if (!isRetryableOpenAIResponse(resp.status) || attempt >= maxRetries) {
         throw lastError
       }
@@ -679,6 +674,10 @@ async function connectSSE(
     input: payload.input,
     store: false,
     stream: true,
+    include: ['reasoning.encrypted_content'],
+    ...(payload.access_programs && {
+      access_programs: payload.access_programs,
+    }),
     ...(payload.tools && { tools: payload.tools }),
     ...(payload.tool_choice && { tool_choice: payload.tool_choice }),
     ...(payload.reasoning && { reasoning: payload.reasoning }),
@@ -761,7 +760,7 @@ async function connectSSE(
                 stream.push({
                   type: 'content_block_start',
                   index: blockIndex,
-                  content_block: { type: 'thinking', thinking: '', signature: '' },
+                  content_block: { type: 'thinking', thinking: '', signature: '', openAIReasoningSummary: true },
                 } as any)
               }
               reasoningText += delta
@@ -798,6 +797,7 @@ async function connectSSE(
                     type: 'thinking',
                     thinking: '',
                     signature: '',
+                    openAIReasoningSummary: true,
                   },
                 } as any)
               }
@@ -820,6 +820,21 @@ async function connectSSE(
               if (hasThinking) {
                 closeCurrentBlock()
               }
+            } else if (type === 'response.output_item.done' && event.item?.type === 'reasoning') {
+              closeCurrentBlock()
+              // Emit the complete replay item before persistence, separately from visible summaries.
+              stream.push({
+                type: 'content_block_start',
+                index: blockIndex,
+                content_block: {
+                  type: 'thinking',
+                  thinking: '',
+                  signature: '',
+                  openAIReasoning: event.item,
+                },
+              } as any)
+              stream.push({ type: 'content_block_stop', index: blockIndex } as any)
+              blockIndex++
             } else if (type === 'response.output_text.delta') {
               if (hasThinking || currentToolCallId || currentWebSearchCallId) {
                 closeCurrentBlock()
@@ -1131,7 +1146,7 @@ export function createOpenAICompatClient(options: {
       }
       input.push({ type: 'compaction_trigger' })
       const compactPayload = {
-        model: mapModel(params.model || DEFAULT_OPENAI_MODEL),
+        model: normalizeModelStringForAPI(params.model),
         instructions:
           params.instructions ?? serializeOpenAIInstructions(params.system),
         input,
@@ -1243,7 +1258,7 @@ export function createOpenAICompatClient(options: {
       return { input_tokens: Math.max(1, Math.ceil(serialized.length / 4)) }
     },
     create(params: any, requestOptions?: { signal?: AbortSignal }): any {
-      const model = mapModel(params.model || DEFAULT_OPENAI_MODEL)
+      const model = normalizeModelStringForAPI(params.model)
       const input = anthropicMessagesToResponsesInput(params.messages, params.system)
       if (
         params.openai_compaction?.type === 'compaction' &&
@@ -1259,10 +1274,14 @@ export function createOpenAICompatClient(options: {
       // Extract system as instructions (required by chatgpt codex backend)
       const instructions = serializeOpenAIInstructions(params.system)
       const reasoning = anthropicEffortToOpenAIReasoning(params.output_config?.effort)
+      const daybreak = getInitialSettings().daybreak ?? 'off'
       const payload: any = {
         model,
         input,
         instructions,
+        access_programs: {
+          cyber: daybreak === 'off' ? 'standard' : `daybreak_${daybreak}`,
+        },
         ...(tools && { tools }),
         ...(toolChoice && { tool_choice: toolChoice }),
         ...(reasoning && { reasoning }),

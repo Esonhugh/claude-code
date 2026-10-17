@@ -4,7 +4,7 @@ import type { LocalJSXCommandCall } from '../../types/command.js'
 
 export const call: LocalJSXCommandCall = async (
   onDone,
-  { options: { commands } },
+  { options: { commands }, mods },
 ) => {
-  return <HelpV2 commands={commands} onClose={onDone} />
+  return <HelpV2 commands={commands} mods={mods?.commands} onClose={onDone} />
 }

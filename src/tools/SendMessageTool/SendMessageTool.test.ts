@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, expect, mock, test } from 'bun:test'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, realpath, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { z } from 'zod/v4'
@@ -10,31 +10,46 @@ const childFlag = 'CLAUDE_CODE_SEND_MESSAGE_TEST_CHILD'
 
 if (process.env[childFlag] !== '1') {
   test('SendMessage routing (isolated)', async () => {
-    const child = Bun.spawn(
-      [
-        process.execPath,
-        'test',
-        '--feature=UDS_INBOX',
-        '--timeout',
-        '30000',
-        import.meta.path,
-      ],
-      {
-        cwd: import.meta.dir,
-        env: { ...process.env, [childFlag]: '1' },
-        stdout: 'pipe',
-        stderr: 'pipe',
-      },
-    )
-    const [code, stdout, stderr] = await Promise.all([
-      child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-    ])
-    if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
+    const fixture = await realpath(await mkdtemp(join(tmpdir(), 'send-message-home-')))
+    let child: ReturnType<typeof Bun.spawn> | undefined
+    try {
+      await Promise.all(['home', 'config', 'cache', 'state', 'tmp'].map(name => mkdir(join(fixture, name))))
+      const runningChild = Bun.spawn(
+        [
+          process.execPath,
+          'test',
+          '--feature=UDS_INBOX',
+          '--timeout',
+          '30000',
+          import.meta.path,
+        ],
+        {
+          cwd: import.meta.dir,
+          env: {
+            PATH: process.env.PATH ?? '', HOME: join(fixture, 'home'), CLAUDE_CONFIG_DIR: join(fixture, 'config'),
+            XDG_CONFIG_HOME: join(fixture, 'config'), XDG_CACHE_HOME: join(fixture, 'cache'), XDG_STATE_HOME: join(fixture, 'state'),
+            TMPDIR: join(fixture, 'tmp'), ANTHROPIC_API_KEY: 'sk-test-placeholder', DISABLE_TELEMETRY: '1',
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', PRIVACY_MODE: '1', [childFlag]: '1',
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+          timeout: 30_000,
+        },
+      )
+      child = runningChild
+      const [code, stdout, stderr] = await Promise.all([
+        runningChild.exited,
+        new Response(runningChild.stdout).text(),
+        new Response(runningChild.stderr).text(),
+      ])
+      if (code !== 0) throw new Error(`${stdout}\n${stderr}`)
+    } finally {
+      if (child && child.exitCode === null) { child.kill(); await child.exited }
+      await rm(fixture, { recursive: true, force: true })
+    }
   }, 30_000)
 } else {
-  const configDir = await mkdtemp(join(tmpdir(), 'send-message-tool-'))
+  const configDir = await realpath(await mkdtemp(join(tmpdir(), 'send-message-tool-')))
   afterAll(async () => {
     await rm(configDir, { recursive: true, force: true })
   })
@@ -179,6 +194,27 @@ if (process.env[childFlag] !== '1') {
     expect(sendToUdsSocket).not.toHaveBeenCalled()
   })
 
+  test('running local agents still queue when their metadata cannot be read', async () => {
+    const { getAgentTranscriptPath } = await import('../../utils/sessionStorage.js')
+    const agentId = 'a00112233445566778'
+    const metadataPath = getAgentTranscriptPath(agentId as never).replace(/\.jsonl$/, '.meta.json')
+    await mkdir(join(metadataPath, '..'), { recursive: true })
+    await writeFile(metadataPath, '{not json')
+    state = {
+      ...state,
+      agentNameRegistry: new Map([['meta-broken', agentId]]),
+      tasks: { [agentId]: { id: agentId, type: 'local_agent', status: 'running', pendingMessages: [] } },
+    } as unknown as typeof state
+    const result = await SendMessageTool.call(
+      { to: 'meta-broken', message: 'still deliver' },
+      context,
+      async () => ({ behavior: 'allow' }),
+      undefined,
+    )
+    expect(result.data.success).toBe(true)
+    expect(state.tasks[agentId]).toMatchObject({ pendingMessages: ['still deliver'] })
+  })
+
   test('evicted registered agents still resume before peer resolution', async () => {
     state.agentNameRegistry.set(peer.name, 'a0123456789abcdef' as never)
     const result = await SendMessageTool.call(
@@ -190,6 +226,43 @@ if (process.env[childFlag] !== '1') {
     expect(result.data.success).toBe(true)
     expect(resumeAgentBackground).toHaveBeenCalledTimes(1)
     expect(resolvePeerSession).not.toHaveBeenCalled()
+  })
+
+  test('C17 produced live teammate routes by logical ID and registered name using its own mailbox team', async () => {
+    const { spawnInProcessTeammate } = await import('../../utils/swarm/spawnInProcess.js')
+    const produced = await spawnInProcessTeammate({name:'produced-reviewer',teamName:'produced-routing-team',prompt:'Review',planModeRequired:false,permissionMode:'default'},context)
+    const task = state.tasks[produced.taskId!]
+    expect(task.type).toBe('in_process_teammate')
+    if (task.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+    try {
+      const logicalId = task.identity.resumableAgentId!
+      expect(logicalId).toMatch(/^aproduced-reviewer-[0-9a-f]{16}$/)
+      for (const to of [logicalId,'produced-reviewer']) {
+        const result = await SendMessageTool.call({to,message:'private fixture hello'},context,async()=>({behavior:'allow'}),undefined)
+        expect(result.data.success).toBe(true)
+      }
+      expect((await readMailbox('produced-reviewer','produced-routing-team')).map(row=>row.text)).toEqual(['private fixture hello','private fixture hello'])
+      expect(resumeAgentBackground).not.toHaveBeenCalled()
+      expect(resolvePeerSession).not.toHaveBeenCalled()
+      expect(sendToUdsSocket).not.toHaveBeenCalled()
+    } finally { task.unregisterCleanup?.(); task.abortController?.abort() }
+  })
+
+  test('C17 logical teammate inbox failure reports no queue without resuming or routing to peers', async () => {
+    const { spawnInProcessTeammate } = await import('../../utils/swarm/spawnInProcess.js')
+    const produced = await spawnInProcessTeammate({name:'blocked-reviewer',teamName:'blocked-routing-team',prompt:'Review',planModeRequired:false,permissionMode:'default'},context)
+    const task = state.tasks[produced.taskId!]
+    if (task.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+    try {
+      const inbox = getInboxPath(task.identity.agentName, task.identity.teamName)
+      await mkdir(inbox,{recursive:true}); await writeFile(join(inbox,'block'),'private fixture')
+      const result = await SendMessageTool.call({to:task.identity.resumableAgentId!,message:'private fixture hello'},context,async()=>({behavior:'allow'}),undefined)
+      expect(result.data.success).toBe(false)
+      expect(result.data.message).toContain('nothing was queued')
+      expect(resumeAgentBackground).not.toHaveBeenCalled()
+      expect(resolvePeerSession).not.toHaveBeenCalled()
+      expect(sendToUdsSocket).not.toHaveBeenCalled()
+    } finally { task.unregisterCleanup?.(); task.abortController?.abort() }
   })
 
   test('real Teams context routes members before peer resolution', async () => {
@@ -232,6 +305,42 @@ if (process.env[childFlag] !== '1') {
     )
     expect(unknown.data.success).toBe(false)
     expect(existsSync(getInboxPath('missing-member', teamName))).toBe(false)
+  })
+
+  test('protocol messages report failure when the inbox write fails', async () => {
+    const teamName = 'blocked-protocol-team'
+    await writeTeamFileAsync(teamName, {
+      name: teamName, createdAt: 1, leadAgentId: 'lead',
+      members: ['blocked-member', 'team-lead'].map(name => ({ name, agentId: `${name}@team`, joinedAt: 1, cwd: '/tmp', tmuxPaneId: '', subscriptions: [] })),
+    })
+    state.teamContext = { teamName, leadAgentId: 'lead', teamFilePath: '', teammates: {} }
+    for (const [name, team] of [['blocked-member', teamName], ['team-lead', undefined]] as const) {
+      const inbox = getInboxPath(name, team)
+      await mkdir(inbox, { recursive: true }); await writeFile(join(inbox, 'block'), 'private fixture')
+    }
+    process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+    try {
+      for (const message of [
+        { type: 'shutdown_request' },
+        { type: 'plan_approval_response', request_id: 'plan-1', approve: true },
+        { type: 'plan_approval_response', request_id: 'plan-1', approve: false, feedback: 'redo' },
+        { type: 'shutdown_response', request_id: 'shutdown-1', approve: false, reason: 'busy' },
+      ]) {
+        const result = await SendMessageTool.call(
+          { to: message.type === 'shutdown_response' ? 'team-lead' : 'blocked-member', message } as never,
+          context,
+          async () => ({ behavior: 'allow' }),
+          undefined,
+        )
+        expect(result.data.success, message.type).toBe(false)
+        expect(result.data.message).toContain('nothing was sent')
+      }
+      const broadcast = await SendMessageTool.call({ to: '*', message: 'all hands' }, context, async () => ({ behavior: 'allow' }), undefined)
+      expect(broadcast.data.success).toBe(false)
+      expect(broadcast.data.message).toContain('nothing was queued for them: blocked-member')
+    } finally {
+      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+    }
   })
 
   test('ambiguous peers return actionable resolver errors without mailbox fallback', async () => {

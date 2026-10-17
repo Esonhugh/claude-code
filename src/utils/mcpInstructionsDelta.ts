@@ -1,12 +1,9 @@
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logEvent } from '../services/analytics/index.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
 } from '../services/mcp/types.js'
 import type { Message } from '../types/message.js'
-import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import { isAnt } from 'src/utils/userType.js'
 
 
 export type McpInstructionsDelta = {
@@ -26,23 +23,6 @@ export type McpInstructionsDelta = {
 export type ClientSideInstruction = {
   serverName: string
   block: string
-}
-
-/**
- * True → announce MCP server instructions via persisted delta attachments.
- * False → prompts.ts keeps its DANGEROUS_uncachedSystemPromptSection
- * (rebuilt every turn; cache-busts on late connect).
- *
- * Env override for local testing: CLAUDE_CODE_MCP_INSTR_DELTA=true/false
- * wins over both ant bypass and the GrowthBook gate.
- */
-export function isMcpInstructionsDeltaEnabled(): boolean {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_MCP_INSTR_DELTA)) return true
-  if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_MCP_INSTR_DELTA)) return false
-  return (
-    isAnt() ||
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_basalt_3kr', false)
-  )
 }
 
 /**

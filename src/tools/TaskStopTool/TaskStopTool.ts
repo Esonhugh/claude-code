@@ -7,6 +7,7 @@ import { jsonStringify } from '../../utils/slowOperations.js'
 import { DESCRIPTION, TASK_STOP_TOOL_NAME } from './prompt.js'
 import { renderToolResultMessage, renderToolUseMessage } from './UI.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isLiveLocalAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 
 
 const inputSchema = lazySchema(() =>
@@ -81,7 +82,7 @@ export const TaskStopTool = buildTool({
       }
     }
 
-    if (task.status !== 'running') {
+    if (task.status !== 'running' && !isLiveLocalAgentTask(task)) {
       return {
         result: false,
         message: `Task ${id} is not running (status: ${task.status})`,

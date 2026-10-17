@@ -1,6 +1,10 @@
 import type { Cursor } from './cursor.js'
 import type { Size } from './layout/geometry.js'
-import type { ScrollHint } from './render-node-to-output.js'
+import type { ScrollHint, FollowScroll } from './render-node-to-output.js'
+import type { TerminalImage } from './dom.js'
+import type { TerminalEvidenceBoundary } from './terminalEvidence.js'
+import type { NativeTerminalFrameSpan } from './nativeTerminalJournal.js'
+import type { TerminalPaneEvidence } from './terminalPaneEvidence.js'
 import {
   type CharPool,
   createScreen,
@@ -9,14 +13,27 @@ import {
   type StylePool,
 } from './screen.js'
 
+export type PlacedTerminalImage = TerminalImage & {
+  x: number
+  y: number
+  columns: number
+  rows: number
+  sourceLeft: number
+  sourceTop: number
+  sourceColumns: number
+  sourceRows: number
+}
+
 export type Frame = {
   readonly screen: Screen
   readonly viewport: Size
   readonly cursor: Cursor
+  readonly terminalImages?: PlacedTerminalImage[]
   /** DECSTBM scroll optimization hint (alt-screen only, null otherwise). */
   readonly scrollHint?: ScrollHint | null
   /** A ScrollBox has remaining pendingScrollDelta — schedule another frame. */
   readonly scrollDrainPending?: boolean
+  readonly followScroll?: FollowScroll | null
 }
 
 export function emptyFrame(
@@ -37,6 +54,25 @@ export type FlickerReason = 'resize' | 'offscreen' | 'clear'
 
 export type FrameEvent = {
   durationMs: number
+  /** Frame committed by the render that produced this event. */
+  frame?: Frame
+  /** Physical cursor position after cursor declaration parking. */
+  physicalCursor?: Cursor
+  /** Terminal buffer that received this frame. */
+  terminalBuffer?: 'normal' | 'alternate'
+  /** Actual stdout dimensions, independent of the renderer's sentinel viewport. */
+  terminalViewport?: { width: number; height: number }
+  terminalPanes?: readonly TerminalPaneEvidence[]
+  terminalUiRevision?: number
+  nativeTerminalEvidence?: NativeTerminalFrameSpan
+  nativeTerminalRootReset?: boolean
+  nativeTerminalCursorVisible?: boolean
+  terminalEvidence?: {
+    start: TerminalEvidenceBoundary
+    end: TerminalEvidenceBoundary
+    rootReset: boolean
+    cursorVisible: boolean
+  }
   /** Phase breakdown in ms + patch count. Populated when the ink instance
    *  has frame-timing instrumentation enabled (via onFrame wiring). */
   phases?: {

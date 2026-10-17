@@ -26,6 +26,7 @@ import { EVENT_HANDLER_PROPS } from './events/event-handlers.js'
 import { getFocusManager, getRootNode } from './focus.js'
 import { LayoutDisplay } from './layout/node.js'
 import applyStyles, { type Styles, type TextStyles } from './styles.js'
+import { setTerminalPaneCommit, setTerminalUiRevision, type TerminalPaneCommit } from './terminalPaneEvidence.js'
 
 // We need to conditionally perform devtools connection to avoid
 // accidentally breaking other third-party code.
@@ -120,6 +121,14 @@ function setEventHandler(node: DOMElement, key: string, value: unknown): void {
 
 function applyProp(node: DOMElement, key: string, value: unknown): void {
   if (key === 'children') return
+  if (key === 'terminalUiRevision') {
+    setTerminalUiRevision(node, value as number | undefined)
+    return
+  }
+  if (key === 'terminalPaneCommit') {
+    setTerminalPaneCommit(node, value as TerminalPaneCommit | undefined)
+    return
+  }
 
   if (key === 'style') {
     setStyle(node, value as Styles)
@@ -434,6 +443,14 @@ const reconciler = createReconciler<
 
     if (props) {
       for (const [key, value] of Object.entries(props)) {
+        if (key === 'terminalUiRevision') {
+          setTerminalUiRevision(node, value as number | undefined)
+          continue
+        }
+        if (key === 'terminalPaneCommit') {
+          setTerminalPaneCommit(node, value as TerminalPaneCommit | undefined)
+          continue
+        }
         if (key === 'style') {
           setStyle(node, value as Styles)
           continue

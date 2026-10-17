@@ -16,6 +16,13 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { prefetchAllMcpResources } from 'src/services/mcp/client.js'
+import {
+  createToolCatalog,
+  describeModTool,
+  type ModToolDescription,
+} from '../services/mods/toolCatalog.js'
+import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/prompt.js'
+import type { ModSnapshot } from '../services/mods/runtime.js'
 import type { ScopedMcpServerConfig } from 'src/services/mcp/types.js'
 import { BashTool } from 'src/tools/BashTool/BashTool.js'
 import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
@@ -127,6 +134,12 @@ export async function toolToAPISchema(
     agents: AgentDefinition[]
     allowedAgentTypes?: string[]
     model?: string
+    modsSnapshot?: ModSnapshot
+    modDescription?: ModToolDescription
+    skipModDescription?: boolean
+    signal?: AbortSignal
+    /** False when this request cannot use ToolSearch, regardless of Mods placement. */
+    allowDeferLoading?: boolean
     /** When true, mark this tool with defer_loading for tool search */
     deferLoading?: boolean
     cacheControl?: {
@@ -225,20 +238,45 @@ export async function toolToAPISchema(
     cache.set(cacheKey, base)
   }
 
-  // Per-request overlay: defer_loading and cache_control vary by call
-  // (tool search defers different tools per turn; cache markers move).
-  // Explicit field copy avoids mutating the cached base and sidesteps
-  // BetaTool.cache_control's `| null` clashing with our narrower type.
+  // Per-request overlay: Agent's inline listing is projected against the
+  // captured Mods generation, while defer_loading/cache_control and tool
+  // descriptions vary by call. Keep all of them out of the stable base cache.
+  const description =
+    tool.name === AGENT_TOOL_NAME && options.modsSnapshot?.hasHooks('agent.offer')
+      ? await tool.prompt({
+          getToolPermissionContext: options.getToolPermissionContext,
+          tools: options.tools,
+          agents: options.agents,
+          allowedAgentTypes: options.allowedAgentTypes,
+          modsSnapshot: options.modsSnapshot,
+          signal: options.signal,
+        })
+      : base.description ?? ''
+  const described = options.skipModDescription
+    ? undefined
+    : options.modDescription ??
+      (options.modsSnapshot
+        ? await describeModTool(
+            options.modsSnapshot,
+            tool,
+            description,
+            options.signal,
+          )
+        : undefined)
   const schema: BetaToolWithExtras = {
     name: base.name,
-    description: base.description,
+    description: described?.description ?? description,
     input_schema: base.input_schema,
     ...(base.strict && { strict: true }),
     ...(base.eager_input_streaming && { eager_input_streaming: true }),
   }
 
   // Add defer_loading if requested (for tool search feature)
-  if (options.deferLoading) {
+  if (
+    options.allowDeferLoading !== false &&
+    tool.name !== TOOL_SEARCH_TOOL_NAME &&
+    (described?.isDeferred ?? options.deferLoading)
+  ) {
     schema.defer_loading = true
   }
 
@@ -280,6 +318,66 @@ export async function toolToAPISchema(
   // and will be serialized in the API request, even though they're not in the SDK's
   // BetaTool type definition. This is intentional for beta features.
   return schema as BetaTool
+}
+
+/** Resolve placement before any consumer filters out undiscovered tools. */
+export async function resolveModToolDescriptions(
+  tools: Tools,
+  options: Parameters<typeof toolToAPISchema>[1],
+): Promise<ReadonlyMap<Tool, ModToolDescription> | undefined> {
+  const snapshot = options.modsSnapshot
+  if (!snapshot?.hasHooks('tool.describe')) return undefined
+  return new Map(
+    await Promise.all(tools.map(async tool => {
+      const base = await toolToAPISchema(tool, {
+        ...options,
+        modDescription: undefined,
+        skipModDescription: true,
+      })
+      const described = await describeModTool(
+        snapshot,
+        tool,
+        'description' in base ? base.description ?? '' : '',
+        options.signal,
+      )
+      return [tool, described] as const
+    })),
+  )
+}
+
+/** Apply Mods only after core/tool-search gating, preserving host Tool identities. */
+export async function toolsToAPISchemas(
+  tools: Tools,
+  options: Parameters<typeof toolToAPISchema>[1] & {
+    deferLoadingForTool?: (tool: Tool) => boolean
+    modDescriptions?: ReadonlyMap<Tool, ModToolDescription>
+  },
+): Promise<{ tools: Tools; schemas: BetaToolUnion[] }> {
+  const schemas = new Map(
+    await Promise.all(
+      tools.map(async tool => [
+        tool,
+        await toolToAPISchema(tool, {
+          ...options,
+          modDescription: options.modDescriptions?.get(tool),
+          deferLoading:
+            options.deferLoadingForTool?.(tool) ?? options.deferLoading,
+        }),
+      ] as const),
+    ),
+  )
+  const catalog = createToolCatalog(tools, async tool => {
+    const schema = schemas.get(tool)!
+    return 'description' in schema ? schema.description ?? '' : ''
+  })
+  const projected = await catalog.project(options.modsSnapshot, options.signal)
+  return {
+    tools: projected.map(entry => entry.tool),
+    schemas: projected.map(({ tool, description }) => ({
+      ...schemas.get(tool)!,
+      description,
+    })),
+  }
 }
 
 let loggedStrip = false
@@ -465,22 +563,23 @@ export function appendSystemContext(
 
 export function prependUserContext(
   messages: Message[],
-  context: { [k: string]: string },
+  context: { [k: string]: string } | readonly { name: string; text: string }[],
 ): Message[] {
   if (process.env.NODE_ENV === 'test') {
     return messages
   }
 
-  if (Object.entries(context).length === 0) {
+  const blocks = Array.isArray(context)
+    ? context
+    : Object.entries(context).map(([name, text]) => ({ name, text }))
+  if (blocks.length === 0) {
     return messages
   }
 
   return [
     createUserMessage({
-      content: `<system-reminder>\nAs you answer the user's questions, you can use the following context:\n${Object.entries(
-        context,
-      )
-        .map(([key, value]) => `# ${key}\n${value}`)
+      content: `<system-reminder>\nAs you answer the user's questions, you can use the following context:\n${blocks
+        .map(({ name, text }) => `# ${name}\n${text}`)
         .join('\n')}
 
       IMPORTANT: this context may or may not be relevant to your tasks. You should not respond to this context unless it is highly relevant to your task.\n</system-reminder>\n`,

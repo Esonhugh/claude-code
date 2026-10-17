@@ -7,6 +7,7 @@ type Priority = 'low' | 'medium' | 'high' | 'immediate'
 
 type BaseNotification = {
   key: string
+  color?: keyof Theme
   /**
    * Keys of notifications that this notification invalidates.
    * If a notification is invalidated, it will be removed from the queue
@@ -15,6 +16,8 @@ type BaseNotification = {
   invalidates?: string[]
   priority: Priority
   timeoutMs?: number
+  pinned?: boolean
+  wrap?: boolean
   /**
    * Combine notifications with the same key, like Array.reduce().
    * Called as fold(accumulator, incoming) when a notification with a matching
@@ -26,7 +29,6 @@ type BaseNotification = {
 
 type TextNotification = BaseNotification & {
   text: string
-  color?: keyof Theme
 }
 
 type JSXNotification = BaseNotification & {
@@ -69,6 +71,7 @@ export function useNotifications(): {
             return {
               ...prev,
               notifications: {
+                ...prev.notifications,
                 queue: prev.notifications.queue,
                 current: null,
               },
@@ -85,6 +88,7 @@ export function useNotifications(): {
       return {
         ...prev,
         notifications: {
+          ...prev.notifications,
           queue: prev.notifications.queue.filter(_ => _ !== next),
           current: next,
         },
@@ -94,6 +98,20 @@ export function useNotifications(): {
 
   const addNotification = useCallback<AddNotificationFn>(
     (notif: Notification) => {
+      if (notif.pinned) {
+        setAppState(prev => {
+          if (prev.notifications.pinned.some(n => n.key === notif.key)) return prev
+          return {
+            ...prev,
+            notifications: {
+              ...prev.notifications,
+              pinned: [...prev.notifications.pinned, notif],
+            },
+          }
+        })
+        return
+      }
+
       // Handle immediate priority notifications
       if (notif.priority === 'immediate') {
         // Clear any existing timeout since we're showing a new immediate notification
@@ -114,6 +132,7 @@ export function useNotifications(): {
               return {
                 ...prev,
                 notifications: {
+                  ...prev.notifications,
                   queue: prev.notifications.queue.filter(
                     _ => !notif.invalidates?.includes(_.key),
                   ),
@@ -133,6 +152,7 @@ export function useNotifications(): {
         setAppState(prev => ({
           ...prev,
           notifications: {
+            ...prev.notifications,
             current: notif,
             queue:
               // Only re-queue the current notification if it's not immediate
@@ -173,6 +193,7 @@ export function useNotifications(): {
                   return {
                     ...p,
                     notifications: {
+                      ...p.notifications,
                       queue: p.notifications.queue,
                       current: null,
                     },
@@ -189,6 +210,7 @@ export function useNotifications(): {
             return {
               ...prev,
               notifications: {
+                ...prev.notifications,
                 current: folded,
                 queue: prev.notifications.queue,
               },
@@ -209,6 +231,7 @@ export function useNotifications(): {
             return {
               ...prev,
               notifications: {
+                ...prev.notifications,
                 current: prev.notifications.current,
                 queue: newQueue,
               },
@@ -236,6 +259,7 @@ export function useNotifications(): {
         return {
           ...prev,
           notifications: {
+            ...prev.notifications,
             current: invalidatesCurrent ? null : prev.notifications.current,
             queue: [
               ...prev.notifications.queue.filter(
@@ -260,8 +284,9 @@ export function useNotifications(): {
       setAppState(prev => {
         const isCurrent = prev.notifications.current?.key === key
         const inQueue = prev.notifications.queue.some(n => n.key === key)
+        const isPinned = prev.notifications.pinned.some(n => n.key === key)
 
-        if (!isCurrent && !inQueue) {
+        if (!isCurrent && !inQueue && !isPinned) {
           return prev
         }
 
@@ -273,8 +298,10 @@ export function useNotifications(): {
         return {
           ...prev,
           notifications: {
+            ...prev.notifications,
             current: isCurrent ? null : prev.notifications.current,
             queue: prev.notifications.queue.filter(n => n.key !== key),
+            pinned: isPinned ? prev.notifications.pinned.filter(n => n.key !== key) : prev.notifications.pinned,
           },
         }
       })
@@ -298,7 +325,7 @@ export function useNotifications(): {
   return { addNotification, removeNotification }
 }
 
-const PRIORITIES: Record<Priority, number> = {
+export const PRIORITIES: Record<Priority, number> = {
   immediate: 0,
   high: 1,
   medium: 2,

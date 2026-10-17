@@ -6,6 +6,7 @@ import type { AppState } from '../../state/AppState.js'
 import type { AgentId } from '../../types/ids.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { logError } from '../../utils/log.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { updateTaskState } from '../../utils/task/framework.js'
@@ -14,10 +15,18 @@ import { isLocalShellTask } from './guards.js'
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
 export function killTask(taskId: string, setAppState: SetAppStateFn): void {
+  let killed = false
+  let wasNotified = false
+  let toolUseId: string | undefined
+  let description: string | undefined
   updateTaskState(taskId, setAppState, task => {
     if (task.status !== 'running' || !isLocalShellTask(task)) {
       return task
     }
+    killed = true
+    wasNotified = task.notified
+    toolUseId = task.toolUseId
+    description = task.description
 
     try {
       logForDebugging(`LocalShellTask ${taskId} kill requested`)
@@ -43,6 +52,14 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
     }
   })
   void evictTaskOutput(taskId)
+  // notified:true above suppresses the "exit code 137" XML notification, so
+  // print.ts never emits the SDK task_notification — close the bookend here.
+  if (killed && !wasNotified) {
+    emitTaskTerminatedSdk(taskId, 'stopped', {
+      toolUseId,
+      summary: description,
+    })
+  }
 }
 
 /**
@@ -71,6 +88,11 @@ export function killShellTasksForAgent(
   // Purge any queued notifications addressed to this agent — its query loop
   // has exited and won't drain them. killTask fires 'killed' notifications
   // asynchronously; drop the ones already queued and any that land later sit
-  // harmlessly (no consumer matches a dead agentId).
-  dequeueAllMatching(cmd => cmd.agentId === agentId)
+  // harmlessly (no consumer matches a dead agentId). Notifications from child
+  // agents it owns stay queued: the owner's parking hand-off delivers them.
+  dequeueAllMatching(cmd => {
+    if (cmd.agentId !== agentId) return false
+    const source = cmd.taskId ? tasks[cmd.taskId] : undefined
+    return !(source?.type === 'local_agent' && source.ownerAgentId === agentId)
+  })
 }

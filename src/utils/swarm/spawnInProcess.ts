@@ -25,6 +25,8 @@ import type {
 } from '../../tasks/InProcessTeammateTask/types.js'
 import { createAbortController } from '../abortController.js'
 import { formatAgentId } from '../agentId.js'
+import { asAgentId, toAgentId } from '../../types/ids.js'
+import { createAgentId } from '../uuid.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from '../debug.js'
@@ -33,7 +35,7 @@ import { evictTaskOutput } from '../task/diskOutput.js'
 import {
   evictTerminalTask,
   registerTask,
-  STOPPED_DISPLAY_MS,
+  PANEL_GRACE_MS,
 } from '../task/framework.js'
 import { createTeammateContext } from '../teammateContext.js'
 import {
@@ -51,7 +53,9 @@ type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
  */
 export type SpawnContext = {
   setAppState: SetAppStateFn
+  getAppState?: () => AppState
   toolUseId?: string
+  modSpawnedBy?: string
 }
 
 /**
@@ -64,12 +68,16 @@ export type InProcessSpawnConfig = {
   teamName: string
   /** Initial prompt/task for the teammate */
   prompt: string
+  description?: string
+  agentType?: string
+  parentAgentId?: string
+  resumableAgentId?: string
   /** Optional UI color for the teammate */
   color?: string
   /** Whether teammate must enter plan mode before implementing */
   planModeRequired: boolean
   /** Effective permission mode inherited or explicitly selected for this teammate */
-  permissionMode: PermissionMode
+  permissionMode?: PermissionMode
   /** Optional model override for this teammate */
   model?: string
 }
@@ -82,6 +90,7 @@ export type InProcessSpawnOutput = {
   success: boolean
   /** Full agent ID (format: "name@team") */
   agentId: string
+  identity?: TeammateIdentity
   /** Task ID for tracking in AppState */
   taskId?: string
   /** AbortController for this teammate (linked to parent) */
@@ -122,6 +131,7 @@ export async function spawnInProcessTeammate(
   // Generate deterministic agent ID
   const agentId = formatAgentId(name, teamName)
   const taskId = generateTaskId('in_process_teammate')
+  const resumableAgentId = config.resumableAgentId ?? createAgentId(name)
 
   logForDebugging(
     `[spawnInProcessTeammate] Spawning ${agentId} (taskId: ${taskId})`,
@@ -138,6 +148,7 @@ export async function spawnInProcessTeammate(
     // Create teammate identity (stored as plain data in AppState)
     const identity: TeammateIdentity = {
       agentId,
+      resumableAgentId,
       agentName: name,
       teamName,
       color,
@@ -163,7 +174,15 @@ export async function spawnInProcessTeammate(
     }
 
     // Create task state
-    const description = `${name}: ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`
+    const description = config.description ?? `${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`
+
+    let effectivePermissionMode = permissionMode
+    if (effectivePermissionMode === undefined) {
+      const parentMode = context.getAppState?.().toolPermissionContext.mode ?? 'default'
+      effectivePermissionMode = planModeRequired
+        ? 'plan'
+        : parentMode === 'plan' || parentMode === 'dontAsk' ? 'default' : parentMode
+    }
 
     const taskState: InProcessTeammateTaskState = {
       ...createTaskStateBase(
@@ -175,13 +194,15 @@ export async function spawnInProcessTeammate(
       type: 'in_process_teammate',
       status: 'running',
       identity,
+      spawnedWith:{description:config.description,agentType:config.agentType,parentAgentId:config.parentAgentId},
+      ...(context.modSpawnedBy === undefined ? {} : {spawnedBy:context.modSpawnedBy}),
       prompt,
       model,
       abortController,
       awaitingPlanApproval: false,
       spinnerVerb: sample(getSpinnerVerbs()),
       pastTenseVerb: sample(TURN_COMPLETION_VERBS),
-      permissionMode: planModeRequired ? 'plan' : permissionMode,
+      permissionMode: effectivePermissionMode,
       isIdle: false,
       shutdownRequested: false,
       lastReportedToolCount: 0,
@@ -200,6 +221,36 @@ export async function spawnInProcessTeammate(
 
     // Register task in AppState
     registerTask(taskState, setAppState)
+    setAppState(prev => {
+      const reserved = (candidate: string) => {
+        const normalized = candidate.normalize('NFKC').replace(/[\p{Cc}\p{Cf}]/gu, character => /\s/.test(character) ? character : '').trim().toLowerCase().replace(/\s+/g, '-')
+        return ['main', 'team-lead', 'user', 'system'].includes(normalized) || toAgentId(normalized) !== null
+      }
+      if (reserved(name)) {
+        logForDebugging(`[spawnInProcessTeammate] Refused reserved registry name ${name} for ${resumableAgentId}`)
+        return prev
+      }
+      const existing = prev.agentNameRegistry.get(name)
+      if (existing === resumableAgentId) return prev
+      const taskFor = (id: string) => prev.tasks[id] ?? Object.values(prev.tasks).find(task => task.type === 'in_process_teammate' && task.identity.resumableAgentId === id)
+      const previousTask = existing === undefined ? undefined : prev.tasks[existing]
+      const occupied = existing !== undefined && (previousTask?.status === 'running' || previousTask?.type === 'local_agent' || Object.values(prev.tasks).some(task => task.type === 'in_process_teammate' && task.status === 'running' && task.identity.resumableAgentId === existing))
+      let registryName = name
+      if (occupied) {
+        const base = name.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+/, '').slice(0, 64) || 'agent'
+        const teammateNames = new Set(Object.values(prev.teamContext?.teammates ?? {}).map(teammate => teammate.name))
+        for (let suffix = 1; ; suffix++) {
+          const candidate = suffix === 1 ? base : `${base}-${suffix}`
+          if (reserved(candidate) || teammateNames.has(candidate)) continue
+          const id = prev.agentNameRegistry.get(candidate)
+          if (id === undefined || taskFor(id) === undefined) { registryName = candidate; break }
+        }
+        logForDebugging(`[spawnInProcessTeammate] Name ${name} already routes to ${existing}; registered ${registryName} for ${resumableAgentId}`)
+      }
+      const names = new Map(prev.agentNameRegistry)
+      names.set(registryName, asAgentId(resumableAgentId))
+      return {...prev, agentNameRegistry:names}
+    })
 
     logForDebugging(
       `[spawnInProcessTeammate] Registered ${agentId} in AppState`,
@@ -208,6 +259,7 @@ export async function spawnInProcessTeammate(
     return {
       success: true,
       agentId,
+      identity,
       taskId,
       abortController,
       teammateContext,
@@ -267,7 +319,7 @@ export function killInProcessTeammate(
     teammateTask.abortController?.abort()
 
     logForDebugging(
-      `[transcript_retention_decision] task=${taskId} status=killed retain=${teammateTask.retain ? 'keep' : 'truncate'}`,
+      `[transcript_retention_decision] task=${taskId} status=killed retain=${teammateTask.retain ? 'keep' : 'grace'}`,
     )
 
     // Call cleanup handler
@@ -299,12 +351,9 @@ export function killInProcessTeammate(
           status: 'killed' as const,
           notified: true,
           endTime: Date.now(),
+          retain: teammateTask.retain ?? false,
+          evictAfter: teammateTask.retain ? undefined : Date.now() + PANEL_GRACE_MS,
           onIdleCallbacks: [], // Clear callbacks to prevent stale references
-          messages: teammateTask.retain
-            ? teammateTask.messages
-            : teammateTask.messages?.length
-              ? [teammateTask.messages[teammateTask.messages.length - 1]!]
-              : undefined,
           pendingUserMessages: [],
           inProgressToolUseIDs: undefined,
           abortController: undefined,
@@ -315,9 +364,10 @@ export function killInProcessTeammate(
     }
   })
 
-  // Remove from team file (outside state updater to avoid file I/O in callback)
+  // Remove from team file (outside state updater to avoid file I/O in callback).
+  // Fire-and-forget: the removal is best-effort and logs its own failures.
   if (teamName && agentId) {
-    removeMemberByAgentId(teamName, agentId)
+    void removeMemberByAgentId(teamName, agentId)
   }
 
   if (killed) {
@@ -332,7 +382,7 @@ export function killInProcessTeammate(
     })
     setTimeout(
       evictTerminalTask.bind(null, taskId, setAppState),
-      STOPPED_DISPLAY_MS,
+      PANEL_GRACE_MS,
     )
   }
 

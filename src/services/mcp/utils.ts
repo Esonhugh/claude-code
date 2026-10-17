@@ -321,10 +321,11 @@ export function ensureConfigScope(scope?: string): ConfigScope {
 
 export function ensureTransport(type?: string): 'stdio' | 'sse' | 'http' {
   if (!type) return 'stdio'
+  if (type === 'streamable-http') return 'http'
 
   if (type !== 'stdio' && type !== 'sse' && type !== 'http') {
     throw new Error(
-      `Invalid transport type: ${type}. Must be one of: stdio, sse, http`,
+      `Invalid transport type: ${type}. Must be one of: stdio, sse, http (or streamable-http)`,
     )
   }
 

@@ -1,4 +1,8 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import {
+  projectOfferedAgents,
+  type AgentOfferProjection,
+} from '../../services/mods/agentOffer.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
@@ -82,9 +86,10 @@ export async function getPrompt(
   agentDefinitions: AgentDefinition[],
   isCoordinator?: boolean,
   allowedAgentTypes?: string[],
+  projection: AgentOfferProjection = {},
 ): Promise<string> {
   // Filter agents by allowed types when Agent(x,y) restricts which agents can be spawned
-  const effectiveAgents = allowedAgentTypes
+  const allowedAgents = allowedAgentTypes
     ? agentDefinitions.filter(a => allowedAgentTypes.includes(a.agentType))
     : agentDefinitions
 
@@ -97,7 +102,7 @@ export async function getPrompt(
 
 ## When to fork
 
-Fork yourself (omit \`subagent_type\`) when the intermediate tool output isn't worth keeping in your context. The criterion is qualitative \u2014 "will I need this output again" \u2014 not task size.
+Fork yourself (set \`subagent_type: "fork"\`) when the intermediate tool output isn't worth keeping in your context. The criterion is qualitative \u2014 "will I need this output again" \u2014 not task size.
 - **Research**: fork open-ended questions. If research can be broken into independent questions, launch parallel forks in one message. A fork beats a fresh subagent for this \u2014 it inherits context and shares your cache.
 - **Implementation**: prefer to fork implementation work that requires more than a couple of edits. Do research before jumping to implementation.
 
@@ -117,7 +122,7 @@ Forks are cheap because they share your prompt cache. Don't set \`model\` on a f
 
 ${
     forkEnabled
-      ? 'A fresh agent with `subagent_type` starts with no conversation context. '
+      ? 'A fresh named agent or general-purpose agent starts with no conversation context. '
       : 'Each agent starts fresh. '
   }Give the goal, relevant findings or exclusions, exact scope, whether to research or edit, and what you expect it to return. Include known paths or commands. For implementation, request the specific change instead of "based on your findings, fix it."
 `
@@ -127,6 +132,9 @@ ${
   // tool description static across MCP/plugin/permission changes so the
   // tools-block prompt cache doesn't bust every time an agent loads.
   const listViaAttachment = shouldInjectAgentListInMessages()
+  const effectiveAgents = listViaAttachment
+    ? allowedAgents
+    : await projectOfferedAgents(allowedAgents, projection)
 
   const agentListSection = listViaAttachment
     ? `Available agent types are listed in <system-reminder> messages in the conversation.`
@@ -144,7 +152,7 @@ ${agentListSection}
 
 ${
   forkEnabled
-    ? `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type to use a specialized agent, or omit it to fork yourself — a fork inherits your full conversation context.`
+    ? `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type to use a specialized agent. If omitted, the general-purpose agent is used. Use subagent_type: "fork" to inherit your full conversation context.`
     : `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.`
 }`
 
@@ -196,10 +204,10 @@ Usage notes:
     !isInProcessTeammate() &&
     !forkEnabled
       ? `
-- Use foreground when blocked on the result; use run_in_background only for independent work. Completion is announced automatically—do not poll, sleep, or check proactively.`
+- Agents run in the background by default. Set run_in_background: false when blocked on the result. Completion is announced automatically—do not poll, sleep, or check proactively.`
       : ''
   }
-- Resume an existing agent with ${SEND_MESSAGE_TOOL_NAME} using its ID or name as \`to\`; it retains context. ${forkEnabled ? 'A fresh Agent call with subagent_type has no context.' : 'A fresh Agent call has no context.'}
+- Resume an existing agent with ${SEND_MESSAGE_TOOL_NAME} using its ID or name as \`to\`; it retains context. ${forkEnabled ? 'A fresh Agent call has no context unless subagent_type is "fork".' : 'A fresh Agent call has no context.'}
 - Generally trust agent output.
 - Honor agent descriptions that call for proactive use.
 - If the user asks to run agents in parallel, send a single message with multiple ${AGENT_TOOL_NAME} tool calls.

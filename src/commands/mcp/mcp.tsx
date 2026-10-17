@@ -29,18 +29,19 @@ function MCPToggle({
 
     const isEnabling = action === 'enable'
     const clients = mcpClients.filter(c => c.name !== 'ide')
-    const toToggle =
-      target === 'all'
-        ? clients.filter(c =>
-            isEnabling ? c.type === 'disabled' : c.type !== 'disabled',
-          )
-        : clients.filter(c => c.name === target)
+    const targets =
+      target === 'all' ? clients : clients.filter(c => c.name === target)
+    const toToggle = targets.filter(c =>
+      isEnabling ? c.type === 'disabled' : c.type !== 'disabled',
+    )
 
     if (toToggle.length === 0) {
       onComplete(
         target === 'all'
           ? `All MCP servers are already ${isEnabling ? 'enabled' : 'disabled'}`
-          : `MCP server "${target}" not found`,
+          : targets.length === 0
+            ? `MCP server "${target}" not found`
+            : `MCP server "${target}" is already ${isEnabling ? 'enabled' : 'disabled'}`,
       )
       return
     }

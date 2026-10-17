@@ -3,6 +3,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PluginHooksSchema } from './schemas.js'
+import {
+  checkEnabledPlugins,
+  getPluginEditableScopes,
+} from './pluginStartupCheck.js'
+import { setAllowedSettingSources, setFlagSettingsInline } from '../../bootstrap/state.js'
+import { resetSettingsCache } from '../settings/settingsCache.js'
 
 const childFlag = 'CLAUDE_CODE_INLINE_PLUGIN_TEST_CHILD'
 
@@ -84,6 +90,18 @@ if (!process.env[childFlag]) {
   })
 }
 
+describe('enabled plugin settings', () => {
+  test('treats version constraint arrays as enabled', async () => {
+    setAllowedSettingSources(['flagSettings'])
+    setFlagSettingsInline({
+      enabledPlugins: { 'pinned@marketplace': ['^1.0.0'] },
+    })
+    resetSettingsCache()
+    expect(await checkEnabledPlugins()).toContain('pinned@marketplace')
+    expect(getPluginEditableScopes().get('pinned@marketplace')).toBe('flag')
+  })
+})
+
 describe('plugin module declarations', () => {
   test('retains modules-only declarations', () => {
     expect(PluginHooksSchema().parse({ modules: ['./register.ts'] })).toEqual({ modules: ['./register.ts'] })
@@ -93,9 +111,15 @@ describe('plugin module declarations', () => {
     expect(PluginHooksSchema().parse(input)).toEqual(input)
     expect(PluginHooksSchema().parse({ hooks: {} })).toEqual({ hooks: {} })
   })
-  test('rejects an empty declaration and non-relative module paths', () => {
+  test.each(['register.ts', 'nested/register.ts'])('accepts a relative filename without a dot prefix: %s', path => {
+    expect(PluginHooksSchema().parse({ modules: [path] })).toEqual({ modules: [path] })
+  })
+  test.each(['/outside.ts', 'node:fs'])('retains a path string for directory-aware module validation: %s', path => {
+    // Official 2.1.292 declares string paths; module loading checks their resolved directory.
+    expect(PluginHooksSchema().parse({ modules: [path] })).toEqual({ modules: [path] })
+  })
+  test('rejects an empty declaration and more than one module', () => {
     expect(PluginHooksSchema().safeParse({}).success).toBe(false)
-    expect(PluginHooksSchema().safeParse({ modules: ['/outside.ts'] }).success).toBe(false)
-    expect(PluginHooksSchema().safeParse({ modules: ['node:fs'] }).success).toBe(false)
+    expect(PluginHooksSchema().safeParse({ modules: ['./first.ts', './second.ts'] }).success).toBe(false)
   })
 })

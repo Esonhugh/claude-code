@@ -47,13 +47,17 @@ function envSessionKind(): SessionKind | undefined {
   return undefined
 }
 
+export function getSessionKind(): SessionKind {
+  return envSessionKind() ?? 'interactive'
+}
+
 /**
  * True when this REPL is running inside a `claude --bg` tmux session.
  * Exit paths (/exit, ctrl+c, ctrl+d) should detach the attached client
  * instead of killing the process.
  */
 export function isBgSession(): boolean {
-  return envSessionKind() === 'bg'
+  return getSessionKind() === 'bg'
 }
 
 /**
@@ -70,7 +74,7 @@ export function isBgSession(): boolean {
 export async function registerSession(): Promise<boolean> {
   if (getAgentId() != null) return false
 
-  const kind: SessionKind = envSessionKind() ?? 'interactive'
+  const kind = getSessionKind()
   const dir = getSessionsDir()
   const pidFile = join(dir, `${process.pid}.json`)
   unregistering = false

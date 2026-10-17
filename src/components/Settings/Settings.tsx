@@ -13,6 +13,7 @@ import { Tabs, Tab } from '../design-system/Tabs.js'
 import { Status, buildDiagnostics, buildStatusUsage } from './Status.js'
 import { Config } from './Config.js'
 import { Usage } from './Usage.js'
+import { Stats } from '../Stats.js'
 import type {
   LocalJSXCommandContext,
   CommandResultDisplay,
@@ -33,7 +34,7 @@ type Props = {
     options?: { display?: CommandResultDisplay },
   ) => void
   context: LocalJSXCommandContext
-  defaultTab: 'Status' | 'Config' | 'Usage' | 'Gates'
+  defaultTab: 'Status' | 'Config' | 'Usage' | 'Stats' | 'Gates'
 }
 
 export function Settings({
@@ -47,6 +48,7 @@ export function Settings({
   // focused). Settings must cede Esc so search can clear/exit first.
   const [configOwnsEsc, setConfigOwnsEsc] = useState(false)
   const [gatesOwnsEsc, setGatesOwnsEsc] = useState(false)
+  const [usageOwnsEsc, setUsageOwnsEsc] = useState(false)
   // Fixed content height so switching tabs doesn't shift the pane height.
   // Outside modals cap at min(80% viewport, 30). Inside a Modal the modal's
   // innerSize.rows IS the ScrollBox viewport — the 0.8 multiplier over-
@@ -90,7 +92,8 @@ export function Settings({
     isActive:
       !tabsHidden &&
       !(selectedTab === 'Config' && configOwnsEsc) &&
-      !(selectedTab === 'Gates' && gatesOwnsEsc),
+      !(selectedTab === 'Gates' && gatesOwnsEsc) &&
+      !(selectedTab === 'Usage' && usageOwnsEsc),
   })
 
   const tabs = [
@@ -113,7 +116,13 @@ export function Settings({
       </Suspense>
     </Tab>,
     <Tab key="usage" title="Usage">
-      <Usage />
+      <Usage
+        contentHeight={insideModal ? Math.max(1, rows - 2) : contentHeight}
+        onOwnsEscChange={setUsageOwnsEsc}
+      />
+    </Tab>,
+    <Tab key="stats" title="Stats">
+      <Stats embedded onClose={onClose} />
     </Tab>,
     ...(isAnt()
       ? [
@@ -134,14 +143,17 @@ export function Settings({
         selectedTab={selectedTab}
         onTabChange={setSelectedTab}
         hidden={tabsHidden}
+        disableNavigation={selectedTab === 'Usage' && usageOwnsEsc}
         // Config has interactive content — start with header unfocused so
         // left/right/tab cycle option values instead of switching tabs.
         initialHeaderFocused={defaultTab !== 'Config' && defaultTab !== 'Gates'}
         // Inside a Modal, skip the Tabs-level cap so tall tabs (Status's
         // MCP list) flow to their natural height for the Modal's ScrollBox
         // to scroll. Config/Gates still get contentHeight above — they
-        // paginate internally so this only affects Status/Usage.
-        contentHeight={tabsHidden || insideModal ? undefined : contentHeight}
+        // paginate internally so this only affects Status/Usage/Stats.
+        // Stats has a variable-height chart, not internal pagination. Capping
+        // it flex-shrinks text rows into one another when focus/view changes.
+        contentHeight={tabsHidden || insideModal || selectedTab === 'Stats' ? undefined : contentHeight}
       >
         {tabs}
       </Tabs>

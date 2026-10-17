@@ -49,6 +49,7 @@ import { addToHistory } from './history.js'
 import type { Root } from './ink.js'
 import { launchRepl } from './replLauncher.js'
 import { createModsSession } from './services/mods/session.js'
+import { deferInboundMessages, setInboundMessageReceiver } from './utils/inboundMessageQueue.js'
 import {
   hasGrowthBookEnvOverride,
   initializeGrowthBook,
@@ -125,6 +126,8 @@ import { applyConfigEnvironmentVariables } from './utils/managedEnv.js'
 import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
+import { initializeFullscreenMode } from './utils/fullscreen.js'
+import { configureTuiRestart } from './utils/tuiRestart.js'
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js'
 import { settingsChangeDetector } from './utils/settings/changeDetector.js'
 import { skillChangeDetector } from './utils/skills/skillChangeDetector.js'
@@ -274,7 +277,8 @@ import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cache
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js'
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js'
 import { getGlobExclusionsForPluginCache } from './utils/plugins/orphanedPluginFilter.js'
-import { getPluginSeedDirs } from './utils/plugins/pluginDirectories.js'
+import { filterNoMcpEnvironmentPluginDirectories, getPluginSeedDirs, mergePluginDirectories, settlePluginDirsEnvironment } from './utils/plugins/pluginDirectories.js'
+import { areSideloadFlagsDisabled, filterSideloadMcpServers, getSideloadFlagsError, getSideloadStartupError } from './utils/plugins/sideloadPolicy.js'
 import { countFilesRoundedRg } from './utils/ripgrep.js'
 import {
   processSessionStartHooks,
@@ -362,6 +366,9 @@ import {
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js'
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js'
+import { getStdinStream } from 'src/utils/stdin.js'
+import { captureLaunchInitialize } from './entrypoints/sdk/launchInitialize.js'
+import { createPluginDirNoMcpOption } from './cli/pluginOptions.js'
 import { setCwd } from 'src/utils/Shell.js'
 import {
   type ProcessedResume,
@@ -374,6 +381,7 @@ import {
   getInitialMainLoopModel,
   getIsNonInteractiveSession,
   getSdkBetas,
+  getIsRemoteMode,
   getSessionId,
   getUserMsgOptIn,
   setAllowedChannels,
@@ -385,6 +393,7 @@ import {
   setFlagSettingsPath,
   setInitialMainLoopModel,
   setInlinePlugins,
+  setInlinePluginsNoMcp,
   setIsInteractive,
   setKairosActive,
   setOriginalCwd,
@@ -395,6 +404,7 @@ import {
   setSessionSource,
   setUserMsgOptIn,
   switchSession,
+  getSessionStartedAt,
 } from './bootstrap/state.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -407,11 +417,7 @@ import { migrateAutoUpdatesToSettings } from './migrations/migrateAutoUpdatesToS
 import { migrateBypassPermissionsAcceptedToSettings } from './migrations/migrateBypassPermissionsAcceptedToSettings.js'
 import { migrateEnableAllProjectMcpServersToSettings } from './migrations/migrateEnableAllProjectMcpServersToSettings.js'
 import { migrateFennecToOpus } from './migrations/migrateFennecToOpus.js'
-import { migrateLegacyOpusToCurrent } from './migrations/migrateLegacyOpusToCurrent.js'
-import { migrateOpusToOpus1m } from './migrations/migrateOpusToOpus1m.js'
 import { migrateReplBridgeEnabledToRemoteControlAtStartup } from './migrations/migrateReplBridgeEnabledToRemoteControlAtStartup.js'
-import { migrateSonnet1mToSonnet45 } from './migrations/migrateSonnet1mToSonnet45.js'
-import { migrateSonnet45ToSonnet46 } from './migrations/migrateSonnet45ToSonnet46.js'
 import { resetAutoModeOptInForDefaultOffer } from './migrations/resetAutoModeOptInForDefaultOffer.js'
 import { resetProToOpusDefault } from './migrations/resetProToOpusDefault.js'
 import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js'
@@ -598,7 +604,6 @@ async function logStartupTelemetry(): Promise<void> {
   })
 }
 
-// @[MODEL LAUNCH]: Consider any migrations you may need for model strings. See migrateSonnet1mToSonnet45.ts for an example.
 // Bump this when adding a new sync migration so existing users re-run the set.
 const CURRENT_MIGRATION_VERSION = 12
 function runMigrations(): void {
@@ -607,10 +612,6 @@ function runMigrations(): void {
     migrateBypassPermissionsAcceptedToSettings()
     migrateEnableAllProjectMcpServersToSettings()
     resetProToOpusDefault()
-    migrateSonnet1mToSonnet45()
-    migrateLegacyOpusToCurrent()
-    migrateSonnet45ToSonnet46()
-    migrateOpusToOpus1m()
     migrateReplBridgeEnabledToRemoteControlAtStartup()
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer()
@@ -893,15 +894,6 @@ export async function main() {
   process.on('exit', () => {
     resetCursor()
   })
-  process.on('SIGINT', () => {
-    // In print mode, print.ts registers its own SIGINT handler that aborts
-    // the in-flight query and calls gracefulShutdown; skip here to avoid
-    // preempting it with a synchronous process.exit().
-    if (process.argv.includes('-p') || process.argv.includes('--print')) {
-      return
-    }
-    process.exit(0)
-  })
   profileCheckpoint('main_warning_handler_initialized')
 
   // Check for cc:// or cc+unix:// URL in argv — rewrite so the main command
@@ -1119,28 +1111,32 @@ export async function main() {
 async function getInputPrompt(
   prompt: string,
   inputFormat: 'text' | 'stream-json',
+  launchInput?: AsyncIterable<string>,
 ): Promise<string | AsyncIterable<string>> {
+  if (launchInput && inputFormat === 'stream-json') return launchInput
   if (
     !process.stdin.isTTY &&
     // Input hijacking breaks MCP.
     !process.argv.includes('mcp')
   ) {
+    const stdin = getStdinStream()
+    if (stdin !== process.stdin) logForDebugging('[stdin] reading redirected regular file through an explicit fd stream')
     if (inputFormat === 'stream-json') {
-      return process.stdin
+      return stdin
     }
-    process.stdin.setEncoding('utf8')
+    stdin.setEncoding('utf8')
     let data = ''
     const onData = (chunk: string) => {
       data += chunk
     }
-    process.stdin.on('data', onData)
+    stdin.on('data', onData)
     // If no data arrives in 3s, stop waiting and warn. Stdin is likely an
     // inherited pipe from a parent that isn't writing (subprocess spawned
     // without explicit stdin handling). 3s covers slow producers like curl,
     // jq on large files, python with import overhead. The warning makes
     // silent data loss visible for the rare producer that's slower still.
-    const timedOut = await peekForStdinData(process.stdin, 3000)
-    process.stdin.off('data', onData)
+    const timedOut = await peekForStdinData(stdin, 3000)
+    stdin.off('data', onData)
     if (timedOut) {
       process.stderr.write(
         'Warning: no stdin data received in 3s, proceeding without it. ' +
@@ -1177,10 +1173,19 @@ async function run(): Promise<CommanderCommand> {
     .enablePositionalOptions()
   profileCheckpoint('run_commander_initialized')
 
+  let launchInput: ReturnType<typeof captureLaunchInitialize> | undefined
+
   // Use preAction hook to run initialization only when executing a command,
   // not when displaying help. This avoids the need for env variable signaling.
-  program.hook('preAction', async thisCommand => {
+  program.hook('preAction', async (thisCommand, actionCommand) => {
     profileCheckpoint('preAction_start')
+    if (thisCommand === actionCommand && thisCommand.getOptionValue('awaitInitialize') === true &&
+        thisCommand.getOptionValue('inputFormat') === 'stream-json' &&
+        thisCommand.getOptionValue('sdkUrl') === undefined && !process.stdin.isTTY) {
+      const stdin = getStdinStream()
+      stdin.setEncoding('utf8')
+      launchInput = captureLaunchInitialize(stdin)
+    }
     // Await async subprocess loads started at module evaluation (lines 12-20).
     // Nearly free — subprocesses complete during the ~135ms of imports above.
     // Must resolve before init() which triggers the first settings read
@@ -1218,14 +1223,42 @@ async function run(): Promise<CommanderCommand> {
     // before .option('--plugin-dir', ...) in the chain — extra-typings
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
+    const launch = await launchInput?.ready
+    if (launch?.kind === 'violation') {
+      process.stderr.write(`${launch.message}\n`)
+      process.exit(1)
+    }
+    const initializedPlugins = launch?.kind === 'applied' ? launch : undefined
+    logForDebugging(`[SDK] launch initialize=${launch?.kind ?? 'disabled'} plugins=${initializedPlugins?.pluginCount ?? 0}`)
     const pluginDir = thisCommand.getOptionValue('pluginDir')
-    if (
-      Array.isArray(pluginDir) &&
-      pluginDir.length > 0 &&
-      pluginDir.every(p => typeof p === 'string')
-    ) {
-      setInlinePlugins(pluginDir)
-      clearPluginCache('preAction: --plugin-dir inline plugins')
+    const pluginDirNoMcp = thisCommand.getOptionValue('pluginDirNoMcp')
+    const pluginDirsNoMcp = mergePluginDirectories(
+      Array.isArray(pluginDirNoMcp) && pluginDirNoMcp.every(p => typeof p === 'string') ? pluginDirNoMcp : [],
+      initializedPlugins?.pluginDirsNoMcp ?? [],
+    )
+    const environmentPluginDirs = filterNoMcpEnvironmentPluginDirectories(
+      settlePluginDirsEnvironment(), pluginDirsNoMcp,
+    )
+    const sideloadError = getSideloadStartupError(thisCommand.opts(), environmentPluginDirs, actionCommand.opts(), initializedPlugins?.pluginCount ?? 0)
+    if (sideloadError) {
+      process.stderr.write(`${sideloadError}\n`)
+      process.exit(1)
+    }
+    const pluginDirs = mergePluginDirectories(
+      Array.isArray(pluginDir) && pluginDir.every(p => typeof p === 'string') ? pluginDir : [],
+      initializedPlugins?.pluginDirs ?? [],
+      environmentPluginDirs,
+    )
+    if (pluginDirs.length > 0) {
+      setInlinePlugins(pluginDirs)
+      clearPluginCache(environmentPluginDirs.length > 0
+        ? 'preAction: CLAUDE_CODE_PLUGIN_DIRS inline plugins'
+        : 'preAction: --plugin-dir inline plugins')
+    }
+
+    if (pluginDirsNoMcp.length > 0) {
+      setInlinePluginsNoMcp(pluginDirsNoMcp)
+      clearPluginCache('preAction: session plugins without MCP discovery')
     }
 
     runMigrations()
@@ -1336,6 +1369,7 @@ async function run(): Promise<CommanderCommand> {
       'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)',
       () => true,
     )
+    .option('--await-initialize', 'Read launch-scoped plugins from the first initialize stdin line (requires --input-format=stream-json)')
     .addOption(
       new Option(
         '--input-format <format>',
@@ -1631,6 +1665,7 @@ async function run(): Promise<CommanderCommand> {
       (val: string, prev: string[]) => [...prev, val],
       [] as string[],
     )
+    .addOption(createPluginDirNoMcpOption())
     .option('--disable-slash-commands', 'Disable all skills', () => true)
     .option('--chrome', 'Enable Claude in Chrome integration')
     .option('--no-chrome', 'Disable Claude in Chrome integration')
@@ -1640,6 +1675,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .action(async (prompt, options) => {
       profileCheckpoint('action_handler_start')
+      configureTuiRestart(program)
 
       // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
       // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
@@ -2148,7 +2184,7 @@ async function run(): Promise<CommanderCommand> {
         // is auto, OR settings defaultMode is auto but the gate denied it
         // (permissionMode resolved to default with no explicit CLI override).
         // Used by verifyAutoModeGateAccess to decide whether to notify on
-        // auto-unavailable, and by tengu_auto_mode_config opt-in carousel.
+        // auto-unavailable.
         if (
           (options as { enableAutoMode?: boolean }).enableAutoMode ||
           permissionModeCli === 'auto' ||
@@ -2227,6 +2263,19 @@ async function run(): Promise<CommanderCommand> {
         }
 
         if (Object.keys(allConfigs).length > 0) {
+          const sideloadBlocked = areSideloadFlagsDisabled() && Object.values(allConfigs).some(config => config.type !== 'sdk')
+          const remote = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode()
+          if (sideloadBlocked && !remote) {
+            process.stderr.write(`${getSideloadFlagsError(['--mcp-config'])}\n`)
+            process.exit(1)
+          }
+          const sideload = filterSideloadMcpServers(allConfigs, sideloadBlocked && remote)
+          if (sideload.dropped.length > 0) {
+            logForDebugging(`--mcp-config: ${sideload.dropped.length} ${plural(sideload.dropped.length, 'server')} ignored (disableSideloadFlags policy): ${sideload.dropped.join(', ')}`, { level: 'warn' })
+            process.stderr.write(`Warning: managed setting disableSideloadFlags forbids --mcp-config on this machine; ignoring ${sideload.dropped.length} ${plural(sideload.dropped.length, 'server-delivered MCP server')}: ${sideload.dropped.join(', ')}\n`)
+          }
+          allConfigs = sideload.servers
+
           // SDK hosts (Nest/Desktop) own their server naming and may reuse
           // built-in names — skip reserved-name checks for type:'sdk'.
           const nonSdkConfigNames = Object.entries(allConfigs)
@@ -2469,7 +2518,7 @@ async function run(): Promise<CommanderCommand> {
         const rawChannels = channelOpts.channels
         const rawDev = channelOpts.dangerouslyLoadDevelopmentChannels
         // Always parse + set. ChannelsNotice reads getAllowedChannels() and
-        // renders the appropriate branch (disabled/noAuth/policyBlocked/
+        // renders the appropriate branch (disabled/policyBlocked/
         // listening) in the startup screen. gateChannelServer() enforces.
         // --channels works in both interactive and print/SDK modes; dev-channels
         // stays interactive-only (requires a confirmation dialog).
@@ -2698,6 +2747,7 @@ async function run(): Promise<CommanderCommand> {
       let inputPrompt = await getInputPrompt(
         effectivePrompt,
         (inputFormat ?? 'text') as 'text' | 'stream-json',
+        launchInput?.input,
       )
       profileCheckpoint('action_after_input_prompt')
 
@@ -2777,9 +2827,10 @@ async function run(): Promise<CommanderCommand> {
         process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent' &&
         !isSSHRemoteSession
       ) {
-        initBuiltinPlugins()
+        await initBuiltinPlugins()
         initBundledSkills()
       }
+      deferInboundMessages()
       const setupPromise = setup(
         preSetupCwd,
         permissionMode,
@@ -2902,7 +2953,7 @@ async function run(): Promise<CommanderCommand> {
       // Special case the default model with the null keyword
       // NOTE: Model resolution happens after setup() to ensure trust is established before AWS auth
       const userSpecifiedModel =
-        options.model === 'default' ? getDefaultMainLoopModel() : options.model
+        options.model === 'default' ? null : options.model
       const userSpecifiedFallbackModel =
         fallbackModel === 'default' ? getDefaultMainLoopModel() : fallbackModel
 
@@ -3025,20 +3076,19 @@ async function run(): Promise<CommanderCommand> {
         }
       }
 
-      // Compute effective model early so hooks can run in parallel with MCP
-      // If user didn't specify a model but agent has one, use the agent's model
-      let effectiveModel = userSpecifiedModel
+      // Set the CLI choice before considering an agent-definition fallback.
+      setMainLoopModelOverride(userSpecifiedModel)
       if (
-        !effectiveModel &&
+        getUserSpecifiedModelSetting() === undefined &&
         mainThreadAgentDefinition?.model &&
         mainThreadAgentDefinition.model !== 'inherit'
       ) {
-        effectiveModel = parseUserSpecifiedModel(
-          mainThreadAgentDefinition.model,
-        )
+        setMainLoopModelOverride(mainThreadAgentDefinition.model)
       }
-
-      setMainLoopModelOverride(effectiveModel)
+      const selectedModel = getUserSpecifiedModelSetting()
+      const effectiveModel = selectedModel === null
+        ? getDefaultMainLoopModel()
+        : selectedModel
 
       // Compute resolved model for hooks (use user-specified model at launch)
       setInitialMainLoopModel(getUserSpecifiedModelSetting() || null)
@@ -3122,6 +3172,7 @@ async function run(): Promise<CommanderCommand> {
 
       // Show setup screens after commands are loaded
       if (!isNonInteractiveSession) {
+        initializeFullscreenMode(getInitialSettings().tui)
         const ctx = getRenderContext(false)
         getFpsMetrics = ctx.getFpsMetrics
         stats = ctx.stats
@@ -3574,9 +3625,9 @@ async function run(): Promise<CommanderCommand> {
       // This host is created only after trust; its Worker remains lazy until
       // a local conversation binds with actual module declarations.
       const modsSession = createModsSession({
+        bare: isBareMode(),
         isTrusted: isNonInteractiveSession || checkHasTrustDialogAccepted(),
         getDisabledReason: () => {
-          if (isBareMode()) return 'Mods are unsupported in bare mode'
           if (typeof Bun === 'undefined') return 'Mods require the Bun CLI runtime; Node execution is unsupported'
           if (
             isSSHRemoteSession ||
@@ -3588,10 +3639,11 @@ async function run(): Promise<CommanderCommand> {
           ) {
             return 'Mods are unsupported in remote/SSH sessions'
           }
-          if (getInitialSettings().disableAllHooks) return 'Mods are disabled by disableAllHooks'
           return undefined
         },
       })
+      const clearInboundReceiver = setInboundMessageReceiver((input, admit, signal) => modsSession.receive(input, admit, signal))
+      registerCleanup(async () => { clearInboundReceiver() })
 
       // --print mode
       if (isNonInteractiveSession) {
@@ -3998,8 +4050,11 @@ async function run(): Promise<CommanderCommand> {
       const initialState: AppState = {
         settings: getInitialSettings(),
         tasks: {},
+        runningSubagents: 0,
         agentNameRegistry: new Map(),
+        sendMessagePins: {},
         verbose: verbose ?? getGlobalConfig().verbose ?? false,
+        diffSidebarVisible: false,
         mainLoopModel: initialMainLoopModel,
         mainLoopModelForSession: null,
         isBriefOnly: initialIsBriefOnly,
@@ -4060,6 +4115,7 @@ async function run(): Promise<CommanderCommand> {
         notifications: {
           current: null,
           queue: initialNotifications,
+          pinned: [],
         },
         elicitation: {
           queue: [],
@@ -4251,6 +4307,7 @@ async function run(): Promise<CommanderCommand> {
               initialFileHistorySnapshots: loaded.fileHistorySnapshots,
               initialContentReplacements: loaded.contentReplacements,
               initialAgentName: loaded.agentName,
+              initialDevModsFolder: loaded.devModsFolder,
               initialAgentColor: loaded.agentColor,
             },
             renderAndRun,
@@ -4674,7 +4731,7 @@ async function run(): Promise<CommanderCommand> {
           // New behavior: start local TUI with CCR engine
           // Mark that we're in remote mode for command visibility
           setIsRemoteMode(true)
-          switchSession(asSessionId(createdSession.id))
+          switchSession(asSessionId(createdSession.id), null, getSessionStartedAt())
 
           // Get OAuth credentials for remote session
           let apiCreds: { accessToken: string; orgUUID: string }
@@ -5053,6 +5110,7 @@ async function run(): Promise<CommanderCommand> {
                 agentName: undefined,
                 agentColor: undefined as AgentColorName | undefined,
                 restoredAgentDef: mainThreadAgentDefinition,
+                devModsFolder: undefined,
                 initialState,
                 contentReplacements: undefined,
               }
@@ -5072,6 +5130,7 @@ async function run(): Promise<CommanderCommand> {
               initialFileHistorySnapshots: resumeData.fileHistorySnapshots,
               initialContentReplacements: resumeData.contentReplacements,
               initialAgentName: resumeData.agentName,
+              initialDevModsFolder: resumeData.devModsFolder,
               initialAgentColor: resumeData.agentColor,
             },
             renderAndRun,
@@ -5268,14 +5327,14 @@ async function run(): Promise<CommanderCommand> {
     program.addOption(
       new Option(
         '--channels <servers...>',
-        'MCP servers whose channel notifications (inbound push) should register this session. Space-separated server names.',
-      ).hideHelp(),
+        'Enable inbound notifications from approved channel plugins for this session: plugin:<name>@<marketplace> (space-separated).',
+      ),
     )
     program.addOption(
       new Option(
         '--dangerously-load-development-channels <servers...>',
-        'Load channel servers not on the approved allowlist. For local channel development only. Shows a confirmation dialog at startup.',
-      ).hideHelp(),
+        'Load development channels: plugin:<name>@<marketplace> or server:<name>. Interactive only; requires startup confirmation; organization policy still applies.',
+      ),
     )
   }
 
@@ -5787,6 +5846,15 @@ async function run(): Promise<CommanderCommand> {
         './cli/handlers/plugins.js'
       )
       await pluginValidateHandler(manifestPath, options)
+    })
+
+  pluginCmd
+    .command('test [dir]')
+    .description('Run plugin author tests')
+    .option('--child <file>', undefined)
+    .action(async (directory = '.', options: { child?: string }) => {
+      const { pluginTestHandler } = await import('./cli/handlers/plugins.js')
+      await pluginTestHandler(directory, options)
     })
 
   // Plugin list command

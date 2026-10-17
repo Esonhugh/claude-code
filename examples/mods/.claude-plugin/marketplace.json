@@ -1,0 +1,9 @@
+{
+  "name": "mods-examples",
+  "owner": { "name": "You" },
+  "plugins": [
+    { "name": "token-weather", "source": "./token-weather" },
+    { "name": "blast-radius", "source": "./blast-radius" },
+    { "name": "replay-theater", "source": "./replay-theater" }
+  ]
+}

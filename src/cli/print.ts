@@ -1,5 +1,14 @@
+import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
+import { createSdkStreamState } from './streamState.js'
+import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
+import { createModMcpConnections } from '../services/mods/mcpConnect.js'
+import { createModRemoteUIControl } from '../services/mods/remoteUiControl.js'
+import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
+import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
+import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import { readFile, stat } from 'fs/promises'
 import { dirname } from 'path'
 import {
@@ -9,7 +18,7 @@ import {
 import { waitForRemoteManagedSettingsToLoad } from 'src/services/remoteManagedSettings/index.js'
 import { StructuredIO } from 'src/cli/structuredIO.js'
 import { RemoteIO } from 'src/cli/remoteIO.js'
-import { restoreCostStateForSession } from 'src/cost-tracker.js'
+import { restoreSessionCosts } from 'src/cost-tracker.js'
 import {
   type Command,
   formatDescriptionWithSource,
@@ -33,7 +42,7 @@ import {
   logForDiagnosticsNoPII,
   withDiagnosticsTiming,
 } from 'src/utils/diagLogs.js'
-import { toolMatchesName, type Tool, type Tools } from 'src/Tool.js'
+import { toolMatchesName, type Tool, type Tools, type ToolUseContext } from 'src/Tool.js'
 import {
   type AgentDefinition,
   isBuiltInAgent,
@@ -45,12 +54,23 @@ import {
   dequeue,
   dequeueAllMatching,
   enqueue,
+  enqueueTracked,
   hasCommandsInQueue,
   peek,
+  remove,
   subscribeToCommandQueue,
   getCommandsByMaxPriority,
+  getCommandQueueSnapshot,
 } from 'src/utils/messageQueueManager.js'
 import { notifyCommandLifecycle } from 'src/utils/commandLifecycle.js'
+import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
+import { getConfigRows } from '../components/Settings/configRows.js'
+import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { createModToolHost } from '../services/mods/toolHost.js'
+import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
+import { countModSessionTurns } from '../services/mods/sessionTurns.js'
+import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import {
   getSessionState,
   notifySessionStateChanged,
@@ -71,6 +91,7 @@ import {
   loadConversationForResume,
   type TurnInterruptionState,
 } from 'src/utils/conversationRecovery.js'
+import { getMcpServerStatusSource } from 'src/services/mcp/types.js'
 import type {
   MCPServerConnection,
   McpSdkServerConfig,
@@ -125,8 +146,10 @@ import type {
   SDKControlInitializeRequest,
   SDKControlInitializeResponse,
   SDKControlRequest,
+  SDKControlInterruptResponse,
   SDKControlResponse,
   SDKControlMcpSetServersResponse,
+  SDKControlMcpSetServersRequest,
   SDKControlReloadPluginsResponse,
 } from 'src/entrypoints/sdk/controlTypes.js'
 import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
@@ -138,6 +161,7 @@ import reject from 'lodash-es/reject.js'
 import { isPolicyAllowed } from 'src/services/policyLimits/index.js'
 import type { ReplBridgeHandle } from 'src/bridge/replBridge.js'
 import { getRemoteSessionUrl } from 'src/constants/product.js'
+import { areSideloadFlagsDisabled, filterSideloadMcpServers } from 'src/utils/plugins/sideloadPolicy.js'
 import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
@@ -226,6 +250,8 @@ import {
   fetchToolsForClient,
   areMcpConfigsEqual,
   reconnectMcpServerImpl,
+  callMCPToolForMod,
+  findMCPConnectionForMod,
 } from 'src/services/mcp/client.js'
 import {
   filterMcpServersByPolicy,
@@ -275,6 +301,7 @@ import {
   parseUserSpecifiedModel,
 } from 'src/utils/model/model.js'
 import { getModelOptions } from 'src/utils/model/modelOptions.js'
+import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
   getSupportedEffortLevelsForModel,
   modelSupportsEffort,
@@ -282,9 +309,11 @@ import {
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
+import { validateModel } from 'src/utils/model/validateModel.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
 import {
   getSessionId,
+  getOriginalCwd,
   setMainLoopModelOverride,
   setMainThreadAgentType,
   switchSession,
@@ -355,8 +384,7 @@ import {
   markMessagesAsRead,
   isShutdownApproved,
 } from '../utils/teammateMailbox.js'
-import { removeTeammateFromTeamFile } from '../utils/swarm/teamHelpers.js'
-import { unassignTeammateTasks } from '../utils/tasks.js'
+import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { stopTask } from '../tasks/stopTask.js'
@@ -466,6 +494,9 @@ export function canBatchWith(
     next.mode === 'prompt' &&
     head.origin === undefined &&
     next.origin === undefined &&
+    head.promptSubmitMetadata === undefined &&
+    next.promptSubmitMetadata === undefined &&
+    (next.priority ?? 'next') === (head.priority ?? 'next') &&
     next.workload === head.workload &&
     next.isMeta === head.isMeta &&
     next.skipSlashCommands === head.skipSlashCommands &&
@@ -744,6 +775,8 @@ export async function runHeadless(
     restoredWorkerState: structuredIO.restoredWorkerState,
   })
 
+  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages) }))
+
   // SessionStart hooks can emit initialUserMessage — the first user turn for
   // headless orchestrator sessions where stdin is empty and additionalContext
   // alone (an attachment, not a turn) would leave the REPL with nothing to
@@ -948,12 +981,19 @@ export async function runHeadless(
       !(
         message.type === 'system' &&
         (message.subtype === 'session_state_changed' ||
+          message.subtype === 'ui_log' ||
+          message.subtype === 'ui_invalidate' ||
+          message.subtype === 'ui_panes' ||
+          message.subtype === 'ui_scroll' ||
+          message.subtype === 'ui_focus' ||
           message.subtype === 'task_notification' ||
           message.subtype === 'task_started' ||
           message.subtype === 'task_progress' ||
           // @ts-ignore - recovered code
           message.subtype === 'post_turn_summary')
       ) &&
+      message.type !== 'active_goal' &&
+      message.type !== 'autocompact_state' &&
       message.type !== 'stream_event' &&
       message.type !== 'keep_alive' &&
       // @ts-ignore - recovered code
@@ -1046,6 +1086,7 @@ function runHeadlessStreaming(
   agents: AgentDefinition[],
   options: {
     modsSession?: ModsSession
+    outputFormat?: string
     verbose: boolean | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
@@ -1298,6 +1339,25 @@ function runHeadlessStreaming(
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
+  let pendingModelSwitches = Promise.resolve()
+
+  const streamState = createSdkStreamState({
+    remote: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE),
+    readInputs: () => ({
+      goal: getAppState().goalStatus,
+      model: activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
+      autoCompactWindow: getAppState().autoCompactWindow,
+    }),
+    enqueue: message => output.enqueue(message),
+    configurationReady: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? initializeGrowthBook() : Promise.resolve(),
+  })
+  const unregisterStreamStateCleanup = registerCleanup(async () => { streamState.dispose() })
+  async function finishOutput(): Promise<void> {
+    await streamState.ready
+    streamState.dispose()
+    unregisterStreamStateCleanup()
+    output.done()
+  }
 
   function injectModelSwitchBreadcrumbs(
     modelArg: string,
@@ -1776,6 +1836,7 @@ function runHeadlessStreaming(
         error: connection.type === 'failed' ? connection.error : undefined,
         config,
         scope: connection.config.scope,
+        source: getMcpServerStatusSource(connection.config),
         tools: serverTools,
         capabilities,
       }
@@ -1938,11 +1999,24 @@ function runHeadlessStreaming(
         }
       : undefined
 
-  // Abort the current operation when a 'now' priority message arrives.
-  subscribeToCommandQueue(() => {
+  // Interrupt urgent input and wake idle SDK sessions for channel messages.
+  const unsubscribeCommandQueue = subscribeToCommandQueue(() => {
+    // QueryEngine-owned command receipts can enqueue again while turn.complete is settling.
+    // Keep draining them even after stdin closes; their hooks must finish before output closes.
+    if (peek(cmd => cmd.agentId === undefined && cmd.commandRunReceipt !== undefined)) void run()
     if (abortController && getCommandsByMaxPriority('now').length > 0) {
       abortController.abort('interrupt')
     }
+    if (
+      (feature('KAIROS') || feature('KAIROS_CHANNELS')) &&
+      !inputClosed &&
+      peek(cmd => cmd.agentId === undefined && cmd.origin?.kind === 'channel')
+    ) {
+      void run()
+    }
+  })
+  const unregisterCommandQueueCleanup = registerCleanup(async () => {
+    unsubscribeCommandQueue()
   })
 
   const run = async () => {
@@ -2016,6 +2090,9 @@ function runHeadlessStreaming(
       // into a single follow-up turn instead of N separate turns.
       const drainCommandQueue = async () => {
         while ((command = dequeue(isMainThread))) {
+          // Keep stdin controls responsive while queued turns wait for model validation.
+          await pendingModelSwitches
+          streamState.refresh()
           if (
             command.mode !== 'prompt' &&
             command.mode !== 'orphaned-permission' &&
@@ -2226,8 +2303,10 @@ function runHeadlessStreaming(
           // const-capture: TS loses `while ((command = dequeue()))` narrowing
           // inside the closure.
           const cmd = command
-          await runWithWorkload(cmd.workload ?? options.workload, async () => {
-            for await (const message of ask({
+          let promptAdmitted = false
+          try {
+            await runWithWorkload(cmd.workload ?? options.workload, async () => {
+              for await (const message of ask({
               modsSession: options.modsSession,
               commands: uniqBy(
                 [...currentCommands, ...appState.mcp.commands],
@@ -2237,6 +2316,21 @@ function runHeadlessStreaming(
               promptUuid: cmd.uuid,
               isMeta: cmd.isMeta,
               origin: cmd.origin,
+              promptSubmitMetadata: cmd.promptSubmitMetadata ?? (
+                cmd.origin ? undefined : {
+                  origin: { kind: cmd.mode === 'task-notification' ? 'task-notification' :
+                    structuredIO instanceof RemoteIO ? 'bridge' : 'sdk' },
+                  wait: false,
+                }
+              ),
+              promptSubmitCallerChain: cmd.promptSubmitCallerChain,
+              onPromptAdmission: result => {
+                if (result.admission) {
+                  promptAdmitted = true
+                  cmd.promptSubmitReceipt?.admit(result.admission)
+                }
+                cmd.commandRunReceipt?.admit(result)
+              },
               skipSlashCommands: cmd.skipSlashCommands,
               skipAttachments: cmd.skipAttachments,
               cwd: cwd(),
@@ -2283,7 +2377,7 @@ function runHeadlessStreaming(
                   params.url,
                   'elicitationId' in params ? params.elicitationId : undefined,
                 ),
-              agents: currentAgents,
+              agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
               orphanedPermission: cmd.orphanedPermission,
               setSDKStatus: status => {
                 output.enqueue({
@@ -2329,8 +2423,15 @@ function runHeadlessStreaming(
                 }
                 output.enqueue(message)
               }
-            }
-          }) // end runWithWorkload
+              }
+            }) // end runWithWorkload
+          } catch (error) {
+            for (const queued of batch) queued.commandRunReceipt?.cancel(error)
+            for (const queued of batch.slice(1)) queued.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
+            throw error
+          } finally {
+            if (!promptAdmitted) cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
+          }
 
           for (const uuid of batchUuids) {
             notifyCommandLifecycle(uuid, 'completed')
@@ -2647,37 +2748,15 @@ function runHeadlessStreaming(
                   : undefined
 
                 if (teammateId) {
-                  // Remove from team file
-                  removeTeammateFromTeamFile(teamName, {
-                    agentId: teammateId,
-                    name: teammateToRemove,
-                  })
-                  logForDebugging(
-                    `[print.ts] Removed ${teammateToRemove} from team file`,
-                  )
-
-                  // Unassign tasks owned by this teammate
-                  await unassignTeammateTasks(
+                  await handleTeammateShutdownApproved({
                     teamName,
                     teammateId,
-                    teammateToRemove,
-                    'shutdown',
-                  )
-
-                  // Remove from teamContext in AppState
-                  setAppState(prev => {
-                    if (!prev.teamContext?.teammates) return prev
-                    if (!(teammateId in prev.teamContext.teammates)) return prev
-                    const { [teammateId]: _, ...remainingTeammates } =
-                      prev.teamContext.teammates
-                    return {
-                      ...prev,
-                      teamContext: {
-                        ...prev.teamContext,
-                        teammates: remainingTeammates,
-                      },
-                    }
+                    teammateName: teammateToRemove,
+                    setAppState,
                   })
+                  logForDebugging(
+                    `[print.ts] Removed ${teammateToRemove} from team`,
+                  )
                 }
               }
             }
@@ -2759,13 +2838,172 @@ function runHeadlessStreaming(
         }
         suggestionState.abortController?.abort()
         suggestionState.abortController = null
+        // A turn.complete hook may still be waiting on a command it queued; let it settle first.
+        await options.modsSession?.runtime?.settleTurns()
+        if (running || peek(isMainThread) !== undefined) return
         await finalizePendingAsyncHooks()
         unsubscribeSkillChanges()
         unsubscribeAuthStatus?.()
+        unsubscribeCommandQueue()
+        unregisterCommandQueueCleanup()
         statusListeners.delete(rateLimitListener)
-        output.done()
+        await finishOutput()
       }
     }
+  }
+
+  // Bind before any delivery enters receive, including the first idle peer wake.
+  const inboundController = new AbortController()
+  const modLoadedNestedMemoryPaths = new Set<string>()
+  const modDiscoveredSkillNames = new Set<string>()
+  const getModToolContext = (): ToolUseContext => ({
+    messages: mutableMessages,
+    mods: options.modsSession?.runtime,
+    options: {
+      commands: currentCommands,
+      debug: false,
+      tools: buildAllTools(getAppState()),
+      verbose: options.verbose ?? false,
+      mainLoopModel: activeUserSpecifiedModel
+        ? parseUserSpecifiedModel(activeUserSpecifiedModel)
+        : getMainLoopModel(),
+      thinkingConfig: options.thinkingConfig ?? { type: 'disabled' },
+      mcpClients: [
+        ...getAppState().mcp.clients,
+        ...sdkClients,
+        ...dynamicMcpState.clients,
+      ],
+      mcpResources: {},
+      isNonInteractiveSession: true,
+      agentDefinitions: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }) ?? { activeAgents: currentAgents, allAgents: currentAgents },
+      customSystemPrompt: options.systemPrompt,
+      appendSystemPrompt: options.appendSystemPrompt,
+      maxBudgetUsd: options.maxBudgetUsd,
+    },
+    getAppState,
+    setAppState,
+    abortController: inboundController,
+    readFileState,
+    nestedMemoryAttachmentTriggers: new Set<string>(),
+    loadedNestedMemoryPaths: modLoadedNestedMemoryPaths,
+    dynamicSkillDirTriggers: new Set<string>(),
+    discoveredSkillNames: modDiscoveredSkillNames,
+    setInProgressToolUseIDs: () => {},
+    setResponseLength: () => {},
+    updateFileHistoryState: updater => {
+      setAppState(state => ({ ...state, fileHistory: updater(state.fileHistory) }))
+    },
+    updateAttributionState: updater => {
+      setAppState(state => ({ ...state, attribution: updater(state.attribution) }))
+    },
+  })
+  const modMcpConnections = createModMcpConnections({getState:getAppState,setState:setAppState})
+  const inboundBinding = options.modsSession?.bind({
+    cwd: cwd(), surface: null, isInteractive: false, sessionId: getSessionId(),
+  }, setAppState, {
+    messages: () => projectModSessionMessages(mutableMessages),
+    rawMessages: () => mutableMessages,
+    agentMessages: readModBoundAgentMessages,
+    captureUsage: () => captureModSessionUsage(getModToolContext()),
+    model: () => activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
+    turns: () => countModSessionTurns(mutableMessages),
+    ...getModHttpServices(),
+    configRows: () =>
+      getConfigRows({
+        getAppState,
+        setAppState,
+        options: {
+          mcpClients: [
+            ...getAppState().mcp.clients,
+            ...sdkClients,
+            ...dynamicMcpState.clients,
+          ],
+        },
+      }),
+    cwd,
+    root: getOriginalCwd,
+    commands: () => currentCommands,
+    tasks: () => getAppState().tasks,
+    agentNames: () => getAppState().agentNameRegistry,
+    uiLog: (plugin, text, to) => {
+      if (text.length > 10000) {
+        const end = text.charCodeAt(9999)
+        text = Buffer.from(text.slice(0, end >= 0xd800 && end <= 0xdbff ? 9999 : 10000), 'utf16le').toString('utf16le') + '…'
+      }
+      logForDebugging(`[${plugin}] $.ui.log${to === 'debug' ? ' (to debug)' : ''}: ${text}`)
+      if (to === 'transcript' && options.outputFormat === 'stream-json') output.enqueue({
+        type: 'system', subtype: 'ui_log', plugin, text,
+        uuid: randomUUID(), session_id: getSessionId(),
+      })
+    },
+    tools: () => getModToolContext().options.tools,
+    toolCatalog: () => createToolCatalogForContext(getModToolContext()),
+    toolHost: () => createModToolHost(getModToolContext(), canUseTool),
+    mcpConnect: modMcpConnections.connect,
+    mcpRelease: modMcpConnections.release,
+    mcpCall: (server, tool, args, signal) =>
+      callMCPToolForMod(
+        findMCPConnectionForMod([
+          ...getAppState().mcp.clients,
+          ...sdkClients,
+          ...dynamicMcpState.clients,
+        ], server),
+        tool,
+        args,
+        signal,
+      ),
+    commandRun: createModCommandQueue({wake:()=>run()}),
+    // QueryEngine replaces commandRun/submitPrompt per turn; it calls this for input it queues once idle.
+    wake: () => run(),
+    submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
+      const uuid = randomUUID()
+      let settled = false
+      const finish = (settle: () => void) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', cancel)
+        settle()
+      }
+      const cancel = () => {
+        finish(() => {
+          logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=aborted`)
+          reject(signal.reason)
+        })
+        remove([queued])
+      }
+      const queued = enqueueTracked({
+        value: text,
+        mode: 'prompt',
+        priority: 'later',
+        uuid,
+        origin,
+        promptSubmitCallerChain: copyModCallerChain(callerChain),
+        promptSubmitMetadata: {
+          origin,
+          wait: false,
+          ...(attachments === undefined ? {} : { attachments }),
+        },
+        promptSubmitReceipt: {
+          admit: result => finish(() => {
+            logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=${result.drop === undefined ? 'admitted' : 'dropped'}`)
+            resolve(result)
+          }),
+          cancel: reason => finish(() => reject(reason)),
+        },
+      })
+      logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=headless asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
+      signal.addEventListener('abort', cancel, { once: true })
+      if (signal.aborted) cancel()
+      else void run()
+    }),
+    presentation: () => ({ columns: 80, isFullscreen: false }),
+  })
+  void inboundBinding?.catch(logError)
+  registerCleanup(async () => { inboundController.abort() })
+
+  // --channels must receive the first event while idle, before any user turn.
+  for (const client of getAppState().mcp.clients) {
+    reregisterChannelHandlerAfterReconnect(client)
   }
 
   // Set up UDS inbox callback so the query loop is kicked off
@@ -2802,7 +3040,7 @@ function runHeadlessStreaming(
     cronScheduler = cronSchedulerModule.createCronScheduler({
       onFire: prompt => {
         if (inputClosed) return
-        enqueue({
+        void enqueueInboundMessage({
           mode: 'prompt',
           value: prompt,
           uuid: randomUUID(),
@@ -2816,8 +3054,10 @@ function runHeadlessStreaming(
           // reads this per-iteration and hoists it into bootstrap state for
           // the ask() call.
           workload: WORKLOAD_CRON,
-        })
-        void run()
+        }, { kind: 'scheduled-trigger' }, {
+          signal: inboundController.signal,
+          enqueue: command => { enqueue(command); void run() },
+        }).catch(logError)
       },
       isLoading: () => running || inputClosed,
       getJitterConfig: cronJitterConfigModule?.getCronJitterConfig,
@@ -2840,9 +3080,11 @@ function runHeadlessStreaming(
     })
   }
 
+
   const sendControlResponseError = function (
     message: SDKControlRequest,
     errorMessage: string,
+    errorCode?: import('../entrypoints/sdk/controlTypes.js').SDKControlErrorCode,
   ) {
     output.enqueue({
       type: 'control_response',
@@ -2850,9 +3092,23 @@ function runHeadlessStreaming(
         subtype: 'error',
         request_id: message.request_id,
         error: errorMessage,
+        ...(errorCode && { error_code: errorCode }),
       },
     })
   }
+
+  const remoteUIControl = createModRemoteUIControl({
+    ready: () => inboundBinding ?? Promise.resolve(),
+    runtime: () => options.modsSession?.runtime ?? undefined,
+    invalidate: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
+    panes: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
+    focus: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
+    scroll: message => output.enqueue({...message, uuid:randomUUID(), session_id:getSessionId()}),
+    success: sendControlResponseSuccess,
+    error: sendControlResponseError,
+  })
+
+  void (inboundBinding ?? Promise.resolve()).then(() => remoteUIControl.connect()).catch(logError)
 
   // Handle unexpected permission responses by looking up the unresolved tool
   // call in the transcript and executing it
@@ -2921,6 +3177,7 @@ function runHeadlessStreaming(
       }
 
       if (message.type === 'control_request') {
+        if (remoteUIControl.handleRequest(message)) continue
         if (managedSSHControl.handleRequest(message)) {
           continue
         }
@@ -2943,7 +3200,18 @@ function runHeadlessStreaming(
           suggestionState.abortController = null
           suggestionState.lastEmitted = null
           suggestionState.pendingSuggestion = null
-          sendControlResponseSuccess(message)
+          // Snapshot synchronously with the abort, before the next turn drains
+          // these messages. The drain installs its controller without yielding
+          // after dequeueing, so no unarmed batch is held outside this queue.
+          const response = {
+            still_queued: getCommandQueueSnapshot()
+              .filter(command => command.agentId === undefined)
+              .flatMap(command => command.uuid === undefined ? [] : [command.uuid]),
+          } satisfies SDKControlInterruptResponse
+          logForDebugging(
+            `[print.ts] interrupt handled, stillQueued=${response.still_queued.length}`,
+          )
+          sendControlResponseSuccess(message, response)
         } else if (message.request.subtype === 'end_session') {
           logForDebugging(
             `[print.ts] end_session received, reason=${message.request.reason ?? 'unspecified'}`,
@@ -2957,13 +3225,14 @@ function runHeadlessStreaming(
           suggestionState.lastEmitted = null
           suggestionState.pendingSuggestion = null
           managedSSHControl.shutdown()
+    await remoteUIControl.dispose()
           sendControlResponseSuccess(message)
           break // exits for-await → falls through to inputClosed=true drain below
         } else if (message.request.subtype === 'initialize') {
           // SDK MCP server names from the initialize message
           // Populated by both browser and ProcessTransport sessions
           if (
-            message.request.sdkMcpServers &&
+            !initialized && message.request.sdkMcpServers &&
             // @ts-ignore - recovered code
             message.request.sdkMcpServers.length > 0
           ) {
@@ -2991,12 +3260,13 @@ function runHeadlessStreaming(
             options,
             agents,
             getAppState,
+            () => remoteUIControl.capabilities(),
           )
 
           // Enable prompt suggestions in AppState when SDK consumer opts in.
           // shouldEnablePromptSuggestion() returns false for non-interactive
           // sessions, but the SDK consumer explicitly requested suggestions.
-          if (message.request.promptSuggestions) {
+          if (!initialized && message.request.promptSuggestions) {
             setAppState(prev => {
               if (prev.promptSuggestionEnabled) return prev
               return { ...prev, promptSuggestionEnabled: true }
@@ -3004,7 +3274,7 @@ function runHeadlessStreaming(
           }
 
           if (
-            message.request.agentProgressSummaries &&
+            !initialized && message.request.agentProgressSummaries &&
             getFeatureValue_CACHED_MAY_BE_STALE('tengu_slate_prism', true)
           ) {
             setSdkAgentProgressSummariesEnabled(true)
@@ -3160,7 +3430,7 @@ function runHeadlessStreaming(
                     unsubscribeSkillChanges()
                     unsubscribeAuthStatus?.()
                     statusListeners.delete(rateLimitListener)
-                    output.done()
+                    await finishOutput()
                   }
                 }
               }
@@ -3185,20 +3455,36 @@ function runHeadlessStreaming(
           // now fired by onChangeAppState (with externalized mode name).
         } else if (message.request.subtype === 'set_model') {
           const requestedModel = message.request.model ?? 'default'
-          const model =
-            requestedModel === 'default'
-              ? getDefaultMainLoopModel()
-              : requestedModel
-          // @ts-ignore - recovered code
-          activeUserSpecifiedModel = model
-          // @ts-ignore - recovered code
-          setMainLoopModelOverride(model)
-          // @ts-ignore - recovered code
-          notifySessionMetadataChanged({ model })
-          // @ts-ignore - recovered code
-          injectModelSwitchBreadcrumbs(requestedModel, model)
-
-          sendControlResponseSuccess(message)
+          if (typeof requestedModel !== 'string') {
+            sendControlResponseError(message, 'set_model: model must be a string', 'invalid_request')
+            continue
+          }
+          pendingModelSwitches = pendingModelSwitches.then(async () => {
+            if (!requestedModel.trim()) {
+              sendControlResponseError(message,
+                'Model "(unrecognized model name)" is not a recognized model id. Run /model to see available models.',
+                'catalog_unknown')
+              return
+            }
+            if (requestedModel !== 'default') {
+              const result = await validateModel(requestedModel, { deadlineMs: 5000 })
+              if (!result.valid) {
+                logForDebugging(`[SDK] set_model rejected: ${result.errorCode ?? 'api_error'}: ${result.error}`)
+                sendControlResponseError(message, result.error ?? 'set_model failed', result.errorCode)
+                return
+              }
+            }
+            const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
+            activeUserSpecifiedModel = model
+            setMainLoopModelOverride(model)
+            streamState.refresh()
+            notifySessionMetadataChanged({ model })
+            injectModelSwitchBreadcrumbs(requestedModel, model)
+            sendControlResponseSuccess(message)
+          }).catch(error => {
+            logError(error)
+            sendControlResponseError(message, 'set_model failed')
+          })
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
           if (message.request.max_thinking_tokens === null) {
             options.thinkingConfig = undefined
@@ -3315,10 +3601,18 @@ function runHeadlessStreaming(
           }
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'mcp_set_servers') {
-          const { response, sdkServersChanged } = await applyMcpServerChanges(
-            // @ts-ignore - recovered code
-            message.request.servers,
-          )
+          const remote = isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
+          // The legacy control envelope is open; this subtype has a defined wire request.
+          const request = message.request as SDKControlMcpSetServersRequest
+          const sideload = filterSideloadMcpServers(request.servers, remote && areSideloadFlagsDisabled())
+          // A remote payload with no SDK transports does not replace transports
+          // already registered by the host's initialize request.
+          const servers = remote && !Object.values(sideload.servers).some(config => config.type === 'sdk')
+            ? { ...sdkMcpConfigs, ...sideload.servers } : sideload.servers
+          const { response, sdkServersChanged } = await applyMcpServerChanges(servers)
+          for (const name of sideload.dropped) {
+            response.errors[name] = 'Ignored: managed setting disableSideloadFlags forbids server-delivered MCP servers on this machine'
+          }
           sendControlResponseSuccess(message, response)
 
           // Connect SDK servers AFTER response to avoid deadlock
@@ -3928,12 +4222,17 @@ function runHeadlessStreaming(
             // message order so a subsequent claude_authenticate doesn't
             // replace the service before this code lands.
             if (message.request.subtype === 'claude_oauth_callback') {
-              claudeOAuth.service.handleManualAuthCodeInput({
-                // @ts-ignore - recovered code
-                authorizationCode: message.request.authorizationCode,
-                // @ts-ignore - recovered code
-                state: message.request.state,
-              })
+              try {
+                claudeOAuth.service.handleManualAuthCodeInput({
+                  // @ts-ignore - recovered code
+                  authorizationCode: message.request.authorizationCode,
+                  // @ts-ignore - recovered code
+                  state: message.request.state,
+                })
+              } catch (error) {
+                sendControlResponseError(message, errorMessage(error))
+                continue
+              }
             }
             // Detach the await — the stdin reader is serial and blocking
             // here deadlocks claude_oauth_wait_for_completion: flow may
@@ -4066,6 +4365,7 @@ function runHeadlessStreaming(
           const newModel = getMainLoopModel()
           if (newModel !== prevModel) {
             activeUserSpecifiedModel = newModel
+            streamState.refresh()
             // @ts-ignore - recovered code
             const modelArg = incoming.model ? String(incoming.model) : 'default'
             notifySessionMetadataChanged({ model: newModel })
@@ -4090,6 +4390,7 @@ function runHeadlessStreaming(
           try {
             // @ts-ignore - recovered code
             await stopTask(taskId, {
+              source: 'user',
               getAppState,
               setAppState,
             })
@@ -4179,7 +4480,8 @@ function runHeadlessStreaming(
                     customSystemPrompt: options.systemPrompt,
                     appendSystemPrompt: options.appendSystemPrompt,
                     thinkingConfig: options.thinkingConfig,
-                    agents: currentAgents,
+                    agents: options.modsSession?.runtime?.agents.projection({ activeAgents: currentAgents, allAgents: currentAgents }).activeAgents ?? currentAgents,
+                    mods: options.modsSession?.runtime,
                   })
               const result = await runSideQuestion({
                 // @ts-ignore - recovered code
@@ -4236,16 +4538,18 @@ function runHeadlessStreaming(
                 )
                 const handle = await initReplBridge({
                   onInboundMessage(msg) {
-                    const fields = extractInboundMessageFields(msg)
-                    if (!fields) return
-                    const { content, uuid } = fields
-                    enqueue({
-                      value: content,
-                      mode: 'prompt' as const,
-                      uuid,
-                      skipSlashCommands: true,
-                    })
-                    void run()
+                    void (async () => {
+                      const fields = extractInboundMessageFields(msg)
+                      if (!fields) return
+                      const value = await resolveAndPrepend(msg, fields.content)
+                      await enqueueInboundMessage({
+                        value, mode: 'prompt', uuid: fields.uuid,
+                        skipSlashCommands: true, bridgeOrigin: fields.origin.kind === 'bridge',
+                      }, fields.origin, {
+                        signal: inboundController.signal,
+                        enqueue: command => { enqueue(command); void run() },
+                      })
+                    })().catch(logError)
                   },
                   onPermissionResponse(response) {
                     // Forward bridge permission responses into the
@@ -4261,6 +4565,7 @@ function runHeadlessStreaming(
                       model === 'default' ? getDefaultMainLoopModel() : model
                     activeUserSpecifiedModel = resolved
                     setMainLoopModelOverride(resolved)
+                    streamState.refresh()
                   },
                   onSetMaxThinkingTokens(maxTokens) {
                     if (maxTokens === null) {
@@ -4348,6 +4653,7 @@ function runHeadlessStreaming(
         continue
       } else if (message.type === 'control_cancel_request') {
         managedSSHControl.cancel(message.request_id)
+        remoteUIControl.cancel(message.request_id)
         continue
       } else if (message.type === 'control_response') {
         // Replay control_response messages when replay mode is enabled
@@ -4424,16 +4730,29 @@ function runHeadlessStreaming(
         trackReceivedMessageUuid(message.uuid)
       }
 
-      enqueue({
-        mode: 'prompt' as const,
+      const remoteFields = structuredIO instanceof RemoteIO ? extractInboundMessageFields(message) : undefined
+      if (structuredIO instanceof RemoteIO && !remoteFields) continue
+      const inboundCommand: QueuedCommand = {
+        mode: 'prompt',
         // file_attachments rides the protobuf catchall from the web composer.
         // Same-ref no-op when absent (no 'file_attachments' key).
         // @ts-ignore - recovered code
-        value: await resolveAndPrepend(message, message.message.content),
+        value: await resolveAndPrepend(message, remoteFields?.content ?? message.message.content),
         // @ts-ignore - recovered code
         uuid: message.uuid,
         priority: message.priority,
-      })
+      }
+      if (structuredIO instanceof RemoteIO) {
+        let admitted = false
+        await enqueueInboundMessage(inboundCommand, remoteFields!.origin, {
+          signal: inboundController.signal,
+          enqueue: command => { admitted = true; enqueue(command) },
+        })
+        if (!admitted) continue
+      } else {
+        // Local SDK/stdin is prompt.submit, not an inbound session.receive.
+        enqueue(inboundCommand)
+      }
       // Increment prompt count for attribution tracking and save snapshot
       // The snapshot persists promptCount so it survives compaction
       if (feature('COMMIT_ATTRIBUTION')) {
@@ -4448,9 +4767,13 @@ function runHeadlessStreaming(
       }
       void run()
     }
+    await pendingModelSwitches
     inputClosed = true
+    await remoteUIControl.settle()
+    inboundController.abort()
     clearPeerWake()
     managedSSHControl.shutdown()
+    await remoteUIControl.dispose()
     shellAbortController?.abort('session-closed')
     cronScheduler?.stop()
     if (!running && !shellCommandRunning) {
@@ -4461,11 +4784,15 @@ function runHeadlessStreaming(
       }
       suggestionState.abortController?.abort()
       suggestionState.abortController = null
+      await options.modsSession?.runtime?.settleTurns()
+      if (running || peek(cmd => cmd.agentId === undefined) !== undefined) return
       await finalizePendingAsyncHooks()
       unsubscribeSkillChanges()
       unsubscribeAuthStatus?.()
+      unsubscribeCommandQueue()
+      unregisterCommandQueueCleanup()
       statusListeners.delete(rateLimitListener)
-      output.done()
+      await finishOutput()
     }
   })()
 
@@ -4691,82 +5018,71 @@ async function handleInitializeRequest(
   },
   agents: AgentDefinition[],
   getAppState: () => AppState,
+  getCapabilities: () => Promise<string[]>,
 ): Promise<void> {
-  if (initialized) {
-    output.enqueue({
-      type: 'control_response',
-      response: {
-        subtype: 'error',
-        error: 'Already initialized',
-        request_id: requestId,
-        // @ts-ignore - recovered code
-        pending_permission_requests:
-          structuredIO.getPendingPermissionRequests(),
-      },
-    })
-    return
-  }
+  if (!initialized) {
+    // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
+    if (request.systemPrompt !== undefined) {
+      // @ts-ignore - recovered code
+      options.systemPrompt = request.systemPrompt
+    }
+    if (request.appendSystemPrompt !== undefined) {
+      // @ts-ignore - recovered code
+      options.appendSystemPrompt = request.appendSystemPrompt
+    }
+    if (request.promptSuggestions !== undefined) {
+      options.promptSuggestions = request.promptSuggestions
+    }
 
-  // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
-  if (request.systemPrompt !== undefined) {
-    // @ts-ignore - recovered code
-    options.systemPrompt = request.systemPrompt
-  }
-  if (request.appendSystemPrompt !== undefined) {
-    // @ts-ignore - recovered code
-    options.appendSystemPrompt = request.appendSystemPrompt
-  }
-  if (request.promptSuggestions !== undefined) {
-    options.promptSuggestions = request.promptSuggestions
-  }
+    // Merge agents from stdin to avoid ARG_MAX limits
+    if (request.agents) {
+      const stdinAgents = parseAgentsFromJson(request.agents, 'flagSettings')
+      agents.push(...stdinAgents)
+    }
 
-  // Merge agents from stdin to avoid ARG_MAX limits
-  if (request.agents) {
-    const stdinAgents = parseAgentsFromJson(request.agents, 'flagSettings')
-    agents.push(...stdinAgents)
-  }
+    // Re-evaluate main thread agent after SDK agents are merged
+    // This allows --agent to reference agents defined via SDK
+    if (options.agent) {
+      // If main.tsx already found this agent (filesystem-defined), it already
+      // applied systemPrompt/model/initialPrompt. Skip to avoid double-apply.
+      const alreadyResolved = getMainThreadAgentType() === options.agent
+      const mainThreadAgent = agents.find(a => a.agentType === options.agent)
+      if (mainThreadAgent && !alreadyResolved) {
+        // Update the main thread agent type in bootstrap state
+        setMainThreadAgentType(mainThreadAgent.agentType)
 
-  // Re-evaluate main thread agent after SDK agents are merged
-  // This allows --agent to reference agents defined via SDK
-  if (options.agent) {
-    // If main.tsx already found this agent (filesystem-defined), it already
-    // applied systemPrompt/model/initialPrompt. Skip to avoid double-apply.
-    const alreadyResolved = getMainThreadAgentType() === options.agent
-    const mainThreadAgent = agents.find(a => a.agentType === options.agent)
-    if (mainThreadAgent && !alreadyResolved) {
-      // Update the main thread agent type in bootstrap state
-      setMainThreadAgentType(mainThreadAgent.agentType)
-
-      // Apply the agent's system prompt if user hasn't specified a custom one
-      // SDK agents are always custom agents (not built-in), so getSystemPrompt() takes no args
-      if (!options.systemPrompt && !isBuiltInAgent(mainThreadAgent)) {
-        const agentSystemPrompt = mainThreadAgent.getSystemPrompt()
-        if (agentSystemPrompt) {
-          options.systemPrompt = agentSystemPrompt
+        // Apply the agent's system prompt if user hasn't specified a custom one
+        // SDK agents are always custom agents (not built-in), so getSystemPrompt() takes no args
+        if (!options.systemPrompt && !isBuiltInAgent(mainThreadAgent)) {
+          const agentSystemPrompt = mainThreadAgent.getSystemPrompt()
+          if (agentSystemPrompt) {
+            options.systemPrompt = agentSystemPrompt
+          }
         }
-      }
 
-      // Apply the agent's model if user didn't specify one and agent has a model
-      if (
-        !options.userSpecifiedModel &&
-        mainThreadAgent.model &&
-        mainThreadAgent.model !== 'inherit'
-      ) {
-        const agentModel = parseUserSpecifiedModel(mainThreadAgent.model)
-        setMainLoopModelOverride(agentModel)
-      }
+        // Apply the agent's model if user didn't specify one and agent has a model
+        if (
+          !options.userSpecifiedModel &&
+          mainThreadAgent.model &&
+          mainThreadAgent.model !== 'inherit'
+        ) {
+          const agentModel = parseUserSpecifiedModel(mainThreadAgent.model)
+          setMainLoopModelOverride(agentModel)
+        }
 
-      // SDK-defined agents arrive via init, so main.tsx's lookup missed them.
-      if (mainThreadAgent.initialPrompt) {
+        // SDK-defined agents arrive via init, so main.tsx's lookup missed them.
+        if (mainThreadAgent.initialPrompt) {
+          structuredIO.prependUserMessage(mainThreadAgent.initialPrompt)
+        }
+      } else if (mainThreadAgent?.initialPrompt) {
+        // Filesystem-defined agent (alreadyResolved by main.tsx). main.tsx
+        // handles initialPrompt for the string inputPrompt case, but when
+        // inputPrompt is an AsyncIterable (SDK stream-json), it can't
+        // concatenate — fall back to prependUserMessage here.
         structuredIO.prependUserMessage(mainThreadAgent.initialPrompt)
       }
-    } else if (mainThreadAgent?.initialPrompt) {
-      // Filesystem-defined agent (alreadyResolved by main.tsx). main.tsx
-      // handles initialPrompt for the string inputPrompt case, but when
-      // inputPrompt is an AsyncIterable (SDK stream-json), it can't
-      // concatenate — fall back to prependUserMessage here.
-      structuredIO.prependUserMessage(mainThreadAgent.initialPrompt)
     }
+
   }
 
   const settings = getSettings_DEPRECATED()
@@ -4775,7 +5091,7 @@ async function handleInitializeRequest(
 
   // Get account information
   const accountInfo = getAccountInformation()
-  if (request.hooks) {
+  if (!initialized && request.hooks) {
     const hooks: Partial<Record<HookEvent, HookCallbackMatcher[]>> = {}
     for (const [event, matchers] of Object.entries(request.hooks)) {
       // @ts-ignore - recovered code
@@ -4791,11 +5107,16 @@ async function handleInitializeRequest(
     }
     registerHookCallbacks(hooks)
   }
-  if (request.jsonSchema) {
+  if (!initialized && request.jsonSchema) {
     // @ts-ignore - recovered code
     setInitJsonSchema(request.jsonSchema)
   }
+  const capabilities = await getCapabilities()
+  logForDebugging(`[ModsUI] initialize capabilities=${capabilities.join(',') || 'none'}`)
+  const pluginsApplied = getInitializePluginsApplied(request.plugins, getInlinePlugins(), getInlinePluginsNoMcp())
   const initResponse: SDKControlInitializeResponse = {
+    ...(pluginsApplied === undefined ? {} : { plugins_applied: pluginsApplied }),
+    ...(capabilities.length ? { capabilities } : {}),
     commands: commands
       .filter(cmd => cmd.userInvocable !== false)
       .map(cmd => ({
@@ -5014,8 +5335,7 @@ function handleSetPermissionMode(
  * goes to the consumer's canUseTool callback over stdio; there is no CLI-side
  * dialog for a remote "yes tbxkq" to resolve. If an IDE wants channel-relayed
  * tool approval, that's IDE-side plumbing against its own pending-map. (Also
- * gated separately by tengu_harbor_permissions — not yet shipping on
- * interactive either.)
+ * interactive relay can be disabled with the local opt-out.)
  */
 function handleChannelEnable(
   requestId: string,
@@ -5112,6 +5432,7 @@ function handleChannelEnable(
         // @ts-ignore - recovered code
         origin: { kind: 'channel', server: serverName },
         skipSlashCommands: true,
+        skipAttachments: true,
       })
     },
   )
@@ -5189,6 +5510,7 @@ function reregisterChannelHandlerAfterReconnect(
         // @ts-ignore - recovered code
         origin: { kind: 'channel', server: connection.name },
         skipSlashCommands: true,
+        skipAttachments: true,
       })
     },
   )
@@ -5312,18 +5634,18 @@ async function loadInitialMessages(
             if (persistSession) {
               await resetSessionFilePointer()
             }
-            restoreCostStateForSession(result.sessionId)
           }
         }
         restoreSessionStateFromLog(result, setAppState)
-        restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
         restoreSessionMetadata(
           options.forkSession
-            ? { ...result, worktreeSession: undefined }
+            ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
             : result,
         )
+        restoreSessionCosts(result, { forkSession: options.forkSession })
+        restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Write mode entry for the resumed session
         if (feature('COORDINATOR_MODE') && coordinatorModeModule) {
@@ -5515,17 +5837,17 @@ async function loadInitialMessages(
         if (persistSession) {
           await resetSessionFilePointer()
         }
-        restoreCostStateForSession(result.sessionId)
       }
       restoreSessionStateFromLog(result, setAppState)
-      restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Restore session metadata so it's re-appended on exit via reAppendSessionMetadata
       restoreSessionMetadata(
         options.forkSession
-          ? { ...result, worktreeSession: undefined }
+          ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
           : result,
       )
+      restoreSessionCosts(result, { forkSession: options.forkSession })
+      restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Write mode entry for the resumed session
       if (feature('COORDINATOR_MODE') && coordinatorModeModule) {

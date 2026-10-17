@@ -34,6 +34,14 @@ try {
   assert.equal(isFastModeSupportedByModel('gpt-5.5'), true)
   assert.equal(isFastModeSupportedByModel('gpt-unknown'), true)
   await prefetchFastModeStatus()
+  delete process.env.CLAUDE_CODE_USE_OPENAI
+  const { FAST_MODE_MODEL_DISPLAY } = await import('./fastMode.js')
+  assert.equal(FAST_MODE_MODEL_DISPLAY, 'Opus 5.5')
+  assert.equal(isFastModeSupportedByModel('claude-opus-5-5'), true)
+  assert.equal(isFastModeSupportedByModel('claude-opus-5'), true)
+  assert.equal(isFastModeSupportedByModel('claude-opus-4-8'), true)
+  assert.equal(isFastModeSupportedByModel('claude-opus-4-7'), false)
+  assert.equal(isFastModeSupportedByModel('claude-opus-4-6'), false)
 } finally {
   const authModule = await import('./auth.js')
   authModule.getOpenAIAuthInfo.cache.clear?.()

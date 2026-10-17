@@ -53,12 +53,19 @@ export async function scanMemoryFiles(
           signal,
         )
         const { frontmatter } = parseFrontmatter(content, filePath)
+        const metadata = frontmatter.metadata
+        const fields = {
+          type: frontmatter.type,
+          ...(typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata)
+            ? metadata
+            : {}),
+        }
         return {
           filename: relativePath,
           filePath,
           mtimeMs,
           description: frontmatter.description || null,
-          type: parseMemoryType(frontmatter.type),
+          type: parseMemoryType(fields.type),
         }
       }),
     )

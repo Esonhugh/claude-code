@@ -1,11 +1,34 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { resetSettingsCache } from '../../utils/settings/settingsCache.js'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const originalMacroDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'MACRO')
 
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
 }
 
+const envKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+const savedEnvironment = envKeys.map(key => process.env[key])
+const tempHome = realpathSync(mkdtempSync(join(tmpdir(), 'openai-compat-test-')))
+process.env.HOME = tempHome
+process.env.CLAUDE_CONFIG_DIR = tempHome
+process.env.XDG_CONFIG_HOME = join(tempHome, 'xdg-config')
+process.env.XDG_CACHE_HOME = join(tempHome, 'xdg-cache')
+process.env.XDG_STATE_HOME = join(tempHome, 'xdg-state')
+process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+resetSettingsCache()
 const originalFetch = globalThis.fetch
 const originalOpenAIBaseURL = process.env.OPENAI_BASE_URL
 const originalOpenAISocket = process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
@@ -13,6 +36,11 @@ const originalOpenAIAuthMode = process.env.CLAUDE_CODE_OPENAI_AUTH_MODE
 
 try {
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
+  getOpenAIAuthInfo.cache.set(undefined, {
+    accessToken: 'sk-test-api-key',
+    isChatGPT: false,
+  })
+  delete process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET
   const { getSessionId } = await import('../../bootstrap/state.js')
   const {
     analyzeOpenAIWireRequest,
@@ -81,6 +109,157 @@ try {
       ].join('\n\n'),
       { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
     )
+  globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
+
+  const optionalAgentSchema = {
+    type: 'object',
+    properties: {
+      description: { type: 'string' },
+      prompt: { type: 'string' },
+      model: { type: 'string', minLength: 1 },
+      name: { type: 'string' },
+      team_name: { type: 'string' },
+    },
+    required: ['description', 'prompt'],
+  }
+
+  // Transport fixtures only: no account discovery or real model requests.
+  for (const endpoint of ['api', 'oauth', 'gateway'] as const) {
+    getOpenAIAuthInfo.cache.set(undefined, {
+      accessToken: 'model-contract-token',
+      isChatGPT: endpoint === 'oauth',
+    })
+    if (endpoint === 'gateway') {
+      process.env.OPENAI_BASE_URL = 'https://models.example.test/v1'
+    } else {
+      delete process.env.OPENAI_BASE_URL
+    }
+    const client = createOpenAICompatClient({
+      apiKey: 'model-contract-token', maxRetries: 2, timeout: 1000,
+    })
+    for (const stream of [false, true]) {
+      const wireTools: unknown[] = []
+      globalThis.fetch = (async (_input, init) => {
+        wireTools.push(JSON.parse(String(init?.body)).tools)
+        return wireResponse()
+      }) as typeof fetch
+      const result = await client.beta.messages.create({
+        model: 'gpt-5.6-sol', max_tokens: 16, stream,
+        messages: [{ role: 'user', content: 'delegate without a model override' }],
+        tools: [{ name: 'Agent', description: 'Launch agent', input_schema: optionalAgentSchema }],
+      } as any)
+      if (stream) {
+        for await (const _event of result as unknown as AsyncIterable<any>) { /* consume response */ }
+      }
+      assert.deepEqual(wireTools, [[{
+        type: 'function', name: 'Agent', description: 'Launch agent',
+        parameters: optionalAgentSchema, strict: false,
+      }]], `${endpoint}/${stream ? 'stream' : 'nonstream'} preserves optional tool fields`)
+    }
+    for (const mode of ['stream', 'nonstream', 'compact'] as const) {
+      for (const model of [
+        'claude-opus-4-6', 'claude-sonnet-5', 'Gateway/MixedCase',
+        'gpt-5.6-sol', 'claude-opus-5[1m]', 'Gateway/MixedCase[2M]',
+      ]) {
+        const wireModels: string[] = []
+        globalThis.fetch = (async (_input, init) => {
+          wireModels.push(JSON.parse(String(init?.body)).model)
+          return wireResponse()
+        }) as typeof fetch
+        const params = { model, max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+        const expectedModel = model.replace(/\[(1|2)m\]/gi, '')
+        if (mode === 'compact') {
+          await (client.beta.messages as any).compact(params)
+        } else if (mode === 'stream') {
+          const stream = await client.beta.messages.create({ ...params, stream: true } as any)
+          const events: any[] = []
+          for await (const event of stream as unknown as AsyncIterable<any>) events.push(event)
+          assert.equal(events.find(event => event.type === 'message_start')?.message.model, expectedModel)
+        } else {
+          const result = await client.beta.messages.create(params as any)
+          assert.equal((result as any).model, expectedModel)
+        }
+        assert.deepEqual(wireModels, [expectedModel], `${endpoint}/${mode}/${model}`)
+      }
+      const rejectedModels: string[] = []
+      globalThis.fetch = (async (_input, init) => {
+        rejectedModels.push(JSON.parse(String(init?.body)).model)
+        return new Response('{"error":{"message":"unsupported model"}}', { status: 400 })
+      }) as typeof fetch
+      const params = { model: 'claude-opus-4-6', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] }
+      await assert.rejects(async () => {
+        if (mode === 'compact') {
+          await (client.beta.messages as any).compact(params)
+        } else if (mode === 'stream') {
+          const stream = await client.beta.messages.create({ ...params, stream: true } as any)
+          for await (const _event of stream as unknown as AsyncIterable<any>) { /* consume deferred errors */ }
+        } else {
+          await client.beta.messages.create(params as any)
+        }
+      }, /OpenAI API 400: .*unsupported model/)
+      assert.deepEqual(rejectedModels, ['claude-opus-4-6'])
+    }
+  }
+  getOpenAIAuthInfo.cache.set(undefined, { accessToken: 'sk-test-api-key', isChatGPT: false })
+  delete process.env.OPENAI_BASE_URL
+  globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
+
+  const { updateSettingsForSource } = await import('../../utils/settings/settings.js')
+  const daybreakClient = createOpenAICompatClient({
+    apiKey: 'sk-test-api-key', maxRetries: 0, timeout: 1000,
+  })
+  const daybreakBodies: Array<Record<string, any>> = []
+  globalThis.fetch = (async (_input, init) => {
+    daybreakBodies.push(JSON.parse(String(init?.body)))
+    return wireResponse()
+  }) as typeof fetch
+  const daybreakParams = {
+    model: 'gpt-5.6-sol', max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+  }
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'blue' }).error, null)
+  const blueStream = await daybreakClient.beta.messages.create({ ...daybreakParams, stream: true } as any)
+  for await (const _event of blueStream as unknown as AsyncIterable<any>) { /* consume response */ }
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_blue' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'red' }).error, null)
+  await daybreakClient.beta.messages.create(daybreakParams as any)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_red' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'off' }).error, null)
+  await daybreakClient.beta.messages.create(daybreakParams as any)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'standard' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: 'red' }).error, null)
+  let forbiddenRequests = 0
+  globalThis.fetch = (async (_input, init) => {
+    forbiddenRequests++
+    daybreakBodies.push(JSON.parse(String(init?.body)))
+    return new Response('{"error":{"message":"Daybreak access denied"}}', { status: 403 })
+  }) as typeof fetch
+  await assert.rejects(
+    () => daybreakClient.beta.messages.create(daybreakParams as any),
+    /OpenAI API 403: .*Daybreak access denied/,
+  )
+  assert.equal(forbiddenRequests, 1)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'daybreak_red' })
+
+  globalThis.fetch = (async (_input, init) => {
+    daybreakBodies.push(JSON.parse(String(init?.body)))
+    return wireResponse()
+  }) as typeof fetch
+  await (daybreakClient.beta.messages as any).compact(daybreakParams)
+  assert.equal('access_programs' in daybreakBodies.at(-1)!, false)
+
+  assert.equal(updateSettingsForSource('userSettings', { daybreak: undefined }).error, null)
+  await daybreakClient.beta.messages.create(daybreakParams as any)
+  assert.deepEqual(daybreakBodies.at(-1)?.access_programs, { cyber: 'standard' })
+  assert.equal(daybreakBodies.at(-1)?.model, 'gpt-5.6-sol')
+
   globalThis.fetch = (async () => wireResponse()) as unknown as typeof fetch
 
   const debugArg = '--debug-to-stderr'
@@ -1118,7 +1297,7 @@ try {
     messages: [{ role: 'user', content: 'hi' }],
   })
 
-  assert.equal(requests[0]!.body.model, 'gpt-5.6-luna')
+  assert.equal(requests[0]!.body.model, 'claude-sonnet-4-5-20250929')
 
   const tokenCount = await rootURLClient.beta.messages.countTokens({
     model: 'gpt-5.5',
@@ -1409,6 +1588,25 @@ try {
   )
 
   assert.equal(attempts, 1)
+
+  const { createModModelComplete } = await import('../mods/modelAdapter.js')
+  const { getAssistantMessageFromError } = await import('./errors.js')
+  const statusClient = createOpenAICompatClient({apiKey:'sk-test-api-key',maxRetries:0,timeout:1000})
+  // Shared Mods receipts follow the pinned 2.1.292 categories, including OpenAI transport failures.
+  for (const [status, category] of [[400,'unknown'],[401,'authentication_failed'],[403,'authentication_failed'],[404,'model_not_found'],[429,'rate_limit'],[500,'server_error'],[529,'server_error']] as const) {
+    globalThis.fetch = (async () => new Response('{"error":{"message":"FAKE_PRIVATE_PROVIDER_BODY"}}', {status,headers:{'X-Private':'FAKE_PRIVATE_HEADER'}})) as unknown as typeof fetch
+    const complete = createModModelComplete(async options => statusClient.beta.messages.create({model:options.model,max_tokens:16,messages:options.messages}), model=>model, ()=>64000)
+    assert.deepEqual(await complete({model:'gpt-5.5',prompt:'failure'}), {
+      isAnswered:false,reason:'api-error',status,error:category,
+      usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0},
+    })
+    await assert.rejects(statusClient.beta.messages.create({model:'gpt-5.5',max_tokens:16,messages:[{role:'user',content:'failure'}]}), error => {
+      assert.ok(error instanceof Error)
+      assert.match(error.message,new RegExp(`OpenAI API ${status}:`))
+      assert.deepEqual(getAssistantMessageFromError(error,'gpt-5.5').apiError,{status,type:'api_error',message:''})
+      return true
+    })
+  }
 
   requests.length = 0
   process.env.CLAUDE_CODE_OPENAI_UNIX_SOCKET = '/tmp/openai.sock'
@@ -1831,6 +2029,7 @@ try {
       type: 'thinking',
       thinking: 'Inspect the request. Use the Bash tool.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     { type: 'text', text: 'Running it now.' },
     {
@@ -1867,6 +2066,7 @@ try {
       type: 'thinking',
       thinking: 'Raw visible reasoning.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     { type: 'text', text: 'Done.' },
   ])
@@ -1896,6 +2096,7 @@ try {
       type: 'thinking',
       thinking: 'Done-only visible reasoning.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     { type: 'text', text: 'Done.' },
   ])
@@ -1927,11 +2128,13 @@ try {
       type: 'thinking',
       thinking: 'First part.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     {
       type: 'thinking',
       thinking: 'Second part.',
       signature: '',
+      openAIReasoningSummary: true,
     },
   ])
 
@@ -1962,6 +2165,7 @@ try {
       type: 'thinking',
       thinking: 'Then reason.',
       signature: '',
+      openAIReasoningSummary: true,
     },
     {
       type: 'tool_use',
@@ -1970,6 +2174,50 @@ try {
       input: { command: 'pwd' },
     },
   ])
+
+  const encryptedReasoning = {
+    type: 'reasoning',
+    id: 'rs_replay',
+    summary: [{ type: 'summary_text', text: 'Inspect before reading.' }],
+    encrypted_content: 'synthetic-encrypted-reasoning',
+  }
+  const reasoningReplayRequests: any[] = []
+  globalThis.fetch = (async (_input, init) => {
+    reasoningReplayRequests.push(JSON.parse(String(init?.body)))
+    return new Response(
+      [
+        { type: 'response.reasoning_summary_text.done', item_id: 'rs_replay', text: 'Inspect before reading.' },
+        { type: 'response.output_item.done', item: encryptedReasoning },
+        { type: 'response.output_text.delta', delta: 'Reading now.' },
+        { type: 'response.output_item.added', item: { type: 'function_call', id: 'fc_replay', call_id: 'fc_replay', name: 'Read' } },
+        { type: 'response.function_call_arguments.done', item_id: 'fc_replay', arguments: '{"file_path":"test.txt"}' },
+        { type: 'response.completed', response: { id: 'resp_replay', usage: { input_tokens: 1, output_tokens: 3 } } },
+      ].map(event => `data: ${JSON.stringify(event)}\n\n`).join(''),
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )
+  }) as unknown as typeof fetch
+  const reasoningReply = await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'read test.txt' }],
+  } as any)
+  await rootURLClient.beta.messages.create({
+    model: 'gpt-5.5',
+    max_tokens: 16,
+    messages: [
+      { role: 'user', content: 'read test.txt' },
+      { role: 'assistant', content: JSON.parse(JSON.stringify(reasoningReply.content)) },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'fc_replay', content: 'file contents' }] },
+    ],
+  } as any)
+  assert.deepEqual(reasoningReplayRequests[1].input, [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'read test.txt' }] },
+    encryptedReasoning,
+    { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Reading now.' }] },
+    { type: 'function_call', id: 'fc_replay', call_id: 'fc_replay', name: 'Read', arguments: '{"file_path":"test.txt"}' },
+    { type: 'function_call_output', call_id: 'fc_replay', output: 'file contents' },
+  ])
+  assert.deepEqual(reasoningReplayRequests[0].include, ['reasoning.encrypted_content'])
 
   globalThis.fetch = (async () => {
     return new Response(
@@ -2119,6 +2367,17 @@ try {
     )
   }
 } finally {
+  try {
+    rmSync(tempHome, { recursive: true, force: true })
+  } finally {
+    resetSettingsCache()
+    envKeys.forEach((key, i) => {
+      if (savedEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedEnvironment[i]
+    })
+    if (originalMacroDescriptor) Object.defineProperty(globalThis, 'MACRO', originalMacroDescriptor)
+    else Reflect.deleteProperty(globalThis, 'MACRO')
+  }
   globalThis.fetch = originalFetch
   const { getOpenAIAuthInfo } = await import('../../utils/auth.js')
   getOpenAIAuthInfo.cache.clear?.()

@@ -43,7 +43,7 @@ export async function checkEnabledPlugins(): Promise<string[]> {
   // Start with --add-dir plugins (lowest priority)
   const addDirPlugins = getAddDirEnabledPlugins()
   for (const [pluginId, value] of Object.entries(addDirPlugins)) {
-    if (pluginId.includes('@') && value) {
+    if (pluginId.includes('@') && (value === true || Array.isArray(value))) {
       enabledPlugins.push(pluginId)
     }
   }
@@ -55,7 +55,7 @@ export async function checkEnabledPlugins(): Promise<string[]> {
         continue
       }
       const idx = enabledPlugins.indexOf(pluginId)
-      if (value) {
+      if (value === true || Array.isArray(value)) {
         if (idx === -1) {
           enabledPlugins.push(pluginId)
         }
@@ -102,7 +102,7 @@ export function getPluginEditableScopes(): Map<string, ExtendedPluginScope> {
     if (!pluginId.includes('@')) {
       continue
     }
-    if (value === true) {
+    if (value === true || Array.isArray(value)) {
       result.set(pluginId, 'flag') // 'flag' scope = session-only, no write-back
     } else if (value === false) {
       result.delete(pluginId)
@@ -140,14 +140,13 @@ export function getPluginEditableScopes(): Map<string, ExtendedPluginScope> {
         )
       }
 
-      if (value === true) {
+      if (value === true || Array.isArray(value)) {
         // Plugin enabled at this scope
         result.set(pluginId, scope)
       } else if (value === false) {
         // Explicitly disabled - remove from result
         result.delete(pluginId)
       }
-      // Note: Other values (like version strings for future P2) are ignored for now
     }
   }
 

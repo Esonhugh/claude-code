@@ -1,6 +1,7 @@
 import React, {
   type Ref,
   useCallback,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -12,6 +13,8 @@ import type { FocusEvent } from '../events/focus-event.js'
 import type { KeyboardEvent } from '../events/keyboard-event.js'
 import type { Styles } from '../styles.js'
 import Box from './Box.js'
+import { ClockContext } from './ClockContext.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 type ButtonState = {
   focused: boolean
@@ -30,10 +33,15 @@ export type Props = Except<Styles, 'textWrap'> & {
    * Set to -1 for programmatically focusable only.
    */
   tabIndex?: number
+  mountSettleMs?: number
   /**
    * Focus this button when it mounts.
    */
   autoFocus?: boolean
+  /**
+   * Called when this button receives keyboard focus.
+   */
+  onFocus?: (event: FocusEvent) => void
   /**
    * Render prop receiving the interactive state. Use this to
    * style children based on focus/hover/active — Button itself
@@ -48,19 +56,23 @@ function Button({
   onAction,
   tabIndex = 0,
   autoFocus,
+  mountSettleMs = 300,
+  onFocus,
   children,
   ref,
   ...style
 }: Props): React.ReactNode {
+  const clock = useContext(ClockContext)
+  const [mountedAt] = useState(() => clock?.now() ?? performance.now())
   const [isFocused, setIsFocused] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
   const [isActive, setIsActive] = useState(false)
 
-  const activeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const activeTimer = useRef<(() => void) | null>(null)
 
   useEffect(() => {
     return () => {
-      if (activeTimer.current) clearTimeout(activeTimer.current)
+      activeTimer.current?.()
     }
   }, [])
 
@@ -70,25 +82,40 @@ function Button({
         e.preventDefault()
         setIsActive(true)
         onAction()
-        if (activeTimer.current) clearTimeout(activeTimer.current)
-        activeTimer.current = setTimeout(
-          setter => setter(false),
-          100,
-          setIsActive,
-        )
+        activeTimer.current?.()
+        if (clock) activeTimer.current = clock.setTimeout(() => setIsActive(false), 100)
+        else {
+          const timer = setTimeout(() => setIsActive(false), 100)
+          activeTimer.current = () => clearTimeout(timer)
+        }
       }
     },
-    [onAction],
+    [clock, onAction],
   )
 
   const handleClick = useCallback(
-    (_e: ClickEvent) => {
+    (event: ClickEvent) => {
+      const elapsedMs = (clock?.now() ?? performance.now()) - mountedAt
+      const stray = event.isWindowActivation || elapsedMs < mountSettleMs
+      logForDebugging(`[InkButton] ${JSON.stringify({ event: 'click', elapsedMs, mountSettleMs,
+        isWindowActivation: event.isWindowActivation, disposition: stray ? 'stray' : 'activate',
+        col: event.col, row: event.row })}`)
+      if (stray) {
+        event.dropAsStray()
+        return
+      }
       onAction()
     },
-    [onAction],
+    [clock, mountedAt, mountSettleMs, onAction],
   )
 
-  const handleFocus = useCallback((_e: FocusEvent) => setIsFocused(true), [])
+  const handleFocus = useCallback(
+    (event: FocusEvent) => {
+      setIsFocused(true)
+      onFocus?.(event)
+    },
+    [onFocus],
+  )
   const handleBlur = useCallback((_e: FocusEvent) => setIsFocused(false), [])
   const handleMouseEnter = useCallback(() => setIsHovered(true), [])
   const handleMouseLeave = useCallback(() => setIsHovered(false), [])
@@ -111,6 +138,7 @@ function Button({
       onBlur={handleBlur}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
+      hoverFollowsPaint
       {...style}
     >
       {content}

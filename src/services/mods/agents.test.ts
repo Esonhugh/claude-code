@@ -1,0 +1,275 @@
+import { afterEach, expect, test } from 'bun:test'
+import { mkdtemp, writeFile, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createModsRuntime, type ModsRuntime } from './runtime.js'
+
+const roots: string[] = []
+const runtimes: ModsRuntime[] = []
+afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose()))
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+})
+async function plugin(name: string, source: string) {
+  const pluginRoot = await mkdtemp(join(tmpdir(), 'mods-agents-'))
+  roots.push(pluginRoot)
+  const entry = join(pluginRoot, 'register.ts')
+  await writeFile(entry, source)
+  return { name, storageId: name + '@test', pluginRoot, entrypoints: [entry] }
+}
+const binding = { cwd: '/tmp', surface: null, isInteractive: false, sessionId: 'offline' } as const
+
+test('production Worker agent.register is hookable and replaces its real definition', async () => {
+  const mod = await plugin('author', `export function register(on) {
+    let version = 0;
+    on('command.run', async $ => {
+      try { return {text:JSON.stringify(await $.agent.register({name:'reviewer',description:'Review '+(++version),prompt:'Original'}))}; }
+      catch { return {text:'retired'}; }
+    });
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('agent.register', ($,e,next) => next({...e,prompt:e.prompt+' rewritten'}));
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod, policy])
+  expect(diagnostics).toEqual([])
+  const snapshot = runtime.capture()
+  try {
+    expect(await snapshot.dispatch('command.run', {}, async () => ({}))).toEqual({text:'{"agent":"author:reviewer"}'})
+    expect(await snapshot.dispatch('command.run', {}, async () => ({}))).toEqual({text:'{"agent":"author:reviewer"}'})
+    const definitions = runtime.agents.getSnapshot()
+    expect(definitions).toHaveLength(1)
+    expect(definitions[0]?.agentType).toBe('author:reviewer')
+    expect(definitions[0]?.whenToUse).toBe('Review 2')
+    const definition = definitions[0]!
+    if (definition.source === 'built-in') throw new Error('Expected a registered plugin agent')
+    expect(definition.getSystemPrompt()).toBe('Original rewritten')
+    await runtime.reconcile([])
+    expect(runtime.agents.getSnapshot()).toEqual([])
+    expect(await snapshot.dispatch('command.run', {}, async () => ({}))).toEqual({text:'retired'})
+    expect(runtime.agents.getSnapshot()).toEqual([])
+  } finally { snapshot.release() }
+})
+
+test('production Worker retains native declared agent fields from user Mods', async () => {
+  const mod = await plugin('author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({
+        name:'reviewer',
+        description:'Review',
+        prompt:'Review',
+        permissionMode:'bypassPermissions',
+        hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+        mcpServers:['filesystem'],
+      });
+      return next(e);
+    });
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+
+  expect(runtime.agents.getSnapshot()).toHaveLength(1)
+  expect(runtime.agents.getSnapshot()[0]).toMatchObject({
+    permissionMode:'bypassPermissions',
+    hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+    mcpServers:['filesystem'],
+  })
+})
+
+test('production Worker retains native declared agent fields injected by middleware', async () => {
+  const mod = await plugin('author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({name:'reviewer',description:'Review',prompt:'Review'});
+      return next(e);
+    });
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('agent.register', ($,e,next) => next({
+      ...e,
+      permissionMode:'bypassPermissions',
+      hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+      mcpServers:['filesystem'],
+    }));
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod, policy])
+
+  expect(runtime.agents.getSnapshot()).toHaveLength(1)
+  expect(runtime.agents.getSnapshot()[0]).toMatchObject({
+    permissionMode:'bypassPermissions',
+    hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+    mcpServers:['filesystem'],
+  })
+})
+
+test('production Worker preserves privileged agent fields for host-owned native Mods', async () => {
+  const mod = await plugin('native-author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({
+        name:'reviewer',
+        description:'Review',
+        prompt:'Review',
+        permissionMode:'bypassPermissions',
+        hooks:{PreToolUse:[{hooks:[{type:'command',command:'true'}]}]},
+        mcpServers:['filesystem'],
+      });
+      return next(e);
+    });
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([{ ...mod, isNative: true }])
+
+  expect(runtime.agents.getSnapshot()[0]).toMatchObject({
+    permissionMode: 'bypassPermissions',
+    hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'true' }] }] },
+    mcpServers: ['filesystem'],
+  })
+})
+
+test('production Worker stages reload definitions atomically and publishes a recovered startup hook', async () => {
+  const source = (version: string, fail = false) => `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({name:'reviewer',description:'${version}',prompt:'${version}',tools:['Read'],maxTurns:3});
+      ${fail ? "throw Error('failed startup');" : 'return next(e);'}
+    });
+    on('command.run', async $ => {
+      try { await $.agent.register({name:'reviewer',description:'invalid',prompt:'invalid',maxTurns:0}); }
+      catch { return {text:'rejected'}; }
+      return {text:'accepted'};
+    });
+  }`
+  const mod = await plugin('reload', source('old'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const old = runtime.agents.getSnapshot()[0]!
+  const seen: string[][] = []
+  const unsubscribe = runtime.agents.subscribe(() => seen.push(runtime.agents.getSnapshot().map(agent => agent.whenToUse)))
+  const snapshot = runtime.capture()
+  try {
+    expect(await snapshot.dispatch('command.run',{},async()=>({}))).toEqual({text:'rejected'})
+    expect(runtime.agents.getSnapshot()[0]).toBe(old)
+    await writeFile(mod.entrypoints[0]!, source('failed', true))
+    await runtime.reconcile([mod])
+    expect(runtime.agents.getSnapshot()[0]).toMatchObject({agentType:'reload:reviewer',whenToUse:'failed'})
+    expect(seen).toEqual([['failed']])
+    await writeFile(mod.entrypoints[0]!, source('new'))
+    await runtime.reconcile([mod])
+    expect(seen).toEqual([['failed'],['new']])
+    expect(runtime.agents.getSnapshot()[0]).toMatchObject({agentType:'reload:reviewer',tools:['Read'],maxTurns:3})
+    const projected = runtime.agents.projection({activeAgents:[old],allAgents:[old]})
+    expect(projected.activeAgents).toEqual(runtime.agents.getSnapshot())
+    await runtime.reconcile([])
+    expect(runtime.agents.projection(projected)).toEqual({activeAgents:[],allAgents:[]})
+  } finally { snapshot.release(); unsubscribe() }
+})
+test('production Worker agent.spawn skips only its calling hook and starts through the host', async () => {
+  const caller = await plugin('caller', `export function register(on) {
+    on('*', async ($,e,next) => {
+      if (next.event === 'agent.spawn') return {deny:'caller recursed'};
+      if (next.event === 'command.run') return {text:JSON.stringify(await $.agent.spawn({prompt:'review',description:'Review',subagentType:'reviewer',model:'haiku',effort:'low',name:'worker',cwd:'/tmp/work'}))};
+      return next(e);
+    });
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('agent.spawn', ($,e,next) => next({...e,prompt:e.prompt+' rewritten'}));
+  }`)
+  const calls: unknown[] = []
+  const runtime = createModsRuntime({services:{agentSpawn:async (request, spawnSnapshot, signal) =>
+    spawnSnapshot.dispatch('agent.spawn', {
+      tool_use_id:'mod-spawn',
+      description:'Agent task',
+      subagentType:'general-purpose',
+      provider:{plugin:'engine',tier:'core'},
+      parentModel:'claude-sonnet',
+      background:true,
+      fork:false,
+      ...request,
+    }, async rewritten => {
+      calls.push({request:rewritten,signal})
+      return {model:'claude-haiku',agentId:'agent-child'}
+    }, {signal}) as Promise<{model:string;agentId?:string}|{deny:string}>
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,policy])
+  const snapshot = runtime.capture()
+  try {
+    expect(await snapshot.dispatch('command.run',{},async()=>({}))).toEqual({text:'{"model":"claude-haiku","agentId":"agent-child"}'})
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({request:{prompt:'review rewritten',description:'Review',subagentType:'reviewer',model:'haiku',effort:'low',name:'worker',cwd:'/tmp/work'}})
+  } finally { snapshot.release() }
+})
+
+test('production Worker agent.spawn of a plugin agent resolves its provider through the call snapshot', async () => {
+  const author = await plugin('author', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.agent.register({name:'reviewer',description:'Review',prompt:'Review'});
+      return next(e);
+    });
+  }`)
+  const spawner = await plugin('spawner', `export function register(on) {
+    on('command.run', async $ => {
+      try { return {text:JSON.stringify(await $.agent.spawn({prompt:'review',description:'Review',subagentType:'author:reviewer'}))}; }
+      catch (error) { return {text:'spawn-error:'+(error instanceof Error ? error.message : String(error))}; }
+    });
+  }`)
+  const gate = await plugin('gate', `export function register(on) {
+    on('agent.offer', ($,e,next) => next(e));
+  }`)
+  const runtime = createModsRuntime({services:{agentSpawn: async (request, spawnSnapshot, signal) => {
+    // Mirror AgentTool: resolve the target definition and run the model-facing
+    // offer check against the snapshot handed to the spawn host.
+    const { isAgentOffered } = await import('./agentOffer.js')
+    const target = runtime.agents.getSnapshot().find(agent => agent.agentType === request.subagentType)
+    if (!target) return { deny: 'unknown agent' }
+    if (!(await isAgentOffered(target, { snapshot: spawnSnapshot, signal }))) return { deny: 'not offered' }
+    return { model: 'claude-haiku', agentId: 'agent-child' }
+  }}})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([author, spawner, gate])
+  const snapshot = runtime.capture()
+  try {
+    expect(await snapshot.dispatch('command.run', {}, async () => ({}))).toEqual({text:'{"model":"claude-haiku","agentId":"agent-child"}'})
+  } finally { snapshot.release() }
+})
+
+test('production Worker agent.list reads live session tasks rather than definitions', async () => {
+  const mod = await plugin('observer', `export function register(on) {
+    on('command.run', async $ => ({text:JSON.stringify(await $.agent.list())}));
+  }`)
+  let tasks: Record<string, unknown> = {
+    child: {id:'child',type:'local_agent',description:'Review changes',status:'running',agentId:'agent-child',agentType:'Explore',parentAgentId:'parent',spawnedBy:'author'},
+    mate: {id:'mate',type:'in_process_teammate',description:'Help',status:'running',identity:{agentId:'agent-mate',agentName:'reviewer',agentType:'general-purpose'}},
+    shell: {id:'shell',type:'local_bash',description:'Ignored',status:'running'},
+  }
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{tasks:() => tasks as import('../../state/AppState.js').AppState['tasks'],agentNames:()=>new Map([['child-name','agent-child' as never]])}})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const snapshot = runtime.capture()
+  try {
+    const list = async () => JSON.parse((await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}).text)
+    expect(await list()).toEqual([
+      {id:'agent-child',description:'Review changes',type:'Explore',status:'running',parentId:'parent',spawnedBy:'author',name:'child-name'},
+      {id:'agent-mate',teammateId:'agent-mate',description:'Help',type:'teammate',status:'running',name:'reviewer'},
+    ])
+    tasks = {}
+    expect(await list()).toEqual([])
+  } finally { snapshot.release() }
+})

@@ -31,6 +31,7 @@ import { normalizePathForConfigKey } from './path.js'
 import { getEssentialTrafficOnlyReason } from './privacyLevel.js'
 import { getManagedFilePath } from './settings/managedPath.js'
 import type { ThemeSetting } from './theme.js'
+import type { WorkflowSizeGuideline } from '../tools/WorkflowTool/workflowFeatureFlags.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -82,6 +83,7 @@ export type ProjectConfig = {
   lastToolDuration?: number
   lastCost?: number
   lastDuration?: number
+  lastStartTime?: number
   lastLinesAdded?: number
   lastLinesRemoved?: number
   lastTotalInputTokens?: number
@@ -97,6 +99,7 @@ export type ProjectConfig = {
     {
       inputTokens: number
       outputTokens: number
+      thinkingTokens?: number
       cacheReadInputTokens: number
       cacheCreationInputTokens: number
       webSearchRequests: number
@@ -242,6 +245,8 @@ export type GlobalConfig = {
   hasUsedBackgroundTask?: boolean // Whether the user has backgrounded a task (Ctrl+B)
   queuedCommandUpHintCount?: number // Counter for how many times the user has seen the queued command up hint
   diffTool?: DiffTool // Which tool to use for displaying diffs (terminal or vscode)
+  diffSidebarOpen?: boolean
+  diffPreferences?: Record<string, { mode?: 'session' | 'uncommitted' | 'branch' }>
 
   // Terminal setup state tracking
   iterm2SetupInProgress?: boolean
@@ -550,8 +555,11 @@ export type GlobalConfig = {
   // undefined = no cache, null = extra usage enabled, string = disabled reason.
   cachedExtraUsageDisabledReason?: string | null
 
-  // Auto permissions notification tracking (ant-only)
-  autoPermissionsNotificationCount?: number // Number of times the auto permissions notification has been shown
+  // Whether the one-time auto mode description has been shown
+  hasSeenAutoModeEntryWarning?: boolean
+
+  // "Dynamic workflow size" chosen in /config; settings.workflowSizeGuideline overrides it
+  workflowSizeGuideline?: WorkflowSizeGuideline
 
   // Speculation configuration (ant-only)
   speculationEnabled?: boolean // Whether speculation is enabled (default: true)
@@ -559,6 +567,8 @@ export type GlobalConfig = {
 
   // Client data for server-side experiments (fetched during bootstrap).
   clientDataCache?: Record<string, unknown> | null
+  autoCompactWindowsCache?: Record<string, unknown> | null
+  bootstrapCacheKey?: string
 
   // Additional model options for the model picker (fetched during bootstrap).
   additionalModelOptionsCache?: ModelOption[]
@@ -624,61 +634,6 @@ function createDefaultGlobalConfig(): GlobalConfig {
 }
 
 export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = createDefaultGlobalConfig()
-
-export const GLOBAL_CONFIG_KEYS = [
-  'apiKeyHelper',
-  'installMethod',
-  'autoUpdates',
-  'autoUpdatesProtectedForNative',
-  'theme',
-  'verbose',
-  'preferredNotifChannel',
-  'shiftEnterKeyBindingInstalled',
-  'editorMode',
-  'hasUsedBackslashReturn',
-  'autoCompactEnabled',
-  'showTurnDuration',
-  'diffTool',
-  'env',
-  'tipsHistory',
-  'todoFeatureEnabled',
-  'showExpandedTodos',
-  'messageIdleNotifThresholdMs',
-  'autoConnectIde',
-  'autoInstallIdeExtension',
-  'fileCheckpointingEnabled',
-  'terminalProgressBarEnabled',
-  'showStatusInTerminalTab',
-  'taskCompleteNotifEnabled',
-  'inputNeededNotifEnabled',
-  'agentPushNotifEnabled',
-  'respectGitignore',
-  'claudeInChromeDefaultEnabled',
-  'hasCompletedClaudeInChromeOnboarding',
-  'lspRecommendationDisabled',
-  'lspRecommendationNeverPlugins',
-  'lspRecommendationIgnoredCount',
-  'copyFullResponse',
-  'copyOnSelect',
-  'permissionExplainerEnabled',
-  'prStatusFooterEnabled',
-  'remoteControlAtStartup',
-  'remoteDialogSeen',
-] as const
-
-export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]
-
-export function isGlobalConfigKey(key: string): key is GlobalConfigKey {
-  return GLOBAL_CONFIG_KEYS.includes(key as GlobalConfigKey)
-}
-
-export const PROJECT_CONFIG_KEYS = [
-  'allowedTools',
-  'hasTrustDialogAccepted',
-  'hasCompletedProjectOnboarding',
-] as const
-
-export type ProjectConfigKey = (typeof PROJECT_CONFIG_KEYS)[number]
 
 /**
  * Check if the user has already accepted the trust dialog for the cwd.
@@ -768,10 +723,6 @@ const TEST_GLOBAL_CONFIG_FOR_TESTING: GlobalConfig = {
 }
 const TEST_PROJECT_CONFIG_FOR_TESTING: ProjectConfig = {
   ...DEFAULT_PROJECT_CONFIG,
-}
-
-export function isProjectConfigKey(key: string): key is ProjectConfigKey {
-  return PROJECT_CONFIG_KEYS.includes(key as ProjectConfigKey)
 }
 
 /**

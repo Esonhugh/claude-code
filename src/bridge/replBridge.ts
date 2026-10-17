@@ -67,6 +67,7 @@ import {
   injectBridgeFault,
 } from './bridgeDebug.js'
 import { isAnt } from 'src/utils/userType.js'
+import type { ModUiInboundEvent, ModUiOutboundEvent } from './modUiMessages.js'
 
 
 export type ReplBridgeHandle = {
@@ -75,6 +76,7 @@ export type ReplBridgeHandle = {
   sessionIngressUrl: string
   writeMessages(messages: Message[]): void
   writeSdkMessages(messages: SDKMessage[]): void
+  sendModUiEvent(event: ModUiOutboundEvent): void
   sendControlRequest(request: SDKControlRequest): void
   sendControlResponse(response: SDKControlResponse): void
   sendControlCancelRequest(requestId: string): void
@@ -176,6 +178,7 @@ export type BridgeCoreParams = {
   initialMessages?: Message[]
   previouslyFlushedUUIDs?: Set<string>
   onInboundMessage?: (msg: SDKMessage) => void
+  onModUiEvent?: (event: ModUiInboundEvent) => void | Promise<void>
   onPermissionResponse?: (response: SDKControlResponse) => void
   onInterrupt?: () => void
   onSetModel?: (model: string | undefined) => void
@@ -286,6 +289,7 @@ export async function initBridgeCore(
     initialMessages,
     previouslyFlushedUUIDs,
     onInboundMessage,
+    onModUiEvent,
     onPermissionResponse,
     onInterrupt,
     onSetModel,
@@ -1339,6 +1343,7 @@ export async function initBridgeCore(
             onInboundMessage,
             onPermissionResponse,
             onServerControlRequest,
+            onModUiEvent,
           )
         })
 
@@ -1778,6 +1783,12 @@ export async function initBridgeCore(
       }
       const events = filtered.map(m => ({ ...m, session_id: currentSessionId }))
       void transport.writeBatch(events)
+    },
+    sendModUiEvent(event) {
+      if (!transport) return
+      // Dedicated bridge control event; intentionally outside StdoutMessage/SDK transcript.
+      // @ts-expect-error ReplBridgeTransport is typed to the SDK union only.
+      void transport.write({ ...event, session_id: currentSessionId })
     },
     sendControlRequest(request: SDKControlRequest) {
       if (!transport) {

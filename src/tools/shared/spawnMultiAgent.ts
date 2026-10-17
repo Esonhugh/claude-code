@@ -14,12 +14,12 @@ import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTa
 import { formatAgentId } from '../../utils/agentId.js'
 import { quote } from '../../utils/bash/shellQuote.js'
 import { isInBundledMode } from '../../utils/bundledMode.js'
-import { getGlobalConfig } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
+import { getDefaultEffortForModel, type EffortValue } from '../../utils/effort.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
-import { parseUserSpecifiedModel } from '../../utils/model/model.js'
+import { getDefaultMainLoopModel } from '../../utils/model/model.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { isTmuxAvailable } from '../../utils/swarm/backends/detection.js'
 import {
@@ -61,41 +61,10 @@ import {
   isInsideTmux,
   sendCommandToPane,
 } from '../../utils/swarm/teammateLayoutManager.js'
-import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
+import { resolveTeammateModel } from '../../utils/swarm/teammateModel.js'
 import { registerTask } from '../../utils/task/framework.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import type { AgentDefinition } from '../AgentTool/loadAgentsDir.js'
-
-function getDefaultTeammateModel(leaderModel: string | null): string {
-  const configured = getGlobalConfig().teammateDefaultModel
-  if (configured === null) {
-    // User picked "Default" in the /config picker — follow the leader.
-    return leaderModel ?? getHardcodedTeammateModelFallback()
-  }
-  if (configured !== undefined) {
-    return parseUserSpecifiedModel(configured)
-  }
-  return getHardcodedTeammateModelFallback()
-}
-
-/**
- * Resolve a teammate model value. Handles the 'inherit' alias (from agent
- * frontmatter) by substituting the leader's model. gh-31069: 'inherit' was
- * passed literally to --model, producing "It may not exist or you may not
- * have access". If leader model is null (not yet set), falls through to the
- * default.
- *
- * Exported for testing.
- */
-export function resolveTeammateModel(
-  inputModel: string | undefined,
-  leaderModel: string | null,
-): string {
-  if (inputModel === 'inherit') {
-    return leaderModel ?? getDefaultTeammateModel(leaderModel)
-  }
-  return inputModel ?? getDefaultTeammateModel(leaderModel)
-}
 
 // ============================================================================
 // Types
@@ -116,6 +85,8 @@ export type SpawnOutput = {
   plan_mode_required?: boolean
 }
 
+type SpawnResult = { data: SpawnOutput; loopAgentId?: string }
+
 export type SpawnTeammateConfig = {
   name: string
   prompt: string
@@ -127,6 +98,7 @@ export type SpawnTeammateConfig = {
   permissions?: string[]
   model?: string
   agent_type?: string
+  effort?: EffortValue
   description?: string
   /** request_id of the API call whose response contained the tool_use that
    *  spawned this teammate. Threaded through to TeammateAgentContext for
@@ -144,8 +116,9 @@ type SpawnInput = {
   plan_mode_required?: boolean
   permissionMode?: PermissionMode
   permissions?: string[]
-  model?: string
+  model: string
   agent_type?: string
+  effort?: EffortValue
   description?: string
   invokingRequestId?: string
 }
@@ -272,7 +245,7 @@ function releaseTeammateName(teamName: string, name: string): void {
 async function handleSpawnSplitPane(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const { setAppState, getAppState } = context
   const {
     name,
@@ -307,8 +280,7 @@ async function handleSpawnSplitPane(
     )
   }
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
+  const model = input.model
 
   const uniqueName = await generateUniqueTeammateName(name, teamName)
 
@@ -398,30 +370,36 @@ async function handleSpawnSplitPane(
 
   // Build CLI flags to propagate to teammate
   // Pass plan_mode_required to prevent inheriting bypass permissions
-  let inheritedFlags = buildInheritedCliFlags({
+  const inheritedFlags = buildInheritedCliFlags({
     planModeRequired: plan_mode_required,
     permissionMode: effectivePermissionMode,
     allowedTools: permissions,
+    model,
+    effort: input.effort,
   })
-
-  // If teammate has a custom model, add --model flag (or replace inherited one)
-  if (model) {
-    // Remove any inherited --model flag first
-    inheritedFlags = inheritedFlags
-      .split(' ')
-      .filter((flag, i, arr) => flag !== '--model' && arr[i - 1] !== '--model')
-      .join(' ')
-    // Add the teammate's model
-    inheritedFlags = inheritedFlags
-      ? `${inheritedFlags} --model ${quote([model])}`
-      : `--model ${quote([model])}`
-  }
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
   // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
   // Includes CLAUDECODE, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, and API provider vars.
   const envStr = buildInheritedEnvVars()
   const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+
+  // Send initial instructions via mailbox before launching; the teammate's inbox
+  // poller submits them as its first turn, so it must not start without them.
+  const instructionsWritten = await writeToMailbox(
+    sanitizedName,
+    {
+      from: TEAM_LEAD_NAME,
+      text: prompt,
+      timestamp: new Date().toISOString(),
+    },
+    teamName,
+  )
+  if (!instructionsWritten) {
+    // Close the pane created above so the aborted spawn leaves no empty pane behind.
+    await detectionResult.backend.killPane(paneId, !insideTmux).catch(() => false)
+    throw new Error(`Failed to write initial instructions to ${sanitizedName}'s inbox — spawn aborted`)
+  }
 
   // Send the command to the new pane
   // Use swarm socket when running outside tmux (external swarm session)
@@ -462,12 +440,15 @@ async function handleSpawnSplitPane(
     teamName,
     teammateColor,
     prompt,
+    model,
     plan_mode_required,
     permissionMode: effectivePermissionMode,
     paneId,
     insideTmux,
     backendType: detectionResult.backend.type,
     toolUseId: context.toolUseId,
+    spawnedWith:{description:input.description,agentType:agent_type,parentAgentId:context.agentId},
+    spawnedBy:context.modSpawnedBy,
   })
 
   // Register agent in the team file
@@ -486,18 +467,6 @@ async function handleSpawnSplitPane(
     subscriptions: [],
     backendType: detectionResult.backend.type,
   })
-
-  // Send initial instructions to teammate via mailbox
-  // The teammate's inbox poller will pick this up and submit it as their first turn
-  await writeToMailbox(
-    sanitizedName,
-    {
-      from: TEAM_LEAD_NAME,
-      text: prompt,
-      timestamp: new Date().toISOString(),
-    },
-    teamName,
-  )
 
   return {
     data: {
@@ -524,7 +493,7 @@ async function handleSpawnSplitPane(
 async function handleSpawnSeparateWindow(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const { setAppState, getAppState } = context
   const {
     name,
@@ -559,8 +528,7 @@ async function handleSpawnSeparateWindow(
     )
   }
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
+  const model = input.model
 
   const uniqueName = await generateUniqueTeammateName(name, teamName)
 
@@ -617,30 +585,36 @@ async function handleSpawnSeparateWindow(
 
   // Build CLI flags to propagate to teammate
   // Pass plan_mode_required to prevent inheriting bypass permissions
-  let inheritedFlags = buildInheritedCliFlags({
+  const inheritedFlags = buildInheritedCliFlags({
     planModeRequired: plan_mode_required,
     permissionMode: effectivePermissionMode,
     allowedTools: permissions,
+    model,
+    effort: input.effort,
   })
-
-  // If teammate has a custom model, add --model flag (or replace inherited one)
-  if (model) {
-    // Remove any inherited --model flag first
-    inheritedFlags = inheritedFlags
-      .split(' ')
-      .filter((flag, i, arr) => flag !== '--model' && arr[i - 1] !== '--model')
-      .join(' ')
-    // Add the teammate's model
-    inheritedFlags = inheritedFlags
-      ? `${inheritedFlags} --model ${quote([model])}`
-      : `--model ${quote([model])}`
-  }
 
   const flagsStr = inheritedFlags ? ` ${inheritedFlags}` : ''
   // Propagate env vars that teammates need but may not inherit from tmux split-window shells.
   // Includes CLAUDECODE, CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS, and API provider vars.
   const envStr = buildInheritedEnvVars()
   const spawnCommand = `cd ${quote([workingDir])} && env ${envStr} ${quote([binaryPath])} ${teammateArgs}${flagsStr}`
+
+  // Send initial instructions via mailbox before launching; the teammate's inbox
+  // poller submits them as its first turn, so it must not start without them.
+  const instructionsWritten = await writeToMailbox(
+    sanitizedName,
+    {
+      from: TEAM_LEAD_NAME,
+      text: prompt,
+      timestamp: new Date().toISOString(),
+    },
+    teamName,
+  )
+  if (!instructionsWritten) {
+    // Close the window created above so the aborted spawn leaves no empty window behind.
+    await execFileNoThrow(TMUX_COMMAND, ['kill-window', '-t', `${SWARM_SESSION_NAME}:${windowName}`])
+    throw new Error(`Failed to write initial instructions to ${sanitizedName}'s inbox — spawn aborted`)
+  }
 
   // Send the command to the new window
   const sendKeysResult = await execFileNoThrow(TMUX_COMMAND, [
@@ -688,12 +662,15 @@ async function handleSpawnSeparateWindow(
     teamName,
     teammateColor,
     prompt,
+    model,
     plan_mode_required,
     permissionMode: effectivePermissionMode,
     paneId,
     insideTmux: false,
     backendType: 'tmux',
     toolUseId: context.toolUseId,
+    spawnedWith:{description:input.description,agentType:agent_type,parentAgentId:context.agentId},
+    spawnedBy:context.modSpawnedBy,
   })
 
   // Register agent in the team file
@@ -712,18 +689,6 @@ async function handleSpawnSeparateWindow(
     subscriptions: [],
     backendType: 'tmux', // This handler always uses tmux directly
   })
-
-  // Send initial instructions to teammate via mailbox
-  // The teammate's inbox poller will pick this up and submit it as their first turn
-  await writeToMailbox(
-    sanitizedName,
-    {
-      from: TEAM_LEAD_NAME,
-      text: prompt,
-      timestamp: new Date().toISOString(),
-    },
-    teamName,
-  )
 
   return {
     data: {
@@ -756,24 +721,30 @@ function registerOutOfProcessTeammateTask(
     teamName,
     teammateColor,
     prompt,
+    model,
     plan_mode_required,
     permissionMode,
     paneId,
     insideTmux,
     backendType,
     toolUseId,
+    spawnedWith,
+    spawnedBy,
   }: {
     teammateId: string
     sanitizedName: string
     teamName: string
     teammateColor: string
     prompt: string
+    model: string
     plan_mode_required?: boolean
     permissionMode: PermissionMode
     paneId: string
     insideTmux: boolean
     backendType: BackendType
     toolUseId?: string
+    spawnedWith:NonNullable<InProcessTeammateTaskState['spawnedWith']>
+    spawnedBy?: string
   },
 ): void {
   const taskId = generateTaskId('in_process_teammate')
@@ -789,6 +760,8 @@ function registerOutOfProcessTeammateTask(
       toolUseId,
     ),
     type: 'in_process_teammate',
+    spawnedWith,
+    ...(spawnedBy === undefined ? {} : {spawnedBy}),
     status: 'running',
     identity: {
       agentId: teammateId,
@@ -799,6 +772,7 @@ function registerOutOfProcessTeammateTask(
       parentSessionId: getSessionId(),
     },
     prompt,
+    model,
     abortController,
     awaitingPlanApproval: false,
     permissionMode: plan_mode_required ? 'plan' : permissionMode,
@@ -810,6 +784,7 @@ function registerOutOfProcessTeammateTask(
   }
 
   registerTask(taskState, setAppState)
+  logForDebugging(`[spawnTeammate] agentId=${teammateId}, taskId=${taskId}, model=${model}`)
 
   // When abort is signaled, kill the pane using the backend that created it
   // (tmux kill-pane for tmux panes, it2 session close for iTerm2 native panes).
@@ -833,7 +808,7 @@ function registerOutOfProcessTeammateTask(
 async function handleSpawnInProcess(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   const { setAppState, getAppState } = context
   const {
     name,
@@ -867,8 +842,7 @@ async function handleSpawnInProcess(
     )
   }
 
-  // Resolve model: 'inherit' → leader's model; undefined → default Opus
-  const model = resolveTeammateModel(input.model, getAppState().mainLoopModel)
+  const model = input.model
 
   const uniqueName = await generateUniqueTeammateName(name, teamName)
 
@@ -898,6 +872,9 @@ async function handleSpawnInProcess(
     name: sanitizedName,
     teamName,
     prompt,
+    description:input.description,
+    agentType:agent_type,
+    parentAgentId:context.agentId,
     color: teammateColor,
     planModeRequired: plan_mode_required ?? false,
     permissionMode: effectivePermissionMode,
@@ -912,24 +889,18 @@ async function handleSpawnInProcess(
 
   // Debug: log what spawn returned
   logForDebugging(
-    `[handleSpawnInProcess] spawn result: taskId=${result.taskId}, hasContext=${!!result.teammateContext}, hasAbort=${!!result.abortController}`,
+    `[handleSpawnInProcess] spawn result: agentId=${teammateId}, taskId=${result.taskId}, model=${model}, hasContext=${!!result.teammateContext}, hasAbort=${!!result.abortController}`,
   )
 
   // Start the agent execution loop (fire-and-forget)
-  if (result.taskId && result.teammateContext && result.abortController) {
+  if (result.identity && result.taskId && result.teammateContext && result.abortController) {
     startInProcessTeammate({
-      identity: {
-        agentId: teammateId,
-        agentName: sanitizedName,
-        teamName,
-        color: teammateColor,
-        planModeRequired: plan_mode_required ?? false,
-        parentSessionId: result.teammateContext.parentSessionId,
-      },
+      identity: result.identity,
       taskId: result.taskId,
       prompt,
       description: input.description,
       model,
+      effort: input.effort,
       agentDefinition,
       teammateContext: result.teammateContext,
       // Strip messages: the teammate never reads toolUseContext.messages
@@ -1017,6 +988,7 @@ async function handleSpawnInProcess(
   // Sending via both paths would cause duplicate welcome messages.
 
   return {
+    loopAgentId: result.identity?.resumableAgentId,
     data: {
       teammate_id: teammateId,
       agent_id: teammateId,
@@ -1043,7 +1015,7 @@ async function handleSpawnInProcess(
 async function handleSpawn(
   input: SpawnInput,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
+): Promise<SpawnResult> {
   // Check if in-process mode is enabled via feature flag
   if (isInProcessEnabled()) {
     return handleSpawnInProcess(input, context)
@@ -1091,14 +1063,34 @@ async function handleSpawn(
 export async function spawnTeammate(
   config: SpawnTeammateConfig,
   context: ToolUseContext,
-): Promise<{ data: SpawnOutput }> {
-  const teamName = config.team_name || context.getAppState().teamContext?.teamName
-  if (!teamName || !config.name) return handleSpawn(config, context)
+): Promise<SpawnResult> {
+  const appState = context.getAppState()
+  const teamName = config.team_name || appState.teamContext?.teamName
+  const definition = context.options.agentDefinitions.activeAgents.find(
+    agent => agent.agentType === config.agent_type,
+  )
+  const input: SpawnInput = {
+    ...config,
+    effort: config.effort ?? definition?.effort ?? appState.effortValue ??
+      getDefaultEffortForModel(context.options.mainLoopModel ?? appState.mainLoopModel ?? getDefaultMainLoopModel()),
+    model: resolveTeammateModel(
+      config.model,
+      context.options.mainLoopModel ??
+        appState.mainLoopModel ??
+        getDefaultMainLoopModel(),
+      definition?.model,
+      config.plan_mode_required
+        ? 'plan'
+        : config.permissionMode ?? appState.toolPermissionContext.mode,
+    ),
+  }
+  logForDebugging(`[spawnTeammate] name=${config.name}, model=${input.model}`)
+  if (!teamName || !config.name) return handleSpawn(input, context)
 
   const reservedName = await reserveUniqueTeammateName(config.name, teamName)
   try {
     return await handleSpawn(
-      { ...config, name: reservedName, team_name: teamName },
+      { ...input, name: reservedName, team_name: teamName },
       context,
     )
   } finally {

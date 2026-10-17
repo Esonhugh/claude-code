@@ -1,0 +1,2836 @@
+import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
+import { createModMcpConnections } from '../services/mods/mcpConnect.js'
+import { getDefaultAppState } from '../state/AppStateStore.js'
+import { prepareConversationRewind, rewindConversationTo } from '../utils/conversationRewind.js'
+import { resetSettingsCache } from '../utils/settings/settingsCache.js'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { mkdtemp, realpath, rm } from 'node:fs/promises'
+import { beforeEach, afterEach, expect, spyOn, test } from 'bun:test'
+import memoize from 'lodash-es/memoize.js'
+import { readFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { logForDebugging } from '../utils/debug.js'
+import { copyModCallerChain } from '../services/mods/callerChain.js'
+import ts from 'typescript'
+import * as React from 'react'
+import { PassThrough } from 'node:stream'
+import { render } from '../ink.js'
+import { useInputBuffer, type UseInputBufferResult } from '../hooks/useInputBuffer.js'
+import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
+import { fillPromptBox, FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
+import { getModHttpServices } from '../services/mods/hostOperations.js'
+import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
+import {
+  createModsSession,
+  ModAuthoringPromptDismissedError,
+} from '../services/mods/session.js'
+import { isCommandImmediate, type Command } from '../types/command.js'
+import { processSlashCommand } from '../utils/processUserInput/processSlashCommand.js'
+import { DiffController } from '../services/diff/controller.js'
+import { QueryGuard } from '../utils/QueryGuard.js'
+import {
+  getUserContextInstructionFiles,
+  withUserContextInstructionFiles,
+} from '../context.js'
+
+
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+})
+afterEach(async () => {
+  resetSettingsCache()
+  testEnvKeys.forEach((key, i) => {
+    if (savedTestEnvironment[i] === undefined) delete process.env[key]
+    else process.env[key] = savedTestEnvironment[i]
+  })
+  if (testConfigRoot !== undefined) {
+    await rm(testConfigRoot, { recursive: true, force: true })
+    testConfigRoot = undefined
+  }
+})
+
+// Execute the actual callbacks without importing REPL's startup/services graph.
+function extract(path: string, name: string, kind: 'callback' | 'function' | 'effect' | 'block' = 'callback') {
+  const source = readFileSync(new URL(path, import.meta.url), 'utf8')
+  const file = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const matches: ts.Node[] = []
+  function visit(node: ts.Node) {
+    if (kind === 'callback' && ts.isVariableDeclaration(node) && node.name.getText(file) === name &&
+      node.initializer && ts.isCallExpression(node.initializer)) {
+      matches.push(node.initializer.arguments[0]!)
+    }
+    if (kind === 'function' && ts.isFunctionDeclaration(node) && node.name?.text === name) matches.push(node)
+    if (kind === 'effect' && ts.isCallExpression(node) && node.expression.getText(file) === 'useEffect' &&
+      node.arguments[0]?.getText(file).includes(name)) matches.push(node.arguments[0])
+    if (kind === 'block' && ts.isIfStatement(node) && node.expression.getText(file).includes(name)) {
+      matches.push(node.thenStatement)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(matches).toHaveLength(1)
+  const text = matches[0]!.getText(file).replace(/^export /, '')
+  const expression = kind === 'block' ? `() => ${text}` : `(${text})`
+  const js = ts.transpileModule(`const extracted = ${expression};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, jsx: ts.JsxEmit.React },
+    transformers: { before: [context => root => {
+      const visit = (node: ts.Node): ts.VisitResult<ts.Node> =>
+        ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword
+          ? ts.factory.updateCallExpression(node, ts.factory.createIdentifier('importModule'), node.typeArguments, node.arguments)
+          : ts.visitEachChild(node, visit, context)
+      return ts.visitNode(root, visit) as ts.SourceFile
+    }] },
+  }).outputText
+  return (scope: Record<string, any>) => {
+    let mcpState = getDefaultAppState()
+    const modMcpConnections = createModMcpConnections({getState:()=>mcpState,setState:update=>{mcpState=update(mcpState)}})
+    return new Function(
+    'scope',
+    'modMcpConnections',
+    'getModHttpServices',
+    'createModCommandQueue',
+    'readModBoundAgentMessages',
+    'FAILED_PROMPT_BATCH_DROP',
+    'UNSUBMITTED_PROMPT_DROP',
+    'randomUUID',
+    'logForDebugging',
+    'copyModCallerChain',
+    'beginModSelectionRun',
+    `with (scope) { ${js}; return extracted; }`,
+  )(scope, modMcpConnections, getModHttpServices, createModCommandQueue, readModBoundAgentMessages, FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP, randomUUID, logForDebugging, copyModCallerChain, () => () => {})
+  }
+}
+
+test('REPL sizes the dock from the shown pane requested body columns', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let dockWidth: ts.Expression | undefined
+  let shownModDock: ts.Expression | undefined
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'shownModDock') shownModDock = node.initializer
+    if (ts.isJsxAttribute(node) && node.name.getText(file) === 'dockWidth' &&
+        node.initializer && ts.isJsxExpression(node.initializer)) dockWidth = node.initializer.expression
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(shownModDock).toBeDefined()
+  expect(dockWidth).toBeDefined()
+  const evaluate = new Function('modDock', `const shownModDock = ${shownModDock!.getText(file)}; return ${dockWidth!.getText(file)};`)
+  expect(evaluate([{ shown: false, columns: 60, bodyColumns: 60 }, { shown: true, columns: 24, bodyColumns: 24 }])).toBe(25)
+  expect(evaluate([{ shown: true, columns: 100, bodyColumns: 53 }])).toBe(54)
+  expect(evaluate([{ shown: true, bodyColumns: 78 }])).toBe(79)
+  expect(evaluate([])).toBeUndefined()
+})
+
+const makeSubmit = extract('./REPL.tsx', 'onSubmit')
+const makeHandle = extract('../utils/handlePromptSubmit.ts', 'handlePromptSubmit', 'function')
+const makeExecute = extract('../utils/handlePromptSubmit.ts', 'executeUserInput', 'function')
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(r => { resolve = r })
+  return { promise, resolve }
+}
+const noop = () => {}
+
+
+test('initial CLI resume restores persisted Mod authoring consent before the first host bind', async () => {
+  const calls: unknown[] = []
+  const modsSession = {
+    restoreAuthoringConsent: (root: string | undefined) => calls.push(['restore', root]),
+    bind: async (value: unknown) => { calls.push(['bind', value]) },
+  }
+  const restore = extract('./REPL.tsx', 'initialDevModsRestored', 'block')({
+    initialDevModsRestored: { current: false },
+    initialDevModsFolder: '/config/dev-mods/session',
+    modsSession,
+  })
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession,
+    getCwd: () => '/repo',
+    getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session',
+    setAppState: noop,
+    messagesRef: { current: [] },
+    modToolContextRef: { current: noop },
+    inputValueRef: { current: '' },
+    insertTextRef: { current: null },
+    modPromptBlockedRef: { current: false },
+  })
+
+  restore()
+  await awaitMods()
+  expect(calls).toEqual([
+    ['restore', '/config/dev-mods/session'],
+    ['bind', {
+      cwd: '/repo',
+      surface: 'terminal',
+      isInteractive: true,
+      sessionId: 'session',
+    }],
+  ])
+})
+
+test('resume processing preserves authoring consent only for the original session', () => {
+  const source = readFileSync(new URL('../utils/sessionRestore.ts', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('sessionRestore.ts', source, ts.ScriptTarget.Latest, true)
+  let returned: ts.ObjectLiteralExpression | undefined
+  function visit(node: ts.Node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === 'processResumedConversation') {
+      function findReturn(candidate: ts.Node) {
+        if (ts.isReturnStatement(candidate) && candidate.expression && ts.isObjectLiteralExpression(candidate.expression)) {
+          returned = candidate.expression
+        }
+        ts.forEachChild(candidate, findReturn)
+      }
+      findReturn(node)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(returned).toBeDefined()
+  const devModsFolder = returned!.properties.find(property =>
+    property.name?.getText(file) === 'devModsFolder',
+  )
+  expect(devModsFolder).toBeDefined()
+  const evaluate = new Function(
+    'opts',
+    'result',
+    `return ({${devModsFolder!.getText(file)}}).devModsFolder`,
+  )
+  expect(evaluate({ forkSession: false }, { devModsFolder: '/config/dev-mods/session' }))
+    .toBe('/config/dev-mods/session')
+  expect(evaluate({ forkSession: true }, { devModsFolder: '/config/dev-mods/session' }))
+    .toBeUndefined()
+})
+
+test('production tool context exposes Mod authoring consent while generic hook prompts stay feature-gated', async () => {
+  const requests: any[] = []
+  const requestPrompt = (source: string) => async (request: unknown, signal?: AbortSignal) => {
+    requests.push(source, request, signal)
+    return { prompt_response: 'mod_hot_reload', selected: 'enable' }
+  }
+  const modsSession = {
+    runtime: undefined,
+    requestAuthoringConsent: async (prompt: any, signal: AbortSignal) => {
+      const response = await prompt({ prompt: 'mod_hot_reload' }, signal)
+      return response.selected === 'enable'
+        ? { enabled: true, root: '/config/dev-mods/session' }
+        : { enabled: false }
+    },
+  }
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let returned: ts.ObjectLiteralExpression | undefined
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(file) === 'getToolUseContext' &&
+      node.initializer && ts.isCallExpression(node.initializer)) {
+      const callback = node.initializer.arguments[0]
+      if (callback && (ts.isArrowFunction(callback) || ts.isFunctionExpression(callback))) {
+        function findReturn(candidate: ts.Node) {
+          if (returned) return
+          if (ts.isReturnStatement(candidate) && candidate.expression && ts.isObjectLiteralExpression(candidate.expression)) {
+            returned = candidate.expression
+            return
+          }
+          ts.forEachChild(candidate, findReturn)
+        }
+        findReturn(callback.body)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(returned).toBeDefined()
+  const properties = returned!.properties.filter(property =>
+    property.name && ['requestModAuthoringConsent', 'requestPrompt'].includes(property.name.getText(file)),
+  )
+  const expression = `{${properties.map(property => property.getText(file)).join(',')}}`
+  const js = ts.transpileModule(`return ${expression};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const context = new Function('scope', `with (scope) { ${js} }`)({
+    modsSession,
+    requestPrompt,
+    feature: () => false,
+  })
+
+  expect(context.requestPrompt).toBeUndefined()
+  const signal = new AbortController().signal
+  await expect(context.requestModAuthoringConsent(signal)).resolves.toEqual({
+    enabled: true,
+    root: '/config/dev-mods/session',
+  })
+  expect(requests).toEqual(['mod_hot_reload', { prompt: 'mod_hot_reload' }, signal])
+
+  const noHost = new Function('scope', `with (scope) { ${js} }`)({
+    modsSession: undefined,
+    requestPrompt,
+    feature: () => false,
+  })
+  expect(noHost.requestModAuthoringConsent).toBeUndefined()
+})
+
+test('REPL Mods prompt host reads the live PromptInput handle before React commits', async () => {
+  let services: any
+  const inputValueRef = { current: 'stale React input' }
+  let draft = 'A😀B'
+  const modPromptBlockedRef = { current: false }
+  const setInputWithCursorCalls: unknown[] = []
+  const modes: unknown[] = [], paints: unknown[] = []
+  const insertTextRef = {
+    current: {
+      get text() { return draft },
+      cursorOffset: 3,
+      insert: noop,
+      setInputWithCursor: (text: string, cursor: number) => {
+        draft = text
+        insertTextRef.current.cursorOffset = cursor
+        setInputWithCursorCalls.push([text, cursor])
+      },
+      paintDecorations: (decorations: unknown, text: string) => paints.push([decorations, text]),
+      carryDecorations: noop,
+    },
+  }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: {
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => {
+        services = host
+      },
+    },
+    getCwd: () => '/repo',
+    getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session',
+    setAppState: noop,
+    messagesRef: { current: [] },
+    modToolContextRef: { current: noop },
+    inputValueRef,
+    insertTextRef,
+    modPromptBlockedRef,
+    fillPromptBox,
+    setInputMode: (mode: string) => modes.push(mode),
+  })
+  await awaitMods()
+  const prompt = services.prompt()
+  expect(prompt.read()).toEqual({ text: 'A😀B', cursor: 3 })
+  expect(prompt.fill({ text: 'x', mode: 'insert' })).toBe(true)
+  expect(setInputWithCursorCalls).toEqual([['A😀xB', 4]])
+  expect(prompt.read()).toEqual({ text: 'A😀xB', cursor: 4 })
+  expect(inputValueRef.current).toBe('stale React input')
+  expect(modes).toEqual([])
+  const decorations = [{ start: 0, end: 3, color: 'green' }]
+  expect(prompt.fill({ text: 'new', mode: 'replace', decorations })).toBe(true)
+  expect(setInputWithCursorCalls).toEqual([['A😀xB', 4], ['new', 3]])
+  expect(prompt.read()).toEqual({ text: 'new', cursor: 3 })
+  expect(modes).toEqual(['prompt'])
+  expect(paints).toEqual([[ [{ start: 0, end: 3, color: '#46a758' }], 'new' ]])
+  modPromptBlockedRef.current = true
+  expect(prompt.isBlocked()).toBe(true)
+})
+
+test('PromptInput keeps Mod suggestions visible during local command dispatch', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile(
+    'REPL.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  )
+  let responding: ts.Expression | undefined
+  let promptResponding: ts.Expression | undefined
+  function visit(node: ts.Node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(file) === 'isAssistantResponding'
+    ) {
+      responding = node.initializer
+    }
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === 'isAssistantResponding' &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer)
+    ) {
+      promptResponding = node.initializer.expression
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+
+  expect(responding).toBeDefined()
+  expect(promptResponding?.getText(file)).toBe('isAssistantResponding')
+  const evaluate = new Function(
+    'isExternalLoading',
+    'isQueryActive',
+    'queryGuard',
+    `return ${responding!.getText(file)}`,
+  )
+  expect(evaluate(false, true, { isDispatching: true })).toBe(false)
+  expect(evaluate(false, true, { isDispatching: false })).toBe(true)
+  expect(evaluate(true, false, { isDispatching: false })).toBe(true)
+  expect(evaluate(false, false, { isDispatching: false })).toBe(false)
+})
+
+test('Mods prompt suggestion requires a mounted box and reads live query state', async () => {
+  let services: any
+  let stateWrites = 0
+  const inputValueRef = { current: '' }
+  const insertTextRef = { current: null as null | { cursorOffset: number } }
+  const queryGuard = new QueryGuard()
+  const isExternalLoadingRef = { current: false }
+  const inputModeRef = { current: 'prompt' }
+  const modTypeaheadActiveRef = { current: false }
+  const appState = { viewingAgentTaskId: null as string | null }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: () => { stateWrites++ }, messagesRef: { current: [] },
+    modToolContextRef: { current: noop }, inputValueRef, insertTextRef,
+    queryGuard, isExternalLoadingRef, inputModeRef, modTypeaheadActiveRef,
+    store: { getState: () => appState },
+    modPromptBlockedRef: { current: false },
+  })
+  await awaitMods()
+  const prompt = services.prompt()
+
+  expect(prompt.suggest('draft', 'fixture@test')).toBe(false)
+  expect(stateWrites).toBe(0)
+  insertTextRef.current = { cursorOffset: 0 }
+  expect(prompt.canSuggest()).toBe(true)
+  inputModeRef.current = 'bash'
+  expect(prompt.canSuggest()).toBe(false)
+  inputModeRef.current = 'prompt'
+  appState.viewingAgentTaskId = 'agent-1'
+  expect(prompt.canSuggest()).toBe(false)
+  appState.viewingAgentTaskId = null
+  queryGuard.reserve()
+  expect(prompt.canSuggest()).toBe(true)
+  queryGuard.tryStart()
+  expect(prompt.canSuggest()).toBe(false)
+  queryGuard.forceEnd()
+  isExternalLoadingRef.current = true
+  expect(prompt.canSuggest()).toBe(false)
+  isExternalLoadingRef.current = false
+  modTypeaheadActiveRef.current = true
+  expect(prompt.canSuggest()).toBe(false)
+  expect(prompt.suggest('hidden by completion', 'fixture@test')).toBe(false)
+  expect(stateWrites).toBe(0)
+})
+
+test('Mods pending prompt suggestion rechecks live composer ownership', () => {
+  for (const blocked of ['bash', 'agent'] as const) {
+    let shown: boolean | undefined
+    let stateWrites = 0
+    const pendingModSuggestionRef = {
+      current: {
+        text: 'draft',
+        owner: 'fixture@test',
+        resolve(value: boolean) { shown = value },
+      } as { text: string; owner: string; resolve(value: boolean): void } | undefined,
+    }
+    const inputModeRef = { current: blocked === 'bash' ? 'bash' : 'prompt' }
+    const appState = {
+      viewingAgentTaskId: blocked === 'agent' ? 'agent-1' : null,
+    }
+    const effect = extract('./REPL.tsx', 'pendingModSuggestionRef', 'effect')({
+      pendingModSuggestionRef,
+      modPromptBlockedRef: { current: false },
+      insertTextRef: { current: { cursorOffset: 0 } },
+      inputValueRef: { current: '' },
+      isExternalLoadingRef: { current: false },
+      queryGuard: new QueryGuard(),
+      inputModeRef,
+      modTypeaheadActiveRef: { current: false },
+      store: { getState: () => appState },
+      setAppState: () => { stateWrites++ },
+    })
+
+    effect()
+
+    expect(shown).toBe(false)
+    expect(stateWrites).toBe(0)
+    expect(pendingModSuggestionRef.current).toBeUndefined()
+  }
+})
+
+test('REPL unmount rejects a dialog-deferred Mod suggestion', () => {
+  let shown: boolean | undefined
+  const pendingModSuggestionRef = {
+    current: {
+      text: 'draft',
+      owner: 'fixture@test:1',
+      resolve(value: boolean) { shown = value },
+    } as { text: string; owner: string; resolve(value: boolean): void } | undefined,
+  }
+  const clearPendingModSuggestion = extract('./REPL.tsx', 'clearPendingModSuggestion')({
+    pendingModSuggestionRef,
+  })
+
+  clearPendingModSuggestion()
+
+  expect(shown).toBe(false)
+  expect(pendingModSuggestionRef.current).toBeUndefined()
+})
+
+test('successful edits reach the transcript and auto-open diff without a Mods runtime', async () => {
+  let state = { diffSidebarVisible: false }
+  let messages: any[] = []
+  const surfaces: any[] = []
+  const errors: unknown[] = []
+  const diff = new DiffController({ cwd: '/synthetic' })
+  diff.autoOpen = async surface => { surfaces.push(surface); return true }
+  const onEvent = extract('./REPL.tsx', 'onQueryEvent')({
+    handleMessageFromStream: (event: any, append: any) => append(event),
+    diffController: diff, store: { getState: () => state },
+    getDiffOwnership: () => false,
+    modsSession: { runtime: undefined, ui: { getSnapshot: () => [] } },
+    getSessionId: () => 'synthetic-session', process: { stdout: { columns: 144 } },
+    isFullscreenEnvEnabled: () => true, fileHistoryEnabled: () => true,
+    MIN_DIFF_SIDEBAR_COLUMNS: 110, logError: (error: unknown) => errors.push(error),
+    setAppState: (fn: any) => { state = fn(state) },
+    setMessages: (fn: any) => { messages = fn(messages) },
+    isCompactBoundaryMessage: () => false, feature: () => false,
+    setResponseLength: noop, setStreamMode: noop, setStreamingToolUses: noop,
+    setStreamingThinking: noop, onStreamingText: undefined,
+  })
+  const assistant = { type: 'assistant', message: { content: [
+    { type: 'tool_use', id: 'edit-1', name: 'Edit', input: {} },
+  ] } }
+  const result = { type: 'user', message: { content: [
+    { type: 'tool_result', tool_use_id: 'edit-1', content: 'done' },
+  ] } }
+  try {
+    onEvent(assistant)
+    onEvent(result)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(messages).toEqual([assistant, result])
+    expect(surfaces).toEqual([{ columns: 144, isFullscreen: true, hasDock: false, checkpointing: true }])
+    expect(state.diffSidebarVisible).toBe(true)
+    expect(errors).toEqual([])
+  } finally {
+    diff.dispose()
+  }
+})
+
+test('live diff ownership suppresses native edit observations and fences a pending sidebar open', async () => {
+  let owned = false
+  let state = { diffSidebarVisible: false }
+  let messages: any[] = []
+  const surfaces: unknown[] = []
+  const errors: unknown[] = []
+  const pending = deferred()
+  const diff = new DiffController({ cwd: '/synthetic' })
+  const observe = spyOn(diff, 'observeMessage')
+  diff.autoOpen = async surface => { surfaces.push(surface); await pending.promise; return true }
+  const onEvent = extract('./REPL.tsx', 'onQueryEvent')({
+    handleMessageFromStream: (event: any, append: any) => append(event),
+    diffController: diff, store: { getState: () => state },
+    getDiffOwnership: () => owned,
+    modsSession: { runtime: undefined, ui: { getSnapshot: () => [] } },
+    getSessionId: () => 'synthetic-session', process: { stdout: { columns: 144 } },
+    isFullscreenEnvEnabled: () => true, fileHistoryEnabled: () => true,
+    MIN_DIFF_SIDEBAR_COLUMNS: 110, logError: (error: unknown) => errors.push(error),
+    setAppState: (fn: any) => { state = fn(state) },
+    setMessages: (fn: any) => { messages = fn(messages) },
+    isCompactBoundaryMessage: () => false, feature: () => false,
+    setResponseLength: noop, setStreamMode: noop, setStreamingToolUses: noop,
+    setStreamingThinking: noop, onStreamingText: undefined,
+  })
+  const edit = (id: string) => {
+    onEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Edit', input: {} }] } })
+    onEvent({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'done' }] } })
+  }
+  try {
+    edit('pending')
+    expect(surfaces).toHaveLength(1)
+    expect(observe).toHaveBeenCalledTimes(2)
+    owned = true
+    pending.resolve()
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(state.diffSidebarVisible).toBe(false)
+    edit('taken-over')
+    expect(observe).toHaveBeenCalledTimes(2)
+    expect(surfaces).toHaveLength(1)
+    expect(messages).toHaveLength(4)
+    owned = false
+    edit('restored')
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(observe).toHaveBeenCalledTimes(4)
+    expect(surfaces).toHaveLength(2)
+    expect(state.diffSidebarVisible).toBe(true)
+    expect(messages).toHaveLength(6)
+    expect(errors).toEqual([])
+  } finally {
+    observe.mockRestore()
+    diff.dispose()
+  }
+})
+
+test('the REPL native controller reads current ownership before probes and preference writes', async () => {
+  let owned = false
+  let probes = 0
+  let config: any = {}
+  class ObservedController extends DiffController {
+    constructor(options: ConstructorParameters<typeof DiffController>[0]) {
+      super({ ...options, createBackend: async () => ({
+        root: '/synthetic',
+        fetch: async () => { probes++; return { kind: 'unavailable', reason: 'fixture' } },
+        fetchBody: async () => ({ status: 'no-body', hunks: [] }),
+        headKey: async () => null,
+      }) })
+    }
+  }
+  const diff = extract('./REPL.tsx', '[diffController]')({
+    isRemoteExecutionSession: false, DiffController: ObservedController,
+    diffOwnershipRef: { current: () => owned },
+    getCwd: () => '/synthetic', addNotification: noop,
+    getGlobalConfig: () => config,
+    saveGlobalConfig: (fn: any) => { config = fn(config) },
+  })() as DiffController
+  try {
+    await diff.refresh()
+    expect(probes).toBe(1)
+    diff.setOpenPreference(false)
+    expect(config.diffSidebarOpen).toBe(false)
+    owned = true
+    await diff.refresh()
+    diff.setOpenPreference(true)
+    expect(probes).toBe(1)
+    expect(config.diffSidebarOpen).toBe(false)
+    owned = false
+    await diff.refresh()
+    diff.setOpenPreference(true)
+    expect(probes).toBe(2)
+    expect(config.diffSidebarOpen).toBe(true)
+  } finally {
+    diff.dispose()
+  }
+})
+
+test('diff open preference is global while base stays repository scoped', async () => {
+  let config: any = { diffPreferences: { '/repo-a': { mode: 'branch' }, '/repo-b': { mode: 'uncommitted' } } }
+  let cwd = '/repo-a'
+  const makeDiff = extract('./REPL.tsx', '[diffController]')({
+    isRemoteExecutionSession: false, DiffController, initialMessages: [],
+    diffOwnershipRef: { current: () => false },
+    getCwd: () => cwd, addNotification: noop,
+    getGlobalConfig: () => config,
+    saveGlobalConfig: (fn: any) => { config = fn(config) },
+  })
+  const first = makeDiff() as DiffController
+  first.setOpenPreference(false)
+  expect(config.diffSidebarOpen).toBe(false)
+  expect(config.diffPreferences).toEqual({ '/repo-a': { mode: 'branch' }, '/repo-b': { mode: 'uncommitted' } })
+  cwd = '/repo-b/subdir'
+  const second = makeDiff() as DiffController
+  // A global close must suppress opening without probing this other repository.
+  second.refresh = () => { throw new Error('unexpected Git probe') }
+  expect(await second.autoOpen({ columns: 144, isFullscreen: true, checkpointing: true, hasDock: false })).toBe(false)
+  second.setOpenPreference(true)
+  expect(config.diffSidebarOpen).toBe(true)
+  first.dispose()
+  second.dispose()
+})
+
+test('startup resume dates the diff baseline from activation, not historical messages', async () => {
+  const starts: number[] = []
+  class ObservedController extends DiffController {
+    constructor(options: ConstructorParameters<typeof DiffController>[0]) {
+      super({ ...options, createBackend: async options => { starts.push(options.sessionStartMs); return null } })
+    }
+  }
+  const before = Date.now()
+  const diff = extract('./REPL.tsx', '[diffController]')({
+    isRemoteExecutionSession: false, DiffController: ObservedController,
+    diffOwnershipRef: { current: () => false },
+    initialMessages: [{ timestamp: '2020-01-01T00:00:00Z' }],
+    getCwd: () => '/repo', addNotification: noop, getGlobalConfig: () => ({}), saveGlobalConfig: noop,
+  })() as DiffController
+  await diff.refresh()
+  expect(starts[0]).toBeGreaterThanOrEqual(before)
+  diff.dispose()
+})
+
+test('diff hands an open sidebar to a dialog when layout narrows and respects an explicit close', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const declarations = new Map<string, string>()
+  let sidebarVisible = ''
+  let centeredModal = ''
+  function visit(node: ts.Node) {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      const name = node.name.getText(file)
+      if (
+        name === 'otherModalOverlayActive' ||
+        name === 'nativeDiffVisible' ||
+        name === 'canShowDiffSidebar' ||
+        name === 'showResponsiveDiffDialog'
+      ) {
+        declarations.set(name, node.initializer.getText(file))
+      }
+      if (name === 'centeredModal') centeredModal = node.initializer.getText(file)
+    }
+    if (ts.isJsxAttribute(node) && node.name.getText(file) === 'sidebarPane' &&
+      node.initializer && ts.isJsxExpression(node.initializer) &&
+      node.initializer.expression && ts.isConditionalExpression(node.initializer.expression)) {
+      sidebarVisible = node.initializer.expression.condition.getText(file)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(declarations.has('otherModalOverlayActive')).toBe(true)
+  expect(declarations.has('nativeDiffVisible')).toBe(true)
+  expect(declarations.has('canShowDiffSidebar')).toBe(true)
+  expect(declarations.has('showResponsiveDiffDialog')).toBe(true)
+  expect(sidebarVisible).not.toBe('')
+  expect(centeredModal).toContain('responsiveDiffDialog')
+
+  const evaluate = new Function('scope', `with (scope) {
+    const otherModalOverlayActive = ${declarations.get('otherModalOverlayActive')};
+    const nativeDiffVisible = ${declarations.get('nativeDiffVisible')};
+    const canShowDiffSidebar = ${declarations.get('canShowDiffSidebar')};
+    const showResponsiveDiffDialog = ${declarations.get('showResponsiveDiffDialog')};
+    return { sidebar: ${sidebarVisible}, dialog: showResponsiveDiffDialog };
+  }`)
+  const state = {
+    activeOverlays: new Set<string>(),
+    diffSidebarVisible: true,
+  }
+  const scope = {
+    get diffSidebarVisible() { return state.diffSidebarVisible },
+    diffOwned: false,
+    useAppState: (select: (value: typeof state) => unknown) => select(state),
+    screen: 'prompt',
+    modTerminalSize: { columns: 144 }, modDock: [] as unknown[],
+    MIN_DIFF_SIDEBAR_COLUMNS: 110,
+    toolJSX: null, focusedInputDialog: undefined,
+    showBashesDialog: false, exitFlow: null,
+  }
+  const presentation = () => evaluate(scope) as { sidebar: boolean; dialog: boolean }
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
+  scope.diffOwned = true
+  for (const columns of [109, 110, 144]) {
+    scope.modTerminalSize.columns = columns
+    expect(presentation()).toEqual({ sidebar: false, dialog: false })
+    expect(state.diffSidebarVisible).toBe(true)
+  }
+  scope.diffOwned = false
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
+  scope.modTerminalSize.columns = 109
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.modTerminalSize.columns = 110
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
+  scope.modDock = [{}]
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.toolJSX = { jsx: {} }
+  expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  scope.toolJSX = null
+  scope.modDock = []
+  expect(presentation()).toEqual({ sidebar: true, dialog: false })
+  scope.modTerminalSize.columns = 109
+  scope.screen = 'transcript'
+  expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.screen = 'prompt'
+  state.activeOverlays.add('select')
+  expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  expect(state.diffSidebarVisible).toBe(true)
+  state.activeOverlays.clear()
+  state.activeOverlays.add('diff-dialog')
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
+  state.activeOverlays.clear()
+  expect(presentation()).toEqual({ sidebar: false, dialog: true })
+  state.diffSidebarVisible = false
+  for (const columns of [109, 110, 144]) {
+    scope.modTerminalSize.columns = columns
+    expect(presentation()).toEqual({ sidebar: false, dialog: false })
+  }
+})
+
+test('Diff sidebar leaves PromptInput active while its responsive dialog takes ownership', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let expression = ''
+  function visit(node: ts.Node) {
+    if (
+      ts.isJsxAttribute(node) &&
+      node.name.getText(file) === 'isLocalJSXCommandActive' &&
+      node.initializer &&
+      ts.isJsxExpression(node.initializer)
+    ) {
+      expression = node.initializer.expression!.getText(file)
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(expression).not.toContain('diffSidebarKeyboardActive')
+  expect(expression).toContain('isShowingLocalJSXCommand')
+  expect(expression).toContain('showResponsiveDiffDialog')
+  // A focused Pane retains the mounted composer; focus routing owns its keys.
+  expect(expression).not.toContain('modPaneFocused')
+  expect(expression).toContain('modAbovePromptFocused')
+  const active = new Function(
+    'isShowingLocalJSXCommand',
+    'showResponsiveDiffDialog',
+    'modPaneFocused',
+    'modAbovePromptFocused',
+    `return ${expression}`,
+  )
+  expect(active(false, false, false, false)).toBe(false)
+  expect(active(false, true, false, false)).toBe(true)
+  expect(active(false, false, false, true)).toBe(true)
+  expect(active(false, false, true, false)).toBe(false)
+})
+
+test('Diff sidebar leaves keyboard navigation with the composer and background tasks', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let options: ts.ObjectLiteralExpression | undefined
+  function visit(node: ts.Node) {
+    if (
+      ts.isCallExpression(node) &&
+      node.expression.getText(file) === 'useBackgroundTaskNavigation' &&
+      node.arguments[0] &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      options = node.arguments[0]
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(options).toBeDefined()
+  const isActive = options!.properties.find(
+    property => property.name?.getText(file) === 'isActive',
+  )
+  expect(isActive?.getText(file)).toBe('isActive: true')
+})
+
+test('Diff dialog owns scroll keys while unrelated overlays keep transcript scrolling', () => {
+  const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
+  const file = ts.createSourceFile('REPL.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  let expression = ''
+  const declarations: string[] = []
+  function visit(node: ts.Node) {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText(file) === 'diffDialogActive'
+    )
+      declarations.push(`const ${node.getText(file)};`)
+    if (ts.isJsxAttribute(node) && node.name.getText(file) === 'isKeyboardActive' &&
+      node.initializer && ts.isJsxExpression(node.initializer))
+      expression = node.initializer.expression!.getText(file)
+    ts.forEachChild(node, visit)
+  }
+  visit(file)
+  expect(expression).not.toBe('')
+  expect(declarations.join('\n')).not.toContain('diffSidebarKeyboardActive')
+  const js = ts.transpileModule(`${declarations.join('\n')}\nreturn ${expression};`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
+  }).outputText
+  const state = { activeOverlays: new Set<string>() }
+  const scope = {
+    modPaneFocused: false,
+    modAbovePromptFocused: false,
+    modUiPresentation: {
+      composerEmpty: true,
+      hasDialog: false,
+      keyboardOwned: false,
+    },
+    useAppState: (select: (s: typeof state) => unknown) => select(state),
+  }
+  const active = () => new Function('scope', `with (scope) { ${js} }`)(scope)
+  expect(active()).toBe(true)
+  scope.modUiPresentation.composerEmpty = false
+  expect(active()).toBe(true)
+  scope.modUiPresentation.composerEmpty = true
+  state.activeOverlays.add('diff-dialog')
+  expect(active()).toBe(false)
+  state.activeOverlays.clear()
+  state.activeOverlays.add('other-dialog')
+  expect(active()).toBe(true)
+  scope.modPaneFocused = true
+  expect(active()).toBe(false)
+})
+
+test('diff lifecycle follows session identity, not compaction row keys', () => {
+  const resets: string[] = []
+  let state = { diffSidebarVisible: true }
+  const scope = {
+    diffSession: { current: 'session-a' }, diffSessionId: 'session-a',
+    conversationId: 'new-compact-row-key', diffCwd: '/repo',
+    diffController: { cwd: '/repo', reset: (cwd: string) => resets.push(cwd) },
+    setAppState: (fn: any) => { state = fn(state) },
+  }
+  const effect = extract('./REPL.tsx', 'diffSession.current', 'effect')(scope)
+  effect()
+  expect(resets).toEqual([])
+  expect(state.diffSidebarVisible).toBe(true)
+  scope.diffSessionId = 'session-b'
+  effect()
+  expect(resets).toEqual(['/repo'])
+  expect(state.diffSidebarVisible).toBe(false)
+})
+
+test('successful same-ID resume resets diff without waiting for identity change', async () => {
+  let resets = 0
+  let state: any = { diffSidebarVisible: true }
+  let replaced = false
+  const diffSession = { current: 'same-id' }
+  const restoredCosts: unknown[] = []
+  const log = { sessionId: 'same-id', messages: [] }
+  const resume = extract('./REPL.tsx', 'resume')({
+    deserializeMessages: (messages: any) => [...messages], feature: () => false,
+    getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
+    processSessionStartHooks: async () => [], mainThreadAgentDefinition: undefined,
+    mainLoopModel: 'synthetic', copyPlanForResume: noop, restoreSessionStateFromLog: noop,
+    restoreAgentFromSession: () => ({}), initialMainThreadAgentDefinition: undefined,
+    agentDefinitions: {}, setMainThreadAgentDefinition: noop,
+    setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
+    updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    getCwd: () => '/repo', getUserContext: Object.assign(async () => ({}), { cache: { clear: noop } }),
+    resetLoadingState: noop, setAbortController: noop,
+    setConversationId: noop, saveCurrentSessionCosts: noop,
+    restoreSessionCosts: (log: unknown) => { restoredCosts.push(log); return false },
+    resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
+    importModule: async () => ({ renameRecordingForSession: async () => {} }),
+    resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    setHaikuTitle: noop, exitRestoredWorktree: noop, restoreWorktreeForResume: noop,
+    adoptResumedSessionFile: noop, restoreRemoteAgentTasks: noop, store: { getState: () => state },
+    setMessages: () => { replaced = true }, modsSession: undefined,
+    restoreGoalSessionFromLog: noop, contentReplacementStateRef: { current: null },
+    setToolJSX: noop, setInputValue: noop, logEvent: noop, diffSession,
+    getSessionId: () => 'same-id', diffController: { reset: () => { resets++ } },
+  })
+  await resume('same-id', log, 'command')
+  expect(restoredCosts).toHaveLength(1)
+  expect(restoredCosts[0]).toBe(log)
+  expect(replaced).toBe(true)
+  expect(resets).toBe(1)
+  expect(state.diffSidebarVisible).toBe(false)
+  expect(diffSession.current).toBe('same-id')
+})
+
+test('rewind resets diff state even though the session ID is unchanged', () => {
+  const target = { type: 'user', uuid: 'target' } as any
+  const order: string[] = []
+  let state: any = { diffSidebarVisible: true, toolPermissionContext: { mode: 'default' } }
+  rewindConversationTo(target, {
+    messages: [target], logEvent: noop,
+    setMessages: messages => { expect(messages).toEqual([]); order.push('messages') },
+    resetDiff: () => { order.push('diff') },
+    setConversationId: () => { order.push('conversation') },
+    resetMicrocompactState: noop, resetContextCollapse: noop,
+    setAppState: fn => { state = fn(state) },
+  })
+  expect(order).toEqual(['messages', 'diff', 'conversation'])
+  expect(state.diffSidebarVisible).toBe(false)
+  expect(state.sendMessagePins).toEqual({})
+})
+
+test('rewind plans retain earlier messages and restore permission without mutating state', () => {
+  const earlier = { type: 'user', uuid: 'earlier', message: { content: 'retained' } } as any
+  const target = { type: 'user', uuid: 'target', permissionMode: 'plan' } as any
+  const messages = [earlier, target, { type: 'user', uuid: 'later' } as any]
+  const previous: any = { diffSidebarVisible: true, toolPermissionContext: { mode: 'default' }, sendMessagePins: { stale: {} } }
+  const plan = prepareConversationRewind(messages, target)!
+  expect(plan.messages).toEqual([earlier])
+  expect(plan.metrics).toEqual({ preRewindMessageCount: 3, postRewindMessageCount: 1, messagesRemoved: 2, rewindToMessageIndex: 1 })
+  expect(plan.updateAppState(previous)).toMatchObject({ diffSidebarVisible: false, toolPermissionContext: { mode: 'plan' }, sendMessagePins: {}, promptSuggestion: { text: null } })
+  expect(previous.diffSidebarVisible).toBe(true)
+  expect(previous.toolPermissionContext.mode).toBe('default')
+  expect(messages).toHaveLength(3)
+  expect(prepareConversationRewind(messages, { type: 'user', uuid: 'missing' } as any)).toBeUndefined()
+})
+
+function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'prompt', stash = undefined as any,
+  commands = [] as any[], result = {} as any, remote = false } = {}) {
+  const mods = deferred()
+  const hooks = deferred()
+  if (gap !== 'mods') mods.resolve()
+  if (gap !== 'hooks') hooks.resolve()
+  const draft = { text: input, cursor: input.length, mode, paste: {} as any, undo: ['old'], history: 3, stash }
+  const epoch = { current: 0 }
+  const ref = { current: input }
+  const modeRef = { current: mode }
+  const pasteRef = { current: draft.paste }
+  const stashRef = { current: stash }
+  const mutate = (fn: () => void) => { epoch.current++; fn() }
+  const setText = (v: string) => mutate(() => { draft.text = v; ref.current = v })
+  const setMode = (v: string) => mutate(() => { draft.mode = v; modeRef.current = v })
+  const setPaste = (v: any) => mutate(() => { draft.paste = typeof v === 'function' ? v(pasteRef.current) : v; pasteRef.current = draft.paste })
+  const setStash = (v: any) => mutate(() => { draft.stash = v; stashRef.current = v })
+  const helpers = {
+    getCursorOffset: () => draft.cursor,
+    setCursorOffset: (v: number) => mutate(() => { draft.cursor = v }),
+    clearBuffer: () => mutate(() => { draft.undo = [] }),
+    resetHistory: () => mutate(() => { draft.history = -1 }),
+  }
+  const guard = { isActive: active, reserve() { this.isActive = true }, cancelReservation() { this.isActive = false } }
+  const executions: any[] = []
+  const queued: any[] = []
+  const history: any[] = []
+  const remoteMessages: any[] = []
+  const lowerScope: Record<string, any> = {
+    parseReferences: (s: string) => [...s.matchAll(/\[Image #(\d+)\]/g)].map(m => ({ id: Number(m[1]) })), expandPastedTextRefs: (s: string) => s,
+    isValidImagePaste: (c: any) => c.type === 'image', isCommandEnabled: () => true,
+    getCommandName: (c: any) => c.name, logEvent: noop, logForDebugging: noop,
+    enqueue: (v: any) => queued.push(v), startQueryProfile: noop, queryCheckpoint: noop,
+    createAbortController: () => new AbortController(), runWithWorkload: (_: any, fn: any) => fn(),
+    runImmediateModCommand, isCommandImmediate,
+    processUserInput: async (p: any) => {
+      executions.push(p)
+      const settled = p.mode === 'prompt' && (p.skipSlashCommands || !p.input.startsWith('/'))
+        ? { messages: [{ type: 'user', uuid: 'test-message', message: { content: p.input } }], shouldQuery: true, ...result }
+        : { messages: [], shouldQuery: false, ...result }
+      p.onPromptAdmission?.(settled)
+      return settled
+    },
+    fileHistoryEnabled: () => false, createUserMessage: (p: any) => ({ ...p, uuid: 'test-message' }),
+  }
+  lowerScope.executeUserInput = makeExecute(lowerScope)
+  lowerScope.handlePromptSubmit = makeHandle(lowerScope)
+  const scope: Record<string, any> = {
+    ...lowerScope, inputValueRef: ref, inputModeRef: modeRef,
+    draftGenerationRef: epoch, pastedContentsRef: pasteRef, stashedPromptRef: stashRef,
+    inputMode: mode, pastedContents: draft.paste, stashedPrompt: stash,
+    setInputValue: setText, setInputMode: setMode, setPastedContents: setPaste, setStashedPrompt: setStash,
+    repinScroll: noop, feature: () => false,
+    modsSession: { runtime: { activePublicTurnId: active ? 'turn-active' : undefined } }, awaitMods: () => mods.promise,
+    awaitPendingHooks: () => hooks.promise, commands, getCurrentCommands: () => commands, queryGuard: guard, isLoading: active,
+    isExternalLoading: false, activeRemote: { isRemoteMode: remote, sendMessage: async (c: any) => { remoteMessages.push(c); return true } },
+    sshRemote: { isRemoteMode: false }, isRemoteExecutionSession: false,
+    getFeatureValue_CACHED_MAY_BE_STALE: () => 'off', idleHintShownRef: { current: false },
+    lastQueryCompletionTimeRef: { current: 0 }, skipIdleCheckRef: { current: false },
+    getGlobalConfig: () => ({}), getTotalInputTokens: () => 0,
+    addToHistory: (v: any) => history.push(v), prependModeCharacterToInput: (s: string, m: string) => m === 'bash' ? '!' + s : s,
+    prependToShellHistoryCache: noop, setIDESelection: noop, setSubmitCount: noop,
+    tipPickedThisTurnRef: { current: false }, setUserInputOnProcessing: noop, resetTimingRefs: noop,
+    setToolJSX: noop, getToolUseContext: () => ({}), messagesRef: { current: [] },
+    mainLoopModel: 'test', ideSelection: { text: 'selection-at-submit' }, setAbortController: noop,
+    abortController: undefined, onQuery: async () => {}, setAppState: noop, getQuerySourceForREPL: () => 'repl_main',
+    onBeforeQuery: undefined, canUseTool: undefined, addNotification: noop, setMessages: noop,
+    streamModeRef: { current: undefined }, hasInterruptibleToolInProgressRef: { current: false },
+    isFullscreenEnvEnabled: () => true,
+  }
+  const submit = makeSubmit(scope)
+  scope.onSubmitRef = { current: submit }
+  return { submit, scope, lowerScope, helpers, draft, guard, executions, queued, history, epoch, remoteMessages,
+    setText, setMode, setPaste, setStash, release: () => { mods.resolve(); hooks.resolve() } }
+}
+
+for (const gap of ['mods', 'hooks']) {
+  test(`${gap}: active→idle consumes the draft once, before the barrier`, async () => {
+    const h = harness({ gap })
+    const pending = h.submit('submitted', h.helpers)
+    // For the second gap, let the already-resolved Mods barrier advance.
+    await Promise.resolve()
+    expect(h.draft.text).toBe('')
+    expect(h.draft.undo).toEqual([])
+    h.guard.isActive = false
+    h.release()
+    await pending
+    expect(h.executions).toHaveLength(1)
+    expect(h.queued).toHaveLength(0)
+    expect(h.draft.text).toBe('')
+  })
+
+  test(`${gap}: queueing must not clear a new draft or change submitted mode`, async () => {
+    const h = harness({ gap, mode: 'bash' })
+    const pending = h.submit('submitted', h.helpers)
+    await Promise.resolve()
+    h.setText('next draft')
+    h.setMode('prompt')
+    h.setPaste({ 7: { id: 7, type: 'image', content: 'new' } })
+    h.helpers.setCursorOffset(2)
+    h.draft.undo = ['next undo']
+    h.release()
+    await pending
+    expect(h.queued).toHaveLength(1)
+    expect(h.queued[0].mode).toBe('bash')
+    expect(h.draft).toMatchObject({ text: 'next draft', cursor: 2, mode: 'prompt', undo: ['next undo'] })
+    expect(h.draft.paste[7].content).toBe('new')
+  })
+}
+
+test('commands activated during the Mods barrier are available before a React render', async () => {
+  let calls = 0
+  const h = harness({input:'/new-panel'})
+  const pending = h.submit('/new-panel', h.helpers)
+  const command = {name:'new-panel', type:'local-jsx', immediate:true,
+    load:async () => ({call:(done:any) => {calls++; done()}})}
+  h.scope.getCurrentCommands = () => [command]
+  h.release()
+  await pending
+  expect(calls).toBe(1)
+  expect(h.queued).toEqual([])
+})
+
+for (const active of [true, false]) {
+  for (const wait of [false, true]) {
+    test(`composer metadata survives ${active ? 'queue' : 'direct'} ${wait ? 'queue-submit' : 'plain'} dispatch`, async () => {
+      const h = harness({active})
+      const pending = h.submit('submitted', h.helpers, undefined, { wait })
+      h.release()
+      await pending
+      const received = active ? h.queued[0] : h.executions[0]
+      expect(received.promptSubmitMetadata).toEqual({
+        origin: { kind: 'composer' },
+        wait,
+        ...(active ? { turnId: 'turn-active' } : {}),
+      })
+    })
+  }
+}
+
+test('turnId is captured before barriers while scheduling uses the live guard', async () => {
+  const h = harness()
+  const pending = h.submit('submitted', h.helpers)
+  h.scope.modsSession.runtime.activePublicTurnId = 'newer-turn'
+  h.guard.isActive = false
+  h.release()
+  await pending
+  expect(h.executions[0].promptSubmitMetadata.turnId).toBe('turn-active')
+  expect(h.queued).toEqual([])
+})
+
+test('idle ingress does not acquire a later turnId when another turn starts during barriers', async () => {
+  const h = harness({ active: false })
+  const pending = h.submit('submitted', h.helpers)
+  h.guard.isActive = true
+  h.scope.modsSession.runtime.activePublicTurnId = 'later-turn'
+  h.release()
+  await pending
+  expect(h.queued).toHaveLength(1)
+  expect(h.queued[0].promptSubmitMetadata).toEqual({ origin: { kind: 'composer' }, wait: false })
+  expect(h.executions[0].promptSubmitMetadata.turnId).toBeUndefined()
+})
+
+test('late nextInput must not overwrite a same-text new edit', async () => {
+  const h = harness({ active: false, input: '/later', result: { nextInput: 'command result' } })
+  const pending = h.submit('/later', h.helpers)
+  h.setText('/later')
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('/later')
+})
+
+test('keybinding never consumes the existing draft even if its text equals the command', async () => {
+  const h = harness({ active: false, input: '/config', mode: 'bash' })
+  const before = structuredClone(h.draft)
+  const pending = h.submit('/config', h.helpers, undefined, { fromKeybinding: true })
+  h.release()
+  await pending
+  expect(h.draft).toEqual(before)
+  expect(h.history).toEqual([])
+})
+
+const savedStash = { text: 'saved draft', cursorOffset: 2, pastedContents: { 4: { id: 4, type: 'text', content: 'saved' } } }
+
+for (const active of [false, true]) {
+  for (const input of ['normal', '/command']) {
+    test(`stash restores once: ${active ? 'queued' : 'direct'} ${input}`, async () => {
+      const h = harness({ active, input, stash: savedStash })
+      const pending = h.submit(input, h.helpers)
+      h.release()
+      await pending
+      expect(h.draft.text).toBe(savedStash.text)
+      expect(h.draft.cursor).toBe(2)
+      expect(h.draft.paste).toEqual(savedStash.pastedContents)
+      expect(h.draft.stash).toBeUndefined()
+      expect(h.executions).toHaveLength(active && input.startsWith('/') ? 0 : 1)
+      expect(h.queued).toHaveLength(active ? 1 : 0)
+    })
+  }
+}
+
+const edits: Record<string, (h: ReturnType<typeof harness>) => void> = {
+  text: h => h.setText('new draft'),
+  'same text after editing': h => { h.setText('temporary'); h.setText('') },
+  attachment: h => h.setPaste({ 7: { id: 7, type: 'image', content: 'new' } }),
+  mode: h => h.setMode('bash'),
+  cursor: h => h.helpers.setCursorOffset(0),
+  undo: h => h.helpers.clearBuffer(),
+  history: h => h.helpers.resetHistory(),
+  stash: h => h.setStash({ ...savedStash, text: 'new stash' }),
+}
+for (const [name, edit] of Object.entries(edits)) {
+  test(`late nextInput and stash preserve ${name} even with empty text`, async () => {
+    const h = harness({ active: false, input: '/later', stash: savedStash, result: { nextInput: 'result' } })
+    const pending = h.submit('/later', h.helpers)
+    edit(h)
+    const edited = structuredClone(h.draft)
+    h.release()
+    await pending
+    expect(h.draft).toEqual(edited)
+    expect(h.draft.stash).toBeDefined()
+  })
+}
+
+test('legitimate nextInput wins over stash and keeps the stash available', async () => {
+  const h = harness({ active: false, input: '/later', stash: savedStash, result: { nextInput: 'result' } })
+  const pending = h.submit('/later', h.helpers)
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('result')
+  expect(h.draft.cursor).toBe(6)
+  expect(h.draft.stash).toEqual(savedStash)
+})
+
+test('submitNextInput enqueues exactly once without consuming the new draft', async () => {
+  const h = harness({ active: false, input: '/later', result: { nextInput: 'result', submitNextInput: true } })
+  const pending = h.submit('/later', h.helpers)
+  h.setText('new draft')
+  h.release()
+  await pending
+  expect(h.queued).toEqual([{ value: 'result', mode: 'prompt' }])
+  expect(h.draft.text).toBe('new draft')
+})
+
+for (const active of [true, false]) {
+  for (const transition of [false, true]) {
+    test(`keybinding preserves every draft field: active=${active}, transition=${transition}`, async () => {
+      let calls = 0
+      const command = { name: 'config', type: 'local-jsx', immediate: true,
+        load: async () => ({ call: (done: any) => { calls++; done(undefined, { nextInput: 'result' }) } }) }
+      const h = harness({ active, input: '/config', mode: 'bash', commands: [command], stash: savedStash,
+        result: { nextInput: 'result' } })
+      h.setPaste(savedStash.pastedContents)
+      const before = structuredClone(h.draft)
+      const pending = h.submit('/config', h.helpers, undefined, { fromKeybinding: true })
+      if (transition) h.guard.isActive = !active
+      h.release()
+      await pending
+      expect(h.draft).toEqual(before)
+      expect(h.history).toEqual([])
+      expect(calls + h.executions.length).toBe(1)
+    })
+  }
+}
+
+test('keybinding accepts nextInput only into its untouched empty composer', async () => {
+  const h = harness({ active: false, input: '', result: { nextInput: 'result' } })
+  const pending = h.submit('/config', h.helpers, undefined, { fromKeybinding: true })
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('result')
+})
+
+for (const nextInput of [undefined, 'replacement']) {
+  test(`immediate local-jsx restores stash or nextInput (${nextInput})`, async () => {
+    const command = { name: 'config', type: 'local-jsx', immediate: true,
+      load: async () => ({ call: (done: any) => done(undefined, { nextInput }) }) }
+    const h = harness({ input: '/config', commands: [command], stash: savedStash })
+    const pending = h.submit('/config', h.helpers)
+    expect(h.draft.text).toBe('')
+    h.release()
+    await pending
+    expect(h.executions).toEqual([])
+    expect(h.queued).toEqual([])
+    expect(h.draft.text).toBe(nextInput ?? savedStash.text)
+    expect(h.draft.stash).toEqual(nextInput ? savedStash : undefined)
+  })
+}
+
+test('immediate command load gap preserves a new draft and supports submitNextInput', async () => {
+  const loading = deferred()
+  const entered = deferred()
+  const command = { name: 'config', type: 'local-jsx', immediate: true,
+    load: async () => { entered.resolve(); await loading.promise; return {
+      call: (done: any) => done(undefined, { nextInput: 'followup', submitNextInput: true }),
+    } } }
+  const h = harness({ input: '/config', commands: [command], stash: savedStash })
+  const pending = h.submit('/config', h.helpers)
+  h.release()
+  await entered.promise
+  h.setText('/config')
+  loading.resolve()
+  await pending
+  expect(h.draft.text).toBe('/config')
+  expect(h.draft.stash).toEqual(savedStash)
+  expect(h.queued).toEqual([{ value: 'followup', mode: 'prompt' }])
+})
+
+test('dequeue executes real callback with NOOP editor helpers', async () => {
+  const h = harness({ active: false, result: { nextInput: 'ignored' } })
+  const before = structuredClone(h.draft)
+  const executeQueued = extract('./REPL.tsx', 'executeQueuedInput')({ ...h.scope, messages: [] })
+  await executeQueued([{ value: 'queued', mode: 'prompt' }])
+  expect(h.executions).toHaveLength(1)
+  expect(h.draft).toEqual(before)
+  expect(h.history).toEqual([])
+})
+
+test('admitted queued prompt bypasses hooks on dequeue and carries settled turn text', async () => {
+  const h = harness({ active: false })
+  const queries: any[][] = []
+  h.scope.onQuery = async (...args: any[]) => { queries.push(args) }
+  const executeQueued = extract('./REPL.tsx', 'executeQueuedInput')({ ...h.scope, messages: [] })
+  const message = { type: 'user', uuid: 'admitted-message', message: { content: 'rewritten' } }
+  await executeQueued([{
+    value: 'original',
+    mode: 'prompt',
+    admitted: {
+      messages: [message],
+      admission: { text: 'rewritten', context: ['reviewed'], origin: { kind: 'composer' } },
+    },
+  }])
+  expect(h.executions).toEqual([])
+  expect(queries).toHaveLength(1)
+  expect(queries[0]![8]).toEqual({ text: 'rewritten' })
+})
+
+test('prompt admission runs before enqueue and the settled result is reused once', async () => {
+  const h = harness()
+  const gate = deferred()
+  const entered = deferred()
+  const message = { type: 'user', uuid: 'settled', message: { content: 'rewritten' } }
+  const settled = { messages: [message], shouldQuery: true,
+    admission: { text: 'rewritten', origin: { kind: 'composer' } } }
+  h.lowerScope.processUserInput = async (p: any) => {
+    h.executions.push(p)
+    entered.resolve()
+    await gate.promise
+    p.onPromptAdmission?.(settled)
+    expect(h.queued).toHaveLength(1)
+    return settled
+  }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await entered.promise
+  expect(h.queued).toEqual([])
+  h.setText('new draft')
+  gate.resolve()
+  await pending
+  expect(h.queued[0].admitted.messages).toEqual([message])
+  h.guard.isActive = false
+  const queries: any[][] = []
+  h.scope.onQuery = async (...args: any[]) => { queries.push(args) }
+  const executeQueued = extract('./REPL.tsx', 'executeQueuedInput')({ ...h.scope, messages: [] })
+  await executeQueued(h.queued.splice(0))
+  expect(h.executions).toHaveLength(1)
+  expect(queries[0]?.[0]).toEqual([message])
+  expect(queries[0]?.[8]).toEqual({ text: 'rewritten' })
+  expect(h.draft.text).toBe('new draft')
+})
+
+test('core refusal displays its reason without queueing or starting another turn', async () => {
+  const warning = { type: 'system', content: 'blocked by core' }
+  const h = harness({ result: { messages: [warning], shouldQuery: false, admission: { drop: 'blocked by core' } } })
+  let messages: any[] = []
+  h.scope.setMessages = (update: any) => { messages = update(messages) }
+  h.scope.onQuery = async () => { throw new Error('refused input must not start a turn') }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await pending
+  expect(h.queued).toEqual([])
+  expect(messages).toEqual([warning])
+  expect(h.guard.isActive).toBe(true)
+})
+
+test('batched admitted prompts retain each receipt and peer dequeue still skips hooks', async () => {
+  const h = harness({ active: false })
+  const queries: any[][] = []
+  h.scope.onQuery = async (...args: any[]) => { queries.push(args) }
+  const executeQueued = extract('./REPL.tsx', 'executeQueuedInput')({ ...h.scope, messages: [] })
+  await executeQueued(['one', 'two'].map(text => ({
+    value: `original ${text}`, mode: 'prompt',
+    admitted: { shouldQuery: true, messages: [{ type: 'user', uuid: text, message: { content: text } }], admission: { text } },
+  })))
+  expect(h.executions).toEqual([])
+  expect(queries[0]?.[0].map((message: any) => message.message.content)).toEqual(['one', 'two'])
+  expect(queries[0]?.[8]).toEqual({ text: 'one\ntwo' })
+  await executeQueued([{ value: '/peer-text', mode: 'prompt', skipSlashCommands: true, origin: { kind: 'peer' } }])
+  expect(h.executions).toHaveLength(1)
+  expect(h.executions[0].skipHooks).toBe(true)
+  expect(h.executions[0].skipSlashCommands).toBe(true)
+})
+
+test('queued slash and bash keep deferred execution while remote slash text is admitted', async () => {
+  for (const [mode, skipSlashCommands, input] of [
+    ['prompt', false, '/status'], ['bash', false, 'pwd'], ['prompt', true, '/remote'],
+  ] as const) {
+    const h = harness({ input, mode })
+    await h.lowerScope.handlePromptSubmit({
+      ...h.scope, input, mode, skipSlashCommands,
+      commands: [], messages: [], querySource: 'repl_main_thread',
+      onInputChange: h.setText,
+    })
+    expect(h.queued).toHaveLength(1)
+    if (skipSlashCommands) {
+      expect(h.executions).toHaveLength(1)
+      expect(h.executions[0].skipSlashCommands).toBe(true)
+    } else {
+      expect(h.executions).toEqual([])
+      expect(h.queued[0].admitted).toBeUndefined()
+    }
+  }
+})
+
+test('a replacement turn racing admitted input preserves the whole result instead of replaying hooks', async () => {
+  const queued: any[] = []
+  const onQuery = extract('./REPL.tsx', 'onQuery')({
+    isAgentSwarmsEnabled: () => false,
+    queryGuard: { tryStart: () => null },
+    logEvent: noop, enqueue: (command: any) => queued.push(command),
+    getUserContentText: (content: string) => content,
+  })
+  const messages = [
+    { type: 'user', uuid: 'settled', message: { content: 'rewritten' } },
+    { type: 'attachment', attachment: { type: 'hook_additional_context', content: ['retained'] } },
+  ]
+  await onQuery(messages, new AbortController(), true, ['Read'], 'fixture', undefined, 'original', 'high', { text: 'rewritten' })
+  expect(queued).toHaveLength(1)
+  expect(queued[0].admitted).toMatchObject({ messages, shouldQuery: true, allowedTools: ['Read'], model: 'fixture', effort: 'high' })
+})
+
+test('admission failure never overwrites the running abort controller or a newer draft', async () => {
+  const h = harness()
+  const entered = deferred()
+  const gate = deferred()
+  const controller = new AbortController()
+  h.scope.abortController = controller
+  let replacements = 0
+  h.scope.setAbortController = () => { replacements++ }
+  h.scope.getToolUseContext = (_messages: any, _newMessages: any, current: AbortController) => {
+    expect(current).not.toBe(controller)
+    return {}
+  }
+  h.lowerScope.processUserInput = async () => {
+    entered.resolve()
+    await gate.promise
+    throw new Error('admission failed')
+  }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await entered.promise
+  h.setText('new draft')
+  gate.resolve()
+  await expect(pending).rejects.toThrow('admission failed')
+  expect(h.draft.text).toBe('new draft')
+  expect(h.queued).toEqual([])
+  expect(controller.signal.aborted).toBe(false)
+  expect(replacements).toBe(0)
+  expect(h.guard.isActive).toBe(true)
+})
+
+for (const order of ['dismissal-first', 'abort-first'] as const) {
+  test(`${order} Mod authoring consent cancellation restores the unadmitted draft`, async () => {
+    const command: Command = {
+      type: 'prompt',
+      name: 'plugin-authoring',
+      description: 'request Mod authoring consent',
+      progressMessage: 'testing',
+      contentLength: 0,
+      source: 'builtin',
+      async getPromptForCommand(_args, context) {
+        await context.requestModAuthoringConsent?.(context.abortController.signal)
+        return [{ type: 'text', text: 'consent granted' }]
+      },
+    }
+    const h = harness({ active: false, input: '/plugin-authoring', commands: [command] })
+    h.scope.setPastedContents = extract('./REPL.tsx', 'setPastedContents')({
+      draftGenerationRef: h.epoch,
+      pastedContentsRef: h.scope.pastedContentsRef,
+      setPastedContentsState: (value: any) => { h.draft.paste = value },
+    })
+    const controller = new AbortController()
+    const promptQueue: any[] = []
+    const setPromptQueue = (update: (previous: any[]) => any[]) => {
+      promptQueue.splice(0, promptQueue.length, ...update(promptQueue))
+    }
+    const requestPrompt = extract('./REPL.tsx', 'requestPrompt')({
+      useCallback: (callback: unknown) => callback,
+      setPromptQueue,
+      logForDebugging: noop,
+    })('mod_hot_reload', undefined, () => new ModAuthoringPromptDismissedError())
+    const modsSession = createModsSession({
+      isTrusted: true,
+      getSettings: () => ({
+        userSettings: null,
+        flagSettings: null,
+        policySettings: null,
+        hookPolicy: { managedOnly: false, allDisabled: false },
+      }),
+      loadPlugins: async () => [],
+      authoringRoot: () => '/config/dev-mods/session',
+    })
+    await modsSession.bind({
+      cwd: '/repo',
+      sessionId: 'session',
+      surface: 'terminal',
+      isInteractive: true,
+    })
+    h.lowerScope.processUserInput = async (params: any) => processSlashCommand(
+      params.input,
+      [],
+      [],
+      [],
+      {
+        options: {
+          commands: [command],
+          tools: [],
+          isNonInteractiveSession: false,
+          mcpResources: {},
+        },
+        messages: [],
+        abortController: controller,
+        requestModAuthoringConsent: signal =>
+          modsSession.requestAuthoringConsent(requestPrompt, signal),
+        getAppState: () => ({ sessionState: { sessionHooks: {} } }),
+        setAppState: noop,
+      } as never,
+      noop,
+    )
+
+    try {
+      const pending = h.submit('/plugin-authoring', h.helpers)
+      h.release()
+      const deadline = Date.now() + 4_000
+      while (promptQueue.length === 0 && Date.now() < deadline)
+        await new Promise<void>(resolve => setImmediate(resolve))
+      expect(promptQueue).toHaveLength(1)
+      const [item] = promptQueue
+      h.scope.setPastedContents((previous: any) => previous)
+      if (order === 'abort-first') controller.abort('user-cancel')
+      item.reject(item.dismissError())
+      if (order === 'dismissal-first') controller.abort('user-cancel')
+
+      await expect(pending).rejects.toBeInstanceOf(ModAuthoringPromptDismissedError)
+      expect(h.draft.text).toBe('/plugin-authoring')
+      expect(h.draft.cursor).toBe('/plugin-authoring'.length)
+      expect(h.executions).toEqual([])
+      expect(h.queued).toEqual([])
+    } finally {
+      await modsSession.dispose()
+    }
+  })
+}
+
+test('post-admission drop displays only the new warning and does not undo the queued prompt', async () => {
+  const h = harness()
+  const message = { type: 'user', uuid: 'settled', message: { content: 'entered' } }
+  const warning = { type: 'system', content: 'post-next warning' }
+  h.lowerScope.processUserInput = async (p: any) => {
+    p.onPromptAdmission({ messages: [message], shouldQuery: true, admission: { text: 'entered' } })
+    return { messages: [message, warning], shouldQuery: false }
+  }
+  let shown: any[] = []
+  h.scope.setMessages = (update: any) => { shown = update(shown) }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await pending
+  expect(shown).toEqual([warning])
+  expect(h.queued).toHaveLength(1)
+  expect(h.queued[0].admitted.messages).toEqual([message])
+})
+
+test('failure after admission reports the error without restoring a duplicate draft', async () => {
+  const h = harness()
+  h.lowerScope.processUserInput = async (p: any) => {
+    p.onPromptAdmission({ messages: [{ type: 'user', uuid: 'entered', message: { content: 'entered' } }], shouldQuery: true })
+    throw new Error('cancelled after admission')
+  }
+  const pending = h.submit('submitted', h.helpers)
+  h.release()
+  await expect(pending).rejects.toThrow('cancelled after admission')
+  expect(h.queued).toHaveLength(1)
+  expect(h.draft.text).toBe('')
+})
+
+test('reference attachments and IDE selection are snapshots before the barrier', async () => {
+  const h = harness({ active: false, input: 'image [Image #1]', mode: 'bash' })
+  const original = { 1: { id: 1, type: 'image', content: 'old' } }
+  h.setPaste(original)
+  const pending = h.submit('image [Image #1]', h.helpers)
+  h.setPaste({ 2: { id: 2, type: 'image', content: 'new' } })
+  h.scope.ideSelection = { text: 'new selection' }
+  h.release()
+  await pending
+  expect(h.executions[0].pastedContents).toEqual(original)
+  expect(h.executions[0].ideSelection).toEqual({ text: 'selection-at-submit' })
+  expect(h.executions[0].mode).toBe('bash')
+  expect(h.history[0].pastedContents).toEqual(original)
+  expect(h.draft.paste[2].content).toBe('new')
+})
+
+test('remote sends the captured attachments without consuming later edits', async () => {
+  const h = harness({ remote: true, input: 'image [Image #1]' })
+  h.setPaste({ 1: { id: 1, type: 'image', content: 'old' } })
+  const pending = h.submit('image [Image #1]', h.helpers)
+  h.setText('new remote draft')
+  h.setPaste({ 2: { id: 2, type: 'image', content: 'new' } })
+  h.release()
+  await pending
+  expect(h.remoteMessages).toHaveLength(1)
+  expect(h.remoteMessages[0][1].source.data).toBe('old')
+  expect(h.draft.text).toBe('new remote draft')
+  expect(h.executions).toEqual([])
+})
+
+for (const edit of [false, true]) {
+  test(`remote send failure restores only the original owner (edit=${edit})`, async () => {
+    const h = harness({ remote: true })
+    h.scope.activeRemote.sendMessage = async () => false
+    const pending = h.submit('submitted', h.helpers)
+    if (edit) h.setText('new draft')
+    h.release()
+    await pending
+    expect(h.draft.text).toBe(edit ? 'new draft' : 'submitted')
+  })
+}
+
+for (const queryRequired of [false, true]) {
+  test(`speculation stays separate and preserves new draft (queryRequired=${queryRequired})`, async () => {
+    const h = harness({ active: false })
+    let queries = 0
+    let acceptInput = ''
+    h.scope.handleSpeculationAccept = async (_s: any, _t: any, _a: any, input: string) => { acceptInput = input; return { queryRequired } }
+    h.scope.readFileState = {}
+    h.scope.getOriginalCwd = () => '/isolated'
+    h.scope.onQuery = async () => { queries++ }
+    const pending = h.submit('suggestion', h.helpers, { state: {}, speculationSessionTimeSavedMs: 5, setAppState: noop })
+    h.setText('new draft')
+    h.release()
+    await pending
+    expect(acceptInput).toBe('suggestion')
+    expect(queries).toBe(queryRequired ? 1 : 0)
+    expect(h.executions).toEqual([])
+    expect(h.draft.text).toBe('new draft')
+  })
+}
+
+for (const edit of [false, true]) {
+  test(`error restores snapshot without replay or overwriting edits (edit=${edit})`, async () => {
+    const h = harness({ active: false, mode: 'bash' })
+    h.helpers.setCursorOffset(2)
+    h.scope.awaitPendingHooks = async () => { throw new Error('hook failed') }
+    const pending = h.submit('submitted', h.helpers)
+    if (edit) h.setText('new draft')
+    h.release()
+    await expect(pending).rejects.toThrow('hook failed')
+    expect(h.draft.text).toBe(edit ? 'new draft' : 'submitted')
+    if (!edit) expect(h.draft).toMatchObject({ cursor: 2, mode: 'bash' })
+    expect(h.executions).toEqual([])
+    expect(h.queued).toEqual([])
+  })
+}
+
+for (const action of ['resume', 'restore']) {
+  test(`idle dialog ${action} keeps the complete submission snapshot`, async () => {
+    const h = harness({ active: false, mode: 'bash', input: 'image [Image #1]' })
+    let dialog: any
+    h.scope.getFeatureValue_CACHED_MAY_BE_STALE = () => 'dialog'
+    h.scope.lastQueryCompletionTimeRef.current = Date.now() - 100 * 60_000
+    h.scope.getTotalInputTokens = () => 200_000
+    h.scope.setIdleReturnPending = (v: any) => { dialog = v }
+    h.helpers.setCursorOffset(3)
+    const paste = { 1: { id: 1, type: 'image', content: 'old' } }
+    h.setPaste(paste)
+    await h.submit('image [Image #1]', h.helpers)
+    expect(dialog).toBeDefined()
+    expect(h.executions).toEqual([])
+    expect(h.history).toEqual([])
+    if (action === 'resume') {
+      h.setText('new draft')
+      h.setMode('prompt')
+      h.setPaste({})
+      h.scope.skipIdleCheckRef.current = true
+      h.release()
+      await dialog.resume()
+      expect(h.executions).toHaveLength(1)
+      expect(h.executions[0].mode).toBe('bash')
+      expect(h.executions[0].pastedContents).toEqual(paste)
+      expect(h.draft.text).toBe('new draft')
+    } else {
+      dialog.restore()
+      expect(h.draft).toMatchObject({ text: 'image [Image #1]', mode: 'bash', cursor: 3, paste })
+    }
+  })
+}
+
+test('empty submission has no editor, history, or barrier side effects', async () => {
+  const h = harness({ input: '' })
+  const before = structuredClone(h.draft)
+  let barriers = 0
+  h.scope.awaitMods = async () => { barriers++ }
+  await h.submit('  ', h.helpers)
+  expect(h.draft).toEqual(before)
+  expect(h.history).toEqual([])
+  expect(barriers).toBe(0)
+})
+
+test('/exit executes once after barriers without leaving its input behind', async () => {
+  const h = harness({ active: false, input: '/exit' })
+  const pending = h.submit('/exit', h.helpers)
+  expect(h.draft.text).toBe('')
+  expect(h.guard.isActive).toBe(false)
+  h.release()
+  await pending
+  expect(h.executions).toHaveLength(1)
+  expect(h.executions[0].input).toBe('/exit')
+})
+
+
+test('real REPL setters advance ownership synchronously except pasted-content no-ops', () => {
+  const generation = { current: 0 }
+  const base: Record<string, any> = {
+    draftGenerationRef: generation, inputValueRef: { current: '' },
+    inputModeRef: { current: 'prompt' }, pastedContentsRef: { current: {} },
+    stashedPromptRef: { current: undefined },
+    trySuggestBgPRIntercept: () => false, lastUserScrollTsRef: { current: Date.now() },
+    RECENT_SCROLL_REPIN_WINDOW_MS: 3000, repinScroll: noop,
+    setInputValueRaw: noop, setIsPromptInputActive: noop,
+    setInputModeState: noop, setPastedContentsState: noop, setStashedPromptState: noop,
+  }
+  for (const [name, value] of [
+    ['setInputValue', ''], ['setInputMode', 'prompt'],
+    ['setStashedPrompt', undefined],
+  ] as const) {
+    const set = extract('./REPL.tsx', name)(base)
+    const before = generation.current
+    set(value)
+    expect(generation.current).toBe(before + 1)
+  }
+  const setPaste = extract('./REPL.tsx', 'setPastedContents')(base)
+  const beforeNoop = generation.current
+  setPaste((prev: any) => prev)
+  expect(generation.current).toBe(beforeNoop)
+  setPaste({ 1: { content: 'one' } })
+  expect(generation.current).toBe(beforeNoop + 1)
+  setPaste((prev: any) => ({ ...prev, 2: { content: 'two' } }))
+  expect(generation.current).toBe(beforeNoop + 2)
+  expect(base.pastedContentsRef.current).toEqual({ 1: { content: 'one' }, 2: { content: 'two' } })
+})
+
+test('real PromptInput cursor, undo, and history callbacks report ownership changes', () => {
+  let edits = 0
+  let cursor = 1
+  let resets = 0
+  let clears = 0
+  const base = {
+    onInputStateChange: () => { edits++ }, cursorOffsetRef: { current: 1 },
+    setCursorOffsetState: (value: number) => { cursor = value },
+    undoBuffer: () => ({ text: 'undo' }), clearInputBuffer: () => { clears++ },
+    resetInputHistory: () => { resets++ },
+  }
+  const path = '../components/PromptInput/PromptInput.tsx'
+  extract(path, 'setCursorOffset')(base)(1)
+  expect(edits).toBe(1)
+  expect(cursor).toBe(1)
+  expect(extract(path, 'undo')(base)()).toEqual({ text: 'undo' })
+  extract(path, 'clearBuffer')(base)()
+  extract(path, 'resetHistory')(base)()
+  expect(edits).toBe(4)
+  expect(clears).toBe(1)
+  expect(resets).toBe(1)
+})
+
+test('real command-keybinding handlers mark synthetic commands and use NOOP editor helpers', () => {
+  const calls: any[][] = []
+  const handlers = extract('../hooks/useCommandKeybindings.tsx', 'handlers')({
+    commandActions: new Set(['command:config']), onSubmit: (...args: any[]) => calls.push(args),
+    NOOP_HELPERS: { setCursorOffset: noop, clearBuffer: noop, resetHistory: noop },
+  })()
+  handlers['command:config']()
+  expect(calls).toHaveLength(1)
+  expect(calls[0]![0]).toBe('/config')
+  expect(calls[0]![3]).toEqual({ fromKeybinding: true })
+})
+
+test('real PromptInput rejects suggestions and empty input before invoking submission', async () => {
+  const calls: any[] = []
+  const path = '../components/PromptInput/PromptInput.tsx'
+  const base = {
+    store: { getState: () => ({}) }, footerItems: [], pastedContents: {},
+    promptSuggestionState: {}, speculation: {}, isAgentSwarmsEnabled: () => false,
+    suggestionsState: { suggestions: [] as any[] }, logForDebugging: noop,
+    removeNotification: noop, getActiveAgentForInput: () => ({ type: 'leader' }),
+    onSubmitProp: async (...args: any[]) => { calls.push(args) }, onAgentSubmit: undefined,
+    setCursorOffset: noop, getCursorOffset: () => 0, clearBuffer: noop, resetHistory: noop,
+  }
+  const submit = extract(path, 'onSubmit')(base)
+  await submit('')
+  base.suggestionsState.suggestions = [{ description: 'file' }]
+  await submit('blocked')
+  expect(calls).toEqual([])
+  await submit('/actual', true)
+  expect(calls).toHaveLength(1)
+  expect(calls[0]![0]).toBe('/actual')
+})
+
+test('real PromptInput accepts a shown suggestion after case-only edits', async () => {
+  const calls: any[] = []
+  const accepted: string[] = []
+  const path = '../components/PromptInput/PromptInput.tsx'
+  const base = {
+    store: { getState: () => ({}) }, footerItems: [], pastedContents: {},
+    promptSuggestionState: { text: 'Run the tests', shownAt: 1 },
+    speculation: {}, isAgentSwarmsEnabled: () => false,
+    markAccepted: () => accepted.push('accepted'), logOutcomeAtSubmission: noop,
+    suggestionsState: { suggestions: [] as any[] }, logForDebugging: noop,
+    removeNotification: noop, getActiveAgentForInput: () => ({ type: 'leader' }),
+    onSubmitProp: async (...args: any[]) => { calls.push(args) }, onAgentSubmit: undefined,
+    setCursorOffset: noop, getCursorOffset: () => 0, clearBuffer: noop, resetHistory: noop,
+  }
+
+  await extract(path, 'onSubmit')(base)('run the tests')
+
+  expect(accepted).toEqual(['accepted'])
+  expect(calls[0]![0]).toBe('Run the tests')
+})
+
+test('useInputBuffer.clearBuffer cancels the pending debounce, not just rendered history', async () => {
+  let buffer!: UseInputBufferResult
+  const tick = () => new Promise<void>(resolve => setImmediate(resolve))
+  function Probe() {
+    buffer = useInputBuffer({ maxBufferSize: 10, debounceMs: 20 })
+    return null
+  }
+  const stdout = Object.assign(new PassThrough(), { columns: 80, rows: 24, isTTY: false })
+  const stdin = Object.assign(new PassThrough(), { isTTY: false, setRawMode: noop })
+  const app = await render(React.createElement(Probe), {
+    stdout: stdout as unknown as NodeJS.WriteStream, stderr: stdout as unknown as NodeJS.WriteStream,
+    stdin: stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false, patchConsole: false,
+  })
+  try {
+    buffer.pushToBuffer('submitted', 9)
+    await tick()
+    buffer.pushToBuffer('pending old draft', 17)
+    buffer.clearBuffer()
+    await tick()
+    // This is the hook's actual debounce deadline, not polling for readiness.
+    await new Promise(resolve => setTimeout(resolve, 40))
+    await tick()
+    expect(buffer.undo()).toBeUndefined()
+    expect(buffer.canUndo).toBe(false)
+    buffer.pushToBuffer('new draft', 3)
+    await tick()
+    expect(buffer.undo()?.text).toBe('new draft')
+  } finally {
+    app.unmount()
+    app.cleanup()
+  }
+})
+
+
+test('direct processUserInput gap protects new text, history and undo until query completion', async () => {
+  const h = harness({ active: false, input: '/later' })
+  const processing = deferred()
+  const entered = deferred()
+  h.lowerScope.processUserInput = async () => {
+    entered.resolve()
+    await processing.promise
+    return { messages: [{ type: 'user', uuid: 'test' }], shouldQuery: false, nextInput: 'late result' }
+  }
+  const pending = h.submit('/later', h.helpers)
+  h.release()
+  await entered.promise
+  h.setText('new text')
+  h.helpers.setCursorOffset(3)
+  h.draft.history = 9
+  h.draft.undo = ['new undo']
+  const edited = structuredClone(h.draft)
+  processing.resolve()
+  await pending
+  expect(h.draft).toEqual(edited)
+})
+
+for (const fullscreen of [false, true]) {
+  for (const entry of ['repl', 'lower']) {
+    test(`${entry}: conditional immediate command respects fullscreen=${fullscreen}`, async () => {
+      let calls = 0
+      const command = { name: 'diff', type: 'local-jsx',
+        immediate: (_args: string, context: any) => context.modCommand.presentation.isFullscreen,
+        load: async () => ({ call: (done: any) => { calls++; done() } }) }
+      const h = harness({ input: '/diff', commands: [command] })
+      h.scope.getToolUseContext = () => ({ modCommand: { presentation: { isFullscreen: fullscreen } } })
+      if (entry === 'repl') {
+        const pending = h.submit('/diff', h.helpers)
+        h.release()
+        await pending
+      } else {
+        await h.lowerScope.handlePromptSubmit({
+          ...h.scope, input: '/diff', mode: 'prompt', commands: [command], helpers: h.helpers,
+          onInputChange: h.setText, messages: [], querySource: 'repl_main',
+        })
+      }
+      expect(calls).toBe(fullscreen ? 1 : 0)
+      expect(h.queued).toHaveLength(fullscreen ? 0 : 1)
+    })
+  }
+}
+
+test('lower immediate dispatch also leaves the caller-owned editor untouched', async () => {
+  const h = harness({ input: '/config' })
+  const before = structuredClone(h.draft)
+  const command = { name: 'config', type: 'local-jsx', immediate: true,
+    load: async () => ({ call: (done: any) => done() }) }
+  await h.lowerScope.handlePromptSubmit({
+    ...h.scope, input: '/config', mode: 'prompt', commands: [command], helpers: h.helpers,
+    onInputChange: h.setText, messages: [], querySource: 'repl_main',
+  })
+  expect(h.draft).toEqual(before)
+})
+
+test('viewed-agent submit consumes before Mods and never clears a later edit', async () => {
+  const h = harness()
+  let sent = 0
+  const runningTask = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: runningTask } }) },
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => { sent++; return true },
+  })
+  const pending = submit('submitted', runningTask, h.helpers)
+  expect(h.draft.text).toBe('')
+  h.setText('next draft')
+  h.release()
+  await pending
+  expect(sent).toBe(1)
+  expect(h.draft.text).toBe('next draft')
+})
+
+test.each(['completed', 'missing', 'running'])('local Agent submit uses fresh %s state after Mods', async status => {
+  const h = harness()
+  const task = { id: 'local', type: 'local_agent', status: status === 'running' ? 'completed' : 'running' }
+  const currentTask = status === 'missing' ? undefined : { ...task, status }
+  const queued: string[] = []
+  const resumed: string[] = []
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { local: currentTask } }) },
+    isLocalAgentTask: (value: any) => value?.type === 'local_agent',
+    appendMessageToLocalAgent: noop,
+    createUserMessage: (value: any) => value,
+    queuePendingMessage: (id: string) => queued.push(id),
+    resumeAgentBackground: async ({ agentId }: any) => { resumed.push(agentId) },
+    getToolUseContext: () => ({}),
+    canUseTool: noop,
+  })
+  const pending = submit('submitted', task, h.helpers)
+  h.release()
+  await pending
+  expect(queued).toEqual(status === 'running' ? ['local'] : [])
+  expect(resumed).toEqual(status === 'running' ? [] : ['local'])
+})
+
+test('viewed teammate that finishes during Mods keeps the input and reports it was not sent', async () => {
+  const h = harness()
+  const taskAtSubmit = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
+  let currentTask = taskAtSubmit
+  const notifications: any[] = []
+  let sent = 0
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: currentTask } }) },
+    addNotification: (notification: any) => notifications.push(notification),
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => { sent++; return false },
+  })
+  const pending = submit('submitted', taskAtSubmit, h.helpers)
+  expect(h.draft.text).toBe('')
+  currentTask = { ...taskAtSubmit, status: 'completed' }
+  h.release()
+  await pending
+  expect(sent).toBe(0)
+  expect(h.draft.text).toBe('submitted')
+  expect(notifications).toEqual([
+    expect.objectContaining({
+      key: 'teammate-message-not-sent-teammate',
+      text: 'Teammate has stopped; message was not sent.',
+    }),
+  ])
+})
+
+test('teammate terminal transition during injection retains the input and restores the draft', async () => {
+  const h = harness()
+  const task = { id: 'teammate', type: 'in_process_teammate', status: 'running' }
+  const notifications: any[] = []
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: task } }) },
+    addNotification: (notification: any) => notifications.push(notification),
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => false,
+  })
+  const pending = submit('submitted', task, h.helpers)
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('submitted')
+  expect(notifications).toHaveLength(1)
+})
+
+
+test('terminal teammate rejection does not overwrite a later edit', async () => {
+  const h = harness()
+  const task = { id: 'teammate', type: 'in_process_teammate', status: 'completed' }
+  const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+    store: { getState: () => ({ tasks: { teammate: task } }) },
+    addNotification: noop,
+    isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+    injectUserMessageToTeammate: () => false,
+  })
+  const pending = submit('submitted', task, h.helpers)
+  h.setText('next draft')
+  h.release()
+  await pending
+  expect(h.draft.text).toBe('next draft')
+})
+
+for (const status of ['completed', 'failed', 'killed']) {
+  test(`viewed terminal teammate (${status}) keeps input instead of sending to the main agent`, async () => {
+    const h = harness()
+    const task = { id: 'teammate', type: 'in_process_teammate', status }
+    let sent = 0
+    let mainAgentSubmissions = 0
+    const submit = extract('./REPL.tsx', 'onAgentSubmit')({ ...h.scope,
+      store: { getState: () => ({ tasks: { teammate: task } }) },
+      addNotification: noop,
+      onSubmit: () => { mainAgentSubmissions++ },
+      isLocalAgentTask: () => false, isInProcessTeammateTask: (value: any) => value?.type === 'in_process_teammate',
+      injectUserMessageToTeammate: () => { sent++; return false },
+    })
+    const pending = submit('submitted', task, h.helpers)
+    h.release()
+    await pending
+    expect(sent).toBe(0)
+    expect(mainAgentSubmissions).toBe(0)
+    expect(h.draft.text).toBe('submitted')
+  })
+}
+
+
+for (const direction of ['Up', 'Down']) {
+  test(`history ${direction} claims the edit before async history retrieval`, () => {
+    let claimed = false
+    const history = () => { expect(claimed).toBe(true); return false }
+    const handler = extract('../components/PromptInput/PromptInput.tsx', `handleHistory${direction}`, 'function')({
+      suggestions: [], isCursorOnFirstLine: true, isCursorOnLastLine: true, queuedCommands: [],
+      isQueuedCommandEditable: () => false, footerItems: [],
+      onInputStateChange: () => { claimed = true }, onHistoryUp: history, onHistoryDown: history,
+    })
+    handler()
+    expect(claimed).toBe(true)
+  })
+}
+
+test('managed remote execution still skips local hooks and attachments', async () => {
+  const h = harness({ active: false })
+  h.scope.isRemoteExecutionSession = true
+  h.scope.awaitPendingHooks = () => { throw new Error('local hooks must not run') }
+  h.setPaste({ 1: { id: 1, type: 'image', content: 'local image' } })
+  const pending = h.submit('image [Image #1]', h.helpers)
+  h.release()
+  await pending
+  expect(h.executions).toHaveLength(1)
+  expect(h.executions[0].skipHooks).toBe(true)
+  expect(h.executions[0].skipAttachments).toBe(true)
+  expect(h.executions[0].pastedContents).toBeUndefined()
+  expect(h.executions[0].ideSelection).toBeUndefined()
+})
+
+test('concurrent submissions wait for Mods without early reservation and dispatch once each', async () => {
+  const h = harness({ active: false })
+  const processing = deferred()
+  const entered = deferred()
+  h.lowerScope.processUserInput = async (p: any) => {
+    h.executions.push(p)
+    if (p.input === 'first') {
+      entered.resolve()
+      await processing.promise
+    }
+    const settled = { messages: [{ type: 'user', uuid: p.input, message: { content: p.input } }], shouldQuery: true }
+    p.onPromptAdmission?.(settled)
+    return settled
+  }
+  const first = h.submit('first', h.helpers)
+  h.setText('second')
+  const second = h.submit('second', h.helpers)
+  expect(h.guard.isActive).toBe(false)
+  h.release()
+  await entered.promise
+  await second
+  expect(h.queued.map(c => c.value)).toEqual(['second'])
+  processing.resolve()
+  await first
+  expect(h.executions.map(c => c.input)).toEqual(['first', 'second'])
+  expect(h.queued[0].admitted.messages[0].message.content).toBe('second')
+  expect(h.draft.text).toBe('')
+})
+
+test('tracked queue commands settle removal exactly once and stay out of editable input', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let cancellations = 0
+  const admissions: unknown[] = []
+  const command = queue.enqueueTracked({
+    mode: 'prompt',
+    value: 'plugin follow-up',
+    priority: 'later',
+    promptSubmitReceipt: { admit: result=>{admissions.push(result)}, cancel: () => { cancellations++ } },
+  })
+  try {
+    expect(queue.popAllEditable('draft', 0)).toBeUndefined()
+    queue.remove([command])
+    queue.remove([command])
+    expect(cancellations).toBe(0)
+    expect(admissions).toEqual([{drop:'the prompt was removed from the queue before it ran'}])
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+test('queue processing keeps later proactive prompts separate from next prompts', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  const processor = await import('../utils/queueProcessor.js')
+  const batches: string[][] = []
+  try {
+    queue.enqueue({ mode: 'prompt', value: 'user prompt' })
+    queue.enqueue({ mode: 'prompt', value: 'plugin follow-up', priority: 'later' })
+    expect(processor.processQueueIfReady({
+      executeInput: async commands => {
+        batches.push(commands.map(command => command.value as string))
+      },
+    })).toEqual({ processed: true })
+    expect(batches).toEqual([['user prompt']])
+    expect(queue.getCommandQueue().map(command => command.value)).toEqual([
+      'plugin follow-up',
+    ])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+
+test('Mods usage captures the live REPL context and transcript when the capability is called', async () => {
+  let services: any
+  const oldContext = {messages:['old-context'],options:{mainLoopModel:'old'}}
+  const liveContext = {messages:['stale-context'],options:{mainLoopModel:'new'}}
+  const modToolContextRef = {current:() => oldContext}
+  const messagesRef = {current:['old-transcript']}
+  const captured: unknown[] = []
+  const reader = async () => ({context:{window:200000},rateLimits:[]})
+  const awaitMods = extract('./REPL.tsx','awaitMods')({
+    modsSession:{bind:async (_binding:unknown,_set:unknown,host:unknown) => {services=host}},
+    getCwd:() => '/repo',getOriginalCwd:() => '/repo',getSessionId:() => 'session',setAppState:noop,
+    messagesRef,modToolContextRef,
+    captureModSessionUsage:(context:unknown) => {captured.push(context);return reader},
+  })
+  await awaitMods()
+  expect(captured).toEqual([])
+  modToolContextRef.current = () => liveContext
+  messagesRef.current = ['live-transcript']
+  expect(services.captureUsage()).toBe(reader)
+  expect(captured).toEqual([{...liveContext,messages:['live-transcript']}])
+})
+
+
+test('Mods author tool host reads the live REPL context and permission consumer', async () => {
+  let services: any
+  const oldContext = {messages:['old']}
+  const liveContext = {messages:['live']}
+  const canUseTool = async () => ({behavior:'allow'})
+  const modToolContextRef = {current:() => oldContext}
+  const captured: unknown[] = []
+  const host = {call:noop,check:noop}
+  const awaitMods = extract('./REPL.tsx','awaitMods')({
+    modsSession:{bind:async (_binding:unknown,_set:unknown,value:unknown) => {services=value}},
+    getCwd:() => '/repo',getSessionId:() => 'session',getOriginalCwd:() => '/repo',setAppState:noop,
+    modToolContextRef, modCanUseToolRef:{current:canUseTool},
+    createModToolHost:(...args:unknown[]) => {captured.push(args);return host},
+  })
+  await awaitMods()
+  expect(captured).toEqual([])
+  modToolContextRef.current = () => liveContext
+  expect(services.toolHost).toBeFunction()
+  expect(services.toolHost()).toBe(host)
+  expect(captured).toEqual([[liveContext,canUseTool]])
+})
+
+
+test('Mods proactive prompt uses the REPL queue and settles on admission', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let services: any
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    enqueueTracked: queue.enqueueTracked, remove: queue.remove,
+  })
+  try {
+    await awaitMods()
+    const submitted = services.submitPrompt({
+      text: 'follow up',
+      attachments: [{ type: 'document', filename: 'notes.pdf' }],
+      origin: { kind: 'plugin', name: 'fixture' },
+      signal: new AbortController().signal,
+    })
+    const [command] = queue.getCommandQueue()
+    expect(command!.uuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(command).toMatchObject({
+      value: 'follow up',
+      priority: 'later',
+      origin: { kind: 'plugin', name: 'fixture' },
+      promptSubmitMetadata: {
+        origin: { kind: 'plugin', name: 'fixture' },
+        wait: false,
+        attachments: [{ type: 'document', filename: 'notes.pdf' }],
+      },
+    })
+    command!.promptSubmitReceipt!.admit({ text: 'accepted' })
+    await expect(submitted).resolves.toEqual({ text: 'accepted' })
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+test('Mods proactive prompt abort removes the exact REPL queue entry', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let services: any
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    enqueueTracked: queue.enqueueTracked, remove: queue.remove,
+  })
+  const controller = new AbortController()
+  try {
+    await awaitMods()
+    queue.enqueue({ mode: 'prompt', value: 'unrelated' })
+    const submitted = services.submitPrompt({
+      text: 'cancel me', origin: { kind: 'plugin', name: 'fixture' }, signal: controller.signal,
+    })
+    controller.abort(new Error('plugin unloaded'))
+    await expect(submitted).rejects.toThrow('plugin unloaded')
+    expect(queue.getCommandQueue().map(command => command.value)).toEqual(['unrelated'])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+test.each(['remove','clear','reset'] as const)('Mods queued prompt %s resolves the official drop receipt', async operation => {
+  const queue = await import('../utils/messageQueueManager.js')
+  let services: any
+  const awaitMods = extract('./REPL.tsx','awaitMods')({
+    modsSession:{bind:async (_binding:unknown,_set:unknown,host:unknown)=>{services=host}},
+    getCwd:()=>'/repo',getOriginalCwd:()=>'/repo',getSessionId:()=> 'session',
+    setAppState:noop,messagesRef:{current:[]},modToolContextRef:{current:noop},
+    enqueueTracked:queue.enqueueTracked,remove:queue.remove,
+  })
+  try {
+    await awaitMods()
+    const pending = services.submitPrompt({text:'queued',origin:{kind:'plugin',name:'fixture',asUser:true},signal:new AbortController().signal})
+    const handled = pending.then((value:unknown)=>({value}), (error:unknown)=>({error}))
+    const [command] = queue.getCommandQueue()
+    if (operation === 'remove') {queue.remove([command!]);queue.remove([command!])}
+    else if (operation === 'clear') queue.clearCommandQueue()
+    else queue.resetCommandQueue()
+    expect(await handled).toEqual({value:{drop:'the prompt was removed from the queue before it ran'}})
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {queue.resetCommandQueue()}
+})
+
+test('REPL settles a failed queued prompt and every unprocessed batch follower', async () => {
+  const h = harness({active:false})
+  const receipts: unknown[] = [], cancellations: unknown[] = []
+  const commands = ['first','second','third'].map(value=>({mode:'prompt',value,priority:'later',
+    promptSubmitReceipt:{admit:(result:unknown)=>receipts.push([value,result]),cancel:(reason:unknown)=>cancellations.push([value,reason])},
+  }))
+  const failure = new Error('first input failed')
+  h.lowerScope.processUserInput = async()=>{throw failure}
+  await expect(h.lowerScope.executeUserInput({...h.scope,messages:[],querySource:'repl_main',queuedCommands:commands})).rejects.toBe(failure)
+  expect(receipts).toEqual([
+    ['first',{drop:'the prompt did not go through prompt.submit (a command, bash mode, an input that did not query, or a failed pass)'}],
+    ['second',{drop:'an earlier prompt in the batch failed'}],
+    ['third',{drop:'an earlier prompt in the batch failed'}],
+  ])
+  expect(cancellations).toEqual([])
+  expect(h.guard.isActive).toBe(false)
+})
+
+test('REPL settles a queued prompt that never enters prompt.submit', async () => {
+  const h = harness({active:false})
+  const receipts: unknown[] = []
+  h.lowerScope.processUserInput = async()=>({messages:[],shouldQuery:false,resultText:'command output'})
+  await h.lowerScope.executeUserInput({...h.scope,messages:[],querySource:'repl_main',queuedCommands:[{
+    mode:'prompt',value:'not admitted',promptSubmitReceipt:{admit:(result:unknown)=>receipts.push(result),cancel:noop},
+  }]})
+  expect(receipts).toEqual([{drop:'the prompt did not go through prompt.submit (a command, bash mode, an input that did not query, or a failed pass)'}])
+})
+
+test('terminal dequeue forwards each member caller history independently across a batch', async () => {
+  const h = harness({ active: false })
+  const received: any[] = []
+  h.lowerScope.processUserInput = async (args: unknown) => {
+    received.push(args)
+    return { messages: [], shouldQuery: false, allowedTools: [], resultText: 'handled' }
+  }
+  const first = ['first', { plugin: 'p', registration: 1 }]
+  const second = ['second', { plugin: 'q', registration: 2 }]
+  await h.lowerScope.executeUserInput({ ...h.scope, messages: [], querySource: 'repl_main', queuedCommands: [
+    { mode: 'prompt', value: 'one', priority: 'later', promptSubmitCallerChain: first },
+    { mode: 'prompt', value: 'two', priority: 'later', promptSubmitCallerChain: second },
+  ] })
+  expect(received.map(args => args.promptSubmitCallerChain)).toEqual([first, second])
+  expect(received.map(args => args.promptSubmitMetadata)).toEqual([
+    { origin: { kind: 'unclassified' }, wait: false },
+    { origin: { kind: 'unclassified' }, wait: false },
+  ])
+})
+
+
+test('QueryEngine drains its own proactive prompt through real input admission', async () => {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const queue = await import('../utils/messageQueueManager.js')
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  let submitted: Promise<unknown> | undefined
+  const inputs: unknown[] = []
+  const metadata: unknown[] = []
+  const callerChains: unknown[] = []
+  const produced: any[] = []
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
+      inputs.push(args.input)
+      metadata.push(args.promptSubmitMetadata)
+      callerChains.push(args.promptSubmitCallerChain)
+      if (inputs.length === 1) {
+        submitted = services.submitPrompt({
+          text: 'plugin follow-up',
+          attachments: [{ type: 'document', mediaType: 'application/pdf', filename: 'notes.pdf' }],
+          origin: { kind: 'plugin', name: 'fixture' },
+          callerChain: ['earlier', { plugin: 'fixture', registration: 7 }],
+          signal: new AbortController().signal,
+        })
+      } else {
+        args.onPromptAdmission?.({
+          messages: [], shouldQuery: false, allowedTools: [], resultText: 'admitted',
+          admission: { text: 'plugin follow-up', origin: { kind: 'plugin', name: 'fixture' } },
+        })
+      }
+      const message = {type:'user' as const,uuid:`fixture-${inputs.length}`,message:{role:'user' as const,content:String(args.input)}}
+      produced.push(message)
+      return { messages: [message] as any, shouldQuery: false, allowedTools: [], resultText: 'done' }
+    }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
+      hostService: () => undefined,
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('initial', { skipAttachments: true })) void _message
+    expect(inputs).toEqual(['initial', 'plugin follow-up'])
+    expect(metadata[1]).toEqual({
+      origin: { kind: 'plugin', name: 'fixture' }, wait: false,
+      attachments: [{ type: 'document', mediaType: 'application/pdf', filename: 'notes.pdf' }],
+    })
+    expect(callerChains).toEqual([undefined, ['earlier', { plugin: 'fixture', registration: 7 }]])
+    await expect(submitted!).resolves.toEqual({
+      text: 'plugin follow-up', origin: { kind: 'plugin', name: 'fixture' },
+    })
+    expect(produced[1].origin).toEqual({kind:'plugin',name:'fixture'})
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {
+    queue.resetCommandQueue()
+    for (const mock of mocks) mock.mockRestore()
+  }
+})
+
+test('QueryEngine settles a Mods command.run receipt when its queued slash command runs', async () => {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const queue = await import('../utils/messageQueueManager.js')
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  let receipt: Promise<unknown> | undefined
+  const inputs: unknown[] = []
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
+      inputs.push(args.input)
+      if (inputs.length === 1) {
+        receipt = services.commandRun({
+          command: 'hello', args: 'queued', origin: { kind: 'plugin', name: 'fixture' }, signal: new AbortController().signal,
+        })
+      } else {
+        // A slash command result carries no prompt admission.
+        args.onPromptAdmission?.({
+          messages: [], shouldQuery: false, allowedTools: [], resultText: 'COMMAND_OUTPUT queued',
+          commandExitCode: 7, commandContext: ['hidden-command-note'],
+        })
+      }
+      return { messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }
+    }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
+      hostService: () => undefined,
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('initial', { skipAttachments: true })) void _message
+    expect(inputs).toEqual(['initial', '/hello queued'])
+    await expect(receipt!).resolves.toEqual({
+      text: 'COMMAND_OUTPUT queued', context: ['hidden-command-note'], exitCode: 7,
+    })
+    expect(queue.getCommandQueue()).toEqual([])
+  } finally {
+    queue.resetCommandQueue()
+    for (const mock of mocks) mock.mockRestore()
+  }
+})
+
+async function bindIdleModsEngine(hostServices: Record<string, unknown>) {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockResolvedValue({ messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
+      hostService: (key: string) => hostServices[key],
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('bind', { skipAttachments: true })) void _message
+  } finally {
+    for (const mock of mocks) mock.mockRestore()
+  }
+  return services
+}
+
+test('QueryEngine supplies Mods log and MCP connection services without replacing its host\'s', async () => {
+  const own = await bindIdleModsEngine({})
+  expect(() => own.uiLog('fixture', 'logged', 'transcript')).not.toThrow()
+  await expect(own.mcpConnect(undefined, 'docs', new AbortController().signal)).resolves.toMatchObject({ isConnected: false })
+  await expect(own.mcpRelease('fixture')).resolves.toBeUndefined()
+  const host = { uiLog: () => {}, mcpConnect: async () => ({ isConnected: true, server: 'docs' }), mcpRelease: async () => {} }
+  const hosted = await bindIdleModsEngine(host)
+  expect(hosted.uiLog).toBe(host.uiLog)
+  expect(hosted.mcpConnect).toBe(host.mcpConnect)
+  expect(hosted.mcpRelease).toBe(host.mcpRelease)
+})
+
+test('QueryEngine wakes its host for Mods input queued while idle, and refuses it without one', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  const request = () => ({ command: 'hello', args: '', origin: { kind: 'plugin' as const, name: 'fixture' }, signal: new AbortController().signal })
+  const prompt = () => ({ text: 'follow-up', origin: { kind: 'plugin' as const, name: 'fixture' }, callerChain: [], signal: new AbortController().signal })
+  try {
+    const alone = await bindIdleModsEngine({})
+    await expect(alone.commandRun(request())).rejects.toThrow('QueryEngine is idle')
+    await expect(alone.submitPrompt(prompt())).rejects.toThrow('QueryEngine is idle')
+    expect(queue.getCommandQueue()).toEqual([])
+    let wakes = 0
+    const hosted = await bindIdleModsEngine({ wake: () => { wakes++ } })
+    // The queue reset below cancels both receipts.
+    hosted.commandRun(request()).catch(noop)
+    hosted.submitPrompt(prompt()).catch(noop)
+    expect(wakes).toBe(2)
+    expect(queue.getCommandQueue().map(command => command.value)).toEqual(['/hello', 'follow-up'])
+  } finally {
+    queue.resetCommandQueue()
+  }
+})
+
+test('REPL binds Mods MCP calls to the current connection and forwards cancellation', async () => {
+  const { callMCPToolForMod, findMCPConnectionForMod } = await import('../services/mcp/client.js')
+  let services: any
+  const calls: unknown[] = []
+  const connection = {
+    name: 'fixture-server', type: 'connected', config: { type: 'sdk' }, capabilities: {},
+    cleanup: async () => {},
+    client: { callTool: async (request: unknown, _schema: unknown, options: any) => {
+      calls.push({ request, signal: options.signal })
+      return { content: [{ type: 'text', text: 'pong' }] }
+    } },
+  }
+  let clients: any[] = []
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session', setAppState: noop,
+    modToolContextRef: { current: () => ({ options: { mcpClients: clients } }) },
+    callMCPToolForMod, findMCPConnectionForMod,
+  })
+  await awaitMods()
+  clients = [connection]
+  const controller = new AbortController()
+  await expect(services.mcpCall('fixture-server', 'ping', { value: 1 }, controller.signal)).resolves.toEqual({
+    content: [{ type: 'text', text: 'pong' }], isError: false,
+  })
+  expect(calls).toEqual([{ request: { name: 'ping', arguments: { value: 1 } }, signal: controller.signal }])
+  controller.abort(new Error('cancel MCP'))
+  await expect(services.mcpCall('fixture-server', 'ping', {}, controller.signal)).rejects.toThrow('cancel MCP')
+  expect(calls).toHaveLength(1)
+})
+
+test('REPL Mods session model and turns read live state without building a ToolUseContext', async () => {
+  const { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } = await import('../utils/model/model.js')
+  const { countModSessionTurns } = await import('../services/mods/sessionTurns.js')
+  const { createUserMessage } = await import('../utils/messages.js')
+  let services: any
+  let state: any = { ...getDefaultAppState(), mainLoopModel: 'claude-opus-4-1', mainLoopModelForSession: null }
+  const messagesRef = { current: [
+    createUserMessage({ content: 'prompt' }),
+    createUserMessage({ content: [{ type: 'tool_result', tool_use_id: 'call', content: 'done' }] }),
+  ] }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session', setAppState: noop, messagesRef,
+    store: { getState: () => state },
+    modToolContextRef: { current: () => { throw new Error('built a ToolUseContext') } },
+    getDefaultMainLoopModelSetting, parseUserSpecifiedModel, countModSessionTurns,
+  })
+  await awaitMods()
+  expect(services.model()).toBe(parseUserSpecifiedModel('claude-opus-4-1'))
+  state = { ...state, mainLoopModelForSession: 'claude-sonnet-4-5' }
+  expect(services.model()).toBe(parseUserSpecifiedModel('claude-sonnet-4-5'))
+  state = { ...state, mainLoopModel: null, mainLoopModelForSession: null }
+  expect(services.model()).toBe(parseUserSpecifiedModel(getDefaultMainLoopModelSetting()))
+  expect(services.turns()).toBe(1)
+})
+
+test('QueryEngine binds Mods MCP calls to its configured connection', async () => {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const { getDefaultAppState } = await import('../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  const calls: unknown[] = []
+  const connection = {
+    name: 'fixture-server',
+    type: 'connected',
+    config: { type: 'sdk' },
+    capabilities: {},
+    cleanup: async () => {},
+    client: {
+      callTool: async (request: unknown) => {
+        calls.push(request)
+        return { content: [{ type: 'text', text: 'pong' }] }
+      },
+    },
+  }
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockResolvedValue({ messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [connection as any], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
+      hostService: () => undefined,
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('bind', { skipAttachments: true })) void _message
+    await expect(services.mcpCall('fixture-server', 'ping', { value: 1 }, new AbortController().signal)).resolves.toEqual({
+      content: [{ type: 'text', text: 'pong' }],
+      isError: false,
+    })
+    expect(calls).toEqual([{ name: 'ping', arguments: { value: 1 } }])
+  } finally {
+    for (const mock of mocks) mock.mockRestore()
+  }
+})
+
+test.each([false, true])('same-ID resume clears raw context after cwd/transcript restore before Mods bind (Mods=%s)', async withMods => {
+  let resets = 0
+  let state: any = { diffSidebarVisible: true }
+  let replaced = false
+  let cwd = '/old-repo'
+  let transcript = 'old-transcript'
+  const events: string[] = []
+  const getUserContext = memoize(async () => ({ claudeMd: `${cwd}:${transcript}` }))
+  expect(await getUserContext()).toEqual({ claudeMd: '/old-repo:old-transcript' })
+  const clearCache = getUserContext.cache.clear!.bind(getUserContext.cache)
+  const clear = spyOn(getUserContext.cache, 'clear').mockImplementation(() => {
+    events.push(`clear:${cwd}:${transcript}:${replaced}`)
+    clearCache()
+  })
+  const diffSession = { current: 'same-id' }
+  const restoredCosts: unknown[] = []
+  const log = { sessionId: 'same-id', messages: [] }
+  const resume = extract('./REPL.tsx', 'resume')({
+    deserializeMessages: (messages: any) => [...messages], feature: () => false,
+    getSessionEndHookTimeoutMs: () => 1000, executeSessionEndHooks: async () => {},
+    processSessionStartHooks: async () => [], mainThreadAgentDefinition: undefined,
+    mainLoopModel: 'synthetic', copyPlanForResume: noop, restoreSessionStateFromLog: noop,
+    restoreAgentFromSession: () => ({}), initialMainThreadAgentDefinition: undefined,
+    agentDefinitions: {}, setMainThreadAgentDefinition: noop,
+    setAppState: (fn: any) => { state = fn(state) }, computeStandaloneAgentContext: noop,
+    updateSessionName: noop, restoreReadFileState: noop, getOriginalCwd: () => '/repo',
+    getCwd: () => cwd, getUserContext, resetLoadingState: noop, setAbortController: noop,
+    setConversationId: noop, saveCurrentSessionCosts: noop,
+    restoreSessionCosts: (log: unknown) => { restoredCosts.push(log); return false },
+    resetCostState: noop, switchSession: noop, asSessionId: (id: string) => id,
+    importModule: async () => ({ renameRecordingForSession: async () => {} }),
+    resetSessionFilePointer: async () => {}, clearSessionMetadata: noop,
+    restoreSessionMetadata: noop, haikuTitleAttemptedRef: { current: false },
+    setHaikuTitle: noop, exitRestoredWorktree: noop,
+    restoreWorktreeForResume: () => { cwd = '/target-repo' },
+    adoptResumedSessionFile: () => { transcript = 'target-transcript' },
+    restoreRemoteAgentTasks: noop, store: { getState: () => state },
+    setMessages: () => { replaced = true },
+    modsSession: withMods ? { runtime: { invalidatePromptContext: () => events.push('invalidate') } } : undefined,
+    awaitMods: async () => {
+      events.push('bind')
+      expect(await getUserContext()).toEqual({ claudeMd: '/target-repo:target-transcript' })
+    },
+    restoreGoalSessionFromLog: noop, contentReplacementStateRef: { current: null },
+    setToolJSX: noop, setInputValue: noop, logEvent: noop, diffSession,
+    getSessionId: () => 'same-id', diffController: { reset: () => { resets++ } },
+  })
+  try {
+    await resume('same-id', log, 'command')
+    expect(await getUserContext()).toEqual({ claudeMd: '/target-repo:target-transcript' })
+    expect(events).toEqual([
+      'clear:/target-repo:target-transcript:true', ...(withMods ? ['invalidate', 'bind'] : []),
+    ])
+    expect(clear).toHaveBeenCalledTimes(1)
+    expect(restoredCosts).toHaveLength(1)
+    expect(restoredCosts[0]).toBe(log)
+    expect(replaced).toBe(true)
+    expect(resets).toBe(1)
+    expect(state.diffSidebarVisible).toBe(false)
+    expect(diffSession.current).toBe('same-id')
+  } finally {
+    clear.mockRestore()
+  }
+})
+
+test('query refresh reloads raw REPL context with live overlays and instruction provenance', async () => {
+  const instructionFiles = [{
+    path: '/synthetic/project/CLAUDE.md',
+    kind: 'project' as const,
+    content: 'project instructions',
+  }]
+  const baseUserContext = withUserContextInstructionFiles({
+    claudeMd: 'rendered project instructions',
+    currentDate: 'Today is synthetic.',
+    coordinatorContext: 'base loses',
+    terminalFocus: 'base focus',
+  }, instructionFiles)
+  let loadedContext: Record<string, string> = baseUserContext
+  let loads = 0
+  const terminalFocusRef = { current: false }
+  let queryInput: any
+  let state: any = {
+    fastMode: false,
+    mcp: { clients: [] },
+    toolPermissionContext: { alwaysAllowRules: { command: [] } },
+  }
+  const onQueryImpl = extract('./REPL.tsx', 'onQueryImpl')({
+    modsSession: undefined,
+    awaitMods: noop,
+    initialMcpClients: [],
+    store: {
+      getState: () => state,
+      setState: (update: any) => { state = update(state) },
+    },
+    mergeClients: (_initial: any[], current: any[]) => current,
+    diagnosticTracker: { handleQueryStart: noop },
+    getConnectedIdeClient: () => undefined,
+    closeOpenDiffs: noop,
+    maybeMarkProjectOnboardingComplete: noop,
+    titleDisabled: true,
+    feature: (name: string) => name === 'PROACTIVE',
+    proactiveModule: { isProactiveActive: () => true },
+    terminalFocusRef,
+    getToolUseContext: () => ({
+      options: { tools: [], mcpClients: [] },
+      getAppState: () => ({}),
+    }),
+    toolPermissionContext: {
+      additionalWorkingDirectories: new Map(),
+    },
+    queryCheckpoint: noop,
+    checkAndDisableBypassPermissionsIfNeeded: noop,
+    setAppState: noop,
+    getSystemPrompt: async () => 'system prompt',
+    getUserContext: async () => { loads++; return loadedContext },
+    getUserContextInstructionFiles,
+    withUserContextInstructionFiles,
+    getSystemContext: async () => ({}),
+    getCoordinatorUserContext: () => ({ coordinatorContext: 'retained' }),
+    isScratchpadEnabled: () => false,
+    buildEffectiveSystemPrompt: () => 'system prompt',
+    mainThreadAgentDefinition: undefined,
+    customSystemPrompt: undefined,
+    appendSystemPrompt: undefined,
+    resetTurnHookDuration: noop,
+    resetTurnToolDuration: noop,
+    resetTurnClassifierDuration: noop,
+    query: async function* (input: any) {
+      queryInput = input
+      yield { type: 'assistant', message: { content: [] } }
+    },
+    canUseTool: noop,
+    getQuerySourceForREPL: () => 'repl_main_thread',
+    getUserContentText: (content: string) => content,
+    onQueryEvent: noop,
+    isAnt: () => false,
+    resetLoadingState: noop,
+    logQueryProfileReport: noop,
+    onTurnComplete: undefined,
+  })
+
+  await onQueryImpl([], [], new AbortController(), true, [], 'fixture')
+
+  expect(queryInput.userContext).not.toBe(baseUserContext)
+  expect(queryInput.userContext).toEqual({
+    claudeMd: 'rendered project instructions',
+    currentDate: 'Today is synthetic.',
+    coordinatorContext: 'retained',
+    terminalFocus: 'The terminal is unfocused — the user is not actively watching.',
+  })
+  expect(getUserContextInstructionFiles(queryInput.userContext)).toEqual(instructionFiles)
+  expect(getUserContextInstructionFiles(baseUserContext)).toEqual(instructionFiles)
+  expect(queryInput.refreshUserContext).toBeFunction()
+  const refreshedFiles = [{ ...instructionFiles[0]!, content: 'updated project instructions' }]
+  loadedContext = withUserContextInstructionFiles({
+    claudeMd: 'updated raw instructions', currentDate: 'Tomorrow',
+    coordinatorContext: 'fresh base loses', terminalFocus: 'fresh base focus', newlyLoaded: 'fresh',
+  }, refreshedFiles)
+  const refreshed = await queryInput.refreshUserContext()
+  expect(refreshed).toEqual({
+    ...loadedContext, coordinatorContext: 'retained',
+    terminalFocus: 'The terminal is unfocused — the user is not actively watching.',
+  })
+  expect(getUserContextInstructionFiles(refreshed)).toEqual(refreshedFiles)
+  expect(loadedContext.terminalFocus).toBe('fresh base focus')
+  terminalFocusRef.current = true
+  loadedContext = withUserContextInstructionFiles({ currentDate: 'After removal' }, [])
+  const removed = await queryInput.refreshUserContext()
+  expect(removed).toEqual({ currentDate: 'After removal', coordinatorContext: 'retained' })
+  expect(getUserContextInstructionFiles(removed)).toEqual([])
+  expect(loads).toBe(3)
+})
+
+
+test('REPL Mods tool host resolves the current context and permission callback on each capture', async () => {
+  let services: any
+  const first = { messages: ['first'], options: { tools: ['first-tool'] } }
+  const second = { messages: ['second'], options: { tools: ['second-tool'] } }
+  const modToolContextRef = { current: () => first }
+  const firstPermission = () => 'first'
+  const secondPermission = () => 'second'
+  const modCanUseToolRef = { current: firstPermission }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session',
+    setAppState: noop,
+    modToolContextRef, modCanUseToolRef,
+    createModToolHost: (context: unknown, canUseTool: unknown) => ({ context, canUseTool }),
+  })
+  await awaitMods()
+  expect(services.toolHost()).toEqual({ context: first, canUseTool: firstPermission })
+  modToolContextRef.current = () => second
+  modCanUseToolRef.current = secondPermission
+  expect(services.toolHost()).toEqual({ context: second, canUseTool: secondPermission })
+})

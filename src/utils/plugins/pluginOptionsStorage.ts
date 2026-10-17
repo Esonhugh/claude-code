@@ -31,6 +31,28 @@ import { getPluginDataDir } from './pluginDirectories.js'
 export type PluginOptionValues = UserConfigValues
 export type PluginOptionSchema = UserConfigSchema
 
+/** Resolve declared fields, treating stale picker values as unset before defaults. */
+export function resolvePluginOptions(
+  schema: PluginOptionSchema,
+  saved: PluginOptionValues,
+): PluginOptionValues {
+  const options: PluginOptionValues = {}
+  for (const [key, field] of Object.entries(schema)) {
+    let value = saved[key]
+    if (
+      field.type === 'string' &&
+      field.options !== undefined &&
+      (typeof value !== 'string' || !field.options.includes(value))
+    ) {
+      value = undefined
+    }
+    value ??= field.default
+    if (value !== undefined) options[key] = value
+    else if (!field.required && field.options === undefined) options[key] = ''
+  }
+  return options
+}
+
 /**
  * Canonical storage key for a plugin's options in both `settings.pluginConfigs`
  * and `secureStorage.pluginSecrets`. Today this is `plugin.source` — always
@@ -46,39 +68,55 @@ export function getPluginStorageId(plugin: LoadedPlugin): string {
 }
 
 /**
- * Load saved option values for a plugin, merging non-sensitive (from settings)
- * with sensitive (from secureStorage). SecureStorage wins on key collision.
- *
+ * Load sensitive options without importing merged settings into trusted hosts.
  * Memoized per-pluginId because hooks can fire per-tool-call and each call
- * would otherwise do a settings read + keychain spawn. Cache cleared via
+ * would otherwise do a keychain spawn. Cache cleared via
  * `clearPluginOptionsCache` when settings change or plugins reload.
  */
+export const loadPluginSecrets = memoize(
+  (pluginId: string): PluginOptionValues => {
+    // NOTE: storage.read() spawns `security find-generic-password` on macOS
+    // (~50-100ms, synchronous). Mitigated by the memoize above (per-pluginId,
+    // session-lifetime) + keychain's own 30s TTL cache — so one blocking spawn
+    // per session per plugin-with-options. /reload-plugins clears the memoize
+    // and the next hook/MCP-load after that eats a fresh spawn.
+    try {
+      const storage = getSecureStorage()
+      return (
+        // @ts-ignore - recovered code
+        storage.read()?.pluginSecrets?.[pluginId] ??
+        ({} as PluginOptionValues)
+      )
+    } catch {
+      // Backend errors may embed credential payloads; keep the failure retryable.
+      throw new Error('Unable to read plugin options from secure storage')
+    }
+  },
+)
+
 export const loadPluginOptions = memoize(
   (pluginId: string): PluginOptionValues => {
     const settings = getSettings_DEPRECATED()
     const nonSensitive =
       settings.pluginConfigs?.[pluginId]?.options ?? ({} as PluginOptionValues)
 
-    // NOTE: storage.read() spawns `security find-generic-password` on macOS
-    // (~50-100ms, synchronous). Mitigated by the memoize above (per-pluginId,
-    // session-lifetime) + keychain's own 30s TTL cache — so one blocking spawn
-    // per session per plugin-with-options. /reload-plugins clears the memoize
-    // and the next hook/MCP-load after that eats a fresh spawn.
-    const storage = getSecureStorage()
-    const sensitive =
-      // @ts-ignore - recovered code
-      storage.read()?.pluginSecrets?.[pluginId] ??
-      ({} as Record<string, string>)
-
     // secureStorage wins on collision — schema determines destination so
     // collision shouldn't happen, but if a user hand-edits settings.json we
     // trust the more secure source.
-    return { ...nonSensitive, ...sensitive }
+    return { ...nonSensitive, ...loadPluginSecrets(pluginId) }
   },
 )
 
 export function clearPluginOptionsCache(): void {
+  loadPluginSecrets.cache?.clear?.()
   loadPluginOptions.cache?.clear?.()
+}
+
+const optionChangeListeners = new Set<() => void>()
+
+export function subscribePluginOptionsChange(listener: () => void): () => void {
+  optionChangeListeners.add(listener)
+  return () => { optionChangeListeners.delete(listener) }
 }
 
 /**
@@ -93,12 +131,21 @@ export function savePluginOptions(
   values: PluginOptionValues,
   schema: PluginOptionSchema,
 ): void {
+  // Partial reconfiguration must not require fields omitted from this save.
+  const submittedSchema = Object.fromEntries(
+    Object.entries(schema).filter(([key]) => Object.hasOwn(values, key)),
+  )
+  const validation = validateUserConfig(values, submittedSchema)
+  if (!validation.valid) {
+    throw new Error(`Invalid plugin options: ${validation.errors.join('; ')}`)
+  }
+
   const nonSensitive: PluginOptionValues = {}
-  const sensitive: Record<string, string> = {}
+  const sensitive: PluginOptionValues = {}
 
   for (const [key, value] of Object.entries(values)) {
     if (schema[key]?.sensitive === true) {
-      sensitive[key] = String(value)
+      sensitive[key] = value
     } else {
       nonSensitive[key] = value
     }
@@ -201,6 +248,7 @@ export function savePluginOptions(
   }
 
   clearPluginOptionsCache()
+  for (const listener of optionChangeListeners) listener()
 }
 
 /**
@@ -287,6 +335,7 @@ export function deletePluginOptions(pluginId: string): void {
   }
 
   clearPluginOptionsCache()
+  for (const listener of optionChangeListeners) listener()
 }
 
 /**
@@ -304,7 +353,10 @@ export function getUnconfiguredOptions(
     return {}
   }
 
-  const saved = loadPluginOptions(getPluginStorageId(plugin))
+  const saved = resolvePluginOptions(
+    manifestSchema,
+    loadPluginOptions(getPluginStorageId(plugin)),
+  )
   const validation = validateUserConfig(saved, manifestSchema)
   if (validation.valid) {
     return {}

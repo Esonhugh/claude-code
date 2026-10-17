@@ -8,7 +8,10 @@ import { logForDebugging } from '../utils/debug.js'
 import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 import { reorderBidi } from './bidi.js'
+import { applyTextStyles } from './colorize.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
+import type { PlacedTerminalImage } from './frame.js'
+import type { TerminalImage } from './dom.js'
 import {
   blitRegion,
   CellWidth,
@@ -23,6 +26,7 @@ import {
   shiftRows,
 } from './screen.js'
 import { stringWidth } from './stringWidth.js'
+import type { Color } from './styles.js'
 import { widestLine } from './widest-line.js'
 
 /**
@@ -73,6 +77,8 @@ type WriteOperation = {
   x: number
   y: number
   text: string
+  /** Background inherited by raw content when its ANSI styles reset. */
+  backgroundStyle?: AnsiCode
   /**
    * Per-line soft-wrap flags, parallel to text.split('\n'). softWrap[i]=true
    * means line i is a continuation of line i-1 (the `\n` before it was
@@ -174,6 +180,7 @@ export default class Output {
   private screen: Screen
 
   private readonly operations: Operation[] = []
+  readonly terminalImages: PlacedTerminalImage[] = []
 
   private charCache: Map<string, ClusteredChar[]> = new Map()
 
@@ -200,6 +207,7 @@ export default class Output {
     this.height = height
     this.screen = screen
     this.operations.length = 0
+    this.terminalImages.length = 0
     resetScreen(screen, width, height)
     if (this.charCache.size > 16384) this.charCache.clear()
   }
@@ -238,17 +246,29 @@ export default class Output {
     this.operations.push({ type: 'noSelect', region })
   }
 
-  write(x: number, y: number, text: string, softWrap?: boolean[]): void {
+  write(
+    x: number,
+    y: number,
+    text: string,
+    softWrap?: boolean[],
+    backgroundColor?: Color,
+  ): void {
     if (!text) {
       return
     }
 
+    const backgroundStyle = backgroundColor
+      ? styledCharsFromTokens(
+          tokenize(applyTextStyles(' ', { backgroundColor })),
+        )[0]?.styles[0]
+      : undefined
     this.operations.push({
       type: 'write',
       x,
       y,
       text,
       softWrap,
+      backgroundStyle,
     })
   }
 
@@ -262,6 +282,39 @@ export default class Output {
   unclip() {
     this.operations.push({
       type: 'unclip',
+    })
+  }
+
+  image(image: TerminalImage, x: number, y: number, width: number, height: number): void {
+    let x1 = Math.max(0, x)
+    let y1 = Math.max(0, y)
+    let x2 = Math.min(this.width, x + width)
+    let y2 = Math.min(this.height, y + height)
+    for (let index = this.operations.length - 1, depth = 0; index >= 0; index--) {
+      const operation = this.operations[index]!
+      if (operation.type === 'unclip') {
+        depth++
+      } else if (operation.type === 'clip') {
+        if (depth > 0) depth--
+        else {
+          x1 = Math.max(x1, operation.clip.x1 ?? -Infinity)
+          y1 = Math.max(y1, operation.clip.y1 ?? -Infinity)
+          x2 = Math.min(x2, operation.clip.x2 ?? Infinity)
+          y2 = Math.min(y2, operation.clip.y2 ?? Infinity)
+        }
+      }
+    }
+    if (x1 >= x2 || y1 >= y2) return
+    this.terminalImages.push({
+      ...image,
+      x: Math.floor(x1),
+      y: Math.floor(y1),
+      columns: Math.floor(x2 - x1),
+      rows: Math.floor(y2 - y1),
+      sourceLeft: Math.floor(x1 - x),
+      sourceTop: Math.floor(y1 - y),
+      sourceColumns: Math.floor(width),
+      sourceRows: Math.floor(height),
     })
   }
 
@@ -395,7 +448,7 @@ export default class Output {
         }
 
         case 'write': {
-          const { text, softWrap } = operation
+          const { text, softWrap, backgroundStyle } = operation
           let { x, y } = operation
           let lines = text.split('\n')
           let swFrom = 0
@@ -429,9 +482,18 @@ export default class Output {
             }
 
             if (clipHorizontally) {
-              lines = lines.map(line => {
+              // Rows the vertical clip drops are never painted, except that a
+              // soft-wrapped first visible row measures the clipped row above.
+              let firstRow = clipVertically && y < clip.y1! ? clip.y1! - y : 0
+              if (softWrap?.[firstRow] === true) firstRow--
+              const endRow = clipVertically && y + lines.length > clip.y2!
+                ? clip.y2! - y
+                : lines.length
+              lines = lines.map((line, row) => {
+                if (row < firstRow || row >= endRow) return line
                 const from = x < clip.x1! ? clip.x1! - x : 0
                 const width = stringWidth(line)
+                if (from === 0 && x + width <= clip.x2!) return line
                 const to = x + width > clip.x2! ? clip.x2! - x : width
                 let sliced = sliceAnsi(line, from, to)
                 // Wide chars (CJK, emoji) occupy 2 cells. When `to` lands
@@ -490,6 +552,7 @@ export default class Output {
               screenWidth,
               this.stylePool,
               this.charCache,
+              backgroundStyle,
             )
             writeCells += contentEnd - x
             // See Screen.softWrap docstring for the encoding. contentEnd
@@ -553,6 +616,7 @@ function stylesEqual(a: AnsiCode[], b: AnsiCode[]): boolean {
 function styledCharsWithGraphemeClustering(
   chars: StyledChar[],
   stylePool: StylePool,
+  backgroundStyle?: AnsiCode,
 ): ClusteredChar[] {
   const charCount = chars.length
   if (charCount === 0) return []
@@ -563,7 +627,11 @@ function styledCharsWithGraphemeClustering(
 
   for (let i = 0; i < charCount; i++) {
     const char = chars[i]!
-    const styles = char.styles
+    const styles =
+      backgroundStyle &&
+      !char.styles.some(style => style.endCode === backgroundStyle.endCode)
+        ? [...char.styles, backgroundStyle]
+        : char.styles
 
     // Different styles means we need to flush and start new buffer
     if (bufferChars.length > 0 && !stylesEqual(styles, bufferStyles)) {
@@ -638,16 +706,19 @@ function writeLineToScreen(
   screenWidth: number,
   stylePool: StylePool,
   charCache: Map<string, ClusteredChar[]>,
+  backgroundStyle?: AnsiCode,
 ): number {
-  let characters = charCache.get(line)
+  const cacheKey = JSON.stringify([line, backgroundStyle?.code])
+  let characters = charCache.get(cacheKey)
   if (!characters) {
     characters = reorderBidi(
       styledCharsWithGraphemeClustering(
         styledCharsFromTokens(tokenize(line)),
         stylePool,
+        backgroundStyle,
       ),
     )
-    charCache.set(line, characters)
+    charCache.set(cacheKey, characters)
   }
 
   let offsetX = x

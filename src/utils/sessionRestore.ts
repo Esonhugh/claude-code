@@ -13,7 +13,7 @@ import {
 import { restoreGoalStopHook } from '../commands/goal/hooks.js'
 import { restoreGoalFromTranscript } from '../commands/goal/restore.js'
 import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
-import { restoreCostStateForSession } from '../cost-tracker.js'
+import { restoreSessionCosts } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import {
@@ -29,6 +29,7 @@ import type {
   ContextCollapseCommitEntry,
   ContextCollapseSnapshotEntry,
   PersistedWorktreeSession,
+  SessionCostStateEntry,
 } from '../types/logs.js'
 import type { Message } from '../types/message.js'
 import { renameRecordingForSession } from './asciicast.js'
@@ -41,6 +42,7 @@ import {
 import { updateSessionName } from './concurrentSessions.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
+import { restoreSendMessagePins, retainLiveAgentNames } from './sendMessagePins.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { fileHistoryRestoreStateFromLog } from './fileHistory.js'
 import { createAttachmentMessage } from './attachments.js'
@@ -105,6 +107,9 @@ export function restoreSessionStateFromLog(
   result: ResumeResult,
   setAppState: (f: (prev: AppState) => AppState) => void,
 ): void {
+  // Rebuild bindings from the target history, never from the previous session.
+  setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(result.messages ?? []), agentNameRegistry: retainLiveAgentNames(prev.agentNameRegistry, prev.tasks) }))
+
   // Restore file history state
   if (result.fileHistorySnapshots && result.fileHistorySnapshots.length > 0) {
     fileHistoryRestoreStateFromLog(result.fileHistorySnapshots, newState => {
@@ -300,6 +305,7 @@ export type ProcessedResume = {
   agentName: string | undefined
   agentColor: AgentColorName | undefined
   restoredAgentDef: AgentDefinition | undefined
+  devModsFolder: string | undefined
   initialState: AppState
 }
 
@@ -322,6 +328,8 @@ type ResumeLoadResult = {
   contextCollapseCommits?: ContextCollapseCommitEntry[]
   contextCollapseSnapshot?: ContextCollapseSnapshotEntry
   sessionId: UUID | undefined
+  startedAt?: number
+  costState?: SessionCostStateEntry
   agentName?: string
   agentColor?: string
   agentSetting?: string
@@ -329,6 +337,7 @@ type ResumeLoadResult = {
   tag?: string
   mode?: 'coordinator' | 'normal'
   worktreeSession?: PersistedWorktreeSession | null
+  devModsFolder?: string
   prNumber?: number
   prUrl?: string
   prRepository?: string
@@ -467,7 +476,6 @@ export async function processResumedConversation(
       // getSessionRecordingPaths() can discover it during /share
       await renameRecordingForSession()
       await resetSessionFilePointer()
-      restoreCostStateForSession(sid)
     }
   } else if (result.contentReplacements?.length) {
     // --fork-session keeps the fresh startup session ID. useLogMessages will
@@ -488,8 +496,12 @@ export async function processResumedConversation(
   // would delete a worktree the original session still references — so
   // strip worktreeSession from the fork path so the cache stays unset.
   restoreSessionMetadata(
-    opts.forkSession ? { ...result, worktreeSession: undefined } : result,
+    opts.forkSession
+      ? { ...result, sessionId: getSessionId(), worktreeSession: undefined }
+      : result,
   )
+
+  restoreSessionCosts(result, { forkSession: opts.forkSession })
 
   if (!opts.forkSession) {
     // Cd back into the worktree the session was in when it last exited.
@@ -571,6 +583,7 @@ export async function processResumedConversation(
       ? undefined
       : result.agentColor) as AgentColorName | undefined,
     restoredAgentDef: restoredAgent,
+    devModsFolder: opts.forkSession ? undefined : result.devModsFolder,
     initialState,
   }
 }

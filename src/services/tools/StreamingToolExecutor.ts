@@ -11,6 +11,9 @@ import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import { runToolUse } from './toolExecution.js'
 import type { ModSnapshot } from '../mods/runtime.js'
+import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createModToolHost } from '../mods/toolHost.js'
+import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 type MessageUpdate = {
   message?: Message
@@ -100,7 +103,22 @@ export class StreamingToolExecutor {
       if (this.admissionClosed || this.discarded)
         throw new Error('Tool executor admission is closed')
       if (!this.modsSnapshot) {
-        this.modsSnapshot = this.toolUseContext.mods.capture()
+        this.modsSnapshot = this.toolUseContext.mods.capture({
+          toolCatalog: () => createToolCatalogForContext(this.toolUseContext),
+          toolHost: () => createModToolHost(this.toolUseContext, this.canUseTool),
+          captureUsage: () =>
+            captureModSessionUsage({
+              ...this.toolUseContext,
+              messages: [
+                ...this.toolUseContext.messages,
+                ...this.tools.map(tool => tool.assistantMessage),
+                assistantMessage,
+              ].filter(
+                (message, index, messages) =>
+                  messages.findIndex(item => item.uuid === message.uuid) === index,
+              ),
+            }),
+        })
         this.toolUseContext = {
           ...this.toolUseContext,
           modsSnapshot: this.modsSnapshot,

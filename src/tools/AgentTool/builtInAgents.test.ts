@@ -60,6 +60,18 @@ describe('Explore and Plan built-in agents', () => {
   })
 })
 
+test('verification reads both instruction filenames before passing or failing work', async () => {
+  const { VERIFICATION_AGENT } = await import('./built-in/verificationAgent.js')
+  const prompt = VERIFICATION_AGENT.getSystemPrompt({
+    toolUseContext: { options: {} as never },
+  })
+
+  expect(prompt).toContain("Read the project's AGENTS.md / CLAUDE.md / README")
+  expect(prompt).toContain(
+    'does AGENTS.md / CLAUDE.md / comments / commit message explain',
+  )
+})
+
 describe('Coordinator built-in worker agent', () => {
   test('returns the worker definition used in coordinator mode', () => {
     const agents = getCoordinatorAgents()

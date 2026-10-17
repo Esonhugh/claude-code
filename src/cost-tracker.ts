@@ -1,5 +1,6 @@
-import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type { UsageWithOutputTokenDetails as Usage } from './entrypoints/sdk/sdkUtilityTypes.js'
 import chalk from 'chalk'
+import { logForDebugging } from './utils/debug.js'
 import {
   addToTotalCostState,
   addToTotalLinesChanged,
@@ -7,6 +8,7 @@ import {
   getModelUsage,
   getSdkBetas,
   getSessionId,
+  getSessionStartTime,
   getTokenCounter,
   getTotalAPIDuration,
   getTotalAPIDurationWithoutRetries,
@@ -44,8 +46,12 @@ import {
 import { isFastModeEnabled } from './utils/fastMode.js'
 import { formatDuration, formatNumber } from './utils/format.js'
 import type { FpsMetrics } from './utils/fpsTracker.js'
-import { getCanonicalName } from './utils/model/model.js'
-import { calculateUSDCost } from './utils/modelCost.js'
+import { getCanonicalName, normalizeModelStringForAPI } from './utils/model/model.js'
+import { getAPIProvider } from './utils/model/providers.js'
+import { calculateUSDCost, MODEL_COSTS } from './utils/modelCost.js'
+import type { LogOption } from './types/logs.js'
+import { captureSessionCostState, parseSessionCostState } from './utils/sessionCostState.js'
+import { recordSessionCostState } from './utils/sessionStorage.js'
 export {
   getTotalCostUSD as getTotalCost,
   getTotalDuration,
@@ -76,6 +82,7 @@ type StoredCostState = {
   totalLinesAdded: number
   totalLinesRemoved: number
   lastDuration: number | undefined
+  startTime?: number
   modelUsage: { [modelName: string]: ModelUsage } | undefined
 }
 
@@ -119,6 +126,7 @@ export function getStoredSessionCosts(
     totalLinesAdded: projectConfig.lastLinesAdded ?? 0,
     totalLinesRemoved: projectConfig.lastLinesRemoved ?? 0,
     lastDuration: projectConfig.lastDuration,
+    startTime: projectConfig.lastStartTime,
     modelUsage,
   }
 }
@@ -130,6 +138,7 @@ export function getStoredSessionCosts(
  */
 export function restoreCostStateForSession(sessionId: string): boolean {
   const data = getStoredSessionCosts(sessionId)
+  logForDebugging(`[ModsSession] ${JSON.stringify({ event: 'restore-cost', sessionId, matched: data !== undefined, startTime: data?.startTime, lastDuration: data?.lastDuration })}`)
   if (!data) {
     return false
   }
@@ -137,11 +146,40 @@ export function restoreCostStateForSession(sessionId: string): boolean {
   return data.modelUsage !== undefined
 }
 
+/** Restore the selected transcript snapshot, including explicit source inheritance for a fork. */
+export function restoreSessionCosts(
+  log: Pick<LogOption, 'sessionId' | 'costState'>,
+  options: { forkSession?: boolean } = {},
+): boolean {
+  const snapshot = parseSessionCostState(log.costState)
+  const matches = snapshot !== undefined && snapshot.sessionId === log.sessionId &&
+    (options.forkSession || log.sessionId === getSessionId())
+  logForDebugging(`[ModsSession] ${JSON.stringify({
+    event: 'restore-cost-state', sourceSessionId: log.sessionId, sessionId: getSessionId(),
+    matched: Boolean(matches), forkSession: Boolean(options.forkSession),
+    totalCostUSD: matches ? snapshot.totalCostUSD : undefined,
+    totalDuration: matches ? snapshot.totalDuration : undefined,
+    startTime: matches ? snapshot.startTime : undefined,
+  })}`)
+  if (!matches) return false
+  setCostStateForRestore({
+    ...snapshot,
+    lastDuration: snapshot.totalDuration,
+    modelUsage: Object.fromEntries(Object.entries(snapshot.modelUsage).map(([model, usage]) => [model, {
+      ...usage,
+      contextWindow: getContextWindowForModel(model, getSdkBetas()),
+      maxOutputTokens: getModelMaxOutputTokens(model).default,
+    }])),
+  })
+  return true
+}
+
 /**
  * Saves the current session's costs to project config.
  * Call this before switching sessions to avoid losing accumulated costs.
  */
 export function saveCurrentSessionCosts(fpsMetrics?: FpsMetrics): void {
+  void recordSessionCostState(captureSessionCostState())
   saveCurrentProjectConfig(current => ({
     ...current,
     lastCost: getTotalCostUSD(),
@@ -149,6 +187,7 @@ export function saveCurrentSessionCosts(fpsMetrics?: FpsMetrics): void {
     lastAPIDurationWithoutRetries: getTotalAPIDurationWithoutRetries(),
     lastToolDuration: getTotalToolDuration(),
     lastDuration: getTotalDuration(),
+    lastStartTime: getSessionStartTime(),
     lastLinesAdded: getTotalLinesAdded(),
     lastLinesRemoved: getTotalLinesRemoved(),
     lastTotalInputTokens: getTotalInputTokens(),
@@ -164,6 +203,7 @@ export function saveCurrentSessionCosts(fpsMetrics?: FpsMetrics): void {
         {
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
+          thinkingTokens: usage.thinkingTokens,
           cacheReadInputTokens: usage.cacheReadInputTokens,
           cacheCreationInputTokens: usage.cacheCreationInputTokens,
           webSearchRequests: usage.webSearchRequests,
@@ -267,6 +307,7 @@ function addToTotalModelUsage(
 
   modelUsage.inputTokens += usage.input_tokens
   modelUsage.outputTokens += usage.output_tokens
+  modelUsage.thinkingTokens = (modelUsage.thinkingTokens ?? 0) + (usage.output_tokens_details?.thinking_tokens ?? 0)
   modelUsage.cacheReadInputTokens += usage.cache_read_input_tokens ?? 0
   modelUsage.cacheCreationInputTokens += usage.cache_creation_input_tokens ?? 0
   modelUsage.webSearchRequests +=
@@ -274,6 +315,10 @@ function addToTotalModelUsage(
   modelUsage.costUSD += cost
   modelUsage.contextWindow = getContextWindowForModel(model, getSdkBetas())
   modelUsage.maxOutputTokens = getModelMaxOutputTokens(model).default
+  const canonical = getCanonicalName(normalizeModelStringForAPI(model))
+  modelUsage.canonicalModel = canonical
+  modelUsage.provider = getAPIProvider()
+  modelUsage.costBasis = MODEL_COSTS[canonical] !== undefined ? 'list' : 'unknown'
   // @ts-ignore - recovered code
   return modelUsage
 }

@@ -13,6 +13,12 @@ import {
   type Tools,
 } from '../../Tool.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { resolveModToolDescriptions } from '../../utils/api.js'
+import { createModToolHost } from '../../services/mods/toolHost.js'
+import {
+  createToolCatalogForContext,
+  type ModToolDescription,
+} from '../../services/mods/toolCatalog.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { isPlanModeAvailable } from '../../utils/planModeV2.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
@@ -191,6 +197,7 @@ async function searchToolsWithKeywords(
   deferredTools: Tools,
   tools: Tools,
   maxResults: number,
+  modDescriptions?: ReadonlyMap<Tool, ModToolDescription>,
 ): Promise<string[]> {
   const queryLower = query.toLowerCase().trim()
 
@@ -241,7 +248,9 @@ async function searchToolsWithKeywords(
     const matches = await Promise.all(
       deferredTools.map(async tool => {
         const parsed = parseToolName(tool.name)
-        const description = await getToolDescriptionMemoized(tool.name, tools)
+        const description =
+          modDescriptions?.get(tool)?.description ??
+          await getToolDescriptionMemoized(tool.name, tools)
         const descNormalized = description.toLowerCase()
         const hintNormalized = tool.searchHint?.toLowerCase() ?? ''
         const matchesAll = requiredTerms.every(term => {
@@ -262,7 +271,9 @@ async function searchToolsWithKeywords(
   const scored = await Promise.all(
     candidateTools.map(async tool => {
       const parsed = parseToolName(tool.name)
-      const description = await getToolDescriptionMemoized(tool.name, tools)
+      const description =
+        modDescriptions?.get(tool)?.description ??
+        await getToolDescriptionMemoized(tool.name, tools)
       const descNormalized = description.toLowerCase()
       const hintNormalized = tool.searchHint?.toLowerCase() ?? ''
 
@@ -328,17 +339,46 @@ export const ToolSearchTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  async call(input, { options: { tools: staleTools }, getAppState }) {
+  async call(input, context, canUseTool) {
+    const {
+      options,
+      getAppState,
+    } = context
     const { query, max_results = 5 } = input
     const appState = getAppState()
-    const tools = staleTools.filter(
+    const currentTools = options.refreshTools?.() ?? options.tools
+    const currentContext = currentTools === options.tools
+      ? context
+      : { ...context, options: { ...options, tools: currentTools } }
+    const tools = currentTools.filter(
       tool =>
         isPlanModeAvailable() ||
         (tool.name !== ENTER_PLAN_MODE_TOOL_NAME &&
           (tool.name !== EXIT_PLAN_MODE_V2_TOOL_NAME ||
             appState.toolPermissionContext.mode === 'plan')),
     )
-    const deferredTools = tools.filter(isDeferredTool)
+    const snapshot = context.modsSnapshot ?? context.mods?.capture({
+      toolCatalog: () => createToolCatalogForContext(currentContext),
+      toolHost: () => createModToolHost(currentContext, canUseTool),
+    })
+    let modDescriptions: ReadonlyMap<Tool, ModToolDescription> | undefined
+    try {
+      if (snapshot?.hasHooks('tool.describe')) {
+        modDescriptions = await resolveModToolDescriptions(tools, {
+          tools: currentTools,
+          agents: context.options.agentDefinitions.activeAgents,
+          getToolPermissionContext: async () => appState.toolPermissionContext,
+          model: context.options.mainLoopModel,
+          modsSnapshot: snapshot,
+          signal: context.abortController.signal,
+        })
+      }
+    } finally {
+      if (snapshot !== context.modsSnapshot) snapshot?.release()
+    }
+    const deferredTools = tools.filter(tool =>
+      isDeferredTool(tool, modDescriptions?.get(tool)?.isDeferred),
+    )
     maybeInvalidateCache(deferredTools)
 
     // Check for MCP servers still connecting
@@ -420,6 +460,7 @@ export const ToolSearchTool = buildTool({
       deferredTools,
       tools,
       max_results,
+      modDescriptions,
     )
 
     logForDebugging(

@@ -24,9 +24,10 @@ import {
 } from '../constants/betas.js'
 import { OAUTH_BETA_HEADER } from '../constants/oauth.js'
 import { isClaudeAISubscriber } from './auth.js'
+import { isApproveForMeAvailable } from './permissions/approveForMe.js'
 import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import { getCanonicalName } from './model/model.js'
+import { getCanonicalName, isModelOlderThan } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
@@ -150,6 +151,12 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
     return false
   }
   return (
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical.includes('claude-opus-4-8') ||
+    canonical.includes('claude-opus-4-7') ||
     canonical.includes('claude-sonnet-4-6') ||
     canonical.includes('claude-sonnet-4-5') ||
     canonical.includes('claude-opus-4-1') ||
@@ -162,6 +169,17 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
 // @[MODEL LAUNCH]: Add the new model if it supports auto mode (specifically PI probes) — ask in #proj-claude-code-safety-research.
 export function modelSupportsAutoMode(model: string): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
+    // userType() is always 'external' in this fork, so the ant-only paths below never run.
+    // OpenAI mode reviews with the ChatGPT login ("Approve for me"); every other provider
+    // follows official 2.1.292: models older than claude-opus-4-6 are out, and third-party
+    // providers also leave out the 4-6 models and Haiku.
+    if (!isAnt()) {
+      if (getAPIProvider() === 'openai') return isApproveForMeAvailable()
+      const canonical = getCanonicalName(model)
+      if (isModelOlderThan(canonical, 'claude-opus-4-6')) return false
+      return getAPIProvider() === 'firstParty' || !(canonical === 'claude-opus-4-6' ||
+        canonical === 'claude-sonnet-4-6' || canonical.includes('haiku'))
+    }
     const m = getCanonicalName(model)
     // External: firstParty-only at launch (PI probes not wired for
     // Bedrock/Vertex/Foundry yet). Checked before allowModels so the GB

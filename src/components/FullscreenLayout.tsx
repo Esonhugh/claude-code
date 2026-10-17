@@ -15,13 +15,18 @@ import { fileURLToPath } from 'url'
 import { ModalContext } from '../context/modalContext.js'
 import {
   PromptOverlayProvider,
+  PromptDockColumnsContext,
   usePromptOverlay,
   usePromptOverlayDialog,
+  usePromptOverlayGap,
 } from '../context/promptOverlayContext.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js'
+import { TerminalSizeContext } from '../ink/components/TerminalSizeContext.js'
 import instances from '../ink/instances.js'
 import { Box, Text } from '../ink.js'
+import { subscribeLayout, type DOMElement } from '../ink/dom.js'
+import { ModsBandBudgetContext, ModsPaneHostRowsContext } from '../context/modsPaneHostContext.js'
 import type { Message } from '../types/message.js'
 import { openBrowser, openPath } from '../utils/browser.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
@@ -42,10 +47,13 @@ export const ScrollChromeContext = createContext<{
 }>({ setStickyPrompt: () => {} })
 
 type Props = {
+  terminalUiRevision?: number
   /** Content that scrolls (messages, tool output) */
   scrollable: ReactNode
   /** Content pinned to the bottom (spinner, prompt, permissions) */
   bottom: ReactNode
+  /** Plugin band above the composer, using the conversation width beside a dock. */
+  abovePrompt?: ReactNode
   /** Content rendered inside the ScrollBox after messages — user can scroll
    *  up to see context while it's showing (used by PermissionRequest). */
   overlay?: ReactNode
@@ -54,6 +62,18 @@ type Props = {
    *  region (not the bottom slot) so the overflowY:hidden cap doesn't clip
    *  it. Fullscreen only — used for the companion speech bubble. */
   bottomFloat?: ReactNode
+  /** Mods pane content beside the conversation and above the full-width composer. */
+  dockPane?: ReactNode
+  /** Width of the Mods dock in terminal columns. Defaults to 45% of the terminal, capped at 90 columns with 70 for the conversation. */
+  dockWidth?: number
+  /** Whether the visible Mods dock currently owns focus. */
+  dockFocused?: boolean
+  /** Native sidebar content beside the transcript and above the full-width composer. */
+  sidebarPane?: ReactNode
+  /** Width of the native sidebar in terminal columns. */
+  sidebarWidth?: number
+  /** Mods pane content seated above the prompt in inline mode. */
+  inlinePane?: ReactNode
   /** Slash-command dialog content. Rendered in an absolute-positioned
    *  bottom-anchored pane (▔ divider, paddingX=2) that paints over the
    *  ScrollBox AND bottom slot. Provides ModalContext so Pane/Dialog inside
@@ -298,10 +318,18 @@ export function computeUnseenDivider(
  * so nothing can accidentally render outside it.
  */
 export function FullscreenLayout({
+  terminalUiRevision,
   scrollable,
   bottom,
+  abovePrompt,
   overlay,
   bottomFloat,
+  dockPane,
+  dockWidth,
+  dockFocused = false,
+  sidebarPane,
+  sidebarWidth,
+  inlinePane,
   modal,
   modalScrollRef,
   scrollRef,
@@ -312,6 +340,76 @@ export function FullscreenLayout({
   onPillClick,
 }: Props): React.ReactNode {
   const { rows: terminalRows, columns } = useTerminalSize()
+  const hasDock = React.Children.toArray(dockPane).length > 0
+  const [dockHovered, setDockHovered] = useState(false)
+  const dockLit = dockFocused || dockHovered
+  useEffect(() => { if (!hasDock) setDockHovered(false) }, [hasDock])
+  const hasSidebar = React.Children.toArray(sidebarPane).length > 0
+  const sidebarColumns = hasSidebar ? (sidebarWidth ?? 0) : 0
+  const dockColumns = hasDock
+    ? Math.min(
+        Math.max(0, dockWidth ?? Math.min(Math.floor(columns * 0.45), 90, columns - 70)),
+        Math.max(0, columns - sidebarColumns - 1),
+      )
+    : 0
+  const conversationSize = useMemo(
+    () => ({ columns: columns - dockColumns - sidebarColumns, rows: terminalRows, global: {columns,rows:terminalRows,conversationColumns:columns-dockColumns-sidebarColumns} }),
+    [columns, dockColumns, sidebarColumns, terminalRows],
+  )
+  const sidebarSize = useMemo(
+    () => ({ columns: sidebarColumns, rows: terminalRows, global: conversationSize.global }),
+    [sidebarColumns, terminalRows, conversationSize.global],
+  )
+  const dockSize = useMemo(
+    () => ({ columns: Math.max(0, dockColumns - 1), rows: terminalRows, global: conversationSize.global }),
+    [dockColumns, terminalRows, conversationSize.global],
+  )
+  const bottomRef = useRef<DOMElement>(null)
+  const subscribeBottomLayout = useCallback((listener: () => void) => {
+    if (!bottomRef.current) return () => {}
+    let active = true
+    let pending = false
+    const unsubscribe = subscribeLayout(bottomRef.current, () => {
+      if (pending) return
+      pending = true
+      queueMicrotask(() => { pending = false; if (active) listener() })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [])
+  const bottomRows = useSyncExternalStore(subscribeBottomLayout, () =>
+    Math.max(0, Math.ceil(bottomRef.current?.yogaNode?.getComputedHeight() ?? 0)),
+  )
+  const bandRows = Math.max(0, Math.floor(terminalRows / 2) - bottomRows)
+  const bandSize = useMemo(
+    () => ({ columns: columns - dockColumns, rows: terminalRows, global: conversationSize.global }),
+    [columns, dockColumns, terminalRows, conversationSize.global],
+  )
+  const mainRowRef = useRef<DOMElement>(null)
+  const subscribeMainLayout = useCallback((listener: () => void) => {
+    if (!mainRowRef.current) return () => {}
+    let active = true
+    let pending = false
+    const unsubscribe = subscribeLayout(mainRowRef.current, () => {
+      if (pending) return
+      pending = true
+      queueMicrotask(() => {
+        pending = false
+        if (active) listener()
+      })
+    })
+    return () => { active = false; unsubscribe() }
+  }, [hasDock, hasSidebar])
+  const mainRowRows = useSyncExternalStore(subscribeMainLayout, () =>
+    Math.max(0, Math.floor(mainRowRef.current?.yogaNode?.getComputedHeight() ?? 0)),
+  )
+  const paneLayout = `${hasSidebar}:${sidebarColumns}:${hasDock}:${dockColumns}`
+  const previousPaneLayout = useRef(paneLayout)
+  useLayoutEffect(() => {
+    if (previousPaneLayout.current !== paneLayout) {
+      instances.get(process.stdout)?.invalidatePrevFrame()
+      previousPaneLayout.current = paneLayout
+    }
+  }, [paneLayout])
   // Scroll-derived chrome state lives HERE, not in REPL. StickyTracker
   // writes via ScrollChromeContext; pillVisible subscribes directly to
   // ScrollBox. Both change rarely (pill flips once per threshold crossing,
@@ -362,7 +460,7 @@ export function FullscreenLayout({
     }
   }, [])
 
-  if (isFullscreenEnvEnabled()) {
+  if (isFullscreenEnvEnabled() || hasSidebar) {
     // Overlay renders BELOW messages inside the same ScrollBox — user can
     // scroll up to see prior context while a permission dialog is showing.
     // The ScrollBox never unmounts across overlay transitions, so scroll
@@ -384,47 +482,94 @@ export function FullscreenLayout({
     const headerPrompt =
       sticky != null && sticky !== 'clicked' && overlay == null ? sticky : null
     const padCollapsed = sticky != null && overlay == null
-    return (
-      <PromptOverlayProvider>
-        <Box flexGrow={1} flexDirection="column" overflow="hidden">
-          {headerPrompt && (
-            <StickyPromptHeader
-              text={headerPrompt.text}
-              onClick={headerPrompt.scrollTo}
-            />
-          )}
-          <ScrollBox
-            ref={scrollRef}
-            flexGrow={1}
-            flexDirection="column"
-            paddingTop={padCollapsed ? 0 : 1}
-            stickyScroll
-          >
-            <ScrollChromeContext value={chromeCtx}>
-              {scrollable}
-            </ScrollChromeContext>
-            {overlay}
-          </ScrollBox>
-          {!hidePill && pillVisible && overlay == null && (
-            <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
-          )}
-          {bottomFloat != null && (
-            <Box position="absolute" bottom={0} right={0} opaque>
-              {bottomFloat}
+    const bottomContent = (
+      <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">
+        <SuggestionsOverlay />
+        <DialogOverlay />
+        {abovePrompt != null && <TerminalSizeContext value={bandSize}>
+          <ModsBandBudgetContext value={bandRows}>
+            <Box flexShrink={0} flexDirection="column" width={bandSize.columns} maxHeight={bandRows} overflowY="hidden">
+              {abovePrompt}
             </Box>
-          )}
+          </ModsBandBudgetContext>
+        </TerminalSizeContext>}
+        <Box
+          ref={bottomRef}
+          flexDirection="column"
+          width="100%"
+          flexGrow={1}
+          overflowY="hidden"
+        >
+          <PromptDockColumnsContext value={dockColumns}>{bottom}</PromptDockColumnsContext>
+          {hasDock && <DockTail width={dockColumns} isLit={dockLit} />}
         </Box>
-        <Box flexDirection="column" flexShrink={0} width="100%" maxHeight="50%">
-          <SuggestionsOverlay />
-          <DialogOverlay />
-          <Box
-            flexDirection="column"
-            width="100%"
-            flexGrow={1}
-            overflowY="hidden"
-          >
-            {bottom}
+      </Box>
+    )
+    return (
+      <TerminalSizeContext value={{columns,rows:terminalRows,global:conversationSize.global}}>
+      <PromptOverlayProvider container={bottomRef}>
+        <Box terminalUiRevision={terminalUiRevision} flexGrow={1} flexDirection="column" overflow="hidden">
+          <Box ref={mainRowRef} flexGrow={1} flexDirection="row" overflow="hidden">
+            <TerminalSizeContext value={conversationSize}>
+              <Box width={conversationSize.columns} height={mainRowRows} flexShrink={0} flexDirection="column">
+                <Box flexGrow={1} flexDirection="column" overflow="hidden">
+                  {headerPrompt && (
+                    <StickyPromptHeader
+                      text={headerPrompt.text}
+                      onClick={headerPrompt.scrollTo}
+                    />
+                  )}
+                  <ScrollBox
+                    ref={scrollRef}
+                    flexGrow={1}
+                    flexDirection="column"
+                    paddingTop={padCollapsed ? 0 : 1}
+                    stickyScroll
+                  >
+                    <ScrollChromeContext value={chromeCtx}>
+                      {scrollable}
+                    </ScrollChromeContext>
+                    {overlay}
+                  </ScrollBox>
+                  {!hidePill && pillVisible && overlay == null && (
+                    <NewMessagesPill count={newMessageCount} onClick={onPillClick} />
+                  )}
+                  {bottomFloat != null && (
+                    <Box position="absolute" bottom={0} right={0} opaque>
+                      {bottomFloat}
+                    </Box>
+                  )}
+                </Box>
+                {React.Children.toArray(inlinePane).length > 0 && (
+                  <Box flexDirection="column" flexShrink={0} width="100%" overflow="hidden">
+                    {inlinePane}
+                  </Box>
+                )}
+              </Box>
+            </TerminalSizeContext>
+            {hasSidebar && (
+              <TerminalSizeContext value={sidebarSize}>
+                <Box flexDirection="column" flexShrink={0} width={sidebarColumns} overflow="hidden">
+                  {sidebarPane}
+                </Box>
+              </TerminalSizeContext>
+            )}
+            {hasDock && (
+              <TerminalSizeContext value={dockSize}>
+                <Box flexDirection="row" flexShrink={0} width={dockColumns}
+                  backgroundColor="composerSidebarBackground" overflow="hidden">
+                  <Box flexShrink={0} width={1} borderStyle="single" borderLeft
+                    borderRight={false} borderTop={false} borderBottom={false}
+                    borderLeftDimColor={!dockLit} borderLeftColor={dockLit ? 'suggestion' : undefined}
+                    onMouseEnter={() => setDockHovered(true)} onMouseLeave={() => setDockHovered(false)} />
+                  <Box flexDirection="column" flexGrow={1} width={dockSize.columns} overflow="hidden">
+                    <ModsPaneHostRowsContext value={mainRowRows}>{dockPane}</ModsPaneHostRowsContext>
+                  </Box>
+                </Box>
+              </TerminalSizeContext>
+            )}
           </Box>
+          {bottomContent}
         </Box>
         {modal != null && (
           <ModalContext
@@ -478,17 +623,34 @@ export function FullscreenLayout({
           </ModalContext>
         )}
       </PromptOverlayProvider>
+      </TerminalSizeContext>
     )
   }
 
   return (
+    <TerminalSizeContext value={{columns,rows:terminalRows,global:conversationSize.global}}>
     <>
       {scrollable}
+      {sidebarPane}
+      {dockPane}
+      {inlinePane}
+      {abovePrompt}
       {bottom}
       {overlay}
       {modal}
     </>
+    </TerminalSizeContext>
   )
+}
+
+function DockTail({ width, isLit }: { width: number; isLit: boolean }): React.ReactNode {
+  const rows = usePromptOverlayGap()
+  return rows > 0 ? (
+    <Box position="absolute" top={0} right={0} width={width} height={rows}
+      backgroundColor="composerSidebarBackground" borderStyle="single" borderLeft
+      borderRight={false} borderTop={false} borderBottom={false}
+      borderLeftDimColor={!isLit} borderLeftColor={isLit ? 'suggestion' : undefined} />
+  ) : null
 }
 
 // Slack-style pill. Absolute overlay at bottom={0} of the scrollwrap — floats
@@ -608,7 +770,7 @@ function SuggestionsOverlay(): React.ReactNode {
   )
 }
 
-// Dialog portaled from PromptInput (AutoModeOptInDialog) — same clip-escape
+// Dialog portaled from the prompt — same clip-escape
 // pattern as SuggestionsOverlay. Renders later in tree order so it paints
 // over suggestions if both are ever up (they shouldn't be).
 function DialogOverlay(): React.ReactNode {

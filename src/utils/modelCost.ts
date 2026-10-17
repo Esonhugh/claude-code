@@ -11,7 +11,15 @@ import {
   CLAUDE_OPUS_4_1_CONFIG,
   CLAUDE_OPUS_4_5_CONFIG,
   CLAUDE_OPUS_4_6_CONFIG,
+  CLAUDE_OPUS_4_7_CONFIG,
+  CLAUDE_OPUS_4_8_CONFIG,
   CLAUDE_OPUS_4_CONFIG,
+  CLAUDE_FABLE_5_CONFIG,
+  CLAUDE_FABLE_5_1_CONFIG,
+  CLAUDE_MYTHOS_5_CONFIG,
+  CLAUDE_MYTHOS_5_1_CONFIG,
+  CLAUDE_OPUS_5_5_CONFIG,
+  CLAUDE_SONNET_5_5_CONFIG,
   CLAUDE_SONNET_4_5_CONFIG,
   CLAUDE_SONNET_4_6_CONFIG,
   CLAUDE_SONNET_4_CONFIG,
@@ -20,6 +28,7 @@ import {
   firstPartyNameToCanonical,
   getCanonicalName,
   getDefaultMainLoopModelSetting,
+  normalizeModelStringForAPI,
   type ModelShortName,
 } from './model/model.js'
 
@@ -59,12 +68,40 @@ export const COST_TIER_5_25 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
-// Fast mode pricing for Opus 4.6: $30 input / $150 output per Mtok
-export const COST_TIER_30_150 = {
-  inputTokens: 30,
-  outputTokens: 150,
-  promptCacheWriteTokens: 37.5,
-  promptCacheReadTokens: 3,
+export const COST_TIER_4_20 = {
+  inputTokens: 4,
+  outputTokens: 20,
+  promptCacheWriteTokens: 5,
+  promptCacheReadTokens: 0.2,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+export const COST_TIER_10_50 = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheReadTokens: 0.25,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+export const COST_TIER_10_50_LEGACY_CACHE = {
+  ...COST_TIER_10_50,
+  promptCacheReadTokens: 1,
+} as const satisfies ModelCosts
+
+export const COST_TIER_FAST_8_40 = {
+  inputTokens: 8,
+  outputTokens: 40,
+  promptCacheWriteTokens: 10,
+  promptCacheReadTokens: 0.4,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+export const COST_TIER_FAST_10_50 = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheReadTokens: 1,
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
@@ -89,19 +126,73 @@ export const COST_HAIKU_45 = {
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 /**
- * Get the cost tier for Opus 4.6 based on fast mode.
+ * Get the cost tier for the current Opus model based on fast mode.
  */
-export function getOpus46CostTier(fastMode: boolean): ModelCosts {
+export function getOpusCostTier(fastMode: boolean): ModelCosts {
   if (isFastModeEnabled() && fastMode) {
-    return COST_TIER_30_150
+    return COST_TIER_FAST_8_40
   }
-  return COST_TIER_5_25
+  return COST_TIER_4_20
 }
 
 // @[MODEL LAUNCH]: Add a pricing entry for the new model below.
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
 export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
+  [firstPartyNameToCanonical(CLAUDE_FABLE_5_1_CONFIG.firstParty)]:
+    COST_TIER_10_50,
+  [firstPartyNameToCanonical(CLAUDE_FABLE_5_CONFIG.firstParty)]:
+    COST_TIER_10_50_LEGACY_CACHE,
+  [firstPartyNameToCanonical(CLAUDE_MYTHOS_5_1_CONFIG.firstParty)]:
+    COST_TIER_10_50,
+  [firstPartyNameToCanonical(CLAUDE_MYTHOS_5_CONFIG.firstParty)]:
+    COST_TIER_10_50_LEGACY_CACHE,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_5_5_CONFIG.firstParty)]: COST_TIER_4_20,
+  'claude-opus-5': COST_TIER_5_25,
+  [firstPartyNameToCanonical(CLAUDE_SONNET_5_5_CONFIG.firstParty)]: {
+    inputTokens: 2,
+    outputTokens: 10,
+    promptCacheWriteTokens: 2.5,
+    promptCacheReadTokens: 0.2,
+    webSearchRequests: 0.01,
+  },
+  'claude-sonnet-5': {
+    inputTokens: 2,
+    outputTokens: 10,
+    promptCacheWriteTokens: 2.5,
+    promptCacheReadTokens: 0.2,
+    webSearchRequests: 0.01,
+  },
+  // OpenAI has no separate cache-write surcharge; uncached input uses the base rate.
+  // Verified 2026-09-19: Sol promotional pricing lasts at least through 2026-11-21.
+  'gpt-5.6-sol': {
+    inputTokens: 4,
+    outputTokens: 20,
+    promptCacheWriteTokens: 4,
+    promptCacheReadTokens: 0.4,
+    webSearchRequests: 0.01,
+  },
+  'gpt-6-astra': {
+    inputTokens: 10,
+    outputTokens: 50,
+    promptCacheWriteTokens: 10,
+    promptCacheReadTokens: 1,
+    webSearchRequests: 0.01,
+  },
+  'gpt-5.6-terra': {
+    inputTokens: 2,
+    outputTokens: 12,
+    promptCacheWriteTokens: 2,
+    promptCacheReadTokens: 0.2,
+    webSearchRequests: 0.01,
+  },
+  'gpt-5.6-luna': {
+    inputTokens: 0.2,
+    outputTokens: 1.2,
+    promptCacheWriteTokens: 0.2,
+    promptCacheReadTokens: 0.02,
+    webSearchRequests: 0.01,
+  },
   [firstPartyNameToCanonical(CLAUDE_3_5_HAIKU_CONFIG.firstParty)]:
     COST_HAIKU_35,
   [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
@@ -123,6 +214,10 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_5_25,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_4_7_CONFIG.firstParty)]:
+    COST_TIER_5_25,
+  [firstPartyNameToCanonical(CLAUDE_OPUS_4_8_CONFIG.firstParty)]:
+    COST_TIER_5_25,
 }
 
 /**
@@ -142,14 +237,17 @@ function tokensToUSDCost(modelCosts: ModelCosts, usage: Usage): number {
 }
 
 export function getModelCosts(model: string, usage: Usage): ModelCosts {
-  const shortName = getCanonicalName(model)
+  const shortName = getCanonicalName(normalizeModelStringForAPI(model))
 
-  // Check if this is an Opus 4.6 model with fast mode active.
-  if (
-    shortName === firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)
-  ) {
-    const isFastMode = usage.speed === 'fast'
-    return getOpus46CostTier(isFastMode)
+  if (usage.speed === 'fast') {
+    if (
+      shortName === firstPartyNameToCanonical(CLAUDE_OPUS_5_5_CONFIG.firstParty)
+    ) {
+      return COST_TIER_FAST_8_40
+    }
+    if (shortName === 'claude-opus-5' || shortName === 'claude-opus-4-8') {
+      return COST_TIER_FAST_10_50
+    }
   }
 
   const costs = MODEL_COSTS[shortName]
@@ -230,7 +328,7 @@ export function formatModelPricing(costs: ModelCosts): string {
  * Returns undefined if model is not found
  */
 export function getModelPricingString(model: string): string | undefined {
-  const shortName = getCanonicalName(model)
+  const shortName = getCanonicalName(normalizeModelStringForAPI(model))
   const costs = MODEL_COSTS[shortName]
   if (!costs) return undefined
   return formatModelPricing(costs)

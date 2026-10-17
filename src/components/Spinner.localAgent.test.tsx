@@ -3,7 +3,9 @@ import React from 'react'
 import { PassThrough } from 'node:stream'
 import { render } from '../ink.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
+import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/types.js'
 import type { SpinnerAnimationRowProps } from './Spinner/SpinnerAnimationRow.js'
+import { TeammateSpinnerLine } from './Spinner/TeammateSpinnerLine.js'
 
 let received: SpinnerAnimationRowProps | undefined
 mock.module('./Spinner/SpinnerAnimationRow.js', () => ({
@@ -23,6 +25,8 @@ const task = {
 
 async function renderSpinner(element: React.ReactElement) {
   const stdout = Object.assign(new PassThrough(), { columns: 120, rows: 40, isTTY: false })
+  let output = ''
+  stdout.on('data', chunk => { output += chunk.toString() })
   stdout.resume()
   const instance = await render(element, {
     stdout: stdout as unknown as NodeJS.WriteStream,
@@ -32,6 +36,7 @@ async function renderSpinner(element: React.ReactElement) {
   })
   try {
     await new Promise(resolve => setTimeout(resolve, 30))
+    return output
   } finally {
     instance.unmount()
     instance.cleanup()
@@ -53,4 +58,30 @@ test.each(['completed', 'failed', 'killed'] as const)('no animation after %s eve
   received = undefined
   await renderSpinner(<LocalAgentSpinner task={{ ...task, status }} hasActiveTools={true} verbose={false} />)
   expect(received).toBeUndefined()
+})
+
+const teammate = {
+  id: 'teammate', type: 'in_process_teammate', status: 'running',
+  description: 'teammate', startTime: 1_000, endTime: 6_000,
+  outputFile: '', outputOffset: 0, notified: true,
+  identity: { agentId: 'worker@team', agentName: 'worker', teamName: 'team', planModeRequired: false, parentSessionId: 'session' },
+  prompt: 'work', awaitingPlanApproval: false, permissionMode: 'default',
+  pendingUserMessages: [], isIdle: true, shutdownRequested: false,
+  lastReportedToolCount: 0, lastReportedTokenCount: 0,
+} as InProcessTeammateTaskState
+
+test.each([
+  ['completed', 'done'],
+  ['failed', 'failed'],
+  ['killed', 'stopped'],
+] as const)('terminal teammate %s status is explicit and duration stays frozen', async (status, label) => {
+  const output = await renderSpinner(
+    <TeammateSpinnerLine
+      teammate={{ ...teammate, status }}
+      isLast={true}
+      allIdle={true}
+    />,
+  )
+  expect(output).toContain(`${label} for 5s`)
+  expect(output).not.toContain('Idle for')
 })

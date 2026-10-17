@@ -3,7 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import { addInvokedSkill, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import {
   getCommand,
   getMcpSkillCommands,
@@ -22,10 +22,19 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
 import {
+  captureModSkillPromptSnapshot,
+  renderModSkillPrompt,
+} from '../../services/mods/skillPrompt.js'
+import {
   connectToServer,
   fetchToolsForClient,
 } from '../../services/mcp/client.js'
-import { getMcpConfigByName } from '../../services/mcp/config.js'
+import {
+  doesEnterpriseMcpConfigExist,
+  filterMcpServersByPolicy,
+  getMcpConfigByName,
+  isMcpServerDisabled,
+} from '../../services/mcp/config.js'
 import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
@@ -47,6 +56,7 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -67,10 +77,12 @@ import {
 } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import type { ModelAlias } from '../../utils/model/aliases.js'
+import { getCanonicalName } from '../../utils/model/model.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
+  isLoggableMessage,
+  type AgentMetadata,
   setAgentTranscriptSubdir,
   writeAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -94,6 +106,11 @@ import {
   resolveAgentTools,
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import {
+  resolveDeclaredAgentPermissionMode,
+  shouldBubbleAgentPermissionPrompts,
+} from './permissionMode.js'
+import { getCurrentSubagentDepth } from './subagentDepth.js'
 import { isAnt } from 'src/utils/userType.js'
 
 /**
@@ -133,16 +150,31 @@ async function initializeAgentMcpServers(
   // surface. Blocking them (as the first cut did) breaks plugin agents that
   // legitimately need MCP, contradicting "plugin-provided always loads."
   const agentIsAdminTrusted = isSourceAdminTrusted(agentDefinition.source)
+  const specServerNames = agentDefinition.mcpServers.map((spec) =>
+    typeof spec === 'string' ? spec : Object.keys(spec)[0]!,
+  )
   if (isRestrictedToPluginOnly('mcp') && !agentIsAdminTrusted) {
-    const blockedServerNames = agentDefinition.mcpServers.map((spec) =>
-      typeof spec === 'string' ? spec : Object.keys(spec)[0]!,
-    )
     logForDebugging(
       `[Agent: ${agentDefinition.agentType}] Skipping MCP servers: strictPluginOnlyCustomization locks MCP to plugin-only (agent source: ${agentDefinition.source})`,
     )
-    if (blockedServerNames.length > 0) {
-      await onMcpServersBlocked?.(blockedServerNames, 'plugin-only policy')
+    if (specServerNames.length > 0) {
+      await onMcpServersBlocked?.(specServerNames, 'plugin-only policy')
     }
+    return {
+      clients: parentClients,
+      tools: [],
+      cleanup: async () => {},
+    }
+  }
+
+  // An enterprise MCP config has exclusive control over MCP servers — the same
+  // rule that rejects --mcp-config (main.tsx) and getClaudeCodeMcpConfigs.
+  if (doesEnterpriseMcpConfigExist()) {
+    logForDebugging(
+      `[Agent: ${agentDefinition.agentType}] Skipping MCP servers: blocked by enterprise MCP config (agent source: ${agentDefinition.source})`,
+      { level: 'warn' },
+    )
+    await onMcpServersBlocked?.(specServerNames, 'enterprise MCP config')
     return {
       clients: parentClients,
       tools: [],
@@ -193,12 +225,57 @@ async function initializeAgentMcpServers(
         )
         continue
       }
+      let isReservedName = isClaudeInChromeMCPServer(serverName)
+      if (!isReservedName && feature('CHICAGO_MCP')) {
+        const { isComputerUseMCPServer } = await import(
+          'src/utils/computerUse/common.js'
+        )
+        isReservedName = isComputerUseMCPServer(serverName)
+      }
+      if (isReservedName) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Skipping reserved MCP server name '${serverName}' in frontmatter`,
+          { level: 'warn' },
+        )
+        continue
+      }
+      // Host-provided transports (SDK, IDE) and claude.ai connectors cannot be
+      // defined by an agent file.
+      if (
+        serverConfig.type === 'sdk' ||
+        serverConfig.type === 'sse-ide' ||
+        serverConfig.type === 'ws-ide' ||
+        serverConfig.type === 'claudeai-proxy'
+      ) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Skipping unsupported MCP transport '${serverConfig.type}' for '${serverName}' in frontmatter`,
+          { level: 'warn' },
+        )
+        continue
+      }
       name = serverName
       config = {
         ...serverConfig,
         scope: 'dynamic' as const,
       } as ScopedMcpServerConfig
       isNewlyCreated = true
+    }
+
+    if (isMcpServerDisabled(name)) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] MCP server '${name}' is disabled for this project`,
+        { level: 'warn' },
+      )
+      await onMcpServersBlocked?.([name], 'disabled')
+      continue
+    }
+    if (filterMcpServersByPolicy({ [name]: config }).blocked.length > 0) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] MCP server '${name}' blocked by managed settings MCP policy`,
+        { level: 'warn' },
+      )
+      await onMcpServersBlocked?.([name], 'managed settings MCP policy')
+      continue
     }
 
     // Connect to the server
@@ -250,6 +327,8 @@ async function initializeAgentMcpServers(
   }
 }
 
+export const initializeAgentMcpServersForTesting = initializeAgentMcpServers
+
 type QueryMessage =
   | StreamEvent
   | RequestStartEvent
@@ -268,6 +347,7 @@ export function buildAgentMetadataForTesting({
   permissionMode,
   parentAgentId,
   spawnDepth,
+  effort,
 }: {
   agentType: string
   description?: string
@@ -279,6 +359,7 @@ export function buildAgentMetadataForTesting({
   permissionMode?: PermissionMode
   parentAgentId?: string
   spawnDepth?: number
+  effort?: import('../../utils/effort.js').EffortValue
 }) {
   return {
     agentType,
@@ -291,6 +372,7 @@ export function buildAgentMetadataForTesting({
     ...(permissionMode && { permissionMode }),
     ...(parentAgentId && { parentAgentId }),
     ...(spawnDepth !== undefined && { spawnDepth }),
+    ...(effort !== undefined && { effort }),
   }
 }
 
@@ -329,6 +411,7 @@ function isRecordableMessage(
 
 export async function* runAgent({
   agentDefinition,
+  baseSystemPrompt,
   promptMessages,
   toolUseContext,
   canUseTool,
@@ -338,11 +421,13 @@ export async function* runAgent({
   querySource,
   override,
   model,
+  resolvedModel,
   maxTurns,
   preserveToolUseResults,
   availableTools,
   permissionMode: requestedPermissionMode,
   allowedTools,
+  allowedAgentTypes,
   onCacheSafeParams,
   contentReplacementState,
   useExactTools,
@@ -354,11 +439,17 @@ export async function* runAgent({
   toolUseId,
   parentAgentId,
   spawnDepth,
+  spawnedBySkill,
+  spawnedByForkedSkill,
   onMcpServersBlocked,
   transcriptSubdir,
   onQueryProgress,
+  recordedUuids,
+  extraMetadata,
 }: {
   agentDefinition: AgentDefinition
+  /** Host-built named sections, before per-agent environment enhancement. */
+  baseSystemPrompt?: SystemPrompt
   promptMessages: Message[]
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
@@ -374,8 +465,11 @@ export async function* runAgent({
     systemPrompt?: SystemPrompt
     abortController?: AbortController
     agentId?: AgentId
+    readFileState?: ToolUseContext['readFileState']
   }
-  model?: ModelAlias
+  model?: string
+  /** Internal spawn snapshot. Already resolved; do not read env/config again. */
+  resolvedModel?: string
   maxTurns?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
@@ -390,6 +484,9 @@ export async function* runAgent({
    * When provided, replaces ALL allow rules so the agent only has what's
    * explicitly listed (parent approvals don't leak through). */
   allowedTools?: string[]
+  /** Agent types this agent's definition allows it to spawn (`Agent(a, b)`).
+   * Replaces the parent's allowedAgentTypes in the child context. */
+  allowedAgentTypes?: string[]
   /** Optional callback invoked with CacheSafeParams after constructing the agent's
    * system prompt, context, and tools. Used by background summarization to fork
    * the agent's conversation for periodic progress summaries. */
@@ -398,10 +495,10 @@ export async function* runAgent({
    * the same tool results are re-replaced (prompt cache stability). When
    * omitted, createSubagentContext clones the parent's state. */
   contentReplacementState?: ContentReplacementState
-  /** When true, inherit the parent's tools except main-thread-only tools,
+  /** When true, inherit every parent tool definition,
    * without filtering through resolveAgentTools(). Also inherits the parent's
    * thinkingConfig and isNonInteractiveSession. Used by the fork subagent path
-   * to preserve the API request prefix until the first main-thread-only tool. */
+   * to preserve the API request prefix. Main-thread-only calls retain runtime guards. */
   useExactTools?: boolean
   /** Worktree path if the agent was spawned with isolation: "worktree".
    * Persisted to metadata so resume can restore the correct cwd. */
@@ -422,7 +519,8 @@ export async function* runAgent({
   /** Stable recursive spawn depth. */
   spawnDepth?: number
   /** Whether this agent was spawned by a skill-triggered flow. */
-  spawnedBySkill?: boolean
+  spawnedBySkill?: string
+  spawnedByForkedSkill?: boolean
   /** Non-fatal notification hook for blocked/unavailable MCP servers. */
   onMcpServersBlocked?: (
     serverNames: string[],
@@ -436,29 +534,58 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
+  /** UUIDs already persisted for a teammate's accumulating conversation. */
+  recordedUuids?: Set<UUID>
+  /** Host-owned teammate metadata; merged after the normal agent fields. */
+  extraMetadata?: Partial<AgentMetadata>
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
   const permissionMode =
     requestedPermissionMode ??
-    (appState.toolPermissionContext.mode === 'bypassPermissions'
-      ? 'bypassPermissions'
-      : (agentDefinition.permissionMode ?? appState.toolPermissionContext.mode))
+    resolveDeclaredAgentPermissionMode(
+      appState.toolPermissionContext.mode,
+      agentDefinition.permissionMode,
+    )
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  const resolvedAgentModel = getAgentModel(
-    agentDefinition.model,
-    toolUseContext.options.mainLoopModel,
-    model,
-    permissionMode,
-  )
+  const resolvedAgentModel = resolvedModel ??
+    getAgentModel(
+      agentDefinition.model,
+      toolUseContext.options.mainLoopModel,
+      model,
+      permissionMode,
+    )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
+
+  // Determine abortController:
+  // - Override takes precedence
+  // - Async agents get a new unlinked controller (runs independently)
+  // - Sync agents share parent's controller
+  const agentAbortController = override?.abortController
+    ? override.abortController
+    : isAsync
+      ? new AbortController()
+      : toolUseContext.abortController
+
+  const registeredTurn = toolUseContext.mods?.beginAgentTurn?.(agentId)
+  let primaryError: { value: unknown } | undefined
+  let runExitedNormally = false
+  let queryTerminalReason: string | undefined
+  const finishModTurn = () => registeredTurn?.finish({
+    aborted: agentAbortController.signal.aborted || (!runExitedNormally && primaryError === undefined),
+    failed: primaryError !== undefined,
+    terminal: { reason: queryTerminalReason },
+  })
+
+  // The producer owns registration across every setup await, not just query().
+  try {
 
   // Route this agent's transcript into a grouping subdirectory if requested
   // (e.g. workflow subagents write to subagents/workflows/<runId>/).
@@ -486,10 +613,10 @@ export async function* runAgent({
     : []
   const initialMessages: Message[] = [...contextMessages, ...promptMessages]
 
-  const agentReadFileState =
+  const agentReadFileState = override?.readFileState ?? (
     forkContextMessages !== undefined
       ? cloneFileStateCache(toolUseContext.readFileState)
-      : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE)
+      : createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE))
 
   const [baseUserContext, baseSystemContext] = await Promise.all([
     override?.userContext ?? getUserContext(),
@@ -505,11 +632,12 @@ export async function* runAgent({
     agentDefinition.omitClaudeMd &&
     !override?.userContext &&
     getFeatureValue_CACHED_MAY_BE_STALE('tengu_slim_subagent_claudemd', true)
-  const { claudeMd: _omittedClaudeMd, ...userContextNoClaudeMd } =
-    baseUserContext
-  const resolvedUserContext = shouldOmitClaudeMd
-    ? userContextNoClaudeMd
-    : baseUserContext
+  const resolveUserContext = (context: Record<string, string>) => {
+    if (!shouldOmitClaudeMd) return context
+    const { claudeMd: _omittedClaudeMd, ...userContextNoClaudeMd } = context
+    return userContextNoClaudeMd
+  }
+  const resolvedUserContext = resolveUserContext(baseUserContext)
 
   // Explore/Plan are read-only search agents — the parent-session-start
   // gitStatus (up to 40KB, explicitly labeled stale) is dead weight. If they
@@ -534,12 +662,15 @@ export async function* runAgent({
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
-    //   - bubble mode: always show prompts (bubbles to parent terminal)
+    //   - requested bubble: always show prompts (bubbles to parent terminal),
+    //     even when the parent's mode was kept
     //   - default: !isAsync (sync agents show prompts, async agents don't)
     const shouldAvoidPrompts =
       canShowPermissionPrompts !== undefined
         ? !canShowPermissionPrompts
-        : permissionMode === 'bubble'
+        : shouldBubbleAgentPermissionPrompts(
+              requestedPermissionMode ?? agentDefinition.permissionMode,
+            )
           ? false
           : isAsync
     if (shouldAvoidPrompts) {
@@ -573,8 +704,11 @@ export async function* runAgent({
           cliArg: state.toolPermissionContext.alwaysAllowRules.cliArg,
           // Use the provided allowedTools as session-level permissions
           session: [...allowedTools],
-          ...(preloadedSkillAllowedTools.length > 0
-            ? { command: preloadedSkillAllowedTools }
+          ...((spawnedByForkedSkill || preloadedSkillAllowedTools.length > 0)
+            ? { command: [...new Set([
+                ...(spawnedByForkedSkill ? state.toolPermissionContext.alwaysAllowRules.command ?? [] : []),
+                ...preloadedSkillAllowedTools,
+              ])] }
             : {}),
         },
       }
@@ -618,7 +752,17 @@ export async function* runAgent({
         { ...agentDefinition, permissionMode },
         availableTools,
         isAsync,
+        false,
+        // Same depth the Agent tool's call-time limit check reads.
+        getCurrentSubagentDepth({
+          subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
+          spawnDepth,
+        }),
       ).resolvedTools
+
+  logForDebugging(
+    `[runAgent] agentId=${agentId}, agentType=${agentDefinition.agentType}, model=${resolvedAgentModel}, tools=${resolvedTools.map(tool => tool.name).join(',')}`,
+  )
 
   const additionalWorkingDirectories = Array.from(
     // @ts-ignore - recovered code
@@ -635,18 +779,9 @@ export async function* runAgent({
           // @ts-ignore - recovered code
           additionalWorkingDirectories,
           resolvedTools,
+          baseSystemPrompt,
         ),
       )
-
-  // Determine abortController:
-  // - Override takes precedence
-  // - Async agents get a new unlinked controller (runs independently)
-  // - Sync agents share parent's controller
-  const agentAbortController = override?.abortController
-    ? override.abortController
-    : isAsync
-      ? new AbortController()
-      : toolUseContext.abortController
 
   // Execute SubagentStart hooks and collect additional context
   const additionalContexts: string[] = []
@@ -698,6 +833,7 @@ export async function* runAgent({
   // Preload skills from agent frontmatter
   const skillsToPreload = agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
+    const preloadContext = { ...toolUseContext, agentId }
     const allSkills = uniqBy(
       [
         ...(await getSkillToolCommands(getProjectRoot())),
@@ -744,17 +880,55 @@ export async function* runAgent({
     // Load all skill contents concurrently and add to initial messages
     const { formatSkillLoadingMetadata } =
       await import('../../utils/processUserInput/processSlashCommand.js')
-    const loaded = await Promise.all(
-      validSkills.map(async ({ skillName, skill }) => ({
-        skillName,
-        skill,
-        content: await skill.getPromptForCommand('', toolUseContext),
-      })),
-    )
+    const ownedSkillSnapshot = toolUseContext.modsSnapshot
+      ? undefined
+      : captureModSkillPromptSnapshot(preloadContext, canUseTool)
+    let loaded: Array<{
+      skillName: string
+      skill: (typeof validSkills)[0]['skill']
+      content: Awaited<ReturnType<(typeof validSkills)[number]['skill']['getPromptForCommand']>>
+    }>
+    try {
+      const snapshot = toolUseContext.modsSnapshot ?? ownedSkillSnapshot
+      loaded = await Promise.all(
+        validSkills.map(async ({ skillName, skill }) => {
+          const content = await skill.getPromptForCommand('', preloadContext)
+          if (!snapshot?.hasHooks('skill.prompt'))
+            return { skillName, skill, content }
+          const text = content
+            .filter(block => block.type === 'text')
+            .map(block => block.text)
+            .join('\n\n')
+          return {
+            skillName,
+            skill,
+            content: [{
+              type: 'text' as const,
+              text: await renderModSkillPrompt({
+                snapshot,
+                skill: skill.name,
+                text,
+                signal: agentAbortController.signal,
+              }),
+            }],
+          }
+        }),
+      )
+    } finally {
+      ownedSkillSnapshot?.release()
+    }
     for (const { skillName, skill, content } of loaded) {
       logForDebugging(
         `[Agent: ${agentDefinition.agentType}] Preloaded skill '${skillName}'`,
       )
+      const skillContent = content
+        .filter(block => block.type === 'text')
+        .map(block => block.text)
+        .join('\n\n')
+      const skillPath = skill.source
+        ? `${skill.source}:${skill.name}`
+        : skill.name
+      addInvokedSkill(skill.name, skillPath, skillContent, agentId)
 
       // Add command-message metadata so the UI shows which skill is loading
       const metadata = formatSkillLoadingMetadata(
@@ -793,6 +967,12 @@ export async function* runAgent({
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
 
+  const canonicalModel = getCanonicalName(resolvedAgentModel)
+  const inheritThinking =
+    useExactTools ||
+    canonicalModel === 'claude-opus-5' ||
+    canonicalModel === 'claude-sonnet-5'
+
   // Build agent-specific options
   const agentOptions: ToolUseContext['options'] = {
     isNonInteractiveSession: useExactTools
@@ -803,18 +983,21 @@ export async function* runAgent({
     appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
     tools: allTools,
     commands: [],
+    spawnedBySkill,
+    spawnedByForkedSkill,
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
     mainLoopModel: resolvedAgentModel,
-    // For fork children (useExactTools), inherit thinking config to match the
-    // parent's API request prefix for prompt cache hits. For regular
-    // sub-agents, disable thinking to control output token costs.
-    thinkingConfig: useExactTools
+    // Forks preserve the request prefix. Opus/Sonnet 5 preserve the user's
+    // adaptive thinking choice; older regular subagents keep the cost default.
+    thinkingConfig: inheritThinking
       ? toolUseContext.options.thinkingConfig
       : { type: 'disabled' as const },
     mcpClients: mergedMcpClients,
     mcpResources: toolUseContext.options.mcpResources,
-    agentDefinitions: toolUseContext.options.agentDefinitions,
+    agentDefinitions: allowedAgentTypes
+      ? { ...toolUseContext.options.agentDefinitions, allowedAgentTypes }
+      : toolUseContext.options.agentDefinitions,
     subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
     spawnDepth:
       spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
@@ -851,57 +1034,65 @@ export async function* runAgent({
     agentToolUseContext.preserveToolUseResults = true
   }
 
-  // Expose cache-safe params for background summarization (prompt cache sharing)
-  if (onCacheSafeParams) {
-    onCacheSafeParams({
-      systemPrompt: agentSystemPrompt,
-      userContext: resolvedUserContext,
-      systemContext: resolvedSystemContext,
-      toolUseContext: agentToolUseContext,
-      forkContextMessages: initialMessages,
-    })
-  }
-
   // Record initial messages before the query loop starts, plus the agentType
   // so resume can route correctly when subagent_type is omitted. Both writes
   // are fire-and-forget — persistence failure shouldn't block the agent.
-  void recordSidechainTranscript(initialMessages, agentId).catch((_err) =>
+  const lastRecordedIndex = recordedUuids === undefined ? -1
+    : initialMessages.findLastIndex(message => recordedUuids.has(message.uuid))
+  const newInitialMessages = initialMessages.slice(lastRecordedIndex + 1)
+  const recordedParent = initialMessages.slice(0, lastRecordedIndex + 1)
+    .findLast(message => recordedUuids?.has(message.uuid) && isLoggableMessage(message))?.uuid ?? null
+  void recordSidechainTranscript(newInitialMessages, agentId, recordedParent).catch((_err) =>
     logForDebugging(`Failed to record sidechain transcript: ${_err}`),
   )
   void writeAgentMetadata(
     agentId,
-    buildAgentMetadataForTesting({
-      agentType: agentDefinition.agentType,
-      description,
-      worktreePath,
-      worktreeBranch,
-      cwd,
-      name,
-      toolUseId,
-      permissionMode,
-      parentAgentId,
-      spawnDepth:
-        spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
-    }),
+    {
+      ...buildAgentMetadataForTesting({
+        agentType: agentDefinition.agentType,
+        description,
+        worktreePath,
+        worktreeBranch,
+        cwd,
+        name,
+        toolUseId,
+        permissionMode,
+        parentAgentId,
+        effort: agentGetAppState().effortValue,
+        spawnDepth:
+          spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),
+      }),
+      ...extraMetadata,
+      model: resolvedAgentModel,
+    },
   ).catch((_err) => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity
-  let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
+  let lastRecordedUuid: UUID | null = newInitialMessages.findLast(isLoggableMessage)?.uuid ?? recordedParent
+  for (const message of newInitialMessages) {
+    if (isLoggableMessage(message)) recordedUuids?.add(message.uuid)
+  }
   let subagentStopStarted = false
-  let queryTerminalReason: string | undefined
   let queryIterator: ReturnType<typeof query> | undefined
   let queryIteratorDone = false
   const subagentMessages = [...initialMessages]
+  const finishModConversation = toolUseContext.mods?.trackConversation({
+    agentId, sessionId: getSessionId(), messages: () => subagentMessages,
+    toolUseId, workflow: transcriptSubdir !== undefined, parentAgentId: toolUseContext.agentId,
+  })
 
   try {
     queryIterator = query({
       messages: initialMessages,
       systemPrompt: agentSystemPrompt,
       userContext: resolvedUserContext,
+      refreshUserContext: async () =>
+        resolveUserContext(override?.userContext ?? await getUserContext()),
       systemContext: resolvedSystemContext,
       canUseTool,
       toolUseContext: agentToolUseContext,
       querySource,
+      onCacheSafeParams,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
     })
     while (true) {
@@ -912,6 +1103,7 @@ export async function* runAgent({
         break
       }
       const message = next.value
+      if (message.type === 'assistant' || message.type === 'stream_event') registeredTurn?.observe(message)
       if (
         process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING ===
           'after_query_start' &&
@@ -977,6 +1169,7 @@ export async function* runAgent({
           logForDebugging(`Failed to record sidechain transcript: ${err}`),
         )
         if (message.type !== 'progress') {
+          recordedUuids?.add(message.uuid)
           lastRecordedUuid = message.uuid
           subagentMessages.push(message)
         }
@@ -992,9 +1185,27 @@ export async function* runAgent({
     if (isBuiltInAgent(agentDefinition) && agentDefinition.callback) {
       agentDefinition.callback()
     }
+    runExitedNormally = true
+  } catch (error) {
+    primaryError = { value: error }
+    throw error
   } finally {
+    let closeFailure: { value: unknown } | undefined
     if (!queryIteratorDone && queryIterator) {
-      await queryIterator.return(undefined)
+      try {
+        // QueryLoop may yield converted error frames from its catch during
+        // return(). Keep closing until its outer finally releases the lease.
+        let closed = await queryIterator.return(undefined)
+        while (!closed.done) closed = await queryIterator.return(undefined)
+        queryIteratorDone = true
+      }
+      catch (error) {
+        if (!primaryError) primaryError = closeFailure = { value: error }
+        else {
+          try { logForDebugging(`Mods agent query close failed for ${agentId}: ${error instanceof Error ? error.message : String(error)}`, {level:'error'}) }
+          catch { /* Preserve the original producer error if the logger also fails. */ }
+        }
+      }
     }
     if (
       !subagentStopStarted &&
@@ -1029,6 +1240,7 @@ export async function* runAgent({
               logForDebugging(`Failed to record sidechain transcript: ${err}`),
             )
             if (fallbackMessage.type !== 'progress') {
+              recordedUuids?.add(fallbackMessage.uuid)
               lastRecordedUuid = fallbackMessage.uuid
               subagentMessages.push(fallbackMessage)
             }
@@ -1040,6 +1252,8 @@ export async function* runAgent({
         )
       }
     }
+    await finishModTurn()
+    finishModConversation?.()
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // Clean up agent's session hooks
@@ -1083,6 +1297,13 @@ export async function* runAgent({
       )
     }
     /* eslint-enable @typescript-eslint/no-require-imports */
+    if (closeFailure) await Promise.reject(closeFailure.value)
+  }
+  } catch (error) {
+    primaryError ??= { value: error }
+    throw primaryError.value
+  } finally {
+    await finishModTurn()
   }
 }
 
@@ -1138,11 +1359,12 @@ async function getAgentSystemPrompt(
   resolvedAgentModel: string,
   additionalWorkingDirectories: string[],
   resolvedTools: readonly Tool[],
+  baseSystemPrompt?: SystemPrompt,
 ): Promise<string[]> {
   const enabledToolNames = new Set(resolvedTools.map((t) => t.name))
   try {
-    const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
-    const prompts = [agentPrompt]
+    const prompts =
+      baseSystemPrompt ?? [agentDefinition.getSystemPrompt({ toolUseContext })]
 
     return await enhanceSystemPromptWithEnvDetails(
       prompts,

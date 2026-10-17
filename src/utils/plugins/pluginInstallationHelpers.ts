@@ -5,19 +5,22 @@
  * system to reduce code duplication and improve maintainability.
  */
 
-import { randomBytes } from 'crypto'
 import { rename, rm } from 'fs/promises'
-import { dirname, join, resolve, sep } from 'path'
+import { resolve, sep } from 'path'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
 } from '../../services/analytics/index.js'
 import { getCwd } from '../cwd.js'
-import { toError } from '../errors.js'
+import { logForDebugging } from '../debug.js'
+import { getErrnoCode, toError } from '../errors.js'
+import { writeFileSyncAndFlush_DEPRECATED } from '../file.js'
+import { resetSettingsCache } from '../settings/settingsCache.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import {
+  getSettingsFilePathForSource,
   getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
@@ -32,7 +35,10 @@ import {
 import {
   addInstalledPlugin,
   getGitCommitSha,
+  getInstalledPluginsReadRefusal,
+  loadInstalledPluginsFromDisk,
 } from './installedPluginsManager.js'
+import { findPluginFolderCollision, PluginFolderCollisionError } from './pluginFolderCollision.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import { getMarketplaceCacheOnly, getPluginById } from './marketplaceManager.js'
 import {
@@ -53,10 +59,8 @@ import {
   type PluginScope,
   type PluginSource,
 } from './schemas.js'
-import {
-  convertDirectoryToZipInPlace,
-  isPluginZipCacheEnabled,
-} from './zipCache.js'
+import { isPluginZipCacheEnabled } from './zipCache.js'
+import { publishDirectory } from './stagingDirectory.js'
 
 /**
  * Plugin installation metadata for installed_plugins.json
@@ -132,97 +136,68 @@ export async function cacheAndRegisterPlugin(
   projectPath?: string,
   localSourcePath?: string,
 ): Promise<string> {
-  // For local plugins, we need the resolved absolute path
-  // Cast to PluginSource since cachePlugin handles any string path at runtime
+  const collision = findPluginFolderCollision([pluginId], loadInstalledPluginsFromDisk().plugins)
+  if (collision) throw new PluginFolderCollisionError(collision, pluginId)
   const source: PluginSource =
     typeof entry.source === 'string' && localSourcePath
       ? (localSourcePath as PluginSource)
       : entry.source
-
-  const cacheResult = await cachePlugin(source, {
-    manifest: entry as PluginMarketplaceEntry,
+  // Keep the validated download in its unique directory. A manifest name can
+  // equal a marketplace name; the legacy name cache would remove that tree.
+  const cached = await cachePlugin(source, {
+    manifest: entry,
+    keepTemporary: true,
   })
-
-  // For local plugins, use the original source path for Git SHA calculation
-  // because the cached temp directory doesn't have .git (it's copied from a
-  // subdirectory of the marketplace git repo). For external plugins, use the
-  // cached path. For git-subdir sources, cachePlugin already captured the SHA
-  // before discarding the ephemeral clone (the extracted subdir has no .git).
-  const pathForGitSha = localSourcePath || cacheResult.path
-  const gitCommitSha =
-    cacheResult.gitCommitSha ?? (await getGitCommitSha(pathForGitSha))
-
-  const now = getCurrentTimestamp()
-  const version = await calculatePluginVersion(
-    pluginId,
-    entry.source,
-    cacheResult.manifest,
-    pathForGitSha,
-    entry.version,
-    cacheResult.gitCommitSha,
-  )
-
-  // Move the cached plugin to the versioned path: cache/marketplace/plugin/version/
-  const versionedPath = getVersionedCachePath(pluginId, version)
-  let finalPath = cacheResult.path
-
-  // Only move if the paths are different and plugin was cached to a different location
-  if (cacheResult.path !== versionedPath) {
-    // Create the versioned directory structure
-    await getFsImplementation().mkdir(dirname(versionedPath))
-
-    // Remove existing versioned path if present (force: no-op if missing)
-    await rm(versionedPath, { recursive: true, force: true })
-
-    // Check if versionedPath is a subdirectory of cacheResult.path
-    // This happens when marketplace name equals plugin name (e.g., "exa-mcp-server@exa-mcp-server")
-    // In this case, we can't directly rename because we'd be moving a directory into itself
-    const normalizedCachePath = cacheResult.path.endsWith(sep)
-      ? cacheResult.path
-      : cacheResult.path + sep
-    const isSubdirectory = versionedPath.startsWith(normalizedCachePath)
-
-    if (isSubdirectory) {
-      // Move to a temp location first, then to final destination
-      // We can't directly rename/copy a directory into its own subdirectory
-      // Use the parent of cacheResult.path (same filesystem) to avoid EXDEV
-      // errors when /tmp is on a different filesystem (e.g., tmpfs)
-      const tempPath = join(
-        dirname(cacheResult.path),
-        `.claude-plugin-temp-${Date.now()}-${randomBytes(4).toString('hex')}`,
-      )
-      await rename(cacheResult.path, tempPath)
-      await getFsImplementation().mkdir(dirname(versionedPath))
-      await rename(tempPath, versionedPath)
-    } else {
-      // Move the cached plugin to the versioned location
-      await rename(cacheResult.path, versionedPath)
-    }
-    finalPath = versionedPath
+  const errors: unknown[] = []
+  let finalPath: string | undefined
+  try {
+    const pathForGitSha = localSourcePath || cached.path
+    const gitCommitSha =
+      cached.gitCommitSha ?? (await getGitCommitSha(pathForGitSha))
+    const version = await calculatePluginVersion(
+      pluginId,
+      entry.source,
+      cached.manifest,
+      pathForGitSha,
+      entry.version,
+      cached.gitCommitSha,
+    )
+    const now = getCurrentTimestamp()
+    const versionedPath = getVersionedCachePath(pluginId, version)
+    const zipPath = isPluginZipCacheEnabled()
+      ? getVersionedZipCachePath(pluginId, version)
+      : undefined
+    await publishDirectory(
+      versionedPath,
+      staging => rename(cached.path, staging),
+      zipPath,
+    )
+    finalPath = zipPath ?? versionedPath
+    addInstalledPlugin(
+      pluginId,
+      {
+        version,
+        installedAt: now,
+        lastUpdated: now,
+        installPath: finalPath,
+        gitCommitSha,
+      },
+      scope,
+      projectPath,
+    )
+  } catch (error) {
+    errors.push(error)
   }
-
-  // Zip cache mode: convert directory to ZIP and remove the directory
-  if (isPluginZipCacheEnabled()) {
-    const zipPath = getVersionedZipCachePath(pluginId, version)
-    await convertDirectoryToZipInPlace(finalPath, zipPath)
-    finalPath = zipPath
+  // Metadata or publication can fail before the owned download is moved.
+  try {
+    await rm(cached.path, { recursive: true, force: true })
+  } catch (error) {
+    errors.push(error)
   }
-
-  // Add to both V1 and V2 installed_plugins files with correct scope
-  addInstalledPlugin(
-    pluginId,
-    {
-      version,
-      installedAt: now,
-      lastUpdated: now,
-      installPath: finalPath,
-      gitCommitSha,
-    },
-    scope,
-    projectPath,
-  )
-
-  return finalPath
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1)
+    throw new AggregateError(errors, `Plugin installation failed: ${pluginId}`)
+  return finalPath!
 }
 
 /**
@@ -335,9 +310,9 @@ export function formatResolutionError(
  *      location (would silently no-op otherwise).
  *   2. Resolves the transitive dependency closure (when PLUGIN_DEPENDENCIES
  *      is on; trivial single-plugin closure otherwise).
- *   3. Writes the entire closure to enabledPlugins in one settings update.
- *   4. Caches each closure member (downloads/copies sources as needed).
- *   5. Clears memoization caches.
+ *   3. Validates the source paths of the entire closure.
+ *   4. Publishes and registers every closure member, then clears caches.
+ *   5. Enables the closure in one settings update, restoring bytes on failure.
  *
  * Returns a structured result. Message formatting, analytics, and top-level
  * error wrapping stay in the caller-specific wrappers.
@@ -350,11 +325,13 @@ export async function installResolvedPlugin({
   entry,
   scope,
   marketplaceInstallLocation,
+  collisionSurface = 'cli',
 }: {
   pluginId: string
   entry: PluginMarketplaceEntry
   scope: 'user' | 'project' | 'local'
   marketplaceInstallLocation?: string
+  collisionSurface?: 'cli' | 'ui'
 }): Promise<InstallCoreResult> {
   const settingSource = scopeToSettingSource(scope)
 
@@ -365,6 +342,14 @@ export async function installResolvedPlugin({
   if (isPluginBlockedByPolicy(pluginId)) {
     return { ok: false, reason: 'blocked-by-policy', pluginName: entry.name }
   }
+
+  const recordRefusal = getInstalledPluginsReadRefusal()
+  if (recordRefusal) {
+    throw new Error(`Plugin "${pluginId}" was not installed: ${recordRefusal}`)
+  }
+  const installedPlugins = loadInstalledPluginsFromDisk().plugins
+  const rootCollision = findPluginFolderCollision([pluginId], installedPlugins)
+  if (rootCollision) throw new PluginFolderCollisionError(rootCollision, pluginId, collisionSurface)
 
   // ── Resolve dependency closure ──
   // depInfo caches marketplace lookups so the materialize loop doesn't
@@ -411,6 +396,10 @@ export async function installResolvedPlugin({
     // @ts-ignore - recovered code
     return { ok: false, reason: 'resolution-failed', resolution }
   }
+  const collision = findPluginFolderCollision(resolution.closure, installedPlugins)
+  if (collision) {
+    throw new PluginFolderCollisionError(collision, pluginId, collisionSurface, (installedPlugins[pluginId]?.length ?? 0) > 0)
+  }
 
   // ── Policy guard for transitive dependencies ──
   // The root plugin was already checked above, but any dependency in the
@@ -427,16 +416,107 @@ export async function installResolvedPlugin({
     }
   }
 
-  // ── ACTION: write entire closure to settings in one call ──
+  // Validate the entire closure before materializing any member.
+  const members: Array<{
+    id: string
+    entry: PluginMarketplaceEntry
+    localSourcePath?: string
+  }> = []
+  for (const id of resolution.closure) {
+    let info = depInfo.get(id)
+    // Root wasn't pre-seeded (caller didn't pass marketplaceInstallLocation
+    // for a non-local source). Fetch now; it's needed for the cache write.
+    if (!info && id === pluginId) {
+      const mktLocation = (await getPluginById(id))?.marketplaceInstallLocation
+      info = { entry, marketplaceInstallLocation: mktLocation ?? '' }
+    }
+    if (!info)
+      throw new Error(`Plugin ${id} is no longer available for installation`)
+
+    let localSourcePath: string | undefined
+    const { source } = info.entry
+    if (isLocalPluginSource(source)) {
+      try {
+        localSourcePath = validatePathWithinBase(
+          info.marketplaceInstallLocation,
+          source,
+        )
+      } catch (error) {
+        logForDebugging(
+          `[Plugins:install] source path refused for ${id}: ${toError(error).message}`,
+          { level: 'warn' },
+        )
+        throw new Error(
+          `Cannot install ${id}: its marketplace entry path does not stay inside the marketplace directory (an absolute, climbing, network-shaped, backslash-containing or link-traversing entry, an entry of a fetched marketplace that resolves or opens outside its tree — or a relative entry in a url-catalog marketplace, which has no local directory)`,
+          { cause: error },
+        )
+      }
+    }
+    members.push({ id, entry: info.entry, localSourcePath })
+  }
+
+  const projectPath = scope !== 'user' ? getCwd() : undefined
+  for (const member of members) {
+    await cacheAndRegisterPlugin(
+      member.id,
+      member.entry,
+      scope,
+      projectPath,
+      member.localSourcePath,
+    )
+  }
+
+  const depNote = formatDependencyCountSuffix(
+    resolution.closure.filter(id => id !== pluginId),
+  )
+  // Snapshot immediately around this synchronous write so earlier cache work
+  // cannot overwrite unrelated settings changes made while downloads run.
+  const settingsPath = getSettingsFilePathForSource(settingSource)
+  const fs = getFsImplementation()
+  const readSnapshot = (): string | undefined => {
+    if (!settingsPath) return undefined
+    try {
+      return fs.readFileSync(settingsPath, { encoding: 'utf8' })
+    } catch (error) {
+      if (getErrnoCode(error) === 'ENOENT') return undefined
+      throw error
+    }
+  }
+  const snapshot = readSnapshot()
+  const restoreSnapshot = (error: unknown): void => {
+    try {
+      if (settingsPath && readSnapshot() !== snapshot) {
+        if (snapshot === undefined) fs.unlinkSync(fs.realpathSync(settingsPath))
+        else
+          writeFileSyncAndFlush_DEPRECATED(settingsPath, snapshot, {
+            encoding: 'utf-8',
+            atomicOnly: true,
+          })
+        if (readSnapshot() !== snapshot)
+          throw new Error('Settings snapshot restoration did not persist')
+        resetSettingsCache()
+      }
+    } catch (restoreError) {
+      throw new AggregateError(
+        [error, restoreError],
+        `Plugin settings write and restoration failed: ${pluginId}`,
+      )
+    }
+  }
   const closureEnabled: Record<string, true> = {}
   for (const id of resolution.closure) closureEnabled[id] = true
-  const { error } = updateSettingsForSource(settingSource, {
-    enabledPlugins: {
-      ...getSettingsForSource(settingSource)?.enabledPlugins,
-      ...closureEnabled,
+  const { error } = updateSettingsForSource(
+    settingSource,
+    {
+      enabledPlugins: {
+        ...getSettingsForSource(settingSource)?.enabledPlugins,
+        ...closureEnabled,
+      },
     },
-  })
+    { atomicOnly: true },
+  )
   if (error) {
+    restoreSnapshot(error)
     return {
       ok: false,
       reason: 'settings-write-failed',
@@ -444,40 +524,12 @@ export async function installResolvedPlugin({
     }
   }
 
-  // ── Materialize: cache each closure member ──
-  const projectPath = scope !== 'user' ? getCwd() : undefined
-  for (const id of resolution.closure) {
-    let info = depInfo.get(id)
-    // Root wasn't pre-seeded (caller didn't pass marketplaceInstallLocation
-    // for a non-local source). Fetch now; it's needed for the cache write.
-    if (!info && id === pluginId) {
-      const mktLocation = (await getPluginById(id))?.marketplaceInstallLocation
-      if (mktLocation) info = { entry, marketplaceInstallLocation: mktLocation }
-    }
-    if (!info) continue
-
-    let localSourcePath: string | undefined
-    const { source } = info.entry
-    if (isLocalPluginSource(source)) {
-      localSourcePath = validatePathWithinBase(
-        info.marketplaceInstallLocation,
-        source,
-      )
-    }
-    await cacheAndRegisterPlugin(
-      id,
-      info.entry,
-      scope,
-      projectPath,
-      localSourcePath,
-    )
+  try {
+    clearAllCaches()
+  } catch (error) {
+    restoreSnapshot(error)
+    throw error
   }
-
-  clearAllCaches()
-
-  const depNote = formatDependencyCountSuffix(
-    resolution.closure.filter(id => id !== pluginId),
-  )
   return { ok: true, closure: resolution.closure, depNote }
 }
 
@@ -523,6 +575,7 @@ export async function installPluginFromMarketplace({
       entry,
       scope,
       marketplaceInstallLocation,
+      collisionSurface: 'ui',
     })
 
     if (!result.ok) {
@@ -596,6 +649,10 @@ export async function installPluginFromMarketplace({
       message: `✓ Installed ${entry.name}${result.depNote}. Run /reload-plugins to activate.`,
     }
   } catch (err) {
+    if (err instanceof PluginFolderCollisionError) {
+      logForDebugging(`Plugin installation refused for ${pluginId}: ${err.message}`, { level: 'warn' })
+      return { success: false, error: err.message }
+    }
     const errorMessage = err instanceof Error ? err.message : String(err)
     logError(toError(err))
     return { success: false, error: `Failed to install: ${errorMessage}` }

@@ -9,6 +9,8 @@ type Options = {
   context?: KeybindingContextName
   /** Only handle when active (like useInput's isActive) */
   isActive?: boolean
+  /** Handle before ordinary input listeners. */
+  capture?: boolean
 }
 
 /**
@@ -35,7 +37,7 @@ export function useKeybinding(
   handler: () => void | false | Promise<void>,
   options: Options = {},
 ): void {
-  const { context = 'Global', isActive = true } = options
+  const { context = 'Global', isActive = true, capture = false } = options
   const keybindingContext = useOptionalKeybindingContext()
 
   // Register handler with the context for ChordInterceptor to invoke
@@ -63,9 +65,10 @@ export function useKeybinding(
 
       switch (result.type) {
         case 'match':
-          // Chord completed (if any) - clear pending state
-          keybindingContext.setPendingChord(null)
+          // Only the owner of the matched action settles the chord; otherwise
+          // a capture-phase hook would erase it before the interceptor runs.
           if (result.action === action) {
+            keybindingContext.setPendingChord(null)
             if (handler() !== false) {
               event.stopImmediatePropagation()
             }
@@ -77,8 +80,8 @@ export function useKeybinding(
           event.stopImmediatePropagation()
           break
         case 'chord_cancelled':
-          // Chord was cancelled (escape or invalid key)
-          keybindingContext.setPendingChord(null)
+          // This hook only sees its own contexts; the chord interceptor
+          // resolves every registered context and settles the chord.
           break
         case 'unbound':
           // Explicitly unbound - clear any pending chord
@@ -93,7 +96,7 @@ export function useKeybinding(
     [action, context, handler, keybindingContext],
   )
 
-  useInput(handleInput, { isActive })
+  useInput(handleInput, { isActive, capture })
 }
 
 /**
@@ -121,7 +124,7 @@ export function useKeybindings(
   handlers: Record<string, () => void | false | Promise<void>>,
   options: Options = {},
 ): void {
-  const { context = 'Global', isActive = true } = options
+  const { context = 'Global', isActive = true, capture = false } = options
   const keybindingContext = useOptionalKeybindingContext()
 
   // Register all handlers with the context for ChordInterceptor to invoke
@@ -161,9 +164,9 @@ export function useKeybindings(
 
       switch (result.type) {
         case 'match':
-          // Chord completed (if any) - clear pending state
-          keybindingContext.setPendingChord(null)
+          // Only the owner of the matched action settles the chord (see above).
           if (result.action in handlers) {
+            keybindingContext.setPendingChord(null)
             const handler = handlers[result.action]
             if (handler && handler() !== false) {
               event.stopImmediatePropagation()
@@ -176,8 +179,8 @@ export function useKeybindings(
           event.stopImmediatePropagation()
           break
         case 'chord_cancelled':
-          // Chord was cancelled (escape or invalid key)
-          keybindingContext.setPendingChord(null)
+          // This hook only sees its own contexts; the chord interceptor
+          // resolves every registered context and settles the chord.
           break
         case 'unbound':
           // Explicitly unbound - clear any pending chord
@@ -192,5 +195,5 @@ export function useKeybindings(
     [context, handlers, keybindingContext],
   )
 
-  useInput(handleInput, { isActive })
+  useInput(handleInput, { isActive, capture })
 }

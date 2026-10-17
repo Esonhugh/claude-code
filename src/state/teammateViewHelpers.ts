@@ -164,28 +164,32 @@ export function exitTeammateView(
 }
 
 /**
- * Context-sensitive x: running → abort, terminal → dismiss.
- * Dismiss sets evictAfter=0 so the filter hides immediately.
- * If viewing the dismissed agent, also exits to leader.
+ * Dismiss a terminal local agent or in-process teammate.
+ * Running tasks must go through their task implementation before calling this
+ * so lifecycle cleanup and the killed state are recorded without nested setters.
  */
-export function stopOrDismissAgent(
+export function dismissTerminalAgent(
   taskId: string,
   setAppState: (updater: (prev: AppState) => AppState) => void,
 ): void {
   setAppState(prev => {
     const task = prev.tasks[taskId]
-    if (!isLocalAgent(task)) return prev
-    if (task.status === 'running') {
-      task.abortController?.abort()
+    if (
+      (!isLocalAgent(task) && !isInProcessTeammate(task)) ||
+      !isTerminalTaskStatus(task.status) ||
+      task.evictAfter === 0
+    ) {
       return prev
     }
-    if (task.evictAfter === 0) return prev
     const viewingThis = prev.viewingAgentTaskId === taskId
     return {
       ...prev,
       tasks: {
         ...prev.tasks,
-        [taskId]: { ...release(task), evictAfter: 0 },
+        [taskId]: {
+          ...(isLocalAgent(task) ? release(task) : releaseTeammate(task)),
+          evictAfter: 0,
+        },
       },
       ...(viewingThis && {
         viewingAgentTaskId: undefined,

@@ -109,7 +109,42 @@ export function modelSupportsThinking(model: string): boolean {
     return !canonical.includes('claude-3-')
   }
   // 3P (Bedrock/Vertex): only Opus 4+ and Sonnet 4+
-  return canonical.includes('sonnet-4') || canonical.includes('opus-4')
+  return (
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical.includes('sonnet-4') ||
+    canonical.includes('opus-4')
+  )
+}
+
+// These models reject manual budgets and non-default sampling.
+export function requiresAdaptiveThinkingContract(model: string): boolean {
+  const canonical = getCanonicalName(model)
+  return (
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5')
+  )
+}
+
+export function requiresAlwaysOnAdaptiveThinking(model: string): boolean {
+  const canonical = getCanonicalName(model)
+  return (
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical === 'claude-mythos-preview' ||
+    canonical === 'claude-opus-5-5'
+  )
+}
+
+export function supportsManualThinkingBudget(model: string): boolean {
+  return getCanonicalName(model) === 'claude-mythos-preview'
+}
+
+export function usesBetweenToolsWhenThinkingDisabled(model: string): boolean {
+  return getCanonicalName(model) === 'claude-sonnet-5-5'
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports adaptive thinking.
@@ -121,8 +156,11 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   const canonical = getCanonicalName(model)
   // Supported by a subset of Claude 4+ models
   if (
-    canonical === 'claude-fable-5' ||
-    canonical === 'claude-mythos-5' ||
+    canonical.startsWith('claude-opus-5') ||
+    canonical.startsWith('claude-sonnet-5') ||
+    canonical.startsWith('claude-fable-5') ||
+    canonical.startsWith('claude-mythos-5') ||
+    canonical === 'claude-mythos-preview' ||
     canonical.includes('opus-4-8') ||
     canonical.includes('opus-4-7') ||
     canonical.includes('opus-4-6') ||

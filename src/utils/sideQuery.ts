@@ -4,7 +4,10 @@ import {
   getLastApiCompletionTimestamp,
   setLastApiCompletionTimestamp,
 } from '../bootstrap/state.js'
-import { STRUCTURED_OUTPUTS_BETA_HEADER } from '../constants/betas.js'
+import {
+  EXTENDED_CACHE_TTL_BETA_HEADER,
+  STRUCTURED_OUTPUTS_BETA_HEADER,
+} from '../constants/betas.js'
 import type { QuerySource } from '../constants/querySource.js'
 import {
   getAttributionHeader,
@@ -12,11 +15,20 @@ import {
 } from '../constants/system.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../services/analytics/metadata.js'
-import { getAPIMetadata } from '../services/api/claude.js'
+import {
+  getAPIMetadata,
+  getExtendedCacheTtlEnabled,
+  hasExtendedCacheTtlMarker,
+  getPromptCachingEnabled,
+  configureEffortParams,
+} from '../services/api/claude.js'
 import { getAnthropicClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'
-import { normalizeModelStringForAPI } from './model/model.js'
+import { getCanonicalName, isModelOlderThan, normalizeModelStringForAPI } from './model/model.js'
+import { getAPIProvider } from './model/providers.js'
+import { isClaudeAISubscriber } from './auth.js'
+import { requiresAlwaysOnAdaptiveThinking, usesBetweenToolsWhenThinkingDisabled } from './thinking.js'
 
 type MessageParam = Anthropic.MessageParam
 type TextBlockParam = Anthropic.TextBlockParam
@@ -47,15 +59,23 @@ export type SideQueryOptions = {
   output_format?: BetaJSONOutputFormat
   /** Max tokens (default: 1024) */
   max_tokens?: number
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
   /** Max retries (default: 2) */
   maxRetries?: number
   /** Abort signal */
   signal?: AbortSignal
   /** Skip CLI system prompt prefix (keeps attribution header for OAuth). For internal classifiers that provide their own prompt. */
   skipSystemPromptPrefix?: boolean
+  /**
+   * Keep the attribution header even when CLAUDE_CODE_ATTRIBUTION_HEADER opts out, for first-party
+   * OAuth requests that carry no CLI prefix either; like official, the server rejects those.
+   */
+  forceAttributionHeader?: boolean
+  /** Honor provider/model cache settings for explicitly marked author blocks. */
+  dropCacheControlWhenCachingDisabled?: boolean
   /** Temperature override */
   temperature?: number
-  /** Thinking budget (enables thinking), or `false` to send `{ type: 'disabled' }`. */
+  /** Thinking budget (enables thinking), or `false` to turn thinking off with the model's accepted form. */
   thinking?: number | false
   /** Stop sequences — generation stops when any of these strings is emitted */
   stop_sequences?: string[]
@@ -116,9 +136,11 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     maxRetries = 2,
     signal,
     skipSystemPromptPrefix,
+    forceAttributionHeader,
     temperature,
     thinking,
     stop_sequences,
+    effort,
   } = opts
 
   const client = await getAnthropicClient({
@@ -126,6 +148,14 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     model,
     source: 'side_query',
   })
+  const dropMarks = opts.dropCacheControlWhenCachingDisabled === true && !getPromptCachingEnabled(model)
+  const stripMark = <T extends object>(block: T): T => {
+    if (!('cache_control' in block)) return block
+    const {cache_control: _mark, ...plain} = block
+    return plain as T
+  }
+  const requestMessages = dropMarks ? messages.map(message => typeof message.content === 'string' ? message : ({...message, content: message.content.map(stripMark)})) : messages
+  const requestSystem = dropMarks && Array.isArray(system) ? system.map(stripMark) : system
   const betas = [...getModelBetas(model)]
   // Add structured-outputs beta if using output_format and provider supports it
   if (
@@ -141,7 +171,8 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
 
   // Compute fingerprint for OAuth attribution
   const fingerprint = computeFingerprint(messageText, MACRO.VERSION)
-  const attributionHeader = getAttributionHeader(fingerprint)
+  const attributionHeader = getAttributionHeader(fingerprint, forceAttributionHeader === true &&
+    getAPIProvider() === 'firstParty' && isClaudeAISubscriber() && !process.env.ANTHROPIC_UNIX_SOCKET)
 
   // Build system as array to keep attribution header in its own block
   // (prevents server-side parsing from including system content in cc_entrypoint)
@@ -159,16 +190,36 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
             }),
           },
         ]),
-    ...(Array.isArray(system)
-      ? system
-      : system
-        ? [{ type: 'text' as const, text: system }]
+    ...(Array.isArray(requestSystem)
+      ? requestSystem
+      : requestSystem
+        ? [{ type: 'text' as const, text: requestSystem }]
         : []),
   ].filter((block): block is TextBlockParam => block !== null)
 
+  if (
+    getExtendedCacheTtlEnabled(opts.querySource) &&
+    hasExtendedCacheTtlMarker({
+      system: systemBlocks,
+      messages: requestMessages,
+      tools,
+    }) &&
+    !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
+  ) {
+    betas.push(EXTENDED_CACHE_TTL_BETA_HEADER)
+  }
+
   let thinkingConfig: BetaThinkingConfigParam | undefined
   if (thinking === false) {
-    thinkingConfig = { type: 'disabled' }
+    // Same off switch as the main loop: claude-sonnet-5-5 rejects disabled thinking
+    // (between_tools, which xhigh/max also reject), and always-on models think anyway.
+    const betweenTools = usesBetweenToolsWhenThinkingDisabled(model)
+    thinkingConfig = requiresAlwaysOnAdaptiveThinking(model) ||
+      (betweenTools && (effort === 'xhigh' || effort === 'max'))
+      ? { type: 'adaptive' }
+      : betweenTools
+        ? ({ type: 'between_tools' } as unknown as BetaThinkingConfigParam)
+        : { type: 'disabled' }
   } else if (thinking !== undefined) {
     thinkingConfig = {
       type: 'enabled',
@@ -177,6 +228,8 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
   }
 
   const normalizedModel = normalizeModelStringForAPI(model)
+  const outputConfig: Parameters<typeof configureEffortParams>[1] = output_format ? {format:output_format} : {}
+  configureEffortParams(effort, outputConfig, {}, betas, model)
   const start = Date.now()
   // biome-ignore lint/plugin: this IS the wrapper that handles OAuth attribution
   const response = await client.beta.messages.create(
@@ -184,11 +237,12 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
       model: normalizedModel,
       max_tokens,
       system: systemBlocks,
-      messages,
+      messages: requestMessages,
       ...(tools && { tools }),
       ...(tool_choice && { tool_choice }),
-      ...(output_format && { output_config: { format: output_format } }),
-      ...(temperature !== undefined && { temperature }),
+      ...(Object.keys(outputConfig).length > 0 && { output_config: outputConfig }),
+      // Like official 2.1.292, only models older than claude-opus-4-7 accept a sampling temperature.
+      ...(temperature !== undefined && isModelOlderThan(getCanonicalName(model), 'claude-opus-4-7') && { temperature }),
       ...(stop_sequences && { stop_sequences }),
       ...(thinkingConfig && { thinking: thinkingConfig }),
       ...(betas.length > 0 && { betas }),

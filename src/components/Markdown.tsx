@@ -1,7 +1,7 @@
 import { marked, type Token, type Tokens } from 'marked'
 import React, { Suspense, use, useMemo, useRef } from 'react'
 import { useSettings } from '../hooks/useSettings.js'
-import { Ansi, Box, useTheme } from '../ink.js'
+import { Ansi, Box, Text, type DOMElement, useTheme } from '../ink.js'
 import {
   type CliHighlight,
   getCliHighlightPromise,
@@ -15,6 +15,15 @@ type Props = {
   children: string
   /** When true, render all text content as dim */
   dimColor?: boolean
+  hint?: string
+  capProseWidth?: boolean
+  /** False when the native caller has already projected display tags and whitespace. */
+  stripPromptTags?: boolean
+  /** Other link schemes remain text, including links inside tables. */
+  allowedLinkProtocols?: readonly string[]
+  onLinkPress?: (href: string) => void
+  pressableLinks?: readonly string[]
+  registerPressableLink?: (element: DOMElement, active: boolean) => void
 }
 
 // Module-level token cache — marked.lexer is the hot cost on virtual-scroll
@@ -100,22 +109,55 @@ function MarkdownBody({
   children,
   dimColor,
   highlight,
+  hint,
+  capProseWidth,
+  stripPromptTags,
+  allowedLinkProtocols,
+  onLinkPress,
+  pressableLinks,
+  registerPressableLink,
 }: Props & { highlight: CliHighlight | null }): React.ReactNode {
   const [theme] = useTheme()
+  const settings = useSettings()
+  const maxProseWidth = capProseWidth ? settings.maxProseWidth : undefined
   configureMarked()
 
   const elements = useMemo(() => {
-    const tokens = cachedLexer(stripPromptXMLTags(children))
+    const cached = cachedLexer(stripPromptTags === false ? children : stripPromptXMLTags(children))
+    const tokens = allowedLinkProtocols ? structuredClone(cached) : cached
+    if (allowedLinkProtocols) marked.walkTokens(tokens, token => {
+      if (token.type !== 'link') return
+      let protocol: string | undefined
+      try { protocol = new URL(token.href).protocol }
+      catch { protocol = undefined }
+      if (protocol === undefined || !allowedLinkProtocols.includes(protocol)) {
+        // Format the label without handing its unsupported target to Ink.
+        const text = (token.tokens ?? []).map(child =>
+          formatToken(child, theme, 0, null, token, highlight)).join('')
+        Object.assign(token, { type: 'escape', text })
+      }
+    })
     const elements: React.ReactNode[] = []
     let nonTableContent = ''
 
-    function flushNonTableContent(): void {
+    let hinted = false
+
+    function flushNonTableContent(last = false, fullWidth = false): void {
       if (nonTableContent) {
-        elements.push(
-          <Ansi key={elements.length} dimColor={dimColor}>
-            {nonTableContent.trim()}
-          </Ansi>,
-        )
+        const tail = last && hint ? <Text color="subtle">{' ·\u00a0' + hint}</Text> : null
+        if (tail) hinted = true
+        const content = <Ansi
+            key={elements.length}
+            dimColor={dimColor}
+            onLinkPress={onLinkPress}
+            isLinkPressable={pressableLinks === undefined ? undefined : href => pressableLinks.includes(href)}
+            registerPressableLink={registerPressableLink}
+          >
+            {stripPromptTags === false ? nonTableContent.replace(/^\n+/, '').trimEnd() : nonTableContent.trim()}
+          </Ansi>
+        const decorated = tail ? <Text>{content}{tail}</Text> : content
+        elements.push(capProseWidth ? <Box key={elements.length} maxWidth={fullWidth ? undefined : maxProseWidth}>{decorated}</Box> :
+          <React.Fragment key={elements.length}>{decorated}</React.Fragment>)
         nonTableContent = ''
       }
     }
@@ -128,16 +170,25 @@ function MarkdownBody({
             key={elements.length}
             token={token as Tokens.Table}
             highlight={highlight}
+            dimColor={dimColor}
           />,
         )
+      } else if (maxProseWidth !== undefined && token.type === 'code') {
+        flushNonTableContent()
+        nonTableContent = formatToken(token, theme, 0, null, null, highlight)
+        flushNonTableContent(token === tokens.at(-1), true)
       } else {
         nonTableContent += formatToken(token, theme, 0, null, null, highlight)
       }
     }
 
-    flushNonTableContent()
+    flushNonTableContent(true)
+    if (hint && !hinted) {
+      const last = elements.pop()
+      elements.push(<Box key={elements.length} flexDirection="column">{last}<Text color="subtle">{'·\u00a0' + hint}</Text></Box>)
+    }
     return elements
-  }, [children, dimColor, highlight, theme])
+  }, [children, dimColor, highlight, theme, hint, capProseWidth, maxProseWidth, stripPromptTags, allowedLinkProtocols, onLinkPress, pressableLinks, registerPressableLink])
 
   return (
     <Box flexDirection="column" gap={1}>
@@ -178,10 +229,15 @@ export function StreamingMarkdown({
   const stripped = stripPromptXMLTags(children)
 
   const stablePrefixRef = useRef('')
+  const stableTokensRef = useRef<Token[]>([])
+  const prefixCacheKeyRef = useRef<string | undefined>(undefined)
+  const hasDefinitionsRef = useRef(false)
 
   // Reset if text was replaced (defensive; normally unmount handles this)
   if (!stripped.startsWith(stablePrefixRef.current)) {
     stablePrefixRef.current = ''
+    stableTokensRef.current = []
+    hasDefinitionsRef.current = false
   }
 
   // Lex only from current boundary — O(unstable length), not O(full text)
@@ -199,6 +255,26 @@ export function StreamingMarkdown({
   }
   if (advance > 0) {
     stablePrefixRef.current = stripped.substring(0, boundary + advance)
+    stableTokensRef.current = [
+      ...stableTokensRef.current,
+      ...tokens.slice(0, lastContentIdx),
+    ]
+    if (Object.keys(tokens.links).length > 0) hasDefinitionsRef.current = true
+    if (prefixCacheKeyRef.current) tokenCache.delete(prefixCacheKeyRef.current)
+    prefixCacheKeyRef.current = undefined
+    // Markdown normalizes with trim() before looking up the cache. Reuse the
+    // blocks we just parsed instead of re-lexing the growing prefix each time.
+    // Definitions can resolve links in earlier blocks, so preserve full lexing
+    // for that case rather than caching independently parsed blocks.
+    if (!hasDefinitionsRef.current) {
+      const key = hashContent(stripPromptXMLTags(stablePrefixRef.current))
+      if (tokenCache.size >= TOKEN_CACHE_MAX) {
+        const first = tokenCache.keys().next().value
+        if (first !== undefined) tokenCache.delete(first)
+      }
+      tokenCache.set(key, stableTokensRef.current)
+      prefixCacheKeyRef.current = key
+    }
   }
 
   const stablePrefix = stablePrefixRef.current

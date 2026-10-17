@@ -18,9 +18,9 @@ export type Props = {
   readonly color?: keyof Theme | Color
 
   /**
-   * Same as `color`, but for background. Must be a theme key.
+   * Same as `color`, but for background.
    */
-  readonly backgroundColor?: keyof Theme
+  readonly backgroundColor?: keyof Theme | Color
 
   /**
    * Dim the color using the theme's inactive color.
@@ -66,8 +66,8 @@ export type Props = {
 /**
  * Resolves a color value that may be a theme key to a raw Color.
  */
-function resolveColor(
-  color: keyof Theme | Color | undefined,
+export function resolveColor(
+  color: string | undefined,
   theme: Theme,
 ): Color | undefined {
   if (!color) return undefined
@@ -80,8 +80,9 @@ function resolveColor(
   ) {
     return color as Color
   }
-  // It's a theme key - resolve it
-  return theme[color as keyof Theme] as Color
+  // It's a theme key - resolve it. Own keys only, so an inherited name such as
+  // 'constructor' cannot resolve to a function.
+  return Object.hasOwn(theme, color) ? (theme[color as keyof Theme] as Color) : undefined
 }
 
 /**
@@ -111,9 +112,7 @@ export default function ThemedText({
       : dimColor
         ? (theme.inactive as Color)
         : resolveColor(color, theme)
-  const resolvedBackgroundColor = backgroundColor
-    ? (theme[backgroundColor] as Color)
-    : undefined
+  const resolvedBackgroundColor = resolveColor(backgroundColor, theme)
 
   return (
     <Text

@@ -1,8 +1,13 @@
+import { createModCommandQueue } from './services/mods/commandRunQueue.js'
+import { createModMcpConnections } from './services/mods/mcpConnect.js'
+import { copyModCallerChain, type ModCallerChain } from './services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { randomUUID } from 'crypto'
+import { logForDebugging } from './utils/debug.js'
 import last from 'lodash-es/last.js'
 import {
+  getOriginalCwd,
   getSessionId,
   isSessionPersistenceDisabled,
 } from 'src/bootstrap/state.js'
@@ -26,6 +31,11 @@ import {
   LOCAL_COMMAND_STDOUT_TAG,
 } from './constants/xml.js'
 import {
+  getUserContext,
+  getUserContextInstructionFiles,
+  withUserContextInstructionFiles,
+} from './context.js'
+import {
   getModelUsage,
   getTotalAPIDuration,
   getTotalCost,
@@ -35,15 +45,28 @@ import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
+import {
+  callMCPToolForMod,
+  findMCPConnectionForMod,
+} from './services/mcp/client.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { ModsSession } from './services/mods/session.js'
+import { UNSUBMITTED_PROMPT_DROP, type PromptSubmitMetadata } from './services/mods/promptAdapter.js'
+import { projectModSessionMessages } from './services/mods/sessionMessages.js'
+import { readModBoundAgentMessages } from './services/mods/sessionTranscript.js'
+import { countModSessionTurns } from './services/mods/sessionTurns.js'
+import { captureModSessionUsage } from './services/mods/sessionUsage.js'
+import { getConfigRows } from './components/Settings/configRows.js'
+import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { createModToolHost } from './services/mods/toolHost.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
-import type { Message, MessageOrigin } from './types/message.js'
-import type { OrphanedPermission } from './types/textInputTypes.js'
+import type { Message, MessageOrigin, UserMessage } from './types/message.js'
+import type { OrphanedPermission, QueuedCommand } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
+import { getModHttpServices } from './services/mods/hostOperations.js'
 import type { AttributionState } from './utils/commitAttribution.js'
 import { getGlobalConfig } from './utils/config.js'
 import { getCwd } from './utils/cwd.js'
@@ -61,6 +84,7 @@ import {
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
+import { dequeue, enqueueTracked, remove } from './utils/messageQueueManager.js'
 import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import {
   getMainLoopModel,
@@ -68,6 +92,7 @@ import {
 } from './utils/model/model.js'
 import { loadAllPluginsCacheOnly } from './utils/plugins/pluginLoader.js'
 import {
+  type ProcessUserInputBaseResult,
   type ProcessUserInputContext,
   processUserInput,
 } from './utils/processUserInput/processUserInput.js'
@@ -77,7 +102,7 @@ import {
   flushSessionStorage,
   recordTranscript,
 } from './utils/sessionStorage.js'
-import { asSystemPrompt } from './utils/systemPromptType.js'
+import { concatSystemPrompts } from './utils/systemPromptType.js'
 import { resolveThemeSetting } from './utils/systemTheme.js'
 import {
   shouldEnableThinkingByDefault,
@@ -201,6 +226,9 @@ export class QueryEngine {
   // many turns in SDK mode.
   private discoveredSkillNames = new Set<string>()
   private loadedNestedMemoryPaths = new Set<string>()
+  private readonly promptSubmitOwner = Symbol('QueryEngine prompt submit owner')
+  // Mods input this engine queues is drained only while submitMessage runs.
+  private submitting = 0
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -217,6 +245,84 @@ export class QueryEngine {
       uuid?: string
       isMeta?: boolean
       origin?: MessageOrigin
+      promptSubmitMetadata?: PromptSubmitMetadata
+      promptSubmitCallerChain?: ModCallerChain
+      onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
+      skipSlashCommands?: boolean
+      skipAttachments?: boolean
+    },
+  ): AsyncGenerator<SDKMessage, void, unknown> {
+    this.submitting++
+    try {
+      yield* this.submitQueued(prompt, options)
+    } finally {
+      this.submitting--
+    }
+  }
+
+  private async *submitQueued(
+    prompt: string | ContentBlockParam[],
+    options?: Parameters<QueryEngine['submitMessage']>[1],
+  ): AsyncGenerator<SDKMessage, void, unknown> {
+    yield* this.submitTurn(prompt, options)
+
+    let command: QueuedCommand | undefined
+    while (
+      (command = dequeue(
+        queued => queued.promptSubmitOwner === this.promptSubmitOwner,
+      ))
+    ) {
+      const queued = command
+      if (queued.mode !== 'prompt') {
+        const error = new Error('only prompt commands are supported by QueryEngine')
+        queued.promptSubmitReceipt?.cancel(error); queued.commandRunReceipt?.cancel(error)
+        throw error
+      }
+
+      let admitted = false
+      try {
+        yield* this.submitTurn(queued.value, {
+          uuid: queued.uuid,
+          isMeta: queued.isMeta,
+          origin: queued.origin,
+          promptSubmitMetadata: queued.promptSubmitMetadata,
+          promptSubmitCallerChain: queued.promptSubmitCallerChain,
+          onPromptAdmission: result => {
+            if (result.admission) {
+              admitted = true
+              queued.promptSubmitReceipt?.admit(result.admission)
+            }
+            queued.commandRunReceipt?.admit(result)
+          },
+          skipSlashCommands: queued.skipSlashCommands,
+          skipAttachments: queued.skipAttachments,
+        })
+      } catch (error) {
+        queued.commandRunReceipt?.cancel(error)
+        throw error
+      } finally {
+        if (!admitted) queued.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
+      }
+    }
+  }
+
+  /** Queued Mods input runs in this engine's drain, or through its host's wake once the engine is idle. */
+  private wakeModsHost(): void | Promise<void> {
+    if (this.submitting) return
+    const wake = this.config.modsSession?.hostService('wake')
+    if (!wake) throw new Error('QueryEngine is idle and its host runs no queued Mods input; queue it from a hook that runs during submitMessage')
+    return wake()
+  }
+
+  private async *submitTurn(
+    prompt: string | ContentBlockParam[],
+    options?: {
+      uuid?: string
+      isMeta?: boolean
+      origin?: MessageOrigin
+      promptSubmitMetadata?: PromptSubmitMetadata
+      promptSubmitCallerChain?: ModCallerChain
+      onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
       skipSlashCommands?: boolean
       skipAttachments?: boolean
     },
@@ -248,9 +354,6 @@ export class QueryEngine {
 
     this.discoveredSkillNames.clear()
     setCwd(cwd)
-    if (this.config.modsSession) await this.config.modsSession.bind({
-      cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
-    }, setAppState)
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = Date.now()
 
@@ -314,13 +417,18 @@ export class QueryEngine {
       customSystemPrompt: customPrompt,
     })
     headlessProfilerCheckpoint('after_getSystemPrompt')
-    const userContext = {
-      ...baseUserContext,
-      ...getCoordinatorUserContext(
-        mcpClients,
-        isScratchpadEnabled() ? getScratchpadDir() : undefined,
-      ),
-    }
+    const buildUserContext = (base: Record<string, string>) =>
+      withUserContextInstructionFiles(
+        {
+          ...base,
+          ...getCoordinatorUserContext(
+            mcpClients,
+            isScratchpadEnabled() ? getScratchpadDir() : undefined,
+          ),
+        },
+        getUserContextInstructionFiles(base),
+      )
+    const userContext = buildUserContext(baseUserContext)
 
     // When an SDK caller provides a custom system prompt AND has set
     // CLAUDE_COWORK_MEMORY_PATH_OVERRIDE, inject the memory-mechanics prompt.
@@ -337,12 +445,12 @@ export class QueryEngine {
       customPrompt !== undefined && !coordinatorModeModule?.isCoordinatorMode()
         ? getProactiveSection()
         : null
-    const systemPrompt = asSystemPrompt([
-      ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
-      ...(proactiveInstructions ? [proactiveInstructions] : []),
-      ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
-      ...(appendSystemPrompt ? [appendSystemPrompt] : []),
-    ])
+    const systemPrompt = concatSystemPrompts(
+      customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt,
+      proactiveInstructions ? [proactiveInstructions] : [],
+      memoryMechanicsPrompt ? [memoryMechanicsPrompt] : [],
+      appendSystemPrompt ? [appendSystemPrompt] : [],
+    )
 
     // Register function hook for structured output enforcement
     const hasStructuredOutputTool = tools.some(t =>
@@ -366,11 +474,12 @@ export class QueryEngine {
       },
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
+      canUseTool: wrappedCanUseTool,
       mods: this.config.modsSession?.runtime,
       options: {
-        commands,
+        commands: this.config.modsSession?.commands.projection(commands) ?? commands,
         debug: false, // we use stdout, so don't want to clobber it
-        tools,
+        tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
         verbose,
         mainLoopModel: initialMainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -380,7 +489,7 @@ export class QueryEngine {
         isNonInteractiveSession: true,
         customSystemPrompt,
         appendSystemPrompt,
-        agentDefinitions: { activeAgents: agents, allAgents: [] },
+        agentDefinitions: this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
         theme: resolveThemeSetting(getGlobalConfig().theme),
         maxBudgetUsd,
       },
@@ -415,12 +524,128 @@ export class QueryEngine {
       setSDKStatus,
     }
 
+    const getModToolContext = (): ToolUseContext => ({
+      ...processUserInputContext,
+      messages: this.mutableMessages,
+      mods: this.config.modsSession?.runtime,
+      options: {
+        ...processUserInputContext.options,
+        tools: this.config.modsSession?.tools?.projection(this.config.tools) ?? this.config.tools,
+      },
+    })
+    const modMcpConnections = this.config.modsSession?.hostService('mcpConnect')
+      ? undefined
+      : createModMcpConnections({ getState: getAppState, setState: setAppState })
+    if (this.config.modsSession) await this.config.modsSession.bind({
+      cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
+    }, setAppState, {
+      messages: () => projectModSessionMessages(this.mutableMessages),
+      rawMessages: () => this.mutableMessages,
+      agentMessages: readModBoundAgentMessages,
+      captureUsage: () => captureModSessionUsage(getModToolContext()),
+      cwd: getCwd,
+      root: getOriginalCwd,
+      model: () => getModToolContext().options.mainLoopModel,
+      turns: () => countModSessionTurns(this.mutableMessages),
+      ...getModHttpServices(),
+      // print binds first with its output sink and MCP ownership; keep them when present.
+      uiLog: this.config.modsSession.hostService('uiLog') ?? ((plugin, text, to) => {
+        logForDebugging(`[${plugin}] $.ui.log${to === 'debug' ? ' (to debug)' : ''}: ${text}`)
+      }),
+      mcpConnect: modMcpConnections?.connect ?? this.config.modsSession.hostService('mcpConnect'),
+      mcpRelease: modMcpConnections?.release ?? this.config.modsSession.hostService('mcpRelease'),
+      configRows: () =>
+        getConfigRows({
+          getAppState: this.config.getAppState,
+          setAppState,
+          options: { mcpClients: this.config.mcpClients },
+        }),
+      commands: () => this.config.commands,
+      tasks: () => getAppState().tasks,
+      agentNames: () => getAppState().agentNameRegistry,
+      tools: () => getModToolContext().options.tools,
+      toolCatalog: () => createToolCatalogForContext(getModToolContext()),
+      toolHost: () => createModToolHost(getModToolContext(), wrappedCanUseTool),
+      mcpCall: (server, tool, args, signal) =>
+        callMCPToolForMod(
+          findMCPConnectionForMod(this.config.mcpClients, server),
+          tool,
+          args,
+          signal,
+        ),
+      commandRun: createModCommandQueue({owner:this.promptSubmitOwner,wake:()=>this.wakeModsHost()}),
+    submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
+        const uuid = randomUUID()
+        let settled = false
+        const finish = (settle: () => void) => {
+          if (settled) return
+          settled = true
+          signal.removeEventListener('abort', cancel)
+          settle()
+        }
+        const cancel = () => {
+          finish(() => {
+            logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=aborted`)
+            reject(signal.reason)
+          })
+          remove([queued])
+        }
+        const queued = enqueueTracked({
+          value: text,
+          mode: 'prompt',
+          priority: 'later',
+          uuid,
+          origin,
+          promptSubmitOwner: this.promptSubmitOwner,
+          promptSubmitCallerChain: copyModCallerChain(callerChain),
+          promptSubmitMetadata: {
+            origin,
+            wait: false,
+            ...(attachments === undefined ? {} : { attachments }),
+          },
+          promptSubmitReceipt: {
+            admit: result => finish(() => {
+              logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=${result.drop === undefined ? 'admitted' : 'dropped'}`)
+              resolve(result)
+            }),
+            cancel: reason => finish(() => reject(reason)),
+          },
+        })
+        logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=engine asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
+        signal.addEventListener('abort', cancel, { once: true })
+        const refuse = (reason: unknown) => {
+          finish(() => reject(reason))
+          remove([queued])
+        }
+        if (signal.aborted) cancel()
+        else
+          try {
+            void Promise.resolve(this.wakeModsHost()).catch(refuse)
+          } catch (error) {
+            refuse(error)
+          }
+      }),
+      presentation: () => ({columns:80, isFullscreen:false}),
+    })
+    if (this.config.modsSession) {
+      processUserInputContext = {
+        ...processUserInputContext,
+        mods: this.config.modsSession.runtime,
+        options: {
+          ...processUserInputContext.options,
+          commands: await this.config.modsSession.commands.describe(commands),
+          tools: this.config.modsSession.tools?.projection(tools) ?? tools,
+          agentDefinitions: this.config.modsSession.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
+        },
+      }
+    }
+
     // Handle orphaned permission (only once per engine lifetime)
     if (orphanedPermission && !this.hasHandledOrphanedPermission) {
       this.hasHandledOrphanedPermission = true
       for await (const message of handleOrphanedPermission(
         orphanedPermission,
-        tools,
+        processUserInputContext.options.tools,
         this.mutableMessages,
         processUserInputContext,
       )) {
@@ -449,7 +674,16 @@ export class QueryEngine {
       skipSlashCommands: options?.skipSlashCommands,
       skipAttachments: options?.skipAttachments,
       skipHooks: options?.origin?.kind === 'peer',
+      promptSubmitMetadata: options?.promptSubmitMetadata ?? {
+        origin: options?.origin?.kind === 'channel' ? { kind: 'channel', server: options.origin.server } :
+          options?.origin?.kind === 'plugin' ? options.origin :
+          options?.origin && options.origin.kind !== 'human' ? { kind: options.origin.kind } : { kind: 'sdk' },
+        wait: false,
+      },
+      promptSubmitCallerChain: options?.promptSubmitCallerChain,
+      onPromptAdmission: options?.onPromptAdmission,
       querySource: 'sdk',
+      canUseTool: wrappedCanUseTool,
     })
 
     if (options?.origin) {
@@ -518,6 +752,10 @@ export class QueryEngine {
 
     const mainLoopModel = modelFromUserInput ?? initialMainLoopModel
 
+    const describedCommands = this.config.modsSession
+      ? await this.config.modsSession.commands.describe(commands)
+      : commands
+
     // Recreate after processing the prompt to pick up updated messages and
     // model (from slash commands).
     processUserInputContext = {
@@ -525,11 +763,12 @@ export class QueryEngine {
       setMessages: () => {},
       onChangeAPIKey: () => {},
       handleElicitation: this.config.handleElicitation,
+      canUseTool: wrappedCanUseTool,
       mods: this.config.modsSession?.runtime,
       options: {
-        commands,
+        commands: describedCommands,
         debug: false,
-        tools,
+        tools: this.config.modsSession?.tools?.projection(tools) ?? tools,
         verbose,
         mainLoopModel,
         thinkingConfig: initialThinkingConfig,
@@ -540,7 +779,7 @@ export class QueryEngine {
         customSystemPrompt,
         appendSystemPrompt,
         theme: resolveThemeSetting(getGlobalConfig().theme),
-        agentDefinitions: { activeAgents: agents, allAgents: [] },
+        agentDefinitions: this.config.modsSession?.runtime?.agents.projection({ activeAgents: agents, allAgents: agents }) ?? { activeAgents: agents, allAgents: agents },
         maxBudgetUsd,
       },
       getAppState,
@@ -577,12 +816,12 @@ export class QueryEngine {
     headlessProfilerCheckpoint('after_skills_plugins')
 
     yield buildSystemInitMessage({
-      tools,
+      tools: processUserInputContext.options.tools,
       mcpClients,
       model: mainLoopModel,
       permissionMode: initialAppState.toolPermissionContext
         .mode as PermissionMode, // TODO: avoid the cast
-      commands,
+      commands: describedCommands,
       agents,
       skills,
       plugins: enabledPlugins,
@@ -716,6 +955,7 @@ export class QueryEngine {
       messages,
       systemPrompt,
       userContext,
+      refreshUserContext: async () => buildUserContext(await getUserContext()),
       systemContext,
       canUseTool: wrappedCanUseTool,
       toolUseContext: processUserInputContext,
@@ -723,6 +963,23 @@ export class QueryEngine {
       querySource: 'sdk',
       maxTurns,
       taskBudget,
+      publicTurn: {
+        text: messagesFromUserInput
+          .filter(
+            (message): message is UserMessage =>
+              message.type === 'user' && !message.isMeta,
+          )
+          .map(message => {
+            const content = message.message.content
+            if (typeof content === 'string') return content
+            return content
+              .filter(block => block.type === 'text' && typeof block.text === 'string')
+              .map(block => block.text)
+              .join('')
+          })
+          .filter(text => text !== '')
+          .join('\n'),
+      },
     })) {
       // Record assistant, user, and compact boundary messages
       if (
@@ -1251,6 +1508,9 @@ export async function* ask({
   promptUuid,
   isMeta,
   origin,
+  promptSubmitMetadata,
+  promptSubmitCallerChain,
+  onPromptAdmission,
   skipSlashCommands,
   skipAttachments,
   cwd,
@@ -1287,6 +1547,9 @@ export async function* ask({
   promptUuid?: string
   isMeta?: boolean
   origin?: MessageOrigin
+  promptSubmitMetadata?: PromptSubmitMetadata
+  promptSubmitCallerChain?: ModCallerChain
+  onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
   skipSlashCommands?: boolean
   skipAttachments?: boolean
   cwd: string
@@ -1361,6 +1624,9 @@ export async function* ask({
       uuid: promptUuid,
       isMeta,
       origin,
+      promptSubmitMetadata,
+      promptSubmitCallerChain,
+      onPromptAdmission,
       skipSlashCommands,
       skipAttachments,
     })

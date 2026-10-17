@@ -9,6 +9,7 @@ import { getClaudeAIOAuthTokens } from 'src/utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from 'src/utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from 'src/utils/envUtils.js'
+import { getAPIProvider } from 'src/utils/model/providers.js'
 import { clearMcpAuthCache } from './client.js'
 import { normalizeNameForMCP } from './normalization.js'
 import type { ScopedMcpServerConfig } from './types.js'
@@ -39,6 +40,11 @@ const MCP_SERVERS_BETA_HEADER = 'mcp-servers-2025-12-04'
 export const fetchClaudeAIMcpConfigsIfEligible = memoize(
   async (): Promise<Record<string, ScopedMcpServerConfig>> => {
     try {
+      if (getAPIProvider() === 'openai') {
+        logForDebugging('[claudeai-mcp] Disabled for OpenAI provider')
+        return {}
+      }
+
       if (isEnvDefinedFalsy(process.env.ENABLE_CLAUDEAI_MCP_SERVERS)) {
         logForDebugging('[claudeai-mcp] Disabled via env var')
         logEvent('tengu_claudeai_mcp_eligibility', {

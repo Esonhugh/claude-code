@@ -59,6 +59,7 @@ import { TASK_LIST_TOOL_NAME } from '../../tools/TaskListTool/constants.js'
 import { TASK_UPDATE_TOOL_NAME } from '../../tools/TaskUpdateTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
+import { asAgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
 import type { PermissionDecision } from '../../types/permissions.js'
 import {
@@ -77,7 +78,6 @@ import {
   SUBAGENT_REJECT_MESSAGE,
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
 } from '../messages.js'
-import type { ModelAlias } from '../model/aliases.js'
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
@@ -87,7 +87,12 @@ import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
-import { asSystemPrompt } from '../systemPromptType.js'
+import {
+  asSystemPrompt,
+  concatSystemPrompts,
+  joinSystemPrompt,
+  type SystemPrompt,
+} from '../systemPromptType.js'
 import { claimTask, listTasks, type Task, updateTask } from '../tasks.js'
 import type { TeammateContext } from '../teammateContext.js'
 import { runWithTeammateContext } from '../teammateContext.js'
@@ -101,7 +106,7 @@ import {
   writeToMailbox,
 } from '../teammateMailbox.js'
 import { unregisterAgent as unregisterPerfettoAgent } from '../telemetry/perfettoTracing.js'
-import { createContentReplacementState } from '../toolResultStorage.js'
+import { createContentReplacementState, type ContentReplacementState } from '../toolResultStorage.js'
 import { TEAM_LEAD_NAME } from './constants.js'
 import {
   getLeaderSetToolPermissionContext,
@@ -489,8 +494,9 @@ export type InProcessRunnerConfig = {
   toolUseContext: ToolUseContext
   /** Abort controller linked to parent */
   abortController: AbortController
-  /** Optional model override for this teammate */
+  /** Resolved spawn snapshot; reused unchanged across teammate turns. */
   model?: string
+  effort?: import('../effort.js').EffortValue
   /** Optional system prompt override for this teammate */
   systemPrompt?: string
   /** How to apply the system prompt: 'replace' or 'append' to default */
@@ -505,6 +511,9 @@ export type InProcessRunnerConfig = {
   /** request_id of the API call that spawned this teammate, for lineage
    *  tracing on tengu_api_* events. */
   invokingRequestId?: string
+  initialFrom?: string
+  resumeMessages?: Message[]
+  resumeReplacementState?: ContentReplacementState
 }
 
 /**
@@ -927,9 +936,9 @@ export async function runInProcessTeammate(
   }
 
   // Build system prompt based on systemPromptMode
-  let teammateSystemPrompt: string
+  let teammateSystemPrompt: SystemPrompt
   if (systemPromptMode === 'replace' && systemPrompt) {
-    teammateSystemPrompt = systemPrompt
+    teammateSystemPrompt = asSystemPrompt([systemPrompt])
   } else {
     const fullSystemPromptParts = await getSystemPrompt(
       toolUseContext.options.tools,
@@ -938,10 +947,7 @@ export async function runInProcessTeammate(
       toolUseContext.options.mcpClients,
     )
 
-    const systemPromptParts = [
-      ...fullSystemPromptParts,
-      TEAMMATE_SYSTEM_PROMPT_ADDENDUM,
-    ]
+    const systemPromptParts = [TEAMMATE_SYSTEM_PROMPT_ADDENDUM]
 
     // If a specialized agent definition is provided, append its prompt.
     if (agentDefinition) {
@@ -974,7 +980,10 @@ export async function runInProcessTeammate(
       systemPromptParts.push(systemPrompt)
     }
 
-    teammateSystemPrompt = systemPromptParts.join('\n')
+    teammateSystemPrompt = joinSystemPrompt(
+      concatSystemPrompts(fullSystemPromptParts, systemPromptParts),
+      '\n',
+    )
   }
 
   // Resolve agent definition - use full system prompt with teammate addendum.
@@ -982,11 +991,11 @@ export async function runInProcessTeammate(
   const resolvedAgentDefinition: CustomAgentDefinition = {
     agentType: identity.agentName,
     whenToUse: `In-process teammate: ${identity.agentName}`,
-    getSystemPrompt: () => teammateSystemPrompt,
+    getSystemPrompt: () => teammateSystemPrompt.join('\n'),
     // Inject team-essential tools so teammates can always respond to
     // shutdown requests, send messages, and coordinate via the task list,
     // even with explicit tool lists
-    tools: agentDefinition?.tools
+    tools: agentDefinition?.tools && !agentDefinition.tools.includes('*')
       ? [
           ...new Set([
             ...agentDefinition.tools,
@@ -1005,13 +1014,17 @@ export async function runInProcessTeammate(
     // Propagate model from custom agent definition so getAgentModel()
     // can use it as a fallback when no tool-level model is specified
     ...(agentDefinition?.model ? { model: agentDefinition.model } : {}),
+    ...((config.effort ?? agentDefinition?.effort) !== undefined
+      ? { effort: config.effort ?? agentDefinition?.effort }
+      : {}),
   }
 
   // All messages across all prompts
-  const allMessages: Message[] = []
+  const allMessages: Message[] = config.resumeMessages?.slice() ?? []
+  const recordedUuids = new Set(allMessages.map(message => message.uuid))
   // Wrap initial prompt with XML for proper styling in transcript view
   const wrappedInitialPrompt = formatAsTeammateMessage(
-    'team-lead',
+    config.initialFrom ?? 'team-lead',
     prompt,
     undefined,
     description,
@@ -1024,6 +1037,10 @@ export async function runInProcessTeammate(
   // Use parentSessionId as the task list ID since the leader creates tasks
   // under its session ID, not the team name.
   await tryClaimNextTask(identity.parentSessionId, identity.agentName)
+
+  const finishModConversation = toolUseContext.mods?.trackConversation({
+    agentId: identity.resumableAgentId ?? identity.agentId, sessionId: identity.parentSessionId, messages: () => allMessages, persistent: true,
+  })
 
   try {
     // Add initial prompt to task.messages for display (wrapped with XML)
@@ -1047,9 +1064,9 @@ export async function runInProcessTeammate(
     // and makes holistic replace-globally-largest decisions, diverging from
     // earlier iterations' incremental frozen-first decisions → wire prefix
     // differs → cache miss. Gated on parent to inherit feature-flag-off.
-    let teammateReplacementState = toolUseContext.contentReplacementState
+    let teammateReplacementState = config.resumeReplacementState ?? (toolUseContext.contentReplacementState
       ? createContentReplacementState()
-      : undefined
+      : undefined)
 
     // Main teammate loop - runs until abort or shutdown approved
     while (!abortController.signal.aborted && !shouldExit) {
@@ -1181,6 +1198,7 @@ export async function runInProcessTeammate(
           // Use currentWorkAbortController so Escape stops this turn only, not the teammate.
           for await (const message of runAgent({
             agentDefinition: iterationAgentDefinition,
+            baseSystemPrompt: teammateSystemPrompt,
             promptMessages,
             toolUseContext,
             canUseTool: createInProcessCanUseTool(
@@ -1201,8 +1219,26 @@ export async function runInProcessTeammate(
             canShowPermissionPrompts: allowPermissionPrompts ?? true,
             forkContextMessages,
             querySource: 'agent:custom',
-            override: { abortController: currentWorkAbortController },
-            model: model as ModelAlias | undefined,
+            override: {
+              abortController: currentWorkAbortController,
+              agentId: asAgentId(identity.resumableAgentId ?? identity.agentId),
+            },
+            ...(identity.resumableAgentId && {
+              recordedUuids,
+              name: identity.agentName,
+              description,
+              parentAgentId: toolUseContext.agentId,
+              extraMetadata: {
+                taskKind: 'in_process_teammate' as const,
+                teamName: identity.teamName,
+                color: identity.color,
+                planModeRequired: identity.planModeRequired,
+                ...(agentDefinition && { customAgentType: agentDefinition.agentType }),
+                ...(model && { model }),
+                permissionMode: currentPermissionMode,
+              },
+            }),
+            resolvedModel: model,
             preserveToolUseResults: true,
             availableTools: toolUseContext.options.tools,
             permissionMode: currentPermissionMode,
@@ -1556,6 +1592,8 @@ export async function runInProcessTeammate(
       error: errorMessage,
       messages: allMessages,
     }
+  } finally {
+    finishModConversation?.()
   }
 }
 

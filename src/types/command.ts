@@ -4,6 +4,7 @@ import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import type { CompactionResult } from '../services/compact/compact.js'
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js'
 import type { ToolUseContext } from '../Tool.js'
+import type { ModCommandInvocation } from '../services/mods/commandAdapter.js'
 import type { EffortValue } from '../utils/effort.js'
 import type { IDEExtensionInstallationStatus, IdeType } from '../utils/ide.js'
 import type { SettingSource } from '../utils/settings/constants.js'
@@ -28,6 +29,11 @@ export type PromptCommand = {
   contentLength: number // Length of command content in characters (used for token estimation)
   argNames?: string[]
   allowedTools?: string[]
+  disallowedTools?: string[]
+  /** Fork skills run in background by default in interactive sessions. */
+  background?: boolean
+  /** Skill identity used for attribution when the catalog supplies one. */
+  unqualifiedName?: string
   model?: string
   source: SettingSource | 'builtin' | 'mcp' | 'plugin' | 'bundled'
   pluginInfo?: {
@@ -80,6 +86,7 @@ type LocalCommand = {
 }
 
 export type LocalJSXCommandContext = ToolUseContext & {
+  modCommand?: Pick<ModCommandInvocation, 'origin' | 'presentation'>
   canUseTool?: CanUseToolFn
   setMessages: (updater: (prev: Message[]) => Message[]) => void
   options: {
@@ -126,6 +133,8 @@ export type LocalJSXCommandOnDone = (
     additionalMessages?: AttachmentMessage[]
     nextInput?: string
     submitNextInput?: boolean
+    commandExitCode?: number
+    commandRunText?: string
   },
 ) => void
 
@@ -203,7 +212,7 @@ export type CommandBase = {
     | 'mcp'
     | 'codex_app' // Where the command was loaded from
   kind?: 'workflow' // Distinguishes workflow-backed commands (badged in autocomplete)
-  immediate?: boolean // If true, command executes immediately without waiting for a stop point (bypasses queue)
+  immediate?: boolean | ((args: string, context: LocalJSXCommandContext) => boolean)
   isSensitive?: boolean // If true, args are redacted from the conversation history
   /** Defaults to `name`. Only override when the displayed name differs (e.g. plugin prefix stripping). */
   userFacingName?: () => string
@@ -215,6 +224,16 @@ export type Command = CommandBase &
 /** Resolves the user-visible name, falling back to `cmd.name` when not overridden. */
 export function getCommandName(cmd: CommandBase): string {
   return cmd.userFacingName?.() ?? cmd.name
+}
+
+export function isCommandImmediate(
+  cmd: CommandBase,
+  args: string,
+  context: LocalJSXCommandContext,
+): boolean {
+  return typeof cmd.immediate === 'function'
+    ? cmd.immediate(args, context)
+    : cmd.immediate === true
 }
 
 /** Resolves whether the command is enabled, defaulting to true. */

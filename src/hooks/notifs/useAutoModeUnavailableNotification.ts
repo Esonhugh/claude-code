@@ -8,7 +8,6 @@ import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
 } from '../../utils/permissions/permissionSetup.js'
-import { hasAutoModeOptIn } from '../../utils/settings/settings.js'
 
 /**
  * Shows a one-shot notification when the shift-tab carousel wraps past where
@@ -37,8 +36,7 @@ export function useAutoModeUnavailableNotification(): void {
       mode === 'default' &&
       prevMode !== 'default' &&
       prevMode !== 'auto' &&
-      !isAutoModeAvailable &&
-      hasAutoModeOptIn()
+      !isAutoModeAvailable
 
     if (!wrappedPastAutoSlot) return
 

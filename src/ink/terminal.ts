@@ -1,11 +1,13 @@
 import { coerce } from 'semver'
 import type { Writable } from 'stream'
 import { env } from '../utils/env.js'
+import { isEnvTruthy } from '../utils/envUtils.js'
 import { gte } from '../utils/semver.js'
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
 import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
 import { BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
+import { setEvidenceCursorVisible } from './terminalEvidence.js'
 import { link } from './termio/osc.js'
 
 export type Progress = {
@@ -127,6 +129,27 @@ export function isSynchronizedOutputSupported(): boolean {
 // from the response handler. Readers should treat undefined as "not yet known"
 // and fall back to env-var detection.
 
+// Settled once by App's DA1-bounded startup probe. Disabled sessions never probe.
+let programStatusSupport: 'pending' | 'on' | 'off' =
+  isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE) ||
+  process.env.CLAUDE_CODE_SESSION_KIND === 'bg' ? 'off' : 'pending'
+const programStatusListeners = new Set<() => void>()
+
+export function getProgramStatusSupport(): 'pending' | 'on' | 'off' {
+  return programStatusSupport
+}
+
+export function settleProgramStatusSupport(on: boolean): void {
+  if (programStatusSupport !== 'pending') return
+  programStatusSupport = on ? 'on' : 'off'
+  for (const listener of programStatusListeners) listener()
+}
+
+export function subscribeProgramStatusSupport(listener: () => void): () => void {
+  programStatusListeners.add(listener)
+  return () => { programStatusListeners.delete(listener) }
+}
+
 let xtversionName: string | undefined
 
 /** Record the XTVERSION response. Called once from App.tsx when the reply
@@ -220,9 +243,11 @@ export function writeDiffToTerminal(
         break
       case 'cursorHide':
         buffer += HIDE_CURSOR
+        setEvidenceCursorVisible(false)
         break
       case 'cursorShow':
         buffer += SHOW_CURSOR
+        setEvidenceCursorVisible(true)
         break
       case 'cursorMove':
         buffer += cursorMove(patch.x, patch.y)

@@ -1,0 +1,2186 @@
+import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test'
+import Anthropic from '@anthropic-ai/sdk'
+import type { MessageCreateParams } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type { QueryParams } from '../../query.js'
+import type { ModSessionUsage } from '../mods/sessionUsage.js'
+
+// Bun module mocks outlive mock.restore(). Keep the SDK mocks, non-test context
+// rendering, and all credential/network stubs in a private child process.
+if (process.env.CLAUDE_MODEL_CONTRACT_CHILD !== import.meta.path) {
+  test('offline model contracts in an isolated process', async () => {
+    const { mkdir, mkdtemp, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const root = await mkdtemp(join(tmpdir(), 'claude-model-contract-'))
+    try {
+      await mkdir(join(root, 'config'))
+      const child = Bun.spawn([
+        process.execPath, 'test', '--no-env-file',
+        import.meta.path, '--timeout', '20000',
+      ], {
+        cwd: root,
+        env: {
+          PATH: process.env.PATH,
+          HOME: root,
+          TMPDIR: root,
+          XDG_CONFIG_HOME: join(root, 'config'),
+          CLAUDE_CONFIG_DIR: join(root, 'config'),
+          CLAUDE_MODEL_CONTRACT_CHILD: import.meta.path,
+          ANTHROPIC_API_KEY: 'test-only',
+          ANTHROPIC_BASE_URL: 'https://provider.invalid',
+          NODE_ENV: 'test',
+          CI: '1',
+          DISABLE_TELEMETRY: '1',
+          DISABLE_ERROR_REPORTING: '1',
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      })
+      const deadline = setTimeout(() => child.kill(), 60_000)
+      try {
+        const [exitCode, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ])
+        process.stdout.write(stdout)
+        process.stderr.write(stderr)
+        expect(exitCode).toBe(0)
+      } finally {
+        clearTimeout(deadline)
+        if (child.exitCode === null) {
+          child.kill()
+          await child.exited
+        }
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }, 65_000)
+} else {
+;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
+  VERSION: 'test',
+}
+
+const envKeys = [
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
+  'MAX_THINKING_TOKENS',
+  'CLAUDE_CODE_DISABLE_THINKING',
+  'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING',
+  'CLAUDE_CODE_EXTRA_BODY',
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
+  'ANTHROPIC_BETAS',
+  'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+] as const
+const originalEnv = Object.fromEntries(envKeys.map(key => [key, process.env[key]]))
+for (const key of envKeys) delete process.env[key]
+beforeEach(() => {
+  for (const key of envKeys) delete process.env[key]
+})
+
+const requests: MessageCreateParams[] = []
+const requestBetaHeaders: string[] = []
+const tokenRequests: Record<string, unknown>[] = []
+let rejectIncompatibleEffort = false
+let streamNotFound = false
+let nonStreamingThinkingTokens: number | undefined
+let streamInterrupted = false
+let overflowRequest = 0
+let overloadedModel: string | undefined
+let modsReplyUsage: {input_tokens:number;output_tokens:number;cache_read_input_tokens:number;cache_creation_input_tokens:number} | undefined
+let modsRefuseStatus: number | undefined
+const client = new Anthropic({
+  apiKey: 'test-only',
+  maxRetries: 0,
+  timeout: 600_000,
+  fetch: async (_url, init) => {
+    const request = JSON.parse(String(init?.body)) as MessageCreateParams
+    const headers = new Headers(init?.headers)
+    requestBetaHeaders.push(headers.get('anthropic-beta') ?? '')
+    if (String(_url).includes('/count_tokens')) {
+      tokenRequests.push(request as unknown as Record<string, unknown>)
+      return Response.json({input_tokens:123})
+    }
+    requests.push(request)
+    if (modsRefuseStatus) return Response.json({type:'error',error:{type:'invalid_request_error',message:'FAKE_PRIVATE_BODY'}},{status:modsRefuseStatus})
+    if (request.model === overloadedModel) {
+      return Response.json({
+        type: 'error',
+        error: { type: 'overloaded_error', message: 'controlled model overload' },
+      }, { status: 529 })
+    }
+    if (requests.length === overflowRequest) {
+      return Response.json({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'input length and `max_tokens` exceed context limit: 188059 + 20000 > 200000',
+        },
+      }, { status: 400 })
+    }
+    if (rejectIncompatibleEffort) {
+      return Response.json(
+        {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'thinking disabled is incompatible with xhigh/max effort',
+          },
+        },
+        { status: 400 },
+      )
+    }
+    if (
+      request.tool_choice?.type === 'tool' &&
+      [
+        'claude-fable-5-1',
+        'claude-opus-5-5',
+        'claude-sonnet-5-5',
+      ].includes(request.model)
+    ) {
+      return Response.json(
+        {
+          type: 'error',
+          error: {
+            type: 'invalid_request_error',
+            message: 'forced tool choice is not supported by this model',
+          },
+        },
+        { status: 400 },
+      )
+    }
+    if (streamNotFound && request.stream) {
+      return Response.json(
+        {
+          type: 'error',
+          error: { type: 'not_found_error', message: 'stream unsupported' },
+        },
+        { status: 404 },
+      )
+    }
+    const message = {
+      id: 'msg_test',
+      type: 'message',
+      role: 'assistant',
+      model: request.model,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: modsReplyUsage ? {...modsReplyUsage,output_tokens:0} : { input_tokens: 1, output_tokens: 1 },
+    }
+    if (!request.stream) {
+      return Response.json({
+        ...message,
+        content: [{ type: 'text', text: 'OK' }],
+        stop_reason: 'end_turn',
+        usage: {
+          ...message.usage,
+          ...(nonStreamingThinkingTokens !== undefined && {
+            output_tokens_details: { thinking_tokens: nonStreamingThinkingTokens },
+          }),
+        },
+      })
+    }
+    const events = [
+      { type: 'message_start', message },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'text', text: '' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'text_delta', text: 'OK' },
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn', stop_sequence: null },
+        usage: { output_tokens: modsReplyUsage?.output_tokens ?? 1 },
+      },
+      { type: 'message_stop' },
+    ]
+    // HTTP creation succeeds; the real SDK raises this error only during iteration.
+    const transportEvents = streamInterrupted
+      ? [...events.slice(0, 3), {
+          type: 'error',
+          error: { type: 'api_error', message: 'controlled mid-stream interruption' },
+        }]
+      : events
+    return new Response(
+      transportEvents
+        .map(
+          (event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`,
+        )
+        .join(''),
+      {
+        headers: {
+          'content-type': 'text/event-stream',
+          'request-id': 'req_test',
+        },
+      },
+    )
+  },
+})
+
+mock.module('./client.js', () => ({
+  CLIENT_REQUEST_ID_HEADER: 'x-client-request-id',
+  getAnthropicClient: async () => client,
+  getCustomHeaders: () => ({}),
+}))
+
+mock.module('../vcr.js', () => ({
+  withStreamingVCR: (_messages: unknown, run: () => AsyncGenerator<unknown>) =>
+    run(),
+  withVCR: (_messages: unknown, run: () => Promise<unknown>) => run(),
+  withTokenCountVCR: (
+    _messages: unknown,
+    _tools: unknown,
+    _model: unknown,
+    run: () => Promise<unknown>,
+  ) => run(),
+}))
+
+const { spyOn } = await import('bun:test')
+const unexpectedIO: string[] = []
+function denyIO(kind: string): never {
+  unexpectedIO.push(kind)
+  throw new Error(`Unexpected offline contract I/O: ${kind}`)
+}
+spyOn(globalThis, 'fetch').mockImplementation(Object.assign(
+  async () => denyIO('fetch'),
+  { preconnect: () => denyIO('fetch.preconnect') },
+))
+for (const module of [await import('node:http'), await import('node:https')]) {
+  spyOn(module.default, 'request').mockImplementation(() => denyIO('http.request'))
+  spyOn(module.default, 'get').mockImplementation(() => denyIO('http.get'))
+}
+const { default: axios } = await import('axios')
+axios.defaults.adapter = async () => denyIO('axios')
+mock.module('../../utils/secureStorage/index.js', () => ({
+  getSecureStorage: () => ({
+    name: 'offline-test',
+    read: () => null,
+    readAsync: async () => null,
+    update: () => denyIO('credential update'),
+  }),
+}))
+const auth = await import('../../utils/auth.js')
+spyOn(auth, 'getAnthropicApiKey').mockReturnValue('test-only')
+spyOn(auth, 'getAnthropicApiKeyWithSource').mockReturnValue({
+  key: 'test-only', source: 'ANTHROPIC_API_KEY',
+})
+spyOn(auth, 'getClaudeAIOAuthTokens').mockReturnValue(null)
+spyOn(auth, 'getClaudeAIOAuthTokensAsync').mockResolvedValue(null)
+spyOn(auth, 'checkAndRefreshOAuthTokenIfNeeded').mockResolvedValue(false)
+spyOn(auth, 'isClaudeAISubscriber').mockReturnValue(false)
+spyOn(auth, 'getOauthAccountInfo').mockReturnValue(undefined)
+const growthbook = await import('../analytics/growthbook.js')
+spyOn(growthbook, 'getFeatureValue_CACHED_MAY_BE_STALE').mockImplementation(
+  (_key, fallback) => fallback,
+)
+spyOn(growthbook, 'getDynamicConfig_BLOCKS_ON_INIT').mockImplementation(
+  async (_key, fallback) => fallback,
+)
+
+spyOn(growthbook, 'checkStatsigFeatureGate_CACHED_MAY_BE_STALE').mockReturnValue(false)
+const settingsCache = await import('../../utils/settings/settingsCache.js')
+settingsCache.setSessionSettingsCache({ settings: {}, errors: [] })
+for (const source of [
+  'userSettings', 'projectSettings', 'localSettings', 'policySettings', 'flagSettings',
+] as const) settingsCache.setCachedSettingsForSource(source, {})
+
+const { queryModelWithoutStreaming, queryModelWithStreaming, queryWithModel, queryHaiku, verifyApiKey } =
+  await import('./claude.js')
+const { createUserMessage } = await import('../../utils/messages.js')
+const { asSystemPrompt } = await import('../../utils/systemPromptType.js')
+const { getEmptyToolPermissionContext } = await import('../../Tool.js')
+
+async function query(
+  model: string,
+  thinkingConfig: Parameters<
+    typeof queryModelWithoutStreaming
+  >[0]['thinkingConfig'],
+  expectedError?: string,
+  tools: import('../../Tool.js').Tools = [],
+  optionOverrides: Partial<
+    Parameters<typeof queryModelWithoutStreaming>[0]['options']
+  > = {},
+) {
+  const result = await queryModelWithoutStreaming({
+    messages: [createUserMessage({ content: 'test' })],
+    systemPrompt: asSystemPrompt([]),
+    thinkingConfig,
+    tools,
+    signal: new AbortController().signal,
+    options: {
+      model,
+      querySource: 'repl_main_thread',
+      agents: [],
+      mcpTools: [],
+      hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true,
+      enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      ...optionOverrides,
+    },
+  })
+  if (expectedError) {
+    expect(JSON.stringify(result.message.content)).toContain(expectedError)
+  } else {
+    expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+  }
+  expect(requests).toHaveLength(streamNotFound ? 2 : 1)
+  return requests[0]!
+}
+
+afterAll(() => {
+  expect(unexpectedIO).toEqual([])
+  mock.restore()
+  for (const key of envKeys) {
+    if (originalEnv[key] === undefined) delete process.env[key]
+    else process.env[key] = originalEnv[key]
+  }
+})
+
+afterEach(() => {
+  requests.length = 0
+  requestBetaHeaders.length = 0
+  tokenRequests.length = 0
+  rejectIncompatibleEffort = false
+  streamNotFound = false
+  nonStreamingThinkingTokens = undefined
+  streamInterrupted = false
+  overflowRequest = 0
+  overloadedModel = undefined
+  modsReplyUsage = undefined
+  modsRefuseStatus = undefined
+})
+
+test.each(['without a turn.step hook','with a turn.step hook','refused provider request'] as const)(
+  'Mods model fork reports its actual reply and usage: %s', async mode => {
+    const {mkdtemp,realpath,writeFile,rm}=await import('node:fs/promises')
+    const {tmpdir}=await import('node:os')
+    const {join}=await import('node:path')
+    const {getDefaultAppState}=await import('../../state/AppStateStore.js')
+    const {createFileStateCacheWithSizeLimit}=await import('../../utils/fileStateCache.js')
+    const {createModsRuntime}=await import('../mods/runtime.js')
+    const {createModModelFork}=await import('../mods/modelAdapter.js')
+    const root=await realpath(await mkdtemp(join(tmpdir(),'mods-fork-usage-wire-')))
+    const diagnostics:unknown[]=[]
+    const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+    modsReplyUsage={input_tokens:3,output_tokens:4,cache_read_input_tokens:5,cache_creation_input_tokens:6}
+    if(mode==='refused provider request') modsRefuseStatus=400
+    try {
+      await runtime.bind({cwd:root,sessionId:'fork-usage',surface:'terminal',isInteractive:false})
+      if(mode==='with a turn.step hook') {
+        const entry=join(root,'register.ts')
+        await writeFile(entry,`export function register(on) {
+          on('turn.step',async function* ($,e,next) {const stream=next(e);yield* stream;return await stream.result;});
+        }`)
+        await runtime.reconcile([{name:'fork-usage',storageId:'fork-usage@test',pluginRoot:root,entrypoints:[entry]}])
+      }
+      let state=getDefaultAppState()
+      const parent=[createUserMessage({content:'main prefix'})]
+      const before=JSON.stringify(parent)
+      const context:import('../../Tool.js').ToolUseContext={
+        options:{commands:[],debug:false,mainLoopModel:'claude-sonnet-5',tools:[],verbose:false,
+          thinkingConfig:{type:'disabled'},mcpClients:[],mcpResources:{},isNonInteractiveSession:true,
+          agentDefinitions:{activeAgents:[],allAgents:[],allowedAgentTypes:undefined}},
+        abortController:new AbortController(),readFileState:createFileStateCacheWithSizeLimit(10),
+        getAppState:()=>state,setAppState:update=>{state=update(state)},setInProgressToolUseIDs(){},
+        setResponseLength(){},updateFileHistoryState(){},updateAttributionState(){},messages:parent,mods:runtime,
+      }
+      const fork=createModModelFork(()=>({systemPrompt:asSystemPrompt(['cache prefix']),userContext:{},systemContext:{},
+        forkContextMessages:parent,toolUseContext:context}))
+      // Official 2.1.292: this SSE fixture reports only message_delta usage
+      // for forks, and HTTP 400 invalid_request_error is exposed as unknown.
+      const expected:import('../mods/types.js').ModModelForkResult=mode==='refused provider request'
+        ? {isAnswered:false,reason:'api-error',status:400,error:'unknown',usage:{input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0}}
+        : {isAnswered:true,text:'OK',usage:{input_tokens:0,output_tokens:4,cache_read_input_tokens:0,cache_creation_input_tokens:0}}
+      expect(await fork({prompt:'fork question'})).toEqual(expected)
+      expect(requests).toHaveLength(1)
+      // Official 2.1.292 leaves tool_choice unset; fork tool denial is internal.
+      expect(requests[0]).not.toHaveProperty('tool_choice')
+      expect(requests[0]!.messages[0]).toMatchObject({role:'user'})
+      expect(JSON.stringify(parent)).toBe(before)
+      expect(diagnostics).toEqual([])
+      expect(unexpectedIO).toEqual([])
+    } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+  },
+)
+
+test('cache marker inspection accepts stable and beta thinking blocks', async () => {
+  const { hasExtendedCacheTtlMarker } = await import('./claude.js')
+  const stableMessages: Anthropic.MessageParam[] = [
+    {
+      role: 'assistant',
+      content: [{ type: 'thinking', thinking: 'stable', signature: 'stable' }],
+    },
+  ]
+  const betaMessages: Anthropic.Beta.Messages.BetaMessageParam[] = [
+    {
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'beta', signature: 'beta' },
+        {
+          type: 'text',
+          text: 'cached',
+          cache_control: { type: 'ephemeral', ttl: '1h' },
+        },
+      ],
+    },
+  ]
+
+  expect(
+    hasExtendedCacheTtlMarker({ messages: stableMessages }),
+  ).toBe(false)
+  expect(hasExtendedCacheTtlMarker({ messages: betaMessages })).toBe(true)
+})
+
+test('1h cache markers add the extended TTL beta once and 5m markers do not', async () => {
+  const state = await import('../../bootstrap/state.js')
+  state.setPromptCache1hEligible(true)
+  state.setPromptCache1hAllowlist(['repl_main_thread'])
+  process.env.ANTHROPIC_BETAS = 'extended-cache-ttl-2025-04-11'
+  try {
+    const request = await query('claude-sonnet-4-6', { type: 'disabled' })
+    expect(request.system).toContainEqual(
+      expect.objectContaining({
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }),
+    )
+    expect(
+      requestBetaHeaders[0]?.split(',').filter(
+        beta => beta.trim() === 'extended-cache-ttl-2025-04-11',
+      ),
+    ).toHaveLength(1)
+
+    state.setPromptCache1hAllowlist([])
+    process.env.ANTHROPIC_BETAS = ''
+    requests.length = 0
+    const fiveMinuteRequest = await query('claude-opus-4-6', {
+      type: 'disabled',
+    })
+    expect(fiveMinuteRequest.system).toContainEqual(
+      expect.objectContaining({ cache_control: { type: 'ephemeral' } }),
+    )
+    expect(requestBetaHeaders[1] ?? '').not.toContain(
+      'extended-cache-ttl-2025-04-11',
+    )
+  } finally {
+    state.setPromptCache1hAllowlist(null)
+    state.setPromptCache1hEligible(null)
+    delete process.env.ANTHROPIC_BETAS
+  }
+})
+
+test('inline MCP tools keep 1h cache markers on the system prompt, never on tools', async () => {
+  const state = await import('../../bootstrap/state.js')
+  const { z } = await import('zod/v4')
+  state.setPromptCache1hEligible(true)
+  state.setPromptCache1hAllowlist(['repl_main_thread'])
+  const tool = {
+    name: 'mcp__test__lookup',
+    isMcp: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  try {
+    const request = await query(
+      'claude-sonnet-4-6',
+      { type: 'disabled' },
+      undefined,
+      [tool],
+    )
+    expect(request.system).not.toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ scope: 'global' }),
+      }),
+    )
+    expect(request.system).toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ type: 'ephemeral', ttl: '1h' }),
+      }),
+    )
+    expect(request.tools?.every(tool => !('cache_control' in tool))).toBe(true)
+    expect(requestBetaHeaders[0]).toContain('extended-cache-ttl-2025-04-11')
+  } finally {
+    state.setPromptCache1hAllowlist(null)
+    state.setPromptCache1hEligible(null)
+  }
+})
+
+test('deferred tools loaded through ToolSearch never carry cache_control', async () => {
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { createAssistantMessage } = await import('../../utils/messages.js')
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  process.env.ENABLE_TOOL_SEARCH = 'true'
+  clearToolSchemaCache()
+  const pinned = {
+    name: 'mcp__corp__pinned',
+    isMcp: true,
+    alwaysLoad: true,
+    inputSchema: z.object({ query: z.string() }),
+    async prompt() {
+      return 'pinned lookup'
+    },
+  } as unknown as import('../../Tool.js').Tool
+  const discovered = {
+    ...pinned,
+    name: 'mcp__corp__discovered',
+    alwaysLoad: false,
+  }
+  try {
+    const result = await queryModelWithoutStreaming({
+      messages: [
+        createUserMessage({ content: 'test' }),
+        createAssistantMessage({
+          content: [
+            {
+              type: 'tool_use',
+              id: 'search-1',
+              name: 'ToolSearch',
+              input: { query: 'corp', max_results: 5 },
+            },
+          ],
+        }),
+        createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'search-1',
+              content: [{ type: 'tool_reference', tool_name: discovered.name }],
+            },
+          ] as unknown as Parameters<typeof createUserMessage>[0]['content'],
+        }),
+      ],
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools: [ToolSearchTool, pinned, discovered],
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: [pinned, discovered],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+    expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+    const request = requests.at(-1)!
+    const tools = request.tools ?? []
+    expect(tools.map(tool => ('name' in tool ? tool.name : undefined))).toEqual(
+      ['ToolSearch', pinned.name, discovered.name],
+    )
+    expect(tools.at(-1)).toMatchObject({ defer_loading: true })
+    expect(tools.every(tool => !('cache_control' in tool))).toBe(true)
+    expect(request.system).toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ type: 'ephemeral' }),
+      }),
+    )
+    expect(request.system).not.toContainEqual(
+      expect.objectContaining({
+        cache_control: expect.objectContaining({ scope: 'global' }),
+      }),
+    )
+  } finally {
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
+
+test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
+  const {createModModelComplete}=await import('../mods/modelAdapter.js')
+  const {EFFORT_BETA_HEADER}=await import('../../constants/betas.js')
+  process.env.CLAUDE_CODE_EFFORT_LEVEL='max'
+  const complete=createModModelComplete(undefined,()=> 'claude-sonnet-4-6',()=>64000)
+  expect((await complete({model:'sonnet',prompt:'test',effort})).isAnswered).toBe(true)
+  expect(requests).toHaveLength(1)
+  expect(requests[0]?.output_config).toMatchObject({effort})
+  expect(requestBetaHeaders[0]).toContain(EFFORT_BETA_HEADER)
+})
+
+test('Mods completion omits unsupported effort and preserves default side-query requests', async () => {
+  const {createModModelComplete}=await import('../mods/modelAdapter.js')
+  const complete=createModModelComplete(undefined,()=> 'claude-haiku-4-5',()=>64000)
+  await complete({model:'haiku',prompt:'test',effort:'max'})
+  await complete({model:'haiku',prompt:'test'})
+  expect(requests).toHaveLength(2)
+  expect(requests[0]).not.toHaveProperty('output_config')
+  expect(requests[1]).not.toHaveProperty('output_config')
+})
+
+test('side-query effort preserves structured output configuration', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  const format={type:'json_schema' as const,schema:{type:'object'}}
+  await sideQuery({model:'claude-sonnet-4-6',messages:[{role:'user',content:'test'}],effort:'low',output_format:format,querySource:'mods_model_complete'})
+  expect(requests[0]?.output_config).toEqual({format,effort:'low'})
+})
+
+test('side queries send a temperature only to models older than claude-opus-4-7, like official', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  for (const model of ['claude-opus-4-6', 'claude-opus-4-7', 'claude-opus-5-5', 'gpt-5.6-sol'])
+    await sideQuery({model,messages:[{role:'user',content:'test'}],temperature:1,querySource:'auto_mode'})
+  expect(requests.map(request => request.temperature)).toEqual([1, undefined, undefined, undefined])
+})
+
+test('side queries turn thinking off with each model\'s accepted form', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  for (const model of ['claude-sonnet-5', 'claude-sonnet-5-5', 'claude-opus-5-5'])
+    await sideQuery({model,messages:[{role:'user',content:'test'}],thinking:false,querySource:'auto_mode'})
+  await sideQuery({model:'claude-sonnet-5-5',messages:[{role:'user',content:'test'}],thinking:false,effort:'max',querySource:'auto_mode'})
+  // claude-sonnet-5-5 rejects disabled thinking (between_tools is its off switch, also
+  // rejected at xhigh/max); claude-opus-5-5 thinks on every request.
+  expect(requests.map(request => request.thinking as unknown)).toEqual([{type:'disabled'}, {type:'between_tools'}, {type:'adaptive'}, {type:'adaptive'}])
+})
+
+test('classifier side queries keep the attribution header for OAuth when the env opts out, like official', async () => {
+  const {sideQuery}=await import('../../utils/sideQuery.js')
+  const subscriber = spyOn(auth, 'isClaudeAISubscriber')
+  const previous = process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
+  process.env.CLAUDE_CODE_ATTRIBUTION_HEADER = '0'
+  const header = (request: MessageCreateParams | undefined) =>
+    JSON.stringify(request?.system ?? '').includes('x-anthropic-billing-header')
+  try {
+    const query = (forceAttributionHeader: boolean) => sideQuery({model:'claude-sonnet-5',messages:[{role:'user',content:'test'}],
+      skipSystemPromptPrefix:true,forceAttributionHeader,querySource:'auto_mode'})
+    subscriber.mockReturnValue(true)
+    await query(true)
+    await query(false)
+    subscriber.mockReturnValue(false)
+    await query(true)
+    expect(requests.map(header)).toEqual([true, false, false])
+  } finally {
+    subscriber.mockReturnValue(false)
+    if (previous === undefined) delete process.env.CLAUDE_CODE_ATTRIBUTION_HEADER
+    else process.env.CLAUDE_CODE_ATTRIBUTION_HEADER = previous
+  }
+})
+
+test('side queries inspect only real cache_control markers for extended TTL', async () => {
+  const state = await import('../../bootstrap/state.js')
+  const { sideQuery } = await import('../../utils/sideQuery.js')
+  state.setPromptCache1hEligible(true)
+  state.setPromptCache1hAllowlist(['side_question'])
+  const base = {
+    model: 'claude-haiku-4-5',
+    querySource: 'side_question' as const,
+    maxRetries: 0,
+  }
+  try {
+    await sideQuery({
+      ...base,
+      messages: [{ role: 'user', content: 'test' }],
+      tools: [{
+        name: 'schema_ttl',
+        description: 'schema ttl',
+        input_schema: {
+          type: 'object',
+          properties: { ttl: { type: 'string', const: '1h' } },
+        },
+      }],
+    })
+    expect(requestBetaHeaders[0]).not.toContain('extended-cache-ttl-2025-04-11')
+
+    await sideQuery({
+      ...base,
+      messages: [{ role: 'user', content: [{
+        type: 'text',
+        text: 'test',
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }] }],
+    })
+    expect(requestBetaHeaders[1]).toContain('extended-cache-ttl-2025-04-11')
+
+    await sideQuery({
+      ...base,
+      messages: [{ role: 'user', content: 'test' }],
+      tools: [{
+        name: 'cached_tool',
+        description: 'cached tool',
+        input_schema: { type: 'object', properties: {} },
+        cache_control: { type: 'ephemeral', ttl: '1h' },
+      }],
+    })
+    expect(requestBetaHeaders[2]).toContain('extended-cache-ttl-2025-04-11')
+  } finally {
+    state.setPromptCache1hAllowlist(null)
+    state.setPromptCache1hEligible(null)
+  }
+})
+
+test.each([false, true])(
+  'Mods deferral changes initial schemas, ToolSearch candidates and discovered schema loading (delta=%s)',
+  async deltaEnabled => {
+    const deltaGate = spyOn(
+      growthbook,
+      'getFeatureValue_CACHED_MAY_BE_STALE',
+    ).mockImplementation((key, fallback) =>
+      key === 'tengu_glacier_2xr'
+        ? (deltaEnabled as typeof fallback)
+        : fallback,
+    )
+    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const { z } = await import('zod/v4')
+    const { createModsRuntime } = await import('../mods/runtime.js')
+    const { ToolSearchTool } =
+      await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+    const { clearToolSchemaCache } =
+      await import('../../utils/toolSchemaCache.js')
+    const root = await mkdtemp(join(tmpdir(), 'mods-deferral-wire-'))
+    const entry = join(root, 'register.ts')
+    const diagnostics: string[] = []
+    const runtime = createModsRuntime({
+      onDiagnostic: event => diagnostics.push(event.message),
+    })
+    const previous = process.env.ENABLE_TOOL_SEARCH
+    process.env.ENABLE_TOOL_SEARCH = 'true'
+    clearToolSchemaCache()
+    await writeFile(
+      entry,
+      `export function register(on) {
+    let flipped = false;
+    on('tool.describe', ($, e) => ({description:'quartz '+e.tool, isDeferred:e.tool === 'ToolSearch' || (flipped ? e.tool === 'mcp__corp__lookup' : e.tool === 'LocalLookup')}));
+    on('tool.call', {tool:'Invalidate'}, async ($) => { flipped = !flipped; await $.ui.invalidate('tool.describe'); return {result:'invalidated'}; });
+  }`,
+    )
+    await runtime.reconcile([
+      {
+        name: 'placement',
+        storageId: 'placement@inline',
+        pluginRoot: root,
+        entrypoints: [entry],
+        tier: 'user',
+      },
+    ])
+    const snapshot = runtime.capture()
+    const local = {
+      name: 'LocalLookup',
+      inputSchema: z.object({ key: z.string() }),
+      async prompt() {
+        return 'local lookup'
+      },
+    } as unknown as import('../../Tool.js').Tool
+    const pinned = { ...local, name: 'mcp__corp__lookup', isMcp: true }
+    const tools = [local, pinned, ToolSearchTool]
+    const messages: import('../../types/message.js').Message[] = [
+      createUserMessage({ content: 'test' }),
+    ]
+    if (deltaEnabled) {
+      const { createAttachmentMessage } =
+        await import('../../utils/attachments.js')
+      messages.push(
+        createAttachmentMessage({
+          type: 'deferred_tools_delta',
+          addedNames: [pinned.name],
+          addedLines: [pinned.name],
+          removedNames: [],
+        }),
+      )
+    }
+    const run = async (model = 'claude-sonnet-5') => {
+      const result = await queryModelWithoutStreaming({
+        messages,
+        systemPrompt: asSystemPrompt([]),
+        thinkingConfig: { type: 'disabled' },
+        tools,
+        signal: new AbortController().signal,
+        options: {
+          model,
+          querySource: 'repl_main_thread',
+          agents: [],
+          mcpTools: [pinned],
+          hasAppendSystemPrompt: false,
+          isNonInteractiveSession: true,
+          enablePromptCaching: false,
+          getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+          modsSnapshot: snapshot,
+        },
+      })
+      expect(result.message.content).toMatchObject([
+        { type: 'text', text: 'OK' },
+      ])
+      return requests.at(-1)!
+    }
+    try {
+      const initial = await run()
+      expect(
+        initial.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
+      ).toEqual(['mcp__corp__lookup', 'ToolSearch'])
+      expect(initial.tools?.every(tool => !('defer_loading' in tool))).toBe(
+        true,
+      )
+      expect(JSON.stringify(initial.messages)).toContain(
+        deltaEnabled
+          ? 'The following deferred tools are now available via ToolSearch:\\nLocalLookup'
+          : '<available-deferred-tools>\\nLocalLookup\\n</available-deferred-tools>',
+      )
+      expect(JSON.stringify(initial.messages)).not.toContain(pinned.name)
+      if (deltaEnabled)
+        expect((messages[1] as any).attachment.addedNames).toEqual([
+          pinned.name,
+        ])
+      const context = {
+        options: {
+          tools,
+          agentDefinitions: { activeAgents: [] },
+          mainLoopModel: 'claude-sonnet-5',
+          mcpClients: [],
+          isNonInteractiveSession: true,
+        },
+        getAppState: () => ({
+          toolPermissionContext: getEmptyToolPermissionContext(),
+          mcp: { clients: [] },
+          sessionHooks: new Map(),
+        }),
+        messages: [],
+        setAppState: () => {},
+        setInProgressToolUseIDs: () => {},
+        // toolExecution clears the invocation snapshot before entering Tool.call.
+        mods: runtime,
+        abortController: new AbortController(),
+      } as unknown as import('../../Tool.js').ToolUseContext
+      const { data } = await ToolSearchTool.call(
+        { query: 'quartz', max_results: 5 },
+        context,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      )
+      expect(data).toMatchObject({
+        matches: ['LocalLookup'],
+        total_deferred_tools: 1,
+      })
+      const { runToolUse } = await import('../tools/toolExecution.js')
+      const { createAssistantMessage } = await import('../../utils/messages.js')
+      const searchUse = {
+        type: 'tool_use' as const,
+        caller: { type: 'direct' as const },
+        id: 'search-1',
+        name: 'ToolSearch',
+        input: { query: 'quartz', max_results: 5 },
+      }
+      const assistant = createAssistantMessage({ content: [searchUse] })
+      const updates = await Array.fromAsync(
+        runToolUse(
+          searchUse,
+          assistant,
+          async () => ({ behavior: 'allow' }),
+          context,
+        ),
+      )
+      const results = updates.flatMap(update =>
+        update.message?.type === 'user' ? [update.message] : [],
+      )
+      expect(JSON.stringify(results)).toContain('"tool_name":"LocalLookup"')
+      expect(JSON.stringify(results)).not.toContain(
+        '"tool_name":"mcp__corp__lookup"',
+      )
+      messages.push(assistant, ...results)
+      const loaded = await run()
+      expect(
+        loaded.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
+      ).toEqual(['LocalLookup', 'mcp__corp__lookup', 'ToolSearch'])
+      expect(loaded.tools?.[0]).toMatchObject({
+        description: 'quartz LocalLookup',
+        defer_loading: true,
+        input_schema: { required: ['key'] },
+      })
+      const unsupported = await run('claude-haiku-4-5')
+      expect(
+        unsupported.tools?.map(tool =>
+          'name' in tool ? tool.name : undefined,
+        ),
+      ).toEqual(['LocalLookup', 'mcp__corp__lookup'])
+      expect(unsupported.tools?.every(tool => !('defer_loading' in tool))).toBe(
+        true,
+      )
+      expect(JSON.stringify(unsupported.messages)).not.toContain(
+        'available via ToolSearch',
+      )
+      await snapshot.dispatch(
+        'tool.call',
+        { tool: 'Invalidate' },
+        async () => ({ result: 'core' }),
+      )
+      messages.splice(1)
+      const flipped = await run()
+      expect(
+        flipped.tools?.map(tool => ('name' in tool ? tool.name : undefined)),
+      ).toEqual(['LocalLookup', 'ToolSearch'])
+      expect(flipped.tools?.every(tool => !('defer_loading' in tool))).toBe(
+        true,
+      )
+      const refreshed = await ToolSearchTool.call(
+        { query: 'quartz', max_results: 5 },
+        context,
+        async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+      )
+      expect(refreshed.data).toMatchObject({
+        matches: ['mcp__corp__lookup'],
+        total_deferred_tools: 1,
+      })
+      expect(diagnostics).toEqual([])
+    } finally {
+      snapshot.release()
+      await runtime.dispose()
+      clearToolSchemaCache()
+      if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+      else process.env.ENABLE_TOOL_SEARCH = previous
+      await rm(root, { recursive: true, force: true })
+      deltaGate.mockImplementation((_key, fallback) => fallback)
+    }
+  },
+)
+
+test('prompt.attachment projects retained and generated deferred deltas at the SDK boundary', async () => {
+  const deltaGate = spyOn(
+    growthbook,
+    'getFeatureValue_CACHED_MAY_BE_STALE',
+  ).mockImplementation((key, fallback) =>
+    key === 'tengu_glacier_2xr' ? (true as typeof fallback) : fallback,
+  )
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { z } = await import('zod/v4')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { createAttachmentMessage } = await import('../../utils/attachments.js')
+  const root = await mkdtemp(join(tmpdir(), 'mods-attachment-wire-'))
+  const entry = join(root, 'register.ts')
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+  })
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  process.env.ENABLE_TOOL_SEARCH = 'true'
+  clearToolSchemaCache()
+  try {
+    await writeFile(
+      entry,
+      `let calls = 0;
+export function register(on) {
+  on('tool.describe', ($, e) => ({description: e.tool, isDeferred: e.tool === 'DeferredLookup'}));
+  on('prompt.attachment', ($, e) => ({text: 'PROJECTED_' + (++calls) + ':' + e.text}));
+  on('tool.call', {tool: 'AttachmentCalls'}, () => ({result: calls}));
+}`,
+    )
+    await runtime.reconcile([
+      {
+        name: 'attachment-wire',
+        storageId: 'attachment-wire@inline',
+        pluginRoot: root,
+        entrypoints: [entry],
+        tier: 'user',
+      },
+    ])
+    const snapshot = runtime.capture()
+    const deferred = {
+      name: 'DeferredLookup',
+      inputSchema: z.object({ key: z.string() }),
+      async prompt() {
+        return 'deferred lookup'
+      },
+    } as unknown as import('../../Tool.js').Tool
+    const tools = [deferred, ToolSearchTool]
+    const retainedDelta = createAttachmentMessage({
+      type: 'deferred_tools_delta',
+      addedNames: [deferred.name],
+      addedLines: ['STALE_RETAINED_LINE'],
+      removedNames: [],
+    })
+    const run = async (messages: import('../../types/message.js').Message[]) => {
+      const result = await queryModelWithoutStreaming({
+        messages,
+        systemPrompt: asSystemPrompt([]),
+        thinkingConfig: { type: 'disabled' },
+        tools,
+        signal: new AbortController().signal,
+        options: {
+          model: 'claude-sonnet-5',
+          querySource: 'repl_main_thread',
+          agents: [],
+          mcpTools: [],
+          hasAppendSystemPrompt: false,
+          isNonInteractiveSession: true,
+          enablePromptCaching: false,
+          getToolPermissionContext: async () =>
+            getEmptyToolPermissionContext(),
+          modsSnapshot: snapshot,
+        },
+      })
+      expect(result.message.content).toMatchObject([
+        { type: 'text', text: 'OK' },
+      ])
+      return requests.at(-1)!
+    }
+    try {
+      const retainedMessages = [
+        createUserMessage({ content: 'existing delta' }),
+        retainedDelta,
+      ]
+      const existing = await run(retainedMessages)
+      expect(JSON.stringify(existing.messages)).toContain('PROJECTED_1:')
+      expect(JSON.stringify(existing.messages)).toContain('DeferredLookup')
+      expect(JSON.stringify(existing.messages)).not.toContain(
+        'STALE_RETAINED_LINE',
+      )
+      expect(retainedDelta.attachment).toMatchObject({
+        type: 'deferred_tools_delta',
+        addedLines: ['STALE_RETAINED_LINE'],
+      })
+
+      const freshMessages = [createUserMessage({ content: 'new delta' })]
+      const generated = await run(freshMessages)
+      expect(JSON.stringify(generated.messages)).toContain('PROJECTED_2:')
+      expect(JSON.stringify(generated.messages)).toContain('DeferredLookup')
+      expect(freshMessages).toHaveLength(1)
+      expect(
+        await snapshot.dispatch(
+          'tool.call',
+          { tool: 'AttachmentCalls' },
+          async () => ({ result: 'unhandled' }),
+        ),
+      ).toEqual({ result: 2 })
+      expect(diagnostics).toEqual([])
+      expect(unexpectedIO).toEqual([])
+    } finally {
+      snapshot.release()
+    }
+  } finally {
+    await runtime.dispose()
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+    await rm(root, { recursive: true, force: true })
+    deltaGate.mockImplementation((_key, fallback) => fallback)
+  }
+})
+
+test('Mods prompt.context reaches SDK messages in order, caches, invalidates and refreshes after compaction', async () => {
+  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { randomUUID } = await import('node:crypto')
+  const { query: runQuery } = await import('../../query.js')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { createCompactBoundaryMessage } = await import('../../utils/messages.js')
+  const { registerHookCallbacks, resetStateForTests } = await import('../../bootstrap/state.js')
+  const { createCacheSafeParams, getLastCacheSafeParams, saveCacheSafeParams, runForkedAgent } = await import('../../utils/forkedAgent.js')
+  const { registerPostSamplingHook, clearPostSamplingHooks } = await import('../../utils/hooks/postSamplingHooks.js')
+  const sampled: import('../../utils/forkedAgent.js').CacheSafeParams[] = []
+  registerPostSamplingHook(context => { sampled.push(createCacheSafeParams(context)) })
+  const root = await mkdtemp(join(tmpdir(), 'mods-context-wire-'))
+  const entry = join(root, 'register.ts')
+  const contextFile = join(root, 'context.txt')
+  const diagnostics: string[] = []
+  const runtime = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event.message),
+  })
+  const originalNodeEnv = process.env.NODE_ENV
+  resetStateForTests()
+  try {
+    await writeFile(entry, `export function register(on) {
+      let runs = 0;
+      on('prompt.context', ($, e) => {
+        runs++;
+        return {blocks:[
+          {name:'9', text:'wire:'+e.blocks.find(b => b.name === 'claudeMd').text+':'+runs},
+          {name:'2', text:'tail:'+runs},
+        ]};
+      });
+      on('tool.call', {tool:'ContextRuns'}, () => ({result:runs}));
+      on('tool.call', {tool:'InvalidateContext'}, async ($) => {
+        await $.ui.invalidate('prompt.context'); return {result:runs};
+      });
+    }`)
+    await writeFile(contextFile, 'first')
+    await runtime.reconcile([{
+      name: 'context-wire', storageId: 'context-wire@inline',
+      pluginRoot: root, entrypoints: [entry], tier: 'user',
+    }])
+    expect(diagnostics).toEqual([])
+    expect(runtime.hasHooks('prompt.context')).toBe(true)
+
+    let appState = getDefaultAppState()
+    const toolUseContext: import('../../utils/processUserInput/processUserInput.js').ProcessUserInputContext = {
+      options: {
+        commands: [], debug: false, mainLoopModel: 'claude-sonnet-5',
+        tools: [], verbose: false, thinkingConfig: { type: 'disabled' },
+        mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+        agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined },
+        ideInstallationStatus: null, theme: 'dark',
+      },
+      abortController: new AbortController(),
+      readFileState: createFileStateCacheWithSizeLimit(10),
+      getAppState: () => appState,
+      setAppState: updater => { appState = updater(appState) },
+      setInProgressToolUseIDs() {}, setResponseLength() {},
+      updateFileHistoryState() {}, updateAttributionState() {},
+      setMessages() {}, onChangeAPIKey() {},
+      messages: [], mods: runtime,
+    }
+    let reads = 0
+    const params: QueryParams = {
+      messages: [createUserMessage({ content: 'public question' })],
+      systemPrompt: asSystemPrompt(['system marker']),
+      userContext: { claudeMd: 'stale QueryParams context' }, systemContext: {},
+      refreshUserContext: async () => {
+        reads++
+        return { claudeMd: await readFile(contextFile, 'utf8') }
+      },
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      toolUseContext, querySource: 'repl_main_thread',
+      deps: {
+        uuid: randomUUID,
+        microcompact: async messages => ({ messages }),
+        autocompact: async () => ({ wasCompacted: false }),
+        // Keep the real API assembly, Anthropic SDK serialization and SSE parser.
+        callModel: queryModelWithStreaming,
+      },
+    }
+    const drain = async (overrides: Partial<QueryParams> = {}) => {
+      const iterator = runQuery({ ...params, ...overrides })
+      const events = []
+      while (true) {
+        const next = await iterator.next()
+        if (next.done) {
+          expect(next.value).toEqual({ reason: 'completed' })
+          break
+        }
+        events.push(next.value)
+      }
+      expect(events.filter(event => event.type === 'assistant')).toContainEqual(
+        expect.objectContaining({ message: expect.objectContaining({
+          content: [{ type: 'text', text: 'OK' }],
+        }) }),
+      )
+      return events
+    }
+    const dispatch = async (tool: string) => {
+      const snapshot = runtime.capture()
+      try {
+        return await snapshot.dispatch('tool.call', { tool }, async () => ({ result: 'unhandled' }))
+      } finally {
+        snapshot.release()
+      }
+    }
+    const assertWire = (index: number, value: string, runs: number, question: string) => {
+      const request = requests[index]!
+      expect(request.stream).toBe(true)
+      expect(request.messages[0]?.role).toBe('user')
+      const content = request.messages.flatMap(message =>
+        typeof message.content === 'string' ? [message.content] :
+          message.content.flatMap(block => block.type === 'text' ? [block.text] : []),
+      )
+      const reminders = content.filter(text => text.includes("As you answer the user's questions"))
+      expect(reminders).toHaveLength(1)
+      expect(content[0]).toBe(reminders[0])
+      expect(reminders[0]).toContain(`# 9\nwire:${value}:${runs}\n# 2\ntail:${runs}`)
+      expect(reminders[0]).not.toContain('stale QueryParams context')
+      expect(reminders[0]).not.toContain('# claudeMd')
+      expect(content.join('\n')).toContain(question)
+      expect(JSON.stringify(request.system)).not.toContain('wire:')
+    }
+
+    // prependUserContext intentionally does nothing in NODE_ENV=test.
+    const { enableConfigs } = await import('../../utils/config.js')
+    enableConfigs()
+    process.env.NODE_ENV = 'development'
+    await drain()
+    expect(requests).toHaveLength(1)
+    assertWire(0, 'first', 1, 'public question')
+    expect(reads).toBe(1)
+    expect(await dispatch('ContextRuns')).toEqual({ result: 1 })
+
+    await writeFile(contextFile, 'second')
+    await drain()
+    expect(requests).toHaveLength(2)
+    assertWire(1, 'first', 1, 'public question')
+    expect(reads).toBe(1)
+    expect(await dispatch('ContextRuns')).toEqual({ result: 1 })
+
+    expect(await dispatch('InvalidateContext')).toEqual({ result: 1 })
+    await drain()
+    expect(requests).toHaveLength(3)
+    assertWire(2, 'second', 2, 'public question')
+    expect(reads).toBe(2)
+    expect(await dispatch('ContextRuns')).toEqual({ result: 2 })
+
+    // A persisted boundary invalidates once; another query with the same UUID
+    // retains that context even if its source has since changed.
+    const boundary = createCompactBoundaryMessage('manual', 100)
+    const messages = [boundary, createUserMessage({ content: 'persisted summary' })]
+    await writeFile(contextFile, 'persisted')
+    await drain({ messages })
+    assertWire(3, 'persisted', 3, 'persisted summary')
+    await writeFile(contextFile, 'not yet visible')
+    await drain({ messages })
+    expect(requests).toHaveLength(5)
+    assertWire(4, 'persisted', 3, 'persisted summary')
+    expect(reads).toBe(3)
+    expect(await dispatch('ContextRuns')).toEqual({ result: 3 })
+
+    // Force a second model iteration, then inject a successful auto-compaction
+    // result. The real query must reread before its very next SDK request.
+    let stops = 0
+    registerHookCallbacks({ Stop: [{ hooks: [{
+      type: 'callback',
+      callback: async () => ++stops === 1
+        ? { decision: 'block', reason: 'continue for context refresh' }
+        : { continue: true },
+    }] }] })
+    let compactions = 0
+    const refreshed: import('../../utils/forkedAgent.js').CacheSafeParams[] = []
+    const autoBoundary = createCompactBoundaryMessage('auto', 100)
+    const events = await drain({
+      messages,
+      onCacheSafeParams: params => { refreshed.push(params) },
+      deps: {
+        ...params.deps!,
+        autocompact: async () => {
+          if (++compactions !== 2) return { wasCompacted: false }
+          await writeFile(contextFile, 'after auto compact')
+          return {
+            wasCompacted: true,
+            compactionResult: {
+              boundaryMarker: autoBoundary,
+              summaryMessages: [createUserMessage({ content: 'auto compact summary' })],
+              attachments: [], hookResults: [],
+            },
+          }
+        },
+      },
+    })
+    expect(stops).toBe(2)
+    expect(compactions).toBe(2)
+    expect(events).toContainEqual(autoBoundary)
+    expect(requests).toHaveLength(7)
+    assertWire(5, 'persisted', 3, 'persisted summary')
+    assertWire(6, 'after auto compact', 4, 'auto compact summary')
+    expect(JSON.stringify(requests[6]!.messages)).not.toContain('wire:persisted')
+    expect(reads).toBe(4)
+    expect(await dispatch('ContextRuns')).toEqual({ result: 4 })
+    expect(sampled).toHaveLength(7)
+    expect(refreshed.map(params => params.resolvedPromptContextBlocks)).toEqual([
+      [{name:'9',text:'wire:persisted:3'},{name:'2',text:'tail:3'}],
+      [{name:'9',text:'wire:after auto compact:4'},{name:'2',text:'tail:4'}],
+    ])
+    const stopped = getLastCacheSafeParams()
+    expect(stopped).not.toBeNull()
+    await dispatch('InvalidateContext')
+    for (const cacheSafeParams of [sampled.at(-1)!, stopped!, refreshed.at(-1)!]) {
+      await runForkedAgent({
+        cacheSafeParams, promptMessages: [createUserMessage({content:'cached side question'})],
+        canUseTool: params.canUseTool, querySource:'agent_summary', forkLabel:'context', skipTranscript:true,
+      })
+      assertWire(requests.length - 1, 'after auto compact', 4, 'cached side question')
+      expect(await dispatch('ContextRuns')).toEqual({result:4})
+    }
+    const { call: btw } = await import('../../commands/btw/btw.js')
+    const { render } = await import('../../ink.js')
+    const { Readable, Writable } = await import('node:stream')
+    const painted = Promise.withResolvers<void>()
+    let output = ''
+    const stdout = Object.assign(new Writable({ write(chunk, _encoding, done) {
+      output += chunk.toString()
+      if (output.includes('OK')) painted.resolve()
+      done()
+    } }), { columns: 100, rows: 30, isTTY: false })
+    const stdin = Object.assign(new Readable({ read() {} }), {
+      isTTY: true, isRaw: false, setRawMode() { return this }, ref() { return this }, unref() { return this },
+    })
+    const { createElement } = await import('react')
+    const { AppStoreContext } = await import('../../state/AppState.js')
+    const { createStore } = await import('../../state/store.js')
+    const node = await btw(() => {}, toolUseContext, 'cached UI side question')
+    const instance = await render(createElement(AppStoreContext.Provider, {value: createStore(appState)}, node), {
+      stdout: stdout as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false, exitOnCtrlC: false,
+    })
+    const deadline = setTimeout(() => painted.reject(new Error(`Side question did not render its answer: ${output}`)), 10_000)
+    try {
+      await painted.promise
+      assertWire(requests.length - 1, 'after auto compact', 4, 'cached UI side question')
+      expect(await dispatch('ContextRuns')).toEqual({result:4})
+    } finally {
+      clearTimeout(deadline)
+      instance.unmount()
+      instance.cleanup()
+    }
+    const { clearSessionCaches } = await import('../../commands/clear/caches.js')
+    clearSessionCaches(new Set(['preserved-background-agent']))
+    expect(getLastCacheSafeParams()).toBeNull()
+    expect(stopped!.resolvedPromptContextBlocks).toEqual([
+      {name:'9',text:'wire:after auto compact:4'},{name:'2',text:'tail:4'},
+    ])
+    expect(diagnostics).toEqual([])
+    expect(unexpectedIO).toEqual([])
+  } finally {
+    clearPostSamplingHooks()
+    saveCacheSafeParams(null)
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = originalNodeEnv
+    resetStateForTests()
+    await runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Worker usage summary avoids provider calls while full counts using the captured model and public projection', async () => {
+  const {mkdtemp,writeFile,rm} = await import('node:fs/promises')
+  const {tmpdir} = await import('node:os')
+  const {join} = await import('node:path')
+  const {z} = await import('zod/v4')
+  const {createModsRuntime} = await import('../mods/runtime.js')
+  const {captureModSessionUsage,validateModSessionUsage} = await import('../mods/sessionUsage.js')
+  const validateUsage: typeof validateModSessionUsage = validateModSessionUsage
+  const {getDefaultAppState} = await import('../../state/AppStateStore.js')
+  const root = await mkdtemp(join(tmpdir(),'mods-usage-wire-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  const state = getDefaultAppState()
+  const context = {
+    messages:[createUserMessage({content:'usage context'})],getAppState:() => state,
+    options:{mainLoopModel:'claude-sonnet-5',tools:[{
+      name:'FixtureTool',inputSchema:z.object({value:z.string()}),
+      description:async () => 'FIXTURE_DESCRIPTION',prompt:async () => 'FIXTURE_PROMPT',
+    }] as unknown as import('../../Tool.js').Tools,
+    agentDefinitions:{activeAgents:[],allAgents:[],allowedAgentTypes:undefined}},
+  }
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry,`export function register(on) {
+      on('tool.call',async ($,e) => ({result:await $.session.usage({breakdown:e.breakdown,columns:e.columns})}));
+    }`)
+    await runtime.reconcile([{name:'usage-wire',storageId:'usage-wire@inline',pluginRoot:root,entrypoints:[entry]}])
+    let captures=0
+    const snapshot=runtime.capture({captureUsage:() => {captures++;return captureModSessionUsage(context)}})
+    try {
+      const invoke=async (breakdown:'summary'|'full'): Promise<ModSessionUsage> => {
+        const response=await snapshot.dispatch('tool.call',{breakdown,columns:40},async () => ({result:'unhandled'})) as {result:unknown}
+        expect(diagnostics).toEqual([])
+        validateUsage(response.result)
+        return response.result
+      }
+      const summary=await invoke('summary')
+      expect(summary.context.breakdown?.model).toBe('claude-sonnet-5')
+      expect(summary.context.breakdown?.gridRows[0]).toHaveLength(5)
+      expect(summary.context.breakdown).not.toHaveProperty('messageBreakdown')
+      expect(tokenRequests).toHaveLength(0)
+      expect(requests).toHaveLength(0)
+      const full=await invoke('full')
+      expect(full.context.breakdown?.model).toBe('claude-sonnet-5')
+      expect(tokenRequests.length).toBeGreaterThan(0)
+      expect(tokenRequests.every(request=>request.model==='claude-sonnet-5')).toBe(true)
+      const toolRequests=tokenRequests.filter(request=>
+        Array.isArray(request.tools) && request.tools.some(tool=>
+          typeof tool==='object' && tool!==null && 'name' in tool && tool.name==='FixtureTool',
+        ),
+      )
+      expect(toolRequests).toHaveLength(1)
+      expect((toolRequests[0]!.tools as unknown[])).toHaveLength(1)
+      expect(requests).toHaveLength(0)
+      expect(captures).toBe(2)
+      expect(diagnostics).toEqual([])
+      expect(unexpectedIO).toEqual([])
+    } finally {snapshot.release()}
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+for (const scenario of ['404 fallback', 'stream overflow', 'fallback overflow'] as const) {
+  test(`prompt.compose refreshes each wire attempt: ${scenario}`, async () => {
+    streamNotFound = scenario !== 'stream overflow'
+    overflowRequest = scenario === 'stream overflow' ? 1 : scenario === 'fallback overflow' ? 2 : 0
+    const composeModels: string[] = []
+    const signal = new AbortController().signal
+    const result = await queryModelWithoutStreaming({
+      messages: [createUserMessage({ content: 'compose retry' })],
+      systemPrompt: asSystemPrompt(['UNCOMPOSED']),
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal,
+      options: {
+        model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+        agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true, enablePromptCaching: true,
+        maxOutputTokensOverride: 20000,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+        composeSystemPrompt: async (model, tools, attemptSignal) => {
+          expect(tools).toEqual([])
+          expect(attemptSignal).toBe(signal)
+          composeModels.push(model)
+          return asSystemPrompt([`ATTEMPT_POLICY_${composeModels.length}`])
+        },
+      },
+    })
+    expect(result.message.content).toMatchObject([{ type: 'text', text: 'OK' }])
+    const count = scenario === 'fallback overflow' ? 3 : 2
+    expect(requests).toHaveLength(count)
+    expect(requests.map(request => Boolean(request.stream))).toEqual(
+      scenario === 'stream overflow' ? [true, true] : scenario === '404 fallback' ? [true, false] : [true, false, false],
+    )
+    if (overflowRequest) {
+      expect(requests[overflowRequest - 1]!.max_tokens).toBe(20000)
+      expect(requests[overflowRequest]!.max_tokens).toBe(10941)
+      expect(requests[overflowRequest]!.thinking).toBeUndefined()
+    }
+    for (let index = 0; index < count; index++) {
+      const wire = JSON.stringify(requests[index]!.system)
+      expect(wire).toContain(`ATTEMPT_POLICY_${index + 1}`)
+      expect(wire).not.toContain('UNCOMPOSED')
+      // Everything except the fresh policy (including prefixes/cache markers) is stable.
+      expect(wire.replace(`ATTEMPT_POLICY_${index + 1}`, 'POLICY')).toBe(
+        JSON.stringify(requests[0]!.system).replace('ATTEMPT_POLICY_1', 'POLICY'),
+      )
+    }
+    expect(composeModels).toEqual(Array(count).fill('claude-sonnet-4-6'))
+    expect(unexpectedIO).toEqual([])
+  })
+}
+
+test('prompt.compose refreshes after a partial SSE error before nonstream fallback', async () => {
+  streamInterrupted = true
+  const composeModels: string[] = []
+  const events: unknown[] = []
+  const signal = new AbortController().signal
+  let fallbackCalls = 0
+  for await (const event of queryModelWithStreaming({
+    messages: [createUserMessage({ content: 'compose interrupted stream' })],
+    systemPrompt: asSystemPrompt(['UNCOMPOSED']),
+    thinkingConfig: { type: 'disabled' }, tools: [], signal,
+    options: {
+      model: 'claude-sonnet-4-6', querySource: 'repl_main_thread',
+      agents: [], mcpTools: [], hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true, enablePromptCaching: true,
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      onStreamingFallback: () => {
+        fallbackCalls++
+        expect(requests).toHaveLength(1)
+        expect(events).toContainEqual(expect.objectContaining({
+          type: 'stream_event', event: {
+            type: 'content_block_delta', index: 0,
+            delta: { type: 'text_delta', text: 'OK' },
+          },
+        }))
+      },
+      composeSystemPrompt: async (model, tools, attemptSignal) => {
+        expect(tools).toEqual([])
+        expect(attemptSignal).toBe(signal)
+        composeModels.push(model)
+        return asSystemPrompt([`INTERRUPTED_POLICY_${composeModels.length}_${model}`])
+      },
+    },
+  })) events.push(event)
+  expect(fallbackCalls).toBe(1)
+  expect(events.filter(event => (event as { type: string }).type === 'assistant')).toEqual([
+    expect.objectContaining({ message: expect.objectContaining({
+      content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn',
+    }) }),
+  ])
+  expect(requests).toHaveLength(2)
+  expect(requests.map(request => Boolean(request.stream))).toEqual([true, false])
+  expect(composeModels).toEqual(['claude-sonnet-4-6', 'claude-sonnet-4-6'])
+  const { getCLISyspromptPrefix } = await import('../../constants/system.js')
+  const prefix = getCLISyspromptPrefix({ isNonInteractive: true, hasAppendSystemPrompt: false })
+  for (let index = 0; index < requests.length; index++) {
+    const request = requests[index]!
+    const marker = `INTERRUPTED_POLICY_${index + 1}_${composeModels[index]}`
+    expect(request.model).toBe(composeModels[index]!)
+    const blocks = request.system as Array<{ text: string }>
+    expect(blocks.filter(block => block.text === prefix)).toHaveLength(1)
+    expect(blocks.filter(block => block.text === marker)).toHaveLength(1)
+    const wire = JSON.stringify(blocks)
+    expect(wire).not.toContain('UNCOMPOSED')
+    expect(wire.replace(marker, 'POLICY')).toBe(
+      JSON.stringify(requests[0]!.system).replace(`INTERRUPTED_POLICY_1_${composeModels[0]}`, 'POLICY'),
+    )
+    expect(request.messages).toEqual(requests[0]!.messages)
+  }
+  expect(tokenRequests).toEqual([])
+  expect(unexpectedIO).toEqual([])
+})
+
+test('prompt.compose follows real query 529 threshold through FallbackTriggeredError to the fallback model', async () => {
+  const { randomUUID } = await import('node:crypto')
+  const { query: runQuery } = await import('../../query.js')
+  const { FallbackTriggeredError } = await import('./withRetry.js')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { getCLISyspromptPrefix } = await import('../../constants/system.js')
+  const primary = 'claude-opus-4-6'
+  const fallback = 'claude-sonnet-4-6'
+  overloadedModel = primary
+  const { getSystemPrompt } = await import('../../constants/prompts.js')
+  const { concatSystemPrompts } = await import('../../utils/systemPromptType.js')
+  const prompt = concatSystemPrompts(await getSystemPrompt([], primary, [], []), ['UNCOMPOSED_OVERLOAD'])
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  const composeModels: string[] = []
+  runtime.registerHostHook({ plugin: 'overload-wire', tier: 'append',
+    registration: { id: 1, event: 'prompt.compose', hasCatch: false },
+    invoke: async (input, next) => {
+      composeModels.push(input.model as string)
+      await next(input)
+      return { sections: [{ id: 'overload:policy',
+        text: `OVERLOAD_POLICY_${composeModels.length}_${input.model}`, scope: 'session' }] }
+    },
+  })
+  let state = getDefaultAppState()
+  const context: import('../../Tool.js').ToolUseContext = {
+    options: { commands: [], debug: false, mainLoopModel: primary, tools: [], verbose: false,
+      thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+      agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+    abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+    messages: [], mods: runtime,
+  }
+  const caught: unknown[] = []
+  const params: QueryParams = {
+    messages: [createUserMessage({ content: 'compose overloaded model' })],
+    systemPrompt: prompt, userContext: {}, systemContext: {},
+    canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext: context,
+    querySource: 'repl_main_thread', fallbackModel: fallback,
+    deps: { uuid: randomUUID, microcompact: async messages => ({ messages }),
+      autocompact: async () => ({ wasCompacted: false }),
+      // Observe and rethrow the real transport error; never manufacture a fallback.
+      callModel: async function* (...args) {
+        try { return yield* queryModelWithStreaming(...args) }
+        catch (error) {
+          caught.push(error)
+          expect(requests).toHaveLength(3)
+          expect(context.options.mainLoopModel).toBe(primary)
+          throw error
+        }
+      },
+    },
+  }
+  const events = []
+  const iterator = runQuery(params)
+  for (;;) {
+    const next = await iterator.next()
+    if (next.done) {
+      expect(next.value).toEqual({ reason: 'completed' })
+      break
+    }
+    events.push(next.value)
+  }
+  expect(caught).toHaveLength(1)
+  expect(caught[0]).toBeInstanceOf(FallbackTriggeredError)
+  expect(caught[0]).toMatchObject({ originalModel: primary, fallbackModel: fallback })
+  expect(requests.map(request => request.model)).toEqual([primary, primary, primary, fallback])
+  expect(requests.every(request => request.stream === true)).toBe(true)
+  expect(composeModels).toEqual(requests.map(request => request.model))
+  expect(context.options.mainLoopModel).toBe(fallback)
+  expect(events.filter(event => event.type === 'assistant')).toEqual([
+    expect.objectContaining({ message: expect.objectContaining({ model: fallback,
+      content: [{ type: 'text', text: 'OK' }], stop_reason: 'end_turn' }) }),
+  ])
+  const prefix = getCLISyspromptPrefix({ isNonInteractive: true, hasAppendSystemPrompt: false })
+  for (let index = 0; index < requests.length; index++) {
+    const request = requests[index]!
+    const marker = `OVERLOAD_POLICY_${index + 1}_${composeModels[index]}`
+    const blocks = request.system as Array<{ text: string }>
+    expect(blocks.filter(block => block.text === prefix)).toHaveLength(1)
+    expect(blocks.filter(block => block.text === marker)).toHaveLength(1)
+    expect(JSON.stringify(blocks)).not.toContain('UNCOMPOSED_OVERLOAD')
+    expect(JSON.stringify(blocks).replace(marker, 'POLICY')).toBe(
+      JSON.stringify(requests[0]!.system).replace(`OVERLOAD_POLICY_1_${primary}`, 'POLICY'),
+    )
+    expect(request.messages).toEqual(requests[0]!.messages)
+  }
+  expect(tokenRequests).toEqual([])
+  expect(diagnostics).toEqual([])
+  expect(unexpectedIO).toEqual([])
+}, 30_000)
+
+test('prompt.compose uses the real query and final SDK catalog on each request', async () => {
+  const { randomUUID } = await import('node:crypto')
+  const { query: runQuery } = await import('../../query.js')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { getSystemPrompt } = await import('../../constants/prompts.js')
+  const { getSystemPromptFacts, getSystemPromptSections } = await import('../../utils/systemPromptType.js')
+  const runtime = createModsRuntime()
+  const seen: any[] = []
+  runtime.registerHostHook({ plugin: 'wire', tier: 'append',
+    registration: { id: 1, event: 'prompt.compose', hasCatch: false },
+    invoke: async (input, next) => {
+      seen.push(input)
+      const original = await next(input) as { sections: any[] }
+      expect(original.sections.find(section => section.id === 'system')?.scope).toBe('shared')
+      return { sections: [{ id: 'wire:policy', text: `WIRE_POLICY_${seen.length}`, scope: 'session' }] }
+    },
+  })
+  runtime.registerHostHook({ plugin: 'step', tier: 'append',
+    registration: { id: 3, event: 'turn.step', hasCatch: false },
+    invoke: async (input, next) => next(input),
+    invokeStream: async function* (input, next) {
+      return yield* next({ ...input, model: 'claude-opus-4-6' }) as unknown as AsyncGenerator<unknown, unknown>
+    },
+  })
+  const { FileReadTool } = await import('../../tools/FileReadTool/FileReadTool.js')
+  runtime.registerHostHook({ plugin: 'catalog', tier: 'append',
+    registration: { id: 2, event: 'tool.list', hasCatch: false },
+    invoke: async () => ({ value: [] }),
+  })
+  let state = getDefaultAppState()
+  const context: import('../../Tool.js').ToolUseContext = {
+    options: { commands: [], debug: false, mainLoopModel: 'claude-sonnet-5', tools: [FileReadTool], verbose: false,
+      thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+      agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+    abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+    messages: [], mods: runtime,
+  }
+  const prompt = await getSystemPrompt([], 'claude-sonnet-5', [], [])
+  expect(getSystemPromptFacts(prompt)?.promptModel).toBe('claude-sonnet-5')
+  expect(getSystemPromptSections(prompt)?.find(section => 'name' in section && section.name === 'env_info_simple')?.scope).toBe('session')
+  let frozen: import('../../utils/forkedAgent.js').CacheSafeParams | undefined
+  const params: QueryParams = {
+    messages: [createUserMessage({ content: 'compose question' })],
+    publicTurn: { text: 'compose question' },
+    systemPrompt: asSystemPrompt(prompt), userContext: {}, systemContext: {},
+    canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext: context,
+    querySource: 'repl_main_thread', onCacheSafeParams: value => { frozen = value },
+    deps: { uuid: randomUUID, microcompact: async messages => ({ messages }),
+      autocompact: async () => ({ wasCompacted: false }), callModel: queryModelWithStreaming },
+  }
+  try {
+    for (let i = 0; i < 2; i++) for await (const _ of runQuery(params)) { /* Real SDK transport above. */ }
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ model: 'claude-opus-4-6', promptModel: 'claude-sonnet-5', surfaces: [], tools: [], outputStyle: null, traits: ['print'] })
+    expect(requests).toHaveLength(2)
+    expect(JSON.stringify(requests[0]!.system)).toContain('WIRE_POLICY_1')
+    expect(JSON.stringify(requests[1]!.system)).toContain('WIRE_POLICY_2')
+    expect([...frozen!.systemPrompt]).toEqual(['WIRE_POLICY_2'])
+    expect(frozen!.toolUseContext.renderedSystemPrompt).toEqual(frozen!.systemPrompt)
+    for await (const _ of runQuery({ ...params, ...frozen!, publicTurn: undefined, onCacheSafeParams: undefined })) { /* Frozen fork. */ }
+    expect(seen).toHaveLength(2)
+    expect(JSON.stringify(requests[2]!.system)).toBe(JSON.stringify(requests[1]!.system))
+  } finally { await runtime.dispose() }
+})
+
+test('Mods named sections reach the actual SDK system field and invalidate on the next query', async () => {
+  const {mkdtemp,writeFile,rm} = await import('node:fs/promises')
+  const {tmpdir} = await import('node:os')
+  const {join} = await import('node:path')
+  const {randomUUID} = await import('node:crypto')
+  const {query:runQuery} = await import('../../query.js')
+  const {createModsRuntime} = await import('../mods/runtime.js')
+  const {getDefaultAppState} = await import('../../state/AppStateStore.js')
+  const {createFileStateCacheWithSizeLimit} = await import('../../utils/fileStateCache.js')
+  const {withSystemPromptSections} = await import('../../utils/systemPromptType.js')
+  const root = await mkdtemp(join(tmpdir(),'mods-section-wire-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  try {
+    const entry = join(root,'register.ts')
+    await writeFile(entry,`let calls=0;export function register(on) {
+      on('prompt.section',($,e) => ({text:e.name==='drop' ? null : 'SECTION_'+e.name+'_'+(++calls)}));
+      on('tool.call',async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+    }`)
+    await runtime.reconcile([{name:'section-wire',storageId:'section-wire@inline',pluginRoot:root,entrypoints:[entry]}])
+    let state = getDefaultAppState()
+    const context: import('../../Tool.js').ToolUseContext = {
+      options:{commands:[],debug:false,mainLoopModel:'claude-sonnet-5',tools:[],verbose:false,
+        thinkingConfig:{type:'disabled'},mcpClients:[],mcpResources:{},isNonInteractiveSession:true,
+        agentDefinitions:{activeAgents:[],allAgents:[],allowedAgentTypes:undefined}},
+      abortController:new AbortController(),readFileState:createFileStateCacheWithSizeLimit(10),
+      getAppState:() => state,setAppState:update => {state=update(state)},
+      setInProgressToolUseIDs(){},setResponseLength(){},updateFileHistoryState(){},updateAttributionState(){},
+      messages:[],mods:runtime,
+    }
+    const params: QueryParams = {
+      messages:[createUserMessage({content:'section question'})],
+      systemPrompt:withSystemPromptSections([
+        {name:'identity',text:'OLD_IDENTITY'}, {name:'drop',text:'DROPPED_SECTION'},
+        {name:'memory',text:null},{text:'APPEND_LITERAL'},
+      ]),userContext:{},systemContext:{},
+      canUseTool:async () => ({behavior:'allow',updatedInput:{}}),toolUseContext:context,querySource:'repl_main_thread',
+      deps:{uuid:randomUUID,microcompact:async messages => ({messages}),autocompact:async () => ({wasCompacted:false}),callModel:queryModelWithStreaming},
+    }
+    const run = async () => {
+      const generator = runQuery(params)
+      for (;;) {const next=await generator.next();if(next.done){expect(next.value.reason).toBe('completed');break}}
+    }
+    await run();await run()
+    expect(requests).toHaveLength(2)
+    const wire = (index:number) => JSON.stringify(requests[index]!.system)
+    expect(wire(0)).toContain('SECTION_identity_1')
+    expect(wire(0)).toContain('SECTION_memory_2')
+    expect(wire(0)).toContain('APPEND_LITERAL')
+    expect(wire(0)).not.toContain('OLD_IDENTITY')
+    expect(wire(0)).not.toContain('DROPPED_SECTION')
+    expect(wire(0)).not.toContain('systemPromptSections')
+    expect(wire(1)).toBe(wire(0))
+    expect(await runtime.dispatch('tool.call',{},async () => ({result:'unhandled'}))).toEqual({result:'invalidated'})
+    await run()
+    expect(requests).toHaveLength(3)
+    expect(wire(2)).toContain('SECTION_identity_3')
+    expect(wire(2)).toContain('SECTION_memory_4')
+    const {getSystemPrompt} = await import('../../constants/prompts.js')
+    const {concatSystemPrompts,getSystemPromptSections} = await import('../../utils/systemPromptType.js')
+    const source = await getSystemPrompt([],context.options.mainLoopModel,[],[])
+    const named = getSystemPromptSections(source)!.filter(section => 'name' in section)
+    expect(named).toContainEqual({name:'language',text:null,scope:'session'})
+    expect(named.some(section => section.name==='system')).toBe(true)
+    params.systemPrompt = concatSystemPrompts(source,['SOURCE_APPEND_LITERAL'])
+    await runtime.dispatch('tool.call',{},async () => ({result:'unhandled'}))
+    await run()
+    expect(requests).toHaveLength(4)
+    for (const section of named) expect(wire(3)).toContain('SECTION_'+section.name+'_')
+    expect(wire(3)).toContain('SOURCE_APPEND_LITERAL')
+    expect(wire(3)).not.toContain('You are Claude Code')
+    const { buildSideQuestionFallbackParams } = await import('../../utils/queryContext.js')
+    const { runSideQuestion } = await import('../../utils/sideQuestion.js')
+    const fallback = await buildSideQuestionFallbackParams({
+      tools: [], commands: [], mcpClients: [], messages: params.messages,
+      readFileState: context.readFileState, getAppState: context.getAppState, setAppState: context.setAppState,
+      customSystemPrompt: undefined, appendSystemPrompt: 'SIDE_APPEND_LITERAL',
+      thinkingConfig: { type: 'disabled' }, agents: [], mods: runtime,
+    })
+    expect((await runSideQuestion({ question: 'side question', cacheSafeParams: fallback })).response).toBe('OK')
+    expect(requests).toHaveLength(5)
+    // Official 2.1.292: the fallback's own model selects lean sections, independently of the earlier query.
+    const fallbackNamed = getSystemPromptSections(fallback.systemPrompt)!.filter(section => 'name' in section)
+    expect(fallbackNamed).toContainEqual({ name: 'lean_body', text: expect.any(String), scope: 'shared' })
+    for (const section of fallbackNamed) expect(wire(4)).toContain('SECTION_' + section.name + '_')
+    expect(wire(4)).not.toContain('SECTION_identity_')
+    expect(wire(4)).not.toContain('SECTION_system_')
+    expect(wire(4)).toContain('SIDE_APPEND_LITERAL')
+    const { getCLISyspromptPrefix } = await import('../../constants/system.js')
+    const sdkPrefix = getCLISyspromptPrefix({ isNonInteractive: true, hasAppendSystemPrompt: true })
+    const sideBlocks = requests[4]!.system as Array<{ text: string }>
+    expect(sideBlocks.filter(block => block.text === sdkPrefix)).toHaveLength(1)
+    expect(sideBlocks.filter(block => block.text !== sdkPrefix).map(block => block.text).join('\n')).not.toContain('You are Claude Code')
+    expect(diagnostics).toEqual([])
+    expect(unexpectedIO).toEqual([])
+  } finally {await runtime.dispose();await rm(root,{recursive:true,force:true})}
+})
+
+test('teammate named sections survive runAgent enhancement and reach the SDK without naming custom replacement text', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { spawnInProcessTeammate } = await import('../../utils/swarm/spawnInProcess.js')
+  const { runInProcessTeammate } = await import('../../utils/swarm/inProcessRunner.js')
+  const { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } = await import('../../utils/swarm/teammatePromptAddendum.js')
+  const root = await mkdtemp(join(tmpdir(), 'mods-teammate-section-wire-'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  const controllers: AbortController[] = []
+  try {
+    const entry = join(root, 'register.ts')
+    await writeFile(entry, `export function register(on) {
+      on('prompt.section', ($, e) => ({text: 'TEAM_SECTION_' + e.name}));
+    }`)
+    await runtime.reconcile([{ name: 'teammate-sections', storageId: 'teammate-sections@inline', pluginRoot: root, entrypoints: [entry] }])
+    let state = getDefaultAppState()
+    const context: import('../../Tool.js').ToolUseContext = {
+      options: { commands: [], debug: false, mainLoopModel: 'claude-sonnet-5', tools: [], verbose: false,
+        thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+        agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+      abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+      getAppState: () => state, setAppState: update => { state = update(state) },
+      setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+      messages: [], mods: runtime,
+    }
+    for (const mode of ['append', 'replace'] as const) {
+      const spawned = await spawnInProcessTeammate({
+        name: mode, teamName: 'offline-sections', prompt: 'answer once', planModeRequired: false, permissionMode: 'default',
+      }, { setAppState: context.setAppState })
+      expect(spawned.success).toBe(true)
+      if (!spawned.taskId || !spawned.abortController || !spawned.teammateContext) throw new Error('Missing teammate state')
+      const controller = spawned.abortController
+      controllers.push(controller)
+      const task = state.tasks[spawned.taskId]!
+      if (task.type !== 'in_process_teammate') throw new Error('Unexpected teammate task')
+      state = { ...state, tasks: { ...state.tasks, [task.id]: {
+        ...task, onIdleCallbacks: [() => controller.abort()],
+      } } }
+      const result = await runInProcessTeammate({
+        identity: task.identity, taskId: task.id, prompt: 'answer once', description: 'offline section consumer',
+        model: 'claude-sonnet-5', teammateContext: spawned.teammateContext, toolUseContext: context,
+        abortController: controller, systemPromptMode: mode, systemPrompt: 'OPAQUE_' + mode,
+      })
+      expect(result.success).toBe(true)
+    }
+    expect(requests).toHaveLength(2)
+    const appended = JSON.stringify(requests[0]!.system)
+    expect(appended).toContain('TEAM_SECTION_identity')
+    expect(appended).toContain('TEAM_SECTION_language')
+    expect(appended).toContain(JSON.stringify(TEAMMATE_SYSTEM_PROMPT_ADDENDUM).slice(1, -1))
+    expect(appended).toContain('OPAQUE_append')
+    expect(appended).toContain('Notes:')
+    expect(appended).not.toContain('You are Claude Code')
+    const replaced = JSON.stringify(requests[1]!.system)
+    expect(replaced).toContain('OPAQUE_replace')
+    expect(replaced).toContain('Notes:')
+    expect(replaced).not.toContain('TEAM_SECTION_')
+    expect(replaced).not.toContain(JSON.stringify(TEAMMATE_SYSTEM_PROMPT_ADDENDUM).slice(1, -1))
+    expect(diagnostics).toEqual([])
+    expect(unexpectedIO).toEqual([])
+  } finally {
+    controllers.forEach(controller => controller.abort())
+    await runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('agent summary forks retain resolved section and ordered context bytes after invalidation and reload', async () => {
+  const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { createModsRuntime } = await import('../mods/runtime.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { withSystemPromptSections, getSystemPromptSections } = await import('../../utils/systemPromptType.js')
+  const { runAgent } = await import('../../tools/AgentTool/runAgent.js')
+  const { GENERAL_PURPOSE_AGENT } = await import('../../tools/AgentTool/built-in/generalPurposeAgent.js')
+  const { runForkedAgent } = await import('../../utils/forkedAgent.js')
+  const root = await mkdtemp(join(tmpdir(), 'mods-summary-section-wire-'))
+  const originalNodeEnv = process.env.NODE_ENV
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  try {
+    const entry = join(root, 'register.ts')
+    const plugin = { name: 'summary-sections', storageId: 'summary-sections@inline', pluginRoot: root, entrypoints: [entry] }
+    const source = (version: string) => `let calls=0, contexts=0;export function register(on) {
+      on('prompt.section', ($, e) => ({text: '${version}_' + e.name + '_' + (++calls)}));
+      on('prompt.context', () => ({blocks:[{name:'9',text:'${version}_CONTEXT_'+(++contexts)},{name:'2',text:'ORDERED_TAIL'}]}));
+      on('tool.call', async $ => {
+        await $.ui.invalidate('prompt.section');await $.ui.invalidate('prompt.context');
+        return {result:{calls,contexts}};
+      });
+    }`
+    await writeFile(entry, source('ORIGINAL'))
+    await runtime.reconcile([plugin])
+    let state = getDefaultAppState()
+    const context: import('../../Tool.js').ToolUseContext = {
+      options: { commands: [], debug: false, mainLoopModel: 'claude-sonnet-5', tools: [], verbose: false,
+        thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+        agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+      abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+      getAppState: () => state, setAppState: update => { state = update(state) },
+      setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+      messages: [], mods: runtime,
+    }
+    const captured: import('../../utils/forkedAgent.js').CacheSafeParams[] = []
+    const { enableConfigs } = await import('../../utils/config.js')
+    enableConfigs()
+    process.env.NODE_ENV = 'development'
+    const canUseTool = async () => ({ behavior: 'allow' as const, updatedInput: {} })
+    const agent = runAgent({
+      agentDefinition: GENERAL_PURPOSE_AGENT,
+      baseSystemPrompt: withSystemPromptSections([{ name: 'identity', text: 'UNRESOLVED_IDENTITY' }]),
+      promptMessages: [createUserMessage({ content: 'answer once' })],
+      toolUseContext: context, canUseTool, isAsync: false, querySource: 'agent:test', availableTools: [],
+      override: { userContext: {}, systemContext: {} },
+      onCacheSafeParams: params => { captured.push({ ...params, forkContextMessages: [...params.forkContextMessages] }) },
+    })
+    for (;;) { if ((await agent.next()).done) break }
+    expect(captured).toHaveLength(1)
+    expect(requests).toHaveLength(1)
+    expect(JSON.stringify(requests[0]!.system)).toContain('ORIGINAL_identity_1')
+    expect(JSON.stringify(requests[0]!.messages)).toContain('# 9\\nORIGINAL_CONTEXT_1\\n# 2\\nORDERED_TAIL')
+    expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'unhandled' }))).toEqual({ result: { calls: 1, contexts: 1 } })
+    for (const reload of [false, true]) {
+      if (reload) {
+        await writeFile(entry, source('RELOADED'))
+        await runtime.reconcile([plugin])
+      }
+      await runForkedAgent({
+        cacheSafeParams: captured[0]!, promptMessages: [createUserMessage({ content: 'summarize' })],
+        canUseTool, querySource: 'agent_summary', forkLabel: 'summary', skipTranscript: true,
+      })
+      expect(requests.at(-1)!.system).toEqual(requests[0]!.system)
+      const firstContent = requests[0]!.messages[0]!.content
+      const forkContent = requests.at(-1)!.messages[0]!.content
+      expect(Array.isArray(firstContent)).toBe(true)
+      expect(Array.isArray(forkContent)).toBe(true)
+      if (!Array.isArray(firstContent) || !Array.isArray(forkContent)) throw new Error('Expected SDK content blocks')
+      expect(forkContent[0]).toEqual(firstContent[0])
+      expect(await runtime.dispatch('tool.call', {}, async () => ({ result: 'unhandled' }))).toEqual({
+        result: { calls: reload ? 0 : 1, contexts: reload ? 0 : 1 },
+      })
+    }
+    expect(requests).toHaveLength(3)
+    expect(getSystemPromptSections(captured[0]!.systemPrompt)).toBeUndefined()
+    expect(captured[0]!.toolUseContext.renderedSystemPrompt).toBe(captured[0]!.systemPrompt)
+    expect(context.renderedSystemPrompt).toBeUndefined()
+    expect(diagnostics).toEqual([])
+    expect(unexpectedIO).toEqual([])
+  } finally {
+    if (originalNodeEnv === undefined) delete process.env.NODE_ENV
+    else process.env.NODE_ENV = originalNodeEnv
+    await runtime.dispose()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test.each(['claude-opus-5', 'claude-sonnet-5'])(
+  '%s explicitly disables thinking on the wire without sampling defaults',
+  async (model) => {
+    const request = await query(model, { type: 'disabled' })
+    expect(request.thinking).toEqual({ type: 'disabled' })
+    expect(request.temperature).toBeUndefined()
+  },
+)
+
+test.each([
+  'claude-fable-5-1',
+  'claude-fable-5',
+  'claude-mythos-5-1',
+  'claude-mythos-5',
+  'claude-mythos-preview',
+  'claude-opus-5-5',
+])(
+  '%s keeps adaptive thinking enabled when callers request disabled thinking',
+  async (model) => {
+    const request = await query(model, { type: 'disabled' })
+    expect(request.thinking).toEqual({ type: 'adaptive' })
+    expect(request.temperature).toBeUndefined()
+  },
+)
+
+test('Sonnet 5.5 uses between-tools reasoning when thinking is disabled', async () => {
+  const request = await query('claude-sonnet-5-5', { type: 'disabled' })
+  expect(request.thinking as unknown).toEqual({ type: 'between_tools' })
+  expect(request.temperature).toBeUndefined()
+})
+
+test.each(['xhigh', 'max'] as const)(
+  'Sonnet 5.5 uses adaptive reasoning for disabled thinking at %s effort',
+  async (effort) => {
+    const request = await query(
+      'claude-sonnet-5-5',
+      { type: 'disabled' },
+      undefined,
+      [],
+      { effortValue: effort, effortResolved: true },
+    )
+    expect(request.thinking).toEqual({ type: 'adaptive' })
+    expect(request.output_config?.effort as string).toBe(effort)
+  },
+)
+
+test.each(['claude-opus-5', 'claude-sonnet-5', 'claude-fable-5-1', 'claude-mythos-5-1', 'claude-mythos-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])(
+  '%s uses adaptive instead of legacy manual budgets',
+  async (model) => {
+    const request = await query(model, { type: 'enabled', budgetTokens: 1234 })
+    expect(request.thinking).toEqual({ type: 'adaptive' })
+    expect(request.temperature).toBeUndefined()
+  },
+)
+
+test('Mythos Preview preserves an explicit manual thinking budget', async () => {
+  const request = await query('claude-mythos-preview', {
+    type: 'enabled',
+    budgetTokens: 1234,
+  })
+  expect(request.thinking).toEqual({ type: 'enabled', budget_tokens: 1234 })
+  expect(request.temperature).toBeUndefined()
+})
+
+test.each([
+  'CLAUDE_CODE_DISABLE_THINKING',
+  'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING',
+])('%s cannot fall back to an invalid manual budget', async (env) => {
+  process.env[env] = '1'
+  const request = await query('claude-opus-5', { type: 'adaptive' })
+  expect(request.thinking).toEqual({ type: 'disabled' })
+})
+
+test('explicit incompatible effort and extra body parameters remain intact', async () => {
+  process.env.CLAUDE_CODE_EFFORT_LEVEL = 'max'
+  process.env.CLAUDE_CODE_EXTRA_BODY = JSON.stringify({
+    temperature: 0.2,
+    top_p: 0.7,
+    top_k: 4,
+  })
+  const request = await query('claude-opus-5', { type: 'disabled' })
+  expect(request.model).toBe('claude-opus-5')
+  expect(request.thinking).toEqual({ type: 'disabled' })
+  expect(request.output_config?.effort).toBe('max')
+  expect(request.temperature).toBe(0.2)
+  expect(request.top_p).toBe(0.7)
+  expect(request.top_k).toBe(4)
+})
+
+test.each(['xhigh', 'max', 'ultracode'])(
+  'explicit disabled + %s surfaces 400 without lowering effort or changing model',
+  async (effort) => {
+    rejectIncompatibleEffort = true
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = effort
+    const request = await query(
+      'claude-opus-5',
+      { type: 'disabled' },
+      'thinking disabled is incompatible',
+    )
+    expect(request.model).toBe('claude-opus-5')
+    expect(request.output_config).toMatchObject({
+      effort: effort === 'ultracode' ? 'xhigh' : effort,
+    })
+    expect(request.thinking).toEqual({ type: 'disabled' })
+  },
+)
+
+test.each(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5'])(
+  '%s preserves explicit forced tool choice and surfaces the provider 400',
+  async (model) => {
+    const request = await query(
+      model,
+      { type: 'disabled' },
+      'forced tool choice is not supported',
+      [],
+      { toolChoice: { type: 'tool', name: 'FixtureTool' } },
+    )
+    expect(request.model).toBe(model)
+    expect(request.tool_choice).toEqual({
+      type: 'tool',
+      name: 'FixtureTool',
+    })
+  },
+)
+
+test('non-streaming fallback retains adaptive parameters and model identity', async () => {
+  const { getUsageForModel } = await import('../../bootstrap/state.js')
+  const priorThinking = getUsageForModel('claude-sonnet-5')?.thinkingTokens ?? 0
+  nonStreamingThinkingTokens = 1
+  streamNotFound = true
+  await query('claude-sonnet-5', { type: 'adaptive' })
+  const request = requests[1]!
+  expect(request.stream).not.toBe(true)
+  expect(request.model).toBe('claude-sonnet-5')
+  expect(request.thinking).toEqual({ type: 'adaptive' })
+  expect(request.temperature).toBeUndefined()
+  expect(request.max_tokens).toBe(32_000)
+  expect(getUsageForModel('claude-sonnet-5')?.thinkingTokens).toBe(priorThinking + 1)
+})
+
+test('explicit output budget overrides the new model default', async () => {
+  process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '48000'
+  const request = await query('claude-sonnet-5', { type: 'adaptive' })
+  expect(request.max_tokens).toBe(48_000)
+})
+
+test('small-fast override to Opus 5 defaults to adaptive without legacy sampling', async () => {
+  process.env.ANTHROPIC_SMALL_FAST_MODEL = 'claude-opus-5'
+  await queryHaiku({
+    systemPrompt: asSystemPrompt([]),
+    userPrompt: 'test',
+    signal: new AbortController().signal,
+    options: {
+      querySource: 'compact',
+      agents: [],
+      mcpTools: [],
+      hasAppendSystemPrompt: false,
+      isNonInteractiveSession: true,
+      temperatureOverride: 0,
+    },
+  })
+  expect(requests).toHaveLength(1)
+  expect(requests[0]!.thinking).toEqual({ type: 'adaptive' })
+  expect(requests[0]!.temperature).toBeUndefined()
+})
+
+test('key verification with a new small-fast model explicitly disables thinking', async () => {
+  process.env.ANTHROPIC_SMALL_FAST_MODEL = 'claude-opus-5'
+  expect(await verifyApiKey('test-only', false)).toBe(true)
+  expect(requests).toHaveLength(1)
+  expect(requests[0]!.thinking).toEqual({ type: 'disabled' })
+  expect(requests[0]!.temperature).toBeUndefined()
+})
+
+test('legacy models retain disabled sampling and manual-budget behavior', async () => {
+  const disabled = await query('claude-sonnet-4-5', { type: 'disabled' })
+  expect(disabled.thinking).toBeUndefined()
+  expect(disabled.temperature).toBe(1)
+  requests.length = 0
+  const enabled = await query('claude-sonnet-4-5', {
+    type: 'enabled',
+    budgetTokens: 1234,
+  })
+  expect(enabled.thinking).toEqual({ type: 'enabled', budget_tokens: 1234 })
+})
+
+test('internal queries honor explicitly disabled default thinking', async () => {
+  process.env.MAX_THINKING_TOKENS = '0'
+  try {
+    await queryWithModel({
+      systemPrompt: asSystemPrompt([]),
+      userPrompt: 'test',
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-opus-5',
+        querySource: 'compact',
+        agents: [],
+        mcpTools: [],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+      },
+    })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.thinking).toEqual({ type: 'disabled' })
+    expect(requests[0]!.temperature).toBeUndefined()
+  } finally {
+    delete process.env.MAX_THINKING_TOKENS
+  }
+})
+
+test.each(['claude-opus-5', 'claude-sonnet-5'])(
+  '%s internal queries default to adaptive and omit legacy sampling overrides',
+  async (model) => {
+    await queryWithModel({
+      systemPrompt: asSystemPrompt([]),
+      userPrompt: 'test',
+      signal: new AbortController().signal,
+      options: {
+        model,
+        querySource: 'compact',
+        agents: [],
+        mcpTools: [],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        temperatureOverride: 0,
+      },
+    })
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.thinking).toEqual({ type: 'adaptive' })
+    expect(requests[0]!.temperature).toBeUndefined()
+  },
+)
+}

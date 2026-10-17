@@ -299,7 +299,7 @@ type LocalAgentTaskState = TaskStateBase & {
   }
   messages?: Message[]        // 对话历史
   isBackgrounded: boolean     // 前台/后台切换
-  pendingMessages: string[]   // SendMessage 队列（等待 Agent 空闲时注入）
+  pendingMessages: string[]   // SendMessage 队列：下一轮工具调用间注入；后台 Agent 结束时仍有残留则用它们续跑一轮
   retain: boolean             // UI 是否持有（阻止驱逐）
 }
 ```
@@ -412,7 +412,7 @@ RemoteAgentTask.spawn()
 | **local_bash** | 向 shell 进程发送 SIGTERM/SIGKILL | 关闭 PTY，清理 output 文件 |
 | **local_agent** | `abortController.abort()` | 清理 Agent MCP 连接，释放 transcript |
 | **in_process_teammate** | `abortController.abort()` + 从 teamContext 移除 | 从 TeamFile 移除成员，释放 Perfetto 追踪 |
-| **remote_agent** | POST 取消请求到远程 CCR | 清理 WebSocket 订阅 |
+| **remote_agent** | 标记 killed 并归档远程 session（`archiveRemoteSession`） | 轮询在状态离开 running 后自行停止 |
 | **dream** | `abortController.abort()` + mtime 回滚 | 恢复 consolidation lock 时间戳 |
 
 ### 6.3 InProcessTeammate 完整关闭流程
@@ -447,7 +447,7 @@ killInProcessTeammate(taskId, setAppState)
     ├── removeMemberByAgentId(team, agentId) // 更新 TeamFile
     ├── evictTaskOutput(taskId)             // 删除磁盘输出文件
     ├── emitTaskTerminatedSdk()             // SDK 事件通知
-    └── setTimeout(evictTerminalTask, 5s)   // 延迟从 AppState 驱逐
+    └── setTimeout(evictTerminalTask, PANEL_GRACE_MS)   // 30s 后从 AppState 驱逐
 ```
 
 ### 6.4 Session 结束时的自动清理
@@ -679,11 +679,10 @@ type TeammateExecutor = {
 **后端选择优先级（自动检测）：**
 
 ```
-detectAndGetBackend()
-    ├── 在 iTerm2 内 + it2 CLI 已安装? ──→ ITermBackend
-    ├── 用户偏好 tmux over iTerm2?  ──→ TmuxBackend
-    ├── 在 tmux session 内?           ──→ TmuxBackend
-    ├── tmux 命令可用?                 ──→ TmuxBackend (创建外部 session)
+detectAndGetBackend()   (src/utils/swarm/backends/registry.ts)
+    ├── 在 tmux session 内?                         ──→ TmuxBackend（始终优先）
+    ├── 在 iTerm2 内 + 未设置偏好 tmux + it2 已安装? ──→ ITermBackend
+    ├── tmux 命令可用?                               ──→ TmuxBackend (创建外部 session)
     ├── 非交互模式 (SDK/API)?          ──→ InProcessBackend
     └── 以上均不满足                    ──→ InProcessBackend (回退)
 ```

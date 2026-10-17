@@ -15,17 +15,17 @@ import { TerminalWriteContext } from '../useTerminalNotification.js'
  * Elsewhere, writes OSC 0 (set title+icon) via Ink's stdout.
  */
 export function useTerminalTitle(title: string | null): void {
-  const writeRaw = useContext(TerminalWriteContext)
+  const terminal = useContext(TerminalWriteContext)
 
   useEffect(() => {
-    if (title === null || !writeRaw) return
+    if (title === null || !terminal) return
 
     const clean = stripAnsi(title)
 
     if (process.platform === 'win32') {
       process.title = clean
     } else {
-      writeRaw(osc(OSC.SET_TITLE_AND_ICON, clean))
+      terminal.write(osc(OSC.SET_TITLE_AND_ICON, clean))
     }
-  }, [title, writeRaw])
+  }, [title, terminal])
 }

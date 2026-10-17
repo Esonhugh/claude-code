@@ -1,5 +1,7 @@
 # Claude Mods 研究报告
 
+> **历史研究快照：** 本报告冻结 2026-09-16、官方 `2.1.272` 与当时本地实现的研究结论，不是当前能力矩阵。当前支持范围、官方 `2.1.277` builtin Mods 和运行命令见根目录 `README.md`；后续 compiled 验收不会反向改写本报告的旧 hash、失败或未覆盖判断。
+
 - 报告日期：2026-09-16；资料采集：2026-09-15 至 2026-09-16。
 - 研究对象：Claude Code 的 **Claude Mods / Function Hooks**。
 - 研究方式：官方公开资料、固定提交的官方示例源码、官方发行二进制静态提取、本地 Worker/VM 契约测试，以及编译产物与官方 `2.1.272` 的 scripted tmux 对照。
@@ -767,6 +769,8 @@ tPs -> function-hooks tool.call
 
 ### 14.3 首批接口及明确限制
 
+**历史范围说明**：本小节记录首批切片，不是当前支持清单；后续已接入的能力见 [15.2](#152-本轮宿主能力与取消)。当前用法与支持范围见根目录 [`README.md`](../../README.md)，各轮冻结验收证据见历史账本 [`mods-test.md`](../../mods-test.md)；下文旧结果不回写为新制品通过。
+
 已实现基础层：
 
 - `hooks/hooks.json` 的 modules-only、hooks-only、共存和入口描述传递。
@@ -883,6 +887,51 @@ Worker 额外使用事件循环 ping/pong watchdog：未响应约 5 秒时终止
 
 **not covered**：重新启用阶段的重叠输入因果 barrier、真实 CLI ask 审批、managed Pre/Post policy 组合、真实账户和外网模型、复杂 Agent/Workflow、全部官方 Mods/UI/stream、官方精确 timer retire 与能力租约。首轮的首次 prompt barrier、本地自动测试与本轮启停运行是不同证据，不能互相替代。
 
+## 15. 当前修复轮次的契约补充（尚未完成整体验收）
+
+本节补充第 14 节首批切片之后的实现，不改写旧运行结果。当前用法与支持范围以根目录 `README.md` 为准，各轮运行限制与结果保留在 `mods-test.md` 历史账本中；类型检查、真实 Worker、本地 CLI、官方 runtime 是四个不同证据层级。
+
+### 15.1 作者类型与可重复检查
+
+**Binary-observed / Source-confirmed**：官方 2.1.272 内嵌完整声明与公开固定 commit 附带声明不是同一文件：前者 SHA-256 `b06a496ce7e89d0dbdda290fb7fab57bc109c620ec2c23da712d63b93b4630d2`，后者 `69d14af889cae22568b6051382e72971578156b36479d4ce4ad13f473797d4ac`。本轮分别保留，不用删减的手写 ambient module 代替目标声明。官方原件许可/再分发边界不在此假定，类型及完整源码 fixture 保留在仓库外。
+
+`src/services/mods/runtimeHost.test.ts` 提供可重复的作者 TSX 契约测试。设置 `CLAUDE_CODE_OFFICIAL_MOD_TYPES` 为授权取得的目标完整 `.d.ts` 绝对路径，再使用 `bun test src/services/mods/runtimeHost.test.ts --test-name-pattern 'an author plugin compiles'`。没有指定类型时该项明确 skip；指定但路径无效时失败。测试以 `strict`、`noUncheckedIndexedAccess`、`skipLibCheck:false` 和无 Node/DOM globals 编译，然后让同一份源码经过本地 loader、真实 Worker、register 和能力调用，而不是只编译后宣称可运行。
+
+样例验证相对 `.js`→`.ts` 导入、TSX、command register/run、fs、store、Pane 回调、prompt context、turn.complete、binding 轮换不重发 start、unload/reload 持久化。负向类型断言覆盖 string ref、scalar context、string timeout 和 Node global。一个目标类型合法但本地不支持的 `$.tool.check()` 明确产生带文件路径和 capability 的 reload 诊断，并保留旧 activation（历史样例使用 `$.tool.list()`，该能力现已接入真实目录）；**完整官方类型不是本地完整功能支持清单**。
+
+本地尚未实现 `/plugin-types` 和 `claude plugin test` 的完整官方开发工具链。插件作者应使用目标官方版本生成的类型，并以本地加载诊断确认实际支持范围；不能把内部 `src/services/mods/types.ts` 当作公开官方作者契约。
+
+### 15.2 本轮宿主能力与取消
+
+**Source-confirmed（本地）**：现有能力包括 command register/list、session cwd/id/surface/messages、fs read/write/list/exists/stat、argv process.run、JSON store、accepted settings.read 和 terminal UI；matcher 已支持 RegExp、数组 any-of、nested partial 及事件 pattern。第 14.3 节的“首批未实现”列表是历史范围，不再代表这些接口当前不存在。远端 surface、全部模型流、所有 host nouns 及官方测试引擎仍不得笼统声明支持。
+
+**Binary-observed（官方静态路径）**：已追到的 optional host-op interceptor setter `ten.set` 位于插件测试引擎 `chunk-gsmvmfzk.pretty.js:485,599–608`；普通 fs/process concrete 路径并未在此进入模型工具的 `canUseTool`。因此本轮不将 argv 拼成 shell 命令后送进另一个工具权限执行器；保留 Mods trust、扫描、admission、withholding 与 op middleware，普通工具执行继续走自己的完整权限路径。此结论是定向静态证据，不是全配置、全平台动态证明。
+
+本地 fs 使用非阻塞 POSIX open 避免无人写入 FIFO 挂住；exists 将文件系统观察错误映射为 false，但非字符串/空路径与生命周期取消仍拒绝。process timeout 限 1–600000 整数毫秒。fs/process host call 合并 invocation 与 activation 信号并释放监听器。Worker 级取消测试只在真实 FileHandle.read 外加入受控 barrier，证明中断后停止继续读块、关闭句柄、activation 可继续且 core 不重放；不承诺已经发生的 mkdir/write 副作用回滚，也不宣称所有底层 I/O 可以立即取消。
+
+`store.get/set/delete` 已补齐非空、最多 256 个 UTF-16 code units 的 key 约束；官方依据分别为 `chunk-8xczzfk0.pretty.js:5353–5365` 和 `chunk-s5nh835p.pretty.js:231215–231220`。真实 Worker 红测还发现 Date 经通用 wire 后成为 `{}`：现只对 host-owned store.set bridge 在作者 realm 内做 JSON 规范化，保留 Date/custom toJSON，拒绝非法值且不将作者函数带入主线程执行。证据 `integration/store-key-contract-red-17.log`、`store-json-realm-red-19.log`、`store-json-realm-qualified-21.log`。随后以 `store-parity-red-26.log` 的四条失败回归修正此前三项差异：按逻辑 store 对象 JSON 的 string.length 限额 4194304（不是 UTF-8 bytes），keys 使用 Object.keys 顺序，嵌套函数遵循普通 JSON.stringify 省略/数组 null 规则。继续保留本地 entries-array 磁盘格式、锁和原子替换，无数据迁移；读取预算允许合法多字节数据及本地编码开销，fs/process 自身的 byte 限额不变。`store-key-middleware-red-qualified-29.log` 还证明空 key 应在作者 wrapper、长 key在host拒绝；现已分层处理，set保持先规范化value再校验key。合格回归 `store-parity-qualified-31.log`：146 pass / 890 expect，包含真实 Worker、容量 ASCII/é/界/代理对边界、恢复及生命周期。仍是本地自动化与官方静态对照，不等同官方运行 parity。
+
+`command.register` 的 description 现在拒绝纯空白但保留合法多行原文。`command.list` 按 `chunk-s5nh835p.pretty.js:228802–228838` 返回用户可见 name、builtin/plugin/user/mcp 四类 source、当前注册 activation 或 markdown manifest 的 plugin 身份，不再泄漏 Settings 枚举或额外 immediate 字段。红测 `command-description-red-23.log`、`command-list-red-37.log`；实际 Worker/adapter 回归 `command-list-green-38.log`：79 pass / 298 expect。`command.describe` 的完整 UI 自然入口不在该元数据修复的通过范围内。
+
+**Source-confirmed（工具目录接线，整合中）**：`tool.list` 是当前已准入 Tool 集合的 metadata 投影，不是第二套可执行工具注册表；目标完整声明要求 `{name, description, mcp}`。模型入口保留原 tool-search/deferred gating，禁止 Mod 添加未知/被 gate 工具、重复身份或修改 schema/call。作者 `$.tool.list()` 使用当前 request/session 的真实 base description，core leaf 不递归调用投影；query、batch/streaming、prompt、command 与 session 服务分别传入当前上下文。`tool.describe` 缓存按 Tool/base description 和捕获代际隔离，支持显式失效，不写回原 API schema cache。MCP provider 来自 canonical server/config scope/pluginSource；无 hooks 的插件也从真实 LoadedPlugin 与相同 settings tier 规则解析，旧 snapshot 保留旧来源。证据与尚红断言见 handoff 的 `catalog-*-41..58`，不是最终新 binary 通过声明。
+
+### 15.3 原件和验收边界
+
+- 固定 commit `f96c3b49c4c8721685206aaab23609b2d399df4e` 的 921 个原件文件逐 SHA 核对未变；所有原件 hooks/tests/plugin augmentations 对 binary 内嵌完整类型检查 exit 0。类型通过不等于官方测试引擎已执行。
+- 本地对 exact builtin `/diff` 的让位仅授予经过完整扫描内容 pin 核验的 provider；失败、disable、unload 恢复 builtin，不凭 manifest.name 或 isNative 自报授予覆盖权。这是本地产品接入选择，不是官方发行物已启用该行为的证明。
+- 官方 2.1.272 隔离运行仍受 rollout gating-off 阻塞；未修改 binary、未伪造身份或内部凭据，official module runtime parity 为 `not covered`。
+- 指定本地产物 `4fea45f3…` 的五核心场景通过，但 Pane 标题覆盖/滚动残影为 `failed`，鼠标送达及 stale callback 终端路径为 `not covered`。后续源码必须新构建并独立取证，不能继承该产物结果。
+
+本节自动化证据根：`/var/folders/4h/pgbsmxdx3wj12mb6mkj90gmh0000gp/T/claude-mods-repair-20260916.aHC2Z1mz`；关键索引为 `integration/author-target-contract-14.log`、`integration/fs-worker-cancel-red-10.log`、`integration/fs-worker-cancel-qualified-11.log`、`integration/official-target-types-08.log`、`integration/official-source-integrity-09.json` 和 `host-operations/official-interceptor-followup.txt`。这些中间测试不得与旧批次重复相加作为最终 unique test 数。
+
+### 15.4 官方289的真实turn生命周期（2026-10-05；源码专项）
+
+本轮参照固定官方2.1.289原始模块与完整内嵌声明，不用旧272/287结果推断新版native通过。main与agent登记由真实producer持有；内部model.fork即使获得新agentId，也不能自动成为turn或借用main登记。结束先释放登记再选择当前completion hooks；逻辑session变化、结束或卸载退役旧owner，共享Worker恢复epoch与此分开。
+
+ROOT迁入9路径，12实际文件分次526 pass/0 fail/4原skip、2725expect，types/lint0；canonical快照 `8ce0f406c2d3ee99c741c1e20a50e261385b8c91c473d2f65144b6d7257a9731`。真实QueryLoop、runAgent、两轮teammate及有界fork通过；complete调用使用fresh lease，实际query iterator关闭至done，避免其catch在return时yield错误帧而遗漏释放。原RED、14条旧fixture契约修订和官方关闭行为反证保留，详见根目录 `mods-test.md` 的PM1最终迁入节。
+
+这不是完整36入口或native验收。compact/settings hook_agent、普通父step fork、raw provider迟到finally与完整原样diff操作/物理效果仍缺；Privacy默认关闭保持。JS Mods共享Worker是官方机制，不能将每插件一个Worker作为自动兼容修复。重复broad pattern规则、焦点握手、GC/安装发布及其余公开方法继续分别验证。
+
 ## Sources
 
 - **[S1] 官方 Mods README，固定提交**：[定义、测试与 Early Access](https://github.com/anthropics/claude-code/blob/f96c3b49c4c8721685206aaab23609b2d399df4e/mods/README.md)
@@ -895,3 +944,27 @@ Worker 额外使用事件循环 ping/pong watchdog：未响应约 5 秒时终止
 - **[S8] 本轮下载产物的固定元数据**：[@anthropic-ai/claude-code-darwin-arm64/2.1.272](https://registry.npmjs.org/@anthropic-ai%2fclaude-code-darwin-arm64/2.1.272)
 
 第三方介绍仅用于发现讨论入口，未用作核心结论依据。报告未把讨论中的性能目标、未来计划或社区 bug 报告当作当前版本已验证事实。
+
+
+### 2026-10-05：ui.invalidate操作类型与插件缓存清理
+
+此前声明迁入后的ROOT源码为2845文件，`82fbe7716a51cb7fbbb2af555ccaab6c70422774e5da9d9b792bb47277ad0542`。独立6入口实际验证：声明七文件分次67 pass/0 fail/269 expect；插件P7子矩阵13/0/63（外层包装1/0/1）；全局TypeScript、lint和changelog exit0，30 releases/latest v2.1.280。结果 `/private/tmp/mods-align-m1scugg4/root-ui-invalidate-event-types-289-migration-r1/verification-r2.json` SHA `a4df07caaf486eef21b57704cc985f62afec89db6e5afff6b3cc3963aa78b468`；六自有PGID均退出，源与两保护binary不变。83私有封存记录逐SHA核验；未安装依赖、未build/提升版本/提交。当前结果不替代完整36入口或native。
+
+UI1正式AF01第一批新增实际RED：Input/Button/Select原3案0 pass/3 fail/5 filtered/15 expect，同test `7b36083e…`、source `6e2b7599…`、4.57s。唯一REPL onFocus AST及真实draw/layout/held commit均已通过，三案drawing2/revision3、DOM实际second、逻辑focusedElement absent、自身ui.focus receipt空；真正失败在first self-hook及committed landing屏障。raw输入/动作/caller详细断言未达到，不声称已验证拒绝或输入泄漏。原sandbox71仅初始化失败保留；同profile真实run自有86110已退出、source0漂移。日志 `/private/tmp/mods-align-m1scugg4/ui-autofocus-289-stage-r1/review/actual-first-drawn-r1/prepared-runs/02-first-drawn-escalated/log.txt`。AF原foundation保持原像，ROOT后续PL1两path及类型四path的偏差单列，不能整目录覆盖。
+
+公开void、hook包装回执、genericEngineCall和testingEngine方便方法分别核对；新operation表仅覆盖ui.invalidate，不代表完整Op类型已对齐。缓存清理A两path已迁入，B发布/C livepin及特殊平台仍未闭合。旧研究快照的判断保留，当前使用方法见README。
+
+
+UI1剩余同源原夹具的三组结果已核对：deny/withhold为0 pass/2 fail/12 expect，raw u真实进入second Input，作者change回执已到而自身focusCalls为0；rewrite两案0/2/8，own focus hook未进入，后续rewrite结果未达到。public caller原案0/1/3则是setup失败：作者写入autoFocus:false被构造函数拒绝，未进入公共调用。固定289构造源码及完整dts均只允许true或省略，单行省略false的夹具纠正与原断言分开保留；该纠正不算生产修复。三组自有92589/92981/93289已退出，45s总期限未触发，source6e2b7599前后零漂移。原件位于 ui-autofocus-289-stage-r1/review/actual-remaining-r1/prepared-runs/，不合并为八个已证明的产品缺陷。
+
+
+最新ROOT只再加入三个可维护GC测试文件，其他源码及共享binary不变：2848文件canonical `7b43f89e89c37c96b50d69a0f56b0e29236c445773118f48205f716616110591`。实际工作区复验原GC业务20 pass/0 fail/88 expect和原P7业务13/0/63；GC父20与P7父1的包装断言合计21/0/81，不能算额外业务case。全局TypeScript/lint/changelog均exit0，四自有PGID退出，源前后不变。结果 `/private/tmp/mods-align-m1scugg4/root-pl1-a20-maintainable-regression-289-migration-r1/verification-r1.json` SHA `bccbcbc10c2ee19846e902ccdbded8d82a66004195b9a3893eaea5a34bf143b5`；1278私有实际证据文件逐SHA核验，原20业务块a4448331字节与10s预算未变。Unix FIFO对照保留，Windows/WSL、B发布、C .in_use和完整36/native仍未通过。
+
+AF12只省略官方不允许的autoFocus:false后，独立实际1 pass/0 fail/22 expect，公共author/user来源、同插件sibling及nested当前registration排除、逻辑/DOM second和Enter动作均通过；七个automatic业务RED仍在。该次wrapper exit1：finally signal0被拒且未提前落child PID，exact childPID/PGID/exit/cleanup在恢复记录中均明确null；只读精确stage签名及pgrep无匹配，不能冒称精确资源审计全绿，也没有重跑抹掉异常。证据 ui-autofocus-289-stage-af12-r1/review/sealed-af12-corrected-r1/。
+
+RT7入口诊断仍为33/1/1between-error/58：同Worker第二load已发出错误响应并回复ping，但到退役前宿主连message.callback.entry也未出现；第一load及其他host正常。frontier缩至postMessage返回到宿主回调入口之间，不声称Bun根因、handler解绑或作者CPU culprit。原34/default5s/hard35s保留，owner26792及初始化26631已退出，sourceac196前后不变；临时日志仍只在私有副本，未迁ROOT。详见 rt7-host-message-diagnostic-execute-r1/report.md。
+
+
+### 2026-10-05：附件复核后的测试卫生修复
+
+声明测试规范化真实临时路径后16/0/126；重绘测试等待实际画面发布后38/0/461，含官方289完整声明检查。两处修复和示例八处void调用已迁入canonical f41d7dc8…；私有同源TypeScript及五文件lint通过。新版response的缺失方法数、文档大小和共享工作区范围需更正，旧快照全量数字不升级为当前结果；原正文与原失败保留，详见mods-test.md的T-1/T-2记录。

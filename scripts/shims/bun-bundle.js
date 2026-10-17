@@ -3,6 +3,8 @@ const defaultRecoverFeatures = [
   'MCP_SKILLS',
   'SSH_REMOTE',
   'UDS_INBOX',
+  'KAIROS_CHANNELS',
+  'TRANSCRIPT_CLASSIFIER',
 ];
 
 const enabled = new Set([

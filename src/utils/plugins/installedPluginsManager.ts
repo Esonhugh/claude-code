@@ -13,17 +13,24 @@
  * plugins active).
  */
 
+import { createHash, randomBytes } from 'crypto'
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join } from 'path'
 import { logForDebugging } from '../debug.js'
 import { errorMessage, isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
-import {
-  jsonParse,
-  jsonStringify,
-  writeFileSync_DEPRECATED,
-} from '../slowOperations.js'
+import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getPluginsDirectory } from './pluginDirectories.js'
+import { validatePathWithinBase } from './pluginInstallationHelpers.js'
 import {
   type InstalledPlugin,
   InstalledPluginsFileSchemaV1,
@@ -31,6 +38,8 @@ import {
   type InstalledPluginsFileV1,
   type InstalledPluginsFileV2,
   type PluginInstallationEntry,
+  PluginIdSchema,
+  PluginInstallationEntrySchema,
   type PluginScope,
 } from './schemas.js'
 
@@ -71,6 +80,328 @@ let installedPluginsCacheV2: InstalledPluginsFileV2 | null = null
  * Background updates modify the disk file only.
  */
 let inMemoryInstalledPlugins: InstalledPluginsFileV2 | null = null
+
+const unreadableStates = new WeakSet<InstalledPluginsFileV2>()
+const unreadableKeptName =
+  /^installed_plugins\.unreadable\.\d{4}-\d{2}-\d{2}\.[0-9a-f]{12}\.kept$/
+const setAsideName =
+  /^installed_plugins\.set-aside\.\d{4}-\d{2}-\d{2}\.[0-9a-f]{12}\.json$/
+
+type RegistryInspection = {
+  data: InstalledPluginsFileV2
+  unreadable: boolean
+  refusal?: string
+  setAside: Record<string, unknown>
+}
+
+function inspectRegistry(raw: {
+  version: number
+  data: unknown
+}): RegistryInspection {
+  const data: InstalledPluginsFileV2 = { version: 2, plugins: {} }
+  const result: RegistryInspection = {
+    data,
+    unreadable: false,
+    setAside: Object.create(null),
+  }
+  if (raw.version > 2) {
+    result.refusal = `installed_plugins.json is in a format (version ${raw.version}) that this version of Claude Code does not know, so plugins cannot be changed from this version, and some may not load. Update Claude Code on this machine (claude update), or change plugins with the version of Claude Code that wrote ${getInstalledPluginsFilePath()}.`
+    return result
+  }
+  if (raw.version !== 2) {
+    const parsed = InstalledPluginsFileSchemaV1().safeParse(raw.data)
+    if (parsed.success) result.data = migrateV1ToV2(parsed.data)
+    else
+      result.unreadable =
+        raw.data !== null &&
+        !(typeof raw.data === 'object' && Object.keys(raw.data).length === 0)
+    return result
+  }
+  if (
+    raw.data === null ||
+    typeof raw.data !== 'object' ||
+    !('plugins' in raw.data) ||
+    raw.data.plugins === null ||
+    typeof raw.data.plugins !== 'object' ||
+    Array.isArray(raw.data.plugins)
+  ) {
+    result.unreadable =
+      raw.data !== null &&
+      !(typeof raw.data === 'object' && Object.keys(raw.data).length === 0)
+    return result
+  }
+  const unparsed: string[] = []
+  for (const [id, records] of Object.entries(raw.data.plugins)) {
+    if (!PluginIdSchema().safeParse(id).success) {
+      result.setAside[id] = records
+      continue
+    }
+    if (!Array.isArray(records)) {
+      unparsed.push(id)
+      continue
+    }
+    const entries = records.map((record) =>
+      PluginInstallationEntrySchema().safeParse(record),
+    )
+    if (entries.some((entry) => !entry.success)) unparsed.push(id)
+    else
+      data.plugins[id] = entries.flatMap((entry) =>
+        entry.success ? [entry.data] : [],
+      )
+  }
+  if (unparsed.length > 0) {
+    const one = unparsed.length === 1
+    const shown = unparsed
+      .slice(0, 3)
+      .map((id) => jsonStringify(id))
+      .join(', ')
+    const names =
+      shown + (unparsed.length > 3 ? ` and ${unparsed.length - 3} more` : '')
+    result.refusal = `installed_plugins.json holds ${one ? 'a record' : 'records'} under ${names} that this version of Claude Code cannot read, so plugins cannot be changed from this version, and some may not load. Update Claude Code on this machine (claude update); or uninstall ${one ? 'that plugin' : 'those plugins'} with the version of Claude Code that wrote ${one ? 'the record' : 'the records'}; or, if neither helps, delete ${one ? 'that record' : 'each of those records'} from ${getInstalledPluginsFilePath()} by hand, then restart or run /reload-plugins.`
+  }
+  return result
+}
+
+function parseRegistry(raw: {
+  version: number
+  data: unknown
+}): InstalledPluginsFileV2 {
+  const inspection = inspectRegistry(raw)
+  if (inspection.refusal) throw new Error(inspection.refusal)
+  if (inspection.unreadable)
+    throw new Error('installed_plugins.json is not a list of plugins')
+  return inspection.data
+}
+
+/** A future format or unrecognized record must be handled by its writer. */
+export function getInstalledPluginsReadRefusal(): string | null {
+  try {
+    const raw = readInstalledPluginsFileRaw()
+    return raw ? (inspectRegistry(raw).refusal ?? null) : null
+  } catch {
+    return null
+  }
+}
+
+function recoveryFiles(pattern: RegExp): string[] {
+  try {
+    return getFsImplementation()
+      .readdirSync(getPluginsDirectory())
+      .filter((entry) => entry.isFile() && pattern.test(entry.name))
+      .map((entry) => entry.name)
+      .sort()
+      .map((name) => join(getPluginsDirectory(), name))
+  } catch {
+    return []
+  }
+}
+
+export function getUnreadableInstalledPluginsNote(): string | null {
+  const paths = recoveryFiles(unreadableKeptName)
+  return paths.length === 0
+    ? null
+    : `Note: installed_plugins.json could not be read and was rebuilt. What it held is kept for a while in ${paths.join(', ')}. Plugins it listed may need installing again; look there for what was recorded.`
+}
+
+export function getSetAsideInstalledPluginsNote(): string | null {
+  const paths = recoveryFiles(setAsideName)
+  return paths.length === 0
+    ? null
+    : `Note: install records under names that no version of Claude Code can use were removed from installed_plugins.json. Their copy is kept for a while in ${paths.join(', ')}. Nothing needs doing about these copies.`
+}
+
+/** Publish the complete file without following or truncating the target name. */
+function atomicWriteRegistryFile(
+  path: string,
+  content: string | Buffer,
+  mode?: number,
+): void {
+  const fs = getFsImplementation()
+  const temporary = `${path}.tmp.${randomBytes(4).toString('hex')}`
+  if (mode === undefined) {
+    try {
+      const stat = fs.lstatSync(path)
+      if (stat.isFile()) mode = stat.mode & 0o777
+    } catch (error) {
+      if (!isENOENT(error)) throw error
+    }
+  }
+  try {
+    writeFileSync(temporary, content, {
+      encoding: 'utf-8',
+      flag: 'wx',
+      flush: true,
+      mode,
+    })
+    fs.renameSync(temporary, path)
+  } catch (error) {
+    try {
+      fs.unlinkSync(temporary)
+    } catch (cleanupError) {
+      if (!isENOENT(cleanupError)) {
+        logForDebugging(
+          `Registry publication failed: ${errorMessage(error)}; temporary cleanup failed: ${errorMessage(cleanupError)}`,
+          { level: 'error' },
+        )
+        throw new AggregateError(
+          [error, cleanupError],
+          'Plugin registry publication and cleanup failed',
+        )
+      }
+    }
+    throw error
+  }
+}
+
+/** Official 2.1.292 only keeps a bounded, unchanged, plain file with one name. */
+function readOwnRegistryBytes(expected: Buffer): Buffer | undefined {
+  let fd: number | undefined
+  try {
+    const path = getInstalledPluginsFilePath()
+    fd = openSync(
+      path,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    )
+    const opened = fstatSync(fd, { bigint: true }),
+      named = lstatSync(path, { bigint: true })
+    if (
+      !opened.isFile() ||
+      !named.isFile() ||
+      opened.nlink !== 1n ||
+      named.nlink !== 1n ||
+      opened.dev !== named.dev ||
+      opened.ino !== named.ino ||
+      [0n, -1n, (1n << 64n) - 1n, 1n << 64n].includes(opened.ino) ||
+      opened.size > 16777216n
+    )
+      return
+    const buffer = Buffer.allocUnsafe(Number(opened.size) + 1)
+    let offset = 0
+    while (offset < buffer.length) {
+      const count = readSync(fd, buffer, offset, buffer.length - offset, offset)
+      if (count === 0) {
+        const bytes = Buffer.from(buffer.subarray(0, offset))
+        return bytes.equals(expected) ||
+          bytes.toString('utf8') === expected.toString('utf8')
+          ? bytes
+          : undefined
+      }
+      offset += count
+    }
+  } catch {
+    return
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd)
+      } catch (error) {
+        logForDebugging(
+          `Registry backup read close failed: ${errorMessage(error)}`,
+          { level: 'warn' },
+        )
+      }
+    }
+  }
+}
+
+function writeInstalledPluginsFile(data: InstalledPluginsFileV2): void {
+  const fs = getFsImplementation(),
+    path = getInstalledPluginsFilePath()
+  let original: Buffer | undefined
+  try {
+    original = fs.readFileBytesSync(path)
+  } catch (error) {
+    if (!isENOENT(error))
+      throw Object.assign(
+        new Error(
+          `installed_plugins.json was not changed: it could not be read first (${errorMessage(error)}), and a file that cannot be read is not replaced. Make it readable, then try again.`,
+          { cause: error },
+        ),
+        { code: (error as NodeJS.ErrnoException).code },
+      )
+  }
+  if (original !== undefined) {
+    let inspection: RegistryInspection
+    try {
+      const raw = jsonParse(original.toString('utf8'))
+      inspection = inspectRegistry({
+        version: typeof raw?.version === 'number' ? raw.version : 1,
+        data: raw,
+      })
+    } catch {
+      inspection = {
+        data: { version: 2, plugins: {} },
+        unreadable: original.toString('utf8').trim() !== '',
+        setAside: Object.create(null),
+      }
+    }
+    if (inspection.refusal)
+      throw new Error(
+        `installed_plugins.json was not changed: ${inspection.refusal}`,
+      )
+    if (inspection.unreadable) {
+      const bytes = readOwnRegistryBytes(original)
+      if (bytes === undefined)
+        logForDebugging(
+          'installed_plugins.json could not be read at all, and its bytes are NOT kept: its name is not a plain file of its own (a symbolic link, a second name of another file, too large), or it changed while it was read; this write replaces only the name',
+          { level: 'warn' },
+        )
+      else {
+        const sha12 = createHash('sha256')
+          .update(bytes)
+          .digest('hex')
+          .slice(0, 12)
+        const kept = join(
+          getPluginsDirectory(),
+          `installed_plugins.unreadable.${new Date().toISOString().slice(0, 10)}.${sha12}.kept`,
+        )
+        try {
+          atomicWriteRegistryFile(kept, bytes, 0o600)
+        } catch (error) {
+          throw Object.assign(
+            new Error(
+              `installed_plugins.json cannot be read, and it was not changed. Before it is rebuilt, its contents are kept in a file beside it, but that file (${kept}) could not be written: ${errorMessage(error)}. Free disk space or make the plugins folder writable, or move installed_plugins.json aside by hand, then try again.`,
+              { cause: error },
+            ),
+            { code: (error as NodeJS.ErrnoException).code },
+          )
+        }
+        logForDebugging(
+          `installed_plugins.json could not be read at all (not JSON, or not a list of plugins): its bytes are kept in ${kept} before this write rebuilds it`,
+          { level: 'warn' },
+        )
+      }
+    }
+    const ids = Object.keys(inspection.setAside).sort()
+    if (ids.length > 0) {
+      const setAside = Object.fromEntries(
+        ids.map((id) => [id, inspection.setAside[id]]),
+      )
+      const content = jsonStringify(setAside, null, 2)
+      const sha12 = createHash('sha256')
+        .update(content)
+        .digest('hex')
+        .slice(0, 12)
+      const kept = join(
+        getPluginsDirectory(),
+        `installed_plugins.set-aside.${new Date().toISOString().slice(0, 10)}.${sha12}.json`,
+      )
+      try {
+        atomicWriteRegistryFile(kept, content, 0o600)
+      } catch (error) {
+        throw new Error(
+          `installed_plugins.json was not changed: it holds records under names that no version of Claude Code can use; they are copied to a side file before they are removed, and that copy could not be written to ${kept} (${errorMessage(error)}). Make that path writable, or move what stands there away, and try again.`,
+          { cause: error },
+        )
+      }
+      logForDebugging(
+        `installed_plugins.json: copied ${ids.length} set-aside record(s) to ${kept} before this write drops them from installed_plugins.json`,
+        { level: 'warn' },
+      )
+    }
+  }
+  atomicWriteRegistryFile(path, jsonStringify(data, null, 2))
+}
 
 /**
  * Get the path to the installed_plugins.json file
@@ -122,9 +453,17 @@ export function migrateToSinglePluginFile(): void {
   const v2FilePath = getInstalledPluginsV2FilePath()
 
   try {
-    // Case 1: Try renaming v2→main directly; ENOENT = v2 doesn't exist
+    // Case 1: Validate and publish legacy V2 before removing its old name.
     try {
-      fs.renameSync(v2FilePath, mainFilePath)
+      const content = fs.readFileSync(v2FilePath, { encoding: 'utf-8' })
+      const parsed = jsonParse(content)
+      const data = parseRegistry({
+        version: typeof parsed?.version === 'number' ? parsed.version : 1,
+        data: parsed,
+      })
+      writeInstalledPluginsFile(data)
+      fs.unlinkSync(v2FilePath)
+      installedPluginsCacheV2 = null
       logForDebugging(
         `Renamed installed_plugins_v2.json to installed_plugins.json`,
       )
@@ -156,10 +495,7 @@ export function migrateToSinglePluginFile(): void {
       const v1Data = InstalledPluginsFileSchemaV1().parse(mainData)
       const v2Data = migrateV1ToV2(v1Data)
 
-      writeFileSync_DEPRECATED(mainFilePath, jsonStringify(v2Data, null, 2), {
-        encoding: 'utf-8',
-        flush: true,
-      })
+      writeInstalledPluginsFile(v2Data)
       logForDebugging(
         `Converted installed_plugins.json from V1 to V2 format (${Object.keys(v1Data.plugins).length} plugins)`,
       )
@@ -190,6 +526,12 @@ export function migrateToSinglePluginFile(): void {
  * This function removes legacy directories that are not referenced by any installation.
  */
 function cleanupLegacyCache(v2Data: InstalledPluginsFileV2): void {
+  if (unreadableStates.has(v2Data)) {
+    logForDebugging(
+      'Skipping legacy cache cleanup: installed_plugins.json could not be read, so which flat folders are still referenced is not known',
+    )
+    return
+  }
   const fs = getFsImplementation()
   const cachePath = getPluginCachePath()
   try {
@@ -215,12 +557,12 @@ function cleanupLegacyCache(v2Data: InstalledPluginsFileV2): void {
       // Check if this is a versioned cache (marketplace dir with plugin/version subdirs)
       // or a legacy cache (flat plugin directory)
       const subEntries = fs.readdirSync(entryPath)
-      const hasVersionedStructure = subEntries.some(subDirent => {
+      const hasVersionedStructure = subEntries.some((subDirent) => {
         if (!subDirent.isDirectory()) return false
         const subPath = join(entryPath, subDirent.name)
         // Check if subdir contains version directories (semver-like or hash)
         const versionEntries = fs.readdirSync(subPath)
-        return versionEntries.some(vDirent => vDirent.isDirectory())
+        return versionEntries.some((vDirent) => vDirent.isDirectory())
       })
 
       if (hasVersionedStructure) {
@@ -304,6 +646,15 @@ function migrateV1ToV2(v1Data: InstalledPluginsFileV1): InstalledPluginsFileV2 {
   return { version: 2, plugins: v2Plugins }
 }
 
+/** Fresh read without migration writes or cached error-to-empty fallback. */
+export function readInstalledPluginsForContractValidation(): InstalledPluginsFileV2 {
+  const raw = readInstalledPluginsFileRaw()
+  if (!raw) return { version: 2, plugins: {} }
+  return raw.version === 2
+    ? InstalledPluginsFileSchemaV2().parse(raw.data)
+    : migrateV1ToV2(InstalledPluginsFileSchemaV1().parse(raw.data))
+}
+
 /**
  * Load installed plugins in V2 format.
  *
@@ -324,24 +675,12 @@ export function loadInstalledPluginsV2(): InstalledPluginsFileV2 {
     const rawData = readInstalledPluginsFileRaw()
 
     if (rawData) {
-      if (rawData.version === 2) {
-        // V2 format - validate and return
-        const validated = InstalledPluginsFileSchemaV2().parse(rawData.data)
-        installedPluginsCacheV2 = validated
-        logForDebugging(
-          `Loaded ${Object.keys(validated.plugins).length} installed plugins from ${filePath}`,
-        )
-        return validated
-      }
-
-      // V1 format - convert to V2
-      const v1Validated = InstalledPluginsFileSchemaV1().parse(rawData.data)
-      const v2Data = migrateV1ToV2(v1Validated)
-      installedPluginsCacheV2 = v2Data
+      const data = parseRegistry(rawData)
+      installedPluginsCacheV2 = data
       logForDebugging(
-        `Loaded and converted ${Object.keys(v1Validated.plugins).length} plugins from V1 format`,
+        `Loaded ${Object.keys(data.plugins).length} installed plugins from ${filePath}`,
       )
-      return v2Data
+      return data
     }
 
     // File doesn't exist - return empty V2
@@ -359,6 +698,7 @@ export function loadInstalledPluginsV2(): InstalledPluginsFileV2 {
     logError(toError(error))
 
     installedPluginsCacheV2 = { version: 2, plugins: {} }
+    unreadableStates.add(installedPluginsCacheV2)
     return installedPluginsCacheV2
   }
 }
@@ -374,11 +714,7 @@ function saveInstalledPluginsV2(data: InstalledPluginsFileV2): void {
   try {
     fs.mkdirSync(getPluginsDirectory())
 
-    const jsonContent = jsonStringify(data, null, 2)
-    writeFileSync_DEPRECATED(filePath, jsonContent, {
-      encoding: 'utf-8',
-      flush: true,
-    })
+    writeInstalledPluginsFile(data)
 
     // Update cache
     installedPluginsCacheV2 = data
@@ -505,12 +841,7 @@ export function loadInstalledPluginsFromDisk(): InstalledPluginsFileV2 {
     const rawData = readInstalledPluginsFileRaw()
 
     if (rawData) {
-      if (rawData.version === 2) {
-        return InstalledPluginsFileSchemaV2().parse(rawData.data)
-      }
-      // V1 format - convert to V2
-      const v1Data = InstalledPluginsFileSchemaV1().parse(rawData.data)
-      return migrateV1ToV2(v1Data)
+      return parseRegistry(rawData)
     }
 
     return { version: 2, plugins: {} }
@@ -519,7 +850,9 @@ export function loadInstalledPluginsFromDisk(): InstalledPluginsFileV2 {
     logForDebugging(`Failed to load installed plugins from disk: ${errorMsg}`, {
       level: 'error',
     })
-    return { version: 2, plugins: {} }
+    const empty: InstalledPluginsFileV2 = { version: 2, plugins: {} }
+    unreadableStates.add(empty)
+    return empty
   }
 }
 
@@ -564,13 +897,8 @@ export function updateInstallationPathOnDisk(
       entry.gitCommitSha = gitCommitSha
     }
 
-    const filePath = getInstalledPluginsFilePath()
-
     // Write to single file (V2 format with version=2)
-    writeFileSync_DEPRECATED(filePath, jsonStringify(diskData, null, 2), {
-      encoding: 'utf-8',
-      flush: true,
-    })
+    writeInstalledPluginsFile(diskData)
 
     // Clear cache since disk changed, but do NOT update inMemoryInstalledPlugins
     installedPluginsCacheV2 = null
@@ -1191,7 +1519,11 @@ export async function migrateFromEnabledPlugins(): Promise<void> {
         let gitCommitSha: string | undefined = undefined
 
         if (typeof entry.source === 'string') {
-          installPath = join(marketplaceInstallLocation, entry.source)
+          // Throws for a source outside the marketplace; caught below.
+          installPath = validatePathWithinBase(
+            marketplaceInstallLocation,
+            entry.source,
+          )
           version = getPluginVersionFromManifest(installPath, pluginId)
           gitCommitSha = await getGitCommitSha(installPath)
         } else {

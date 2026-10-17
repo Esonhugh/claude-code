@@ -4,6 +4,7 @@ import atexit
 import base64
 import fcntl
 import hashlib
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -12,8 +13,10 @@ import re
 import shlex
 import shutil
 import signal
+import stat
 import ssl
 import socket
+import stat
 import select
 import subprocess
 import sys
@@ -24,6 +27,10 @@ from urllib.parse import urlsplit
 
 
 sys.dont_write_bytecode = True
+_clock_spec = importlib.util.spec_from_file_location('native_driver_clock',
+    Path(__file__).resolve().parents[4] / 'scripts/native-driver-clock.py')
+_driver_clock = importlib.util.module_from_spec(_clock_spec)
+_clock_spec.loader.exec_module(_driver_clock)
 
 
 AUTH_ENV_VARS = (
@@ -43,6 +50,9 @@ IGNORED_FILES_EXCLUDED_ROOTS = (
     'official-claude',
 )
 MOCK_OPENAI_TARGETS = frozenset({
+    'readiness-smoke',
+    'goal-lifecycle',
+    'ssh-remote-session-lifecycle',
     'plugins-reload',
     'deferred-tool-discovery',
     'deferred-tool-discovery-off',
@@ -60,7 +70,22 @@ MOCK_OPENAI_TARGETS = frozenset({
     'model-discovery-empty-picker',
     'model-internal-update-config-skill',
     'prompt-modes-cache-prefix',
+    'team-concurrency',
+    'agent-fg-bg',
+    'nested-agent',
+    'workflow',
+    'code-review',
+    'terminal-interaction',
+    'terminal-canonical-diff',
 })
+# These scenarios exercise the supported synchronous caller contract. Keep the
+# default fork route for every other target, including Workflow workers.
+FOREGROUND_FIXTURES = {
+    'agent-fg-bg': ('release-foreground', 'Read'),
+    'nested-agent': ('release-nested-foreground', 'Agent'),
+    'coordinator-selector': ('release-coordinator-foreground', 'Bash, Read'),
+    'subagent-stop-failure-lifecycle': ('release-stop-foreground', ''),
+}
 WORKFLOW_FAULT_SCRIPTS = {
     'workflow-failure-detail': """export const meta = { name: 'release-failure-detail', description: 'Deterministic workflow failure diagnostics.', phases: [{ title: 'Failure probe' }] }
 phase('Failure probe')
@@ -76,8 +101,32 @@ return await parallel([
 ])
 """,
 }
+INLINE_WORKFLOW_SCRIPT = """export const meta = { name: 'release-inline-workflow', description: 'Read-only two-agent release probe.', phases: [{ title: 'Probe' }] }
+phase('Probe')
+const results = await parallel([
+  () => agent('Read-only. Read Makefile and report only VERSION.', { label: 'probe-a' }),
+  () => agent('Read-only. Read package.json and report only version.', { label: 'probe-b' }),
+])
+return { results }
+"""
+LIFECYCLE_MOCK_KINDS = {
+    'nested-agent': (
+        'nested-root-launch', 'nested-parent-launch', 'nested-child-completed',
+        'nested-parent-completed', 'nested-root-completed',
+    ),
+    'workflow': (
+        'workflow-search', 'workflow-launch', 'workflow-probe-a-read',
+        'workflow-probe-a-completed', 'workflow-probe-b-read',
+        'workflow-probe-b-completed', 'workflow-parent-completed',
+    ),
+    'code-review': (
+        'code-review-launch', 'code-review-scope-output',
+        'code-review-scope-completed', 'code-review-parent-completed',
+    ),
+}
 DUMMY_OPENAI_API_KEY = 'release-validation-dummy-key'
 DUMMY_ANTHROPIC_API_KEY = 'release-validation-dummy-anthropic-key'
+OFFICIAL_BUILTIN_MODS_SHA256 = '7529d618a2048f43b92070be542bfa6171d78932cdd24aed73b3392a33c6f161'
 CUSTOM_SYSTEM_PROMPT_MARKER = 'RELEASE_CUSTOM_SYSTEM_PROMPT_MARKER'
 TITLE_GENERATION_INSTRUCTION = 'Generate a concise, sentence-case title'
 BUN_BUILD_TEMPORARY_PATTERN = re.compile(
@@ -116,6 +165,12 @@ TARGET_PATH_RULES = (
     ('agent-fg-bg', (
         'src/tools/AgentTool/',
         'src/tools/ClearGoalTool/',
+    )),
+    ('nested-agent', (
+        'src/tools/AgentTool/',
+        'src/QueryEngine',
+        'src/query',
+        'src/tools/shared/spawnMultiAgent',
     )),
     ('subagent-stop-failure-lifecycle', (
         'src/tools/AgentTool/runAgent',
@@ -251,7 +306,66 @@ TARGET_PATH_RULES = (
         'src/screens/REPL',
         'src/entrypoints/sdk/controlSchemas',
     )),
+    ('terminal-interaction', (
+        'scripts/builtin-terminal-evidence',
+        'scripts/terminal-evidence-broker',
+        'scripts/test-terminal-evidence-broker',
+        'scripts/verify-pty-terminal-evidence',
+        'scripts/recheck-builtin-terminal-evidence',
+        'scripts/terminal-capture-', 'scripts/terminal-input-evidence',
+        'scripts/terminal-frame-semantics',
+        'src/components/FullscreenLayout',
+        'src/components/LogoV2/',
+        'src/components/ModsPane',
+        'src/components/PromptInput/',
+        'src/components/diff/',
+        'src/hooks/useTextInput',
+        'src/ink/',
+        'src/keybindings/',
+        'src/screens/REPL',
+        'src/types/textInputTypes',
+        'src/utils/handlePromptSubmit',
+        'src/utils/processUserInput/',
+    )),
+    ('builtin-mods', (
+        'scripts/mods-test-lab',
+        'scripts/builtin-terminal-evidence',
+        'scripts/terminal-evidence-broker',
+        'scripts/test-terminal-evidence-broker',
+        'scripts/verify-pty-terminal-evidence',
+        'scripts/recheck-builtin-terminal-evidence',
+        'scripts/terminal-capture-', 'scripts/terminal-input-evidence',
+        'scripts/terminal-frame-semantics',
+        'src/services/mods/',
+        'src/components/ModsPane',
+        'src/screens/REPL',
+        'src/QueryEngine',
+        'src/query',
+        'src/utils/handlePromptSubmit',
+        'src/utils/processUserInput/',
+        'src/entrypoints/cli',
+        'src/plugins/builtinMods',
+        'src/plugins/builtinShippedMods',
+        'src/plugins/builtinPlugins',
+        'src/plugins/bundled/',
+        'assets/builtin-mods-',
+        'assets/builtin-diff-',
+    )),
 )
+TARGET_PATH_RULES += (('terminal-canonical-diff', (
+    *next(prefixes for target, prefixes in TARGET_PATH_RULES if target == 'terminal-interaction'),
+    'scripts/terminal-capture-', 'scripts/terminal-input-evidence',
+    'scripts/terminal-frame-semantics',
+    'src/plugins/builtinShippedMods', 'src/plugins/builtinPlugins',
+    'src/services/mods/', 'assets/builtin-diff-',
+)),)
+TARGET_PATH_RULES += (('mods-process-spawn', (
+    'src/services/mods/hostOperations', 'src/services/mods/runtime',
+    'src/services/mods/dispatch', 'src/services/mods/protocol',
+    'src/services/mods/loader', 'src/services/mods/environment',
+    'src/services/mods/worker', 'src/services/mods/testing/runner',
+    'src/services/mods/processSpawn', 'scripts/validate-mods-process-spawn.py',
+)),)
 SSH_LIFECYCLE_IDS = {
     'session_id': 'release-ssh-session-0001',
     'task_id': 'release-ssh-task-0001',
@@ -281,6 +395,225 @@ def code_review_prompt(release_base):
     )
 
 
+def code_review_scope_identity(*, run_args, task_id, run_id, artifact, parents, children, log, wire=None):
+    """Bind the bounded empty-Scope fixture to its actual native child, including Fork."""
+    from datetime import datetime
+    from xml.etree import ElementTree
+    checks = []
+
+    def require(value, reason):
+        if not value:
+            raise ValueError(reason)
+        checks.append(reason)
+
+    def milliseconds(value):
+        return round(datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp() * 1000)
+
+    def blocks(entry, kind):
+        content = entry.get('message', {}).get('content')
+        return [block for block in content if isinstance(block, dict) and block.get('type') == kind] if isinstance(content, list) else []
+
+    try:
+        require(bool(task_id) and bool(run_id), 'owned Workflow IDs')
+        require(all(artifact.get(key) == value for key, value in {
+            'taskId': task_id, 'workflowRunId': run_id, 'workflowName': 'code-review',
+            'scriptPath': 'bundled:code-review', 'status': 'completed', 'runArgs': run_args,
+        }.items()), 'same completed bundled Workflow artifact')
+        start, finish = artifact['startedAt'], artifact['updatedAt']
+        require(isinstance(start, int) and isinstance(finish, int) and start <= finish, 'artifact execution interval')
+        workers, cached = artifact['results'], artifact['resumeCacheEntries']
+        require(len(workers) == len(cached) == 1, 'one Scope worker and one cached result')
+        worker, cache = workers[0], cached[0]
+        require(all(worker.get(key) == value for key, value in {
+            'phaseId': 'Scope', 'agentId': 'scope', 'index': 0, 'status': 'completed',
+        }.items()), 'Scope worker completed without retry')
+        output = json.loads(worker['output'])
+        diff = re.search(r'using exactly: (git diff [^\n]+?)\. Do not widen', run_args)
+        require(diff and output.get('diffCommand') == diff.group(1) and output.get('files') == []
+                and isinstance(output.get('summary'), str) and bool(output['summary']), 'exact bounded empty-scope output')
+        require(all(cache.get(key) == value for key, value in {
+            'phase': 'Scope', 'label': 'scope', 'index': 0, 'result': output,
+        }.items()) and start <= cache['completedAt'] <= finish, 'cache matches actual worker output')
+        launches = [(parent, entry, block) for parent in parents for entry in parent['entries']
+                    if entry.get('type') == 'assistant' for block in blocks(entry, 'tool_use')
+                    if block.get('name') == 'WorkflowTool' and block.get('input') == {
+                        'action': 'run', 'selector': 'code-review', 'runArgs': run_args}]
+        require(len(launches) == 1, 'one exact parent WorkflowTool launch')
+        parent, launch, call = launches[0]
+        cli_session, tool_id = parent['session_id'], call['id']
+        parent_messages = [entry for entry in parent['entries'] if entry.get('type') in ('assistant', 'user')]
+        parent_uuids = [entry.get('uuid') for entry in parent_messages]
+        require(all(isinstance(value, str) and bool(value) for value in parent_uuids)
+                and len(parent_uuids) == len(set(parent_uuids))
+                and all(entry.get('isSidechain') is False for entry in parent_messages), 'unique native parent UUIDs')
+        require(bool(cli_session) and bool(tool_id) and bool(launch.get('uuid')) and all(
+            entry.get('sessionId') == cli_session for entry in parent['entries']
+            if entry.get('type') in ('assistant', 'user')), 'one parent CLI session')
+        replies = [(entry, block) for entry in parent['entries'] for block in blocks(entry, 'tool_result')
+                   if entry.get('type') == 'user' and block.get('tool_use_id') == tool_id]
+        require(len(replies) == 1, 'one native Workflow launch receipt')
+        reply_entry, reply = replies[0]
+        require(reply.get('is_error') is not True and reply_entry.get('parentUuid') == launch['uuid']
+                and reply_entry.get('sourceToolAssistantUUID') == launch['uuid']
+                and isinstance(reply.get('content'), str)
+                and f'Workflow launched in background. Task ID: {task_id}\n' in reply['content']
+                and re.search(rf'(?m)^Run ID: {re.escape(run_id)}$', reply['content']), 'launch receipt links task/run and parent tool')
+        notes = [entry for entry in parent['entries'] if entry.get('type') == 'user'
+                 and entry.get('origin', {}).get('kind') == 'task-notification']
+        require(len(notes) == 1 and isinstance(notes[0]['message']['content'], str), 'one native completion notification')
+        notification_text = notes[0]['message']['content']
+        require(notification_text.startswith('<task-notification>')
+                and notification_text.endswith('</task-notification>')
+                and '<!DOCTYPE' not in notification_text and '<!ENTITY' not in notification_text, 'bounded notification document')
+        notification = ElementTree.fromstring(notification_text)
+        require(notification.tag == 'task-notification' and not notification.attrib
+                and len(list(notification.iter('task-notification'))) == 1, 'one notification root')
+        for tag, expected in (('task-id', task_id), ('tool-use-id', tool_id), ('status', 'completed')):
+            nodes = notification.findall(tag)
+            require(len(nodes) == 1 and not list(nodes[0]) and not nodes[0].attrib
+                    and nodes[0].text == expected, 'exact direct notification ' + tag)
+        result_nodes, usage_nodes = notification.findall('result'), notification.findall('usage')
+        require(len(result_nodes) == len(usage_nodes) == 1 and not list(result_nodes[0]), 'one final result and usage')
+        require(json.loads(result_nodes[0].text) == {
+            'level': 'high', 'target': run_args.removeprefix('high '),
+            'summary': 'No changes found to review.', 'findings': [],
+            'stats': {'finders': 0, 'candidates': 0, 'verified': 0},
+        }, 'bounded empty-scope final report')
+        for tag, expected in (('total_tokens', artifact['tokenCount']), ('tool_uses', artifact['toolUseCount'])):
+            nodes = usage_nodes[0].findall(tag)
+            require(len(nodes) == 1 and not list(nodes[0]) and isinstance(expected, int)
+                    and expected >= 0 and nodes[0].text == str(expected), 'notification matches artifact ' + tag)
+        duration = usage_nodes[0].findall('duration_ms')
+        require(len(duration) == 1 and not list(duration[0]) and re.fullmatch(r'[0-9]+', duration[0].text or ''), 'native notification duration')
+        require(milliseconds(launch['timestamp']) <= start <= milliseconds(reply_entry['timestamp'])
+                and finish <= milliseconds(notes[0]['timestamp'])
+                and milliseconds(reply_entry['timestamp']) <= milliseconds(notes[0]['timestamp']),
+                'parent launch and completion notification bind this execution')
+        scope = f'task={task_id} run={run_id} '
+        lines = log.splitlines()
+        starts = [index for index, line in enumerate(lines) if 'workflow_worker_start ' + scope in line]
+        ends = [index for index, line in enumerate(lines) if 'workflow_worker_terminal ' + scope in line]
+        require(len(starts) == len(ends) == 1 and starts[0] < ends[0], 'one same-run worker interval')
+        exact = 'phase=Scope logical=scope agent=scope attempt=0 worker=0'
+        require(lines[starts[0]].endswith(exact) and lines[ends[0]].endswith(exact + ' status=completed'), 'exact Scope attempt terminal')
+        begin_ms, end_ms = (milliseconds(lines[index].split(' ', 1)[0]) for index in (starts[0], ends[0]))
+        require(start <= begin_ms <= end_ms <= finish, 'worker belongs to artifact interval')
+        window = lines[starts[0] + 1:ends[0]]
+        require(not any('workflow_worker_start ' in line for line in window), 'no competing worker in identity interval')
+        actual = [match for line in window if (match := re.search(
+            r'\[runAgent\] agentId=([^, ]+), agentType=general-purpose, model=([^, ]+),', line))]
+        params = [json.loads(line.split('AgentTool launch params ', 1)[1])
+                  for line in window if 'AgentTool launch params ' in line]
+        require(len(actual) == len(params) == 1, 'one actual native child execution')
+        agent_id, model = actual[0].groups()
+        require(all(params[0].get(key) == value for key, value in {
+            'selectedAgentType': 'general-purpose', 'permissionMode': 'plan', 'toolUseId': tool_id,
+            'spawnDepth': 1, 'model': model,
+        }.items()) and isinstance(params[0].get('isAsync'), bool), 'Agent launch metadata links parent tool')
+        candidates = [child for child in children if child.get('session_id') == cli_session
+                      and child.get('agent_id') == agent_id]
+        require(len(candidates) == 1, 'one child transcript in same CLI session')
+        child = candidates[0]
+        require(all(child['meta'].get(key) == value for key, value in {
+            'agentType': 'general-purpose', 'description': 'code-review: scope', 'toolUseId': tool_id,
+            'permissionMode': 'plan', 'spawnDepth': 1, 'model': model,
+        }.items()), 'native child meta links Scope and parent')
+        entries = [entry for entry in child['entries'] if entry.get('type') in ('user', 'assistant')]
+        child_uuids = [entry.get('uuid') for entry in entries]
+        require(all(isinstance(value, str) and bool(value) for value in child_uuids)
+                and len(child_uuids) == len(set(child_uuids)) and not set(child_uuids).intersection(parent_uuids)
+                and all(entry.get('isSidechain') is True for entry in entries), 'unique native sidechain UUIDs')
+        require(len(entries) == 3 and all(entry.get('agentId') == agent_id
+                and entry.get('sessionId') == cli_session
+                and begin_ms <= milliseconds(entry['timestamp']) <= end_ms for entry in entries), 'child messages belong to this native execution')
+        schema = {'type': 'object', 'required': ['diffCommand', 'files', 'summary'],
+                  'properties': {'diffCommand': {'type': 'string'}, 'files': {'type': 'array', 'items': {'type': 'string'}},
+                                 'summary': {'type': 'string'}, 'conventions': {'type': 'string'}}}
+        suffix = ('\n\nYou MUST call the `StructuredOutput` tool exactly once to return your answer.\n'
+                  'The tool input must match this JSON Schema:\n```json\n' + json.dumps(schema, indent=2) + '\n```\n'
+                  'Do NOT put your answer in a text response. The script reads ONLY the tool call.\n'
+                  'If schema validation fails, read the error and call the tool again with corrected input.')
+        require(entries[0].get('type') == 'user' and isinstance(worker.get('prompt'), str) and bool(worker['prompt'])
+                and entries[0]['message']['content'] == worker['prompt'] + suffix, 'exact actual worker prompt and schema')
+        structured = blocks(entries[1], 'tool_use')
+        require(entries[1].get('type') == 'assistant' and len(structured) == 1
+                and structured[0].get('name') == 'StructuredOutput' and structured[0].get('input') == output
+                and entries[1].get('parentUuid') == entries[0].get('uuid'), 'actual StructuredOutput matches artifact/cache')
+        receipts = blocks(entries[2], 'tool_result')
+        require(entries[2].get('type') == 'user' and len(receipts) == 1
+                and receipts[0].get('tool_use_id') == structured[0].get('id') and bool(structured[0].get('id'))
+                and receipts[0].get('is_error') is not True
+                and receipts[0].get('content') == 'Structured output provided successfully'
+                and entries[2].get('sourceToolAssistantUUID') == entries[1]['uuid']
+                and entries[2].get('parentUuid') == entries[1].get('uuid'), 'native successful StructuredOutput receipt')
+        parent_wire = []
+        for kind in ('code-review-launch', 'code-review-parent-completed', 'code-review-notification-completed'):
+            matches = [request for request in wire if request.get('response_kind') == kind]
+            require(len(matches) == 1, 'one transported parent ' + kind)
+            request = matches[0]
+            require(request.get('method') == 'POST' and request.get('path') == '/v1/responses'
+                    and request.get('authorization', {}).get('matches_dummy') is True
+                    and all(request.get('headers', {}).get(key) == cli_session for key in (
+                        'session-id', 'x-claude-code-session-id', 'thread-id')), 'transported native parent CLI identity')
+            if kind != 'code-review-launch':
+                items = request['body']['input']
+                calls = [item for item in items if item.get('type') == 'function_call' and item.get('name') == 'WorkflowTool']
+                returns = [item for item in items if item.get('type') == 'function_call_output' and item.get('call_id') == tool_id]
+                require(len(calls) == len(returns) == 1 and calls[0].get('id') == calls[0].get('call_id') == tool_id
+                        and json.loads(calls[0]['arguments']) == call['input']
+                        and returns[0].get('output') == reply['content'], 'transported parent call and exact task/run receipt')
+            if kind == 'code-review-notification-completed':
+                messages = [block.get('text') for item in request['body']['input'] if item.get('role') == 'user'
+                            for block in item.get('content', []) if isinstance(block, dict) and block.get('type') == 'input_text']
+                require(messages.count(notification_text) == 1, 'transported exact native completion notification')
+            parent_wire.append(request)
+        wire_sides = []
+        for kind in ('code-review-scope-output', 'code-review-scope-completed'):
+            matches = [request for request in wire if request.get('response_kind') == kind]
+            require(len(matches) == 1, 'one transported ' + kind)
+            request = matches[0]
+            require(request.get('method') == 'POST' and request.get('path') == '/v1/responses'
+                    and request.get('authorization', {}).get('matches_dummy') is True
+                    and all(request.get('headers', {}).get(key) == value for key, value in {
+                        'session-id': cli_session, 'x-claude-code-session-id': cli_session,
+                        'thread-id': agent_id,
+                    }.items()), 'transport belongs to same native CLI/child with dummy auth')
+            body = request['body']
+            require(body['input'][1].get('role') == 'user'
+                    and body['input'][1]['content'][1] == {'type': 'input_text', 'text': worker['prompt'] + suffix},
+                    'transported actual worker prompt')
+            tools = [tool for tool in body['tools'] if tool.get('name') == 'StructuredOutput']
+            require(len(tools) == 1 and tools[0].get('type') == 'function'
+                    and tools[0].get('parameters') == schema, 'transported exact StructuredOutput schema')
+            wire_sides.append(request)
+        require(isinstance(wire_sides[0]['sequence'], int) and wire_sides[0]['sequence'] < wire_sides[1]['sequence'],
+                'native child transport order')
+        require(parent_wire[0]['sequence'] < parent_wire[1]['sequence'] < parent_wire[2]['sequence']
+                and parent_wire[0]['sequence'] < wire_sides[0]['sequence']
+                < wire_sides[1]['sequence'] < parent_wire[2]['sequence'],
+                'each native parent/child stream precedes the completion notification')
+        wire_items = wire_sides[1]['body']['input']
+        calls = [item for item in wire_items if item.get('type') == 'function_call']
+        returns = [item for item in wire_items if item.get('type') == 'function_call_output']
+        require(len(calls) == len(returns) == 1 and calls[0].get('name') == 'StructuredOutput'
+                and calls[0].get('call_id') == calls[0].get('id') == structured[0]['id']
+                and json.loads(calls[0]['arguments']) == output
+                and returns[0].get('call_id') == structured[0]['id'], 'transported call/result IDs and exact arguments')
+        # The native side transcript above remains the authoritative unwrapped
+        # receipt. Wire may append complete system-reminder blocks, never arbitrary
+        # text or a second result. Reminder contents are data, not identity evidence.
+        transported = returns[0].get('output')
+        require(isinstance(transported, str) and re.fullmatch(
+            re.escape(receipts[0]['content']) + r'(?:\n\n<system-reminder>\n(?:(?!</?system-reminder>)[\s\S])+\n</system-reminder>)*',
+            transported), 'transported successful receipt with bounded reminder wrappers')
+        return {'complete': True, 'agent_ids': [agent_id], 'cli_session': cli_session,
+                'task_id': task_id, 'run_id': run_id, 'parent_tool_use_id': tool_id,
+                'structured_tool_use_id': structured[0]['id'], 'checks': checks,
+                'scope': 'bounded empty Scope; same CLI/task/run identity; actual pane/TTY and later review phases require separate evidence'}
+    except (ValueError, KeyError, TypeError, IndexError, AttributeError, ElementTree.ParseError) as error:
+        return {'complete': False, 'agent_ids': [], 'checks': checks, 'reason': str(error)}
+
+
 def submitted_input_pending(pane):
     plain = strip_ansi(pane).replace('\u00a0', ' ')
     lines = plain.splitlines()
@@ -292,24 +625,155 @@ def submitted_input_pending(pane):
         return False
     prompt_index = prompt_indexes[-1]
     prompt_text = lines[prompt_index].split('❯', 1)[1].strip()
-    if not prompt_text:
+    if not prompt_text or prompt_text.startswith('Message @'):
         return False
 
     def is_terminal_chrome(line):
         compact = line.replace(' ', '')
+        lower = line.lower()
         return (
             bool(compact) and set(compact) <= {'─'}
-        ) or 'bypass permissions on' in line or 'Debug mode' in line
+        ) or (
+            'bypass permissions on' in line
+            or 'Debug mode' in line
+            or 'Goal is set' in line
+            or 'plan mode on' in lower
+            or 'shift + ↓ to expand' in line
+        )
 
     trailing_content = [
         line.strip()
         for line in lines[prompt_index + 1:]
         if line.strip()
     ]
+    separator_index = next(
+        (
+            index
+            for index, line in enumerate(trailing_content)
+            if bool(line.replace(' ', ''))
+            and set(line.replace(' ', '')) <= {'─'}
+        ),
+        None,
+    )
+    if separator_index is not None:
+        content_after_separator = [
+            line
+            for line in trailing_content[separator_index + 1:]
+            if not is_terminal_chrome(line)
+        ]
+        if not content_after_separator:
+            return True
+        return all(line.lstrip().startswith('/') for line in content_after_separator)
     return not any(
         not is_terminal_chrome(line)
         for line in trailing_content
     )
+
+
+def submitted_input_visible(pane, text):
+    plain = strip_ansi(pane).replace('\u00a0', ' ')
+    lines = plain.splitlines()
+    prompt_indexes = [
+        index for index, line in enumerate(lines)
+        if '❯' in line
+    ]
+    if not prompt_indexes:
+        return False
+    prompt_index = prompt_indexes[-1]
+    prompt_lines = [lines[prompt_index].split('❯', 1)[1].strip()]
+    for line in lines[prompt_index + 1:]:
+        stripped = line.strip()
+        compact = stripped.replace(' ', '')
+        if bool(compact) and set(compact) <= {'─'}:
+            break
+        prompt_lines.append(stripped)
+    visible_text = '\n'.join(prompt_lines).strip()
+    if re.sub(r'\s+', ' ', visible_text) == re.sub(r'\s+', ' ', text.strip()):
+        return True
+    pasted_ref = re.fullmatch(
+        r'\[Pasted text #\d+(?: \+(\d+) lines)?\]',
+        visible_text,
+    )
+    if not pasted_ref:
+        return False
+    visible_lines = int(pasted_ref.group(1) or 0)
+    return visible_lines == len(re.findall(r'\r\n|\r|\n', text))
+
+
+def _terminal_native_exit_receipts_passed(run, capture, binary_sha256, collector_closed):
+    """Backend originals; outer collector EOF is a separate closing stage."""
+    try:
+        if type(capture.get('nativeJournal')) is not bool:
+            return False
+        if capture['nativeJournal'] and (not isinstance(binary_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', binary_sha256)):
+            return False
+        if capture['nativeJournal'] and (not isinstance(capture.get('captureId'), str) or not capture['captureId']):
+            return False
+        names = (('start.json', 'cleanup.json', 'broker-cleanup.json', 'producer-expected-native.json') +
+                 (('capture-eof',) if collector_closed else ())
+                 if capture['nativeJournal'] else ('native-pty-eof.json',))
+        values = {}
+        for name in names:
+            named = os.lstat(run / name)
+            if not stat.S_ISREG(named.st_mode):
+                return False
+            fd = os.open(run / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as file:
+                info = os.fstat(file.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                        (capture['nativeJournal'] and stat.S_IMODE(info.st_mode) != 0o600) or info.st_nlink != 1 or
+                        (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+                    return False
+                data = file.read()
+            values[name] = data.decode().strip() if name == 'capture-eof' else json.loads(data)
+        if not capture['nativeJournal']:
+            value = values['native-pty-eof.json']
+            return type(value.get('childExitCode')) is int and value['childExitCode'] == 0
+        start, closed, producer = (values[name] for name in ('start.json', 'cleanup.json', 'producer-expected-native.json'))
+        pid = start.get('childPid')
+        return (type(pid) is int and pid > 0 and type(start.get('childPgid')) is int and start['childPgid'] == pid and
+                start.get('binarySha256') == binary_sha256 and json.dumps(closed, sort_keys=True) == json.dumps(values['broker-cleanup.json'], sort_keys=True) and
+                closed.get('backend') == producer.get('backend') == 'native-shared-slot-v1' and
+                closed.get('captureId') == producer.get('captureId') == capture.get('captureId') and
+                type(closed.get('childPid')) is type(producer.get('childPid')) is int and
+                closed['childPid'] == producer['childPid'] == pid and
+                producer.get('binarySha256') == binary_sha256 and
+                type(closed.get('childExitCode')) is int and closed['childExitCode'] == 0 and
+                closed.get('childReaped') is True and closed.get('physicalEof') is True and
+                closed.get('normalCompletion') is True and 'failure' in closed and closed['failure'] is None and
+                closed.get('signalsSent') == [] and closed.get('cleanupErrors') == [] and
+                type(producer.get('nativeClose')) is dict and type(producer.get('ioClose')) is dict and
+                json.dumps(producer['nativeClose'], sort_keys=True) == json.dumps(closed.get('nativeClose'), sort_keys=True) and
+                json.dumps(producer['ioClose'], sort_keys=True) == json.dumps(closed.get('ioClose'), sort_keys=True) and
+                producer['nativeClose'].get('method') == 'owned-broker-closed-native-v1' and
+                producer['ioClose'].get('method') == 'owned-broker-closed-io-v1' and
+                (not collector_closed or values['capture-eof'] == '0'))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def terminal_native_exit_identity(run, launch, binary_sha256):
+    """Keep the launch-bound primitive identity across close clearing members."""
+    if (not isinstance(launch, dict) or launch.get('run') != str(run.resolve()) or
+            not isinstance(binary_sha256, str) or not re.fullmatch(r'[a-f0-9]{64}', binary_sha256) or
+            launch.get('binarySha256') != binary_sha256):
+        return None
+    capture = launch.get('capture')
+    if (not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool or
+            not isinstance(capture.get('captureId'), str) or not capture['captureId']):
+        return None
+    return {'capture': {'nativeJournal': capture['nativeJournal'], 'captureId': capture['captureId']},
+            'binarySha256': binary_sha256}
+
+
+def terminal_native_producer_exit_passed(run, capture, binary_sha256):
+    """Normal native producer closure only; never validates the outer pipe."""
+    return _terminal_native_exit_receipts_passed(run, capture, binary_sha256, False)
+
+
+def terminal_native_exit_passed(run, capture, binary_sha256):
+    """Normal producer plus actual collector EOF; never a full UI verdict."""
+    return _terminal_native_exit_receipts_passed(run, capture, binary_sha256, True)
 
 
 def input_prompt_ready(pane):
@@ -413,7 +877,10 @@ def collect_required_target_inputs(repo, baseline, explicit_base_ref=None):
             ['git', '-C', str(repo), 'diff', '--name-only'],
             check=True,
         ).stdout)),
-        'untracked': sorted(untracked_manifest(repo)),
+        'untracked': sorted(
+            baseline['untracked_files_manifest']
+            if baseline.get('retain_artifacts') else untracked_manifest(repo)
+        ),
     }
     all_paths = sorted({
         path
@@ -441,7 +908,7 @@ def required_targets_for_paths(paths):
 
 
 
-def plan_targets(extra_targets, required_targets):
+def plan_targets(extra_targets, required_targets, *, retain_artifacts=False):
     duplicate_defaults = sorted(set(DEFAULT_TARGETS) & set(extra_targets))
     if duplicate_defaults:
         raise ValueError(
@@ -488,7 +955,110 @@ def assertion_source_runs(runs, registered_runs):
 
 
 
-def assertion_is_valid(assertion, source_runs):
+
+
+BUILTIN_SIDE_NAMES = ('privacyOff', 'privacyOn', 'enabled', 'disabled',
+                      'securityOrdinary', 'securityTeam', 'securityEnterprise')
+BUILTIN_ASSERTIONS = frozenset({'completeness', 'cleanup', 'agents', 'diff', 'security',
+                              'ui', 'dynamicTools', 'suggestionReload', 'telemetry', 'terminalEvidence'})
+BUILTIN_CHECKS = frozenset({'subprocess', 'report', 'assertions', 'binary', 'sides',
+                           'evidence_ownership', 'cache_cleanup', 'independent_frame_replay'})
+
+
+def revalidate_builtin_assertion(source_root, acceptance_path, binary_sha256):
+    script = Path(__file__).resolve().parents[4] / 'scripts/recheck-builtin-terminal-evidence.mjs'
+    try:
+        completed = subprocess.run(
+            [shutil.which('bun') or 'bun', '--no-env-file', str(script), '--final',
+             str(acceptance_path), binary_sha256, str(source_root / 'builtin-terminal-recheck.json'),
+             str(source_root / 'builtin-cache-archive.json')],
+            cwd=script.parent.parent,
+            env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
+                 'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
+                 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
+            capture_output=True, text=True, timeout=60,
+        )
+        result = json.loads(completed.stdout)
+        return (completed.returncode == 0 and result.get('verdict') == 'passed'
+                and result.get('acceptance') == str(acceptance_path)
+                and result.get('binarySha256') == binary_sha256)
+    except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+        return False
+
+
+
+def canonical_wire_checks(run_dir, wire, debug, expected_host):
+    invalid = {'canonical_wire_complete': False, 'canonical_wire_identity': False,
+               'canonical_wire_tool_receipts': False}
+    try:
+        session_ids = set(re.findall(r'\[ForkMode\] enabled source=default sessionId=([a-f0-9-]{36})', debug))
+        if len(session_ids) != 1 or not isinstance(wire, list) or len(wire) != 8:
+            return invalid
+        session = next(iter(session_ids))
+        posts = [row for row in wire if row.get('method') == 'POST' and row.get('path') == '/v1/responses']
+        main = [row for row in posts if is_main_response_request(row)]
+        kinds = [f'canonical-{file}-{step}' for file in ('alpha', 'omega')
+                 for step in ('read', 'write', 'completed')]
+        complete = (len(posts) == 7 and len(main) == 6
+                    and [row.get('response_kind') for row in main] == kinds
+                    and sum(row.get('response_kind') == 'title' and not is_main_response_request(row)
+                            for row in posts) == 1
+                    and sum(row.get('method') == 'GET' and row.get('path') == '/v1/models'
+                            and row.get('response_kind') == 'models' for row in wire) == 1
+                    and [row.get('sequence') for row in wire] == list(range(1, 9)))
+        request_ids = [row.get('headers', {}).get('x-client-request-id') for row in posts]
+        models = {row.get('body', {}).get('model') for row in main}
+        identity = (bool(expected_host) and len(models) == 1 and all(isinstance(model, str) and model for model in models)
+                    and len(set(request_ids)) == 7
+                    and all(isinstance(value, str) and re.fullmatch(r'[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}', value)
+                            for value in request_ids)
+                    and all(row.get('authorization') == {'present': True, 'matches_dummy': True} for row in wire)
+                    and all(openai_request_metadata_matches(row.get('headers', {}), session)
+                            and row['headers'].get('host') == expected_host
+                            and row['headers'].get('content-type') == 'application/json'
+                            and row['body'].get('prompt_cache_key') == session
+                            and row['body'].get('stream') is True and row['body'].get('store') is False
+                            for row in posts))
+        server = object.__new__(MockOpenAIServer)
+        server.run_dir = run_dir
+        receipts = complete and all(server.canonical_diff_response(row['body'])[0] == kind
+                                    for row, kind in zip(main, kinds))
+        # Every tool continuation must retain the exact preceding input bytes.
+        # The live Responses adapter appends one call/result pair per step.
+        receipts = receipts and all(
+            len(following['body']['input']) == len(previous['body']['input']) + 2
+            and following['body']['input'][:-2] == previous['body']['input']
+            for base in (0, 3)
+            for previous, following in zip(main[base:base + 2], main[base + 1:base + 3]))
+        return {'canonical_wire_complete': complete, 'canonical_wire_identity': identity,
+                'canonical_wire_tool_receipts': receipts}
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return invalid
+
+
+def revalidate_terminal_assertion(source_root):
+    script = Path(__file__).resolve().parents[4] / 'scripts/terminal-capture-driver.mjs'
+    try:
+        completed = subprocess.run(
+            [shutil.which('bun') or 'bun', '--no-env-file', str(script), 'verify',
+             str(source_root / 'capture-launch.json')],
+            cwd=script.parent.parent,
+            env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
+                 'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
+                 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
+            capture_output=True, text=True, timeout=60,
+        )
+        result = json.loads(completed.stdout)
+        launch = json.loads((source_root / 'capture-launch.json').read_text())
+        return (completed.returncode == 0 and result.get('verdict') == 'passed'
+                and result.get('run') == str(source_root)
+                and result.get('captureId') == launch['capture']['captureId']
+                and result.get('binarySha256') == launch['binarySha256'])
+    except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired):
+        return False
+
+
+def assertion_is_valid(assertion, source_runs, registered_runs=None):
     if not isinstance(assertion, dict):
         return False
     if assertion.get('validation_verdict') != 'passed':
@@ -507,7 +1077,19 @@ def assertion_is_valid(assertion, source_runs):
         return False
     if not isinstance(evidence_paths, list) or not evidence_paths:
         return False
+    required_paths = assertion.get('required_evidence')
+    if not isinstance(required_paths, list) or not required_paths or any(
+        not isinstance(path, str) or not Path(path).is_absolute()
+        for path in required_paths
+    ):
+        return False
+    if {str(Path(path).resolve()) for path in required_paths} != {
+        str(Path(path).resolve()) for path in evidence_paths
+        if isinstance(path, str)
+    }:
+        return False
     source_root = source_runs[source_run]
+    nonempty_proof = False
     for evidence_path in evidence_paths:
         if not isinstance(evidence_path, str) or not evidence_path.strip():
             return False
@@ -516,8 +1098,353 @@ def assertion_is_valid(assertion, source_runs):
             return False
         if not is_relative_to(absolute_path.resolve(strict=False), source_root):
             return False
-    return True
+        if absolute_path.is_file() and absolute_path.stat().st_size > 0:
+            nonempty_proof = True
+    expected_hashes = assertion.get('evidence_sha256')
+    terminal_target = next((target for target, (required_id, _) in TERMINAL_ACCEPTANCE.items()
+                            if assertion_id == required_id), None)
+    if expected_hashes is not None or assertion_id in ('code-review-native-scope-identity', 'builtin-mods-compiled-acceptance', 'mods-process-spawn-real-author') or terminal_target:
+        if (not isinstance(expected_hashes, dict) or not expected_hashes
+                or any(not isinstance(path, str) or not Path(path).is_absolute()
+                       or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                       for path, digest in expected_hashes.items())):
+            return False
+        try:
+            if set(expected_hashes) != {str(Path(path).resolve()) for path in evidence_paths}:
+                return False
+            verified_bytes = {}
+            for path in evidence_paths:
+                file = Path(path)
+                if file.is_symlink() or not file.is_file():
+                    return False
+                data = file.read_bytes()
+                key = str(file.resolve())
+                if hashlib.sha256(data).hexdigest() != expected_hashes[key]:
+                    return False
+                verified_bytes[key] = data
+            if assertion_id == 'code-review-native-scope-identity':
+                proof_path = str((source_root / 'workflow-agent-identity-proof.json').resolve())
+                if proof_path not in verified_bytes:
+                    return False
+                proof = json.loads(verified_bytes[proof_path])
+                if not isinstance(proof, dict):
+                    return False
+                snapshots = proof.get('source_hashes')
+                if (proof.get('complete') is not True or not isinstance(snapshots, dict) or not snapshots
+                        or any(not isinstance(path, str) or not Path(path).is_absolute()
+                               or not is_relative_to(Path(path).resolve(), source_root / 'workflow-identity-inputs')
+                               or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)
+                               for path, digest in snapshots.items())
+                        or set(expected_hashes) != {*snapshots, proof_path}
+                        or any(expected_hashes.get(path) != digest for path, digest in snapshots.items())):
+                    return False
+            if assertion_id == 'builtin-mods-compiled-acceptance':
+                registered = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                acceptance_path = Path(registered.get('acceptance_report', ''))
+                acceptance_key = str(acceptance_path)
+                checks_key = str(source_root / 'builtin-mods-checks.json')
+                required = {checks_key, str(source_root / 'builtin-terminal-recheck.json'),
+                            str(source_root / 'stdout.txt'), str(source_root / 'stderr.txt'), acceptance_key}
+                if (not acceptance_path.is_absolute() or not is_relative_to(acceptance_path, source_root)
+                        or not required <= verified_bytes.keys()
+                        or expected_hashes[acceptance_key] != registered.get('acceptance_sha256')):
+                    return False
+                report = json.loads(verified_bytes[acceptance_key])
+                checks = json.loads(verified_bytes[checks_key]).get('checks')
+                pair = report.get('pair', {})
+                assertions = report.get('assertions', {})
+                if (not isinstance(checks, dict) or set(checks) != BUILTIN_CHECKS
+                        or not all(value is True for value in checks.values())
+                        or set(pair) != set(BUILTIN_SIDE_NAMES) or set(assertions) != BUILTIN_ASSERTIONS
+                        or not all(value.get('verdict') == 'passed' for value in assertions.values())):
+                    return False
+                archive_key = str(source_root / 'builtin-cache-archive.json')
+                if (archive_key not in verified_bytes
+                        or expected_hashes[archive_key] != registered.get('builtin_archive_receipt_sha256')):
+                    return False
+                archive_proof = json.loads(verified_bytes[archive_key])
+                if (archive_proof.get('source') != registered.get('builtin_archive_source')
+                        or archive_proof.get('archive') != registered.get('builtin_archive_root')
+                        or archive_proof.get('archive') != str(source_root / 'acceptance-cache')
+                        or any(archive_proof.get(key) is not True for key in
+                               ('archiveComplete', 'sourceFilesStable', 'archiveFilesMatch'))):
+                    return False
+                registry = registered.get('builtin_capture_registry', {})
+                if set(registry) != set(BUILTIN_SIDE_NAMES):
+                    return False
+                owned_runs, capture_ids = set(), set()
+                for name in BUILTIN_SIDE_NAMES:
+                    side = pair[name]
+                    root = Path(side['run'])
+                    capture = side['cleanup']['terminalCapture']
+                    identity = {key: side.get(key) for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
+                    if (identity != {key: registry[name].get(key) for key in identity} or side['binarySha256'] != registered.get('binary_sha256')
+                            or not root.is_absolute() or root.is_symlink() or root.resolve() != root
+                            or not is_relative_to(root, source_root / 'acceptance-cache')
+                            or str(root) in owned_runs or side['captureId'] in capture_ids
+                            or expected_hashes.get(str(root / 'bin/claude')) != side['binarySha256']):
+                        return False
+                    owned_runs.add(str(root)); capture_ids.add(side['captureId'])
+                    launch_key = str(root / 'capture-launch.json')
+                    if launch_key not in verified_bytes:
+                        return False
+                    launch = json.loads(verified_bytes[launch_key])
+                    if (any(launch.get(key) != registry[name].get(key)
+                            for key in ('target', 'pane', 'binarySha256', 'driverPid', 'capture'))
+                            or launch.get('run') != registry[name].get('originalRun')
+                            or launch.get('capture', {}).get('captureId') != side['captureId']):
+                        return False
+                    original_relative = str(root.relative_to(source_root / 'acceptance-cache'))
+                    original_launch = archive_proof.get('sourceManifest', {}).get(original_relative + '/capture-launch.json', {})
+                    if (registry[name].get('originalRun') != str(Path(archive_proof['source']) / original_relative)
+                            or original_launch.get('type') != 'file'
+                            or original_launch.get('sha256') != expected_hashes.get(launch_key)):
+                        return False
+                    required_files = terminal_capture_required_files(launch)
+                    files = capture['files']
+                    if (required_files is None or not required_files <= files.keys()
+                            or (launch['capture']['nativeJournal']
+                                and capture.get('backend') != 'native-shared-slot-v1')
+                            or (not launch['capture']['nativeJournal'] and capture.get('backend') is not None)):
+                        return False
+                    for filename, info in files.items():
+                        key = str(root / filename)
+                        if (info.get('path') != key or key not in verified_bytes
+                                or expected_hashes[key] != info.get('sha256')
+                                or len(verified_bytes[key]) != info.get('bytes')):
+                            return False
+                    for sent in (json.loads(line) for line in verified_bytes[str(root / 'inputs.jsonl')].splitlines()):
+                        if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':
+                            key = sent.get('inputFile')
+                            if (key not in verified_bytes or verified_bytes[key].hex() != sent.get('hex')
+                                    or expected_hashes[key] != sent.get('bytesSHA256')):
+                                return False
+                if not revalidate_builtin_assertion(source_root, acceptance_path, registered['binary_sha256']):
+                    return False
+                if any(Path(path).read_bytes() != data for path, data in verified_bytes.items()):
+                    return False
+            if assertion_id == 'mods-process-spawn-real-author':
+                import importlib.util
+                registered = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                native = source_root / 'native'
+                report_key = str(native / 'evidence/result.json')
+                checks_key = str(source_root / 'process-spawn-checks.json')
+                probe_path = Path(__file__).resolve().parents[4] / 'scripts/validate-mods-process-spawn.py'
+                if (expected_hashes != registered.get('process_spawn_evidence_sha256')
+                        or registered.get('process_spawn_root') != str(native)
+                        or report_key not in verified_bytes
+                        or expected_hashes[report_key] != registered.get('process_spawn_report_sha256')
+                        or sha256(probe_path) != registered.get('process_spawn_probe_sha256')):
+                    return False
+                report = json.loads(verified_bytes[report_key])
+                artifacts = report.get('artifactsSHA256')
+                if not isinstance(artifacts, dict) or not artifacts:
+                    return False
+                required = {checks_key, str(source_root / 'stdout.txt'),
+                            str(source_root / 'stderr.txt'), report_key,
+                            *(str(native / name) for name in artifacts)}
+                if required != set(verified_bytes):
+                    return False
+                if (report.get('originalBinary') != registered.get('binary')
+                        or json.loads(verified_bytes[str(source_root / 'stdout.txt')]).get('reportSHA256') != registered.get('process_spawn_report_sha256')):
+                    return False
+                spec = importlib.util.spec_from_file_location('mods_spawn_final_probe', probe_path)
+                probe = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(probe)
+                checks = {'foreground_native_exit': True, **probe.recheck_process_spawn_report(
+                    native, registered['process_spawn_report_sha256'], registered['binary_sha256']),
+                    'closed_originals_rechecked': True}
+                if (not all(value is True for value in checks.values())
+                        or json.loads(verified_bytes[checks_key]).get('checks') != checks
+                        or any(Path(path).read_bytes() != data for path, data in verified_bytes.items())):
+                    return False
+            if terminal_target:
+                required_files = {'capture-launch.json', 'terminal-capture.json',
+                    'independent-pty-checks.json', 'bin/claude',
+                    TERMINAL_ACCEPTANCE[terminal_target][1], *TERMINAL_BUSINESS_FILES[terminal_target]}
+                if not {str((source_root / name).resolve()) for name in required_files} <= set(verified_bytes):
+                    return False
+                def decoded(name):
+                    return json.loads(verified_bytes[str((source_root / name).resolve())])
+                capture = decoded('terminal-capture.json')
+                fresh = decoded('independent-pty-checks.json')
+                launch = decoded('capture-launch.json')
+                checks = decoded(TERMINAL_ACCEPTANCE[terminal_target][1])
+                metadata = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                registered = metadata.get('terminal_capture')
+                if (expected_hashes != metadata.get('terminal_evidence_sha256')
+                        or not isinstance(registered, dict)
+                        or any(launch.get(key) != registered.get(key)
+                               for key in ('run', 'driverPid', 'target', 'pane', 'binarySha256', 'socket',
+                                           'socketRoot', 'serverPid', 'socketIdentity'))
+                        or launch.get('capture') != registered.get('capture')):
+                    return False
+                if (not isinstance(checks, dict)
+                        or not TERMINAL_REQUIRED_CHECKS[terminal_target] <= checks.keys()
+                        or not all(value is True for value in checks.values())
+                        or fresh.get('captureIdentityPassed') is not True
+                        or fresh.get('recheck', {}).get('verdict') != 'passed'
+                        or fresh.get('side', {}).get('run') != str(source_root)
+                        or fresh.get('recheck', {}).get('run') != str(source_root)
+                        or fresh.get('recheck', {}).get('captureId') != capture.get('captureId')
+                        or fresh.get('side', {}).get('captureId') != capture.get('captureId')
+                        or fresh.get('side', {}).get('binarySha256') != capture.get('binarySha256')
+                        or fresh.get('side', {}).get('target') != launch.get('target')
+                        or fresh.get('side', {}).get('pane') != launch.get('pane')
+                        or capture.get('target') != launch.get('target')
+                        or capture.get('pane') != launch.get('pane')
+                        or fresh.get('side', {}).get('cleanup', {}).get('terminalCapture') != capture
+                        or launch.get('run') != str(source_root)
+                        or launch.get('capture', {}).get('captureId') != capture.get('captureId')
+                        or capture.get('framePhysicalVerdict') != 'passed'
+                        or capture.get('eofPassed') is not True
+                        or capture.get('binarySha256') != launch.get('binarySha256')
+                        or expected_hashes[str((source_root / 'bin/claude').resolve())] != capture.get('binarySha256')):
+                    return False
+                files = capture.get('files')
+                required_files = terminal_capture_required_files(registered)
+                if (not isinstance(files, dict) or required_files is None or not required_files <= files.keys()
+                        or (registered['capture']['nativeJournal']
+                            and capture.get('backend') != 'native-shared-slot-v1')
+                        or (not registered['capture']['nativeJournal'] and capture.get('backend') is not None)):
+                    return False
+                for name, info in files.items():
+                    key = str((source_root / name).resolve())
+                    if (not isinstance(info, dict) or info.get('path') != key
+                            or key not in verified_bytes or expected_hashes[key] != info.get('sha256')
+                            or len(verified_bytes[key]) != info.get('bytes')):
+                        return False
+                inputs = [json.loads(line) for line in verified_bytes[str((source_root / 'inputs.jsonl').resolve())].splitlines()]
+                for sent in inputs:
+                    if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':
+                        key = sent.get('inputFile')
+                        if (not isinstance(key, str) or key not in verified_bytes
+                                or verified_bytes[key].hex() != sent.get('hex')
+                                or expected_hashes[key] != sent.get('bytesSHA256')):
+                            return False
+                replay = fresh.get('recheck', {}).get('replay', {})
+                sizes = terminal_resize_sizes(replay)
+                if sizes is None:
+                    return False
+                if terminal_target == 'terminal-interaction':
+                    logical = terminal_frame_report_checks(replay)
+                    if (not logical['frame_semantics'] or not logical['frame_resize_sequence']
+                            or sizes != [(109, 34), (110, 34), (109, 34), (110, 34), (109, 34)]):
+                        return False
+                elif sizes != [(110, 34), (109, 34), (110, 34), (109, 34)]:
+                    return False
+                if terminal_target == 'terminal-canonical-diff':
+                    keys = {str(source_root / 'canonical-wire.json'), str(source_root / 'debug.log')}
+                    if not keys <= verified_bytes.keys():
+                        return False
+                    metadata = json.loads((registered_runs or {}).get(str(source_root), '{}'))
+                    host = urlsplit(metadata.get('mock_openai', {}).get('base_url', '')).netloc
+                    protocol = canonical_wire_checks(source_root, decoded('canonical-wire.json'),
+                        verified_bytes[str(source_root / 'debug.log')].decode(), host)
+                    if not all(protocol.values()):
+                        return False
+                    git_keys = {str(source_root / name) for name in
+                        ('canonical-git.jsonl', 'canonical-release.json',
+                         'canonical-git-output.json', 'canonical-git-output.raw')}
+                    if not git_keys <= verified_bytes.keys():
+                        return False
+                    events = [json.loads(line) for line in verified_bytes[str(source_root / 'canonical-git.jsonl')].splitlines()]
+                    if not all(canonical_git_checks(source_root, events, decoded('canonical-release.json'),
+                                verified_bytes[str(source_root / 'debug.log')].decode()).values()):
+                        return False
+                    native_context = None
+                    if launch.get('capture', {}).get('nativeJournal') is True:
+                        native_context = canonical_native_context(source_root, launch,
+                            expected_hashes[str((source_root / 'bin/claude').resolve())])
+                        if native_context is None:
+                            return False
+                    if not all(canonical_ui_checks(source_root, native_context).values()):
+                        return False
+                if not revalidate_terminal_assertion(source_root):
+                    return False
+                # Replay is read-only; also reject evidence changed during it.
+                if any(Path(path).read_bytes() != data for path, data in verified_bytes.items()):
+                    return False
+        except (OSError, ValueError, TypeError, AttributeError, KeyError):
+            return False
+    return nonempty_proof
 
+
+TERMINAL_CAPTURE_FILES = frozenset({'pty.raw', 'native-pty.raw', 'native-pty-initial.json',
+    'native-pty-eof.json', 'native-input.jsonl', 'pty-io.jsonl', 'broker-cleanup.json',
+    'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl', 'initial-termios.txt', 'observations.jsonl',
+    'capture-eof', 'frame-stream-map.json', 'frame-physical-report.json'})
+
+NATIVE_TERMINAL_CAPTURE_FILES = frozenset({
+    'pty.raw', 'native-pty.raw', 'raw.bin', 'records.bin', 'journal.bin', 'registration.json',
+    'header.json', 'native-initial.json', 'start.json', 'launch.json', 'cleanup.json',
+    'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
+    'observations.jsonl', 'initial-termios.txt', 'capture-eof', 'expected-native.json',
+    'producer-expected-native.json', 'native-observer.json', 'observer.dylib',
+    'observer-compile.log', 'frame-stream-map.json', 'frame-physical-report.json',
+})
+
+
+def terminal_capture_required_files(launch):
+    """Protocol from the held prepared launch, never the final report's labels."""
+    capture = launch.get('capture') if isinstance(launch, dict) else None
+    if (not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool
+            or not isinstance(capture.get('captureId'), str) or not capture['captureId']):
+        return None
+    return NATIVE_TERMINAL_CAPTURE_FILES if capture['nativeJournal'] else TERMINAL_CAPTURE_FILES
+
+TERMINAL_ACCEPTANCE = {
+    'terminal-interaction': ('terminal-interaction-frame-and-input-matrix', 'terminal-interaction-checks.json'),
+    'terminal-canonical-diff': ('terminal-canonical-diff-real-tools-and-pty', 'canonical-checks.json'),
+}
+
+TERMINAL_BUSINESS_FILES = {
+    'terminal-interaction': frozenset({'omega-body-blocked.json', 'input-chunks.json'}),
+    'terminal-canonical-diff': frozenset({'canonical-checkpoints.json', 'canonical-ui-states.json',
+        'omega-body-blocked.json', 'canonical-wire.json', 'debug.log', 'canonical-git.jsonl',
+        'canonical-release.json', 'canonical-git-output.json', 'canonical-git-output.raw'}),
+}
+
+
+TERMINAL_REQUIRED_CHECKS = {
+    'terminal-interaction': frozenset({
+        'ready', 'custom_clawd_layout', 'same_chunk_utf8_submit', 'csi_u_submit',
+        'raw_backspace_submit', 'raw_del_submit', 'forward_delete_submit',
+        'cursor_combination_submit', 'paste_head_visible', 'paste_continuation_visible',
+        'paste_recovery_submit', 'diff_alpha_ready', 'diff_partial_loading',
+        'diff_same_chunk_navigation', 'resize_intent', 'resize_keyboard_ownership',
+        'diff_closed', 'diff_reopened', 'frame_physical', 'frame_resize_sequence',
+        'frame_semantics', 'cleanup', 'bounded_terminal_evidence', 'full_terminal_coverage', 'independent_pty_capture_identity',
+        'independent_pty_resize_sequence', 'normal_native_exit',
+        'same_chunk_utf8_submit_prompt_restored', 'same_chunk_utf8_submit_exact_request',
+        'csi_u_submit_prompt_restored', 'csi_u_submit_exact_request',
+        'raw_backspace_submit_prompt_restored', 'raw_backspace_submit_exact_request',
+        'raw_del_submit_prompt_restored', 'raw_del_submit_exact_request',
+        'forward_delete_submit_prompt_restored', 'forward_delete_submit_exact_request',
+        'cursor_combination_submit_prompt_restored', 'cursor_combination_submit_exact_request',
+        'paste_head_not_submitted', 'paste_continuation_not_submitted',
+        'paste_recovery_submit_prompt_restored', 'paste_recovery_submit_exact_request',
+        'diff_dialog_entry', 'omega_body_blocked', 'diff_partial_publish',
+        'loading_keyboard_ownership', 'resize_detail_preserved',
+        'resize_files_after_explicit_back', 'diff_files_before_close',
+    }),
+    'terminal-canonical-diff': frozenset({
+        'ready', 'canonical_command_owner', 'alpha_real_write_receipt',
+        'alpha_prompt_restored', 'canonical_alpha_dock', 'canonical_initial_focus',
+        'omega_real_write_receipt', 'omega_prompt_restored', 'canonical_batch_blocked',
+        'canonical_exact_git_lane', 'canonical_two_files_before_select',
+        'canonical_focus_landing', 'canonical_omega_control', 'canonical_before_press_alpha_body',
+        'canonical_file_body', 'canonical_escape_keeps_open', 'canonical_inline_same_identity',
+        'canonical_redocked', 'canonical_refocus_landing', 'canonical_person_closed',
+        'canonical_reopened', 'canonical_reopen_scroll_reset', 'canonical_command_closed',
+        'canonical_narrow_refused', 'canonical_no_native_fallback', 'canonical_keyboard_owner',
+        'canonical_release_watcher_stopped', 'scenario_completed', 'normal_native_exit',
+        'cleanup', 'bounded_terminal_evidence', 'full_terminal_coverage', 'independent_pty_capture_identity', 'independent_pty_ink_frames',
+        'independent_pty_resize_sequence', 'canonical_wire_complete', 'canonical_wire_identity',
+        'canonical_wire_tool_receipts', 'canonical_git_release_causal', 'canonical_git_success',
+        'canonical_pane_frame_association', 'canonical_pane_lifecycle', 'canonical_keyboard_landing',
+    }),
+}
 
 
 def validate_required_target_results(required_targets, runs, registered_runs=None):
@@ -534,8 +1461,27 @@ def validate_required_target_results(required_targets, runs, registered_runs=Non
             run.get('validation_verdict') == 'passed'
             and isinstance(assertions, list)
             and bool(assertions)
-            and all(assertion_is_valid(assertion, own_sources) for assertion in assertions)
+            and all(assertion_is_valid(assertion, own_sources, registered_runs) for assertion in assertions)
         )
+        if valid and target == 'code-review':
+            for assertion_id in ('code-review-native-scope-identity', 'code-review-mock-wire',
+                                 'code-review-workflow-lifecycle'):
+                matching = [item for item in assertions if item.get('assertion_id') == assertion_id]
+                if len(matching) != 1 or matching[0].get('source_run') != Path(run['evidence_dir']).name:
+                    valid = False
+                    break
+        if valid and target == 'mods-process-spawn':
+            matching = [item for item in assertions
+                        if item.get('assertion_id') == 'mods-process-spawn-real-author']
+            valid = len(matching) == 1 and matching[0].get('source_run') == Path(run['evidence_dir']).name
+        if valid and target == 'builtin-mods':
+            matching = [item for item in assertions
+                        if item.get('assertion_id') == 'builtin-mods-compiled-acceptance']
+            valid = len(matching) == 1 and matching[0].get('source_run') == Path(run['evidence_dir']).name
+        if valid and target in TERMINAL_ACCEPTANCE:
+            matching = [item for item in assertions
+                        if item.get('assertion_id') == TERMINAL_ACCEPTANCE[target][0]]
+            valid = len(matching) == 1 and matching[0].get('source_run') == Path(run['evidence_dir']).name
         if not valid:
             invalid.append(target)
     return {
@@ -551,6 +1497,1002 @@ def command(args, *, check=False, timeout=120):
         raise RuntimeError(
             f"command failed: {args!r}\nstdout={result.stdout}\nstderr={result.stderr}"
         )
+    return result
+
+
+def initialize_terminal_interaction_repository(fixture):
+    fixture.mkdir()
+    command(['git', '-C', str(fixture), 'init', '-q'], check=True)
+    command(['git', '-C', str(fixture), 'config', 'user.name', 'Release Validation'], check=True)
+    command(['git', '-C', str(fixture), 'config', 'user.email', 'release-validation@example.invalid'], check=True)
+    (fixture / 'alpha.txt').write_text('alpha before\n')
+    (fixture / 'omega.txt').write_text('omega before\n')
+    command(['git', '-C', str(fixture), 'add', 'alpha.txt', 'omega.txt'], check=True)
+    command([
+        'git', '-C', str(fixture), '-c', 'commit.gpgSign=false',
+        'commit', '-q', '-m', 'fixture',
+    ], check=True)
+
+
+def mutate_terminal_interaction_repository(fixture):
+    (fixture / 'alpha.txt').write_text('alpha before\nALPHA_RELEASE_BODY\n')
+    (fixture / 'omega.txt').write_text('omega before\nOMEGA_RELEASE_BODY\n')
+
+
+def terminal_request_submitted(requests, offset, expected):
+    main_requests = [request for request in requests[offset:]
+                     if is_main_response_request(request)]
+    if len(main_requests) != 1:
+        return False
+    items = main_requests[0].get('body', {}).get('input', [])
+    if (
+        not items
+        or not isinstance(items[-1], dict)
+        or items[-1].get('role') != 'user'
+        or any(isinstance(item, dict) and item.get('type') == 'function_call_output'
+               for item in items)
+    ):
+        return False
+    content = items[-1].get('content')
+    if content == expected:
+        return True
+    if not isinstance(content, list):
+        return False
+    texts = []
+    for block in content:
+        if not isinstance(block, dict) or block.get('type') != 'input_text':
+            return False
+        text = block.get('text')
+        if not isinstance(text, str):
+            return False
+        if text.startswith(('<available-deferred-tools>', '<system-reminder>')):
+            continue
+        texts.append(text)
+    return texts == [expected]
+
+
+def create_terminal_git_wrapper(run_dir):
+    real_git = shutil.which('git')
+    if not real_git:
+        raise RuntimeError('git unavailable for terminal fixture')
+    wrapper_dir = run_dir / 'driver-bin'
+    wrapper_dir.mkdir()
+    os.mkfifo(run_dir / 'omega-body.fifo', 0o600)
+    wrapper = wrapper_dir / 'git'
+    wrapper.write_text(f'''#!{sys.executable} -S
+import json, os, select, sys
+from pathlib import Path
+root = Path({str(run_dir)!r})
+args = sys.argv[1:]
+tail = list(args)
+while tail and (tail[0] in ('--no-optional-locks', '--literal-pathspecs')
+                or tail[0].startswith(('--git-dir=', '--work-tree='))):
+    tail.pop(0)
+prefix = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--ignore-submodules=dirty']
+body = (len(tail) == len(prefix) + 3 and tail[:len(prefix)] == prefix
+        and not tail[len(prefix)].startswith('-') and tail[-2:] == ['--', 'omega.txt'])
+if body and not (root / 'omega-body-released').exists():
+    fd = os.open(root / 'omega-body.fifo', os.O_RDWR | os.O_NONBLOCK)
+    try:
+        marker = root / ('omega-body-' + str(os.getpid()) + '.tmp')
+        marker.write_text(json.dumps({{'pid': os.getpid(), 'argv': args}}))
+        marker.replace(root / 'omega-body-blocked.json')
+        if not (root / 'omega-body-released').exists():
+            if not select.select([fd], [], [], 30)[0]:
+                raise RuntimeError('omega body release timed out')
+            os.read(fd, 1)
+        if not (root / 'omega-body-released').exists():
+            raise RuntimeError('omega body release missing latch')
+    finally:
+        os.close(fd)
+os.execv({real_git!r}, [{real_git!r}, *args])
+''')
+    wrapper.chmod(0o700)
+    return wrapper_dir
+
+
+def release_terminal_git_wrapper(run_dir):
+    fifo = run_dir / 'omega-body.fifo'
+    if not fifo.exists():
+        return
+    (run_dir / 'omega-body-released').touch(mode=0o600)
+    fd = os.open(fifo, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        os.write(fd, b'1')
+    finally:
+        os.close(fd)
+
+
+def canonical_diff_content(file):
+    return (f'{file} before\n{file.upper()}_RELEASE_BODY\n'
+            + ''.join(f'{file.upper()}_RELEASE_LINE_{index:03d}\n' for index in range(80)))
+
+
+
+def canonical_git_prefix(run_dir):
+    project = run_dir / 'project'
+    return ['-c', 'core.hooksPath=/dev/null',
+        '--git-dir=' + str(project / '.git'), '--work-tree=' + str(project),
+        '--literal-pathspecs', '--no-optional-locks',
+        '-c', 'diff.relative=false', '-c', 'core.quotePath=false',
+        'diff', '--no-ext-diff', '--no-textconv', '--ignore-submodules=dirty',
+        '--submodule=short', '--no-renames', '--src-prefix=a/', '--dst-prefix=b/',
+        '--raw', '-z', '-p', 'HEAD', '--']
+
+
+def canonical_git_output(run_dir, argv):
+    project = run_dir / 'project'
+    prefix = canonical_git_prefix(run_dir)
+    if (project.is_symlink() or not project.is_dir() or argv[:len(prefix)] != prefix
+            or argv[len(prefix):] not in (['omega.txt'], ['alpha.txt', 'omega.txt'])):
+        raise ValueError('unowned canonical Git command')
+    files = {}
+    for name in ('alpha', 'omega'):
+        path = project / (name + '.txt')
+        if path.is_symlink() or path.read_text() != canonical_diff_content(name):
+            raise ValueError('canonical Git worktree is not the actual completed Write')
+        files[path.name] = sha256(path)
+    git = Path(shutil.which('git', path='/opt/homebrew/bin:/usr/bin:/bin')).resolve()
+    env = {'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(run_dir),
+           'GIT_CONFIG_GLOBAL': '/dev/null', 'GIT_CONFIG_NOSYSTEM': '1'}
+    def run(args):
+        return subprocess.run([str(git), *args], cwd=project, env=env,
+                              capture_output=True, check=True, timeout=5)
+    head = run(['-c', 'core.hooksPath=/dev/null', 'rev-parse', '--verify', 'HEAD']).stdout.decode().strip()
+    completed = run(argv)
+    if len(completed.stdout) > 4 * 1024 * 1024 or len(completed.stderr) > 4 * 1024 * 1024:
+        raise ValueError('independent Git output exceeds the unchanged process budget')
+    return {'method': 'owned-independent-git-read-v1',
+        'git': {'path': str(git), 'sha256': sha256(git)}, 'project': str(project),
+        'head': head, 'files': files, 'argv': argv, 'exitCode': completed.returncode,
+        'stdoutBytes': len(completed.stdout), 'stdoutSHA256': hashlib.sha256(completed.stdout).hexdigest(),
+        'stderrBytes': len(completed.stderr), 'stderrSHA256': hashlib.sha256(completed.stderr).hexdigest()}, completed.stdout
+
+
+def canonical_git_checks(run_dir, events, watcher, debug):
+    failed = {'canonical_git_release_causal': False, 'canonical_git_success': False}
+    try:
+        blocked = [row for row in events if row.get('phase') == 'blocked']
+        released = [row for row in events if row.get('phase') == 'released']
+        if len(blocked) != 1 or len(released) != 1:
+            return failed
+        block, release = blocked[0], released[0]
+        prefix = canonical_git_prefix(run_dir)
+        argv = block['argv']
+        args_hash = hashlib.sha256(json.dumps(argv, separators=(',', ':'), ensure_ascii=False).encode()).hexdigest()
+        pid = block['pid']
+        start = [row for row in events if row.get('phase') == 'start' and row.get('pid') == pid]
+        marker = watcher.get('blockedMarker', {})
+        causal = (len(start) == 1 and start[0]['monotonic'] <= block['monotonic']
+            and all(row.get('lane') == 'canonical-292' and row.get('pid') == pid
+                    and row.get('argv') == argv and row.get('cwd') == str(run_dir / 'project')
+                    and row.get('matched') is True for row in (start[0], block, release))
+            and argv[:len(prefix)] == prefix and argv[len(prefix):] in
+                (['omega.txt'], ['alpha.txt', 'omega.txt'])
+            and watcher.get('source') == 'owned-blocked-marker-watcher'
+            and watcher.get('livePidObserved') is True and marker.get('pid') == pid
+            and marker.get('argv') == argv and marker.get('lane') == 'canonical-292'
+            and block['monotonic'] <= watcher['signalStartedAt'] <= release['monotonic']
+            and 0 <= release['monotonic'] - block['monotonic'] < 5)
+        host = []
+        for line in debug.splitlines():
+            if '[ModsProcess] ' in line:
+                row = json.loads(line.split('[ModsProcess] ', 1)[1])
+                if row.get('pid') == pid:
+                    host.append(row)
+        closed = [row for row in host if row.get('phase') == 'close']
+        opened = [row for row in host if row.get('phase') == 'start']
+        output, raw = canonical_git_output(run_dir, argv)
+        saved = json.loads((run_dir / 'canonical-git-output.json').read_text())
+        success = (causal and len(opened) == 1
+            and all(row.get('owner') == 'cc-plugin-diff@builtin'
+                    and row.get('argsSHA256') == args_hash and row.get('timeoutMs') == 5000 for row in host)
+            and not any(row.get('phase') in ('stop', 'error') for row in host)
+            and len(closed) == 1 and closed[0].get('exitCode') == 0
+            and closed[0].get('timeoutMs') == 5000 and not closed[0].get('stopped')
+            and closed[0].get('isStdoutTruncated') is False
+            and closed[0].get('isStderrTruncated') is False
+            and 0 < closed[0].get('elapsedMs', 0) < 5000
+            and closed[0]['elapsedMs'] - opened[0]['elapsedMs'] >=
+                (release['monotonic'] - start[0]['monotonic']) * 1000
+            and saved == output and (run_dir / 'canonical-git-output.raw').read_bytes() == raw
+            and output['stdoutBytes'] > 0
+            and all(closed[0].get(key) == output[key] for key in
+                    ('stdoutBytes', 'stdoutSHA256')))
+        return {'canonical_git_release_causal': causal, 'canonical_git_success': success}
+    except (OSError, AttributeError, KeyError, TypeError, ValueError, subprocess.SubprocessError):
+        return failed
+
+
+def create_canonical_terminal_git_wrapper(run_dir):
+    real_git = shutil.which('git')
+    if not real_git:
+        raise RuntimeError('git unavailable for canonical terminal fixture')
+    wrapper_dir = run_dir / 'driver-bin'
+    wrapper_dir.mkdir()
+    os.mkfifo(run_dir / 'omega-body.fifo', 0o600)
+    wrapper = wrapper_dir / 'git'
+    wrapper.write_text(f'''#!{sys.executable} -S
+import json, os, select, sys, time
+from pathlib import Path
+root = Path({str(run_dir)!r})
+project = root / 'project'
+args = sys.argv[1:]
+prefix = {canonical_git_prefix(run_dir)!r}
+paths = args[len(prefix):]
+body = (Path.cwd() == project and args[:len(prefix)] == prefix and paths in (
+ ['omega.txt'], ['alpha.txt', 'omega.txt']))
+latched = body and (root / 'canonical-omega-arm').exists() and not (root / 'omega-body-released').exists()
+def log(phase, **fields):
+ with (root / 'canonical-git.jsonl').open('a') as stream:
+  stream.write(json.dumps({{'lane':'canonical-292', 'phase':phase,
+   'pid':os.getpid(), 'cwd':os.getcwd(), 'argv':args,
+   'monotonic':time.monotonic(), 'matched':body, **fields}}) + '\\n')
+log('start')
+if latched:
+ fd = os.open(root / 'omega-body.fifo', os.O_RDWR | os.O_NONBLOCK)
+ try:
+  log('blocked')
+  marker = root / ('omega-body-' + str(os.getpid()) + '.tmp')
+  marker.write_text(json.dumps({{'pid':os.getpid(),'argv':args,'lane':'canonical-292'}}))
+  marker.replace(root / 'omega-body-blocked.json')
+  if not (root / 'omega-body-released').exists():
+   if not select.select([fd], [], [], 5)[0]:
+    raise RuntimeError('canonical body release exceeded the official Git budget')
+   os.read(fd, 1)
+  if not (root / 'omega-body-released').exists():
+   raise RuntimeError('canonical body release missing latch')
+  log('released')
+ finally:
+  os.close(fd)
+os.execv({real_git!r}, [{real_git!r}, *args])
+''')
+    wrapper.chmod(0o700)
+    return wrapper_dir
+
+
+CANONICAL_PANE_CHECKPOINTS = (
+    'canonical_alpha_dock', 'canonical_two_files_before_select', 'canonical_focus_landing',
+    'canonical_omega_control', 'canonical_file_body', 'canonical_escape_keeps_open',
+    'canonical_inline_same_identity', 'canonical_redocked', 'canonical_refocus_landing',
+    'canonical_person_closed', 'canonical_reopened', 'canonical_command_closed',
+    'canonical_narrow_refused',
+)
+
+
+def canonical_native_context(run, launch, binary_sha256):
+    """Read only the bounded header identity, never live slots or counters."""
+    launch_identity = terminal_native_exit_identity(run, launch, binary_sha256)
+    if launch_identity is None or launch_identity['capture']['nativeJournal'] is not True:
+        return None
+    try:
+        import importlib.util
+        import struct
+        schema_path = Path(__file__).resolve().parents[4] / 'scripts/native-terminal-journal.py'
+        spec = importlib.util.spec_from_file_location('canonical_native_schema', schema_path)
+        schema = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(schema)
+        def read(name, limit, header=False):
+            path = run / name
+            named = os.lstat(path)
+            if not stat.S_ISREG(named.st_mode):
+                raise ValueError('Native context requires an owned regular file')
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                opened = os.fstat(fd)
+                if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid() or
+                        stat.S_IMODE(opened.st_mode) != 0o600 or opened.st_nlink != 1 or
+                        (opened.st_dev, opened.st_ino) != (named.st_dev, named.st_ino) or
+                        (not header and opened.st_size > limit)):
+                    raise ValueError('Native context file identity changed')
+                data = os.pread(fd, limit, 0)
+                after, current = os.fstat(fd), os.lstat(path)
+                if ((after.st_dev, after.st_ino, after.st_size) != (opened.st_dev, opened.st_ino, opened.st_size) or
+                        (current.st_dev, current.st_ino, current.st_size, current.st_nlink, current.st_mode) !=
+                        (opened.st_dev, opened.st_ino, opened.st_size, 1, opened.st_mode)):
+                    raise ValueError('Native context changed during read')
+                return data, opened
+            finally:
+                os.close(fd)
+        start = json.loads(read('start.json', 65536)[0])
+        pid = start.get('childPid')
+        if (type(pid) is not int or pid <= 0 or type(start.get('childPgid')) is not int or
+                start['childPgid'] != pid or start.get('binarySha256') != binary_sha256):
+            return None
+        data, identity = read('journal.bin', schema.HEADER.size, True)
+        size = identity.st_size
+        words = schema.HEADER.unpack(data)
+        data, reread = read('journal.bin', schema.HEADER.size, True)
+        if (identity.st_dev, identity.st_ino, identity.st_size) != (reread.st_dev, reread.st_ino, reread.st_size):
+            return None
+        again = schema.HEADER.unpack(data)
+        stable = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 19)
+        if (any(words[key] != again[key] for key in stable) or words[0] != schema.MAGIC or
+                words[1] != 1 or words[2] != schema.HEADER.size or words[8] != pid or
+                not 1 <= words[4] <= 4096 or not 1 <= words[5] <= 1048576 or
+                words[3] < schema.RECORD.size + words[5] or words[3] % 64 or
+                size != words[2] + words[3] * words[4] or
+                not words[12] or not words[13] or not words[19]):
+            return None
+        initial = launch['capture']['initialSize']
+        if any(type(initial.get(key)) is not int or not 0 < initial[key] <= 1000 for key in ('columns', 'rows')):
+            return None
+        return {'nativeJournal': True, 'captureId': launch_identity['capture']['captureId'],
+                'binarySha256': binary_sha256, 'childPid': pid,
+                'clock': {'nonce': f'{words[6]:016x}{words[7]:016x}', 'pid': pid,
+                          'timebaseNumer': words[12], 'timebaseDenom': words[13], 'openedAt': str(words[19])},
+                'initialSize': dict(initial)}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, struct.error):
+        return None
+
+
+def canonical_native_frame_binding(entry, entries, io, context):
+    """Native span/geometry association; final original re-derivation is mandatory."""
+    try:
+        import struct
+        def tick(value):
+            if (type(value) is not str or not value.isascii() or not value.isdecimal() or
+                    not 0 < len(value) <= 20 or value[0] == '0' or not 0 < int(value) < 2 ** 64):
+                raise ValueError('Exact native uint64 clock required')
+            return int(value)
+        if (not isinstance(context, dict) or context.get('nativeJournal') is not True or
+                type(context.get('captureId')) is not str or not context['captureId'] or
+                type(context.get('childPid')) is not int or context['childPid'] <= 0 or
+                type(context.get('binarySha256')) is not str or not re.fullmatch(r'[a-f0-9]{64}', context['binarySha256'])):
+            return None
+        clock = context['clock']
+        if (type(clock) is not dict or type(clock.get('nonce')) is not str or
+                not re.fullmatch(r'[a-f0-9]{32}', clock['nonce']) or
+                any(type(clock.get(key)) is not int or clock[key] <= 0 for key in ('pid', 'timebaseNumer', 'timebaseDenom')) or
+                clock['pid'] != context['childPid']):
+            return None
+        opened = tick(clock['openedAt'])
+        geometry_id, offset = 0, 0
+        if not io or io[0].get('kind') != 'initial-geometry':
+            return None
+        initial = io[0]
+        if (type(initial.get('childPid')) is not int or initial['childPid'] != context['childPid'] or
+                any(type(initial.get(key)) is not int or initial[key] != context['initialSize'][key] for key in ('columns', 'rows'))):
+            return None
+        current_size = context['initialSize'].copy()
+        events, previous_return = [], opened
+        for index, row in enumerate(io, 1):
+            if row.get('kind') == 'resize-ack':
+                geometry_id += 1
+            if (type(row.get('ioId')) is not int or row['ioId'] != index or
+                    type(row.get('geometryId')) is not int or row['geometryId'] != geometry_id or
+                    type(row.get('rawOffset')) is not int or row['rawOffset'] < 0 or
+                    row.get('captureId') != context['captureId'] or
+                    row.get('kind') not in ('initial-geometry', 'input', 'output', 'resize-ack') or
+                    (row['kind'] == 'initial-geometry') != (index == 1)):
+                return None
+            if row['kind'] == 'output':
+                if (type(row.get('start')) is not int or type(row.get('end')) is not int or
+                        row['start'] != offset or not offset < row['end'] == row['rawOffset']):
+                    return None
+                offset = row['end']
+            elif row['rawOffset'] != offset:
+                return None
+            if row['kind'] != 'resize-ack':
+                continue
+            bracket = row['nativeBracket']
+            a, b = tick(bracket['entry']), tick(bracket['return'])
+            if (row.get('succeeded') is not True or row.get('nativeClockCorrelationCovered') is not True or
+                    bracket.get('method') != 'native-mach-ioctl-resize-v1' or bracket.get('nonce') != clock['nonce'] or
+                    type(bracket.get('childPid')) is not int or bracket['childPid'] != context['childPid'] or
+                    any(type(bracket.get(key)) is not int or bracket[key] != clock[key] for key in ('timebaseNumer', 'timebaseDenom')) or
+                    type(bracket.get('result')) is not int or bracket['result'] != 0 or
+                    type(bracket.get('errno')) is not int or not 0 <= bracket['errno'] < 2 ** 31 or
+                    not previous_return <= a <= b):
+                return None
+            before = struct.unpack('HHHH', bytes.fromhex(bracket['beforeSizeHex']))
+            after = struct.unpack('HHHH', bytes.fromhex(bracket['afterSizeHex']))
+            if (before[:2] != (current_size['rows'], current_size['columns']) or
+                    any(type(row.get(key)) is not int or not 0 < row[key] <= 1000 for key in ('columns', 'rows')) or
+                    after[:2] != (row['rows'], row['columns'])):
+                return None
+            current_size = {'columns': row['columns'], 'rows': row['rows']}
+            events.append((a, b, row))
+            previous_return = b
+        def span(value):
+            native, data = value['native'], value['nativeSpan']
+            frame_id = value['frameId']
+            if ('broker' in value or type(frame_id) is not int or frame_id <= 0 or
+                    native.get('profile') != 'ink-post-write-v1' or native.get('captureId') != context['captureId'] or
+                    any(type(native.get(key)) is not int or native[key] <= 0 for key in ('spanId','rendererId','rootEpoch','columns','rows')) or
+                    native['spanId'] != frame_id or data.get('method') != 'native-mach-frame-span-v1' or
+                    json.dumps(data.get('clock'), sort_keys=True) != json.dumps(clock, sort_keys=True) or
+                    type(data.get('threadId')) is not int or data['threadId'] <= 0):
+                return None
+            markers = data['markers']
+            if (type(markers) is not list or len(markers) != 4 or
+                    [row.get('kind') for row in markers] != [10,12,13,11] or
+                    any(type(row.get('kind')) is not int or type(row.get('sequence')) is not int or row['sequence'] <= 0 for row in markers)):
+                return None
+            ticks = [(tick(row['entry']), tick(row['return'])) for row in markers]
+            if (ticks[0][0] < opened or any(a > b for a,b in ticks) or
+                    any(a['sequence'] >= b['sequence'] for a,b in zip(markers, markers[1:])) or
+                    any(a[1] > b[0] for a,b in zip(ticks,ticks[1:]))):
+                return None
+            writes = data['writes']
+            if type(writes) is not list or value.get('writeSequences') != [row.get('sequence') for row in writes]:
+                return None
+            previous_sequence, byte_count = markers[1]['sequence'], 0
+            for write in writes:
+                if (type(write.get('sequence')) is not int or not previous_sequence < write['sequence'] < markers[2]['sequence'] or
+                        type(write.get('result')) is not int or write['result'] < -1 or
+                        any(type(write.get(key)) is not int or write[key] < 0 for key in ('errno','outputBytes')) or
+                        (write['result'] == -1 and (write['errno'] == 0 or write['outputBytes'] != 0)) or
+                        not ticks[1][1] <= tick(write['entry']) <= tick(write['return']) <= ticks[2][0]):
+                    return None
+                previous_sequence = write['sequence']; byte_count += write['outputBytes']
+            if (any(type(value.get(key)) is not int or value[key] < 0 for key in ('rawStart','rawEnd')) or
+                    value['rawEnd']-value['rawStart'] != byte_count or value['rawEnd'] > offset or
+                    data.get('observationKind') != ('output-transaction' if byte_count else 'logical-observation')):
+                return None
+            boundary = value.get('physicalBoundary', 'native-frame-end-v1')
+            if boundary not in ('native-frame-end-v1', 'native-pre-layout-observation-v1'):
+                return None
+            if boundary == 'native-pre-layout-observation-v1':
+                prefix = data.get('layoutWriteSequences')
+                if (writes or byte_count or value['rawStart'] != value['rawEnd'] or
+                        type(data.get('layoutRawStart')) is not int or data['layoutRawStart'] != value['rawStart'] or
+                        type(prefix) is not list or any(type(seq) is not int or not 0 < seq < markers[0]['sequence'] for seq in prefix) or
+                        any(left >= right for left,right in zip(prefix,prefix[1:]))):
+                    return None
+            selected = {'geometryId':0,'ioId':1,**context['initialSize']}
+            for a,b,row in events:
+                if (ticks[0][1] if boundary == 'native-pre-layout-observation-v1' else ticks[2][1]) <= a:
+                    continue
+                if ticks[0][0] < b:
+                    return None
+                selected = row
+            if (native['columns'],native['rows']) != (selected['columns'],selected['rows']):
+                return None
+            frame = json.loads(base64.b64decode(value['frameBase64'], validate=True))
+            if (frame.get('viewport') != {'width': selected['columns'],'height': selected['rows']} or
+                    frame.get('columns') != selected['columns'] or frame.get('buffer') != 'alternate'):
+                return None
+            return {'frame':frame,'geometryId':selected['geometryId'],'resizeIoId':selected['ioId'],
+                    'columns':selected['columns'],'rows':selected['rows'],'outputBytes':byte_count,'physicalBoundary':boundary}
+        bound = span(entry)
+        if bound is None:
+            return None
+        output = entry
+        if not bound['outputBytes']:
+            output = None
+            for previous in reversed(entries):
+                if (previous.get('frameId',0) >= entry['frameId'] or
+                        previous.get('native',{}).get('rootEpoch') != entry['native']['rootEpoch'] or
+                        previous.get('native',{}).get('rendererId') != entry['native']['rendererId']):
+                    continue
+                other = span(previous)
+                if (other and other['outputBytes'] and other['geometryId'] == bound['geometryId'] and
+                        previous['rawEnd'] == entry['rawEnd'] and other['frame'] == bound['frame']):
+                    output = previous
+                    break
+            if output is None:
+                return None
+        return {'method':'native-canonical-span-geometry-v1','captureId':context['captureId'],
+                'frameId':entry['frameId'],'observationKind':entry['nativeSpan']['observationKind'],
+                'physicalBoundary':bound['physicalBoundary'],
+                'geometryId':bound['geometryId'],'resizeIoId':bound['resizeIoId'],
+                'outputSourceFrameId':output['frameId'],'outputRawStart':output['rawStart'],'outputRawEnd':output['rawEnd'],
+                'actualInputOwnerCovered':False,'productTimingEquivalent':False}
+    except (KeyError, ValueError, TypeError, AttributeError, OverflowError, struct.error):
+        return None
+
+
+def canonical_native_action_associated(entry, binding, io, action, boundary):
+    """Bounded transport/output association, never a child read or owner claim."""
+    try:
+        receipt = action['receipt']
+        lower = receipt
+        if action['kind'] == 'resize':
+            lower = action.get('send')
+            if (type(lower) is not dict or lower.get('phase') != 'resize-send' or
+                    receipt.get('phase') != 'resize-return' or type(receipt.get('exitCode')) is not int or
+                    receipt['exitCode'] != 0 or type(lower.get('actionId')) is not int or lower['actionId'] <= 0 or
+                    type(receipt.get('actionId')) is not int or lower['actionId'] != receipt['actionId'] or
+                    any(type(value.get(key)) is not int or not 0 < value[key] <= 1000
+                        for value in (lower,receipt) for key in ('columns','rows')) or
+                    any(lower[key] != receipt[key] for key in ('columns','rows'))):
+                return False
+        if (not isinstance(binding, dict) or binding.get('method') != 'native-canonical-span-geometry-v1' or
+                any(type(value.get(key)) is not int or value[key] < 0 for value in (lower,receipt,boundary)
+                    for key in ('lastObservedFrameId','lastObservedIoId','observedRawBytes')) or
+                not lower['lastObservedFrameId'] < entry['frameId'] <= boundary['lastObservedFrameId'] or
+                not lower['observedRawBytes'] <= binding['outputRawStart'] <= binding['outputRawEnd'] <= boundary['observedRawBytes']):
+            return False
+        if action['kind'] == 'resize' and any(not lower[key] <= receipt[key] <= boundary[key]
+                for key in ('lastObservedFrameId','lastObservedIoId','observedRawBytes')):
+            return False
+        window = [row for row in io if lower['lastObservedIoId'] < row['ioId'] <= boundary['lastObservedIoId']]
+        if action['kind'] == 'resize':
+            return (receipt.get('phase') == 'resize-return' and type(receipt.get('exitCode')) is int and receipt['exitCode']==0 and
+                    any(row['kind']=='resize-ack' and row['ioId']==binding['resizeIoId'] and
+                        (row['columns'],row['rows'])==(receipt['columns'],receipt['rows']) for row in window))
+        if action['kind'] != 'input' or receipt.get('phase') != 'send' or receipt.get('transport') != 'tmux-paste-buffer':
+            return False
+        data = bytes.fromhex(receipt['hex'])
+        if not data:
+            return False
+        inputs = [row for row in window if row['kind']=='input' and row.get('captureId')==binding['captureId']]
+        matches = []
+        for start in range(len(inputs)):
+            chunks = b''
+            for end in range(start,len(inputs)):
+                chunks += bytes.fromhex(inputs[end]['hex'])
+                if chunks==data:
+                    matches.append(inputs[start:end+1]);break
+                if not data.startswith(chunks):break
+        return (len(matches)==1 and all(type(row.get('rawOffset')) is int and
+                receipt['observedRawBytes'] <= row['rawOffset'] <= binding['outputRawStart'] for row in matches[0]))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
+
+
+def canonical_frame_snapshot(states, entries, floor=0, io=None, native_context=None, action=None, boundary=None):
+    if not states:
+        return None
+    state = states[-1]
+    pane = state.get('pane')
+    for entry in reversed(entries):
+        if entry.get('frameId', 0) <= floor or entry.get('terminalUiRevision') != state.get('revision'):
+            continue
+        witnesses = entry.get('terminalPanes')
+        if not isinstance(witnesses, list):
+            continue
+        witnesses = [row for row in witnesses if row.get('plugin') == 'cc-plugin-diff' and row.get('id') == 'diff']
+        frame = json.loads(base64.b64decode(entry['frameBase64']))
+        viewport = frame.get('viewport', {})
+        columns, rows = viewport.get('width'), viewport.get('height')
+        if (columns not in (109, 110) or rows != 34 or frame.get('columns') != columns
+                or frame.get('buffer') != 'alternate'):
+            continue
+        native_binding = None
+        if native_context is not None and entry.get('native') is None:
+            continue
+        if entry.get('native') is not None:
+            native_binding = canonical_native_frame_binding(entry, entries, io, native_context)
+            if native_binding is None or (action is not None and not canonical_native_action_associated(entry, native_binding, io, action, boundary)):
+                continue
+        elif io is not None:
+            broker = entry.get('broker', {})
+            start, end = broker.get('start', {}), broker.get('end', {})
+            acks = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start.get('geometryId')]
+            if (len(acks) != 1 or start.get('geometryId') != end.get('geometryId')
+                    or acks[0].get('succeeded') is not True
+                    or acks[0].get('captureId') != entry.get('captureId')
+                    or acks[0].get('columns') != columns or acks[0].get('rows') != rows
+                    or type(start.get('ioId')) is not int or acks[0]['ioId'] > start['ioId']):
+                continue
+        cells = {(x, y): (char, width) for x, y, char, width, *_ in frame['cells']}
+        screen = '\n'.join(''.join(cells.get((x, y), (' ', 1))[0]
+                                  for x in range(columns) if cells.get((x, y), (' ', 1))[1] != 0)
+                           for y in range(rows))
+        witness = None
+        body = ''
+        if pane and pane.get('visible') and pane.get('shown') and pane.get('hasTree'):
+            if len(witnesses) != 1:
+                continue
+            witness = witnesses[0]
+            if (witness.get('revision') != state.get('revision')
+                    or any(witness.get(key) != pane.get(key) for key in
+                        ('plugin', 'id', 'activation', 'lease', 'drawing', 'visible', 'shown',
+                         'placement', 'focused', 'focusedElement', 'focusedPlugin'))
+                    or any(type(witness.get(key)) is not int or witness[key] <= 0
+                           for key in ('activation', 'lease', 'mount', 'drawing'))
+                    or witness.get('actualFocusWithin') is not pane.get('focused')):
+                continue
+            if pane.get('focusedElement'):
+                controls = [row for row in witness.get('controls', [])
+                            if row.get('key') == pane['focusedElement'] and row.get('plugin') == pane.get('focusedPlugin')]
+                if (len(controls) != 1 or witness.get('actualFocusedElement') != pane['focusedElement']
+                        or witness.get('actualFocusedPlugin') != pane.get('focusedPlugin')):
+                    continue
+            rect, body_rect = witness.get('rect', {}), witness.get('bodyRect', {})
+            if (witness.get('paintable') is not True or not isinstance(rect, dict) or not isinstance(body_rect, dict)
+                    or any(type(value.get(key)) is not int for value in (rect, body_rect)
+                    for key in ('x', 'y', 'width', 'height'))
+                    or any(value['width'] <= 0 or value['height'] <= 0 for value in (rect, body_rect))
+                    or rect['x'] < 0 or rect['x'] + rect['width'] > columns
+                    or body_rect['x'] < rect['x'] or body_rect['y'] < rect['y']
+                    or body_rect['x'] + body_rect['width'] > rect['x'] + rect['width']
+                    or body_rect['y'] + body_rect['height'] > rect['y'] + rect['height']
+                    or body_rect['y'] >= rows or body_rect['y'] + body_rect['height'] <= 0):
+                continue
+            if pane.get('focusedElement'):
+                control = controls[0]
+                control_rect = control.get('rect')
+                empty_button = (control.get('emptyButton') is True and control.get('paintable') is False
+                                and control_rect is None)
+                if not empty_button and (control.get('paintable') is not True or not isinstance(control_rect, dict)
+                        or any(type(control_rect.get(key)) is not int for key in ('x', 'y', 'width', 'height'))
+                        or control_rect['width'] <= 0 or control_rect['height'] <= 0
+                        or control_rect['x'] >= body_rect['x'] + body_rect['width']
+                        or control_rect['x'] + control_rect['width'] <= body_rect['x']
+                        or control_rect['y'] >= min(rows, body_rect['y'] + body_rect['height'])
+                        or control_rect['y'] + control_rect['height'] <= max(0, body_rect['y'])):
+                    continue
+            body = '\n'.join(''.join(cells.get((x, y), (' ', 1))[0]
+                                    for x in range(body_rect['x'], body_rect['x'] + body_rect['width'])
+                                    if cells.get((x, y), (' ', 1))[1] != 0)
+                             for y in range(max(0, body_rect['y']), min(rows, body_rect['y'] + body_rect['height'])))
+        elif witnesses:
+            continue
+        return {'state': state, 'frameId': entry['frameId'], 'terminalUiRevision': entry['terminalUiRevision'],
+                'terminalViewport': viewport, 'witness': witness, 'body': body, 'screen': screen,
+                **({'nativeBinding': native_binding} if native_binding else {})}
+    return None
+
+
+def canonical_debug_states(debug):
+    states = []
+    for line in debug.splitlines():
+        if '[ModsUI] ' not in line:
+            continue
+        row = json.loads(line.split('[ModsUI] ', 1)[1])
+        if row.get('event') != 'publish':
+            continue
+        panes = [pane for pane in row.get('panes', [])
+                 if pane.get('plugin') == 'cc-plugin-diff' and pane.get('id') == 'diff']
+        if len(panes) > 1:
+            raise ValueError('ambiguous canonical Pane publish')
+        states.append({'revision': row['revision'], 'pane': panes[0] if panes else None})
+    return states
+
+
+def canonical_input_file_matches(root, receipt, native=False):
+    try:
+        path = Path(receipt['inputFile'])
+        if (receipt.get('phase') != 'send' or receipt.get('transport') != 'tmux-paste-buffer' or path.parent != root):
+            return False
+        named = os.lstat(path)
+        if not stat.S_ISREG(named.st_mode):
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as file:
+            opened = os.fstat(file.fileno())
+            if (not stat.S_ISREG(opened.st_mode) or opened.st_uid != os.getuid() or opened.st_nlink != 1 or
+                    opened.st_size > 65536 or (native and stat.S_IMODE(opened.st_mode) != 0o600) or
+                    (opened.st_dev,opened.st_ino) != (named.st_dev,named.st_ino)):
+                return False
+            data = file.read(65537)
+            after, current = os.fstat(file.fileno()), os.lstat(path)
+            if (len(data) != opened.st_size or
+                    (after.st_dev,after.st_ino,after.st_size) != (opened.st_dev,opened.st_ino,opened.st_size) or
+                    (current.st_dev,current.st_ino,current.st_size,current.st_nlink,current.st_mode) !=
+                    (opened.st_dev,opened.st_ino,opened.st_size,1,opened.st_mode)):
+                return False
+        return data.hex() == receipt['hex'] and hashlib.sha256(data).hexdigest() == receipt['bytesSHA256']
+    except (OSError, KeyError, ValueError, TypeError):
+        return False
+
+
+def canonical_ui_checks(root, native_context=None):
+    checks = {'canonical_pane_frame_association': False,
+              'canonical_pane_lifecycle': False, 'canonical_keyboard_landing': False}
+    def read(name):
+        return json.loads((root / name).read_bytes())
+    def lines(name):
+        return [json.loads(line) for line in (root / name).read_bytes().splitlines()]
+    try:
+        states, checkpoints, frames = read('canonical-ui-states.json'), read('canonical-checkpoints.json'), lines('frames.jsonl')
+        if states != canonical_debug_states((root / 'debug.log').read_text()):
+            return checks
+        if not states or any(a['revision'] >= b['revision'] for a, b in zip(states, states[1:])):
+            return checks
+        selected = [row for row in checkpoints if row.get('name') in CANONICAL_PANE_CHECKPOINTS
+                    or row.get('name', '').startswith('canonical_tab_landing_')]
+        names = [row['name'] for row in selected]
+        if (len(names) != len(set(names))
+                or [name for name in names if name in CANONICAL_PANE_CHECKPOINTS] != list(CANONICAL_PANE_CHECKPOINTS)):
+            return checks
+        tabs = [name for name in names if name.startswith('canonical_tab_landing_')]
+        if tabs != [f'canonical_tab_landing_{i}' for i in range(len(tabs))]:
+            return checks
+        inputs, geometry, io = lines('inputs.jsonl'), lines('geometry.jsonl'), lines('pty-io.jsonl')
+        tab_inputs = [row for row in inputs if row.get('phase') == 'send' and
+                      re.fullmatch(r'raw-canonical-tab-\d+\.bin', Path(row.get('inputFile', '')).name)]
+        if ([Path(row['inputFile']).stem.removeprefix('raw-').replace('canonical-tab-', 'canonical_tab_landing_')
+             for row in tab_inputs] != tabs):
+            return checks
+        focus_index, omega_index = names.index('canonical_focus_landing'), names.index('canonical_omega_control')
+        if names[focus_index + 1:omega_index] != tabs:
+            return checks
+        observed = {}
+        previous_id = 0
+        for checkpoint in selected:
+            observation, action = checkpoint['observation'], checkpoint['action']
+            if checkpoint.get('passed') is not True or not isinstance(observation, dict) or not isinstance(action, dict):
+                return checks
+            receipt = action['receipt']
+            journal = inputs if action['kind'] == 'input' else geometry if action['kind'] == 'resize' else []
+            if sum(row == receipt for row in journal) != 1:
+                return checks
+            frame_id = observation['frameId']
+            frame = [entry for entry in frames if entry['frameId'] == frame_id]
+            state = [entry for entry in states if entry['revision'] == observation['terminalUiRevision']]
+            if (len(frame) != 1 or len(state) != 1 or frame_id < previous_id
+                    or type(checkpoint.get('lastObservedFrameId')) is not int
+                    or frame_id > checkpoint['lastObservedFrameId']):
+                return checks
+            native = frame[0].get('native') is not None
+            lower = action.get('send') if native and action['kind'] == 'resize' else receipt
+            if not isinstance(lower, dict) or checkpoint['frameFloor'] > lower['lastObservedFrameId']:
+                return checks
+            # Authenticate the recorded observation; publication may advance
+            # between observing it and recording the checkpoint boundary.
+            matched = canonical_frame_snapshot(state, frames[:frame_id],
+                lower['lastObservedFrameId'], io[:checkpoint['lastObservedIoId']], native_context, action, checkpoint)
+            if matched is None:
+                return checks
+            if matched != observation or checkpoint.get('pane') != matched['state']['pane']:
+                return checks
+            native = frame[0].get('native') is not None
+            if native:
+                if not canonical_native_action_associated(frame[0], matched.get('nativeBinding'), io, action, checkpoint):
+                    return checks
+                ack = [row for row in io if row.get('ioId') == matched['nativeBinding']['resizeIoId']]
+            else:
+                start, end = frame[0]['broker']['start'], frame[0]['broker']['end']
+                if (any(type(row.get(key)) is not int for row in (start, end) for key in ('ioId', 'geometryId', 'rawOffset'))
+                        or start['geometryId'] != end['geometryId']
+                        or not receipt['lastObservedIoId'] < start['ioId'] < end['ioId'] <= checkpoint['lastObservedIoId']
+                        or not receipt['observedRawBytes'] <= start['rawOffset'] <= end['rawOffset'] <= checkpoint['observedRawBytes']
+                        or any(row.get('captureId') != frame[0].get('captureId') for row in (start, end))):
+                    return checks
+                ack = [row for row in io if row.get('kind') == 'resize-ack' and row.get('geometryId') == start['geometryId']]
+                if (len(ack) != 1 or ack[0].get('succeeded') is not True
+                        or ack[0].get('captureId') != frame[0].get('captureId') or ack[0]['ioId'] > start['ioId']
+                        or matched['terminalViewport'] != {'width': ack[0]['columns'], 'height': ack[0]['rows']}):
+                    return checks
+            if action['kind'] == 'input':
+                path = Path(receipt['inputFile'])
+                if not canonical_input_file_matches(root, receipt, native):
+                    return checks
+                if native:
+                    sent = [row for row in inputs if row.get('actionId') == receipt.get('actionId') and row.get('phase') == 'sent']
+                    if (len(sent) != 1 or sent[0].get('exitCodes') != [0,0] or
+                            any(type(code) is not int for code in sent[0]['exitCodes'])):
+                        return checks
+            else:
+                if (receipt.get('phase') != 'resize-return' or receipt.get('exitCode') != 0
+                        or matched['terminalViewport'] != {'width': receipt['columns'], 'height': receipt['rows']}):
+                    return checks
+                sent = [row for row in geometry if row.get('phase') == 'resize-send' and row.get('actionId') == receipt.get('actionId')]
+                if (len(sent) != 1 or sent[0]['columns'] != receipt['columns'] or sent[0]['rows'] != receipt['rows']
+                        or (native and action.get('send') != sent[0])
+                        or ack[0]['ioId'] <= sent[0]['lastObservedIoId']):
+                    return checks
+            previous_id = frame_id
+            observed[checkpoint['name']] = (matched, action)
+        checks['canonical_pane_frame_association'] = True
+        def match(name): return observed[name][0]
+        def witness(name): return match(name)['witness']
+        def body(name): return match(name)['body']
+        def input_is(name, stem, data):
+            action = observed[name][1]
+            return (action['kind'] == 'input' and Path(action['receipt']['inputFile']).name == f'raw-{stem}.bin'
+                    and action['receipt']['hex'] == data.hex())
+        navigation = ('canonical_focus_landing', *tabs)
+        if observed['canonical_omega_control'][1] != observed[navigation[-1]][1]:
+            return checks
+        if any(observed[name][1]['receipt'] != receipt for name, receipt in zip(tabs, tab_inputs)):
+            return checks
+        keyboard = all(witness(name) and witness(name)['focused'] is True and witness(name)['actualFocusWithin'] is True
+                       for name in ('canonical_focus_landing', *tabs, 'canonical_omega_control', 'canonical_refocus_landing'))
+        keyboard = keyboard and witness('canonical_omega_control')['focusedElement'] == 'file:omega.txt'
+        previous_key = witness('canonical_focus_landing').get('focusedElement')
+        for index, name in enumerate(tabs):
+            current_key = witness(name).get('focusedElement')
+            keyboard = keyboard and current_key != previous_key and input_is(name, f'canonical-tab-{index}', b'\t')
+            previous_key = current_key
+        checks['canonical_keyboard_landing'] = bool(keyboard and
+            input_is('canonical_focus_landing', 'canonical-focus-chord', b'\x18\t') and
+            input_is('canonical_refocus_landing', 'canonical-refocus', b'\x18\t') and
+            input_is('canonical_file_body', 'canonical-file-press', b'\r') and
+            input_is('canonical_escape_keeps_open', 'canonical-leave-focus', b'\x1b'))
+        first = witness('canonical_alpha_dock')
+        continuation = ('canonical_two_files_before_select', 'canonical_focus_landing', *tabs,
+            'canonical_omega_control', 'canonical_file_body', 'canonical_escape_keeps_open',
+            'canonical_inline_same_identity', 'canonical_redocked', 'canonical_refocus_landing')
+        same_lease = all(witness(name) and all(witness(name)[key] == first[key] for key in ('activation', 'lease'))
+                         for name in continuation)
+        reopened = witness('canonical_reopened')
+        checks['canonical_pane_lifecycle'] = bool(first and same_lease and reopened and
+            first['placement'] == 'dock' and first['focused'] is False and
+            'ALPHA_RELEASE_BODY' in body('canonical_alpha_dock') and 'omega.txt' not in body('canonical_alpha_dock') and
+            all(text in body('canonical_two_files_before_select') for text in ('alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY')) and
+            'OMEGA_RELEASE_BODY' not in body('canonical_two_files_before_select') and
+            'OMEGA_RELEASE_BODY' in body('canonical_file_body') and 'ALPHA_RELEASE_BODY' not in body('canonical_file_body') and
+            witness('canonical_escape_keeps_open')['focused'] is False and
+            witness('canonical_inline_same_identity')['placement'] == 'inline' and
+            observed['canonical_inline_same_identity'][1]['kind'] == 'resize' and
+            observed['canonical_inline_same_identity'][1]['receipt']['columns'] == 109 and
+            'Resize' in match('canonical_inline_same_identity')['screen'] and
+            witness('canonical_redocked')['placement'] == 'dock' and
+            observed['canonical_redocked'][1]['kind'] == 'resize' and
+            observed['canonical_redocked'][1]['receipt']['columns'] == 110 and
+            'OMEGA_RELEASE_BODY' in body('canonical_redocked') and
+            witness('canonical_person_closed') is None and
+            input_is('canonical_person_closed', 'canonical-close-chord', b'\x18x') and
+            reopened['activation'] == first['activation'] and reopened['lease'] != first['lease'] and
+            'ALPHA_RELEASE_BODY' in body('canonical_reopened') and 'ALPHA_RELEASE_LINE_000' in body('canonical_reopened') and
+            'OMEGA_RELEASE_BODY' not in body('canonical_reopened') and reopened['paintedScrollTop'] == 0 and
+            input_is('canonical_reopened', 'canonical-reopen', b'/diff\r') and
+            witness('canonical_command_closed') is None and input_is('canonical_command_closed', 'canonical-command-close', b'/diff\r') and
+            witness('canonical_narrow_refused') is None and input_is('canonical_narrow_refused', 'canonical-too-narrow', b'/diff\r') and
+            match('canonical_narrow_refused')['terminalViewport']['width'] == 109 and
+            'Resize your terminal to at least 110 columns to show the diff panel' in match('canonical_narrow_refused')['screen'])
+    except (OSError, ValueError, TypeError, AttributeError, KeyError):
+        pass
+    return checks
+
+
+def native_physical_boundaries_valid(report):
+    """Versioned per-frame boundaries; labels never supply missing evidence."""
+    if not isinstance(report, dict) or report.get('method') != 'native-journal-ioctl-geometry-replay-v1':
+        return False
+    if report.get('framePhysicalBoundary') == 'native-frame-end-v1':
+        return report.get('semanticSource') == 'independent-xterm-native-frame-end-v1'
+    if (report.get('framePhysicalBoundary') != 'native-per-frame-boundary-v2' or
+            report.get('semanticSource') != 'independent-xterm-native-per-frame-v2' or
+            not isinstance(report.get('frames'), list) or not report['frames']):
+        return False
+    for frame in report['frames']:
+        if not isinstance(frame, dict) or frame.get('physicalBoundary') not in (
+                'native-frame-end-v1', 'native-pre-layout-observation-v1'):
+            return False
+        if frame['physicalBoundary'] == 'native-pre-layout-observation-v1' and (
+                type(frame.get('outputBytes')) is not int or frame['outputBytes'] != 0 or
+                type(frame.get('rawStart')) is not int or frame['rawStart'] < 0 or
+                type(frame.get('rawEnd')) is not int or frame['rawStart'] != frame['rawEnd']):
+            return False
+    return True
+
+
+def terminal_resize_sizes(report):
+    """Keep native request/ACK/paint proof distinct from legacy broker proof."""
+    if not isinstance(report, dict) or report.get('verdict') != 'passed':
+        return None
+    native = report.get('method') == 'native-journal-ioctl-geometry-replay-v1'
+    if not native and report.get('method') != 'independent-pty-replay-v1':
+        return None
+    proof = report.get('nativeGeometryProof' if native else 'geometryProof', {})
+    if (not isinstance(proof, dict) or proof.get('verdict') != 'passed' or
+            (native and (proof.get('method') != 'native-driver-mach-frame-geometry-v2' or
+                         not native_physical_boundaries_valid(report) or
+                         report.get('parserSHA256') != '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'))):
+        return None
+    rows = proof.get('sizes')
+    if not isinstance(rows, list) or any(not isinstance(row, dict) or
+            any(type(row.get(key)) is not int or not 0 < row[key] <= 1000 for key in ('columns', 'rows'))
+            for row in rows):
+        return None
+    if native:
+        frames = report.get('frames')
+        if (not isinstance(frames, list) or type(proof.get('requested')) is not int or
+                type(proof.get('acknowledged')) is not int or
+                proof['requested'] != proof['acknowledged'] or proof['requested'] != len(rows) or
+                any(any(type(row.get(key)) is not int or row[key] <= 0
+                        for key in ('actionId', 'ioId', 'geometryId', 'frameId')) or
+                    row['actionId'] != index or row['geometryId'] != index or
+                    not any(isinstance(frame, dict) and type(frame.get('frameId')) is int and
+                        frame['frameId'] == row['frameId'] and
+                        frame.get('verdict') == 'passed' and type(frame.get('outputBytes')) is int and
+                        frame['outputBytes'] > 0 and
+                        (frame.get('columns'), frame.get('rows')) == (row['columns'], row['rows'])
+                        for frame in frames)
+                    for index, row in enumerate(rows, 1)) or
+                any(left['ioId'] >= right['ioId'] or left['frameId'] >= right['frameId']
+                    for left, right in zip(rows, rows[1:]))):
+            return None
+    return [(row['columns'], row['rows']) for row in rows]
+
+
+def terminal_frame_report_checks(report):
+    invalid = {'renderer_write_replay': False, 'frame_resize_sequence': False, 'frame_semantics': False}
+    if not isinstance(report, dict):
+        return invalid
+    frames = report.get('frames', [])
+    if not isinstance(frames, list) or any(
+        not isinstance(frame, dict) or not isinstance(frame.get('semantic', {}), dict)
+        for frame in frames
+    ):
+        return invalid
+    native = (report.get('method') == 'native-journal-ioctl-geometry-replay-v1' and
+              native_physical_boundaries_valid(report) and
+              report.get('parserSHA256') == '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed')
+    replay = ((native or report.get('method') in {'renderer-write-replay-v1', 'independent-pty-replay-v1'})
+                and report.get('verdict') == 'passed' and bool(frames)
+                and type(report.get('frameCount')) is int and report['frameCount'] == len(frames)
+                and all(f.get('verdict') == 'passed' for f in frames)
+                and all(type(f.get('frameId')) is int and f['frameId'] > 0 and
+                    all(type(f.get(key)) is int and 0 < f[key] <= 1000 for key in ('columns', 'rows'))
+                    for f in frames)
+                and (not native or all(type(f.get('outputBytes')) is int and f['outputBytes'] >= 0 and
+                    type(f.get('replayBytes')) is int and f['replayBytes'] >= f['outputBytes'] for f in frames))
+                and all(a['frameId'] < b['frameId'] for a, b in zip(frames, frames[1:])))
+    sequence = []
+    for frame in frames:
+        size = (frame.get('columns'), frame.get('rows'))
+        if not sequence or size != (sequence[-1]['columns'], sequence[-1]['rows']):
+            sequence.append({'columns': size[0], 'rows': size[1], 'frameId': frame.get('frameId')})
+    resize = bool(sequence) and report.get('sizeSequence') == sequence and any(
+        [f['columns'] for f in sequence[i:i + 3]] == [110, 109, 110]
+        for i in range(len(sequence) - 2))
+    # Require ordered semantic states, not just a physically self-consistent blank screen.
+    predicates = [
+        lambda f, s: f.get('columns') == 110 and s.get('alphaBody') is True,
+        lambda f, s: s.get('diffMode') == 'detail' and s.get('omegaFile') is True
+                     and s.get('loading') is True and s.get('omegaBody') is False,
+        lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'detail'
+                     and s.get('omegaFile') is True and s.get('omegaBody') is True,
+        lambda f, s: f.get('columns') == 109 and s.get('diffMode') == 'detail'
+                     and s.get('omegaFile') is True and s.get('omegaBody') is True,
+        lambda f, s: f.get('columns') == 110 and s.get('diffMode') == 'detail'
+                     and s.get('omegaFile') is True and s.get('omegaBody') is True,
+    ]
+    stage = 0
+    for frame in frames:
+        if stage < len(predicates) and predicates[stage](frame, frame.get('semantic', {})):
+            stage += 1
+    return {'renderer_write_replay': replay and report.get('method') == 'renderer-write-replay-v1',
+            'frame_resize_sequence': resize,
+            'frame_semantics': replay and resize and stage == len(predicates)}
+
+
+def terminal_socket_identity(capture):
+    root = Path(capture['socketRoot'])
+    path = Path(capture['socket'])
+    if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
+            or path.parent != root or path.name != 's' or path.is_symlink()):
+        raise ValueError('terminal socket is outside its owned canonical directory')
+    root_info, info = root.lstat(), path.lstat()
+    if (not stat.S_ISDIR(root_info.st_mode) or root_info.st_mode & 0o077
+            or root_info.st_uid != os.getuid() or not stat.S_ISSOCK(info.st_mode)
+            or info.st_uid != os.getuid()):
+        raise ValueError('terminal socket ownership or file type is invalid')
+    return {'rootDevice': root_info.st_dev, 'rootInode': root_info.st_ino,
+            'device': info.st_dev, 'inode': info.st_ino}
+
+
+def release_owned_terminal_socket(capture):
+    path = Path(capture['socket'])
+    result = {'socket_released': False, 'server_exited': False, 'stale_socket_removed': False}
+    try:
+        pid = capture.get('serverPid')
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+            raise ValueError('terminal socket server identity is missing')
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            result['server_exited'] = True
+        else:
+            raise ValueError('terminal socket server has not exited')
+        if not path.exists() and not path.is_symlink():
+            result['socket_released'] = True
+            return result
+        if terminal_socket_identity(capture) != capture.get('socketIdentity'):
+            raise ValueError('terminal socket inode no longer belongs to this run')
+        # A dead server may leave its unix socket entry after the last session.
+        # Refuse a live/replaced endpoint; remove only the captured owned inode.
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            try:
+                probe.connect(str(path))
+            except ConnectionRefusedError:
+                pass
+            else:
+                raise ValueError('terminal socket endpoint is still live')
+        if terminal_socket_identity(capture) != capture['socketIdentity']:
+            raise ValueError('terminal socket changed during cleanup')
+        path.unlink()
+        result.update(socket_released=True, stale_socket_removed=True)
+    except (OSError, ValueError) as error:
+        result['error'] = str(error)
     return result
 
 
@@ -656,6 +2598,207 @@ def is_relative_to(path, parent):
         return True
     except ValueError:
         return False
+
+
+def builtin_cache_producers_closed(cache, binary_sha256):
+    """Deleting a captured run also requires its producer's EOF and reap receipt."""
+    artifacts = ('native-pty.raw', 'pty-io.jsonl', 'native-pty-initial.json',
+                 'native-pty-eof.json', 'broker-cleanup.json',
+                 'frame-request.fifo', 'frame-response.fifo')
+    for run in (cache / 'runs').glob('r-*'):
+        if run.is_symlink() or not run.is_dir():
+            return False
+        native_artifacts = ('journal.bin', 'registration.json', 'native-initial.json',
+                            'native-observer.json', 'producer-expected-native.json')
+        has_native = any((run / name).exists() or (run / name).is_symlink()
+                         for name in native_artifacts)
+        launch_path = run / 'capture-launch.json'
+        if has_native or launch_path.exists() or launch_path.is_symlink():
+            try:
+                named = launch_path.lstat()
+                fd = os.open(launch_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, 'rb') as stream:
+                    info = os.fstat(stream.fileno())
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                            or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1
+                            or (info.st_dev, info.st_ino) != (named.st_dev, named.st_ino)):
+                        return False
+                    launch = json.load(stream)
+                capture = launch.get('capture') if isinstance(launch, dict) else None
+                if not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool:
+                    return False
+                if has_native and capture['nativeJournal'] is not True:
+                    return False
+                if capture['nativeJournal']:
+                    identity = terminal_native_exit_identity(run, launch, binary_sha256)
+                    if (identity is None
+                            or not terminal_native_exit_passed(run, identity['capture'], binary_sha256)
+                            or any((run / name).exists() or (run / name).is_symlink()
+                                   for name in ('frame-request.fifo', 'frame-response.fifo'))):
+                        return False
+                    continue
+            except (OSError, ValueError, KeyError, TypeError):
+                return False
+        if not any((run / name).exists() or (run / name).is_symlink() for name in artifacts):
+            continue
+        try:
+            paths = [run / name for name in ('native-pty.raw', 'native-pty-initial.json',
+                                           'native-pty-eof.json', 'broker-cleanup.json')]
+            if any(path.is_symlink() or not path.is_file() for path in paths):
+                return False
+            raw, initial_path, eof_path, cleanup_path = paths
+            initial, eof, cleanup = [json.loads(path.read_text())
+                                     for path in (initial_path, eof_path, cleanup_path)]
+            if not all(isinstance(value, dict) for value in (initial, eof, cleanup)):
+                return False
+            pid, capture_id = initial.get('pid'), initial.get('captureId')
+            removed = cleanup.get('fifoRemoved')
+            if (type(pid) is not int or pid <= 0 or not isinstance(capture_id, str) or not capture_id
+                    or initial.get('pgid') != pid or initial.get('binarySha256') != binary_sha256
+                    or eof.get('captureId') != capture_id or cleanup.get('captureId') != capture_id
+                    or eof.get('childPid') != pid or cleanup.get('childPid') != pid
+                    or type(eof.get('childExitCode')) is not int or eof['childExitCode'] != 0
+                    or type(eof.get('rawBytes')) is not int or eof['rawBytes'] != raw.stat().st_size
+                    or cleanup.get('childReaped') is not True
+                    or type(eof.get('childStatus')) is not int or eof['childStatus'] != 0
+                    or type(cleanup.get('childStatus')) is not int or cleanup['childStatus'] != eof['childStatus']
+                    or cleanup.get('physicalEof') is not True or cleanup.get('normalCompletion') is not True
+                    or cleanup.get('cleanupErrors') != [] or 'failure' not in cleanup or cleanup['failure'] is not None
+                    or 'stopReason' not in cleanup or cleanup['stopReason'] is not None
+                    or not isinstance(removed, list) or sorted(removed) != ['frame-request.fifo', 'frame-response.fifo']
+                    or any((run / name).exists() or (run / name).is_symlink() for name in removed)):
+                return False
+        except (OSError, ValueError, TypeError):
+            return False
+    return True
+
+
+def builtin_cache_endpoints_match(root, expected):
+    """Only the original, explicitly excluded IPC nodes may remain in the source."""
+    if root.is_symlink() or not root.is_dir() or not isinstance(expected, list):
+        return False
+    allowed = {}
+    for row in expected:
+        if (not isinstance(row, dict) or set(row) != {'path', 'type', 'device', 'inode', 'mode'}
+                or not isinstance(row['path'], str)):
+            return False
+        parts = Path(row['path']).parts
+        if (len(parts) != 3 or parts[0] != 'runs'
+                or not re.fullmatch(r'r-[0-9a-f]{12}', parts[1])
+                or not ((row['type'] == 'fifo' and parts[2] in ('frame-request.fifo', 'frame-response.fifo'))
+                        or (row['type'] == 'socket' and parts[2] == 'tmux.sock'))
+                or any(type(row[key]) is not int for key in ('device', 'inode', 'mode'))
+                or row['path'] in allowed):
+            return False
+        allowed[row['path']] = row
+    for path in sorted(root.rglob('*')):
+        info = path.lstat()
+        if stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
+            continue
+        kind = 'fifo' if stat.S_ISFIFO(info.st_mode) else 'socket' if stat.S_ISSOCK(info.st_mode) else None
+        relative = str(path.relative_to(root))
+        actual = {'path': relative, 'type': kind, 'device': info.st_dev,
+                  'inode': info.st_ino, 'mode': stat.S_IMODE(info.st_mode)}
+        if actual != allowed.get(relative):
+            return False
+    return True
+
+
+def builtin_cache_archive_matches(source, archive, receipt, expected_snapshot):
+    """Deletion requires both trees to still match the original verified snapshot."""
+    try:
+        if receipt.is_symlink() or not receipt.is_file():
+            return False
+        saved = json.loads(receipt.read_text())
+        if not isinstance(expected_snapshot, dict):
+            return False
+        expected_manifest = expected_snapshot.get('sourceManifest')
+        expected_endpoints = expected_snapshot.get('excludedTransports')
+        if (not isinstance(saved, dict) or not isinstance(expected_manifest, dict)
+                or saved.get('source') != str(source) or saved.get('archive') != str(archive)
+                or any(saved.get(key) is not True for key in (
+                    'archiveComplete', 'sourceFilesStable', 'archiveFilesMatch'))
+                or saved.get('sourceManifest') != expected_manifest
+                or saved.get('excludedTransports') != expected_endpoints):
+            return False
+        return (builtin_cache_endpoints_match(source, expected_endpoints)
+                and builtin_cache_endpoints_match(archive, [])
+                and tree_manifest(source) == expected_manifest
+                and tree_manifest(archive) == expected_manifest)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def archive_builtin_cache(source, archive, receipt):
+    """Copy durable evidence without opening the run's ephemeral IPC endpoints."""
+    if archive.exists() or receipt.exists():
+        raise FileExistsError('builtin evidence archive or receipt already exists')
+    before = tree_manifest(source)
+    excluded = []
+    stable = matched = False
+    completed = False
+
+    def ignore(directory, names):
+        ignored = []
+        for name in sorted(names):
+            path = Path(directory) / name
+            relative = path.relative_to(source)
+            parts = relative.parts
+            if (len(parts) != 3 or parts[0] != 'runs'
+                    or not re.fullmatch(r'r-[0-9a-f]{12}', parts[1])):
+                continue
+            info = path.lstat()
+            kind = None
+            if (name in ('frame-request.fifo', 'frame-response.fifo')
+                    and stat.S_ISFIFO(info.st_mode)):
+                kind = 'fifo'
+            elif name == 'tmux.sock' and stat.S_ISSOCK(info.st_mode):
+                kind = 'socket'
+            if kind is not None:
+                ignored.append(name)
+                excluded.append({'path': str(relative), 'type': kind,
+                                 'device': info.st_dev, 'inode': info.st_ino,
+                                 'mode': stat.S_IMODE(info.st_mode)})
+        return ignored
+
+    try:
+        # Preserve links as links, rather than reading a target outside this cache.
+        copy_spec = importlib.util.spec_from_file_location('owned_evidence_copy',
+            Path(__file__).resolve().parents[4] / 'scripts/owned-evidence-copy.py')
+        copy_module = importlib.util.module_from_spec(copy_spec)
+        copy_spec.loader.exec_module(copy_module)
+        shutil.copytree(source, archive, ignore=ignore, symlinks=True,
+                        copy_function=copy_module.copy_evidence_file)
+        stable = tree_manifest(source) == before
+        matched = tree_manifest(archive) == before
+        if not stable or not matched:
+            raise OSError('builtin evidence changed or archive bytes differ')
+        completed = True
+    finally:
+        with receipt.open('x', encoding='utf-8') as stream:
+            json.dump({'source': str(source), 'archive': str(archive),
+                       'archiveComplete': completed, 'sourceFilesStable': stable,
+                       'archiveFilesMatch': matched, 'sourceManifest': before,
+                       'excludedTransports': excluded,
+                       'scope': 'File preservation only; EOF, reap, timing and business verdicts remain separate.'},
+                      stream, indent=2)
+            stream.write('\n')
+    return {'sourceManifest': before, 'excludedTransports': excluded}
+
+
+def remap_path_strings(value, source_root, target_root):
+    if isinstance(value, dict):
+        return {
+            key: remap_path_strings(item, source_root, target_root)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [remap_path_strings(item, source_root, target_root) for item in value]
+    if isinstance(value, str):
+        source = str(source_root)
+        if value == source or value.startswith(source + os.sep):
+            return str(target_root) + value[len(source):]
+    return value
 
 
 def strip_ansi(text):
@@ -799,35 +2942,41 @@ def sse_compaction(item_id, encrypted_content):
     )
 
 
-def sse_function_call(call_id, name, arguments):
-    events = [
-        {
-            'type': 'response.output_item.added',
-            'item': {
-                'type': 'function_call',
-                'id': call_id,
+def sse_function_calls(calls):
+    events = []
+    for call_id, name, arguments in calls:
+        events.extend([
+            {
+                'type': 'response.output_item.added',
+                'item': {
+                    'type': 'function_call',
+                    'id': call_id,
+                    'call_id': call_id,
+                    'name': name,
+                },
+            },
+            {
+                'type': 'response.function_call_arguments.done',
+                'item_id': call_id,
                 'call_id': call_id,
                 'name': name,
+                'arguments': json.dumps(arguments, separators=(',', ':')),
             },
+        ])
+    events.append({
+        'type': 'response.completed',
+        'response': {
+            'usage': {'input_tokens': 1, 'output_tokens': len(calls)},
         },
-        {
-            'type': 'response.function_call_arguments.done',
-            'item_id': call_id,
-            'call_id': call_id,
-            'name': name,
-            'arguments': json.dumps(arguments, separators=(',', ':')),
-        },
-        {
-            'type': 'response.completed',
-            'response': {
-                'usage': {'input_tokens': 1, 'output_tokens': 1},
-            },
-        },
-    ]
+    })
     return ''.join(
         f'data: {json.dumps(event, separators=(",", ":"))}\n\n'
         for event in events
     )
+
+
+def sse_function_call(call_id, name, arguments):
+    return sse_function_calls([(call_id, name, arguments)])
 
 
 def is_main_response_request(request):
@@ -848,6 +2997,12 @@ class MockOpenAIServer:
         self.requests = []
         self.server = None
         self.thread = None
+        self.request_handlers = set()
+        self.stop_result = None
+        self.lifecycle_responses = set()
+        if label == 'retained-turn-end-load':
+            self.turn_waiting = threading.Event()
+            self.turn_release = threading.Event()
         if label == 'transcript-retention':
             self.retention_release = threading.Event()
             self.retention_parent_waiting = threading.Event()
@@ -858,6 +3013,9 @@ class MockOpenAIServer:
             self.coordinator_release = threading.Event()
             self.coordinator_tools_done = threading.Event()
             self.coordinator_stopped = threading.Event()
+        if label == 'agent-fg-bg':
+            self.agent_fgbg_release = threading.Event()
+            self.agent_fgbg_child_waiting = threading.Event()
 
     def start(self):
         owner = self
@@ -923,6 +3081,11 @@ class MockOpenAIServer:
                 if urlsplit(self.path).path != '/v1/responses':
                     self.send_error(404)
                     return
+                if owner.label in LIFECYCLE_MOCK_KINDS and not request['authorization']['matches_dummy']:
+                    request['response_kind'] = 'invalid-auth'
+                    owner.flush()
+                    self.send_error(401)
+                    return
                 response_kind, response = owner.response_for(body)
                 request['response_kind'] = response_kind
                 owner.flush()
@@ -938,8 +3101,28 @@ class MockOpenAIServer:
                 self.end_headers()
                 self.wfile.write(encoded)
 
-        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
-        self.server.daemon_threads = True
+        class OwnedServer(ThreadingHTTPServer):
+            def process_request(self, request, client_address):
+                thread = threading.Thread(target=self.process_request_thread,
+                    args=(request, client_address), name=f'release-mock-handler-{owner.label}', daemon=True)
+                with owner.lock:
+                    owner.request_handlers.add(thread)
+                try:
+                    thread.start()
+                except BaseException:
+                    with owner.lock:
+                        owner.request_handlers.discard(thread)
+                    self.shutdown_request(request)
+                    raise
+
+            def process_request_thread(self, request, client_address):
+                try:
+                    super().process_request_thread(request, client_address)
+                finally:
+                    with owner.lock:
+                        owner.request_handlers.discard(threading.current_thread())
+
+        self.server = OwnedServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             name=f'release-mock-openai-{self.label}',
@@ -987,6 +3170,199 @@ class MockOpenAIServer:
         with self.lock:
             return json.loads(json.dumps(self.requests))
 
+    def lifecycle_response(self, body):
+        items = body.get('input', [])
+        outputs = {item.get('call_id'): item.get('output') for item in items
+                   if isinstance(item, dict) and item.get('type') == 'function_call_output'}
+        users = []
+        for item in items:
+            if not isinstance(item, dict) or item.get('role') != 'user':
+                continue
+            content = item.get('content', '')
+            if isinstance(content, str):
+                users.append(content)
+            elif isinstance(content, list):
+                users.extend(block.get('text', '') for block in content if isinstance(block, dict))
+        kind, response = self.label + '-unrecognized', sse_incomplete('Unrecognized lifecycle fixture request')
+        if self.label == 'nested-agent':
+            if any(text.startswith('RELEASE_NESTED_CHILD_REQUEST:') for text in users):
+                kind, response = 'nested-child-completed', sse_completed('RELEASE_NESTED_CHILD_DONE')
+            elif any(text.startswith('RELEASE_NESTED_PARENT_REQUEST:') for text in users):
+                if 'fc_nested_child' in outputs:
+                    kind, response = 'nested-parent-completed', sse_completed('RELEASE_NESTED_PARENT_DONE')
+                else:
+                    kind, response = 'nested-parent-launch', sse_function_call(
+                        'fc_nested_child', 'Agent', {
+                            'description': 'release nested child', 'subagent_type': 'release-nested-foreground',
+                            'run_in_background': False,
+                            'prompt': 'RELEASE_NESTED_CHILD_REQUEST: Reply exactly RELEASE_NESTED_CHILD_DONE.',
+                        })
+            elif any(text.startswith('Release gate read-only nested Agent validation.') for text in users):
+                if 'fc_nested_parent' in outputs:
+                    kind, response = 'nested-root-completed', sse_completed('RELEASE_NESTED_ROOT_DONE')
+                else:
+                    kind, response = 'nested-root-launch', sse_function_call(
+                        'fc_nested_parent', 'Agent', {
+                            'description': 'release nested parent', 'subagent_type': 'release-nested-foreground',
+                            'run_in_background': False,
+                            'prompt': 'RELEASE_NESTED_PARENT_REQUEST: Use Agent once to launch a foreground child, then reply RELEASE_NESTED_PARENT_DONE.',
+                        })
+        elif self.label == 'workflow':
+            if any(text.startswith('Use Workflow with this exact inline script.')
+                   and INLINE_WORKFLOW_SCRIPT in text for text in users):
+                if 'fc_workflow_launch' in outputs:
+                    kind, response = 'workflow-parent-completed', sse_completed('RELEASE_WORKFLOW_PARENT_DONE')
+                elif 'fc_workflow_search' in outputs:
+                    kind, response = 'workflow-launch', sse_function_call(
+                        'fc_workflow_launch', 'Workflow', {'script': INLINE_WORKFLOW_SCRIPT})
+                else:
+                    kind, response = 'workflow-search', sse_function_call(
+                        'fc_workflow_search', 'ToolSearch', {'query': 'select:Workflow'})
+            else:
+                for name, path, version in (('a', 'Makefile', 'VERSION'), ('b', 'package.json', 'version')):
+                    if any(text.strip() == f'Read-only. Read {path} and report only {version}.' for text in users):
+                        call_id = f'fc_workflow_probe_{name}_read'
+                        if call_id in outputs:
+                            kind, response = f'workflow-probe-{name}-completed', sse_completed(str(outputs[call_id]))
+                        else:
+                            kind, response = f'workflow-probe-{name}-read', sse_function_call(
+                                call_id, 'Read', {'file_path': str(Path(__file__).resolve().parents[4] / path)})
+        elif self.label == 'code-review':
+            scope = any(text.startswith('Establish the scope of a code review.\n') for text in users)
+            if scope:
+                if 'fc_code_review_scope' in outputs:
+                    kind, response = 'code-review-scope-completed', sse_completed('')
+                else:
+                    diff = next((match.group(1) for text in users
+                                 if (match := re.search(r'using exactly: (git diff [^\n]+?)\. Do not widen', text))), None)
+                    if diff:
+                        kind, response = 'code-review-scope-output', sse_function_call(
+                            'fc_code_review_scope', 'StructuredOutput', {
+                                'diffCommand': diff, 'files': [],
+                                'summary': 'Deterministic empty-scope release fixture.',
+                            })
+            else:
+                prompt = next((text for text in users if text.startswith('Workflow: code-review\n')
+                               and 'selector-based input' in text and 'selector: "code-review"' in text), None)
+                if prompt:
+                    match = re.search(r'\nUser input:\n(.*?)\n\nExecute this validated workflow', prompt, re.DOTALL)
+                    if match:
+                        if 'fc_code_review_launch' in outputs:
+                            kind, response = 'code-review-parent-completed', sse_completed('RELEASE_CODE_REVIEW_PARENT_DONE')
+                        else:
+                            kind, response = 'code-review-launch', sse_function_call(
+                                'fc_code_review_launch', 'WorkflowTool', {
+                                    'action': 'run', 'selector': 'code-review', 'runArgs': match.group(1),
+                                })
+        # Task notifications are a distinct root turn, not a second workflow launch.
+        if (kind == self.label + '-parent-completed'
+                and kind in self.lifecycle_responses) and any(
+            '<task-notification>' in text and '<status>completed</status>' in text for text in users
+        ):
+            kind = self.label + '-notification-completed'
+            response = sse_completed('RELEASE_WORKFLOW_NOTIFICATION_DONE')
+        with self.lock:
+            if kind in self.lifecycle_responses:
+                return self.label + '-duplicate', sse_incomplete('Duplicate lifecycle fixture request: ' + kind)
+            if kind in LIFECYCLE_MOCK_KINDS[self.label] or kind == self.label + '-notification-completed':
+                self.lifecycle_responses.add(kind)
+        return kind, response
+
+    def canonical_diff_response(self, body):
+        nonce = hashlib.sha256(str(self.run_dir.resolve()).encode()).hexdigest()[:24]
+        items = body.get('input', [])
+        users = [(index, item) for index, item in enumerate(items)
+                 if isinstance(item, dict) and item.get('role') == 'user']
+        invalid = ('canonical-invalid', sse_incomplete('Invalid owned canonical Read/Write continuation'))
+        if not users:
+            return invalid
+        user_index, user = users[-1]
+        content = user.get('content')
+        if isinstance(content, list):
+            texts = []
+            for block in content:
+                if (not isinstance(block, dict) or block.get('type') != 'input_text'
+                        or not isinstance(block.get('text'), str)):
+                    return invalid
+                text = block['text']
+                if re.fullmatch(r'<(system-reminder|available-deferred-tools)>.*</\1>\s*',
+                                text, re.DOTALL):
+                    continue
+                texts.append(text)
+            caveat = ('<local-command-caveat>Caveat: The messages below were generated by the user '
+                      'while running local commands. DO NOT respond to these messages or otherwise '
+                      'consider them in your response unless the user explicitly asks you to.'
+                      '</local-command-caveat>')
+            if texts and texts[0].strip() == caveat:
+                if (len(texts) != 4
+                        or not re.fullmatch(r'<command-name>/diff</command-name>\s*'
+                            r'<command-message>diff</command-message>\s*'
+                            r'<command-args></command-args>\s*', texts[1])
+                        or not re.fullmatch(r'<local-command-stdout>Diff panel '
+                            r'(shown|hidden)</local-command-stdout>\s*', texts[2])):
+                    return invalid
+                texts = texts[3:]
+            if len(texts) != 1:
+                return invalid
+            content = texts[0]
+        file = next((name for name in ('alpha', 'omega')
+                     if content == f'RELEASE_CANONICAL_DIFF:{nonce}:{name}'), None)
+        if file is None:
+            return invalid
+        read_id = f'fc_canonical_{file}_read_{nonce}'
+        write_id = f'fc_canonical_{file}_write_{nonce}'
+        outputs = [item for item in items[user_index + 1:]
+                   if isinstance(item, dict) and item.get('type') == 'function_call_output']
+        if any(item.get('call_id') not in {read_id, write_id} for item in outputs):
+            return invalid
+        read = [item for item in outputs if item.get('call_id') == read_id]
+        wrote = [item for item in outputs if item.get('call_id') == write_id]
+        if len(read) > 1 or len(wrote) > 1 or (wrote and not read):
+            return invalid
+        calls = [item for item in items[user_index + 1:] if isinstance(item, dict)
+                 and item.get('type') == 'function_call']
+        if len(calls) != len(outputs):
+            return invalid
+        tail = items[user_index + 1:]
+        expected_tail = [(kind, call_id) for call_id in
+                         ([read_id, write_id] if wrote else [read_id] if read else [])
+                         for kind in ('function_call', 'function_call_output')]
+        if (len(tail) != len(expected_tail) or any(
+                not isinstance(item, dict) or (item.get('type'), item.get('call_id')) != expected
+                for item, expected in zip(tail, expected_tail))):
+            return invalid
+        path = self.run_dir / f'project/{file}.txt'
+        for item in outputs:
+            paired = [call for call in calls if call.get('call_id') == item.get('call_id')]
+            if len(paired) != 1 or items.index(paired[0]) >= items.index(item):
+                return invalid
+            call = paired[0]
+            reading = item.get('call_id') == read_id
+            expected_args = {'file_path': str(path)} if reading else {
+                'file_path': str(path), 'content': canonical_diff_content(file)}
+            try:
+                arguments = json.loads(call.get('arguments', ''))
+            except (ValueError, TypeError):
+                return invalid
+            if call.get('name') != ('Read' if reading else 'Write') or arguments != expected_args:
+                return invalid
+            output = item.get('output')
+            if not isinstance(output, str) or not output.strip() or re.search(
+                r'(?i)(?:^|\n)\s*(?:error:|permission denied|tool use rejected)', output):
+                return invalid
+        if read and f'{file} before' not in read[0]['output']:
+            return invalid
+        if wrote:
+            if 'successfully' not in wrote[0]['output'] or f'{file}.txt' not in wrote[0]['output']:
+                return invalid
+            return f'canonical-{file}-completed', sse_completed(f'RELEASE_CANONICAL_{file.upper()}_DONE:{nonce}')
+        if read:
+            return f'canonical-{file}-write', sse_function_call(write_id, 'Write', {
+                'file_path': str(path),
+            'content': canonical_diff_content(file),
+            })
+        return f'canonical-{file}-read', sse_function_call(read_id, 'Read', {'file_path': str(path)})
+
     def response_for(self, body):
         current_request = {
             'method': 'POST',
@@ -995,6 +3371,61 @@ class MockOpenAIServer:
         }
         if not is_main_response_request(current_request):
             return 'title', sse_completed('{"title":"Release validation"}')
+        if self.label == 'terminal-canonical-diff':
+            return self.canonical_diff_response(body)
+        if self.label == 'retained-turn-end-load':
+            self.turn_waiting.set()
+            if not self.turn_release.wait(90):
+                return 'retained-timeout', sse_incomplete('G5 harness release not observed')
+            return 'retained-readiness', sse_completed('RELEASE_RETAINED_RESPONSE')
+        if self.label == 'retained-readiness':
+            return 'retained-readiness', sse_completed('RELEASE_RETAINED_RESPONSE')
+        if self.label in LIFECYCLE_MOCK_KINDS:
+            return self.lifecycle_response(body)
+        if self.label == 'agent-fg-bg':
+            items = body.get('input', [])
+            outputs = {
+                item.get('call_id'): item.get('output')
+                for item in items if isinstance(item, dict)
+                and item.get('type') == 'function_call_output'
+            }
+            users = [
+                item for item in items
+                if isinstance(item, dict) and item.get('role') == 'user'
+            ]
+            child = any(
+                'RELEASE_FGBG_CHILD_REQUEST' in json.dumps(item.get('content'))
+                for item in users
+            )
+            if child:
+                if 'fc_release_fgbg_read' in outputs:
+                    self.agent_fgbg_child_waiting.set()
+                    if not self.agent_fgbg_release.wait(timeout=120):
+                        return 'agent-fg-bg-child-timeout', sse_incomplete(
+                            'foreground/background fixture was not released'
+                        )
+                    return 'agent-fg-bg-child-completed', sse_completed(
+                        'VERSION := release-validation\nRELEASE_FGBG_CHILD_DONE'
+                    )
+                return 'agent-fg-bg-read-call', sse_function_call(
+                    'fc_release_fgbg_read', 'Read',
+                    {'file_path': str(Path(__file__).resolve().parents[4] / 'Makefile')},
+                )
+            if 'fc_release_fgbg_agent' in outputs:
+                return 'agent-fg-bg-parent-completed', sse_completed(
+                    'RELEASE_FGBG_PARENT_RESTORED'
+                )
+            return 'agent-fg-bg-agent-call', sse_function_call(
+                'fc_release_fgbg_agent', 'Agent', {
+                    'description': 'release foreground background',
+                    'prompt': (
+                        'RELEASE_FGBG_CHILD_REQUEST: Read Makefile and report its '
+                        'VERSION line, then print RELEASE_FGBG_CHILD_DONE.'
+                    ),
+                    'subagent_type': 'release-foreground',
+                    'run_in_background': False,
+                },
+            )
         if self.label in WORKFLOW_FAULT_SCRIPTS:
             items = body.get('input', [])
             outputs = {item.get('call_id'): item.get('output')
@@ -1043,6 +3474,53 @@ class MockOpenAIServer:
                 if call_id not in outputs:
                     return call_id.removeprefix('fc_'), sse_function_call(call_id, name, arguments)
             return f'plugins-{phase}-completed', sse_completed(f'Plugin probe {phase} complete.')
+        if self.label == 'team-concurrency':
+            items = body.get('input', [])
+            worker = next((
+                name
+                for name in ('worker-a', 'worker-b', 'worker-c')
+                if any(
+                    isinstance(item, dict)
+                    and item.get('role') == 'user'
+                    and f'Reply exactly {name}.' in json.dumps(item.get('content'))
+                    for item in items
+                )
+            ), None)
+            if worker:
+                return 'team-worker-completed', sse_completed(worker)
+            outputs = {
+                item.get('call_id'): item.get('output')
+                for item in items
+                if isinstance(item, dict)
+                and item.get('type') == 'function_call_output'
+            }
+            if 'fc_team_create' not in outputs:
+                return 'team-create', sse_function_call(
+                    'fc_team_create',
+                    'TeamCreate',
+                    {'team_name': 'release-team-concurrency'},
+                )
+            worker_calls = [
+                (
+                    f'fc_team_worker_{suffix}',
+                    'Agent',
+                    {
+                        'description': f'release team concurrency {name}',
+                        'name': name,
+                        'subagent_type': 'general-purpose',
+                        'run_in_background': True,
+                        'prompt': f'Reply exactly {name}. Do not use tools or modify files.',
+                    },
+                )
+                for suffix, name in (
+                    ('a', 'worker-a'),
+                    ('b', 'worker-b'),
+                    ('c', 'worker-c'),
+                )
+            ]
+            if not all(call_id in outputs for call_id, _name, _arguments in worker_calls):
+                return 'team-agents', sse_function_calls(worker_calls)
+            return 'team-completed', sse_completed('RELEASE_TEAM_CONCURRENCY_DONE')
         if self.label in {'deferred-tool-discovery', 'deferred-tool-discovery-off'}:
             outputs = {item.get('call_id'): item.get('output')
                        for item in body.get('input', []) if isinstance(item, dict)
@@ -1131,7 +3609,7 @@ class MockOpenAIServer:
                 {
                     'description': 'release coordinator selector',
                     'prompt': 'RELEASE_COORDINATOR_CHILD_REQUEST: Run Bash then Read Makefile and report its VERSION line.',
-                    'subagent_type': 'general-purpose',
+                    'subagent_type': 'release-coordinator-foreground',
                     'run_in_background': False,
                 },
             )
@@ -1256,7 +3734,8 @@ class MockOpenAIServer:
                                 'This release validation request is expected to fail. '
                                 'Do not call tools.'
                             ),
-                            'subagent_type': 'general-purpose',
+                            'subagent_type': 'release-stop-foreground',
+                            'run_in_background': False,
                         },
                     ),
                 )
@@ -1319,15 +3798,27 @@ class MockOpenAIServer:
         if self.label == 'coordinator-selector':
             self.coordinator_stopped.set()
             self.coordinator_release.set()
+        if self.label == 'agent-fg-bg':
+            self.agent_fgbg_release.set()
         if self.server is None:
-            return {'stopped': True, 'thread_alive': False}
+            self.stop_result = {'stopped': True, 'thread_alive': False, 'active_handlers': []}
+            return self.stop_result
         self.server.shutdown()
         self.server.server_close()
         if self.thread is not None:
             self.thread.join(timeout=5)
         alive = bool(self.thread and self.thread.is_alive())
+        deadline = time.monotonic() + 5
+        with self.lock:
+            handlers = list(self.request_handlers)
+        for handler in handlers:
+            handler.join(timeout=max(0, deadline - time.monotonic()))
+        with self.lock:
+            active_handlers = [handler.name for handler in self.request_handlers if handler.is_alive()]
         self.flush()
-        return {'stopped': not alive, 'thread_alive': alive}
+        self.stop_result = {'stopped': not alive and not active_handlers,
+                            'thread_alive': alive, 'active_handlers': active_handlers}
+        return self.stop_result
 
 
 def custom_prompt_instructions_stable(bodies):
@@ -1646,6 +4137,8 @@ class BinaryGate:
         self.pid = os.getpid()
         self.session_index = 0
         self.active_runs = {}
+        self.terminal_capture = None
+        self.code_review_mock_servers = {}
         self.registered_runs = {}
         self.auth_homes = set()
         self.mock_servers = {}
@@ -1689,6 +4182,7 @@ class BinaryGate:
             'baseline_captured_at': self.baseline.get('captured_at'),
             'binary': str(self.binary),
             'binary_sha256': current_state['binary']['sha256'],
+            'driver_sha256': sha256(Path(__file__).resolve()),
             'required_target_inputs': required_target_inputs,
             'required_targets': sorted(
                 required_targets_for_paths(required_target_inputs['all_paths'])
@@ -1883,7 +4377,132 @@ class BinaryGate:
         }
 
     def tmux(self, *args, check=False, timeout=30):
-        return command(['tmux', *args], check=check, timeout=timeout)
+        capture = getattr(self, 'terminal_capture', None)
+        if capture is None:
+            return command(['tmux', *args], check=check, timeout=timeout)
+        run = Path(capture['run'])
+        before = self.terminal_capture_boundary(run)
+        kind = args[0]
+        action = None
+        if kind == 'send-keys':
+            keys = {'Enter': b'\r', 'Escape': b'\x1b', 'C-c': b'\x03',
+                    'Tab': b'\t', 'Down': b'\x1b[B', 'Up': b'\x1b[A'}
+            rest = list(args[args.index('-t') + 2:])
+            data = (''.join(rest[1:]).encode() if rest[:1] == ['-l'] else
+                    b''.join(keys[key] for key in rest))
+            action = self.terminal_input_begin(run, {
+                'transport': 'tmux-send-keys', 'args': list(args),
+                'hex': data.hex(), 'target': capture['target'],
+            })
+        elif kind == 'resize-window':
+            rows = self.terminal_jsonl(run / 'geometry.jsonl')
+            action = sum(row.get('phase') == 'resize-send' for row in rows) + 1
+            geometry = {
+                'actionId': action, 'columns': int(args[args.index('-x') + 1]),
+                'rows': int(args[args.index('-y') + 1]),
+                'actualArgs': list(args), 'target': capture['target'],
+            }
+        if kind == 'resize-window':
+            sent = {**geometry, 'phase': 'resize-send', **before}
+            native = capture.get('capture', {}).get('nativeJournal') is True
+            if native:
+                sent['nativeDriverClock'] = _driver_clock.read_native_driver_clock(capture)
+            result = execution_error = clock_error = returned_clock = None
+            try:
+                result = command(['tmux', '-S', capture['socket'], *args], check=False, timeout=timeout)
+            except BaseException as error:
+                execution_error = error
+            try:
+                if native:
+                    returned_clock = _driver_clock.read_native_driver_clock(capture)
+            except Exception as error:
+                clock_error = error
+            # Samples precede publication; an observation failure never replaces
+            # the original command failure or invents an exit status.
+            try:
+                self.terminal_append(run / 'geometry.jsonl', sent)
+                self.terminal_append(run / 'geometry.jsonl', {
+                    **geometry, 'phase': 'resize-return',
+                    'exitCode': result.returncode if result is not None else None,
+                    **self.terminal_capture_boundary(run),
+                    **({'nativeDriverClock': returned_clock} if returned_clock else {}),
+                    **({'commandError': type(execution_error).__name__} if execution_error else {}),
+                    **({'clockError': str(clock_error)} if clock_error else {}),
+                })
+            except Exception as publication_error:
+                if execution_error is None and clock_error is None:
+                    raise
+                try:
+                    print(json.dumps({'phase':'resize-evidence-publication-failed',
+                        'captureId':capture.get('capture',{}).get('captureId'),'actionId':action,
+                        'errno':getattr(publication_error,'errno',None),
+                        'errorType':type(publication_error).__name__}),file=sys.stderr)
+                except Exception:
+                    pass  # Preserve the original failure even when diagnostics are unavailable.
+                raise execution_error if execution_error is not None else clock_error
+            if execution_error:
+                raise execution_error
+            if clock_error:
+                raise clock_error
+        else:
+            result = command(['tmux', '-S', capture['socket'], *args], check=False, timeout=timeout)
+        if kind == 'send-keys':
+            self.terminal_append(run / 'inputs.jsonl', {
+                'actionId': action, 'phase': 'sent' if result.returncode == 0 else 'failed',
+                'exitCodes': [result.returncode], **self.terminal_capture_boundary(run),
+            })
+        elif kind == 'capture-pane':
+            self.terminal_append(run / 'observations.jsonl', {
+                'args': list(args), 'exitCode': result.returncode,
+                'textSHA256': text_sha256(result.stdout), **before,
+            })
+        if check and result.returncode:
+            raise RuntimeError(f'owned tmux {args!r}: {result.stderr}')
+        return result
+
+    @staticmethod
+    def terminal_jsonl(path):
+        if not path.exists():
+            return []
+        text = path.read_text()
+        lines = text.split('\n')
+        if not text.endswith('\n'):
+            lines.pop()
+        return [json.loads(line) for line in lines if line]
+
+    @staticmethod
+    def terminal_append(path, row):
+        with path.open('a') as stream:
+            stream.write(json.dumps(row) + '\n')
+
+    def terminal_capture_boundary(self, run):
+        frames = self.terminal_jsonl(run / 'frames.jsonl')
+        io = self.terminal_jsonl(run / 'pty-io.jsonl')
+        return {
+            'lastObservedFrameId': frames[-1]['frameId'] if frames else None,
+            'lastObservedIoId': io[-1]['ioId'] if io else None,
+            'observedRawBytes': (run / 'pty.raw').stat().st_size,
+        }
+
+    def terminal_input_begin(self, run, row):
+        action = sum(value.get('phase') == 'send'
+                     for value in self.terminal_jsonl(run / 'inputs.jsonl')) + 1
+        self.terminal_append(run / 'inputs.jsonl', {
+            **row, 'actionId': action, 'phase': 'send',
+            'chunkClaim': 'one transport command; native read grouping unknown',
+            **self.terminal_capture_boundary(run),
+        })
+        return action
+
+    def terminal_capture_command(self, action, descriptor):
+        result = command([
+            'bun', str(self.repo / 'scripts/terminal-capture-driver.mjs'),
+            action, str(descriptor),
+        ], timeout=90)
+        run = descriptor.parent
+        (run / f'capture-{action}-stdout.txt').write_text(result.stdout)
+        (run / f'capture-{action}-stderr.txt').write_text(result.stderr)
+        return result
 
     def capture(self, target, path, *, history=True):
         args = ['capture-pane', '-p', '-e', '-J']
@@ -1919,11 +4538,16 @@ class BinaryGate:
         executable = bin_dir / 'ssh'
         remote_version = repr(str(self.baseline['makefile_version']))
         executable.write_text('''#!/usr/bin/env python3
-import atexit, json, os, signal, sys
+import atexit, json, os, re, signal, sys
 io = os.environ["CC_VALIDATION_SSH_IO"]
+def redact(value):
+    if not isinstance(value, str): return value
+    normalized = value.replace("\\\\=", "=")
+    return re.sub(r"(CLAUDE_CODE_(?:SSH_REMOTE_TOKEN|SSH_PERMISSION_BOOTSTRAP|OAUTH_TOKEN)=)[^ ]+", r"\\1[REDACTED]", normalized)
 def event(name, **extra):
+    safe = {key: [redact(item) for item in value] if isinstance(value, list) else redact(value) for key, value in extra.items()}
     with open(io, "a") as stream:
-        stream.write(json.dumps({"event": name, **extra}, sort_keys=True) + "\\n")
+        stream.write(json.dumps({"event": name, **safe}, sort_keys=True) + "\\n")
 def exit_on_signal(_signum, _frame):
     atexit.unregister(event)
     event("remote-process-exit")
@@ -2036,20 +4660,21 @@ else:
         ids_match = all(
             fixture.get(key) == value for key, value in SSH_LIFECYCLE_IDS.items()
         )
-        cleanup_absent = require_cleanup or not any(
-            name in observed_names for name in cleanup_names
+        cleanup_requirement_met = (
+            all(name in observed_names for name in cleanup_names)
+            if require_cleanup else True
         )
         return {
             'passed': (
                 ids_match and not missing_events and unique and ordered
-                and event_fields_match and cleanup_absent
+                and event_fields_match and cleanup_requirement_met
             ),
             'missing_events': missing_events,
             'ids_match': ids_match,
             'unique': unique,
             'ordered': ordered,
             'event_fields_match': event_fields_match,
-            'cleanup_absent': cleanup_absent,
+            'cleanup_requirement_met': cleanup_requirement_met,
         }
 
     @staticmethod
@@ -2209,6 +4834,8 @@ else:
             })
         if label == 'deferred-tool-discovery-off':
             settings['enableWorkflows'] = False
+        if label in {'code-review', 'prompt-modes-cache-prefix'}:
+            settings['planModeAvailable'] = True
         if label == 'prompt-modes-cache-prefix':
             settings.update({
                 'skipAutoPermissionPrompt': True,
@@ -2246,6 +4873,16 @@ else:
                     }],
                 }],
             }
+        if label in FOREGROUND_FIXTURES:
+            agent_type, tools = FOREGROUND_FIXTURES[label]
+            agents = config / 'agents'
+            agents.mkdir(parents=True)
+            (agents / f'{agent_type}.md').write_text(
+                f'---\nname: {agent_type}\n'
+                'description: Deterministic foreground lifecycle validation.\n'
+                f'tools: {tools}\nmodel: inherit\nbackground: false\n---\n'
+                'Follow the requested validation task and return its completion marker.\n'
+            )
         if label == 'model-discovery-empty-picker':
             settings['model'] = 'gpt-empty-discovery-current'
         if label == 'first-party-bootstrap-picker':
@@ -2253,6 +4890,24 @@ else:
         (config / 'settings.json').write_text(
             json.dumps(settings, indent=2) + '\n'
         )
+        marketplace = config / 'plugins/marketplaces/Esonhugh-Marketplace'
+        (marketplace / '.claude-plugin').mkdir(parents=True)
+        (marketplace / '.claude-plugin/marketplace.json').write_text(json.dumps({
+            'name': 'Esonhugh-Marketplace',
+            'owner': {'name': 'Release validation fixture'},
+            'plugins': [],
+        }, indent=2) + '\n')
+        (config / 'plugins/known_marketplaces.json').write_text(json.dumps({
+            'Esonhugh-Marketplace': {
+                'source': {
+                    'source': 'github',
+                    'repo': 'Esonhugh/Marketplace',
+                },
+                'installLocation': str(marketplace),
+                'lastUpdated': '2026-09-29T00:00:00.000Z',
+                'autoUpdate': False,
+            },
+        }, indent=2) + '\n')
         (run_dir / 'auth-source-metadata.json').write_text(json.dumps({
             'source': auth_source,
             'strategy': auth_strategy,
@@ -2313,6 +4968,7 @@ else:
         run_key = f'{self.stamp}-{label}-{self.pid}-{self.session_index}'
         run_dir = self.evidence_root / 'runs' / run_key
         run_dir.mkdir(parents=True)
+        (run_dir / 'tmp').mkdir(mode=0o700)
         config, home = self.make_fixture(run_dir, label)
         mock_base_url = None
         uses_local_mock = label in MOCK_OPENAI_TARGETS or label == 'first-party-bootstrap-picker'
@@ -2331,6 +4987,7 @@ else:
             '-e', f'CC_VALIDATION_EVIDENCE_DIR={run_dir}',
             '-e', f'CC_VALIDATION_CONFIG_DIR={config}',
             '-e', f'CC_VALIDATION_HOME={home}',
+            '-e', f'CC_VALIDATION_TMPDIR={run_dir / "tmp"}',
             '-e', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL=1',
         ]
         for name in ('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY'):
@@ -2348,6 +5005,8 @@ else:
             settings = json.loads(settings_path.read_text())
             settings['teammateMode'] = 'in-process'
             settings_path.write_text(json.dumps(settings, indent=2) + '\n')
+        if label in FOREGROUND_FIXTURES:
+            args.extend(['-e', 'CC_VALIDATION_FORK_SUBAGENT=0'])
         if label == 'workflow-retry-partial-failure':
             args.extend([
                 '-e',
@@ -2378,6 +5037,41 @@ else:
                 '-e',
                 f'CC_VALIDATION_SYSTEM_PROMPT={CUSTOM_SYSTEM_PROMPT_MARKER}',
             ])
+        if label in {'terminal-interaction', 'terminal-canonical-diff'}:
+            fixture = run_dir / 'project'
+            initialize_terminal_interaction_repository(fixture)
+            global_config_path = config / '.claude.json'
+            global_config = json.loads(global_config_path.read_text())
+            global_config['projects'][str(fixture)] = {
+                'hasTrustDialogAccepted': True,
+                'hasCompletedProjectOnboarding': True,
+            }
+            global_config_path.write_text(json.dumps(global_config, indent=2) + '\n')
+            args.extend([
+                '-e', f'CC_VALIDATION_PATH_PREFIX={(create_terminal_git_wrapper if label == "terminal-interaction" else create_canonical_terminal_git_wrapper)(run_dir)}',
+                '-e', f'CC_VALIDATION_CWD={fixture}',
+                '-e', f'CC_VALIDATION_FRAME_EVIDENCE_PATH={run_dir / "frames.jsonl"}',
+                '-e', 'CC_VALIDATION_NO_FLICKER=1',
+            ])
+            settings_path = config / 'settings.json'
+            settings = json.loads(settings_path.read_text())
+            settings['tui'] = 'fullscreen'
+            if label == 'terminal-interaction':
+                settings['enabledPlugins'] = {
+                    'cc-plugin-diff@builtin': False, 'diff@builtin': False,
+                }
+            settings_path.write_text(json.dumps(settings, indent=2) + '\n')
+            clawd = config / 'clawd.txt'
+            clawd.write_text('\n'.join([
+                'CLAWD_RELEASE_ROW_ONE',
+                'CLAWD_RELEASE_ROW_TWO',
+                'CLAWD_RELEASE_ROW_THREE',
+                'CLAWD_RELEASE_ROW_FOUR',
+                'CLAWD_RELEASE_ROW_FIVE',
+                'CLAWD_RELEASE_ROW_SIX',
+                'CLAWD_RELEASE_ROW_SEVEN',
+                'CLAWD_RELEASE_WIDE_' + ('界' * 120),
+            ]) + '\n')
         if label == 'ssh-remote-session-lifecycle':
             fixture = self.make_ssh_transport_fixture(run_dir)
             args.extend([
@@ -2412,7 +5106,48 @@ else:
                                     '--debug', '--debug-file', str(run_dir / 'debug.log')]))
         else:
             args.append(str(self.launcher))
+        if label in {'terminal-interaction', 'terminal-canonical-diff'}:
+            if self.terminal_capture is not None:
+                raise RuntimeError('terminal captures must be serial')
+            socket_root = Path(tempfile.mkdtemp(prefix='cc-term-', dir='/private/tmp'))
+            binary = run_dir / 'bin/claude'
+            binary.parent.mkdir()
+            shutil.copy2(self.binary, binary)
+            if sha256(binary) != self.manifest['binary_sha256']:
+                raise RuntimeError('copied terminal binary differs from baseline')
+            descriptor = run_dir / 'capture-launch.json'
+            launch = {
+                'run': str(run_dir), 'driverPid': os.getpid(), 'socket': str(socket_root / 's'),
+                'socketRoot': str(socket_root), 'target': target, 'pane': target,
+                'tmux': shutil.which('tmux'), 'argv': [str(self.launcher)],
+                'binarySha256': self.manifest['binary_sha256'],
+                'env': {'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+                        'HOME': str(home), 'TERM': 'xterm-256color'},
+            }
+            descriptor.write_text(json.dumps(launch, indent=2) + '\n')
+            prepared = self.terminal_capture_command('prepare', descriptor)
+            if prepared.returncode:
+                raise RuntimeError('terminal capture preparation failed')
+            self.terminal_capture = json.loads(descriptor.read_text())
+            args[-1] = self.terminal_capture['capture']['wrapper']
+            for name in ('CC_VALIDATION_FRAME_BROKER_DIR', 'CC_VALIDATION_FRAME_CAPTURE_ID',
+                         'CC_VALIDATION_FRAME_BINARY_SHA256', 'CC_VALIDATION_FRAME_NATIVE_JOURNAL'):
+                args[-1:-1] = ['-e', f'{name}={self.terminal_capture["env"][name]}']
+            args[-1:-1] = ['-e', f'CC_VALIDATION_BINARY={binary}']
         result = self.tmux(*args)
+        if label in {'terminal-interaction', 'terminal-canonical-diff'} and result.returncode == 0:
+            self.active_runs[session] = (run_dir, target)
+            self.tmux('set-option', '-w', '-t', target, 'remain-on-exit', 'on', check=True)
+            pane = self.tmux('display-message', '-p', '-t', target, '#{pane_id}',
+                             check=True).stdout.strip()
+            self.terminal_capture['pane'] = pane
+            self.terminal_capture['serverPid'] = int(self.tmux(
+                'display-message', '-p', '-t', target, '#{pid}', check=True).stdout.strip())
+            self.terminal_capture['socketIdentity'] = terminal_socket_identity(self.terminal_capture)
+            descriptor.write_text(json.dumps(self.terminal_capture, indent=2) + '\n')
+            installed = self.terminal_capture_command('install', descriptor)
+            if installed.returncode:
+                raise RuntimeError('terminal capture recorder installation failed')
         (run_dir / 'tmux-start-stdout.txt').write_text(result.stdout)
         (run_dir / 'tmux-start-stderr.txt').write_text(result.stderr)
         (run_dir / 'pane-target.txt').write_text(target + '\n')
@@ -2433,6 +5168,7 @@ else:
             ),
             'config': str(config),
             'home': str(home),
+            'fork_subagent': '0' if label in FOREGROUND_FIXTURES else 'product default',
             'mock_openai': {
                 'enabled': mock_base_url is not None,
                 'base_url': mock_base_url,
@@ -2442,6 +5178,7 @@ else:
                 ),
             },
             'terminal': {'cols': 200, 'rows': 60},
+            'terminal_capture': self.terminal_capture if label in {'terminal-interaction', 'terminal-canonical-diff'} else None,
             'flags': [
                 *(
                     []
@@ -2468,6 +5205,8 @@ else:
         }, indent=2) + '\n')
         self.registered_runs[str(run_dir.resolve())] = (
             run_dir / 'run-metadata.json').read_text()
+        if label == 'code-review':
+            self.code_review_mock_servers[run_dir.name] = mock_server
         if result.returncode == 0:
             self.active_runs[session] = (run_dir, target)
         ready = result.returncode == 0 and self.wait_ready(target, run_dir)
@@ -2557,6 +5296,43 @@ else:
             if mock_server is not None
             else {'stopped': True, 'thread_alive': False}
         )
+        captured = getattr(self, 'terminal_capture', None)
+        capture_cleanup = None
+        if captured and captured['run'] == str(run_dir):
+            killed = None
+            try:
+                if terminal_socket_identity(captured) == captured.get('socketIdentity'):
+                    server = self.tmux('display-message', '-p', '#{pid}')
+                    if server.returncode == 0 and server.stdout.strip() == str(captured['serverPid']):
+                        killed = self.tmux('kill-server')
+            except (OSError, ValueError):
+                pass
+            sealed = self.terminal_capture_command('seal', run_dir / 'capture-launch.json')
+            def server_gone():
+                try:
+                    os.kill(captured['serverPid'], 0)
+                    return False
+                except ProcessLookupError:
+                    return True
+                except PermissionError:
+                    return False
+            self.wait_until(server_gone, 5, 0.1)
+            socket_cleanup = release_owned_terminal_socket(captured)
+            capture_cleanup = {
+                'kill_server_exit': killed.returncode if killed is not None else None,
+                'seal_exit': sealed.returncode,
+                **socket_cleanup,
+                'descriptor': str(run_dir / 'capture-launch.json'),
+            }
+            self.terminal_capture = None
+            socket_root = Path(captured['socketRoot'])
+            if socket_cleanup['socket_released']:
+                try:
+                    socket_root.rmdir()
+                    capture_cleanup['socket_root_released'] = True
+                except OSError as error:
+                    capture_cleanup['socket_root_released'] = False
+                    capture_cleanup['socket_root_error'] = str(error)
         return {
             'kill_exit': close_result.returncode,
             'session_exists_after': session_exists_after,
@@ -2565,6 +5341,7 @@ else:
             'remaining_processes': list(remaining.values()),
             'forced_termination': terminated,
             'mock_server': mock_cleanup,
+            'terminal_capture': capture_cleanup,
         }
 
     def close_active_runs(self):
@@ -2596,6 +5373,10 @@ else:
             and not cleanup['forced_termination']
             and cleanup.get('mock_server', {}).get('stopped', True)
             and not cleanup.get('mock_server', {}).get('thread_alive', False)
+            and (cleanup.get('terminal_capture') is None
+                 or (cleanup['terminal_capture'].get('socket_released') is True
+                     and cleanup['terminal_capture'].get('server_exited') is True
+                     and cleanup['terminal_capture'].get('socket_root_released') is True))
         )
 
     def remove_auth_homes(self):
@@ -2636,6 +5417,29 @@ else:
         raise SystemExit(128 + signum)
 
     def record(self, result):
+        if result.get('label') in TERMINAL_ACCEPTANCE or result.get('label') == 'mods-process-spawn':
+            root = Path(result['evidence_dir']).resolve()
+            metadata_path = root / 'run-metadata.json'
+            registered = self.registered_runs[str(root)]
+            if metadata_path.read_text() != registered:
+                raise RuntimeError('terminal producer metadata changed before acceptance registration')
+            process_spawn = result['label'] == 'mods-process-spawn'
+            required_id = 'mods-process-spawn-real-author' if process_spawn else TERMINAL_ACCEPTANCE[result['label']][0]
+            matching = [item for item in result.get('assertions', []) if item.get('assertion_id') == required_id]
+            if len(matching) != 1 or str(metadata_path) in matching[0].get('evidence_sha256', {}):
+                raise RuntimeError('terminal producer has no unique sealed business assertion')
+            metadata = json.loads(registered)
+            anchor = 'process_spawn_evidence_sha256' if process_spawn else 'terminal_evidence_sha256'
+            metadata[anchor] = dict(matching[0]['evidence_sha256'])
+            metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+            self.registered_runs[str(root)] = metadata_path.read_text()
+        assertions = result.get('assertions')
+        if result.get('validation_verdict') == 'passed' and isinstance(assertions, list) and any(
+            assertion.get('validation_verdict') != 'passed'
+            for assertion in assertions
+        ):
+            result['validation_verdict'] = 'failed'
+            result['reason'] = 'one or more target assertions failed'
         result['driver_run'] = f'{self.stamp}-{self.pid}'
         self.manifest['runs'].append(result)
         (self.evidence_root / 'driver-progress.json').write_text(
@@ -2725,22 +5529,959 @@ else:
         if result['validation_verdict'] != 'passed':
             raise RuntimeError(f'readiness smoke failed: {run_dir}')
 
-    def send(self, target, run_dir, text, filename, *, confirm_pending=True):
+    def terminal_interaction(self):
+        run_dir, session, target, ready = self.start('terminal-interaction')
+        result = {'label': 'terminal-interaction', 'evidence_dir': str(run_dir)}
+        input_chunks = []
+        checks = dict.fromkeys((
+            'ready', 'custom_clawd_layout', 'same_chunk_utf8_submit',
+            'csi_u_submit', 'raw_backspace_submit', 'raw_del_submit',
+            'forward_delete_submit', 'cursor_combination_submit',
+            'paste_head_visible', 'paste_continuation_visible', 'paste_recovery_submit',
+            'diff_alpha_ready', 'diff_partial_loading', 'diff_same_chunk_navigation',
+            'resize_intent', 'resize_keyboard_ownership', 'diff_closed', 'diff_reopened',
+            'frame_physical', 'frame_resize_sequence', 'frame_semantics', 'cleanup',
+            'independent_pty_capture_identity', 'independent_pty_resize_sequence',
+            'normal_native_exit',
+        ), False)
+        checks['ready'] = ready
+        evidence = []
+
+        def pane(name):
+            path = run_dir / f'{name}-pane.txt'
+            if path not in evidence:
+                evidence.append(path)
+            return strip_ansi(self.capture(target, path, history=False))
+
+        def observe(name, predicate, timeout=30):
+            return self.wait_until(lambda: predicate(pane(name)), timeout, 0.1)
+
+        def require(name, value):
+            checks[name] = bool(value)
+            if not value:
+                raise RuntimeError(f'terminal interaction failed: {name}')
+
+        def raw(name, chunk):
+            input_chunks.append({'scenario': name, 'hex': chunk.hex()})
+            self.paste_bytes(target, run_dir, chunk, f'raw-{name}.bin')
+
+        def requests():
+            return self.mock_servers[run_dir.name].snapshot()
+
+        def submitted(name, offset, expected):
+            require(name, self.wait_until(
+                lambda: terminal_request_submitted(requests(), offset, expected), 30, 0.1))
+            require(name + '_prompt_restored', observe(name, input_prompt_ready))
+            require(name + '_exact_request', terminal_request_submitted(requests(), offset, expected))
+
+        try:
+            if not ready:
+                raise RuntimeError('terminal interaction did not reach readiness')
+            plain = pane('03-startup')
+            rows = [f'CLAWD_RELEASE_ROW_{name}' for name in (
+                'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN')]
+            require('custom_clawd_layout', all(marker in plain for marker in rows)
+                    and plain.count('CLAWD_RELEASE_WIDE_') == 1
+                    and 'bypass permissions on' in plain.lower())
+            cases = [
+                ('same_chunk_utf8_submit', '中文\r'.encode(), '中文'),
+                ('csi_u_submit', b'\x1b[20013u\x1b[25991u\x1b[13u', '中文'),
+                ('raw_backspace_submit', '中文'.encode() + b'\x08\r', '中'),
+                ('raw_del_submit', '中文'.encode() + b'\x7f\r', '中'),
+                ('forward_delete_submit', '中文'.encode() + b'\x1b[D\x1b[3~\r', '中'),
+                ('cursor_combination_submit', '中文'.encode()
+                 + b'\x1b[D' + '甲'.encode() + b'\x1b[C' + '乙'.encode()
+                 + b'\x1b[H' + '首'.encode()
+                 + b'\x1b[F' + '尾'.encode() + b'\r', '首中甲文乙尾'),
+            ]
+            for name, chunk, expected in cases:
+                offset = len(requests())
+                raw(name, chunk)
+                submitted(name, offset, expected)
+
+            offset = len(requests())
+            raw('delayed-paste-head', b'\x1b[200~RECOVERY_LITERAL')
+            require('paste_head_visible', observe('05a-paste-head',
+                    lambda text: 'RECOVERY_LITERAL' in text))
+            require('paste_head_not_submitted', len(requests()) == offset)
+            raw('delayed-paste-continuation', b'_CONTINUATION\x1b[201~')
+            require('paste_continuation_visible', observe('05b-paste-continuation',
+                    lambda text: 'RECOVERY_LITERAL_CONTINUATION' in text))
+            require('paste_continuation_not_submitted', len(requests()) == offset)
+            raw('delayed-paste-enter', b'\r')
+            submitted('paste_recovery_submit', offset, 'RECOVERY_LITERAL_CONTINUATION')
+
+            # Enter the reachable keyboard dialog at 109 columns. At 110 the
+            # native command opens a mouse-only sidebar instead.
+            self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
+            fixture = run_dir / 'project'
+            (fixture / 'alpha.txt').write_text('alpha before\nALPHA_RELEASE_BODY\n')
+            raw('diff-open', b'/diff\r')
+            require('diff_dialog_entry', observe('06-dialog-entry', lambda text:
+                    'Diff · files' in text and 'alpha.txt' in text and 'ALPHA_RELEASE_BODY' in text
+                    and 'omega.txt' not in text))
+            self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
+            require('diff_alpha_ready', observe('06-alpha-ready', lambda text:
+                    'Diff · files' in text and 'alpha.txt' in text and 'ALPHA_RELEASE_BODY' in text
+                    and 'omega.txt' not in text))
+            (fixture / 'omega.txt').write_text('omega before\nOMEGA_RELEASE_BODY\n')
+            require('omega_body_blocked', self.wait_until(
+                lambda: (run_dir / 'omega-body-blocked.json').exists(), 30, 0.1))
+            require('diff_partial_publish', observe('06a-partial-publish', lambda text:
+                    all(marker in text for marker in ('alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY'))
+                    and 'OMEGA_RELEASE_BODY' not in text))
+            navigation_offset = len(requests())
+            nav_chunk = b'\x1b[B\r'
+            input_chunks.append({'scenario': 'diff Down plus Enter in one chunk', 'hex': nav_chunk.hex()})
+            self.paste_bytes(target, run_dir, nav_chunk, 'raw-diff-down-enter.bin')
+            require('diff_partial_loading', observe('07-omega-loading', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'Loading diff body'))
+                    and 'OMEGA_RELEASE_BODY' not in text and 'ALPHA_RELEASE_BODY' not in text))
+            require('loading_keyboard_ownership', len(requests()) == navigation_offset)
+            release_terminal_git_wrapper(run_dir)
+            require('diff_same_chunk_navigation', observe('07a-omega-ready', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and 'Loading diff body' not in text and 'ALPHA_RELEASE_BODY' not in text))
+
+            before_resize = self.debug(run_dir).count('[diff] close')
+            self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
+            require('resize_detail_preserved', observe('08-resize-109', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and 'ALPHA_RELEASE_BODY' not in text
+                    and self.tmux('display-message', '-p', '-t', target,
+                                  '#{window_width}x#{window_height}').stdout.strip() == '109x34'))
+            self.tmux('resize-window', '-t', target, '-x', '110', '-y', '34', check=True)
+            require('resize_intent', observe('08a-resize-110', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'omega.txt', 'OMEGA_RELEASE_BODY'))
+                    and 'ALPHA_RELEASE_BODY' not in text
+                    and self.tmux('display-message', '-p', '-t', target,
+                                  '#{window_width}x#{window_height}').stdout.strip() == '110x34')
+                    and self.debug(run_dir).count('[diff] close') == before_resize)
+            raw('resize-detail-back', b'\x1b')
+            require('resize_files_after_explicit_back', observe('08b-files-after-back', lambda text:
+                    'Diff · files' in text and all(name in text for name in ('alpha.txt', 'omega.txt'))))
+            raw('resize-up-enter', b'\x1b[A\r')
+            require('resize_keyboard_ownership', observe('08c-alpha-detail', lambda text:
+                    all(marker in text for marker in ('Diff · detail', 'alpha.txt', 'ALPHA_RELEASE_BODY'))
+                    and 'OMEGA_RELEASE_BODY' not in text)
+                    and len(requests()) == navigation_offset
+                    and self.debug(run_dir).count('[diff] close') == before_resize)
+            raw('detail-back', b'\x1b')
+            require('diff_files_before_close', observe('09-files', lambda text:
+                    'Diff · detail' not in text and all(name in text for name in ('alpha.txt', 'omega.txt'))))
+            raw('diff-close', b'\x1b')
+            require('diff_closed', observe('09a-closed', lambda text:
+                    not any(name in text for name in ('alpha.txt', 'omega.txt'))
+                    and input_prompt_ready(text)
+                    and '[diff] dialog close user' in self.debug(run_dir)))
+            self.tmux('resize-window', '-t', target, '-x', '109', '-y', '34', check=True)
+            raw('diff-reopen', b'/diff\r')
+            require('diff_reopened', observe('10-reopened', lambda text:
+                    all(marker in text for marker in ('Diff · files', 'alpha.txt', 'omega.txt', 'ALPHA_RELEASE_BODY'))))
+        except Exception as error:
+            result['error'] = str(error)
+            checks['scenario_completed'] = False
+            pane('failure')
+        finally:
+            try:
+                release_terminal_git_wrapper(run_dir)
+            finally:
+                native_exit_requested = False
+                exit_identity = terminal_native_exit_identity(run_dir, getattr(self, 'terminal_capture', None),
+                    (getattr(self, 'manifest', None) or {}).get('binary_sha256'))
+                try:
+                    # Each Escape belongs to an observed dialog state. Sending
+                    # a second Escape to an already closed composer opens Rewind.
+                    current = pane('11-cleanup-state')
+                    if 'Diff · detail' in current:
+                        raw('cleanup-detail-back', b'\x1b')
+                        observe('11a-cleanup-files', lambda text: 'Diff · files' in text, 5)
+                        current = pane('11b-cleanup-state')
+                    if 'Diff · files' in current:
+                        raw('cleanup-close-dialog', b'\x1b')
+                    composer_ready = observe('11-cleanup-composer', lambda text:
+                        input_prompt_ready(text) and 'Diff · files' not in text and 'Diff · detail' not in text, 5)
+                    if composer_ready:
+                        raw('cleanup-native-exit', b'/exit\r')
+                        native_exit_requested = True
+                    result['native_exit_observation'] = {'producerClosedBeforeCaptureClose':
+                        native_exit_requested and exit_identity is not None and self.wait_until(
+                            lambda: terminal_native_producer_exit_passed(run_dir, exit_identity['capture'],
+                                exit_identity['binarySha256']), 5, 0.1)}
+                except Exception as error:
+                    result['native_exit_error'] = str(error)
+                cleanup = self.close(run_dir, session, target)
+                checks['normal_native_exit'] = native_exit_requested and exit_identity is not None and terminal_native_exit_passed(
+                    run_dir, exit_identity['capture'], exit_identity['binarySha256'])
+        checks['cleanup'] = self.cleanup_passed(cleanup)
+        (run_dir / 'input-chunks.json').write_text(json.dumps(input_chunks, indent=2) + '\n')
+        checks['bounded_terminal_evidence'] = (cleanup.get('terminal_capture') or {}).get('seal_exit') == 0
+        checks['full_terminal_coverage'] = False
+        if (run_dir / 'capture-launch.json').is_file():
+            try:
+                full_verify = self.terminal_capture_command('verify', run_dir / 'capture-launch.json')
+                checks['full_terminal_coverage'] = full_verify.returncode == 0
+            except (OSError, subprocess.SubprocessError) as error:
+                result['full_coverage_error'] = str(error)
+        frame_report = run_dir / 'frame-physical-report.json'
+        frames = run_dir / 'frames.jsonl'
+        if frames.exists() and frames.stat().st_size:
+            try:
+                report = json.loads(frame_report.read_text())
+                logical = terminal_frame_report_checks(report)
+                checks['frame_resize_sequence'] = logical['frame_resize_sequence']
+                checks['frame_semantics'] = logical['frame_semantics']
+                fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
+                checks['independent_pty_capture_identity'] = fresh['captureIdentityPassed'] is True
+                checks['frame_physical'] = fresh['recheck']['verdict'] == 'passed'
+                checks['independent_pty_resize_sequence'] = terminal_resize_sizes(report) == [
+                    (109, 34), (110, 34), (109, 34), (110, 34), (109, 34)]
+            except (OSError, ValueError, TypeError, KeyError) as error:
+                result['frame_report_error'] = str(error)
+        checks_path = run_dir / 'terminal-interaction-checks.json'
+        checks_path.write_text(json.dumps(checks, indent=2) + '\n')
+        passed = all(checks.values())
+        held_launch = json.loads(getattr(self, 'registered_runs', {}).get(str(run_dir.resolve()), '{}')).get('terminal_capture', {})
+        capture_paths = [run_dir / name for name in (
+            *sorted(terminal_capture_required_files(held_launch) or ()),
+            'terminal-capture.json', 'bin/claude', 'independent-pty-checks.json',
+            'capture-launch.json', 'capture-verify-stdout.txt', 'capture-verify-stderr.txt',
+        )]
+        proofs = [*evidence, run_dir / 'omega-body-blocked.json',
+                  run_dir / 'input-chunks.json', frames, frame_report, checks_path,
+                  *capture_paths, *[Path(row['inputFile']) for row in self.terminal_jsonl(run_dir / 'inputs.jsonl')
+                    if row.get('phase') == 'send' and row.get('transport') == 'tmux-paste-buffer']]
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed',
+            'checks': checks,
+            'input_chunks': input_chunks,
+            'assertions': [self.required_assertion(
+                run_dir,
+                'terminal-interaction-frame-and-input-matrix',
+                'Current-binary terminal interaction matrix',
+                'Exact incremental requests, raw input, partial loading ownership, open intent resize and physical/semantic frames agree.',
+                proofs,
+                passed=passed,
+                reason='Terminal input, lifecycle, frame replay, or cleanup evidence was incomplete',
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
+            )],
+            'cleanup': cleanup,
+            'frame_scope': 'Independent native PTY bytes and declared Ink roots; synchronous capture timing, non-Ink regions and tail semantics remain open.',
+            'renderer_write_replay': 'not run in broker capture',
+        })
+        self.record(result)
+
+    def canonical_pane_states(self, run_dir):
+        return canonical_debug_states(self.debug(run_dir))
+
+    def canonical_pane(self, run_dir):
+        observation = getattr(self, 'canonical_observation', None)
+        if observation is not None:
+            return observation['state']['pane']
+        states = self.canonical_pane_states(run_dir)
+        return states[-1]['pane'] if states else None
+
+    def canonical_dock_text(self, run_dir):
+        observation = getattr(self, 'canonical_observation', None) or canonical_frame_snapshot(
+            self.canonical_pane_states(run_dir), self.terminal_jsonl(run_dir / 'frames.jsonl'),
+            getattr(self, 'canonical_frame_floor', 0) or 0, self.terminal_jsonl(run_dir / 'pty-io.jsonl'),
+            getattr(self, 'canonical_native_identity', None), getattr(self, 'canonical_action', None),
+            self.terminal_capture_boundary(run_dir))
+        return observation['body'] if observation and observation['witness'] and observation['witness']['placement'] == 'dock' else ''
+
+    def terminal_canonical_diff(self):
+        run_dir, session, target, ready = self.start('terminal-canonical-diff')
+        server = self.mock_servers[run_dir.name]
+        result = {'label': 'terminal-canonical-diff', 'evidence_dir': str(run_dir)}
+        checks = {'ready': ready}
+        checkpoints = []
+        wire = []
+        self.canonical_frame_floor = 0
+        self.canonical_observation = None
+        self.canonical_action = None
+        self.canonical_native_identity = None
+        release_checks = {}
+        release_done = threading.Event()
+        release_cancelled = threading.Event()
+        release_thread = None
+
+        def raw(name, data):
+            self.canonical_observation = None
+            self.canonical_frame_floor = self.terminal_capture_boundary(run_dir)['lastObservedFrameId']
+            self.paste_bytes(target, run_dir, data, f'raw-{name}.bin')
+            sent = [row for row in self.terminal_jsonl(run_dir / 'inputs.jsonl') if row.get('phase') == 'send']
+            self.canonical_action = {'kind': 'input', 'receipt': sent[-1]} if sent else None
+
+        def resize(columns):
+            self.canonical_observation = None
+            self.canonical_frame_floor = self.terminal_capture_boundary(run_dir)['lastObservedFrameId']
+            self.tmux('resize-window', '-t', target, '-x', str(columns), '-y', '34', check=True)
+            resized = [row for row in self.terminal_jsonl(run_dir / 'geometry.jsonl') if row.get('phase') == 'resize-return']
+            sent = [row for row in self.terminal_jsonl(run_dir / 'geometry.jsonl')
+                    if resized and row.get('phase') == 'resize-send' and row.get('actionId') == resized[-1].get('actionId')]
+            self.canonical_action = {'kind': 'resize', 'receipt': resized[-1],
+                                     'send': sent[0] if len(sent) == 1 else None} if resized else None
+
+        def release_on_receipt():
+            deadline = time.monotonic() + 30
+            try:
+                marker = run_dir / 'omega-body-blocked.json'
+                while not release_cancelled.wait(0.01) and time.monotonic() < deadline:
+                    if not marker.exists():
+                        continue
+                    blocked = json.loads(marker.read_text())
+                    release_checks['canonical_exact_git_lane'] = blocked.get('lane') == 'canonical-292'
+                    os.kill(blocked['pid'], 0)
+                    watcher = {'source': 'owned-blocked-marker-watcher', 'blockedMarker': blocked,
+                               'livePidObserved': True, 'signalStartedAt': time.monotonic()}
+                    release_terminal_git_wrapper(run_dir)
+                    watcher['signalCompletedAt'] = time.monotonic()
+                    (run_dir / 'canonical-release.json').write_text(json.dumps(watcher, indent=2) + '\n')
+                    release_checks['canonical_batch_blocked'] = True
+                    release_checks['releaseObservedAt'] = time.monotonic()
+                    return
+                release_checks['canonical_batch_blocked'] = False
+            except (OSError, ValueError, KeyError) as error:
+                release_checks['error'] = str(error)
+            finally:
+                release_done.set()
+
+        def require(name, predicate, timeout=30):
+            pane_checkpoint = name in CANONICAL_PANE_CHECKPOINTS or name.startswith('canonical_tab_landing_')
+            observation = None
+            def probe():
+                nonlocal observation
+                if pane_checkpoint:
+                    if self.canonical_native_identity is None:
+                        self.canonical_native_identity = canonical_native_context(run_dir,
+                            getattr(self, 'terminal_capture', None), (getattr(self, 'manifest', None) or {}).get('binary_sha256'))
+                    observation = canonical_frame_snapshot(self.canonical_pane_states(run_dir),
+                        self.terminal_jsonl(run_dir / 'frames.jsonl'), self.canonical_frame_floor,
+                        self.terminal_jsonl(run_dir / 'pty-io.jsonl'), self.canonical_native_identity,
+                        self.canonical_action, self.terminal_capture_boundary(run_dir))
+                    self.canonical_observation = observation
+                    if observation is None:
+                        return False
+                return predicate()
+            value = self.wait_until(probe, timeout, 0.1)
+            checks[name] = value
+            self.capture(target, run_dir / f'{name}-pane.txt', history=False)
+            checkpoints.append({'name': name, 'passed': value,
+                                'pane': self.canonical_pane(run_dir),
+                                'frameFloor': self.canonical_frame_floor,
+                                'observation': observation,
+                                'action': self.canonical_action,
+                                **self.terminal_capture_boundary(run_dir)})
+            if not value:
+                raise RuntimeError(f'canonical terminal interaction failed: {name}')
+
+        def pane_open():
+            pane = self.canonical_pane(run_dir)
+            return bool(pane and pane.get('visible') and pane.get('shown') and pane.get('hasTree'))
+
+        def edit(file):
+            nonce = hashlib.sha256(str(run_dir.resolve()).encode()).hexdigest()[:24]
+            raw(f'{file}-real-read-write', f'RELEASE_CANONICAL_DIFF:{nonce}:{file}\r'.encode())
+            require(f'{file}_real_write_receipt', lambda:
+                    sum(item.get('response_kind') == f'canonical-{file}-completed'
+                        for item in server.snapshot()) == 1
+                    and (run_dir / f'project/{file}.txt').read_text() ==
+                        canonical_diff_content(file))
+            require(f'{file}_prompt_restored', lambda: input_prompt_ready(strip_ansi(
+                self.capture(target, run_dir / f'{file}-restored-pane.txt', history=False))))
+
+        try:
+            if not ready:
+                raise RuntimeError('canonical terminal did not reach readiness')
+            resize(110)
+            require('canonical_command_owner', lambda:
+                    '[Mods:diff] ownership=plugin' in self.debug(run_dir))
+            edit('alpha')
+            raw('canonical-open', b'/diff\r')
+            require('canonical_alpha_dock', lambda: pane_open()
+                    and self.canonical_pane(run_dir).get('placement') == 'dock'
+                    and 'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'omega.txt' not in self.canonical_dock_text(run_dir))
+            checks['canonical_initial_focus'] = self.canonical_pane(run_dir).get('focused') is False
+            (run_dir / 'canonical-omega-arm').touch(mode=0o600)
+            release_thread = threading.Thread(target=release_on_receipt, daemon=False)
+            release_thread.start()
+            edit('omega')
+            require('canonical_batch_blocked', lambda: release_done.is_set()
+                    and release_checks.get('canonical_batch_blocked') is True)
+            checks['canonical_exact_git_lane'] = release_checks.get('canonical_exact_git_lane') is True
+            require('canonical_two_files_before_select', lambda: pane_open()
+                    and 'alpha.txt' in self.canonical_dock_text(run_dir)
+                    and 'omega.txt' in self.canonical_dock_text(run_dir)
+                    and 'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'OMEGA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            provider_offset = len(server.snapshot())
+            raw('canonical-focus-chord', b'\x18\t')
+            require('canonical_focus_landing', lambda:
+                    self.canonical_pane(run_dir).get('focused') is True)
+            for index in range(32):
+                if self.canonical_pane(run_dir).get('focusedElement') == 'file:omega.txt':
+                    break
+                previous = self.canonical_pane(run_dir).get('focusedElement')
+                raw(f'canonical-tab-{index}', b'\t')
+                require(f'canonical_tab_landing_{index}', lambda:
+                        self.canonical_pane(run_dir).get('focusedElement') != previous, 5)
+            require('canonical_omega_control', lambda:
+                    self.canonical_pane(run_dir).get('focusedElement') == 'file:omega.txt', 5)
+            checks['canonical_before_press_alpha_body'] = (
+                'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                and 'OMEGA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            raw('canonical-file-press', b'\r')
+            require('canonical_file_body', lambda:
+                    'OMEGA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'ALPHA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            raw('canonical-leave-focus', b'\x1b')
+            require('canonical_escape_keeps_open', lambda:
+                    pane_open() and self.canonical_pane(run_dir).get('focused') is False)
+            resize(109)
+            require('canonical_inline_same_identity', lambda:
+                    pane_open() and self.canonical_pane(run_dir).get('placement') == 'inline'
+                    and 'Resize' in self.canonical_observation['screen'])
+            resize(110)
+            require('canonical_redocked', lambda:
+                    pane_open() and self.canonical_pane(run_dir).get('placement') == 'dock'
+                    and 'OMEGA_RELEASE_BODY' in self.canonical_dock_text(run_dir))
+            raw('canonical-refocus', b'\x18\t')
+            require('canonical_refocus_landing', lambda:
+                    self.canonical_pane(run_dir).get('focused') is True)
+            raw('canonical-close-chord', b'\x18x')
+            require('canonical_person_closed', lambda: self.canonical_pane(run_dir) is None)
+            raw('canonical-reopen', b'/diff\r')
+            require('canonical_reopened', lambda:
+                    pane_open() and 'ALPHA_RELEASE_BODY' in self.canonical_dock_text(run_dir)
+                    and 'OMEGA_RELEASE_BODY' not in self.canonical_dock_text(run_dir))
+            checks['canonical_reopen_scroll_reset'] = (
+                'ALPHA_RELEASE_LINE_000' in self.canonical_dock_text(run_dir))
+            raw('canonical-command-close', b'/diff\r')
+            require('canonical_command_closed', lambda: self.canonical_pane(run_dir) is None)
+            resize(109)
+            raw('canonical-too-narrow', b'/diff\r')
+            require('canonical_narrow_refused', lambda: self.canonical_pane(run_dir) is None
+                    and 'Resize your terminal to at least 110 columns to show the diff panel'
+                    in self.canonical_observation['screen'])
+            checks['canonical_no_native_fallback'] = '[diff] open' not in self.debug(run_dir)
+            checks['canonical_keyboard_owner'] = (
+                len(server.snapshot()) == provider_offset)
+            checks['scenario_completed'] = True
+        except Exception as error:
+            result['error'] = str(error)
+            checks['scenario_completed'] = False
+        finally:
+            release_cancelled.set()
+            if release_thread is not None:
+                release_thread.join(timeout=2)
+                checks['canonical_release_watcher_stopped'] = not release_thread.is_alive()
+            release_terminal_git_wrapper(run_dir)
+            wire = server.snapshot()
+            native_exit_requested = False
+            exit_identity = terminal_native_exit_identity(run_dir, getattr(self, 'terminal_capture', None),
+                (getattr(self, 'manifest', None) or {}).get('binary_sha256'))
+            try:
+                raw('canonical-cleanup-leave-focus', b'\x1b')
+                if self.canonical_pane(run_dir) is not None:
+                    raw('canonical-cleanup-close', b'/diff\r')
+                    self.wait_until(lambda: self.canonical_pane(run_dir) is None, 5, 0.1)
+                raw('canonical-cleanup-native-exit', b'/exit\r')
+                native_exit_requested = True
+                result['native_exit_observation'] = {'producerClosedBeforeCaptureClose': exit_identity is not None and self.wait_until(lambda:
+                    terminal_native_producer_exit_passed(run_dir, exit_identity['capture'], exit_identity['binarySha256']),
+                    5, 0.1)}
+            except Exception as error:
+                result['native_exit_error'] = str(error)
+            cleanup = self.close(run_dir, session, target)
+            checks['normal_native_exit'] = native_exit_requested and exit_identity is not None and terminal_native_exit_passed(
+                run_dir, exit_identity['capture'], exit_identity['binarySha256'])
+        checks['cleanup'] = self.cleanup_passed(cleanup)
+        checks['bounded_terminal_evidence'] = (cleanup.get('terminal_capture') or {}).get('seal_exit') == 0
+        checks['full_terminal_coverage'] = False
+        if (run_dir / 'capture-launch.json').is_file():
+            try:
+                full_verify = self.terminal_capture_command('verify', run_dir / 'capture-launch.json')
+                checks['full_terminal_coverage'] = full_verify.returncode == 0
+            except (OSError, subprocess.SubprocessError) as error:
+                result['full_coverage_error'] = str(error)
+        try:
+            fresh = json.loads((run_dir / 'independent-pty-checks.json').read_text())
+            physical = fresh['recheck'].get('replay', {})
+            checks['independent_pty_capture_identity'] = fresh['captureIdentityPassed'] is True
+            checks['independent_pty_ink_frames'] = fresh['recheck']['verdict'] == 'passed'
+            checks['independent_pty_resize_sequence'] = terminal_resize_sizes(physical) == [
+                (110, 34), (109, 34), (110, 34), (109, 34)]
+        except (OSError, ValueError, KeyError) as error:
+            result['physical_error'] = str(error)
+            checks['independent_pty_ink_frames'] = False
+        wire = server.snapshot()
+        host = urlsplit(json.loads((run_dir / 'run-metadata.json').read_text())['mock_openai']['base_url']).netloc
+        checks.update(canonical_wire_checks(run_dir, wire, self.debug(run_dir), host))
+        watcher_path = run_dir / 'canonical-release.json'
+        watcher = json.loads(watcher_path.read_text()) if watcher_path.exists() else {}
+        try:
+            output, raw_output = canonical_git_output(run_dir, watcher['blockedMarker']['argv'])
+            (run_dir / 'canonical-git-output.json').write_text(json.dumps(output, indent=2) + '\n')
+            (run_dir / 'canonical-git-output.raw').write_bytes(raw_output)
+        except (OSError, KeyError, ValueError, subprocess.SubprocessError) as error:
+            result['git_output_error'] = str(error)
+        checks.update(canonical_git_checks(run_dir, self.terminal_jsonl(run_dir / 'canonical-git.jsonl'),
+                                          watcher, self.debug(run_dir)))
+        states = self.canonical_pane_states(run_dir)
+        (run_dir / 'canonical-checkpoints.json').write_text(json.dumps(checkpoints, indent=2) + '\n')
+        (run_dir / 'canonical-ui-states.json').write_text(json.dumps(states, indent=2) + '\n')
+        (run_dir / 'canonical-wire.json').write_text(json.dumps(wire, indent=2) + '\n')
+        checks.update(canonical_ui_checks(run_dir, self.canonical_native_identity))
+        result['native_association_scope'] = 'Bounded native span, transport and Mach geometry; child read/parser/owner and timing remain uncovered.' if self.canonical_native_identity else None
+        checks_path = run_dir / 'canonical-checks.json'
+        checks_path.write_text(json.dumps(checks, indent=2) + '\n')
+        proofs = [run_dir / name for name in (
+            'canonical-checkpoints.json', 'canonical-ui-states.json', 'canonical-wire.json',
+            'canonical-git.jsonl', 'omega-body-blocked.json', 'canonical-release.json',
+            'canonical-git-output.json', 'canonical-git-output.raw',
+            'canonical-checks.json', 'debug.log',
+            'capture-launch.json', 'bin/claude',
+            'terminal-capture.json', 'frame-physical-report.json', 'independent-pty-checks.json',
+            'capture-verify-stdout.txt', 'capture-verify-stderr.txt',
+        )]
+        held_launch = json.loads(getattr(self, 'registered_runs', {}).get(str(run_dir.resolve()), '{}')).get('terminal_capture', {})
+        proofs.extend(run_dir / name for name in sorted(terminal_capture_required_files(held_launch) or ()))
+        proofs.extend(Path(row['inputFile']) for row in self.terminal_jsonl(run_dir / 'inputs.jsonl')
+                      if row.get('phase') == 'send' and row.get('transport') == 'tmux-paste-buffer')
+        passed = all(checks.values())
+        result.update({
+            'validation_verdict': 'passed' if passed else 'failed', 'checks': checks,
+            'cleanup': cleanup,
+            'frame_scope': 'Independent native PTY and declared Ink roots; synchronous capture timing and non-Ink/tail semantics remain open.',
+            'assertions': [self.required_assertion(
+                run_dir, 'terminal-canonical-diff-real-tools-and-pty',
+                'Official shipped Mods Diff through the real CLI',
+                'Real Read/Write receipts trigger the canonical Git batch; actual pane identity, focus, keyboard, resize, close/reopen and independent PTY frames agree.',
+                proofs, passed=passed,
+                reason=result.get('error', 'canonical tool, UI, PTY or cleanup evidence incomplete'),
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
+            )],
+        })
+        self.record(result)
+
+    def mods_process_spawn(self):
+        import importlib.util
+        run_dir = self.evidence_root / 'mods-process-spawn'
+        run_dir.mkdir()
+        metadata_path = run_dir / 'run-metadata.json'
+        metadata_path.write_text(json.dumps({
+            'label': 'mods-process-spawn', 'source_run': run_dir.name,
+            'driver_run': f'{self.stamp}-{self.pid}',
+            'evidence_dir': str(run_dir.resolve()), 'binary': str(self.binary),
+            'binary_sha256': self.manifest['binary_sha256'],
+        }, indent=2) + '\n')
+        self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+        script = self.repo / 'scripts/validate-mods-process-spawn.py'
+        command = [sys.executable, str(script), '--binary', str(self.binary),
+                   '--binary-sha256', self.manifest['binary_sha256'],
+                   '--evidence-root', str(run_dir / 'native')]
+        completed = subprocess.run(command, cwd=self.repo, capture_output=True,
+                                   text=True, check=False)
+        (run_dir / 'stdout.txt').write_text(completed.stdout)
+        (run_dir / 'stderr.txt').write_text(completed.stderr)
+        checks = {'foreground_native_exit': completed.returncode == 0}
+        error = None
+        held_sha = None
+        try:
+            receipt = json.loads(completed.stdout)
+            held_sha = receipt['reportSHA256']
+            spec = importlib.util.spec_from_file_location('mods_spawn_probe', script)
+            probe = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(probe)
+            checks.update(probe.recheck_process_spawn_report(
+                run_dir / 'native', held_sha, self.manifest['binary_sha256']))
+        except (OSError, ValueError, KeyError, TypeError) as failure:
+            error = str(failure)
+            checks['closed_originals_rechecked'] = False
+        else:
+            checks['closed_originals_rechecked'] = True
+        checks_path = run_dir / 'process-spawn-checks.json'
+        checks_path.write_text(json.dumps({
+            'checks': checks, 'held_report_sha256': held_sha,
+            'error': error, 'command': command,
+            'coverage': 'eight actual author CLI contracts; no complete UI/Mods claim',
+        }, indent=2) + '\n')
+        proofs = [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt',
+                  run_dir / 'native/evidence/result.json',
+                  run_dir / 'native/evidence/debug.log',
+                  run_dir / 'native/evidence/pty.raw',
+                  run_dir / 'native/evidence/inputs.jsonl',
+                  run_dir / 'native/evidence/driver-used.py',
+                  run_dir / 'native/cwd/children.jsonl']
+        passed = all(checks.values())
+        if passed:
+            report = json.loads((run_dir / 'native/evidence/result.json').read_bytes())
+            proofs = list(dict.fromkeys([*proofs, *(run_dir / 'native' / name
+                        for name in report['artifactsSHA256'])]))
+            metadata = json.loads(self.registered_runs[str(run_dir.resolve())])
+            metadata.update(process_spawn_root=str(run_dir / 'native'),
+                            process_spawn_report_sha256=held_sha,
+                            process_spawn_probe_sha256=sha256(script))
+            metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+            self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+        self.record({
+            'label': 'mods-process-spawn', 'evidence_dir': str(run_dir),
+            'validation_verdict': 'passed' if passed else 'failed',
+            'checks': checks,
+            'assertions': [self.required_assertion(
+                run_dir, 'mods-process-spawn-real-author',
+                'Process stream through actual author CLI',
+                'Eight real author calls preserve pipes, raw/wrapped receipts, origin, repeat, deny and close semantics; owned children and socket close, with held report and originals rechecked.',
+                proofs, passed=passed,
+                reason=error or 'process.spawn actual entry contract failed',
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
+            )],
+        })
+
+    def builtin_mods(self):
+        run_dir = self.evidence_root / 'builtin-mods'
+        run_dir.mkdir()
+        cache = Path(tempfile.mkdtemp(prefix='mods-release-', dir='/private/tmp'))
+        metadata_path = run_dir / 'run-metadata.json'
+        metadata_path.write_text(json.dumps({
+            'label': 'builtin-mods',
+            'source_run': 'builtin-mods',
+            'driver_run': f'{self.stamp}-{self.pid}',
+            'evidence_dir': str(run_dir.resolve()),
+            'binary': str(self.binary),
+            'binary_sha256': self.manifest['binary_sha256'],
+            'builtin_archive_source': str(cache),
+            'builtin_archive_root': str(run_dir / 'acceptance-cache'),
+        }, indent=2) + '\n')
+        self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+        completed = subprocess.run(
+            [
+                'bun', str(self.repo / 'scripts/mods-test-lab.mjs'),
+                'accept-builtin', '--binary', str(self.binary),
+                '--cache', str(cache),
+            ],
+            cwd=self.repo,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        (run_dir / 'stdout.txt').write_text(completed.stdout)
+        (run_dir / 'stderr.txt').write_text(completed.stderr)
+        reports = list((cache / 'runs').glob('r-*/acceptance.json'))
+        report = None
+        report_error = None
+        archived_report = None
+        original_report = None
+        archive_receipt = run_dir / 'builtin-cache-archive.json'
+        cache_removed = False
+        archive_verified = False
+        producers_closed = False
+        archive_current = False
+        archived_snapshot = None
+        archive_receipt_sha256 = None
+        archive = run_dir / 'acceptance-cache'
+        try:
+            if len(reports) == 1:
+                relative_report = reports[0].relative_to(cache)
+                archive = run_dir / 'acceptance-cache'
+                archived_snapshot = archive_builtin_cache(cache, archive, archive_receipt)
+                # Pin the parent-produced receipt before any consumer or cleanup.
+                # It binds the original launch bytes, not a later coupled rewrite.
+                archive_receipt_sha256 = sha256(archive_receipt)
+                archive_verified = True
+                original_report = archive / relative_report
+                report = remap_path_strings(
+                    json.loads(original_report.read_text()),
+                    cache.resolve(),
+                    archive.resolve(),
+                )
+                archived_report = run_dir / 'acceptance-remapped.json'
+                archived_report.write_text(json.dumps(report, indent=2) + '\n')
+                # Preserve malformed originals, then settle them as failed evidence.
+                if not isinstance(report, dict):
+                    raise ValueError('Builtin acceptance report must be an object')
+                pair, assertions = report.get('pair', {}), report.get('assertions', {})
+                if (not isinstance(pair, dict) or not isinstance(assertions, dict)
+                        or any(not isinstance(value, dict) for value in assertions.values())
+                        or not isinstance(report.get('evidence', ''), str)):
+                    raise ValueError('Builtin acceptance pair/assertions/evidence have invalid types')
+                for name, side in pair.items():
+                    if not isinstance(side, dict):
+                        raise ValueError(f'Builtin side {name} must be an object')
+                    if any(key in side and not isinstance(side[key], str) for key in ('run', 'socket')):
+                        raise ValueError(f'Builtin side {name} paths must be strings')
+                    captures, cleanup = side.get('captures', {}), side.get('cleanup', {})
+                    if (not isinstance(captures, dict) or not isinstance(cleanup, dict)
+                            or any(not isinstance(value, str) for value in captures.values())):
+                        raise ValueError(f'Builtin side {name} captures/cleanup have invalid types')
+                    terminal = cleanup.get('terminalCapture', {})
+                    files = terminal.get('files', {}) if isinstance(terminal, dict) else None
+                    if (not isinstance(files, dict)
+                            or any(not isinstance(info, dict)
+                                   or ('path' in info and not isinstance(info['path'], str))
+                                   for info in files.values())):
+                        raise ValueError(f'Builtin side {name} terminal files have invalid types')
+            else:
+                report_error = f'expected exactly one acceptance.json, found {len(reports)}'
+        except (OSError, ValueError, TypeError) as error:
+            report_error = str(error)
+            report = None
+        finally:
+            # Failed or incomplete archives must retain the actual producer bytes.
+            producers_closed = archive_verified and builtin_cache_producers_closed(
+                cache, self.manifest['binary_sha256'])
+            archive_current = producers_closed and builtin_cache_archive_matches(
+                cache, archive, archive_receipt, archived_snapshot)
+            if archive_current:
+                try:
+                    shutil.rmtree(cache)
+                    cache_removed = not cache.exists()
+                except OSError as error:
+                    report_error = report_error or f'cache cleanup failed: {error}'
+
+        expected_assertions = BUILTIN_ASSERTIONS
+        checks = {
+            'subprocess': completed.returncode == 0,
+            'report': report is not None,
+            'assertions': False,
+            'binary': False,
+            'sides': False,
+            'evidence_ownership': False,
+            'cache_cleanup': cache_removed,
+            'independent_frame_replay': False,
+        }
+        recheck_path = run_dir / 'builtin-terminal-recheck.json'
+        if report is not None and archived_report is not None:
+            assertions = report.get('assertions', {})
+            pair = report.get('pair', {})
+            sides = [pair.get(name) for name in (
+                'privacyOff', 'privacyOn', 'enabled', 'disabled',
+                'securityOrdinary', 'securityTeam', 'securityEnterprise',
+            )]
+            checks['assertions'] = (
+                set(assertions) == expected_assertions
+                and all(assertions[name].get('verdict') == 'passed' for name in expected_assertions)
+            )
+            checks['sides'] = all(isinstance(side, dict) for side in sides)
+            checks['binary'] = checks['sides'] and all(
+                side.get('binarySha256') == self.manifest['binary_sha256']
+                for side in sides
+            )
+            target_root = run_dir.resolve()
+            evidence_paths = [archived_report, Path(report.get('evidence', ''))]
+            durable_paths = list(evidence_paths)
+            for side in sides:
+                if not isinstance(side, dict):
+                    continue
+                run_path = side.get('run')
+                if isinstance(run_path, str) and run_path.startswith('/'):
+                    path = Path(run_path)
+                    evidence_paths.append(path)
+                    durable_paths.append(path)
+                socket_path = side.get('socket')
+                if isinstance(socket_path, str) and socket_path.startswith('/'):
+                    evidence_paths.append(Path(socket_path))
+                captures = [
+                    Path(value) for value in side.get('captures', {}).values()
+                    if isinstance(value, str)
+                ]
+                evidence_paths.extend(captures)
+                durable_paths.extend(captures)
+            checks['evidence_ownership'] = (
+                all(
+                    is_relative_to(path.resolve(strict=False), target_root)
+                    for path in evidence_paths
+                )
+                and all(path.exists() for path in durable_paths)
+            )
+            rechecked = subprocess.run([
+                'bun', '--no-env-file', str(self.repo / 'scripts/recheck-builtin-terminal-evidence.mjs'),
+                str(archived_report), self.manifest['binary_sha256'], str(recheck_path), str(archive_receipt),
+            ], cwd=self.repo, text=True, capture_output=True, check=False, timeout=120)
+            (run_dir / 'terminal-recheck-stdout.txt').write_text(rechecked.stdout)
+            (run_dir / 'terminal-recheck-stderr.txt').write_text(rechecked.stderr)
+            try:
+                recheck = json.loads(recheck_path.read_text())
+                checks['independent_frame_replay'] = (
+                    rechecked.returncode == 0 and recheck.get('verdict') == 'passed'
+                    and len(recheck.get('sides', {})) == 7
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                report_error = report_error or f'independent terminal recheck failed: {error}'
+        checks_path = run_dir / 'builtin-mods-checks.json'
+        checks_path.write_text(json.dumps({
+            'checks': checks,
+            'report_error': report_error,
+            'temporary_cache': str(cache),
+            'retained_cache': str(cache) if cache.exists() else None,
+            'cache_producers_closed': producers_closed,
+            'cache_archive_current': archive_current,
+        }, indent=2) + '\n')
+        proofs = [checks_path, run_dir / 'stdout.txt', run_dir / 'stderr.txt']
+        if archive_receipt.exists():
+            proofs.append(archive_receipt)
+        if original_report is not None:
+            proofs.append(original_report)
+        if archived_report is not None:
+            proofs.append(archived_report)
+        if recheck_path.exists():
+            proofs.append(recheck_path)
+        if report is not None and archived_report is not None:
+            metadata = json.loads(metadata_path.read_text())
+            metadata.update(acceptance_report=str(archived_report.resolve()),
+                            acceptance_sha256=sha256(archived_report),
+                            builtin_archive_receipt_sha256=archive_receipt_sha256,
+                            builtin_capture_registry={name: {
+                                key: report.get('pair', {}).get(name, {}).get(key)
+                                for key in ('run', 'target', 'pane', 'captureId', 'binarySha256')}
+                                for name in BUILTIN_SIDE_NAMES})
+            for name in BUILTIN_SIDE_NAMES:
+                side = report.get('pair', {}).get(name, {})
+                if not isinstance(side, dict) or not isinstance(side.get('run'), str):
+                    continue  # Incomplete business reports remain failed, not a driver exception.
+                root = Path(side['run'])
+                try:
+                    if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
+                            or not is_relative_to(root, run_dir / 'acceptance-cache')):
+                        raise ValueError('Capture launch is outside the owned archived run')
+                    path = root / 'capture-launch.json'
+                    info = path.lstat()
+                    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                            or info.st_uid != os.getuid()):
+                        raise ValueError('Capture launch file is not an owned regular original')
+                    with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as source:
+                        actual = os.fstat(source.fileno())
+                        if (actual.st_dev, actual.st_ino) != (info.st_dev, info.st_ino):
+                            raise ValueError('Capture launch identity changed during read')
+                        launch = json.loads(source.read())
+                    metadata['builtin_capture_registry'][name].update(
+                        originalRun=str(cache / root.relative_to(archive)),
+                        driverPid=launch.get('driverPid'), capture=launch.get('capture'))
+                except (OSError, ValueError, TypeError, AttributeError) as error:
+                    metadata['builtin_capture_registry'][name]['capture_launch_error'] = str(error)
+            metadata_path.write_text(json.dumps(metadata, indent=2) + '\n')
+            self.registered_runs[str(run_dir.resolve())] = metadata_path.read_text()
+            for side in report.get('pair', {}).values():
+                if not isinstance(side, dict):
+                    continue
+                files = side.get('cleanup', {}).get('terminalCapture', {}).get('files', {})
+                proofs.extend(Path(info['path']) for info in files.values() if isinstance(info, dict) and 'path' in info)
+                if side.get('run'):
+                    root = Path(side['run'])
+                    proofs.append(root / 'capture-launch.json')
+                    proofs.append(root / 'bin/claude')
+                    for sent in self.terminal_jsonl(root / 'inputs.jsonl'):
+                        if sent.get('phase') == 'send' and sent.get('transport') == 'tmux-paste-buffer':
+                            proofs.append(Path(sent['inputFile']))
+                proofs.extend(Path(path) for path in side.get('captures', {}).values())
+        proofs = sorted(set(proofs))
+        passed = all(checks.values())
+        result = {
+            'label': 'builtin-mods',
+            'evidence_dir': str(run_dir),
+            'validation_verdict': 'passed' if passed else 'failed',
+            'checks': checks,
+            'acceptance_report': str(archived_report) if archived_report else None,
+            'assertions': [self.required_assertion(
+                run_dir,
+                'builtin-mods-compiled-acceptance',
+                'Compiled builtin Mods acceptance',
+                'The current binary passes agents-md, diff, telemetry, compiled native sec-default policy and ModsPane interaction, dynamic tools, suggestion reload, independent raw-backed physical terminal replay for every side, completeness, cleanup, identity and evidence ownership checks.',
+                proofs,
+                passed=passed,
+                reason=report_error or 'builtin Mods compiled acceptance checks failed',
+                evidence_sha256={str(path.resolve()): sha256(path)
+                                 for path in proofs if path.is_file()},
+            )],
+        }
+        self.record(result)
+
+    def paste_bytes(self, target, run_dir, data, filename):
         input_path = run_dir / filename
-        single_line_command = text.startswith('/') and '\n' not in text and '\r' not in text
-        input_path.write_text(text if single_line_command else text + '\n')
+        with os.fdopen(os.open(input_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                               0o600), 'wb') as input_file:
+            input_file.write(data)
         buffer_name = f'cc-release-{self.pid}-{self.session_index}'
-        self.tmux('load-buffer', '-b', buffer_name, str(input_path), check=True)
-        self.tmux('paste-buffer', '-b', buffer_name, '-t', target, check=True)
+        commands = [
+            ['load-buffer', '-b', buffer_name, str(input_path)],
+            ['paste-buffer', '-b', buffer_name, '-t', target],
+        ]
+        capture = getattr(self, 'terminal_capture', None)
+        if not capture or capture['run'] != str(run_dir):
+            for args in commands:
+                self.tmux(*args, check=True)
+            return
+        action = self.terminal_input_begin(run_dir, {
+            'transport': 'tmux-paste-buffer', 'target': target,
+            'buffer': buffer_name, 'inputFile': str(input_path),
+            'hex': data.hex(), 'bytesSHA256': hashlib.sha256(data).hexdigest(),
+            'actualCommands': commands,
+        }) if capture and capture['run'] == str(run_dir) else None
+        exits = []
+        try:
+            for args in commands:
+                completed = self.tmux(*args, check=False)
+                exits.append(completed.returncode)
+                if completed.returncode:
+                    raise RuntimeError(f'raw terminal input failed: {completed.stderr}')
+        finally:
+            if action is not None:
+                self.terminal_append(run_dir / 'inputs.jsonl', {
+                    'actionId': action,
+                    'phase': 'sent' if exits == [0, 0] else 'failed',
+                    'exitCodes': exits, **self.terminal_capture_boundary(run_dir),
+                })
+
+    def send(self, target, run_dir, text, filename, *, confirm_pending=True):
+        self.paste_bytes(
+            target,
+            run_dir,
+            b'\x1b[200~' + text.encode() + b'\x1b[201~',
+            filename,
+        )
+        submitted_path = run_dir / f'02-submitted-{Path(filename).stem}-pane.txt'
+
+        def capture_pending():
+            pane = self.capture(target, submitted_path)
+            return pane, (
+                submitted_input_visible(pane, text)
+                and submitted_input_pending(pane)
+            )
+
+        paste_ready = self.wait_until(
+            lambda: submitted_input_visible(
+                capture_pending()[0],
+                text,
+            ),
+            5,
+            0.1,
+        )
+        if not paste_ready:
+            raise RuntimeError(
+                f'pasted input did not become ready for submission: {submitted_path}'
+            )
+
         self.tmux('send-keys', '-t', target, 'Enter', check=True)
         time.sleep(0.5)
-        submitted_path = run_dir / '02-submitted-pane.txt'
-        submitted = self.capture(target, submitted_path)
-        plain = strip_ansi(submitted)
-        if confirm_pending and ('[Pasted text' in plain or submitted_input_pending(submitted)):
+        submitted, is_pending = capture_pending()
+
+        if confirm_pending and is_pending:
+            plain = strip_ansi(submitted)
+            if re.search(r'\bEsc to (?:cancel|close)\b', plain):
+                is_pending = False
+
+        if confirm_pending and is_pending:
             self.tmux('send-keys', '-t', target, 'Enter', check=True)
-            time.sleep(0.5)
-            self.capture(target, submitted_path)
+            cleared = self.wait_until(lambda: not capture_pending()[1], 5, 0.1)
+            if not cleared:
+                raise RuntimeError(
+                    f'input remained pending after confirmation: {submitted_path}'
+                )
 
     def debug(self, run_dir):
         path = run_dir / 'debug.log'
@@ -2768,6 +6509,20 @@ else:
         return '\n'.join(
             path.read_text(errors='replace') for path in self.transcript_paths(run_dir)
         )
+
+    def compact_boundaries(self, run_dir):
+        boundaries = []
+        for path in self.transcript_paths(run_dir):
+            for entry in self.path_entries(path):
+                if (
+                    entry.get('type') == 'system'
+                    and entry.get('subtype') == 'compact_boundary'
+                ):
+                    boundaries.append({
+                        'openAICompaction': entry.get('openAICompaction'),
+                        'compactMetadata': entry.get('compactMetadata'),
+                    })
+        return boundaries
 
     def assistant_text(self, run_dir, *, subagents=False):
         text = []
@@ -3516,6 +7271,15 @@ else:
     def agent_ids(self, log):
         return sorted(set(re.findall(r'AgentLifecycle\] foreground_registered agent_id=([^ ]+)', log)))
 
+    def agent_launches(self, log):
+        launches = []
+        for payload in re.findall(r'AgentTool launch params (\{[^\n]+\})', log):
+            try:
+                launches.append(json.loads(payload))
+            except json.JSONDecodeError:
+                continue
+        return launches
+
     def write_markers(self, run_dir, log):
         keys = [
             'AgentTool launch params',
@@ -3664,22 +7428,27 @@ else:
             self.record(result)
             return
         prompt = (
-            'Release gate read-only validation. Call the Agent tool directly exactly once in foreground. '
-            'Use a general-purpose agent with description "release foreground background" and omit run_in_background. '
-            'The child must run the harmless command sleep 18, then read Makefile and report only the VERSION line. '
-            'The child must not call Agent or delegate; it must use Bash and Read directly. '
-            'Do not modify files and do not use any other parent tools. After continuation returns, print RELEASE_FGBG_PARENT_RESTORED.'
+            'Run the deterministic foreground/background Agent lifecycle release fixture. '
+            'Do not modify files.'
         )
         self.send(target, run_dir, prompt, 'input-agent.txt')
         registered = self.wait_until(
             lambda: '[AgentLifecycle] foreground_registered' in self.debug(run_dir), 90
         )
+        server = self.mock_servers.get(run_dir.name)
+        child_waiting = (
+            registered
+            and server is not None
+            and server.agent_fgbg_child_waiting.wait(timeout=30)
+        )
         self.capture(target, run_dir / '03-foreground-running-pane.txt')
-        if registered:
+        if child_waiting:
             self.tmux('send-keys', '-t', target, 'C-b')
-        transitioned = registered and self.wait_until(
+        transitioned = child_waiting and self.wait_until(
             lambda: '[AgentLifecycle] foreground_to_background' in self.debug(run_dir), 30
         )
+        if transitioned:
+            server.agent_fgbg_release.set()
         self.capture(target, run_dir / '04-backgrounded-pane.txt')
         terminal = transitioned and self.wait_until(
             lambda: (
@@ -3702,7 +7471,7 @@ else:
                     run_dir,
                     agent_id=task_match.group(1),
                     task_id=task_match.group(2),
-                    expected_output='VERSION :=',
+                    expected_output='RELEASE_FGBG_CHILD_DONE',
                 )['complete'],
                 30,
                 0.5,
@@ -3711,7 +7480,7 @@ else:
                 run_dir,
                 agent_id=task_match.group(1),
                 task_id=task_match.group(2),
-                expected_output='VERSION :=',
+                expected_output='RELEASE_FGBG_CHILD_DONE',
             )
         (run_dir / 'agent-completion-proof.json').write_text(
             json.dumps(agent_proof, indent=2) + '\n'
@@ -3724,8 +7493,11 @@ else:
         markers = self.write_markers(run_dir, log)
         notifications = self.notification_count(run_dir)
         cleanup = self.close(run_dir, session, target)
+        launches = [json.loads(line.split('AgentTool launch params ', 1)[1]) for line in log.splitlines() if 'AgentTool launch params ' in line]
+        foreground_mode = (len(launches) == 1 and launches[0].get('selectedAgentType') == 'release-foreground' and launches[0].get('runInBackground') is False and launches[0].get('isAsync') is False and '[ForkMode] enabled' not in log)
         passed = (
             terminal
+            and foreground_mode
             and agent_proof['complete']
             and notification_ready
             and len(ids) == 1
@@ -3739,6 +7511,7 @@ else:
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'agent_ids': ids,
+            'foreground_mode': foreground_mode,
             'notification_ready': notification_ready,
             'notification_count': notifications,
             'marker_counts': markers,
@@ -3783,13 +7556,14 @@ else:
                     in self.assistant_text(run_dir, subagents=True)
                     and 'RELEASE_NESTED_CHILD_DONE'
                     in self.assistant_text(run_dir, subagents=True)
+                    and 'RELEASE_NESTED_ROOT_DONE' in self.assistant_text(run_dir)
                 ),
                 360,
                 1,
             )
             final = self.capture(target, run_dir / '03-terminal-pane.txt')
             prompt_restored = self.wait_until(
-                lambda: '❯' in strip_ansi(
+                lambda: input_prompt_ready(
                     self.capture(target, run_dir / '04-final-pane.txt')
                 ),
                 30,
@@ -3803,6 +7577,20 @@ else:
         log = self.debug(run_dir)
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
+        launches = self.agent_launches(log)
+        root_launches = [launch for launch in launches if launch.get('spawnDepth') == 1]
+        child_launches = [launch for launch in launches if launch.get('spawnDepth') == 2]
+        parentage_ok = (
+            len(root_launches) == 1
+            and root_launches[0].get('parentAgentId') in {None, ''}
+            and len(child_launches) == 1
+            and child_launches[0].get('parentAgentId') in ids
+        )
+        (run_dir / 'nested-agent-launches.json').write_text(json.dumps({
+            'agent_ids': ids,
+            'launches': launches,
+            'parentage_ok': parentage_ok,
+        }, indent=2) + '\n')
         notifications = self.notification_count(run_dir)
         parent_result = 'RELEASE_NESTED_PARENT_DONE' in self.assistant_text(
             run_dir, subagents=True
@@ -3810,13 +7598,16 @@ else:
         child_result = 'RELEASE_NESTED_CHILD_DONE' in self.assistant_text(
             run_dir, subagents=True
         )
+        wire_assertion = self.workflow_mock_wire(run_dir, 'nested-agent')
         cleanup = self.close(run_dir, session, target)
         passed = (
             terminal
+            and wire_assertion['validation_verdict'] == 'passed'
             and parent_result
             and child_result
             and prompt_restored
             and len(ids) == 2
+            and parentage_ok
             and markers['[AgentLifecycle] foreground_registered'] == 2
             and notifications == 0
             and self.cleanup_passed(cleanup)
@@ -3826,26 +7617,38 @@ else:
             'agent_ids': ids,
             'notification_count': notifications,
             'marker_counts': markers,
+            'agent_launches': launches,
+            'parentage_ok': parentage_ok,
             'child_result_observed': child_result,
             'parent_result_observed': parent_result,
             'parent_prompt_restored': prompt_restored,
+            'assertions': [
+                wire_assertion,
+                self.required_assertion(
+                    run_dir,
+                    'nested-agent-lifecycle',
+                    'Nested Agent lifecycle',
+                    'A foreground parent launches one child, both return their expected result, and the parent prompt is restored.',
+                    [
+                        run_dir / '03-terminal-pane.txt',
+                        run_dir / '04-final-pane.txt',
+                        run_dir / 'nested-agent-launches.json',
+                        run_dir / 'debug.log',
+                    ],
+                    passed=passed,
+                    reason='Nested Agent lifecycle or cleanup evidence was incomplete',
+                ),
+            ],
             'cleanup': cleanup,
         })
         self.record(result)
 
     def workflow(self):
-        run_dir, session, target, ready = self.start('inline-workflow')
+        run_dir, session, target, ready = self.start('workflow')
         result = {'label': 'workflow', 'evidence_dir': str(run_dir)}
         completion_proof = {'complete': False, 'status': None}
         if ready:
-            script = """export const meta = { name: 'release-inline-workflow', description: 'Read-only two-agent release probe.', phases: [{ title: 'Probe' }] }
-phase('Probe')
-const results = await parallel([
-  () => agent('Read-only. Read Makefile and report only VERSION.', { label: 'probe-a' }),
-  () => agent('Read-only. Read package.json and report only version.', { label: 'probe-b' }),
-])
-return { results }
-"""
+            script = INLINE_WORKFLOW_SCRIPT
             prompt = 'Use Workflow with this exact inline script. Do not modify files.\n```js\n' + script + '```'
             self.send(target, run_dir, prompt, 'input-workflow.txt')
             launched = self.wait_until(
@@ -3905,6 +7708,8 @@ return { results }
                     )
                     for _ in range(3):
                         self.tmux('send-keys', '-t', target, 'Escape')
+            self.wait_until(
+                lambda: 'RELEASE_WORKFLOW_PARENT_DONE' in self.assistant_text(run_dir), 30, 0.1)
             final = self.capture(target, run_dir / '08-final-pane.txt')
         else:
             task_id = run_id = status = None
@@ -3915,6 +7720,7 @@ return { results }
         markers = self.write_markers(run_dir, log)
         ids = self.agent_ids(log)
         notifications = self.notification_count(run_dir)
+        wire_assertion = self.workflow_mock_wire(run_dir, 'workflow')
         cleanup = self.close(run_dir, session, target)
         logical_workers = sorted(set(re.findall(
             r'workflow_worker_start[^\n]*\blogical=([^ ]+)',
@@ -3926,7 +7732,9 @@ return { results }
         )))
         passed = (
             status == 'completed'
+            and wire_assertion['validation_verdict'] == 'passed'
             and completion_proof['complete']
+            and 'RELEASE_WORKFLOW_PARENT_DONE' in self.assistant_text(run_dir)
             and logical_workers == ['probe-a', 'probe-b']
             and completed_logical_workers == logical_workers
             and notifications == 1
@@ -3952,6 +7760,7 @@ return { results }
             'parent_prompt_restored': '❯' in strip_ansi(final or terminal),
             'marker_counts': markers,
             'assertions': [
+                wire_assertion,
                 self.required_assertion(
                     run_dir,
                     'inline-workflow-lifecycle',
@@ -3970,6 +7779,101 @@ return { results }
             'cleanup': cleanup,
         })
         self.record(result)
+
+    def code_review_scope_identity_proof(self, run_dir, task_id, run_id, expected_prompt):
+        proof_path = run_dir / 'workflow-agent-identity-proof.json'
+        evidence = [proof_path]
+        hashes = {}
+        snapshots = {}
+        snapshot_root = run_dir / 'workflow-identity-inputs'
+
+        def read_owned(path, root):
+            if path.is_symlink() or not path.is_file() or not is_relative_to(path.resolve(), root.resolve()):
+                raise ValueError(f'not a regular file in the registered run: {path}')
+            key = str(path.resolve())
+            if key in snapshots:
+                return snapshots[key]['bytes']
+            data = path.read_bytes()
+            relative = path.relative_to(root)
+            copy = snapshot_root / ('workflow-runs' if root == self.workflow_runs else 'case') / relative
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            with copy.open('xb') as stream:
+                stream.write(data)
+            copy.chmod(0o600)
+            digest = hashlib.sha256(data).hexdigest()
+            hashes[str(copy.resolve())] = digest
+            snapshots[key] = {'bytes': data, 'snapshot': str(copy.resolve()), 'sha256': digest}
+            evidence.append(copy)
+            return data
+
+        def json_file(path):
+            return json.loads(read_owned(path, run_dir))
+
+        try:
+            snapshot_root.mkdir()
+            if (task_id not in self.workflow_task_ids or run_id not in self.workflow_run_ids
+                    or not re.fullmatch(r'[A-Za-z0-9_-]+', task_id)
+                    or not re.fullmatch(r'wf_[A-Za-z0-9_-]+', run_id)):
+                raise ValueError('Workflow IDs were not registered by this target')
+            metadata_bytes = read_owned(run_dir / 'run-metadata.json', run_dir)
+            if metadata_bytes.decode() != self.registered_runs.get(str(run_dir.resolve())):
+                raise ValueError('native metadata differs from the immutable start registration')
+            metadata = json.loads(metadata_bytes)
+            if any(metadata.get(key) != value for key, value in {
+                'driver_run': f'{self.stamp}-{self.pid}', 'source_run': run_dir.name,
+                'label': 'code-review', 'binary_sha256': self.manifest['binary_sha256'],
+            }.items()):
+                raise ValueError('native metadata belongs to a different driver/run/binary')
+            server = self.code_review_mock_servers.get(run_dir.name)
+            if (not isinstance(server, MockOpenAIServer) or server.run_dir.resolve() != run_dir.resolve()
+                    or server.label != 'code-review' or not server.stop_result
+                    or server.stop_result.get('stopped') is not True
+                    or server.stop_result.get('active_handlers') != []):
+                raise ValueError('this target has no stopped, registered native provider')
+            live_wire = server.snapshot()
+            wire = json_file(run_dir / 'mock-openai-requests.json')
+            if wire != live_wire or not live_wire or any(request.get('response_kind') is None for request in live_wire):
+                raise ValueError('archived requests differ from this case live provider snapshot')
+            target = read_owned(run_dir / 'pane-target.txt', run_dir).decode().rstrip('\n')
+            if target != metadata.get('target'):
+                raise ValueError('pane target differs from registered case')
+            pasted = read_owned(run_dir / 'input-code-review.txt', run_dir)
+            if pasted != b'\x1b[200~' + expected_prompt.encode() + b'\x1b[201~':
+                raise ValueError('native pasted input differs from caller expectation')
+            artifact_path = self.workflow_runs / run_id / 'session.json'
+            task_path = self.workflow_runs / f'{task_id}.json'
+            artifact_bytes = read_owned(artifact_path, self.workflow_runs)
+            if artifact_bytes != read_owned(task_path, self.workflow_runs):
+                raise ValueError('Workflow task and run mirrors differ')
+            parents, children = [], []
+            for path in sorted((run_dir / 'config/projects').glob('**/*.jsonl')):
+                if 'subagents' in path.parts:
+                    continue
+                parents.append({'session_id': path.stem,
+                                'entries': [json.loads(line) for line in read_owned(path, run_dir).decode().splitlines()]})
+            for meta in sorted((run_dir / 'config/projects').glob('**/subagents/agent-*.meta.json')):
+                child_path = meta.with_name(meta.name.replace('.meta.json', '.jsonl'))
+                children.append({'session_id': meta.parent.parent.name,
+                                 'agent_id': meta.name.removeprefix('agent-').removesuffix('.meta.json'),
+                                 'meta': json_file(meta),
+                                 'entries': [json.loads(line) for line in read_owned(child_path, run_dir).decode().splitlines()]})
+            proof = code_review_scope_identity(
+                run_args=expected_prompt.removeprefix('/code-review '), task_id=task_id, run_id=run_id,
+                artifact=json.loads(artifact_bytes), parents=parents, children=children,
+                log=read_owned(run_dir / 'debug.log', run_dir).decode(),
+                wire=live_wire)
+            proof['native_window_target'] = target
+        except (ValueError, KeyError, TypeError, OSError) as error:
+            proof = {'complete': False, 'agent_ids': [], 'reason': str(error)}
+        proof.update(source_run=run_dir.name, source_hashes=hashes,
+                     immutable_inputs={source: {key: value for key, value in snapshot.items() if key != 'bytes'}
+                                       for source, snapshot in snapshots.items()},
+                     pane_tty_scope='session:window.pane target only; actual %pane_id/TTY requires separate collection')
+        proof_bytes = (json.dumps(proof, indent=2) + '\n').encode()
+        proof_path.write_bytes(proof_bytes)
+        proof['evidence_paths'] = list(dict.fromkeys(evidence))
+        proof['evidence_sha256'] = {**hashes, str(proof_path.resolve()): hashlib.sha256(proof_bytes).hexdigest()}
+        return proof
 
     def slash_workflow(self, kind):
         run_dir, session, target, ready = self.start(kind)
@@ -4039,6 +7943,9 @@ return { results }
                 and status not in {'completed', 'failed', 'stopped'}
                 and not completion_proof['complete']
             )
+            if kind == 'code-review' and completion_proof['complete']:
+                self.wait_until(
+                    lambda: 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir), 30, 0.1)
             terminal = self.capture(target, run_dir / '05-terminal-pane.txt')
         else:
             task_id = run_id = status = None
@@ -4080,6 +7987,10 @@ return { results }
             json.dumps(workflow_complete, indent=2) + '\n'
         )
         cleanup = self.close(run_dir, session, target)
+        identity_proof = self.code_review_scope_identity_proof(run_dir, task_id, run_id, prompt) if kind == 'code-review' else None
+        if identity_proof is not None:
+            ids = identity_proof['agent_ids']
+        wire_assertion = self.workflow_mock_wire(run_dir, kind) if kind == 'code-review' else None
         passed = (
             ready
             and launched
@@ -4089,6 +8000,11 @@ return { results }
             and notifications == 1
             and '❯' in strip_ansi(terminal)
             and fetch_ok
+            and (identity_proof is None or identity_proof['complete'])
+            and (wire_assertion is None or (
+                wire_assertion['validation_verdict'] == 'passed'
+                and 'RELEASE_CODE_REVIEW_PARENT_DONE' in self.assistant_text(run_dir)
+            ))
             and self.cleanup_passed(cleanup)
         )
         if passed:
@@ -4115,6 +8031,7 @@ return { results }
             'task_id': task_id,
             'run_id': run_id,
             'agent_ids': ids,
+            'workflow_agent_identity': {key: value for key, value in identity_proof.items() if key != 'evidence_paths'} if identity_proof is not None else None,
             'notification_count': notifications,
             'permission_approvals': approvals,
             'parent_prompt_restored': '❯' in strip_ansi(terminal),
@@ -4122,6 +8039,14 @@ return { results }
             'deep_research_phase_evidence': phase_evidence,
             'marker_counts': markers,
             'assertions': [
+                *([self.required_assertion(
+                    run_dir, 'code-review-native-scope-identity', 'code-review native Scope identity',
+                    'The same task/run, parent tool, CLI session, exact prompt/schema and StructuredOutput receipt resolve one actual native child.',
+                    identity_proof['evidence_paths'], passed=identity_proof['complete'],
+                    evidence_sha256=identity_proof['evidence_sha256'],
+                    reason=identity_proof.get('reason') or 'Native Scope identity was incomplete',
+                )] if identity_proof is not None else []),
+                *([wire_assertion] if wire_assertion else []),
                 self.required_assertion(
                     run_dir,
                     f'{kind}-workflow-lifecycle',
@@ -4143,17 +8068,23 @@ return { results }
 
     def required_assertion(self, run_dir, assertion_id, subject, predicate,
                            paths, *, runtime_state='done', passed=False,
-                           reason=None):
+                           reason=None, evidence_sha256=None):
+        missing = [str(path.resolve()) for path in paths if not path.exists()]
+        passed = passed and not missing
+        if missing:
+            reason = 'missing required evidence: ' + ', '.join(missing)
         return {
             'assertion_id': assertion_id,
             'source_run': run_dir.name,
             'subject': subject,
             'predicate': predicate,
             'required_evidence': [str(path) for path in paths],
-            'observed_evidence_paths': [str(path.resolve()) for path in paths],
+            'observed_evidence_paths': [str(path.resolve()) for path in paths if path.exists()],
+            'missing_evidence_paths': missing,
             'runtime_state': runtime_state,
             'validation_verdict': 'passed' if passed else 'failed',
             'reason_if_not_passed': None if passed else reason,
+            **({'evidence_sha256': dict(evidence_sha256)} if evidence_sha256 is not None else {}),
         }
 
     def mock_response_requests(self, run_dir):
@@ -5073,6 +9004,7 @@ return { results }
                             request.get('response_kind') == 'compaction'
                             for request in self.mock_response_requests(run_dir)
                         ) == 2
+                        and len(self.compact_boundaries(run_dir)) == 2
                     ),
                     90,
                     0.25,
@@ -5128,17 +9060,7 @@ return { results }
             and compact_instructions[1].endswith('RELEASE_PRECOMPACT_HOOK')
             and 'RELEASE_COMPACT_CALLER' not in compact_instructions[1]
         )
-        boundaries = []
-        for path in self.transcript_paths(run_dir):
-            for entry in self.path_entries(path):
-                if (
-                    entry.get('type') == 'system'
-                    and entry.get('subtype') == 'compact_boundary'
-                ):
-                    boundaries.append({
-                        'openAICompaction': entry.get('openAICompaction'),
-                        'compactMetadata': entry.get('compactMetadata'),
-                    })
+        boundaries = self.compact_boundaries(run_dir)
         persisted_chain = (
             len(boundaries) == 2
             and boundaries[0].get('openAICompaction') == first_item
@@ -5335,7 +9257,7 @@ return { results }
             hook_once
             and hook_record.get('hook_event_name') == 'SubagentStop'
             and hook_record.get('stop_hook_active') is False
-            and hook_record.get('agent_type') == 'general-purpose'
+            and hook_record.get('agent_type') == 'release-stop-foreground'
             and isinstance(hook_record.get('agent_id'), str)
             and bool(hook_record.get('agent_id'))
             and hook_record.get('cwd') == str(self.repo)
@@ -5670,7 +9592,7 @@ return { results }
         alias_selected = False
         for case, expected, pane_name in (
             ('EXPLICIT', 'gpt-release-discovered', '06-explicit-model-pane.txt'),
-            ('DEFAULT', 'gpt-5.6-luna', '08-default-model-pane.txt'),
+            ('DEFAULT', 'gpt-5.6-terra', '08-default-model-pane.txt'),
         ):
             pane_path = run_dir / pane_name
             input_path = run_dir / f'input-{case.lower()}-model.txt'
@@ -5680,7 +9602,7 @@ return { results }
                 if case == 'DEFAULT':
                     self.send(target, run_dir, '/model sonnet', 'input-model-alias.txt')
                     alias_selected = self.wait_until(
-                        lambda: 'Set model to Sonnet' in strip_ansi(
+                        lambda: 'Set model to gpt-5.6-terra' in strip_ansi(
                             self.capture(target, alias_path)
                         ), 30, 0.25,
                     )
@@ -5897,6 +9819,10 @@ return { results }
         analysis_path = run_dir / 'first-party-bootstrap-analysis.json'
         config_path = run_dir / 'config' / '.claude-local-oauth.json'
         mock_server = getattr(self, 'mock_servers', {}).get(run_dir.name)
+        metadata = json.loads((run_dir / 'run-metadata.json').read_text())
+        base_url = metadata['mock_openai']['base_url'].rstrip('/')
+        normalized_base = base_url if base_url.endswith('/v1') else base_url + '/v1'
+        expected_key = f'anthropic:{normalized_base}:api-key:{hashlib.sha256(DUMMY_ANTHROPIC_API_KEY.encode()).hexdigest()[:16]}'
 
         def bootstrap_ready():
             try:
@@ -5915,7 +9841,8 @@ return { results }
                     'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
                     'description': 'Release validation bootstrap model',
                 }]
-                and 'additionalModelOptionsCacheKey' not in global_config
+                and global_config.get('additionalModelOptionsCacheKey') == expected_key
+                and global_config.get('bootstrapCacheKey') == expected_key
             )
 
         bootstrap_completed = ready and self.wait_until(
@@ -5952,14 +9879,15 @@ return { results }
         except (OSError, json.JSONDecodeError):
             global_config = {}
         options = global_config.get('additionalModelOptionsCache')
-        unkeyed_cache = (
+        keyed_cache = (
             isinstance(options, list)
             and options == [{
                 'value': 'release-first-party-bootstrap-model',
                 'label': 'RELEASE_FIRST_PARTY_BOOTSTRAP_MODEL',
                 'description': 'Release validation bootstrap model',
             }]
-            and 'additionalModelOptionsCacheKey' not in global_config
+            and global_config.get('additionalModelOptionsCacheKey') == expected_key
+            and global_config.get('bootstrapCacheKey') == expected_key
         )
         mock_server = getattr(self, 'mock_servers', {}).get(run_dir.name)
         bootstrap_requests = [
@@ -5970,17 +9898,19 @@ return { results }
         analysis_path.write_text(json.dumps({
             'bootstrap_endpoint_contract': '/api/claude_cli/bootstrap',
             'bootstrap_endpoint_request_count': len(bootstrap_requests),
-            'unkeyed_cache': unkeyed_cache,
+            'keyed_cache': keyed_cache,
+            'expected_cache_key': expected_key,
+            'observed_cache_key': global_config.get('additionalModelOptionsCacheKey'),
             'picker_visible': picker_visible,
             'current_model_confirmed': current,
         }, indent=2) + '\n')
         cleanup = self.close(run_dir, session, target)
         cache_passed = (
-            ready and endpoint_once and unkeyed_cache
+            ready and endpoint_once and keyed_cache
             and self.cleanup_passed(cleanup)
         )
         picker_passed = (
-            ready and picker_visible and current and unkeyed_cache
+            ready and picker_visible and current and keyed_cache
             and self.cleanup_passed(cleanup)
         )
         passed = cache_passed and picker_passed
@@ -5994,7 +9924,7 @@ return { results }
         result.update({
             'validation_verdict': 'passed' if passed else 'failed',
             'reason': None if passed else 'first-party bootstrap startup cache or picker evidence was incomplete',
-            'unkeyed_cache': unkeyed_cache,
+            'keyed_cache': keyed_cache,
             'bootstrap_endpoint_once': endpoint_once,
             'picker_visible': picker_visible,
             'current_model_confirmed': current,
@@ -6003,10 +9933,10 @@ return { results }
                     run_dir,
                     'first-party-bootstrap-startup-cache',
                     'First-party bootstrap startup cache',
-                    'Startup consumes the persisted unkeyed /api/claude_cli/bootstrap model cache without keyed-discovery filtering.',
+                    'Startup consumes the persisted /api/claude_cli/bootstrap model cache only when both keys match this run endpoint and dummy credential identity.',
                     evidence,
                     passed=cache_passed,
-                    reason='the isolated startup did not preserve and consume the unkeyed bootstrap cache',
+                    reason='the isolated startup did not preserve and consume its exact bootstrap cache identity',
                 ),
                 self.required_assertion(
                     run_dir,
@@ -6179,13 +10109,21 @@ return { results }
                 0.25,
             )
             self.capture(target, first_path)
-            self.send(target, run_dir, '/plan', 'input-plan-mode-command.txt')
-            plan_enabled = self.wait_until(
-                lambda: 'Enabled plan mode' in strip_ansi(
-                    self.capture(target, plan_path)
-                ),
-                30,
-                0.25,
+            plan_enabled = False
+            mode_cycles = 0
+            for mode_cycles in range(1, 5):
+                self.tmux('send-keys', '-t', target, 'BTab', check=True)
+                plan_enabled = self.wait_until(
+                    lambda: 'plan mode on' in strip_ansi(
+                        self.capture(target, plan_path)
+                    ).lower(),
+                    3,
+                    0.1,
+                )
+                if plan_enabled:
+                    break
+            (run_dir / 'input-plan-mode-command.txt').write_text(
+                f'BTab x{mode_cycles}\n'
             )
             if plan_enabled:
                 self.send(
@@ -6320,9 +10258,32 @@ return { results }
 
     def workflow_mock_wire(self, run_dir, label):
         server = self.mock_servers.get(run_dir.name)
+        if label == 'code-review':
+            server = getattr(self, 'code_review_mock_servers', {}).get(run_dir.name)
         requests = server.snapshot() if server else []
         responses = [request for request in requests if is_main_response_request(request)]
         kinds = [request.get('response_kind') for request in responses]
+        if label in LIFECYCLE_MOCK_KINDS:
+            expected = LIFECYCLE_MOCK_KINDS[label]
+            # Completion may arrive with the launch result or in a separate root turn.
+            notification = label + '-notification-completed'
+            optional = {notification} if label != 'nested-agent' else set()
+            checks = {
+                'exact-requests': sorted(kind for kind in kinds if kind not in optional) == sorted(expected),
+                'notification-turn-at-most-once': kinds.count(notification) <= 1,
+                'recognized': all(request.get('response_kind') in {*expected, *optional, 'models', 'title'}
+                                  for request in requests),
+                'dummy-auth': bool(requests) and all(
+                    request.get('authorization', {}).get('matches_dummy') for request in requests),
+            }
+            path = run_dir / 'workflow-mock-wire.json'
+            path.write_text(json.dumps({'checks': checks, 'response_kinds': kinds}, indent=2) + '\n')
+            return self.required_assertion(
+                run_dir, label + '-mock-wire', label,
+                'Local mock observes exact lifecycle requests with dummy authentication and no duplicates or unknown requests.',
+                [path, run_dir / 'mock-openai-requests.json'], passed=all(checks.values()),
+                reason='lifecycle mock protocol or dummy authentication mismatch',
+            )
         expected_workers = 1 if label == 'workflow-retry-partial-failure' else 0
         checks = {
             'discovery-once': kinds.count('workflow-search') == 1,
@@ -6508,8 +10469,10 @@ return { results }
         result = {'label': 'team-concurrency', 'evidence_dir': str(run_dir)}
         running_path = run_dir / '03-running-pane.txt'
         terminal_path = run_dir / '04-terminal-pane.txt'
+        tasks_path = run_dir / '05-tasks-pane.txt'
         marker_path = run_dir / 'debug-marker-search.txt'
         config_evidence = run_dir / 'team-config.json'
+        artifact_evidence = run_dir / 'team-artifacts.json'
         team_name = 'release-team-concurrency'
         terminal = False
         if ready:
@@ -6533,9 +10496,34 @@ return { results }
                 0.5,
             )
             self.capture(target, terminal_path)
+            if terminal:
+                self.send(target, run_dir, '/tasks', 'input-team-tasks.txt')
+                tasks_visible = self.wait_until(
+                    lambda: (
+                        'Background tasks' in (
+                            text := strip_ansi(self.capture(
+                                target, tasks_path, history=False
+                            ))
+                        )
+                        and f'Team: {team_name} (4)' in text
+                        and all(name in text for name in (
+                            'worker-a', 'worker-b', 'worker-c'
+                        ))
+                        and not submitted_input_pending(text)
+                    ),
+                    30,
+                    0.25,
+                )
+            else:
+                tasks_visible = False
+                tasks_path.write_text(
+                    'team completion marker was not reached; /tasks was not sent\n'
+                )
         else:
+            tasks_visible = False
             running_path.write_text('readiness failed\n')
             terminal_path.write_text('readiness failed\n')
+            tasks_path.write_text('readiness failed\n')
         team_files = list((run_dir / 'config' / 'teams').glob('*/config.json'))
         team_config = None
         if len(team_files) == 1:
@@ -6574,16 +10562,51 @@ return { results }
             and marker_counts['team_mutation_commit'] >= 3
             and marker_counts['team_mutation_abort'] == 0
         )
+        team_dir = team_files[0].parent if len(team_files) == 1 else None
+        inbox_paths = sorted(
+            str(path)
+            for path in (team_dir / 'inboxes').glob('*.json')
+        ) if team_dir else []
+        task_ids = sorted(set(re.findall(
+            r'\[spawnInProcessTeammate\] Spawning [^ ]+ \(taskId: ([^)]+)\)',
+            log,
+        )))
+        leader_inbox_path = team_dir / 'inboxes' / 'team-lead.json' if team_dir else None
+        idle_notifications = []
+        if leader_inbox_path and leader_inbox_path.exists():
+            try:
+                messages = json.loads(leader_inbox_path.read_text())
+                for message in messages:
+                    payload = json.loads(message.get('text', '')) if isinstance(message, dict) else None
+                    if isinstance(payload, dict) and payload.get('type') == 'idle_notification':
+                        idle_notifications.append(payload)
+            except (json.JSONDecodeError, OSError):
+                idle_notifications = []
+        idle_workers = [item.get('from') for item in idle_notifications]
+        artifact_evidence.write_text(json.dumps({
+            'inbox_paths': inbox_paths,
+            'task_ids': task_ids,
+            'idle_notifications': idle_notifications,
+        }, indent=2) + '\n')
+        artifacts_ok = (
+            inbox_paths == ([str(leader_inbox_path)] if leader_inbox_path else [])
+            and len(task_ids) == 3
+            and len(idle_notifications) == 3
+            and set(idle_workers) == {'worker-a', 'worker-b', 'worker-c'}
+            and all(item.get('idleReason') == 'available' for item in idle_notifications)
+        )
         cleanup = self.close(run_dir, session, target)
         passed = (
-            ready and terminal and config_ok and markers_ok
+            ready and terminal and tasks_visible and config_ok and markers_ok and artifacts_ok
             and self.cleanup_passed(cleanup)
         )
         evidence = [
             run_dir / 'input-team-concurrency.txt',
             running_path,
             terminal_path,
+            tasks_path,
             config_evidence,
+            artifact_evidence,
             marker_path,
             run_dir / 'debug.log',
         ]
@@ -6602,9 +10625,9 @@ return { results }
                 'team-mutation-lock-markers',
                 'Team mutation serialization',
                 'Three registrations commit without abort or member loss.',
-                [config_evidence, marker_path, run_dir / 'debug.log'],
-                passed=passed and markers_ok,
-                reason='team mutation marker counts were incomplete',
+                [config_evidence, artifact_evidence, marker_path, run_dir / 'debug.log'],
+                passed=passed and markers_ok and artifacts_ok,
+                reason='team mutation, task, or mailbox evidence was incomplete',
             ),
         ]
         result.update({
@@ -6613,6 +10636,9 @@ return { results }
             'team_name': team_config.get('name') if isinstance(team_config, dict) else None,
             'member_count': len(members),
             'agent_ids': agent_ids,
+            'task_ids': task_ids,
+            'inbox_paths': inbox_paths,
+            'tasks_visible': tasks_visible,
             'marker_counts': marker_counts,
             'assertions': assertions,
             'cleanup': cleanup,
@@ -7031,14 +11057,17 @@ return { results }
                 polluted = rewind(path)
                 evidence['samples'].append({'time': time.monotonic(), 'path': str(path),
                                             'rewind': polluted})
-                return time.monotonic() > evidence['main_escape_sent'] + 0.8
+                # Ink buffers a lone ESC for 50 ms before dispatch. Observe past
+                # that delay plus the 800 ms double-press window so this probe's
+                # ESC cannot pair with the following intentional double ESC.
+                return time.monotonic() > evidence['main_escape_sent'] + 0.9
             observed = self.wait_until(observe, 2, 0.05)
             evidence['isolated'] = observed and not any(sample['rewind'] for sample in evidence['samples'])
             if evidence['isolated']:
                 evidence['double_first_sent'] = time.monotonic()
-                self.tmux('send-keys', '-t', target, 'Escape', check=True)
-                evidence['double_second_sent'] = time.monotonic()
-                self.tmux('send-keys', '-t', target, 'Escape', check=True)
+                evidence['double_second_sent'] = evidence['double_first_sent']
+                evidence['double_chunk_hex'] = '1b1b'
+                self.tmux('send-keys', '-t', target, '-l', '\x1b\x1b', check=True)
                 evidence['normal_rewind'] = (
                     evidence['double_second_sent'] - evidence['double_first_sent'] < 0.8
                     and self.wait_until(lambda: rewind(run_dir / 'main-rewind-pane.txt'), 5, 0.05))
@@ -7504,7 +11533,7 @@ return { results }
                         r'\s*Overview\s+Models(?:\s+OpenAI)?\s*', strip_ansi(line))), '')
                     # Ink's selected tab is the sole bold label in this row.
                     selected = re.findall(
-                        r'\x1b\[1m(?:\x1b\[[0-9;]*m)*\s*(Overview|Models|OpenAI)\s*\x1b\[0m', bar)
+                        r'\x1b\[1m(?:\x1b\[[0-9;]*m)*\s*(Overview|Models|OpenAI)\b', bar)
                     checks[f'{name}-active-{active.lower()}'] = selected == [active]
                     return text in strip_ansi(raw) and selected == [active]
 
@@ -7526,6 +11555,7 @@ return { results }
                 if ready:
                     self.send(target, run_dir, '/stats', 'stats-command.txt')
                     pane = observe('empty', 'No stats available yet', 0, 'Overview')
+                    self.tmux('send-keys', '-t', target, 'Down')
                     if label == 'openai-stats':
                         checks['oauth-tab'] = 'OpenAI' in pane
                         self.tmux('send-keys', '-t', target, 'Tab')
@@ -7597,12 +11627,17 @@ return { results }
         except Exception:
             self.release_lease()
             raise
+        planned_targets = ['readiness-smoke', *targets]
         self.manifest.update({
             'completion_state': 'running',
             'normal_exit': False,
-            'expected_run_count': len(targets) + 1,
+            'expected_run_count': len(planned_targets),
             'recorded_run_count': 0,
-            'planned_targets': ['readiness-smoke', *targets],
+            'planned_targets': planned_targets,
+            'readiness_smoke': {
+                'status': 'planned',
+                'reason': None,
+            },
             'matrix_complete': False,
             'completion_reason': None,
         })
@@ -7636,9 +11671,18 @@ return { results }
             'coordinator-selector': self.coordinator_selector,
             'transcript-retention': self.transcript_retention,
             'ssh-remote-session-lifecycle': self.ssh_remote_session_lifecycle,
+            'terminal-interaction': self.terminal_interaction,
+            'terminal-canonical-diff': self.terminal_canonical_diff,
+            'builtin-mods': self.builtin_mods,
+            'mods-process-spawn': self.mods_process_spawn,
         }
         try:
             self.run_target('readiness-smoke', self.readiness_smoke)
+            readiness_result = self.manifest['runs'][-1]
+            self.manifest['readiness_smoke'] = {
+                'status': readiness_result['validation_verdict'],
+                'evidence_dir': readiness_result['evidence_dir'],
+            }
             for target in targets:
                 self.run_target(target, actions[target])
         except Exception as error:
@@ -7681,13 +11725,17 @@ return { results }
                     'binary',
                 )
             )
-            expected_runs = len(targets) + 1
+            expected_runs = len(planned_targets)
             required_coverage = validate_required_target_results(
                 set(self.manifest['required_targets']),
                 self.manifest['runs'],
                 self.registered_runs,
             )
             self.manifest['required_target_coverage'] = required_coverage
+            planned_coverage = validate_required_target_results(
+                set(targets), self.manifest['runs'], self.registered_runs,
+            )
+            self.manifest['planned_target_coverage'] = planned_coverage
             self.manifest['overall_verdict'] = (
                 'passed'
                 if (
@@ -7696,6 +11744,7 @@ return { results }
                     and 'driver_error' not in self.manifest
                     and len(self.manifest['runs']) == expected_runs
                     and required_coverage['passed']
+                    and planned_coverage['passed']
                     and all(
                         run['validation_verdict'] == 'passed'
                         for run in self.manifest['runs']
@@ -7716,6 +11765,1238 @@ return { results }
             )
         print(json.dumps(self.manifest, indent=2))
         return self.manifest['overall_verdict'] == 'passed'
+
+
+def retained_target_policy(targets):
+    reasons = {
+        'readiness-smoke': 'real credential copy and runtime cleanup not adapted',
+        'plugins-reload': 'plugin update/delete lifecycle not adapted',
+        'terminal-interaction': 'fixture git commit is forbidden',
+        'builtin-mods': 'S7 cold-cache restart has not run',
+        'team-concurrency': 'team directory cleanup not adapted',
+        'transcript-retention': 'team directory cleanup not adapted',
+        'coordinator-selector': 'team directory cleanup not adapted',
+        'ssh-remote-session-lifecycle': 'socket fallback outside run root not constrained',
+    }
+    planned = ['readiness-smoke', *targets]
+    return {
+        'overall_verdict': 'blocked', 'completion_state': 'blocked',
+        'normal_exit': False, 'matrix_complete': False, 'runs': [],
+        'planned_targets': planned, 'expected_run_count': len(planned),
+        'recorded_run_count': 0,
+        'readiness_smoke': {'status': 'blocked', 'reason': reasons['readiness-smoke']},
+        'blocked_targets': {
+            target: reasons.get(target, 'runtime cleanup and child environment not adapted')
+            for target in planned
+        },
+    }
+
+
+def retained_sandbox_profile(root, port):
+    quoted = json.dumps(str(root))
+    config = str(root / 'config/.claude.json')
+    atomic = json.dumps('^' + ''.join(
+        character if character.isalnum() or character in '/_-' else f'[{character}]'
+        for character in config
+    ) + r'[.]tmp[.][0-9]+[.][0-9]+$')
+    return f'''(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write* (subpath {quoted}))
+(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (regex #"^/dev/ttys"))
+(deny file-write-unlink)
+(allow file-write-unlink (literal {json.dumps(str(root / 't'))}))
+(allow file-write-unlink (literal {json.dumps(config)}) (literal {json.dumps(config + '.lock')}) (regex #{atomic}))
+(deny network*)
+(allow network* (local unix-socket) (remote unix-socket))
+(allow network-outbound (remote ip "localhost:{port}"))
+(deny process-exec (literal "/usr/bin/security"))
+(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))
+(deny file-read* (regex #"/Library/Keychains(/|$)"))
+'''
+
+
+def retained_readiness_request(requests):
+    return any(
+        request.get('method') == 'POST'
+        and request.get('path') == '/v1/responses'
+        and request.get('authorization', {}).get('matches_dummy') is True
+        and request.get('response_kind') == 'retained-readiness'
+        and any(
+            message.get('role') == 'user' and (
+                message.get('content') == 'RELEASE_RETAINED_INPUT'
+                or isinstance(message.get('content'), list) and any(
+                    part.get('type') == 'input_text'
+                    and part.get('text') == 'RELEASE_RETAINED_INPUT'
+                    for part in message['content'] if isinstance(part, dict)
+                )
+            )
+            for message in (request.get('body') or {}).get('input', [])
+            if isinstance(message, dict)
+        )
+        for request in requests
+    )
+
+
+def retained_builtin_cache_sandbox_profile(root, port, target, *, cold):
+    root = Path(root)
+    target = Path(target)
+    cache = target.parent
+    writable = [
+        root / 'config', root / 'tmp', root / 'cwd', root / 'evidence',
+        root / 'home/.cache', root / 'home/.config', root / 'home/.local',
+    ]
+    rules = [
+        '(version 1)', '(allow default)', '(deny file-write*)',
+        *(f'(allow file-write* (subpath {json.dumps(str(path))}))' for path in writable),
+        f'(allow file-write* (literal {json.dumps(str(root / "t"))}))',
+        '(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (regex #"^/dev/ttys"))',
+        '(deny file-write-unlink)',
+        f'(allow file-write-unlink (literal {json.dumps(str(root / "t"))}))',
+        f'(allow file-write-unlink (subpath {json.dumps(str(root / "config"))}))',
+        '(deny network*)',
+        '(allow network* (local unix-socket) (remote unix-socket))',
+        f'(allow network-outbound (remote ip "localhost:{port}"))',
+        '(deny process-exec (literal "/usr/bin/security"))',
+        '(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))',
+        '(deny file-read* (regex #"/Library/Keychains(/|$)"))',
+    ]
+    if cold:
+        escaped_target = ''.join(
+            character if character.isalnum() or character in '/_-' else f'[{character}]'
+            for character in str(target)
+        )
+        temporary = '^' + escaped_target + r'[.]tmp[.][0-9]+[.]' + '[0-9a-f-]' * 36 + '(/|$)'
+        for path in (root / 'home/Library', root / 'home/Library/Caches',
+                     cache.parent, cache, target):
+            rules.append(f'(allow file-write* (literal {json.dumps(str(path))}))')
+        rules.extend((
+            f'(allow file-write* (subpath {json.dumps(str(target))}) (regex #"{temporary}"))',
+            f'(allow file-write-unlink (subpath {json.dumps(str(target))}) (regex #"{temporary}"))',
+            f'(allow file-write* (literal {json.dumps(str(target) + ".lock")}))',
+            f'(allow file-write-unlink (literal {json.dumps(str(target) + ".lock")}))',
+        ))
+    else:
+        rules.append(f'(deny file-write* (subpath {json.dumps(str(cache))}))')
+    return '\n'.join(rules) + '\n'
+
+
+def retained_builtin_cache_snapshot(root):
+    root = Path(root)
+    entries = {}
+    if not root.is_dir() or root.is_symlink():
+        return {'root': str(root), 'entries': entries}
+    for path in sorted(root.rglob('*')):
+        relative = path.relative_to(root).as_posix()
+        stat_result = path.lstat()
+        entry = {'type': 'directory' if path.is_dir() else 'file',
+                 'inode': stat_result.st_ino, 'mtime_ns': stat_result.st_mtime_ns}
+        if path.is_file() and not path.is_symlink():
+            entry.update({'size': stat_result.st_size, 'sha256': sha256(path)})
+        elif path.is_symlink():
+            entry['type'] = 'symlink'
+        entries[relative] = entry
+    return {'root': str(root), 'entries': entries}
+
+
+RETAINED_BUILTIN_TREE_DIGEST_SCRIPT = r'''
+import { createHash } from 'node:crypto';
+import { readFile, readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+async function treeDigest(root, relative = '') {
+  const hash = createHash('sha256');
+  for (const name of (await readdir(join(root, relative), { withFileTypes: true }))
+    .filter(entry => relative !== '' || entry.name !== '.complete')
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    const path = relative ? `${relative}/${name.name}` : name.name;
+    hash.update(name.isDirectory() ? `d\0${path}\0` : `f\0${path}\0`);
+    hash.update(name.isDirectory() ? await treeDigest(root, path) : await readFile(join(root, path)));
+  }
+  return hash.digest('hex');
+}
+console.log(await treeDigest(process.argv.at(-2), process.argv.at(-1)));
+'''
+
+
+def retained_builtin_tree_digest(root, relative=''):
+    env = {
+        'PATH': os.environ.get('PATH', '/usr/bin:/bin'),
+        'HOME': '/dev/null',
+        'TMPDIR': '/private/tmp',
+        'LANG': 'en_US.UTF-8',
+        'BUN_RUNTIME_TRANSPILER_CACHE_PATH': '0',
+    }
+    completed = subprocess.run(
+        ['bun', '--eval', RETAINED_BUILTIN_TREE_DIGEST_SCRIPT, str(root), relative],
+        env=env, capture_output=True, text=True, check=True, timeout=30,
+    )
+    tree_digest = completed.stdout.strip()
+    if not re.fullmatch('[0-9a-f]{64}', tree_digest):
+        raise ValueError('invalid builtin tree digest output')
+    return tree_digest
+
+
+def validate_retained_builtin_cache(archive, target, first, second):
+    import zipfile
+
+    target = Path(target)
+    archive = Path(archive)
+    expected = {}
+    try:
+        with zipfile.ZipFile(archive) as zipped:
+            expected = {entry.filename: hashlib.sha256(zipped.read(entry)).hexdigest()
+                        for entry in zipped.infolist() if not entry.is_dir()}
+        complete = (target / '.complete').read_text().splitlines()
+    except (OSError, ValueError, zipfile.BadZipFile):
+        complete = []
+    entries = second.get('entries', {})
+    archive_entries = all(
+        entries.get(name, {}).get('sha256') == digest for name, digest in expected.items()
+    )
+    expected_names = {*expected, '.complete'}
+    expected_directories = {
+        parent.as_posix()
+        for name in expected
+        for parent in Path(name).parents
+        if parent != Path('.')
+    }
+    return {
+        'archive_digest': hashlib.sha256(archive.read_bytes()).hexdigest() == OFFICIAL_BUILTIN_MODS_SHA256,
+        'archive_entries': archive_entries,
+        'complete_marker': complete == [OFFICIAL_BUILTIN_MODS_SHA256,
+                                        retained_builtin_tree_digest(target)],
+        'no_extra_entries': set(entries) == expected_names | expected_directories,
+        'no_generated_artifacts': not any(
+            name.endswith('/types') or name.endswith('/generated')
+            or '.tmp.' in name or '.stale.' in name
+            for name in entries if name not in expected_names and name not in expected_directories
+        ),
+        'identity_unchanged': first == second,
+    }
+
+
+def retained_request_texts(request):
+    texts = []
+    body = request.get('body') if isinstance(request.get('body'), dict) else {}
+    instructions = body.get('instructions')
+    if isinstance(instructions, str):
+        texts.append(instructions)
+    for message in body.get('input', []):
+        if not isinstance(message, dict):
+            continue
+        content = message.get('content')
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            texts.extend(part.get('text', '') for part in content
+                         if isinstance(part, dict) and part.get('type') == 'input_text')
+    return texts
+
+
+def retained_builtin_response_ready(pane, request, prompt, agents_marker):
+    texts = retained_request_texts(request)
+    plain = strip_ansi(pane)
+    return (
+        is_main_response_request(request)
+        and prompt in texts
+        and any(agents_marker in text for text in texts)
+        and request.get('authorization', {}).get('matches_dummy') is True
+        and request.get('response_kind') == 'retained-readiness'
+        and 'RELEASE_RETAINED_RESPONSE' in plain
+        and input_prompt_ready(plain)
+    )
+
+
+def retained_builtin_diff_list_ready(pane, tracked_filename):
+    plain = strip_ansi(pane)
+    return 'Diff · files' in plain and tracked_filename in plain
+
+
+def retained_builtin_diff_detail_ready(pane, tracked_filename, diff_marker):
+    plain = strip_ansi(pane)
+    return all(marker in plain for marker in ('Diff · detail', tracked_filename, diff_marker))
+
+
+def validate_retained_builtin_launch_behavior(*, requests, request_offset, prompt,
+                                               agents_marker, tracked_filename,
+                                               diff_marker, response_pane,
+                                               diff_list_pane, diff_detail_pane,
+                                               closed_pane):
+    corresponding = [
+        request for request in requests[request_offset:]
+        if is_main_response_request(request)
+        and prompt in retained_request_texts(request)
+    ]
+    request = corresponding[0] if len(corresponding) == 1 else {}
+    texts = retained_request_texts(request)
+    plain_closed = strip_ansi(closed_pane)
+    return {
+        'one_corresponding_provider_request': len(corresponding) == 1,
+        'provider_dummy_authorized': request.get('authorization', {}).get('matches_dummy') is True,
+        'provider_response_ready': retained_builtin_response_ready(
+            response_pane, request, prompt, agents_marker,
+        ),
+        'agents_marker_in_corresponding_request': any(agents_marker in text for text in texts),
+        'diff_list_has_tracked_file': retained_builtin_diff_list_ready(
+            diff_list_pane, tracked_filename,
+        ),
+        'diff_detail_has_independent_marker': retained_builtin_diff_detail_ready(
+            diff_detail_pane, tracked_filename, diff_marker,
+        ),
+        'diff_closed': tracked_filename not in plain_closed
+            and diff_marker not in plain_closed
+            and input_prompt_ready(plain_closed),
+        'provider_request_sequence': request.get('sequence'),
+        'provider_request_path': request.get('path'),
+    }
+
+
+def seed_retained_builtin_cache(repo, root, env):
+    import io
+    import zipfile
+
+    # Retained readiness is macOS-only. Match env-paths('claude-cli') there.
+    if sys.platform != 'darwin' or Path(env['HOME']) != root / 'home':
+        raise ValueError('retained builtin cache requires the isolated macOS HOME')
+    archive = repo / 'assets/builtin-mods-2.1.277.zip'
+    data = archive.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != OFFICIAL_BUILTIN_MODS_SHA256:
+        raise ValueError('retained builtin archive does not match official SHA-256')
+    cache = root / 'home/Library/Caches/claude-cli-nodejs/builtin-mods'
+    target = cache / digest
+    for parent in (target, *target.parents):
+        if parent.is_symlink():
+            raise ValueError(f'retained cache path is a symlink: {parent}')
+        if parent == root:
+            break
+    target.mkdir(parents=True, mode=0o700)
+    # The pinned archive is trusted; still keep extraction confined to target.
+    with zipfile.ZipFile(io.BytesIO(data)) as zipped:
+        for entry in zipped.infolist():
+            name = entry.filename
+            if name.startswith('/') or '\\' in name or any(
+                part in ('', '.', '..') for part in name.rstrip('/').split('/')
+            ):
+                raise ValueError(f'unsafe builtin archive entry: {name}')
+            if entry.is_dir():
+                continue
+            path = target / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open('xb') as stream:
+                stream.write(zipped.read(entry))
+    completed = subprocess.run(
+        ['bun', '--eval', RETAINED_BUILTIN_TREE_DIGEST_SCRIPT, str(target), ''],
+        cwd=root, env=env, capture_output=True, text=True, check=True, timeout=30,
+    )
+    tree_digest = completed.stdout.strip()
+    if not re.fullmatch('[0-9a-f]{64}', tree_digest):
+        raise ValueError('invalid builtin tree digest output')
+    with (target / '.complete').open('x') as stream:
+        stream.write(f'{digest}\n{tree_digest}')
+    return {'archive': str(archive), 'path': str(target),
+            'archive_digest': digest, 'tree_digest': tree_digest}
+
+
+def seed_retained_ripgrep_cache(repo, root, env):
+    if (sys.platform != 'darwin' or os.uname().machine != 'arm64'
+            or Path(env['HOME']) != root / 'home'):
+        raise ValueError('retained ripgrep cache requires the isolated macOS arm64 HOME')
+    # Keep these inputs identical to scripts/package-binary.mjs.
+    package = repo / 'node_modules/@vscode/ripgrep/package.json'
+    version = json.loads(package.read_text())['version']
+    if not isinstance(version, str) or not re.fullmatch(r'[0-9A-Za-z][0-9A-Za-z.+-]*', version):
+        raise ValueError('invalid installed ripgrep version')
+    source = repo / 'node_modules/@vscode/ripgrep-darwin-arm64/bin/rg'
+    data = source.read_bytes()
+    target = root / f'home/Library/Caches/claude-cli-nodejs/ripgrep/{version}-arm64-darwin/rg'
+    for parent in (target, *target.parents):
+        if parent.is_symlink():
+            raise ValueError(f'retained cache path is a symlink: {parent}')
+        if parent == root:
+            break
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open('xb') as stream:
+        stream.write(data)
+        os.fchmod(stream.fileno(), 0o755)
+    return {'source': str(source), 'version': version, 'path': str(target),
+            'sha256': hashlib.sha256(data).hexdigest()}
+
+
+def retained_builtin_cache_restart(root, binary, repo, evidence, baseline_module):
+    result = {
+        'label': 'builtin-mods', 'status': 'failed', 'validation_verdict': 'failed',
+        'scenario_id': 'S7-builtin-cache-restart', 'evidence_dir': str(evidence),
+        'physical_covered': False, 'physical_frames': 'not covered', 'assertions': [],
+    }
+    env = {**baseline_module.retained_environment(root),
+           'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+           'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+    for name in ('home/.codex', 'config', 'tmp', 'cwd', 'evidence/first', 'evidence/second'):
+        (root / name).mkdir(parents=True, mode=0o700)
+    fixture = root / 'cwd'
+    tracked_filename = '00-s7-fixture.txt'
+    tracked_file = fixture / tracked_filename
+    agents_file = fixture / 'AGENTS.md'
+    tracked_file.write_text('S7 fixture baseline\n')
+    agents_file.write_text('S7 AGENTS baseline\n')
+    command(['git', '-C', str(fixture), 'init', '-q'], check=True)
+    command(['git', '-C', str(fixture), 'add', tracked_filename, 'AGENTS.md'], check=True)
+    (root / 'home/.codex/auth.json').write_text(json.dumps({'OPENAI_API_KEY': DUMMY_OPENAI_API_KEY}))
+    (root / 'home/.codex/auth.json').chmod(0o600)
+    (root / 'config/.claude.json').write_text(json.dumps({
+        'numStartups': 1, 'installMethod': 'local', 'hasCompletedOnboarding': True,
+        'projects': {str(root / 'cwd'): {'hasTrustDialogAccepted': True,
+                                       'hasCompletedProjectOnboarding': True}},
+    }))
+    (root / 'config/settings.json').write_text(json.dumps({
+        'skipDangerousModePermissionPrompt': True, 'model': 'gpt-release-discovered',
+        'enabledPlugins': {'agents-md@builtin': True, 'diff@builtin': True,
+                           'telemetry@builtin': False},
+    }))
+    result['ripgrep_cache'] = seed_retained_ripgrep_cache(repo, root, env)
+    archive = repo / 'assets/builtin-mods-2.1.277.zip'
+    cache = root / 'home/Library/Caches/claude-cli-nodejs/builtin-mods'
+    target = cache / OFFICIAL_BUILTIN_MODS_SHA256
+    result['cache_initially_absent'] = not cache.exists()
+    if not result['cache_initially_absent']:
+        result['error'] = f'S7 builtin cache was not cold: {cache}'
+        (evidence / 's7-result.json').write_text(json.dumps(result, indent=2) + '\n')
+        return result
+    provider = MockOpenAIServer(evidence, 'retained-readiness')
+    launcher = repo / '.claude/skills/claude-agent-workflow-validation/scripts/launch-built-claude.sh'
+    tmux_path = shutil.which('tmux', path=env['PATH'])
+    socket_path = str(root / 't')
+    if not tmux_path or not Path('/usr/bin/sandbox-exec').is_file():
+        raise RuntimeError('retained S7 requires tmux and macOS sandbox-exec')
+    server = None
+    log = None
+
+    def launch_once(name, cold):
+        nonlocal server, log
+        run_evidence = evidence / name
+        profile = evidence / f'{name}.sb'
+        prompt = f'S7_{name.upper()}_PROMPT'
+        agents_marker = f'S7_{name.upper()}_AGENTS_MARKER'
+        diff_marker = f'S7_{name.upper()}_DIFF_MARKER'
+        agents_file.write_text(f'{agents_marker}\n')
+        tracked_file.write_text(f'S7 fixture baseline\n{diff_marker}\n')
+        # Unborn HEAD reads the staged body and withholds stale unstaged edits.
+        command(['git', '-C', str(fixture), 'add', tracked_filename, 'AGENTS.md'], check=True)
+        request_offset = len(provider.snapshot())
+        url = result['provider_url']
+        profile.write_text(retained_builtin_cache_sandbox_profile(
+            root, urlsplit(url).port, target, cold=cold,
+        ))
+        launch_env = {**env, 'CC_VALIDATION_RETAIN_ARTIFACTS': '1',
+            'CC_VALIDATION_RUN_ROOT': str(root), 'CC_VALIDATION_BINARY': str(binary),
+            'CC_VALIDATION_REPO_ROOT': str(repo), 'CC_VALIDATION_CWD': str(root / 'cwd'),
+            'CC_VALIDATION_HOME': env['HOME'], 'CC_VALIDATION_CONFIG_DIR': env['CLAUDE_CONFIG_DIR'],
+            'CC_VALIDATION_EVIDENCE_DIR': str(run_evidence),
+            'CC_VALIDATION_OPENAI_BASE_URL': url + '/v1',
+            'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
+        command_line = shlex.join(['/usr/bin/env', '-i',
+            *(f'{key}={value}' for key, value in launch_env.items()), '/bin/sh', str(launcher)])
+        argv = ['/usr/bin/sandbox-exec', '-f', str(profile), tmux_path,
+                '-D', '-S', socket_path, '-f', '/dev/null']
+        log = (run_evidence / 'tmux-server.log').open('x')
+        server = subprocess.Popen(argv, cwd=root / 'cwd', env=env, stdout=log, stderr=log,
+                                  start_new_session=True)
+        deadline = time.monotonic() + 10
+        while not (root / 't').exists() and server.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        def tmux(*arguments, check=True):
+            completed = subprocess.run([tmux_path, '-S', socket_path, *arguments],
+                                       cwd=root / 'cwd', env=env, capture_output=True,
+                                       text=True, timeout=10)
+            if check and completed.returncode:
+                raise RuntimeError(f'tmux {arguments!r}: {completed.stderr}')
+            return completed
+        inputs = []
+        def send(label, value, *, key=False):
+            encoded = ({'Enter': b'\r', 'Escape': b'\x1b'}[value]
+                       if key else value.encode())
+            inputs.append({'label': label, 'hex': encoded.hex(),
+                           'transport': 'tmux key' if key else 'tmux literal'})
+            (run_evidence / 'input-hex.json').write_text(json.dumps(inputs, indent=2) + '\n')
+            tmux('send-keys', '-t', 's7:0.0', *([] if key else ['-l']), value)
+        tmux('set-option', '-g', 'remain-on-exit', 'on')
+        # Below the native sidebar threshold; Enter/Escape belong to the dialog.
+        tmux('new-session', '-d', '-s', 's7', '-x', '109', '-y', '40', command_line)
+        def wait_state(label, predicate):
+            deadline = time.monotonic() + 45
+            while time.monotonic() < deadline:
+                pane = tmux('capture-pane', '-p', '-S', '-2000', '-t', 's7:0.0', check=False)
+                (run_evidence / f'{label}.txt').write_text(pane.stdout)
+                if pane.returncode == 0 and predicate(strip_ansi(pane.stdout)):
+                    return pane.stdout
+                if server.poll() is not None:
+                    break
+                time.sleep(0.1)
+            raise RuntimeError(f'S7 {name} {label} state not observed')
+        startup = wait_state('startup', input_prompt_ready)
+        send('prompt', prompt)
+        send('prompt-submit', 'Enter', key=True)
+        response = wait_state('response-ready', lambda pane:
+            any(retained_builtin_response_ready(pane, request, prompt, agents_marker)
+                    for request in provider.snapshot()[request_offset:]))
+        send('diff-command', '/diff')
+        send('diff-submit', 'Enter', key=True)
+        diff_list = wait_state('diff-list', lambda pane:
+                              retained_builtin_diff_list_ready(pane, tracked_filename))
+        send('diff-detail', 'Enter', key=True)
+        diff_detail = wait_state('diff-detail', lambda pane:
+            retained_builtin_diff_detail_ready(pane, tracked_filename, diff_marker))
+        send('diff-back', 'Escape', key=True)
+        wait_state('diff-list-restored', lambda pane:
+                   retained_builtin_diff_list_ready(pane, tracked_filename))
+        send('diff-close', 'Escape', key=True)
+        diff_closed = wait_state('diff-closed', lambda pane:
+            tracked_filename not in pane and diff_marker not in pane and input_prompt_ready(pane))
+        checks = validate_retained_builtin_launch_behavior(
+            requests=provider.snapshot(), request_offset=request_offset, prompt=prompt,
+            agents_marker=agents_marker, tracked_filename=tracked_filename,
+            diff_marker=diff_marker, response_pane=response, diff_list_pane=diff_list,
+            diff_detail_pane=diff_detail, closed_pane=diff_closed,
+        )
+        (run_evidence / 'behavior-checks.json').write_text(json.dumps(checks, indent=2) + '\n')
+        if not all(checks.values()):
+            raise RuntimeError(f'S7 {name} behavior checks failed: {checks}')
+        send('exit-command', '/exit')
+        send('exit-submit', 'Enter', key=True)
+        wait_state('exit', lambda _pane: tmux(
+            'display-message', '-p', '-t', 's7:0.0', '#{pane_dead} #{pane_dead_status}',
+        ).stdout.strip() == '1 0')
+        launch = {
+            'name': name, 'cache_state': 'cold' if cold else 'warm',
+            'argv': [str(binary), '--dangerously-skip-permissions', '--debug',
+                     '--debug-file', str(run_evidence / 'debug.log')],
+            'command': command_line, 'profile': str(profile),
+            'home': env['HOME'], 'config': env['CLAUDE_CONFIG_DIR'],
+            'cwd': str(fixture), 'cache': str(cache),
+            'prompt': prompt, 'agents_marker': agents_marker, 'diff_marker': diff_marker,
+            'request_offset': request_offset,
+            'provider_request_sequence': checks['provider_request_sequence'],
+            'provider_request_path': checks['provider_request_path'],
+            'panes': {label: str(run_evidence / f'{label}.txt') for label in (
+                'startup', 'response-ready', 'diff-list', 'diff-detail',
+                'diff-list-restored', 'diff-closed', 'exit')},
+            'input_hex': str(run_evidence / 'input-hex.json'),
+            'checks': checks, 'normal_exit': True,
+        }
+        (run_evidence / 'launch.json').write_text(json.dumps(launch, indent=2) + '\n')
+        result.setdefault('launches', []).append(launch)
+        closed = tmux('kill-server', check=False)
+        server.wait(timeout=10)
+        socket_file = root / 't'
+        if socket_file.is_socket():
+            socket_file.unlink()
+        cleanup = {'kill_returncode': closed.returncode, 'server_exit': server.returncode,
+                   'socket_released': not socket_file.exists()}
+        log.close()
+        log = None
+        server = None
+        if not all((cleanup['kill_returncode'] == 0, cleanup['server_exit'] == 0,
+                    cleanup['socket_released'])):
+            raise RuntimeError(f'S7 {name} cleanup failed: {cleanup}')
+        return checks
+
+    try:
+        result['provider_url'] = provider.start()
+        before_binary = baseline_module.binary_identity(binary)
+        launch_once('first', True)
+        first = retained_builtin_cache_snapshot(target)
+        (evidence / 'cache-first.json').write_text(json.dumps(first, indent=2) + '\n')
+        launch_once('second', False)
+        second = retained_builtin_cache_snapshot(target)
+        (evidence / 'cache-second.json').write_text(json.dumps(second, indent=2) + '\n')
+        checks = validate_retained_builtin_cache(archive, target, first, second)
+        checks.update({
+            'cache_initially_absent': result['cache_initially_absent'],
+            'two_normal_exits': len(result.get('launches', [])) == 2
+                and all(launch['normal_exit'] for launch in result['launches']),
+            'same_home_config_cache_cwd': True,
+            'no_resume': all('--resume' not in launch['command'] for launch in result['launches']),
+            'binary_unchanged': before_binary == baseline_module.binary_identity(binary),
+        })
+        result['checks'] = checks
+        checks_path = evidence / 's7-checks.json'
+        checks_path.write_text(json.dumps(checks, indent=2) + '\n')
+        passed = all(checks.values())
+        result['status'] = result['validation_verdict'] = 'passed' if passed else 'failed'
+        result['assertions'] = [{
+            'assertion_id': 'retained-builtin-cache-restart', 'source_run': 'builtin-mods',
+            'runtime_state': 'done', 'validation_verdict': result['validation_verdict'],
+            'observed_evidence_paths': [str(checks_path), str(evidence / 'cache-first.json'),
+                                        str(evidence / 'cache-second.json')],
+        }]
+    except Exception as error:
+        result['error'] = f'{type(error).__name__}: {error}'
+    finally:
+        if server is not None:
+            subprocess.run([tmux_path, '-S', socket_path, 'kill-server'], env=env,
+                           capture_output=True, timeout=10)
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.terminate()
+                server.wait(timeout=10)
+            socket_file = root / 't'
+            if socket_file.is_socket():
+                socket_file.unlink()
+        provider.stop()
+        if log:
+            log.close()
+        result.pop('provider_url', None)
+        (evidence / 's7-result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def retained_g5_consent(pane):
+    return all(text in pane for text in (
+        'mod_hot_reload', 'How does this work?', 'Enable for this session', 'Not now'))
+
+
+def retained_g5_clear_cancelled(pane, expected_draft, before, after):
+    plain = strip_ansi(pane).replace('\u00a0', ' ')
+    if (retained_g5_consent(plain)
+            or not submitted_input_visible(plain, expected_draft)):
+        return False
+    prompt_index = plain.rfind('❯')
+    if prompt_index < 0 or 'esc to interrupt' in plain[prompt_index:].lower():
+        return False
+    before_posts = [request for request in before['requests']
+                    if request.get('method') == 'POST']
+    after_posts = [request for request in after['requests']
+                   if request.get('method') == 'POST']
+    return (after_posts == before_posts
+            and after['roots'] == before['roots']
+            and after['entries'] == before['entries'])
+
+
+def retained_g5_terminal_semantics(scenario, pane, expected_draft, before, after):
+    if retained_g5_consent(pane):
+        return False
+    if scenario == 'cancel':
+        return (before is not None
+                and expected_draft is not None
+                and retained_g5_clear_cancelled(
+                    pane, expected_draft, before, after,
+                ))
+    return (retained_g5_semantics(
+                'enable' if scenario in (
+                    'turn-end-load', 'same-session-resume', 'fork-session'
+                ) else scenario,
+                after['requests'], after['roots'], after['entries'],
+                input_prompt_ready(pane),
+            )
+            and 'RELEASE_RETAINED_RESPONSE' in pane)
+
+
+def retained_g5_semantics(scenario, requests, roots, entries, prompt_ready):
+    if not prompt_ready:
+        return False
+    posts = [request for request in requests if request.get('method') == 'POST']
+    texts = []
+    for request in posts:
+        if (request.get('path') != '/v1/responses'
+                or request.get('authorization', {}).get('matches_dummy') is not True
+                or request.get('response_kind') != 'retained-readiness'):
+            continue
+        for message in (request.get('body') or {}).get('input', []):
+            if not isinstance(message, dict) or message.get('role') != 'user':
+                continue
+            content = message.get('content', [])
+            if isinstance(content, str):
+                texts.append(content)
+            elif isinstance(content, list):
+                texts.extend(part.get('text', '') for part in content
+                             if isinstance(part, dict) and part.get('type') == 'input_text')
+    if scenario == 'cancel':
+        return not posts and not roots and not entries
+    if scenario == 'not-now':
+        return not roots and not entries and any(
+            'This invocation did not enable a session authoring root;' in text for text in texts)
+    if scenario == 'enable':
+        return any(entry.get('type') == 'dev-mods'
+                   and entry.get('folder') in roots
+                   and Path(entry['folder']).name == entry.get('sessionId')
+                   and any('Session authoring was enabled for this session only.' in text
+                           and f"`{entry['folder']}`" in text for text in texts)
+                   for entry in entries)
+    return False
+
+
+def retained_g5_held_identity(requests, roots, config, response_kind=None):
+    held = [request for request in requests if is_main_response_request(request)]
+    if len(held) != 1:
+        return None
+    request = held[0]
+    if (request.get('response_kind') != response_kind
+            or request.get('authorization', {}).get('matches_dummy') is not True):
+        return None
+    headers = request.get('headers', {})
+    session = headers.get('session-id', '')
+    if (not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', session)
+            or any(headers.get(key) != session for key in ('thread-id', 'x-claude-code-session-id'))):
+        return None
+    folders = []
+    for message in request.get('body', {}).get('input', []):
+        if not isinstance(message, dict) or message.get('role') != 'user':
+            continue
+        content = message.get('content', [])
+        texts = [content] if isinstance(content, str) else [
+            part.get('text', '') for part in content
+            if isinstance(part, dict) and part.get('type') == 'input_text']
+        for text in texts:
+            folders.extend(re.findall(
+                r'Session authoring was enabled for this session only\. '
+                r'Create plugins as direct child directories of `([^`]+)`; '
+                r'valid child plugins load after the current turn and are watched for later changes\.', text))
+    if len(folders) != 1:
+        return None
+    folder = Path(folders[0])
+    if (folders[0] not in roots or folder != config / 'dev-mods' / session
+            or not folder.is_dir() or folder.is_symlink() or folder.parent.is_symlink()):
+        return None
+    return {'sessionId': session, 'folder': folders[0], 'request_sequence': request['sequence']}
+
+
+def retained_g5_identity_persisted(identity, entries):
+    return any(entry.get('type') == 'dev-mods'
+               and entry.get('sessionId') == identity['sessionId']
+               and entry.get('folder') == identity['folder'] for entry in entries)
+
+
+def retained_g5_resumed(identity, entries, requests, pane):
+    posts = [request for request in requests if is_main_response_request(request)]
+    return (len(posts) == 1
+            and posts[0].get('authorization', {}).get('matches_dummy') is True
+            and posts[0].get('response_kind') == 'retained-readiness'
+            and all(posts[0].get('headers', {}).get(key) == identity['sessionId']
+                    for key in ('session-id', 'thread-id', 'x-claude-code-session-id'))
+            and retained_g5_identity_persisted(identity, entries)
+            and all(marker in pane for marker in (
+                'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'))
+            and input_prompt_ready(pane))
+
+
+def retained_g5_forked(original, entries, roots, requests, pane):
+    posts = [request for request in requests if is_main_response_request(request)]
+    if len(posts) != 1:
+        return False
+    request = posts[0]
+    headers = request.get('headers', {})
+    fork_session = headers.get('session-id', '')
+    return (request.get('authorization', {}).get('matches_dummy') is True
+            and request.get('response_kind') == 'retained-readiness'
+            and re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', fork_session) is not None
+            and fork_session != original['sessionId']
+            and all(headers.get(key) == fork_session
+                    for key in ('thread-id', 'x-claude-code-session-id'))
+            and roots == [original['folder']]
+            and len(entries) == 1
+            and retained_g5_identity_persisted(original, entries)
+            and 'G5_FORK_IDENTITY_PROBE' in pane
+            and all(marker not in pane for marker in (
+                'G5_SAME_SESSION_ACTIVE', 'G5_SAME_SESSION_ROOT_ACTIVE',
+                'G5_SAME_SESSION_CHILD_ACTIVE'))
+            and input_prompt_ready(pane))
+
+
+def retained_g5_turn_active(pane, waiting, released, declarations):
+    return (waiting and not released and not declarations
+            and 'esc to interrupt' in strip_ansi(pane).lower()
+            and 'G5_TURN_END_ACTIVE' not in pane)
+
+
+def retained_g5(root, binary, repo, evidence, baseline_module, scenario_only=None):
+    result = {'label': 'terminal-interaction', 'validation_verdict': 'blocked',
+              'logical_frames': 'not covered', 'physical_frames': 'not covered',
+              'turn_end_plugin_load': 'not covered', 'resume': 'not covered',
+              'fork_session': 'not covered', 'scenarios': []}
+    scenarios = ((scenario_only,) if scenario_only else
+                 ('not-now', 'enable', 'cancel', 'turn-end-load',
+                  'same-session-resume', 'fork-session'))
+    for scenario in scenarios:
+        child = root / f'g5-{scenario}'
+        child.mkdir(mode=0o700)
+        child_evidence = child / 'evidence'
+        child_evidence.mkdir(mode=0o700)
+        run = retained_readiness(child, binary, repo, child_evidence, baseline_module, scenario)
+        result['scenarios'].append(run)
+        if scenario == 'turn-end-load':
+            result['turn_end_plugin_load'] = run['status']
+        if scenario == 'same-session-resume':
+            result['resume'] = run['status']
+        if scenario == 'fork-session':
+            result['fork_session'] = run['status']
+        if run['status'] != 'passed':
+            break
+    result['first_divergence'] = next((run for run in result['scenarios']
+                                       if run['status'] != 'passed'), None)
+    (evidence / 'g5-result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def retained_readiness(root, binary, repo, evidence, baseline_module, scenario=None):
+    result = {'label': 'readiness-smoke', 'status': 'failed',
+              'evidence_dir': str(evidence), 'physical_covered': False,
+              'feature_matrix_covered': False, 'assertions': []}
+    env = {**baseline_module.retained_environment(root),
+           'PATH': '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+           'SHELL': '/bin/sh', 'TERM': 'xterm-256color', 'LANG': 'en_US.UTF-8'}
+    for name in ('home/.codex', 'config', 'tmp', 'cwd'):
+        (root / name).mkdir(parents=True, mode=0o700)
+    (root / 'home/.codex/auth.json').write_text(json.dumps({'OPENAI_API_KEY': DUMMY_OPENAI_API_KEY}))
+    (root / 'home/.codex/auth.json').chmod(0o600)
+    (root / 'config/.claude.json').write_text(json.dumps({
+        'numStartups': 1, 'installMethod': 'local', 'hasCompletedOnboarding': True,
+        'projects': {str(root / 'cwd'): {'hasTrustDialogAccepted': True,
+                                       'hasCompletedProjectOnboarding': True}}}))
+    (root / 'config/settings.json').write_text(json.dumps({
+        'skipDangerousModePermissionPrompt': True, 'model': 'gpt-release-discovered'}))
+    result['builtin_cache'] = seed_retained_builtin_cache(repo, root, env)
+    result['ripgrep_cache'] = seed_retained_ripgrep_cache(repo, root, env)
+    provider = MockOpenAIServer(evidence, 'retained-turn-end-load'
+                                if scenario == 'turn-end-load' else 'retained-readiness')
+    server = None
+    log = None
+    socket_path = str(root / 't')
+    tmux_path = shutil.which('tmux', path=env['PATH'])
+    if not tmux_path or not Path('/usr/bin/sandbox-exec').is_file():
+        raise RuntimeError('retained readiness requires tmux and macOS sandbox-exec')
+    def tmux(*arguments, check=True):
+        completed = subprocess.run([tmux_path, '-S', socket_path, *arguments],
+                                   cwd=root / 'cwd', env=env, capture_output=True,
+                                   text=True, timeout=10)
+        if check and completed.returncode:
+            raise RuntimeError(f'tmux {arguments!r}: {completed.stderr}')
+        return completed
+    def wait_pane(name, predicate):
+        deadline = time.monotonic() + 45
+        last = ''
+        while time.monotonic() < deadline:
+            captured = tmux('capture-pane', '-p', '-t', 'readiness:0.0', check=False)
+            last = captured.stdout
+            (evidence / f'{name}.txt').write_text(last)
+            if captured.returncode == 0 and predicate(strip_ansi(last)):
+                result['assertions'].append({'state': name, 'passed': True})
+                return
+            if server.poll() is not None:
+                break
+            time.sleep(0.1)
+        raise RuntimeError(f'{name} state not observed; see {evidence / (name + ".txt")}')
+    def g5_interaction():
+        result.update({'label': f'G5-{scenario}', 'scenario_id': f'G5-{scenario}',
+                       'logical_frames': 'not covered', 'physical_frames': 'not covered',
+                       'raw_inputs': [], 'clear': 'not covered'})
+        def send(value, hex_value=None):
+            result['raw_inputs'].append({'hex': hex_value or value.encode().hex(),
+                                         'transport': 'tmux key' if hex_value else 'tmux literal',
+                                         'value': value})
+            (evidence / 'input.json').write_text(json.dumps(result['raw_inputs'], indent=2))
+            tmux('send-keys', '-t', 'readiness:0.0', *([] if hex_value else ['-l']), value)
+        def snapshot():
+            roots = sorted(str(path) for path in (root / 'config/dev-mods').glob('*') if path.is_dir())
+            entries = []
+            for path in (root / 'config/projects').rglob('*.jsonl'):
+                for line in path.read_text().splitlines():
+                    try:
+                        entry = json.loads(line)
+                    except ValueError:
+                        continue
+                    if entry.get('type') == 'dev-mods':
+                        entries.append({**entry, 'evidence_path': str(path)})
+            result['semantic_state'] = {'roots': roots, 'entries': entries,
+                                        'requests_path': str(evidence / 'mock-openai-requests.json')}
+            return roots, entries
+        send('/plugin-authoring')
+        wait_pane('command-draft', lambda pane: '/plugin-authoring' in pane)
+        send('Enter', '0d')
+        wait_pane('consent', retained_g5_consent)
+        roots, entries = snapshot()
+        if roots or entries or any(r.get('method') == 'POST' for r in provider.snapshot()):
+            raise RuntimeError('G5 consent had premature filesystem or model side effects')
+        before_cancel = None
+        if scenario == 'cancel':
+            before_cancel = {
+                'requests': provider.snapshot(),
+                'roots': roots,
+                'entries': entries,
+            }
+            send('C-c', '03')
+        else:
+            send('Down', '1b5b42')
+            if scenario == 'not-now':
+                send('Down', '1b5b42')
+            send('Enter', '0d')
+        if scenario == 'turn-end-load':
+            wait_pane('turn-active-before-write', lambda pane: retained_g5_turn_active(
+                pane, provider.turn_waiting.is_set(), provider.turn_release.is_set(), False))
+            roots, entries = snapshot()
+            identity = retained_g5_held_identity(provider.snapshot(), roots, root / 'config')
+            if identity is None:
+                raise RuntimeError('harness gap: exact held request consent session root not observed')
+            result['held_identity'] = identity
+            (evidence / 'held-identity.json').write_text(json.dumps({
+                **identity, 'entries_at_hold': entries,
+                'requests': provider.snapshot()}, indent=2) + '\n')
+            plugin = Path(identity['folder']) / 'g5-turn-marker'
+            (plugin / '.claude-plugin').mkdir(parents=True)
+            (plugin / 'hooks').mkdir()
+            (plugin / '.claude-plugin/plugin.json').write_text(json.dumps({
+                'name': 'g5-turn-marker', 'version': '0.0.1',
+                'description': 'Retained G5 turn boundary fixture'}))
+            (plugin / 'hooks/hooks.json').write_text(json.dumps({'modules': ['./marker.mjs']}))
+            (plugin / 'hooks/marker.mjs').write_text('''export function register(on) {
+  on("ui.render", { component: "AbovePrompt" }, ($, e) => {
+    const { Text } = $.ui.resolve(e);
+    return Text({ children: "G5_TURN_END_ACTIVE" });
+  });
+}
+''')
+            result['fixture'] = {'root': str(plugin),
+                                 'files': baseline_module.tree_manifest(plugin)}
+            # Check every sampled active pane while the provider response is held.
+            # This is bounded semantic sampling, not per-frame physical coverage.
+            observations = []
+            for index in range(20):
+                pane = tmux('capture-pane', '-p', '-t', 'readiness:0.0').stdout
+                (evidence / f'turn-held-{index:02d}.txt').write_text(pane)
+                state = {'sample': index, 'waiting': provider.turn_waiting.is_set(),
+                         'released': provider.turn_release.is_set(),
+                         'declarations': (plugin / '.claude-plugin/types').exists()}
+                state['passed'] = retained_g5_turn_active(pane, state['waiting'],
+                                                          state['released'], state['declarations'])
+                observations.append(state)
+                (evidence / 'turn-observations.json').write_text(json.dumps(observations, indent=2))
+                if not state['passed']:
+                    raise RuntimeError('turn boundary divergence or active-state harness gap; response remains held')
+                threading.Event().wait(0.1)
+            result['assertions'].append({'state': 'turn-held-no-early-load', 'passed': True})
+            provider.turn_release.set()
+        def terminal(pane):
+            roots, entries = snapshot()
+            if scenario == 'turn-end-load' and not retained_g5_identity_persisted(
+                    result['held_identity'], entries):
+                return False
+            return retained_g5_terminal_semantics(
+                scenario,
+                pane,
+                '/plugin-authoring' if scenario == 'cancel' else None,
+                before_cancel,
+                {
+                    'requests': provider.snapshot(),
+                    'roots': roots,
+                    'entries': entries,
+                },
+            )
+        wait_pane('semantic-terminal', terminal)
+        if scenario == 'turn-end-load':
+            wait_pane('turn-end-ui-active', lambda pane: terminal(pane)
+                      and 'G5_TURN_END_ACTIVE' in pane)
+        if scenario in ('same-session-resume', 'fork-session'):
+            roots, entries = snapshot()
+            identity = retained_g5_held_identity(provider.snapshot(), roots, root / 'config',
+                                                'retained-readiness')
+            if identity is None or not retained_g5_identity_persisted(identity, entries):
+                raise RuntimeError('harness gap: exact original consent identity not observed')
+            result['original_identity'] = identity
+            (evidence / 'original-identity.json').write_text(json.dumps({
+                **identity, 'entries': entries, 'requests': provider.snapshot()}, indent=2))
+            plugins = []
+            for name, marker in (
+                ('g5-resume-root-marker', 'G5_SAME_SESSION_ROOT_ACTIVE'),
+                ('g5-resume-child-marker', 'G5_SAME_SESSION_CHILD_ACTIVE'),
+            ):
+                plugin = Path(identity['folder']) / name
+                (plugin / '.claude-plugin').mkdir(parents=True)
+                (plugin / 'hooks').mkdir()
+                (plugin / '.claude-plugin/plugin.json').write_text(json.dumps({
+                    'name': name, 'version': '0.0.1'}))
+                (plugin / 'hooks/hooks.json').write_text(json.dumps({'modules': ['./marker.mjs']}))
+                (plugin / 'hooks/marker.mjs').write_text(f'''export function register(on) {{
+  on("ui.render", {{ component: "AbovePrompt" }}, async ($, e, next) => {{
+    const {{ Box, Text }} = $.ui.resolve(e);
+    return Box({{ children: [await next(e), Text({{ children: "{marker}" }})] }});
+  }});
+}}
+''')
+                plugins.append(plugin)
+            result['fixtures'] = [
+                {'root': str(plugin), 'files': baseline_module.tree_manifest(plugin)}
+                for plugin in plugins
+            ]
+            wait_pane('original-ui-active', lambda pane: input_prompt_ready(pane)
+                      and all(marker in pane for marker in (
+                          'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE')))
+            def normal_exit(name):
+                send('/exit')
+                wait_pane(name + '-draft', lambda pane: submitted_input_visible(pane, '/exit'))
+                send('Enter', '0d')
+                def exited(_pane):
+                    state = tmux('display-message', '-p', '-t', 'readiness:0.0',
+                                 '#{pane_dead} #{pane_dead_status}').stdout.strip()
+                    result[name] = state
+                    (evidence / (name + '.json')).write_text(json.dumps({'dead_status': state}))
+                    return state == '1 0'
+                wait_pane(name, exited)
+            normal_exit('original-exit')
+            _, entries = snapshot()
+            (evidence / 'authorization-after-exit.json').write_text(json.dumps(entries, indent=2))
+            if not retained_g5_identity_persisted(identity, entries):
+                raise RuntimeError('original authorization missing after normal exit')
+            before_sequences = {request['sequence'] for request in provider.snapshot()}
+            resume_args = ['--resume', identity['sessionId']]
+            if scenario == 'fork-session':
+                resume_args.append('--fork-session')
+            resume_command = command_line + ' ' + shlex.join(resume_args)
+            result['resume_argv'] = [str(binary), '--dangerously-skip-permissions', '--debug',
+                                     '--debug-file', str(evidence / 'debug.log'), *resume_args]
+            result['resume_command'] = resume_command
+            (evidence / 'resume-launch.json').write_text(json.dumps({
+                'argv': result['resume_argv'], 'command': resume_command}, indent=2))
+            tmux('respawn-pane', '-t', 'readiness:0.0', resume_command)
+            def resumed_ready(pane):
+                if not input_prompt_ready(pane):
+                    return False
+                if scenario == 'fork-session':
+                    return all(marker not in pane for marker in (
+                        'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'))
+                return all(marker in pane for marker in (
+                    'G5_SAME_SESSION_ROOT_ACTIVE', 'G5_SAME_SESSION_CHILD_ACTIVE'))
+            wait_pane('resumed-startup', resumed_ready)
+            result['resumed_pane_identity'] = tmux('display-message', '-p', '-t', 'readiness:0.0',
+                '#{session_id} #{window_id} #{pane_id} #{pane_pid}').stdout.strip()
+            probe = ('G5_FORK_IDENTITY_PROBE' if scenario == 'fork-session'
+                     else 'G5_RESUME_IDENTITY_PROBE')
+            send(probe)
+            wait_pane('resume-probe-draft', lambda pane: submitted_input_visible(pane, probe))
+            send('Enter', '0d')
+            def resumed(pane):
+                roots, entries = snapshot()
+                requests = [request for request in provider.snapshot()
+                            if request['sequence'] not in before_sequences]
+                (evidence / 'resumed-identity.json').write_text(json.dumps({
+                    'expected': identity, 'roots': roots, 'entries': entries,
+                    'requests': requests}, indent=2))
+                if scenario == 'fork-session':
+                    return retained_g5_forked(identity, entries, roots, requests, pane)
+                return retained_g5_resumed(identity, entries, requests, pane)
+            wait_pane('resumed-exact-identity-ui', resumed)
+            if scenario == 'fork-session':
+                roots, entries = snapshot()
+                before_cancel = {'requests': provider.snapshot(), 'roots': roots, 'entries': entries}
+                send('/plugin-authoring')
+                wait_pane('fork-command-draft', lambda pane:
+                          submitted_input_visible(pane, '/plugin-authoring'))
+                send('Enter', '0d')
+                wait_pane('fork-consent', retained_g5_consent)
+                send('C-c', '03')
+                def fork_cancelled(pane):
+                    roots, entries = snapshot()
+                    return retained_g5_clear_cancelled(pane, '/plugin-authoring', before_cancel, {
+                        'requests': provider.snapshot(), 'roots': roots, 'entries': entries})
+                wait_pane('fork-consent-cancel', fork_cancelled)
+                send('C-u', '15')
+                wait_pane('fork-cancel-draft-cleared', input_prompt_ready)
+            normal_exit('resumed-exit')
+        if scenario == 'enable':
+            before = {
+                'requests': provider.snapshot(),
+                'roots': list(result['semantic_state']['roots']),
+                'entries': list(result['semantic_state']['entries']),
+            }
+            send('/clear')
+            wait_pane('clear-draft', lambda pane: '/clear' in pane)
+            send('Enter', '0d')
+            wait_pane('clear-ready', lambda pane: input_prompt_ready(pane)
+                      and 'RELEASE_RETAINED_RESPONSE' not in pane)
+            send('/plugin-authoring')
+            wait_pane('clear-command-draft', lambda pane: '/plugin-authoring' in pane)
+            send('Enter', '0d')
+            wait_pane('clear-consent', retained_g5_consent)
+            send('C-c', '03')
+            def clear_cancelled(pane):
+                roots, entries = snapshot()
+                after = {
+                    'requests': provider.snapshot(),
+                    'roots': roots,
+                    'entries': entries,
+                }
+                return retained_g5_clear_cancelled(
+                    pane, '/plugin-authoring', before, after,
+                )
+            wait_pane('clear-cancel', clear_cancelled)
+            result['clear'] = 'passed'
+
+    try:
+        url = provider.start()
+        profile = root / 'sandbox.sb'
+        profile.write_text(retained_sandbox_profile(root, urlsplit(url).port))
+        launch_env = {**env, 'CC_VALIDATION_RETAIN_ARTIFACTS': '1',
+            'CC_VALIDATION_RUN_ROOT': str(root), 'CC_VALIDATION_BINARY': str(binary),
+            'CC_VALIDATION_REPO_ROOT': str(repo), 'CC_VALIDATION_CWD': str(root / 'cwd'),
+            'CC_VALIDATION_HOME': env['HOME'], 'CC_VALIDATION_CONFIG_DIR': env['CLAUDE_CONFIG_DIR'],
+            'CC_VALIDATION_EVIDENCE_DIR': str(evidence),
+            'CC_VALIDATION_OPENAI_BASE_URL': url + '/v1',
+            'CC_VALIDATION_DISABLE_NONESSENTIAL_TRAFFIC': '1'}
+        launcher = repo / '.claude/skills/claude-agent-workflow-validation/scripts/launch-built-claude.sh'
+        command_line = shlex.join(['/usr/bin/env', '-i',
+            *(f'{key}={value}' for key, value in launch_env.items()), '/bin/sh', str(launcher)])
+        argv = ['/usr/bin/sandbox-exec', '-f', str(profile), tmux_path,
+                '-D', '-S', socket_path, '-f', '/dev/null']
+        result.update({'command': argv, 'environment': launch_env,
+                       'binary_before': baseline_module.binary_identity(binary),
+                       'socket': socket_path, 'target': 'readiness:0.0'})
+        log = (evidence / 'tmux-server.log').open('x')
+        server = subprocess.Popen(argv, cwd=root / 'cwd', env=env, stdout=log, stderr=log,
+                                  start_new_session=True)
+        result['server_pid'] = server.pid
+        deadline = time.monotonic() + 10
+        while not (root / 't').exists() and server.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        tmux('set-option', '-g', 'remain-on-exit', 'on')
+        result['launch_command'] = command_line
+        tmux('new-session', '-d', '-s', 'readiness', '-x', '120', '-y', '40', command_line)
+        wait_pane('startup', input_prompt_ready)
+        result['pane_identity'] = tmux('display-message', '-p', '-t', 'readiness:0.0',
+                                      '#{session_id} #{window_id} #{pane_id} #{pane_pid}').stdout.strip()
+        if scenario:
+            g5_interaction()
+        else:
+            raw = b'RELEASE_RETAINED_INPUT'
+            (evidence / 'input.json').write_text(json.dumps([
+                {'hex': raw.hex(), 'transport': 'tmux send-keys -l'},
+                {'hex': '0d', 'transport': 'tmux send-keys Enter'}], indent=2))
+            tmux('send-keys', '-t', 'readiness:0.0', '-l', raw.decode())
+            wait_pane('input', lambda pane: raw.decode() in pane)
+            tmux('send-keys', '-t', 'readiness:0.0', 'Enter')
+            # A fast response clears the composer; observe the submitted transcript instead.
+            wait_pane('submitted', lambda pane: bool(re.search(
+                r'^\s*❯ RELEASE_RETAINED_INPUT\s*\n\s*⏺ RELEASE_RETAINED_RESPONSE\s*$',
+                pane, re.MULTILINE)) and input_prompt_ready(pane)
+                      and retained_readiness_request(provider.snapshot()))
+            wait_pane('response', lambda pane: 'RELEASE_RETAINED_RESPONSE' in pane
+                      and input_prompt_ready(pane))
+        result['binary_after'] = baseline_module.binary_identity(binary)
+        if result['binary_before'] != result['binary_after']:
+            raise RuntimeError('binary identity changed during readiness')
+        result['status'] = 'passed'
+    except Exception as error:
+        result['error'] = f'{type(error).__name__}: {error}'
+    finally:
+        if server is not None:
+            closed = tmux('kill-server', check=False)
+            result['close_server'] = {'returncode': closed.returncode, 'stderr': closed.stderr}
+            try:
+                server.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                server.terminate()
+                server.wait(timeout=10)
+            result['server_exit'] = server.returncode
+            socket_file = root / 't'
+            if socket_file.is_socket():
+                socket_file.unlink()
+            result['socket_released'] = not (root / 't').exists()
+            if not result['socket_released']:
+                result['status'] = 'failed'
+        if scenario == 'turn-end-load':
+            provider.turn_release.set()
+        provider.stop()
+        if log:
+            log.close()
+        result['validation_verdict'] = result['status']
+        (evidence / 'readiness-result.json').write_text(json.dumps(result, indent=2) + '\n')
+    return result
+
+
+def retained_preflight(args, extra_targets):
+    # Never construct BinaryGate here: its legacy lifecycle owns destructive cleanup.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'release_baseline', Path(__file__).with_name('capture-release-baseline.py'),
+    )
+    baseline_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(baseline_module)
+    repo = args.repo.resolve()
+    root, binary = baseline_module.retained_paths(repo, args.run_root, args.binary)
+    if args.baseline.parent.resolve() / args.baseline.name != root / 'baseline.json' or args.baseline.is_symlink():
+        raise ValueError('--baseline must be <run-root>/baseline.json, not a symlink')
+    baseline = json.loads(args.baseline.read_text())
+    if baseline.get('run_root') != str(root) or baseline.get('retain_artifacts') is not True:
+        raise ValueError('baseline does not own this retained run root')
+    if baseline.get('repo') != str(repo):
+        raise ValueError('baseline repository does not match --repo')
+    evidence = args.evidence_root.parent.resolve() / args.evidence_root.name
+    if evidence != root / 'evidence' or evidence.exists() or evidence.is_symlink():
+        raise ValueError('--evidence-root must be a new <run-root>/evidence')
+    if {p.name for p in root.iterdir()} != {'baseline.json'}:
+        raise ValueError('run root contains unexpected artifacts or was already used')
+    state = baseline_module.retained_repository_state(repo, root, binary)
+    for key, value in state.items():
+        if baseline.get(key) != value:
+            raise ValueError(f'baseline {key} does not match current repository state')
+    inputs = collect_required_target_inputs(repo, baseline, args.base_ref)
+    required = required_targets_for_paths(inputs['all_paths'])
+    targets = plan_targets(extra_targets, required, retain_artifacts=True)
+    manifest = {
+        **retained_target_policy(targets),
+        'repo': str(repo), 'run_root': str(root), 'retain_artifacts': True,
+        'baseline': str(args.baseline), 'binary': state['binary'],
+        'protected_root_binary': state['protected_root_binary'],
+        'required_target_inputs': inputs, 'required_targets': sorted(required),
+        'required_target_coverage': validate_required_target_results(required, []),
+        'environment': baseline_module.retained_environment(root),
+        'tmux': {'socket': str(root / 't'), 'started': False},
+        'processes_started': [], 'cleanup': 'not needed; no handlers started',
+        'repository_state_start': state,
+    }
+    socket_path = str(root / 't')
+    if len(socket_path.encode()) >= 100:
+        manifest['isolation_blocker'] = 'private tmux socket path too long; no external fallback allowed'
+    evidence.mkdir(mode=0o700)
+    if 'isolation_blocker' not in manifest:
+        readiness = retained_readiness(root, binary, repo, evidence, baseline_module)
+        manifest['readiness_smoke'] = readiness
+        manifest['runs'] = [readiness]
+        manifest['recorded_run_count'] = 1
+        manifest['blocked_targets'].pop('readiness-smoke')
+        manifest['tmux']['started'] = 'server_pid' in readiness
+        manifest['processes_started'] = [readiness['server_pid']] if 'server_pid' in readiness else []
+        manifest['cleanup'] = {key: readiness.get(key) for key in ('server_exit', 'socket_released', 'close_server')}
+        if readiness['status'] == 'passed' and 'builtin-mods' in targets:
+            s7_root = root / 's7-builtin-cache-restart'
+            s7_root.mkdir(mode=0o700)
+            s7_evidence = s7_root / 'evidence'
+            s7_evidence.mkdir(mode=0o700)
+            s7 = retained_builtin_cache_restart(
+                s7_root, binary, repo, s7_evidence, baseline_module,
+            )
+            manifest['runs'].append(s7)
+            manifest['recorded_run_count'] = len(manifest['runs'])
+            if s7.get('validation_verdict') == 'passed':
+                manifest['blocked_targets']['builtin-mods'] = (
+                    'full builtin-mods acceptance contract not covered by retained S7'
+                )
+        if readiness['status'] == 'passed' and 'terminal-interaction' in targets:
+            g5 = retained_g5(root, binary, repo, evidence, baseline_module,
+                             getattr(args, 'g5_scenario', None))
+            manifest['runs'].append(g5)
+            manifest['recorded_run_count'] = len(manifest['runs'])
+        manifest['required_target_coverage'] = validate_required_target_results(
+            required, manifest['runs'],
+        )
+    final_state = baseline_module.retained_repository_state(repo, root, binary)
+    manifest['repository_state_unchanged'] = final_state == state
+    manifest['repository_state_end'] = final_state
+    manifest['retained_inventory_before_report'] = baseline_module.tree_manifest(root)
+    manifest['inventory_excludes_self'] = 'evidence/driver-final-manifest.json'
+    with (evidence / 'driver-final-manifest.json').open('x') as stream:
+        stream.write(json.dumps(manifest, indent=2) + '\n')
+    print(json.dumps(manifest, indent=2))
+    return 2
 
 
 def main():
@@ -7741,7 +13022,14 @@ def main():
         default=None,
         help='comma-separated extra targets to append after diff-required targets',
     )
+    parser.add_argument('--binary', type=Path)
+    parser.add_argument('--run-root', type=Path)
+    parser.add_argument('--retain-artifacts', action='store_true')
+    parser.add_argument('--g5-scenario', choices=['turn-end-load', 'same-session-resume', 'fork-session'],
+                        help='retained diagnostic subset; required targets and blocked verdict remain unchanged')
     args = parser.parse_args()
+    if args.g5_scenario and not args.retain_artifacts:
+        parser.error('--g5-scenario requires retained mode')
     try:
         extra_targets = parse_target_list(args.targets)
     except ValueError as error:
@@ -7753,6 +13041,13 @@ def main():
     unknown = set(extra_targets) - allowed
     if unknown:
         parser.error(f'unknown targets: {sorted(unknown)}')
+    if args.retain_artifacts or args.run_root or args.binary:
+        if not (args.retain_artifacts and args.run_root and args.binary):
+            parser.error('retained mode requires --binary, --run-root and --retain-artifacts')
+        try:
+            return retained_preflight(args, extra_targets)
+        except (RuntimeError, ValueError, OSError) as error:
+            parser.error(str(error))
     try:
         gate = BinaryGate(
             args.repo,

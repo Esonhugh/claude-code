@@ -180,7 +180,7 @@ function splitNumericParams(params: string): number[] {
 }
 
 export type KeyParseState = {
-  mode: 'NORMAL' | 'IN_PASTE'
+  mode: 'NORMAL' | 'IN_PASTE' | 'RECOVERING_PASTE'
   incomplete: string
   pasteBuffer: string
   // Internal tokenizer instance
@@ -225,21 +225,28 @@ export function parseMultipleKeypresses(
 
   // Convert tokens to parsed keys, handling paste mode
   const keys: ParsedInput[] = []
-  let inPaste = prevState.mode === 'IN_PASTE'
+  let inPaste = prevState.mode !== 'NORMAL'
+  let recoveringPaste = prevState.mode === 'RECOVERING_PASTE'
   let pasteBuffer = prevState.pasteBuffer
 
   for (const token of tokens) {
     if (token.type === 'sequence') {
       if (token.value === PASTE_START) {
         inPaste = true
+        recoveringPaste = false
         pasteBuffer = ''
       } else if (token.value === PASTE_END) {
-        // Always emit a paste key, even for empty pastes. This allows
-        // downstream handlers to detect empty pastes (e.g., for clipboard
-        // image handling on macOS). The paste content may be empty string.
-        keys.push(createPasteKey(pasteBuffer))
-        inPaste = false
-        pasteBuffer = ''
+        if (inPaste) {
+          // Preserve genuine empty pastes for clipboard image handling, but
+          // do not emit a second empty paste when the closing marker arrives
+          // after an idle recovery already released the payload.
+          if (!recoveringPaste || pasteBuffer) {
+            keys.push(createPasteKey(pasteBuffer))
+          }
+          inPaste = false
+          recoveringPaste = false
+          pasteBuffer = ''
+        }
       } else if (inPaste) {
         // Sequences inside paste are treated as literal text
         pasteBuffer += token.value
@@ -278,21 +285,40 @@ export function parseMultipleKeypresses(
         const mouse = parseMouseEvent(resynthesized)
         keys.push(mouse ?? parseKeypress(resynthesized))
       } else {
-        keys.push(parseKeypress(token.value))
+        // Bulk stdin reads may contain both text and Enter/Tab/control keys.
+        // Paste above remains a single literal payload.
+        // eslint-disable-next-line no-control-regex
+        for (const part of token.value.match(/[^\x00-\x1f\x7f]+|[\x00-\x1f\x7f]/g) ?? []) {
+          keys.push(parseKeypress(part))
+        }
       }
     }
   }
 
-  // If flushing and still in paste mode, emit what we have
-  if (isFlush && inPaste && pasteBuffer) {
-    keys.push(createPasteKey(pasteBuffer))
-    inPaste = false
-    pasteBuffer = ''
+  // Release the currently buffered payload after an idle timeout, but keep
+  // treating late bytes as paste content until the terminal's closing marker
+  // arrives. This restores responsiveness without reinterpreting delayed CR,
+  // Tab, or Escape bytes as commands.
+  if (isFlush && inPaste) {
+    if (recoveringPaste) {
+      if (pasteBuffer) keys.push(createPasteKey(pasteBuffer))
+      inPaste = false
+      recoveringPaste = false
+      pasteBuffer = ''
+    } else {
+      keys.push(createPasteKey(pasteBuffer))
+      recoveringPaste = true
+      pasteBuffer = ''
+    }
   }
 
   // Build new state
   const newState: KeyParseState = {
-    mode: inPaste ? 'IN_PASTE' : 'NORMAL',
+    mode: !inPaste
+      ? 'NORMAL'
+      : recoveringPaste
+        ? 'RECOVERING_PASTE'
+        : 'IN_PASTE',
     incomplete: tokenizer.buffer(),
     pasteBuffer,
     _tokenizer: tokenizer,
@@ -532,9 +558,18 @@ function keycodeToName(keycode: number): string | undefined {
     case 57415: // KP_EQUAL
       return '='
     default:
-      // Printable ASCII characters
-      if (keycode >= 32 && keycode <= 126) {
-        return String.fromCharCode(keycode).toLowerCase()
+      // Printable Unicode scalar values. Kitty CSI-u reports committed text as
+      // codepoints, including IME/CJK input; functional keys use the private-use
+      // range handled explicitly above or remain unmapped.
+      if (
+        keycode >= 32 &&
+        (keycode <= 126 || keycode >= 160) &&
+        keycode <= 0x10ffff &&
+        !(keycode >= 0xd800 && keycode <= 0xdfff) &&
+        !(keycode >= 0xe000 && keycode <= 0xf8ff)
+      ) {
+        const character = String.fromCodePoint(keycode)
+        return keycode <= 126 ? character.toLowerCase() : character
       }
       return undefined
   }
@@ -553,6 +588,8 @@ export type ParsedKey = {
   raw: string | undefined
   code?: string
   isPasted: boolean
+  /** Zero-based terminal coordinates for mouse wheel keys. */
+  pointer?: { column: number; row: number }
 }
 
 /** A terminal response sequence (DECRPM, DA1, OSC reply, etc.) parsed
@@ -680,8 +717,15 @@ function parseKeypress(s: string = ''): ParsedKey {
   // should still be recognized as wheelup/wheeldown.
   if ((match = SGR_MOUSE_RE.exec(s))) {
     const button = parseInt(match[1]!, 10)
-    if ((button & 0x43) === 0x40) return createNavKey(s, 'wheelup', false)
-    if ((button & 0x43) === 0x41) return createNavKey(s, 'wheeldown', false)
+    if ((button & 0x43) === 0x40 || (button & 0x43) === 0x41) {
+      return {
+        ...createNavKey(s, (button & 1) === 0 ? 'wheelup' : 'wheeldown', false),
+        pointer: {
+          column: parseInt(match[2]!, 10) - 1,
+          row: parseInt(match[3]!, 10) - 1,
+        },
+      }
+    }
     // Shouldn't reach here (parseMouseEvent catches non-wheel) but be safe
     return createNavKey(s, 'mouse', false)
   }
@@ -693,8 +737,15 @@ function parseKeypress(s: string = ''): ParsedKey {
   // tracking in alt-screen and only need wheel for ScrollBox.
   if (s.length === 6 && s.startsWith('\x1b[M')) {
     const button = s.charCodeAt(3) - 32
-    if ((button & 0x43) === 0x40) return createNavKey(s, 'wheelup', false)
-    if ((button & 0x43) === 0x41) return createNavKey(s, 'wheeldown', false)
+    if ((button & 0x43) === 0x40 || (button & 0x43) === 0x41) {
+      return {
+        ...createNavKey(s, (button & 1) === 0 ? 'wheelup' : 'wheeldown', false),
+        pointer: {
+          column: s.charCodeAt(4) - 33,
+          row: s.charCodeAt(5) - 33,
+        },
+      }
+    }
     return createNavKey(s, 'mouse', false)
   }
 

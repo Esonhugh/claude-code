@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 import type { SubagentStopHookInput } from '../../entrypoints/agentSdkTypes.js'
 
 const childProcessEnv = 'CLAUDE_CODE_RUN_AGENT_SUBAGENT_STOP_TEST_CHILD'
@@ -46,9 +46,28 @@ async function runIsolatedTests(): Promise<void> {
     | 'complete'
   let queryMode: QueryMode = 'throw'
   const recordedMessages: unknown[] = []
+  const queryContexts: Record<string, string>[] = []
+  const queryAgentIds: Array<string | undefined> = []
+  const queryAgentDefinitions: Array<Record<string, unknown> | undefined> = []
+  const transcriptAgentIds: string[] = []
+  const refreshCallbacks: Array<
+    (() => Promise<Record<string, string>>) | undefined
+  > = []
 
   mock.module('../../query.js', () => ({
-    query: async function* () {
+    query: async function* (params: import('../../query.js').QueryParams) {
+      params.onCacheSafeParams?.({
+        systemPrompt: params.systemPrompt,
+        userContext: params.userContext,
+        resolvedPromptContextBlocks: params.resolvedPromptContextBlocks,
+        systemContext: params.systemContext,
+        toolUseContext: params.toolUseContext,
+        forkContextMessages: params.messages,
+      })
+      queryContexts.push(params.userContext)
+      queryAgentIds.push(params.toolUseContext.agentId)
+      queryAgentDefinitions.push(params.toolUseContext.options.agentDefinitions as Record<string, unknown> | undefined)
+      refreshCallbacks.push(params.refreshUserContext)
       if (queryMode === 'assistant_then_throw' || queryMode === 'model_error') {
         yield {
           type: 'assistant',
@@ -130,8 +149,9 @@ async function runIsolatedTests(): Promise<void> {
   const sessionStorage = await import('../../utils/sessionStorage.js')
   mock.module('../../utils/sessionStorage.js', () => ({
     ...sessionStorage,
-    recordSidechainTranscript: async (messages: unknown[]) => {
+    recordSidechainTranscript: async (messages: unknown[], agentId: string) => {
       recordedMessages.push(...messages)
+      transcriptAgentIds.push(agentId)
     },
     writeAgentMetadata: async () => {},
     setAgentTranscriptSubdir: () => {},
@@ -192,7 +212,7 @@ async function runIsolatedTests(): Promise<void> {
     }
   }
 
-  async function drainAgent(): Promise<void> {
+  async function drainAgent(extra: Partial<Parameters<typeof runAgent>[0]> = {}): Promise<void> {
     const iterator = runAgent({
       agentDefinition: GENERAL_PURPOSE_AGENT,
       promptMessages: [createUserMessage({ content: 'finish the task' })],
@@ -207,6 +227,7 @@ async function runIsolatedTests(): Promise<void> {
         systemContext: {},
         systemPrompt: asSystemPrompt([]),
       },
+      ...extra,
     })
 
     let next = await iterator.next()
@@ -219,7 +240,246 @@ async function runIsolatedTests(): Promise<void> {
     resetStateForTests()
     queryMode = 'throw'
     recordedMessages.length = 0
+    queryContexts.length = 0
+    queryAgentIds.length = 0
+    queryAgentDefinitions.length = 0
+    transcriptAgentIds.length = 0
+    refreshCallbacks.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  test('C6 narrows the child agentDefinitions to the resolved allowedAgentTypes', async () => {
+    queryMode = 'complete'
+    await drainAgent({ allowedAgentTypes: ['worker'] })
+    expect(queryAgentDefinitions.at(-1)?.allowedAgentTypes).toEqual(['worker'])
+    await drainAgent()
+    expect(queryAgentDefinitions.at(-1)?.allowedAgentTypes).toBeUndefined()
+  })
+
+  test('instruction provenance survives child overrides and forks while omit stays explicitly empty', async () => {
+    queryMode = 'complete'
+    const contextModule = await import('../../context.js')
+    const { runForkedAgent } = await import('../../utils/forkedAgent.js')
+    const files = [{ path: '/fixture/CLAUDE.md', kind: 'project' as const, content: 'known instructions' }]
+    const known = contextModule.withUserContextInstructionFiles({ claudeMd: 'known rendered text', currentDate: 'today' }, files)
+    const load = spyOn(contextModule, 'getUserContext').mockResolvedValue(known)
+    try {
+      const override = { agentId: testAgentId, systemContext: {}, systemPrompt: asSystemPrompt([]) }
+      await drainAgent({ override, agentDefinition: { ...GENERAL_PURPOSE_AGENT, omitClaudeMd: true } })
+      expect(queryContexts.at(-1)).toEqual({ currentDate: 'today' })
+      expect(contextModule.getUserContextInstructionFiles(queryContexts.at(-1)!)).toEqual([])
+      expect(load).toHaveBeenCalledTimes(1)
+      for (const userContext of [known, { claudeMd: 'opaque override' }, {}]) {
+        await drainAgent({ override: { ...override, userContext }, agentDefinition: { ...GENERAL_PURPOSE_AGENT, omitClaudeMd: true } })
+        expect(queryContexts.at(-1)).toBe(userContext)
+        expect(contextModule.getUserContextInstructionFiles(queryContexts.at(-1)!)).toEqual(
+          userContext === known ? files : 'claudeMd' in userContext ? undefined : [],
+        )
+        await runForkedAgent({
+          promptMessages: [createUserMessage({ content: 'fork' })],
+          cacheSafeParams: { systemPrompt: asSystemPrompt([]), userContext, systemContext: {}, toolUseContext: createContext(), forkContextMessages: [] },
+          canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+          querySource: 'agent:test', forkLabel: 'instruction-provenance', skipTranscript: true,
+        })
+        expect(queryContexts.at(-1)).toBe(userContext)
+      }
+      expect(load).toHaveBeenCalledTimes(1)
+    } finally {
+      load.mockRestore()
+    }
+  })
+
+  test('fork transcript and query share one identity, including explicit and ephemeral forks', async () => {
+    queryMode = 'complete'
+    const { runForkedAgent } = await import('../../utils/forkedAgent.js')
+    const parent = { ...createContext(), agentId: testAgentId }
+    const explicitId = createAgentId('explicit-fork')
+    for (const overrides of [undefined, { agentId: explicitId }]) {
+      const before = transcriptAgentIds.length
+      await runForkedAgent({
+        promptMessages: [createUserMessage({ content: 'fork' })],
+        cacheSafeParams: { systemPrompt: asSystemPrompt([]), userContext: {}, systemContext: {}, toolUseContext: parent, forkContextMessages: [] },
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        querySource: 'agent:test', forkLabel: 'identity-test', overrides,
+      })
+      expect(transcriptAgentIds.slice(before)).toEqual([queryAgentIds.at(-1)!])
+      expect(queryAgentIds.at(-1)).not.toBe(testAgentId)
+      if (overrides) expect(queryAgentIds.at(-1)).toBe(explicitId)
+    }
+    const before = transcriptAgentIds.length
+    await runForkedAgent({
+      promptMessages: [createUserMessage({ content: 'ephemeral' })],
+      cacheSafeParams: { systemPrompt: asSystemPrompt([]), userContext: {}, systemContext: {}, toolUseContext: parent, forkContextMessages: [] },
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+      querySource: 'agent:test', forkLabel: 'identity-test', skipTranscript: true,
+    })
+    expect(transcriptAgentIds).toHaveLength(before)
+    expect(queryAgentIds.at(-1)).toBeString()
+    expect(queryAgentIds.at(-1)).not.toBe(testAgentId)
+    expect(parent.agentId).toBe(testAgentId)
+  })
+
+  test('host-built named sections survive agent enhancement while final overrides remain exact', async () => {
+    queryMode = 'complete'
+    const { withSystemPromptSections, getSystemPromptSections } = await import('../../utils/systemPromptType.js')
+    const base = withSystemPromptSections([
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+      { text: 'TEAMMATE_APPEND' },
+    ])
+    let rendered: import('../../utils/systemPromptType.js').SystemPrompt | undefined
+    const override = { agentId: testAgentId, userContext: {}, systemContext: {} }
+    await drainAgent({
+      baseSystemPrompt: base,
+      override,
+      onCacheSafeParams: params => { rendered = params.systemPrompt },
+    })
+    expect([...getSystemPromptSections(rendered!)!.slice(0, 3)]).toEqual([...getSystemPromptSections(base)!])
+    expect(rendered!.join('\n')).toContain('Notes:')
+    expect(rendered!.join('\n')).toContain('CORE_IDENTITY')
+    expect(rendered!.join('\n')).toContain('TEAMMATE_APPEND')
+    expect(getSystemPromptSections(base)).toHaveLength(3)
+    const final = asSystemPrompt(['FINAL_OVERRIDE'])
+    await drainAgent({
+      baseSystemPrompt: base,
+      override: { ...override, systemPrompt: final },
+      onCacheSafeParams: params => { rendered = params.systemPrompt },
+    })
+    expect(rendered).toBe(final)
+    expect(getSystemPromptSections(rendered!)).toBeUndefined()
+  })
+
+  test('query refresh reloads agent context while keeping explicit overrides and read-only omissions', async () => {
+    queryMode = 'complete'
+    const contextModule = await import('../../context.js')
+    const { EXPLORE_AGENT } = await import('./built-in/exploreAgent.js')
+    const { PLAN_AGENT } = await import('./built-in/planAgent.js')
+    const files = [
+      {
+        path: '/fixture/CLAUDE.md',
+        kind: 'project' as const,
+        content: 'original',
+      },
+    ]
+    const freshFiles = [{ ...files[0]!, content: 'fresh' }]
+    const original = contextModule.withUserContextInstructionFiles(
+      { claudeMd: 'original', currentDate: 'today' },
+      files,
+    )
+    const fresh = contextModule.withUserContextInstructionFiles(
+      { claudeMd: 'fresh', currentDate: 'tomorrow', extra: 'new' },
+      freshFiles,
+    )
+    const load = spyOn(contextModule, 'getUserContext').mockResolvedValue(original)
+    const override = {
+      agentId: testAgentId,
+      systemContext: {},
+      systemPrompt: asSystemPrompt([]),
+    }
+    try {
+      for (const agentDefinition of [
+        GENERAL_PURPOSE_AGENT,
+        EXPLORE_AGENT,
+        PLAN_AGENT,
+      ]) {
+        load.mockResolvedValue(original)
+        await drainAgent({ override, agentDefinition })
+        const refresh = refreshCallbacks.at(-1)
+        expect(refresh).toBeFunction()
+        load.mockResolvedValue(fresh)
+        const refreshed = await refresh!()
+        if (agentDefinition.omitClaudeMd) {
+          expect(queryContexts.at(-1)).toEqual({ currentDate: 'today' })
+          expect(refreshed).toEqual({ currentDate: 'tomorrow', extra: 'new' })
+          expect(
+            contextModule.getUserContextInstructionFiles(refreshed),
+          ).toEqual([])
+        } else {
+          expect(queryContexts.at(-1)).toBe(original)
+          expect(refreshed).toBe(fresh)
+          expect(
+            contextModule.getUserContextInstructionFiles(refreshed),
+          ).toEqual(freshFiles)
+        }
+        load.mockResolvedValue(
+          contextModule.withUserContextInstructionFiles(
+            { currentDate: 'after removal' },
+            [],
+          ),
+        )
+        const removed = await refresh!()
+        expect(removed).toEqual({ currentDate: 'after removal' })
+        expect(contextModule.getUserContextInstructionFiles(removed)).toEqual([])
+      }
+      expect(load).toHaveBeenCalledTimes(9)
+      for (const userContext of [original, { claudeMd: 'opaque override' }, {}]) {
+        await drainAgent({
+          override: { ...override, userContext },
+          agentDefinition: EXPLORE_AGENT,
+        })
+        const refresh = refreshCallbacks.at(-1)
+        expect(refresh).toBeFunction()
+        expect(await refresh!()).toBe(userContext)
+        expect(
+          contextModule.getUserContextInstructionFiles(await refresh!()),
+        ).toEqual(
+          userContext === original
+            ? files
+            : 'claudeMd' in userContext
+              ? undefined
+              : [],
+        )
+      }
+      expect(load).toHaveBeenCalledTimes(9)
+    } finally {
+      load.mockRestore()
+    }
+  })
+
+  test('resolved model bypasses later env and definition changes', async () => {
+    queryMode = 'complete'
+    const previous = process.env.CLAUDE_CODE_SUBAGENT_MODEL
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL = 'env-changed-after-spawn'
+    let observedModel: string | undefined
+    try {
+      await drainAgent({
+        resolvedModel: 'Snapshot/Custom-ID',
+        model: 'tool-model',
+        agentDefinition: { ...GENERAL_PURPOSE_AGENT, model: 'definition-model' },
+        onCacheSafeParams: params => { observedModel = params.toolUseContext.options.mainLoopModel },
+      })
+      expect(observedModel).toBe('Snapshot/Custom-ID')
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_CODE_SUBAGENT_MODEL
+      else process.env.CLAUDE_CODE_SUBAGENT_MODEL = previous
+    }
+  })
+
+  for (const model of ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-6', 'custom-opus-5-gateway']) {
+    test(`${model} uses the appropriate parent or legacy thinking default`, async () => {
+      queryMode = 'complete'
+      const context = createContext()
+      const thinkingConfig = { type: 'enabled' as const, budgetTokens: 2048 }
+      let observedThinking: unknown
+      await drainAgent({
+        resolvedModel: model,
+        toolUseContext: { ...context, options: { ...context.options, thinkingConfig } },
+        onCacheSafeParams: params => { observedThinking = params.toolUseContext.options.thinkingConfig },
+      })
+      expect(observedThinking).toEqual(
+        model === 'claude-opus-5' || model === 'claude-sonnet-5' ? thinkingConfig : { type: 'disabled' },
+      )
+    })
+  }
+
+  test('Opus 5 preserves explicitly disabled parent thinking', async () => {
+    queryMode = 'complete'
+    let observedThinking: unknown
+    await drainAgent({
+      resolvedModel: 'claude-opus-5',
+      onCacheSafeParams: params => { observedThinking = params.toolUseContext.options.thinkingConfig },
+    })
+    expect(observedThinking).toEqual({ type: 'disabled' })
   })
 
   test('runs SubagentStop once for the controlled post-start fault', async () => {

@@ -299,9 +299,11 @@ export function LogoV2(): React.ReactNode {
             width={columns}
           >
             <Text bold>{welcomeMessage}</Text>
-            <Box marginY={1}>
-              <Clawd />
-            </Box>
+            {columns >= 50 && (
+              <Box marginY={1}>
+                <Clawd />
+              </Box>
+            )}
             <Text dimColor>{modelDisplayName}</Text>
             <Text dimColor>{billingType}</Text>
             <Text dimColor>
@@ -386,7 +388,7 @@ export function LogoV2(): React.ReactNode {
                 <Text bold>{welcomeMessage}</Text>
               </Box>
 
-              <Clawd />
+              {columns >= 100 && <Clawd />}
 
               <Box flexDirection="column" alignItems="center">
                 <Text dimColor>{modelLine}</Text>

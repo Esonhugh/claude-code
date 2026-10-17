@@ -1032,11 +1032,41 @@ export function getMcpConfigsByScope(
 }
 
 /**
- * Get an MCP server configuration by name
+ * Get an MCP server configuration by name, applying the same admission rules
+ * as getClaudeCodeMcpConfigs(): enterprise-exclusive config, plugin-only lock,
+ * .mcp.json approval and allowed/deniedMcpServers policy. Servers disabled for
+ * the project are still returned; callers decide (re-enabling needs them).
  * @param name The name of the server
- * @returns The server configuration with scope, or undefined if not found
+ * @param options.includeUnapprovedProjectServers Also return pending/rejected
+ *   .mcp.json servers, for status display only — never connect to them.
+ * @returns The server configuration with scope, or null if not found
  */
-export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
+export function getMcpConfigByName(
+  name: string,
+  {
+    includeUnapprovedProjectServers = false,
+  }: { includeUnapprovedProjectServers?: boolean } = {},
+): ScopedMcpServerConfig | null {
+  const config = doesEnterpriseMcpConfigExist()
+    ? (getMcpConfigsByScope('enterprise').servers[name] ?? null)
+    : findMcpConfigByName(name, includeUnapprovedProjectServers)
+  return config && isMcpServerAllowedByPolicy(name, config) ? config : null
+}
+
+/**
+ * Raw lookup without approval or policy checks, for cleaning up stored state
+ * of a server being removed (`claude mcp remove`). Never connect to the result.
+ */
+export function getConfiguredMcpConfigByName(
+  name: string,
+): ScopedMcpServerConfig | null {
+  return findMcpConfigByName(name, true)
+}
+
+function findMcpConfigByName(
+  name: string,
+  includeUnapprovedProjectServers: boolean,
+): ScopedMcpServerConfig | null {
   const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
 
   // When MCP is locked to plugin-only, only enterprise servers are reachable
@@ -1055,7 +1085,11 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
   if (localServers[name]) {
     return localServers[name]
   }
-  if (projectServers[name]) {
+  if (
+    projectServers[name] &&
+    (includeUnapprovedProjectServers ||
+      getProjectMcpServerStatus(name) === 'approved')
+  ) {
     return projectServers[name]
   }
   if (userServers[name]) {

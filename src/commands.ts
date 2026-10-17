@@ -1,3 +1,4 @@
+import subtask from './commands/subtask/index.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import addDir from './commands/add-dir/index.js'
 import autofixPr from './commands/autofix-pr/index.js'
@@ -18,6 +19,7 @@ import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 import cost from './commands/cost/index.js'
+import daybreak from './commands/daybreak/index.js'
 import diff from './commands/diff/index.js'
 import ctx_viz from './commands/ctx_viz/index.js'
 import doctor from './commands/doctor/index.js'
@@ -58,6 +60,7 @@ import bughunter from './commands/bughunter/index.js'
 import terminalSetup from './commands/terminalSetup/index.js'
 import usage from './commands/usage/index.js'
 import theme from './commands/theme/index.js'
+import tui from './commands/tui.js'
 import vim from './commands/vim/index.js'
 import { feature } from 'bun:bundle'
 // Dead code elimination: conditional imports
@@ -285,6 +288,7 @@ const COMMANDS = memoize((): Command[] => [
   context,
   contextNonInteractive,
   cost,
+  daybreak,
   diff,
   doctor,
   effort,
@@ -322,6 +326,7 @@ const COMMANDS = memoize((): Command[] => [
   stickers,
   tag,
   theme,
+  tui,
   feedback,
   review,
   ultrareview,
@@ -337,6 +342,7 @@ const COMMANDS = memoize((): Command[] => [
   vim,
   ...(webCmd ? [webCmd] : []),
   ...(forkCmd ? [forkCmd] : []),
+  subtask,
   ...(buddy ? [buddy] : []),
   ...(proactive ? [proactive] : []),
   ...(briefCommand ? [briefCommand] : []),

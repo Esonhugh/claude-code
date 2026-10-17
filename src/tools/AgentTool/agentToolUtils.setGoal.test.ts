@@ -49,7 +49,11 @@ for (const isAsync of [false, true]) {
   )
 }
 
-assert.deepEqual(filterToolsForExactAgent(goalTools), [])
+assert.deepEqual(
+  filterToolsForExactAgent(goalTools),
+  goalTools,
+  'cache-sharing forks must keep parent tool definitions; execution guards still apply',
+)
 assert.deepEqual(
   resolveAgentTools(
     { tools: ['*'], source: 'built-in' },
@@ -60,5 +64,11 @@ assert.deepEqual(
   goalTools,
   'main-thread resolution must keep goal tools available',
 )
+
+
+// Keeping schema bytes for cache sharing must not grant goal mutation to a fork.
+const childContext = { agentId: 'fork-child' } as Parameters<typeof SetGoalTool.call>[1]
+await assert.rejects(SetGoalTool.call({ goal: 'forbidden' }, childContext), /SetGoal cannot be used in agent contexts/)
+await assert.rejects(ClearGoalTool.call({}, childContext), /ClearGoal cannot be used in agent contexts/)
 
 console.log('agentToolUtils.setGoal.test.ts passed')

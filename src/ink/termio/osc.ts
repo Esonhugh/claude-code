@@ -4,6 +4,7 @@
 
 import { Buffer } from 'buffer'
 import { env } from '../../utils/env.js'
+import { truncateUtf8Bytes } from '../../tools/TerminalTool/compressReadOutput.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
@@ -40,7 +41,11 @@ export function wrapForMultiplexer(sequence: string): string {
     return `\x1bPtmux;${escaped}\x1b\\`
   }
   if (process.env['STY']) {
-    return `\x1bP${sequence}\x1b\\`
+    // Screen cannot nest ST inside DCS; terminate an inner OSC with BEL.
+    const payload = sequence.startsWith(OSC_PREFIX) && sequence.endsWith(ST)
+      ? sequence.slice(0, -ST.length) + BEL
+      : sequence
+    return `\x1bP${payload}\x1b\\`
   }
   return sequence
 }
@@ -247,6 +252,7 @@ export const OSC = {
   RESET_CURSOR_COLOR: 112,
   SEMANTIC_PROMPT: 133,
   GHOSTTY: 777, // Ghostty notification protocol
+  PROGRAM_STATUS: 7501,
   TAB_STATUS: 21337, // Tab status extension
 } as const
 
@@ -450,6 +456,48 @@ export const CLEAR_ITERM2_PROGRESS = `${OSC_PREFIX}${OSC.ITERM2};${ITERM2.PROGRE
  * Uses BEL terminator for cleanup — safe on all terminals.
  */
 export const CLEAR_TERMINAL_TITLE = `${OSC_PREFIX}${OSC.SET_TITLE_AND_ICON};${BEL}`
+
+export type ProgramStatus = {
+  state: 'idle' | 'working' | 'blocked' | 'done' | 'error'
+  kind?: 'permission' | 'question' | 'auth'
+  progress?: number
+  title?: string
+  msg?: string
+  /** Omitted for the root record; normalize child ids with programStatusId. */
+  id?: string
+}
+
+// eslint-disable-next-line no-control-regex
+const PROGRAM_STATUS_CONTROL = /[\x00-\x1F\x7F-\x9F]/g
+
+export function programStatusId(raw: string): string | undefined {
+  const id = raw.replace(/[^A-Za-z0-9_.+-]/g, '-').slice(0, 32)
+  return id.length > 0 ? id : undefined
+}
+
+function programStatusText(text: string, maxBytes: number): string {
+  return Buffer.from(truncateUtf8Bytes(text.replace(PROGRAM_STATUS_CONTROL, ' '), maxBytes)).toString('base64')
+}
+
+export function programStatus(status: ProgramStatus): string {
+  const fields = [`state=${status.state}`, 'app=claude-code']
+  if (status.id !== undefined) fields.push(`id=${status.id}`)
+  if (status.state === 'blocked' && status.kind) fields.push(`kind=${status.kind}`)
+  if ((status.state === 'working' || status.state === 'blocked') &&
+      status.progress !== undefined && Number.isFinite(status.progress)) {
+    fields.push(`progress=${Math.min(100, Math.max(0, Math.round(status.progress)))}`)
+  }
+  if (status.title) fields.push(`title=${programStatusText(status.title, 192)}`)
+  if (status.msg) fields.push(`msg=${programStatusText(status.msg, 2048)}`)
+  return osc(OSC.PROGRAM_STATUS, fields.join(':'))
+}
+
+/** Global exit clear always uses BEL, including on kitty. */
+export const CLEAR_ALL_PROGRAM_STATUS = `${OSC_PREFIX}${OSC.PROGRAM_STATUS};state=clear${BEL}`
+
+export function clearProgramStatus(id: string): string {
+  return osc(OSC.PROGRAM_STATUS, `state=clear:id=${id}`)
+}
 
 /** Clear all three OSC 21337 tab-status fields. Used on exit. */
 export const CLEAR_TAB_STATUS = osc(

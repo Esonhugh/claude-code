@@ -1,4 +1,4 @@
-import { getPluginErrorMessage, type PluginError } from '../../types/plugin.js'
+import { getPluginErrorMessage, getMarketplaceRegistrationGuidance, getMarketplaceRegistrationReason, type PluginError } from '../../types/plugin.js'
 
 export function formatErrorMessage(error: PluginError): string {
   switch (error.type) {
@@ -16,8 +16,14 @@ export function formatErrorMessage(error: PluginError): string {
       return `Invalid manifest at ${error.manifestPath}: ${error.validationErrors.join(', ')}`
     case 'plugin-not-found':
       return `Plugin "${error.pluginId}" not found in marketplace "${error.marketplace}"`
-    case 'marketplace-not-found':
+    case 'marketplace-not-found': {
+      if (error.registrationHidden !== undefined) {
+        const message = `Marketplace "${error.marketplace}" is added but ignored`
+        const reason = getMarketplaceRegistrationReason(error)
+        return reason === undefined ? `${message} (see the debug log)` : `${message}. ${reason}`
+      }
       return `Marketplace "${error.marketplace}" not found`
+    }
     case 'marketplace-load-failed':
       return `Failed to load marketplace "${error.marketplace}": ${error.reason}`
     case 'mcp-config-invalid':
@@ -84,10 +90,13 @@ export function getErrorGuidance(error: PluginError): string | null {
       return 'Check manifest file follows the required schema'
     case 'plugin-not-found':
       return `Plugin may not exist in marketplace "${error.marketplace}"`
-    case 'marketplace-not-found':
+    case 'marketplace-not-found': {
+      const guidance = getMarketplaceRegistrationGuidance(error)
+      if (guidance !== undefined) return guidance
       return error.availableMarketplaces.length > 0
         ? `Available marketplaces: ${error.availableMarketplaces.join(', ')}`
         : 'Add the marketplace first using /plugin marketplace add'
+    }
     case 'mcp-config-invalid':
       return 'Check MCP server configuration in .mcp.json or manifest'
     case 'mcp-server-suppressed-duplicate': {

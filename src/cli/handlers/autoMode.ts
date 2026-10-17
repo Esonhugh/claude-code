@@ -40,6 +40,7 @@ export function autoModeConfigHandler(): void {
     soft_deny: config?.soft_deny?.length
       ? config.soft_deny
       : defaults.soft_deny,
+    hard_deny: defaults.hard_deny,
     environment: config?.environment?.length
       ? config.environment
       : defaults.environment,

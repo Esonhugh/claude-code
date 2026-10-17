@@ -140,6 +140,7 @@ export function UnifiedInstalledCell({
   }
 
   // MCP server
+  const isClaudeOfficialApp = item.client.config.type === 'claudeai-proxy'
   let statusIcon: string
   let statusText: string
 
@@ -189,6 +190,14 @@ export function UnifiedInstalledCell({
         {' '}
         <Text backgroundColor="userMessageBackground">MCP</Text>
       </Text>
+      {isClaudeOfficialApp && (
+        <Text dimColor={!isSelected}>
+          {' '}
+          <Text backgroundColor="userMessageBackground">
+            Claude Official App
+          </Text>
+        </Text>
+      )}
       <Text dimColor={!isSelected}> · {statusIcon} </Text>
       <Text dimColor={!isSelected}>{statusText}</Text>
     </Box>

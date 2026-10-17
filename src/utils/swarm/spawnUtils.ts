@@ -10,6 +10,7 @@ import {
   getSessionBypassPermissionsMode,
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
+import type { EffortValue } from '../effort.js'
 import { isInBundledMode } from '../bundledMode.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getTeammateModeFromSnapshot } from './backends/teammateModeSnapshot.js'
@@ -39,6 +40,8 @@ export function buildInheritedCliFlags(options?: {
   planModeRequired?: boolean
   permissionMode?: PermissionMode
   allowedTools?: string[]
+  model?: string
+  effort?: EffortValue
 }): string {
   const flags: string[] = []
   const { planModeRequired, permissionMode, allowedTools } = options || {}
@@ -59,10 +62,13 @@ export function buildInheritedCliFlags(options?: {
     flags.push(`--allowedTools ${quote([allowedTools.join(',')])}`)
   }
 
-  // Propagate --model if explicitly set via CLI
-  const modelOverride = getMainLoopModelOverride()
+  // Spawn callers supply the resolved snapshot, replacing the parent override.
+  const modelOverride = options?.model ?? getMainLoopModelOverride()
   if (modelOverride) {
     flags.push(`--model ${quote([modelOverride])}`)
+  }
+  if (options?.effort !== undefined) {
+    flags.push(`--effort ${quote([String(options.effort)])}`)
   }
 
   // Propagate --settings if set via CLI
@@ -103,8 +109,16 @@ const TEAMMATE_ENV_VARS = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
-  // Custom API endpoint
+  'CLAUDE_CODE_USE_OPENAI',
+  'CLAUDE_CODE_EFFORT_LEVEL',
+  // Custom API endpoints (credentials are never forwarded in shell commands)
   'ANTHROPIC_BASE_URL',
+  'OPENAI_BASE_URL',
+  // Preserve role aliases for any children spawned by the teammate.
+  'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'ANTHROPIC_SMALL_FAST_MODEL',
   // Config directory override
   'CLAUDE_CONFIG_DIR',
   // CCR marker — teammates need this for CCR-aware code paths. Auth finds

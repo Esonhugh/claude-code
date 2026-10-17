@@ -1,20 +1,81 @@
 import assert from 'node:assert/strict'
-import { mock } from 'bun:test'
+import { mock, test } from 'bun:test'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import type { ToolUseContext } from '../../Tool.js'
+import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
+import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+import { GENERAL_PURPOSE_AGENT } from '../../tools/AgentTool/built-in/generalPurposeAgent.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
+import { asAgentId } from '../../types/ids.js'
 import { createUserMessage } from '../messages.js'
+import { canEvictTerminalTask } from '../task/retention.js'
+import { dismissTerminalAgent, enterTeammateView, exitTeammateView } from '../../state/teammateViewHelpers.js'
+import {
+  getSystemPromptSections,
+  withSystemPromptSections,
+  type SystemPrompt,
+} from '../systemPromptType.js'
+import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
 
 let runAgentMode: 'complete' | 'fail' = 'complete'
 let lifecycleAbortController: AbortController | undefined
+let observedResolvedModel: string | undefined
+let observedTools: string[] = []
+let observedSystemPrompt: SystemPrompt | undefined
+let observedOverrides: Array<{
+  abortController?: AbortController
+  agentId?: ReturnType<typeof asAgentId>
+}> = []
+let queuedFollowUp: { taskId: string; message: string } | undefined
+let currentSetState:
+  | ((updater: (prev: ReturnType<typeof createState>) => ReturnType<typeof createState>) => void)
+  | undefined
 
 mock.module('../../constants/prompts.js', () => ({
-  getSystemPrompt: async () => [],
+  getSystemPrompt: async () =>
+    withSystemPromptSections([
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+    ]),
 }))
 mock.module('../../tools/AgentTool/runAgent.js', () => ({
-  async *runAgent() {
+  async *runAgent(params: {
+    resolvedModel?: string
+    baseSystemPrompt: SystemPrompt
+    agentDefinition: AgentDefinition
+    availableTools: Tools
+    override?: {
+      abortController?: AbortController
+      agentId?: ReturnType<typeof asAgentId>
+    }
+  }) {
+    observedResolvedModel = params.resolvedModel
+    observedSystemPrompt = params.baseSystemPrompt
+    observedOverrides.push(params.override ?? {})
+    const { resolveAgentTools } = await import('../../tools/AgentTool/agentToolUtils.js')
+    observedTools = resolveAgentTools(params.agentDefinition, params.availableTools, true)
+      .resolvedTools.map(tool => tool.name)
     if (runAgentMode === 'fail') {
       throw new Error('runner boom')
+    }
+    const hasFollowUp = queuedFollowUp !== undefined
+    if (queuedFollowUp) {
+      const { taskId, message } = queuedFollowUp
+      queuedFollowUp = undefined
+      params.override?.abortController?.abort()
+      currentSetState?.(prev => {
+        const task = prev.tasks[taskId]
+        if (!task || task.type !== 'in_process_teammate') return prev
+        return {
+          ...prev,
+          tasks: {
+            ...prev.tasks,
+            [taskId]: {
+              ...task,
+              pendingUserMessages: [...task.pendingUserMessages, message],
+            },
+          },
+        }
+      })
     }
     yield {
       type: 'assistant',
@@ -39,11 +100,14 @@ mock.module('../../tools/AgentTool/runAgent.js', () => ({
         },
       },
     }
-    lifecycleAbortController?.abort()
+    if (!hasFollowUp) {
+      lifecycleAbortController?.abort()
+    }
   },
 }))
 mock.module('../task/framework.js', () => ({
   STOPPED_DISPLAY_MS: 0,
+  PANEL_GRACE_MS: 30_000,
   evictTerminalTask: () => {},
   registerTask: (task: { id: string }, setAppState: (updater: (prev: ReturnType<typeof getDefaultAppState>) => ReturnType<typeof getDefaultAppState>) => void) => {
     setAppState(prev => ({
@@ -67,6 +131,7 @@ mock.module('./teamHelpers.js', () => ({
 
 const { spawnInProcessTeammate, killInProcessTeammate } = await import('./spawnInProcess.js')
 const { runInProcessTeammate } = await import('./inProcessRunner.js')
+const { isViewableTeammate } = await import('../../tasks/InProcessTeammateTask/InProcessTeammateTask.js')
 
 function createState() {
   return {
@@ -89,7 +154,7 @@ function createToolUseContext(
 ): ToolUseContext {
   return {
     options: {
-      tools: [],
+      tools: ['Read', 'Bash', 'SendMessage', 'TaskCreate'].map(name => ({ name }) as Tool),
       mainLoopModel: 'claude-sonnet-4-6',
       mcpClients: [],
     },
@@ -104,7 +169,7 @@ function createToolUseContext(
   } as unknown as ToolUseContext
 }
 
-async function spawnTask(retain?: true) {
+async function spawnTask(retain?: boolean, name = 'researcher', teamName = 'retention-team') {
   let state = createState()
   const setState = (
     updater: (prev: typeof state) => typeof state,
@@ -113,8 +178,8 @@ async function spawnTask(retain?: true) {
   }
   const spawnResult = await spawnInProcessTeammate(
     {
-      name: 'researcher',
-      teamName: 'retention-team',
+      name,
+      teamName,
       prompt: 'inspect only',
       planModeRequired: false,
       permissionMode: 'default',
@@ -138,7 +203,7 @@ async function spawnTask(retain?: true) {
       ...state.tasks,
       [spawnResult.taskId]: {
         ...state.tasks[spawnResult.taskId],
-        ...(retain ? { retain } : {}),
+        ...(retain !== undefined ? { retain } : {}),
         messages: seedMessages,
       },
     },
@@ -154,15 +219,36 @@ async function spawnTask(retain?: true) {
   }
 }
 
-async function runCase(mode: 'complete' | 'fail', retain?: true) {
-  const spawned = await spawnTask(retain)
+async function runCase(
+  mode: 'complete' | 'fail',
+  retain?: true,
+  agentDefinition?: AgentDefinition,
+  agentId = 'researcher@retention-team',
+  followUp?: string,
+  useSpawnedIdentity = false,
+) {
+  const [agentName = 'researcher', teamName = 'retention-team'] =
+    agentId.split('@')
+  const spawned = await spawnTask(retain, agentName, teamName)
   runAgentMode = mode
   lifecycleAbortController = spawned.abortController
+  currentSetState = spawned.setState
+  queuedFollowUp = followUp
+    ? { taskId: spawned.taskId, message: followUp }
+    : undefined
+  const parentAgentId = asAgentId('aparent0000000000')
+  const parentToolUseContext = createToolUseContext(
+    spawned.getState,
+    spawned.setState,
+  )
+  parentToolUseContext.agentId = parentAgentId
+  const producedTask = spawned.getState().tasks[spawned.taskId]
   const result = await runInProcessTeammate({
-    identity: {
-      agentId: 'researcher@retention-team',
-      agentName: 'researcher',
-      teamName: 'retention-team',
+    identity: useSpawnedIdentity && producedTask?.type === 'in_process_teammate'
+      ? producedTask.identity : {
+      agentId,
+      agentName,
+      teamName,
       color: 'blue',
       planModeRequired: false,
       parentSessionId: 'session-retention-test',
@@ -170,20 +256,42 @@ async function runCase(mode: 'complete' | 'fail', retain?: true) {
     taskId: spawned.taskId,
     prompt: 'inspect only',
     description: 'Retention test teammate',
+    model: 'gpt-5.6-sol',
+    agentDefinition,
     teammateContext: spawned.teammateContext,
-    toolUseContext: createToolUseContext(spawned.getState, spawned.setState),
+    toolUseContext: parentToolUseContext,
     abortController: spawned.abortController,
   })
   lifecycleAbortController = undefined
+  currentSetState = undefined
+  queuedFollowUp = undefined
   return {
     result,
     task: spawned.getState().tasks[spawned.taskId],
     seedMessages: spawned.seedMessages,
+    parentAgentId,
+    parentToolUseContext,
+    taskId: spawned.taskId,
   }
 }
 
 const completedRetained = await runCase('complete', true)
 assert.equal(completedRetained.result.success, true)
+assert.equal(observedResolvedModel, 'gpt-5.6-sol')
+assert.ok(observedSystemPrompt, 'teammate must pass its structured base prompt to runAgent')
+assert.deepEqual([...observedSystemPrompt], [
+  `CORE_IDENTITY\n${TEAMMATE_SYSTEM_PROMPT_ADDENDUM}`,
+])
+assert.deepEqual(getSystemPromptSections(observedSystemPrompt), [
+  {
+    sections: [
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+      { text: TEAMMATE_SYSTEM_PROMPT_ADDENDUM, scope: 'session' },
+    ],
+    separator: '\n',
+  },
+])
 assert.equal(completedRetained.task?.type, 'in_process_teammate')
 assert.equal(completedRetained.task?.status, 'completed')
 assert.deepEqual(
@@ -231,19 +339,119 @@ assert.deepEqual(
   killedRetainedSpawn.seedMessages,
 )
 
-const killedUnretainedSpawn = await spawnTask()
-const killedUnretained = killInProcessTeammate(
-  killedUnretainedSpawn.taskId,
-  killedUnretainedSpawn.setState,
-)
-assert.equal(killedUnretained, true)
-assert.equal(
-  killedUnretainedSpawn.getState().tasks[killedUnretainedSpawn.taskId]?.messages?.length,
-  1,
-)
-assert.deepEqual(
-  killedUnretainedSpawn.getState().tasks[killedUnretainedSpawn.taskId]?.messages?.[0],
-  killedUnretainedSpawn.seedMessages[1],
-)
+const killedViewedTask = killedRetainedSpawn.getState().tasks[killedRetainedSpawn.taskId]!
+assert.equal(isViewableTeammate(killedViewedTask), true)
+assert.equal(killedViewedTask.evictAfter, undefined)
+assert.equal(canEvictTerminalTask(killedViewedTask, Date.now() + 60_000), false)
+
+for (const retain of [undefined, false]) {
+  const stopped = await spawnTask(retain)
+  const before = Date.now()
+  assert.equal(killInProcessTeammate(stopped.taskId, stopped.setState), true)
+  const task = stopped.getState().tasks[stopped.taskId]!
+  assert.equal(task.status, 'killed')
+  assert.equal(isViewableTeammate(task), true, 'first stop must not hide the teammate')
+  assert.deepEqual(task.messages, stopped.seedMessages)
+  assert.equal(task.retain, false)
+  assert.ok(task.evictAfter! >= before + 30_000)
+  assert.ok(task.evictAfter! <= Date.now() + 30_000)
+  assert.equal(canEvictTerminalTask(task, task.evictAfter! - 1), false)
+  assert.equal(canEvictTerminalTask(task, task.evictAfter!), true)
+  assert.equal(stopped.abortController.signal.aborted, true)
+  assert.equal(killInProcessTeammate(stopped.taskId, stopped.setState), false)
+  assert.equal(stopped.getState().tasks[stopped.taskId], task)
+
+  enterTeammateView(stopped.taskId, stopped.setState)
+  const viewed = stopped.getState().tasks[stopped.taskId]!
+  assert.equal(viewed.evictAfter, undefined)
+  assert.equal(canEvictTerminalTask(viewed, before + 60_000), false)
+  assert.deepEqual(viewed.messages, stopped.seedMessages)
+  exitTeammateView(stopped.setState)
+  const released = stopped.getState().tasks[stopped.taskId]!
+  assert.ok(released.evictAfter! >= before + 30_000)
+  assert.equal(isViewableTeammate(released), true)
+  assert.deepEqual(released.messages, stopped.seedMessages)
+
+  dismissTerminalAgent(stopped.taskId, stopped.setState)
+  const cleared = stopped.getState().tasks[stopped.taskId]!
+  assert.equal(cleared.evictAfter, 0)
+  assert.equal(isViewableTeammate(cleared), false)
+  assert.equal(canEvictTerminalTask(cleared), true)
+}
+
+const originalTeams = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1'
+try {
+  const wildcard = await runCase('complete', true, GENERAL_PURPOSE_AGENT)
+  assert.equal(wildcard.result.success, true)
+  assert.deepEqual(observedTools, ['Read', 'Bash', 'SendMessage', 'TaskCreate'])
+
+  const restricted = await runCase('complete', true, {
+    ...GENERAL_PURPOSE_AGENT,
+    tools: ['Read'],
+  })
+  assert.equal(restricted.result.success, true)
+  assert.deepEqual(observedTools, ['Read', 'SendMessage', 'TaskCreate'])
+} finally {
+  if (originalTeams === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+  else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = originalTeams
+}
 
 console.log('inProcessRetention.test.ts passed')
+
+test('keeps teammate identity across turns and isolates teammates from their parent', async () => {
+  observedOverrides = []
+  const stableConversation = await runCase(
+    'complete',
+    true,
+    undefined,
+    'researcher@stable-team',
+    'second turn',
+  )
+  assert.equal(stableConversation.result.success, true)
+  assert.equal(observedOverrides.length, 2)
+  assert.deepEqual(
+    observedOverrides.map(override => override.agentId),
+    [asAgentId('researcher@stable-team'), asAgentId('researcher@stable-team')],
+  )
+  assert.notEqual(
+    observedOverrides[0]?.abortController,
+    observedOverrides[1]?.abortController,
+  )
+  assert.equal(observedOverrides[0]?.abortController?.signal.aborted, true)
+  assert.equal(stableConversation.parentToolUseContext.agentId, stableConversation.parentAgentId)
+  assert.equal(stableConversation.task?.type, 'in_process_teammate')
+  if (stableConversation.task?.type === 'in_process_teammate') {
+    assert.equal(stableConversation.task.identity.agentId, 'researcher@stable-team')
+    assert.equal(stableConversation.task.id, stableConversation.taskId)
+  }
+
+  const firstConversationOverrides = [...observedOverrides]
+  const isolatedConversation = await runCase(
+    'complete',
+    true,
+    undefined,
+    'reviewer@stable-team',
+  )
+  assert.equal(isolatedConversation.result.success, true)
+  assert.equal(observedOverrides.length, 3)
+  assert.equal(observedOverrides[2]?.agentId, asAgentId('reviewer@stable-team'))
+  assert.notEqual(
+    firstConversationOverrides[0]?.agentId,
+    observedOverrides[2]?.agentId,
+  )
+  assert.equal(isolatedConversation.parentToolUseContext.agentId, isolatedConversation.parentAgentId)
+})
+
+test('C17 real teammate loop uses the constructor-produced logical ID across turns while keeping mailbox context', async () => {
+  observedOverrides = []
+  const conversation = await runCase('complete', true, undefined, 'reviewer@logical-loop-team', 'second turn', true)
+  assert.equal(conversation.result.success, true)
+  const task = conversation.task
+  assert.equal(task?.type, 'in_process_teammate')
+  if (task?.type !== 'in_process_teammate') throw Error('Missing produced teammate')
+  assert.match(task.identity.resumableAgentId!, /^areviewer-[0-9a-f]{16}$/)
+  assert.deepEqual(observedOverrides.map(override => override.agentId), [task.identity.resumableAgentId, task.identity.resumableAgentId])
+  assert.equal(task.identity.agentId, 'reviewer@logical-loop-team')
+  assert.equal(conversation.parentToolUseContext.agentId, conversation.parentAgentId)
+})

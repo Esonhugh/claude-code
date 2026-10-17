@@ -1,4 +1,3 @@
-import capitalize from 'lodash-es/capitalize.js'
 import * as React from 'react'
 import { useCallback, useMemo, useState } from 'react'
 import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKeybindings.js'
@@ -29,8 +28,13 @@ import {
   modelDisplayString,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js'
-import { getModelOptions } from '../utils/model/modelOptions.js'
+import {
+  getModelOptions,
+  resolveServedModelAliasForPersistence,
+  type ModelOption,
+} from '../utils/model/modelOptions.js'
 import { getAPIProvider } from '../utils/model/providers.js'
+import { capitalize, plural } from '../utils/stringUtils.js'
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -76,11 +80,6 @@ export function ModelPicker({
   const exitState = useExitOnCtrlCDWithKeybindings()
   const maxVisible = 10
 
-  const initialValue = initial === null ? NO_PREFERENCE : initial
-  const [focusedValue, setFocusedValue] = useState<string | undefined>(
-    initialValue,
-  )
-
   const isFastMode = useAppState(s =>
     isFastModeEnabled() ? s.fastMode : false,
   )
@@ -100,11 +99,22 @@ export function ModelPicker({
     [isFastMode],
   )
 
+  const initialValue = useMemo(
+    () => resolveInitialPickerValue(initial, modelOptions),
+    [initial, modelOptions],
+  )
+  const [focusedValue, setFocusedValue] = useState<string | undefined>(
+    initialValue,
+  )
+
   // Ensure the initial value is in the options list
   // This handles edge cases where the user's current model (e.g., 'haiku' for 3P users)
   // is not in the base options but should still be selectable and shown as selected
   const optionsWithInitial = useMemo(() => {
-    if (initial !== null && !modelOptions.some(opt => opt.value === initial)) {
+    if (
+      initial !== null &&
+      !modelOptions.some(opt => opt.value === initialValue)
+    ) {
       return [
         ...modelOptions,
         {
@@ -115,7 +125,7 @@ export function ModelPicker({
       ]
     }
     return modelOptions
-  }, [modelOptions, initial])
+  }, [modelOptions, initial, initialValue])
 
   const selectOptions = useMemo(
     () =>
@@ -133,29 +143,46 @@ export function ModelPicker({
     [selectOptions, initialValue],
   )
   const visibleCount = Math.min(maxVisible, selectOptions.length)
-  const hiddenCount = Math.max(0, selectOptions.length - visibleCount)
+  const [visibleToIndex, setVisibleToIndex] = useState(visibleCount)
+  const hiddenCount = getHiddenModelCount(selectOptions.length, visibleToIndex)
 
   const focusedModelName = selectOptions.find(
     opt => opt.value === focusedValue,
   )?.label
+  const focusedOption = selectOptions.find(opt => opt.value === focusedValue)
   const focusedModel = resolveOptionModel(focusedValue)
-  const focusedSupportsEffort = focusedModel
-    ? modelSupportsEffort(focusedModel)
-    : false
-  const focusedSupportsMax = focusedModel
-    ? modelSupportsMaxEffort(focusedModel)
-    : false
-  const focusedDefaultEffort = getDefaultEffortLevelForOption(focusedValue)
+  const focusedEffortOptions = focusedOption?.effortOptions
+  const focusedSupportsEffort = focusedOption?.disabled
+    ? false
+    : focusedEffortOptions
+      ? focusedEffortOptions.length > 0
+    : focusedModel
+      ? modelSupportsEffort(focusedModel)
+      : false
+  const focusedSupportsMax = focusedEffortOptions
+    ? focusedEffortOptions.includes('max')
+    : focusedModel
+      ? modelSupportsMaxEffort(focusedModel)
+      : false
+  const focusedDefaultEffort = getDefaultEffortLevelForOption(focusedValue, focusedOption)
   const displayEffort = effort
 
   const handleFocus = useCallback(
     (value: string) => {
       setFocusedValue(value)
       if (!hasToggledEffort && effortValue === undefined) {
-        setEffort(getDefaultEffortLevelForOption(value))
+        const option = selectOptions.find(opt => opt.value === value)
+        setEffort(getDefaultEffortLevelForOption(value, option))
       }
     },
-    [hasToggledEffort, effortValue],
+    [effortValue, hasToggledEffort, selectOptions],
+  )
+
+  const handleVisibleRangeChange = useCallback(
+    ({ visibleToIndex: nextVisibleToIndex }: { visibleFromIndex: number; visibleToIndex: number }) => {
+      setVisibleToIndex(nextVisibleToIndex)
+    },
+    [],
   )
 
   // Effort level cycling keybindings
@@ -167,11 +194,12 @@ export function ModelPicker({
           prev ?? focusedDefaultEffort,
           direction,
           focusedSupportsMax,
+          focusedEffortOptions,
         ),
       )
       setHasToggledEffort(true)
     },
-    [focusedSupportsEffort, focusedSupportsMax, focusedDefaultEffort],
+    [focusedSupportsEffort, focusedSupportsMax, focusedDefaultEffort, focusedEffortOptions],
   )
 
   useKeybindings(
@@ -195,7 +223,7 @@ export function ModelPicker({
       // See resolvePickerEffortPersistence JSDoc.
       const effortLevel = resolvePickerEffortPersistence(
         effort,
-        getDefaultEffortLevelForOption(value),
+        getDefaultEffortLevelForOption(value, selectOptions.find(opt => opt.value === value)),
         getSettingsForSource('userSettings')?.effortLevel,
         hasToggledEffort,
       )
@@ -207,15 +235,26 @@ export function ModelPicker({
     }
 
     const selectedModel = resolveOptionModel(value)
+    const selectedOption = selectOptions.find(opt => opt.value === value)
+    const selectedSupportsEffort = selectedOption?.disabled
+      ? false
+      : selectedOption?.effortOptions
+        ? selectedOption.effortOptions.length > 0
+      : selectedModel
+        ? modelSupportsEffort(selectedModel)
+        : false
     const selectedEffort =
-      hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel)
+      hasToggledEffort && selectedModel && selectedSupportsEffort
         ? effort
         : undefined
     if (value === NO_PREFERENCE) {
       onSelect(null, selectedEffort)
       return
     }
-    onSelect(value, selectedEffort)
+    onSelect(
+      resolveServedModelAliasForPersistence(value as ModelSetting),
+      selectedEffort,
+    )
   }
 
   const content = (
@@ -245,32 +284,35 @@ export function ModelPicker({
               options={selectOptions}
               onChange={handleSelect}
               onFocus={handleFocus}
+              onVisibleRangeChange={handleVisibleRangeChange}
               onCancel={onCancel ?? (() => {})}
               visibleOptionCount={visibleCount}
             />
           </Box>
           {hiddenCount > 0 && (
             <Box paddingLeft={3}>
-              <Text dimColor>and {hiddenCount} more…</Text>
+              <Text dimColor>… +{hiddenCount} {plural(hiddenCount, 'model')}</Text>
             </Box>
           )}
         </Box>
 
-        <Box marginBottom={1} flexDirection="column">
-          {focusedSupportsEffort ? (
+        {!focusedOption?.disabled && (
+          <Box marginBottom={1} flexDirection="column">
+            {focusedSupportsEffort ? (
             <Text dimColor>
               <EffortLevelIndicator effort={displayEffort} />{' '}
-              {capitalize(displayEffort)} effort
+              {formatEffortLevel(displayEffort)} effort
               {displayEffort === focusedDefaultEffort ? ` (default)` : ``}{' '}
               <Text color="subtle">← → to adjust</Text>
             </Text>
-          ) : (
-            <Text color="subtle">
-              <EffortLevelIndicator effort={undefined} /> Effort not supported
-              {focusedModelName ? ` for ${focusedModelName}` : ''}
-            </Text>
-          )}
-        </Box>
+            ) : (
+              <Text color="subtle">
+                <EffortLevelIndicator effort={undefined} /> Effort not supported
+                {focusedModelName ? ` for ${focusedModelName}` : ''}
+              </Text>
+            )}
+          </Box>
+        )}
 
         {isFastModeEnabled() ? (
           showFastModeNotice ? (
@@ -304,15 +346,24 @@ export function ModelPicker({
           {exitState.pending ? (
             <>Press {exitState.keyName} again to exit</>
           ) : (
-            <Byline>
-              <KeyboardShortcutHint shortcut="Enter" action="confirm" />
+            focusedOption?.disabled ? (
               <ConfigurableShortcutHint
                 action="select:cancel"
                 context="Select"
                 fallback="Esc"
-                description="exit"
+                description="cancel"
               />
-            </Byline>
+            ) : (
+              <Byline>
+                <KeyboardShortcutHint shortcut="Enter" action="confirm" />
+                <ConfigurableShortcutHint
+                  action="select:cancel"
+                  context="Select"
+                  fallback="Esc"
+                  description="exit"
+                />
+              </Byline>
+            )
           )}
         </Text>
       )}
@@ -333,6 +384,25 @@ function resolveOptionModel(value?: string): string | undefined {
     : parseUserSpecifiedModel(value)
 }
 
+export function resolveInitialPickerValue(
+  initial: string | null,
+  options: ModelOption[],
+): string {
+  if (initial === null) return NO_PREFERENCE
+  if (options.some(option => option.value === initial)) return initial
+  const resolved = parseUserSpecifiedModel(initial)
+  return options.some(option => option.value === resolved) ? resolved : initial
+}
+
+export function getHiddenModelCount(totalCount: number, visibleToIndex: number): number {
+  return Math.max(0, totalCount - visibleToIndex)
+}
+
+export function formatEffortLevel(level: EffortLevel | undefined): string {
+  if (level === undefined) return ''
+  return level === 'xhigh' ? 'xHigh' : capitalize(level)
+}
+
 function EffortLevelIndicator({
   effort,
 }: {
@@ -345,14 +415,17 @@ function EffortLevelIndicator({
   )
 }
 
-function cycleEffortLevel(
+export function cycleEffortLevel(
   current: EffortLevel,
   direction: 'left' | 'right',
   includeMax: boolean,
+  configuredLevels?: EffortLevel[],
 ): EffortLevel {
-  const levels: EffortLevel[] = includeMax
-    ? ['minimal', 'low', 'medium', 'high', 'max']
-    : ['minimal', 'low', 'medium', 'high']
+  const levels: EffortLevel[] = configuredLevels && configuredLevels.length > 0
+    ? configuredLevels
+    : includeMax
+      ? ['minimal', 'low', 'medium', 'high', 'max']
+      : ['minimal', 'low', 'medium', 'high']
   // If the current level isn't in the cycle (e.g. 'max' after switching to a
   // non-Opus model), clamp to 'high'.
   const idx = levels.indexOf(current)
@@ -364,7 +437,11 @@ function cycleEffortLevel(
   }
 }
 
-function getDefaultEffortLevelForOption(value?: string): EffortLevel {
+function getDefaultEffortLevelForOption(
+  value?: string,
+  option?: Pick<ModelOption, 'defaultEffort'>,
+): EffortLevel {
+  if (option?.defaultEffort) return option.defaultEffort
   const resolved = resolveOptionModel(value) ?? getDefaultMainLoopModel()
   const defaultValue = getDefaultEffortForModel(resolved)
   return defaultValue !== undefined

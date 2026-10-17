@@ -48,12 +48,18 @@ const CLAWD_HEIGHT = 3
  * mouse tracking is enabled (i.e. inside `<AlternateScreen>` / fullscreen);
  * elsewhere this renders and behaves identically to plain `<Clawd />`.
  */
-export function AnimatedClawd(): React.ReactNode {
+export function AnimatedClawd({ maxWidth }: { maxWidth?: number }): React.ReactNode {
   const { pose, bounceOffset, onClick } = useClawdAnimation()
   return (
-    <Box height={CLAWD_HEIGHT} flexDirection="column" onClick={onClick}>
+    <Box
+      height={CLAWD_HEIGHT}
+      width={maxWidth}
+      flexDirection="column"
+      overflow="hidden"
+      onClick={onClick}
+    >
       <Box marginTop={bounceOffset} flexShrink={0}>
-        <Clawd pose={pose} />
+        <Clawd pose={pose} maxWidth={maxWidth} />
       </Box>
     </Box>
   )

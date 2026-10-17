@@ -13,11 +13,16 @@ import { withOAuth401Retry } from '../../utils/http.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
+  fetchGatewayModels,
   fetchModelDiscoveryResult,
+  getFirstPartyModelCacheKey,
   getModelDiscoveryCacheKey,
-  isModelDiscoveryEnabled,
 } from '../../utils/model/openaiModelOptions.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from '../../utils/model/providers.js'
+import { fetchServedModelCatalog } from '../../utils/model/servedModelCatalog.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 
@@ -25,6 +30,7 @@ const bootstrapResponseSchema = lazySchema(() =>
   z.object({
     // @ts-ignore - recovered code
     client_data: z.record(z.string(), z.unknown()).nullish(),
+    auto_compact_windows: z.record(z.string(), z.unknown()).nullish(),
     additional_model_options: z
       .array(
         z
@@ -45,14 +51,22 @@ const bootstrapResponseSchema = lazySchema(() =>
 
 type BootstrapResponse = z.infer<ReturnType<typeof bootstrapResponseSchema>>
 
-async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
+type BootstrapResult = {
+  cacheKey: string
+  response: BootstrapResponse
+}
+
+async function fetchBootstrapAPI(): Promise<BootstrapResult | null> {
   if (isEssentialTrafficOnly()) {
     logForDebugging('[Bootstrap] Skipped: Nonessential traffic disabled')
     return null
   }
 
-  if (getAPIProvider() !== 'firstParty') {
-    logForDebugging('[Bootstrap] Skipped: 3P provider')
+  if (
+    getAPIProvider() !== 'firstParty' ||
+    !isFirstPartyAnthropicBaseUrl()
+  ) {
+    logForDebugging('[Bootstrap] Skipped: 3P provider or gateway')
     return null
   }
 
@@ -66,6 +80,7 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
     return null
   }
 
+  if (!getFirstPartyModelCacheKey()) return null
   const endpoint = `${getOauthConfig().BASE_API_URL}/api/claude_cli/bootstrap`
 
   // withOAuth401Retry handles the refresh-and-retry. API key users fail
@@ -87,6 +102,11 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
         return null
       }
 
+      // Bind the response to the identity whose headers are used for this
+      // attempt. A 401 retry recomputes both headers and identity after refresh.
+      const cacheKey = getFirstPartyModelCacheKey()
+      if (!cacheKey) return null
+
       logForDebugging('[Bootstrap] Fetching')
       const response = await axios.get<unknown>(endpoint, {
         headers: {
@@ -104,7 +124,7 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
         return null
       }
       logForDebugging('[Bootstrap] Fetch ok')
-      return parsed.data
+      return { cacheKey, response: parsed.data }
     })
   } catch (error) {
     logForDebugging(
@@ -118,28 +138,50 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
  * Fetch bootstrap data from the API and persist to disk cache.
  */
 export async function fetchBootstrapData(): Promise<void> {
+  if (getAPIProvider() === 'openai') {
+    await fetchOpenAIModelOptions()
+    return
+  }
+  // Gateway discovery keeps its own on-disk cache, so it is an independent leg
+  // next to the bootstrap: either one failing must not skip the other.
+  const servedCatalogRefresh = fetchServedModelCatalog()
+  await Promise.all([
+    fetchGatewayModels(),
+    fetchBootstrapCaches(),
+    waitForServedCatalogStartup(servedCatalogRefresh),
+  ])
+}
+
+async function waitForServedCatalogStartup(refresh: Promise<unknown>): Promise<void> {
+  let timeout: ReturnType<typeof setTimeout> | undefined
   try {
-    let response: BootstrapResponse | null
-    if (isModelDiscoveryEnabled()) {
-      const discovery = await fetchModelDiscoveryResult()
-      if (!discovery || discovery.cacheKey !== getModelDiscoveryCacheKey()) {
-        return
-      }
-      response = { additional_model_options: discovery.options }
-    } else {
-      response = await fetchBootstrapAPI()
-    }
-    if (!response) return
+    await Promise.race([
+      refresh,
+      new Promise<void>(resolve => {
+        timeout = setTimeout(resolve, 1000)
+        timeout.unref?.()
+      }),
+    ])
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+  }
+}
 
-    const clientData = response.client_data ?? null
-    const additionalModelOptions = response.additional_model_options ?? []
-    const additionalModelOptionsCacheKey = getModelDiscoveryCacheKey() ?? undefined
+/**
+ * OpenAI has no bootstrap endpoint: model discovery is the only source, and it
+ * owns the keyed `additionalModelOptionsCache` slot. A failed or stale-identity
+ * discovery keeps the previous cache.
+ */
+async function fetchOpenAIModelOptions(): Promise<void> {
+  try {
+    const discovery = await fetchModelDiscoveryResult()
+    if (!discovery || discovery.cacheKey !== getModelDiscoveryCacheKey()) return
 
-    // Only persist if data actually changed — avoids a config write on every startup.
     const config = getGlobalConfig()
+    const additionalModelOptionsCacheKey =
+      getModelDiscoveryCacheKey() ?? undefined
     if (
-      isEqual(config.clientDataCache, clientData) &&
-      isEqual(config.additionalModelOptionsCache, additionalModelOptions) &&
+      isEqual(config.additionalModelOptionsCache, discovery.options) &&
       config.additionalModelOptionsCacheKey === additionalModelOptionsCacheKey
     ) {
       logForDebugging('[Bootstrap] Cache unchanged, skipping write')
@@ -149,9 +191,45 @@ export async function fetchBootstrapData(): Promise<void> {
     logForDebugging('[Bootstrap] Cache updated, persisting to disk')
     saveGlobalConfig(current => ({
       ...current,
-      clientDataCache: clientData,
-      additionalModelOptionsCache: additionalModelOptions,
+      additionalModelOptionsCache: discovery.options,
       additionalModelOptionsCacheKey,
+    }))
+  } catch (error) {
+    logError(error)
+  }
+}
+
+async function fetchBootstrapCaches(): Promise<void> {
+  try {
+    const result = await fetchBootstrapAPI()
+    if (!result || result.cacheKey !== getFirstPartyModelCacheKey()) return
+
+    const { cacheKey, response } = result
+    const config = getGlobalConfig()
+    const clientData = response.client_data ?? null
+    const autoCompactWindows = response.auto_compact_windows ?? null
+    const additionalModelOptions = response.additional_model_options ?? []
+
+    // Only persist if data actually changed — avoids a config write on every startup.
+    if (
+      isEqual(config.clientDataCache, clientData) &&
+      isEqual(config.autoCompactWindowsCache, autoCompactWindows) &&
+      config.bootstrapCacheKey === cacheKey &&
+      isEqual(config.additionalModelOptionsCache, additionalModelOptions) &&
+      config.additionalModelOptionsCacheKey === cacheKey
+    ) {
+      logForDebugging('[Bootstrap] Cache unchanged, skipping write')
+      return
+    }
+
+    logForDebugging('[Bootstrap] Cache updated, persisting to disk')
+    saveGlobalConfig(current => ({
+      ...current,
+      clientDataCache: clientData,
+      autoCompactWindowsCache: autoCompactWindows,
+      bootstrapCacheKey: cacheKey,
+      additionalModelOptionsCache: additionalModelOptions,
+      additionalModelOptionsCacheKey: cacheKey,
     }))
   } catch (error) {
     logError(error)

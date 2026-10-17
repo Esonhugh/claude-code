@@ -69,6 +69,23 @@ export type OptionWithDescription<T = string> =
       resetCursorOnUpdate?: boolean
     })
 
+export function getMaxLabelWidth<T>(
+  options: OptionWithDescription<T>[],
+  hideIndexes: boolean,
+  maxIndexWidth: number,
+  selectedValue: T | undefined,
+): number {
+  return Math.max(
+    0,
+    ...options.map(option => {
+      if (option.type === 'input') return 0
+      const indexWidth = hideIndexes ? 0 : maxIndexWidth + 2
+      const checkmarkWidth = option.value === selectedValue ? 2 : 0
+      return 2 + indexWidth + stringWidth(getTextContent(option.label)) + checkmarkWidth
+    }),
+  )
+}
+
 export type SelectProps<T> = {
   /**
    * When disabled, user input is ignored.
@@ -129,6 +146,14 @@ export type SelectProps<T> = {
    * for bidirectional sync, as this can cause feedback loops.
    */
   readonly onFocus?: (value: T) => void
+
+  /**
+   * Callback when the visible option window changes.
+   */
+  readonly onVisibleRangeChange?: (range: {
+    visibleFromIndex: number
+    visibleToIndex: number
+  }) => void
 
   /**
    * Initial value to focus. This is used to set focus when the component mounts.
@@ -211,6 +236,7 @@ export function Select<T>({
   onCancel,
   onChange,
   onFocus,
+  onVisibleRangeChange,
   defaultFocusValue,
   layout = 'compact',
   disableSelection = false,
@@ -275,6 +301,17 @@ export function Select<T>({
     onFocus,
     focusValue: defaultFocusValue,
   })
+
+  useEffect(() => {
+    onVisibleRangeChange?.({
+      visibleFromIndex: state.visibleFromIndex,
+      visibleToIndex: state.visibleToIndex,
+    })
+  }, [
+    onVisibleRangeChange,
+    state.visibleFromIndex,
+    state.visibleToIndex,
+  ])
 
   useSelectInput({
     isDisabled,
@@ -652,15 +689,11 @@ export function Select<T>({
 
   // Calculate max label width for alignment when descriptions exist
   if (hasDescriptions) {
-    const maxLabelWidth = Math.max(
-      ...optionData.map(data => {
-        if (data.option.type === 'input') return 0
-        const labelText = getTextContent(data.option.label)
-        // Width: indicator (1) + space (1) + index + label + space + checkmark (1)
-        const indexWidth = hideIndexes ? 0 : maxIndexWidth + 2
-        const checkmarkWidth = data.isSelected ? 2 : 0
-        return 2 + indexWidth + stringWidth(labelText) + checkmarkWidth
-      }),
+    const maxLabelWidth = getMaxLabelWidth(
+      state.options,
+      hideIndexes,
+      maxIndexWidth,
+      state.value,
     )
 
     return (

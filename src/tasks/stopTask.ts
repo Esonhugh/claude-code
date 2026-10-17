@@ -4,8 +4,10 @@
 import type { AppState } from '../state/AppState.js'
 import type { TaskStateBase } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
-import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
+import { isLiveLocalAgentTask, isLocalAgentTask, killAsyncAgent } from './LocalAgentTask/LocalAgentTask.js'
+import { readAgentMetadata } from '../utils/sessionStorage.js'
+import { asAgentId } from '../types/ids.js'
 
 export class StopTaskError extends Error {
   constructor(
@@ -18,6 +20,7 @@ export class StopTaskError extends Error {
 }
 
 type StopTaskContext = {
+  source?: 'model' | 'user'
   getAppState: () => AppState
   setAppState: (f: (prev: AppState) => AppState) => void
 }
@@ -47,7 +50,7 @@ export async function stopTask(
     throw new StopTaskError(`No task found with ID: ${taskId}`, 'not_found')
   }
 
-  if (task.status !== 'running') {
+  if (task.status !== 'running' && !isLiveLocalAgentTask(task)) {
     throw new StopTaskError(
       `Task ${taskId} is not running (status: ${task.status})`,
       'not_running',
@@ -62,37 +65,18 @@ export async function stopTask(
     )
   }
 
-  await taskImpl.kill(taskId, setAppState)
-
-  // Bash: suppress the "exit code 137" notification (noise). Agent tasks: don't
-  // suppress — the AbortError catch sends a notification carrying
-  // extractPartialResult(agentMessages), which is the payload not noise.
-  if (isLocalShellTask(task)) {
-    let suppressed = false
-    setAppState(prev => {
-      const prevTask = prev.tasks[taskId]
-      if (!prevTask || prevTask.notified) {
-        return prev
-      }
-      suppressed = true
-      return {
-        ...prev,
-        tasks: {
-          ...prev.tasks,
-          [taskId]: { ...prevTask, notified: true },
-        },
-      }
-    })
-    // Suppressing the XML notification also suppresses print.ts's parsed
-    // task_notification SDK event — emit it directly so SDK consumers see
-    // the task close.
-    if (suppressed) {
-      emitTaskTerminatedSdk(taskId, 'stopped', {
-        toolUseId: task.toolUseId,
-        summary: task.description,
-      })
-    }
+  if (context.source === 'user' && isLocalAgentTask(task)) {
+    killAsyncAgent(taskId, setAppState, 'user')
+    // Ensure the SDK acknowledgment follows durable cancellation.
+    await readAgentMetadata(asAgentId(taskId))
+  } else {
+    await taskImpl.kill(taskId, setAppState)
   }
+
+  // Bash: killTask pre-sets notified (suppresses the "exit code 137" noise)
+  // and emits the SDK 'stopped' event itself. Agent tasks: don't suppress —
+  // the AbortError catch sends a notification carrying
+  // extractPartialResult(agentMessages), which is the payload not noise.
 
   const command = isLocalShellTask(task) ? task.command : task.description
 

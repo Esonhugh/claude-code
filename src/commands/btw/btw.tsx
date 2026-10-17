@@ -182,6 +182,7 @@ async function buildCacheSafeParams(
     return {
       systemPrompt: saved.systemPrompt,
       userContext: saved.userContext,
+      resolvedPromptContextBlocks: saved.resolvedPromptContextBlocks,
       systemContext: saved.systemContext,
       toolUseContext: context,
       forkContextMessages,

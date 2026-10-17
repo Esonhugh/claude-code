@@ -1,16 +1,279 @@
 # 变更日志
 
+- 验收基础设施：新增 Darwin shared-slot 原生采集器，保持原 write/writev/NOCANCEL 及 errno；丢失、截断、来源或时序不明继续拒收。修复 native probe 的空 packet 收据和异常回收，新增 live CAS/循环复用与 partial/EFAULT 回归。21 项局部 probe 通过；完整无 ACK Ink/TTY/输入验收未闭合，不宣称 Mods/UI 发布通过。
+
+
 本文档记录基于 Claude Code `2.1.88` 恢复源码之后的本地变更。
 
 记录规则：
 
-- 发布条目标题固定为 `## YYYY-MM-DD - vX.Y.Z - 标题`，按版本号从新到旧排列。
-- 未发布条目标题固定为 `## YYYY-MM-DD - 标题`，不得在标题中包含版本号。
-- 发布条目依次包含 `版本状态`、`关联提交`、`变更内容`、`测试覆盖` 四个三级章节，每个章节至少包含一个顶层 `- ` 条目。
+- 版本汇总条目（含未发布版本）的标题固定为 `## YYYY-MM-DD - vX.Y.Z - 标题`，按版本号从新到旧排列。
+- 尚未归入版本的未发布条目标题固定为 `## YYYY-MM-DD - 标题`，不得在标题中包含版本号。
+- 版本汇总条目依次包含 `版本状态`、`关联提交`、`变更内容`、`测试覆盖` 四个三级章节，每个章节至少包含一个顶层 `- ` 条目。
 - `变更内容` 可以使用 `####` 分组，但每条用户可见 release note 必须单独占一行并以顶层 `- ` 开头。
-- 发布条目可以覆盖上一版本 tag 之后的全部提交；未发布条目按对应变更 commit 的提交日期记录。
+- 版本汇总条目可以覆盖上一版本 tag 之后的全部提交，未发布版本必须明确标注状态；已归入同一未发布版本的增量统一补入该条目，具体实验细节存入专项文档。
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
+
+## 2026-10-07 - v2.1.280 - 未发布
+
+
+### 版本状态
+
+- 未发布；汇总 2026-09-30 至 2026-10-13 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
+
+### 关联提交
+
+- 本轮原有 Mods 分组包含 `e3e0c8f`、`338d488`、`8ff3c3f`、`b325dd2`、`8a94a5a`、`3a4929d`、`d757015`、`5acd2a3`、`6f8d8da`、`e3b2ff1`、`0bb0e00`、`8059f4a`；邻近夹具修复与剩余测试覆盖分别提交。
+- 累计范围为 `v2.1.219..HEAD`；逐批提交与验证细节见[历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。
+
+### 变更内容
+
+- 用量面板：对齐固定官方 2.1.292，读取 usage 接口 `limits[]` 中按模型划分的周窗口，在 `/usage` 的 Sonnet 行之后显示 `Current week (Fable)` 等允许列表内模型的用量；允许列表取 `tengu_usage_overage_included_models`，缺省为 Fable 系列，surface 行和其他模型不显示。响应头 `7d_oi` 窗口进入原始用量，`seven_day_overage_included` 限额文案为 `Fable limit`，SDK 限额类型同步。达到 Fable 限额后的 usage credits 确认对话仍未实现。
+- 终端选区：选区滚动、输入跟随与复制去重已合入；`$.ui.selection()` 读取当前选中文字，存在可确定的消息归属时附带 `requestId`，并保留已持有的 VM 回调。完整 terminal/diff/browser Client 生命周期仍未通过验收。
+- Mods 注册与类型：空模式 `!*` 不匹配事件，校验器识别合法 bare `on` helper；Worker 限制同一原始模式的重复注册。静态校验不执行 helper，重复调用的动态检查仍由 Worker 负责。声明测试复用各自的本地/官方编译缓存，保持原有期限与类型断言。
+- 作者测试：每个文件的 HOME 放在作者目录之外；成功、失败和终止后只回收本次运行创建的 HOME 与内联插件目录，保留并发运行文件。测试 registrar 的异步注册、catch 和惰性流行为仍未合入，README 示例按当前可用入口修正。
+- 会话与 Agent：加入拥有明确归属的 transcript 读取器，收紧带标签 Agent ID 的生成和解析；mailbox 写入成功后返回内部确认，释放锁失败单独记录。公开 transcript 接线、teammate 身份/恢复及确认回执的消费者仍有未提交部分。
+- SDK 模型切换：队列消费等待已接收的 `set_model` 校验，紧随其后的用户消息使用新模型及其默认 effort；stdin 控制消息继续处理。普通 Sonnet 请求省略显式 `high` 的既有差异保持记录。
+- 已知缺口：托管 Mods 准入依赖的原生文件监听测试、Client 故障次数和保留焦点测试仍阻塞相应产品组；caller chain、Worker reload 及 teammate 恢复不能据本轮局部通过视为完成。官方基线保持 2.1.292，既有 Button/Pane/diff 2.1.295 与 OSC 7501 2.1.296 专项不变。
+
+- Mods 模块入口：对齐固定官方 2.1.292，hooks.json 接受不带 ./ 的文件名及嵌套路径；前导 / 仍从声明文件所在目录拼接，目录越界和外部符号链接继续拒绝。十组真实 CLI 的准入结果及 hook 回执一致；完整 hooks.json 和 Mods/UI 兼容仍待验收。
+
+- Mods 文件状态：对齐固定官方 2.1.292，末端符号链接因循环或超过系统跳转上限无法跟随时，fs.stat 返回链接自身元数据并省略 realPath；路径中间的循环链接仍报错。macOS 13 组真实 CLI 完整回执逐字匹配；完整文件 API 和 Mods/UI 兼容仍待验收。
+
+- MCP 指令上下文：SDK 连接保存 initialize 返回的 instructions，普通连接与 SDK 共用长度处理；对齐固定官方 2.1.292，将指令通过消息传给模型。默认上限 2048 个 UTF-16 单元，可用 CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH 配置正整数；截断避免半个代理对并打印原长度和上限。 磁盘记录及恢复上下文尚未对齐。
+
+- SDK 动态 MCP：stdio 配置在创建连接前复制 `args`，省略参数数组时返回固定官方 2.1.292 的展开错误，失败结果仍可查询和移除；显式 `args: []` 可用。系统启动错误文案和完整 MCP 生命周期继续独立对齐。
+
+- SDK MCP 元数据：连接成功后保存 initialize 返回的 serverInfo，状态回执保留服务器名称、版本和合法扩展实现信息；对齐固定官方 2.1.292。
+
+- SDK MCP 状态：新增独立于 scope 的 source 定义来源字段，对齐固定官方 2.1.292 的用户、动态、插件和 SDK 来源；同步可选字符串 schema 与类型定义。完整 MCP/Mods 生命周期仍待独立对齐。
+
+- 自动压缩来源：对齐固定官方 2.1.292 的原生 1M 模型默认值和未知模型窗口保护；保留显式 1M、已知旧模型、禁用自动压缩、已声明能力及 inference profile 的来源边界。共享解析结果同时用于远程状态和压缩阈值，避免 reactive 模式将受保护窗口误当作 `auto`；实际 API 超限后的 reactive 压缩仍待验收。
+
+- SDK 模型切换：`set_model` 先验证自定义模型，再修改会话状态；失败保留原模型，返回官方 2.1.292 的具体错误和可选错误码。API 验证期限为 5 秒，超时取消请求，晚到结果不缓存；串行切换期间仍处理其他控制消息，类型和 schema 保留错误码。
+- 自动压缩窗口：环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 对齐固定官方 2.1.292 的整数前缀、整值科学计数法和千位分隔符解析；限制为 100,000–1,000,000 tokens，再按模型窗口限制。无效值保留原有回退，压缩阈值和远程 `autocompact_state` 使用同一结果，非法／超上限值打印诊断。
+- 新增隐藏选项 `--plugin-dir-no-mcp`：每次接收一个路径，可重复使用；保留插件命令和 Mods，跳过引擎的 MCP 发现。与 SDK 跳过来源合并，过滤重叠的环境变量来源，显式普通 CLI/SDK 来源仍可发现 MCP；托管策略拒绝在加载前生效。
+- 会话插件路径：`--plugin-dir` 和 SDK 启动来源支持父目录、ZIP、大写扩展名及单层包装目录；跳过 MCP 的来源标记随展开结果保留。ZIP 按内容复用缓存，更新时发布完整目录，失败时保留旧缓存；预览更新不替换运行中的版本，退出清理会话缓存。
+- SDK 启动插件：新增 `--await-initialize`，在启动加载前接收 `initialize.plugins`，支持跳过 MCP 发现、保留后续输入及托管策略拒绝；重复初始化只返回 `plugins_applied`，不动态加载插件。空白行和无结尾换行的处理对齐固定官方 2.1.292。
+- Mods 自身预算排除调用 hook 前的 UI 权限同步等待，避免插件尚未执行就被误判超时；保留默认 50ms 编辑预算。普通/Vim 真实 CLI 的填入、编辑回执、预算和 composer 绘制与固定官方 2.1.292 一致，完整 UI 和 Client 生命周期仍待验收。
+
+- 插件缓存：对齐固定官方 2.1.292 的 14 天孤立版本保留期和临时目录名规则，保护已安装引用、新临时目录、ZIP 与目录重填，保守处理安装记录读取失败并避免跟随标记/版本链接。macOS 真实启动的保留、清理及文件内容结果与官方一致；其他平台和存储后端仍待验收。
+- Mods guard：运行时名称与存储 ID 对齐 `cc-plugin-sec-default` / `cc-plugin-sec-default@builtin`；排序配置保留官方旧别名 `sec-default@builtin` 并归一化大小写，阻止外部插件冒充宿主 guard。只有管理员策略或服务器已验证的远程策略可以显式移除 guard；磁盘缓存继续提供普通策略值，但其 `prependPlugins` 不能撤销 guard。固定官方 2.1.292 的默认、缓存空排序、自定义排序和新旧名称真实启动场景通过对照；远程刷新及跨平台管理员来源仍待验收。
+- Mods 工具权限：`tool.check` 回执补齐经典 Hook 事件来源、与最终裁决相符的嵌套规则及 allow／ask 的命中规则回退；公开查询不运行经典 Hook。经典命令 Hook 的拒绝消息补齐事件／工具错误前缀，且保留策略来源，防止格式化影响受保护的策略裁决。固定官方 2.1.292 的四个真实 CLI 场景中，经典 Hook 结果和权限查询回执一致；完整工具契约继续独立验收。
+- Mods 作者工具回执：从最终工具消息生成公开结果，区分权限／插件拒绝与普通执行错误，合成结果保留 mapper 生成的文本；内部引用、只读标记与模型上下文继续留在 middleware。新增作者、工具、结果类别、文本长度和耗时诊断，不记录参数值。固定官方 2.1.292 的八个有效回执结构一致；插件拒绝归因的后续修复见下一项，完整工具契约继续验收。
+- Mods 权限归因：真实工具检查保留相同裁决的原权限来源、已批准输入和空原因时的拒绝消息；只有实际调用 `next` 才采用核心输入改写。改变裁决时按匹配插件名单生成拒绝／审批消息，短路仍保留匹配插件、重复注册只计一次，并区分缺省和空字符串原因。新增工具、核心调用状态、hook 裁决和插件名单诊断。固定官方 2.1.292 的十一组真实 CLI 场景中，查询、调用和事件记录逐项一致；connector ceiling 及完整工具生命周期继续验收，子 Agent 检查身份的后续修复见下一项。
+- Mods 工具检查身份：真实子 Agent 的权限检查携带与 `tool.call` 相同的 `agentId`，主循环、作者工具调用及公开查询不冒用 Agent 身份。恢复省略的宿主元信息，拒绝显式改变固定字段，并返回带实际插件名与字段名的 `HooksError`。增加 Agent ID 和检查阶段诊断，不记录参数正文。固定官方 2.1.292 的四个真实 CLI 场景中，按调用 ID 核对的身份、查询及完整错误一致；原始请求交错仍有差异；控制子任务返回时机后双方均产生额外完成请求，请求数量不作为独立失败判据。完整 Agent 生命周期继续验收。
+- Agent 启动回执：对齐固定官方 2.1.292 的内部元信息提示、SendMessage 摘要参数及等待完成通知的操作说明；可读输出路径缺失时使用无路径回退，不再生成空 `output_file`。三项完整文字断言和两组真实 CLI 文字对照通过；条件共享目录提示、其他结果分支与完整 Agent 生命周期继续验收。
+- Mods 不可用工具：`$.tool.call` 和 `$.tool.check` 抛出带实际调用插件名的 `HooksError`，作者输入不能伪造归因；保留动态工具退役后不可执行的检查。新增方法名、工具名和不可用结果诊断，不记录参数值。固定官方 2.1.292 的 Bash check／call、Read check 三项真实错误回执一致。
+- Mods 作者诊断：`plugin validate` 保留 hook 注册顺序和各自 matcher，展示正则、列表、嵌套字段及可追踪常量；仅在没有直接调用时列出排序、去重后的 helper 来源，静态扫描不执行模块代码。固定官方 2.1.292 的七个 CLI 场景中 hooks/calls 输出一致；其他警告和诊断仍待对齐。
+- 终端状态：按固定官方 2.1.296 探测 OSC 7501，使用 root 主记录、状态/等待种类、任务进度及后台任务子记录；仅发送变化，删除和退出时清理。无应答、禁用终端标题及后台会话不发送报告。等待消息包含完整命令、路径或 URL，与官方一致；缺少数据源的活动文本和回合结束摘要仍待接入。
+- 远程 SDK：发送 `active_goal` 与 `autocompact_state`，同步目标、模型及活动压缩窗口变化并去重，切换 session 后失效旧快照，退出释放订阅；普通本地会话不发送这两类帧。已核对六个固定官方 2.1.292 初始化场景；窗口简写解析和 `set_model` 校验回执差异仍待修复。
+- Mods 修复：公开 telemetry 调用恢复经过 hook 链和内置发送门控；notice 对齐 AskUserQuestion 底部位置；headless `turn.complete` 的 `command.run` 不再等待被当前 hook 持有的队列。保留 Privacy Mode，完整交互及多插件生命周期继续验收。
+
+- 修复 Mods Pane 已显示但快捷键尚未登记、或重绘后仍指向旧 drawing 的时序窗口；action 在 layout commit 同步登记和释放，保留可核对动作/代次/准入状态的调试日志。
+
+- 内置官方 diff Mod 的固定来源升级至 2.1.295；校验最新完整模块、身份模块、原始注册闭包及 scan，打包与运行加载同一来源。沿用官方最新 dock 行数、滚动偏移及无顶部留白布局；保留损坏/过期归档的明确错误与原生恢复，完整 UI/发布验收继续独立结算。见[diff 来源记录](docs/research/mods-shipped-diff-295-20261010.md)。
+
+- 对齐官方 2.1.295 Pane 的控件/标签/关闭位置焦点环、可滚动内容优先级及标签选中/hover 样式；RenderElement Button 鼠标激活保留自定义键盘槽位。内部关闭位置移动经过真实 ui.focus 协商及取消/迟到保护，不改变作者公开 undefined focus 的释放含义；修复 Client Input 后 Tab 导航，完整发布门禁仍独立结算。见[Pane 焦点记录](docs/research/mods-pane-focus295-20261009.md)。
+
+- Mods Button 对齐官方 2.1.295 的字符串/Text children、稳定 guest handle 和绘制持有生命周期；作者声明按固定摘要投影两个 Button 定义，其他声明仍为 2.1.292 基线。终端补齐挂载点击稳定期、窗口激活/点击处置和语义输入批次刷新；新增真实 Worker、Ink 与隔离终端验收入口，完整 Mods/UI 与发布仍待闭合。见[Button 验收边界](docs/research/mods-button-295-validity-20261009.md)。
+
+- 对齐官方 2.1.295 绘制后的 hover 重新命中、四次连续变化后的 1000ms 暂停、指针恢复、文本内部空格点击及可见 absolute 溢出命中/按轴裁剪；Button、Box 和 Text 的内部类型与 host 属性分别接线。专项验收增加静止指针、按钮移动和 resize 样式检查，完整 Mods/UI 与发布门禁继续独立结算。
+
+- 修正 native resize 消费层把 broker 已读 tail 等同内核 write 前缀的误拒收；继续用原 Mach/write 记录重算前缀并核对原件、唯一请求窗口和后续物理帧。保留历史失败收据，新增 tail 落后正例及越界负例，不据局部回放提升完整 native 或发布结论。
+
+- Builtin 终端验收在原 sandbox 内启动 native broker，在 ready/Popen 前固定普通屏幕起点与原始 parser 状态；按实际输出前缀和物理 marker 比较普通屏幕帧。归档重验依据同次回执读取副本，保留原 JSON/摘要且不依赖原 cache；删除守卫按实际 backend 分别校验 native 或 legacy 关闭原件；child 读取核对全部 broker 字节，并只按实际查询识别终端应答。APFS 副本保留独立 inode 与完整逻辑字节，避免为稀疏 journal 分配空槽；完整输入归属、时序与发布门禁仍单独验收。见[验收范围](docs/research/mods-builtin-native-normal-root-validity-20261009.md)。
+
+- native 终端验收记录实际 child 的 read/readv/NOCANCEL、errno 和不可变成功前缀，补齐 PTY 别名、短读、EOF、EAGAIN/EBADF/EFAULT、容量不足与非法元数据拒收。实际 CLI 回归核对唯一 /exit 字节并输出独立读取证明；parser、消费 owner、状态与帧因果及时序门禁继续保持未覆盖。
+
+- 修正原生终端验收消费者的bounded/full与legacy条件混用；按登记协议核对必需原件，并分开结算资源关闭、物理证据与完整覆盖，未覆盖的完整门禁继续失败。
+
+- 修复 builtin 证据归档后原始 producer 路径与 archive 路径的校验回归：保留原始启动记录字节，以同次归档收据和 parent 登记核对映射及摘要。补充源/目录替换、缺失归档、完成标志和耦合摘要伪造的拒收回归；完整终端覆盖及发布结论仍单独验收。
+
+- 验收有效性：resize控制器保存真实Mach send/return与caller身份；独立回放按同案时钟关联内核ACK和实际正输出帧，异步发布尾不充当执行时间。旧Native50的27通过/3失败保留，完整input owner、timing和发布仍未通过；见[请求时钟处置](docs/research/mods-native-driver-clock-validity-20261009.md)。
+
+- Mods process.run：宿主合并信号保留首个原始取消原因（包括false/null/0/空字符串）；实际operation signal交付core，公开失败按固定官方2.1.293的HooksError语义包装。补齐独立截断标志、恰好4MiB的UTF-8边界和真实start/stop/TERM/KILL/close摘要日志；终止允许2000ms宽限并复验PID起始身份，处理helper首次失败后恢复与group TERM失败后的PID兜底；终止失败保留errno、identity查询exitCode、后代未知状态与原取消原因，避免无界结算等待及把查询失败当作退出。完整input owner、无观测时序、终端/Client发布验收仍未通过。
+
+- 修复原生终端验收报告被旧格式拒收的问题；严格校验实际resize请求与后续绘制帧，CLI fixture在真实命令前后保存请求与返回边界，故障fixture原子发布实际EAGAIN回执，保留完整门禁未通过状态。使用方法与证据边界见[原生报告消费契约](docs/research/mods-native-report-contract-validity-20261009.md)。
+
+- canonical 验收接入真实 native marker/write span、host launch 与 Mach geometry，严格关联当前动作窗口、DOM pane 和零输出的同 root 来源；保留合法失败 write/retry 与原 errno，resize 严格绑定发送前边界及实际 ACK/返回配对，最终认证已记录的 exact frame，原始输入文件 exclusive/no-follow 0600 创建。live、最终及归档重验一致，旧 resize RED、child input owner 和完整发布仍未闭合，见[原生 canonical 绑定](docs/research/mods-native-canonical-binding-validity-20261009.md)。
+
+- 验收采集：原生writer批处理已排队prefix，避免重复重建已发布帧；producer退出与外层collector EOF分阶段核对，保留原关闭预算、内存上限及全量原件拒收。Native43完整30项27通过3失败，真实关闭/完整90帧与122项IO已保存；CLI/frame文件14通过1个resize失败。受控积压正例不替代真实UI或完整发布，见[发布积压与关闭验收](docs/research/mods-native-publication-close-validity-20261009.md)。
+
+- 验收有效性：native身份/退出分别绑定实际关闭原件，拒收错误JSON类型、FIFO/链接及不完整diff子测试；新增真实CLI原件负例和关闭状态清理回归。15项完整CLI/frame文件通过；Native41 完整默认动态矩阵及原有七项追加目标共30项：27通过、3失败。完整时序、input owner和发布保持未通过。见[原生身份验收处置](docs/research/mods-native-identity-validity-20261009.md)。
+
+- 原生验收实时前缀：默认 broker 通过有界独立 writer 发布真实 frame/IO，拒收溢出、篡改和 final 原件不一致，不新增产品 ACK。新二进制完整12项 CLI/frame文件及相关回归通过；Native40 完整30项27通过3失败，旧后端字段关联、输入owner、时序与完整发布仍未闭合。见[实时前缀验收](docs/research/mods-native-live-prefix-validity-20261009.md)。
+
+- Workflow 等待实际 Agent 任务终态，转后台继续同一 stream；转发真实进度，取消保留原原因并隔离无关 Agent。完成、失败与停止通知绑定 task/tool ID、已测用量和输出，暂停不发送终态通知，结束 run 不重复执行或通知。详见[生命周期验收](docs/research/workflow-agent-lifecycle-validity-20261009.md)。
+
+- native resize 验收：owned broker 在真实 `TIOCSWINSZ` 前后记录 Mach 时钟与内核尺寸；时钟跨 JSON 使用精确 uint64 十进制字符串。独立回放按 syscall prefix 应用尺寸变化，在帧输出结束点逐 cell 比较；重叠、身份/几何不符及缺失括号继续拒收。真实默认 CLI 的一次 resize/正常退出局部回放已通过，完整 native 与发布门禁继续保持未通过。
+
+- 首次 seal 拒收：native broker 关闭时从内存原件提前固定 producer expectation，sealer只读并绑定prepare身份，禁止从当前cleanup重新生成摘要；真实first-seal复制负例拒收删input/重编号/改两份cleanup。该证明以prepare及producer原件保持独立为前提。
+
+- IO 原件完整性：owned broker 正常关闭时固定摘要/数量/末尾 identity，并由独立expected绑定；回放要求完整连续raw覆盖，拒收裁剪、重编号与IO/cleanup耦合改写。完整几何历史、输入owner与完整验收继续保持未通过。
+
+- 验收拒收：默认 native capture 显式绑定 backend 和 IO 初始几何，没有 native 括号的 observed resize 不允许固定尺寸回放的局部通过；缺失或不匹配的几何收据保持失败。Python broker/replay 入口禁止生成源码 bytecode，新增拒收及初始化回归；完整发布验收未通过。
+
+- 默认终端验收采集接入 Darwin shared-slot broker：预先绑定 observer，原生执行期间用有界内存保存记录，不等待 frame ACK 或同步落盘；溢出保持失败且继续 PTY 转发，退出后保存原件及故障收尾。新增真实默认 broker 启动/退出和预存文件拒收回归；完整 geometry/input/时序与发布门禁仍未通过。
+
+- 验收证据：将 Darwin native journal 接入实际 Ink layout/write/snapshot，私有采集模式关闭旧 FIFO ACK 和同步 frame mirror；回放重新绑定原始 packets/raw、registration 与本轮身份，拒收同时改写 output/cells 的派生数据。新增真实 CLI 固定几何逐帧及 tmux 启动超时回收；完整默认 no-ACK/resize/input/diff 生命周期和 Mods 发布门禁仍未通过。
+
+#### Mods 焦点组合键
+
+- 已持键 Pane 的裸 Tab、Shift+Tab、上下键和人工 Band 导航保留同插件、同 key 控件的独立槽位；自动或改写焦点保留首匹配规则。私有宿主回执区分真正接受与 withholding，避免按相同坐标误移焦点；请求被 withholding 时，改写回执也保留已获焦的原槽位。人工 Pane 跨插件导航携带实际目标 plugin，维持 person 来源，作者公开参数不增加内部字段。
+
+- 草稿实际改变时作废挂起焦点请求并清理控件 holder；显式持键后允许非空草稿的自动首焦。跨插件同 key 按已协商的 plugin 与 element 选择真实 DOM owner，避免回执与实际按键归属分离。
+- `release-check` 增加 README 测试路径检查；历史工作区未交付的夹具从当前可执行用法中分开记录，缺失路径继续拒收。
+
+- 补齐官方 `abovePrompt:focus` 与 `abovePrompt:toggle` 默认定义和宿主操作，依次访问 Band 实际控件、可见 Pane 正文及 composer；未持键面板不再提前抢占裸 Tab，避免组合键前缀遗留导致下一次 Tab 被取消并吞掉。
+- 焦点回归同时核对组合键终态、宿主快照与实际 DOM 控件，覆盖官方 diff 的 source、空 base 控件和独立 Tab 导航；验证环境启动失败与未闭合的物理帧证据单独保留，完整官方兼容及发布门禁继续执行。
+
+#### 终端验收帧关联
+
+- 明确区分实际输出事务与零输出逻辑观察；仅在start/end之间发生真实resize且原始输出区间为零时，比较resize前状态，然后完整回放外部变化。字符、宽字符、样式、光标、buffer、root和后续新geometry检查保留。
+- 补足输入/几何/逐帧及退出收据的封存和fresh replay；未知、缺失、错案、跨运行和不完整清理继续拒收。第30轮29项中23通过、6失败，完整验收仍未通过；无需ACK的采集链仍在开发。
+
+#### 终端 broker 生命周期
+
+- 增加可运行的真实 PTY broker 和回归脚本，修复部分启动泄漏、恢复 TTY 失败跳过清理、waitpid 状态登记与终态回执的信号窗口；保留原始 EOF/退出事实、失败原因和逐项清理错误。
+- 源缓存删除拒绝异常完成、未观察 physical EOF 或有清理错误的回执；旧格式和缺证据保持失败并保留原件。
+- [有效性与用法](docs/research/mods-broker-lifecycle-validity-20261008.md)记录真实 RED、测试超时/沙箱错误处置及完整验收边界；不声称同步 ACK 时序等价或完整 Mods/UI 已通过。
+
+
+- 修复内置 Mods 验收缓存含 FIFO 时归档失败；限定排除并记录真实 IPC 端点，校验源/副本 manifest，保留原报告字节。归档失败、producer 缺 EOF/reap 或删除前最终快照失配或出现新增/替换特殊端点时保留源缓存，业务及终端门禁继续独立拒收。见[归档有效性](docs/research/mods-builtin-evidence-archive-20261008.md)。
+- 修复显式 nested Agent 在工具已可用时仍被跳过解析的问题；缺席/禁止时保留类型元数据，权限与深度检查继续生效。使用和同轮验收边界见[嵌套工具准入](docs/research/mods-nested-agent-availability-20261008.md)，完整发布验收仍在进行。
+- 增加 Darwin 原生 syscall 输出观测与严格字节验证：包含 NOCANCEL、别名 fd、部分写入、errno 和独立 pipe/PTY EOF；采集无 ACK，不完整证据拒收，启动与故障实验不替代完整 UI/时序验收。使用方法与边界见[原生采集记录](docs/research/mods-native-write-capture-validity-20261008.md)。
+- Mods终端观测绑定已提交DOM的私有身份、实际焦点与几何；保留合法plain空Button的逻辑焦点席位，缺失/隐藏/foreign控件仍拒绝。第十七轮29项27通过2失败；干净源码第十八轮29项22通过7失败，首次Tab未前进及终端收尾未通过，整体验收仍失败、同步采集时序仍不等价；实现与必验边界见[终端验收有效性](docs/research/mods-terminal-evidence-validity-20261008.md)。
+- 接通 Mods Pane / PaneField 的 `Ctrl+X X` 人工关闭与自定义 `pane:close`，覆盖 Input/Select 和真实 Band consumer；关闭 hook 前释放宿主与字段焦点，阻止被否决关闭后的旧焦点请求迟到恢复。使用与验收边界见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
+
+- 完善 code-review 空变更 Scope 的同轮原生身份、请求回执和通知核对，保存专属输入快照；最终汇总重验全部快照与证明哈希。修复 provider 收尾后 wire 空表、请求线程提前结算和合法异步时序误拒绝。
+- 收紧发布验收：追加目标也必须有同次运行的有效断言；缺失或未声明的证据、仅空文件或目录不能通过。`--targets builtin-mods` 保留其他必验目标及独立 readiness，readiness 和本地生命周期使用隔离 dummy 认证。测试入口执行全部已定义的 retained 回归。
+- 接通远程 prompt 编辑、补全及元素焦点，18 类客户端控制均有运行入口；对齐只读事实、UTF-16、Unicode 候选、排队/撤销、渲染焦点、控件归属、迟到 deny 和 system/ui_focus。使用方法见 README，固定官方 2.1.292 对跑与完整验收边界见[编辑与焦点专项](docs/research/mods-remote-composer-292-20261008.md)。
+- 修复 Mods capability 异常 catch 对 Proxy 原型和 name getter 的执行风险，保留安全消息和原始错误身份；真实 Worker、编译故障注入与其范围见[异常边界专项](docs/research/mods-capability-error-audit-20261008.md)。
+- 修复 Mods 宿主与嵌套回调的取消原因丢失：保留原始错误对象、预先取消和局部 clock 信号，继续执行撤销、进程回收及有界 stream 收尾。详见[取消与缺口复核](docs/research/mods-cancellation-audit-292-20261008.md)。
+- 远程滚动：SDK `ui_scroll` 与插件 `$.ui.scroll` 共用视图位置；接通排队增量合并、只读事件信息、程序移动后的过期回执拒绝、按所属插件查找控件位置，以及 `system/ui_scroll` 与跟随末尾推送。详见[滚动专项](docs/research/mods-remote-scroll-292-20261008.md)。
+
+- 集中完善 Mods 生命周期与作者工具、官方 2.1.292 类型与 diff、终端及部分 SDK UI、Agent/fork 和会话恢复；开放 Channels，修复 OAuth 与模型缓存隔离，增加 OpenAI Daybreak 配置，并保留 Privacy Mode。
+
+- 新增无终端 Mods Pane 登记与 SDK 列表、显示、焦点、关闭控制；支持 system/ui_panes 状态推送，焦点请求和实际焦点分开保存，按远程 viewport 放置等待项。
+- 对齐 Pane 同 ID 更新的插件归属、可选属性替换、跨插件关闭、重复关闭去重、异常恢复及标题 Unicode 校验；关闭时撤销外部绘制与 Client 地址。
+
+- 原生验收对零写入观察新增原始 marker/全部 syscall 前缀证明和明确的 pre-layout 比较边界；实际输出事务与 resize 重叠继续拒收。专项修正官方 Button 点击后的键盘焦点前置，增加关闭位置往返；本地焦点差异及完整发布仍未通过。
+
+### 测试覆盖
+
+- 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。
+- 各提交在纯 HEAD 加候选补丁中通过类型检查、lint、对应测试及提交门禁。runner 的清理场景在真实子进程中连续五轮通过；相同成功/失败场景的三端 CLI 结果一致，候选清理范围更接近官方。
+- 模型切换回归先在 HEAD 源码和二进制中复现；校验延迟 1.5 秒的三方对照确认候选使用新模型和 `medium` effort，其余场景没有新增差异。该受控 API 验证不代替完整 UI 或真实模型质量评估。
+- 模型结果补充原有 SDK effort、fork 回执、Worker classifier 和不透明 provider 值测试；mailbox 使用真实文件及注入的解锁错误验证确认结果。被阻塞的新测试保留在工作区，未作为通过项提交。
+
+- 在两个现有测试文件中增加 28 组环境值回归及生产阈值断言；16 组 macOS 真实 CLI 对照固定官方 2.1.292，覆盖上下限、非法值、设置回退、百分比和普通本地会话。设置／实验配置解析保持原有语义；远程 Mods 不可用提示仍与官方有差异；完整压缩引擎和 SDK 生命周期继续单独验收。
+- 跳过 MCP 的 CLI 入口新增 7 项参数和环境过滤测试；37 组 macOS 真实入口对照固定官方 2.1.292，通过命令发现、初始化回执、session.start 文件标记、MCP 启动/握手/工具发现、来源优先级与托管拒绝验收。远程/CCR、故障重连及完整 UI 生命周期继续单独验收。
+- 会话路径新增 9 项测试，覆盖父目录分类、ZIP、缓存刷新、损坏/越界归档和预览保留；固定官方 2.1.292 的 8 组普通 CLI、16 组 SDK 启动路径对照通过。该对照只验收命令发现、初始化回执、退出/错误输出及路径约束，不包含隐藏 CLI 选项、完整 MCP 握手或 UI 生命周期。
+- SDK 启动插件新增 18 项确定性测试；19 组真实 stdio 对照覆盖初始化回执、命令可见性、MCP 发现与握手、文件输入和策略拒绝。完整 SDK 字段与远程传输不计入本项兼容结论。
+- 作者诊断：7 项定向测试由失败转为通过，CLI 旧预期依据官方实测改为精确 matcher/helper 输出；隔离 `--changed` 门禁、六个相邻文件、类型、lint 与构建通过。只验收 hooks/calls 文本，不宣告全部 `plugin validate` 输出兼容。
+- OSC 7501：四个定向文件 43 项通过；真实 PTY 对照包含权限、提问、完成、错误、焦点/按键、关闭开关和退出清理。后台子记录 working/title/clear 已对照，父子根时序及缺少数据源的两类 msg 不计为已通过。
+- 远程 SDK 状态流：5 项定向测试、隔离提交门禁及六个官方 CLI 初始化场景通过。共享工作区仍有 Vim、声明等测试失败；隔离提交通过不等于整个工作区、完整 Mods/UI、diff、浏览器 Client 或发布通过。
+
+- Native39 完整门禁正常收尾：30项 / 27通过 / 3失败。code-review、workflow、workflow-retry-partial-failure、workflow-failure-detail 均通过最终验收；其余失败为 builtin-mods、terminal-canonical-diff、terminal-interaction。整体仍未通过。 完整源码回归和默认验收入口通过，子测试执行数量及日志保留；共享 WIP 的私有合并回归另验，不冒充同一 binary source。原生帧关联、输入 owner、终端时序与完整 Mods 发布继续保持未通过。
+
+- 接通 $.process.spawn 真实子进程、同步流、raw/wrapped receipt、middleware 与环境归属；正常返回保有流，超时及卸载停止自己的孩子，catch 使用新信号。新增 Worker、严格作者类型及 plugin test runner 矩阵；最终14文件746通过、7项原有skip、0失败，私有合并快照44通过。新binary在Native36通过此能力的八项CLI契约和最终原件重查；完整门禁24通过/6失败，不能宣告Mods/UI或发布通过。见[流专项](docs/research/mods-process-spawn-validity-293-20261008.md)。
+- process.spawn 真实作者 CLI 入口成为必需 mods-process-spawn target；driver持有关闭摘要、binary/probe/root和全部proof map，最终必须固定唯一断言ID并重读全部原件、重新计算契约。缺target及七种最终误接收的默认入口RED保留，修复后默认回归通过。
+
+- Native35 两批修复的准确合并source：28 collector、11真实CLI/frame、4 buffer、89 Bun及release-check通过；完整29项仍23 passed/6 failed。129帧/5owned resize与终态native/IO摘要匹配、资源清理完整，整体native/Mods/发布仍failed，见[最终处置](docs/research/mods-native-payload-closure-validity-20261008.md#native35-最终处置)。
+- 原生终端证据补充真实 tcsetattr 的内核前后模式及 syscall 括号，按实际 output flags重放write/frame/resize prefix；覆盖失败errno、overflow及歧义拒收。完整 mode/input/lifecycle仍未通过，见[模式观测记录](docs/research/mods-native-termios-observation-validity-20261008.md)。
+- 首封native验收另核对终态IO摘要与producer ioClose，拒绝独立重放后修改输入清单仍借旧physical通过。
+- 首封native验收固定内存来源的raw/records/metadata摘要，拒绝producer与IO不变的等长write/raw/snapshot耦合篡改；解码只消费已校验bytes，最终manifest再次匹配。真实首封RED/GREEN及边界见[内容闭包记录](docs/research/mods-native-payload-closure-validity-20261008.md)。
+- Native33 本批冻结候选完整默认矩阵及追加项29/29记录、23 passed/6 failed；真实diff与交互125帧、五次owned resize的有限物理回放通过，正常EOF/reap及资源清理完整。整体native/Mods/四路发布仍未通过，失败分类与原始manifest见[resize验收记录](docs/research/mods-native-resize-bracket-validity-20261008.md#native33-最终处置)。
+
+- 关闭功能干净候选的相邻四文件 291 项通过，`make release-check` 通过；共享工作区冻结候选的相邻五文件 308 项、验收驱动回归、类型与构建检查通过。完整 29 项真实终端矩阵已执行，26 通过、3 失败，整体未通过；不能将源码结果视为完整 UI/diff 或发布通过。详见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
+
+- 本批验收器干净候选33项、保留工作区 WIP 的提交后像40项 retained 与原有断言通过。最终封存修复后的完整私有工作区矩阵28项执行、26通过、2失败，整体未通过；[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)记录真实失败、制品及范围。
+- 验收器六个缺口均有干净 HEAD 的失败对照，修复候选的原有断言和 25 个 retained 回归通过。完整工作区的新制品矩阵仍为 28 项执行、25 通过、3 失败，整体未通过；帧诊断不能代替完整终端验收。详见[验收有效性记录](docs/research/release-acceptance-validity-20261008.md)。
+- 已完成分项回归、类型与构建检查；18 类远程控制已接通，完整 UI/diff、浏览器 Client 与发布矩阵仍须闭合；已修复此前 host callback 取消回归，验证范围见[取消专项](docs/research/mods-cancellation-audit-292-20261008.md)。当前结果见[实现审查](docs/research/mods-implementation-audit-20261007.md)，逐轮证据见 [mods-test.md](mods-test.md)。
+
+- SDK Pane 的真实 Worker、协议类型与官方 2.1.292 / 新候选 / 完整工作区控制验收见 [Pane 控制专项](docs/research/mods-pane-controls-292-20261007.md)；未覆盖的完整 UI/diff 和其他远程控制继续分别验收。
+
+## 2026-09-19 - Mods 分页焦点与自适应布局修复
+
+### 版本状态
+
+- 未发布；保持版本与依赖不变。以下修复不解除旧 Workflow timeout、PTY 退出码异常的推送门禁。
+
+### 变更内容
+
+- 修复 Mods 分页复用 DOM 行时旧逻辑 key 和 plugin 行坐标未注销的问题，保留同 key 其他有效节点；host snapshot 同步焦点不再反馈成新的人工导航。跨页回调返回旧窗口槽位 key 时，在确认同一 DOM 已成为新绘制的请求目标且带 autoFocus 后交接焦点，避免选中项和实际焦点错位。连续导航等待已开始的绘制完成及对应 snapshot 实际提交后再解析下一目标，无重绘时直接继续；Escape、隐藏、owner 切换和卸载释放等待，替代绘制不再受旧绘制阻塞，后续独立焦点移动不复用旧分页交接，不使用固定延时。
+- Button/Select/Input 的 key 复用既有 UI 字符串长度与总量预算，不再因完整文件路径超过64字符拒绝官方 diff 绘制；保留控制字符校验和精确 key 身份。
+- Select/Input 的焦点高亮随实际 focus/blur 更新，不再出现 Input 始终高亮或 Select 入焦不可见。
+- Diff 使用与插件绘制一致的 body 宽度预算，并按嵌套 Code 容器的实际 Yoga 宽度约束布局，替代固定76/80列；重绘和终端 resize 更新可用宽度与滚动范围。局部布局的 metrics 回报在 commit 完成后读取 viewport，避免父 ref 尚未重挂时的空指标触发更新循环。
+- Dock 正文高度按实际 viewport 回报，composer 高度改变后重新绘制插件，焦点操作不再把测量值重置为终端估算值；Pane 保留基础高度并伸展填满可用空间，支持缩小后恢复，不将高度修复等同于插件虚拟分页的尾部可达性保证。
+- Mods Pane 获焦时 transcript 让出 PageUp/PageDown 等键盘滚动，保留 Pane 外滚轮与失焦后的原快捷键行为；不再由 legacy handler 提前消费 Pane 的翻页输入。文件控件被详情重绘移除后，失效焦点回到 Pane 正文，方向键滚动正文而非误入辅助控件；Tab 仍可进入控件，Input/Select 保留自身按键消费。
+
+### 测试覆盖
+
+- 增加真实文件 key、五行窗口延迟重绘的16文件正反分页回归，覆盖逐次和连续方向键；补充精确注销、host 焦点回声、控件高亮、109/110列切换及嵌套 padding 的红绿验证。
+- 新制品的限定 scripted tmux 验收、相邻回归及未覆盖项记录在 `mods-test.md` 对应历史轮次中；历史失败保留，不以本轮局部结果声称全仓或官方完整 parity 通过。
+
+## 2026-09-19 - Mods 输入链与 SSH 长临时路径修复
+
+### 版本状态
+
+- 未发布；版本与依赖保持不变，不创建 tag 或 release。以下修复不覆盖上一轮失败，也不宣称官方完整兼容或 full-covered。
+
+### 变更内容
+
+- Mods Pane 增加受 composer/dialog 所有权约束的人工 Tab/鼠标入焦；方向键按可见控件顺序导航，使用 middleware 最终焦点落点并串行处理连续输入，Escape 取消待处理焦点。
+- Pane 的 Button action 接入既有 keybinding/chord 系统，补齐 diff 文件导航与 base 切换默认键位，保留用户重绑/解绑及 drawing 生命周期；已被 legacy handler 消费的输入不再重复激活 DOM 控件。
+- 保留已有鼠标 parser 的 wheel 坐标，按实际命中 Pane body 转为相对坐标传入 ui.scroll；插件虚拟列表可自行消费滚轮，无需外层内容溢出，不抢焦或额外滚动 transcript。
+- SSH control/proxy socket 使用唯一私有目录，按 UTF-8 字节预算保留 OpenSSH 临时后缀空间，过长 TMP 自动选择短临时根；清理不递归删除仍存活的 socket，失败可诊断并重试。
+- SSH child close/error 的 proxy 清理异常在事件回调边界记录，避免同步逸出；显式 stop 仍保留错误与重试语义。
+
+### 测试覆盖
+
+- SSH 长路径、多字节、并发目录、真实本地 UDS、启动失败和清理重试取得红→绿；主线程追加 close/error 两项红→绿，相邻10文件142 pass / 0 fail。该结果不代表真实远端 SSH 集成。
+- Mods 输入链的红绿、相邻回归、提交后完整自动化及新制品 scripted tmux 结果见 `mods-test.md` 第 8 节；CHANGELOG 内嵌制品，后续动态测试结果不改变已构建内容身份。
+- Workflow 原5000ms超时仍未定因；一次有界诊断的目标通过，但镜像漏内嵌 CHANGELOG 导致完整前缀不合格，不把未复现当成修复。指定 settings 的官方检查在 sandbox 编译前置受阻，official 未启动，不据此判断认证或 gate；推送门禁仍保留。
+
+## 2026-09-18 - Mods 生命周期、宿主能力与兼容性收口
+
+### 版本状态
+
+- 未发布；记录 Mods 实现系列及本轮 settings/Escape 修复，不代表公开包已包含这些变更，不创建 tag 或 release。
+- `Makefile VERSION` 保持 `2.1.219`，`package.json` 保持 `0.0.0-dev`；测试计划和最终验收记录位于根目录 `mods-test.md`。
+- 本地源码支持范围、官方完整类型通过、本地运行官方插件原件与官方 binary runtime parity 分别判定，不宣称全官方 API、全部平台或 full-covered。
+
+### 关联提交
+
+- `fb7b441`、`54695c3`、`1476236` — Mods 基础生命周期、tool middleware、inline 启停与研究记录。
+- `3dd5536`、`2899097`、`96e68bf` — accepted settings 内容身份、managed source merge 与 hook provenance。
+- `83f72ac`、`9a1f602`、`e859a75`、`ad9af61`、`24e416c`、`9f64669` — loader/Worker 契约、fs/process/store、scoped classic hooks、命令、Pane 与宿主准入。
+- `eb2c146`、`d48c698`、`164e811` — managed 工具审核与 prompt/turn/command 接线、初始化期间的草稿所有权。
+- `462c676`、`1f09ebb`、`bc34711` — queued admission/public turn 生命周期、Pane resize 焦点与 mode-only managed precedence。
+- `446eb28`、`d421338`、`19638f5`、`6c7b0e0`、`a46ed1a` — provenance、SSH/Workflow 回归与历史兼容性证据。
+- `c006eeb`、`8de982f`、`0da3f73` — 本轮 hooks snapshot 审核边界、非法 remote managed 磁盘缓存回退和 Pane Escape 所有权修复。
+- `be36848`、`ef1f440` — Mods 使用与测试方案；首次 SSH bootstrap 测试同步调整，后续完整复验仍重现。
+- `d9a28d1` — SSH 测试用 awaited React `act` 等待 effects/state commit，显式验证 callback 安装并保证清理；保留全部原断言，不修改生产语义。
+
+### 变更内容
+
+- 可信 Plugin 可声明 Function Hooks modules；采用固定源码快照、共享 Worker 和独立 activation VM，按 register、engine.create、准入、session.start barrier 发布能力。
+- 增加作用域能力与 lazy continuation，保留在途 generation；技术 reload 失败保旧，refuse/disable/remove 撤旧，取消和 Worker 失效不重放宿主副作用。
+- 接入 tool/prompt/turn middleware、activation-owned commands、terminal Pane、session/settings、fs/process 和 JSON store；普通模型工具继续经过 managed hooks、schema 与权限主管线。
+- 排队输入保存已完成的 admission，drain 不重复运行 prompt hooks；public turn 身份与初始化输入消费、新草稿恢复分离，避免队列或 barrier 导致重复注入和草稿覆盖。
+- Pane resize 保留已有焦点，禁用释放 command/UI 所有权；本轮阻止 overlay 持有键盘时 composer 记录 Escape，避免快速关闭 Pane 误开 Rewind。
+- 本轮移除 hooks snapshot 更新中的隐式磁盘 cache reset，使外部 settings 候选不能绕过 ConfigChange；可信启动/worktree cwd 转换显式刷新缓存。
+- 本轮在 settings 边界验证 remote managed 磁盘缓存；非法 remote 层保留诊断但不参与 precedence/merge，合法 MDM、file、HKCU 层可接替，不把 schema 重依赖引回 leaf cache。
+- README 增加 Mods 加载、启停、生命周期和可信代码边界；研究报告标清历史首批范围，根目录 `mods-test.md` 记录完整测试方案及后续结果。
+
+### 测试覆盖
+
+- 三项产品修复均取得最小红→绿；settings 四文件相邻回归117 pass / 0 fail，UI 相邻回归25 pass / 0 fail。首轮提交后 `make release-check`、`make build` 通过，版本保持不变。
+- 首轮261文件独立进程为260 qualified、1565 registered pass / 3 Peer fail、106个完成脚本；同进程 raw 为1565 pass / 4 fail / 1 error，额外SSH readiness顶层失败确实存在。Mods 子集22文件559 pass / 0 fail / 0 skip，不能与全清单重复相加。
+- 后续完整复验分别暴露既有SSH ControlPath长TMP限制、短TMP runner遗漏Peer fixture授权及SSH readiness再次失败，原始记录全部保留。最终SSH测试修复在两次完整清单中均完成；两轮分别1565 pass / 3 Peer fail与1564 pass / 4 fail，第二轮新增Workflow command-runner的5000ms超时、根因未定。Peer身份环境限制保留，历史PTY异常本轮未重现，不称根因已修复。
+- 新binary的官方diff原件补验中，inline Enter、详情滚动、两级Escape及fullscreen鼠标row/边缘按钮分别通过；部分方向键导航、fullscreen快捷键与滚轮失败，不能宣称终端交互完整兼容。命令/UI smoke的13条通过不替代活跃Agent/Workflow/后台任务验收。
+- 当前整体未通过，推送门禁仍阻塞；完整数字与证据见 `mods-test.md`。官方2.1.272自然gate限制、remote managed编译制品公开入口限制单列；父LCOV不能覆盖Worker/VM/child/compiled。CHANGELOG参与制品内嵌，结果回填后的构建与smoke另列身份，不沿用首轮制品hash。
+- 已完成的真实 `@esonhugh/claude-code@2.1.219` 上下文对比：默认首轮内容 81984→74771 bytes，减少 8.80%，主要来自工具集合/描述差异；统一 Read-only 后六次规范化请求相同。不是功能等价优化、真实 tokenizer/计费测量或新构建的结果。
 
 ## 2026-09-15 - 独立会话通信、Plan 模式开关与运行时兼容性
 

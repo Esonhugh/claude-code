@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
-import { afterAll, mock } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { afterAll, expect, mock, test } from 'bun:test'
+import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
@@ -34,8 +34,21 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 
-const originalSettings = getSessionSettingsCache()
+const originalTestConfigDir = process.env.CLAUDE_CONFIG_DIR
+const testConfigDir = realpathSync(mkdtempSync(join(tmpdir(), 'agent-tool-config-')))
+process.env.CLAUDE_CONFIG_DIR = testConfigDir
 afterAll(() => {
+  if (originalTestConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+  else process.env.CLAUDE_CONFIG_DIR = originalTestConfigDir
+  rmSync(testConfigDir, { recursive: true, force: true })
+})
+
+const originalSettings = getSessionSettingsCache()
+const originalApiKey = process.env.ANTHROPIC_API_KEY
+process.env.ANTHROPIC_API_KEY ??= 'test-agent-effort-key'
+afterAll(() => {
+  if (originalApiKey === undefined) delete process.env.ANTHROPIC_API_KEY
+  else process.env.ANTHROPIC_API_KEY = originalApiKey
   if (originalSettings) setSessionSettingsCache(originalSettings)
   else resetSettingsCache()
 })
@@ -48,7 +61,10 @@ function createTestAssistantMessage(text: string) {
   return createAssistantMessage({ content: text })
 }
 
+let controlledCompletion: Promise<void> | undefined
+let controlledSpawnParams: Record<string, unknown> | undefined
 async function* createControlledAgentStream() {
+  await controlledCompletion
   yield createTestAssistantMessage('controlled agent done')
 }
 
@@ -58,6 +74,7 @@ let controlledPermissionMode: Parameters<typeof resolveAgentTools>[0]['permissio
 let controlledAllowedTools: string[] | undefined
 let controlledCanShowPermissionPrompts: boolean | undefined
 let controlledMainLoopModel: string | undefined
+let controlledResolvedModel: string | undefined
 let controlledSpawnTeammateConfig: SpawnTeammateConfig | undefined
 mock.module('../shared/spawnMultiAgent.js', () => ({
   spawnTeammate: async (config: SpawnTeammateConfig) => {
@@ -71,6 +88,7 @@ mock.module('../shared/spawnMultiAgent.js', () => ({
         tmux_window_name: 'test',
         tmux_pane_id: 'test',
       },
+      ...(config.name === 'parity-logical' ? {loopAgentId:'aparity-logical-0123456789abcdef'} : {}),
     }
   },
 }))
@@ -79,11 +97,13 @@ mock.module('./runAgent.js', () => ({
     agentDefinition: Parameters<typeof resolveAgentTools>[0]
     availableTools: Parameters<typeof resolveAgentTools>[1]
     isAsync: boolean
+    resolvedModel?: string
     canShowPermissionPrompts?: boolean
     permissionMode?: Parameters<typeof resolveAgentTools>[0]['permissionMode']
     allowedTools?: string[]
     toolUseContext: { options: { mainLoopModel: string } }
   }) => {
+    controlledSpawnParams = params
     controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
     controlledResolvedToolNames = resolveAgentTools(
       {
@@ -97,11 +117,14 @@ mock.module('./runAgent.js', () => ({
     controlledAllowedTools = params.allowedTools
     controlledCanShowPermissionPrompts = params.canShowPermissionPrompts
     controlledMainLoopModel = params.toolUseContext.options.mainLoopModel
+    controlledResolvedModel = params.resolvedModel
     return createControlledAgentStream()
   },
 }))
 
 type TestContext = {
+  toolUseId?: string
+  options: { mainLoopModel: string }
   getAppState: () => ReturnType<typeof getDefaultAppState>
   setAppState: (updater: unknown) => void
   setAppStateForTasks?: (updater: (prev: ReturnType<TestContext['getAppState']>) => unknown) => void
@@ -203,6 +226,206 @@ try {
 assert.ok(depthLimitError instanceof Error)
 assert.equal(depthLimitError.message, SUBAGENT_DEPTH_LIMIT_MESSAGE)
 
+const deniedOfferInputs: unknown[] = []
+const deniedOfferContext = createContext(0) as TestContext & {
+  modsSnapshot: {
+    hasHooks(event: string): boolean
+    dispatch(event: string, input: Record<string, unknown>): Promise<unknown>
+  }
+}
+deniedOfferContext.modsSnapshot = {
+  hasHooks: event => event === 'agent.offer',
+  dispatch: async (_event, input) => {
+    deniedOfferInputs.push(input)
+    return { isOffered: false }
+  },
+}
+await assert.rejects(
+  AgentTool.call(
+    {
+      description: 'denied offer',
+      prompt: 'do not launch',
+      subagent_type: 'general-purpose',
+    },
+    deniedOfferContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_denied_offer' } } as never,
+  ),
+  /Agent type 'general-purpose' is not offered/,
+)
+assert.deepEqual(deniedOfferInputs, [
+  {
+    agent: 'general-purpose',
+    description: GENERAL_PURPOSE_AGENT.whenToUse,
+    source: 'built-in',
+    provider: { plugin: 'engine', tier: 'core' },
+  },
+])
+
+const deniedSpawnInputs: unknown[] = []
+const deniedSpawnContext = createContext(0) as TestContext & {
+  modsSnapshot: {
+    hasHooks(event: string): boolean
+    dispatch(
+      event: string,
+      input: Record<string, unknown>,
+      core: (input: Record<string, unknown>) => Promise<unknown>,
+    ): Promise<unknown>
+  }
+}
+deniedSpawnContext.modsSnapshot = {
+  hasHooks: event => event === 'agent.spawn',
+  dispatch: async (event, input) => {
+    assert.equal(event, 'agent.spawn')
+    deniedSpawnInputs.push(input)
+    return { deny: 'blocked by spawn policy' }
+  },
+}
+await assert.rejects(
+  AgentTool.call(
+    {
+      description: 'audit spawn',
+      prompt: 'inspect only',
+      subagent_type: 'general-purpose',
+      run_in_background: true,
+    },
+    deniedSpawnContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_spawn_mod' } } as never,
+  ),
+  /blocked by spawn policy/,
+)
+assert.deepEqual(deniedSpawnInputs, [
+  {
+    tool_use_id: deniedSpawnContext.toolUseId,
+    prompt: 'inspect only',
+    description: 'audit spawn',
+    subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: deniedSpawnContext.options.mainLoopModel,
+    permissionMode: 'default',
+    background: true,
+    fork: false,
+  },
+])
+assert.deepEqual(deniedSpawnContext.getAppState().tasks, {})
+
+for (const background of [false, true]) {
+  const context = createContext(0) as typeof deniedSpawnContext
+  const release = Promise.withResolvers<void>()
+  controlledCompletion = release.promise
+  const launched = Promise.withResolvers<void>()
+  let dispatchCount = 0
+  context.modsSnapshot = {
+    hasHooks: event => event === 'agent.spawn',
+    dispatch: async (_event, input, core) => {
+      dispatchCount++
+      const result = await core({
+        ...input,
+        prompt: 'rewritten prompt',
+        description: 'rewritten   description',
+        subagentType: 'general-purpose',
+        model: 'claude-haiku-4-5',
+        background,
+        cwd: '/tmp',
+      }) as { model: string; agentId: string }
+      assert.equal(result.model, 'claude-haiku-4-5')
+      assert.ok(context.getAppState().tasks[result.agentId])
+      assert.equal(context.getAppState().tasks[result.agentId].status, 'running')
+      launched.resolve()
+      return result
+    },
+  }
+  let completed = false
+  const call = AgentTool.call({
+    description: 'original', prompt: 'original', subagent_type: 'general-purpose',
+    run_in_background: !background,
+  }, context as never, async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_rewrite' } } as never).then(result => {
+    completed = true
+    return result
+  })
+  await Promise.race([
+    launched.promise,
+    call.then(() => { throw new Error('AgentTool completed before launch hook') }),
+    new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('agent.spawn next waited for completion')), 2000)
+      void launched.promise.finally(() => clearTimeout(timer))
+    }),
+  ])
+  assert.equal(completed, false)
+  assert.equal(controlledSpawnParams?.cwd, '/tmp')
+  assert.equal(controlledSpawnParams?.description, 'rewritten description')
+  assert.equal(dispatchCount, 1)
+  release.resolve()
+  const result = await call
+  assert.equal(result.data.prompt, 'rewritten prompt')
+  if (result.data.status === 'async_launched') await context.waitForTaskLifecycle(result.data.agentId)
+  controlledCompletion = undefined
+}
+
+for (const key of ['tool_use_id', 'name', 'fork', 'isTeammate', 'parentModel', 'permissionMode', 'parentAgentId', 'provider']) {
+  const context = createContext(0) as typeof deniedSpawnContext
+  context.modsSnapshot = {
+    hasHooks: event => event === 'agent.spawn',
+    dispatch: async (_event, input, core) => core({ ...input, [key]: 'rewritten' }),
+  }
+  await assert.rejects(AgentTool.call({
+    description: 'pinned', prompt: 'no launch', subagent_type: 'general-purpose',
+  }, context as never, async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_pinned' } } as never), new RegExp(`agent.spawn cannot rewrite ${key}`))
+  assert.deepEqual(context.getAppState().tasks, {})
+}
+
+const normalizedOfferAgent = {
+  ...GENERAL_PURPOSE_AGENT,
+  agentType: 'code-reviewer',
+  whenToUse: 'Use the canonical code reviewer.',
+}
+const normalizedOfferInputs: unknown[] = []
+const normalizedOfferContext = createContext(0) as TestContext & {
+  options: {
+    agentDefinitions: {
+      activeAgents: typeof normalizedOfferAgent[]
+      inactiveAgents: never[]
+      allowedAgentTypes: undefined
+    }
+  }
+  modsSnapshot: {
+    hasHooks(event: string): boolean
+    dispatch(event: string, input: Record<string, unknown>): Promise<unknown>
+  }
+}
+normalizedOfferContext.options.agentDefinitions.activeAgents = [normalizedOfferAgent]
+normalizedOfferContext.modsSnapshot = {
+  hasHooks: event => event === 'agent.offer',
+  dispatch: async (_event, input) => {
+    normalizedOfferInputs.push(input)
+    return { isOffered: false }
+  },
+}
+await assert.rejects(
+  AgentTool.call(
+    {
+      description: 'normalized denied offer',
+      prompt: 'do not launch',
+      subagent_type: 'Code Reviewer',
+    },
+    normalizedOfferContext as never,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_normalized_offer' } } as never,
+  ),
+  /Agent type 'code-reviewer' is not offered/,
+)
+assert.deepEqual(normalizedOfferInputs, [
+  {
+    agent: 'code-reviewer',
+    description: 'Use the canonical code reviewer.',
+    source: 'built-in',
+    provider: { plugin: 'engine', tier: 'core' },
+  },
+])
+
 assert.deepEqual(
   buildAgentMetadataForTesting({
     agentType: 'general-purpose',
@@ -273,6 +496,68 @@ await AgentTool.call(
 )
 assert.ok(controlledAvailableToolNames.includes('StructuredOutput'))
 assert.ok(controlledResolvedToolNames.includes('StructuredOutput'))
+assert.equal(controlledResolvedModel, controlledMainLoopModel)
+
+for (const model of ['gpt-5.6-sol', 'Gateway/Custom-ID', 'inherit', 'opus']) {
+  assert.equal(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'model test', model }).success, true)
+}
+for (const model of ['', null]) {
+  assert.equal(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'model test', model }).success, false)
+}
+
+test('Agent model-visible effort follows the provider without changing configured launch effort', () => {
+  const keys = ['CLAUDE_CODE_USE_OPENAI', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY']
+  const saved = keys.map(key => process.env[key])
+  const official = ['low', 'medium', 'high', 'xhigh', 'max']
+  try {
+    for (const providerFlag of [undefined, ...keys.slice(1), keys[0], undefined]) {
+      for (const key of keys) delete process.env[key]
+      if (providerFlag) process.env[providerFlag] = '1'
+      const allowed = providerFlag === keys[0]
+        ? ['none', 'minimal', ...official, 'ultra', 'ultracode', 0, 42]
+        : official
+      // Official 2.1.292 API request: Agent.effort is exactly these five strings.
+      for (const effort of ['none', 'minimal', ...official, 'ultra', 'ultracode', 0, 42, '', 'inherit', 'invalid', null, 1.5, Infinity]) {
+        const parsed = AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'effort test', effort })
+        expect(parsed.success).toBe(allowed.includes(effort as never))
+        if (parsed.success) expect(parsed.data).toHaveProperty('effort', effort)
+      }
+      expect(AgentTool.inputSchema.safeParse({ prompt: 'inspect', description: 'effort test' }).success).toBe(true)
+    }
+  } finally {
+    keys.forEach((key, index) => {
+      if (saved[index] === undefined) delete process.env[key]
+      else process.env[key] = saved[index]
+    })
+  }
+})
+
+test('Agent effort override, definition and parent are isolated launch snapshots', async () => {
+  const previous = controlledSpawnParams
+  try {
+  for (const [effort, definedEffort, parentEffort, expected] of [
+    ['low', 'medium', 'xhigh', 'low'],
+    [undefined, 'medium', 'xhigh', 'medium'],
+    [undefined, undefined, 'ultra', 'ultra'],
+    [0, 'medium', 'xhigh', 0],
+    [undefined, undefined, 0, 0],
+    [undefined, undefined, undefined, 'high'],
+  ] as const) {
+    const context = createContext(0)
+    if (expected === 'high') context.options.mainLoopModel = 'claude-fable-5'
+    const definition = { ...GENERAL_PURPOSE_AGENT, effort: definedEffort }
+    ;(context.options as unknown as { agentDefinitions: { activeAgents: unknown[] } }).agentDefinitions.activeAgents = [definition]
+    context.setAppState((state: ReturnType<typeof getDefaultAppState>) => ({ ...state, effortValue: parentEffort }))
+    await AgentTool.call({
+      prompt: 'inspect', description: 'effort worker', run_in_background: false,
+      ...(effort === undefined ? {} : { effort }),
+    }, context as never, async () => ({ behavior: 'allow' }), createTestAssistantMessage('effort'))
+    expect(controlledSpawnParams?.agentDefinition).toHaveProperty('effort', expected)
+    expect(context.getAppState().effortValue).toBe(parentEffort)
+    expect(definition.effort).toBe(definedEffort)
+  }
+  } finally { controlledSpawnParams = previous }
+})
 
 setSessionSettingsCache({ settings: { planModeAvailable: false }, errors: [] })
 const disabledPlanContext = createContext(0)
@@ -459,7 +744,9 @@ await AgentTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_trusted_definition_elevation_worker' } } as never,
 )
-assert.equal(controlledPermissionMode, 'bypassPermissions')
+// Official 2.1.292: a declared bypassPermissions is not authorized unless the
+// parent already runs in bypassPermissions; the parent mode is kept.
+assert.equal(controlledPermissionMode, 'default')
 
 controlledPermissionMode = undefined
 await AgentTool.call(
@@ -475,7 +762,7 @@ await AgentTool.call(
     message: { id: 'msg_definition_elevation_after_blocked_request_worker' },
   } as never,
 )
-assert.equal(controlledPermissionMode, 'bypassPermissions')
+assert.equal(controlledPermissionMode, 'default')
 
 const explicitDefaultDefinitionContext =
   createContext(0) as never as TestContext & {
@@ -576,10 +863,12 @@ await AgentTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_bubble_prompt_worker' } } as never,
 )
-assert.equal(controlledPermissionMode, 'bubble')
+// Official 2.1.292: a declared mode never replaces a parent in auto,
+// acceptEdits or bypassPermissions; bubble still lets prompts surface.
+assert.equal(controlledPermissionMode, 'auto')
 assert.equal(controlledCanShowPermissionPrompts, true)
 
-for (const parentMode of ['plan', 'dontAsk'] as const) {
+for (const parentMode of ['default', 'plan', 'dontAsk', 'acceptEdits'] as const) {
   const restrictedBubbleContext = createContext(0) as never as TestContext & {
     options: typeof autoBubbleContext.options
   }
@@ -607,7 +896,12 @@ for (const parentMode of ['plan', 'dontAsk'] as const) {
     async () => ({ behavior: 'allow' }),
     { message: { id: `msg_${parentMode}_bubble_prompt_worker` } } as never,
   )
-  assert.equal(controlledPermissionMode, 'bubble')
+  // bubble becomes the agent's mode only under a default parent; plan and
+  // dontAsk keep their restriction and acceptEdits keeps its fast path.
+  assert.equal(
+    controlledPermissionMode,
+    parentMode === 'default' ? 'bubble' : parentMode,
+  )
   assert.equal(controlledCanShowPermissionPrompts, true)
 }
 
@@ -715,13 +1009,14 @@ try {
     {
       description: 'named restricted teammate',
       prompt: 'inspect only',
-      subagent_type: 'named-restricted-agent',
+      subagent_type: 'Named Restricted Agent',
       name: 'named-worker',
     },
     namedRestrictedContext as never,
     async () => ({ behavior: 'allow' }),
     { message: { id: 'msg_named_restricted_teammate' } } as never,
   )
+  assert.equal(controlledSpawnTeammateConfig?.agent_type, namedRestrictedAgent.agentType)
   assert.equal(
     controlledSpawnTeammateConfig?.permissionMode,
     'bypassPermissions',
@@ -1178,3 +1473,59 @@ if (originalAgentTeamsFlag === undefined) {
 }
 
 console.log('AgentTool.nesting.test.ts passed')
+
+
+const parityTeamName='c17-real-agent-'+Date.now()
+await writeTeamFileAsync(parityTeamName,{name:parityTeamName,createdAt:Date.now(),leadAgentId:'lead',members:[]})
+const parityContext=createContext(0) as TestContext & {
+  modsSnapshot: import('../../services/mods/runtime.js').ModSnapshot
+  modAgentStarted: NonNullable<import('../../Tool.js').ToolUseContext['modAgentStarted']>
+}
+parityContext.setAppState((prev:ReturnType<TestContext['getAppState']>)=>({...prev,teamContext:{teamName:parityTeamName,teamFilePath:'fixture',leadAgentId:'lead',teammates:{}}}))
+let parityFrame:Record<string,unknown>|undefined
+let parityLaunch:Parameters<typeof parityContext.modAgentStarted>[0]|undefined
+parityContext.modAgentStarted=launch=>{parityLaunch=launch}
+parityContext.modsSnapshot={
+  hasHooks:event=>event==='agent.spawn',
+  dispatch:async(_event,input,core,options)=>{parityFrame=input;options?.validateInput?.(input,input);return core(input)},
+  release:()=>{},
+}
+await AgentTool.call({name:'parity-worker',description:'Real teammate launch',prompt:'Review',subagent_type:'general-purpose'},parityContext as never,async()=>({behavior:'allow'}),{message:{id:'msg_c17'}} as never)
+const directParityFrame=parityFrame
+const directParityLaunch=parityLaunch
+test('C17 actual AgentTool marks the host-owned teammate frame before middleware',()=>{
+  expect(directParityFrame).toMatchObject({isTeammate:true,background:true,name:'parity-worker'})
+})
+test('C17 actual AgentTool carries both logical and teammate ids through the started sink',()=>{
+  expect(directParityLaunch).toMatchObject({agentId:'parity-worker@'+parityTeamName,teammateId:'parity-worker@'+parityTeamName})
+})
+const {createModToolHost}=await import('../../services/mods/toolHost.js')
+const parityHost=createModToolHost(parityContext as never,async()=>({behavior:'allow'}))
+const publicLaunch=await parityHost.spawn({name:'parity-public',description:'Public launch',prompt:'Review',subagentType:'general-purpose'},parityContext.modsSnapshot,new AbortController().signal,'author')
+test('C17 real Mods tool host preserves teammate launch ids for the public caller',()=>{
+  expect(publicLaunch).toMatchObject({agentId:'parity-public@'+parityTeamName,teammateId:'parity-public@'+parityTeamName})
+})
+
+const logicalLaunch=await parityHost.spawn({name:'parity-logical',description:'Logical launch',prompt:'Review',subagentType:'general-purpose'},parityContext.modsSnapshot,new AbortController().signal,'author')
+test('C17 actual AgentTool and public host use loop identity independently from teammate address',()=>{
+  expect(logicalLaunch).toMatchObject({agentId:'aparity-logical-0123456789abcdef',teammateId:'parity-logical@'+parityTeamName})
+})
+
+let restoredParityError:unknown
+let restoredParityConfig:SpawnTeammateConfig|undefined
+parityContext.modsSnapshot={hasHooks:event=>event==='agent.spawn',release:()=>{},dispatch:async(_event,input,core,options)=>{
+  const rewritten:import('../../services/mods/types.js').ModInput={...input,background:false,cwd:'/tmp/spoof'};delete rewritten.provider;delete rewritten.parentAgentId;delete rewritten.isTeammate
+  const restored=options?.restoreInput?.(rewritten,input)??rewritten
+  options?.validateInput?.(restored,input)
+  return core(restored)
+}}
+try{await AgentTool.call({name:'parity-restored',description:'Restored teammate launch',prompt:'Review',subagent_type:'general-purpose'},parityContext as never,async()=>({behavior:'allow'}),{message:{id:'msg_c17_restored'}} as never);restoredParityConfig=controlledSpawnTeammateConfig}catch(error){restoredParityError=error}
+test('C17 real AgentTool restores omitted pinned fields and ignores teammate cwd/background rewrites',()=>{
+  expect(restoredParityError).toBeUndefined()
+  expect(restoredParityConfig).toMatchObject({name:'parity-restored',team_name:parityTeamName})
+  expect(restoredParityConfig).not.toHaveProperty('cwd')
+})
+
+const descriptionHost=createModToolHost(createContext(0) as never,async()=>({behavior:'allow'}))
+const descriptionLaunch=await descriptionHost.spawn({prompt:'one two three four five six'}, {hasHooks:()=>false,release:()=>{},dispatch:async(_event,input,core)=>core(input)},new AbortController().signal,'author')
+test('C17 real public agent host uses the native five-word default description',()=>{expect(descriptionLaunch).toHaveProperty('agentId');expect(controlledSpawnParams?.description).toBe('one two three four five')})

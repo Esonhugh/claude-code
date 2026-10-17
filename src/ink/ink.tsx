@@ -28,10 +28,15 @@ import * as dom from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
-import { dispatchClick, dispatchHover } from './hit-test.js'
+import { getEvidenceCursorVisible, nextEvidenceRendererId, recordTerminalEvidenceFrame, setEvidenceCursorVisible, terminalEvidenceBoundary } from './terminalEvidence.js'
+import { beginNativeTerminalFrame, initializeNativeTerminalJournal, nativeTerminalFrameBoundary } from './nativeTerminalJournal.js'
+import { collectTerminalPaneEvidence, collectTerminalUiRevision } from './terminalPaneEvidence.js'
+import { dispatchMouseClick, dispatchHover, followHover, hitTest, hoverCellIsBlank } from './hit-test.js'
+import { ClickEvent, type ClickDisposition, type ClickModifiers } from './events/click-event.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
+import { LayoutEdge } from './layout/node.js'
 import { optimize } from './optimizer.js'
 import Output from './output.js'
 import type { ParsedKey } from './parse-keypress.js'
@@ -43,10 +48,7 @@ import reconciler, {
   recordYogaMs,
   resetProfileCounters,
 } from './reconciler.js'
-import renderNodeToOutput, {
-  consumeFollowScroll,
-  didLayoutShift,
-} from './render-node-to-output.js'
+import renderNodeToOutput, { didLayoutShift } from './render-node-to-output.js'
 import {
   applyPositionedHighlight,
   type MatchPosition,
@@ -59,7 +61,6 @@ import {
   cellAt,
   createScreen,
   HyperlinkPool,
-  isEmptyCellAt,
   migrateScreenPools,
   StylePool,
 } from './screen.js'
@@ -80,7 +81,8 @@ import {
   selectWordAt,
   shiftAnchor,
   shiftSelection,
-  shiftSelectionForFollow,
+  isSelectionOffscreen,
+  selectionColumns,
   startSelection,
   updateSelection,
 } from './selection.js'
@@ -89,6 +91,7 @@ import {
   supportsExtendedKeys,
   type Terminal,
   writeDiffToTerminal,
+  getProgramStatusSupport,
 } from './terminal.js'
 import {
   CURSOR_HOME,
@@ -111,12 +114,16 @@ import {
 } from './termio/dec.js'
 import {
   CLEAR_ITERM2_PROGRESS,
+  CLEAR_ALL_PROGRAM_STATUS,
   CLEAR_TAB_STATUS,
   setClipboard,
   supportsTabStatus,
   wrapForMultiplexer,
 } from './termio/osc.js'
-import { TerminalWriteProvider } from './useTerminalNotification.js'
+import {
+  TerminalWriteProvider,
+  type TerminalWriter,
+} from './useTerminalNotification.js'
 
 // Alt-screen: renderer.ts sets cursor.visible = !isTTY || screen.height===0,
 // which is always false in alt-screen (TTY + content fills screen).
@@ -140,6 +147,12 @@ function makeAltScreenParkPatch(terminalRows: number) {
   })
 }
 
+function mapsEqual(left: ReadonlyMap<number, string>, right: ReadonlyMap<number, string>): boolean {
+  if (left.size !== right.size) return false
+  for (const [key, value] of left) if (right.get(key) !== value) return false
+  return true
+}
+
 export type Options = {
   stdout: NodeJS.WriteStream
   stdin: NodeJS.ReadStream
@@ -153,6 +166,10 @@ export type Options = {
 export default class Ink {
   private readonly log: LogUpdate
   private readonly terminal: Terminal
+  private readonly evidenceRendererId = nextEvidenceRendererId()
+  private evidenceRootEpoch = 1
+  private displayedTerminalImages = new Map<number, string>()
+  private terminalImageIds = new Set<number>()
   private scheduleRender: (() => void) & { cancel?: () => void }
   // Ignore last render after unmounting a tree to prevent empty output before exit
   private isUnmounted = false
@@ -205,10 +222,16 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>()
+  private readonly selectionTakeDownListeners = new Set<() => void>()
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
   private readonly hoveredNodes = new Set<dom.DOMElement>()
+  private hoverCol = -1
+  private hoverRow = -1
+  private hoverFollowStreak = 0
+  private hoverFollowHeldUntil = 0
+  private readonly appRef = React.createRef<App>()
   // Set by <AlternateScreen> via setAltScreenActive(). Controls the
   // renderer's cursor.y clamping (keeps cursor in-viewport to avoid
   // LF-induced scroll when screen.height === terminalRows) and gates
@@ -217,12 +240,19 @@ export default class Ink {
   // Set alongside altScreenActive so SIGCONT resume knows whether to
   // re-enable mouse tracking (not all <AlternateScreen> uses want it).
   private altScreenMouseTracking = false
+  // Terminal modes to prepend to the first rendered alternate-screen frame.
+  // Keeping entry deferred avoids a visible cleared interval before paint.
+  private pendingAltScreenEntry: string | null = null
   // True when the previous frame's screen buffer cannot be trusted for
   // blit — selection overlay mutated it, resetFramesForAltScreen()
   // replaced it with blanks, or forceRedraw() reset it to 0×0. Forces
   // one full-render frame; steady-state frames after clear it and regain
   // the blit + narrow-damage fast path.
   private prevFrameContaminated = false
+  // Selection overlay painted into frontFrame ('' when none). Repainting the
+  // same overlay over blitted cells is idempotent, so only a change in it
+  // makes the previous frame unsafe to blit.
+  private paintedSelectionOverlay = ''
   // Set by handleResize: prepend ERASE_SCREEN to the next onRender's patches
   // INSIDE the BSU/ESU block so clear+paint is atomic. Writing ERASE_SCREEN
   // synchronously in handleResize would leave the screen blank for the ~80ms
@@ -242,6 +272,7 @@ export default class Ink {
   private displayCursor: { x: number; y: number } | null = null
 
   constructor(private readonly options: Options) {
+    initializeNativeTerminalJournal()
     autoBind(this)
 
     if (this.options.patchConsole) {
@@ -252,6 +283,13 @@ export default class Ink {
     this.terminal = {
       stdout: options.stdout,
       stderr: options.stderr,
+    }
+    this.terminalWriter = {
+      write: (data: string): void => {
+        options.stdout.write(data)
+      },
+      setAltScreenActive: this.setAltScreenActive,
+      isTTY: Boolean(options.stdout.isTTY),
     }
 
     this.terminalColumns = options.stdout.columns || 80
@@ -335,6 +373,7 @@ export default class Ink {
         recordYogaMs(ms)
         const c = getYogaCounters()
         this.lastYogaCounters = { ms, ...c }
+        for (const listener of this.rootNode.layoutListeners ?? []) listener()
       }
     }
 
@@ -365,9 +404,11 @@ export default class Ink {
   }
 
   private handleResume = () => {
+    this.forgetPointer()
     if (!this.options.stdout.isTTY) {
       return
     }
+    this.evidenceRootEpoch++
 
     // Alt screen: after SIGCONT, content is stale (shell may have written
     // to main screen, switching focus away) and mouse tracking was
@@ -455,7 +496,9 @@ export default class Ink {
    * Call `exitAlternateScreen()` when done to restore Ink.
    */
   enterAlternateScreen(): void {
+    setEvidenceCursorVisible(true)
     this.pause()
+    this.forgetPointer()
     this.suspendStdin()
     this.options.stdout.write(
       // Disable extended key reporting first — editors that don't speak
@@ -495,6 +538,7 @@ export default class Ink {
         '\x1b[?25l', // hide cursor (Ink manages)
     )
     this.resumeStdin()
+    setEvidenceCursorVisible(false)
     if (this.altScreenActive) {
       this.resetFramesForAltScreen()
     } else {
@@ -539,6 +583,9 @@ export default class Ink {
     const terminalWidth = this.options.stdout.columns || 80
     const terminalRows = this.options.stdout.rows || 24
 
+    const nativeTerminalEvidence = beginNativeTerminalFrame(this.evidenceRendererId, this.evidenceRootEpoch, terminalWidth, terminalRows)
+
+    const selectionOverlay = this.selectionOverlaySignature(terminalWidth)
     const frame = this.renderer({
       frontFrame: this.frontFrame,
       backFrame: this.backFrame,
@@ -546,91 +593,67 @@ export default class Ink {
       terminalWidth,
       terminalRows,
       altScreen: this.altScreenActive,
-      prevFrameContaminated: this.prevFrameContaminated,
+      prevFrameContaminated:
+        this.prevFrameContaminated ||
+        selectionOverlay !== this.paintedSelectionOverlay,
+      overlayActive: selectionOverlay !== '',
     })
     const rendererMs = performance.now() - renderStart
+    for (const listener of this.rootNode.frameListeners ?? []) listener()
+    const terminalPanes = collectTerminalPaneEvidence(this.rootNode)
+    const terminalUiRevision = collectTerminalUiRevision(this.rootNode)
 
-    // Sticky/auto-follow scrolled the ScrollBox this frame. Translate the
-    // selection by the same delta so the highlight stays anchored to the
-    // TEXT (native terminal behavior — the selection walks up the screen
-    // as content scrolls, eventually clipping at the top). frontFrame
-    // still holds the PREVIOUS frame's screen (swap is at ~500 below), so
-    // captureScrolledRows reads the rows that are about to scroll out
-    // before they're overwritten — the text stays copyable until the
-    // selection scrolls entirely off. During drag, focus tracks the mouse
-    // (screen-local) so only anchor shifts — selection grows toward the
-    // mouse as the anchor walks up. After release, both ends are text-
-    // anchored and move as a block.
-    const follow = consumeFollowScroll()
+    // Capture from the previous frame and move by the distance actually painted.
+    // Drag keeps focus at the pointer; released selections move both endpoints.
+    const follow = frame.followScroll ?? null
     if (
       follow &&
       this.selection.anchor &&
-      // Only translate if the selection is ON scrollbox content. Selections
-      // in the footer/prompt/StickyPromptHeader are on static text — the
-      // scroll doesn't move what's under them. Without this guard, a
-      // footer selection would be shifted by -delta then clamped to
-      // viewportBottom, teleporting it into the scrollbox. Mirror the
-      // bounds check the deleted check() in ScrollKeybindingHandler had.
       this.selection.anchor.row >= follow.viewportTop &&
-      this.selection.anchor.row <= follow.viewportBottom
+      this.selection.anchor.row <= follow.viewportBottom &&
+      (this.selection.virtualAnchorCol ?? this.selection.anchor.col) >=
+        follow.viewportLeft &&
+      (this.selection.virtualAnchorCol ?? this.selection.anchor.col) <=
+        follow.viewportRight
     ) {
       const { delta, viewportTop, viewportBottom } = follow
-      // captureScrolledRows and shift* are a pair: capture grabs rows about
-      // to scroll off, shift moves the selection endpoint so the same rows
-      // won't intersect again next frame. Capturing without shifting leaves
-      // the endpoint in place, so the SAME viewport rows re-intersect every
-      // frame and scrolledOffAbove grows without bound — getSelectedText
-      // then returns ever-growing text on each re-copy. Keep capture inside
-      // each shift branch so the pairing can't be broken by a new guard.
+      const first = delta > 0 ? viewportTop : viewportBottom + delta + 1
+      const last = delta > 0 ? viewportTop + delta - 1 : viewportBottom
+      const side = delta > 0 ? 'above' : 'below'
       if (this.selection.isDragging) {
-        if (hasSelection(this.selection)) {
+        if (hasSelection(this.selection))
           captureScrolledRows(
             this.selection,
             this.frontFrame.screen,
-            viewportTop,
-            viewportTop + delta - 1,
-            'above',
+            first,
+            last,
+            side,
           )
-        }
         shiftAnchor(this.selection, -delta, viewportTop, viewportBottom)
       } else if (
-        // Flag-3 guard: the anchor check above only proves ONE endpoint is
-        // on scrollbox content. A drag from row 3 (scrollbox) into the
-        // footer at row 6, then release, leaves focus outside the viewport
-        // — shiftSelectionForFollow would clamp it to viewportBottom,
-        // teleporting the highlight from static footer into the scrollbox.
-        // Symmetric check: require BOTH ends inside to translate. A
-        // straddling selection falls through to NEITHER shift NOR capture:
-        // the footer endpoint pins the selection, text scrolls away under
-        // the highlight, and getSelectedText reads the CURRENT screen
-        // contents — no accumulation. Dragging branch doesn't need this:
-        // shiftAnchor ignores focus, and the anchor DOES shift (so capture
-        // is correct there even when focus is in the footer).
         !this.selection.focus ||
         (this.selection.focus.row >= viewportTop &&
-          this.selection.focus.row <= viewportBottom)
+          this.selection.focus.row <= viewportBottom &&
+          (this.selection.virtualFocusCol ?? this.selection.focus.col) >=
+            follow.viewportLeft &&
+          (this.selection.virtualFocusCol ?? this.selection.focus.col) <=
+            follow.viewportRight)
       ) {
-        if (hasSelection(this.selection)) {
+        if (hasSelection(this.selection))
           captureScrolledRows(
             this.selection,
             this.frontFrame.screen,
-            viewportTop,
-            viewportTop + delta - 1,
-            'above',
+            first,
+            last,
+            side,
           )
-        }
-        const cleared = shiftSelectionForFollow(
+        shiftSelection(
           this.selection,
           -delta,
           viewportTop,
           viewportBottom,
+          this.frontFrame.screen.width,
         )
-        // Auto-clear (both ends overshot minRow) must notify React-land
-        // so useHasSelection re-renders and the footer copy/escape hint
-        // disappears. notifySelectionChange() would recurse into onRender;
-        // fire the listeners directly — they schedule a React update for
-        // LATER, they don't re-enter this frame.
-        if (cleared) for (const cb of this.selectionListeners) cb()
       }
     }
 
@@ -656,7 +679,8 @@ export default class Ink {
     let selActive = false
     let hlActive = false
     if (this.altScreenActive) {
-      selActive = hasSelection(this.selection)
+      selActive =
+        hasSelection(this.selection) && !isSelectionOffscreen(this.selection)
       if (selActive) {
         applySelectionOverlay(frame.screen, this.selection, this.stylePool)
       }
@@ -832,12 +856,14 @@ export default class Ink {
       }
 
       if (target !== null) {
+        let displayedTarget = target
         if (this.altScreenActive) {
           // Absolute CUP (1-indexed); next frame's CSI H resets regardless.
           // Emitted after altScreenParkPatch so the declared position wins.
           const row = Math.min(Math.max(target.y + 1, 1), terminalRows)
           const col = Math.min(Math.max(target.x + 1, 1), terminalWidth)
           optimized.push({ type: 'stdout', content: cursorPosition(row, col) })
+          displayedTarget = { x: col - 1, y: row - 1 }
         } else {
           // After the diff (or preamble), cursor is at frame.cursor. If no
           // diff AND previously parked, it's still at the old park position
@@ -852,7 +878,7 @@ export default class Ink {
             optimized.push({ type: 'stdout', content: cursorMove(dx, dy) })
           }
         }
-        this.displayCursor = target
+        this.displayCursor = displayedTarget
       } else {
         // Declaration cleared (input blur, unmount). Restore physical cursor
         // to frame.cursor before forgetting the park position — otherwise
@@ -872,19 +898,49 @@ export default class Ink {
       }
     }
 
+    const altScreenEntry = this.pendingAltScreenEntry
+    if (altScreenEntry !== null && hasDiff) {
+      this.pendingAltScreenEntry = null
+      optimized.unshift({ type: 'stdout', content: altScreenEntry })
+    }
+
     const tWrite = performance.now()
+    const evidenceStart = terminalEvidenceBoundary('frame-start', this.evidenceRendererId, this.evidenceRootEpoch)
+    nativeTerminalFrameBoundary('frame-start', nativeTerminalEvidence)
     writeDiffToTerminal(
       this.terminal,
       optimized,
-      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED && altScreenEntry === null,
     )
+    const terminalImagesChanged = this.writeTerminalImages(frame)
+    if (terminalImagesChanged) {
+      const cursor = this.displayCursor ?? frame.cursor
+      const row = Math.min(Math.max(cursor.y + 1, 1), terminalRows)
+      const col = Math.min(Math.max(cursor.x + 1, 1), terminalWidth)
+      this.options.stdout.write(cursorPosition(row, col))
+      this.displayCursor = { x: col - 1, y: row - 1 }
+    }
     const writeMs = performance.now() - tWrite
+    const evidenceEnd = terminalEvidenceBoundary('frame-end', this.evidenceRendererId, this.evidenceRootEpoch)
+    nativeTerminalFrameBoundary('frame-end', nativeTerminalEvidence)
+    const terminalEvidence = evidenceStart && evidenceEnd ? {
+      start: evidenceStart,
+      end: evidenceEnd,
+      rootReset: prevFrame.screen.height === 0,
+      cursorVisible: getEvidenceCursorVisible(),
+    } : undefined
+    const terminalViewport = { width: terminalWidth, height: terminalRows }
+    recordTerminalEvidenceFrame({ durationMs: writeMs, frame, physicalCursor: this.displayCursor ?? frame.cursor, terminalBuffer: this.altScreenActive ? 'alternate' : 'normal', terminalViewport, terminalPanes, terminalUiRevision, terminalEvidence, nativeTerminalEvidence, nativeTerminalRootReset: prevFrame.screen.height === 0, nativeTerminalCursorVisible: getEvidenceCursorVisible(), flickers })
 
     // Update blit safety for the NEXT frame. The frame just rendered
-    // becomes frontFrame (= next frame's prevScreen). If we applied the
-    // selection overlay, that buffer has inverted cells. selActive/hlActive
-    // are only ever true in alt-screen; in main-screen this is false→false.
-    this.prevFrameContaminated = selActive || hlActive
+    // becomes frontFrame (= next frame's prevScreen). Search highlights
+    // contaminate it; the selection overlay only does when it changes
+    // (recorded after followScroll moved it). selActive/hlActive are only
+    // ever true in alt-screen; in main-screen this is false→false.
+    this.prevFrameContaminated = hlActive
+    this.paintedSelectionOverlay = selActive
+      ? this.selectionOverlaySignature(terminalWidth)
+      : ''
 
     // A ScrollBox has pendingScrollDelta left to drain — schedule the next
     // frame. MUST NOT call this.scheduleRender() here: we're inside a
@@ -917,8 +973,17 @@ export default class Ink {
       cacheHits: 0,
       live: 0,
     }
+    if (hasDiff || didLayoutShift()) this.followHover()
     this.options.onFrame?.({
       durationMs: performance.now() - renderStart,
+      frame,
+      physicalCursor: this.displayCursor ?? frame.cursor,
+      terminalBuffer: this.altScreenActive ? 'alternate' : 'normal',
+      terminalViewport,
+      terminalPanes,
+      terminalUiRevision,
+      terminalEvidence,
+      nativeTerminalEvidence,
       phases: {
         renderer: rendererMs,
         diff: diffMs,
@@ -956,6 +1021,7 @@ export default class Ink {
    * an external process (e.g. tmux, shell, full-screen TUI).
    */
   repaint(): void {
+    this.evidenceRootEpoch++
     this.frontFrame = emptyFrame(
       this.frontFrame.viewport.height,
       this.frontFrame.viewport.width,
@@ -1021,13 +1087,21 @@ export default class Ink {
    * the first alt-screen frame (and first main-screen frame on exit) is
    * a full redraw with no stale diff state.
    */
-  setAltScreenActive(active: boolean, mouseTracking = false): void {
+  setAltScreenActive(
+    active: boolean,
+    mouseTracking = false,
+    entrySequence?: string,
+  ): void {
     if (this.altScreenActive === active) return
     this.altScreenActive = active
     this.altScreenMouseTracking = active && mouseTracking
     if (active) {
+      this.pendingAltScreenEntry = entrySequence ?? null
       this.resetFramesForAltScreen()
     } else {
+      this.pendingAltScreenEntry = null
+      this.forgetPointer()
+      this.clearTextSelection()
       this.repaint()
     }
   }
@@ -1155,6 +1229,7 @@ export default class Ink {
    * matches the physical cursor after ENTER_ALT_SCREEN + CSI H (home).
    */
   private resetFramesForAltScreen(): void {
+    this.evidenceRootEpoch++
     const rows = this.terminalRows
     const cols = this.terminalColumns
     const blank = (): Frame => ({
@@ -1180,6 +1255,11 @@ export default class Ink {
     this.prevFrameContaminated = true
   }
 
+  /** Read the current rendered selection without changing it or copying. */
+  getSelectedText(): string {
+    return hasSelection(this.selection) ? getSelectedText(this.selection, this.frontFrame.screen) : ''
+  }
+
   /**
    * Copy the current selection to the clipboard without clearing the
    * highlight. Matches iTerm2's copy-on-select behavior where the selected
@@ -1187,7 +1267,7 @@ export default class Ink {
    */
   copySelectionNoClear(): string {
     if (!hasSelection(this.selection)) return ''
-    const text = getSelectedText(this.selection, this.frontFrame.screen)
+    const text = this.getSelectedText()
     if (text) {
       // Raw OSC 52, or DCS-passthrough-wrapped OSC 52 inside tmux (tmux
       // drops it silently unless allow-passthrough is on — no regression).
@@ -1205,14 +1285,14 @@ export default class Ink {
   copySelection(): string {
     if (!hasSelection(this.selection)) return ''
     const text = this.copySelectionNoClear()
-    clearSelection(this.selection)
-    this.notifySelectionChange()
+    this.clearTextSelection()
     return text
   }
 
   /** Clear the current text selection without copying. */
   clearTextSelection(): void {
     if (!hasSelection(this.selection)) return
+    this.notifySelectionTakeDown()
     clearSelection(this.selection)
     this.notifySelectionChange()
   }
@@ -1364,7 +1444,6 @@ export default class Ink {
    * edge. Supplies screen.width for the col-reset-on-clamp boundary.
    */
   shiftSelectionForScroll(dRow: number, minRow: number, maxRow: number): void {
-    const hadSel = hasSelection(this.selection)
     shiftSelection(
       this.selection,
       dRow,
@@ -1372,13 +1451,6 @@ export default class Ink {
       maxRow,
       this.frontFrame.screen.width,
     )
-    // shiftSelection clears when both endpoints overshoot the same edge
-    // (Home/g/End/G page-jump past the selection). Notify subscribers so
-    // useHasSelection updates. Safe to call notifySelectionChange here —
-    // this runs from keyboard handlers, not inside onRender().
-    if (hadSel && !hasSelection(this.selection)) {
-      this.notifySelectionChange()
-    }
   }
 
   /**
@@ -1386,7 +1458,7 @@ export default class Ink {
    * anchor stays fixed so the highlight grows or shrinks relative to it.
    * Left/right wrap across row boundaries — native macOS text-edit
    * behavior: shift+left at col 0 wraps to end of the previous row.
-   * Up/down clamp at viewport edges (no scroll-to-extend yet). Drops to
+   * The scroll handler owns viewport-edge scrolling. Drops to
    * char mode. No-op outside alt-screen or without an active selection.
    */
   moveSelectionFocus(move: FocusMove): void {
@@ -1394,12 +1466,14 @@ export default class Ink {
     const { focus } = this.selection
     if (!focus) return
     const { width, height } = this.frontFrame.screen
-    const maxCol = width - 1
+    const edges = selectionColumns(this.selection, width)
+    const minCol = edges.lo,
+      maxCol = edges.hi
     const maxRow = height - 1
     let { col, row } = focus
     switch (move) {
       case 'left':
-        if (col > 0) col--
+        if (col > minCol) col--
         else if (row > 0) {
           col = maxCol
           row--
@@ -1408,7 +1482,7 @@ export default class Ink {
       case 'right':
         if (col < maxCol) col++
         else if (row < maxRow) {
-          col = 0
+          col = minCol
           row++
         }
         break
@@ -1419,7 +1493,7 @@ export default class Ink {
         if (row < maxRow) row++
         break
       case 'lineStart':
-        col = 0
+        col = minCol
         break
       case 'lineEnd':
         col = maxCol
@@ -1428,6 +1502,60 @@ export default class Ink {
     if (col === focus.col && row === focus.row) return
     moveFocus(this.selection, col, row)
     this.notifySelectionChange()
+  }
+
+  startTextSelection(col: number, row: number): void {
+    this.notifySelectionTakeDown()
+    let node = hitTest(this.rootNode, col, row) ?? undefined
+    let scope: SelectionState['scope']
+    while (node) {
+      const layout = nodeCache.get(node)
+      if (layout) {
+        const left = Math.floor(layout.x),
+          right = Math.floor(layout.x + layout.width)
+        if (!scope && node.style.selectionScope) {
+          const yoga = node.yogaNode
+          scope = {
+            node,
+            x1:
+              left +
+              (yoga
+                ? yoga.getComputedBorder(LayoutEdge.Left) +
+                  yoga.getComputedPadding(LayoutEdge.Left)
+                : 0),
+            x2:
+              right -
+              (yoga
+                ? yoga.getComputedBorder(LayoutEdge.Right) +
+                  yoga.getComputedPadding(LayoutEdge.Right)
+                : 0),
+          }
+        } else if (scope) {
+          const overflow = node.style.overflowX ?? node.style.overflow
+          if (overflow === 'hidden' || overflow === 'scroll') {
+            scope.x1 = Math.max(scope.x1!, left)
+            scope.x2 = Math.min(scope.x2!, right)
+          }
+        }
+      }
+      node = node.parentNode
+    }
+    startSelection(
+      this.selection,
+      col,
+      row,
+      scope && scope.x2! > scope.x1! ? scope : undefined,
+    )
+  }
+
+  notifySelectionTakeDown(): void {
+    if (!this.altScreenActive || !hasSelection(this.selection)) return
+    for (const listener of this.selectionTakeDownListeners) listener()
+  }
+
+  subscribeToSelectionTakeDown(listener: () => void): () => void {
+    this.selectionTakeDownListeners.add(listener)
+    return () => this.selectionTakeDownListeners.delete(listener)
   }
 
   /** Whether there is an active text selection. */
@@ -1444,6 +1572,18 @@ export default class Ink {
     return () => this.selectionListeners.delete(cb)
   }
 
+  private selectionOverlaySignature(width: number): string {
+    const { anchor, focus, scope } = this.selection
+    if (
+      !this.altScreenActive ||
+      !anchor ||
+      !focus ||
+      isSelectionOffscreen(this.selection)
+    )
+      return ''
+    return `${anchor.row},${anchor.col},${focus.row},${focus.col}|${scope?.x1},${scope?.x2}|${width}`
+  }
+
   private notifySelectionChange(): void {
     this.onRender()
     for (const cb of this.selectionListeners) cb()
@@ -1457,14 +1597,57 @@ export default class Ink {
    * nodeCache rects map 1:1 to terminal cells (no scrollback offset).
    */
   dispatchClick(col: number, row: number): boolean {
-    if (!this.altScreenActive) return false
-    const blank = isEmptyCellAt(this.frontFrame.screen, col, row)
-    return dispatchClick(this.rootNode, col, row, blank)
+    return this.dispatchMouseClick(col, row) !== 'unhandled'
+  }
+
+  dispatchMouseClick(col: number, row: number, isWindowActivation = false, mods?: ClickModifiers): ClickDisposition {
+    if (!this.altScreenActive) return 'unhandled'
+    const target = hitTest(this.rootNode, col, row)
+    const blank = hoverCellIsBlank(this.rootNode, this.frontFrame.screen, col, row, target) &&
+      !this.litWhereClicked(target, col, row)
+    return dispatchMouseClick(this.rootNode, new ClickEvent(col, row, blank, this.getHyperlinkAt(col, row), isWindowActivation, mods))
   }
 
   dispatchHover(col: number, row: number): void {
     if (!this.altScreenActive) return
-    dispatchHover(this.rootNode, col, row, this.hoveredNodes)
+    this.hoverCol = col
+    this.hoverRow = row
+    this.hoverFollowStreak = 0
+    this.hoverFollowHeldUntil = 0
+    dispatchHover(this.rootNode, col, row, this.hoveredNodes, this.frontFrame.screen)
+  }
+
+  private litWhereClicked(target: dom.DOMElement | null, col: number, row: number): boolean {
+    if (col !== this.hoverCol || row !== this.hoverRow) return false
+    let node: dom.DOMElement | undefined = target ?? undefined
+    while (node) {
+      if (node.attributes.hoverIgnoresBlankCells && this.hoveredNodes.has(node)) return true
+      node = node.parentNode
+    }
+    return false
+  }
+
+  private forgetPointer(): void {
+    this.hoverCol = -1
+    this.hoverRow = -1
+    this.hoverFollowStreak = 0
+    this.hoverFollowHeldUntil = 0
+    const app = this.appRef.current
+    if (app) {
+      app.lastHoverCol = -1
+      app.lastHoverRow = -1
+    }
+  }
+
+  private followHover(): void {
+    if (!this.altScreenActive || this.hoverCol < 0 || performance.now() < this.hoverFollowHeldUntil) return
+    const changed = followHover(this.rootNode, this.hoverCol, this.hoverRow, this.hoveredNodes, this.frontFrame.screen)
+    this.hoverFollowStreak = changed ? this.hoverFollowStreak + 1 : 0
+    // A hover style can move its own target. Match the official four-paint, 1s backoff.
+    if (this.hoverFollowStreak >= 4) {
+      this.hoverFollowStreak = 0
+      this.hoverFollowHeldUntil = performance.now() + 1000
+    }
   }
 
   dispatchKeyboardEvent(parsedKey: ParsedKey): void {
@@ -1537,7 +1720,7 @@ export default class Ink {
     // selectWordAt/selectLineAt no-op on noSelect/out-of-bounds. Seed with
     // a char-mode selection so the press still starts a drag even if the
     // word/line scan finds nothing selectable.
-    startSelection(this.selection, col, row)
+    this.startTextSelection(col, row)
     if (count === 2) selectWordAt(this.selection, screen, col, row)
     else selectLineAt(this.selection, screen, row)
     // Ensure hasSelection is true so release doesn't re-dispatch onClickAt.
@@ -1635,13 +1818,9 @@ export default class Ink {
     }
   }
 
-  // Stable identity for TerminalWriteContext. An inline arrow here would
-  // change on every render() call (initial mount + each resize), which
-  // cascades through useContext → <AlternateScreen>'s useLayoutEffect dep
-  // array → spurious exit+re-enter of the alt screen on every SIGWINCH.
-  private writeRaw(data: string): void {
-    this.options.stdout.write(data)
-  }
+  // Stable identity for TerminalWriteContext. Recreating this object on each
+  // render would retrigger terminal mode effects on every SIGWINCH.
+  private terminalWriter: TerminalWriter
 
   private setCursorDeclaration: CursorDeclarationSetter = (
     decl,
@@ -1662,6 +1841,7 @@ export default class Ink {
 
     const tree = (
       <App
+        ref={this.appRef}
         stdin={this.options.stdin}
         stdout={this.options.stdout}
         stderr={this.options.stderr}
@@ -1671,8 +1851,10 @@ export default class Ink {
         terminalRows={this.terminalRows}
         selection={this.selection}
         onSelectionChange={this.notifySelectionChange}
-        onClickAt={this.dispatchClick}
+        onSelectionStart={this.startTextSelection}
+        onClickAt={this.dispatchMouseClick}
         onHoverAt={this.dispatchHover}
+        onHoverLost={this.forgetPointer}
         getHyperlinkAt={this.getHyperlinkAt}
         onOpenHyperlink={this.openHyperlink}
         onMultiClick={this.handleMultiClick}
@@ -1681,7 +1863,7 @@ export default class Ink {
         onCursorDeclaration={this.setCursorDeclaration}
         dispatchKeyboardEvent={this.dispatchKeyboardEvent}
       >
-        <TerminalWriteProvider value={this.writeRaw}>
+        <TerminalWriteProvider value={this.terminalWriter}>
           {node}
         </TerminalWriteProvider>
       </App>
@@ -1693,12 +1875,41 @@ export default class Ink {
     reconciler.flushSyncWork()
   }
 
+  private writeTerminalImages(frame: Frame): boolean {
+    const images = frame.terminalImages ?? []
+    const next = new Map(images.map(image => [
+      image.id,
+      `${image.identity}\0${image.x}\0${image.y}\0${image.columns}\0${image.rows}\0${image.sourceLeft}\0${image.sourceTop}\0${image.sourceColumns}\0${image.sourceRows}`,
+    ]))
+    if (mapsEqual(this.displayedTerminalImages, next)) return false
+    let output = ''
+    for (const [id, identity] of this.displayedTerminalImages) {
+      if (next.get(id) !== identity)
+        output += `\u001b_Ga=d,d=i,i=${id}\u001b\\`
+    }
+    for (const image of images) {
+      this.terminalImageIds.add(image.id)
+      if (this.displayedTerminalImages.get(image.id) === next.get(image.id)) continue
+      output += cursorPosition(image.y + 1, image.x + 1)
+      output += image.sequences(image).join('')
+    }
+    if (output) this.options.stdout.write(output)
+    this.displayedTerminalImages = next
+    return output.length > 0
+  }
+
   unmount(error?: Error | number | null): void {
     if (this.isUnmounted) {
       return
     }
 
     this.onRender()
+    let imageCleanup = ''
+    for (const id of this.terminalImageIds) {
+      imageCleanup += `\u001b_Ga=d,d=i,i=${id}\u001b\\`
+    }
+    if (imageCleanup) this.options.stdout.write(imageCleanup)
+    this.displayedTerminalImages.clear()
     this.unsubscribeExit()
 
     if (typeof this.restoreConsole === 'function') {
@@ -1744,6 +1955,8 @@ export default class Ink {
       writeSync(1, SHOW_CURSOR)
       // Clear iTerm2 progress bar
       writeSync(1, CLEAR_ITERM2_PROGRESS)
+      if (getProgramStatusSupport() === 'on')
+        writeSync(1, wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
       // Clear tab status (OSC 21337) so a stale dot doesn't linger
       if (supportsTabStatus())
         writeSync(1, wrapForMultiplexer(CLEAR_TAB_STATUS))
@@ -1789,6 +2002,7 @@ export default class Ink {
 
   resetLineCount(): void {
     if (this.options.stdout.isTTY) {
+      this.evidenceRootEpoch++
       // Swap so old front becomes back (for screen reuse), then reset front
       this.backFrame = this.frontFrame
       this.frontFrame = emptyFrame(

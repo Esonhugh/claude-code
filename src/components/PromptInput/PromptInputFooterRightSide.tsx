@@ -49,12 +49,15 @@ export function PromptInputFooterRightSide({
 }: Props): React.ReactNode {
   const goalActive = useAppState(s => s.goalStatus.active)
   return (
-    <Box flexShrink={1} gap={1}>
+    <Box
+      flexShrink={0}
+      flexDirection="column"
+      alignItems={isNarrow ? 'flex-start' : 'flex-end'}
+    >
       {isFullscreen ? null : (
         <Notifications
           apiKeyStatus={apiKeyStatus}
           autoUpdaterResult={autoUpdaterResult}
-          debug={debug}
           isAutoUpdating={isAutoUpdating}
           verbose={verbose}
           messages={messages}
@@ -66,10 +69,15 @@ export function PromptInputFooterRightSide({
           isNarrow={isNarrow}
         />
       )}
-      {goalActive && <Text dimColor>·</Text>}
-      <GoalStatusIndicator active={goalActive} />
-      {isAnt() && isUndercover() && <Text dimColor>undercover</Text>}
-      <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
+      <Box flexShrink={0} gap={1}>
+        {goalActive && <Text dimColor>·</Text>}
+        <GoalStatusIndicator active={goalActive} />
+        {isAnt() && isUndercover() && <Text dimColor>undercover</Text>}
+        {debug && (
+          <Text color="warning" wrap="truncate">Debug</Text>
+        )}
+        <BridgeStatusIndicator bridgeSelected={bridgeSelected} />
+      </Box>
     </Box>
   )
 }

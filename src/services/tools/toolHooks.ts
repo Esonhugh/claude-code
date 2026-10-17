@@ -4,6 +4,17 @@ import {
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
 import type z from 'zod/v4'
+import { isDeepStrictEqual } from 'node:util'
+import { Stream } from '../../utils/stream.js'
+import { getSessionId } from '../../bootstrap/state.js'
+import {
+  createModClassicAdapter,
+  type ClassicPreToolUseResult,
+  type ClassicResult,
+} from '../mods/classicAdapter.js'
+import type { ModInput } from '../mods/types.js'
+import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createModToolHost } from '../mods/toolHost.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js'
 import type { HookProgress } from '../../types/hooks.js'
@@ -12,10 +23,13 @@ import type {
   AttachmentMessage,
   ProgressMessage,
 } from '../../types/message.js'
-import type { PermissionDecision } from '../../types/permissions.js'
+import type { PermissionDecision, PermissionRule } from '../../types/permissions.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
+  type AggregatedHookResult,
+  type HookSourceScope,
+  createBaseHookInput,
   executePostToolHooks,
   executePostToolUseFailureHooks,
   executePreToolHooks,
@@ -24,17 +38,398 @@ import {
 import { logError } from '../../utils/log.js'
 import {
   getRuleBehaviorDescription,
+  requiresExplicitUserApproval,
   type PermissionDecisionReason,
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
-import { checkRuleBasedPermissions } from '../../utils/permissions/permissions.js'
+import {
+  checkRuleBasedPermissions,
+  createPermissionRequestMessage,
+  hasPermissionsToUseTool,
+  toolAlwaysAllowedRule,
+} from '../../utils/permissions/permissions.js'
+import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js'
 import { formatError } from '../../utils/toolErrors.js'
 import { isMcpTool } from '../mcp/utils.js'
 import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
 
+export type ModToolCheckResult = {
+  decision: 'allow' | 'ask' | 'deny'
+  reason?: string
+  rule?: string
+  hook?: string
+}
+
+/** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
+export async function checkModToolPermission(
+  tool: Tool,
+  input: Record<string, unknown>,
+  context: ToolUseContext,
+): Promise<PermissionDecision> {
+  context.abortController.signal.throwIfAborted()
+  let checked: PermissionResult | undefined
+  // Retain the tool check already performed by the rule pipeline, avoiding a
+  // second permission probe while preserving its bypass-immune safeguards.
+  const rule = await checkRuleBasedPermissions({
+    ...tool,
+    checkPermissions: async (args, toolContext) => {
+      checked = await tool.checkPermissions(args, toolContext)
+      return checked
+    },
+  }, input, context)
+  context.abortController.signal.throwIfAborted()
+  if (rule) return rule
+  if (checked?.behavior === 'ask' && tool.requiresUserInteraction?.()) return checked
+  const permission = context.getAppState().toolPermissionContext
+  const updatedInput =
+    checked?.behavior === 'allow' || checked?.behavior === 'ask'
+      ? checked.updatedInput
+      : undefined
+  if (permission.mode === 'bypassPermissions' ||
+    (permission.mode === 'plan' && permission.isBypassPermissionsModeAvailable))
+    return { behavior: 'allow', updatedInput, decisionReason: { type: 'mode', mode: permission.mode } }
+  const allow = toolAlwaysAllowedRule(permission, tool)
+  if (allow) return { behavior: 'allow', updatedInput, decisionReason: { type: 'rule', rule: allow } }
+  if (checked && checked.behavior !== 'passthrough') return checked
+  return { ...checked, behavior: 'ask', message: createPermissionRequestMessage(tool.name, checked?.decisionReason) }
+}
+
+function modDecisionRule(reason: PermissionDecisionReason | undefined, behavior: PermissionDecision['behavior']): PermissionRule | undefined {
+  if (reason?.type !== 'subcommandResults') return undefined
+  for (const result of reason.reasons.values()) {
+    const why = result.behavior === behavior ? result.decisionReason : undefined
+    const rule = why?.type === 'rule' ? why.rule : modDecisionRule(why, behavior)
+    if (rule) return rule
+  }
+  return undefined
+}
+
+export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string): ModToolCheckResult {
+  const why = decision.decisionReason
+  const hook = (why?.type === 'hook' && why.hookName !== 'tool.check' ? why.hookName.split(':').at(0) : undefined) || hookAskFloor
+  const matchedRule = (why?.type === 'rule' ? why.rule : undefined) ?? modDecisionRule(why, decision.behavior) ??
+    (decision.behavior === 'deny' ? undefined : decision.matchedAskRule)
+  const reason = decision.behavior === 'allow' ? why && 'reason' in why ? why.reason : undefined : decision.message
+  return { decision: decision.behavior, ...(reason ? { reason } : {}), ...(matchedRule ? { rule:permissionRuleValueToString(matchedRule.ruleValue) } : {}), ...(hook ? { hook } : {}) }
+}
+
+type ClassicToolEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
+type ClassicToolResult = ClassicResult &
+  Pick<ClassicPreToolUseResult, 'allow' | 'ask' | 'deny' | 'updatedInput'>
+
+/** Invocation-local managed Pre pass; never stored in a tool/agent context. */
+export type ManagedPreToolUsePass = {
+  input?: ModInput
+  equivalentInputs?: ModInput[]
+  result?: ClassicToolResult
+  observations?: AggregatedHookResult[]
+}
+
+/** Bridge one existing executor boundary; raw observations never inject contexts. */
+async function* runClassicToolHooks(
+  context: ToolUseContext,
+  tool: Tool,
+  event: ClassicToolEvent,
+  input: ModInput,
+  fallback: (sourceScope?: HookSourceScope) => AsyncIterable<AggregatedHookResult>,
+  sourceScope: HookSourceScope = 'all',
+  managedPass?: ManagedPreToolUsePass,
+): AsyncGenerator<AggregatedHookResult> {
+  if (sourceScope === 'managed' && event !== 'PreToolUse') {
+    yield* fallback('managed')
+    return
+  }
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : context.mods?.capture({
+        toolCatalog: () => createToolCatalogForContext(context),
+        toolHost: () => createModToolHost(context, hasPermissionsToUseTool),
+      })
+  const snapshot = context.modsSnapshot ?? ownedSnapshot
+  if (!snapshot) {
+    yield* fallback(sourceScope)
+    return
+  }
+  const stream = new Stream<AggregatedHookResult>()
+  const observations: AggregatedHookResult[] = []
+  const pending: Promise<unknown>[] = []
+  const signal = context.abortController.signal
+  const callClassic = (sourceScope: HookSourceScope, value: ModInput) => {
+    const classic = createModClassicAdapter({
+      sourceScope,
+      getToolUseContext: () => context,
+      getSessionId,
+      getMessages: () => context.messages,
+      getToolUseID: () => String(input.tool_use_id),
+      onHookResult: (_name, result) => {
+        observations.push(result)
+        // Progress and diagnostics retain their identity. Decisions/contexts are
+        // consumed only through the folded answer; Pre's stop is host-only.
+        if (
+          result.message ||
+          (event === 'PreToolUse' && result.preventContinuation)
+        ) {
+          stream.enqueue({
+            message: result.message,
+            hook: result.hook,
+            hookSource: result.hookSource,
+            impossible: result.impossible,
+            ...(event === 'PreToolUse' && result.preventContinuation
+              ? { preventContinuation: true, stopReason: result.stopReason }
+              : {}),
+          })
+        }
+      },
+    }).classic
+    if (event === 'PreToolUse')
+      return classic.PreToolUse(
+        value as Parameters<typeof classic.PreToolUse>[0],
+      )
+    if (event === 'PostToolUse')
+      return classic.PostToolUse(
+        value as Parameters<typeof classic.PostToolUse>[0],
+      )
+    return classic.PostToolUseFailure(
+      value as Parameters<typeof classic.PostToolUseFailure>[0],
+    )
+  }
+  function validateInput(value: ModInput) {
+    const pinned =
+      event === 'PreToolUse'
+        ? ['tool', 'tool_use_id']
+        : [
+            'hook_event_name',
+            'tool_name',
+            'tool_use_id',
+            'session_id',
+            'transcript_path',
+            'cwd',
+            'permission_mode',
+            'agent_id',
+            'agent_type',
+          ]
+    for (const key of pinned) {
+      if (!isDeepStrictEqual(value[key], input[key]))
+        throw new Error(`classic.${event} cannot rewrite ${key}`)
+    }
+  }
+  function validateResult(value: unknown): asserts value is ClassicToolResult {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error(`classic.${event} must return an object`)
+    const result = value as ClassicToolResult
+    for (const key of event === 'PreToolUse'
+      ? (['deny', 'ask'] as const)
+      : (['block', 'stopReason'] as const)) {
+      if (result[key] !== undefined && typeof result[key] !== 'string')
+        throw new Error(`classic.${event} ${key} must be a string`)
+    }
+    if (
+      result.additionalContext !== undefined &&
+      (!Array.isArray(result.additionalContext) ||
+        result.additionalContext.some(item => typeof item !== 'string'))
+    )
+      throw new Error(`classic.${event} additionalContext must contain strings`)
+    if (event === 'PreToolUse') {
+      if (result.allow !== undefined && result.allow !== true)
+        throw new Error('classic.PreToolUse allow must be true')
+      if (
+        [result.allow, result.ask, result.deny].filter(
+          value => value !== undefined,
+        ).length > 1
+      )
+        throw new Error(
+          'classic.PreToolUse must return at most one permission decision',
+        )
+      if (
+        result.updatedInput !== undefined &&
+        (!result.updatedInput ||
+          typeof result.updatedInput !== 'object' ||
+          Array.isArray(result.updatedInput))
+      )
+        throw new Error('classic.PreToolUse updatedInput must be an object')
+      if (result.updatedInput !== undefined)
+        tool.inputSchema.parse(result.updatedInput)
+    } else if (
+      result.preventContinuation !== undefined &&
+      result.preventContinuation !== true
+    ) {
+      throw new Error(`classic.${event} preventContinuation must be true`)
+    }
+  }
+  const execution = (async () => {
+    try {
+      const reused = event === 'PreToolUse' && managedPass?.result !== undefined &&
+        [managedPass.input, ...(managedPass.equivalentInputs ?? [])].some(value =>
+          isDeepStrictEqual(value, input),
+        )
+      const managed: ClassicToolResult = sourceScope === 'non-managed'
+        ? {}
+        : reused ? managedPass!.result! : await callClassic('managed', input)
+      if (reused) observations.push(...(managedPass!.observations ?? []))
+      if (event === 'PreToolUse' && sourceScope === 'managed' && managedPass && !reused) {
+        managedPass.input = managed.updatedInput === undefined ? input : {
+          ...managed.updatedInput, tool: input.tool, tool_use_id: input.tool_use_id,
+        }
+        managedPass.result = managed
+        managedPass.observations = [...observations]
+      }
+      const managedObservationCount = observations.length
+      const passedInput = event === 'PreToolUse' && managed.updatedInput !== undefined
+        ? { ...managed.updatedInput, tool: input.tool, tool_use_id: input.tool_use_id }
+        : input
+      let answer = { ...managed }
+      const blocked =
+        event === 'PreToolUse'
+          ? managed.deny !== undefined
+          : managed.block !== undefined || managed.preventContinuation
+      if (!blocked && sourceScope !== 'managed') {
+        const downstream = await snapshot.dispatch(
+          `classic.${event}`,
+          passedInput,
+          value => {
+            validateInput(value)
+            const run = callClassic(
+              event === 'PreToolUse' && !isDeepStrictEqual(value, passedInput)
+                ? 'all' : 'non-managed',
+              value,
+            )
+            pending.push(run)
+            return run
+          },
+          { signal, validateInput, validateResult },
+        )
+        validateResult(downstream)
+        answer = { ...managed, ...downstream }
+        if (managed.additionalContext || downstream.additionalContext)
+          answer.additionalContext = [
+            ...(managed.additionalContext ?? []),
+            ...(downstream.additionalContext ?? []),
+          ]
+        if (event === 'PreToolUse') {
+          delete answer.allow
+          delete answer.ask
+          delete answer.deny
+          if (downstream.deny !== undefined) answer.deny = downstream.deny
+          else if (managed.ask !== undefined || downstream.ask !== undefined)
+            answer.ask = managed.ask ?? downstream.ask
+          else {
+            const { tool: _tool, tool_use_id: _id, ...passedArgs } = passedInput
+            const changed = downstream.updatedInput !== undefined &&
+              !isDeepStrictEqual(downstream.updatedInput, passedArgs)
+            if (downstream.allow || (managed.allow && !changed)) answer.allow = true
+          }
+        }
+      }
+      await Promise.allSettled(pending)
+      signal.throwIfAborted()
+      if (
+        event === 'PreToolUse' &&
+        answer.deny === undefined &&
+        answer.updatedInput !== undefined
+      ) {
+        const parsed = tool.inputSchema.parse(answer.updatedInput)
+        const validation = await tool.validateInput?.(parsed, context)
+        if (validation?.result === false)
+          throw new Error(
+            validation.message ?? 'Invalid classic.PreToolUse updatedInput',
+          )
+        answer.updatedInput = parsed
+      }
+      const folded: AggregatedHookResult = {
+        additionalContexts: answer.additionalContext,
+      }
+      if (event === 'PreToolUse') {
+        const stopped = observations.findLast(item => item.preventContinuation)
+        if (stopped) {
+          delete answer.allow
+          delete answer.ask
+          answer.deny =
+            stopped.stopReason ?? 'Execution stopped by PreToolUse hook'
+        }
+        folded.permissionBehavior =
+          answer.deny !== undefined
+            ? 'deny'
+            : answer.ask !== undefined
+              ? 'ask'
+              : answer.allow
+                ? 'allow'
+                : undefined
+        folded.hookPermissionDecisionReason = answer.deny ?? answer.ask
+        folded.updatedInput = answer.updatedInput
+        const managedWins =
+          blocked ||
+          (folded.permissionBehavior === 'ask' && managed.ask !== undefined) ||
+          (folded.permissionBehavior === 'allow' && managed.allow === true)
+        const decisionObservations = managedWins
+          ? observations.slice(0, managedObservationCount)
+          : observations.slice(managedObservationCount)
+        const origin =
+          decisionObservations.findLast(
+            item =>
+              item.permissionBehavior === folded.permissionBehavior &&
+              (folded.permissionBehavior === 'allow' ||
+                item.hookPermissionDecisionReason ===
+                  folded.hookPermissionDecisionReason),
+          ) ??
+          decisionObservations.findLast(
+            item =>
+              item.blockingError !== undefined &&
+              getPreToolHookBlockingMessage(
+                `PreToolUse:${tool.name}`,
+                item.blockingError,
+              ) === answer.deny,
+          )
+        folded.hookSource = stopped?.hookSource ?? origin?.hookSource
+      } else {
+        if (answer.block !== undefined) {
+          const origin = observations.findLast(
+            item => item.blockingError?.blockingError === answer.block,
+          )
+          folded.blockingError = origin?.blockingError ?? {
+            blockingError: answer.block,
+            command: `classic.${event}`,
+          }
+          folded.hook = origin?.hook
+          folded.hookSource = origin?.hookSource
+          folded.impossible = origin?.impossible
+        }
+        folded.preventContinuation = answer.preventContinuation
+        folded.stopReason = answer.stopReason
+        if (event === 'PostToolUse') {
+          folded.updatedToolOutput = answer.updatedToolOutput
+          folded.updatedMCPToolOutput = answer.updatedMCPToolOutput
+        }
+      }
+      // Existing post wrappers stop consuming at preventContinuation; send the
+      // already-folded context/output first, then that terminal control item.
+      if (event !== 'PreToolUse' && folded.preventContinuation) {
+        const { preventContinuation, stopReason, ...beforeStop } = folded
+        stream.enqueue(beforeStop)
+        stream.enqueue({ preventContinuation, stopReason })
+      } else {
+        stream.enqueue(folded)
+      }
+    } finally {
+      // A module may call next without awaiting it. Keep the captured realm and
+      // observer alive until those executions settle, including on cancellation.
+      await Promise.allSettled(pending)
+      ownedSnapshot?.release()
+    }
+  })()
+  void execution.then(
+    () => stream.done(),
+    error => stream.error(error),
+  )
+  try {
+    yield* stream
+  } finally {
+    await execution
+  }
+}
+
 export type PostToolUseHooksResult<Output> =
   | MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
-  | { updatedMCPToolOutput: Output }
+  | { updatedToolOutput: Output }
 
 export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   toolUseContext: ToolUseContext,
@@ -46,6 +441,7 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  sourceScope: HookSourceScope = 'all',
 ): AsyncGenerator<PostToolUseHooksResult<Output>> {
   const postToolStartTime = Date.now()
   try {
@@ -53,14 +449,31 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
     const permissionMode = appState.toolPermissionContext.mode
 
     let toolOutput = toolResponse
-    for await (const result of executePostToolHooks(
-      tool.name,
-      toolUseID,
-      toolInput,
-      toolOutput,
+    for await (const result of runClassicToolHooks(
       toolUseContext,
-      permissionMode,
-      toolUseContext.abortController.signal,
+      tool,
+      'PostToolUse',
+      {
+        ...createBaseHookInput(permissionMode, undefined, toolUseContext),
+        hook_event_name: 'PostToolUse',
+        tool_name: tool.name,
+        tool_use_id: toolUseID,
+        tool_input: toolInput,
+        tool_response: toolOutput,
+      },
+      scope =>
+        executePostToolHooks(
+          tool.name,
+          toolUseID,
+          toolInput,
+          toolOutput,
+          toolUseContext,
+          permissionMode,
+          toolUseContext.abortController.signal,
+          undefined,
+          scope,
+        ),
+      sourceScope,
     )) {
       try {
         // Check if we were aborted during hook execution
@@ -97,10 +510,10 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         if (
           result.message &&
           !(
-            // @ts-ignore - recovered code
-            result.message.type === 'attachment' &&
-            // @ts-ignore - recovered code
-            result.message.attachment.type === 'hook_blocking_error'
+            (result.message as unknown as AttachmentMessage).type ===
+              'attachment' &&
+            (result.message as unknown as AttachmentMessage).attachment.type ===
+              'hook_blocking_error'
           )
         ) {
           // @ts-ignore - recovered code
@@ -147,12 +560,15 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
           }
         }
 
-        // If hooks provided updatedMCPToolOutput, yield it if this is an MCP tool
-        if (result.updatedMCPToolOutput && isMcpTool(tool)) {
-          toolOutput = result.updatedMCPToolOutput as Output
-          yield {
-            updatedMCPToolOutput: toolOutput,
-          }
+        // General replacement works for every tool. The legacy MCP field is
+        // retained as an MCP-only alias, and wins when both are supplied.
+        const replacement =
+          result.updatedMCPToolOutput !== undefined && isMcpTool(tool)
+            ? result.updatedMCPToolOutput
+            : result.updatedToolOutput
+        if (replacement !== undefined) {
+          toolOutput = replacement as Output
+          yield { updatedToolOutput: toolOutput }
         }
       } catch (error) {
         const postToolDurationMs = Date.now() - postToolStartTime
@@ -206,6 +622,7 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  sourceScope: HookSourceScope = 'all',
 ): AsyncGenerator<
   MessageUpdateLazy<AttachmentMessage | ProgressMessage<HookProgress>>
 > {
@@ -214,15 +631,33 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
     const appState = toolUseContext.getAppState()
     const permissionMode = appState.toolPermissionContext.mode
 
-    for await (const result of executePostToolUseFailureHooks(
-      tool.name,
-      toolUseID,
-      processedInput,
-      error,
+    for await (const result of runClassicToolHooks(
       toolUseContext,
-      isInterrupt,
-      permissionMode,
-      toolUseContext.abortController.signal,
+      tool,
+      'PostToolUseFailure',
+      {
+        ...createBaseHookInput(permissionMode, undefined, toolUseContext),
+        hook_event_name: 'PostToolUseFailure',
+        tool_name: tool.name,
+        tool_use_id: toolUseID,
+        tool_input: processedInput,
+        error,
+        is_interrupt: isInterrupt,
+      },
+      scope =>
+        executePostToolUseFailureHooks(
+          tool.name,
+          toolUseID,
+          processedInput,
+          error,
+          toolUseContext,
+          isInterrupt,
+          permissionMode,
+          toolUseContext.abortController.signal,
+          undefined,
+          scope,
+        ),
+      sourceScope,
     )) {
       try {
         // Check if we were aborted during hook execution
@@ -254,10 +689,10 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
         if (
           result.message &&
           !(
-            // @ts-ignore - recovered code
-            result.message.type === 'attachment' &&
-            // @ts-ignore - recovered code
-            result.message.attachment.type === 'hook_blocking_error'
+            (result.message as unknown as AttachmentMessage).type ===
+              'attachment' &&
+            (result.message as unknown as AttachmentMessage).attachment.type ===
+              'hook_blocking_error'
           )
         ) {
           // @ts-ignore - recovered code
@@ -274,6 +709,24 @@ export async function* runPostToolUseFailureHooks<Input extends AnyObject>(
               blockingError: result.blockingError,
             }),
           }
+        }
+
+        if (
+          result.preventContinuation &&
+          (toolUseContext.mods || toolUseContext.modsSnapshot)
+        ) {
+          yield {
+            message: createAttachmentMessage({
+              type: 'hook_stopped_continuation',
+              message:
+                result.stopReason ||
+                'Execution stopped by PostToolUseFailure hook',
+              hookName: `PostToolUseFailure:${tool.name}`,
+              toolUseID,
+              hookEvent: 'PostToolUseFailure',
+            }),
+          }
+          return
         }
 
         // If hooks provided additional context, add it as a message
@@ -353,6 +806,100 @@ export async function resolveHookPermissionDecision(
 }> {
   const requiresInteraction = tool.requiresUserInteraction?.()
   const requireCanUseTool = toolUseContext.requireCanUseTool
+  const snapshot = toolUseContext.modsSnapshot
+  if (snapshot?.hasHooks('tool.check')) {
+    const declarative = await resolveHookPermissionDecision(
+      hookPermissionResult, tool, input,
+      { ...toolUseContext, modsSnapshot: undefined },
+      async (checkedTool, args, context, _assistant, _id, forced) =>
+        forced ?? checkModToolPermission(checkedTool, args, context),
+      assistantMessage, toolUseID,
+    )
+    const core = declarative.decision
+    const why = core.decisionReason
+    // Managed policy and bypass-immune safety requirements remain outside the
+    // plugin verdict, as they are outside classic Pre's user-tier overrides.
+    const protectedDecision =
+      (why?.type === 'rule' && ['policySettings', 'flagSettings'].includes(why.rule.source)) ||
+      (why?.type === 'hook' && ['policySettings', 'flagSettings'].includes(why.hookSource ?? '')) ||
+      why?.type === 'safetyCheck' || requiresExplicitUserApproval(why)
+    if (protectedDecision && core.behavior === 'deny') return declarative
+    const event = { tool: tool.name, input: structuredClone(declarative.input), tool_use_id: toolUseID,
+      ...(toolUseContext.agentId === undefined ? {} : { agentId: toolUseContext.agentId }),
+    }
+    logForDebugging(`[ModsToolCheck] tool=${tool.name} toolUseId=${toolUseID} agentId=${toolUseContext.agentId ?? 'none'} phase=dispatch`)
+    const pinned = structuredClone(event)
+    const validateInput = (value: ModInput) => {
+      for (const key of ['tool', 'input', 'tool_use_id', 'agentId'] as const)
+        if (!isDeepStrictEqual(value[key], pinned[key]))
+          throw new Error(`tool.check cannot rewrite ${key}`)
+    }
+    function validateResult(value: unknown): asserts value is ModToolCheckResult {
+      if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        !('decision' in value) || typeof value.decision !== 'string' ||
+        !['allow', 'ask', 'deny'].includes(value.decision) ||
+        ('reason' in value && value.reason !== undefined && typeof value.reason !== 'string') ||
+        ('rule' in value && value.rule !== undefined && typeof value.rule !== 'string') ||
+        ('hook' in value && value.hook !== undefined && typeof value.hook !== 'string'))
+        throw new Error('tool.check must return a decision and optional string reason/rule/hook')
+    }
+    const projected = modToolCheckResult(core, toolUseContext.hookAskFloor === true ? 'PreToolUse' : undefined)
+    let coreWasCalled = false
+    let hooked: readonly string[] = []
+    const verdict = await snapshot.dispatch('tool.check', event, async value => {
+      validateInput(value)
+      coreWasCalled = true
+      return { ...projected }
+    }, { signal: toolUseContext.abortController.signal, validateInput, validateResult,
+      onHooks: hooks => { hooked = hooks.map(hook => hook.plugin) },
+    })
+    toolUseContext.abortController.signal.throwIfAborted()
+    validateResult(verdict)
+    let decision: PermissionDecision
+    if (coreWasCalled && verdict.decision === core.behavior) {
+      // A reason rewrite does not replace the evaluated permission source.
+      decision = core.behavior === 'allow' || !verdict.reason ? core : { ...core, message: verdict.reason }
+    } else {
+      const plugins = `${hooked.length === 1 ? 'plugin' : 'plugins'} ${hooked.join(', ')}`
+      const reason = verdict.reason === undefined ? '' : `: ${verdict.reason}`
+      const decisionReason: PermissionDecisionReason = {
+        type: 'hook', hookName: 'tool.check', hookSource: `plugin:${hooked.join('+')}`, reason: verdict.reason,
+      }
+      const updatedInput = coreWasCalled && core.behavior !== 'deny'
+        ? core.updatedInput ?? declarative.input : declarative.input
+      switch (verdict.decision) {
+        case 'allow': decision = { behavior: 'allow', updatedInput, decisionReason }; break
+        case 'deny': decision = { behavior: 'deny', message: `Permission to use ${tool.name} denied by ${plugins}${reason}`, decisionReason }; break
+        case 'ask': decision = { behavior: 'ask', message: `${tool.name} needs approval (asked by ${plugins}${reason})`, updatedInput, decisionReason }; break
+      }
+      logForDebugging(`[ModsToolCheck] tool=${tool.name} toolUseId=${toolUseID} agentId=${toolUseContext.agentId ?? 'none'} previous=${coreWasCalled ? core.behavior : 'unevaluated'} hookDecision=${verdict.decision} plugins=${JSON.stringify(hooked)}`)
+    }
+    if (protectedDecision && core.behavior === 'ask' &&
+      (decision.behavior === 'allow' ||
+        (decision.behavior === 'ask' && requiresExplicitUserApproval(why)))) decision = core
+    if (hookPermissionResult && decision.behavior !== 'deny') {
+      // Pre's deny/ask short-circuits the ordinary rules. An override must not
+      // erase a managed rule or safety prompt that that short-circuit hid.
+      const rules = await checkRuleBasedPermissions(tool, declarative.input, toolUseContext)
+      const reason = rules?.decisionReason
+      if (rules && ((reason?.type === 'rule' &&
+        ['policySettings', 'flagSettings'].includes(reason.rule.source)) || reason?.type === 'safetyCheck' ||
+        requiresExplicitUserApproval(reason)))
+        decision = rules
+    }
+    if (decision.behavior === 'ask' && requiresExplicitUserApproval(decision.decisionReason)) {
+      decision = await hasPermissionsToUseTool(
+        tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
+      )
+    }
+    if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
+      (requireCanUseTool || (requiresInteraction &&
+        !(hookPermissionResult?.behavior === 'allow' && hookPermissionResult.updatedInput !== undefined))))) {
+      decision = await canUseTool(tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
+        decision.behavior === 'ask' ? decision : undefined)
+    }
+    return { decision, input: declarative.input }
+  }
 
   if (hookPermissionResult?.behavior === 'allow') {
     const hookInput = hookPermissionResult.updatedInput ?? input
@@ -399,6 +946,12 @@ export async function resolveHookPermissionDecision(
       )
       return { decision: ruleCheck, input: hookInput }
     }
+    const forceDecision = requiresExplicitUserApproval(ruleCheck.decisionReason)
+      ? await hasPermissionsToUseTool(tool, hookInput, toolUseContext, assistantMessage, toolUseID)
+      : undefined
+    if (forceDecision?.behavior === 'deny') {
+      return { decision: forceDecision, input: hookInput }
+    }
     // ask rule — dialog required despite hook approval
     logForDebugging(
       `Hook approved tool use for ${tool.name}, but ask rule requires prompt`,
@@ -410,6 +963,7 @@ export async function resolveHookPermissionDecision(
         toolUseContext,
         assistantMessage,
         toolUseID,
+        forceDecision,
       ),
       input: hookInput,
     }
@@ -422,13 +976,24 @@ export async function resolveHookPermissionDecision(
 
   // No hook decision or 'ask' — normal permission flow, possibly with
   // forceDecision so the dialog shows the hook's ask message.
-  const forceDecision =
+  let forceDecision: PermissionDecision | undefined =
     hookPermissionResult?.behavior === 'ask' ? hookPermissionResult : undefined
   const askInput =
     hookPermissionResult?.behavior === 'ask' &&
     hookPermissionResult.updatedInput
       ? hookPermissionResult.updatedInput
       : input
+  if (forceDecision) {
+    const ruleCheck = await checkRuleBasedPermissions(tool, askInput, toolUseContext)
+    if (ruleCheck?.behavior === 'deny') {
+      return { decision: ruleCheck, input: askInput }
+    }
+    if (requiresExplicitUserApproval(ruleCheck?.decisionReason)) {
+      forceDecision = await hasPermissionsToUseTool(
+        tool, askInput, toolUseContext, assistantMessage, toolUseID,
+      )
+    }
+  }
   return {
     decision: await canUseTool(
       tool,
@@ -451,6 +1016,8 @@ export async function* runPreToolUseHooks(
   requestId: string | undefined,
   mcpServerType: McpServerType,
   mcpServerBaseUrl: string | undefined,
+  sourceScope: HookSourceScope = 'all',
+  managedPass?: ManagedPreToolUsePass,
 ): AsyncGenerator<
   | {
       type: 'message'
@@ -473,16 +1040,26 @@ export async function* runPreToolUseHooks(
   try {
     const appState = toolUseContext.getAppState()
 
-    for await (const result of executePreToolHooks(
-      tool.name,
-      toolUseID,
-      processedInput,
+    for await (const result of runClassicToolHooks(
       toolUseContext,
-      appState.toolPermissionContext.mode,
-      toolUseContext.abortController.signal,
-      undefined, // timeoutMs - use default
-      toolUseContext.requestPrompt,
-      tool.getToolUseSummary?.(processedInput),
+      tool,
+      'PreToolUse',
+      { ...processedInput, tool: tool.name, tool_use_id: toolUseID },
+      scope =>
+        executePreToolHooks(
+          tool.name,
+          toolUseID,
+          processedInput,
+          toolUseContext,
+          appState.toolPermissionContext.mode,
+          toolUseContext.abortController.signal,
+          undefined, // timeoutMs - use default
+          toolUseContext.requestPrompt,
+          tool.getToolUseSummary?.(processedInput),
+          scope,
+        ),
+      sourceScope,
+      managedPass,
     )) {
       try {
         if (result.message) {

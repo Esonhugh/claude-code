@@ -1,8 +1,20 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { sep } from 'node:path'
+import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
+import { createHash } from 'node:crypto'
+import { mkdir, readdir } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
+import type { PromptRequest, PromptResponse } from '../../types/hooks.js'
+import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import { recordDevModsConsent } from '../../utils/sessionStorage.js'
+import type { Tool, Tools } from '../../Tool.js'
+import type { Command } from '../../types/command.js'
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js'
+import type { SettingsJson } from '../../utils/settings/types.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
+import { subscribeRateLimitUsage } from '../claudeAiLimits.js'
+import { getSubscriptionType } from '../../utils/auth.js'
+import { seatNativeModPlugins } from './native.js'
+import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
 import {
@@ -13,23 +25,63 @@ import { subscribePluginRefresh } from '../../utils/plugins/cacheUtils.js'
 import {
   clearPluginCache,
   loadAllPluginsCacheOnly,
+  loadSessionOnlyPlugins,
+  mergePluginSources,
 } from '../../utils/plugins/pluginLoader.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import { getEnabledSettingSources } from '../../utils/settings/constants.js'
-import { getSettingsForSource } from '../../utils/settings/settings.js'
-import { prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import { getMdmSettings } from '../../utils/settings/mdm/settings.js'
+import {
+  getSettingsForSource,
+  getVouchedPolicySettings,
+  loadManagedFileSettings,
+  updateSettingsForSource,
+} from '../../utils/settings/settings.js'
+import {
+  validateUserConfig,
+  type UserConfigValues,
+} from '../../utils/plugins/mcpbHandler.js'
+import { getModPluginOrigin, prepareModPlugins, type PrepareModPluginsSettings } from './plugins.js'
+import {
+  getPluginStorageId,
+  resolvePluginOptions,
+  subscribePluginOptionsChange,
+} from '../../utils/plugins/pluginOptionsStorage.js'
+import type { ModConfigRowProvider } from './config.js'
+import type { ModUiPane, ModUiPresentation } from './ui.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { runModSessionReceive, type SessionReceiveInput, type SessionReceiveResult } from './receiveAdapter.js'
 import {
   createModsRuntime,
   type ModBinding,
   type ModDiagnostic,
+  type ModHostServices,
   type ModsRuntime,
 } from './runtime.js'
 
+export class ModAuthoringPromptDismissedError extends Error {
+  constructor() {
+    super('Mod authoring prompt dismissed')
+    this.name = 'ModAuthoringPromptDismissedError'
+  }
+}
+
 export type ModsSessionOptions = {
+  /** Skip plugin discovery/execution while retaining the local SDK UI engine. */
+  bare?: boolean
   /** The CLI supplies this only after its trust gate (print mode has implicit trust). */
   isTrusted: boolean
   getDisabledReason?: () => string | undefined
   loadPlugins?: () => Promise<readonly LoadedPlugin[]>
+  loadAuthoringPlugin?: (
+    path: string,
+  ) => Promise<
+    | LoadedPlugin
+    | { plugin: LoadedPlugin; errors: PluginError[] }
+    | undefined
+  >
+  authoringRoot?: (sessionId: string) => string
+  persistAuthoringConsent?: (root: string) => Promise<void>
   getSettings?: () => PrepareModPluginsSettings
   onDiagnostic?: (event: ModDiagnostic) => void
   createRuntime?: typeof createModsRuntime
@@ -42,6 +94,8 @@ export function createModsSession(options: ModsSessionOptions) {
   let runtime: ModsRuntime | undefined
   let binding: ModBinding | undefined
   let runtimeBound = false
+  const firstBinding = Promise.withResolvers<void>()
+  let receiveController = new AbortController()
   let setAppState: SetAppState | undefined
   let initialized = false
   let stopped = false
@@ -52,13 +106,95 @@ export function createModsSession(options: ModsSessionOptions) {
   let watcherClosing: Promise<void> = Promise.resolve()
   let publishedDiagnostics = false
   let roots: string[] = []
+  let unsubscribeUsage: (() => void) | undefined
   let unsubscribeSettings: (() => void) | undefined
   let unsubscribePlugins: (() => void) | undefined
+  let unsubscribeOptions: (() => void) | undefined
   let unregisterShutdown: (() => void) | undefined
   let unregisterCleanup: (() => void) | undefined
   let settingsKey: string | undefined
   let diagnostics: PluginError[] = []
   const reported = new Set<string>()
+  // Retired activations may still report errors after a token is rotated.
+  const diagnosticSecrets = new Set<string>()
+  let configPlugins: readonly LoadedPlugin[] = []
+  let authoringRoot: string | undefined
+  let restoredAuthoringRoot: string | undefined
+  let authoringRestorePending = false
+  let authoringEnabled = false
+  let authoringPending = false
+  let authoringGeneration = 0
+  let authoringConsent: Promise<{ enabled: boolean; root?: string }> | undefined
+  let authoringPrompt: ((request: PromptRequest, signal?: AbortSignal) => Promise<PromptResponse>) | undefined
+  let authoringRetryPending = false
+  let authoringRetry: Promise<void> | undefined
+  let authoringController = new AbortController()
+  const authoringPlugins = new Map<string, LoadedPlugin>()
+  let builtinConfigRows: ModHostServices['configRows']
+  const services: ModHostServices = {
+    configRows: async () => [
+      ...(await (builtinConfigRows?.() ?? [])),
+      ...pluginConfigRows(),
+    ],
+  }
+  const renderListeners = new Set<() => void>()
+  let renderSnapshot: { runtime: ModsRuntime; version: number } | undefined
+  let unsubscribeRender: (() => void) | undefined
+  const publishRender = () => {
+    renderSnapshot = !stopped && runtime ? { runtime, version: runtime.renderHooks.getSnapshot() } : undefined
+    for (const listener of renderListeners) listener()
+  }
+  const renderHooks = {
+    getSnapshot: () => renderSnapshot,
+    subscribe(listener: () => void) {
+      renderListeners.add(listener)
+      return () => { renderListeners.delete(listener) }
+    },
+  }
+  const uiListeners = new Set<() => void>()
+  const emptyPanes: readonly ModUiPane[] = Object.freeze([])
+  let unsubscribeUi: (() => void) | undefined
+  const ui = {
+    getSnapshot: () => runtime?.ui.getSnapshot() ?? emptyPanes,
+    subscribe(listener: () => void) {
+      uiListeners.add(listener)
+      return () => { uiListeners.delete(listener) }
+    },
+    render: (presentation: ModUiPresentation) => runtime?.ui.render(presentation, { nativeSites: false }) ?? Promise.resolve(),
+  }
+  const commandListeners = new Set<() => void>()
+  const emptyCommands: Command[] = []
+  let unsubscribeCommands: (() => void) | undefined
+  const commands = {
+    getSnapshot: () => stopped ? emptyCommands : runtime?.commands.getSnapshot() ?? emptyCommands,
+    subscribe(listener: () => void) {
+      commandListeners.add(listener)
+      return () => { commandListeners.delete(listener) }
+    },
+    projection: (existing: Command[]) => stopped ? existing : runtime?.commands.projection(existing) ?? existing,
+    describe: (existing: Command[]) => stopped ? Promise.resolve(existing) : runtime?.commands.describe(existing) ?? Promise.resolve(existing),
+  }
+
+  const toolListeners = new Set<() => void>()
+  const emptyTools: Tool[] = []
+  let unsubscribeTools: (() => void) | undefined
+  let unsubscribeAgents: (() => void) | undefined
+  function publishAgents() {
+    if (!setAppState || !runtime?.agents) return
+    setAppState(previous => {
+      const agentDefinitions = runtime!.agents.projection(previous.agentDefinitions)
+      return agentDefinitions === previous.agentDefinitions ? previous : {...previous, agentDefinitions}
+    })
+  }
+
+  const tools = {
+    getSnapshot: () => runtime?.tools?.getSnapshot() ?? emptyTools,
+    subscribe(listener: () => void) {
+      toolListeners.add(listener)
+      return () => { toolListeners.delete(listener) }
+    },
+    projection: (existing: Tools) => runtime?.tools?.projection(existing) ?? existing,
+  }
 
   const readSettings =
     options.getSettings ??
@@ -66,6 +202,9 @@ export function createModsSession(options: ModsSessionOptions) {
       userSettings: getSettingsForSource('userSettings'),
       flagSettings: getSettingsForSource('flagSettings'),
       policySettings: getSettingsForSource('policySettings'),
+      policyPluginOrdering: getVouchedPolicySettings(),
+      subscriptionType: getSubscriptionType(),
+      hasManagedSettings: getMdmSettings().errors.length > 0 || loadManagedFileSettings().errors.length > 0,
       enabledOptionSources: {
         user: getEnabledSettingSources().includes('userSettings'),
         flag: getEnabledSettingSources().includes('flagSettings'),
@@ -78,6 +217,103 @@ export function createModsSession(options: ModsSessionOptions) {
   const loadPlugins =
     options.loadPlugins ??
     (async () => (await loadAllPluginsCacheOnly()).enabled)
+
+  function pluginConfigRows(): ModConfigRowProvider[] {
+    const settings = readSettings()
+    return configPlugins
+      .filter(plugin => plugin.enabled !== false)
+      .flatMap(plugin => {
+        const storageId = getPluginStorageId(plugin)
+        const usesInlineName =
+          storageId.endsWith('@inline') &&
+          [
+            settings.userSettings,
+            settings.flagSettings,
+            settings.policySettings,
+          ].some(
+            source => source?.pluginConfigs?.[plugin.name] !== undefined,
+          )
+        const configId = usesInlineName ? plugin.name : storageId
+        const readOptions = (source: SettingsJson | null) =>
+          Object.assign(
+            {},
+            storageId.endsWith('@inline')
+              ? source?.pluginConfigs?.[plugin.name]?.options
+              : undefined,
+            source?.pluginConfigs?.[storageId]?.options,
+          )
+        const saved = Object.assign(
+          {},
+          settings.enabledOptionSources?.user === false
+            ? {}
+            : readOptions(settings.userSettings),
+          settings.enabledOptionSources?.flag === false
+            ? {}
+            : readOptions(settings.flagSettings),
+          readOptions(settings.policySettings),
+        )
+        const schema = plugin.manifest.userConfig ?? {}
+        const values = resolvePluginOptions(schema, saved)
+
+        return Object.entries(schema).map(
+          ([key, field]): ModConfigRowProvider => {
+            const storedValue = (value: ModConfigRowProvider['value']) =>
+              (Array.isArray(value) ? [...value] : value) as UserConfigValues[string]
+            return {
+            key: `${plugin.name}.${key}`,
+            label: field.title || key,
+            ...(field.description === undefined
+              ? {}
+              : { description: field.description }),
+            kind:
+              field.type === 'boolean'
+                ? 'boolean'
+                : field.type === 'number'
+                  ? 'number'
+                  : field.options
+                    ? 'choice'
+                    : 'text',
+            value: field.sensitive
+              ? ''
+              : field.multiple &&
+                  (values[key] === undefined || values[key] === '')
+                ? []
+                : values[key] ?? '',
+            ...(field.options === undefined ? {} : { options: field.options }),
+            provider: getModPluginOrigin(plugin, settings),
+            isLocked: Object.hasOwn(
+              settings.policySettings?.pluginConfigs?.[configId]?.options ?? {},
+              key,
+            ),
+            ...(field.sensitive
+              ? {}
+              : {
+                  validate: value => {
+                    const result = validateUserConfig(
+                      { [key]: storedValue(value) },
+                      { [key]: field },
+                    )
+                    return result.valid
+                      ? undefined
+                      : result.errors.join('; ')
+                  },
+                  set: value => {
+                    const result = updateSettingsForSource('userSettings', {
+                      pluginConfigs: {
+                        [configId]: {
+                          options: { [key]: storedValue(value) },
+                        },
+                      },
+                    })
+                    if (result.error) throw result.error
+                    scheduleRefresh()
+                  },
+                }),
+            }
+          },
+        )
+      })
+  }
 
   function publishDiagnostics() {
     if (!setAppState || (!publishedDiagnostics && diagnostics.length === 0))
@@ -98,15 +334,31 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   function diagnostic(event: ModDiagnostic) {
+    const redact = (value: string) => {
+      for (const secret of [...diagnosticSecrets].sort((a, b) => b.length - a.length)) value = value.replaceAll(secret, '[REDACTED]')
+      return value
+    }
+    event = { ...event, message: redact(event.message) }
     const key = `${event.plugin}:${event.stage}:${event.message}`
-    if (reported.has(key)) return
+    if (reported.has(key) && !event.workerFault) return
     reported.add(key)
     // Do not serialize settings, options, event input or stack traces here.
     const text = `[Mods] ${event.plugin} (${event.stage}): ${event.message}`
       .replace(/[\r\n]/g, ' ')
       .replaceAll(String.fromCharCode(27), ' ')
     process.stderr.write(text + '\n')
-    logForDebugging(text)
+    const fault = event.workerFault
+    logForDebugging(text + (fault ? ` workerFault=${JSON.stringify({
+      cause: fault.cause, workerAgeMs: fault.workerAgeMs, pendingRequests: fault.pendingRequests,
+      ...(fault.pingAgeMs === undefined ? {} : {pingAgeMs:fault.pingAgeMs}),
+      ...(fault.culprit && {culprit: {
+        environment:fault.culprit.environment, plugin:redact(fault.culprit.plugin), storageId:redact(fault.culprit.storageId),
+        evidence:fault.culprit.evidence, stage:fault.culprit.stage,
+        ...(fault.culprit.requestId === undefined ? {} : {requestId:fault.culprit.requestId}),
+        ...(fault.culprit.settledRequestId === undefined ? {} : {settledRequestId:fault.culprit.settledRequestId}),
+        ...(fault.culprit.handle === undefined ? {} : {handle:fault.culprit.handle}),
+      }}),
+    })}` : ''))
     diagnostics.push({
       type: 'generic-error',
       source: `plugin:mods:${event.plugin}`,
@@ -126,45 +378,67 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   function relevantSettings(settings: PrepareModPluginsSettings): string {
-    return JSON.stringify([
+    return createHash('sha256').update(JSON.stringify([
       ...[
         settings.userSettings,
         settings.flagSettings,
         settings.policySettings,
       ].map(source => ({
         enabledPlugins: source?.enabledPlugins,
+        prependPlugins: source?.prependPlugins,
+        appendPlugins: source?.appendPlugins,
         pluginConfigs: source?.pluginConfigs,
         disableAllHooks: source?.disableAllHooks,
         allowManagedHooksOnly: source?.allowManagedHooksOnly,
       })),
+      settings.hasManagedSettings === true || (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0),
       settings.policySettings?.hooks,
       settings.policySettings?.strictPluginOnlyCustomization,
       settings.hookPolicy,
+      settings.subscriptionType,
       settings.enabledOptionSources,
+      settings.policyPluginOrdering,
       options.getDisabledReason?.(),
-    ])
+    ])).digest('hex')
   }
 
-  function scheduleRefresh() {
-    if (stopped) return
+  function authoringOwns(path: string): boolean {
+    if (!authoringEnabled || !authoringRoot) return false
+    const child = relative(authoringRoot, path)
+    return child === '' || (!child.startsWith(`..${sep}`) && child !== '..' && !isAbsolute(child))
+  }
+
+  function deferAuthoringRefresh(): boolean {
+    if (!runtime?.activePublicTurnId) return false
+    authoringPending = true
+    return true
+  }
+
+  function scheduleRefresh(authoringChange = false) {
+    if (stopped || (authoringChange && deferAuthoringRefresh())) return
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
       timer = undefined
-      void refresh().catch(() => {}) // refresh reports the stage, not raw input
+      void refresh(undefined, authoringChange).catch(() => {}) // refresh reports the stage, not raw input
     }, 150)
     timer.unref?.()
   }
 
   async function watchPlugins(plugins: readonly LoadedPlugin[]) {
-    const nextRoots = [
-      ...new Set(
-        plugins
-          .filter(plugin =>
-            plugin.hookModules?.some(group => group.paths.length),
+    const watchEnabled = binding?.isInteractive || process.env.CLAUDE_CODE_PLUGIN_DIR_WATCH === '1'
+    const nextRoots = watchEnabled ? [
+      ...new Set([
+        ...(authoringEnabled && authoringRoot ? [authoringRoot] : []),
+        ...plugins
+          .filter(
+            plugin =>
+              plugin.isBuiltin !== true &&
+              !authoringOwns(plugin.path) &&
+              plugin.hookModules?.some(group => group.paths.length),
           )
           .map(plugin => plugin.path),
-      ),
-    ].sort()
+      ]),
+    ].sort() : []
     if (
       nextRoots.length === roots.length &&
       nextRoots.every((root, index) => root === roots[index])
@@ -184,16 +458,20 @@ export function createModsSession(options: ModsSessionOptions) {
       usePolling: true,
       interval: 500,
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
-      ignored: (path, stats) =>
-        path.split(sep).includes('.git') ||
-        Boolean(stats && !stats.isFile() && !stats.isDirectory()),
+      // Only module sources and JSON (hooks.json, plugin.json) can change a declaration.
+      ignored: (path, stats) => {
+        const root = roots.find(root => path === root || path.startsWith(root + sep))
+        return (root === undefined ? path : relative(root, path)).split(sep).some(part => part === '.git' || part === 'node_modules') ||
+          Boolean(stats && !stats.isFile() && !stats.isDirectory()) ||
+          Boolean(stats?.isFile() && extname(path) !== '.json' && !esmModuleExtensions.includes(extname(path)))
+      },
     })
-    watcher.on('all', () => {
+    watcher.on('all', (_event, path: string) => {
       // Invalidate the declaration cache only on an actual owned-file change,
       // never on polling ticks. This picks up imports and hooks.json changes.
       if (stopped) return
       clearPluginCache()
-      scheduleRefresh()
+      scheduleRefresh(authoringOwns(path))
     })
     watcher.on('error', () =>
       diagnostic({
@@ -205,20 +483,113 @@ export function createModsSession(options: ModsSessionOptions) {
     )
   }
 
-  async function reconcile(plugins?: readonly LoadedPlugin[]) {
+  async function loadAuthoringChildren(
+    enabledPlugins: SettingsJson['enabledPlugins'],
+  ): Promise<PluginError[]> {
+    if (!authoringEnabled || !authoringRoot) return []
+    let children: string[]
+    try {
+      children = (await readdir(authoringRoot, { withFileTypes: true }))
+        .filter(entry => entry.isDirectory() && !entry.isSymbolicLink())
+        .map(entry => join(authoringRoot!, entry.name))
+        .sort()
+    } catch (error) {
+      return [{
+        type: 'generic-error',
+        source: 'plugin:mods:host',
+        plugin: 'host',
+        error: `authoring: Unable to read this session's Mods folder: ${error instanceof Error ? error.message : String(error)}`,
+      }]
+    }
+    const next = new Map<string, LoadedPlugin>()
+    const errors: PluginError[] = []
+    if (!options.loadAuthoringPlugin) {
+      const loaded = await loadSessionOnlyPlugins(children, enabledPlugins)
+      for (const plugin of loaded.plugins) next.set(plugin.path, plugin)
+      errors.push(...loaded.errors)
+    } else {
+      for (const child of children) {
+        try {
+          const result = await options.loadAuthoringPlugin(child)
+          if (!result) continue
+          const loaded = 'plugin' in result ? result.plugin : result
+          if ('plugin' in result) errors.push(...result.errors)
+          loaded.source = `${loaded.name}@inline`
+          loaded.repository = loaded.source
+          loaded.enabled = enabledPlugins?.[loaded.source] !== false
+          next.set(child, loaded)
+        } catch (error) {
+          errors.push({
+            type: 'generic-error',
+            source: `${basename(child)}@inline`,
+            plugin: basename(child),
+            error: `authoring: ${error instanceof Error ? error.message : String(error)}`,
+          })
+        }
+      }
+    }
+    authoringPlugins.clear()
+    for (const [path, plugin] of next) authoringPlugins.set(path, plugin)
+    return errors
+  }
+
+  function effectiveEnabledPlugins(
+    settings: PrepareModPluginsSettings,
+  ): SettingsJson['enabledPlugins'] {
+    return Object.assign(
+      {},
+      settings.userSettings?.enabledPlugins,
+      settings.flagSettings?.enabledPlugins,
+      settings.policySettings?.enabledPlugins,
+    )
+  }
+
+  function managedPluginNames(settings: PrepareModPluginsSettings): Set<string> | null {
+    const names = new Set<string>()
+    for (const [pluginId, value] of Object.entries(
+      settings.policySettings?.enabledPlugins ?? {},
+    )) {
+      if (typeof value !== 'boolean' || !pluginId.includes('@')) continue
+      const name = pluginId.split('@')[0]
+      if (name) names.add(name)
+    }
+    return names.size > 0 ? names : null
+  }
+
+  async function reconcile(plugins?: readonly LoadedPlugin[], deferAuthoring = false) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
     const policy = settings.policySettings
-    const managedToolHooks = !settings.hookPolicy.allDisabled && policy?.disableAllHooks !== true
-      && [...(policy?.hooks?.PreToolUse ?? []), ...(policy?.hooks?.PostToolUse ?? [])].some(group => group.hooks.length > 0)
     const disabled = options.getDisabledReason?.()
-      ?? (managedToolHooks ? 'Mods with managed tool hooks are unsupported; external Mods are not activated' : undefined)
-      ?? (policy?.allowManagedHooksOnly || policy?.strictPluginOnlyCustomization
+      ?? (policy?.strictPluginOnlyCustomization
         ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
-    const loaded = plugins ?? (await loadPlugins())
+    const configured = options.bare ? [] : plugins ?? (await loadPlugins())
+    const authoringErrors = deferAuthoring || options.bare
+      ? []
+      : await loadAuthoringChildren(effectiveEnabledPlugins(settings))
     if (stopped || isShuttingDown()) return
+    const { plugins: loaded, errors: mergeErrors } = mergePluginSources({
+      session: options.bare ? [] : [...authoringPlugins.values()],
+      marketplace: configured.filter(plugin => plugin.isBuiltin !== true),
+      builtin: configured.filter(plugin => plugin.isBuiltin === true),
+      managedNames: managedPluginNames(settings),
+    })
+    configPlugins = loaded
     const prepared = prepareModPlugins(loaded, settings)
-    diagnostics = []
+    for (const input of prepared.inputs) {
+      const schema = loaded.find(plugin => getPluginStorageId(plugin) === input.storageId)?.manifest.userConfig
+      for (const [key, field] of Object.entries(schema ?? {})) {
+        if (!field.sensitive) continue
+        const value = input.options?.[key]
+        for (const secret of Array.isArray(value) ? value : [value]) {
+          if (secret !== undefined && String(secret) !== '') diagnosticSecrets.add(String(secret))
+        }
+      }
+    }
+    const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
+      .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
+    services.pluginOrigin = storageId => origins.get(storageId)
+    diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
     for (const error of prepared.errors) diagnostic(error)
     if (
@@ -229,12 +600,42 @@ export function createModsSession(options: ModsSessionOptions) {
     ) {
       diagnostic({ plugin: 'host', stage: 'unsupported', message: disabled })
     }
-    const inputs = disabled ? [] : prepared.inputs
-    if (!runtime && inputs.length > 0) {
-      runtime = (options.createRuntime ?? createModsRuntime)({
+    const inputs = disabled || options.bare ? [] : seatNativeModPlugins(prepared.inputs, settings)
+    const hasConfigRows = loaded.some(
+      plugin =>
+        plugin.enabled !== false &&
+        !plugin.hookModules?.some(group => group.paths.length) &&
+        Object.keys(plugin.manifest.userConfig ?? {}).length > 0,
+    )
+    if (!runtime && !disabled && (options.bare || inputs.length > 0 || hasConfigRows)) {
+      const created = (options.createRuntime ?? createModsRuntime)({
         onDiagnostic: diagnostic,
+        services,
       })
-      unregisterShutdown = registerModsHostDisposer(dispose)
+      if (binding) await created.bind(binding)
+      if (stopped) {
+        await created.dispose()
+        return
+      }
+      runtime = created
+      unsubscribeRender = runtime.renderHooks.subscribe(publishRender)
+      publishRender()
+      runtimeBound = binding !== undefined
+      unsubscribeUi = runtime.ui.subscribe(() => {
+        for (const listener of uiListeners) listener()
+      })
+      unsubscribeCommands = runtime.commands.subscribe(() => {
+        for (const listener of commandListeners) listener()
+      })
+      unsubscribeAgents = runtime.agents?.subscribe(publishAgents)
+      unsubscribeTools = runtime.tools?.subscribe(() => {
+        for (const listener of toolListeners) listener()
+      })
+      unregisterShutdown = registerModsHostDisposer(
+        dispose,
+        (reason, timeoutMs, sessionId) =>
+          runtime!.endSession(reason, timeoutMs, sessionId),
+      )
     }
     if (runtime) {
       // A clear can bind the runtime directly through ToolUseContext. Do not
@@ -252,21 +653,57 @@ export function createModsSession(options: ModsSessionOptions) {
       publishDiagnostics()
   }
 
-  function refresh(plugins?: readonly LoadedPlugin[]): Promise<void> {
+  function authoringRequestIsCurrent(
+    sessionId: string,
+    generation: number,
+    signal: AbortSignal,
+  ): boolean {
+    return !stopped && !signal.aborted && generation === authoringGeneration && binding?.sessionId === sessionId
+  }
+
+  async function enableAuthoring(
+    root: string,
+    sessionId: string,
+    generation: number,
+    signal: AbortSignal,
+  ): Promise<boolean> {
+    signal.throwIfAborted()
+    await mkdir(root, { recursive: true, mode: 0o700 })
+    signal.throwIfAborted()
+    if (!authoringRequestIsCurrent(sessionId, generation, signal)) return false
+    await (options.persistAuthoringConsent ?? recordDevModsConsent)(root)
+    signal.throwIfAborted()
+    if (!authoringRequestIsCurrent(sessionId, generation, signal)) return false
+    authoringRoot = root
+    authoringEnabled = true
+    if (deferAuthoringRefresh()) return true
+    await refresh()
+    if (!authoringRequestIsCurrent(sessionId, generation, signal)) {
+      authoringRoot = undefined
+      authoringEnabled = false
+      authoringPlugins.clear()
+      return false
+    }
+    return true
+  }
+
+  function refresh(plugins?: readonly LoadedPlugin[], authoringChange = false): Promise<void> {
     if (stopped || isShuttingDown() || !options.isTrusted) return Promise.resolve()
+    if (authoringChange && deferAuthoringRefresh()) return Promise.resolve()
     initialize()
     if (timer) clearTimeout(timer)
     timer = undefined
+    const deferAuthoring = deferAuthoringRefresh()
     return enqueue(async () => {
       try {
-        await reconcile(plugins)
+        await reconcile(plugins, deferAuthoring)
       } catch (error) {
         if (!stopped)
           diagnostic({
             plugin: 'host',
             stage: 'refresh',
             message:
-              'Unable to refresh Mods; the current runtime is retained. Use /reload-plugins to retry.',
+              'Unable to refresh Mods. Use /reload-plugins to retry.',
           })
         throw error
       }
@@ -277,12 +714,15 @@ export function createModsSession(options: ModsSessionOptions) {
     if (initialized || stopped || !options.isTrusted) return
     initialized = true
     unregisterCleanup = registerCleanup(dispose)
+    unsubscribeUsage = subscribeRateLimitUsage(() => { if (!stopped) void runtime?.measure() })
     unsubscribePlugins = subscribePluginRefresh(plugins => {
       if (plugins) return refresh(plugins)
       scheduleRefresh()
     })
+    unsubscribeOptions = subscribePluginOptionsChange(scheduleRefresh)
     unsubscribeSettings = settingsChangeDetector.subscribe(() => {
       if (stopped) return
+      runtime?.config.refresh()
       const nextKey = relevantSettings(readSettings())
       if (nextKey !== settingsKey) {
         settingsKey = nextKey
@@ -292,13 +732,132 @@ export function createModsSession(options: ModsSessionOptions) {
     })
   }
 
+  async function requestAuthoringConsent(
+    requestPrompt: (
+      request: PromptRequest,
+      signal?: AbortSignal,
+    ) => Promise<PromptResponse>,
+    signal: AbortSignal,
+  ): Promise<{ enabled: boolean; root?: string }> {
+    if (stopped || options.bare || !options.isTrusted || options.getDisabledReason?.() || !binding?.isInteractive)
+      return { enabled: false }
+    authoringPrompt = requestPrompt
+    if (authoringEnabled && authoringRoot)
+      return { enabled: true, root: authoringRoot }
+    if (authoringConsent) return authoringConsent
+    const generation = authoringGeneration
+    const consent = (async () => {
+      const sessionId = binding.sessionId
+      const root =
+        options.authoringRoot?.(sessionId) ??
+        join(getClaudeConfigHomeDir(), 'dev-mods', sessionId)
+      let expanded = false
+      for (let attempt = 0; attempt < 3; attempt++) {
+        signal.throwIfAborted()
+        if (!authoringRequestIsCurrent(sessionId, generation, signal))
+          return { enabled: false }
+        const timing = runtime?.activePublicTurnId
+          ? 'when this turn ends'
+          : 'now'
+        const message = expanded
+          ? [
+              `Mods live in this session's folder (${root}).`,
+              'A mod is code Claude wrote; it runs with your permissions.',
+              `Enable: they load ${timing} and reload when their files change.`,
+              'Enable holds for this session, also after a restart.',
+              'Not now: they stay unloaded until this session next starts.',
+              '/plugin lists what loaded and turns it off.',
+            ].join('\n')
+          : `Enable hot reloading for this session?\n\nMods in this session's folder (${root}) load ${timing} and reload when their files change. They run with your permissions.`
+        const response = await requestPrompt(
+          {
+            prompt: 'mod_hot_reload',
+            message,
+            options: [
+              { key: 'explain', label: 'How does this work?' },
+              { key: 'enable', label: 'Enable for this session' },
+              { key: 'decline', label: 'Not now' },
+            ],
+          },
+          signal,
+        )
+        signal.throwIfAborted()
+        if (!authoringRequestIsCurrent(sessionId, generation, signal))
+          return { enabled: false }
+        if (response.selected === 'explain') {
+          expanded = true
+          continue
+        }
+        authoringRetryPending = false
+        if (response.selected !== 'enable') return { enabled: false }
+        return await enableAuthoring(root, sessionId, generation, signal)
+          ? { enabled: true, root }
+          : { enabled: false }
+      }
+      return { enabled: false }
+    })()
+    authoringConsent = consent
+    try {
+      return await consent
+    } catch (error) {
+      if (signal.aborted || error instanceof ModAuthoringPromptDismissedError) {
+        authoringRetryPending = true
+      } else {
+        diagnostic({
+          plugin: 'host',
+          stage: 'authoring-consent',
+          message: `Unable to request Mod authoring consent: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      }
+      throw error
+    } finally {
+      if (authoringConsent === consent) authoringConsent = undefined
+    }
+  }
+
+  function scheduleAuthoringRetry() {
+    if (authoringRetry || !authoringRetryPending || !authoringPrompt || stopped || !binding?.isInteractive)
+      return
+    authoringRetryPending = false
+    const prompt = authoringPrompt
+    const signal = authoringController.signal
+    const retry = requestAuthoringConsent(prompt, signal)
+      .then(() => {})
+      .catch(error => {
+        if (signal.aborted || error instanceof ModAuthoringPromptDismissedError) return
+        diagnostic({
+          plugin: 'host',
+          stage: 'authoring-consent',
+          message: `Unable to request Mod authoring consent: ${error instanceof Error ? error.message : String(error)}`,
+        })
+      })
+      .finally(() => {
+        if (authoringRetry === retry) authoringRetry = undefined
+      })
+    authoringRetry = retry
+  }
+
   function dispose(): Promise<void> {
     if (disposal) return disposal
     stopped = true
+    publishRender()
+    unsubscribeRender?.()
+    renderListeners.clear()
+    for (const listener of commandListeners) listener()
+    authoringGeneration++
+    authoringConsent = undefined
+    authoringPrompt = undefined
+    authoringRetryPending = false
+    authoringController.abort(new Error('Mods session disposed'))
+    authoringPending = false
+    receiveController.abort(new Error('Mods session disposed'))
+    firstBinding.resolve()
     if (timer) clearTimeout(timer)
     timer = undefined
+    unsubscribeUsage?.()
     unsubscribeSettings?.()
     unsubscribePlugins?.()
+    unsubscribeOptions?.()
     const close = Promise.all([watcherClosing, watcher?.close()])
     watcher = undefined
     // Close watchers before the first awaited runtime teardown. Async loads and
@@ -311,6 +870,14 @@ export function createModsSession(options: ModsSessionOptions) {
           await runtime?.dispose()
         } finally {
           await queue
+          diagnosticSecrets.clear()
+          unsubscribeUi?.()
+          uiListeners.clear()
+          unsubscribeCommands?.()
+          commandListeners.clear()
+          unsubscribeAgents?.()
+          unsubscribeTools?.()
+          toolListeners.clear()
           unregisterShutdown?.()
           unregisterCleanup?.()
         }
@@ -320,12 +887,26 @@ export function createModsSession(options: ModsSessionOptions) {
   }
 
   return {
+    commands,
+    isDiffOwned: () => !stopped && (runtime?.isDiffOwned() ?? false),
+    tools,
+    ui,
+    renderHooks,
     get runtime() {
       return stopped ? undefined : runtime
     },
+    /** A service an earlier bind installed, so a nested host (QueryEngine under print) can keep it. */
+    hostService<K extends keyof ModHostServices>(key: K): ModHostServices[K] {
+      return services[key]
+    },
     /** Await before processing a prompt, including slash commands that fork. */
-    async bind(next: ModBinding, updateState?: SetAppState): Promise<void> {
+    async bind(next: ModBinding, updateState?: SetAppState, hostServices?: ModHostServices): Promise<void> {
       if (stopped || !options.isTrusted) return
+      if (hostServices) {
+        const { configRows, ...rest } = hostServices
+        if (configRows) builtinConfigRows = configRows
+        Object.assign(services, rest)
+      }
       if (updateState) setAppState = updateState
       const changed =
         !binding ||
@@ -333,17 +914,96 @@ export function createModsSession(options: ModsSessionOptions) {
           key =>
             next[key as keyof ModBinding] !== binding![key as keyof ModBinding],
         )
+      if (binding && binding.sessionId !== next.sessionId) {
+        receiveController.abort(new Error('Mods session changed'))
+        receiveController = new AbortController()
+        authoringGeneration++
+        authoringConsent = undefined
+        authoringPrompt = undefined
+        authoringRetryPending = false
+        authoringController.abort(new Error('Mods session changed'))
+        authoringController = new AbortController()
+        authoringRoot = undefined
+        authoringEnabled = false
+        authoringPending = false
+        authoringPlugins.clear()
+      }
       binding = next
+      const authoringRestoreRequested = authoringRestorePending
+      if (authoringRestorePending) {
+        const expected =
+          options.authoringRoot?.(next.sessionId) ??
+          join(getClaudeConfigHomeDir(), 'dev-mods', next.sessionId)
+        if (restoredAuthoringRoot === expected) {
+          authoringRoot = restoredAuthoringRoot
+          authoringEnabled = true
+        }
+        restoredAuthoringRoot = undefined
+        authoringRestorePending = false
+      }
       if (changed) runtimeBound = false
       const first = !initialized
       initialize()
-      if (first || timer) await refresh()
-      else if (changed && runtime)
-        await enqueue(async () => {
-          await runtime!.bind(next)
-          runtimeBound = true
-        })
-      else await queue
+      try {
+        if (first || timer || authoringRestoreRequested) await refresh()
+        else if (runtime)
+          await enqueue(async () => {
+            await runtime!.bind(next)
+            runtimeBound = true
+          })
+        else await queue
+      } finally {
+        // A failed first refresh must not hold inbound messages forever.
+        firstBinding.resolve()
+      }
+      publishAgents()
+    },
+    async receive(input: SessionReceiveInput, admit: (input: SessionReceiveInput) => void | SessionReceiveResult | Promise<void | SessionReceiveResult>, signal?: AbortSignal) {
+      const lifetime = receiveController.signal
+      const combined = createCombinedAbortSignal(signal, { signalB: lifetime })
+      let abort: (() => void) | undefined
+      let snapshot: ReturnType<ModsRuntime['capture']> | undefined
+      try {
+        combined.signal.throwIfAborted()
+        // A disabled host (remote/SSH) never binds, so there is no runtime to wait for.
+        if (options.isTrusted && !options.getDisabledReason?.()) {
+          const aborted = new Promise<never>((_, reject) => {
+            abort = () => reject(combined.signal.reason)
+            combined.signal.addEventListener('abort', abort, { once: true })
+          })
+          await Promise.race([firstBinding.promise, aborted])
+          await Promise.race([queue, aborted])
+        }
+        combined.signal.throwIfAborted()
+        snapshot = runtime?.capture()
+        return await runModSessionReceive(snapshot, input, admit, combined.signal)
+      } catch (error) {
+        signal?.throwIfAborted()
+        lifetime.throwIfAborted()
+        throw error
+      } finally {
+        if (abort) combined.signal.removeEventListener('abort', abort)
+        snapshot?.release()
+        combined.cleanup()
+      }
+    },
+    requestAuthoringConsent,
+    async finishTurn(): Promise<void> {
+      if (authoringPending) {
+        authoringPending = false
+        await refresh()
+      }
+      scheduleAuthoringRetry()
+    },
+    restoreAuthoringConsent(root: string | undefined): void {
+      restoredAuthoringRoot = root
+      authoringRestorePending = true
+      if (!root) {
+        authoringRoot = undefined
+        authoringEnabled = false
+        authoringPending = false
+        authoringPlugins.clear()
+      }
     },
     refresh,
     dispose,

@@ -1,7 +1,9 @@
+import { parkAgentForChildren } from './backgroundOwner.js'
 import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js'
 import type {
+  AssistantMessage,
   Message as MessageType,
   NormalizedUserMessage,
 } from 'src/types/message.js'
@@ -10,6 +12,7 @@ import { z } from 'zod/v4'
 import {
   clearInvokedSkillsForAgent,
   getSdkAgentProgressSummariesEnabled,
+  getIsNonInteractiveSession,
 } from '../../bootstrap/state.js'
 import {
   enhanceSystemPromptWithEnvDetails,
@@ -18,6 +21,9 @@ import {
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { restoreModAgentSpawnInput, validateModAgentSpawnInput } from '../../services/mods/agents.js'
+import { isAgentOffered, providerForAgent } from '../../services/mods/agentOffer.js'
+import type { ModInput } from '../../services/mods/types.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -47,12 +53,15 @@ import {
   registerRemoteAgentTask,
 } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js'
 import { assembleToolPool } from '../../tools.js'
-import { asAgentId } from '../../types/ids.js'
+import { asAgentId, toAgentId } from '../../types/ids.js'
 import { runWithAgentContext } from '../../utils/agentContext.js'
+import { assertSubagentCapacity, takeSubagentConcurrencySlot } from '../../utils/subagentConcurrency.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { EFFORT_LEVELS, getDefaultEffortForModel, type EffortValue } from '../../utils/effort.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
 import { AbortError, errorMessage, toError } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -63,6 +72,8 @@ import {
   normalizeMessages,
 } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
+import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
+import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
 import { permissionModeSchema } from '../../utils/permissions/PermissionMode.js'
 import {
   isPlanModeAvailable,
@@ -71,7 +82,7 @@ import {
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
-import { writeAgentMetadata } from '../../utils/sessionStorage.js'
+import { clearAgentMetadataWorktree } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
@@ -103,9 +114,10 @@ import {
   getLastToolUseName,
   resolveAgentTools,
   runAsyncAgentLifecycle,
+  reportObservedAgentProgress,
 } from './agentToolUtils.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { resolveAgentType } from './agentTypeResolver.js'
+import { normalizeAgentType, resolveAgentType } from './agentTypeResolver.js'
 import {
   getAvailableMcpServerNames,
   getMissingRequiredMcpServers,
@@ -119,6 +131,7 @@ import {
   buildForkedMessages,
   buildWorktreeNotice,
   FORK_AGENT,
+  getForkAgentAvailability,
   isForkSubagentEnabled,
   isInForkChild,
 } from './forkSubagent.js'
@@ -131,6 +144,7 @@ import { getPrompt } from './prompt.js'
 import { runAgent } from './runAgent.js'
 import {
   applyRequestedAgentPermissionMode,
+  resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
 import {
@@ -203,16 +217,23 @@ const baseInputSchema = lazySchema(() =>
       .optional()
       .describe('The type of specialized agent to use for this task'),
     model: z
-      .enum(['sonnet', 'opus', 'haiku'])
+      .string()
+      .min(1)
       .optional()
       .describe(
-        "Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent.",
+        "Optional model override: an alias (sonnet, opus, haiku), a full model ID, or inherit. Takes precedence over the agent definition's model frontmatter. CLAUDE_CODE_SUBAGENT_MODEL takes precedence over this override. If omitted, uses the agent definition's model or the default agent/teammate selection.",
+      ),
+    effort: z
+      .union([z.enum(EFFORT_LEVELS), z.number().int()])
+      .optional()
+      .describe(
+        "Optional reasoning effort override. Takes precedence over the agent definition's effort. If omitted, uses the agent definition's effort or inherits the caller's effort. The session effort environment override still applies.",
       ),
     run_in_background: z
       .boolean()
       .optional()
       .describe(
-        'Set to true to run this agent in the background. You will be notified when it completes.',
+        'Agents run in the background by default. Set to false to wait in the foreground. You will be notified when a background agent completes.',
       ),
   }),
 )
@@ -221,8 +242,12 @@ const baseInputSchema = lazySchema(() =>
 const fullInputSchema = lazySchema(() => {
   // Multi-agent parameters
   const multiAgentInputSchema = z.object({
+    // Same rule as official: resumeInProcessTeammate only restores names in
+    // this shape, so spawn refuses the rest. An empty name still means none.
     name: z
       .string()
+      .regex(/^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63})?$/, { message: 'name must start with a letter or digit and contain only letters, digits, underscores, or hyphens (max 64 chars)' })
+      .refine(name => !['main', 'team-lead', 'user', 'system'].includes(name.toLowerCase()) && toAgentId(name.toLowerCase()) === null, { message: 'name must not be a reserved name ("main", "team-lead", "user" or "system", in any spelling) or have the shape of an agent id — those already address an agent directly' })
       .optional()
       .describe(
         'Name for the spawned agent. Makes it addressable via SendMessage({to: name}) while running.',
@@ -266,44 +291,59 @@ const fullInputSchema = lazySchema(() => {
 // (field type collapses to `unknown`). The ternary return produces a union
 // type, but call() destructures via the explicit AgentToolInput type below
 // which always includes all optional fields.
-const planEnabledInputSchema = lazySchema(() => {
-  const schema = feature('KAIROS')
-    ? fullInputSchema()
-    : fullInputSchema().omit({ cwd: true })
-
-  // GrowthBook-in-lazySchema is acceptable here (unlike subagent_type, which
-  // was removed in 906da6c723): the divergence window is one-session-per-
-  // gate-flip via _CACHED_MAY_BE_STALE disk read, and worst case is either
-  // "schema shows a no-op param" (gate flips on mid-session: param ignored
-  // by forceAsync) or "schema hides a param that would've worked" (gate
-  // flips off mid-session: everything still runs async via memoized
-  // forceAsync). No Zod rejection, no crash — unlike required→optional.
+const planEnabledSchema = lazySchema(() => feature('KAIROS')
+  ? fullInputSchema()
+  : fullInputSchema().omit({ cwd: true }))
+const backgroundDisabledInputSchema = lazySchema(() => planEnabledSchema().omit({ run_in_background: true }))
+const planDisabledSchema = lazySchema(() => planEnabledSchema().extend({
+  mode: permissionModeSchema()
+    .exclude(['plan'])
+    .optional()
+    .describe('Permission mode for spawned teammate. Omit to inherit the caller mode. A bypassPermissions caller always remains bypassPermissions.'),
+}))
+const planAndBackgroundDisabledInputSchema = lazySchema(() => planDisabledSchema().omit({ run_in_background: true }))
+// Cache schema variants, not the startup decision: imports can request the
+// schema before CLI bootstrap sets the session's interactive mode.
+function planEnabledInputSchema() {
   return isBackgroundTasksDisabled || isForkSubagentEnabled()
-    ? schema.omit({ run_in_background: true })
-    : schema
-})
-const planDisabledInputSchema = lazySchema(() =>
-  planEnabledInputSchema().extend({
-    mode: permissionModeSchema()
-      .exclude(['plan'])
+    ? backgroundDisabledInputSchema()
+    : planEnabledSchema()
+}
+function planDisabledInputSchema() {
+  return isBackgroundTasksDisabled || isForkSubagentEnabled()
+    ? planAndBackgroundDisabledInputSchema()
+    : planDisabledSchema()
+}
+
+type ProviderInputSchema = ReturnType<typeof planEnabledInputSchema> | ReturnType<typeof planDisabledInputSchema>
+function withAnthropicEffort(schema: ProviderInputSchema) {
+  return schema.extend({
+    effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max'])
       .optional()
-      .describe(
-        'Permission mode for spawned teammate. Omit to inherit the caller mode. A bypassPermissions caller always remains bypassPermissions.',
-      ),
-  }),
-)
+      .describe(baseInputSchema().shape.effort.description!),
+  })
+}
+const anthropicInputSchemas = new WeakMap<ProviderInputSchema, ReturnType<typeof withAnthropicEffort>>()
 
 export function inputSchema() {
-  return isPlanModeAvailable()
+  const schema = isPlanModeAvailable()
     ? planEnabledInputSchema()
     : planDisabledInputSchema()
+  // Restrict model requests; configured/ inherited effort keeps its wider type.
+  if (getAPIProvider() === 'openai') return schema
+  let anthropicSchema = anthropicInputSchemas.get(schema)
+  if (!anthropicSchema) {
+    anthropicSchema = withAnthropicEffort(schema)
+    anthropicInputSchemas.set(schema, anthropicSchema)
+  }
+  return anthropicSchema
 }
 type InputSchema = ReturnType<typeof inputSchema>
 
 // Explicit type widens the schema inference to always include all optional
 // fields even when .omit() strips them for gating (cwd, run_in_background).
-// subagent_type is optional; call() defaults it to general-purpose when the
-// fork gate is off, or routes to the fork path when the gate is on.
+// subagent_type is optional and defaults to general-purpose in every mode.
+// The synthetic fork is always selected explicitly.
 type AgentToolInput = z.infer<ReturnType<typeof baseInputSchema>> & {
   name?: string
   team_name?: string
@@ -348,6 +388,7 @@ export function buildAgentLaunchDebugParams({
   description,
   name,
   model,
+  effort,
   permissionMode,
   runInBackground,
   selectedAgentBackground,
@@ -370,6 +411,7 @@ export function buildAgentLaunchDebugParams({
   description: string
   name?: string
   model: string
+  effort?: EffortValue
   permissionMode?: string
   runInBackground: boolean
   selectedAgentBackground: boolean
@@ -395,6 +437,7 @@ export function buildAgentLaunchDebugParams({
     hasName: name !== undefined,
     nameLength: name?.length,
     model,
+    ...(effort !== undefined && { effort }),
     permissionMode,
     runInBackground,
     selectedAgentBackground,
@@ -456,7 +499,14 @@ import { isAnt } from 'src/utils/userType.js'
 export type Progress = AgentToolProgress | ShellProgress
 
 export const AgentTool = buildTool({
-  async prompt({ agents, tools, getToolPermissionContext, allowedAgentTypes }) {
+  async prompt({
+    agents,
+    tools,
+    getToolPermissionContext,
+    allowedAgentTypes,
+    modsSnapshot,
+    signal,
+  }) {
     const toolPermissionContext = await getToolPermissionContext()
 
     // Get MCP servers that have tools available
@@ -487,7 +537,10 @@ export const AgentTool = buildTool({
     const isCoordinator = feature('COORDINATOR_MODE')
       ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
       : false
-    return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes)
+    return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes, {
+      snapshot: modsSnapshot,
+      signal,
+    })
   },
   name: AGENT_TOOL_NAME,
   searchHint: 'delegate work to a subagent',
@@ -508,6 +561,7 @@ export const AgentTool = buildTool({
       subagent_type,
       description,
       model: modelParam,
+      effort,
       run_in_background,
       name,
       team_name,
@@ -520,9 +574,10 @@ export const AgentTool = buildTool({
     assistantMessage,
     onProgress?,
   ) {
+    const parentMessage = assistantMessage as AssistantMessage | undefined
     const startTime = Date.now()
     description = normalizeAgentDescription(description)
-    const model = isCoordinatorMode() ? undefined : modelParam
+    let model = isCoordinatorMode() ? undefined : modelParam
 
     // Get app state for permission mode and agent filtering.
     const appState = toolUseContext.getAppState()
@@ -566,14 +621,19 @@ export const AgentTool = buildTool({
       )
     }
 
-    // Fork subagent experiment routing:
-    // - subagent_type set: use it (explicit wins)
-    // - subagent_type omitted, gate on: fork path (undefined)
-    // - subagent_type omitted, gate off: default general-purpose
-    const effectiveType =
-      subagent_type ??
-      (isForkSubagentEnabled() ? undefined : GENERAL_PURPOSE_AGENT.agentType)
-    const isForkPath = effectiveType === undefined
+    const allAgents = toolUseContext.options.agentDefinitions.activeAgents
+    const { allowedAgentTypes } = toolUseContext.options.agentDefinitions
+    const effectiveType = subagent_type ?? GENERAL_PURPOSE_AGENT.agentType
+    const requestedFork = normalizeAgentType(effectiveType) === FORK_AGENT.agentType
+    const forkAvailability = getForkAgentAvailability({
+      activeAgents: allAgents, allowedAgentTypes,
+      permissionContext: appState.toolPermissionContext,
+      innerCall: toolUseContext.innerCall,
+    })
+    if (requestedFork && forkAvailability.denyRule) {
+      throw new Error(`Agent type 'fork' has been denied by permission rule 'Agent(fork)' from ${forkAvailability.denyRule.source}.`)
+    }
+    const isForkPath = requestedFork && forkAvailability.available
 
     if (!isForkPath) {
       assertCanSpawnNestedSubagent(toolUseContext.options)
@@ -582,6 +642,9 @@ export const AgentTool = buildTool({
     let selectedAgent: AgentDefinition
     let selectedAgentMatchKind: 'fork' | 'exact' | 'normalized'
     if (isForkPath) {
+      if (isolation === 'remote') {
+        throw new Error('Fork cannot use isolation: "remote" — a remote session cannot inherit the conversation context. Omit isolation (or use "worktree"), or spawn a named agent type for remote work.')
+      }
       // Recursive fork guard: fork children keep the Agent tool in their
       // pool for cache-identical tool defs, so reject fork attempts at call
       // time. Primary check is querySource (compaction-resistant — set on
@@ -600,8 +663,18 @@ export const AgentTool = buildTool({
       selectedAgent = FORK_AGENT
       selectedAgentMatchKind = 'fork'
     } else {
-      const allAgents = toolUseContext.options.agentDefinitions.activeAgents
-      const { allowedAgentTypes } = toolUseContext.options.agentDefinitions
+      if (subagent_type === undefined) {
+        const matches = allAgents.filter(agent => normalizeAgentType(agent.agentType) === normalizeAgentType(GENERAL_PURPOSE_AGENT.agentType))
+        const exact = matches.find(agent => agent.agentType === GENERAL_PURPOSE_AGENT.agentType)
+        const defaultAgent = exact ?? (matches.length === 1 ? matches[0] : undefined)
+        if (!defaultAgent || !(allowedAgentTypes?.includes(defaultAgent.agentType) ?? true)) {
+          const offered = filterDeniedAgents(allowedAgentTypes ? allAgents.filter(agent => allowedAgentTypes.includes(agent.agentType)) : allAgents, appState.toolPermissionContext, AGENT_TOOL_NAME)
+          const available = await Promise.all(offered.map(async agent => await isAgentOffered(agent, { snapshot: toolUseContext.modsSnapshot, signal: toolUseContext.abortController.signal }) ? agent.agentType : undefined))
+          const names = available.filter((name): name is string => name !== undefined)
+          if (forkAvailability.available && isolation !== 'remote' && toolUseContext.options.querySource !== 'agent:builtin:fork' && !isInForkChild(toolUseContext.messages)) names.unshift(FORK_AGENT.agentType)
+          throw new Error(`subagent_type is required: the general-purpose agent is not available in this session. Available agents: ${names.join(', ') || 'none'}`)
+        }
+      }
       const resolution = resolveAgentType({
         requestedType: effectiveType,
         activeAgents: allAgents,
@@ -610,6 +683,14 @@ export const AgentTool = buildTool({
       })
       selectedAgent = resolution.agent
       selectedAgentMatchKind = resolution.matchKind
+      if (
+        !(await isAgentOffered(selectedAgent, {
+          snapshot: toolUseContext.modsSnapshot,
+          signal: toolUseContext.abortController.signal,
+        }))
+      ) {
+        throw new Error(`Agent type '${selectedAgent.agentType}' is not offered`)
+      }
     }
 
     // Same lifecycle constraint as the run_in_background guard above, but for
@@ -628,11 +709,11 @@ export const AgentTool = buildTool({
         ? spawnMode
         : undefined
     const permissionMode =
-      appState.toolPermissionContext.mode === 'bypassPermissions'
-        ? 'bypassPermissions'
-        : (explicitPermissionMode ??
-          selectedAgent.permissionMode ??
-          appState.toolPermissionContext.mode)
+      explicitPermissionMode ??
+      resolveDeclaredAgentPermissionMode(
+        appState.toolPermissionContext.mode,
+        selectedAgent.permissionMode,
+      )
     if (
       permissionMode === 'plan' &&
       appState.toolPermissionContext.mode !== 'plan' &&
@@ -640,12 +721,6 @@ export const AgentTool = buildTool({
     ) {
       throw new Error(PLAN_MODE_DISABLED_MESSAGE)
     }
-    const workerPermissionContext = explicitPermissionMode
-      ? requestedPermissionContext
-      : permissionMode === appState.toolPermissionContext.mode
-        ? appState.toolPermissionContext
-        : { ...appState.toolPermissionContext, mode: permissionMode }
-
     let teamName = appState.teamContext?.teamName
     let shouldSpawnTeammate = Boolean(
       teamName && name && !isForkPath && !isolation && !cwd,
@@ -657,6 +732,50 @@ export const AgentTool = buildTool({
         shouldSpawnTeammate = false
       }
     }
+
+    // Resolve the same mode for execution, telemetry and the agent.spawn hook.
+    // Omitted background defaults to async for ordinary callers. In-process
+    // teammates retain synchronous children because they share the leader's
+    // lifecycle. The built-in web-fetch helper ignores implicit async routing.
+    const shouldRunInBackground = () => {
+      const forkMode = isForkSubagentEnabled()
+      const callerIsHeadlessSubagent = forkMode && toolUseContext.agentId !== undefined && toolUseContext.innerCall !== true && !isCurrentInProcessTeammate && getIsNonInteractiveSession()
+      const forceAsync = forkMode && !isCurrentInProcessTeammate && !callerIsHeadlessSubagent
+      const implicitAsync =
+        isCoordinatorMode() && !isCurrentInProcessTeammate ||
+        forceAsync ||
+        !isCurrentInProcessTeammate && !callerIsHeadlessSubagent && run_in_background !== false ||
+        (feature('KAIROS') ? appState.kairosEnabled : false) ||
+        (proactiveModule?.isProactiveActive() ?? false)
+      const isWebFetchHelper =
+        selectedAgent.source === 'built-in' &&
+        selectedAgent.agentType === 'web-fetch'
+      return (
+        !isBackgroundTasksDisabled &&
+        (run_in_background === true ||
+          selectedAgent.background === true ||
+          (!isWebFetchHelper && implicitAsync))
+      )
+    }
+
+    const started = Promise.withResolvers<{ model: string; agentId: string; teammateId?: string }>()
+    let launchNotified = false
+    const notifyStarted = (launch: { model: string; agentId: string; teammateId?: string }) => {
+      started.resolve(launch)
+      if (launchNotified) return
+      launchNotified = true
+      toolUseContext.modAgentStarted?.(launch)
+    }
+    // Completion remains owned by AgentTool; middleware observes launch only.
+    const execute = async () => {
+    const resolvedEffort = effort ?? selectedAgent.effort ?? appState.effortValue ??
+      getDefaultEffortForModel(toolUseContext.options.mainLoopModel)
+    if (resolvedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: resolvedEffort }
+    const workerPermissionContext = explicitPermissionMode
+      ? requestedPermissionContext
+      : permissionMode === appState.toolPermissionContext.mode
+        ? appState.toolPermissionContext
+        : { ...appState.toolPermissionContext, mode: permissionMode }
 
     // Check if this is a multi-agent spawn request.
     // Match recover 201: named teammates route from live team context, excluding
@@ -674,13 +793,8 @@ export const AgentTool = buildTool({
       const permissions = resolvedTeammateTools.hasWildcard
         ? undefined
         : resolvedTeammateTools.validTools
-      const agentDef = subagent_type
-        ? toolUseContext.options.agentDefinitions.activeAgents.find(
-            a => a.agentType === subagent_type,
-          )
-        : undefined
-      if (agentDef?.color) {
-        setAgentColor(subagent_type!, agentDef.color)
+      if (selectedAgent.color) {
+        setAgentColor(selectedAgent.agentType, selectedAgent.color)
       }
       const result = await spawnTeammate(
         {
@@ -692,13 +806,20 @@ export const AgentTool = buildTool({
           plan_mode_required: permissionMode === 'plan',
           permissionMode,
           permissions,
-          model: model ?? agentDef?.model,
-          agent_type: subagent_type,
-          invokingRequestId: assistantMessage?.requestId,
+          model,
+          effort: selectedAgent.effort,
+          agent_type: selectedAgent.agentType,
+          invokingRequestId: parentMessage?.requestId,
         },
         toolUseContext,
       )
 
+      const launch = {
+        model: result.data.model ?? getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode),
+        agentId: result.loopAgentId ?? result.data.teammate_id,
+        teammateId: result.data.teammate_id,
+      }
+      notifyStarted(launch)
       const spawnResult: TeammateSpawnedOutput = {
         status: 'teammate_spawned' as const,
         prompt,
@@ -711,6 +832,8 @@ export const AgentTool = buildTool({
     if (cwd && effectiveIsolation === 'worktree') {
       throw new Error('cwd is mutually exclusive with isolation: "worktree"')
     }
+
+    if (effectiveIsolation !== 'remote') assertSubagentCapacity(toolUseContext)
 
     // Capture for type narrowing — `let selectedAgent` prevents TS from
     // narrowing property types across the if-else assignment above.
@@ -785,13 +908,14 @@ export const AgentTool = buildTool({
       setAgentColor(selectedAgent.agentType, selectedAgent.color)
     }
 
-    // Resolve agent params for logging (these are already resolved in runAgent)
-    const resolvedAgentModel = getAgentModel(
-      selectedAgent.model,
-      toolUseContext.options.mainLoopModel,
-      isForkPath ? undefined : model,
-      permissionMode,
-    )
+    // Snapshot once for logging, task metadata, and execution.
+    const resolvedAgentModel = isForkPath
+      ? getRuntimeMainLoopModel({
+          permissionMode: appState.toolPermissionContext.mode,
+          mainLoopModel: toolUseContext.options.mainLoopModel,
+          exceeds200kTokens: appState.toolPermissionContext.mode === 'plan' && doesMostRecentAssistantMessageExceed200k(toolUseContext.messages),
+        })
+      : getAgentModel(selectedAgent.model, toolUseContext.options.mainLoopModel, model, permissionMode)
 
     const childSubagentDepth = getNextSubagentDepth(toolUseContext.options)
     const parentAgentId =
@@ -819,9 +943,7 @@ export const AgentTool = buildTool({
         selectedAgent.color as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       is_built_in_agent: isBuiltInAgent(selectedAgent),
       is_resume: false,
-      is_async:
-        (run_in_background === true || selectedAgent.background === true) &&
-        !isBackgroundTasksDisabled,
+      is_async: shouldRunInBackground(),
       is_fork: isForkPath,
       agent_depth: childSubagentDepth,
       agent_system_prompt_chars: agentSystemPromptChars,
@@ -864,6 +986,8 @@ export const AgentTool = buildTool({
           selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
 
+      const launch = { model: resolvedAgentModel, agentId: taskId }
+      notifyStarted(launch)
       const remoteResult: RemoteLaunchedOutput = {
         status: 'remote_launched',
         taskId,
@@ -922,7 +1046,9 @@ export const AgentTool = buildTool({
           appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
         })
       }
-      promptMessages = buildForkedMessages(prompt, assistantMessage)
+      if (!parentMessage)
+        throw new Error('Fork requires a parent assistant message')
+      promptMessages = buildForkedMessages(prompt, parentMessage)
     } else {
       try {
         const additionalWorkingDirectories = Array.from(
@@ -965,46 +1091,17 @@ export const AgentTool = buildTool({
       promptMessages = [createUserMessage({ content: prompt })]
     }
 
+    const shouldRunAsync = shouldRunInBackground()
     const metadata = {
       prompt,
       resolvedAgentModel,
       isBuiltInAgent: isBuiltInAgent(selectedAgent),
       startTime,
       agentType: selectedAgent.agentType,
-      isAsync:
-        (run_in_background === true || selectedAgent.background === true) &&
-        !isBackgroundTasksDisabled,
+      isAsync: shouldRunAsync,
     }
+    const isCoordinator = isCoordinatorMode()
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature('COORDINATOR_MODE')
-      ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE)
-      : false
-
-    // Fork subagent experiment: force ALL spawns async for a unified
-    // <task-notification> interaction model (not just fork spawns — all of them).
-    const forceAsync = isForkSubagentEnabled()
-
-    // Assistant mode: force all agents async. Synchronous subagents hold the
-    // main loop's turn open until they complete — the daemon's inputQueue
-    // backs up, and the first overdue cron catch-up on spawn becomes N
-    // serial subagent turns blocking all user input. Same gate as
-    // executeForkedSlashCommand's fire-and-forget path; the
-    // <task-notification> re-entry there is handled by the else branch
-    // below (registerAsyncAgentTask + notifyOnCompletion).
-    const assistantForceAsync = feature('KAIROS')
-      ? appState.kairosEnabled
-      : false
-
-    const shouldRunAsync =
-      (run_in_background === true ||
-        selectedAgent.background === true ||
-        isCoordinator ||
-        forceAsync ||
-        assistantForceAsync ||
-        (proactiveModule?.isProactiveActive() ?? false)) &&
-      !isBackgroundTasksDisabled
     // Assemble the worker's tool pool independently of the parent's.
     // Workers always get their tools from assembleToolPool with their own
     // permission mode, so they aren't affected by the parent's tool
@@ -1077,6 +1174,7 @@ export const AgentTool = buildTool({
           description,
           name,
           model: resolvedAgentModel,
+          effort: selectedAgent.effort,
           permissionMode,
           runInBackground: run_in_background === true,
           selectedAgentBackground: selectedAgent.background === true,
@@ -1117,20 +1215,21 @@ export const AgentTool = buildTool({
       canUseTool,
       isAsync: shouldRunAsync,
       canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
-        selectedAgent.permissionMode,
-        permissionMode,
+        explicitPermissionMode ?? selectedAgent.permissionMode,
       )
         ? true
         : undefined,
+      // options.querySource is set only on fork children; a normal agent they
+      // spawn must not report itself as a fork.
       querySource:
-        toolUseContext.options.querySource ??
+        (isForkPath ? toolUseContext.options.querySource : undefined) ??
         getQuerySourceForAgent(
           selectedAgent.agentType,
           isBuiltInAgent(selectedAgent),
         ),
-      model: isForkPath ? undefined : model,
+      resolvedModel: resolvedAgentModel,
       // Fork path: pass the parent's system prompt and tool array. runAgent
-      // removes main-thread-only tools before building the child request.
+      // preserves every parent tool definition before building the child request.
       // workerTools is rebuilt under permissionMode 'bubble', so its tool-def
       // serialization would diverge earlier. useExactTools also inherits the
       // parent's thinkingConfig and isNonInteractiveSession (see runAgent.ts).
@@ -1147,6 +1246,7 @@ export const AgentTool = buildTool({
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
       permissionMode,
       allowedTools,
+      allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
       // Pass parent conversation when the fork-subagent path needs full
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,
@@ -1199,9 +1299,10 @@ export const AgentTool = buildTool({
           // Clear worktreePath from metadata so resume doesn't try to use
           // a deleted directory. Fire-and-forget to match runAgent's
           // writeAgentMetadata handling.
-          void writeAgentMetadata(asAgentId(earlyAgentId), {
+          void clearAgentMetadataWorktree(asAgentId(earlyAgentId), {
             agentType: selectedAgent.agentType,
             description,
+            effort: selectedAgent.effort,
           }).catch(_err =>
             logForDebugging(`Failed to clear worktree metadata: ${_err}`),
           )
@@ -1212,6 +1313,28 @@ export const AgentTool = buildTool({
       return { worktreePath, worktreeBranch }
     }
 
+    const resumeOwner = async (nextPrompt: string) => {
+      const { resumeAgentBackground } = await import('./resumeAgent.js')
+      return resumeAgentBackground({
+        agentId: earlyAgentId,
+        prompt: nextPrompt,
+        promptIsMeta: true,
+        toolUseContext,
+        canUseTool,
+        invokingRequestId: parentMessage?.requestId,
+        getWorktreeResult: cleanupWorktreeIfNeeded,
+      })
+    }
+
+    try {
+      assertSubagentCapacity(toolUseContext)
+    } catch (error) {
+      await cleanupWorktreeIfNeeded()
+      throw error
+    }
+    const releaseSlot = takeSubagentConcurrencySlot(toolUseContext)
+    let ownsSlot = true
+    try {
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId
       const agentBackgroundTask = registerAsyncAgent({
@@ -1225,12 +1348,13 @@ export const AgentTool = buildTool({
         // They are killed explicitly via chat:killAgents.
         toolUseId: toolUseContext.toolUseId,
         parentAgentId,
+        ownerAgentId: toolUseContext.agentId,
+        spawnedBy: toolUseContext.modSpawnedBy,
         spawnDepth: childSubagentDepth,
       })
 
       // Register name → agentId for SendMessage routing. Post-registerAsyncAgent
-      // so we don't leave a stale entry if spawn fails. Sync agents skipped —
-      // coordinator is blocked, so SendMessage routing doesn't apply.
+      // so we don't leave a stale entry if background registration fails.
       if (name) {
         rootSetAppState(prev => {
           const next = new Map(prev.agentNameRegistry)
@@ -1248,7 +1372,7 @@ export const AgentTool = buildTool({
         agentType: 'subagent' as const,
         subagentName: selectedAgent.agentType,
         isBuiltIn: isBuiltInAgent(selectedAgent),
-        invokingRequestId: assistantMessage?.requestId,
+        invokingRequestId: parentMessage?.requestId,
         invocationKind: 'spawn' as const,
         invocationEmitted: false,
       }
@@ -1283,10 +1407,15 @@ export const AgentTool = buildTool({
               isForkSubagentEnabled() ||
               getSdkAgentProgressSummariesEnabled(),
             getWorktreeResult: cleanupWorktreeIfNeeded,
+            onRunSettled: releaseSlot,
+            resume: resumeOwner,
           }),
         ),
       )
 
+      ownsSlot = false
+      const launch = { model: resolvedAgentModel, agentId: agentBackgroundTask.agentId }
+      notifyStarted(launch)
       const canReadOutputFile = toolUseContext.options.tools.some(
         t =>
           toolMatchesName(t, FILE_READ_TOOL_NAME) ||
@@ -1308,6 +1437,16 @@ export const AgentTool = buildTool({
       // Create an explicit agentId for sync agents
       const syncAgentId = asAgentId(earlyAgentId)
 
+      // A synchronous named agent is still addressable after its report,
+      // including when the foreground task has already been evicted.
+      if (name) {
+        rootSetAppState(prev => {
+          const names = new Map(prev.agentNameRegistry)
+          names.set(name, syncAgentId)
+          return { ...prev, agentNameRegistry: names }
+        })
+      }
+
       // Set up agent context for sync execution (for analytics attribution)
       const syncAgentContext = {
         agentId: syncAgentId,
@@ -1317,14 +1456,14 @@ export const AgentTool = buildTool({
         agentType: 'subagent' as const,
         subagentName: selectedAgent.agentType,
         isBuiltIn: isBuiltInAgent(selectedAgent),
-        invokingRequestId: assistantMessage?.requestId,
+        invokingRequestId: parentMessage?.requestId,
         invocationKind: 'spawn' as const,
         invocationEmitted: false,
       }
 
       // Wrap entire sync agent execution in context for analytics attribution
       // and optionally in a worktree cwd override for filesystem isolation
-      return runWithAgentContext(syncAgentContext, () =>
+      return await runWithAgentContext(syncAgentContext, () =>
         wrapWithCwd(async () => {
           const agentMessages: MessageType[] = []
           const agentStartTime = Date.now()
@@ -1345,7 +1484,7 @@ export const AgentTool = buildTool({
               onProgress
             ) {
               onProgress({
-                toolUseID: `agent_${assistantMessage.message.id}`,
+                toolUseID: `agent_${parentMessage?.message.id ?? toolUseContext.toolUseId}`,
                 data: {
                   message: normalizedFirstMessage,
                   type: 'agent_progress',
@@ -1380,6 +1519,7 @@ export const AgentTool = buildTool({
               setAppState: rootSetAppState,
               toolUseId: toolUseContext.toolUseId,
               parentAgentId,
+              ownerAgentId: toolUseContext.agentId,
               spawnDepth: childSubagentDepth,
               autoBackgroundMs: getAutoBackgroundMs() || undefined,
             })
@@ -1484,6 +1624,8 @@ export const AgentTool = buildTool({
               // Race between next message and background signal
               // If background tasks are disabled, just await the next message directly
               const nextMessagePromise = agentIterator.next()
+              const launch = { model: resolvedAgentModel, agentId: syncAgentId }
+              notifyStarted(launch)
               const raceResult = backgroundPromise
                 ? await Promise.race([
                     nextMessagePromise.then(r => ({
@@ -1536,6 +1678,8 @@ export const AgentTool = buildTool({
                     const resolveActivity2 = createActivityDescriptionResolver(
                       toolUseContext.options.tools,
                     )
+                    const postProcessingWarning =
+                      'Agent post-processing could not complete. Review the agent output before continuing.'
                     try {
                       // Continue the same iterator in the background. Restarting
                       // runAgent here would replay the original prompt and repeat
@@ -1568,6 +1712,21 @@ export const AgentTool = buildTool({
                           toolUseContext.options.tools,
                         )
                         agentMessages.push(msg)
+                        // Same retain stream-append as runAsyncAgentLifecycle.
+                        rootSetAppState(prev => {
+                          const t = prev.tasks[backgroundedTaskId]
+                          if (!isLocalAgentTask(t) || !t.retain) return prev
+                          return {
+                            ...prev,
+                            tasks: {
+                              ...prev.tasks,
+                              [backgroundedTaskId]: {
+                                ...t,
+                                messages: [...(t.messages ?? []), msg],
+                              },
+                            },
+                          }
+                        })
 
                         // Track progress for backgrounded agents
                         updateProgressFromMessage(
@@ -1581,6 +1740,7 @@ export const AgentTool = buildTool({
                           tracker,
                           rootSetAppState,
                         )
+                        reportObservedAgentProgress(toolUseContext, msg)
 
                         const lastToolName = getLastToolUseName(msg)
                         if (lastToolName) {
@@ -1616,7 +1776,14 @@ export const AgentTool = buildTool({
                       // unblocks immediately. classifyHandoffIfNeeded and
                       // cleanupWorktreeIfNeeded can hang — they must not gate
                       // the status transition (gh-20236).
+                      releaseSlot()
                       completeAsyncAgent(agentResult, rootSetAppState)
+                      if (parkAgentForChildren({
+                        taskId: backgroundedTaskId,
+                        toolUseContext,
+                        resume: resumeOwner,
+                        getWorktreeResult: cleanupWorktreeIfNeeded,
+                      })) return
                       logForDebugging(
                         `[AgentLifecycle] background_terminal agent_id=${syncAgentId} task_id=${backgroundedTaskId} status=completed tool_uses=${agentResult.totalToolUseCount}`,
                       )
@@ -1626,8 +1793,6 @@ export const AgentTool = buildTool({
                         agentResult.content,
                         '\n',
                       )
-                      const postProcessingWarning =
-                        'Agent post-processing could not complete. Review the agent output before continuing.'
 
                       if (feature('TRANSCRIPT_CLASSIFIER')) {
                         try {
@@ -1693,6 +1858,38 @@ export const AgentTool = buildTool({
                         ...worktreeResult,
                       })
                     } catch (error) {
+                      releaseSlot()
+                      const currentTask =
+                        toolUseContext.getAppState().tasks[backgroundedTaskId]
+                      if (
+                        isLocalAgentTask(currentTask) &&
+                        currentTask.status === 'completed'
+                      ) {
+                        logForDebugging(
+                          `Agent post-processing failed after completion: ${errorMessage(error)}`,
+                          { level: 'warn' },
+                        )
+                        addAgentTaskWarning(
+                          backgroundedTaskId,
+                          postProcessingWarning,
+                          rootSetAppState,
+                        )
+                        enqueueAgentNotification({
+                          taskId: backgroundedTaskId,
+                          description,
+                          status: 'completed',
+                          setAppState: rootSetAppState,
+                          finalMessage: postProcessingWarning,
+                          toolUseId: toolUseContext.toolUseId,
+                        })
+                        return
+                      }
+                      refreshLastAssistantProgress(
+                        tracker,
+                        agentMessages,
+                        resolveActivity2,
+                        toolUseContext.options.tools,
+                      )
                       if (error instanceof AbortError) {
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
@@ -1777,6 +1974,7 @@ export const AgentTool = buildTool({
                         ...worktreeResult,
                       })
                     } finally {
+                      releaseSlot()
                       if (stopForegroundSummarization) {
                         stopForegroundSummarization()
                         logForDebugging(
@@ -1790,6 +1988,7 @@ export const AgentTool = buildTool({
                     }
                   })
 
+                  ownsSlot = false
                   // Return async_launched result immediately
                   const canReadOutputFile = toolUseContext.options.tools.some(
                     t =>
@@ -1812,11 +2011,15 @@ export const AgentTool = buildTool({
               }
 
               // Process the message from the race result
-              if (raceResult.type !== 'message') {
-                // This shouldn't happen - background case handled above
-                continue
+              let result: Awaited<typeof nextMessagePromise>
+              if (raceResult.type === 'message') {
+                result = raceResult.result
+              } else {
+                // The signal stays resolved for a task that no longer qualifies:
+                // stop racing it and keep the item already in flight.
+                backgroundPromise = undefined
+                result = await nextMessagePromise
               }
-              const { result } = raceResult
               if (result.done) break
               const message = result.value
               if (!message) continue
@@ -1897,7 +2100,7 @@ export const AgentTool = buildTool({
                   // Forward progress updates
                   if (onProgress) {
                     onProgress({
-                      toolUseID: `agent_${assistantMessage.message.id}`,
+                      toolUseID: `agent_${parentMessage?.message.id ?? toolUseContext.toolUseId}`,
                       data: {
                         message: m,
                         type: 'agent_progress',
@@ -1941,6 +2144,7 @@ export const AgentTool = buildTool({
             // Store the error to handle after cleanup
             syncAgentError = toError(error)
           } finally {
+            if (!wasBackgrounded) releaseSlot()
             removeParentAbortForwarder?.()
 
             // Clear the background hint UI
@@ -2098,6 +2302,67 @@ export const AgentTool = buildTool({
         }),
       )
     }
+    } finally {
+      if (ownsSlot) releaseSlot()
+    }
+    }
+
+    const snapshot = toolUseContext.modsSnapshot
+    if (!snapshot?.hasHooks('agent.spawn')) return execute()
+    const input: ModInput = {
+      tool_use_id: toolUseContext.toolUseId,
+      prompt,
+      description,
+      subagentType: selectedAgent.agentType,
+      provider: providerForAgent(selectedAgent, snapshot),
+      parentModel: toolUseContext.options.mainLoopModel,
+      permissionMode,
+      background: shouldSpawnTeammate || shouldRunInBackground(),
+      ...(shouldSpawnTeammate && { isTeammate: true }),
+      fork: isForkPath,
+      ...(name !== undefined && { name }),
+      ...(model !== undefined && { model }),
+      ...(effort !== undefined && { effort }),
+      ...(cwd !== undefined && { cwd }),
+      ...(toolUseContext.agentId !== undefined && { parentAgentId: toolUseContext.agentId }),
+    }
+    const validateInput = (value: ModInput) => validateModAgentSpawnInput(value, input)
+    let completion: ReturnType<typeof execute> | undefined
+    const result = await snapshot.dispatch('agent.spawn', input, async value => {
+      validateInput(value)
+      if (completion) return started.promise
+      prompt = value.prompt as string
+      description = normalizeAgentDescription(value.description as string)
+      model = value.model as string | undefined
+      effort = value.effort as EffortValue | undefined
+      cwd = value.cwd as string | undefined
+      run_in_background = value.background as boolean
+      if (!isForkPath && value.subagentType !== selectedAgent.agentType) {
+        const resolution = resolveAgentType({
+          requestedType: value.subagentType as string,
+          activeAgents: toolUseContext.options.agentDefinitions.activeAgents,
+          allowedAgentTypes: toolUseContext.options.agentDefinitions.allowedAgentTypes,
+          permissionContext: appState.toolPermissionContext,
+        })
+        selectedAgent = resolution.agent
+        selectedAgentMatchKind = resolution.matchKind
+        if (!(await isAgentOffered(selectedAgent, {
+          snapshot,
+          signal: toolUseContext.abortController.signal,
+        }))) throw new Error(`Agent type '${selectedAgent.agentType}' is not offered`)
+      }
+      if (isCurrentInProcessTeammate && run_in_background) {
+        throw new Error('In-process teammates cannot spawn background agents.')
+      }
+      // Explicit middleware background overrides the definition default.
+      selectedAgent = { ...selectedAgent, background: run_in_background }
+      completion = execute()
+      void completion.catch(started.reject)
+      return started.promise
+    }, { signal: toolUseContext.abortController.signal, validateInput, restoreInput: restoreModAgentSpawnInput }) as { deny?: string }
+    if (result.deny !== undefined) throw new Error(result.deny)
+    if (!completion) throw new Error('agent.spawn did not start an agent')
+    return completion
   },
   isReadOnly() {
     return true // delegates permission checks to its underlying tools
@@ -2176,10 +2441,10 @@ The agent is now running and will receive instructions via mailbox.`,
       }
     }
     if (data.status === 'async_launched') {
-      const prefix = `Async agent launched successfully.\nagentId: ${data.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${data.agentId}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.`
-      const instructions = data.canReadOutputFile
-        ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.\noutput_file: ${data.outputFile}\nDo not proactively read or tail the transcript. Only inspect the output file if the user asks for progress or you need a specific result before continuing.`
-        : `Briefly tell the user what you launched and end your response. Do not generate any other text — agent results will arrive in a subsequent message.`
+      const prefix = `Async agent launched successfully. (This tool result is internal metadata — never quote or paste any part of it, including the agentId below, into a user-facing reply.)\nagentId: ${data.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${data.agentId}', summary: '<5-10 word recap>' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes. You know nothing about its results until that notification arrives — do not report, assume, or predict them; continue other work or respond to the user in the meantime.`
+      const instructions = data.canReadOutputFile && data.outputFile
+        ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using.\noutput_file: ${data.outputFile}\nDo NOT ${FILE_READ_TOOL_NAME} or tail this file via the shell tool — it is the full subagent JSONL transcript and reading it will overflow your context. If the user asks for progress, say the agent is still running; you'll get a completion notification.`
+        : `In your own words, briefly tell the user what you launched — do not echo this tool result. Agent results will arrive in a subsequent message. If the user asks for progress, say the agent is still running.`
       const text = `${prefix}\n${instructions}`
       return {
         tool_use_id: toolUseID,

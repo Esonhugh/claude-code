@@ -13,15 +13,18 @@ import type {
 } from '../../Tool.js'
 import { getCwd } from '../cwd.js'
 import { isEnvTruthy } from '../envUtils.js'
+import { isApproveForMeAvailable } from './approveForMe.js'
+import { getAPIProvider } from '../model/providers.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../planModeV2.js'
 import type { SettingSource } from '../settings/constants.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
 import {
   getSettings_DEPRECATED,
   getSettingsFilePathForSource,
+  getSettingsForSource,
   getUseAutoModeDuringPlan,
-  hasAutoModeOptIn,
 } from '../settings/settings.js'
+import { getGlobalConfig } from '../config.js'
 import {
   type PermissionMode,
   permissionModeFromString,
@@ -726,12 +729,13 @@ export function initialPermissionModeFromCLI({
     growthBookDisableBypassPermissionsMode ||
     settingsDisableBypassPermissionsMode
 
-  // Sync circuit-breaker check (cached GB read). Prevents the
-  // AutoModeOptInDialog from showing in showSetupScreens() when auto can't
-  // actually be entered. autoModeFlagCli still carries intent through to
-  // verifyAutoModeGateAccess, which notifies the user why.
+  // Sync circuit-breaker check (cached GB read) so startup does not land in
+  // an auto mode that can't actually be entered. autoModeFlagCli still carries
+  // intent through to verifyAutoModeGateAccess, which notifies the user why.
+  // OpenAI mode has auto only as Approve for me, which needs the ChatGPT login.
   const autoModeCircuitBrokenSync = feature('TRANSCRIPT_CLASSIFIER')
-    ? getAutoModeEnabledStateIfCached() === 'disabled'
+    ? getAPIProvider() === 'openai' && !isApproveForMeAvailable() ||
+      getAutoModeEnabledStateIfCached() === 'disabled'
     : false
 
   // Modes in order of priority
@@ -746,7 +750,7 @@ export function initialPermissionModeFromCLI({
     if (feature('TRANSCRIPT_CLASSIFIER') && parsedMode === 'auto') {
       if (autoModeCircuitBrokenSync) {
         logForDebugging(
-          'auto mode circuit breaker active (cached) — falling back to default',
+          'auto mode unavailable at startup (cached circuit breaker, or OpenAI mode without the ChatGPT login) — falling back to default',
           { level: 'warn' },
         )
       } else {
@@ -775,9 +779,19 @@ export function initialPermissionModeFromCLI({
     }
     // auto from settings requires the same gate check as from CLI
     else if (feature('TRANSCRIPT_CLASSIFIER') && settingsMode === 'auto') {
-      if (autoModeCircuitBrokenSync) {
+      // Like official 2.1.292, project and local settings are repo-controllable,
+      // so only policy, user and flag settings may grant auto mode.
+      if (!(['policySettings', 'userSettings', 'flagSettings'] as const).some(
+        source => getSettingsForSource(source)?.permissions?.defaultMode === 'auto',
+      )) {
         logForDebugging(
-          'auto mode circuit breaker active (cached) — falling back to default',
+          'settings defaultMode "auto" ignored — only policy/user/flag settings may grant auto mode (projectSettings and localSettings are repo-controllable)',
+          { level: 'warn' },
+        )
+        logEvent('tengu_settings_auto_mode_untrusted_source_ignored', {})
+      } else if (autoModeCircuitBrokenSync) {
+        logForDebugging(
+          'auto mode unavailable at startup (cached circuit breaker, or OpenAI mode without the ChatGPT login) — falling back to default',
           { level: 'warn' },
         )
       } else {
@@ -792,7 +806,13 @@ export function initialPermissionModeFromCLI({
 
   for (const mode of orderedModes) {
     if (mode === 'plan' && !isPlanModeAvailable()) {
-      throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+      // Only settings can reach here (an explicit --permission-mode plan threw
+      // above), so degrade like a disabled bypass mode instead of refusing to start.
+      logForDebugging('plan mode from settings is disabled (planModeAvailable is not set)', {
+        level: 'warn',
+      })
+      notification = PLAN_MODE_DISABLED_MESSAGE
+      continue
     }
     if (mode === 'bypassPermissions' && disableBypassPermissionsMode) {
       if (growthBookDisableBypassPermissionsMode) {
@@ -1129,7 +1149,7 @@ export async function verifyAutoModeGateAccess(
   )
 
   // Carousel availability: not circuit-broken, not disabled-by-settings,
-  // model supports it, disableFastMode breaker not firing, and (enabled or opted-in)
+  // model supports it, and disableFastMode breaker not firing
   const mainModel = getMainLoopModel()
   // Temp circuit breaker: tengu_auto_mode_config.disableFastMode blocks auto
   // mode when fast mode is on. Checks runtime AppState.fastMode (if provided)
@@ -1143,15 +1163,11 @@ export async function verifyAutoModeGateAccess(
         mainModel.toLowerCase().includes('-fast')))
   const modelSupported =
     modelSupportsAutoMode(mainModel) && !disableFastModeBreakerFires
-  let carouselAvailable = false
-  if (enabledState !== 'disabled' && !disabledBySettings && modelSupported) {
-    carouselAvailable =
-      enabledState === 'enabled' || hasAutoModeOptInAnySource()
-  }
-  // canEnterAuto gates explicit entry (--permission-mode auto, defaultMode: auto)
-  // — explicit entry IS an opt-in, so we only block on circuit breaker + settings + model
+  // Like official 2.1.292 there is no opt-in step: the carousel offers auto
+  // whenever it can be entered (circuit breaker + settings + model).
   const canEnterAuto =
     enabledState !== 'disabled' && !disabledBySettings && modelSupported
+  const carouselAvailable = canEnterAuto
   logForDebugging(
     `[auto-mode] verifyAutoModeGateAccess: enabledState=${enabledState} disabledBySettings=${disabledBySettings} model=${mainModel} modelSupported=${modelSupported} disableFastModeBreakerFires=${disableFastModeBreakerFires} carouselAvailable=${carouselAvailable} canEnterAuto=${canEnterAuto}`,
   )
@@ -1333,14 +1349,16 @@ export function getAutoModeUnavailableReason(): AutoModeUnavailableReason | null
  * Controls auto mode availability in UI surfaces (CLI, IDE, Desktop).
  * - 'enabled': auto mode is available in the shift-tab carousel (or equivalent)
  * - 'disabled': auto mode is fully unavailable — circuit breaker for incident response
- * - 'opt-in': auto mode is available only if the user has explicitly opted in
- *   (via --enable-auto-mode in CLI, or a settings toggle in IDE/Desktop)
+ * - 'opt-in': treated like 'enabled'; official 2.1.292 has no opt-in step
  */
 export type AutoModeEnabledState = 'enabled' | 'disabled' | 'opt-in'
 
-const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'disabled'
+// Official 2.1.292 treats a missing rollout value as enabled.
+const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'enabled'
 
 function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
+  // The GrowthBook rollout gates first-party auto mode; Approve for me is this build's own offer.
+  if (isApproveForMeAvailable()) return 'enabled'
   if (value === 'enabled' || value === 'disabled' || value === 'opt-in') {
     return value
   }
@@ -1349,7 +1367,7 @@ function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
 
 /**
  * Reads the `enabled` field from tengu_auto_mode_config (cached, may be stale).
- * Defaults to 'disabled' if GrowthBook is unavailable or the field is unset.
+ * Defaults to 'enabled' if GrowthBook is unavailable or the field is unset.
  * Other surfaces (IDE, Desktop) should call this to decide whether to surface
  * auto mode in their mode pickers.
  */
@@ -1380,16 +1398,15 @@ export function getAutoModeEnabledStateIfCached():
 }
 
 /**
- * Returns true if the user has opted in to auto mode via any trusted mechanism:
- * - CLI flag (--enable-auto-mode / --permission-mode auto) — session-scoped
- *   availability request; the startup dialog in showSetupScreens enforces
- *   persistent consent before the REPL renders.
- * - skipAutoPermissionPrompt setting (persistent; set by accepting the opt-in
- *   dialog or by IDE/Desktop settings toggle)
+ * Whether entering auto mode should show its one-time description, like
+ * official 2.1.292: not after it has been shown once, and not when policy,
+ * user or flag settings set skipAutoPermissionPrompt (project and local
+ * settings are repo-controllable).
  */
-export function hasAutoModeOptInAnySource(): boolean {
-  if (autoModeStateModule?.getAutoModeFlagCli() ?? false) return true
-  return hasAutoModeOptIn()
+export function shouldShowAutoModeEntryWarning(): boolean {
+  return !(['policySettings', 'userSettings', 'flagSettings'] as const).some(
+    source => getSettingsForSource(source)?.skipAutoPermissionPrompt === true,
+  ) && !getGlobalConfig().hasSeenAutoModeEntryWarning
 }
 
 /**
@@ -1468,24 +1485,20 @@ export function isDefaultPermissionModeAuto(): boolean {
 
 /**
  * Whether plan mode should use auto mode semantics (classifier runs during
- * plan). True when the user has opted in to auto mode and the gate is enabled.
+ * plan). True when the gate is enabled and useAutoModeDuringPlan is not off.
  * Evaluated at permission-check time so it's reactive to config changes.
  */
 export function shouldPlanUseAutoMode(): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
-    return (
-      hasAutoModeOptIn() &&
-      isAutoModeGateEnabled() &&
-      getUseAutoModeDuringPlan()
-    )
+    return isAutoModeGateEnabled() && getUseAutoModeDuringPlan()
   }
   return false
 }
 
 /**
  * Centralized plan-mode entry. Stashes the current mode as prePlanMode so
- * ExitPlanMode can restore it. When the user has opted in to auto mode,
- * auto semantics stay active during plan mode.
+ * ExitPlanMode can restore it. When shouldPlanUseAutoMode() is true, auto
+ * semantics stay active during plan mode.
  */
 export function prepareContextForPlanMode(
   context: ToolPermissionContext,

@@ -6,7 +6,6 @@
  * to avoid circular dependencies.
  */
 
-import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 
 // ============================================================================
@@ -19,20 +18,20 @@ export const EXTERNAL_PERMISSION_MODES = [
   'default',
   'dontAsk',
   'plan',
+  'auto',
 ] as const
 
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
 
 // Exhaustive mode union for typechecking. The user-addressable runtime set
 // is INTERNAL_PERMISSION_MODES below.
-export type InternalPermissionMode = ExternalPermissionMode | 'auto' | 'bubble'
+export type InternalPermissionMode = ExternalPermissionMode | 'bubble'
 export type PermissionMode = InternalPermissionMode
 
 // Runtime validation set: modes that are user-addressable (settings.json
 // defaultMode, --permission-mode CLI flag, conversation recovery).
 export const INTERNAL_PERMISSION_MODES = [
   ...EXTERNAL_PERMISSION_MODES,
-  ...(feature('TRANSCRIPT_CLASSIFIER') ? (['auto'] as const) : ([] as const)),
 ] as const satisfies readonly PermissionMode[]
 
 export const PERMISSION_MODES = INTERNAL_PERMISSION_MODES
@@ -176,6 +175,7 @@ export type PermissionAllowDecision<
   Input extends { [key: string]: unknown } = { [key: string]: unknown },
 > = {
   behavior: 'allow'
+  matchedAskRule?: PermissionRule
   updatedInput?: Input
   userModified?: boolean
   decisionReason?: PermissionDecisionReason
@@ -201,6 +201,7 @@ export type PermissionAskDecision<
   Input extends { [key: string]: unknown } = { [key: string]: unknown },
 > = {
   behavior: 'ask'
+  matchedAskRule?: PermissionRule
   message: string
   updatedInput?: Input
   decisionReason?: PermissionDecisionReason
@@ -349,12 +350,16 @@ export type YoloClassifierResult = {
   shouldBlock: boolean
   reason: string
   unavailable?: boolean
+  /** The classifier request was rejected with a 401. */
+  unauthorized?: boolean
   /**
    * API returned "prompt is too long" — the classifier transcript exceeded
    * the context window. Deterministic (same transcript → same error), so
    * callers should fall back to normal prompting rather than retry/fail-closed.
    */
   transcriptTooLong?: boolean
+  /** The classifier answered but its decision could not be parsed. */
+  unparseable?: boolean
   /** The model used for this classifier call */
   model: string
   /** Token usage from the classifier API call (for overhead telemetry) */

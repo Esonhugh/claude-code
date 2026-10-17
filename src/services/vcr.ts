@@ -408,6 +408,7 @@ export async function* withStreamingVCR(
 export async function withTokenCountVCR(
   messages: unknown[],
   tools: unknown[],
+  model: string,
   f: () => Promise<number | null>,
 ): Promise<number | null> {
   // Dehydrate before hashing so fixture keys survive cwd/config-home/tempdir
@@ -417,7 +418,7 @@ export async function withTokenCountVCR(
   // every test run produces a new hash and fixtures never hit in CI.
   const cwdSlug = getCwd().replace(/[^a-zA-Z0-9]/g, '-')
   const dehydrated = (
-    dehydrateValue(jsonStringify({ messages, tools })) as string
+    dehydrateValue(jsonStringify({ messages, tools, model })) as string
   )
     .replaceAll(cwdSlug, '[CWD_SLUG]')
     .replace(

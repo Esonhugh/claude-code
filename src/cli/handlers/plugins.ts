@@ -4,7 +4,8 @@
  */
 /* eslint-disable custom-rules/no-process-exit -- CLI subcommand handlers intentionally exit */
 import figures from 'figures'
-import { basename, dirname } from 'path'
+import { readFile } from 'node:fs/promises'
+import { basename, dirname, relative } from 'path'
 import { setUseCoworkPlugins } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -22,11 +23,15 @@ import {
   VALID_UPDATE_SCOPES,
 } from '../../services/plugins/pluginCliCommands.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
+import { isInBundledMode } from '../../utils/bundledMode.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
 import { getInstallCounts } from '../../utils/plugins/installCounts.js'
 import {
+  getInstalledPluginsReadRefusal,
+  getSetAsideInstalledPluginsNote,
+  getUnreadableInstalledPluginsNote,
   isPluginInstalled,
   loadInstalledPluginsV2,
 } from '../../utils/plugins/installedPluginsManager.js'
@@ -48,14 +53,19 @@ import {
   parsePluginIdentifier,
   scopeToSettingSource,
 } from '../../utils/plugins/pluginIdentifier.js'
-import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
+import {
+  loadAllPlugins,
+  loadAllPluginsCacheOnly,
+  loadPluginsForContractValidation,
+} from '../../utils/plugins/pluginLoader.js'
 import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
+  resolveForeignModStateDeclarations,
   type ValidationResult,
   validateManifest,
   validatePluginContents,
 } from '../../utils/plugins/validatePlugin.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
+import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { plural } from '../../utils/stringUtils.js'
 import { cliError, cliOk } from '../exit.js'
 
@@ -71,6 +81,14 @@ export function handleMarketplaceError(error: unknown, action: string): never {
 }
 
 function printValidationResult(result: ValidationResult): void {
+  for (const note of result.notes ?? []) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`  ${figures.pointer} ${note}`)
+  }
+  if (result.notes?.length) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log('')
+  }
   if (result.errors.length > 0) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(
@@ -118,7 +136,41 @@ export async function pluginValidateHandler(
     if (result.fileType === 'plugin') {
       const manifestDir = dirname(result.filePath)
       if (basename(manifestDir) === '.claude-plugin') {
-        contentResults = await validatePluginContents(dirname(manifestDir))
+        let foreignDeclarations: Awaited<ReturnType<typeof resolveForeignModStateDeclarations>>['declarations']
+        let foreignWarning: string | undefined
+        const cachedPlugins = loadAllPluginsCacheOnly.cache?.get(undefined)
+        try {
+          const context = cachedPlugins
+            ? { ...await cachedPlugins, complete: true }
+            : await loadPluginsForContractValidation()
+          if (!context.complete || context.errors.length) {
+            const details = context.errors.map(error => `${error.source}: ${getPluginErrorMessage(error)}`).join('; ')
+            foreignWarning = `${cachedPlugins ? 'Cached plugin' : 'Plugin contract'} context has ${context.errors.length} loader ${plural(context.errors.length, 'error')}${context.complete ? '' : ' and is incomplete'}; foreign state references were left unchecked.${details ? ` ${details}` : ''}`
+          } else {
+            const manifest = jsonParse(await readFile(result.filePath, 'utf8')) as { name?: unknown }
+            if (typeof manifest.name === 'string') {
+              const resolved = await resolveForeignModStateDeclarations(
+                context.enabled,
+                manifest.name,
+              )
+              foreignDeclarations = resolved.declarations
+              foreignWarning = resolved.warning
+            }
+          }
+        } catch (error) {
+          foreignWarning = `Could not use ${cachedPlugins ? 'cached plugin' : 'plugin contract'} context: ${errorMessage(error)}. Foreign state references were left unchecked.`
+        }
+        contentResults = await validatePluginContents(
+          dirname(manifestDir),
+          foreignDeclarations,
+        )
+        if (foreignWarning) {
+          const hooksResult = contentResults.find(r => r.fileType === 'hooks')
+          hooksResult?.warnings.push({
+            path: 'state',
+            message: foreignWarning,
+          })
+        }
         for (const r of contentResults) {
           // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`Validating ${r.fileType}: ${r.filePath}\n`)
@@ -150,6 +202,69 @@ export async function pluginValidateHandler(
       `${figures.cross} Unexpected error during validation: ${errorMessage(error)}`,
     )
     process.exit(2)
+  }
+}
+
+function printPluginTestResult(
+  root: string,
+  result: {
+    files: Array<{
+      file: string
+      tests: Array<{ name: string; durationMs: number; failure?: string }>
+      loadFailure?: string
+    }>
+    passed: number
+    failed: number
+    durationMs: number
+  },
+): void {
+  const lines = ['']
+  for (const file of result.files) {
+    const title = relative(root, file.file) || basename(file.file)
+    lines.push(`${title}:`)
+    for (const test of file.tests) {
+      lines.push(`(${test.failure === undefined ? 'pass' : 'fail'}) ${test.name} [${test.durationMs.toFixed(2)}ms]`)
+      if (test.failure !== undefined) lines.push(test.failure)
+    }
+    if (file.loadFailure !== undefined) {
+      lines.push('(fail) the file did not load')
+      lines.push(file.loadFailure)
+    }
+    lines.push('')
+  }
+  const tests = result.files.reduce((sum, file) => sum + file.tests.length, 0)
+  lines.push(` ${result.passed} pass`)
+  lines.push(` ${result.failed} fail`)
+  lines.push(`Ran ${tests} ${tests === 1 ? 'test' : 'tests'} across ${result.files.length} ${result.files.length === 1 ? 'file' : 'files'}. [${(result.durationMs / 1000).toFixed(2)}s]`)
+  process.stdout.write(`${lines.join('\n')}\n`)
+}
+
+export async function pluginTestHandler(
+  directory: string,
+  options: { child?: string } = {},
+): Promise<void> {
+  try {
+    const { runPluginTestChild, runPluginTests } = await import(
+      '../../services/mods/testing/runner.js'
+    )
+    if (options.child) process.exit(await runPluginTestChild(directory, options.child))
+    const result = await runPluginTests(directory, {
+      childCommand: (file, root) => [
+        process.execPath,
+        ...(isInBundledMode() ? [] : [process.argv[1]!]),
+        'plugin',
+        'test',
+        root,
+        '--child',
+        file,
+      ],
+    })
+    printPluginTestResult(directory, result)
+    if (result.failed) process.exit(1)
+    process.exit(0)
+  } catch (error) {
+    logError(error)
+    cliError(`${figures.cross} Plugin tests failed: ${errorMessage(error)}`)
   }
 }
 
@@ -346,15 +461,23 @@ export async function pluginListHandler(options: {
     }
   }
 
+  const refusal = getInstalledPluginsReadRefusal()
+  const recoveryNotes = [getSetAsideInstalledPluginsNote(), getUnreadableInstalledPluginsNote()]
+    .filter((note): note is string => note !== null)
   if (pluginIds.length === 0 && inlinePlugins.length === 0) {
     // inlineLoadErrors can exist with zero inline plugins (e.g. --plugin-dir
     // points at a nonexistent path). Don't early-exit over them — fall
     // through to the session section so the failure is visible.
     if (inlineLoadErrors.length === 0) {
-      cliOk(
-        'No plugins installed. Use `claude plugin install` to install a plugin.',
-      )
+      const first = refusal ? `Note: ${refusal}` : 'No plugins installed. Use `claude plugin install` to install a plugin.'
+      cliOk([first, ...recoveryNotes].join('\n\n') + (refusal || recoveryNotes.length > 0 ? '\n' : ''))
     }
+  }
+
+  const notes = [...(refusal ? [`Note: ${refusal}`] : []), ...recoveryNotes]
+  if (notes.length > 0) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`${notes.join('\n\n')}\n`)
   }
 
   if (pluginIds.length > 0) {

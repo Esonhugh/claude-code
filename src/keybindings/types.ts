@@ -19,6 +19,8 @@ export type KeybindingContextName =
   | 'ModelPicker'
   | 'Select'
   | 'Plugin'
+  | 'Pane'
+  | 'PaneField'
   | (string & {})
 
 // A keybinding action — either a known action string, a command reference,

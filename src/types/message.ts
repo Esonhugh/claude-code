@@ -10,15 +10,17 @@ export type PartialCompactDirection = 'back' | 'forward' | 'from' | 'up_to'
 export type MessageOrigin =
   | { kind: 'human' | 'task-notification' | 'coordinator' }
   | { kind: 'channel'; server: string }
+  | { kind: 'plugin'; name: string; asUser?: true }
   | {
       kind: 'peer'
       from: string
       msg_id?: string
       name?: string
       fromMode?: 'bypass' | 'prompting'
+      plugin?: string
     }
 
-export type SystemMessageLevel = 'info' | 'warning' | 'error' | 'suggestion'
+export type SystemMessageLevel = 'info' | 'notice' | 'warning' | 'error' | 'suggestion'
 
 // ---------------------------------------------------------------------------
 // Content block placeholders (re-exported Anthropic SDK shapes are complex;
@@ -125,6 +127,8 @@ export interface UserMessage {
     direction?: PartialCompactDirection
   }
   toolUseResult?: unknown
+  /** Explicit refusal metadata; ordinary execution failures do not set it. */
+  toolDenialKind?: 'permission-rule' | 'user-rejected'
   mcpMeta?: {
     _meta?: Record<string, unknown>
     structuredContent?: Record<string, unknown>
@@ -163,6 +167,7 @@ export interface AssistantMessage {
   isMeta?: boolean
   isVirtual?: boolean
   isApiErrorMessage?: boolean
+  apiErrorStatus?: number
   apiError?: {
     status: number
     type: string
@@ -384,6 +389,7 @@ export interface NormalizedAssistantMessage<T = BetaContentBlock> {
   isMeta?: boolean
   isVirtual?: boolean
   isApiErrorMessage?: boolean
+  apiErrorStatus?: number
   apiError?: {
     status: number
     type: string

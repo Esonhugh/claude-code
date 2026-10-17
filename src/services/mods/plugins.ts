@@ -1,14 +1,25 @@
-import { dirname, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
+import { logForDebugging } from '../../utils/debug.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
+import { markBuiltinModInput } from '../../plugins/builtinPlugins.js'
 import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
-import { getPluginStorageId } from '../../utils/plugins/pluginOptionsStorage.js'
+import { getPluginStorageId, loadPluginSecrets, resolvePluginOptions } from '../../utils/plugins/pluginOptionsStorage.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import type { ModDiagnostic, ModPluginInput } from './runtime.js'
+import {dependencyMatchesPlugin, qualifyDependency} from '../../utils/plugins/dependencyResolver.js'
+import type {ModTypeDependency} from './declarations.js'
+import type { ModOrigin } from './types.js'
+import { isSecDefaultId, SEC_DEFAULT_NAME, shouldSeatSecDefault } from './native.js'
 
 export type PrepareModPluginsSettings = {
   userSettings: SettingsJson | null
   flagSettings: SettingsJson | null
   policySettings: SettingsJson | null
+  /** Vouched admin ordering; undefined means the embedding host supplied policy. */
+  policyPluginOrdering?: Pick<SettingsJson, 'prependPlugins' | 'appendPlugins'> | null
+  /** Admin settings remain authoritative even when their contents failed validation. */
+  hasManagedSettings?: boolean
+  subscriptionType?: 'team' | 'enterprise' | 'pro' | 'max' | null
   hookPolicy: {
     /** Result of shouldAllowManagedHooksOnly(). */
     managedOnly: boolean
@@ -22,10 +33,6 @@ export type PrepareModPluginsSettings = {
 }
 
 type PluginOptions = Record<string, string | number | boolean | string[]>
-type UnmodeledOrderingSettings = SettingsJson & {
-  prependPlugins?: unknown
-  appendPlugins?: unknown
-}
 
 function diagnostic(
   plugin: string,
@@ -36,6 +43,7 @@ function diagnostic(
 }
 
 function configuredOptions(
+  plugin: LoadedPlugin,
   storageId: string,
   settings: PrepareModPluginsSettings,
 ): PluginOptions {
@@ -46,6 +54,8 @@ function configuredOptions(
     enabled.flag ? settings.flagSettings : null,
     settings.policySettings,
   ]) {
+    if (storageId.endsWith('@inline'))
+      Object.assign(result, source?.pluginConfigs?.[plugin.name]?.options)
     Object.assign(result, source?.pluginConfigs?.[storageId]?.options)
   }
   return result
@@ -55,31 +65,27 @@ function prepareOptions(
   plugin: LoadedPlugin,
   storageId: string,
   settings: PrepareModPluginsSettings,
-): { options?: PluginOptions; error?: ModDiagnostic } {
+): { options?: PluginOptions; fingerprintOptions?: PluginOptions; error?: ModDiagnostic } {
   const schema = plugin.manifest.userConfig ?? {}
-  const sensitive = Object.entries(schema)
-    .filter(([, field]) => field.sensitive === true)
-    .map(([key]) => key)
-  if (sensitive.length > 0) {
-    return {
-      error: diagnostic(
-        plugin.name,
-        'options',
-        `Sensitive plugin options are unsupported by Mods: ${sensitive.join(', ')}; module not loaded`,
-      ),
-    }
+  const hasSensitiveOptions = Object.values(schema).some(field => field.sensitive === true)
+  const saved = {
+    ...configuredOptions(plugin, storageId, settings),
+    ...(hasSensitiveOptions ? loadPluginSecrets(storageId) : {}),
   }
+  const options = resolvePluginOptions(schema, saved)
+  if (plugin.name === 'agents-md' && saved.projectInstructions !== undefined)
+    options.projectInstructions = saved.projectInstructions
 
-  const saved = configuredOptions(storageId, settings)
-  const options: PluginOptions = {}
-  for (const [key, field] of Object.entries(schema)) {
-    if (!(field.required && field.default === undefined)) {
-      options[key] = field.default ?? ''
-    }
-    if (saved[key] !== undefined) options[key] = saved[key]
-  }
-
-  const validation = validateUserConfig(options, schema)
+  const validation = validateUserConfig(
+    plugin.name === 'agents-md'
+      ? Object.fromEntries(
+          Object.entries(options).filter(
+            ([key]) => key !== 'projectInstructions',
+          ),
+        )
+      : options,
+    schema,
+  )
   if (!validation.valid) {
     return {
       error: diagnostic(
@@ -89,25 +95,51 @@ function prepareOptions(
       ),
     }
   }
-  return { options }
+  const fingerprintOptions = hasSensitiveOptions
+    ? Object.fromEntries(
+        Object.entries(options).filter(([key]) => schema[key]?.sensitive !== true),
+      )
+    : undefined
+  return { options, fingerprintOptions }
 }
 
-function hasOrderingSettings(settings: PrepareModPluginsSettings): boolean {
-  return [
-    settings.userSettings,
-    settings.flagSettings,
-    settings.policySettings,
-  ].some((source) => {
-    const value = source as UnmodeledOrderingSettings | null
-    return (
-      value?.prependPlugins !== undefined || value?.appendPlugins !== undefined
-    )
-  })
+export function getModPluginOrigin(
+  plugin: LoadedPlugin,
+  settings: PrepareModPluginsSettings,
+): ModOrigin {
+  const storageId = getPluginStorageId(plugin)
+  if (plugin.isBuiltin === true && storageId.endsWith('@builtin'))
+    return { plugin: storageId, tier: 'builtin' }
+  const managed = plugin.managedSource === true && settings.policySettings?.enabledPlugins?.[storageId] === true
+  const hasPolicy = settings.hasManagedSettings === true ||
+    (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0)
+  const ordering = hasPolicy ? settings.policySettings :
+    settings.enabledOptionSources?.user === false ? null : settings.userSettings
+  let tier: ModOrigin['tier'] = managed ? 'prepend' : 'user'
+  if (hasPolicy ? managed : !managed) {
+    if (ordering?.prependPlugins?.includes(storageId)) tier = 'prepend'
+    else if (ordering?.appendPlugins?.includes(storageId)) tier = 'append'
+  }
+  return { plugin: storageId, tier }
+}
+
+function authorTypeDependencies(owner: LoadedPlugin, plugins: readonly LoadedPlugin[]): ModTypeDependency[] {
+  const dependencies = new Map<string, LoadedPlugin>(), queue = [owner]
+  for (const current of queue) {
+    for (const candidate of plugins) {
+      if (candidate.enabled === false || candidate.name === owner.name || dependencies.has(candidate.name)) continue
+      if (!(current.manifest.dependencies ?? []).some(dependency => dependencyMatchesPlugin(qualifyDependency(dependency, current.source), candidate.source))) continue
+      dependencies.set(candidate.name, candidate)
+      queue.push(candidate)
+    }
+  }
+  return [...dependencies.values()].flatMap(plugin => plugin.manifest.types === undefined ? [] :
+    [{name:plugin.name, pluginRoot:plugin.path, path:plugin.manifest.types}])
 }
 
 /**
  * Converts already-loaded, trusted plugins into declarations for createModsRuntime.
- * This adapter performs no filesystem access and never reads secure option storage.
+ * Resolves and validates settings and secure options before module evaluation.
  */
 export function prepareModPlugins(
   plugins: readonly LoadedPlugin[],
@@ -119,20 +151,28 @@ export function prepareModPlugins(
   const allDisabled =
     settings.hookPolicy.allDisabled ||
     settings.policySettings?.disableAllHooks === true
+  const guardOption = settings.policySettings?.pluginConfigs?.['cc-plugin-sec-default@builtin']?.options?.allowManagedModsOnly
+  const managedModsOnly = shouldSeatSecDefault(settings) && guardOption !== undefined && guardOption !== false
   const managedOnly =
     settings.hookPolicy.managedOnly ||
     settings.policySettings?.allowManagedHooksOnly === true ||
+    managedModsOnly ||
     settings.userSettings?.disableAllHooks === true ||
     settings.flagSettings?.disableAllHooks === true
 
-  if (hasOrderingSettings(settings)) {
-    errors.push(
-      diagnostic(
-        'mods',
-        'ordering',
-        'prependPlugins/appendPlugins are not available in the local settings schema; configured Mods ordering was not applied',
-      ),
-    )
+  const hasPolicy = settings.hasManagedSettings === true ||
+    (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0)
+  const user = settings.enabledOptionSources?.user === false ? null : settings.userSettings
+  const ordering = hasPolicy ? settings.policySettings : user
+  const prepend = [...new Set(ordering?.prependPlugins ?? [])]
+  const append = [...new Set(ordering?.appendPlugins ?? [])]
+  if (hasPolicy) {
+    for (const key of ['prependPlugins', 'appendPlugins'] as const) {
+      if (user?.[key] !== undefined) errors.push(diagnostic('mods', 'ordering', `${key} in user settings ignored: this machine has managed settings`))
+    }
+  }
+  for (const id of append) {
+    if (prepend.includes(id)) errors.push(diagnostic('mods', 'ordering', `${id} is in both tier lists; it is prepended`))
   }
 
   for (const plugin of plugins) {
@@ -140,15 +180,27 @@ export function prepareModPlugins(
     const entrypoints = [
       ...new Set(
         (plugin.hookModules ?? []).flatMap((group) =>
-          group.paths.map((path) => resolve(dirname(group.configPath), path)),
+          group.paths.map((path) => join(dirname(group.configPath), path)),
         ),
       ),
     ]
     if (entrypoints.length === 0) continue
 
     const storageId = getPluginStorageId(plugin)
-    const managed = policyEnabled?.[storageId] === true
-    if (allDisabled) {
+    if (shouldSeatSecDefault(settings) && (plugin.name === 'sec-default' || plugin.name === SEC_DEFAULT_NAME || isSecDefaultId(storageId))) {
+      errors.push(diagnostic(plugin.name, 'native', 'sec-default is host-owned on this session; the external name collision is not loaded'))
+      continue
+    }
+    const trustedBuiltin =
+      plugin.isBuiltin === true && storageId === `${plugin.name}@builtin`
+    const managed = plugin.managedSource === true && policyEnabled?.[storageId] === true
+    if (!trustedBuiltin && policyEnabled?.[storageId] === true && !managed) {
+      logForDebugging(
+        `[Mods] ${storageId}: enabled by managed settings without verified in-place directory provenance; hooks keep the user tier${managedOnly ? ' and are refused by managed-only policy' : ''}; loaded from ${plugin.path}`,
+        { level: 'warn' },
+      )
+    }
+    if (!trustedBuiltin && allDisabled) {
       errors.push(
         diagnostic(
           plugin.name,
@@ -158,12 +210,14 @@ export function prepareModPlugins(
       )
       continue
     }
-    if (managedOnly && !managed) {
+    if (!trustedBuiltin && managedOnly && !managed) {
       errors.push(
         diagnostic(
           plugin.name,
           'policy',
-          'Hooks modules are restricted to managed plugins',
+          managedModsOnly
+            ? 'Hooks modules are restricted to managed plugins by allowManagedModsOnly'
+            : 'Hooks modules are restricted to managed plugins',
         ),
       )
       continue
@@ -175,16 +229,39 @@ export function prepareModPlugins(
       continue
     }
 
-    const builtin = plugin.isBuiltin === true && storageId.endsWith('@builtin')
-    inputs.push({
+    const typeDependencies = authorTypeDependencies(plugin, plugins)
+    const input: ModPluginInput = {
       name: plugin.name,
+      ...(plugin.manifest.version === undefined ? {} : { version: plugin.manifest.version }),
       storageId,
       pluginRoot: plugin.path,
       entrypoints,
+      ...(typeDependencies.length ? {authorTypeDependencies:typeDependencies} : {}),
       options: prepared.options,
-      tier: builtin ? 'builtin' : managed ? 'prepend' : 'user',
-    })
+      fingerprintOptions: prepared.fingerprintOptions,
+      tier: getModPluginOrigin(plugin, settings).tier,
+    }
+    Object.defineProperty(input, 'mcpPlugin', {value:plugin})
+    markBuiltinModInput(plugin, input)
+    inputs.push(input)
   }
 
+  const eligible = (input: ModPluginInput) => input.tier !== 'builtin' &&
+    (hasPolicy ? input.tier !== 'user' : policyEnabled?.[input.storageId] !== true)
+  for (const [key, ids] of [['prependPlugins', prepend], ['appendPlugins', append]] as const) {
+    for (const id of ids) {
+      if (key === 'prependPlugins' && isSecDefaultId(id) && shouldSeatSecDefault(settings)) continue
+      if (!inputs.some(input => input.storageId === id && eligible(input))) {
+        errors.push(diagnostic('mods', 'ordering', `${key} names ${id}, which is not an enabled ${hasPolicy ? 'managed ' : ''}plugin with a hooks module; skipped`))
+      }
+    }
+  }
+  const tiers = ['prepend', 'user', 'append', 'builtin']
+  const rank = (input: ModPluginInput) => {
+    const ids = input.tier === 'prepend' ? prepend : input.tier === 'append' ? append : []
+    const index = ids.indexOf(input.storageId)
+    return index === -1 ? ids.length : index
+  }
+  inputs.sort((a, b) => tiers.indexOf(a.tier!) - tiers.indexOf(b.tier!) || rank(a) - rank(b))
   return { inputs, errors }
 }

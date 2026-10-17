@@ -1,32 +1,219 @@
+import { resolve } from 'node:path'
+import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
+import type { ModCommandRequest } from './commandRunQueue.js'
+import { createModUiAskRequest } from './uiAsk.js'
+import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
+import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
+import type { LoadedPlugin } from '../../types/plugin.js'
+import { createModToolNotices, type ModToolNotices } from './uiNotice.js'
+import { officialCoreCalls } from './coreCalls.js'
+import { createModRemoteFocus } from './remoteUiFocus.js'
+import { createModRemotePrompt } from './remoteUiPrompt.js'
+import { runModPromptEdit } from './promptEdit.js'
+import { restorePromptAutocompleteInput, validatePromptAutocompleteInput, validatePromptAutocompleteResult } from './promptAutocomplete.js'
+import { modClientDataProblem } from './remoteUiClient.js'
+import { matchesModMatcher as matchesRenderMatcher, type ModMatcher } from './matcher.js'
+import { combineModModelSignals } from './modelAbort.js'
+import { isTerminalTaskStatus } from '../../taskStatus.js'
+import { setTimeout as delay } from 'node:timers/promises'
+import {getFeatureValue_CACHED_MAY_BE_STALE} from '../analytics/growthbook.js'
+import { randomUUID } from 'node:crypto'
+import { isEffortLevel } from '../../utils/effort.js'
+import { createModTurnRegistry, type ModRegisteredTurn, type ModTurnEnd } from './turnRegistry.js'
+import { createModTurnCompletion } from './turnAdapter.js'
+import {sanitizePromptFillInput} from './promptFillUnicode.js'
+import type { ModUiSelection } from './uiSelection.js'
+import {validateModModelCompleteInput} from './modelTextBlocks.js'
+import {validateModUiCopyArgs, type ModUiCopyArgs, type ModUiCopyResult} from './uiCopy.js'
+import { validatePromptDecorations, validatePromptEditInput, validatePromptEditResult } from './promptEdit.js'
+import type { ModContinuation, ModStreamNext } from './types.js'
+import { appendModCallerChain, copyModCallerChain, type ModCallerChain } from './callerChain.js'
+import type { CacheSafeParams } from '../../utils/forkedAgent.js'
+import type { ModModelCompleteResult, ModModelForkRequest, ModModelForkResult, ModModelUsage, PromptComposeInput, PromptComposeResult } from './types.js'
+import { createModAgents, listModAgents, restoreModAgentSpawnInput, validateModAgentSpawnInput } from './agents.js'
+import type { AppState } from '../../state/AppState.js'
+import { validateTurnStepInput, validateTurnStepChunk, validateTurnStepResult } from './turnStep.js'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { isDeepStrictEqual } from 'node:util'
+import { isProxy } from 'node:util/types'
+import { createModRemoteScroll } from './remoteUiScroll.js'
+import { createModUiRealm } from './uiRealm.js'
+import type { Tool } from '../../Tool.js'
+import type { ExitReason } from '../../entrypoints/agentSdkTypes.js'
+import { createToolCatalogForContext, type ModToolDescription, type ToolCatalog } from './toolCatalog.js'
+import { createModToolHost } from './toolHost.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
-import { createModClockBridge, createModEnvironmentHost, type ModEnvironment } from './environment.js'
+import { createModMutableResultBridge, createModClockBridge, createModStreamBridge, createModEnvironmentHost, createModStateBridge, createModStoreBridge, createModModelBridge, createModUiBridge, createModUiCoreTable, createModInterfaceBridge, type ModEnvironment } from './environment.js'
+import type { ModWorkerFault } from './protocol.js'
+import { createModClients, copyModClientData, findModClient } from './client.js'
+import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
 import { loadModDeclaration } from './loader.js'
-import { dispatchModEvent } from './dispatch.js'
-import type { ModDeclaration, ModDispatchHook, ModInput, ModOrigin, ModTier } from './types.js'
+import { buildModClientBundle } from './clientBundle.js'
+import { getNativeModDeclaration } from './native.js'
+import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
+import {getOfficialShippedPaneRequests,updateOfficialShippedPaneRequest} from '../../plugins/builtinShippedMods.js'
+import builtinDiff from '../../commands/diff/index.js'
+import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
+import { createModHostOperations, ModProcessTimeoutError, ModProcessTerminationError, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
+import { createModCommands, type ModCommandSpec } from './commands.js'
+import { createModTools, type ModToolSpec } from './tools.js'
+import { describeModCommand, runModCommand, type CommandPresentation } from './commandAdapter.js'
+import { getCommandName, type Command } from '../../types/command.js'
+import { validateModRenderTree } from '../../components/ModsPane.js'
+import { createModHookStream, dispatchModEvent, dispatchModStream, getModCapabilitySignal, pauseModBudget } from './dispatch.js'
+import { createModProcessStream } from './protocol.js'
+import { reconcilePromptContext, validatePromptContext, type PromptContext } from './promptContext.js'
+import { validateModSessionUsageArgs, validateModSessionUsage, type ModUsageReader } from './sessionUsage.js'
+import { createModSessionMeasure } from './sessionMeasure.js'
+import type { Message } from '../../types/message.js'
+import { projectModApiMessages, projectModSessionMessages, validateModSessionMessagesArgs, type ModApiMessage, type ModSessionMessage } from './sessionMessages.js'
+import { validateModCompactInput, validateModCompactResult } from './compactAdapter.js'
+import { validateSessionReceiveResult } from './receiveAdapter.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { getMaxConcurrentSubagents } from '../../utils/subagentConcurrency.js'
+import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
+import { createModState } from './state.js'
+import { createModToasts } from './toast.js'
+import { ensureModDeclarations, type ModTypeDependency } from './declarations.js'
+import { createModModelFork, createModModelClassify, validateModModelClassifyInput, createModModelComplete, type ModModelCompleteRequest } from './modelAdapter.js'
+import { getSmallFastModel } from '../../utils/model/model.js'
+import { findCanonicalGitRootFresh, getOriginRemoteUrlFresh } from '../../utils/git.js'
+import {
+  applyPromptFill,
+  emptyPromptBox,
+  validatePromptBox,
+  validatePromptFillInput,
+  type ModPromptHost,
+  type PromptAttachment,
+  type PromptFillInput,
+  type PromptFillResult,
+  type PromptSubmitResult,
+} from './promptAdapter.js'
+import type { ModDeclaration, ModDispatchHook, ModInput, ModNext, ModOrigin, ModTier, ModHookStream } from './types.js'
 
 export type ModPluginInput = {
+  /** Trusted host metadata; never serialized into the module declaration. */
+  mcpPlugin?: LoadedPlugin
   name: string
   storageId: string
+  version?: string
+  /** Set only by a trusted host registration, not by plugin.json or tier. */
+  isNative?: boolean
   pluginRoot: string
   entrypoints: string[]
+  /** Host-only author project dependencies; not sent to the hook Worker. */
+  authorTypeDependencies?: readonly ModTypeDependency[]
   options?: ModInput
+  fingerprintOptions?: ModInput
   tier?: ModTier
 }
 export type ModBinding = {
   cwd: string
-  surface: 'terminal' | null
+  surface: ModRenderSurface | null
   isInteractive: boolean
   sessionId: string
 }
-export type ModDiagnostic = { plugin: string; stage: string; message: string }
-export type ModDispatchOptions = { signal?: AbortSignal; validateResult?: (value: unknown) => void }
+export type ModRequestServices = {
+  commandRun?(request:ModCommandRequest):Promise<import('./commandAdapter.js').CommandRunResult>
+  agentSpawn?(
+    input: ModInput,
+    snapshot: ModSnapshot,
+    signal: AbortSignal,
+    spawnedBy?: string,
+    leftRunning?: (agentId: string) => void,
+  ): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
+  tools?(): readonly Tool[]
+  toolHost?(): {
+    tools?(): readonly Tool[]
+    spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask', person?: boolean): Promise<unknown>
+    check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
+  }
+  toolCatalog?(): ToolCatalog
+  composePrompt?(input: Partial<PromptComposeInput>, snapshot: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult>
+  captureUsage?(): ModUsageReader
+  modelFork?(request: ModModelForkRequest, signal?: AbortSignal, onUsage?: (usage: ModModelUsage) => void): Promise<ModModelForkResult>
+  modelComplete?(request: ModModelCompleteRequest, signal?: AbortSignal): Promise<ModModelCompleteResult>
+  mcpConnect?(plugin: LoadedPlugin | undefined, server: string, signal: AbortSignal): Promise<ModMcpConnectResult>
+  mcpRelease?(source: string): Promise<void>
+  mcpCall?(server: string, tool: string, args: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  submitPrompt?(input: {
+    text: string
+    attachments?: readonly PromptAttachment[]
+    origin: { kind: 'plugin'; name: string; asUser?: true }
+    callerChain: ModCallerChain
+    signal: AbortSignal
+  }): Promise<PromptSubmitResult>
+}
+export type ModHostServices = ModRequestServices & ModHttpServices & {
+  messages?(): readonly unknown[]
+  rawMessages?(): readonly Message[]
+  agentMessages?(agentId:string,sessionId:string): Promise<readonly Message[] | undefined>
+  tasks?(): AppState['tasks']
+  agentNames?(): AppState['agentNameRegistry']
+  configRows?(): readonly ModConfigRowProvider[] | Promise<readonly ModConfigRowProvider[]>
+  pluginOrigin?(storageId: string): ModOrigin | undefined
+  cwd?(): string
+  root?(): string
+  model?(): string
+  turns?(): number
+  commands?(): readonly Command[]
+  builtinCommands?(): readonly Command[]
+  presentation?(): CommandPresentation
+  uiPresentation?(): ModUiPresentation
+  uiSelection?(): ModUiSelection | undefined
+  uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
+  uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
+  /** Runs queued input while the host is idle; QueryEngine calls it for input it queued after its turn ended. */
+  wake?(): void | Promise<void>
+  uiStatus?(plugin: string, text: string | undefined): void
+  uiToast?(plugin: string, text: string, timeoutMs: number): void
+  prompt?(): ModPromptHost | undefined
+}
+export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault }
+export type ModDispatchOptions = {
+  /** Host-pinned caller identity, never read from the event's input. */
+  origin?: ModOrigin
+  signal?: AbortSignal
+  caller?: { plugin: string; registrationId: number }
+  /** Host-owned history across deferred queues, separate from public input. */
+  callerChain?: ModCallerChain
+  /** Host-only matching origins for non-stream dispatch. */
+  onHooks?: (hooks: readonly ModOrigin[]) => void
+  validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
+  validateInput?: (input: ModInput, received: ModInput) => void
+  restoreInput?: (input: ModInput, received: ModInput) => ModInput
+  restoreResult?: (result: unknown, previous: unknown, called: boolean) => unknown
+  reportDirectCoreFailure?: boolean
+}
+export type ModPromptContext = { result: Promise<PromptContext>; signal: AbortSignal }
+export type ModPromptSection = { result: Promise<{text:string | null}>; signal: AbortSignal }
 export type ModSnapshot = {
-  dispatch(event: string, input: ModInput, core: (input: ModInput) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
+  readonly toolNotices?: ModToolNotices
+  readonly toolDescriptions?: WeakMap<Tool, Map<string, Promise<ModToolDescription>>>
+  readonly promptSections?: Map<string, ModPromptSection>
+  readonly promptAttachments?: Map<string, ModPromptSection>
+  readonly promptContexts?: Map<string | undefined, ModPromptContext>
+  readonly promptContextBoundaries?: Map<string | undefined, string>
+  pluginOrigin?(storageId: string): ModOrigin | undefined
+  toolOrigin?(tool: Tool): ModOrigin | undefined
+  commandRunHooks?(command: string, origin?: ModOrigin): readonly ModOrigin[]
+  dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
+  stream?(event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
   hasHooks(event: string): boolean
   release(): void
 }
 type Nouns = Record<string, Record<string, (...args: unknown[]) => unknown>>
+type InterfaceState = {
+  owners: Map<string, string>
+  withheld: Map<string, Set<string>>
+  carried?: Map<string, Set<string>>
+  endedBy?: string
+}
+type CapabilityLease = { entries: number; building?: boolean }
 type Activation = {
+  builtinInput?: ModPluginInput
   declaration: ModDeclaration
   environment: ModEnvironment
   state: 'candidate' | 'active' | 'retiring' | 'disposed'
@@ -34,33 +221,538 @@ type Activation = {
   started: boolean
   waits: Map<number, { kind: string; timer: ReturnType<typeof setTimeout>; reject(error: Error): void }>
   methods: WeakMap<object, (...args: unknown[]) => Promise<unknown>>
+  engine?: Record<string, unknown>
+  engineScope?: { snapshot: readonly Activation[]; table: Nouns }
+  controller: AbortController
+  processControllers: Set<AbortController>
+  operations: ReturnType<typeof createModHostOperations>
+  uiPublished?: boolean
+  uiStatus?: { text: string | undefined }
+  uiLogs?: { text: string; to: 'transcript' | 'debug' }[]
+  suggestionOwner: string
+  suggestionEligible: boolean
+  uiRelease?: Promise<void>
   dispose?: Promise<void>
 }
+// A failed fold is retried when its actual declaration or surrounding set changes.
+type FailedBuildStep = { declaration: ModDeclaration; order: readonly string[] }
+function sameModDeclaration(previous: ModDeclaration, current: ModDeclaration): boolean {
+  if (current.modules.some(module => /\bimport\s*\(/.test(module.source))) return false
+  // Fingerprint is a local cache hint, not part of the author's actual arguments.
+  return isDeepStrictEqual({ ...previous, fingerprint: undefined }, { ...current, fingerprint: undefined })
+}
+
+type DrawingLease = {
+  instance: string
+  owner: ModUiOwner
+  snapshot: readonly Activation[]
+  table: Nouns
+  participants: Set<Activation>
+}
+export type ModRemoteClientInput = {
+  surface: Exclude<ModRenderSurface, 'terminal'>
+  clientId: string
+  viewport?: { columns: number; rows: number; isFullscreen?: boolean }
+  answers?: readonly ('ui_copy' | 'ui_prompt_read' | 'ui_prompt_fill' | 'ui_prompt_suggest' | 'ui_read_selection')[]
+}
+type AttachedClient = {
+  surface: ModRenderSurface
+  clientId: string
+  viewport?: { columns: number; rows: number; isFullscreen?: boolean }
+  references: number
+  transport: boolean
+  answers?: ModRemoteClientInput['answers']
+}
 const tierOrder: ModTier[] = ['prepend', 'user', 'append', 'builtin', 'core']
-const unavailableDuringCreate = () => { throw new Error('Capabilities cannot be called during engine.create') }
+// Identity-only entries; all calls, including beneath, use engineFor's bridge.
+const clockIdentity = () => { throw new Error('Clock calls must use the environment bridge') }
 const coreClock = Object.freeze({
-  now: unavailableDuringCreate, sleep: unavailableDuringCreate,
-  after: unavailableDuringCreate, every: unavailableDuringCreate,
+  now: clockIdentity, sleep: clockIdentity, after: clockIdentity, every: clockIdentity,
 })
 
-export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: ModDiagnostic) => void } = {}) {
+// Core noun identity is stable; the caller's activation selects its store and lifetime.
+const hostIdentity = () => { throw new Error('Host calls must use the environment bridge') }
+const invalidatableEvents = ['ui.render', 'prompt.section', 'prompt.context', 'prompt.attachment', 'tool.describe', 'command.describe', 'config.describe']
+const invalidationError = 'ui.invalidate takes "ui.render", "prompt.section", "prompt.context", "prompt.attachment", "tool.describe", "command.describe" or "config.describe"'
+const coreHost: Nouns = {
+  telemetry: { log: hostIdentity, mark: hostIdentity },
+  plugin: { name: hostIdentity, root: hostIdentity },
+  fs: { read: hostIdentity, write: hostIdentity, list: hostIdentity, exists: hostIdentity, stat: hostIdentity, ancestors: hostIdentity },
+  process: { run: hostIdentity, spawn: hostIdentity },
+  settings: { read: hostIdentity },
+  env: { get: hostIdentity, set: hostIdentity },
+  store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
+  state: { get: hostIdentity, set: hostIdentity },
+  session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
+  http: { fetch: hostIdentity },
+  agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
+  command: { run: hostIdentity, register: hostIdentity, list: hostIdentity },
+  config: { list: hostIdentity, set: hostIdentity },
+  model: { complete: hostIdentity, classify: hostIdentity, fork: hostIdentity },
+  prompt: { compose: hostIdentity, read: hostIdentity, fill: hostIdentity, submit: hostIdentity, suggest: hostIdentity },
+  mcp: { connect: hostIdentity, call: hostIdentity },
+  turn: { step: hostIdentity, abort: hostIdentity },
+  tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
+  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+}
+
+async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
+  const errors: unknown[] = []
+  for (const cleanup of cleanups) {
+    try { await cleanup() } catch (error) { errors.push(error) }
+  }
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, 'Mods cleanup failed')
+}
+
+export function createModsRuntime({ onDiagnostic, services = {}, testing = false, promptEditBudgetMs = 50 }: {
+  onDiagnostic?: (event: ModDiagnostic) => void
+  services?: ModHostServices
+  /** Mock host capabilities or throw at their terminal; retain runtime-owned state and drawing. */
+  testing?: boolean
+  /** Host-selected edit budget; production retains the official 50ms default. */
+  promptEditBudgetMs?: number
+} = {}) {
+  if (!Number.isFinite(promptEditBudgetMs) || promptEditBudgetMs <= 0) throw new TypeError('promptEditBudgetMs must be a positive finite number')
+  const testTerminal = (event: string) => {
+    const [noun, method] = event.split('.')
+    return testing && noun !== 'state' && !(noun === 'ui' &&
+      ['blit', 'scroll', 'focus', 'invalidate', 'resolve'].includes(method!)) &&
+      (noun === 'clock' || Object.hasOwn(coreHost[noun!] ?? {}, method!))
+  }
+  const runningSpawns = new Map<string, number>()
+  async function observeSpawn(agentId: string, plugin: string) {
+    const started = Date.now()
+    let taskId: string | undefined
+    for (;;) {
+      if (stopped) return
+      const task = Object.values(services.tasks?.() ?? {}).find(task => task.type === 'local_agent' && task.agentId === agentId)
+      if (task) {
+        taskId = task.id
+        if (isTerminalTaskStatus(task.status)) {
+          logForDebugging(`[ModsAgent] spawn settled plugin=${plugin} agentId=${agentId} taskId=${taskId} status=${task.status}`)
+          return
+        }
+      } else if (taskId !== undefined || Date.now() - started >= 10 * 60 * 1000) {
+        logForDebugging(`[ModsAgent] spawn observer ended plugin=${plugin} agentId=${agentId} taskId=${taskId ?? 'missing'} reason=${taskId === undefined ? 'registration-timeout' : 'evicted'}`)
+        return
+      }
+      // A launched child outlives its caller; only task settlement frees its slot.
+      await delay(150, undefined, { ref: false })
+    }
+  }
+  const hostHooks = new Set<ModDispatchHook>()
   let active: Activation[] = []
   let nouns: Nouns = {}
+  let descriptionCache = { value: new WeakMap<Tool, Map<string, Promise<ModToolDescription>>>() }
+  let sectionCache = new Map<string, ModPromptSection>()
+  let attachmentCache = new Map<string, ModPromptSection>()
+  let contextCache = new Map<string | undefined, ModPromptContext>()
+  let contextBoundaries = new Map<string | undefined, string>()
+  let descriptionOrigins = services.pluginOrigin
   let binding: ModBinding | undefined
+  type Conversation = {
+    messages?: () => readonly Message[]
+    rows?: ModSessionMessage[]
+    api?: ModApiMessage[]
+    toolUseId?: string
+    persistent?: boolean
+  }
+  const conversations = new Map<string, Conversation>()
+  const excludedConversations = new Set<string>()
+
+  function trackedAgents(): Map<string, string> {
+    return new Map([...conversations].flatMap(([agentId, entry]) =>
+      entry.toolUseId ? [[entry.toolUseId, agentId] as const] : [],
+    ))
+  }
+
+  function trackConversation(input: {
+    agentId: string
+    sessionId: string
+    messages: () => readonly Message[]
+    toolUseId?: string
+    workflow?: boolean
+    parentAgentId?: string
+    persistent?: boolean
+  }): () => void {
+    if (stopped || ending || !binding || binding.sessionId !== input.sessionId) return () => {}
+    if (input.workflow || (input.parentAgentId !== undefined && excludedConversations.has(input.parentAgentId))) {
+      excludedConversations.add(input.agentId)
+      return () => {}
+    }
+    if (excludedConversations.has(input.agentId)) return () => {}
+    // A teammate's outer producer includes all turns; a single query's copy does not.
+    if (conversations.get(input.agentId)?.persistent && !input.persistent) return () => {}
+    const entry: Conversation = {
+      messages: input.messages,
+      toolUseId: input.toolUseId,
+      persistent: input.persistent,
+    }
+    conversations.set(input.agentId, entry)
+    return () => {
+      if (conversations.get(input.agentId) !== entry || !entry.messages) return
+      try {
+        const messages = entry.messages()
+        entry.rows = projectModSessionMessages(messages, 4096, trackedAgents())
+        entry.api = projectModApiMessages(messages, [...(services.tools?.() ?? [])])
+      } catch (error) {
+        conversations.delete(input.agentId)
+        diagnostic('engine', 'session.messages', error)
+      } finally {
+        entry.messages = undefined
+        entry.persistent = false
+      }
+    }
+  }
+  let publicTurn: { turnId: string; abort?: () => void } | undefined
+  const turns = createModTurnRegistry<ModRegisteredTurn>()
+  let turnEpoch = Symbol('mods session turn epoch')
+  let turnLifetime = new AbortController()
+  // Turns whose turn.complete hooks are still running; a hook that queues input ends its turn early
+  // and its completion settles later, with the input it queued (see settleTurns).
+  const completingTurns = new Set<() => void>()
+  const settlingTurns = new Set<Promise<unknown>>()
+  function retireTurns(): void {
+    turns.clear()
+    publicTurn = undefined
+    turnLifetime.abort(new Error('Mods turn session scope retired'))
+    turnLifetime = new AbortController()
+    turnEpoch = Symbol('mods session turn epoch')
+  }
+  const attachedClients = new Map<string, AttachedClient>()
+  const clientTransitions = new Map<string, Promise<void>>()
   let stopped = false
   let queue = Promise.resolve()
   let declarations: ModPluginInput[] = []
   let recovering = false
+  let recoveryRequested = false
+  let currentRecovery: Promise<void> | undefined
+  let workerError: Error | undefined
+  const workerRecoveries = new WeakMap<Error, Promise<void>>()
   let hostEpoch = 0
+  let activationId = 0
   let hostDead = false
   const activations = new Set<Activation>()
   const retired = new Set<Activation>()
-  const ownedMethods = new WeakSet<object>()
+  const interfaceStates = new WeakMap<Nouns, InterfaceState>()
+  const capabilityContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; active: boolean; callerChain?: ModCallerChain; callbackOwner?: string; hook?: { plugin: string; registrationId: number }; next?: ModContinuation }>()
+  const invocationSignal = new AsyncLocalStorage<AbortSignal>()
+  const turnStepCore = new AsyncLocalStorage<(input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>>()
+  const requestServices = new AsyncLocalStorage<ModRequestServices>()
+  let forkSnapshot: CacheSafeParams | null = null
+  let forkGeneration = 0
+  const productionModelFork = createModModelFork(() => forkSnapshot)
+  const uiContext = new AsyncLocalStorage<{ snapshot: readonly Activation[]; table: Nouns; person: boolean; active?: boolean }>()
+  const drawingCallbackPlugin = new AsyncLocalStorage<string>()
+  let publicationNotifications: Set<() => void> | undefined
+  const notify = (listener: () => void) => {
+    if (publicationNotifications) publicationNotifications.add(listener)
+    else listener()
+  }
+  let renderHooksVersion = 0
+  const renderHooksListeners = new Set<() => void>()
+  const publishRenderHooks = () => {
+    renderHooksVersion++
+    for (const listener of renderHooksListeners) notify(listener)
+  }
+  const renderHooks = {
+    getSnapshot: () => renderHooksVersion,
+    subscribe(listener: () => void) {
+      renderHooksListeners.add(listener)
+      return () => { renderHooksListeners.delete(listener) }
+    },
+    matchesComponent(component: ModRenderComponent): boolean {
+      if (stopped) return false
+      const matches = (registration: { event: string; matcher?: { readonly [key: string]: ModMatcher } }) => {
+        if (!matchesModEventPattern(registration.event, 'ui.render')) return false
+        const criterion = registration.matcher?.component
+        return criterion === undefined || matchesRenderMatcher({ component: criterion }, { component })
+      }
+      return [...hostHooks].some(hook => matches(hook.registration)) || active.some(owner =>
+        owner.environment.registrations.some(matches))
+    },
+    matches(input: ModInput): boolean {
+      if (stopped) return false
+      const matches = (registration: { event: string; matcher?: {readonly [key: string]: ModMatcher} }) => {
+        if (!matchesModEventPattern(registration.event, 'ui.render')) return false
+        try { return matchesRenderMatcher(registration.matcher ?? {}, input) }
+        catch { return false }
+      }
+      return [...hostHooks].some(hook => matches(hook.registration)) || active.some(owner =>
+        owner.environment.registrations.some(matches))
+    },
+  }
+  const toast = createModToasts({
+    show: (plugin, text, timeoutMs) => {
+      if (!services.uiToast) throw new Error('UI toast is unavailable on this host')
+      services.uiToast(plugin, text, timeoutMs)
+    },
+    dropped: plugin => logForDebugging(`[Mods:${plugin}] ui.toast throttled`),
+  })
+  const agents = createModAgents(owner => (owner as Activation).declaration, notify)
+  const config = createModConfig(() => services.configRows?.() ?? [], (event, input, core, options) => dispatch(event, input, core, active, nouns, options), () => nouns)
+  const state = createModState({
+    onStale: instances => {
+      for (const instance of instances) {
+        const [surface, component, requestId] = instance.split('\0')
+        void ui.invalidateInstance({
+          surface: surface as ModRenderSurface,
+          component: component as ModRenderComponent,
+          requestId,
+        }).catch(error => diagnostic('mods', 'state.invalidate', error))
+      }
+    },
+  })
+  const drawings = new Map<number, DrawingLease>()
+  const clientOwners = new Map<number, { participant: Activation; owner: object; requestId: string }>()
+  const clients = createModClients({
+    validate: tree => { validateModRenderTree(tree) },
+    fault: (pane, plugin, input, id) => {
+      const client = clientOwners.get(id)
+      const current = ui.getClientSite(pane.owner, pane.id)
+      const original = pane.drawing === undefined ? undefined : drawings.get(pane.drawing)
+      // React may reject the old frame before its parent commits the new site.
+      // Only that same live numeric owner can borrow the current drawing lease.
+      const lease = original ?? (client?.owner === pane.owner && client.requestId === pane.id &&
+        current?.drawing !== undefined && findModClient(current.tree, plugin, input.element, input.module)
+        ? drawings.get(current.drawing) : undefined)
+      const participant = [...(lease?.participants ?? [])].find(item => item === client?.participant && item.declaration.name === plugin)
+      if (!participant || participant.state !== 'active') return
+      const heard = participant.environment.registrations.some(registration => {
+        if (!matchesModEventPattern(registration.event, 'ui.fault')) return false
+        try { return matchesModMatcher(registration.matcher ?? {}, input) }
+        catch (error) { diagnostic(plugin, 'ui.fault.matcher', error); return true }
+      })
+      const started = performance.now()
+      void dispatch('ui.fault', input, async () => ({}), lease!.snapshot, lease!.table, {only:participant,callerChain:[]})
+        .finally(async () => {
+          logForDebugging(`[ModsUI] ${JSON.stringify({event:'ui.fault',plugin,...input,settledMs:performance.now()-started})}`)
+          if (heard && findModClient(ui.getClientSite(pane.owner, pane.id)?.tree, plugin, input.element, input.module))
+            await ui.redrawForFault(pane)
+        }).catch(error => diagnostic(plugin, 'ui.fault', error))
+    },
+    request: async (pane, plugin, request, onFault) => {
+      if (request.op === 'mount') {
+        const lease = pane.drawing === undefined ? undefined : drawings.get(pane.drawing)
+        const participant = [...(lease?.participants ?? [])].find(item => item.declaration.name === plugin)
+        if (!participant || participant.state !== 'active' || !findModClient(pane.tree, plugin, request.element!, request.module!))
+          throw new Error('Client drawing is stale')
+        clientOwners.set(request.id, { participant, owner: pane.owner, requestId: pane.id })
+      }
+      const entry = clientOwners.get(request.id)
+      if (!entry) return { stopped: true }
+      if (entry.owner !== pane.owner || entry.requestId !== pane.id || entry.participant.declaration.name !== plugin)
+        throw new Error('Client instance belongs to another drawing')
+      if (request.op === 'dispose') clientOwners.delete(request.id)
+      if (entry.participant.state !== 'active') { clientOwners.delete(request.id); return { stopped: true } }
+      return withReference(entry.participant, () => entry.participant.environment.client(request, onFault))
+    },
+    message: async (pane, plugin, message) => {
+      const current = ui.getClientSite(pane.owner, pane.id)
+      const lease = current?.drawing === undefined ? undefined : drawings.get(current.drawing)
+      const participant = [...(lease?.participants ?? [])].find(item => item.declaration.name === plugin)
+      if (!participant || !current?.visible || !findModClient(current.tree, plugin, message.element, message.module)) return {}
+      return dispatch('ui.message', {
+        surface: current.surface ?? 'terminal', component: current.component ?? 'Pane', requestId: current.id, ...message,
+      }, async () => ({}), lease!.snapshot, lease!.table, {
+        only: participant, origin: { plugin: 'client', tier: participant.declaration.tier },
+      }) as Promise<{ props?: unknown }>
+    },
+  })
+  const ui = createModUi({
+    asked: getOfficialShippedPaneRequests(),
+    onAskedChange: updateOfficialShippedPaneRequest,
+    notify,
+    clients,
+    validateTree: (tree, input, refs) => { validateModRenderTree(tree, input?.surface, refs) },
+    attach: attachClient,
+    remotePlacement: () => {
+      const clients = [...attachedClients.values()].filter(client => client.viewport !== undefined)
+      if (clients.length === 0 || clients.some(client => client.viewport?.isFullscreen !== undefined)) return {isPlaced: true}
+      return {isPlaced: false, reason: `no attached surface places panes (${clients.map(client => client.clientId).join(', ')}): placed when a surface that does attaches, or once they detach`}
+    },
+    detach: detachClient,
+    pluginOf: owner => (owner as Activation).declaration.name,
+    dispatch: async (owner, event, input, core, options) => {
+      const entered = uiContext.getStore()
+      const interaction = ['ui.press', 'ui.input', 'ui.select'].includes(event)
+      const addressedDrawing = interaction || event === 'ui.blit'
+      const pane = addressedDrawing ? ui.getSnapshot().find(pane => pane.id === input.requestId) : undefined
+      const drawingId = options.drawing ?? pane?.drawing
+      const drawing = drawingId === undefined ? undefined : drawings.get(drawingId)
+      const snapshot = drawing?.snapshot ?? entered?.snapshot ?? active
+      const table = drawing?.table ?? entered?.table ?? nouns
+      const automaticFocus = event === 'ui.focus' && options.automaticFocus === true
+      const origin = automaticFocus ? { plugin: 'engine', tier: 'core' as const }
+        : event === 'ui.open' || options.origin?.kind === 'plugin'
+        ? { plugin: (owner as Activation).declaration.name, tier: (owner as Activation).declaration.tier }
+        : undefined
+      // Noun effects have {value,deny} envelopes; UI interactions/render have
+      // their own result contracts. The pane service owns each event exactly once.
+      const wrapped = event === 'ui.open' || event === 'ui.close'
+      const result = await dispatch(event, input, async rewritten => {
+        const value = interaction
+          ? await drawingCallbackPlugin.run(input.plugin as string, () => core(rewritten))
+          : await core(rewritten)
+        return wrapped ? { value } : value
+      }, snapshot, table, {
+        origin,
+        ...(automaticFocus ? { callerChain: [], signal: options.signal } : {}),
+        skipOwner: options.skipOwner as Activation | undefined,
+        validateInput: options.validateInput,
+        restoreInput: options.restoreInput,
+      })
+      if (wrapped) {
+        if (typeof (result as { deny?: string }).deny === 'string') throw new Error((result as { deny: string }).deny)
+        return (result as { value?: unknown }).value
+      }
+      return result
+    },
+    draw: async (owner, input, drawing, core, validateRenderTree, signal) => {
+      const context = uiContext.getStore()
+      // Recovery may inherit a settled hook's scope; render the published generation.
+      const entered = context?.active === false ? undefined : context
+      const instance = `${input.surface}\0${input.component}\0${input.requestId}`
+      const lease: DrawingLease = { instance, owner, snapshot: entered?.snapshot ?? active, table: entered?.table ?? nouns, participants: new Set() }
+      drawings.set(drawing, lease)
+      let invalidTree = false
+      const validatedTrees = new WeakSet<object>()
+      const result = await dispatch('ui.render', input, core ?? (async () => ({ type: 'Box', children: [] })), lease.snapshot, lease.table, {
+        drawing, callerChain: [], signal,
+        validateRenderTree: tree => {
+          try {
+            if (validateRenderTree) validateRenderTree(tree)
+            else validateModRenderTree(tree, input.surface)
+            if (tree && typeof tree === 'object') validatedTrees.add(tree)
+          }
+          catch (error) { invalidTree = true; throw error }
+        },
+      })
+      // Invalid trees use the original engine row; thrown hooks still descend through next().
+      return input.surface !== 'terminal' && invalidTree && !validatedTrees.has(result as object)
+        ? { type: 'engine', ref: 0 } : result
+    },
+    invokeDrawing: async (owner, drawing, handle, args, retarget) => {
+      const plugin = drawingCallbackPlugin.getStore()
+      const admit = (owner: ModUiOwner, drawing: number) => {
+        const lease = drawings.get(drawing)
+        const participant = [...(lease?.participants ?? [])].find(item => item.declaration.name === plugin)
+        if (!lease || lease.owner !== owner || !participant || participant.state !== 'active' ||
+          (participant.uiPublished && !active.includes(participant)))
+          throw new Error('Mod UI drawing callback is stale or belongs to an unknown plugin')
+        return { lease, participant }
+      }
+      const { lease, participant } = admit(owner, drawing)
+      // An admitted interaction waits for UI access; a redraw meanwhile may release its drawing
+      // while another drawing still holds the same callback. Re-check after every wait.
+      const run = (drawing: number, lease: DrawingLease): Promise<unknown> =>
+        uiContext.run({ snapshot: lease.snapshot, table: lease.table, person: true }, async () => {
+          await participant.environment.setUiAccess(uiAllowed(participant, lease.table))
+          const moved = drawings.has(drawing) ? undefined : retarget?.()
+          if (!moved || moved.drawing === drawing) return participant.environment.invokeDrawing(drawing, handle, args)
+          const next = admit(moved.owner, moved.drawing)
+          if (next.participant !== participant) throw new Error('Mod UI drawing callback is stale or belongs to an unknown plugin')
+          return run(moved.drawing, next.lease)
+        })
+      return withReference(participant, () => run(drawing, lease))
+    },
+    releaseDrawing: async (owner, drawing) => {
+      const lease = drawings.get(drawing)
+      if (!lease || lease.owner !== owner) return
+      drawings.delete(drawing)
+      if (![...drawings.values()].some(current => current.instance === lease.instance))
+        state.forgetRender(lease.instance)
+      await Promise.all([...lease.participants].map(item => item.environment.releaseDrawing(drawing)))
+    },
+  })
+  let lastInterface: InterfaceState = { owners: new Map(['clock', ...Object.keys(coreHost)].map(noun => [noun, 'engine'])), withheld: new Map() }
+  const crashedWithholders = new Map<string, Set<string>>()
+  const knownArgs = new Map<string, ModDeclaration>()
+  const unloadedSteps = new Map<string, FailedBuildStep>()
+  let unattributedCrashes = 0
   const controller = new AbortController()
-  const diagnostic = (plugin: string, stage: string, error: unknown) => onDiagnostic?.({
-    plugin, stage, message: error instanceof Error ? error.message : String(error),
+  const diagnostic = (plugin: string, stage: string, error: unknown, workerFault?: ModWorkerFault) => onDiagnostic?.({
+    plugin, stage, message: error instanceof Error ? error.message : String(error), ...(workerFault && {workerFault}),
   })
   let host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
+  let activeHostCallbacks = 0
+  const toolNotices = createModToolNotices()
+  const tools = createModTools({
+    notify,
+    pluginOf: owner => (owner as Activation).declaration.name,
+    getTools: () => (requestServices.getStore()?.toolHost ?? services.toolHost)?.()?.tools?.() ??
+      (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
+  })
+  const commands = createModCommands({
+    notify,
+    isEnabled: command => command !== builtinDiff || !isDiffOwned(),
+    canReplaceBuiltin: (registeredOwner, spec, command) => {
+      const owner = registeredOwner as Activation
+      return command === builtinDiff && spec.name === builtinDiff.name && owner.state === 'active' &&
+        owner.engineScope?.snapshot.includes(owner) === true && owner.builtinInput !== undefined && isCanonicalDiffMod(owner.builtinInput)
+    },
+    getBuiltinCommands: () => (services.builtinCommands?.() ?? services.commands?.() ?? []).filter(command =>
+      command.type === 'prompt'
+        ? command.source === 'builtin' || command.source === 'bundled'
+        : !command.isMcp && (command.loadedFrom === undefined || command.loadedFrom === 'bundled'),
+    ),
+    describe: async (command, registeredOwner) => {
+      const snapshot = capture()
+      try {
+        const owner = registeredOwner as Activation | undefined
+        const plugin = command.type === 'prompt' ? command.pluginInfo?.repository : undefined
+        const provider: ModOrigin = owner
+          ? { plugin: owner.declaration.storageId, tier: owner.declaration.tier }
+          : plugin
+            ? snapshot.pluginOrigin?.(plugin) ?? { plugin, tier: 'user' }
+            : command.isMcp || command.loadedFrom === 'mcp'
+              ? { plugin: `mcp:${command.mcpServerName ?? command.name}`, tier: 'user' }
+              : command.type === 'prompt' && !['builtin', 'bundled'].includes(command.source)
+                ? { plugin: command.source, tier: command.source === 'policySettings' ? 'prepend' : 'user' }
+                : { plugin: 'engine', tier: 'core' }
+        return await describeModCommand(snapshot, command, provider)
+      } finally { snapshot.release() }
+    },
+    run: async (name, args, context) => {
+      const command = commands.list().find(command => command.name === name)
+      if (!command) throw new Error(`Mod command /${name} is no longer active`)
+      const snapshot = capture({
+        toolCatalog: () => createToolCatalogForContext(context),
+        toolHost: () => createModToolHost(context, context.canUseTool ?? hasPermissionsToUseTool),
+      })
+      try {
+        const result = await runModCommand({
+          snapshot, command,
+          input: { command: name, args, origin: context.modCommand?.origin ?? { kind: 'unclassified' }, presentation: context.modCommand?.presentation ?? services.presentation?.() ?? { columns: 80, isFullscreen: false } },
+          signal: context.abortController.signal,
+          core: async () => ({ command, messages: [], shouldQuery: false, resultText: `No Mod hook answered /${name}.` }),
+        })
+        return {
+          text: result.resultText,
+          ...(result.commandRunText === undefined ? {} : {commandRunText:result.commandRunText}),
+          ...(result.commandExitCode === undefined ? {} : {exitCode:result.commandExitCode}),
+          context: result.messages.flatMap(message =>
+            message.type === 'user' && message.isMeta && typeof message.message.content === 'string'
+              ? [message.message.content] : [],
+          ),
+        }
+      } finally { snapshot.release() }
+    },
+  })
+
+  function isDiffOwned(): boolean {
+    return !stopped && !hostDead && active.some(owner =>
+      owner.state === 'active' && owner.builtinInput !== undefined && isCanonicalDiffMod(owner.builtinInput))
+  }
+  let publishedDiffOwnership = false
+  function publishDiffOwnership() {
+    const owned = isDiffOwned()
+    if (owned === publishedDiffOwnership) return
+    publishedDiffOwnership = owned
+    commands.invalidateDescriptions()
+    logForDebugging(`[Mods:diff] ownership=${owned ? 'plugin' : 'native'} workerGeneration=${hostEpoch}`)
+  }
 
   function enqueue<T>(work: () => Promise<T>): Promise<T> {
     const pending = queue.then(() => {
@@ -71,6 +763,150 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
     return pending
   }
 
+  function attachedSurfaces(): ModRenderSurface[] {
+    const surfaces: ModRenderSurface[] = []
+    if (binding?.surface) surfaces.push(binding.surface)
+    for (const client of attachedClients.values()) if (!surfaces.includes(client.surface)) surfaces.push(client.surface)
+    return surfaces
+  }
+
+  function transitionClient(clientId: string, work: () => Promise<void>): Promise<void> {
+    const previous = clientTransitions.get(clientId) ?? Promise.resolve()
+    const current = previous.catch(() => {}).then(work)
+    clientTransitions.set(clientId, current)
+    void current.finally(() => {
+      if (clientTransitions.get(clientId) === current) clientTransitions.delete(clientId)
+    }).catch(() => {})
+    return current
+  }
+
+  function attachClient(input: Pick<AttachedClient, 'surface' | 'clientId' | 'viewport'>, signal?: AbortSignal): Promise<void> {
+    return transitionClient(input.clientId, async () => {
+      signal?.throwIfAborted()
+      if (stopped) throw new Error('Mods runtime disposed')
+      if (!binding) throw new Error('Mod UI client requires a bound session')
+      if (ending) throw new Error('Mod UI client cannot attach while the session is ending')
+      const existing = attachedClients.get(input.clientId)
+      if (existing) {
+        if (existing.surface !== input.surface) throw new Error(`Mod UI client ${input.clientId} is already attached to ${existing.surface}`)
+        existing.references++
+        return
+      }
+      const client: AttachedClient = {...structuredClone(input),references:1,transport:false}
+      const event = {
+        surface: client.surface,
+        clientId: client.clientId,
+        ...(client.viewport === undefined ? {} : {viewport:client.viewport}),
+      }
+      // Transport state precedes the observation hook; next() does not commit it.
+      attachedClients.set(client.clientId, client)
+      ui.refreshRemotePlacement()
+      logForDebugging(`[ModsUIClient] attach clientId=${client.clientId} surface=${client.surface}`)
+      await dispatch('session.attach', event, async () => ({clientId:client.clientId}), active, nouns, {signal})
+    })
+  }
+
+  function detachClient(input: Pick<AttachedClient, 'surface' | 'clientId'> & {reason:'detach'|'end'}, signal?: AbortSignal): Promise<void> {
+    return transitionClient(input.clientId, async () => {
+      signal?.throwIfAborted()
+      const client = attachedClients.get(input.clientId)
+      if (!client) return
+      if (input.reason === 'detach' && (client.transport || client.references > 1)) {
+        client.references = Math.max(0, client.references - 1)
+        return
+      }
+      if (stopped) {
+        attachedClients.delete(client.clientId)
+        remoteScroll.reconcile()
+      remoteFocus.reconcile()
+        remotePrompt.forget(client.clientId)
+        ui.refreshRemotePlacement()
+        return
+      }
+      attachedClients.delete(client.clientId)
+      remoteScroll.reconcile()
+      remoteFocus.reconcile()
+      remotePrompt.forget(client.clientId)
+      ui.refreshRemotePlacement()
+      logForDebugging(`[ModsUIClient] detach clientId=${client.clientId} surface=${client.surface} reason=${input.reason}`)
+      await dispatch('session.detach', {surface:client.surface,clientId:client.clientId,reason:input.reason},
+        async () => ({clientId:client.clientId}), active, nouns, {signal})
+    })
+  }
+
+  function observeRemoteClient(event: 'session.attach' | 'session.detach', input: ModInput, signal?: AbortSignal): Promise<void> {
+    // The SDK acknowledges the transport transition before hook notification settles.
+    return queue.then(() => dispatch(event, input, async () => ({clientId:input.clientId}), active, nouns, {signal}))
+      .then(() => {}, error => {
+        if (!signal?.aborted) diagnostic('engine', event, error)
+      })
+  }
+
+  const remoteScroll = createModRemoteScroll({
+    panes: () => ui.paneState().panes,
+    attached: clientId => attachedClients.has(clientId),
+    dispatch: (input, core, origin, contract) => {
+      const entered = uiContext.getStore()
+      return dispatch('ui.scroll', input, core, entered?.snapshot ?? active, entered?.table ?? nouns, {origin, ...contract})
+    },
+  })
+  const remoteFocus = createModRemoteFocus({
+    scroll: remoteScroll, panes: () => ui.paneState(), attached: clientId => attachedClients.has(clientId),
+    placed: () => { const clients=[...attachedClients.values()].filter(client => client.viewport !== undefined); return !clients.length || clients.some(client => client.viewport?.isFullscreen !== undefined) },
+    subscribe: listener => ui.subscribe(listener),
+    dispatch: (input, core, origin, contract, signal) => { const entered = uiContext.getStore(); return dispatch('ui.focus', input, core, entered?.snapshot ?? active, entered?.table ?? nouns, {origin, ...contract, signal}) },
+  })
+  let remoteFocusedPane = ui.paneState().focusedId
+  const stopRemoteScroll = ui.subscribe(() => {
+    remoteScroll.reconcile(); remoteFocus.reconcile()
+    const focused = ui.paneState().focusedId
+    if (focused !== remoteFocusedPane) { remoteFocusedPane = focused; remoteFocus.syncPanes() }
+  })
+  const remotePrompt = createModRemotePrompt({
+    async edit(edit) { const snapshot = capture(); try { return await runModPromptEdit(snapshot, edit) } finally { snapshot.release() } },
+    autocomplete: (input, signal) => dispatch('prompt.autocomplete', input, async () => ({suggestions:[]}), active, nouns, {signal}) as Promise<import('./promptAutocomplete.js').PromptAutocompleteResult>,
+  })
+
+  function attachRemoteClient(input: ModRemoteClientInput, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    if (stopped) throw new Error('Mods runtime disposed')
+    if (!binding) throw new Error('Mod UI client requires a bound session')
+    if (ending) throw new Error('Mod UI client cannot attach while the session is ending')
+    const existing = attachedClients.get(input.clientId)
+    if (existing) {
+      existing.transport = true
+      if (input.viewport !== undefined) existing.viewport = {...existing.viewport, ...structuredClone(input.viewport)}
+      if (input.answers !== undefined) existing.answers = [...input.answers]
+      ui.refreshRemotePlacement()
+      return {attached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
+    }
+    const client: AttachedClient = {...structuredClone(input), references:0, transport:true}
+    attachedClients.set(client.clientId, client)
+    ui.refreshRemotePlacement()
+    logForDebugging(`[ModsUIClient] attach clientId=${client.clientId} surface=${client.surface}`)
+    const settled = observeRemoteClient('session.attach', {
+      surface:client.surface, clientId:client.clientId,
+      ...(client.viewport === undefined ? {} : {viewport:client.viewport}),
+    }, signal)
+    return {attached:true, surfaces:attachedSurfaces(), settled}
+  }
+
+  function detachRemoteClient(clientId: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
+    const client = attachedClients.get(clientId)
+    if (!client) return {detached:false, surfaces:attachedSurfaces(), settled:Promise.resolve()}
+    attachedClients.delete(clientId)
+    remoteScroll.reconcile()
+    remoteFocus.reconcile()
+    remotePrompt.forget(clientId)
+    ui.refreshRemotePlacement()
+    logForDebugging(`[ModsUIClient] detach clientId=${clientId} surface=${client.surface} reason=detach`)
+    const settled = stopped ? Promise.resolve() : observeRemoteClient('session.detach', {
+      surface:client.surface, clientId, reason:'detach',
+    }, signal)
+    return {detached:true, surfaces:attachedSurfaces(), settled}
+  }
+
   function cancelWait(owner: Activation, id: number) {
     const wait = owner.waits.get(id)
     if (!wait) return
@@ -79,18 +915,60 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
     wait.reject(new Error('Module timer cancelled'))
   }
 
+  function releaseUi(owner: Activation): Promise<void> {
+    if (owner.uiRelease) return owner.uiRelease
+    owner.uiRelease = Promise.resolve().then(() => runCleanups([
+      () => services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner),
+      () => ui.releaseCandidate(owner),
+      () => {
+        if (owner.uiPublished && owner.uiStatus && !active.some(item => item !== owner && item.declaration.name === owner.declaration.name && item.uiStatus))
+          services.uiStatus?.(owner.declaration.name, undefined)
+      },
+      () => ui.release(owner),
+    ]))
+    return owner.uiRelease
+  }
+
+  function mcpSource(owner: Activation) {
+    return declarations.find(input => input.storageId === owner.declaration.storageId)?.mcpPlugin?.source ?? owner.declaration.storageId
+  }
+
+  // The host owns servers per plugin source, not per activation: a reload's
+  // replacement reuses the old activation's connections, so only the last
+  // live activation of a plugin gives them back.
+  function releaseMcp(owner: Activation) {
+    if (active.some(item => item !== owner && item.state === 'active' && item.declaration.storageId === owner.declaration.storageId)) return
+    return services.mcpRelease?.(mcpSource(owner))
+  }
+
   function disposeActivation(owner: Activation): Promise<void> {
     if (owner.dispose) return owner.dispose
     owner.state = 'disposed'
-    for (const id of owner.waits.keys()) cancelWait(owner, id)
-    owner.dispose = owner.environment.dispose().finally(() => { retired.delete(owner); activations.delete(owner) })
+    owner.dispose = Promise.resolve().then(() => runCleanups([
+      () => commands.release(owner),
+      () => tools.release(owner),
+      () => agents.release(owner),
+      () => owner.controller.abort(),
+      () => releaseMcp(owner),
+      ...[...owner.waits.keys()].map(id => () => cancelWait(owner, id)),
+      () => releaseUi(owner),
+      () => owner.environment.dispose(),
+    ])).finally(() => { retired.delete(owner); activations.delete(owner) })
     return owner.dispose
   }
 
   function retire(owner: Activation) {
     if (owner.state === 'disposed' || owner.state === 'retiring') return
+    owner.suggestionEligible = false
     owner.state = 'retiring'
+    void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
+    commands.release(owner)
+    publishDiffOwnership()
+    tools.release(owner)
+    agents.release(owner)
     retired.add(owner)
+    // Stop environment-owned process streams before their snapshot references can hold retirement open.
+    for (const operation of owner.processControllers) operation.abort(new Error('Module environment unloaded'))
     // A pending sleep may belong to an in-flight hook; stop future timer ticks,
     // but do not turn a normal reload into cancellation of that continuation.
     for (const [id, wait] of owner.waits) if (wait.kind !== 'sleep') cancelWait(owner, id)
@@ -107,46 +985,706 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
     }
   }
 
-  function checkCall(owner: Activation, op: string, table: Nouns, entered = false) {
-    if (stopped || owner.state === 'disposed') throw new Error('Module environment unloaded')
+  function checkCall(owner: Activation, op: string, table: Nouns, lease: CapabilityLease) {
+    if (stopped || owner.state === 'disposed' || (owner.state === 'retiring' && lease.entries === 0))
+      throw new Error('Module environment unloaded')
     if (!owner.declaration.calls.includes(op)) throw new Error(`Module capability ${op} is absent from scan`)
     if (owner.state === 'candidate' && !op.startsWith('clock.')) throw new Error('Module has not been admitted')
     const [noun, method] = op.split('.') as [string, string]
-    if (!table[noun]?.[method] || (!entered && nouns[noun]?.[method] !== table[noun]?.[method])) {
+    const provider = capabilityContext.getStore()
+    const published = owner.engineScope
+    const current = provider?.active ? provider.table : lease.building || lease.entries > 0 ? table : published?.table ?? nouns
+    // Telemetry is an event call, including when a legacy built-in supplies its sender.
+    if (noun === 'telemetry') return
+    const state = interfaceStates.get(current)
+    const withholders = new Set([...(state?.withheld.get(noun) ?? []), ...(lease.building ? state?.carried?.get(noun) ?? [] : [])].filter(plugin => plugin !== owner.declaration.name))
+    if (withholders.size) throw new Error(`Module capability ${op} was withheld by ${[...withholders].join(', ')}`)
+    if (!table[noun]?.[method] || (!lease.building && current[noun]?.[method] !== table[noun]?.[method])) {
+      if (!table[noun]?.[method] && officialCoreCalls.has(op))
+        throw new Error(`$.${op} is not available in this build`)
       throw new Error(`Module capability ${op} was withdrawn`)
     }
   }
 
-  function engineFor(owner: Activation, snapshot: readonly Activation[], table: Nouns, lease: { entries: number }): Record<string, unknown> {
+  function validateMcpToolResult(value: unknown): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        !Array.isArray((value as ModInput).content) || typeof (value as ModInput).isError !== 'boolean')
+      throw new TypeError('mcp.call must return { content, isError, structuredContent? }')
+  }
+
+  function validateComposeInput(value: unknown, partial = false): void {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new TypeError('prompt.compose takes an object')
+    const input = value as ModInput
+    const fields = ['model', 'promptModel', 'surfaces', 'tools', 'outputStyle', 'traits']
+    if (Object.keys(input).some(key => !fields.includes(key))) throw new TypeError('Unknown prompt.compose fact')
+    for (const field of fields) {
+      const fact = input[field]
+      if (partial && fact === undefined) continue
+      const valid = field === 'model' || field === 'promptModel' ? typeof fact === 'string'
+        : field === 'outputStyle' ? fact === null || !!fact && typeof fact === 'object' && !Array.isArray(fact) &&
+          typeof (fact as ModInput).name === 'string' && typeof (fact as ModInput).isKeepingCodingInstructions === 'boolean'
+        : Array.isArray(fact) && fact.every(item => typeof item === 'string' &&
+          (field === 'tools' || (field === 'surfaces'
+            ? ['terminal', 'desktop', 'mobile', 'vscode']
+            : ['bare', 'lean', 'sdk-preset', 'teammate', 'analysis', 'print', 'skills', 'send-user-message']).includes(item)))
+      if (!valid) throw new TypeError(`Invalid prompt.compose ${field}`)
+    }
+  }
+
+  const fsPathEvents = new Set(['fs.read', 'fs.stat', 'fs.exists', 'fs.list', 'fs.write'])
+  function checkFsPath(event: string, input: ModInput, plugin?: string): ModInput {
+    if (typeof input.path !== 'string' || input.path === '')
+      throw Object.assign(new Error(`${plugin === undefined ? '' : plugin + ': '}${event}: takes a path (host check)`), {name:'HooksError'})
+    return input
+  }
+  function raiseFsPath(input: ModInput, at: string, field: 'path' | 'of' = 'path'): ModInput {
+    const value = input[field]
+    if (typeof value !== 'string' || value === '') return input
+    const path = resolve(at, value)
+    return path === value ? input : {...input, [field]: path}
+  }
+
+  function hostInput(op: string, args: unknown[], plugin?: string): ModInput {
+    switch (op) {
+      case 'telemetry.log': case 'telemetry.mark': return modTelemetryArgs(op, args[0], plugin)
+      case 'command.run': {
+        const value = args[0] && typeof args[0] === 'object' && !Array.isArray(args[0]) ? args[0] as ModInput : undefined
+        if (typeof value?.command !== 'string' || value.command === '')
+          throw Object.assign(new Error(`${plugin}: $.command.run takes { command, args? } (the command's name without the slash)`),{name:'HooksError'})
+        return {command:value.command,args:value.args ?? ''}
+      }
+      case 'agent.spawn': {
+        const value = args[0]
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            typeof (value as ModInput).prompt !== 'string' || !(value as ModInput & {prompt:string}).prompt.trim())
+          throw new TypeError('agent.spawn takes a non-empty prompt')
+        const input = value as ModInput
+        if (input.effort !== undefined && !(typeof input.effort === 'string' && isEffortLevel(input.effort) || typeof input.effort === 'number' && Number.isInteger(input.effort)))
+          throw new TypeError('agent.spawn takes a valid effort level or integer')
+        return Object.fromEntries(['prompt', 'description', 'subagentType', 'model', 'effort', 'name', 'cwd']
+          .filter(key => input[key] !== undefined).map(key => [key, input[key]]))
+      }
+      case 'agent.register': {
+        const value = args[0]
+        if (!value || typeof value !== 'object' || Array.isArray(value) ||
+            typeof (value as ModInput).name !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test((value as ModInput).name as string))
+          throw new TypeError('agent.register takes a short name of letters, digits, _ or - (up to 64)')
+        const input = value as ModInput
+        return Object.fromEntries(['name', 'description', 'prompt', 'tools', 'disallowedTools', 'model', 'effort',
+          'permissionMode', 'mcpServers', 'hooks', 'maxTurns', 'skills', 'initialPrompt', 'memory', 'background', 'omitClaudeMd', 'isolation']
+          .filter(key => input[key] !== undefined).map(key => [key, Array.isArray(input[key]) ? [...input[key]] : input[key]]))
+      }
+      case 'tool.register': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input))
+          throw new TypeError('tool.register takes a tool specification')
+        return { ...input, inputSchema: (input as ModInput).inputSchema === undefined ? { type: 'object' } : (input as ModInput).inputSchema }
+      }
+      case 'tool.call': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool)
+          throw new TypeError('tool.call takes { tool, ...arguments }')
+        return input as ModInput
+      }
+      case 'turn.abort': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).turnId !== 'string')
+          throw new TypeError('turn.abort takes { turnId }')
+        return {turnId: (input as ModInput).turnId}
+      }
+      case 'tool.check': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).tool !== 'string' || !(input as ModInput).tool ||
+            !Object.hasOwn(input, 'input') || Object.keys(input).some(key => key !== 'tool' && key !== 'input'))
+          throw new TypeError('tool.check takes { tool, input }')
+        return input as ModInput
+      }
+      case 'fs.read': case 'fs.stat': {
+        const options = args[1] === undefined ? {} : args[1]
+        if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError(`${op} options must be an object`)
+        return checkFsPath(op, op === 'fs.read'
+          ? { path: args[0], as: (options as ModInput).as === undefined ? 'text' : (options as ModInput).as }
+          : { path: args[0], resolve: (options as ModInput).resolve === undefined ? false : (options as ModInput).resolve }, plugin)
+      }
+      case 'fs.exists': return checkFsPath(op, { path: args[0] }, plugin)
+      case 'fs.list': return checkFsPath(op, { path: args[0] ?? '.' }, plugin)
+      case 'fs.write': return checkFsPath(op, { path: args[0], text: args[1] }, plugin)
+      case 'env.get': return { name: args[0] }
+      case 'env.set': return { name: args[0], value: args[1] }
+      case 'store.get': case 'store.delete': return { key: args[0] }
+      case 'store.set': return { key: args[0], value: args[1] }
+      case 'state.get': return args[0] as ModInput
+      case 'state.set': return {
+        ...(args[0] as ModInput),
+        value: args[1],
+        ...(args[2] && typeof args[2] === 'object' && (args[2] as ModInput).ifVersion !== undefined
+          ? { ifVersion: (args[2] as ModInput).ifVersion }
+          : {}),
+      }
+      case 'process.run': return { argv: args[0], ...(args[1] === undefined ? {} : { init: args[1] }) }
+      case 'prompt.compose': {
+        const input = args[0] === undefined ? {} : args[0]
+        if (args.length > 1) throw new TypeError('prompt.compose takes one optional object')
+        validateComposeInput(input, true)
+        return input as ModInput
+      }
+      case 'session.compact': {
+        const entry = args[0] as ModInput | undefined
+        if (entry !== undefined && (!entry || typeof entry !== 'object' || Array.isArray(entry) ||
+            entry.instructions !== undefined && typeof entry.instructions !== 'string'))
+          throw Object.assign(new Error(`${plugin}: $.session.compact takes { instructions } (a string) or nothing`), {name:'HooksError'})
+        return entry?.instructions === undefined ? {} : {instructions:entry.instructions}
+      }
+      case 'session.send': return modSessionSendArgs(args[0], plugin)
+      case 'session.usage': {
+        const input = args[0] === undefined ? {} : args[0]
+        if (args.length > 1) throw new TypeError('session.usage takes one optional object')
+        validateModSessionUsageArgs(input)
+        return input
+      }
+      case 'session.authorize': {
+        if (args.length) throw new TypeError('session.authorize takes no arguments')
+        return {}
+      }
+      case 'http.fetch': {
+        const init = args[1] === undefined ? {} : args[1]
+        if (args.length > 2 || !init || typeof init !== 'object' || Array.isArray(init))
+          throw new TypeError('http.fetch takes a URL and optional init object')
+        return { url: args[0], init }
+      }
+      case 'mcp.connect':
+        if (typeof args[0] !== 'string' || args[0].trim() === '') throw new TypeError('$.mcp.connect takes { server } (a non-empty string)')
+        return {server: args[0]}
+      case 'mcp.call': {
+        const callArgs = args[2] === undefined ? {} : args[2]
+        if (args.length > 3 || typeof args[0] !== 'string' || !args[0] || typeof args[1] !== 'string' || !args[1] ||
+            !callArgs || typeof callArgs !== 'object' || Array.isArray(callArgs))
+          throw new TypeError('mcp.call takes server, tool and optional args')
+        return { server: args[0], tool: args[1], args: callArgs }
+      }
+      case 'settings.read': case 'fs.ancestors': {
+        const input = op === 'settings.read' && args[0] === undefined ? {} : args[0]
+        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError(`${op} args must be an object`)
+        return input as ModInput
+      }
+      case 'config.list':
+        if (args.length) throw new TypeError('config.list takes no arguments')
+        return {}
+      case 'config.set':
+        if (args.length !== 1) throw new TypeError('config.set takes { key, value }')
+        return args[0] as ModInput
+      case 'prompt.fill': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string' ||
+            ((input as ModInput).mode !== undefined && !['replace', 'append', 'insert'].includes((input as ModInput).mode as string)))
+          throw new TypeError('prompt.fill takes { text, mode? }')
+        validatePromptDecorations((input as ModInput).decorations)
+        return { text: (input as ModInput).text, mode: (input as ModInput).mode ?? 'replace',
+          ...((input as ModInput).decorations === undefined ? {} : {decorations:(input as ModInput).decorations}) }
+      }
+      case 'prompt.submit': {
+        const input = args[0]
+        if (!input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string')
+          throw new TypeError('prompt.submit takes { text, asUser? }')
+        if ((input as ModInput).asUser !== undefined && typeof (input as ModInput).asUser !== 'boolean')
+          throw new TypeError('prompt.submit asUser must be a boolean')
+        const text = (input as ModInput).text as string
+        if (!text.trim()) throw new TypeError('prompt.submit requires a non-empty prompt')
+        if (text.trimStart().startsWith('/'))
+          throw new TypeError('prompt.submit cannot run slash commands; use command.run')
+        return {
+          text,
+          ...((input as ModInput).asUser === true ? { asUser: true } : {}),
+        }
+      }
+      case 'prompt.suggest': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).text !== 'string' || Object.keys(input).some(key => key !== 'text'))
+          throw new TypeError('prompt.suggest takes { text }')
+        return { text: (input as ModInput).text }
+      }
+      case 'ui.blit': {
+        const input = args[0]
+        if (args.length !== 1 || !input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof (input as ModInput).requestId !== 'string' || !(input as ModInput).requestId ||
+            typeof (input as ModInput).key !== 'string' || !(input as ModInput).key ||
+            Object.keys(input).some(key => !['requestId', 'key', 'cells', 'source', 'columns', 'rows'].includes(key)))
+          throw new TypeError('ui.blit takes { requestId, key, cells|source, columns?, rows? }')
+        const cells = (input as ModInput).cells
+        const source = (input as ModInput).source
+        if ((typeof cells !== 'string') === (source === undefined) ||
+            ((input as ModInput).columns !== undefined && !Number.isInteger((input as ModInput).columns)) ||
+            ((input as ModInput).rows !== undefined && !Number.isInteger((input as ModInput).rows)))
+          throw new TypeError('ui.blit takes exactly one cells or source payload and optional integer dimensions')
+        return input as ModInput
+      }
+      case 'ui.open': case 'ui.close': case 'ui.scroll': case 'ui.focus': case 'command.register': case 'model.fork': return args[0] as ModInput
+      case 'model.complete': {
+        validateModModelCompleteInput(args[0], plugin)
+        return args[0] as ModInput
+      }
+      case 'model.classify': {
+        const input = { text: args[0], labels: args[1], ...(args[2] === undefined ? {} : { options: args[2] }) }
+        validateModModelClassifyInput(input, plugin ?? 'mod')
+        return input
+      }
+      case 'ui.ask': return createModUiAskRequest(args, plugin ?? 'mod').input
+      case 'ui.log': {
+        const options = args[1] === undefined ? {} : args[1]
+        if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('ui.log options must be an object')
+        const to = (options as ModInput).to === undefined ? 'transcript' : (options as ModInput).to
+        if (to !== 'transcript' && to !== 'debug') throw new TypeError('ui.log to must be transcript or debug')
+        return { text: args[0], to }
+      }
+      case 'ui.toast': {
+        const options = args[1] as ModInput | undefined
+        return { text: args[0], ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}) }
+      }
+      case 'ui.copy': {
+        const value = args[0] as Partial<ModUiCopyArgs> | undefined
+        const input = {text: value?.text, ...(value?.surface === undefined ? {} : {surface: value.surface})}
+        validateModUiCopyArgs(input)
+        const surface = input.surface ?? attachedSurfaces()[0]
+        return {...input, ...(surface === undefined ? {} : {surface})}
+      }
+      case 'ui.notice': return { tool_use_id: args[0], text: args[1] }
+      case 'ui.status': return { text: args[0] }
+      case 'ui.invalidate':
+        if (!invalidatableEvents.includes(args[0] as string)) throw new TypeError(invalidationError)
+        return { event: args[0] }
+      case 'ui.selection': case 'ui.panes': return {}
+      case 'ui.resolve': throw new Error('UI resolve requires an admitted terminal hook')
+      case 'session.messages': {
+        if (args.length > 1) throw new TypeError('session.messages takes at most one argument')
+        const input = args[0] === undefined ? {} : args[0]
+        validateModSessionMessagesArgs(input)
+        return {...input}
+      }
+      case 'session.version': return {}
+      case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'prompt.read': {
+        if (args.length) throw new TypeError(`${op} takes no arguments`)
+        return {}
+      }
+      default: throw new Error(officialCoreCalls.has(op) ? `$.${op} is not available in this build` : `Unsupported host capability ${op}`)
+    }
+  }
+
+  async function hostCall(owner: Activation, op: string, input: ModInput, signal: AbortSignal | undefined = invocationSignal.getStore()): Promise<unknown> {
+    const { fs, process, store, settings } = owner.operations
+    switch (op) {
+      case 'settings.read': return settings.read(input)
+      case 'env.get': return owner.operations.env.get(input.name as string)
+      case 'env.set': return owner.operations.env.set(input.name as string, input.value as string | undefined)
+      case 'fs.read': case 'fs.list': case 'fs.stat': case 'fs.exists': case 'fs.write': case 'fs.ancestors': case 'process.run': {
+        if (fsPathEvents.has(op)) checkFsPath(op, input)
+        const combined = createCombinedAbortSignal(signal, {signalB:owner.controller.signal})
+        try {
+          switch (op) {
+            case 'fs.read': return await fs.read(input.path as string, { as: input.as as 'text' | 'bytes' }, combined.signal)
+            case 'fs.ancestors': return await fs.ancestors(input as Parameters<typeof fs.ancestors>[0], combined.signal)
+            case 'fs.list': return await fs.list(input.path as string, combined.signal)
+            case 'fs.stat': return await fs.stat(input.path as string, { resolve: input.resolve as boolean }, combined.signal)
+            case 'fs.exists': return await fs.exists(input.path as string, combined.signal)
+            case 'fs.write': return await fs.write(input.path as string, input.text as string, combined.signal)
+            case 'process.run': {
+              try {
+                return await process.run(input.argv as string[], input.init as Parameters<typeof process.run>[1], combined.signal)
+              } catch (error) {
+                const code = (error as NodeJS.ErrnoException | null)?.code
+                const message = error instanceof Error ? error.message : String(error)
+                const detail = error instanceof ModProcessTimeoutError
+                  ? `aborted: still running after ${error.timeoutMs}ms`
+                  : error instanceof ModProcessTerminationError ? 'failed to terminate process tree'
+                  : combined.signal.aborted ? 'aborted'
+                  : `failed to start: ${code === undefined ? message : `${code}: ${message}`}`
+                throw Object.assign(new Error(`${owner.declaration.name}: $.process.run(${(input.argv as string[])[0]}) ${detail}`), { name: 'HooksError' })
+              }
+            }
+          }
+        } catch (error) {
+          if (combined.signal.aborted) throw error
+          const code = (error as NodeJS.ErrnoException | null)?.code
+          if (fsPathEvents.has(op) && typeof code === 'string')
+            throw Object.assign(new Error(`${owner.declaration.name}: $.${op}(${String(input.path)}) failed: ${code}`), {name:'HooksError'})
+          throw error
+        } finally { combined.cleanup() }
+      }
+      case 'store.get': return store.get(input.key as string)
+      case 'store.set': return store.set(input.key as string, input.value)
+      case 'store.delete': return store.delete(input.key as string)
+      case 'store.keys': return store.keys()
+      case 'session.authorize': return owner.operations.session.authorize()
+      case 'http.fetch': {
+        const combined = createCombinedAbortSignal(invocationSignal.getStore(), { signalB: owner.controller.signal })
+        try {
+          return await owner.operations.http.fetch(
+            input.url as string,
+            input.init as Parameters<typeof owner.operations.http.fetch>[1],
+            combined.signal,
+          )
+        } finally { combined.cleanup() }
+      }
+      case 'ui.open': {
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        const context = uiContext.getStore()
+        const origin: ModUiOrigin = context?.person && context.active !== false ? { kind: 'person' } : { kind: 'plugin', name: owner.declaration.name }
+        const presentation = binding?.surface === 'terminal' && binding.isInteractive && services.uiPresentation
+          ? services.uiPresentation()
+          : {columns: 1, rows: 1, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false, headless: true as const}
+        return ui.open(owner, input as ModUiOpenArgs, origin, presentation)
+      }
+      case 'ui.close': {
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        const result = await ui.close(owner, input.id as string, { kind: 'plugin' })
+        if (result && typeof (result as { deny?: string }).deny === 'string') throw new Error((result as { deny: string }).deny)
+        return result
+      }
+      case 'ui.blit': {
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        return ui.blit(owner, input as Parameters<typeof ui.blit>[1])
+      }
+      case 'ui.focus': {
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (!input || typeof input !== 'object' || Array.isArray(input) ||
+            typeof input.requestId !== 'string' || !input.requestId ||
+            typeof input.key !== 'string' || !input.key)
+          throw new TypeError('ui.focus takes { requestId, key }')
+        if (!attachedSurfaces().includes('terminal')) {
+          const abovePrompt = owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'ui.render') && (registration.matcher?.component === undefined || matchesRenderMatcher({component:registration.matcher.component}, {component:'AbovePrompt'})))
+          return remoteFocus.focus({plugin:owner.declaration.name,tier:owner.declaration.tier}, {requestId:input.requestId,key:input.key}, abovePrompt, invocationSignal.getStore(), capabilityContext.getStore()?.next.event)
+        }
+        return ui.focus(owner, {
+          requestId: input.requestId,
+          element: input.key,
+          origin: { kind: 'plugin', name: owner.declaration.name },
+        })
+      }
+      case 'ui.scroll': {
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (!input || typeof input !== 'object' || Array.isArray(input))
+          throw new TypeError('ui.scroll takes an object')
+        const target = input.to
+        const site = input.in
+        const block = input.block
+        const edge: 'start' | 'end' | undefined = target === 'start' || target === 'end' ? target : undefined
+        const targetRequestId = target && typeof target === 'object' && !Array.isArray(target) &&
+          typeof (target as ModInput).requestId === 'string' &&
+          (target as ModInput).requestId !== '' && !Object.hasOwn(target, 'key')
+          ? (target as ModInput).requestId as string
+          : undefined
+        const key = target && typeof target === 'object' && !Array.isArray(target) &&
+          typeof (target as ModInput).key === 'string' &&
+          (target as ModInput).key !== '' && !Object.hasOwn(target, 'requestId')
+          ? (target as ModInput).key as string
+          : undefined
+        if ((!edge && targetRequestId === undefined && key === undefined) ||
+            edge && (typeof site !== 'string' || !site) ||
+            site !== undefined && (typeof site !== 'string' || !site) ||
+            block !== undefined && !['start', 'center', 'end', 'nearest'].includes(block as string))
+          throw new TypeError('ui.scroll takes { to, in?, block? }')
+        const request = {
+          ...(typeof site !== 'string' ? {} : { requestId: site }),
+          ...(targetRequestId === undefined ? {} : { targetRequestId }),
+          ...(key === undefined ? {} : { key }),
+          ...(edge === undefined ? {} : { edge }),
+          ...(block === undefined ? {} : { block: block as 'start' | 'center' | 'end' | 'nearest' }),
+          origin: { kind: 'plugin' as const, name: owner.declaration.name },
+        }
+        if (binding?.surface !== 'terminal') {
+          const abovePrompt = owner.environment.registrations.some(registration =>
+            matchesModEventPattern(registration.event, 'ui.render') &&
+            (registration.matcher?.component === undefined || matchesRenderMatcher({component:registration.matcher.component}, {component:'AbovePrompt'})))
+          return remoteScroll.reveal({plugin:owner.declaration.name,tier:owner.declaration.tier}, request, abovePrompt)
+        }
+        return ui.reveal(owner, request)
+      }
+      case 'ui.invalidate':
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (!invalidatableEvents.includes(input.event as string)) throw new TypeError(invalidationError)
+        if (input.event === 'config.describe') {
+          config.invalidate()
+          return undefined
+        }
+        if (input.event === 'command.describe') {
+          commands.invalidateDescriptions()
+          return undefined
+        }
+        if (input.event === 'tool.describe') {
+          descriptionCache.value = new WeakMap()
+          return undefined
+        }
+        if (input.event === 'prompt.section') {
+          sectionCache = new Map()
+          return undefined
+        }
+        if (input.event === 'prompt.attachment') {
+          attachmentCache = new Map()
+          return undefined
+        }
+        if (input.event === 'prompt.context') {
+          contextCache = new Map()
+          contextBoundaries = new Map()
+          return undefined
+        }
+        void ui.invalidate(owner, input.event as string).catch(error => diagnostic(owner.declaration.name, 'ui.invalidate', error))
+        return undefined
+      case 'ui.toast':
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        toast(owner.declaration.name, input)
+        return undefined
+      case 'ui.notice': {
+        if (typeof input.tool_use_id !== 'string' || input.tool_use_id === '')
+          throw new TypeError('$.ui.notice takes the tool_use_id of an open call')
+        if (input.text !== undefined && typeof input.text !== 'string')
+          throw new TypeError('$.ui.notice takes text or undefined')
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        const problem = toolNotices.set(input.tool_use_id, owner.declaration.name, input.text as string | undefined)
+        if (problem) throw new Error(`${owner.declaration.name}: $.ui.notice: ${input.tool_use_id} refused: ${problem}`)
+        return undefined
+      }
+      case 'ui.log': case 'ui.status': {
+        if (typeof input.text !== 'string' && !(op === 'ui.status' && input.text === undefined)) throw new Error(`${op} requires text`)
+        if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
+        if (op === 'ui.log') {
+          if (!services.uiLog) throw new Error('UI log is unavailable on this host')
+          if (input.to !== 'transcript' && input.to !== 'debug') throw new TypeError('ui.log to must be transcript or debug')
+          if (owner.uiPublished) services.uiLog(owner.declaration.name, input.text as string, input.to)
+          else (owner.uiLogs ??= []).push({ text: input.text as string, to: input.to })
+        } else {
+          if (!services.uiStatus) throw new Error('UI status is unavailable on this host')
+          owner.uiStatus = { text: input.text as string | undefined }
+          if (owner.uiPublished) services.uiStatus(owner.declaration.name, owner.uiStatus.text)
+        }
+        return undefined
+      }
+      case 'tool.register': {
+        if (!binding) throw new Error('tool.register requires a bound session')
+        if (owner.state !== 'active') throw new Error('Tool registration belongs to a retired activation')
+        return tools.register(owner, input as ModToolSpec)
+      }
+      case 'ui.copy': {
+        validateModUiCopyArgs(input)
+        const {text, surface} = input
+        const plugin = owner.declaration.name
+        if (!surface || !attachedSurfaces().includes(surface)) {
+          logForDebugging(`[Mods:${plugin}] ui.copy: no surface draws (${surface ?? 'none attached'}); nothing copied`)
+          return {isCopied: false, reason: 'no-surface'}
+        }
+        if (surface !== 'terminal' && text.length > 1000000 || !services.uiCopy) {
+          logForDebugging(`[Mods:${plugin}] ui.copy: ${text.length} chars to ${surface}; no clipboard took it`)
+          return {isCopied: false, reason: 'no-clipboard'}
+        }
+        const combined = createCombinedAbortSignal(invocationSignal.getStore() ?? owner.controller.signal, {signalB: owner.controller.signal})
+        try {
+          combined.signal.throwIfAborted()
+          return await services.uiCopy({text, surface}, plugin, combined.signal)
+        } finally { combined.cleanup() }
+      }
+      case 'ui.selection': return services.uiSelection?.()
+      case 'ui.panes': return ui.panes(owner)
+      case 'agent.list': {
+        if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
+        return listModAgents(services.tasks(), services.agentNames?.())
+      }
+      case 'agent.register': {
+        if (!binding) throw new Error('agent.register requires a bound session')
+        if (owner.state !== 'active') throw new Error('Agent registration belongs to a retired activation')
+        return agents.register(owner, input)
+      }
+      case 'command.register': return commands.register(owner, input as ModCommandSpec)
+      case 'command.list': return (await commands.describe([...(services.commands?.() ?? [])])).map(command => {
+        const owner = commands.ownerOf(command) as Activation | undefined
+        const plugin = owner?.declaration.name ?? (command.type === 'prompt' ? command.pluginInfo?.pluginManifest.name : undefined)
+        const source = owner || command.loadedFrom === 'plugin'
+          ? 'plugin'
+          : command.type !== 'prompt'
+            ? command.loadedFrom === 'mcp' ? 'mcp' : 'builtin'
+            : command.source === 'builtin' || command.source === 'bundled'
+              ? 'builtin'
+              : command.source === 'plugin' || command.source === 'mcp' ? command.source : 'user'
+        return {
+          name: getCommandName(command), description: command.description, source,
+          ...(plugin === undefined ? {} : { plugin }),
+        }
+      })
+      case 'session.version': {
+        const version = typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev'
+        // Match analytics' version_base and use the same embedded build stamp.
+        const base = version.match(/^\d+\.\d+\.\d+(?:-[a-z]+)?/)?.[0]
+        const builtAt = typeof MACRO !== 'undefined' ? MACRO.BUILD_TIME || undefined : undefined
+        return { version, ...(base === undefined ? {} : { base }), ...(builtAt === undefined ? {} : { builtAt }) }
+      }
+      case 'session.cwd': case 'session.root': case 'session.id':
+        if (!binding) throw new Error('Module session is not bound')
+        return op === 'session.cwd' ? services.cwd?.() ?? binding.cwd
+          : op === 'session.root' ? services.root?.() ?? binding.cwd : binding.sessionId
+      case 'session.repo': {
+        if (!binding) throw new Error('Module session is not bound')
+        const cwd = services.cwd?.() ?? binding.cwd
+        const root = findCanonicalGitRootFresh(cwd)
+        if (!root) return null
+        return { root, remote: await getOriginRemoteUrlFresh(cwd), internal: false, name: null }
+      }
+      case 'session.surface': return attachedSurfaces()[0] ?? null
+      case 'session.surfaces': return attachedSurfaces()
+      case 'session.model':
+        if (!services.model) throw new Error('Session model is unavailable on this host')
+        return services.model()
+      case 'session.turns':
+        if (!services.turns) throw new Error('Session turn count is unavailable on this host')
+        return services.turns()
+      case 'turn.abort': {
+        if (typeof input.turnId !== 'string') throw new TypeError('turn.abort takes { turnId }')
+        if (!publicTurn || input.turnId !== publicTurn.turnId)
+          throw new Error(`Cannot abort turn ${input.turnId}; running turn is ${publicTurn?.turnId ?? 'none'}`)
+        if (!publicTurn.abort) throw new Error(`Turn ${publicTurn.turnId} has no running model request`)
+        publicTurn.abort()
+        return undefined
+      }
+      case 'session.messages': {
+        validateModSessionMessagesArgs(input)
+        if (input.agentId !== undefined) {
+          const denied = {deny:`No readable conversation for agent ${input.agentId} in this session`}
+          const entry = !excludedConversations.has(input.agentId) && conversations.get(input.agentId)
+          if (!entry) {
+            if (excludedConversations.has(input.agentId) || !binding || ending || stopped) return denied
+            const current = binding
+            const saved = await services.agentMessages?.(input.agentId,current.sessionId)
+            if (!saved || binding !== current || ending || stopped) return denied
+            return input.as === 'api'
+              ? projectModApiMessages(saved,[...(services.tools?.() ?? [])])
+              : projectModSessionMessages(saved,4096,trackedAgents())
+          }
+          if (entry.messages) return input.as === 'api'
+            ? projectModApiMessages(entry.messages(),[...(services.tools?.() ?? [])])
+            : projectModSessionMessages(entry.messages(),4096,trackedAgents())
+          return structuredClone(input.as === 'api' ? entry.api ?? [] : entry.rows ?? [])
+        }
+        if (services.rawMessages) return input.as === 'api'
+          ? projectModApiMessages(services.rawMessages(),[...(services.tools?.() ?? [])])
+          : projectModSessionMessages(services.rawMessages(),4096,trackedAgents())
+        if (input.as === 'api') throw new Error('Raw session messages are unavailable on this host')
+        const messages = services.messages
+        if (!messages) throw new Error('Session messages are unavailable on this host')
+        return messages()
+      }
+      case 'prompt.read': {
+        const box = services.prompt?.()?.read() ?? emptyPromptBox()
+        validatePromptBox(box)
+        return structuredClone(box)
+      }
+      default: throw new Error(officialCoreCalls.has(op) ? `$.${op} is not available in this build` : `Unsupported host capability ${op}`)
+    }
+  }
+
+  async function dispatchState(op: string, input: ModInput, snapshot: readonly Activation[], table: Nouns,
+    options: ModDispatchOptions & { origin: ModOrigin }) {
+    const received = op === 'state.set'
+      ? Object.freeze({ ...input, previous: state.previous({
+        plugin: input.plugin as string,
+        key: input.key as string,
+        ...(input.id === undefined ? {} : { id: input.id as string }),
+      }) })
+      : input
+    return await dispatch(
+      op,
+      received,
+      async rewritten => op === 'state.get'
+        ? state.get(rewritten as never)
+        : state.set(options.origin.plugin, rewritten as never),
+      snapshot,
+      table,
+      {
+        ...options,
+        validateInput: (rewritten, original) => {
+          if (rewritten.plugin !== original.plugin || rewritten.key !== original.key ||
+              rewritten.id !== original.id)
+            throw new Error(`${op} cannot rewrite plugin, key or id`)
+          if (op === 'state.set' && (rewritten.ifVersion !== original.ifVersion ||
+              !isDeepStrictEqual(rewritten.previous, original.previous)))
+            throw new Error('state.set cannot rewrite ifVersion or previous')
+        },
+        ...(op === 'state.set' ? {
+          restoreInput: (rewritten: ModInput, original: ModInput) => ({
+            ...rewritten,
+            ...(!Object.hasOwn(rewritten, 'ifVersion') ? { ifVersion: original.ifVersion } : {}),
+            ...(!Object.hasOwn(rewritten, 'previous') ? { previous: original.previous } : {}),
+          }),
+        } : {}),
+      },
+    ) as { value?: unknown; deny?: string } & Record<string, unknown>
+  }
+
+  function engineFor(owner: Activation, snapshot: readonly Activation[], table: Nouns, lease: CapabilityLease, dynamic = false): Record<string, unknown> {
+    const scope = () => {
+      if (!dynamic) return { snapshot, table, lease }
+      const entered = capabilityContext.getStore()
+      const invocation = invocationSignal.getStore()
+      if (entered?.active && !invocation?.aborted) entered.next?.signal.throwIfAborted()
+      const ui = uiContext.getStore()
+      const current = entered?.active && !invocation?.aborted ? entered : ui?.active !== false ? ui : undefined
+      if (current)
+        return { snapshot: current.snapshot, table: current.table, lease: { entries: 1 } }
+      const published = owner.engineScope
+      return published && owner.state === 'active'
+        ? { snapshot: published.snapshot, table: published.table, lease: { entries: 1 } }
+        : { snapshot: active, table: nouns, lease: { entries: 0 } }
+    }
     const clock = createModClockBridge({
       now: async () => {
-        checkCall(owner, 'clock.now', table, lease.entries > 0)
-        return await dispatch('clock.now', {}, async () => Date.now(), snapshot, table, {
-          origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-        }) as number
+        const {snapshot,table,lease}=scope()
+        checkCall(owner, 'clock.now', table, lease)
+        const caller = capabilityContext.getStore()
+        const resumeBudget = pauseModBudget(caller?.active ? caller.next : undefined)
+        try {
+          const result = await dispatch('clock.now', {}, async () => ({ value: Date.now() }), snapshot, table, {
+            origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+          }) as { value: number; deny?: string }
+          if (typeof result.deny === 'string') throw new Error(result.deny)
+          return result.value
+        } finally { resumeBudget?.() }
       },
       wait: async (kind, ms, id) => {
-        checkCall(owner, `clock.${kind}`, table, lease.entries > 0)
+        const {snapshot,table,lease}=scope()
+        checkCall(owner, `clock.${kind}`, table, lease)
         if (!Number.isFinite(ms) || ms < 0 || (kind === 'every' && ms < 1)) throw new Error('Invalid clock duration')
         if (owner.state === 'retiring' && kind !== 'sleep') throw new Error('Module timer belongs to a retired activation')
-        await withReference(owner, () => dispatch(`clock.${kind}`, { ms }, async input => {
+        const result = await withReference(owner, () => dispatch(`clock.${kind}`, { ms }, async input => {
           if (typeof input.ms !== 'number' || !Number.isFinite(input.ms) || input.ms < 0 || (kind === 'every' && input.ms < 1)) throw new Error('Invalid clock duration')
           await new Promise<void>((resolve, reject) => {
             const timer = setTimeout(() => { owner.waits.delete(id); resolve() }, input.ms as number)
             timer.unref?.()
             owner.waits.set(id, { kind, timer, reject })
           })
-          return undefined
-        }, snapshot, table, { origin: { plugin: owner.declaration.name, tier: owner.declaration.tier } }))
+          return { value: undefined }
+        }, snapshot, table, { origin: { plugin: owner.declaration.name, tier: owner.declaration.tier } })) as { value?: undefined; deny?: string }
+        if (typeof result.deny === 'string') throw new Error(result.deny)
       },
       cancel: id => cancelWait(owner, id),
-      run: async callback => {
-        if (owner.state !== 'active') throw new Error('Module timer belongs to a retired activation')
-        // A callback enters the generation captured when its clock was injected.
+      run: async (callback, kind) => {
+        const {snapshot,table,lease}=scope()
+        checkCall(owner, `clock.${kind}`, table, lease)
+        if (owner.state !== 'active' && !(owner.state === 'candidate' && lease.building)) throw new Error('Module timer belongs to a retired activation')
+        // Pin this generation and consult the scheduling frame until its receipt settles.
         for (const item of snapshot) item.references++
         lease.entries++
-        try { return await withReference(owner, callback) }
+        const parent = capabilityContext.getStore()
+        const entered={snapshot,table,active:true,
+          get callerChain() { return parent?.active ? parent.callerChain : undefined },
+          get hook() { return parent?.active && parent.hook?.plugin === owner.declaration.name ? parent.hook : undefined },
+          get callbackOwner() { return parent?.active && parent.hook?.plugin === owner.declaration.name ? undefined : owner.declaration.name },
+          get next() { return parent?.active ? parent.next : undefined },
+        }
+        try { return await capabilityContext.run(entered, () => uiContext.run({ snapshot, table, person: false }, () => withReference(owner, callback))) }
         finally {
+          entered.active=false
           lease.entries--
           for (const item of snapshot) {
             item.references--
@@ -155,82 +1693,1341 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
         }
       },
     })
+    async function readPromptForCaller(
+      caller: Activation,
+      captured: readonly Activation[],
+      interfaceTable: Nouns,
+    ) {
+      if (!caller.declaration.calls.includes('prompt.read')) return emptyPromptBox()
+      checkCall(caller, 'prompt.read', interfaceTable, lease)
+      if (!binding || binding.surface !== 'terminal' || !binding.isInteractive)
+        return emptyPromptBox()
+      const result = await withReference(caller, () => dispatch(
+        'prompt.read',
+        {},
+        async () => {
+          const box = services.prompt?.()?.read() ?? emptyPromptBox()
+          validatePromptBox(box)
+          return { value: structuredClone(box) }
+        },
+        captured,
+        interfaceTable,
+        {
+          signal: invocationSignal.getStore(),
+          origin: { plugin: caller.declaration.name, tier: caller.declaration.tier },
+        },
+      )) as { value?: unknown; deny?: string }
+      if (typeof result.deny === 'string') return emptyPromptBox()
+      validatePromptBox(result.value)
+      return structuredClone(result.value)
+    }
+
     const result: Record<string, unknown> = table.clock ? { clock } : {}
     for (const [noun, methods] of Object.entries(table)) {
       if (noun === 'clock') continue
-      const wrapped: Record<string, (...args: unknown[]) => Promise<unknown>> = {}
-      for (const [method, fn] of Object.entries(methods)) wrapped[method] = async (...args) => {
-        const op = `${noun}.${method}`
-        checkCall(owner, op, table, lease.entries > 0)
-        const input = args[0] ?? {}
-        if (args.length > 1 || typeof input !== 'object' || input === null || Array.isArray(input)) {
-          throw new Error('This Mods slice supports noun methods with one object argument or no arguments')
-        }
-        const result = await dispatch(op, input as ModInput, async rewritten => ({ value: await fn(rewritten) }), snapshot, table, {
-          origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-        }) as { value?: unknown; deny?: string }
-        if (typeof result.deny === 'string') throw new Error(result.deny)
-        return result.value
+      if (noun === 'plugin') {
+        result.plugin = Object.freeze({ name: owner.declaration.name, root: owner.declaration.pluginRoot })
+        continue
       }
-      result[noun] = Object.freeze(wrapped)
+      let step: ((input: ModInput) => ModHookStream) | undefined
+      if (noun === 'turn' && methods.step === hostIdentity) {
+        step = createModStreamBridge((input: ModInput) => {
+          const { snapshot, table, lease } = scope()
+          checkCall(owner, 'turn.step', table, lease)
+          const core = testing
+            // eslint-disable-next-line require-yield -- A rejecting terminal emits no chunks.
+            ? async function* () { throw new Error('Unhandled plugin test event: turn.step') }
+            : turnStepCore.getStore()
+          if (!core) throw new Error('turn.step model request is unavailable outside a model step')
+          const caller = capabilityContext.getStore()
+          const source = stream('turn.step', input, core, snapshot, table, {
+            signal: invocationSignal.getStore(), origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+          })
+          const pull = async (method: 'next' | 'return' | 'throw', value?: unknown) => {
+            const resume = pauseModBudget(caller?.active ? caller.next : undefined)
+            try { return await source[method](value as never) } finally { resume?.() }
+          }
+          return { next: () => pull('next'), return: (value: unknown) => pull('return', value), throw: (error: unknown) => pull('throw', error), result: source.result, [Symbol.asyncIterator]() { return this } }
+        })
+      }
+      const wrapped: Record<string, (...args: unknown[]) => unknown> = {}
+      for (const [method, bound] of Object.entries(methods)) wrapped[method] = async (...args) => {
+        const {snapshot,table,lease}=scope()
+        const op = `${noun}.${method}`
+        checkCall(owner, op, table, lease)
+        const fn=noun === 'telemetry' ? hostIdentity : (dynamic ? table[noun]?.[method] : bound)!
+        const ask = fn === hostIdentity && op === 'ui.ask' ? createModUiAskRequest(args, owner.declaration.name) : undefined
+        const input = ask?.input ?? (fn === hostIdentity ? hostInput(op, args, owner.declaration.name) : args[0] ?? {})
+        if (op === 'env.get' || op === 'env.set') {
+          const name = (input as ModInput).name
+          const allowed = owner.declaration.env?.[op === 'env.get' ? 'reads' : 'writes']
+          if (typeof name !== 'string' || !allowed?.includes(name))
+            throw new Error(`Module environment name ${String(name)} is absent from scan for ${op}`)
+        }
+        if (op === 'state.get' || op === 'state.set') {
+          const ref = input as { plugin?: unknown; key?: unknown }
+          const allowed = owner.declaration.state?.[op === 'state.get' ? 'reads' : 'writes']
+          if (typeof ref.plugin !== 'string' || typeof ref.key !== 'string' ||
+              !allowed?.some(entry => entry.plugin === ref.plugin && entry.key === ref.key))
+            throw new Error(`Module state reference ${String(ref.plugin)} ${String(ref.key)} is absent from scan for ${op}`)
+        }
+        if (fn !== hostIdentity && (args.length > 1 || typeof input !== 'object' || input === null || Array.isArray(input))) {
+          throw new Error('Custom noun methods require one object argument or no arguments')
+        }
+        const context = capabilityContext.getStore()
+        const caller = context?.active ? context.hook : undefined
+        const callbackOwner = context?.active ? context.callbackOwner : undefined
+        const callerChain = appendModCallerChain(context?.active ? context.callerChain : undefined,
+          caller?.plugin === owner.declaration.name
+            ? { plugin: caller.plugin, registration: caller.registrationId }
+            : owner.declaration.name)
+        const invocation = invocationSignal.getStore()
+        // Logging and the operation that cancels the turn must acknowledge
+        // completion even after that turn's cancellation reaches this frame.
+        const signal = ['ui.log', 'turn.abort'].includes(op) && fn === hostIdentity ? undefined : context?.active && context.next
+          ? getModCapabilitySignal(context.next)
+          : context?.active && !invocation?.aborted ? invocation : undefined
+        signal?.throwIfAborted()
+        const resumeBudget = pauseModBudget(context?.active ? context.next : undefined)
+        const modelAbort = op === 'model.complete' && fn === hostIdentity
+          ? combineModModelSignals((args[1] as {signal?:AbortSignal} | undefined)?.signal)
+          : undefined
+        const modelInvocation = modelAbort ? combineModModelSignals(signal, modelAbort.signal) : undefined
+        // A model call outside any hook (a timer callback) still ends with its activation.
+        const modelOwned = fn === hostIdentity && (op === 'model.complete' || op === 'model.fork' || op === 'model.classify')
+          ? createCombinedAbortSignal(modelInvocation?.signal ?? signal, { signalB: owner.controller.signal })
+          : undefined
+        const coreSignal = modelOwned?.signal ?? modelInvocation?.signal ?? signal
+        try {
+          // State and drawing belong to this runtime, not to production host providers.
+          if (testTerminal(op)) {
+            const result = await withReference(owner, () => dispatch(op, input as ModInput,
+              async () => { throw new Error(`Unhandled plugin test event: ${op}`) }, snapshot, table, {
+                signal, origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                ...(caller ? { caller } : {}),
+              })) as { value?: unknown; deny?: string }
+            return capabilityResult(op, result)
+          }
+          if (fn === hostIdentity && op === 'prompt.compose') {
+            const compose = requestServices.getStore()?.composePrompt ?? services.composePrompt
+            if (!compose) throw new Error('Prompt composition host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            let open = true
+            const callSnapshot: ModSnapshot = {
+              toolNotices,
+              dispatch: (event, eventInput, core, options) => {
+                if (!open) throw new Error('Mod prompt composition invocation settled')
+                return dispatch(event, eventInput, core, snapshot, table, {
+                  ...options, signal: combined.signal,
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? { caller } : {}),
+                })
+              },
+              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+                item.environment.registrations.some(registration =>
+                  matchesModEventPattern(registration.event, event) &&
+                  (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
+                )),
+              release() {},
+            }
+            try {
+              combined.signal.throwIfAborted()
+              const result = await withReference(owner, () => compose(input as Partial<PromptComposeInput>, callSnapshot, combined.signal))
+              validateResult(op, result, input as ModInput)
+              return result
+            } finally { open = false; combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'prompt.read')
+            return await readPromptForCaller(owner, snapshot, table)
+          if (fn === hostIdentity && (op === 'state.get' || op === 'state.set')) {
+            const result = await withReference(owner, () => dispatchState(op, input as ModInput, snapshot, table, {
+              signal, origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+              ...(caller ? { caller } : {}),
+            }))
+            return capabilityResult(op, result)
+          }
+          if (fn === hostIdentity && (op === 'config.list' || op === 'config.set')) {
+            const run = (event: string, eventInput: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) =>
+              dispatch(event, eventInput, core, snapshot, table, {
+                ...(options ?? {}), signal,
+                origin:{plugin:owner.declaration.name,tier:owner.declaration.tier},
+                ...(caller ? {caller} : {}),
+              })
+            if (op === 'config.list')
+              // Caller projections do not reuse the engine menu's description cache.
+              return await withReference(owner, () => config.list(run, {}))
+            return await withReference(owner, () => config.set(
+              input as {key:string;value:ModConfigValue},
+              {kind:'plugin',name:owner.declaration.name},
+              run,
+            ))
+          }
+          if (fn === hostIdentity && ['ui.open', 'ui.close', 'ui.blit', 'ui.scroll', 'ui.focus'].includes(op))
+            return await withReference(owner, () => hostCall(owner, op, input as ModInput))
+          if (fn === hostIdentity && op === 'prompt.fill') {
+            const prompt = services.prompt?.()
+            const origin = { kind: 'plugin' as const, name: owner.declaration.name }
+            const eventInput: PromptFillInput = { ...(input as ModInput), origin } as PromptFillInput
+            const result = await withReference(owner, () => dispatch(
+              op,
+              eventInput,
+              async rewritten => applyPromptFill(
+                prompt,
+                sanitizePromptFillInput(rewritten as PromptFillInput, getFeatureValue_CACHED_MAY_BE_STALE('tengu_tranquil_cloud', true)),
+                !binding || binding.surface !== 'terminal' || !binding.isInteractive
+                  ? 'no_composer' : prompt?.isBlocked?.() === true ? 'dialog' : undefined,
+              ),
+              snapshot,
+              table,
+              {
+                signal,
+                origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                validateInput: value => validatePromptFillInput(value, origin),
+                restoreInput: (value, received) => {
+                  const restored = {...value}
+                  for (const key of ['origin', 'mode']) if (!Object.hasOwn(restored, key)) restored[key] = received[key]
+                  return restored
+                },
+              },
+            )) as { isFilled: boolean }
+            return { ...result, ...(await readPromptForCaller(owner, snapshot, table)) }
+          }
+          if (fn === hostIdentity && op === 'command.run') {
+            const event = context?.active ? context.next?.event : undefined
+            // session.start and plugin.register run inside the load the host awaits before it runs queued input.
+            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
+            const prefix = `${owner.declaration.name}: $.command.run`
+            if (held) throw Object.assign(new Error(`${owner.declaration.name}: command.run: called from a ${held} hook, it would wait on the turn this hook is holding; ${held === 'command.run' ? 'answer { text } instead, or run it' : 'run it'} from a later event (turn.complete) (host check)`),{name:'HooksError'})
+            if (typeof (input as ModInput).args !== 'string') throw Object.assign(new Error(`${prefix} takes { command, args? } (the name without the slash)`),{name:'HooksError'})
+            const name = (input as ModInput).command as string
+            const lookup = () => commands.projection([...(services.commands?.() ?? [])]).find(command => command.userInvocable !== false && [command.name,getCommandName(command),...(command.aliases ?? [])].some(value => value.toLowerCase() === name.toLowerCase()))
+            let found = lookup()
+            // Outside a hook (e.g. a startup clock callback) the command may belong to a plugin whose
+            // session.start has not been published yet; let the in-flight load settle before deciding.
+            if (!found && event === undefined) {
+              await queue
+              found = lookup()
+            }
+            if (!found) throw Object.assign(new Error(`${prefix}: no command named /${name} in this session`),{name:'HooksError'})
+            const run = requestServices.getStore()?.commandRun ?? services.commandRun
+            if (!run) throw new Error('Command execution host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal,{signalB:owner.controller.signal})
+            try {
+              combined.signal.throwIfAborted()
+              logForDebugging(`[ModsCommand] plugin=${owner.declaration.name} command=${found.name} queued`)
+              const command = found
+              const receipt = withReference(owner,()=>run({command:command.name,args:(input as ModInput).args as string,origin:{kind:'plugin',name:owner.declaration.name},signal:combined.signal}))
+              if (event === 'turn.complete' && completingTurns.size) {
+                logForDebugging('[ModsCommand] a turn.complete hook queued input; the turn ends so it can run, and turn.complete settles with the turn that runs it')
+                for (const endTurn of [...completingTurns]) endTurn()
+              }
+              return await receipt
+            } finally {combined.cleanup()}
+          }
+          if (fn === hostIdentity && op === 'prompt.submit') {
+            const submit = requestServices.getStore()?.submitPrompt ?? services.submitPrompt
+            if (!submit) throw new Error('Prompt submission host is unavailable on this host')
+            const held = context?.active ? context.next?.event : undefined
+            const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
+              ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
+                'prompt.attachment', 'prompt.mention', 'prompt.compose', 'tool.describe', 'command.run',
+                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step', 'session.start', 'plugin.register'].includes(held) ||
+              (held.startsWith('classic.') && !['classic.SessionStart', 'classic.Setup', 'classic.SessionEnd'].includes(held))
+            ))
+            if (holdsTurn) {
+              const holding = held?.startsWith('classic.') && held !== 'classic.PreToolUse' ? 'may be holding' : 'is holding'
+              const advice = held === 'prompt.submit' ? 'answer { text } or next(e) instead, or ' : ''
+              throw new Error(`prompt.submit called from a ${held} hook, it would wait on the turn this hook ${holding}; ${advice}submit from a later event (turn.complete)`)
+            }
+            const origin = { kind: 'plugin' as const, name: owner.declaration.name,
+              ...((input as ModInput).asUser === true ? { asUser: true as const } : {}) }
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            try {
+              combined.signal.throwIfAborted()
+              const receipt = withReference(owner, () => submit({
+                text: (input as ModInput).text as string,
+                ...((input as ModInput).attachments === undefined
+                  ? {}
+                  : { attachments: (input as ModInput).attachments as PromptAttachment[] }),
+                origin,
+                callerChain,
+                signal: combined.signal,
+              }))
+              if (held === 'turn.complete' && completingTurns.size) {
+                logForDebugging('[ModsPrompt] a turn.complete hook submitted a prompt; the turn ends so it can run, and turn.complete settles with the turn that runs it')
+                for (const endTurn of [...completingTurns]) endTurn()
+              }
+              return await receipt
+            } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'prompt.suggest') {
+            const prompt = services.prompt?.()
+            const origin = { kind: 'plugin' as const, name: owner.declaration.name }
+            const eventInput = { ...(input as ModInput), origin }
+            return withReference(owner, () => dispatch(
+              op,
+              eventInput,
+              async rewritten => {
+                if (!owner.suggestionEligible || typeof rewritten.text !== 'string' || rewritten.text.trim() === '' ||
+                    binding?.surface !== 'terminal' || !binding.isInteractive ||
+                    prompt?.read().text !== '' || prompt.canSuggest?.() === false)
+                  return { isShown: false }
+                const shown = await prompt.suggest?.(
+                  rewritten.text,
+                  owner.suggestionOwner,
+                ) === true
+                return { isShown: shown && owner.suggestionEligible }
+              },
+              snapshot,
+              table,
+              {
+                signal,
+                origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                ...(caller ? { caller } : {}),
+                validateInput: rewritten => {
+                  if (typeof rewritten.text !== 'string' ||
+                      !isDeepStrictEqual(rewritten.origin, origin))
+                    throw new TypeError('prompt.suggest requires text and cannot rewrite origin')
+                },
+              },
+            ))
+          }
+          if (fn === hostIdentity && op === 'agent.spawn') {
+            const request = requestServices.getStore()
+            const spawn = request?.agentSpawn ?? services.agentSpawn ?? request?.toolHost?.()?.spawn ?? services.toolHost?.()?.spawn
+            if (!spawn) throw new Error('Agent spawn host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            let open = true
+            const callSnapshot: ModSnapshot = {
+              toolNotices,
+              dispatch: (event, eventInput, core, options) => {
+                if (!open) throw new Error('Mod agent invocation settled')
+                return dispatch(event, eventInput, core, snapshot, table, {
+                  ...options,
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? { caller } : {}),
+                })
+              },
+              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+                item.environment.registrations.some(registration =>
+                  matchesModEventPattern(registration.event, event) &&
+                  (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
+                )),
+              pluginOrigin: storageId => {
+                const provider = snapshot.find(value => value.declaration.storageId === storageId)
+                return provider
+                  ? { plugin: provider.declaration.storageId, tier: provider.declaration.tier }
+                  : services.pluginOrigin?.(storageId)
+              },
+              release() {},
+            }
+            const plugin = owner.declaration.name
+            const limit = getMaxConcurrentSubagents()
+            const running = runningSpawns.get(plugin) ?? 0
+            let leftRunning = false
+            let reserved = false
+            const release = () => {
+              if (!reserved) return
+              reserved = false
+              const remaining = (runningSpawns.get(plugin) ?? 1) - 1
+              if (remaining === 0) runningSpawns.delete(plugin)
+              else runningSpawns.set(plugin, remaining)
+              logForDebugging(`[ModsAgent] spawn released plugin=${plugin} running=${remaining}`)
+            }
+            try {
+              combined.signal.throwIfAborted()
+              if (running >= limit) {
+                logForDebugging(`$.agent.spawn (${plugin}): ${running} running at once; refused`)
+                throw new Error(`${plugin}: $.agent.spawn refused: ${limit} spawns are running at once`)
+              }
+              runningSpawns.set(plugin, running + 1)
+              reserved = true
+              logForDebugging(`[ModsAgent] spawn reserved plugin=${plugin} running=${running + 1} limit=${limit}`)
+              return await withReference(owner, () => spawn(input as ModInput, callSnapshot, combined.signal, plugin, agentId => {
+                if (leftRunning) return
+                leftRunning = true
+                void observeSpawn(agentId, plugin).then(release, error => {
+                  logForDebugging(`[ModsAgent] spawn observer failed plugin=${plugin} agentId=${agentId}: ${String(error)}`)
+                  release()
+                })
+              }))
+            } finally {
+              if (!leftRunning) release()
+              open = false
+              combined.cleanup()
+            }
+          }
+          if (fn === hostIdentity && (op === 'tool.call' || op === 'session.send' || op === 'ui.ask')) {
+            const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
+            if (op === 'session.send' && !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'SendMessage'))
+              return {isDelivered:false,reason:'this session has no SendMessage tool (messaging between sessions and agents is not on here)'}
+            if (ask && (!binding?.isInteractive || !(host?.tools?.() ?? (requestServices.getStore()?.tools ?? services.tools)?.() ?? []).some(tool => tool.name === 'AskUserQuestion')))
+              throw Object.assign(new Error(`${owner.declaration.name}: $.tool.call: no tool named \"AskUserQuestion\" in this session`), {name:'HooksError'})
+            if (!host) throw new Error('Tool execution host is unavailable on this host')
+            let toolInput = input as ModInput
+            if (op === 'session.send') {
+              const resolved = await resolveModSessionSendAddress((input as ReturnType<typeof modSessionSendArgs>).to, services.tasks?.())
+              if ('reason' in resolved) {
+                logForDebugging(`[ModsSend] plugin=${owner.declaration.name} refused: ${resolved.reason}`)
+                return {isDelivered:false,reason:resolved.reason}
+              }
+              toolInput = {tool:'SendMessage',to:resolved.to,message:(input as ModInput).text}
+            }
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            let open = true
+            const callSnapshot: ModSnapshot = {
+              toolNotices,
+              dispatch: (event, input, core, options) => {
+                if (!open) throw new Error('Mod tool invocation settled')
+                return dispatch(event, input, core, snapshot, table, {
+                  ...options,
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  ...(caller ? {caller} : {}),
+                })
+              },
+              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+                item.environment.registrations.some(registration =>
+                  matchesModEventPattern(registration.event, event) &&
+                  (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
+                )),
+              pluginOrigin: storageId => {
+                const provider = snapshot.find(value => value.declaration.storageId === storageId)
+                return provider
+                  ? { plugin: provider.declaration.storageId, tier: provider.declaration.tier }
+                  : services.pluginOrigin?.(storageId)
+              },
+              release() {},
+            }
+            try {
+              combined.signal.throwIfAborted()
+              // Only a call descending from the person's own interaction may speak consent for them.
+              const uiOrigin = uiContext.getStore()
+              const person = Boolean(uiOrigin?.person && uiOrigin.active !== false)
+              const receipt = await withReference(owner, () => host.call(toolInput, callSnapshot, combined.signal, owner.declaration.name, ask ? 'ui.ask' : undefined, person))
+              if (ask) {
+                const answer = ask.answer(receipt as import('./toolAdapter.js').ToolCallResult)
+                logForDebugging(`[ModsUI] ui.ask plugin=${owner.declaration.name} answered chars=${answer.length}`)
+                return answer
+              }
+              if (op !== 'session.send') return receipt
+              const sent = sessionSendToolResult(receipt as import('./toolAdapter.js').ToolCallResult)
+              logForDebugging(`[ModsSend] plugin=${owner.declaration.name} to=${String(toolInput.to)} delivered=${sent.isDelivered}${sent.isDelivered ? '' : ` reason=${sent.reason}`}`)
+              return sent
+            } finally { open = false; combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'tool.check') {
+            const host = (requestServices.getStore()?.toolHost ?? services.toolHost)?.()
+            if (!host) throw new Error('Tool permission host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            try {
+              return await withReference(owner, () => dispatch(op, input as ModInput,
+                async (question, signal) => host.check(question, signal ?? combined.signal, owner.declaration.name), snapshot, table, {
+                  origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                  signal: combined.signal,
+                }))
+            } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'mcp.connect') {
+            const plugin = declarations.find(input => input.storageId === owner.declaration.storageId)?.mcpPlugin
+            const connect = requestServices.getStore()?.mcpConnect ?? services.mcpConnect
+            const combined = createCombinedAbortSignal(signal, {signalB:owner.controller.signal})
+            try {
+              const result = await withReference(owner, () => dispatch(op, input as ModInput, async rewritten => ({
+                value: await (async () => {
+                  const value = connect ? await connect(plugin, rewritten.server as string, combined.signal)
+                    : plugin ? {isConnected:false as const,reason:'failed' as const,message:'MCP connection host is unavailable on this host'}
+                    : unlistedModMcpServer(rewritten.server as string)
+                  if (owner.state !== 'active' && value.isConnected) {
+                    await releaseMcp(owner)
+                    return {isConnected:false as const,reason:'failed' as const,message:`The MCP server "${value.server}" was taken out: its plugin unloaded while it connected.`}
+                  }
+                  return value
+                })(),
+              }), snapshot, table, {
+                origin:{plugin:owner.declaration.name,tier:owner.declaration.tier},signal:combined.signal,
+                ...(caller ? {caller} : {}),
+                validateInput: rewritten => {
+                  if (typeof rewritten.server !== 'string' || rewritten.server.trim() === '')
+                    throw new TypeError('$.mcp.connect takes { server } (a non-empty string)')
+                },
+              })) as {value?:ModMcpConnectResult;deny?:string}
+              if (typeof result.deny === 'string') throw new Error(result.deny)
+              return result.value
+            } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && op === 'mcp.call') {
+            const call = requestServices.getStore()?.mcpCall ?? services.mcpCall
+            if (!call) throw new Error('MCP execution host is unavailable on this host')
+            const combined = createCombinedAbortSignal(signal, { signalB: owner.controller.signal })
+            try {
+              const result = await withReference(owner, () => dispatch(op, input as ModInput, async (rewritten, signal) => ({
+                value: await call(
+                  rewritten.server as string,
+                  rewritten.tool as string,
+                  rewritten.args as Record<string, unknown>,
+                  signal ?? combined.signal,
+                ).then(value => {
+                  validateMcpToolResult(value)
+                  return value
+                }),
+              }), snapshot, table, {
+                origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+                signal: combined.signal,
+                ...(caller ? {caller} : {}),
+                validateInput: rewritten => {
+                  if (typeof rewritten.server !== 'string' || !rewritten.server ||
+                      typeof rewritten.tool !== 'string' || !rewritten.tool ||
+                      !rewritten.args || typeof rewritten.args !== 'object' || Array.isArray(rewritten.args))
+                    throw new TypeError('mcp.call requires server, tool and args')
+                },
+                validateResult: value => {
+                  const returned = value as {value?:unknown;deny?:unknown}
+                  if (typeof returned.deny !== 'string') validateMcpToolResult(returned.value)
+                },
+              })) as {value?:unknown;deny?:string}
+              if (typeof result.deny === 'string') throw new Error(result.deny)
+              return result.value
+            } finally { combined.cleanup() }
+          }
+          if (fn === hostIdentity && (op === 'telemetry.log' || op === 'telemetry.mark')) {
+            const origin = {plugin:owner.declaration.name,tier:owner.declaration.tier}
+            // The pinned 277 built-in publishes its sender as a noun; the public API remains core-owned.
+            const provider = snapshot.find(item => item.declaration.name === interfaceStates.get(table)?.owners.get('telemetry'))
+            const sender = provider?.declaration.tier === 'builtin' || provider?.declaration.tier === 'core' ? table.telemetry?.[method] : undefined
+            const result = await withReference(owner, () => dispatch(op, input as ModInput, async rewritten => {
+              const answer = modTelemetryCoreResult(origin)
+              if ('deny' in answer || !sender || rewritten.to === 'collector') return answer
+              await sender(rewritten)
+              return answer
+            }, snapshot, table, {origin,signal})) as {deny?:string}
+            return modTelemetryResult(op, result, owner.declaration.name)
+          }
+          if (fn === hostIdentity && op === 'session.compact') {
+            if (binding && !binding.isInteractive)
+              throw Object.assign(new Error(`${owner.declaration.name}: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on`), {name:'HooksError'})
+            throw new Error('$.session.compact is not available in this build')
+          }
+          const catalog = fn === hostIdentity && op === 'tool.list'
+            ? (requestServices.getStore()?.toolCatalog ?? services.toolCatalog)?.()
+            : undefined
+          if (fn === hostIdentity && op === 'tool.list' && !catalog)
+            throw new Error('Tool catalog is unavailable on this host')
+          const usage = fn === hostIdentity && op === 'session.usage'
+            ? (requestServices.getStore()?.captureUsage ?? services.captureUsage)?.()
+            : undefined
+          if (fn === hostIdentity && op === 'session.usage' && !usage)
+            throw new Error('Session usage is unavailable on this host')
+          const result = await withReference(owner, () => dispatch(op, input as ModInput, async (rewritten, signal) => {
+            if (catalog) return { value: await catalog.list() }
+            if (usage) {
+              validateModSessionUsageArgs(rewritten)
+              return { value: await usage(rewritten, signal) }
+            }
+            const completion = requestServices.getStore()?.modelComplete ?? services.modelComplete ?? createModModelComplete(undefined, undefined, undefined, owner.declaration.name)
+            if (op === 'model.fork') {
+              const fork = requestServices.getStore()?.modelFork ?? services.modelFork ?? productionModelFork
+              return { value: await fork(rewritten as ModModelForkRequest, signal) }
+            }
+            if (op === 'model.complete') {
+              validateModModelCompleteInput(rewritten)
+              return { value: await completion(rewritten as ModModelCompleteRequest, signal) }
+            }
+            if (op === 'model.classify') {
+              validateModModelClassifyInput(rewritten)
+              // Classifiers call core completion, without firing an author model.complete event.
+              const classify = createModModelClassify(completion, getSmallFastModel, owner.declaration.name)
+              return { value: await classify(
+                rewritten.text as string,
+                rewritten.labels as string[],
+                rewritten.options as {model?:string} | undefined,
+                signal,
+              ) }
+            }
+            const entered = capabilityContext.getStore()
+            const provider = { snapshot, table: entered?.active ? entered.table : lease.entries > 0 || lease.building ? table : nouns, active: true, callerChain }
+            try {
+              if (fn === hostIdentity)
+                return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => hostCall(owner, op, rewritten, signal))) }
+              return { value: await invocationSignal.run(signal ?? owner.controller.signal, () => capabilityContext.run(provider, () => fn(rewritten))) }
+            } finally { provider.active = false }
+          }, snapshot, table, {
+            origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
+            ...(fn === hostIdentity && coreSignal && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal: coreSignal } : {}),
+            reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
+            ...(catalog ? { validateResult: catalog.validateResult } : {}),
+          })) as { value?: unknown; deny?: string }
+          if (typeof result.deny === 'string') {
+            if (fn === hostIdentity && (op === 'model.classify' || op === 'model.complete' || op === 'session.version'))
+              throw Object.assign(new Error(`${owner.declaration.name}: $.${op}: ${result.deny}`), {name:'HooksError'})
+            throw new Error(result.deny)
+          }
+          return result.value
+        } finally { modelOwned?.cleanup(); modelInvocation?.cleanup(); modelAbort?.cleanup(); resumeBudget?.() }
+      }
+      for (const [method, fn] of Object.entries(methods))
+        if (fn !== hostIdentity) createModInterfaceBridge(wrapped[method]!, `${noun}.${method}`)
+      if (noun === 'process' && methods.spawn === hostIdentity) wrapped.spawn = createModStreamBridge((request: unknown) => {
+        const args = request && typeof request === 'object' && !Array.isArray(request) ? request as Record<string, unknown> : undefined
+        const input = args ? {
+          argv: Array.isArray(args.argv) ? [...args.argv] : args.argv,
+          ...(args.cwd === undefined ? {} : {cwd:args.cwd}),
+          ...(args.env === undefined ? {} : {env:args.env && typeof args.env === 'object' && !Array.isArray(args.env) ? {...args.env} : args.env}),
+          ...(args.input === undefined ? {} : {input:args.input}),
+        } : request
+        const caller = capabilityContext.getStore()
+        const parent = caller?.active && caller.next ? getModCapabilitySignal(caller.next) : invocationSignal.getStore()
+        let phase: 'nothing' | 'started' | 'ran' = 'nothing'
+        let operation: AbortController | undefined
+        let signal: AbortSignal | undefined
+        let source: ModHookStream | undefined
+        const output = createModHookStream((async function* () {
+          const {snapshot, table, lease} = scope()
+          checkCall(owner, 'process.spawn', table, lease)
+          if (owner.state === 'retiring') throw new Error('Module environment unloaded')
+          validateModProcessSpawnRequest(input)
+          operation = new AbortController()
+          owner.processControllers.add(operation)
+          signal = AbortSignal.any([operation.signal, owner.controller.signal, ...(parent ? [parent] : [])])
+          try {
+            // Middleware sees ValueOrDeny; the public facade exposes only the raw process receipt.
+            source = stream('process.spawn', input as ModInput, async function* (rewritten, signal) {
+              validateModProcessSpawnRequest(rewritten)
+              phase = 'started'
+              const receipt = yield* owner.operations.process.spawn(rewritten, signal)
+              phase = 'ran'
+              return {value:receipt}
+            }, snapshot, table, {signal, origin:{plugin:owner.declaration.name, tier:owner.declaration.tier}})
+            let thrown: {error: unknown} | undefined
+            for (;;) {
+              const resume = pauseModBudget(caller?.active ? caller.next : undefined)
+              let item: IteratorResult<unknown, unknown>
+              try { item = await (thrown ? source.throw(thrown.error) : source.next()) }
+              finally { resume?.() }
+              thrown = undefined
+              if (item.done) {
+                const result = item.value as {value?: unknown; deny?: string}
+                if (typeof result.deny === 'string') {
+                  const effect = phase === 'nothing' ? '' : ` ${phase}, and a plugin withheld its result`
+                  throw Object.assign(new Error(`${owner.declaration.name}: $.process.spawn${effect}: ${result.deny}`), {name:'HooksError'})
+                }
+                return result.value
+              }
+              try { yield item.value } catch (error) { thrown = {error} }
+            }
+          } finally {
+            operation.abort(new Error('Process stream finished'))
+            try { if (source) await source.return(undefined) }
+            finally { owner.processControllers.delete(operation) }
+          }
+        })(), reason => { operation?.abort(reason); void source?.return(undefined).catch(() => {}) })
+        return {
+          next: value => output.next(value),
+          throw: error => output.throw(error),
+          // Preserve the cancellation entering finally, so revocation does not report it again as a teardown failure.
+          return: value => {
+            const reason = signal?.aborted ? signal.reason : value instanceof Error ? value : new Error('Module stream closed before completion')
+            operation?.abort(reason)
+            return output.return(reason)
+          },
+          result: output.result,
+          [Symbol.asyncIterator]() { return this },
+        }
+      }, 'environment')
+      if (step) wrapped.step = step
+      if (noun === 'model') for (const method of ['complete','fork','classify'] as const)
+        if (methods[method] === hostIdentity && wrapped[method]) createModModelBridge(wrapped[method],method)
+      if (noun === 'session' && methods.version === hostIdentity && wrapped.version) createModMutableResultBridge(wrapped.version)
+      if (noun === 'store') {
+        for (const method of ['get', 'set', 'delete'] as const) {
+          if (methods[method] === hostIdentity && wrapped[method])
+            createModStoreBridge(method, wrapped[method])
+        }
+      }
+      if (noun === 'state') {
+        for (const method of ['get', 'set'] as const) {
+          if (methods[method] === hostIdentity && wrapped[method])
+            createModStateBridge(method, wrapped[method])
+        }
+      }
+      result[noun] = noun === 'ui' && !lease.building
+        ? createModUiBridge(wrapped)
+        : Object.freeze(wrapped)
     }
     return Object.freeze(result)
   }
 
-  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation): ModDispatchHook[] {
-    return snapshot.filter(owner => !only || owner === only).flatMap(owner => owner.environment.registrations.map(registration => ({
+  function capabilityResult(op: string, result: { value?: unknown; deny?: string }) {
+    if (typeof result.deny === 'string') throw new Error(result.deny)
+    return ['agent.spawn', 'tool.call', 'tool.check', 'prompt.fill', 'prompt.submit',
+      'prompt.suggest', 'prompt.compose', 'config.set', 'state.get', 'state.set'].includes(op) ? result : result.value
+  }
+
+  function hostCallbackFacade(next: ModContinuation, snapshot: readonly Activation[], table: Nouns,
+    origin: ModOrigin, lifetime: AbortSignal, alive: () => boolean): Record<string, unknown> {
+    const frame = capabilityContext.getStore()
+    const callerChain = appendModCallerChain(frame?.active ? frame.callerChain : undefined,
+      frame?.active && frame.hook?.plugin === origin.plugin
+        ? { plugin: origin.plugin, registration: frame.hook.registrationId }
+        : origin.plugin)
+    const call = async (op: string, input: ModInput, signal?: AbortSignal) => {
+      if (!alive() || stopped) throw new Error('Host callback invocation ended')
+      next.signal.throwIfAborted()
+      const invocation = combineModModelSignals(next.signal, lifetime)
+      const combined = combineModModelSignals(invocation.signal, signal)
+      const resume = pauseModBudget(next)
+      try {
+        const result = op === 'state.get' || op === 'state.set'
+          ? await dispatchState(op, input, snapshot, table, { origin, callerChain, signal: combined.signal })
+          : await dispatch(op, input, async () => {
+            throw new Error(`Unhandled plugin test event: ${op}`)
+          }, snapshot, table, { origin, callerChain, signal: combined.signal }) as {value?:unknown;deny?:string}
+        return capabilityResult(op, result)
+      } finally { combined.cleanup(); invocation.cleanup(); resume?.() }
+    }
+    const duration = (ms: number, every = false) => {
+      if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < (every ? 1 : 0))
+        throw new Error('Invalid clock duration')
+    }
+    const schedule = (kind: 'after' | 'every', ms: number, callback: () => unknown) => {
+      duration(ms, kind === 'every')
+      if (typeof callback !== 'function') throw new Error('Clock callback must be a function')
+      const cancellation = new AbortController()
+      const run = async () => {
+        do {
+          await call(`clock.${kind}`, {ms}, cancellation.signal)
+          if (cancellation.signal.aborted || !alive()) return
+          await callback()
+        } while (kind === 'every' && !cancellation.signal.aborted && alive())
+      }
+      void run().catch(error => {
+        if (!cancellation.signal.aborted && !next.signal.aborted && !lifetime.aborted) diagnostic(origin.plugin, `clock.${kind}`, error)
+      })
+      return Object.freeze({cancel: () => cancellation.abort()})
+    }
+    const engine: Record<string, unknown> = {
+      plugin: Object.freeze({name:origin.plugin,root:'builtin:claude-code/testing'}),
+      clock: Object.freeze({
+        now: () => call('clock.now', {}),
+        sleep: async (ms: number, {signal}: {signal?:AbortSignal} = {}) => {
+          duration(ms)
+          await call('clock.sleep', {ms}, signal)
+        },
+        after: (ms: number, callback: () => unknown) => schedule('after', ms, callback),
+        every: (ms: number, callback: () => unknown) => schedule('every', ms, callback),
+      }),
+    }
+    for (const [noun, methods] of Object.entries(Object.keys(table).length ? table : coreHost)) {
+      if (noun === 'plugin' || noun === 'clock') continue
+      engine[noun] = Object.freeze(Object.fromEntries(Object.keys(methods).map(method => {
+        const op = `${noun}.${method}`
+        if (op === 'process.spawn' && methods[method] === hostIdentity) return [method, (request: ModInput) => {
+          const args = request && typeof request === 'object' && !Array.isArray(request) ? request : undefined
+          const input = args ? {
+            argv: Array.isArray(args.argv) ? [...args.argv] : args.argv,
+            ...(args.cwd === undefined ? {} : {cwd:args.cwd}),
+            ...(args.env === undefined ? {} : {env:args.env && typeof args.env === 'object' && !Array.isArray(args.env) ? {...args.env} : args.env}),
+            ...(args.input === undefined ? {} : {input:args.input}),
+          } : request
+          let source: ModHookStream | undefined
+          let combined: ReturnType<typeof combineModModelSignals> | undefined
+          return createModProcessStream(async (method, value) => {
+            if (!source) {
+              if (method === 'return') return {done:true, value}
+              if (!alive() || stopped) throw new Error('Host callback invocation ended')
+              next.signal.throwIfAborted()
+              validateModProcessSpawnRequest(input)
+              combined = combineModModelSignals(next.signal, lifetime)
+              // Test callbacks share the stream chain; its terminal never launches a real child.
+              source = stream('process.spawn', input,
+                // eslint-disable-next-line require-yield -- A rejecting terminal emits no chunks.
+                async function* () {throw new Error('Unhandled plugin test event: process.spawn')},
+                snapshot, table, {origin,signal:combined.signal})
+            }
+            const resume = pauseModBudget(next)
+            try {
+              const item = await source[method](value)
+              if (item.done) {
+                combined?.cleanup()
+                const receipt = item.value as {value?:unknown;deny?:string}
+                if (typeof receipt.deny === 'string')
+                  throw Object.assign(new Error(`${origin.plugin}: $.process.spawn: ${receipt.deny}`), {name:'HooksError'})
+                return {done:true,value:receipt.value}
+              }
+              return item
+            } catch (error) {combined?.cleanup(); throw error}
+            finally {resume?.()}
+          })
+        }]
+        if (op === 'ui.resolve') {
+          const realm = createModUiRealm(origin.plugin, isProxy)
+          return [method, (input: ModInput) => {
+            if (!alive() || stopped) throw new Error('Host callback invocation ended')
+            next.signal.throwIfAborted()
+            if (next.event !== 'ui.render') throw new Error('UI resolve requires an admitted terminal hook')
+            return realm.resolve(input)
+          }]
+        }
+        return [method, (...args: unknown[]) => call(op,
+          methods[method] === hostIdentity ? hostInput(op, args) : (args[0] ?? {}) as ModInput)]
+      })))
+    }
+    return Object.freeze(engine)
+  }
+
+  const emptyEngine = Object.freeze({})
+  function engineFacade(owner: Activation, table: Nouns, snapshot: readonly Activation[] = active): Record<string, unknown> {
+    if (!owner.engine) {
+      const declared: Nouns = Object.create(null)
+      for (const op of owner.declaration.calls) {
+        const [noun, method] = op.split('.') as [string, string]
+        const bound = table[noun]?.[method] ?? coreHost[noun]?.[method] ?? (noun === 'clock' ? coreClock[method as keyof typeof coreClock] : hostIdentity)
+        ;(declared[noun] ??= Object.create(null))[method] = bound
+      }
+      if (table.plugin) declared.plugin = table.plugin
+      owner.engine = engineFor(owner, snapshot, declared, { entries: 0 }, true)
+    }
+    return owner.engine
+  }
+
+  function uiAllowed(owner: Activation, table: Nouns): boolean {
+    const current = owner.uiPublished ? nouns : table
+    return (binding?.surface != null || attachedClients.size > 0) && owner.state === 'active' && owner.declaration.calls.includes('ui.resolve') &&
+      Boolean(table.ui?.resolve && current.ui?.resolve) &&
+      ![...(interfaceStates.get(table)?.withheld.get('ui') ?? []), ...(interfaceStates.get(current)?.withheld.get('ui') ?? [])]
+        .some(name => name !== owner.declaration.name)
+  }
+
+  function hooksFor(snapshot: readonly Activation[], table: Nouns, only?: Activation, drawing?: number, skipOwner?: Activation, callerChain?: ModCallerChain): ModDispatchHook[] {
+    const trusted = [...hostHooks].map(hook => ({
+      ...hook,
+      ...(hook.invokeStream ? { invokeStream: (input: ModInput, next: ModStreamNext, catching: boolean) => {
+        const entered = { snapshot, table, active: true, callerChain, hook: {plugin:hook.plugin,registrationId:hook.registration.id}, next }
+        const run = <T>(call: () => T) => invocationSignal.run(next.signal, () => capabilityContext.run(entered, call))
+        return (async function* () {
+          let source: AsyncGenerator<unknown, unknown> | undefined
+          try {
+            source = run(() => hook.invokeStream!(input, next, catching))
+            let thrown: { error: unknown } | undefined
+            for (;;) {
+              const item = await run(() => thrown ? source!.throw(thrown.error) : source!.next())
+              thrown = undefined
+              if (item.done) return item.value
+              try { yield item.value } catch (error) { thrown = { error } }
+            }
+          } finally {
+            try { if (source) await run(() => source!.return(undefined)) }
+            finally { entered.active = false }
+          }
+        })()
+      } } : {}),
+      invoke: async (input: ModInput, next: import('./types.js').ModNext, catching: boolean) => {
+        const entered = { snapshot, table, active: true, callerChain, hook: {plugin:hook.plugin,registrationId:hook.registration.id}, next }
+        try {
+          return await invocationSignal.run(next.signal, () => capabilityContext.run(entered, () => hook.invoke(input, next, catching)))
+        } finally { entered.active = false }
+      },
+    }))
+    return [...trusted, ...snapshot.filter(owner => (!only || owner === only) && owner !== skipOwner).flatMap(owner => owner.environment.registrations.map(registration => ({
       plugin: owner.declaration.name,
       tier: owner.declaration.tier,
       registration,
+      invokeStream: (input, next, catching) => {
+        const entered = { snapshot, table, active: true, callerChain, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
+        const run = <T>(call: () => T) => invocationSignal.run(next.signal, () => capabilityContext.run(entered, call))
+        return (async function* () {
+          owner.references++
+          let source: ModHookStream | undefined
+          try {
+            const resumeBudget = pauseModBudget(next)
+            try { await owner.environment.setUiAccess(uiAllowed(owner, table)) }
+            finally { resumeBudget?.() }
+            source = run(() => owner.environment.invokeStream(catching ? registration.catchId! : registration.id, [engineFacade(owner, table, snapshot), input], next))
+            let thrown: { error: unknown } | undefined
+            for (;;) {
+              const item = await run(() => thrown ? source!.throw(thrown.error) : source!.next())
+              thrown = undefined
+              if (item.done) return item.value
+              try { yield item.value } catch (error) { thrown = { error } }
+            }
+          } finally {
+            try { if (source) await run(() => source!.return(undefined)) }
+            finally {
+              entered.active = false
+              owner.references--
+              if (owner.state === 'retiring' && owner.references === 0) await disposeActivation(owner)
+            }
+          }
+        })()
+      },
       invoke: (input, next, catching) => withReference(owner, async () => {
-        const lease = { entries: 1 }
+        const entered = { snapshot, table, active: true, callerChain, hook: { plugin: owner.declaration.name, registrationId: registration.id }, next }
         try {
-          return await owner.environment.invoke(
-            catching ? registration.catchId! : registration.id,
-            [registration.event === 'engine.create' ? Object.freeze({}) : engineFor(owner, snapshot, table, lease), input], next,
-          )
-        } finally { lease.entries-- }
+          if (next.event !== 'engine.create') {
+            const resumeBudget = pauseModBudget(next)
+            try { await owner.environment.setUiAccess(uiAllowed(owner, table)) }
+            finally { resumeBudget?.() }
+          }
+          if (drawing !== undefined) drawings.get(drawing)?.participants.add(owner)
+          const origin = input.origin as { kind?: string } | undefined
+          const parent = uiContext.getStore()
+          const person = registration.event === 'command.run'
+            ? origin?.kind === 'composer' || origin?.kind === 'shortcut'
+            : Boolean(parent?.person && parent.active !== false)
+          const uiInvocation = { snapshot, table, person, active: true }
+          try {
+            const result = await uiContext.run(uiInvocation, () => invocationSignal.run(next.signal, () => capabilityContext.run(entered, () => owner.environment.invoke(
+              catching ? registration.catchId! : registration.id,
+              [next.event === 'engine.create' ? emptyEngine : engineFacade(owner, table, snapshot), input], next, drawing,
+            ))))
+            if (next.event === 'session.receive' && next.trace.length === 0 && result && typeof result === 'object' && typeof (result as ModInput).consumed === 'string')
+              logForDebugging(`[Mods] ${owner.declaration.name} session.receive consumed: ${String((result as ModInput).consumed).replace(/[\r\n]/g, ' ').replaceAll(String.fromCharCode(27), ' ')}`)
+            return result
+          } finally { uiInvocation.active = false }
+        } finally { entered.active = false }
       }),
-    } satisfies ModDispatchHook)))
+    } satisfies ModDispatchHook)))]
   }
 
-  function validateResult(event: string, result: unknown) {
-    if (event === 'clock.now') {
-      if (typeof result !== 'number' || !Number.isFinite(result)) throw new Error('clock.now must return a finite number')
+  function validateResult(event: string, result: unknown, input?: ModInput) {
+    if (event === 'telemetry.log' || event === 'telemetry.mark') return validateModTelemetryResult(event, result)
+    if (event === 'prompt.edit') return validatePromptEditResult(result)
+    if (event === 'prompt.autocomplete') return validatePromptAutocompleteResult(result)
+    if (event === 'prompt.compose') {
+      if (!result || typeof result !== 'object' || !Array.isArray((result as ModInput).sections))
+        throw new TypeError('prompt.compose must return sections')
+      const ids = new Set<string>()
+      let session = false
+      for (const section of (result as PromptComposeResult).sections) {
+        if (!section || typeof section.id !== 'string' || !section.id || ids.has(section.id) ||
+            typeof section.text !== 'string' || !['shared', 'session'].includes(section.scope) ||
+            session && section.scope === 'shared') throw new TypeError('Invalid prompt.compose section')
+        ids.add(section.id)
+        session ||= section.scope === 'session'
+      }
       return
     }
-    if (event.startsWith('clock.')) return
+    if (event === 'prompt.read') {
+      if (!result || typeof result !== 'object' || Array.isArray(result))
+        throw new TypeError('prompt.read must return value or deny')
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result)) throw new TypeError('prompt.read must return value or deny')
+      validatePromptBox(result.value)
+      return
+    }
+    if (event === 'prompt.fill') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          typeof (result as Partial<{isFilled:boolean}>).isFilled !== 'boolean')
+        throw new TypeError('prompt.fill must return isFilled')
+      return
+    }
+    if (event === 'prompt.suggest') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          typeof (result as Partial<{isShown:boolean}>).isShown !== 'boolean')
+        throw new TypeError('prompt.suggest must return isShown')
+      return
+    }
+    if (event === 'session.receive') return validateSessionReceiveResult(result)
+    if (event === 'session.send') return validateSessionSendResult(result)
+    if (event === 'session.attach' || event === 'session.detach') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) || typeof (result as ModInput).clientId !== 'string')
+        throw new TypeError(`${event} must return clientId`)
+      return
+    }
+    if (event === 'session.compact') {
+      validateModCompactResult(result)
+      return
+    }
+    if (event === 'tool.check') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) ||
+          !['allow', 'ask', 'deny'].includes((result as ModInput).decision as string) ||
+          ['reason', 'rule', 'hook'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string'))
+        throw new TypeError('tool.check must return { decision, reason?, rule?, hook? }')
+      return
+    }
+    if (event === 'config.describe') {
+      const value = result as {label?:unknown;description?:unknown;isHidden?:unknown} | null
+      if (!value || typeof value.label !== 'string' || typeof value.isHidden !== 'boolean' ||
+        (value.description !== undefined && typeof value.description !== 'string')) throw new TypeError('config.describe requires label, description and isHidden')
+      return
+    }
+    if (event === 'session.usage') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('session.usage must return value or deny')
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result)) throw new TypeError('session.usage must return value or deny')
+      validateModSessionUsage(result.value)
+      return
+    }
+    if (event === 'model.fork') {
+      const envelope = result as {value?: ModModelForkResult; deny?: string} | null
+      if (typeof envelope?.deny === 'string') return
+      if (!envelope || !('value' in envelope)) throw new TypeError('model.fork must return value or deny')
+
+      return
+    }
+    if (event === 'model.complete') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) || !('value' in result) && !('deny' in result && typeof result.deny === 'string')) throw new TypeError('model.complete must return value or deny')
+      return
+    }
+    if (event === 'model.classify') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) || !('value' in result) && !('deny' in result && typeof result.deny === 'string')) throw new TypeError('model.classify must return value or deny')
+      return
+    }
+    if (event === 'state.get' || event === 'state.set') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object or deny`)
+      const value = result as ModInput
+      if (typeof value.deny === 'string') return
+      if (event === 'state.get') {
+        if (!Object.hasOwn(value, 'value') || !Number.isSafeInteger(value.version) || (value.version as number) < 0)
+          throw new Error('state.get must return value and a non-negative version')
+      } else if (typeof value.isSet !== 'boolean' || !Number.isSafeInteger(value.version) || (value.version as number) < 0) {
+        throw new Error('state.set must return isSet and a non-negative version')
+      }
+      return
+    }
+    if (event === 'env.get' || event === 'env.set') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result) || (event === 'env.get'
+        ? result.value !== undefined && typeof result.value !== 'string'
+        : result.value !== undefined)) throw new Error(`${event} must return ${event === 'env.get' ? 'a string or undefined' : 'undefined'} in value or deny`)
+      return
+    }
+    if (event.startsWith('clock.')) {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
+      if ('deny' in result && typeof result.deny === 'string') return
+      if (!('value' in result) || (event === 'clock.now'
+        ? typeof result.value !== 'number' || !Number.isFinite(result.value)
+        : result.value !== undefined)) throw new Error(`${event} must return ${event === 'clock.now' ? 'a finite number' : 'undefined'} in value or deny`)
+      return
+    }
+    if (event === 'prompt.context') {
+      validatePromptContext(result)
+      return
+    }
+    if (event.startsWith('classic.')) {
+      if (!result || typeof result !== 'object' || Array.isArray(result))
+        throw new Error(`${event} must return an object`)
+      return
+    }
+    if (event === 'ui.fault') return
+    if (event === 'ui.message') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.message must return an object')
+      if (Object.hasOwn(result, 'props') && (result as { props?: unknown }).props !== undefined) {
+        const problem = modClientDataProblem((result as { props?: unknown }).props)
+        if (problem) throw new TypeError(`ui.message props ${problem}`)
+      }
+      return
+    }
+    if (event === 'ui.render') {
+      validateModRenderTree(result, input?.surface as ModRenderSurface | undefined)
+      return
+    }
+    if (event === 'ui.resolve') {
+      if (!result || typeof result !== 'object' || Array.isArray(result) || !Object.values(result).every(value => typeof value === 'function'))
+        throw new Error('ui.resolve must return an element constructor table')
+      return
+    }
+    if (event === 'ui.focus') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.focus must return an object')
+      const deny = (result as {deny?:unknown}).deny
+      if (deny !== undefined && (typeof deny !== 'string' || deny === '')) throw new TypeError('ui.focus deny must be a non-empty string')
+      return
+    }
+    if (['ui.press', 'ui.input', 'ui.select', 'ui.scroll', 'ui.blit'].includes(event)) {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object`)
+      return
+    }
     if (result === null || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return an object`)
     const value = result as Record<string, unknown>
-    if (event === 'tool.call' && !('result' in value) && typeof value.deny !== 'string') throw new Error('tool.call must return result or deny')
+    if (['prompt.section', 'prompt.attachment', 'skill.prompt', 'attribution.text'].includes(event)) {
+      if (typeof value.text !== 'string' && !(['prompt.section', 'prompt.attachment'].includes(event) && value.text === null))
+        throw new Error(`${event} must return text`)
+      return
+    }
+    if (event === 'tool.describe' || event === 'command.describe') {
+      if (typeof value.description !== 'string' || (event === 'command.describe' && typeof value.isHidden !== 'boolean'))
+        throw new Error(`${event} must return description${event === 'command.describe' ? ' and isHidden' : ''}`)
+      if (event === 'tool.describe' && value.isDeferred !== undefined && typeof value.isDeferred !== 'boolean')
+        throw new Error('tool.describe isDeferred must be boolean')
+      return
+    }
+    if (event === 'agent.offer') {
+      if (typeof value.isOffered !== 'boolean') throw new Error('agent.offer must return isOffered')
+      return
+    }
+    if (event === 'agent.spawn') {
+      if (value.deny !== undefined
+        ? typeof value.deny !== 'string' || typeof value.model === 'string'
+        : typeof value.model !== 'string') throw new Error('agent.spawn must return model or deny, never both')
+      return
+    }
+    if (event === 'tool.call' && (value.deny !== undefined
+      ? typeof value.deny !== 'string' || Object.hasOwn(value, 'result')
+      : !Object.hasOwn(value, 'result'))) throw new Error('tool.call must return result or deny, never both')
     if (event === 'plugin.register' && value.allow !== true && typeof value.refuse !== 'string') throw new Error('plugin.register must allow or refuse')
+    if (event === 'session.measure') {
+      if (!Array.isArray(value.changed) || !value.changed.every(unit => ['context', 'rateLimits', 'cost'].includes(unit)))
+        throw new Error('session.measure must return changed units')
+      return
+    }
     if (event === 'session.start' && typeof value.cwd !== 'string') throw new Error('session.start must return cwd')
-    if (!['tool.call', 'plugin.register', 'session.start', 'engine.create'].includes(event) && !('value' in value) && typeof value.deny !== 'string') {
+    if (event === 'session.end') {
+      if (typeof value.sessionId !== 'string') throw new Error('session.end must return sessionId')
+      return
+    }
+    if (event === 'command.run' && value.text !== undefined && typeof value.text !== 'string') throw new Error('command.run text must be a string')
+    if (event === 'turn.start' && typeof value.turnId !== 'string') throw new Error('turn.start must return turnId')
+    if (event === 'turn.complete' && typeof value.text !== 'string') throw new Error('turn.complete must return text')
+    if (event === 'prompt.submit' && typeof value.text !== 'string' && typeof value.drop !== 'string') throw new Error('prompt.submit must return text or drop')
+    if (!['tool.call', 'plugin.register', 'session.start', 'engine.create', 'command.run', 'turn.start', 'turn.complete', 'prompt.submit'].includes(event) && !('value' in value) && typeof value.deny !== 'string') {
       throw new Error(`${event} must return value or deny`)
+    }
+  }
+
+  function dispatchCallerChain(
+    options: ModDispatchOptions,
+    context: ReturnType<typeof capabilityContext.getStore>,
+    creating = false,
+  ): ModCallerChain {
+    if (options.callerChain !== undefined) return copyModCallerChain(options.callerChain)
+    const prior = context?.active ? context.callerChain : undefined
+    if (!options.origin || creating) return copyModCallerChain(prior)
+    const caller = options.caller ?? (context?.active ? context.hook : undefined)
+    return appendModCallerChain(prior, caller?.plugin === options.origin.plugin
+      ? { plugin: caller.plugin, registration: caller.registrationId }
+      : options.origin.plugin)
+  }
+
+  function dispatchCallerOrigin(chain: ModCallerChain, snapshot: readonly Activation[], fallback?: ModOrigin): ModOrigin | undefined {
+    const last = chain.at(-1)
+    if (last === undefined) return fallback
+    const plugin = typeof last === 'string' ? last : last.plugin
+    const tier = snapshot.find(owner => owner.declaration.name === plugin)?.declaration.tier
+      ?? [...hostHooks].find(hook => hook.plugin === plugin)?.tier
+      ?? (fallback?.plugin === plugin ? fallback.tier : undefined) ?? 'user'
+    return { plugin, tier }
+  }
+
+  function stream(event: 'turn.step' | 'process.spawn', input: ModInput,
+    core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>,
+    snapshot: readonly Activation[] = active, table: Nouns = nouns, options: ModDispatchOptions = {},
+  ): ModHookStream {
+    if (stopped) throw new Error('Mods runtime disposed')
+    if (testTerminal(event))
+      // eslint-disable-next-line require-yield -- A rejecting terminal emits no chunks.
+      core = async function* () { throw new Error(`Unhandled plugin test event: ${event}`) }
+    const cancellation = new AbortController()
+    const delivery = new AbortController()
+    let activePulls = 0
+    let source: ModHookStream | undefined
+    let abortDelivery: ReturnType<typeof setTimeout> | undefined
+    const clearAbortDelivery = () => { if (abortDelivery !== undefined) clearTimeout(abortDelivery); abortDelivery = undefined }
+    const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
+    const abort = () => {
+      const reason = options.signal?.aborted ? options.signal.reason : controller.signal.reason
+      cancellation.abort(typeof reason === 'string' ? Object.assign(new Error(reason), {name:'HooksError'}) : reason)
+      if (activePulls === 0 || controller.signal.aborted) delivery.abort(cancellation.signal.reason)
+      else {
+        abortDelivery ??= setTimeout(() => delivery.abort(cancellation.signal.reason), 5000)
+        abortDelivery.unref?.()
+      }
+    }
+    combined.signal.addEventListener('abort', abort, { once: true })
+    if (combined.signal.aborted) abort()
+    const context = capabilityContext.getStore()
+    const callerChain = dispatchCallerChain(options, context)
+    const origin = dispatchCallerOrigin(callerChain, snapshot, options.origin)
+    const services = requestServices.getStore()
+    for (const owner of snapshot) owner.references++
+    let entered = false
+    let released: Promise<void> | undefined
+    const release = () => released ??= (async () => {
+      for (const owner of snapshot) {
+        owner.references--
+        if (owner.state === 'retiring' && owner.references === 0) await disposeActivation(owner)
+      }
+    })()
+    const output = createModHookStream((async function* () {
+      entered = true
+      try {
+        source = dispatchModStream({ event, input, core, settleAfterAbort: true, hooks: hooksFor(snapshot, table, undefined, undefined, undefined, callerChain), signal: cancellation.signal, origin, callerChain,
+          validateInput: (value, received) => {
+            if (event === 'turn.step') validateTurnStepInput(value)
+            else validateModProcessSpawnRequest(value)
+            options.validateInput?.(value, received)
+          },
+          validateChunk: event === 'turn.step' ? validateTurnStepChunk : (value: unknown) => {
+            const chunk = value as {stream?: unknown; text?: unknown} | null
+            if (!chunk || typeof chunk !== 'object' || !['stdout','stderr'].includes(chunk.stream as string) || typeof chunk.text !== 'string' || !chunk.text)
+              throw new TypeError('process.spawn chunks require {stream: stdout | stderr, text: non-empty string}')
+          },
+          validateResult: (result, previous) => {
+            if (event === 'turn.step') validateTurnStepResult(result, input)
+            else {
+              const receipt = result as {value?: unknown; deny?: unknown} | null
+              if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt) ||
+                  !Object.hasOwn(receipt,'value') && typeof receipt.deny !== 'string')
+                throw new TypeError('process.spawn hooks must return value or deny')
+            }
+            options.validateResult?.(result, previous)
+          },
+          onFailure: (plugin, error) => diagnostic(plugin, event, error),
+        })
+        let thrown: { error: unknown } | undefined
+        for (;;) {
+          const item = await requestServices.run(services ?? {}, () => turnStepCore.run(core, () => thrown ? source!.throw(thrown.error) : source!.next()))
+          thrown = undefined
+          if (item.done) return item.value
+          try { yield item.value } catch (error) { thrown = { error } }
+        }
+      } finally {
+        try { if (source) await source.return(event === 'process.spawn' && cancellation.signal.aborted ? cancellation.signal.reason : undefined) }
+        finally {
+          clearAbortDelivery(); combined.signal.removeEventListener('abort', abort); combined.cleanup()
+          await release()
+        }
+      }
+    })(), error => {
+      clearAbortDelivery(); cancellation.abort(error)
+      // Explicit close cancels the pending chain immediately; signal-driven
+      // cancellation of an active pull instead lets the hook settle first.
+      void source?.return(event === 'process.spawn' ? error : undefined).catch(() => {})
+      combined.signal.removeEventListener('abort', abort)
+      combined.cleanup()
+    }, delivery.signal)
+    void output.result.then(undefined, () => {
+      if (!entered) return release()
+    }).catch(error => diagnostic('engine', event, error))
+    const pull = async (method: 'next' | 'throw', value: unknown) => {
+      activePulls++
+      try { return await output[method](value) }
+      finally { activePulls-- }
+    }
+    return {
+      next: value => pull('next', value),
+      throw: error => pull('throw', error),
+      return: value => {
+        if (combined.signal.aborted) delivery.abort(cancellation.signal.reason)
+        return output.return(value)
+      },
+      result: output.result,
+      [Symbol.asyncIterator]() { return this },
     }
   }
 
   async function dispatch(
     event: string,
     input: ModInput,
-    core: (input: ModInput) => Promise<unknown>,
+    core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>,
     snapshot: readonly Activation[] = active,
     table: Nouns = nouns,
-    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation } = {},
+    options: ModDispatchOptions & { origin?: ModOrigin; only?: Activation; skipOwner?: Activation; drawing?: number; validateRenderTree?: (tree: unknown) => void; onFailure?: (error: unknown) => void } = {},
   ) {
     if (stopped) throw new Error('Mods runtime disposed')
-    const combined = createCombinedAbortSignal(options.signal, { signalB: controller.signal })
+    // Official 2.1.292 raises filesystem entry paths against the invocation's cwd.
+    const pathField = event === 'fs.ancestors' ? 'of' : 'path'
+    const pathBase = fsPathEvents.has(event) || event === 'fs.ancestors' ? services.cwd?.() ?? binding?.cwd ?? process.cwd() : undefined
+    if (pathBase !== undefined) input = raiseFsPath(input, pathBase, pathField)
+    const context = capabilityContext.getStore()
+    // Preserve the cancellation reason for every event, including nested host calls.
+    const combined = combineModModelSignals(options.signal, controller.signal)
+    const callerChain = dispatchCallerChain(options, context, event === 'engine.create')
+    const origin = dispatchCallerOrigin(callerChain, snapshot, options.origin)
+    const pinsProvider = ['tool.describe', 'command.describe', 'agent.offer', 'agent.spawn'].includes(event)
+    const provider = pinsProvider ? structuredClone(input.provider) : undefined
     for (const owner of snapshot) owner.references++
+    const dispatchServices = requestServices.getStore() ?? {}
     try {
-      return await dispatchModEvent({
-        event, input, hooks: hooksFor(snapshot, table, options.only), core,
-        signal: combined.signal, origin: options.origin,
-        // Runtime-raised noun calls skip the originating plugin to avoid an
-        // accidental timer/capability recursion. Tool model events have none.
-        ...(options.origin ? { skip: { plugin: options.origin.plugin } } : {}),
-        validateResult: result => { validateResult(event, result); options.validateResult?.(result) },
-        onFailure: (plugin, error) => diagnostic(plugin, event, error),
-      })
+      if (testTerminal(event))
+        core = async () => { throw new Error(`Unhandled plugin test event: ${event}`) }
+      const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
+        event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner, callerChain)
+          .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
+        signal: combined.signal, origin, callerChain,
+        ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
+        reportDirectCoreFailure: options.reportDirectCoreFailure,
+        onHooks: options.onHooks,
+        validateResult: (result, nextResults) => {
+          if (event === 'ui.render' && options.validateRenderTree) options.validateRenderTree(result)
+          else validateResult(event, result, input)
+          if (event === 'ui.focus' && (result as {deny?:unknown}).deny !== undefined && nextResults.some(value => (value as {deny?:unknown}).deny === undefined)) throw new TypeError('ui.focus cannot deny after next() committed a move')
+          options.validateResult?.(result, nextResults)
+        },
+        validateInput: (value, received) => {
+          if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
+          if (event === 'ui.copy') validateModUiCopyArgs(value)
+          if (event === 'prompt.edit') validatePromptEditInput(value, received)
+          if (event === 'agent.spawn') validateModAgentSpawnInput(value, received)
+          if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')
+          if (event === 'model.fork' && (typeof value.prompt !== 'string' || Object.keys(value).some(key => key !== 'prompt')))
+            throw new TypeError('model.fork takes only {prompt: string}')
+          if (event === 'prompt.compose') {
+            validateComposeInput(value)
+            if (value.model !== input.model) throw new TypeError('prompt.compose cannot rewrite model')
+          }
+          if (event === 'session.usage') validateModSessionUsageArgs(value)
+          if (event === 'session.compact') {
+            validateModCompactInput(value)
+            if (value.trigger !== input.trigger || value.agentId !== input.agentId)
+              throw new Error('session.compact cannot rewrite trigger or agentId')
+          }
+          if (pinsProvider && !isDeepStrictEqual(value.provider, provider)) throw new Error(`${event} cannot rewrite provider`)
+          options.validateInput?.(value, received)
+        },
+        restoreInput: (value, received) => {
+          // fs.ancestors forwards a rewritten of literally; path-based calls raise it again.
+          if (pathBase !== undefined && event !== 'fs.ancestors') return raiseFsPath(value, pathBase, pathField)
+          if (event === 'session.measure') return received
+          if (event === 'telemetry.log' && !Object.hasOwn(value,'to')) return {...value,to:received.to}
+          if (event === 'prompt.autocomplete') return restorePromptAutocompleteInput(value, received)
+          if (event === 'prompt.edit') {
+            const restored = {...value}
+            for (const key of ['origin', 'key']) if (!Object.hasOwn(restored, key) && Object.hasOwn(received, key)) restored[key] = received[key]
+            return restored
+          }
+          if (event === 'agent.spawn') return restoreModAgentSpawnInput(options.restoreInput?.(value, received) ?? value, received)
+          const restored = options.restoreInput?.(value, received) ?? value
+          if (event === 'session.compact' && restored.agentId === undefined && received.agentId !== undefined)
+            return { ...restored, agentId: received.agentId }
+          if (event !== 'prompt.context') return restored
+          validatePromptContext(received)
+          return reconcilePromptContext(restored, received)
+        },
+        restoreResult: event === 'session.attach' || event === 'session.detach'
+          ? (_result: unknown, previous: unknown, called: boolean) => ({
+              clientId: ((called ? previous : input) as ModInput).clientId,
+            })
+          : event === 'session.measure'
+            ? (_result: unknown, previous: unknown) => ({
+                changed: structuredClone((previous as ModInput).changed),
+              })
+            : event === 'prompt.fill'
+              ? (result: unknown, previous: unknown, called: boolean) => {
+                  if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+                  const {refusal, ...filled} = result as PromptFillResult
+                  const below = previous as PromptFillResult | undefined
+                  return called && filled.isFilled === false && below?.isFilled === false &&
+                    refusal !== undefined && refusal === below.refusal ? {...filled,refusal} : filled
+                }
+              : event === 'prompt.context'
+                ? (result: unknown, previous: unknown) => {
+                    validatePromptContext(previous)
+                    return reconcilePromptContext(result, previous)
+                  }
+                : event === 'tool.check'
+                  ? (result: unknown) => {
+                      if (!result || typeof result !== 'object' || Array.isArray(result)) return result
+                      const value = result as ModInput
+                      return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
+                    }
+                  : options.restoreResult,
+        onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
+      }))
+      if (event === 'ui.render') {
+        const instance = `${String(input.surface)}\0${String(input.component)}\0${String(input.requestId)}`
+        return await state.render(instance, () => state.dispatch(runDispatch))
+      }
+      return await state.dispatch(runDispatch)
     } finally {
       combined.cleanup()
       for (const owner of snapshot) {
@@ -240,117 +3037,475 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
     }
   }
 
-  async function build(snapshot: Activation[], replacements = new Map<Activation, Activation>()): Promise<{ modules: Activation[]; table: Nouns }> {
+  async function build(
+    snapshot: Activation[],
+    replacements = new Map<Activation, Activation>(),
+    refresh?: { previous: readonly Activation[]; changed: ReadonlySet<Activation>; table?: Nouns },
+    order: readonly string[] = snapshot.map(owner => owner.declaration.storageId),
+  ): Promise<{ modules: Activation[]; table: Nouns }> {
+    const previousTable = refresh?.table ?? nouns
+    const previousInterface = refresh?.table ? interfaceStates.get(refresh.table)! : lastInterface
     let modules = [...snapshot]
     for (;;) {
-      let table: Nouns = { clock: coreClock }
+      const names = new Set(modules.map(owner => owner.declaration.name))
+      const replacedNames = new Set(refresh?.previous.filter(previous =>
+        !modules.includes(previous) || [...replacements].some(([candidate, old]) => old === previous && modules.includes(candidate)),
+      ).map(owner => owner.declaration.name))
+      const state: InterfaceState = refresh ? {
+        owners: new Map([...previousInterface.owners].filter(([noun, owner]) =>
+          owner === 'engine' || names.has(owner) && (!replacedNames.has(owner) || owner !== previousInterface.owners.get(noun)))),
+        withheld: new Map([...previousInterface.withheld].flatMap(([noun, owners]) => {
+          const retained = new Set([...owners].filter(owner => names.has(owner) && !replacedNames.has(owner)))
+          return retained.size ? [[noun, retained] as const] : []
+        })),
+      } : {
+        owners: new Map([...previousInterface.owners].filter(([, owner]) => owner === 'engine' || names.has(owner))),
+        withheld: new Map(),
+        carried: new Map([...previousInterface.withheld].map(([noun, owners]) => [noun, new Set([...owners].filter(owner => names.has(owner)))])),
+      }
+      for (const [noun, owners] of crashedWithholders) {
+        const missing = new Set([...owners].filter(owner => !names.has(owner)))
+        if (missing.size) state.withheld.set(noun, missing)
+      }
+      const base: Nouns = refresh ? Object.fromEntries(Object.entries(previousTable).filter(([noun]) => {
+        const owner = previousInterface.owners.get(noun)
+        return owner === undefined || owner === 'engine' || !replacedNames.has(owner)
+      })) : { clock: coreClock, ...coreHost }
+      interfaceStates.set(base, state)
+      const leases: CapabilityLease[] = []
       let failed: Activation | undefined
-      for (const owner of [...modules].reverse()) {
-        const steps = owner.environment.registrations.filter(registration => registration.event === 'engine.create')
-        for (const registration of [...steps].reverse()) {
-          const before = table
-          try {
-            const result = await dispatchModEvent({
-              event: 'engine.create', input: { plugins: modules.map(item => item.declaration.name) },
-              hooks: hooksFor([owner], before).filter(hook => hook.registration.id === registration.id),
-              core: async () => before, signal: controller.signal,
-            }) as Nouns
-            if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('engine.create must return an interface')
-            for (const [noun, methods] of Object.entries(result)) {
-              if (!methods || typeof methods !== 'object' || Array.isArray(methods)) throw new Error(`Invalid noun ${noun}`)
-              const entries = Object.entries(methods)
-              if (!entries.every(([, fn]) => typeof fn === 'function')) throw new Error(`Noun ${noun} must contain callable methods`)
-              if (before[noun] && (entries.length !== Object.keys(before[noun]).length || entries.some(([key, fn]) => before[noun]![key] !== fn))) {
-                throw new Error(`engine.create may not replace noun ${noun}`)
-              }
+      const folding = refresh ? modules.filter(owner => refresh.changed.has(owner)) : modules
+      const hooks = folding.flatMap(owner => hooksFor([owner], base).filter(hook => matchesModEventPattern(hook.registration.event, 'engine.create')).map(hook => ({
+        ...hook,
+        invoke: async (input: ModInput, next: ModNext, catching: boolean) => {
+          let before = base
+          let called = false
+          const views: { noun: string; view: object; methods: Nouns[string] }[] = []
+          const descend = async (input: ModInput, tier?: ModTier) => {
+            before = await (tier === undefined ? next(input) : next.to(input, tier)) as Nouns
+            called = true
+            const lease: CapabilityLease = { entries: 0, building: true }
+            leases.push(lease)
+            const built = engineFor(owner, snapshot, before, lease)
+            for (const [noun, view] of Object.entries(built)) views.push({ noun, view: view as object, methods: before[noun]! })
+            return built
+          }
+          const continuation = Object.defineProperties((input: ModInput) => descend(input), {
+            ...Object.getOwnPropertyDescriptors(next),
+            to: { value: (input: ModInput, tier: ModTier) => descend(input, tier) },
+          }) as ModNext
+          const result = await hook.invoke(input, continuation, catching) as Nouns
+          if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('engine.create must return an interface')
+          if (!called) state.endedBy = owner.declaration.name
+          const table: Nouns = Object.create(null)
+          for (const [noun, methods] of Object.entries(result)) {
+            if (!methods || typeof methods !== 'object' || Array.isArray(methods)) throw new Error(`Invalid noun ${noun}`)
+            // Ordinary noun objects are cloned across the Worker; their host
+            // callable identities survive, while the clock has its own wire tag.
+            const inherited = views.find(item => item.noun === noun && (item.view === methods ||
+              noun !== 'clock' && Object.keys(methods).length === Object.keys(item.view).length &&
+              Object.entries(methods).every(([method, fn]) => fn === (item.view as Nouns[string])[method])))?.methods
+            if (inherited) { table[noun] = inherited; continue }
+            if (noun === 'plugin') throw new Error('engine.create may not replace plugin identity')
+            const entries = Object.entries(methods)
+            if (!entries.every(([, fn]) => typeof fn === 'function')) throw new Error(`Noun ${noun} must contain callable methods`)
+            const provider = state.owners.get(noun)
+            const legacyTelemetry = noun === 'telemetry' && provider === 'engine' &&
+              (owner.declaration.tier === 'builtin' || owner.declaration.tier === 'core')
+            if (noun === 'telemetry' && !legacyTelemetry && provider !== owner.declaration.name)
+              throw Object.assign(new Error(`${owner.declaration.name}: engine.create replaced $.telemetry, added by core; to change what a method does, hook the method`), {name:'HooksError'})
+            if (provider !== undefined && provider !== owner.declaration.name && !legacyTelemetry) {
+              const by = [...(state.withheld.get(noun) ?? []), ...(state.carried?.get(noun) ?? [])].at(-1) ?? state.endedBy
+              throw new Error(`engine.create may not replace noun ${noun}, owned by ${provider}${by ? ` (withheld by ${by})` : ''}`)
             }
-            table = Object.fromEntries(Object.entries(result).map(([noun, methods]) => [
-              noun,
-              Object.fromEntries(Object.entries(methods).map(([method, fn]) => {
-                if (before[noun] || ownedMethods.has(fn)) return [method, fn]
-                let wrapped = owner.methods.get(fn)
-                if (!wrapped) {
-                  wrapped = (...args) => withReference(owner, async () => {
-                    if (owner.state === 'candidate') throw new Error('Module has not been admitted')
-                    return fn(...args)
-                  })
-                  owner.methods.set(fn, wrapped)
-                  ownedMethods.add(wrapped)
-                }
-                return [method, wrapped]
-              })),
-            ]))
-          } catch (error) {
-            diagnostic(owner.declaration.name, 'engine.create', error)
-            failed = owner
-            break
+            state.owners.set(noun, owner.declaration.name)
+            table[noun] = Object.fromEntries(entries.map(([method, fn]) => {
+              let wrapped = owner.methods.get(fn)
+              if (!wrapped) {
+                wrapped = (...args) => withReference(owner, async () => {
+                  if (owner.state === 'candidate') throw new Error('Module has not been admitted')
+                  return fn(...args)
+                })
+                owner.methods.set(fn, wrapped)
+              }
+              return [method, wrapped]
+            }))
+          }
+          for (const [noun, methods] of Object.entries(before)) {
+            if (Object.hasOwn(result, noun)) continue
+            if (noun === 'telemetry' && owner.declaration.tier === 'user')
+              throw Object.assign(new Error(`${owner.declaration.name}: engine.create withheld $.telemetry, added by core; it runs in the user tier (no managed source vouches for the copy it loaded from), where a plugin adds nouns and withholds none`), {name:'HooksError'})
+            const withholders = state.withheld.get(noun) ?? new Set<string>()
+            withholders.add(owner.declaration.name)
+            state.withheld.set(noun, withholders)
+            table[noun] = methods
+          }
+          interfaceStates.set(table, state)
+          return table
+        },
+      })))
+      try {
+        const table = await dispatchModEvent({
+          event: 'engine.create', input: { plugins: folding.map(item => item.declaration.name) },
+          hooks, core: async () => base, signal: controller.signal,
+          onFailure: (plugin, error) => {
+            if (failed) return
+            failed = modules.find(item => item.declaration.name === plugin)
+            // engine.create has no hook budget: a live hook failure is threw/shape.
+            // Worker death instead abandons this fold and must never become a gate.
+            if (failed && !hostDead && !controller.signal.aborted)
+              unloadedSteps.set(failed.declaration.storageId, { declaration: failed.declaration, order: [...order] })
+            diagnostic(plugin, 'engine.create', error)
+          },
+        }) as Nouns
+        if (!failed) {
+          for (const owner of modules) unloadedSteps.delete(owner.declaration.storageId)
+          return { modules, table }
+        }
+      } catch (error) { if (!failed) throw error }
+      finally { for (const lease of leases) lease.building = false }
+      modules = modules.filter(owner => owner !== failed)
+      if (!active.includes(failed!)) await disposeActivation(failed!)
+    }
+  }
+
+  const uiSurfaces: readonly ModRenderSurface[] = ['terminal', 'desktop', 'mobile', 'vscode']
+  const uiComponents: readonly ModRenderComponent[] = ['AskUserQuestion', 'UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'ToolProgress', 'CommandOutput', 'Spinner', 'TurnDuration', 'InfoNotice', 'SessionMode', 'PromptHint', 'AbovePrompt', 'Pane']
+
+  async function composeUiTables(snapshot: readonly Activation[], table: Nouns) {
+    const composed = new Map<ModEnvironment, ReadonlyMap<string, object>>()
+    const resolverRegistrations = (owner: Activation) => owner.environment.registrations.filter(registration => registration.event === 'ui.resolve')
+    for (const owner of snapshot) {
+      if (!owner.declaration.calls.includes('ui.resolve')) continue
+      const tables = new Map<string, object>()
+      for (const surface of uiSurfaces) for (const component of uiComponents) {
+        const input = { surface, component }
+        let elements: unknown = createModUiCoreTable(surface, component)
+        for (const provider of [...snapshot].reverse()) {
+          if (provider === owner) continue
+          for (const registration of [...resolverRegistrations(provider)].reverse()) {
+            const downstream = elements
+            const next = Object.assign(async () => downstream, {
+              to: async () => downstream,
+              is: () => false,
+              signal: controller.signal,
+              event: 'ui.resolve',
+              origin: { plugin: 'engine', tier: 'core' as const },
+              trace: [],
+              budget: { ms: 0, remainingMs: Infinity },
+            })
+            elements = await withReference(provider, async () => provider.environment.invoke(registration.id, [engineFacade(provider, table, snapshot), input], next))
+            validateResult('ui.resolve', elements, input)
           }
         }
-        if (failed) break
+        tables.set(`${surface}:${component}`, Object.freeze(elements as object))
       }
-      if (!failed) return { modules, table }
-      const previous = replacements.get(failed)
-      modules = previous
-        ? modules.map(owner => owner === failed ? previous : owner)
-        : modules.filter(owner => owner !== failed)
-      if (failed.state === 'candidate') await disposeActivation(failed)
+      composed.set(owner.environment, tables)
     }
+    return composed
   }
 
   async function admit(candidate: ModDeclaration, judges: readonly Activation[], table: Nouns) {
     const result = await dispatch('plugin.register', {
       name: candidate.name, tier: candidate.tier, root: candidate.pluginRoot, provenance: candidate.storageId,
-      uses: { events: candidate.events, calls: candidate.calls },
+      ...(candidate.version === undefined ? {} : { version: candidate.version }),
+      uses: {
+        events: candidate.events, calls: candidate.calls,
+        ...(candidate.env ? { env: candidate.env } : {}),
+        ...(candidate.state ? { state: candidate.state } : {}),
+      },
     }, async () => ({ allow: true }), judges, table) as { allow?: true; refuse?: string }
     return result.refuse
   }
 
-  async function start(owners: readonly Activation[]) {
-    if (!binding) return
-    for (const owner of owners) {
-      if (owner.started || owner.state !== 'active') continue
-      owner.started = true
-      const input = { cwd: binding.cwd, surface: binding.surface, isInteractive: binding.isInteractive }
-      await dispatch('session.start', input, async () => ({ cwd: input.cwd }), active, nouns, { only: owner })
-    }
+  function judgesFor(candidate: ModDeclaration, before: readonly Activation[], after: readonly Activation[]) {
+    const eligible = before.filter(judge => judge.state === 'active' && (candidate.tier === 'user' || judge.declaration.tier !== 'user'))
+    if (candidate.isNative) return eligible.filter(judge => judge.declaration.isNative)
+    return [...eligible, ...after.filter(judge => judge.state === 'active' && (candidate.tier === 'user' ? judge.declaration.tier !== 'user' : judge.declaration.isNative))]
   }
 
-  async function reconcile(inputs: ModPluginInput[]) {
+  async function publish(
+    built: { modules: Activation[]; table: Nouns },
+    replacements = new Map<Activation, Activation>(),
+    previouslyActive: readonly Activation[] = active,
+  ) {
+    let uiTables = await composeUiTables(built.modules, built.table)
+    let publishUiTables = await host.prepareUiTables(
+      uiTables,
+      built.modules.filter(owner => !previouslyActive.includes(owner) && uiTables.has(owner.environment)).map(owner => owner.environment),
+    )
+    const prepared = new Set<Activation>()
+    const uiPublications = new Map<Activation, () => Promise<void>>()
+    if (binding) {
+      for (;;) {
+        let failed: Activation | undefined
+        for (const owner of built.modules) {
+          if (owner.state !== 'active') continue
+          owner.engineScope = { snapshot: built.modules, table: built.table }
+          if (owner.started) {
+            if (!owner.uiPublished) prepared.add(owner)
+            continue
+          }
+          owner.started = true
+          const input = { cwd: binding.cwd, surface: binding.surface, isInteractive: binding.isInteractive }
+          try {
+            await dispatch('session.start', input, async () => ({ cwd: input.cwd }), built.modules, built.table, {
+              only: owner,
+            })
+            commands.validateCommit(owner, replacements.get(owner), [...prepared])
+            tools.validateCommit(owner, replacements.get(owner), [...prepared])
+            agents.validateCommit(owner, replacements.get(owner), [...prepared])
+            uiPublications.set(owner, await uiContext.run(
+              { snapshot: built.modules, table: built.table, person: false },
+              () => ui.prepareCommit(owner, replacements.get(owner), [...prepared]),
+            ))
+            prepared.add(owner)
+          } catch (error) {
+            if (stopped || hostDead) throw error
+            if (!failed) diagnostic(owner.declaration.name, 'session.start', error)
+            failed = owner
+          }
+          if (failed) break
+        }
+        if (!failed) break
+        const old = replacements.get(failed)
+        const remaining = old
+          ? built.modules.map(owner => owner === failed ? old : owner)
+          : built.modules.filter(owner => owner !== failed)
+        if (old) old.suggestionEligible = true
+        await disposeActivation(failed)
+        built = await build(remaining, replacements)
+        uiTables = await composeUiTables(built.modules, built.table)
+        publishUiTables = await host.prepareUiTables(
+          uiTables,
+          built.modules.filter(owner => !previouslyActive.includes(owner) && uiTables.has(owner.environment)).map(owner => owner.environment),
+        )
+        for (const owner of prepared) if (!built.modules.includes(owner)) prepared.delete(owner)
+      }
+    }
+    await Promise.all(built.modules.map(owner => owner.environment.setUiAccess(uiAllowed(owner, built.table))))
+    const notifications = new Set<() => void>()
+    const uiCleanup: Promise<void>[] = []
+    publicationNotifications = notifications
+    try {
+      const replaced = active.filter(owner => !built.modules.includes(owner))
+      for (const owner of replaced) owner.suggestionEligible = false
+      await publishUiTables()
+      active = built.modules
+      for (const owner of active) owner.engineScope = { snapshot: active, table: built.table }
+      const commandsChanged = nouns !== built.table
+      if (nouns !== built.table) {
+        descriptionCache = { value: new WeakMap() }
+        sectionCache = new Map()
+        attachmentCache = new Map()
+        contextCache = new Map()
+        contextBoundaries = new Map()
+      }
+      nouns = built.table
+      lastInterface = interfaceStates.get(nouns)!
+      config.invalidate()
+      // Publish the matching hook generation before notifying command subscribers.
+      const previousCommands = commands.getSnapshot()
+      if (commandsChanged) commands.invalidateDescriptions(false)
+      for (const owner of prepared) {
+        commands.commit(owner, replacements.get(owner))
+        tools.commit(owner, replacements.get(owner))
+        agents.commit(owner, replacements.get(owner))
+        const publishUi = uiPublications.get(owner)
+        if (publishUi) uiCleanup.push(publishUi())
+        owner.uiPublished = true
+      }
+      for (const owner of prepared) {
+        if (owner.uiStatus) notify(() => services.uiStatus?.(owner.declaration.name, owner.uiStatus!.text))
+        for (const { text, to } of owner.uiLogs ?? []) notify(() => services.uiLog?.(owner.declaration.name, text, to))
+        owner.uiLogs = undefined
+      }
+      for (const [noun, owners] of crashedWithholders) {
+        for (const owner of active) owners.delete(owner.declaration.name)
+        if (!owners.size) crashedWithholders.delete(noun)
+      }
+      for (const owner of replaced) {clients.invalidatePlugin?.(owner.declaration.name);retire(owner)}
+      publishDiffOwnership()
+      publishRenderHooks()
+      if (commandsChanged && commands.getSnapshot() === previousCommands) commands.invalidateDescriptions()
+    } finally { publicationNotifications = undefined }
+    for (const listener of notifications) listener()
+    await Promise.all(uiCleanup)
+    const staleDrawings = [...drawings.values()].some(lease =>
+      lease.snapshot.length !== active.length ||
+      lease.snapshot.some((owner, index) => owner !== active[index]))
+    if (staleDrawings && !stopped) await ui.render(services.uiPresentation?.())
+  }
+
+  async function reconcile(inputs: ModPluginInput[], recoveringOwners?: ReadonlySet<string>) {
+    if (recoveringOwners === undefined) unattributedCrashes = 0
     if (hostDead) {
       host = createModEnvironmentHost({ onDied: workerDied, onError: asynchronousError })
       hostDead = false
+    }
+    const declaredNames = new Set(inputs.map(input => input.name))
+    let releasedWithholding = false
+    for (const [noun, owners] of crashedWithholders) {
+      for (const owner of owners) if (!declaredNames.has(owner)) { owners.delete(owner); releasedWithholding = true }
+      if (!owners.size) crashedWithholders.delete(noun)
     }
     declarations = inputs
     const previous = active
     const epoch = hostEpoch
     const ensureLive = () => {
       if (stopped) throw new Error('Mods runtime disposed')
-      if (hostEpoch !== epoch) throw new Error('Mods Worker generation changed during reload')
+      if (hostEpoch !== epoch) throw workerError ?? new Error('Mods Worker generation changed during reload')
     }
     const wanted = new Set(inputs.map(input => input.storageId))
+    const previouslyKnown = [...knownArgs.keys()]
+    for (const id of knownArgs.keys()) if (!wanted.has(id)) { knownArgs.delete(id); unloadedSteps.delete(id) }
     const removed = previous.filter(owner => !wanted.has(owner.declaration.storageId))
     active = previous.filter(owner => wanted.has(owner.declaration.storageId))
     for (const owner of removed) retire(owner)
-    const candidates = [...active]
+    let candidates = [...active]
     const replacements = new Map<Activation, Activation>()
-    for (const input of inputs) {
-      const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
+    const order = new Map(inputs.map((input, index) => [input.storageId, index]))
+    const seatOrder = (a: { declaration: ModDeclaration }, b: { declaration: ModDeclaration }) =>
+      tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier) || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!
+    const cold = previous.length === 0
+    const scanned = new Map<ModPluginInput, ModDeclaration>()
+    let bootstrap: { modules: Activation[]; table: Nouns } | undefined
+    // A native seat holds the user tier out of the privileged events it wraps.
+    // Its own failure must not leave user Mods running unguarded, so the whole
+    // tier stands down for this reconcile instead.
+    const guards = new Set(inputs.filter(input => getNativeModDeclaration(input) !== undefined))
+    let guardFailed = false
+    const failGuard = (input: ModPluginInput) => {
+      if (!guards.has(input) || guardFailed) return
+      guardFailed = true
+      diagnostic(input.name, 'guard', 'Managed Mods protection did not load; no user Mod is activated')
+    }
+    const withdraw = (owner: Activation) => {
+      candidates.splice(candidates.indexOf(owner), 1)
+      active = active.filter(other => other !== owner)
+      retire(owner)
+    }
+    for (const input of inputs.filter(input => !recoveringOwners || recoveringOwners.has(input.storageId))) {
       try {
-        const declaration = await loadModDeclaration(input)
+        const declaration = recoveringOwners
+          ? knownArgs.get(input.storageId)
+          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+        if (!declaration) continue
+        scanned.set(input, declaration)
+        if (!recoveringOwners) {
+          knownArgs.delete(input.storageId)
+          knownArgs.set(input.storageId, declaration)
+        }
+      } catch (error) {
         ensureLive()
-        if (old?.declaration.fingerprint === declaration.fingerprint) continue
+        const old = active.find(owner => owner.declaration.storageId === input.storageId)
+        if (!old) failGuard(input)
+        diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
+      }
+    }
+    const ordered = [...scanned.keys()].sort((a, b) => seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
+    const foldOrder = ordered.map(input => input.storageId)
+    const gated = new Set(ordered.flatMap(input => {
+      const failed = unloadedSteps.get(input.storageId), declaration = scanned.get(input)!
+      return failed && sameModDeclaration(failed.declaration, declaration) &&
+        (recoveringOwners || isDeepStrictEqual(failed.order, foldOrder.filter(id => failed.order.includes(id))))
+        ? [input.storageId] : []
+    }))
+    if (!recoveringOwners) {
+      const pending = ordered.filter(input => !gated.has(input.storageId))
+      const kept = active.filter(owner => !gated.has(owner.declaration.storageId))
+      const unchanged = !releasedWithholding && previouslyKnown.every(id => wanted.has(id)) &&
+        pending.length === kept.length && pending.every((input, index) =>
+          input.storageId === kept[index]!.declaration.storageId && sameModDeclaration(kept[index]!.declaration, scanned.get(input)!))
+      if (!unchanged) gated.clear()
+    }
+    const loading = ordered.filter(input => !gated.has(input.storageId))
+    if (cold) {
+      const rank = (declaration: ModDeclaration) => declaration.isNative ? 0 : declaration.tier !== 'user' ? 1 : 2
+      loading.sort((a, b) => rank(scanned.get(a)!) - rank(scanned.get(b)!) || seatOrder({ declaration: scanned.get(a)! }, { declaration: scanned.get(b)! }))
+    }
+    async function buildBootstrap() {
+      const changed = new Set(candidates.filter(owner => !bootstrap?.modules.includes(owner)))
+      if (bootstrap && !changed.size) return
+      // Keep newly admitted providers barred during their own bootstrap fold.
+      for (const owner of changed) owner.state = 'candidate'
+      bootstrap = await build([...candidates].sort(seatOrder), replacements, bootstrap && {
+        previous: bootstrap.modules, changed, table: bootstrap.table,
+      }, foldOrder)
+      ensureLive()
+      candidates = [...bootstrap.modules]
+      for (const owner of candidates) owner.state = 'active'
+    }
+    for (const input of loading) {
+      const old = candidates.find(owner => owner.declaration.storageId === input.storageId)
+      if (guardFailed && (input.tier ?? 'user') === 'user') {
+        if (old) withdraw(old)
+        diagnostic(input.name, 'guard', 'Managed Mods protection is not loaded; this user Mod stands down')
+        continue
+      }
+      let suggestionSuspended = false
+      try {
+        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+        const refreshDeclarations = async () => {
+          if (declaration.isNative || declaration.tier === 'builtin') return
+          try {
+            const project = await ensureModDeclarations(
+              declaration.pluginRoot, typeof MACRO !== 'undefined' ? MACRO.VERSION : '0.0.0-dev',
+              (requestServices.getStore()?.tools ?? services.tools)?.() ?? [],
+              input.entrypoints, input.authorTypeDependencies,
+            )
+            if (project.written.length) logForDebugging(`[mods] author-project ${JSON.stringify({plugin:input.name, typeRoot:project.root, entries:project.entries, entrypoints:input.entrypoints, written:project.written})}`)
+          } catch (error) {
+            diagnostic(input.name, 'types', error)
+          }
+        }
+        ensureLive()
+        if (old && sameModDeclaration(old.declaration, declaration)) {
+          await refreshDeclarations()
+          ensureLive()
+          continue
+        }
         if (old) {
-          const refusal = await admit(declaration, active.filter(owner => owner !== old), nouns)
+          old.suggestionEligible = false
+          suggestionSuspended = true
+        }
+        {
+          const seats = [...(cold ? candidates : active).filter(owner => owner !== old), { declaration }].sort(seatOrder)
+          const position = seats.findIndex(owner => owner.declaration === declaration)
+          let judges = judgesFor(declaration, seats.slice(0, position) as Activation[], seats.slice(position + 1) as Activation[])
+          if (cold && judges.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'plugin.register')))) {
+            await buildBootstrap()
+            judges = judges.filter(owner => candidates.includes(owner))
+          }
+          const refusal = await admit(declaration, judges, bootstrap?.table ?? nouns)
           if (refusal !== undefined) {
-            candidates.splice(candidates.indexOf(old), 1)
-            active = active.filter(owner => owner !== old)
-            retire(old)
+            if (old) withdraw(old)
+            failGuard(input)
+            knownArgs.delete(input.storageId)
+            unloadedSteps.delete(input.storageId)
             diagnostic(declaration.name, 'admission', refusal)
             continue
           }
         }
+        await refreshDeclarations()
+        ensureLive()
         const environment = await host.load(declaration)
-        const candidate: Activation = { declaration, environment, state: 'candidate', references: 0, started: false, waits: new Map(), methods: new WeakMap() }
+        const activationController = new AbortController()
+        const candidate: Activation = {
+          declaration, environment, state: 'active', references: 0, started: false,
+          ...(isCanonicalDiffMod(input) ? { builtinInput: input } : {}),
+          waits: new Map(), methods: new WeakMap(), controller: activationController, processControllers: new Set(),
+          suggestionOwner: `${declaration.storageId}:${++activationId}`,
+          suggestionEligible: true,
+          operations: createModHostOperations({
+            cwd: () => { if (!binding) throw new Error('Module session is not bound'); return services.cwd?.() ?? binding.cwd },
+            root: () => { if (!binding) throw new Error('Module session is not bound'); return services.root?.() ?? binding.cwd },
+            storageId: declaration.storageId, signal: activationController.signal,
+            sessionId: () => binding?.sessionId,
+            firstPartyCredential: services.firstPartyCredential,
+            httpFetch: services.httpFetch,
+          }),
+        }
         activations.add(candidate)
         if (stopped || epoch !== hostEpoch) {
           await disposeActivation(candidate)
@@ -360,36 +3515,28 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
         else candidates.push(candidate)
         if (old) replacements.set(candidate, old)
       } catch (error) {
+        if (suggestionSuspended && old && active.includes(old)) {
+          old.suggestionEligible = true
+        }
         ensureLive()
+        // A retained previous version still guards the user tier.
+        if (!old) failGuard(input)
         diagnostic(input.name, old ? 'reload' : 'load', old ? `The previous version stays loaded: ${error instanceof Error ? error.message : error}` : error)
       }
     }
-    const order = new Map(inputs.map((input, index) => [input.storageId, index]))
-    candidates.sort((a, b) => tierOrder.indexOf(a.declaration.tier) - tierOrder.indexOf(b.declaration.tier)
-      || order.get(a.declaration.storageId)! - order.get(b.declaration.storageId)!)
-    if (candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) return
-    let built = await build(candidates, replacements)
-    ensureLive()
-    const admitted: Activation[] = []
-    for (const owner of built.modules) {
-      if (owner.state === 'active' || replacements.has(owner)) { admitted.push(owner); continue }
-      const refusal = await admit(owner.declaration, admitted, built.table)
-      if (refusal !== undefined) {
-        diagnostic(owner.declaration.name, 'admission', refusal)
-        await disposeActivation(owner)
-        const old = active.find(item => item.declaration.storageId === owner.declaration.storageId)
-        if (old) { active = active.filter(item => item !== old); retire(old) }
-      } else admitted.push(owner)
+    candidates.sort(seatOrder)
+    if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) {
+      // publish() invalidates on every other path; the host's plugin config rows may still have changed.
+      config.invalidate()
+      return
     }
-    if (admitted.length !== built.modules.length) built = await build(admitted)
-    else built.modules = admitted
+    const changed = new Set(candidates.filter(owner => !previous.includes(owner)))
+    const refresh = previous.length ? { previous, changed } : undefined
+    if (cold) await buildBootstrap()
+    const built = cold ? bootstrap! : await build(candidates, replacements, refresh, foldOrder)
     ensureLive()
     for (const owner of built.modules) owner.state = 'active'
-    const replaced = active.filter(owner => !built.modules.includes(owner))
-    active = built.modules
-    nouns = built.table
-    for (const owner of replaced) retire(owner)
-    await start(active)
+    await publish(built, replacements, previous)
   }
 
   function asynchronousError(error: Error, environment: number) {
@@ -397,38 +3544,121 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
     diagnostic(owner?.declaration.name ?? 'engine', 'async', error)
   }
 
-  function workerDied(error: Error) {
-    diagnostic('engine', 'worker', error)
+  function workerDied(error: Error, fault: ModWorkerFault) {
+    workerError = error
+    diagnostic(fault.culprit?.plugin ?? 'engine', 'worker', error, fault)
+    const disabled = new Set<string>()
+    if (fault.culprit) disabled.add(fault.culprit.storageId)
+    else if (++unattributedCrashes >= 3) {
+      const native = new Set(declarations.filter(input => getNativeModDeclaration(input) !== undefined).map(input => input.storageId))
+      for (const id of knownArgs.keys()) if (!native.has(id)) disabled.add(id)
+      diagnostic('engine', 'worker.disable', `Worker Mods are off after ${unattributedCrashes} unattributed crashes; withholdings remain until reload or disable`)
+    }
+    for (const id of disabled) { knownArgs.delete(id); unloadedSteps.delete(id) }
     hostEpoch++
     hostDead = true
+    for (const [noun, owners] of lastInterface.withheld) crashedWithholders.set(noun, new Set(owners))
     for (const owner of activations) {
       owner.state = 'disposed'
+      void releaseUi(owner).catch(error => diagnostic(owner.declaration.name, 'ui.close', error))
+      commands.release(owner)
+      tools.release(owner)
+      agents.release(owner)
+      owner.controller.abort()
       for (const id of owner.waits.keys()) cancelWait(owner, id)
+      void Promise.resolve().then(() => services.mcpRelease?.(mcpSource(owner)))
+        .catch(error => logForDebugging(`[Mods:${owner.declaration.name}] mcp release after worker death failed: ${String(error)}`))
     }
     active = []
     nouns = {}
+    publishDiffOwnership()
+    publishRenderHooks()
     retired.clear()
     activations.clear()
-    if (stopped || recovering) return
+    if (fault.culprit) {
+      const plugin = fault.culprit.plugin
+      const withheld = [...lastInterface.withheld].filter(([, owners]) => owners.has(plugin)).map(([noun]) => `$.${noun}`).join(', ')
+      const text = `${plugin} was unloaded: it crashed the hooks worker` +
+        (withheld ? `; what it withheld (${withheld}) stays withheld until it reloads or is disabled` : '')
+      try { services.uiLog?.(plugin, text, 'transcript') }
+      catch (error) { diagnostic(plugin, 'ui.log', error) }
+    }
+    if (stopped) return
+    if (recovering) {
+      recoveryRequested = true
+      if (currentRecovery) workerRecoveries.set(error, currentRecovery)
+      return
+    }
     recovering = true
-    void enqueue(async () => {
-      try { await reconcile(declarations) }
-      finally { recovering = false }
-    }).catch(error => diagnostic('engine', 'recovery', error))
+    currentRecovery = enqueue(async () => {
+      try {
+        for (let round = 0; round < 3; round++) {
+          recoveryRequested = false
+          try { await reconcile(declarations, new Set(knownArgs.keys())) }
+          catch (error) { if (stopped || !recoveryRequested) throw error }
+          if (!recoveryRequested || stopped) break
+        }
+      } finally { recovering = false; currentRecovery = undefined }
+    })
+    workerRecoveries.set(error, currentRecovery)
+    void currentRecovery.catch(error => diagnostic('engine', 'recovery', error))
   }
 
-  function capture(): ModSnapshot {
+  function capture(hostServices: ModRequestServices = {}): ModSnapshot {
     if (stopped) throw new Error('Mods runtime disposed')
     const snapshot = active
     const table = nouns
+    const pluginOrigin = services.pluginOrigin
+    if (descriptionOrigins !== pluginOrigin) {
+      descriptionOrigins = pluginOrigin
+      descriptionCache = { value: new WeakMap() }
+    }
+    const toolOrigins = new Map(tools.list().map(tool => {
+      const owner = tools.ownerOf(tool) as Activation
+      return [tool, { plugin: owner.declaration.name, tier: owner.declaration.tier }] as const
+    }))
+    const descriptions = descriptionCache
+    const sections = sectionCache
+    const attachments = attachmentCache
+    const contexts = contextCache
+    const boundaries = contextBoundaries
     let released = false
     for (const owner of snapshot) owner.references++
     return {
+      toolNotices,
+      toolOrigin: tool => toolOrigins.get(tool),
+      get toolDescriptions() { return descriptions.value },
+      get promptSections() { return sections },
+      get promptAttachments() { return attachments },
+      get promptContexts() { return contexts },
+      get promptContextBoundaries() { return boundaries },
+      pluginOrigin(storageId) {
+        const owner = snapshot.find(value => value.declaration.storageId === storageId)
+        return owner ? { plugin: owner.declaration.storageId, tier: owner.declaration.tier } : pluginOrigin?.(storageId)
+      },
+      commandRunHooks(command, origin) {
+        if (released) throw new Error('Mods snapshot released')
+        const context = capabilityContext.getStore()
+        const caller = context?.active && context.hook?.plugin === origin?.plugin ? context.hook : undefined
+        const callbackOwner = context?.active && context.callbackOwner === origin?.plugin ? context.callbackOwner : undefined
+        const matches = new Map<string, ModOrigin>()
+        for (const hook of hooksFor(snapshot, table)) {
+          if (callbackOwner === hook.plugin || caller?.plugin === hook.plugin && caller.registrationId === hook.registration.id) continue
+          if (!matchesModEventPattern(hook.registration.event, 'command.run') ||
+              !matchesRenderMatcher(hook.registration.matcher ?? {}, {command})) continue
+          if (!matches.has(hook.plugin)) matches.set(hook.plugin, {plugin:hook.plugin,tier:hook.tier})
+        }
+        return [...matches.values()]
+      },
       dispatch: async (event, input, core, options) => {
         if (released) throw new Error('Mods snapshot released')
-        return dispatch(event, input, core, snapshot, table, options)
+        return requestServices.run(hostServices, () => dispatch(event, input, core, snapshot, table, options))
       },
-      hasHooks: event => snapshot.some(owner => owner.environment.registrations.some(registration => registration.event === event)),
+      stream: (event, input, core, options) => {
+        if (released) throw new Error('Mods snapshot released')
+        return requestServices.run(hostServices, () => stream(event, input, core, snapshot, table, options))
+      },
+      hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
       release() {
         if (released) return
         released = true
@@ -440,27 +3670,354 @@ export function createModsRuntime({ onDiagnostic }: { onDiagnostic?: (event: Mod
     }
   }
 
+  function invalidatePromptContext(agentId?: string): void {
+    contextCache = new Map(contextCache)
+    contextCache.delete(agentId)
+    contextBoundaries = new Map(contextBoundaries)
+    contextBoundaries.delete(agentId)
+  }
+
+  const measurements = createModSessionMeasure({
+    ready: () => queue,
+    captureUsage: () => services.captureUsage?.(),
+    dispatch: (input, reader, signal) => requestServices.run({captureUsage: () => reader}, () =>
+      dispatch('session.measure', input, async () => ({changed: input.changed}), active, nouns, {signal})),
+    onError: error => diagnostic('engine', 'session.measure', error),
+  })
+  function measure(captureUsage?: () => ModUsageReader): Promise<void> {
+    if (stopped || ending || !binding || !active.some(owner => owner.started &&
+      owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, 'session.measure')))) return Promise.resolve()
+    return measurements.request(captureUsage)
+  }
+
+  function beginRegisteredTurn(turnId: string, agentId?: string, abort?: () => void): ModRegisteredTurn {
+    if (stopped) throw new Error('Mods runtime disposed')
+    const epoch = turnEpoch
+    const signal = turnLifetime.signal
+    const startedAt = performance.now()
+    const completion = createModTurnCompletion(turnId, agentId)
+    const publicIdentity = agentId === undefined ? { turnId, abort } : undefined
+    let lastQueryServices: ModRequestServices = {}
+    let released = false
+    let ended: Promise<Awaited<ReturnType<typeof completion.complete>> | undefined> | undefined
+    const turn: ModRegisteredTurn = {
+      turnId, ...(agentId === undefined ? {} : { agentId }),
+      observe: completion.observe,
+      rememberQueryServices(next) {
+        if (turns.current(agentId) === turn) lastQueryServices = next
+      },
+      release() {
+        if (released) return
+        released = true
+        turns.release(turn)
+        if (publicIdentity && publicTurn === publicIdentity) publicTurn = undefined
+      },
+      finish(end: ModTurnEnd) {
+        if (ended) return ended
+        turn.release()
+        // Assign the once promise before entering callbacks; completion forks
+        // cannot borrow the just-ended registration or a released query lease.
+        let endTurn!: () => void
+        const queuedInput = new Promise<undefined>(resolve => { endTurn = () => { settlingTurns.add(completed); resolve(undefined) } })
+        completingTurns.add(endTurn)
+        const completed: Promise<Awaited<ReturnType<typeof completion.complete>> | undefined> = Promise.resolve().then(async () => {
+          if (stopped || epoch !== turnEpoch || signal.aborted) return undefined
+          const snapshot = runtime.capture(lastQueryServices)
+          try {
+            if (stopped || epoch !== turnEpoch || signal.aborted || !snapshot.hasHooks('turn.complete')) return undefined
+            return await completion.complete(snapshot, {
+              ...end, durationMs: performance.now() - startedAt, signal,
+            })
+          } finally { snapshot.release() }
+        }).catch(error => {
+          try { diagnostic('engine', 'turn.complete', error) } catch { /* A diagnostic sink cannot replace a producer error. */ }
+          try {
+            logForDebugging(`Mods turn.complete failed for ${agentId ?? 'main'} turn ${turnId}: ${error instanceof Error ? error.message : String(error)}`, {level:'error'})
+          } catch { /* Completion cleanup must not mask body or iterator-close errors. */ }
+          return undefined
+        }).finally(() => { completingTurns.delete(endTurn); settlingTurns.delete(completed) })
+        // A turn.complete hook waiting on input it queued cannot settle before this turn ends.
+        ended = Promise.race([completed, queuedInput])
+        return ended
+      },
+    }
+    turns.admit(turn)
+    if (publicIdentity) publicTurn = publicIdentity
+    return turn
+  }
+
   let disposal: Promise<void> | undefined
-  return {
+  let ending: Promise<void> | undefined
+  function endSession(reason: ExitReason, timeoutMs = 1500, sessionId?: string): Promise<void> {
+    if (stopped || !binding || (sessionId !== undefined && binding.sessionId !== sessionId)) return Promise.resolve()
+    if (ending) return ending
+    retireTurns()
+    forkSnapshot = null
+    forkGeneration++
+    const input = { reason, sessionId: binding.sessionId, resume: { id: binding.sessionId } }
+    const deadline = new AbortController()
+    const timer = setTimeout(() => deadline.abort(new Error('Mods session.end timed out')), timeoutMs)
+    ending = measurements.stop().then(async () => {
+      for (const client of [...attachedClients.values()]) {
+        deadline.signal.throwIfAborted()
+        await detachClient({...client,reason:'end'}, deadline.signal)
+      }
+      await dispatch('session.end', input, async () => ({ sessionId: input.sessionId }), active, nouns, { signal: deadline.signal })
+    }).then(() => {}, error => diagnostic('engine', 'session.end', error))
+      .finally(() => {
+        attachedClients.clear()
+        remoteScroll.reconcile()
+        remoteFocus.reconcile()
+        remotePrompt.clear()
+        clientTransitions.clear()
+        clearTimeout(timer)
+        state.reset()
+      })
+    return ending
+  }
+  const runtime = {
+    async settle() {
+      await queue
+      if (stopped) throw new Error('Mods runtime disposed')
+      await host.settle(() => activeHostCallbacks)
+    },
+    /** Trusted embedding hooks share dispatch semantics, without entering the plugin realm. */
+    registerHostHook(hook: ModDispatchHook): () => void {
+      if (stopped) throw new Error('Mods runtime disposed')
+      const registered = { ...hook, registration: structuredClone(hook.registration) }
+      hostHooks.add(registered)
+      if (matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      return () => {
+        if (hostHooks.delete(registered) && matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      }
+    },
+    registerHostCallback(hook: Pick<ModDispatchHook, 'tier' | 'registration'>,
+      callback: (engine: Record<string, unknown>, input: ModInput, next: ModContinuation) => unknown,
+      catcher?: (engine: Record<string, unknown>, input: ModInput, next: ModContinuation) => unknown): () => void {
+      if (stopped) throw new Error('Mods runtime disposed')
+      const origin: ModOrigin = {plugin:'claude-code/testing',tier:hook.tier}
+      const registered: ModDispatchHook = {
+        ...origin, registration: structuredClone(hook.registration),
+        invokeStream: async function* (input, next, catching) {
+          const context = capabilityContext.getStore()!
+          const lifetime = new AbortController()
+          const engine = hostCallbackFacade(next, context.snapshot, context.table, origin, lifetime.signal,
+            () => context.active && !lifetime.signal.aborted)
+          try {
+            const source = (catching ? catcher! : callback)(engine, input, next) as AsyncGenerator<unknown, unknown> | undefined
+            if (!source || typeof source[Symbol.asyncIterator] !== 'function' ||
+                typeof source.next !== 'function' || typeof source.return !== 'function' || typeof source.throw !== 'function')
+              throw new TypeError(`${next.event} requires an async generator hook`)
+            return yield* source
+          } finally { lifetime.abort() }
+        },
+        invoke: async (input, next, catching) => {
+          const context = capabilityContext.getStore()!
+          const lifetime = new AbortController()
+          const engine = hostCallbackFacade(next, context.snapshot, context.table, origin, lifetime.signal,
+            () => context.active && !lifetime.signal.aborted)
+          activeHostCallbacks++
+          let active = true
+          const release = () => {
+            if (!active) return
+            active = false
+            activeHostCallbacks--
+          }
+          next.signal.addEventListener('abort', release, { once: true })
+          if (next.signal.aborted) release()
+          try { return await (catching ? catcher! : callback)(engine, input, next) }
+          finally {
+            release()
+            next.signal.removeEventListener('abort', release)
+            lifetime.abort()
+          }
+        },
+      }
+      hostHooks.add(registered)
+      if (matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      return () => {
+        if (hostHooks.delete(registered) && matchesModEventPattern(registered.registration.event, 'ui.render')) publishRenderHooks()
+      }
+    },
+    captureForkSnapshotWriter() {
+      const generation = forkGeneration
+      return (params: CacheSafeParams) => {
+        if (!stopped && generation === forkGeneration) forkSnapshot = {
+          ...params, forkContextMessages:[...params.forkContextMessages],
+          toolUseContext:{...params.toolUseContext, options:{...params.toolUseContext.options}},
+        }
+      }
+    },
     capture,
-    reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)),
-    bind: (next: ModBinding) => enqueue(async () => { binding = next; await start(active) }),
-    dispatch: (event: string, input: ModInput, core: (input: ModInput) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
-    hasHooks: (event: string) => active.some(owner => owner.environment.registrations.some(registration => registration.event === event)),
+    trackConversation,
+    invalidatePromptContext,
+    measure,
+    endSession,
+    tools,
+    agents,
+    commands,
+    config,
+    isDiffOwned,
+    /** Trusted SDK transport roster; not an author capability. */
+    remoteScroll,
+    remoteFocus,
+    remotePrompt,
+    remoteClients: { attach:attachRemoteClient, detach:detachRemoteClient, surfaces:attachedSurfaces,
+      has: (clientId: string) => attachedClients.has(clientId),
+      placesPanes: (clientId: string) => attachedClients.get(clientId)?.viewport?.isFullscreen !== undefined,
+    },
+
+    async remoteClientPress(input: ModInput, type: 'press' | 'input' | 'select'): Promise<{ reached?: ModInput }> {
+      let reached: ModInput | undefined
+      await dispatch(`ui.${type}`, input, async rewritten => {
+        reached = structuredClone(rewritten)
+        return { element: rewritten.element, ...(type === 'press' ? {} : { value: rewritten.value }) }
+      }, active, nouns, {
+        validateResult: result => {
+          const value = result as ModInput
+          if (typeof value.element !== 'string' || type !== 'press' && typeof value.value !== 'string')
+            throw new TypeError(type === 'press' ? 'ui.press requires { element }' : `ui.${type} requires { element, value }`)
+        },
+        validateInput: value => {
+          if (value.plugin !== input.plugin || value.requestId !== input.requestId ||
+            typeof value.element !== 'string' || typeof value.component !== 'string' ||
+            !['terminal', 'desktop', 'mobile', 'vscode'].includes(String(value.surface)) ||
+            type !== 'press' && typeof value.value !== 'string' || type === 'input' && value.kind !== input.kind)
+            throw new TypeError(`ui.${type} cannot change the owning plugin, requestId or input kind`)
+        },
+      })
+      return reached === undefined ? {} : { reached }
+    },
+    async remoteClientMessage(plugin: string, input: ModInput): Promise<{ props?: unknown } | undefined> {
+      const owner = active.find(owner => owner.declaration.name === plugin)
+      if (!owner) return
+      return dispatch('ui.message', input, async () => ({}), active, nouns, {
+        only: owner, origin: { plugin: 'client', tier: owner.declaration.tier },
+      }) as Promise<{ props?: unknown }>
+    },
+    async remoteClientFault(plugin: string, input: ModInput): Promise<void> {
+      const owner = active.find((owner) => owner.declaration.name === plugin)
+      if (!owner) return
+      const started = performance.now()
+      try {
+        await dispatch('ui.fault', input, async () => ({}), active, nouns, {
+          only: owner,
+          restoreInput: (value, received) =>
+            Object.fromEntries(
+              [
+                'surface',
+                'component',
+                'requestId',
+                'element',
+                'module',
+                'phase',
+                'reason',
+              ].map((key) => [
+                key,
+                Object.hasOwn(value, key) ? value[key] : received[key],
+              ]),
+            ),
+        })
+      } finally {
+        logForDebugging(
+          `[ModsUIRemote] ui.fault ${plugin}/${String(input.element)} (${String(input.module)}) in ${String(input.component)} ${JSON.stringify(input.requestId)} from ${String(input.surface)}, ${String(input.phase)}: reason=${JSON.stringify(input.reason)} origin=engine/core settledMs=${(performance.now() - started).toFixed(1)}`,
+        )
+      }
+    },
+    hearsRemoteClientFault(plugin: string, input: ModInput): boolean {
+      const owner = active.find((owner) => owner.declaration.name === plugin)
+      return (
+        owner?.environment.registrations.some((registration) => {
+          if (!matchesModEventPattern(registration.event, 'ui.fault'))
+            return false
+          try {
+            return matchesRenderMatcher(registration.matcher ?? {}, input)
+          } catch (error) {
+            diagnostic(plugin, 'ui.fault.matcher', error)
+            return true
+          }
+        }) ?? false
+      )
+    },
+    clientModule(plugin: string) {
+      const owner = active.find(owner => owner.declaration.name === plugin)
+      return owner ? buildModClientBundle(owner.declaration) : undefined
+    },
+    ui,
+    renderHooks,
+    get activePublicTurnId(): string | undefined { return publicTurn?.turnId },
+    currentTurn: (agentId?: string) => turns.current(agentId),
+    /** Resolves once turns ended early by a turn.complete hook's queued input have finished their completion. */
+    settleTurns: async (): Promise<void> => { await Promise.all([...settlingTurns]) },
+    beginAgentTurn(agentId: string): ModRegisteredTurn | undefined {
+      if (stopped || ending || ![...hostHooks].some(hook => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
+          !active.some(owner => owner.environment.registrations.some(registration => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
+      return beginRegisteredTurn(randomUUID(), agentId)
+    },
+    beginPublicTurn(turnId: string, abort?: () => void): () => void {
+      return beginRegisteredTurn(turnId, undefined, abort).release
+    },
+    reconcile: (inputs: ModPluginInput[]) => enqueue(() => reconcile(inputs)).catch(error => {
+      const recovery = error instanceof Error ? workerRecoveries.get(error) : undefined
+      if (recovery) return recovery
+      throw error
+    }),
+    bind: (next: ModBinding) => enqueue(async () => {
+      if (!ending && binding && Object.keys(next).every(key =>
+        next[key as keyof ModBinding] === binding![key as keyof ModBinding],
+      )) return
+      if (ending || binding?.sessionId !== next.sessionId) {
+        retireTurns()
+        conversations.clear()
+        excludedConversations.clear()
+        forkSnapshot = null
+        forkGeneration++
+        await ending
+        if (binding && binding.sessionId !== next.sessionId) {
+          for (const owner of active)
+            services.prompt?.()?.clearSuggestion?.(owner.suggestionOwner)
+        }
+        await measurements.reset()
+        ending = undefined
+        commands.invalidateDescriptions()
+        state.reset()
+        sectionCache = new Map()
+        attachmentCache = new Map()
+        invalidatePromptContext()
+      }
+      binding = next
+      if (active.length) await publish({ modules: active, table: nouns })
+    }),
+    stream: (event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
+    dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
+    hasHooks: (event: string) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true
-      controller.abort()
-      disposal = (async () => {
-        await Promise.all([...activations].map(disposeActivation))
-        active = []
-        nouns = {}
-        await host.dispose()
-        await queue
-      })()
+      publishRenderHooks()
+      retireTurns()
+      for (const owner of activations) commands.release(owner)
+      publishDiffOwnership()
+      conversations.clear()
+      excludedConversations.clear()
+      hostHooks.clear()
+      publicTurn = undefined
+      forkSnapshot = null
+      forkGeneration++
+      disposal = Promise.resolve().then(() => runCleanups([
+        () => controller.abort(),
+        () => measurements.stop(),
+        () => { stopRemoteScroll(); remoteScroll.dispose(); remoteFocus.dispose(); remotePrompt.clear() },
+        () => ui.dispose(),
+        () => runCleanups([...activations].map(owner => () => disposeActivation(owner))),
+        () => { active = []; nouns = {} },
+        () => host.dispose(),
+        () => queue,
+      ]))
       return disposal
     },
   }
+  return runtime
 }
 
 export type ModsRuntime = ReturnType<typeof createModsRuntime>

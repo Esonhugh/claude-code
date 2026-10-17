@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { prepareChannelTransport } from './channelCapabilities.js'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -28,6 +29,7 @@ import {
   type JSONRPCMessage,
   type ListPromptsResult,
   ListPromptsResultSchema,
+  type ListResourcesResult,
   ListResourcesResultSchema,
   ListRootsRequestSchema,
   type ListToolsResult,
@@ -238,6 +240,24 @@ const DEFAULT_MCP_TOOL_TIMEOUT_MS = 100_000_000
  * docs into tool.description; this caps the p95 tail without losing the intent.
  */
 const MAX_MCP_DESCRIPTION_LENGTH = 2048
+
+function getMcpServerInstructions(
+  instructions: string | undefined,
+  serverName: string,
+): string | undefined {
+  if (!instructions) return instructions
+  const rawLimit = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH?.trim()
+  const parsedLimit = rawLimit !== undefined && /^[+-]?\d+$/.test(rawLimit) ? Number(rawLimit) : NaN
+  const limit = Number.isFinite(parsedLimit) && parsedLimit >= 1
+    ? parsedLimit
+    : MAX_MCP_DESCRIPTION_LENGTH
+  if (instructions.length <= limit) return instructions
+
+  logMCPDebug(serverName, `Server instructions truncated from ${instructions.length} to ${limit} chars`)
+  const clipped = instructions.slice(0, limit)
+  const last = clipped.charCodeAt(clipped.length - 1)
+  return (last >= 0xd800 && last <= 0xdbff ? clipped.slice(0, -1) : clipped) + '… [truncated]'
+}
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
@@ -988,7 +1008,7 @@ export const connectToServer = memoize(
           process.env.CLAUDE_CODE_SHELL_PREFIX || serverRef.command
         const finalArgs = process.env.CLAUDE_CODE_SHELL_PREFIX
           ? [[serverRef.command, ...serverRef.args].join(' ')]
-          : serverRef.args
+          : [...serverRef.args]
         transport = new StdioClientTransport({
           command: finalCommand,
           args: finalArgs,
@@ -1088,6 +1108,9 @@ export const connectToServer = memoize(
         }
       }
 
+      if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+        prepareChannelTransport(transport)
+      }
       const connectPromise = client.connect(transport)
       const timeoutPromise = new Promise<never>((_, reject) => {
         const timeoutId = setTimeout(() => {
@@ -1199,19 +1222,7 @@ export const connectToServer = memoize(
 
       const capabilities = client.getServerCapabilities()
       const serverVersion = client.getServerVersion()
-      const rawInstructions = client.getInstructions()
-      let instructions = rawInstructions
-      if (
-        rawInstructions &&
-        rawInstructions.length > MAX_MCP_DESCRIPTION_LENGTH
-      ) {
-        instructions =
-          rawInstructions.slice(0, MAX_MCP_DESCRIPTION_LENGTH) + '… [truncated]'
-        logMCPDebug(
-          name,
-          `Server instructions truncated from ${rawInstructions.length} to ${MAX_MCP_DESCRIPTION_LENGTH} chars`,
-        )
-      }
+      const instructions = getMcpServerInstructions(client.getInstructions(), name)
 
       // Log successful connection details
       logMCPDebug(
@@ -1466,10 +1477,11 @@ export const connectToServer = memoize(
           stdioTransport.stderr?.off('data', stderrHandler)
         }
 
-        // For stdio transports, explicitly terminate the child process with proper signals
-        // NOTE: StdioClientTransport.close() only sends an abort signal, but many MCP servers
-        // (especially Docker containers) need explicit SIGINT/SIGTERM signals to trigger graceful shutdown
-        if (serverRef.type === 'stdio') {
+        // For stdio transports (type omitted defaults to stdio), explicitly terminate the child.
+        // StdioClientTransport.close() ends stdin, waits 2s, sends SIGTERM, waits 2s, then
+        // SIGKILL — too slow to finish before CLI exit, and many servers (especially Docker
+        // containers) need SIGINT to shut down gracefully.
+        if (serverRef.type === 'stdio' || !serverRef.type) {
           try {
             const stdioTransport = transport as StdioClientTransport
             const childPid = stdioTransport.pid
@@ -1672,11 +1684,14 @@ export const connectToServer = memoize(
       if (inProcessServer) {
         inProcessServer.close().catch(() => {})
       }
+      const message = errorMessage(error)
+      const prefix = error instanceof McpError ? `MCP error ${error.code}: ` : undefined
       return {
         name,
         type: 'failed' as const,
         config: serverRef,
-        error: errorMessage(error),
+        // Official 2.1.292 exposes the server's message, retaining its own text.
+        error: prefix && message.startsWith(prefix) ? message.slice(prefix.length) : message,
       }
     }
   },
@@ -1746,6 +1761,52 @@ export async function ensureConnectedClient(
   return connectedClient
 }
 
+export function findMCPConnectionForMod(
+  connections: readonly MCPServerConnection[],
+  server: string,
+): MCPServerConnection {
+  const exact = connections.find(connection => connection.name === server)
+  if (exact) return exact
+  const normalized = normalizeNameForMCP(server)
+  const matches = connections.filter(connection =>
+    normalizeNameForMCP(connection.name) === normalized,
+  )
+  if (matches.length > 1)
+    throw new Error(`Ambiguous MCP server "${server}": ${matches.map(connection => connection.name).join(', ')}`)
+  if (matches[0]) return matches[0]
+  const available = connections.map(connection => connection.name).join(', ')
+  throw new Error(`Unknown MCP server "${server}"${available ? `; available servers: ${available}` : ''}`)
+}
+
+export async function callMCPToolForMod(
+  connection: MCPServerConnection,
+  tool: string,
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+): Promise<{ content: Awaited<ReturnType<Client['callTool']>>['content']; isError: boolean; structuredContent?: unknown }> {
+  signal.throwIfAborted()
+  if (connection.type === 'disabled' || connection.type === 'needs-auth' || connection.type === 'failed')
+    throw new Error(`MCP server "${connection.name}" is ${connection.type}`)
+  const connected = connection.type === 'connected'
+    ? await ensureConnectedClient(connection)
+    : connection.config.type === 'sdk'
+      ? await connectToServer.cache.get(getServerCacheKey(connection.name, connection.config))
+      : await connectToServer(connection.name, connection.config)
+  signal.throwIfAborted()
+  if (connected?.type !== 'connected')
+    throw new Error(`MCP server "${connection.name}" is ${connection.type}`)
+  const result = await connected.client.callTool(
+    { name: tool, arguments: args },
+    CallToolResultSchema,
+    { signal, timeout: getMcpToolTimeoutMs() },
+  )
+  return {
+    content: result.content,
+    isError: result.isError === true,
+    ...(!Object.hasOwn(result, 'structuredContent') ? {} : { structuredContent: result.structuredContent }),
+  }
+}
+
 /**
  * Compares two MCP server configurations to determine if they are equivalent.
  * Used to detect when a server needs to be reconnected due to config changes.
@@ -1772,6 +1833,51 @@ export function areMcpConfigsEqual(
 // Max cache size for fetch* caches. Keyed by server name (stable across
 // reconnects), bounded to prevent unbounded growth with many MCP servers.
 const MCP_FETCH_CACHE_SIZE = 20
+
+const MAX_MCP_LIST_PAGES = 20
+
+async function requestAllPages<Page extends { nextCursor?: string }, Item>(
+  client: Client,
+  serverName: string,
+  method: 'tools/list' | 'resources/list' | 'prompts/list',
+  resultSchema: Parameters<Client['request']>[1],
+  pickItems: (page: Page) => Item[] | undefined,
+): Promise<Item[]> {
+  const items: Item[] = []
+  let cursor: string | undefined
+  let pageCount = 0
+  const logPaginated = (outcome: 'complete' | 'capped' | 'error') =>
+    logEvent('tengu_mcp_list_paginated', {
+      method:
+        method as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      pageCount,
+      itemCount: items.length,
+      outcome:
+        outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+  try {
+    do {
+      const page = (await client.request(
+        { method, ...(cursor && { params: { cursor } }) },
+        resultSchema,
+      )) as Page
+      pageCount++
+      items.push(...(pickItems(page) ?? []))
+      cursor = page.nextCursor
+    } while (cursor && pageCount < MAX_MCP_LIST_PAGES)
+  } catch (error) {
+    if (pageCount > 0) logPaginated('error')
+    throw error
+  }
+  if (cursor) {
+    logMCPDebug(
+      serverName,
+      `${method} still returning nextCursor after ${MAX_MCP_LIST_PAGES} pages; stopping`,
+    )
+  }
+  if (pageCount > 1) logPaginated(cursor ? 'capped' : 'complete')
+  return items
+}
 
 const CODEX_APPS_FETCH_CACHE_SUFFIX = '#host-owned-codex-apps'
 
@@ -1826,13 +1932,16 @@ export const fetchToolsForClient = memoizeWithLRU(
         return []
       }
 
-      const result = (await client.client.request(
-        { method: 'tools/list' },
+      const tools = await requestAllPages(
+        client.client,
+        client.name,
+        'tools/list',
         ListToolsResultSchema,
-      )) as ListToolsResult
+        (page: ListToolsResult) => page.tools,
+      )
 
       // Sanitize tool data from MCP server
-      const toolsToProcess = recursivelySanitizeUnicode(result.tools)
+      const toolsToProcess = recursivelySanitizeUnicode(tools)
 
       // Check if we should skip the mcp__ prefix for SDK MCP servers
       const skipPrefix =
@@ -1858,6 +1967,10 @@ export const fetchToolsForClient = memoizeWithLRU(
             name: skipPrefix ? tool.name : fullyQualifiedName,
             mcpInfo: {
               serverName: client.name,
+              scope: client.config.scope,
+              ...(client.config.pluginSource && {
+                pluginSource: client.config.pluginSource,
+              }),
               toolName: tool.name,
               ...(appsNames && {
                 permissionToolName: appsNames.permissionToolName,
@@ -2136,15 +2249,16 @@ export const fetchResourcesForClient = memoizeWithLRU(
         return []
       }
 
-      const result = await client.client.request(
-        { method: 'resources/list' },
+      const resources = await requestAllPages(
+        client.client,
+        client.name,
+        'resources/list',
         ListResourcesResultSchema,
+        (page: ListResourcesResult) => page.resources,
       )
 
-      if (!result.resources) return []
-
       // Add server name to each resource
-      return result.resources.map(resource => ({
+      return resources.map(resource => ({
         ...resource,
         server: client.name,
       }))
@@ -2170,15 +2284,16 @@ export const fetchCommandsForClient = memoizeWithLRU(
       }
 
       // Request prompts list from client
-      const result = (await client.client.request(
-        { method: 'prompts/list' },
+      const prompts = await requestAllPages(
+        client.client,
+        client.name,
+        'prompts/list',
         ListPromptsResultSchema,
-      )) as ListPromptsResult
-
-      if (!result.prompts) return []
+        (page: ListPromptsResult) => page.prompts,
+      )
 
       // Sanitize prompt data from MCP server
-      const promptsToProcess = recursivelySanitizeUnicode(result.prompts)
+      const promptsToProcess = recursivelySanitizeUnicode(prompts)
 
       // Convert MCP prompts to our Command format
       return promptsToProcess.map(prompt => {
@@ -3448,6 +3563,9 @@ export async function setupSdkMcpClients(
 
       try {
         // Connect the client
+        if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+          prepareChannelTransport(transport)
+        }
         await client.connect(transport)
 
         // Get capabilities from the server
@@ -3458,6 +3576,8 @@ export async function setupSdkMcpClients(
           type: 'connected',
           name,
           capabilities: capabilities || {},
+          serverInfo: client.getServerVersion(),
+          instructions: getMcpServerInstructions(client.getInstructions(), name),
           client,
           config: { ...config, scope: 'dynamic' as const },
           cleanup: async () => {

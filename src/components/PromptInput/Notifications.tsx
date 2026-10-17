@@ -1,6 +1,13 @@
 import { feature } from 'bun:bundle'
 import * as React from 'react'
-import { type ReactNode, useEffect, useMemo, useState } from 'react'
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react'
 import {
   type Notification,
   useNotifications,
@@ -17,6 +24,7 @@ import { Box, Text } from '../../ink.js'
 import { useClaudeAiLimits } from '../../services/claudeAiLimitsHook.js'
 import { calculateTokenWarningState } from '../../services/compact/autoCompact.js'
 import type { MCPServerConnection } from '../../services/mcp/types.js'
+import type { ModUiPane } from '../../services/mods/ui.js'
 import type { Message } from '../../types/message.js'
 import {
   getApiKeyHelperElapsedMs,
@@ -48,11 +56,39 @@ const VoiceIndicator: typeof import('./VoiceIndicator.js').VoiceIndicator =
 
 export const FOOTER_TEMPORARY_STATUS_TIMEOUT = 5000
 
+const HoldToastsContext = createContext(false)
+
+export function HoldToastsProvider({
+  hold,
+  children,
+}: {
+  hold: boolean
+  children: ReactNode
+}): ReactNode {
+  return (
+    <HoldToastsContext.Provider value={hold}>
+      {children}
+    </HoldToastsContext.Provider>
+  )
+}
+
+export function shouldHoldToasts(panes: readonly ModUiPane[]): boolean {
+  return panes.some(
+    pane => pane.visible && pane.shown !== false && pane.holdToasts,
+  )
+}
+
+export function getVisibleTransientNotification(
+  current: Notification | null,
+  holdToasts: boolean,
+): Notification | null {
+  return holdToasts ? null : current
+}
+
 type Props = {
   apiKeyStatus: VerificationStatus
   autoUpdaterResult: AutoUpdaterResult | null
   isAutoUpdating: boolean
-  debug: boolean
   verbose: boolean
   messages: Message[]
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void
@@ -66,7 +102,6 @@ type Props = {
 export function Notifications({
   apiKeyStatus,
   autoUpdaterResult,
-  debug,
   isAutoUpdating,
   verbose,
   messages,
@@ -92,6 +127,17 @@ export function Notifications({
   ).isAboveWarningThreshold
   const { status: ideStatus } = useIdeConnectionStatus(mcpClients)
   const notifications = useAppState(s => s.notifications)
+  const holdToasts = useContext(HoldToastsContext)
+  const visibleNotifications = useMemo(
+    () => ({
+      ...notifications,
+      current: getVisibleTransientNotification(
+        notifications.current,
+        holdToasts,
+      ),
+    }),
+    [notifications, holdToasts],
+  )
   const { addNotification, removeNotification } = useNotifications()
   const claudeAiLimits = useClaudeAiLimits()
 
@@ -176,11 +222,10 @@ export function Notifications({
         <NotificationContent
           ideSelection={ideSelection}
           mcpClients={mcpClients}
-          notifications={notifications}
+          notifications={visibleNotifications}
           isInOverageMode={isInOverageMode ?? false}
           isTeamOrEnterprise={isTeamOrEnterprise}
           apiKeyStatus={apiKeyStatus}
-          debug={debug}
           verbose={verbose}
           tokenUsage={tokenUsage}
           mainLoopModel={mainLoopModel}
@@ -203,7 +248,6 @@ function NotificationContent({
   isInOverageMode,
   isTeamOrEnterprise,
   apiKeyStatus,
-  debug,
   verbose,
   tokenUsage,
   mainLoopModel,
@@ -223,7 +267,6 @@ function NotificationContent({
   isInOverageMode: boolean
   isTeamOrEnterprise: boolean
   apiKeyStatus: VerificationStatus
-  debug: boolean
   verbose: boolean
   tokenUsage: number
   mainLoopModel: string
@@ -319,13 +362,6 @@ function NotificationContent({
             {isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)
               ? 'Authentication error · Try again'
               : 'Not logged in · Run /login'}
-          </Text>
-        </Box>
-      )}
-      {debug && (
-        <Box>
-          <Text color="warning" wrap="truncate">
-            Debug mode
           </Text>
         </Box>
       )}

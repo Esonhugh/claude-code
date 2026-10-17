@@ -7,7 +7,8 @@
  * Note: Inboxes are keyed by agent name within a team.
  */
 
-import { mkdir, readFile, writeFile } from 'fs/promises'
+import { mkdir, readFile, rename, unlink, writeFile } from 'fs/promises'
+import { randomUUID } from 'node:crypto'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { TEAMMATE_MESSAGE_TAG } from '../constants/xml.js'
@@ -135,7 +136,7 @@ export async function writeToMailbox(
   recipientName: string,
   message: Omit<TeammateMessage, 'read'>,
   teamName?: string,
-): Promise<void> {
+): Promise<boolean> {
   await ensureInboxDir(teamName)
 
   const inboxPath = getInboxPath(recipientName, teamName)
@@ -156,7 +157,7 @@ export async function writeToMailbox(
         `[TeammateMailbox] writeToMailbox: failed to create inbox file: ${error}`,
       )
       logError(error)
-      return
+      return false
     }
   }
 
@@ -181,12 +182,17 @@ export async function writeToMailbox(
     logForDebugging(
       `[TeammateMailbox] Wrote message to ${recipientName}'s inbox from ${message.from}`,
     )
+    return true
   } catch (error) {
     logForDebugging(`Failed to write to inbox for ${recipientName}: ${error}`)
     logError(error)
+    return false
   } finally {
     if (release) {
-      await release()
+      await release().catch(error => {
+        logForDebugging(`Failed to release inbox lock for ${recipientName}: ${error}`)
+        logError(error)
+      })
     }
   }
 }
@@ -314,12 +320,15 @@ export async function markMessagesAsRead(
       `[TeammateMailbox] markMessagesAsRead: ${unreadCount} unread of ${messages.length} total`,
     )
 
-    // messages comes from jsonParse — fresh, unshared objects safe to mutate
-    for (const m of messages) m.read = true
+    // Read messages are never read back (only resume drops them), so drop the
+    // ones already read instead of rewriting an ever-growing inbox each poll.
+    const kept = messages
+      .filter(m => !m.read)
+      .map(m => ({ ...m, read: true }))
 
-    await writeFile(inboxPath, jsonStringify(messages, null, 2), 'utf-8')
+    await writeFile(inboxPath, jsonStringify(kept, null, 2), 'utf-8')
     logForDebugging(
-      `[TeammateMailbox] markMessagesAsRead: WROTE ${unreadCount} message(s) as read to ${inboxPath}`,
+      `[TeammateMailbox] markMessagesAsRead: WROTE ${unreadCount} message(s) as read to ${inboxPath} (dropped ${messages.length - kept.length} already read)`,
     )
   } catch (error) {
     const code = getErrnoCode(error)
@@ -352,9 +361,14 @@ export async function clearMailbox(
 ): Promise<void> {
   const inboxPath = getInboxPath(agentName, teamName)
 
+  let release: (() => Promise<void>) | undefined
   try {
-    // flag 'r+' throws ENOENT if the file doesn't exist, so we don't
-    // accidentally create an inbox file that wasn't there.
+    // Same lock as writeToMailbox so a concurrent append is not clobbered.
+    // Locking a missing inbox throws ENOENT, so we don't create one here.
+    release = await lockfile.lock(inboxPath, {
+      lockfilePath: `${inboxPath}.lock`,
+      ...LOCK_OPTIONS,
+    })
     await writeFile(inboxPath, '[]', { encoding: 'utf-8', flag: 'r+' })
     logForDebugging(`[TeammateMailbox] Cleared inbox for ${agentName}`)
   } catch (error) {
@@ -364,6 +378,12 @@ export async function clearMailbox(
     }
     logForDebugging(`Failed to clear inbox for ${agentName}: ${error}`)
     logError(error)
+  } finally {
+    if (release) {
+      await release().catch(error => {
+        logForDebugging(`Failed to release inbox lock for ${agentName}: ${error}`)
+      })
+    }
   }
 }
 
@@ -1083,6 +1103,7 @@ export function isStructuredProtocolMessage(messageText: string): boolean {
       type === 'sandbox_permission_request' ||
       type === 'sandbox_permission_response' ||
       type === 'shutdown_request' ||
+      type === 'shutdown_response' ||
       type === 'shutdown_approved' ||
       type === 'team_permission_update' ||
       type === 'mode_set_request' ||
@@ -1091,6 +1112,35 @@ export function isStructuredProtocolMessage(messageText: string): boolean {
     )
   } catch {
     return false
+  }
+}
+
+/** Drop read messages and matching stale protocol frames before teammate resume. */
+export async function dropMailboxMessagesByPredicate(
+  agentName: string,
+  predicate: (message: TeammateMessage) => boolean,
+  teamName?: string,
+): Promise<boolean> {
+  const path = getInboxPath(agentName, teamName)
+  let release: (() => Promise<void>) | undefined
+  let temporary: string | undefined
+  try {
+    release = await lockfile.lock(path, { lockfilePath: `${path}.lock`, ...LOCK_OPTIONS })
+    const messages = jsonParse(await readFile(path, 'utf8')) as TeammateMessage[]
+    const kept = messages.filter(message => !message.read && !predicate(message))
+    if (kept.length === messages.length) return true
+    temporary = `${path}.${randomUUID()}.tmp`
+    await writeFile(temporary, jsonStringify(kept, null, 2), { encoding: 'utf8', flag: 'wx' })
+    await rename(temporary, path)
+    temporary = undefined
+    return true
+  } catch (error) {
+    if (getErrnoCode(error) === 'ENOENT') return true
+    logForDebugging(`[TeammateMailbox] Failed to drop stale frames for ${agentName}: ${error}`)
+    return false
+  } finally {
+    if (temporary) await unlink(temporary).catch(() => {})
+    if (release) await release().catch(error => logForDebugging(`[TeammateMailbox] Failed to release drop lock for ${agentName}: ${error}`))
   }
 }
 

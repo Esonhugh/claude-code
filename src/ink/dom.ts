@@ -9,6 +9,21 @@ import type { Styles, TextStyles } from './styles.js'
 import { expandTabs } from './tabstops.js'
 import wrapText from './wrap-text.js'
 
+export type TerminalImagePlacement = {
+  columns: number
+  rows: number
+  sourceLeft: number
+  sourceTop: number
+  sourceColumns: number
+  sourceRows: number
+}
+
+export type TerminalImage = {
+  id: number
+  identity: string
+  sequences: (placement: TerminalImagePlacement) => string[]
+}
+
 type InkNode = {
   parentNode: DOMElement | undefined
   yogaNode?: LayoutNode
@@ -36,6 +51,8 @@ export type DOMElement = {
 
   // Internal properties
   onComputeLayout?: () => void
+  layoutListeners?: Set<() => void>
+  frameListeners?: Set<() => void>
   onRender?: () => void
   onImmediateRender?: () => void
   // Used to skip empty renders during React 19's effect double-invoke in test mode
@@ -43,12 +60,14 @@ export type DOMElement = {
 
   // When true, this node needs re-rendering
   dirty: boolean
+  hasAbsoluteDescendant?: boolean
   // Set by the reconciler's hideInstance/unhideInstance; survives style updates.
   isHidden?: boolean
   // Event handlers set by the reconciler for the capture/bubble dispatcher.
   // Stored separately from attributes so handler identity changes don't
   // mark dirty and defeat the blit optimization.
   _eventHandlers?: Record<string, unknown>
+  terminalImage?: TerminalImage
 
   // Scroll state for overflow: 'scroll' boxes. scrollTop is the number of
   // rows the content is scrolled down by. scrollHeight/scrollViewportHeight
@@ -69,6 +88,7 @@ export type DOMElement = {
   // the clamp releases). Undefined = no clamp (sticky-scroll, cold start).
   scrollClampMin?: number
   scrollClampMax?: number
+  scrollTopRendered?: number
   scrollHeight?: number
   scrollViewportHeight?: number
   scrollViewportTop?: number
@@ -131,6 +151,14 @@ export const createNode = (nodeName: ElementNames): DOMElement => {
   return node
 }
 
+function markAbsoluteAncestors(node: DOMElement): void {
+  let current: DOMElement | undefined = node
+  while (current && !current.hasAbsoluteDescendant) {
+    current.hasAbsoluteDescendant = true
+    current = current.parentNode
+  }
+}
+
 export const appendChildNode = (
   node: DOMElement,
   childNode: DOMElement,
@@ -141,6 +169,9 @@ export const appendChildNode = (
 
   childNode.parentNode = node
   node.childNodes.push(childNode)
+  if (childNode.style.position === 'absolute' || childNode.hasAbsoluteDescendant) {
+    markAbsoluteAncestors(node)
+  }
 
   if (childNode.yogaNode) {
     node.yogaNode?.insertChild(
@@ -162,6 +193,10 @@ export const insertBeforeNode = (
   }
 
   newChildNode.parentNode = node
+  if (newChildNode.style.position === 'absolute' ||
+    (newChildNode.nodeName !== '#text' && newChildNode.hasAbsoluteDescendant)) {
+    markAbsoluteAncestors(node)
+  }
 
   const index = node.childNodes.indexOf(beforeChildNode)
 
@@ -269,7 +304,17 @@ export const setStyle = (node: DOMNode, style: Styles): void => {
   if (stylesEqual(node.style, style)) {
     return
   }
+  if (node.nodeName !== '#text' && node.parentNode &&
+    (node.style.position === 'absolute' || style.position === 'absolute')) {
+    const cached = nodeCache.get(node)
+    // Previous pixels may overlap clean siblings when the absolute region changes.
+    if (cached) addPendingClear(node.parentNode, cached, true)
+  }
+  const becameAbsolute = style.position === 'absolute' && node.style.position !== 'absolute'
   node.style = style
+  if (becameAbsolute && node.parentNode) {
+    markAbsoluteAncestors(node.parentNode)
+  }
   markDirty(node)
 }
 
@@ -410,6 +455,32 @@ export const markDirty = (node?: DOMNode): void => {
     }
     current = current.parentNode
   }
+}
+
+// Observe completed layout, including commits made by ancestors or client leaves.
+export const subscribeLayout = (node: DOMElement, listener: () => void): (() => void) => {
+  let root = node
+  while (root.parentNode) root = root.parentNode
+  const listeners = root.layoutListeners ??= new Set()
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+
+// Keep this accessor usable by recovered hosts whose DOM shape predates the field.
+export const recordPaintedScrollTop = (node: DOMElement, top: number): void => {
+  const painted = node as DOMElement & { scrollTopRendered?: number }
+  painted.scrollTopRendered = top
+}
+export const readPaintedScrollTop = (node: DOMElement): number | undefined =>
+  (node as DOMElement & { scrollTopRendered?: number }).scrollTopRendered
+
+// Observe painted geometry, after scrollTopRendered has been clamped for this frame.
+export const subscribeFrame = (node: DOMElement, listener: () => void): (() => void) => {
+  let root = node
+  while (root.parentNode) root = root.parentNode
+  const listeners = root.frameListeners ??= new Set()
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
 }
 
 // Walk to root and call its onRender (the throttled scheduleRender). Use for

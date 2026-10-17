@@ -1,4 +1,5 @@
 import { isEqual } from 'lodash-es'
+import { createHash } from 'node:crypto'
 import type {
   ContentBlockParam,
   ToolResultBlockParam,
@@ -8,6 +9,10 @@ import type { AssistantMessage } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { createUserMessage } from '../../utils/messages.js'
 import {
+  buildLargeToolResultMessage,
+  generatePreview,
+  persistToolResult,
+  PREVIEW_SIZE_BYTES,
   processPreMappedToolResultBlock,
   processToolResultBlock,
 } from '../../utils/toolResultStorage.js'
@@ -15,21 +20,20 @@ import type { MessageUpdateLazy } from '../tools/toolExecution.js'
 import type { ModSnapshot } from './runtime.js'
 import type { ModInput } from './types.js'
 
-/** Filled by the existing tool pipeline, before mapping or classic output hooks. */
+/** Filled by the existing tool pipeline after classic output rewriting. */
 export type ModToolExecutionRecord = {
   input: ModInput
   hasResult: boolean
   result?: unknown
   error?: unknown
   messages: MessageUpdateLazy[]
+  /** Set immediately before tool.call, using the admitted execution input. */
+  isReadOnly?: true
 }
 
-type ToolCallResult = {
-  result?: unknown
-  deny?: string
-  ref?: string
-  context?: string | string[]
-}
+export type ToolCallResult =
+  | { deny: string; result?: undefined; ref?: undefined; text?: undefined; isError?: undefined; isReadOnly?: undefined; context?: undefined }
+  | { result: unknown; deny?: undefined; ref?: number; text?: string; isError?: true; isReadOnly?: true; context?: readonly string[] }
 
 export async function runModToolCall({
   snapshot,
@@ -39,6 +43,7 @@ export async function runModToolCall({
   toolUseContext,
   assistantMessage,
   core,
+  review,
 }: {
   snapshot: ModSnapshot
   tool: Tool
@@ -49,9 +54,21 @@ export async function runModToolCall({
   core: (
     input: ModInput,
     record: ModToolExecutionRecord,
+    signal?: AbortSignal,
   ) => Promise<MessageUpdateLazy[]>
+  /** Host review after user dispatch, before mapping/persistence; never replays core. */
+  review?: (
+    input: ModInput,
+    output: unknown,
+    context: readonly string[],
+  ) => Promise<{
+    output: unknown
+    messages: MessageUpdateLazy[]
+    context: readonly string[]
+  }>
 }): Promise<MessageUpdateLazy[]> {
   const runs: ModToolExecutionRecord[] = []
+  const referencedRuns: ModToolExecutionRecord[] = []
   const pending: Promise<unknown>[] = []
   const event = {
     ...input,
@@ -82,36 +99,71 @@ export async function runModToolCall({
   function matchingRun(value: ToolCallResult) {
     if (value.deny !== undefined) return undefined
     const referenced =
-      value.ref !== undefined ? runs[Number(value.ref)] : undefined
+      value.ref !== undefined ? referencedRuns[value.ref - 1] : undefined
     if (
       referenced?.messages.length &&
-      isEqual(value.result, valueOf(referenced))
+      (value.result === undefined || isEqual(value.result, valueOf(referenced)))
     )
       return referenced
     return runs.findLast(
       run => run.messages.length && isEqual(value.result, valueOf(run)),
     )
   }
-  function validateResult(value: unknown): asserts value is ToolCallResult {
+  function validateResult(
+    value: unknown,
+    nextResults: readonly unknown[] = [],
+  ): asserts value is ToolCallResult {
     if (value === null || typeof value !== 'object' || Array.isArray(value))
       throw new Error('tool.call must return an object')
     const result = value as ToolCallResult
     if (result.deny !== undefined) {
       if (typeof result.deny !== 'string')
         throw new Error('tool.call deny must be a string')
+      if (Object.hasOwn(result, 'result'))
+        throw new Error('tool.call cannot return deny beside result')
       return
     }
     if (!('result' in result))
       throw new Error('tool.call must return result or deny')
     if (
-      result.context !== undefined &&
-      typeof result.context !== 'string' &&
-      !(
-        Array.isArray(result.context) &&
-        result.context.every(item => typeof item === 'string')
-      )
+      result.ref !== undefined &&
+      (!Number.isSafeInteger(result.ref) ||
+        result.ref < 1 ||
+        !referencedRuns[result.ref - 1])
     )
-      throw new Error('tool.call context must be text or a list of texts')
+      throw new Error('tool.call ref must identify an execution of this call')
+    if (result.context !== undefined) {
+      if (!Array.isArray(result.context))
+        throw new Error('tool.call context must be a list of texts')
+      for (let index = 0; index < result.context.length; index++) {
+        const item = result.context[index]
+        if (
+          !Object.hasOwn(result.context, index) ||
+          typeof item !== 'string' ||
+          item === ''
+        )
+          throw new Error('tool.call context must contain non-empty texts')
+      }
+    }
+    const downstream = (nextResults as readonly ToolCallResult[]).filter(
+      item => item.deny === undefined,
+    )
+    const matching = downstream.filter(item =>
+      isEqual(item.result, result.result),
+    )
+    for (const below of matching.length ? matching : downstream) {
+      const remaining = new Map<string, number>()
+      for (const item of result.context ?? [])
+        remaining.set(item, (remaining.get(item) ?? 0) + 1)
+      for (const item of below.context ?? []) {
+        const count = remaining.get(item) ?? 0
+        if (count === 0)
+          throw new Error(
+            'tool.call cannot remove context attached by a downstream hook',
+          )
+        remaining.set(item, count - 1)
+      }
+    }
     if (matchingRun(result)) return
     if (runs.at(-1) && failed(runs.at(-1)!))
       throw new Error(
@@ -131,7 +183,7 @@ export async function runModToolCall({
     result = await snapshot.dispatch(
       'tool.call',
       event,
-      rewritten => {
+      (rewritten, signal) => {
         const { tool: name, tool_use_id: id, agentId, ...args } = rewritten
         if (
           name !== event.tool ||
@@ -146,10 +198,10 @@ export async function runModToolCall({
           hasResult: false,
           messages: [],
         }
-        const ref = String(runs.push(record) - 1)
+        runs.push(record)
         const execution = (async () => {
           try {
-            record.messages = await core(args, record)
+            record.messages = await core(args, record, signal)
           } catch (error) {
             record.error = error
             throw error
@@ -165,10 +217,11 @@ export async function runModToolCall({
                     .join('\n') ?? '')
               : ''
           return {
-            ref,
+            ref: referencedRuns.push(record),
             result: valueOf(record),
             text,
             ...(failed(record) ? { isError: true } : {}),
+            ...(record.isReadOnly ? { isReadOnly: true } : {}),
           }
         })()
         pending.push(execution)
@@ -183,29 +236,82 @@ export async function runModToolCall({
   }
   toolUseContext.abortController.signal.throwIfAborted()
   validateResult(result)
-  const unchanged = matchingRun(result)
+  const finalResult = result as ToolCallResult
+  let unchanged = matchingRun(finalResult)
   const last = runs.at(-1)
   const source = unchanged ?? last
-  const context =
-    result.deny === undefined
-      ? (typeof result.context === 'string'
-          ? [result.context]
-          : (result.context ?? [])
-        ).filter(Boolean)
-      : []
-  const additionalContext: MessageUpdateLazy[] = context.length
-    ? [
-        {
-          message: createAttachmentMessage({
-            type: 'hook_additional_context',
-            content: context,
-            hookName: 'tool.call',
-            toolUseID: `${toolUseID}-context`,
-            hookEvent: 'PostToolUse',
-          }),
-        },
-      ]
-    : []
+  let context = finalResult.deny === undefined ? (finalResult.context ?? []) : []
+  let reviewedMessages: MessageUpdateLazy[] = []
+  // Real failures were reviewed in the existing catch path. No-next deny is
+  // not an execution; deny after execution still reviews the last real output.
+  if (
+    review &&
+    (finalResult.deny === undefined || last?.hasResult) &&
+    !(source && failed(source))
+  ) {
+    const output =
+      finalResult.deny !== undefined
+        ? last
+          ? valueOf(last)
+          : undefined
+        : unchanged
+          ? valueOf(unchanged)
+          : finalResult.result
+    const reviewed = await review(source?.input ?? input, output, context)
+    toolUseContext.abortController.signal.throwIfAborted()
+    reviewedMessages = reviewed.messages
+    context = reviewed.context
+    if (
+      finalResult.deny === undefined &&
+      !isEqual(output, reviewed.output)
+    ) {
+      finalResult.result = reviewed.output
+      unchanged = undefined
+    }
+  }
+  toolUseContext.modToolCallResult?.(
+    finalResult.deny === undefined && (finalResult.context !== undefined || context.length)
+      ? { ...(finalResult as Extract<ToolCallResult, { result: unknown }>), context }
+      : finalResult,
+  )
+  async function additionalContext(): Promise<MessageUpdateLazy[]> {
+    if (toolUseContext.modToolCallResult || finalResult.deny !== undefined || !context.length) return []
+    const signal = toolUseContext.abortController.signal
+    async function persist(content: string): Promise<string> {
+      signal.throwIfAborted()
+      // A review can change the content of the same call. Content-address the
+      // reviewed bytes separately from the call ID so wx never reuses stale data.
+      const callHash = createHash('sha256').update(toolUseID).digest('hex')
+      const contentHash = createHash('sha256').update(content).digest('hex')
+      const saved = await persistToolResult(
+        content,
+        `mods-context-${callHash}-${contentHash}`,
+      )
+      signal.throwIfAborted()
+      return 'error' in saved
+        ? `[tool.call context persistence failed: ${saved.error}. Full context was not saved; showing only the head.]\n${generatePreview(content, PREVIEW_SIZE_BYTES).preview}`
+        : buildLargeToolResultMessage(saved)
+    }
+    const content: string[] = []
+    if (context.reduce((total, item) => total + item.length, 0) > 200_000)
+      content.push(await persist(JSON.stringify(context)))
+    else
+      for (const item of context)
+        content.push(item.length > 100_000 ? await persist(item) : item)
+    signal.throwIfAborted()
+    return [
+      {
+        message: createAttachmentMessage({
+          type: 'hook_additional_context',
+          content,
+          hookName: 'tool.call',
+          toolUseID: `${toolUseID}-context`,
+          hookEvent: 'PostToolUse',
+          modEvent: 'tool.call',
+        }),
+      },
+    ]
+  }
   if (unchanged) {
     if (unchanged.hasResult && !failed(unchanged)) {
       for (const update of unchanged.messages) {
@@ -224,21 +330,22 @@ export async function runModToolCall({
         if (processed !== block) Object.assign(block, processed)
       }
     }
-    return additionalContext.length
-      ? [...unchanged.messages, ...additionalContext]
+    const attachments = await additionalContext()
+    return attachments.length || reviewedMessages.length
+      ? [...unchanged.messages, ...reviewedMessages, ...attachments]
       : unchanged.messages
   }
 
   const output =
-    result.deny === undefined && tool.outputSchema
-      ? tool.outputSchema.parse(result.result)
-      : result.result
+    finalResult.deny === undefined && tool.outputSchema
+      ? tool.outputSchema.parse(finalResult.result)
+      : finalResult.result
   const mapped =
-    result.deny !== undefined
+    finalResult.deny !== undefined
       ? {
           type: 'tool_result' as const,
           tool_use_id: toolUseID,
-          content: `<tool_use_error>${result.deny}</tool_use_error>`,
+          content: `<tool_use_error>${finalResult.deny}</tool_use_error>`,
           is_error: true,
         }
       : await processToolResultBlock(tool, output, toolUseID)
@@ -256,11 +363,12 @@ export async function runModToolCall({
         : [mapped],
     imagePasteIds: oldMessage?.imagePasteIds,
     mcpMeta: oldMessage?.mcpMeta,
+    toolDenialKind: finalResult.deny !== undefined ? 'permission-rule' : oldMessage?.toolDenialKind,
     toolUseResult:
       toolUseContext.agentId && !toolUseContext.preserveToolUseResults
         ? undefined
-        : result.deny !== undefined
-          ? `Error: ${result.deny}`
+        : finalResult.deny !== undefined
+          ? `Error: ${finalResult.deny}`
           : output,
     sourceToolAssistantUUID: assistantMessage.uuid,
   })
@@ -276,6 +384,7 @@ export async function runModToolCall({
           update === original ? replacement : update,
         )
       : [...(source?.messages ?? []), replacement]),
-    ...additionalContext,
+    ...reviewedMessages,
+    ...(await additionalContext()),
   ]
 }

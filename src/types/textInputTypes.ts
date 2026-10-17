@@ -1,3 +1,4 @@
+import type { ModCallerChain } from '../services/mods/callerChain.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { UUID } from 'crypto'
 import type React from 'react'
@@ -5,9 +6,15 @@ import type { PermissionResult } from '../entrypoints/agentSdkTypes.js'
 import type { Key } from '../ink.js'
 import type { PastedContent } from '../utils/config.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
+import type { PromptDecoration } from '../services/mods/promptEdit.js'
 import type { TextHighlight } from '../utils/textHighlighting.js'
 import type { AgentId } from './ids.js'
 import type { AssistantMessage, MessageOrigin } from './message.js'
+import type {
+  PromptSubmitMetadata,
+  PromptSubmitResult,
+} from '../services/mods/promptAdapter.js'
+import type { ProcessUserInputBaseResult } from '../utils/processUserInput/processUserInput.js'
 
 /**
  * Inline ghost text for mid-input command autocomplete
@@ -24,7 +31,29 @@ export type InlineGhostText = {
 /**
  * Base props for text input components
  */
+export type TextInputEdit = {
+  before: {text: string; cursor: number}
+  after: {text: string; cursor: number}
+  key?: {key: string; ctrl?: true; shift?: true; meta?: true}
+}
+
+export type PromptInputHandle = {
+  insert(text: string): void
+  setInputWithCursor(value: string, cursor: number): void
+  readonly text: string
+  readonly cursorOffset: number
+  paintDecorations(decorations: PromptDecoration[] | undefined, text: string): void
+  carryDecorations(edit: TextInputEdit): void
+}
+
+export type TextInputChangeResult =
+  | string
+  | { value: string; cursorOffset: number; accepted?: boolean }
+  | void
+
 export type BaseTextInputProps = {
+  readonly onEdit?: (edit: TextInputEdit) => void
+  readonly getInputBox?: () => { text: string; cursor: number }
   /**
    * Optional callback for handling history navigation on up arrow at start of input
    */
@@ -72,9 +101,13 @@ export type BaseTextInputProps = {
   readonly value: string
 
   /**
-   * Function to call when value updates.
+   * Function to call when value updates. May return the value actually accepted
+   * by a controlled input so later events in the same stdin batch observe it.
    */
-  readonly onChange: (value: string) => void
+  readonly onChange: (
+    value: string,
+    cursorOffset?: number,
+  ) => TextInputChangeResult
 
   /**
    * Function to call when `Enter` is pressed, where first argument is a value of the input.
@@ -340,6 +373,25 @@ export type QueuedCommand = {
    * undefined = human (keyboard).
    */
   origin?: MessageOrigin
+  promptSubmitMetadata?: PromptSubmitMetadata
+  /** Host-only recursion history, never part of public prompt metadata. */
+  promptSubmitCallerChain?: ModCallerChain
+  /** Host-owned receipt for an idle-queued author command. */
+  commandRunReceipt?: {
+    admit(result: ProcessUserInputBaseResult): void
+    cancel(reason: unknown): void
+  }
+  /** Host-owned settlement for a plugin-submitted prompt. */
+  promptSubmitReceipt?: {
+    admit(result: PromptSubmitResult): void
+    cancel(reason: unknown): void
+  }
+  /** Host-local owner used to route proactive prompts to their active consumer. */
+  promptSubmitOwner?: symbol
+  /** Already admitted at ingress; dequeue must not execute submission hooks again. */
+  admitted?: Omit<ProcessUserInputBaseResult, 'shouldQuery'> & {
+    shouldQuery?: boolean
+  }
   /**
    * Workload tag threaded through to cc_workload= in the billing-header
    * attribution block. The queue is the async boundary between the cron
@@ -356,6 +408,8 @@ export type QueuedCommand = {
    * unified the queue but lost the isolation the dual-queue accidentally had).
    */
   agentId?: AgentId
+  /** Background task whose notification is delivered to this agent. */
+  taskId?: string
 }
 
 /**

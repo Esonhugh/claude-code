@@ -1,6 +1,12 @@
-import uniqBy from 'lodash-es/uniqBy.js'
-import { useMemo } from 'react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 import type { Command } from '../commands.js'
+import { getCommandName } from '../types/command.js'
+import type { ModCommands } from '../services/mods/commands.js'
+import { logError } from '../utils/log.js'
+
+const emptyModCommands: Command[] = []
+const getEmptyModCommands = () => emptyModCommands
+const subscribeEmptyMods = () => () => {}
 
 export function useReplCommands(
   localCommands: Command[],
@@ -9,6 +15,7 @@ export function useReplCommands(
   pluginReconnectKey: number,
   isRemoteExecutionSession: boolean,
   disableSlashCommands: boolean,
+  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection' | 'describe'>,
 ): Command[] {
   const localCommandsWithoutReloadedPlugins = useMemo(
     () =>
@@ -27,10 +34,25 @@ export function useReplCommands(
     commandsWithPlugins,
     isRemoteExecutionSession ? [] : mcpCommands,
   )
-  return useMemo(
-    () => (disableSlashCommands ? [] : mergedCommands),
-    [disableSlashCommands, mergedCommands],
+  return useModCommandProjection(
+    disableSlashCommands ? emptyModCommands : mergedCommands,
+    disableSlashCommands || isRemoteExecutionSession ? undefined : mods,
   )
+}
+
+export function useModCommandProjection(
+  commands: Command[],
+  mods?: Pick<ModCommands, 'subscribe' | 'getSnapshot' | 'projection' | 'describe'>,
+): Command[] {
+  const snapshot = useSyncExternalStore(
+    mods?.subscribe ?? subscribeEmptyMods,
+    mods?.getSnapshot ?? getEmptyModCommands,
+    getEmptyModCommands,
+  )
+  useEffect(() => {
+    if (mods) void mods.describe(commands).catch(logError)
+  }, [commands, mods, snapshot])
+  return useMemo(() => mods?.projection(commands) ?? commands, [commands, mods, snapshot])
 }
 
 export function useMergedCommands(
@@ -39,10 +61,24 @@ export function useMergedCommands(
 ): Command[] {
   return useMemo(() => {
     if (mcpCommands.length > 0) {
-      const initialNames = new Set(initialCommands.map(command => command.name))
-      const uniqueMcpCommands = uniqBy(mcpCommands, 'name').filter(
-        command => !initialNames.has(command.name),
+      const claimedNames = new Set(
+        initialCommands.flatMap(command => [
+          command.name,
+          getCommandName(command),
+          ...(command.aliases ?? []),
+        ]),
       )
+      const uniqueMcpCommands: Command[] = []
+      for (const command of mcpCommands) {
+        const names = [
+          command.name,
+          getCommandName(command),
+          ...(command.aliases ?? []),
+        ]
+        if (names.some(name => claimedNames.has(name))) continue
+        uniqueMcpCommands.push(command)
+        for (const name of names) claimedNames.add(name)
+      }
       return [...initialCommands, ...uniqueMcpCommands]
     }
     return initialCommands

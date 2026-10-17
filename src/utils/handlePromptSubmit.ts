@@ -10,7 +10,9 @@ import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import type { IDESelection } from '../hooks/useIdeSelection.js'
 import type { AppState } from '../state/AppState.js'
 import type { SetToolJSXFn } from '../Tool.js'
-import type { LocalJSXCommandOnDone } from '../types/command.js'
+import { isCommandImmediate, type LocalJSXCommandOnDone } from '../types/command.js'
+import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
+import { FAILED_PROMPT_BATCH_DROP, UNSUBMITTED_PROMPT_DROP } from '../services/mods/promptAdapter.js'
 import type { Message } from '../types/message.js'
 import { createUserMessage } from './messages.js'
 import {
@@ -27,7 +29,10 @@ import { fileHistoryEnabled, fileHistoryMakeSnapshot } from './fileHistory.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { enqueue } from './messageQueueManager.js'
 import { resolveSkillModelOverride } from './model/model.js'
-import type { ProcessUserInputContext } from './processUserInput/processUserInput.js'
+import type {
+  ProcessUserInputContext,
+  ProcessUserInputBaseResult,
+} from './processUserInput/processUserInput.js'
 import { processUserInput } from './processUserInput/processUserInput.js'
 import type { QueryGuard } from './QueryGuard.js'
 import { queryCheckpoint, startQueryProfile } from './queryProfiler.js'
@@ -70,8 +75,10 @@ type BaseExecutionParams = {
     onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>,
     input?: string,
     effort?: EffortValue,
+    publicTurn?: { text: string },
   ) => Promise<void>
   setAppState: (updater: (prev: AppState) => AppState) => void
+  onInputRun?: () => (() => void)
   onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>
   canUseTool?: CanUseToolFn
   skipLocalContext?: boolean
@@ -81,7 +88,6 @@ type BaseExecutionParams = {
  * Parameters for core execution logic (no UI concerns).
  */
 type ExecuteUserInputParams = BaseExecutionParams & {
-  resetHistory: () => void
   onInputChange: (value: string) => void
 }
 
@@ -89,6 +95,7 @@ export type PromptInputHelpers = {
   setCursorOffset: (offset: number) => void
   clearBuffer: () => void
   resetHistory: () => void
+  getCursorOffset?: () => number
 }
 
 export type HandlePromptSubmitParams = BaseExecutionParams & {
@@ -111,6 +118,9 @@ export type HandlePromptSubmitParams = BaseExecutionParams & {
   streamMode?: SpinnerMode
   hasInterruptibleToolInProgress?: boolean
   uuid?: UUID
+  promptSubmitMetadata?: QueuedCommand['promptSubmitMetadata']
+  promptSubmitCallerChain?: QueuedCommand['promptSubmitCallerChain']
+  onPromptAdmitted?: () => void
   /**
    * When true, input starting with `/` is treated as plain text.
    * Used for remotely-received messages (bridge/CCR) that should not
@@ -123,12 +133,10 @@ export async function handlePromptSubmit(
   params: HandlePromptSubmitParams,
 ): Promise<void> {
   const {
-    helpers,
     queryGuard,
     isExternalLoading = false,
     commands,
     onInputChange,
-    setPastedContents,
     setToolJSX,
     getToolUseContext,
     messages,
@@ -144,8 +152,6 @@ export async function handlePromptSubmit(
     uuid,
     skipSlashCommands,
   } = params
-
-  const { setCursorOffset, clearBuffer, resetHistory } = helpers
 
   // Queue processor path: commands are pre-validated and ready to execute.
   // Skip all input validation, reference parsing, and queuing logic.
@@ -166,10 +172,10 @@ export async function handlePromptSubmit(
       onQuery,
       setAppState,
       onBeforeQuery,
-      resetHistory,
       canUseTool,
       onInputChange,
       skipLocalContext: params.skipLocalContext,
+      onInputRun: params.onInputRun,
     })
     return
   }
@@ -229,7 +235,7 @@ export async function handlePromptSubmit(
 
   // Handle local-jsx immediate commands (e.g., /config, /doctor)
   // Skip for remote bridge messages — slash commands from CCR clients are plain text
-  if (!skipSlashCommands && finalInput.trim().startsWith('/')) {
+  if (!skipSlashCommands && (queryGuard.isActive || isExternalLoading) && finalInput.trim().startsWith('/')) {
     const trimmedInput = finalInput.trim()
     const spaceIndex = trimmedInput.indexOf(' ')
     const commandName =
@@ -248,28 +254,17 @@ export async function handlePromptSubmit(
           getCommandName(cmd) === commandName),
     )
 
+    const context = immediateCommand?.type === 'local-jsx'
+      ? getToolUseContext(messages, [], createAbortController(), mainLoopModel)
+      : undefined
     if (
-      immediateCommand &&
-      immediateCommand.type === 'local-jsx' &&
-      (queryGuard.isActive || isExternalLoading)
+      immediateCommand?.type === 'local-jsx' && context &&
+      isCommandImmediate(immediateCommand, commandArgs, context)
     ) {
       logEvent('tengu_immediate_command_executed', {
         commandName:
           immediateCommand.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
-
-      // Clear input
-      onInputChange('')
-      setCursorOffset(0)
-      setPastedContents({})
-      clearBuffer()
-
-      const context = getToolUseContext(
-        messages,
-        [],
-        createAbortController(),
-        mainLoopModel,
-      )
 
       let doneWasCalled = false
       const onDone: LocalJSXCommandOnDone = (result, options) => {
@@ -305,8 +300,7 @@ export async function handlePromptSubmit(
         }
       }
 
-      const impl = await immediateCommand.load()
-      const jsx = await impl.call(onDone, context, commandArgs)
+      const jsx = await runImmediateModCommand(immediateCommand, onDone, context, commandArgs)
 
       // Skip if onDone already fired — prevents stuck isLocalJSXCommand
       // (see processSlashCommand.tsx local-jsx case for full mechanism).
@@ -343,22 +337,66 @@ export async function handlePromptSubmit(
       params.abortController?.abort('interrupt')
     }
 
-    // Enqueue with string value + raw pastedContents. Images will be resized
-    // at execution time when processUserInput runs (not baked in here).
-    enqueue({
+    const cmd: QueuedCommand = {
       value: finalInput.trim(),
       preExpansionValue: input.trim(),
       mode,
       pastedContents: hasImages ? pastedContents : undefined,
       skipSlashCommands,
       uuid,
+      promptSubmitMetadata: params.promptSubmitMetadata,
+      promptSubmitCallerChain: params.promptSubmitCallerChain,
+    }
+    // Commands still execute after the turn; only ordinary prompts are admitted
+    // now. Never borrow or replace the running turn's abort controller/editor.
+    if (
+      mode !== 'prompt' ||
+      (!skipSlashCommands && finalInput.trim().startsWith('/'))
+    ) {
+      enqueue(cmd)
+      return
+    }
+    let committed = false
+    const admittedMessages = new Set<Message>()
+    const admit = (result: ProcessUserInputBaseResult) => {
+      committed = true
+      for (const message of result.messages) admittedMessages.add(message)
+      if (result.shouldQuery) {
+        enqueue({ ...cmd, admitted: result })
+        params.onPromptAdmitted?.()
+      } else if (result.messages.length) {
+        params.setMessages?.(previous => [...previous, ...result.messages])
+      }
+    }
+    const result = await processUserInput({
+      input: cmd.value,
+      preExpansionInput: cmd.preExpansionValue,
+      mode,
+      setToolJSX,
+      context: getToolUseContext(
+        messages, [], createAbortController(), mainLoopModel,
+      ),
+      pastedContents: params.skipLocalContext ? undefined : cmd.pastedContents,
+      ideSelection: params.skipLocalContext ? undefined : ideSelection,
+      messages,
+      isAlreadyProcessing: true,
+      querySource: params.querySource,
+      canUseTool,
+      uuid,
+      skipSlashCommands,
+      skipAttachments: params.skipLocalContext,
+      skipHooks: params.skipLocalContext,
+      promptSubmitMetadata: cmd.promptSubmitMetadata,
+      promptSubmitCallerChain: cmd.promptSubmitCallerChain,
+      deferCommands: true,
+      onPromptAdmission: admit,
     })
-
-    onInputChange('')
-    setCursorOffset(0)
-    setPastedContents({})
-    resetHistory()
-    clearBuffer()
+    if (result.deferred) enqueue(cmd)
+    else if (!committed && result.messages.length) admit(result)
+    else if (committed) {
+      const notices = result.messages.filter(message => !admittedMessages.has(message))
+      if (notices.length) params.setMessages?.(previous => [...previous, ...notices])
+    }
     return
   }
 
@@ -375,6 +413,8 @@ export async function handlePromptSubmit(
     pastedContents: hasImages ? pastedContents : undefined,
     skipSlashCommands,
     uuid,
+    promptSubmitMetadata: params.promptSubmitMetadata,
+    promptSubmitCallerChain: params.promptSubmitCallerChain,
   }
 
   await executeUserInput({
@@ -392,10 +432,10 @@ export async function handlePromptSubmit(
     onQuery,
     setAppState,
     onBeforeQuery,
-    resetHistory,
     canUseTool,
     onInputChange,
     skipLocalContext: params.skipLocalContext,
+    onInputRun: params.onInputRun,
   })
 }
 
@@ -420,7 +460,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     onQuery,
     setAppState,
     onBeforeQuery,
-    resetHistory,
     canUseTool,
     queuedCommands,
     skipLocalContext = false,
@@ -437,6 +476,8 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     return getToolUseContext(messages, [], abortController, mainLoopModel)
   }
 
+  const finishInputRun = params.onInputRun?.()
+
   // Wrap in try-finally so the guard is released even if processUserInput
   // throws or onQuery is skipped. onQuery's finally calls queryGuard.end(),
   // which transitions running→idle; cancelReservation() below is a no-op in
@@ -452,6 +493,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     queryCheckpoint('query_process_user_input_start')
 
     const newMessages: Message[] = []
+    const admittedTexts: string[] = []
     let shouldQuery = false
     let allowedTools: string[] | undefined
     let model: string | undefined
@@ -487,29 +529,62 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       for (let i = 0; i < commands.length; i++) {
         const cmd = commands[i]!
         const isFirst = i === 0
-        const result = await processUserInput({
-          input: cmd.value,
-          preExpansionInput: cmd.preExpansionValue,
-          mode: cmd.mode,
-          setToolJSX,
-          context: makeContext(),
-          pastedContents:
-            isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
-          messages,
-          setUserInputOnProcessing: isFirst
-            ? setUserInputOnProcessing
-            : undefined,
-          isAlreadyProcessing: !isFirst,
-          querySource,
-          canUseTool,
-          uuid: cmd.uuid,
-          ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
-          skipSlashCommands: cmd.skipSlashCommands,
-          bridgeOrigin: cmd.bridgeOrigin,
-          isMeta: cmd.isMeta,
-          skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
-          skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
-        })
+        let result: ProcessUserInputBaseResult
+        if (cmd.admitted) {
+          result = {
+            ...cmd.admitted,
+            shouldQuery: cmd.admitted.shouldQuery ?? cmd.admitted.admission?.drop === undefined,
+          }
+        } else {
+          try {
+            result = await processUserInput({
+                input: cmd.value,
+                preExpansionInput: cmd.preExpansionValue,
+                mode: cmd.mode,
+                setToolJSX,
+                context: makeContext(),
+                pastedContents:
+                  isFirst && !skipLocalContext ? cmd.pastedContents : undefined,
+                messages,
+                setUserInputOnProcessing: isFirst
+                  ? setUserInputOnProcessing
+                  : undefined,
+                isAlreadyProcessing: !isFirst,
+                querySource,
+                canUseTool,
+                uuid: cmd.uuid,
+                ideSelection: isFirst && !skipLocalContext ? ideSelection : undefined,
+                skipSlashCommands: cmd.skipSlashCommands,
+                bridgeOrigin: cmd.bridgeOrigin,
+                isMeta: cmd.isMeta,
+                skipAttachments: cmd.skipAttachments || skipLocalContext || !isFirst,
+                skipHooks: cmd.origin?.kind === 'peer' || skipLocalContext,
+                promptSubmitMetadata: cmd.promptSubmitMetadata ?? {
+                  origin: cmd.bridgeOrigin ? { kind: 'bridge' } :
+                    cmd.origin?.kind === 'channel' ? { kind: 'channel', server: cmd.origin.server } :
+                    cmd.origin?.kind === 'plugin' ? cmd.origin :
+                    cmd.origin?.kind === 'human' ? { kind: 'composer' } :
+                    cmd.origin ? { kind: cmd.origin.kind } :
+                    cmd.mode === 'task-notification' ? { kind: 'task-notification' } :
+                    { kind: 'unclassified' },
+                  wait: false,
+                },
+                promptSubmitCallerChain: cmd.promptSubmitCallerChain,
+                onPromptAdmission: admitted => {
+                  if (admitted.admission) cmd.promptSubmitReceipt?.admit(admitted.admission)
+                  cmd.commandRunReceipt?.admit(admitted)
+                },
+              })
+          } catch (error) {
+            for (const queued of commands.slice(i)) queued.commandRunReceipt?.cancel(error)
+            cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
+            for (const follower of commands.slice(i + 1))
+              follower.promptSubmitReceipt?.admit({drop:FAILED_PROMPT_BATCH_DROP})
+            throw error
+          }
+          if (!result.admission)
+            cmd.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
+        }
         // Stamp origin here rather than threading another arg through
         // processUserInput → processUserInputBase → processTextPrompt → createUserMessage.
         // Derive origin from mode for task-notifications — mirrors the origin
@@ -528,6 +603,9 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           }
         }
         newMessages.push(...result.messages)
+        if (result.admission?.text !== undefined) {
+          admittedTexts.push(result.admission.text)
+        }
         if (isFirst) {
           shouldQuery = result.shouldQuery
           allowedTools = result.allowedTools
@@ -556,11 +634,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
       }
 
       if (newMessages.length) {
-        // History is now added in the caller (onSubmit) for direct user submissions.
-        // This ensures queued command processing (notifications, already-queued user input)
-        // doesn't add to history, since those either shouldn't be in history or were
-        // already added when originally queued.
-        resetHistory()
         setToolJSX({
           jsx: null,
           shouldHidePromptInput: false,
@@ -585,6 +658,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           shouldCallBeforeQuery ? onBeforeQuery : undefined,
           primaryInput,
           effort,
+          admittedTexts.length ? { text: admittedTexts.join('\n') } : undefined,
         )
       } else {
         // Local slash commands that skip messages (e.g., /model, /theme).
@@ -598,7 +672,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
           shouldHidePromptInput: false,
           clearLocalJSX: true,
         })
-        resetHistory()
         setAbortController(null)
       }
 
@@ -623,5 +696,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // turn's resetLoadingState. Harmless when onQuery ran: setMessages grew
     // displayedMessages past the baseline, so REPL.tsx already hid it.
     setUserInputOnProcessing(undefined)
+    finishInputRun?.()
   }
 }

@@ -131,6 +131,7 @@ import {
 import { filterDeniedAgents } from './permissions/permissions.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
+import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import {
   matchingRuleForInput,
   pathInAllowedWorkingPath,
@@ -171,7 +172,6 @@ import {
 } from './toolSearch.js'
 import {
   getMcpInstructionsDelta,
-  isMcpInstructionsDeltaEnabled,
   type ClientSideInstruction,
 } from './mcpInstructionsDelta.js'
 import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from './claudeInChrome/common.js'
@@ -256,8 +256,7 @@ import {
   isTeamLead,
 } from './teammate.js'
 import { isInProcessTeammate } from './teammateContext.js'
-import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
-import { unassignTeammateTasks } from './tasks.js'
+import { handleTeammateShutdownApproved } from './swarm/teammateShutdown.js'
 import { getCompanionIntroAttachment } from '../buddy/prompt.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -394,6 +393,7 @@ export type HookAttachment =
       hookName: string
       toolUseID: string
       hookEvent: HookEvent
+      modEvent?: 'prompt.submit' | 'tool.call'
     }
   | HookSystemMessageAttachment
   | HookPermissionDecisionAttachment
@@ -1663,10 +1663,10 @@ export function getDeferredToolsDeltaAttachment(
  * Exported for compact.ts — re-announces the full set after compaction eats
  * prior deltas.
  */
-export function getAgentListingDeltaAttachment(
+export async function getAgentListingDeltaAttachment(
   toolUseContext: ToolUseContext,
   messages: Message[] | undefined,
-): Attachment[] {
+): Promise<Attachment[]> {
   if (!shouldInjectAgentListInMessages()) return []
 
   // Skip if AgentTool isn't in the pool — the listing would be unactionable.
@@ -1694,6 +1694,21 @@ export function getAgentListingDeltaAttachment(
   )
   if (allowedAgentTypes) {
     filtered = filtered.filter(a => allowedAgentTypes.includes(a.agentType))
+  }
+  const { projectOfferedAgents } = await import('../services/mods/agentOffer.js')
+  const ownedSnapshot =
+    !toolUseContext.modsSnapshot && toolUseContext.mods?.hasHooks('agent.offer')
+      ? toolUseContext.mods.capture({
+          toolCatalog: () => createToolCatalogForContext(toolUseContext),
+        })
+      : undefined
+  try {
+    filtered = await projectOfferedAgents(filtered, {
+      snapshot: toolUseContext.modsSnapshot ?? ownedSnapshot,
+      signal: toolUseContext.abortController.signal,
+    })
+  } finally {
+    ownedSnapshot?.release()
   }
 
   // Reconstruct announced set from prior deltas in the transcript.
@@ -1734,15 +1749,13 @@ export function getAgentListingDeltaAttachment(
   ]
 }
 
-// Exported for compact.ts / reactiveCompact.ts — single source of truth for the gate.
+// Shared with compaction so persisted instructions follow the same delta path.
 export function getMcpInstructionsDeltaAttachment(
   mcpClients: MCPServerConnection[],
   tools: Tools,
   model: string,
   messages: Message[] | undefined,
 ): Attachment[] {
-  if (!isMcpInstructionsDeltaEnabled()) return []
-
   // The chrome ToolSearch hint is client-authored and ToolSearch-conditional;
   // actual server `instructions` are unconditional. Decide the chrome part
   // here, pass it into the pure diff as a synthesized entry.
@@ -3898,37 +3911,15 @@ async function getTeammateMailboxAttachments(
           : undefined
 
         if (teammateId) {
-          // Remove from team file
-          removeTeammateFromTeamFile(teamName, {
-            agentId: teammateId,
-            name: teammateToRemove,
-          })
-          logForDebugging(
-            `[SwarmMailbox] Removed ${teammateToRemove} from team file`,
-          )
-
-          // Unassign tasks owned by this teammate
-          await unassignTeammateTasks(
+          await handleTeammateShutdownApproved({
             teamName,
             teammateId,
-            teammateToRemove,
-            'shutdown',
-          )
-
-          // Remove from teamContext in AppState
-          toolUseContext.setAppState(prev => {
-            if (!prev.teamContext?.teammates) return prev
-            if (!(teammateId in prev.teamContext.teammates)) return prev
-            const { [teammateId]: _, ...remainingTeammates } =
-              prev.teamContext.teammates
-            return {
-              ...prev,
-              teamContext: {
-                ...prev.teamContext,
-                teammates: remainingTeammates,
-              },
-            }
+            teammateName: teammateToRemove,
+            setAppState: toolUseContext.setAppState,
           })
+          logForDebugging(
+            `[SwarmMailbox] Removed ${teammateToRemove} from team`,
+          )
         }
       }
     }

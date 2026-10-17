@@ -7,6 +7,10 @@
  * SDK consumers should use coreSchemas.ts instead.
  */
 
+import { SDK_CONTROL_ERROR_CODES } from './controlTypes.js'
+import { SDKControlUIRequestSchema } from './modsControlSchemas.js'
+export * from './modsControlSchemas.js'
+
 import { z } from 'zod/v4'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
@@ -55,10 +59,19 @@ export const SDKHookCallbackMatcherSchema = lazySchema(() =>
 // Control Request Types
 // ============================================================================
 
+export const SDKLocalPluginSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('local'),
+    path: z.string(),
+    skipMcpDiscovery: z.boolean().optional(),
+  }),
+)
+
 export const SDKControlInitializeRequestSchema = lazySchema(() =>
   z
     .object({
       subtype: z.literal('initialize'),
+      plugins: z.array(SDKLocalPluginSchema()).optional(),
       hooks: z
         .record(HookEventSchema(), z.array(SDKHookCallbackMatcherSchema()))
         .optional(),
@@ -78,6 +91,7 @@ export const SDKControlInitializeRequestSchema = lazySchema(() =>
 export const SDKControlInitializeResponseSchema = lazySchema(() =>
   z
     .object({
+      plugins_applied: z.boolean().optional(),
       commands: z.array(SlashCommandSchema()),
       agents: z.array(AgentInfoSchema()),
       output_style: z.string(),
@@ -646,6 +660,7 @@ export const SDKControlElicitationResponseSchema = lazySchema(() =>
 
 export const SDKControlRequestInnerSchema = lazySchema(() =>
   z.union([
+    SDKControlUIRequestSchema(),
     SDKControlInterruptRequestSchema(),
     SDKControlPermissionRequestSchema(),
     SDKControlInitializeRequestSchema(),
@@ -696,6 +711,7 @@ export const ControlErrorResponseSchema = lazySchema(() =>
     subtype: z.literal('error'),
     request_id: z.string(),
     error: z.string(),
+    error_code: z.enum(SDK_CONTROL_ERROR_CODES).optional(),
     pending_permission_requests: z
       .array(z.lazy(() => SDKControlRequestSchema()))
       .optional(),

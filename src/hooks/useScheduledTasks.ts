@@ -12,6 +12,8 @@ import { createCronScheduler } from '../utils/cronScheduler.js'
 import { removeCronTasks } from '../utils/cronTasks.js'
 import { logForDebugging } from '../utils/debug.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
+import { enqueueInboundMessage } from '../utils/inboundMessageQueue.js'
+import { logError } from '../utils/log.js'
 import { createScheduledTaskFireMessage } from '../utils/messages.js'
 import { WORKLOAD_CRON } from '../utils/workloadContext.js'
 
@@ -70,8 +72,9 @@ export function useScheduledTasks({
     // forward isMeta, so their messages remain visible in the
     // transcript. This is acceptable since normal mode is not the
     // primary use case for scheduled tasks.
-    const enqueueForLead = (prompt: string) =>
-      enqueuePendingNotification({
+    const inboundController = new AbortController()
+    const enqueueForLead = (prompt: string, onQueued?: () => void) => {
+      void enqueueInboundMessage({
         value: prompt,
         mode: 'prompt',
         priority: 'later',
@@ -81,7 +84,11 @@ export function useScheduledTasks({
         // at lower QoS when capacity is tight. No human is actively
         // waiting on this response.
         workload: WORKLOAD_CRON,
-      })
+      }, { kind: 'scheduled-trigger' }, {
+        signal: inboundController.signal,
+        enqueue: command => { enqueuePendingNotification(command); onQueued?.() },
+      }).catch(logError)
+    }
 
     const scheduler = createCronScheduler({
       // Missed-task surfacing (onFire fallback). Teammate crons are always
@@ -112,8 +119,7 @@ export function useScheduledTasks({
         const msg = createScheduledTaskFireMessage(
           `Running scheduled task (${formatCronFireTime(new Date())})`,
         )
-        setMessages(prev => [...prev, msg])
-        enqueueForLead(task.prompt)
+        enqueueForLead(task.prompt, () => setMessages(prev => [...prev, msg]))
       },
       isLoading: () => isLoadingRef.current,
       assistantMode,
@@ -121,7 +127,7 @@ export function useScheduledTasks({
       isKilled: () => !isKairosCronEnabled(),
     })
     scheduler.start()
-    return () => scheduler.stop()
+    return () => { inboundController.abort(); scheduler.stop() }
     // assistantMode is stable for the session lifetime; store/setAppState are
     // stable refs from useSyncExternalStore; setMessages is a stable useCallback.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -84,8 +84,10 @@ const renderBorder = (
   y: number,
   node: DOMNode,
   output: Output,
+  inheritedBackgroundColor?: Color,
 ): void => {
   if (node.style.borderStyle) {
+    const backgroundColor = node.style.backgroundColor ?? inheritedBackgroundColor
     const width = Math.floor(node.yogaNode!.getComputedWidth())
     const height = Math.floor(node.yogaNode!.getComputedHeight())
     const box =
@@ -211,19 +213,19 @@ const renderBorder = (
     const offsetY = showTopBorder ? 1 : 0
 
     if (topBorder) {
-      output.write(x, y, topBorder)
+      output.write(x, y, topBorder, undefined, backgroundColor)
     }
 
     if (showLeftBorder) {
-      output.write(x, y + offsetY, leftBorder)
+      output.write(x, y + offsetY, leftBorder, undefined, backgroundColor)
     }
 
     if (showRightBorder) {
-      output.write(x + width - 1, y + offsetY, rightBorder)
+      output.write(x + width - 1, y + offsetY, rightBorder, undefined, backgroundColor)
     }
 
     if (bottomBorder) {
-      output.write(x, y + height - 1, bottomBorder)
+      output.write(x, y + height - 1, bottomBorder, undefined, backgroundColor)
     }
   }
 }

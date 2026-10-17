@@ -3,6 +3,7 @@
  * This module has heavier dependencies and should be lazy-loaded when possible.
  */
 import { feature } from 'bun:bundle'
+import { retainLiveAgentNames } from '../../utils/sendMessagePins.js'
 import { randomUUID, type UUID } from 'crypto'
 import {
   getLastMainRequestId,
@@ -34,6 +35,7 @@ import {
 import { logError } from '../../utils/log.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
 import { setCwd } from '../../utils/Shell.js'
+import { notifyTasksUpdated } from '../../utils/tasks.js'
 import { processSessionStartHooks } from '../../utils/sessionStart.js'
 import {
   clearSessionMetadata,
@@ -174,6 +176,8 @@ export async function clearConversation({
       return {
         ...prev,
         tasks: nextTasks,
+        sendMessagePins: {},
+        agentNameRegistry: retainLiveAgentNames(prev.agentNameRegistry, nextTasks),
         attribution: createEmptyAttributionState(),
         // Clear standalone agent context (name/color set by /rename, /color)
         // so the new session doesn't display the old session's identity badge
@@ -214,6 +218,7 @@ export async function clearConversation({
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking
   regenerateSessionId({ setCurrentAsParent: true })
+  notifyTasksUpdated()
   if (mods) await mods.bind({
     cwd: getOriginalCwd(),
     sessionId: getSessionId(),

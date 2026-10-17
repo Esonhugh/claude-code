@@ -1,28 +1,106 @@
+import { createModTimerRealm } from './timerRealm.js'
+import {normalizeModModelCompleteRequest} from './modelTextBlocks.js'
 import * as vm from 'node:vm'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import { workerData } from 'node:worker_threads'
+import { atob as hostAtob, btoa as hostBtoa } from 'node:buffer'
+import { webcrypto } from 'node:crypto'
+import { performance as hostPerformance } from 'node:perf_hooks'
+import { TextDecoder as HostTextDecoder, TextEncoder as HostTextEncoder } from 'node:util'
 import { isPromise, isProxy } from 'node:util/types'
-import type { ModWorkerReply, ModWorkerRequest } from './protocol.js'
+import { URL as HostURL, URLSearchParams as HostURLSearchParams } from 'node:url'
+import { createModHookStream, createModProcessStream, type ModWorkerReply, type ModWorkerRequest } from './protocol.js'
+import { createModUiRealm } from './uiRealm.js'
+import { createModClientRealm, copyModClientData } from './clientRealm.js'
+import { isModBroadEventPattern, EMPTY_MOD_EVENT_PATTERN_ERROR, isModEventPattern, matchesModEventPattern, normalizeModMatcher } from './matcher.js'
+import { createModWebRealm } from './webRealm.js'
+import { modStateLibrarySource } from './stateLibrary.js'
 
 // This bootstrap runs in the VM realm. The bridge accepts and returns strings;
 // neither a host object nor a host function is returned to plugin code.
-const bootstrap = `((bridge, isProxy, isPromise) => {
+const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, readBudget, currentInvocation) => {
+  const normalizeStateValue = value => {
+    let text;
+    try { text = JSON.stringify(value); }
+    catch (error) { throw TypeError('state.set value is not JSON data (' + String(error?.message ?? error) + ')'); }
+    if (text === undefined) throw TypeError('state.set value is not JSON data');
+    if (text.length > 4194304) throw RangeError('state.set value is ' + text.length + ' characters, over the 4194304 limit');
+    return JSON.parse(text);
+  };
+  const uiRealm = (${createModUiRealm.toString()})(plugin, isProxy);
+  const copyClientData = value => (${copyModClientData.toString()})(value, isProxy);
+  let clientRequestId;
+  const clients = (${createModClientRealm.toString()})(uiRealm, copyClientData, phase => {
+    if (clientRequestId !== undefined) bridge(JSON.stringify({type:'client-phase',id:clientRequestId,phase}));
+  }, (id, error, unmounted) => {
+    bridge(JSON.stringify({type:'client-fault',instance:id,error,unmounted}));
+  });
+  const isModBroadEventPattern = (${isModBroadEventPattern.toString()});
+  const isModEventPattern = (${isModEventPattern.toString()});
+  const emptyEventPatternError = ${JSON.stringify(EMPTY_MOD_EVENT_PATTERN_ERROR)};
+  const matchesModEventPattern = (${matchesModEventPattern.toString()});
+  const normalizeModMatcher = (${normalizeModMatcher.toString()});
+  const matcherWire = value => {
+    if (value instanceof RegExp) return {type:'regexp', source:value.source, flags:value.flags};
+    if (Array.isArray(value)) return {type:'array', values:value.map(matcherWire)};
+    if (value && typeof value === 'object') return {type:'object', entries:Object.entries(value).map(([key,item]) => [key,matcherWire(item)])};
+    return {type:'value', value};
+  };
+  Object.defineProperties(globalThis, { h: {value:uiRealm.h}, Fragment: {value:uiRealm.Fragment} });
+  const drawings = new Map();
+  const drawingCallbacks = new WeakMap();
+  const keepDrawingCallback = (callback, handles, allocated) => {
+    let id = drawingCallbacks.get(callback);
+    if (id === undefined) { id = ++nextHandle; drawingCallbacks.set(callback, id); }
+    if (!functions.has(id)) { functions.set(id, callback); allocated.push(id); }
+    handles.add(id);
+    return id;
+  };
+  let currentDrawing;
+  let nextUiCall = 0;
+  let uiAllowed = true;
+  let uiTables = new Map();
+  let uiTablesText = '[]';
   const functions = new Map();
   const wires = new WeakMap();
   const hostFunctions = new Map();
+  const engines = new Map();
   const frames = new Map();
   const pending = new Map();
+  const hostErrors = new WeakMap();
+  const abortErrors = new WeakSet();
   const signals = new Map();
   const registrations = [];
+  const singleRegistrations = new Set();
   const timers = new Map();
-  const report = error => {
+  const streams = new Map();
+  const streamHandles = new Map();
+  // Official complete() reuses this frozen value only for author-side cancellation.
+  const abortedModelComplete = Object.freeze({isAnswered:false,reason:'aborted',usage:Object.freeze({input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0})});
+  const normalizeModelComplete = (${normalizeModModelCompleteRequest.toString()});
+  const createStream = (${createModHookStream.toString()});
+  const createProcessStream = (${createModProcessStream.toString()});
+  const settle = request => {
+    signals.delete(request.id);
+    const frame = frames.get(request.id);
+    if (frame) { frame.active = false; frame.remainingMs = readBudget(request.id, true); }
+    frames.delete(request.id);
+    if (request.next) { hostFunctions.delete(request.next.call); hostFunctions.delete(request.next.to); }
+    for (const id of streamHandles.get(request.id) ?? []) hostFunctions.delete(id);
+    streamHandles.delete(request.id);
+    streams.delete(request.id);
+  };
+  const report = (error, operation) => {
     const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined;
-    bridge(JSON.stringify({ type: 'async-error', error: typeof message === 'string' ? message : 'Module asynchronous callback failed' }));
+    const reason = typeof message === 'string' ? message : 'Module asynchronous callback failed';
+    bridge(JSON.stringify({ type: 'async-error', error: operation ? '$.' + operation + ' dropped: ' + reason : reason }));
   };
   let nextHandle = 0, nextCall = 0, nextTimer = 0, registering = true, disposed = false;
   const encode = (value, seen = new Set()) => {
     if (value === undefined) return { type: 'undefined' };
     if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
-      if (typeof value === 'number' && !Number.isFinite(value)) throw Error('Non-finite module value');
+      if (typeof value === 'number' && !Number.isFinite(value)) return {type:'non-finite',value:Number.isNaN(value) ? 'NaN' : value > 0 ? 'Infinity' : '-Infinity'};
       return { type: 'value', value };
     }
     if ((typeof value !== 'object' && typeof value !== 'function') || isProxy(value)) throw Error('Unsupported module value (proxies are not allowed)');
@@ -54,14 +132,129 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
     seen.delete(value);
     return result;
   };
-  const decode = (wire, invocation) => {
+  const encodeUiProps = (value, grant, seen = new Set()) => {
+    if (value === undefined) return { type: 'undefined' };
+    if (value === null || ['string', 'boolean', 'number'].includes(typeof value)) {
+      if (typeof value === 'number' && !Number.isFinite(value)) throw Error('Non-finite module value');
+      return { type: 'value', value };
+    }
+    if ((typeof value !== 'object' && typeof value !== 'function') || isProxy(value)) throw Error('Unsupported module value (proxies are not allowed)');
+    if (typeof value === 'function') {
+      let id = wires.get(value)?.id;
+      if (typeof id !== 'number') { id = ++nextHandle; functions.set(id, value); wires.set(value, { type: 'function', id }); }
+      currentDrawing?.handles.add(id);
+      return { type: 'ui-consumer-function', publication: grant.publication, consumer: environment, provider: grant.provider, id };
+    }
+    if (seen.has(value) || seen.size > 100) throw Error('Unsupported module value');
+    seen.add(value);
+    let result;
+    if (Array.isArray(value)) result = { type: 'array', values: Array.from({ length: value.length }, (_, index) => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+      if (!descriptor) return { type: 'undefined' };
+      if (!('value' in descriptor)) throw Error('Module accessors cannot cross the boundary');
+      return encodeUiProps(descriptor.value, grant, seen);
+    }) };
+    else result = { type: 'object', entries: Object.keys(value).map(key => {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor || !('value' in descriptor)) throw Error('Module accessors cannot cross the boundary');
+      if (key === 'then' && typeof descriptor.value === 'function') throw Error('Module thenable values are unsupported');
+      return [key, encodeUiProps(descriptor.value, grant, seen)];
+    }) };
+    seen.delete(value);
+    return result;
+  };
+  const decode = (wire, invocation, mutable = false) => {
     if (wire.type === 'undefined') return undefined;
     if (wire.type === 'value') return wire.value;
-    if (wire.type === 'array') return Object.freeze(wire.values.map(v => decode(v, invocation)));
-    if (wire.type === 'object') return Object.freeze(Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation)])));
+    if (wire.type === 'non-finite') return Number(wire.value);
+    if (wire.type === 'array') { const value = wire.values.map(v => decode(v, invocation, mutable)); return mutable ? value : Object.freeze(value); }
+    if (wire.type === 'object') { const value = Object.fromEntries(wire.entries.map(([k,v]) => [k, decode(v, invocation, mutable)])); return mutable ? value : Object.freeze(value); }
+    if (wire.type === 'engine') {
+      if (!engines.has(wire.id)) engines.set(wire.id, decode(wire.value, invocation));
+      return engines.get(wire.id);
+    }
     if (wire.type === 'function') {
       if (!functions.has(wire.id)) throw Error('Unknown module function');
       return functions.get(wire.id);
+    }
+    if (wire.type === 'ui-core') return uiRealm.resolve({surface:wire.surface,component:wire.component});
+    if (wire.type === 'ui-function') {
+      return Object.freeze(props => {
+        if (disposed) throw Error('Module environment unloaded');
+        const target = invokeUi(JSON.stringify(wire), JSON.stringify(encodeUiProps({drawing:currentDrawing?.drawing,props}, wire)));
+        if (isPromise(target)) throw Error('UI constructors must be synchronous functions');
+        return decode(JSON.parse(target), invocation);
+      });
+    }
+    if (wire.type === 'ui-consumer-function') {
+      if (wire.consumer === environment) {
+        if (!functions.has(wire.id)) throw Error('UI table callback was withdrawn');
+        return functions.get(wire.id);
+      }
+      if (wire.provider !== environment) throw Error('UI table callback was withdrawn');
+      const drawing = currentDrawing?.drawing;
+      return Object.freeze(input => {
+        if (disposed) throw Error('Module environment unloaded');
+        invokeUi(JSON.stringify(wire), JSON.stringify({type:'undefined'}));
+        return new Promise((resolve, reject) => {
+          const call = ++nextUiCall;
+          pending.set(call, {resolve, reject, invocation});
+          bridge(JSON.stringify({type:'ui-call',call,wire,props:encode({drawing,input})}));
+        });
+      });
+    }
+    if (wire.type === 'ui') {
+      const methods = Object.fromEntries(wire.methods.map(([key,value]) => [key, decode(value, invocation)]));
+      const scroll = methods.scroll;
+      const focus = methods.focus;
+      const blit = methods.blit;
+      const invalidate = methods.invalidate;
+      const panes = methods.panes;
+      const notice = methods.notice;
+      const log = methods.log;
+      const status = methods.status;
+      const toast = methods.toast;
+      const copy = methods.copy;
+      if (notice) methods.notice = Object.freeze((tool_use_id, text) => {
+        notice(tool_use_id, text).catch(error => report(error, 'ui.notice'));
+      });
+      if (log) methods.log = Object.freeze((text, options = {}) => {
+        log(String(text), {to: options?.to ?? 'transcript'}).catch(error => report(error, 'ui.log'));
+      });
+      if (status) methods.status = Object.freeze(text => {
+        status(text === undefined || text === null ? undefined : String(text)).catch(error => report(error, 'ui.status'));
+      });
+      if (toast) methods.toast = Object.freeze((text, options = {}) => {
+        toast(String(text), {...typeof options.timeoutMs === 'number' && {timeoutMs: options.timeoutMs}}).catch(error => report(error, 'ui.toast'));
+      });
+      if (copy) methods.copy = Object.freeze(input => copy({text:input?.text,...input?.surface !== undefined && {surface:input.surface}}));
+      if (panes) methods.panes = Object.freeze(async () =>
+        decode(encode(await panes()), invocation, true));
+      if (invalidate) methods.invalidate = Object.freeze(event => {
+        invalidate(event).catch(error => report(error, 'ui.invalidate'));
+      });
+      if (scroll) methods.scroll = input => scroll({
+        to: input?.to,
+        ...(input?.in !== undefined && {in:input.in}),
+        ...(input?.block !== undefined && {block:input.block}),
+      });
+      if (focus) methods.focus = input => focus({requestId:input?.requestId, key:input?.key});
+      if (blit) methods.blit = input => blit({
+        requestId:input?.requestId,
+        key:input?.key,
+        ...(input?.cells !== undefined && {cells:input.cells}),
+        ...(input?.source !== undefined && {source:input.source}),
+        ...(input?.columns !== undefined && {columns:input.columns}),
+        ...(input?.rows !== undefined && {rows:input.rows}),
+      });
+      const ui = Object.freeze({...methods, resolve: Object.freeze(input => {
+        if (disposed) throw Error('Module environment unloaded');
+        if (!uiAllowed) throw Error('Module capability ui.resolve was withdrawn');
+        const key = input && typeof input === 'object' ? input.surface + ':' + input.component : '';
+        return uiTables.get(key) ?? uiRealm.resolve(input);
+      })});
+      wires.set(ui, wire);
+      return ui;
     }
     if (wire.type === 'clock') {
       const now = decode({ type: 'host-function', id: wire.now }, invocation);
@@ -109,7 +302,7 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
             if (!active || disposed) return;
             callbackStarted = true;
             if (kind === 'after') { active = false; timers.delete(id); }
-            await runCallback(callback);
+            await runCallback(callback, kind);
             if (kind === 'every' && active && !disposed) run();
           }).catch(error => {
             if ((!active && !callbackStarted) || disposed) return;
@@ -119,20 +312,89 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
         timers.set(id, stop); run();
         return Object.freeze({ cancel: stop });
       };
-      return Object.freeze({ now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) });
+      const clock = Object.freeze({ now, sleep: Object.freeze(sleep), after: Object.freeze((ms, callback) => schedule('after', ms, callback)), every: Object.freeze((ms, callback) => schedule('every', ms, callback)) });
+      wires.set(clock, wire);
+      return clock;
+    }
+    if (wire.type === 'host-stream') {
+      const pull = decode({type:'host-function', id:wire.id}, invocation);
+      let handles = streamHandles.get(invocation);
+      if (!handles) { handles = new Set(); streamHandles.set(invocation, handles); }
+      if (wire.streamLifetime !== 'environment') handles.add(wire.id);
+      return (wire.streamLifetime === 'environment' ? createProcessStream : createStream)(async (method, value) => {
+        try {
+          const item = await pull(method, value instanceof Error ? {message:value.message,name:value.name} : value);
+          if (item.done) { handles.delete(wire.id); hostFunctions.delete(wire.id); }
+          return item;
+        } catch (error) { handles.delete(wire.id); hostFunctions.delete(wire.id); throw error; }
+      });
     }
     if (wire.type === 'host-function') {
       const cached = hostFunctions.get(wire.id);
       if (cached) return cached;
-      const proxy = (...args) => {
+      const callHost = (...args) => {
         if (disposed) return Promise.reject(Error('Module environment unloaded'));
         const call = ++nextCall;
-        return new Promise((resolve, reject) => {
-          pending.set(call, { resolve, reject, invocation });
-          try { bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)) })); }
-          catch (error) { pending.delete(call); reject(error); }
+        let cleanup;
+        const result = new Promise((resolve, reject) => {
+          pending.set(call, { resolve, reject, invocation:currentInvocation() ?? invocation, modelMethod:wire.modelMethod, mutableResult:wire.mutableResult });
+          try {
+            if (wire.storeMethod === 'set') {
+              const text = JSON.stringify(args[1]);
+              if (text === undefined) throw TypeError('value must be JSON data');
+              if (text.length > 4194304) throw RangeError('Store value exceeds 4194304 characters');
+              args[1] = JSON.parse(text);
+            }
+            if (wire.storeMethod && (typeof args[0] !== 'string' || args[0] === ''))
+              throw TypeError('key must be a nonempty string');
+            let modelAborted, modelAbortReason;
+            if (wire.modelMethod === 'complete') {
+              const signal = args[1]?.signal;
+              if (signal !== undefined && signal !== null && (typeof signal !== 'object' || !('aborted' in signal) || typeof signal.addEventListener !== 'function' || typeof signal.removeEventListener !== 'function'))
+                throw Object.assign(Error(plugin + ': options.signal must be an AbortSignal'), {name:'HooksError'});
+              const reason = () => {
+                const value = signal?.reason;
+                return value instanceof Error ? {name:value.name,message:value.message}
+                  : {name:'AbortError',message:value === undefined ? 'This operation was aborted' : String(value)};
+              };
+              const abort = () => bridge(JSON.stringify({type:'model-abort',call,reason:reason()}));
+              if (signal && !signal.aborted) signal.addEventListener('abort',abort,{once:true});
+              cleanup = () => signal?.removeEventListener('abort',abort);
+              modelAborted = Boolean(signal?.aborted);
+              if (modelAborted) modelAbortReason = reason();
+              args = [args[0]];
+            }
+            bridge(JSON.stringify({ call, invocation, handle: wire.id, args: args.map(v => encode(v)), ...(wire.modelMethod === 'complete' ? {modelAborted,modelAbortReason} : {}) }));
+          } catch (error) { pending.delete(call); reject(error); }
         });
+        return result.finally(() => cleanup?.());
       };
+      const invokeHost = (...args) => {
+        if (wire.stateMethod === 'set') {
+          try { args[1] = normalizeStateValue(args[1]); }
+          catch (error) { return Promise.reject(error); }
+        }
+        return callHost(...args);
+      };
+      const proxy = wire.stream ? (...args) => {
+        const opened = invokeHost(...args);
+        if (wire.streamLifetime === 'environment')
+          return createProcessStream((method,value) => opened.then(stream => stream[method](value)));
+        const result = opened.then(stream => stream.result);
+        result.catch(() => {});
+        return {
+          next: value => opened.then(stream => stream.next(value)),
+          return: value => opened.then(stream => stream.return(value)),
+          throw: error => opened.then(stream => stream.throw(error)),
+          result,
+          [Symbol.asyncIterator]() { return this; },
+        };
+      } : wire.modelMethod === 'complete' ? async (request, options) => {
+        const signal = options?.signal;
+        if (signal?.aborted === true) return abortedModelComplete;
+        try { return await invokeHost(normalizeModelComplete(request), {signal}); }
+        catch (error) { if (Boolean(signal?.aborted)) return abortedModelComplete; throw error; }
+      } : invokeHost;
       hostFunctions.set(wire.id, proxy); wires.set(proxy, wire);
       return Object.freeze(proxy);
     }
@@ -145,27 +407,54 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
     }
     return value;
   };
+  const asyncGeneratorPrototype = Object.getPrototypeOf(async function* () {});
+  const generatorPrototype = Object.getPrototypeOf(function* () {});
+  const checkHandler = (event, handler) => {
+    if (typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook handler');
+    const prototype = Object.getPrototypeOf(handler);
+    if (event === 'turn.step' || event === 'process.spawn') {
+      if (prototype !== asyncGeneratorPrototype) throw Error(event + ' handlers must be async generators');
+    } else if (prototype === asyncGeneratorPrototype || prototype === generatorPrototype) throw Error('Generator hooks require exact turn.step or process.spawn');
+  };
   function on(event, matcher, handler) {
     if (!registering) throw Error('on() is only available during register()');
     if (typeof matcher === 'function') { handler = matcher; matcher = undefined; }
     const reserved = new Set(['__proto__', 'prototype', 'constructor']);
-    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'settings', 'env']);
-    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'tool.call', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every']);
-    if (typeof event !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*[.][A-Za-z_][A-Za-z0-9_]*$/.test(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
-    const [noun, method] = event.split('.');
-    if (reserved.has(noun) || reserved.has(method) || core.has(noun) && !supported.has(event)) throw Error('Unsupported hook event');
+    const core = new Set(['engine', 'plugin', 'session', 'tool', 'clock', 'command', 'config', 'agent', 'mcp', 'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env']);
+    const supported = new Set(['engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check', 'clock.now', 'clock.sleep', 'clock.after', 'clock.every',
+      'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn', 'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
+      'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'mcp.connect', 'mcp.call', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+      'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.selection', 'ui.copy',
+      'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault', 'config.set', 'config.describe', 'session.authorize', 'http.fetch',
+      'prompt.section', 'prompt.context', 'prompt.attachment', 'skill.prompt', 'attribution.text', 'settings.read', 'tool.describe', 'command.describe', 'agent.offer',
+      'agent.spawn', 'agent.register', 'agent.list', 'tool.register', 'tool.list']);
+    if (event === '!*') throw Error(emptyEventPatternError);
+    if (!isModEventPattern(event) || typeof handler !== 'function' || isProxy(handler)) throw Error('Invalid hook registration event or handler');
+    checkHandler(event, handler);
+    const selected = event.startsWith('!') ? event.slice(1) : event;
+    if (selected !== '*' && !selected.endsWith('.*')) {
+      const [noun, method] = selected.split('.');
+      if (reserved.has(noun) || reserved.has(method) || core.has(noun) && !supported.has(selected)) throw Error('Unsupported hook event');
+    }
     let checkedMatcher;
     if (matcher !== undefined) {
-      if (!matcher || typeof matcher !== 'object' || isProxy(matcher) || Object.getPrototypeOf(matcher) !== Object.prototype) throw Error('Invalid registration matcher');
-      const entries = [];
-      for (const key of Reflect.ownKeys(matcher)) {
-        const descriptor = Object.getOwnPropertyDescriptor(matcher, key);
-        if (typeof key !== 'string' || reserved.has(key) || !descriptor || !('value' in descriptor)) throw Error('Invalid registration matcher');
-        const value = descriptor.value;
-        if (value !== null && !['string', 'boolean', 'number'].includes(typeof value) || typeof value === 'number' && !Number.isFinite(value)) throw Error('Registration matcher requires primitive equality values');
-        entries.push([key, value]);
-      }
-      checkedMatcher = Object.fromEntries(entries);
+      if (!matcher || typeof matcher !== 'object' || isProxy(matcher) || Array.isArray(matcher) || Object.getPrototypeOf(matcher) !== Object.prototype) throw Error('Invalid registration matcher');
+      const check = (value, seen = new Set()) => {
+        if (!value || typeof value !== 'object') return;
+        if (isProxy(value) || seen.has(value) || seen.size >= 100) throw Error('Invalid registration matcher');
+        seen.add(value);
+        for (const descriptor of Object.values(Object.getOwnPropertyDescriptors(value))) {
+          if (!('value' in descriptor)) throw Error('Invalid registration matcher');
+          check(descriptor.value, seen);
+        }
+        seen.delete(value);
+      };
+      check(matcher);
+      checkedMatcher = matcherWire(normalizeModMatcher(matcher));
+    }
+    if (matcher === undefined || isModBroadEventPattern(event)) {
+      if (singleRegistrations.has(event)) throw Error(plugin + ': on("' + event + '") registered twice');
+      singleRegistrations.add(event);
     }
     const id = encode(handler).id;
     const registration = { id, event, matcher: checkedMatcher, hasCatch: false };
@@ -174,6 +463,7 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       if (!registering || registration.hasCatch || event === 'engine.create' || typeof handler !== 'function') {
         throw Error('Invalid hook catch registration');
       }
+      checkHandler(event, handler);
       registration.hasCatch = true;
       registration.catchId = encode(handler).id;
     } });
@@ -190,9 +480,9 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       removeEventListener(type, listener) { if (type === 'abort') listeners.delete(listener); },
       throwIfAborted() { if (aborted) throw reason; },
     });
-    signals.set(invocation, () => {
+    signals.set(invocation, abortReason => {
       if (aborted) return;
-      aborted = true; reason = Object.assign(Error('Module invocation aborted'), { name: 'AbortError' });
+      aborted = true; reason = Object.assign(Error(abortReason?.message ?? 'Module invocation aborted'), { name: abortReason?.name ?? 'AbortError' });
       const event = Object.freeze({ type: 'abort', target: signal, currentTarget: signal });
       for (const [listener, once] of listeners) {
         if (once) listeners.delete(listener);
@@ -207,43 +497,109 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
   }
   return {
     on,
+    errorReference(error) { return hostErrors.get(error); },
+    isAbortError(error) { return abortErrors.has(error); },
     async register(fn, options) {
       try { await fn(on, freeze(JSON.parse(options))); }
       finally { registering = false; }
       return JSON.stringify(registrations);
     },
+    invokeUi(handle, props) {
+      if (disposed || !functions.has(handle)) throw Error('Unknown or unloaded module function');
+      const value = Reflect.apply(functions.get(handle), undefined, [decode(JSON.parse(props))]);
+      if (isPromise(value)) throw Error('UI constructors must be synchronous functions');
+      return JSON.stringify(encode(value));
+    },
+    invokeUiForDrawing(drawing, handle, props) {
+      if (disposed || !functions.has(handle)) throw Error('Unknown or unloaded module function');
+      let handles = drawings.get(drawing);
+      if (!handles) { handles = new Set(); drawings.set(drawing, handles); }
+      const allocated = [];
+      currentDrawing = { drawing, handles };
+      try {
+        const value = Reflect.apply(functions.get(handle), undefined, [decode(JSON.parse(props))]);
+        if (isPromise(value)) throw Error('UI constructors must be synchronous functions');
+        const result = uiRealm.materialize(value, callback => {
+          return keepDrawingCallback(callback, handles, allocated);
+        });
+        return JSON.stringify(encode(result));
+      } catch (error) {
+        for (const id of allocated) { functions.delete(id); handles.delete(id); }
+        throw error;
+      } finally { currentDrawing = undefined; }
+    },
     async invoke(text) {
       const request = JSON.parse(text);
+      if (request.callbackDrawing !== undefined && !drawings.get(request.callbackDrawing)?.has(request.handle)) throw Error('Unknown drawing callback');
       if (disposed || !functions.has(request.handle)) throw Error('Unknown or unloaded module function');
+      const allocated = [];
       const args = request.args.map(v => decode(v, request.id));
       if (request.next) {
         const meta = request.next;
-        const frame = { active: true, trace: decode(meta.trace, request.id) };
+        const frame = { active: true, trace: decode(meta.trace, request.id), budgetMs: readBudget(request.id, false), remainingMs: undefined };
         frames.set(request.id, frame);
-        const call = decode({type:'host-function', id: meta.call}, request.id);
-        const to = decode({type:'host-function', id: meta.to}, request.id);
+        const call = decode({type:'host-function', id: meta.call, stream:meta.event === 'turn.step' || meta.event === 'process.spawn'}, request.id);
+        const to = decode({type:'host-function', id: meta.to, stream:meta.event === 'turn.step' || meta.event === 'process.spawn'}, request.id);
         const next = (...args) => frame.active ? call(...args) : Promise.reject(Error('Module invocation already settled'));
         Object.defineProperties(next, {
           to: { value: Object.freeze((...args) => frame.active ? to(...args) : Promise.reject(Error('Module invocation already settled'))) },
           signal: { value: makeSignal(request.id) },
           event: { value: meta.event }, origin: { value: decode(meta.origin, request.id) },
           trace: { get: () => frame.trace },
-          is: { value: Object.freeze((event) => event === meta.event) },
+          budget: { value: Object.freeze({
+            ms: frame.budgetMs,
+            get remainingMs() { return frame.remainingMs ?? readBudget(request.id, true); },
+          }) },
+          is: { value: Object.freeze((event) => matchesModEventPattern(event, meta.event)) },
           ...(meta.error ? { error: { value: decode(meta.error, request.id) }, called: { value: meta.called } } : {}),
         });
         args.push(Object.freeze(next));
       }
       try {
-        const value = Reflect.apply(functions.get(request.handle), undefined, args);
-        return JSON.stringify(encode(isPromise(value) && !isProxy(value) ? await value : value));
+        let drawingHandles;
+        if (request.drawing !== undefined) {
+          if (!Number.isSafeInteger(request.drawing) || request.drawing <= 0) throw Error('Invalid module drawing');
+          drawingHandles = drawings.get(request.drawing);
+          if (!drawingHandles) { drawingHandles = new Set(); drawings.set(request.drawing, drawingHandles); }
+        }
+        currentDrawing = drawingHandles ? { drawing: request.drawing, handles: drawingHandles } : undefined;
+        let value;
+        try { value = Reflect.apply(functions.get(request.handle), undefined, args); }
+        finally { currentDrawing = undefined; }
+        let result = isPromise(value) && !isProxy(value) ? await value : value;
+        if (request.stream) {
+          if (!result || isProxy(result) || typeof result.next !== 'function' || typeof result.return !== 'function' || typeof result.throw !== 'function') throw Error('Streaming hook must return an async generator');
+          streams.set(request.id, {iterator:result,request});
+          return JSON.stringify({type:'stream',invocation:request.id});
+        }
+        if (drawingHandles) {
+          result = uiRealm.materialize(result, callback => {
+            return keepDrawingCallback(callback, drawingHandles, allocated);
+          });
+        }
+        return JSON.stringify(encode(result));
+      } catch (error) {
+        for (const handle of allocated) {
+          functions.delete(handle);
+          drawings.get(request.drawing)?.delete(handle);
+        }
+        throw error;
       }
-      finally {
-        signals.delete(request.id);
-        const frame = frames.get(request.id);
-        if (frame) frame.active = false;
-        frames.delete(request.id);
-        if (request.next) { hostFunctions.delete(request.next.call); hostFunctions.delete(request.next.to); }
-      }
+      finally { if (!streams.has(request.id)) settle(request); }
+    },
+    hasStream(invocation) { return streams.has(invocation); },
+    async pull(text) {
+      const request = JSON.parse(text), stream = streams.get(request.invocation);
+      if (!stream || disposed) throw Error('Unknown or unloaded module stream');
+      try {
+        if (!['next','return','throw'].includes(request.method)) throw Error('Invalid stream pull');
+        let value = decode(request.value, request.invocation);
+        if (request.method === 'throw' && value?.message) value = Object.assign(Error(value.message), {name:value.name ?? 'Error'});
+        const item = await stream.iterator[request.method](value);
+        const result = JSON.stringify(encode(item));
+        if (item.done) settle(stream.request);
+        return result;
+      } catch (error) { settle(stream.request); throw error; }
     },
     result(text) {
       const result = JSON.parse(text), item = pending.get(result.call);
@@ -252,87 +608,431 @@ const bootstrap = `((bridge, isProxy, isPromise) => {
       try {
         const frame = frames.get(result.invocation);
         if (frame && result.trace) frame.trace = decode(result.trace, result.invocation);
-        if (result.error !== undefined) item.reject(Error(result.error));
-        else item.resolve(decode(result.value, item.invocation));
+        if (result.error !== undefined) {
+          const error = Error(result.error);
+          if (result.errorName === 'HooksError') error.name = 'HooksError';
+          if (result.errorRef !== undefined) hostErrors.set(error, result.errorRef);
+          item.reject(error);
+        } else item.resolve(decode(result.value, item.invocation, item.mutableResult === true || item.modelMethod === 'complete' || item.modelMethod === 'fork'));
       } catch (error) { item.reject(error); }
     },
-    abort(invocation) { signals.get(invocation)?.(); },
+    trace(text) {
+      const update = JSON.parse(text), frame = frames.get(update.invocation);
+      if (frame) frame.trace = decode(update.trace, update.invocation);
+    },
+    abort(invocation, reason, cooperative) {
+      signals.get(invocation)?.(reason);
+      // Public streams follow their host operation's cancellation rather than
+      // rejecting the successful turn.abort acknowledgement. Explicit close
+      // still abandons pending calls so it can interrupt an uncooperative hook.
+      if (!cooperative && streams.has(invocation)) for (const [call, item] of pending) {
+        if (item.invocation !== invocation || item.modelMethod) continue;
+        pending.delete(call);
+        const error = Object.assign(Error('Module invocation aborted'), {name:'AbortError'});
+        abortErrors.add(error);
+        item.reject(error);
+      }
+    },
+    setUiAccess(allowed) { uiAllowed = allowed; },
+    getUiTables() { return uiTablesText; },
+    setUiTables(text) { uiTables = new Map(JSON.parse(text).map(([key, wire]) => [key, decode(wire)])); uiTablesText = text; },
+    registerClient(path, draw) { clients.register(path, draw); },
+    client(text, requestId) {
+      clientRequestId=requestId;
+      try { return JSON.stringify({value:encode(clients.request(JSON.parse(text)))}); }
+      catch (error) {
+        const safe = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error);
+        const message = safe ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined;
+        let errorName;
+        for (let prototype = safe ? error : undefined, depth = 0; prototype && depth < 32 && !isProxy(prototype); depth++) {
+          const name = Object.getOwnPropertyDescriptor(prototype, 'name')?.value;
+          if (typeof name === 'string') {errorName=name;break;}
+          prototype=Object.getPrototypeOf(prototype);
+        }
+        return JSON.stringify({error:typeof message === 'string' ? message : 'Module invocation failed',clientFaultPhase:clients.errorPhase(error) ?? 'run',errorName});
+      } finally {clientRequestId=undefined;}
+    },
+    releaseDrawing(drawing) {
+      const handles = drawings.get(drawing);
+      drawings.delete(drawing);
+      for (const handle of handles ?? []) {
+        if (![...drawings.values()].some(current => current.has(handle))) functions.delete(handle);
+      }
+    },
     dispose() {
       if (disposed) return;
+      clients.dispose();
       for (const stop of timers.values()) stop();
       timers.clear(); disposed = true; registering = false;
       for (const abort of signals.values()) abort();
       for (const item of pending.values()) item.reject(Error('Module environment unloaded'));
       for (const frame of frames.values()) frame.active = false;
-      signals.clear(); frames.clear(); pending.clear(); functions.clear(); hostFunctions.clear(); registrations.length = 0;
+      for (const stream of streams.values()) {
+        try { stream.iterator.return(undefined).catch(report); } catch (error) { report(error); }
+      }
+      streams.clear(); streamHandles.clear();
+      signals.clear(); frames.clear(); pending.clear(); functions.clear(); hostFunctions.clear(); engines.clear(); drawings.clear(); registrations.length = 0;
     },
   };
 })`
 
 type Environment = {
   context: vm.Context
+  lifetime: { id: number; disposed: boolean }
   api: {
+    errorReference(error: unknown): number | undefined
+    isAbortError(error: unknown): boolean
     register(fn: unknown, options: string): Promise<string>
     invoke(text: string): Promise<string>
+    invokeUi(handle: number, props: string): string
+    invokeUiForDrawing(drawing: number, handle: number, props: string): string
+    pull(text: string): Promise<string>
+    hasStream(invocation: number): boolean
     result(text: string): void
-    abort(invocation: number): void
+    trace(text: string): void
+    abort(invocation: number, reason?: {name:string;message:string}, cooperative?: boolean): void
+    setUiAccess(allowed: boolean): void
+    getUiTables(): string
+    setUiTables(text: string): void
+    registerClient(path: string, draw: unknown): void
+    client(text: string, requestId: number): string
+    releaseDrawing(drawing: number): void
     dispose(): void
   }
 }
 
 const environments = new Map<number, Environment>()
+const invocations = new AsyncLocalStorage<number>()
+const callbacks = new AsyncLocalStorage<boolean>()
+const serving = new AsyncLocalStorage<{ id: number; callers: readonly number[] } | undefined>()
+const servingLive = new Set<number>()
+const attribution = workerData?.stamp instanceof SharedArrayBuffer ? new Int32Array(workerData.stamp) : undefined
+function stamped<T>(environment: number, request: number, call: () => T, callback = false): T {
+  if (!attribution) return call()
+  const previous = Atomics.load(attribution, 0)
+  const previousRequest = Atomics.load(attribution, 2)
+  const previousCallback = Atomics.load(attribution, 4)
+  Atomics.store(attribution, 0, environment)
+  Atomics.store(attribution, 2, request)
+  Atomics.store(attribution, 1, environment)
+  Atomics.store(attribution, 3, request)
+  Atomics.store(attribution, 4, callback ? 1 : 0)
+  Atomics.store(attribution, 5, callback ? 1 : 0)
+  try { return call() }
+  finally {
+    Atomics.store(attribution, 0, previous)
+    Atomics.store(attribution, 2, previousRequest)
+    Atomics.store(attribution, 4, previousCallback)
+    if (previous) {
+      Atomics.store(attribution, 1, previous)
+      Atomics.store(attribution, 3, previousRequest)
+      Atomics.store(attribution, 5, previousCallback)
+    }
+  }
+}
+function servingCall() {
+  const call = serving.getStore()
+  return call && servingLive.has(call.id) ? call : undefined
+}
+function callerFrame<T>(callers: readonly number[], call: () => T): T {
+  if (!attribution) return call()
+  const previous = Array.from({ length: 7 }, (_, index) => Atomics.load(attribution, 6 + index))
+  for (let index = 0; index < 7; index++) Atomics.store(attribution, 6 + index, callers[index] ?? 0)
+  try { return call() }
+  finally { for (let index = 0; index < 7; index++) Atomics.store(attribution, 6 + index, previous[index]!) }
+}
+function uiCallerFrame<T>(resolver: number, call: () => T): T {
+  const previous = attribution ? [1, 3, 5].map(index => Atomics.load(attribution, index)) : []
+  try { return callerFrame([...(servingCall()?.callers ?? []), resolver], call) }
+  finally { if (attribution) for (const [offset, index] of [1, 3, 5].entries()) Atomics.store(attribution, index, previous[offset]!) }
+}
+const budgetClocks = new Map<number, BigInt64Array>()
+const promiseRealms = new WeakMap<object, Environment['lifetime']>()
+const uiPublications = new Map<number, number>()
+const stagedUiConsumers = new Map<number, number>()
+const stagedUiTables = new Map<number, ReadonlyMap<number, readonly [string, unknown][]>>()
 const reply = (message: ModWorkerReply) => postMessage(message)
 
-function createEnvironment(id: number): Environment {
+// A Promise subclass still belongs to the realm whose Promise it extends, so
+// walk the chain instead of trusting the immediate prototype.
+function realmOf(promise: object): Environment['lifetime'] | undefined {
+  for (let proto = Object.getPrototypeOf(promise) as object | null; proto; proto = Object.getPrototypeOf(proto)) {
+    const owner = promiseRealms.get(proto)
+    if (owner) return owner
+  }
+  return undefined
+}
+
+// Detached promises still belong to their VM, not to every plugin in this Worker.
+process.on('unhandledRejection', (error, promise) => {
+  // Throwing here would take down the shared Worker and every other Mod with
+  // it, so an unattributable rejection is dropped instead.
+  const owner = realmOf(promise)
+  if (!owner || owner.disposed) return
+  const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
+    ? Object.getOwnPropertyDescriptor(error, 'message')?.value : undefined
+  reply({ type: 'async-error', environment: owner.id, error: typeof message === 'string' ? message : 'Module asynchronous callback failed' })
+})
+
+
+function createEnvironment(id: number, plugin: string): Environment {
   const context = vm.createContext(Object.create(null), {
     codeGeneration: { strings: false, wasm: false },
   })
   vm.runInContext(`
-    for (const name of ['ShadowRealm', 'WebAssembly', 'FinalizationRegistry',
+    for (const name of ['console', 'ShadowRealm', 'WebAssembly', 'FinalizationRegistry',
       'WeakRef', 'Atomics', 'SharedArrayBuffer', 'queueMicrotask',
       '$vm', 'gc', 'edenGC', 'fullGC', 'print', 'readFile', 'Loader']) {
       delete globalThis[name];
     }
   `, context)
+  vm.runInContext(`(${createModWebRealm.toString()})`, context)({
+    URL: HostURL,
+    URLSearchParams: HostURLSearchParams,
+    TextEncoder: HostTextEncoder,
+    TextDecoder: HostTextDecoder,
+    structuredClone: globalThis.structuredClone,
+    atob: hostAtob,
+    btoa: hostBtoa,
+    crypto: webcrypto,
+    performance: hostPerformance,
+    schedule: (callback: () => void, milliseconds: number) => setTimeout(() => callbacks.run(true, () => stamped(id, invocations.getStore() ?? 0, callback, true)), milliseconds),
+  })
+  const timerRealm = vm.runInContext(`(${createModTimerRealm.toString()})`, context)({
+    schedule: (callback: () => void, milliseconds: number, repeat: boolean) => {
+      const fire = () => callbacks.run(true, () => stamped(id, invocations.getStore() ?? 0, callback, true))
+      return repeat ? setInterval(fire, milliseconds) : setTimeout(fire, milliseconds)
+    },
+    cancel: (handle: ReturnType<typeof setTimeout>, repeat: boolean) => {
+      if (repeat) clearInterval(handle)
+      else clearTimeout(handle)
+    },
+    report: (error: string) => reply({type:'async-error',environment:id,error}),
+  }, plugin) as {dispose():void}
   const api = vm.runInContext(bootstrap, context)((text: string) => {
     const data = JSON.parse(text)
-    reply({ type: 'host-call', ...data, environment: id })
-  }, isProxy, isPromise) as Environment['api']
-  return { context, api }
+    reply({ type: 'host-call', ...data, invocation: invocations.getStore() ?? data.invocation, environment: id, serving: servingCall()?.id, ...(callbacks.getStore() && {callback:true}) })
+  }, (wireText: string, props: string) => {
+    const wire = JSON.parse(wireText) as {
+      type?: unknown
+      publication?: unknown
+      consumer?: unknown
+      provider?: unknown
+      id?: unknown
+    }
+    const caller = wire.type === 'ui-function' ? wire.consumer : wire.provider
+    const activePublication = typeof wire.consumer === 'number' ? uiPublications.get(wire.consumer) : undefined
+    const stagedPublication = typeof wire.consumer === 'number' ? stagedUiConsumers.get(wire.consumer) : undefined
+    if (
+      (wire.type !== 'ui-function' && wire.type !== 'ui-consumer-function') ||
+      caller !== id ||
+      (wire.publication !== activePublication && wire.publication !== stagedPublication) ||
+      typeof wire.provider !== 'number' ||
+      typeof wire.id !== 'number'
+    )
+      throw new Error('UI table constructor was withdrawn')
+    const targetId = wire.type === 'ui-function' ? wire.provider : wire.consumer
+    if (typeof targetId !== 'number') throw new Error('UI table constructor was withdrawn')
+    const target = environments.get(targetId)
+    if (!target || target.lifetime.disposed) throw new Error('UI table constructor was withdrawn')
+    if (wire.type === 'ui-consumer-function') return JSON.stringify({ type: 'undefined' })
+    const value = JSON.parse(props) as { type?: unknown; entries?: unknown }
+    if (value.type !== 'object' || !Array.isArray(value.entries)) throw new Error('Invalid UI constructor input')
+    const entries = new Map(value.entries as [string, unknown][])
+    const drawing = entries.get('drawing') as { type?: unknown; value?: unknown } | undefined
+    const input = entries.get('props')
+    if (!input) throw new Error('Invalid UI constructor input')
+    if (drawing?.type === 'undefined') return uiCallerFrame(id, () => stamped(targetId, invocations.getStore() ?? 0, () => target.api.invokeUi(wire.id as number, JSON.stringify(input))))
+    if (drawing?.type !== 'value' || !Number.isSafeInteger(drawing.value) || (drawing.value as number) <= 0)
+      throw new Error('Invalid UI constructor input')
+    return uiCallerFrame(id, () => stamped(targetId, invocations.getStore() ?? 0, () => target.api.invokeUiForDrawing(drawing.value as number, wire.id as number, JSON.stringify(input))))
+  }, isProxy, isPromise, plugin, id, (invocation: number, remaining: boolean) => {
+    const clock = budgetClocks.get(invocation)
+    if (!clock) return remaining ? Infinity : 0
+    for (;;) {
+      const version = Atomics.load(clock, 0)
+      if (version % 2n) continue
+      const available = Atomics.load(clock, 1)
+      const started = Atomics.load(clock, 2)
+      const ms = Number(Atomics.load(clock, 3))
+      if (version !== Atomics.load(clock, 0)) continue
+      if (!remaining) return ms
+      if (ms === 0) return Infinity
+      const elapsed = started === 0n ? 0 : performance.timeOrigin + performance.now() - Number(started) / 1000
+      return Math.max(0, Number(available) / 1000 - elapsed)
+    }
+  }, () => invocations.getStore()) as Environment['api']
+  const dispose = api.dispose
+  api.dispose = () => {timerRealm.dispose();dispose()}
+  const lifetime = { id, disposed: false }
+  promiseRealms.set(vm.runInContext('Promise.prototype', context), lifetime)
+  return { context, api, lifetime }
 }
 
 self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
   const request = event.data
-  if (request.type === 'ping') { reply({ type: 'pong' }); return }
+  if (request.type === 'ping') { reply({ type: 'pong', n: request.n }); return }
+  if (attribution) {
+    Atomics.store(attribution, 1, 0)
+    Atomics.store(attribution, 3, 0)
+    Atomics.store(attribution, 5, 0)
+    setImmediate(() => { Atomics.store(attribution, 1, 0); Atomics.store(attribution, 3, 0); Atomics.store(attribution, 5, 0) })
+  }
+
+  if (request.type === 'settle') {
+    // A worker turn boundary drains continuations without awaiting held capabilities.
+    setImmediate(() => reply({ type: 'settled', id: request.barrier }))
+    return
+  }
   if (request.type === 'host-result') {
-    environments.get(request.environment)?.api.result(JSON.stringify(request))
+    const environment = environments.get(request.environment)
+    if (environment) stamped(request.environment, request.invocation ?? 0, () => environment.api.result(JSON.stringify(request)), request.callback === true)
     return
   }
   if (request.type === 'abort') {
-    environments.get(request.environment)?.api.abort(request.invocation)
+    environments.get(request.environment)?.api.abort(request.invocation, request.reason, request.cooperative)
+    return
+  }
+  if (request.type === 'trace') {
+    environments.get(request.environment)?.api.trace(JSON.stringify(request))
     return
   }
   try {
+    if (request.type === 'ui-tables') {
+      if (!request.publish) {
+        const prepared = new Map<number, readonly [string, unknown][]>()
+        for (const consumer of request.consumers) {
+          if (!environments.has(consumer.environment)) throw new Error('Module environment unloaded')
+          prepared.set(consumer.environment, consumer.tables)
+        }
+        const previousTables = new Map<number, string>()
+        try {
+          for (const environment of request.staged) {
+            const target = environments.get(environment)
+            const tables = prepared.get(environment)
+            if (!target || !tables) throw new Error('Module environment unloaded')
+            previousTables.set(environment, target.api.getUiTables())
+            target.api.setUiTables(JSON.stringify(tables))
+          }
+        } catch (error) {
+          for (const [environment, tables] of previousTables)
+            environments.get(environment)?.api.setUiTables(tables)
+          throw error
+        }
+        stagedUiTables.clear()
+        stagedUiTables.set(request.publication, prepared)
+        stagedUiConsumers.clear()
+        for (const environment of request.staged)
+          stagedUiConsumers.set(environment, request.publication)
+      } else {
+        const prepared = stagedUiTables.get(request.publication)
+        if (!prepared) throw new Error('Unknown UI table publication')
+        for (const environment of prepared.keys())
+          if (!environments.has(environment)) throw new Error('Module environment unloaded')
+        const previousTables = new Map<number, string>()
+        const previousPublications = new Map(uiPublications)
+        try {
+          for (const [id, environment] of environments) {
+            if (prepared.has(id)) continue
+            previousTables.set(id, environment.api.getUiTables())
+            environment.api.setUiTables('[]')
+            uiPublications.delete(id)
+          }
+          for (const [id, tables] of prepared) {
+            const environment = environments.get(id)!
+            previousTables.set(id, environment.api.getUiTables())
+            uiPublications.set(id, request.publication)
+            environment.api.setUiTables(JSON.stringify(tables))
+          }
+        } catch (error) {
+          uiPublications.clear()
+          for (const [id, publication] of previousPublications)
+            uiPublications.set(id, publication)
+          for (const [id, tables] of previousTables)
+            environments.get(id)?.api.setUiTables(tables)
+          throw error
+        }
+        stagedUiTables.clear()
+        stagedUiConsumers.clear()
+      }
+      reply({ type: 'result', id: request.id })
+      return
+    }
+    if (request.type === 'release-drawing' || request.type === 'ui-access') {
+      const environment = environments.get(request.environment)
+      if (!environment) throw new Error('Module environment unloaded')
+      if (request.type === 'release-drawing') environment.api.releaseDrawing(request.drawing)
+      else environment.api.setUiAccess(request.allowed)
+      reply({ type: 'result', id: request.id })
+      return
+    }
+    if (request.type === 'client') {
+      const environment = environments.get(request.environment)
+      if (!environment) throw new Error('Module environment unloaded')
+      // The host owns this instance's one-second watchdog and terminates its
+      // Worker on failure. VM timeouts can poison Bun's Worker message loop.
+      const result = JSON.parse(environment.api.client(JSON.stringify(request.request), request.id))
+      reply({ ...result, type: 'result', id: request.id })
+      // Acknowledge this turn after its already queued realm rejection reactions.
+      // This never awaits the Client's returned value or keeps its instance live.
+      await Promise.resolve()
+      reply({ type: 'client-turn-complete', environment: request.environment, id: request.id })
+      return
+    }
     if (request.type === 'unload') {
-      environments.get(request.environment)?.api.dispose()
+      const environment = environments.get(request.environment)
+      if (environment) {
+        environment.lifetime.disposed = true
+        for (const invocation of budgetClocks.keys()) if (environment.api.hasStream(invocation)) budgetClocks.delete(invocation)
+        environment.api.dispose()
+      }
       environments.delete(request.environment)
+      uiPublications.delete(request.environment)
+      stagedUiConsumers.delete(request.environment)
+      for (const [publication, tables] of stagedUiTables) {
+        if (!tables.has(request.environment)) continue
+        stagedUiTables.delete(publication)
+      }
       reply({ type: 'result', id: request.id })
       return
     }
     if (request.type === 'invoke') {
       const environment = environments.get(request.environment)
       if (!environment) throw new Error('Module environment unloaded')
-      const value = JSON.parse(await environment.api.invoke(JSON.stringify(request)))
-      reply({ type: 'result', id: request.id, value })
+      if (request.next?.budget) budgetClocks.set(request.id, new BigInt64Array(request.next.budget))
+      const call = request.callers === undefined ? undefined : { id: request.id, callers: request.callers }
+      if (call) servingLive.add(call.id)
+      const timeout = call ? setTimeout(() => servingLive.delete(call.id), 10000) : undefined
+      timeout?.unref?.()
+      try {
+        const value = JSON.parse(await serving.run(call, () => invocations.run(request.id, () => callerFrame(call?.callers ?? [], () => stamped(request.environment, request.id, () => environment.api.invoke(JSON.stringify(request)))))))
+        reply({ type: 'result', id: request.id, value })
+      } finally {
+        clearTimeout(timeout)
+        if (call) servingLive.delete(call.id)
+        if (!environment.api.hasStream(request.id)) budgetClocks.delete(request.id)
+      }
+      return
+    }
+    if (request.type === 'stream-pull') {
+      const environment = environments.get(request.environment)
+      if (!environment) throw new Error('Module environment unloaded')
+      try {
+        const value = JSON.parse(await invocations.run(request.invocation, () => stamped(request.environment, request.id, () => environment.api.pull(JSON.stringify(request)))))
+        reply({ type:'result', id:request.id, invocation:request.invocation, value })
+      } finally { if (!environment.api.hasStream(request.invocation)) budgetClocks.delete(request.invocation) }
       return
     }
     if (environments.has(request.environment)) throw new Error('Duplicate module environment')
-    const environment = createEnvironment(request.environment)
+    const environment = createEnvironment(request.environment, request.declaration.name)
     environments.set(request.environment, environment)
     const declaration = request.declaration
     const modules = new Map<string, vm.SourceTextModule>()
     const source = new Map(declaration.modules.map(module => [module.path, module.source]))
-    const empty = new vm.SyntheticModule([], () => {}, { context: environment.context })
+    const stateLibrary = new vm.SourceTextModule(modStateLibrarySource, {
+      context: environment.context,
+      identifier: 'claude-code',
+    })
     const getModule = (path: string): vm.SourceTextModule => {
       const cached = modules.get(path)
       if (cached) return cached
@@ -347,33 +1047,68 @@ self.onmessage = async (event: MessageEvent<ModWorkerRequest>) => {
       return module
     }
     // Multiple files declared by one plugin share a registration window.
-    const entrypoints = declaration.entrypoints.map(getModule)
+    const entrypoints = request.type === 'load-client' ? [] : declaration.entrypoints.map(getModule)
     for (const module of entrypoints) {
       if (module.status === 'unlinked') await module.link((specifier, parent) => {
-        if (specifier === 'claude-code') return empty
+        if (specifier === 'claude-code') return stateLibrary
         const link = declaration.links.find(link => link.from === parent.identifier && link.specifier === specifier)
         if (!link) throw new Error('Import missing from scanned snapshot')
         return getModule(link.to)
       })
-      if (module.status === 'linked') await module.evaluate()
+      if (module.status === 'linked') await stamped(request.environment, request.id, () => module.evaluate())
+    }
+    const clients = request.type === 'load-client'
+      ? (declaration.clients ?? []).filter(client => client.module === request.module)
+      : []
+    if (request.type === 'load-client' && clients.length !== 1) throw new Error('Client module is not in the loaded snapshot')
+    for (const client of clients) {
+      const module = getModule(client.path)
+      if (module.status === 'unlinked') await module.link((specifier, parent) => {
+        if (specifier === 'claude-code') return stateLibrary
+        const link = declaration.links.find(link => link.from === parent.identifier && link.specifier === specifier)
+        if (!link) throw new Error('Client import missing from scanned snapshot')
+        return getModule(link.to)
+      })
+      if (module.status === 'linked') await stamped(request.environment, request.id, () => module.evaluate())
+      const namespace = module.namespace as Record<string, unknown>
+      const names = Object.keys(namespace).filter(name => /^[A-Z]/.test(name) && typeof namespace[name] === 'function')
+      const draw = namespace.default ?? (names.length === 1 ? namespace[names[0]!] : undefined)
+      if (typeof draw !== 'function') throw new Error('Client module must export a default function or one PascalCase function')
+      environment.api.registerClient(client.module, draw)
     }
     const exports = entrypoints.map(module => (module.namespace as { register?: unknown }).register)
     if (exports.some(register => typeof register !== 'function')) throw new Error('Hooks module must export register(on, options)')
-    const registrations = JSON.parse(await environment.api.register(
+    const registrations = JSON.parse(await stamped(request.environment, request.id, () => environment.api.register(
       async (on: unknown, options: unknown) => {
         for (const register of exports) await (register as (on: unknown, options: unknown) => unknown)(on, options)
       },
       JSON.stringify(declaration.options),
-    ))
+    )))
     reply({ type: 'result', id: request.id, registrations })
   } catch (error) {
-    if (request.type === 'load') {
-      environments.get(request.environment)?.api.dispose()
+    const clientFaultPhase = request.type === 'load-client' ? 'load' : request.type === 'client' ? 'run' : undefined
+    let errorName: string | undefined
+    if (clientFaultPhase) {
+      let prototype = error
+      for (let depth = 0; depth < 32 && prototype && (typeof prototype === 'object' || typeof prototype === 'function') && !isProxy(prototype); depth++) {
+        const name = Object.getOwnPropertyDescriptor(prototype, 'name')?.value
+        if (typeof name === 'string') { errorName = name; break }
+        prototype = Object.getPrototypeOf(prototype)
+      }
+    }
+    if (request.type === 'load' || request.type === 'load-client') {
+      const environment = environments.get(request.environment)
+      if (environment) {
+        environment.lifetime.disposed = true
+        environment.api.dispose()
+      }
       environments.delete(request.environment)
     }
     const message = error && (typeof error === 'object' || typeof error === 'function') && !isProxy(error)
       ? Object.getOwnPropertyDescriptor(error, 'message')?.value
       : undefined
-    reply({ type: 'result', id: request.id, error: typeof message === 'string' ? message : 'Module invocation failed' })
+    const errorRef = request.type === 'invoke' || request.type === 'stream-pull' ? environments.get(request.environment)?.api.errorReference(error) : undefined
+    const aborted = request.type === 'stream-pull' && environments.get(request.environment)?.api.isAbortError(error)
+    reply({ type: 'result', id: request.id, ...(request.type === 'stream-pull' ? {invocation:request.invocation} : {}), error: typeof message === 'string' ? message : 'Module invocation failed', errorRef, ...(aborted ? {aborted:true} : {}), ...(clientFaultPhase ? {clientFaultPhase,errorName} : {}) })
   }
 }

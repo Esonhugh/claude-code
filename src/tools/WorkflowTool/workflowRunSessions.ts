@@ -109,10 +109,6 @@ function officialWorkflowResumeEntries(run: OfficialWorkflowRun): WorkflowResume
     const identity = createWorkflowScriptAgentChainIdentity({
       previousKey,
       prompt: agent.promptPreview,
-      opts: {
-        label,
-        phase: agent.phaseTitle,
-      },
     })
     previousKey = identity
     if (result === undefined) return []
@@ -313,7 +309,8 @@ export async function tryStartWorkflowRunSession({
 }> {
   let didStart = false
   const session = await mutateWorkflowRunSession(cwd, workflowRunId, latest => {
-    if (latest) return latest
+    // Like official, a resume keeps the run id; the caller has already refused a live run.
+    if (latest && resumeFromRunId !== workflowRunId) return latest
     didStart = true
     const now = Date.now()
     return {

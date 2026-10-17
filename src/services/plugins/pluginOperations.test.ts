@@ -26,13 +26,32 @@ let cachesCleared = false
 let versionOrphaned = false
 let optionsDeleted = false
 let dataDirDeleted = false
+const settingsBySource = {
+  userSettings: {
+    enabledPlugins: { 'example@marketplace': true } as Record<
+      string,
+      boolean | string[] | undefined
+    >,
+  },
+  projectSettings: { enabledPlugins: {} as Record<string, boolean> },
+  localSettings: { enabledPlugins: {} as Record<string, boolean> },
+  flagSettings: { enabledPlugins: {} as Record<string, boolean> },
+  policySettings: { enabledPlugins: {} as Record<string, boolean> },
+}
 
 mock.module('../../utils/settings/settings.js', () => ({
   ...settingsModule,
-  getSettingsForSource: () => ({
-    enabledPlugins: { 'example@marketplace': true },
-  }),
-  updateSettingsForSource: () => ({ error: settingsError }),
+  getSettingsForSource: (source: keyof typeof settingsBySource) =>
+    settingsBySource[source],
+  updateSettingsForSource: (
+    source: keyof typeof settingsBySource,
+    update: { enabledPlugins?: Record<string, boolean | string[] | undefined> },
+  ) => {
+    if (!settingsError && update.enabledPlugins) {
+      settingsBySource[source].enabledPlugins = update.enabledPlugins as never
+    }
+    return { error: settingsError }
+  },
 }))
 mock.module('../../utils/plugins/pluginLoader.js', () => ({
   ...pluginLoaderModule,
@@ -77,7 +96,9 @@ mock.module('../../utils/plugins/pluginDirectories.js', () => ({
   },
 }))
 
-const { uninstallPluginOp } = await import('./pluginOperations.js')
+const { setPluginEnabledOp, uninstallPluginOp } = await import(
+  './pluginOperations.js'
+)
 const result = await uninstallPluginOp('example@marketplace')
 
 assert.equal(result.success, false)
@@ -99,5 +120,52 @@ assert.equal(cachesCleared, true)
 assert.equal(versionOrphaned, true)
 assert.equal(optionsDeleted, true)
 assert.equal(dataDirDeleted, true)
+
+settingsBySource.userSettings.enabledPlugins['builtin-fixture@builtin'] = false
+settingsBySource.projectSettings.enabledPlugins['builtin-fixture@builtin'] = false
+const overriddenBuiltin = await setPluginEnabledOp(
+  'builtin-fixture@builtin',
+  true,
+)
+assert.equal(overriddenBuiltin.success, false)
+assert.match(overriddenBuiltin.message, /project settings/i)
+assert.equal(
+  settingsBySource.userSettings.enabledPlugins['builtin-fixture@builtin'],
+  false,
+)
+
+settingsBySource.projectSettings.enabledPlugins = {}
+settingsBySource.policySettings.enabledPlugins['builtin-fixture@builtin'] = false
+const managedBuiltin = await setPluginEnabledOp('builtin-fixture@builtin', true)
+assert.equal(managedBuiltin.success, false)
+assert.match(managedBuiltin.message, /policy|organization/i)
+assert.equal(
+  settingsBySource.userSettings.enabledPlugins['builtin-fixture@builtin'],
+  false,
+)
+
+settingsBySource.policySettings.enabledPlugins = {}
+const enabledBuiltin = await setPluginEnabledOp('builtin-fixture@builtin', true)
+assert.equal(enabledBuiltin.success, true)
+assert.equal(
+  settingsBySource.userSettings.enabledPlugins['builtin-fixture@builtin'],
+  true,
+)
+
+settingsBySource.userSettings.enabledPlugins['read-only@marketplace'] = false
+settingsBySource.flagSettings.enabledPlugins['read-only@marketplace'] = true
+const readOnlyDisable = await setPluginEnabledOp('read-only@marketplace', false)
+assert.equal(readOnlyDisable.success, false)
+assert.match(readOnlyDisable.message, /command-line settings/i)
+assert.equal(
+  settingsBySource.userSettings.enabledPlugins['read-only@marketplace'],
+  false,
+)
+
+settingsBySource.flagSettings.enabledPlugins = {}
+settingsBySource.policySettings.enabledPlugins['blocked@marketplace'] = false
+const policyEnable = await setPluginEnabledOp('blocked@marketplace', true)
+assert.equal(policyEnable.success, false)
+assert.match(policyEnable.message, /organization policy/i)
 
 console.log('pluginOperations.test.ts passed')

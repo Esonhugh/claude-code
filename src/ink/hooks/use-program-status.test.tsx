@@ -1,0 +1,231 @@
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
+import React, { act } from 'react'
+import { PassThrough } from 'node:stream'
+import render from '../root.js'
+import { useProgramStatus } from './use-program-status.js'
+import { env } from '../../utils/env.js'
+import { getProgramStatusSupport, settleProgramStatusSupport } from '../terminal.js'
+import {
+  CLEAR_ALL_PROGRAM_STATUS,
+  clearProgramStatus,
+  programStatus,
+  type ProgramStatus,
+  wrapForMultiplexer,
+} from '../termio/osc.js'
+import {
+  TerminalWriteProvider,
+  type TerminalWriter,
+} from '../useTerminalNotification.js'
+
+import * as analytics from '../../services/analytics/index.js'
+
+const savedTerminal = env.terminal
+const savedTmux = process.env.TMUX
+const savedScreen = process.env.STY
+const actEnvironment = globalThis as typeof globalThis & {
+  IS_REACT_ACT_ENVIRONMENT?: boolean
+}
+let savedActEnvironment: boolean | undefined
+beforeEach(() => {
+  env.terminal = 'xterm'
+  savedActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT
+  actEnvironment.IS_REACT_ACT_ENVIRONMENT = true
+})
+afterEach(() => {
+  env.terminal = savedTerminal
+  actEnvironment.IS_REACT_ACT_ENVIRONMENT = savedActEnvironment
+  if (savedTmux === undefined) delete process.env.TMUX
+  else process.env.TMUX = savedTmux
+  if (savedScreen === undefined) delete process.env.STY
+  else process.env.STY = savedScreen
+})
+
+type Child = ProgramStatus & { id: string }
+function Status({ status, childRecords, promptMarks }: { status: ProgramStatus; childRecords: readonly Child[]; promptMarks: number }) {
+  useProgramStatus(status, childRecords, promptMarks)
+  return null
+}
+
+async function mountStatus(isTTY: boolean) {
+  const writes: string[] = []
+  const terminal: TerminalWriter = {
+    isTTY,
+    write: data => writes.push(data),
+  }
+  const stdout = Object.assign(new PassThrough(), {
+    columns: 80,
+    rows: 24,
+    isTTY: false,
+  })
+  const stdin = Object.assign(new PassThrough(), {
+    isTTY: false,
+    setRawMode() {},
+  })
+  const tree = (status: ProgramStatus, children: readonly Child[] = [], promptMarks = 0) => (
+    <TerminalWriteProvider value={terminal}>
+      <Status status={status} childRecords={children} promptMarks={promptMarks} />
+    </TerminalWriteProvider>
+  )
+  let instance!: Awaited<ReturnType<typeof render>>
+  await act(async () => {
+    instance = await render(tree({ state: 'idle' }), {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stderr: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    })
+  })
+  return {
+    writes,
+    async update(status: ProgramStatus, children: readonly Child[] = [], promptMarks = 0) {
+      await act(async () => {
+        instance.rerender(tree(status, children, promptMarks))
+      })
+    },
+    async close() {
+      await act(async () => {
+        instance.unmount()
+      })
+      instance.cleanup()
+    },
+  }
+}
+
+test('pending capability emits neither reports nor unmount clear, then reply enables reporting', async () => {
+  expect(getProgramStatusSupport()).toBe('pending')
+  const pending = await mountStatus(true)
+  await pending.close()
+  expect(pending.writes).toEqual([])
+  const app = await mountStatus(true)
+  try {
+    expect(app.writes).toEqual([])
+    await act(async () => { settleProgramStatusSupport(true) })
+    expect(app.writes).toEqual([wrapForMultiplexer(programStatus({ state: 'idle' }))])
+  } finally {
+    await app.close()
+  }
+  expect(app.writes.at(-1)).toBe(wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
+})
+
+test('TTY reports transitions once, removes stale kind, and clears all reported records on unmount', async () => {
+  delete process.env.TMUX
+  delete process.env.STY
+  const app = await mountStatus(true)
+  try {
+    await app.update({ state: 'idle' })
+    await app.update({ state: 'working' })
+    await app.update({ state: 'blocked', kind: 'permission' })
+    await app.update({ state: 'blocked', kind: 'permission' })
+    await app.update({ state: 'blocked', kind: 'question' })
+    await app.update({ state: 'working' })
+    await app.update({ state: 'idle' })
+    expect(app.writes).toEqual([
+      programStatus({ state: 'idle' }),
+      programStatus({ state: 'working' }),
+      programStatus({ state: 'blocked', kind: 'permission' }),
+      programStatus({ state: 'blocked', kind: 'question' }),
+      programStatus({ state: 'working' }),
+      programStatus({ state: 'idle' }),
+    ])
+  } finally {
+    await app.close()
+  }
+  expect(app.writes.at(-1)).toBe(CLEAR_ALL_PROGRAM_STATUS)
+})
+
+test('non-TTY output contains neither status reports nor cleanup', async () => {
+  const app = await mountStatus(false)
+  try {
+    await app.update({ state: 'working' })
+    await app.update({ state: 'blocked', kind: 'question' })
+    await app.update({ state: 'idle' })
+  } finally {
+    await app.close()
+  }
+  expect(app.writes).toEqual([])
+})
+
+test('tmux and screen reports and cleanup use existing multiplexer passthrough', async () => {
+  for (const multiplexer of ['TMUX', 'STY'] as const) {
+    delete process.env.TMUX
+    delete process.env.STY
+    process.env[multiplexer] = 'osc7501-test'
+    const app = await mountStatus(true)
+    try {
+      expect(app.writes).toEqual([
+        wrapForMultiplexer(programStatus({ state: 'idle' })),
+      ])
+      expect(app.writes[0]).toStartWith(
+        multiplexer === 'TMUX' ? '\x1bPtmux;' : '\x1bP',
+      )
+      if (multiplexer === 'STY') {
+        // Screen terminates DCS at the first ST: the inner OSC must use BEL.
+        expect(app.writes[0]).toEndWith('\x07\x1b\\')
+        expect(app.writes[0]!.split('\x1b\\')).toHaveLength(2)
+      }
+    } finally {
+      await app.close()
+    }
+    expect(app.writes.at(-1)).toBe(wrapForMultiplexer(CLEAR_ALL_PROGRAM_STATUS))
+  }
+})
+
+
+test('diff sends only changed records, then clears removed children in one write', async () => {
+  const app = await mountStatus(true)
+  const root = { state: 'idle' } as const
+  const a: Child = { id: 'a', state: 'working', title: 'Alpha' }
+  const b: Child = { id: 'b', state: 'working', title: 'Beta' }
+  try {
+    await app.update(root, [a, b])
+    await app.update(root, [{ ...a }, { ...b }])
+    const changed: Child = { ...b, state: 'blocked', kind: 'question' }
+    await app.update(root, [a, changed])
+    await app.update({ state: 'done' }, [changed])
+    await app.update({ state: 'done' }, [])
+    expect(app.writes).toEqual([
+      programStatus(root),
+      programStatus(a) + programStatus(b),
+      programStatus(changed),
+      programStatus({ state: 'done' }) + clearProgramStatus('a'),
+      clearProgramStatus('b'),
+    ])
+  } finally {
+    await app.close()
+  }
+  expect(app.writes.at(-1)).toBe(CLEAR_ALL_PROGRAM_STATUS)
+})
+
+test('prompt mark change invalidates root and child cache once', async () => {
+  const app = await mountStatus(true)
+  const root = { state: 'working' } as const
+  const child: Child = { state: 'working', id: 'child' }
+  try {
+    await app.update(root, [child])
+    await app.update(root, [child], 1)
+    await app.update(root, [child], 1)
+    expect(app.writes).toEqual([
+      programStatus({ state: 'idle' }),
+      programStatus(root) + programStatus(child),
+      programStatus(root) + programStatus(child),
+    ])
+  } finally {
+    await app.close()
+  }
+})
+
+test('terminal_program_status analytics fires only once and contains no message payload', async () => {
+  const log = spyOn(analytics, 'logEvent').mockImplementation(() => {})
+  const app = await mountStatus(true)
+  try {
+    await app.update({ state: 'blocked', msg: 'approve Bash: echo private' })
+    await app.update({ state: 'working' }, [{ id: 'task', state: 'working' }])
+    expect(log.mock.calls.filter(([name]) => name === 'terminal_program_status')).toEqual([
+      ['terminal_program_status', {}],
+    ])
+  } finally {
+    await app.close()
+    log.mockRestore()
+  }
+})

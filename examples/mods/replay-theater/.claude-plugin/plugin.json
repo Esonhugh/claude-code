@@ -1,0 +1,7 @@
+{
+  "name": "replay-theater",
+  "version": "0.1.0",
+  "description": "Records the last turn's Edit and Write calls and steps through them one diff at a time.",
+  "author": { "name": "You" },
+  "types": "./types/index.d.ts"
+}

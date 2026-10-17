@@ -299,11 +299,12 @@ export function MCPListPanel({
             )
           })}
 
-          {/* Claude.ai servers section */}
+          {/* Claude AI official Apps section */}
           {claudeAiServers.length > 0 && (
             <Box flexDirection="column" marginBottom={1}>
               <Box paddingLeft={2}>
-                <Text bold>claude.ai</Text>
+                <Text bold>Claude AI</Text>
+                <Text dimColor> (Claude Official Apps)</Text>
               </Box>
               {claudeAiServers.map(server => renderServerItem(server))}
             </Box>

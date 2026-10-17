@@ -6,9 +6,13 @@ describe('headless custom system prompt characterization', () => {
     const source = readFileSync(new URL('./queryContext.ts', import.meta.url), 'utf8')
 
     expect(source).toContain('customSystemPrompt !== undefined')
-    expect(source).toContain('customSystemPrompt !== undefined\n      ? Promise.resolve([])')
+    expect(source).toContain(
+      'customSystemPrompt !== undefined\n      ? Promise.resolve(asSystemPrompt([]))',
+    )
     expect(source).toContain(
       'customSystemPrompt !== undefined ? Promise.resolve({}) : getSystemContext()',
     )
+    expect(source).toContain('concatSystemPrompts(')
+    expect(source).not.toContain('const systemPrompt = asSystemPrompt([')
   })
 })

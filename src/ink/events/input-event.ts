@@ -190,16 +190,24 @@ function parseKey(keypress: ParsedKey): [Key, string] {
 }
 
 export class InputEvent extends Event {
+  private keyboardDispatched = false
+
+  markKeyboardDispatched(): void { this.keyboardDispatched = true }
+  didDispatchKeyboardEvent(): boolean { return this.keyboardDispatched }
+
   readonly keypress: ParsedKey
   readonly key: Key
   readonly input: string
+  /** performance.now() when stdin was read, before rendering between earlier inputs delayed it. */
+  readonly receivedAt: number
 
-  constructor(keypress: ParsedKey) {
+  constructor(keypress: ParsedKey, receivedAt = performance.now()) {
     super()
     const [key, input] = parseKey(keypress)
 
     this.keypress = keypress
     this.key = key
     this.input = input
+    this.receivedAt = receivedAt
   }
 }

@@ -6,6 +6,14 @@ import type {
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
 import { createOpenAITurnScope } from './services/api/openai-turn-scope.js'
+import { randomUUID } from 'crypto'
+import { streamModTurnStep } from './services/mods/turnStepAdapter.js'
+import { resolveAppliedEffort, type EffortValue } from './utils/effort.js'
+import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
+import { createModToolHost } from './services/mods/toolHost.js'
+import { captureModSessionUsage } from './services/mods/sessionUsage.js'
+import { getUserContextInstructionFiles, withUserContextInstructionFiles } from './context.js'
+import { reconcilePromptContext, validatePromptContext, type PromptContext } from './services/mods/promptContext.js'
 import { getAPIProvider } from './utils/model/providers.js'
 import {
   calculateTokenWarningState,
@@ -28,7 +36,23 @@ import {
 import { ImageSizeError } from './utils/imageValidation.js'
 import { ImageResizeError } from './utils/imageResizer.js'
 import { findToolByName, type ToolUseContext } from './Tool.js'
-import { asSystemPrompt, type SystemPrompt } from './utils/systemPromptType.js'
+import {
+  asSystemPrompt,
+  getSystemPromptSections,
+  getSystemPromptFacts,
+  renderSystemPrompt,
+  hasSystemPromptRecipe,
+  withSystemPromptSections,
+  type SystemPromptSection,
+  type SystemPrompt,
+} from './utils/systemPromptType.js'
+import { renderModPromptSections } from './services/mods/promptSections.js'
+import type { ModSnapshot } from './services/mods/runtime.js'
+import type { PromptComposeInput, PromptComposeResult, PromptComposeSection } from './services/mods/types.js'
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './constants/prompts.js'
+import { shouldUseGlobalCacheScope } from './utils/betas.js'
+import { renderModPromptAttachments } from './services/mods/promptAttachments.js'
+import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
   AssistantMessage,
   AttachmentMessage,
@@ -195,6 +219,9 @@ export type QueryParams = {
   messages: Message[]
   systemPrompt: SystemPrompt
   userContext: { [k: string]: string }
+  refreshUserContext?: () => Promise<Record<string, string>>
+  resolvedPromptContextBlocks?: readonly { name: string; text: string }[]
+  onCacheSafeParams?: (params: CacheSafeParams) => void
   systemContext: { [k: string]: string }
   canUseTool: CanUseToolFn
   toolUseContext: ToolUseContext
@@ -203,7 +230,11 @@ export type QueryParams = {
   maxOutputTokensOverride?: number
   maxTurns?: number
   stopHookActive?: boolean
+  toolChoice?: { type: 'none' }
+  saveModForkSnapshot?: (params: CacheSafeParams) => void
   skipCacheWrite?: boolean
+  /** Explicit main/public prompt admitted for this model turn. */
+  publicTurn?: { text: string }
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
   // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
   // budget for the whole agentic turn; `remaining` is computed per iteration
@@ -241,21 +272,238 @@ export async function* query(
   | ToolUseSummaryMessage,
   Terminal
 > {
-  const consumedCommandUuids: string[] = []
-  const terminal = yield* queryLoop(params, consumedCommandUuids)
-  // Only reached if queryLoop returned normally. Skipped on throw (error
-  // propagates through yield*) and on .return() (Return completion closes
-  // both generators). This gives the same asymmetric started-without-completed
-  // signal as print.ts's drainCommandQueue when the turn fails.
-  for (const uuid of consumedCommandUuids) {
-    notifyCommandLifecycle(uuid, 'completed')
+  if (!params.toolUseContext.agentId && (params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk')) {
+    params = {...params, saveModForkSnapshot: params.toolUseContext.mods?.captureForkSnapshotWriter?.()}
   }
+  const consumedCommandUuids: string[] = []
+  const tools = params.toolUseContext.mods?.tools?.projection(params.toolUseContext.options.tools)
+  if (tools && tools !== params.toolUseContext.options.tools) {
+    params = {...params, toolUseContext: {
+      ...params.toolUseContext,
+      options: {...params.toolUseContext.options, tools},
+    }}
+  }
+  let catalogContext = { ...params.toolUseContext, messages: params.messages }
+  const promptFacts = getSystemPromptFacts(params.systemPrompt)
+  const promptPlan = getSystemPromptSections(params.systemPrompt)
+  let composeModel = catalogContext.options.mainLoopModel
+  let composeTools = catalogContext.options.tools.map(tool => tool.name)
+  async function composePrompt(input: Partial<PromptComposeInput>, invocation: ModSnapshot, signal: AbortSignal): Promise<PromptComposeResult> {
+    if (!promptFacts || !promptPlan) throw new Error('Prompt generation facts are unavailable for this prompt')
+    const facts: PromptComposeInput = {
+      ...promptFacts,
+      model: composeModel,
+      surfaces: catalogContext.options.isNonInteractiveSession ? [] : ['terminal'],
+      tools: composeTools,
+      ...input,
+    }
+    return await invocation.dispatch('prompt.compose', facts, async resolved => {
+      let plan = promptPlan
+      if (hasSystemPromptRecipe(params.systemPrompt)) {
+        plan = getSystemPromptSections(await renderSystemPrompt(params.systemPrompt, resolved as PromptComposeInput))!
+      } else if (JSON.stringify(resolved.tools) !== JSON.stringify(composeTools) ||
+          resolved.promptModel !== promptFacts.promptModel ||
+          JSON.stringify(resolved.outputStyle) !== JSON.stringify(promptFacts.outputStyle) ||
+          JSON.stringify(resolved.traits) !== JSON.stringify(promptFacts.traits)) {
+        // Text-only metadata can be composed unchanged, but cannot be regenerated.
+        throw new Error('Prompt generation recipe is unavailable for this prompt')
+      }
+      const sections: PromptComposeSection[] = []
+      async function visit(plan: readonly SystemPromptSection[]) {
+        for (const section of plan) {
+          if ('sections' in section) {
+            const start = sections.length
+            await visit(section.sections)
+            const children = sections.splice(start)
+            if (children.length) sections.push({
+              id: `join-${start}`,
+              text: children.map(child => child.text).join(section.separator),
+              // A joined string is indivisible on the wire: a session child
+              // makes the entire group session-scoped, never globally cached.
+              scope: children.every(child => child.scope === 'shared') ? 'shared' : 'session',
+            })
+            continue
+          }
+          if (section.text === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue
+          if (!section.scope) throw new Error('Prompt section scope is unavailable')
+          let text = section.text
+          if ('name' in section && invocation.hasHooks('prompt.section')) {
+            const rendered = await renderModPromptSections(
+              withSystemPromptSections([section]), invocation, signal,
+            )
+            text = rendered.length ? rendered.join('\n\n') : null
+          }
+          if (text !== null) sections.push({
+            id: 'name' in section ? section.name : `context-${sections.length}`,
+            text, scope: section.scope,
+          })
+        }
+      }
+      await visit(plan)
+      return { sections }
+    }, { signal }) as PromptComposeResult
+  }
+  const queryServices = {
+    composePrompt,
+    tools: () => catalogContext.options.tools,
+    toolCatalog: () => createToolCatalogForContext(catalogContext),
+    toolHost: () => createModToolHost(catalogContext, params.canUseTool),
+    captureUsage: () => captureModSessionUsage(catalogContext),
+  }
+  const snapshot = catalogContext.mods?.capture(queryServices)
+  let registeredTurn = catalogContext.mods?.currentTurn?.(catalogContext.agentId)
+  const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
+  const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
+  const handlesMeasure = !params.toolUseContext.agentId &&
+    (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
+  const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
+  const handlesAgentOffer = snapshot?.hasHooks('agent.offer') === true
+  const handlesContext = snapshot?.hasHooks('prompt.context') === true
+  const handlesCompose = promptFacts !== undefined && snapshot?.hasHooks('prompt.compose') === true
+  const handlesSections = snapshot?.hasHooks('prompt.section') === true
+  const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
+  const handlesStep = (isPublicTurn || registeredTurn !== undefined) && snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
+  const handlesCompact = snapshot?.hasHooks('session.compact') === true
+  if (
+    !isPublicTurn &&
+    !handlesStart &&
+    !registeredTurn &&
+    !handlesMeasure &&
+    !handlesCatalog &&
+    !handlesAgentOffer &&
+    !handlesContext &&
+    !handlesSections &&
+    !handlesCompose &&
+    !handlesAttachments &&
+    !handlesStep &&
+    !handlesCompact
+  ) {
+    snapshot?.release()
+    const terminal = yield* queryLoop(params, consumedCommandUuids)
+    // Only normal return completes commands; throw and iterator.return() do not.
+    for (const uuid of consumedCommandUuids) {
+      notifyCommandLifecycle(uuid, 'completed')
+    }
+    return terminal
+  }
+
+  const turnId = isPublicTurn ? randomUUID() : registeredTurn?.turnId
+  const toolUseContext = {
+    ...params.toolUseContext,
+    modsSnapshot: snapshot,
+  }
+  params = { ...params, toolUseContext }
+  let terminal: Terminal
+  let returned = false
+  let failed = false
+  let loopStarted = false
+  let additionalText: string | undefined
+  let endPublicTurn: (() => void) | undefined
+  try {
+    if (isPublicTurn) {
+      endPublicTurn = params.toolUseContext.mods?.beginPublicTurn(
+        turnId!, () => params.toolUseContext.abortController.abort('turn-abort'),
+      )
+      registeredTurn = params.toolUseContext.mods?.currentTurn?.()
+    }
+    registeredTurn?.rememberQueryServices(queryServices)
+    if (handlesStart) {
+      try {
+        await snapshot!.dispatch(
+          'turn.start',
+          { turnId, text: params.publicTurn!.text },
+          async () => ({ turnId }),
+          {
+            signal: params.toolUseContext.abortController.signal,
+            validateResult(value) {
+              const result = value as Record<string, unknown> | null
+              if (!result || Array.isArray(result) || result.turnId !== turnId)
+                throw new Error('turn.start must return the current turnId')
+            },
+          },
+        )
+      } catch (error) {
+        if (!toolUseContext.abortController.signal.aborted || !['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) throw error
+        returned = true
+        return {reason:'aborted_streaming'}
+      }
+    }
+    if (handlesSections && !handlesCompose) {
+      const systemPrompt = await renderModPromptSections(
+        params.systemPrompt,
+        snapshot!,
+        toolUseContext.abortController.signal,
+      )
+      toolUseContext.renderedSystemPrompt = systemPrompt
+      params = { ...params, systemPrompt }
+    }
+    loopStarted = true
+    terminal = yield* queryLoop(params, consumedCommandUuids, params.toolUseContext.agentId ? undefined : registeredTurn?.observe,
+      context => { catalogContext = context }, handlesStep ? turnId : undefined,
+      handlesCompose ? async (model, tools, signal) => {
+        composeModel = model
+        composeTools = tools
+        const result = await composePrompt({}, snapshot!, signal)
+        const firstSession = result.sections.findIndex(section => section.scope === 'session')
+        // Only a contiguous shared prefix can be globally cached. Never reorder
+        // append/prepend content to manufacture such a prefix.
+        return asSystemPrompt(result.sections.flatMap((section, index) =>
+          shouldUseGlobalCacheScope() && firstSession > 0 && index === firstSession
+            ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY, section.text]
+            : [section.text],
+        ))
+      } : undefined)
+    returned = true
+    for (const uuid of consumedCommandUuids) {
+      notifyCommandLifecycle(uuid, 'completed')
+    }
+  } catch (error) {
+    failed = true
+    throw error
+  } finally {
+    try {
+      snapshot?.release()
+      if (isPublicTurn && registeredTurn) {
+        if (loopStarted) {
+          const completed = await registeredTurn.finish({
+            aborted: params.toolUseContext.abortController.signal.aborted || (!returned && !failed),
+            failed, terminal,
+          })
+          if (returned && completed && completed.result.text.trim() && completed.result.text !== completed.input.answer)
+            additionalText = completed.result.text
+        } else registeredTurn.release()
+      }
+    } finally {
+      endPublicTurn?.()
+      try {
+        await params.toolUseContext.modsSession?.finishTurn()
+      } catch (error) {
+        logForDebugging(`Mods finishTurn failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
+        logError(new Error('Mods finishTurn failed', { cause: error }))
+      }
+      if (loopStarted && handlesMeasure) {
+        try {
+          await params.toolUseContext.mods!.measure(() => captureModSessionUsage(catalogContext))
+        } catch (error) {
+          logForDebugging(`Mods session.measure failed: ${error instanceof Error ? error.message : String(error)}`, { level: 'error' })
+          logError(new Error('Mods session.measure failed', { cause: error }))
+        }
+      }
+    }
+  }
+  // Never yield from finally: doing so would keep iterator.return() suspended.
+  // System informational messages are displayed but stripped from API history.
+  if (additionalText) yield createSystemMessage(additionalText, 'info')
   return terminal
 }
 
 async function* queryLoop(
   params: QueryParams,
   consumedCommandUuids: string[],
+  observeResponse?: (message: Message | StreamEvent) => void,
+  updateCatalogContext?: (context: ToolUseContext) => void,
+  turnId?: string,
+  composeRequest?: (model: string, tools: string[], signal: AbortSignal) => Promise<SystemPrompt>,
 ): AsyncGenerator<
   | StreamEvent
   | RequestStartEvent
@@ -266,8 +514,6 @@ async function* queryLoop(
 > {
   // Immutable params — never reassigned during the query loop.
   const {
-    systemPrompt,
-    userContext,
     systemContext,
     canUseTool,
     fallbackModel,
@@ -275,6 +521,115 @@ async function* queryLoop(
     maxTurns,
     skipCacheWrite,
   } = params
+  // Query assembly is complete; cache-sharing forks inherit bytes, not plans.
+  let systemPrompt = getSystemPromptSections(params.systemPrompt)
+    ? asSystemPrompt([...params.systemPrompt])
+    : params.systemPrompt
+  const engineSystemPrompt = systemPrompt
+  let userContext = params.userContext
+  let contextBlocks = params.resolvedPromptContextBlocks ??
+    Object.entries(userContext).map(([name, text]) => ({ name, text }))
+  let resolvedContext: PromptContext | undefined
+  let cacheSafeParamsEmitted = false
+  let stepIndex = 0
+  const snapshot = params.toolUseContext.modsSnapshot
+  async function refreshContext(messages: Message[]) {
+    if (params.resolvedPromptContextBlocks !== undefined) return
+    if (!snapshot?.hasHooks('prompt.context')) return
+    updateCatalogContext?.({ ...state.toolUseContext, messages })
+    const { agentId, abortController } = params.toolUseContext
+    abortController.signal.throwIfAborted()
+    const cache = snapshot.promptContexts
+    const boundaries = snapshot.promptContextBoundaries
+    const source = JSON.stringify({
+      blocks: Object.entries(params.userContext),
+      instructionFiles: getUserContextInstructionFiles(params.userContext),
+    })
+    const boundary = messages.findLast(message =>
+      message.type === 'system' && message.subtype === 'compact_boundary',
+    )?.uuid
+    if (boundaries?.get(agentId) !== boundary) {
+      cache?.delete(agentId)
+      if (boundary === undefined) boundaries?.delete(agentId)
+      else boundaries?.set(agentId, boundary)
+    }
+    const cached = cache?.get(agentId)
+    let pending = cached as (typeof cached & { source?: string })
+    if (agentId === undefined && pending?.source !== source) {
+      cache?.delete(agentId)
+      pending = undefined
+    }
+    if (!pending) {
+      const result = Promise.resolve().then(async () => {
+        const rawContext = await params.refreshUserContext?.() ?? params.userContext
+        abortController.signal.throwIfAborted()
+        const instructionFiles = getUserContextInstructionFiles(rawContext)
+        const initial: PromptContext = {
+          blocks: Object.entries(rawContext).map(([name, text]) => ({ name, text })),
+          ...(instructionFiles === undefined ? {} : { instructionFiles }),
+        }
+        const answer = await snapshot.dispatch(
+          'prompt.context',
+          initial,
+          async input => input,
+          {
+            signal: abortController.signal,
+            validateInput: validatePromptContext,
+            validateResult: validatePromptContext,
+            restoreInput: (input, received) => {
+              validatePromptContext(received)
+              return reconcilePromptContext(input, received)
+            },
+          },
+        )
+        validatePromptContext(answer)
+        return structuredClone(answer)
+      })
+      pending = Object.assign(
+        { result, signal: abortController.signal },
+        agentId === undefined ? { source } : {},
+      )
+      cache?.set(agentId, pending)
+      void result.catch(() => {
+        if (cache?.get(agentId) === pending) cache.delete(agentId)
+      })
+    }
+    const { signal } = abortController
+    const ownerSignal = pending.signal
+    let abort: () => void = () => {}
+    let answer: PromptContext
+    try {
+      answer = await Promise.race([
+        pending.result,
+        new Promise<never>((_resolve, reject) => {
+          abort = () => reject(signal.aborted ? signal.reason : ownerSignal.reason)
+          signal.addEventListener('abort', abort, { once: true })
+          if (ownerSignal !== signal) ownerSignal.addEventListener('abort', abort, { once: true })
+          if (signal.aborted || ownerSignal.aborted) abort()
+        }),
+      ])
+      signal.throwIfAborted()
+    } catch (error) {
+      signal.removeEventListener('abort', abort)
+      ownerSignal.removeEventListener('abort', abort)
+      if (!signal.aborted && ownerSignal.aborted) {
+        if (cache?.get(agentId) === pending) cache.delete(agentId)
+        return refreshContext(messages)
+      }
+      throw error
+    } finally {
+      signal.removeEventListener('abort', abort)
+      ownerSignal.removeEventListener('abort', abort)
+    }
+    if (answer === resolvedContext) return
+    resolvedContext = answer
+    cacheSafeParamsEmitted = false
+    contextBlocks = structuredClone(answer.blocks)
+    userContext = withUserContextInstructionFiles(
+      Object.fromEntries(contextBlocks.map(({ name, text }) => [name, text])),
+      answer.instructionFiles,
+    )
+  }
   const deps = params.deps ?? productionDeps()
   const openAITurnScope =
     getAPIProvider() === 'openai'
@@ -343,6 +698,7 @@ async function* queryLoop(
       stopHookBlockingCount,
       turnCount,
     } = state
+    await refreshContext(messages)
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
     // that returns early on non-write iterations). Discovery runs while the
@@ -474,22 +830,38 @@ async function* queryLoop(
     const fullSystemPrompt = asSystemPrompt(
       appendSystemContext(systemPrompt, systemContext),
     )
+    const projectAttachments = (value: Message[]) =>
+      toolUseContext.modsSnapshot
+        ? renderModPromptAttachments(
+            value,
+            toolUseContext.modsSnapshot,
+            toolUseContext.abortController.signal,
+            toolUseContext.agentId,
+          )
+        : Promise.resolve(value)
+    let projectedMessagesForQuery = await projectAttachments(messagesForQuery)
 
     queryCheckpoint('query_autocompact_start')
-    const { compactionResult, consecutiveFailures, compactionFailure } =
-      await deps.autocompact(
-        messagesForQuery,
+    const {
+      compactionResult,
+      consecutiveFailures,
+      compactionFailure,
+      skip: compactionSkip,
+    } = await deps.autocompact(
+        projectedMessagesForQuery,
         toolUseContext,
         {
           systemPrompt,
           userContext,
+          resolvedPromptContextBlocks: contextBlocks,
           systemContext,
           toolUseContext,
-          forkContextMessages: messagesForQuery,
+          forkContextMessages: projectedMessagesForQuery,
         },
         querySource,
         tracking,
         snipTokensFreed,
+        canUseTool,
       )
     queryCheckpoint('query_autocompact_end')
 
@@ -559,6 +931,10 @@ async function* queryLoop(
 
       // Continue on with the current query call using the post compact messages
       messagesForQuery = postCompactMessages
+      projectedMessagesForQuery = await projectAttachments(messagesForQuery)
+      await refreshContext(messagesForQuery)
+    } else if (compactionSkip !== undefined) {
+      yield createSystemMessage(compactionSkip, 'info')
     } else if (consecutiveFailures !== undefined) {
       // Autocompact failed — propagate failure count so the circuit breaker
       // can stop retrying on the next iteration.
@@ -572,6 +948,18 @@ async function* queryLoop(
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
+    }
+    updateCatalogContext?.(toolUseContext)
+    if (!composeRequest && !cacheSafeParamsEmitted && params.onCacheSafeParams) {
+      cacheSafeParamsEmitted = true
+      params.onCacheSafeParams({
+        systemPrompt,
+        userContext,
+        resolvedPromptContextBlocks: structuredClone(contextBlocks),
+        systemContext,
+        toolUseContext: { ...toolUseContext, renderedSystemPrompt: systemPrompt },
+        forkContextMessages: messagesForQuery,
+      })
     }
 
     const assistantMessages: AssistantMessage[] = []
@@ -661,7 +1049,7 @@ async function* queryLoop(
       !collapseOwnsIt
     ) {
       const { isAtBlockingLimit } = calculateTokenWarningState(
-        tokenCountWithEstimation(messagesForQuery) - snipTokensFreed,
+        tokenCountWithEstimation(projectedMessagesForQuery) - snipTokensFreed,
         toolUseContext.options.mainLoopModel,
       )
       if (isAtBlockingLimit) {
@@ -698,8 +1086,11 @@ async function* queryLoop(
         try {
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
-          for await (const message of deps.callModel({
-            messages: prependUserContext(messagesForQuery, userContext),
+          const request: Parameters<QueryDeps['callModel']>[0] = {
+            messages: prependUserContext(
+              projectedMessagesForQuery,
+              contextBlocks ?? userContext,
+            ),
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: toolUseContext.options.tools,
@@ -713,7 +1104,7 @@ async function* queryLoop(
               ...(config.gates.fastModeEnabled && {
                 fastMode: appState.fastMode,
               }),
-              toolChoice: undefined,
+              toolChoice: params.toolChoice,
               isNonInteractiveSession:
                 toolUseContext.options.isNonInteractiveSession,
               fallbackModel,
@@ -729,6 +1120,27 @@ async function* queryLoop(
               maxOutputTokensOverride,
               fetchOverride: dumpPromptsFetch,
               mcpTools: appState.mcp.tools,
+              modsSnapshot: toolUseContext.modsSnapshot,
+              composeSystemPrompt: composeRequest ? async (model, tools, signal) => {
+                try { systemPrompt = await composeRequest(model, tools, signal) }
+                catch (error) {
+                  if (signal.aborted) throw error
+                  systemPrompt = engineSystemPrompt
+                  logForDebugging(`[Mods] prompt.compose failed; using engine prompt: ${error instanceof Error ? error.message : String(error)}`, {level:'error'})
+                }
+                toolUseContext.renderedSystemPrompt = systemPrompt
+                updateCatalogContext?.(toolUseContext)
+                if (params.onCacheSafeParams) {
+                  cacheSafeParamsEmitted = true
+                  params.onCacheSafeParams({
+                    systemPrompt, userContext, systemContext,
+                    resolvedPromptContextBlocks: structuredClone(contextBlocks),
+                    toolUseContext: { ...toolUseContext, renderedSystemPrompt: systemPrompt },
+                    forkContextMessages: messagesForQuery,
+                  })
+                }
+                return asSystemPrompt(appendSystemContext(systemPrompt, systemContext))
+              } : undefined,
               hasPendingMcpServers: appState.mcp.clients.some(
                 (c) => c.type === 'pending',
               ),
@@ -748,7 +1160,22 @@ async function* queryLoop(
                 },
               }),
             },
-          })) {
+          }
+          const stepSnapshot = params.toolUseContext.modsSnapshot
+          const modelStream = turnId && stepSnapshot?.stream
+            ? streamModTurnStep(stepSnapshot, {
+                turnId, index: stepIndex++, model: currentModel,
+                effort: resolveAppliedEffort(currentModel, appState.effortValue),
+                messageCount: request.messages.length,
+                ...(toolUseContext.agentId === undefined ? {} : {agentId:toolUseContext.agentId}),
+              }, (input, signal) => deps.callModel({
+                ...request, signal: signal ?? request.signal,
+                options: {...request.options, model: input.model as string,
+                  effortValue: input.effort as EffortValue | undefined, effortResolved: true},
+              }), request.signal)
+            : deps.callModel(request)
+          for await (const message of modelStream) {
+            observeResponse?.(message)
             // We won't use the tool_calls from the first attempt
             // We could.. but then we'd have to merge assistant messages
             // with different ids and double up on full the tool_results
@@ -870,6 +1297,8 @@ async function* queryLoop(
             if (isWithheldMaxOutputTokens(message)) {
               withheld = true
             }
+            if (message.type === 'assistant')
+              updateCatalogContext?.({ ...toolUseContext, messages: [...messagesForQuery, ...assistantMessages, message] })
             if (!withheld) {
               yield yieldMessage
             }
@@ -944,6 +1373,9 @@ async function* queryLoop(
             }
           }
         } catch (innerError) {
+          const signal = toolUseContext.abortController.signal
+          if (signal.aborted && (innerError === signal.reason ||
+            (innerError instanceof Error && innerError.name === 'AbortError'))) break
           if (innerError instanceof FallbackTriggeredError && fallbackModel) {
             // Fallback was triggered - switch model and retry
             currentModel = fallbackModel
@@ -979,6 +1411,7 @@ async function* queryLoop(
             // Strip before retry so the fallback model gets clean history.
             if (isAnt()) {
               messagesForQuery = stripSignatureBlocks(messagesForQuery)
+              projectedMessagesForQuery = await projectAttachments(messagesForQuery)
             }
 
             // Log the fallback event
@@ -1058,6 +1491,7 @@ async function* queryLoop(
         systemContext,
         toolUseContext,
         querySource,
+        contextBlocks,
       )
     }
 
@@ -1095,7 +1529,7 @@ async function* queryLoop(
 
       // Skip the interruption message for submit-interrupts — the queued
       // user message that follows provides sufficient context.
-      if (toolUseContext.abortController.signal.reason !== 'interrupt') {
+      if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
         yield createUserInterruptionMessage({
           toolUse: false,
         })
@@ -1178,6 +1612,7 @@ async function* queryLoop(
           cacheSafeParams: {
             systemPrompt,
             userContext,
+            resolvedPromptContextBlocks: contextBlocks,
             systemContext,
             toolUseContext,
             forkContextMessages: messagesForQuery,
@@ -1329,8 +1764,14 @@ async function* queryLoop(
         toolUseContext,
         querySource,
         stopHookActive,
+        contextBlocks,
       )
 
+      if (!toolUseContext.abortController.signal.aborted && stopHookResult.blockingErrors.length === 0) {
+        params.saveModForkSnapshot?.({systemPrompt,userContext,systemContext,
+          resolvedPromptContextBlocks:contextBlocks,toolUseContext,
+          forkContextMessages:[...messagesForQuery,...assistantMessages]})
+      }
       if (stopHookResult.preventContinuation) {
         return { reason: 'stop_hook_prevented' }
       }
@@ -1498,10 +1939,16 @@ async function* queryLoop(
           shouldPreventContinuation = true
         }
 
+        const currentTools =
+          updatedToolUseContext.options.refreshTools?.() ??
+          updatedToolUseContext.options.tools
+        const normalizedTools =
+          updatedToolUseContext.mods?.tools?.projection(currentTools) ??
+          currentTools
         toolResults.push(
           ...normalizeMessagesForAPI(
             [update.message],
-            toolUseContext.options.tools,
+            normalizedTools,
           ).filter((_) => _.type === 'user'),
         )
       }
@@ -1605,7 +2052,7 @@ async function* queryLoop(
       }
       // Skip the interruption message for submit-interrupts — the queued
       // user message that follows provides sufficient context.
-      if (toolUseContext.abortController.signal.reason !== 'interrupt') {
+      if (!['interrupt', 'turn-abort'].includes(toolUseContext.abortController.signal.reason)) {
         yield createUserInterruptionMessage({
           toolUse: true,
         })
@@ -1677,18 +2124,32 @@ async function* queryLoop(
     const queuedCommandsSnapshot = getCommandsByMaxPriority(
       sleepRan ? 'later' : 'next',
     ).filter((cmd) => {
-      if (isSlashCommand(cmd)) return false
+      if (cmd.admitted && (
+        cmd.admitted.shouldQuery === false || cmd.admitted.admission?.drop !== undefined
+      )) return false
+      if (!cmd.admitted && (isSlashCommand(cmd) || cmd.promptSubmitReceipt)) return false
       if (isMainThread) return cmd.agentId === undefined
       // Subagents only drain task-notifications addressed to them — never
       // user prompts, even if someone stamps an agentId on one.
       return cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
     })
 
+    // Ingress already ran prompt hooks for admitted commands. Preserve their
+    // rewritten messages/context, including rewrites that start with a slash.
+    for (const cmd of queuedCommandsSnapshot) {
+      if (!cmd.admitted) continue
+      for (const message of cmd.admitted.messages) {
+        yield message
+        if (message.type === 'user' || message.type === 'attachment') {
+          toolResults.push(message)
+        }
+      }
+    }
     for await (const attachment of getAttachmentMessages(
       null,
       updatedToolUseContext,
       null,
-      queuedCommandsSnapshot,
+      queuedCommandsSnapshot.filter(cmd => !cmd.admitted),
       [...messagesForQuery, ...assistantMessages, ...toolResults],
       querySource,
     )) {
@@ -1764,17 +2225,16 @@ async function* queryLoop(
       queryDepth: queryTracking.depth,
     })
 
-    // Refresh tools between turns so newly-connected MCP servers become available
-    if (updatedToolUseContext.options.refreshTools) {
-      const refreshedTools = updatedToolUseContext.options.refreshTools()
-      if (refreshedTools !== updatedToolUseContext.options.tools) {
-        updatedToolUseContext = {
-          ...updatedToolUseContext,
-          options: {
-            ...updatedToolUseContext.options,
-            tools: refreshedTools,
-          },
-        }
+    // Refresh MCP and Mod registrations between turns, removing retired versions.
+    const baseTools = updatedToolUseContext.options.refreshTools?.() ?? updatedToolUseContext.options.tools
+    const refreshedTools = updatedToolUseContext.mods?.tools?.projection(baseTools) ?? baseTools
+    if (refreshedTools !== updatedToolUseContext.options.tools) {
+      updatedToolUseContext = {
+        ...updatedToolUseContext,
+        options: {
+          ...updatedToolUseContext.options,
+          tools: refreshedTools,
+        },
       }
     }
 
@@ -1798,6 +2258,7 @@ async function* queryLoop(
         taskSummaryModule!.maybeGenerateTaskSummary({
           systemPrompt,
           userContext,
+          resolvedPromptContextBlocks: contextBlocks,
           systemContext,
           toolUseContext,
           forkContextMessages: [

@@ -1,3 +1,4 @@
+import { recordPaintedScrollTop } from './dom.js'
 import indentString from 'indent-string'
 import { applyTextStyles } from './colorize.js'
 import type { DOMElement } from './dom.js'
@@ -41,6 +42,15 @@ export function didLayoutShift(): boolean {
   return layoutShifted
 }
 
+// Per-frame: a selection overlay will be repainted over this frame. Its cells
+// in prevScreen sit at screen positions, so blitting them in place is safe but
+// shifting a scroll region would carry them onto other content.
+let overlayActive = false
+
+export function setOverlayActive(active: boolean): void {
+  overlayActive = active
+}
+
 // DECSTBM scroll optimization hint. When a ScrollBox's scrollTop changes
 // between frames (and nothing else moved), log-update.ts can emit a
 // hardware scroll (DECSTBM + SU/SD) instead of rewriting the whole
@@ -82,20 +92,20 @@ export function getScrollDrainNode(): DOMElement | null {
   return scrollDrainNode
 }
 
-// At-bottom follow scroll event this frame. When streaming content
-// triggers scrollTop = maxScroll, the ScrollBox records the delta +
-// viewport bounds here. ink.tsx consumes it post-render to translate any active
-// text selection by -delta so the highlight stays anchored to the TEXT
-// (native terminal behavior — the selection walks up the screen as content
-// scrolls, eventually clipping at the top). The frontFrame screen buffer
-// still holds the old content at that point — captureScrolledRows reads
-// from it before the front/back swap to preserve the text for copy.
+// Actual painted scroll this frame; Ink captures departing rows from the
+// previous screen before moving the selection by the signed distance.
 export type FollowScroll = {
   delta: number
   viewportTop: number
   viewportBottom: number
+  viewportLeft: number
+  viewportRight: number
 }
 let followScroll: FollowScroll | null = null
+
+export function resetFollowScroll(): void {
+  followScroll = null
+}
 
 export function consumeFollowScroll(): FollowScroll | null {
   const f = followScroll
@@ -461,7 +471,9 @@ function renderNodeToOutput(
       cached.y === y &&
       cached.width === width &&
       cached.height === height &&
-      prevScreen
+      cached.background === inheritedBackgroundColor &&
+      prevScreen &&
+      !subtreeHasTerminalImage(node)
     ) {
       const fx = Math.floor(x)
       const fy = Math.floor(y)
@@ -533,18 +545,25 @@ function renderNodeToOutput(
     // y+1, not y). HelpV2's third shortcuts column hits this — skipping
     // unconditionally drops "ctrl + z to suspend" from /help output.
     if (height === 0 && siblingSharesY(node, yogaNode)) {
-      nodeCache.set(node, { x, y, width, height, top: yogaTop })
+      nodeCache.set(node, {
+        x, y, width, height, top: yogaTop,
+        background: inheritedBackgroundColor,
+      })
       node.dirty = false
       return
     }
 
+    if (node.terminalImage) {
+      output.image(node.terminalImage, x, y, width, height)
+    }
+
     if (node.nodeName === 'ink-raw-ansi') {
       // Pre-rendered ANSI content. The producer already wrapped to width and
-      // emitted terminal-ready escape codes. Skip squash, measure, wrap, and
-      // style re-application — output.write() parses ANSI directly into cells.
+      // emitted terminal-ready escape codes. Keep explicit diff backgrounds;
+      // default/reset styles inherit the containing Box's background in cells.
       const text = node.attributes['rawText'] as string
       if (text) {
-        output.write(x, y, text)
+        output.write(x, y, text, undefined, inheritedBackgroundColor)
       }
     } else if (node.nodeName === 'ink-text') {
       const segments = squashTextNodesToSegments(
@@ -555,7 +574,7 @@ function renderNodeToOutput(
       )
 
       // First, get plain text to check if wrapping is needed
-      const plainText = segments.map(s => s.text).join('')
+      const plainText = segments.map((s) => s.text).join('')
 
       if (plainText.length > 0) {
         // Upstream Ink uses getMaxWidth(yogaNode) unclamped here. That
@@ -580,7 +599,7 @@ function renderNodeToOutput(
           softWrap = w.softWrap
           text = w.wrapped
             .split('\n')
-            .map(line => {
+            .map((line) => {
               let styled = applyTextStyles(line, segment.styles)
               // Apply OSC 8 hyperlink per-line so each line is independently
               // clickable. output.ts splits on newlines and tokenizes each
@@ -611,7 +630,7 @@ function renderNodeToOutput(
         } else {
           // No wrapping needed: apply styles directly
           text = segments
-            .map(segment => {
+            .map((segment) => {
               let styledText = applyTextStyles(segment.text, segment.styles)
               if (segment.hyperlink) {
                 styledText = wrapWithOsc8Link(styledText, segment.hyperlink)
@@ -701,9 +720,9 @@ function renderNodeToOutput(
             yogaNode.getComputedPadding(LayoutEdge.Bottom),
         )
 
-        const content = node.childNodes.find(c => (c as DOMElement).yogaNode) as
-          | DOMElement
-          | undefined
+        const content = node.childNodes.find(
+          (c) => (c as DOMElement).yogaNode,
+        ) as DOMElement | undefined
         const contentYoga = content?.yogaNode
         // scrollHeight is the intrinsic height of the content wrapper.
         // Do NOT add getComputedTop() — that's the wrapper's offset
@@ -757,13 +776,16 @@ function renderNodeToOutput(
         const sticky =
           node.stickyScroll ?? Boolean(node.attributes['stickyScroll'])
         const prevMaxScroll = Math.max(0, prevScrollHeight - prevInnerHeight)
-        // Positional check only valid when content grew — virtualization can
-        // transiently SHRINK scrollHeight (tail unmount + stale heightCache
-        // spacer) making scrollTop >= prevMaxScroll true by artifact, not
-        // because the user was at bottom.
+        // Positional check only valid when content grew and was already
+        // scrollable. If the previous content fit, scrollTop=prevMax=0 says
+        // nothing about intent; following there would jump an initially short
+        // async body to the end as soon as it first overflows. Virtualization
+        // can also transiently SHRINK scrollHeight (tail unmount + stale
+        // heightCache spacer), so shrinking never establishes bottom intent.
         const grew = scrollHeight >= prevScrollHeight
         const atBottom =
-          sticky || (grew && scrollTopBeforeFollow >= prevMaxScroll)
+          sticky ||
+          (grew && prevMaxScroll > 0 && scrollTopBeforeFollow >= prevMaxScroll)
         if (atBottom && (node.pendingScrollDelta ?? 0) >= 0) {
           node.scrollTop = maxScroll
           node.pendingScrollDelta = undefined
@@ -782,15 +804,6 @@ function renderNodeToOutput(
             scrollTopBeforeFollow >= prevMaxScroll
           ) {
             node.stickyScroll = true
-          }
-        }
-        const followDelta = (node.scrollTop ?? 0) - scrollTopBeforeFollow
-        if (followDelta > 0) {
-          const vpTop = node.scrollViewportTop ?? 0
-          followScroll = {
-            delta: followDelta,
-            viewportTop: vpTop,
-            viewportBottom: vpTop + innerHeight - 1,
           }
         }
         // Drain pendingScrollDelta. Native terminals (proportional burst
@@ -848,6 +861,20 @@ function renderNodeToOutput(
         if (scrollTop !== cur) node.pendingScrollDelta = undefined
         if (node.pendingScrollDelta !== undefined) scrollDrainNode = node
         scrollTop = clamped
+        const paintedDelta = scrollTop - (node.scrollTopRendered ?? scrollTop)
+        if (paintedDelta !== 0) {
+          const top = node.scrollViewportTop ?? 0
+          followScroll = {
+            delta: paintedDelta,
+            viewportLeft: Math.floor(x),
+            viewportRight: Math.floor(x + width) - 1,
+            viewportTop: top,
+            viewportBottom: top + innerHeight - 1,
+          }
+        }
+        node.scrollTopRendered = scrollTop
+
+        recordPaintedScrollTop(node, scrollTop)
 
         if (content && contentYoga) {
           // Compute content wrapper's absolute render position with scroll
@@ -864,15 +891,22 @@ function renderNodeToOutput(
           let hint: ScrollHint | null = null
           if (contentCached && contentCached.y !== contentY) {
             // delta = newScrollTop - oldScrollTop (positive = scrolled down).
-            // Capture a DECSTBM hint if the container itself didn't move
-            // and the shift fits within the viewport — otherwise the full
-            // rewrite is needed anyway, and layoutShifted stays the fallback.
+            // Capture a DECSTBM hint if the container itself didn't move,
+            // spans the terminal width, and the shift fits within the viewport.
+            // DECSTBM + SU/SD and output.shift both operate on whole rows, so a
+            // horizontally constrained ScrollBox must use the full render path
+            // or it would also shift sibling columns.
             const delta = contentCached.y - contentY
             const regionTop = Math.floor(y + contentYoga.getComputedTop())
             const regionBottom = regionTop + innerHeight - 1
             if (
               cached?.y === y &&
               cached.height === height &&
+              Math.floor(x + yogaNode.getComputedBorder(LayoutEdge.Left)) ===
+                0 &&
+              Math.ceil(
+                x + width - yogaNode.getComputedBorder(LayoutEdge.Right),
+              ) === output.width &&
               innerHeight > 0 &&
               Math.abs(delta) < innerHeight
             ) {
@@ -914,7 +948,7 @@ function renderNodeToOutput(
           // the DECSTBM shift — emitting DECSTBM leaves stale rows (seen as
           // content bleeding through during scroll-up + streaming). Clear it.
           if (!safeForFastPath) scrollHint = null
-          if (hint && prevScreen && safeForFastPath) {
+          if (hint && prevScreen && safeForFastPath && !overlayActive) {
             const { top, bottom, delta } = hint
             const w = Math.floor(width)
             output.blit(prevScreen, Math.floor(x), top, w, bottom - top + 1)
@@ -938,7 +972,9 @@ function renderNodeToOutput(
             // pass clears dirty flags, and edge-spanning children would be
             // missed by the second pass without this snapshot.
             const dirtyChildren = content.dirty
-              ? new Set(content.childNodes.filter(c => (c as DOMElement).dirty))
+              ? new Set(
+                  content.childNodes.filter((c) => (c as DOMElement).dirty),
+                )
               : null
             renderScrolledChildren(
               content,
@@ -1149,6 +1185,7 @@ function renderNodeToOutput(
             y: contentY,
             width: contentYoga.getComputedWidth(),
             height: contentYoga.getComputedHeight(),
+            background: boxBackgroundColor,
           })
           content.dirty = false
         }
@@ -1203,7 +1240,7 @@ function renderNodeToOutput(
       // Render border AFTER children to ensure it's not overwritten by child
       // clearing operations. When a child shrinks, it clears its old area,
       // which may overlap with where the parent's border now is.
-      renderBorder(x, y, node, output)
+      renderBorder(x, y, node, output, inheritedBackgroundColor)
     } else if (node.nodeName === 'ink-root') {
       renderChildren(
         node,
@@ -1217,7 +1254,10 @@ function renderNodeToOutput(
     }
 
     // Cache layout bounds for dirty tracking
-    const rect = { x, y, width, height, top: yogaTop }
+    const rect = {
+      x, y, width, height, top: yogaTop,
+      background: inheritedBackgroundColor,
+    }
     nodeCache.set(node, rect)
     if (node.style.position === 'absolute') {
       absoluteRectsCur.push(rect)
@@ -1445,6 +1485,15 @@ function renderScrolledChildren(
       seenDirtyChild = true
     }
   }
+}
+
+function subtreeHasTerminalImage(node: DOMElement): boolean {
+  if (node.terminalImage) return true
+  return node.childNodes.some(
+    (child) =>
+      child.nodeName !== '#text' &&
+      subtreeHasTerminalImage(child as DOMElement),
+  )
 }
 
 function dropSubtreeCache(node: DOMElement): void {

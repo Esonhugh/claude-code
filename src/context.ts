@@ -7,9 +7,14 @@ import {
 import { getLocalISODate } from './constants/common.js'
 import {
   filterInjectedMemoryFiles,
-  getClaudeMds,
   getMemoryFiles,
+  getRenderedMemoryFiles,
+  renderClaudeMds,
 } from './utils/claudemd.js'
+import {
+  instructionFilesFromMemory,
+  type InstructionFile,
+} from './services/mods/promptContext.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
 import { execFileNoThrow } from './utils/execFileNoThrow.js'
@@ -18,6 +23,37 @@ import { shouldIncludeGitInstructions } from './utils/gitSettings.js'
 import { logError } from './utils/log.js'
 
 const MAX_STATUS_CHARS = 2000
+
+// Keep provenance out of the string map that existing callers render as blocks.
+const instructionSnapshots = new WeakMap<object, {
+  claudeMd: string | undefined
+  files: readonly InstructionFile[] | undefined
+}>()
+
+export function withUserContextInstructionFiles<T extends Record<string, string>>(
+  context: T,
+  files: readonly InstructionFile[] | undefined,
+): T {
+  instructionSnapshots.set(context, {
+    claudeMd: context.claudeMd,
+    files: files?.map(file => ({ ...file })),
+  })
+  return context
+}
+
+export function getUserContextInstructionFiles(
+  context: Record<string, string>,
+): readonly InstructionFile[] | undefined {
+  const snapshot = instructionSnapshots.get(context)
+  if (snapshot) {
+    return snapshot.claudeMd === context.claudeMd
+      ? snapshot.files?.map(file => ({ ...file }))
+      : undefined
+  }
+  // Overrides without instruction text are explicitly empty, not an invitation
+  // to rediscover files omitted by their caller.
+  return context.claudeMd === undefined ? [] : undefined
+}
 
 // System prompt injection for cache breaking (ant-only, ephemeral debugging state)
 let systemPromptInjection: string | null = null
@@ -167,9 +203,10 @@ export const getUserContext = memoize(
       (isBareMode() && getAdditionalDirectoriesForClaudeMd().length === 0)
     // Await the async I/O (readFile/readdir directory walk) so the event
     // loop yields naturally at the first fs.readFile.
-    const claudeMd = shouldDisableClaudeMd
-      ? null
-      : getClaudeMds(filterInjectedMemoryFiles(await getMemoryFiles()))
+    const memoryFiles = shouldDisableClaudeMd
+      ? []
+      : getRenderedMemoryFiles(filterInjectedMemoryFiles(await getMemoryFiles()))
+    const claudeMd = renderClaudeMds(memoryFiles)
     // Cache for the auto-mode classifier (yoloClassifier.ts reads this
     // instead of importing claudemd.ts directly, which would create a
     // cycle through permissions/filesystem → permissions → yoloClassifier).
@@ -181,9 +218,9 @@ export const getUserContext = memoize(
       claudemd_disabled: Boolean(shouldDisableClaudeMd),
     })
 
-    return {
+    return withUserContextInstructionFiles({
       ...(claudeMd && { claudeMd }),
       currentDate: `Today's date is ${getLocalISODate()}.`,
-    }
+    }, instructionFilesFromMemory(memoryFiles))
   },
 )

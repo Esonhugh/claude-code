@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import axios from 'axios'
 
+const originalNonessentialTraffic = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 const originalAxiosGet = axios.get
 const originalOpenAI = process.env.CLAUDE_CODE_USE_OPENAI
 const originalNodeEnv = process.env.NODE_ENV
@@ -18,6 +18,8 @@ let restoreGlobalConfig: (() => void) | undefined
 }
 
 try {
+  // Network requests below are replaced with axios fixtures; exercise the bootstrap gate itself.
+  delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
   process.env.CLAUDE_CODE_USE_OPENAI = '1'
   process.env.NODE_ENV = 'test'
 
@@ -25,6 +27,9 @@ try {
   const { getGlobalConfig, saveGlobalConfig } = await import('../../utils/config.js')
   const { fetchBootstrapData } = await import('./bootstrap.js')
   const originalClientDataCache = getGlobalConfig().clientDataCache
+  const originalAutoCompactWindowsCache =
+    getGlobalConfig().autoCompactWindowsCache
+  const originalBootstrapCacheKey = getGlobalConfig().bootstrapCacheKey
   const originalModelOptionsCache = getGlobalConfig().additionalModelOptionsCache
   const originalModelOptionsCacheKey =
     getGlobalConfig().additionalModelOptionsCacheKey
@@ -33,6 +38,8 @@ try {
     saveGlobalConfig(current => ({
       ...current,
       clientDataCache: originalClientDataCache,
+      autoCompactWindowsCache: originalAutoCompactWindowsCache,
+      bootstrapCacheKey: originalBootstrapCacheKey,
       additionalModelOptionsCache: originalModelOptionsCache,
       additionalModelOptionsCacheKey: originalModelOptionsCacheKey,
       customApiKeyResponses: originalCustomApiKeyResponses,
@@ -41,6 +48,9 @@ try {
 
   saveGlobalConfig(current => ({
     ...current,
+    clientDataCache: { preserved: 'client-data' },
+    autoCompactWindowsCache: { preserved: 321_000 },
+    bootstrapCacheKey: undefined,
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
@@ -87,6 +97,12 @@ try {
     getGlobalConfig().additionalModelOptionsCacheKey,
     'openai:chatgpt:account-123',
   )
+  assert.deepEqual(getGlobalConfig().clientDataCache, {
+    preserved: 'client-data',
+  })
+  assert.deepEqual(getGlobalConfig().autoCompactWindowsCache, {
+    preserved: 321_000,
+  })
 
   requests.length = 0
   delete process.env.CLAUDE_CODE_USE_OPENAI
@@ -98,16 +114,11 @@ try {
   assert.equal(requests[0]!.url, 'https://gateway.example/v1/models')
   assert.equal(requests[0]!.headers?.Authorization, 'Bearer gateway-token')
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
-    {
-      value: 'anthropic/claude-bootstrap',
-      label: 'Claude Bootstrap',
-      description: 'From gateway',
-    },
+    { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])
   assert.equal(
     getGlobalConfig().additionalModelOptionsCacheKey,
-    'anthropic:https://gateway.example/v1:auth-token:' +
-      createHash('sha256').update('gateway-token').digest('hex').slice(0, 16),
+    'openai:chatgpt:account-123',
   )
 
   saveGlobalConfig(current => ({
@@ -147,8 +158,7 @@ try {
   ])
   assert.equal(
     getGlobalConfig().additionalModelOptionsCacheKey,
-    'anthropic:https://gateway.example/v1:auth-token:' +
-      createHash('sha256').update('gateway-token').digest('hex').slice(0, 16),
+    'openai:chatgpt:account-123',
   )
 
   axios.get = (async () => ({ data: { data: [] } })) as typeof axios.get
@@ -205,6 +215,8 @@ try {
       rejected: [],
     },
     clientDataCache: undefined,
+    autoCompactWindowsCache: undefined,
+    bootstrapCacheKey: undefined,
     additionalModelOptionsCache: undefined,
     additionalModelOptionsCacheKey: undefined,
   }))
@@ -216,6 +228,7 @@ try {
     return {
       data: {
         client_data: { release_validation: 'first-party-bootstrap' },
+        auto_compact_windows: { 'claude-sonnet-5': 640000 },
         additional_model_options: [{
           model: 'claude-first-party-bootstrap',
           name: 'Claude First-Party Bootstrap',
@@ -236,13 +249,64 @@ try {
   assert.deepEqual(getGlobalConfig().clientDataCache, {
     release_validation: 'first-party-bootstrap',
   })
+  assert.deepEqual(getGlobalConfig().autoCompactWindowsCache, {
+    'claude-sonnet-5': 640000,
+  })
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [{
     value: 'claude-first-party-bootstrap',
     label: 'Claude First-Party Bootstrap',
     description: 'First-party bootstrap model',
   }])
+  assert.match(
+    getGlobalConfig().additionalModelOptionsCacheKey ?? '',
+    /^anthropic:https:\/\/api\.anthropic\.com\/v1:api-key:/,
+  )
+  assert.equal(
+    getGlobalConfig().bootstrapCacheKey,
+    getGlobalConfig().additionalModelOptionsCacheKey,
+  )
+
+  // Gateway auth must not authorize the first-party bootstrap. Without usable
+  // first-party credentials, a gateway run may only touch the gateway endpoint.
+  requests.length = 0
+  process.env.CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY = '1'
+  process.env.ANTHROPIC_BASE_URL = 'https://gateway.example'
+  process.env.ANTHROPIC_AUTH_TOKEN = 'gateway-token'
+  delete process.env.ANTHROPIC_API_KEY
+  authModule.getClaudeAIOAuthTokens.cache.set(undefined, null)
+  await fetchBootstrapData()
+  assert.deepEqual(requests.map(request => request.url), [
+    'https://gateway.example/v1/models',
+  ])
+  process.env.ANTHROPIC_API_KEY = 'first-party-test-key'
+
+  // A gateway that does not serve /v1/models must not fall through to the
+  // first-party bootstrap or expose a catalog from another endpoint.
+  requests.length = 0
+  saveGlobalConfig(current => ({
+    ...current,
+    bootstrapCacheKey: undefined,
+    additionalModelOptionsCache: undefined,
+    additionalModelOptionsCacheKey: undefined,
+  }))
+  axios.get = (async (
+    url: string,
+    options?: { headers?: Record<string, string> },
+  ) => {
+    requests.push({ url, headers: options?.headers, params: undefined })
+    throw new Error('gateway has no /v1/models')
+  }) as typeof axios.get
+
+  await fetchBootstrapData()
+
+  assert.deepEqual(requests.map(request => request.url), [
+    'https://gateway.example/v1/models',
+  ])
+  assert.equal(getGlobalConfig().additionalModelOptionsCache, undefined)
   assert.equal(getGlobalConfig().additionalModelOptionsCacheKey, undefined)
 } finally {
+  if (originalNonessentialTraffic === undefined) delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+  else process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = originalNonessentialTraffic
   restoreGlobalConfig?.()
   axios.get = originalAxiosGet
   const authModule = await import('../../utils/auth.js')

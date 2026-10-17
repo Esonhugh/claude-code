@@ -9,6 +9,8 @@ import {
   type LocalWorkflowTaskState,
 } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
+import { getAgentColor } from '../tools/AgentTool/agentColorManager.js'
+import type { Theme } from '../utils/theme.js'
 
 export type CoordinatorPanelTask = LocalAgentTaskState | LocalWorkflowTaskState
 export type CoordinatorPanelBranch = 'none' | 'middle' | 'last'
@@ -22,8 +24,12 @@ export type CoordinatorSessionRow = {
   icon: string
   primaryText: string
   secondaryText: string
-  meta: string
+  tokens: string
+  tools: string
+  elapsed: string
   statusText: string
+  activity: string
+  color?: keyof Theme
   depth: number
   branch: CoordinatorPanelBranch
 }
@@ -319,14 +325,6 @@ function taskElapsed(task: CoordinatorPanelTask, now: number): string {
   return formatDuration(elapsedMs)
 }
 
-function workflowStatusText(task: LocalWorkflowTaskState, now: number): string {
-  if (task.status === 'completed') return `done · ${taskElapsed(task, now)}`
-  if (task.status === 'failed') return `failed · ${taskElapsed(task, now)}`
-  if (task.status === 'killed') return `killed · ${taskElapsed(task, now)}`
-  if (task.status === 'pending') return `paused · ${taskElapsed(task, now)}`
-  return `running · ${taskElapsed(task, now)}`
-}
-
 function activityText(activity: unknown): string | undefined {
   if (!activity) return undefined
   if (typeof activity === 'string') return activity
@@ -335,13 +333,6 @@ function activityText(activity: unknown): string | undefined {
   if (typeof description === 'string' && description.trim() !== '') return description
   const toolName = (activity as { toolName?: unknown }).toolName
   return typeof toolName === 'string' && toolName.trim() !== '' ? toolName : undefined
-}
-
-function agentStatusText(task: LocalAgentTaskState, now: number): string {
-  const prefix = task.status === 'running' ? 'running' : task.status
-  const activity = task.status === 'running' ? activityText(task.progress?.lastActivity) : undefined
-  const status = `${prefix} · ${taskElapsed(task, now)}`
-  return activity ? `${status} · ${activity}` : status
 }
 
 function agentPrimaryText(
@@ -360,20 +351,6 @@ function workflowSecondaryText(task: LocalWorkflowTaskState): string {
   const primaryText = workflowPrimaryText(task)
   const description = task.meta?.description ?? task.description.replace(/^Workflow:\s*/i, '')
   return description === primaryText ? '' : description
-}
-
-function agentRowMeta(task: LocalAgentTaskState): string {
-  const tokenCount = task.progress?.tokenCount ?? 0
-  const toolUseCount = task.progress?.toolUseCount ?? 0
-  return `${formatNumber(tokenCount)} tok · ${toolUseCount} ${toolUseCount === 1 ? 'tool' : 'tools'}`
-}
-
-function workflowRowMeta(task: LocalWorkflowTaskState): string {
-  const completed = workflowTerminalAgentCount(task)
-  const started = task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)
-  const total = task.agentCount ?? started
-  const tokenCount = task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0)
-  return `${completed}/${total} agents · ${formatNumber(tokenCount)} tok`
 }
 
 export function getCoordinatorSessionRows({
@@ -402,8 +379,12 @@ export function getCoordinatorSessionRows({
           entry.collapsedDescendantCount,
         ),
         secondaryText: task.description ?? task.id,
-        meta: agentRowMeta(task),
-        statusText: agentStatusText(task, now),
+        tokens: `${formatNumber(task.progress?.tokenCount ?? 0)} tokens`,
+        tools: `${task.progress?.toolUseCount ?? 0} ${task.progress?.toolUseCount === 1 ? 'tool' : 'tools'}`,
+        elapsed: taskElapsed(task, now),
+        statusText: task.status === 'killed' ? 'stopped' : task.status,
+        activity: task.status === 'running' ? activityText(task.progress?.lastActivity) ?? '' : '',
+        color: getAgentColor(task.agentType),
         depth: entry.depth,
         branch: entry.branch,
       }
@@ -417,8 +398,11 @@ export function getCoordinatorSessionRows({
       icon: '◯',
       primaryText: workflowPrimaryText(task),
       secondaryText: workflowSecondaryText(task),
-      meta: workflowRowMeta(task),
-      statusText: workflowStatusText(task, now),
+      tokens: `${formatNumber(task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0))} tokens`,
+      tools: `${workflowTerminalAgentCount(task)}/${task.agentCount ?? task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)} agents`,
+      elapsed: taskElapsed(task, now),
+      statusText: task.status === 'completed' ? 'done' : task.status === 'killed' ? 'stopped' : task.status === 'pending' ? 'paused' : task.status,
+      activity: '',
       depth: 0,
       branch: 'none',
     }
@@ -435,8 +419,11 @@ export function getCoordinatorSessionRows({
       icon: viewingAgentTaskId === undefined ? '●' : '○',
       primaryText: 'main',
       secondaryText: '',
-      meta: '',
-      statusText: 'current session',
+      tokens: '',
+      tools: '',
+      elapsed: '',
+      statusText: '',
+      activity: '',
       depth: 0,
       branch: 'none',
     },

@@ -184,7 +184,7 @@ export function receivePeerMessageStatus(id: string, from: string, status: PeerM
 export async function sendToUdsSocket(
   socketPath: string,
   message: string,
-  options: { fromMode?: PeerPermissionClass; fromName?: string } = {},
+  options: { fromMode?: PeerPermissionClass; fromName?: string; fromPlugin?: string; signal?: AbortSignal } = {},
 ): Promise<{ msg_id: string }> {
   const { getUdsMessagingSocketPath, getPeerPermissionClass } = await import('./udsMessaging.js')
   const ownPath = getUdsMessagingSocketPath()
@@ -203,7 +203,7 @@ export async function sendToUdsSocket(
   if (pending.size >= 100) pending.delete(pending.keys().next().value!)
   pending.set(id, { endpoint, time: Date.now() })
   try {
-    await sendPeerFrame(endpoint, { msgV: 1, msg_id: id, type: 'user', message: { role: 'user', content }, priority: 'next', from })
+    await sendPeerFrame(endpoint, { msgV: 1, msg_id: id, type: 'user', message: { role: 'user', content }, priority: 'next', from, ...(options.fromPlugin ? {from_plugin:options.fromPlugin} : {}) }, options.signal)
     logForDebugging(`[uds-client] Sent msg_id=${id} session=${getSessionId()}`)
     return { msg_id: id }
   } catch (error) {

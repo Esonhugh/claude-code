@@ -6,10 +6,13 @@
 export type TerminalFocusState = 'focused' | 'blurred' | 'unknown'
 
 let focusState: TerminalFocusState = 'unknown'
+let terminalFocusGainedAt = 0
 const resolvers: Set<() => void> = new Set()
 const subscribers: Set<() => void> = new Set()
 
 export function setTerminalFocused(v: boolean): void {
+  if (v) terminalFocusGainedAt = Date.now()
+  if (!v && focusState === 'blurred') return
   focusState = v ? 'focused' : 'blurred'
   // Notify useSyncExternalStore subscribers
   for (const cb of subscribers) {
@@ -22,6 +25,8 @@ export function setTerminalFocused(v: boolean): void {
     resolvers.clear()
   }
 }
+
+export function getTerminalFocusGainedAt(): number { return terminalFocusGainedAt }
 
 export function getTerminalFocused(): boolean {
   return focusState !== 'blurred'
@@ -41,6 +46,7 @@ export function subscribeTerminalFocus(cb: () => void): () => void {
 
 export function resetTerminalFocusState(): void {
   focusState = 'unknown'
+  terminalFocusGainedAt = 0
   for (const cb of subscribers) {
     cb()
   }

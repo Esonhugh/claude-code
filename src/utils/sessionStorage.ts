@@ -1,5 +1,5 @@
 import { feature } from 'bun:bundle'
-import type { UUID } from 'crypto'
+import { randomUUID, type UUID } from 'crypto'
 import type { Dirent } from 'fs'
 // Sync fs primitives for readFileTailSync — separate from fs/promises
 // imports above. Named (not wildcard) per CLAUDE.md style; no collisions
@@ -11,6 +11,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  rename,
   stat,
   unlink,
   writeFile,
@@ -26,6 +27,9 @@ import {
   getPlanSlugCache,
   getPromptId,
   getSessionId,
+  getSessionStartedAt,
+  isSessionStartEpoch,
+  restoreSessionStartedAt,
   getSessionProjectDir,
   isSessionPersistenceDisabled,
   switchSession,
@@ -52,6 +56,7 @@ import {
   type LogOption,
   type PersistedWorktreeSession,
   type SerializedMessage,
+  type SessionCostStateEntry,
   sortLogs,
   type TranscriptMessage,
 } from '../types/logs.js'
@@ -78,6 +83,7 @@ import { getFsImplementation } from './fsOperations.js'
 import { getWorktreePaths } from './getWorktreePaths.js'
 import { getBranch } from './git.js'
 import { gracefulShutdownSync, isShuttingDown } from './gracefulShutdown.js'
+import { captureSessionCostState, parseSessionCostState } from './sessionCostState.js'
 import { parseJSONL } from './json.js'
 import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
@@ -266,8 +272,20 @@ function getAgentMetadataPath(agentId: AgentId): string {
 
 export type AgentMetadata = {
   agentType: string
+  /** Durable user cancellation; absent on older metadata. */
+  stoppedByUser?: boolean
+  /** Persisted teammate identity used to route stopped or evicted agents. */
+  taskKind?: 'in_process_teammate'
+  name?: string
+  teamName?: string
+  color?: string
+  planModeRequired?: boolean
+  customAgentType?: string
+  model?: string
+  effort?: import('./effort.js').EffortValue
   /** Worktree path if the agent was spawned with isolation: "worktree" */
   worktreePath?: string
+  worktreeBranch?: string
   /** Effective cwd when the agent was spawned with an explicit cwd override. */
   cwd?: string
   /** Original task description from the AgentTool input. Persisted so a
@@ -291,26 +309,72 @@ export type AgentMetadata = {
  * Also stores the worktreePath when the agent was spawned with worktree
  * isolation, enabling resume to restore the correct cwd.
  */
-export async function writeAgentMetadata(
-  agentId: AgentId,
-  metadata: AgentMetadata,
-): Promise<void> {
-  const path = getAgentMetadataPath(agentId)
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(metadata))
+const agentMetadataWrites = new Map<string, Promise<void>>()
+
+async function readAgentMetadataFile(path: string): Promise<AgentMetadata | null> {
+  try {
+    return JSON.parse(await readFile(path, 'utf-8')) as AgentMetadata
+  } catch (error) {
+    if (isFsInaccessible(error)) return null
+    throw error
+  }
 }
 
-export async function readAgentMetadata(
+async function mutateAgentMetadata(
   agentId: AgentId,
-): Promise<AgentMetadata | null> {
+  update: (current: AgentMetadata | null) => AgentMetadata,
+): Promise<void> {
   const path = getAgentMetadataPath(agentId)
+  const previous = agentMetadataWrites.get(path)
+  // A failed earlier write must not prevent a later retry; this write's error
+  // remains observable to its caller and to readers waiting for it.
+  const write = (previous?.catch(() => {}) ?? Promise.resolve()).then(async () => {
+    const metadata = update(await readAgentMetadataFile(path))
+    await mkdir(dirname(path), { recursive: true })
+    const mode = await stat(path).then(info => info.mode & 0o777, error => {
+      if (isFsInaccessible(error)) return 0o666 & ~process.umask()
+      throw error
+    })
+    const temporary = `${path}.${randomUUID()}.tmp`
+    try {
+      await writeFile(temporary, JSON.stringify(metadata), { flag: 'wx', mode })
+      await rename(temporary, path)
+    } finally {
+      await unlink(temporary).catch(error => {
+        if (!isFsInaccessible(error)) logForDebugging(`Failed to clean metadata staging file: ${error}`)
+      })
+    }
+  })
+  agentMetadataWrites.set(path, write)
   try {
-    const raw = await readFile(path, 'utf-8')
-    return JSON.parse(raw) as AgentMetadata
-  } catch (e) {
-    if (isFsInaccessible(e)) return null
-    throw e
+    await write
+  } finally {
+    if (agentMetadataWrites.get(path) === write) agentMetadataWrites.delete(path)
   }
+}
+
+export async function writeAgentMetadata(agentId: AgentId, metadata: AgentMetadata): Promise<void> {
+  await mutateAgentMetadata(agentId, current => current?.stoppedByUser
+    ? { ...metadata, stoppedByUser: true }
+    : metadata)
+}
+
+/** Drop the worktree fields but keep everything else the spawn recorded. */
+export async function clearAgentMetadataWorktree(agentId: AgentId, fallback: AgentMetadata): Promise<void> {
+  await mutateAgentMetadata(agentId, current => {
+    const { worktreePath: _path, worktreeBranch: _branch, ...rest } = current ?? fallback
+    return rest
+  })
+}
+
+export async function markAgentMetadataStoppedByUser(agentId: AgentId, agentType: string): Promise<void> {
+  await mutateAgentMetadata(agentId, current => ({ ...current ?? { agentType }, stoppedByUser: true }))
+}
+
+export async function readAgentMetadata(agentId: AgentId): Promise<AgentMetadata | null> {
+  const path = getAgentMetadataPath(agentId)
+  await agentMetadataWrites.get(path)
+  return readAgentMetadataFile(path)
 }
 
 export type RemoteAgentMetadata = {
@@ -469,6 +533,13 @@ function getProject(): Project {
           project?.reAppendSessionMetadata()
         } catch {
           // Best-effort — don't let metadata re-append crash the cleanup
+        }
+      })
+      process.on('exit', () => {
+        try {
+          project?.appendSessionCostState(captureSessionCostState())
+        } catch (error) {
+          logForDebugging(`[ModsSession] cost snapshot exit write failed: ${error}`, { level: 'error' })
         }
       })
       cleanupRegistered = true
@@ -701,6 +772,12 @@ class Project {
     this.pendingEntries = []
   }
 
+  appendSessionCostState(entry: SessionCostStateEntry): void {
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
+    if (entry.sessionId !== getSessionId() || this.sessionFile !== getTranscriptPath()) return
+    appendEntryToFile(this.sessionFile, entry)
+  }
+
   /**
    * Re-append cached session metadata to the end of the transcript file.
    * This ensures metadata stays within the tail window that readLiteMetadata
@@ -730,9 +807,14 @@ class Project {
    * external-writer concern — their caches are authoritative.
    */
   reAppendSessionMetadata(skipTitleRefresh = false): void {
-    if (!this.sessionFile) return
+    if (!this.sessionFile || this.shouldSkipPersistence()) return
     const sessionId = getSessionId() as UUID
     if (!sessionId) return
+    this.appendSessionCostState(captureSessionCostState())
+    const startedAt = getSessionStartedAt()
+    if (startedAt !== undefined) {
+      appendEntryToFile(this.sessionFile, { type: 'session-started-at', sessionId, startedAt })
+    }
 
     // One sync tail read to refresh SDK-mutable fields. Same
     // LITE_READ_BUF_SIZE window readLiteMetadata uses. Empty string on
@@ -1001,6 +1083,16 @@ class Project {
     }
   }
 
+  async persistForRestart(messages: Message[]): Promise<void> {
+    if (this.shouldSkipPersistence()) {
+      throw new Error('Session persistence is disabled; automatic restart would lose history')
+    }
+    await this.flush()
+    if (this.sessionFile === null) await this.materializeSessionFile()
+    await recordTranscript(messages)
+    await this.flush()
+  }
+
   async insertMessageChain(
     messages: Transcript,
     isSidechain: boolean = false,
@@ -1207,6 +1299,10 @@ class Project {
       // Mode entries can always be appended
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'worktree-state') {
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'session-started-at' || entry.type === 'cost-state') {
+      void this.enqueueWrite(sessionFile, entry)
+    } else if (entry.type === 'dev-mods') {
       void this.enqueueWrite(sessionFile, entry)
     } else if (entry.type === 'content-replacement') {
       // Content replacement records can always be appended. Subagent records
@@ -1459,6 +1555,12 @@ export async function recordTranscript(
   return (lastRecorded?.uuid as UUID | undefined) ?? startingParentUuid ?? null
 }
 
+// Renderer restarts must also save local-command-only sessions, which normally
+// remain buffered until the first user/assistant turn.
+export async function persistSessionForRestart(messages: Message[]): Promise<void> {
+  await getProject().persistForRestart(messages)
+}
+
 export async function recordSidechainTranscript(
   messages: Message[],
   agentId?: string,
@@ -1549,6 +1651,13 @@ export function adoptResumedSessionFile(): void {
  * commit, in commit order. On resume these are collected into an ordered
  * array and handed to restoreFromEntries() which rebuilds the commit log.
  */
+export async function recordDevModsConsent(folder: string): Promise<void> {
+  const sessionId = getSessionId() as UUID
+  if (!sessionId) throw new Error('Cannot persist Mods authoring consent without a session')
+  await getProject().appendEntry({ type: 'dev-mods', sessionId, folder })
+  await getProject().flush()
+}
+
 export async function recordContextCollapseCommit(commit: {
   collapseId: string
   summaryUuid: string
@@ -2066,7 +2175,8 @@ function findLatestMessage<T extends { timestamp: string }>(
   for (const m of messages) {
     if (!predicate(m)) continue
     const t = Date.parse(m.timestamp)
-    if (t > maxTime) {
+    // Entries are append-ordered; retain the chain tail when timestamps tie.
+    if (t >= maxTime) {
       maxTime = t
       latest = m
     }
@@ -2323,6 +2433,9 @@ export async function loadTranscriptFromFile(
       leafUuids,
       contentReplacements,
       worktreeStates,
+      devModsFolders,
+      sessionStartedAts,
+      costStates,
     } = await loadTranscriptFile(filePath)
 
     if (messages.size === 0) {
@@ -2368,6 +2481,9 @@ export async function loadTranscriptFromFile(
       worktreeSession: worktreeStates.has(sessionId)
         ? worktreeStates.get(sessionId)
         : undefined,
+      devModsFolder: devModsFolders.get(sessionId),
+      startedAt: sessionStartedAts.get(sessionId),
+      costState: costStates.get(sessionId),
     }
   }
 
@@ -2516,6 +2632,7 @@ function convertToLogOption(
 
   return {
     date: lastMessage.timestamp,
+    sessionId: lastMessage.sessionId,
     messages: removeExtraFields(transcript),
     fullPath,
     value,
@@ -2772,6 +2889,8 @@ export function getCurrentSessionAgentColor(): string | undefined {
  * agent banner) and re-appended on session exit via reAppendSessionMetadata.
  */
 export function restoreSessionMetadata(meta: {
+  sessionId?: string
+  startedAt?: number
   customTitle?: string
   tag?: string
   agentName?: string
@@ -2784,6 +2903,10 @@ export function restoreSessionMetadata(meta: {
   prRepository?: string
 }): void {
   const project = getProject()
+  if (meta.sessionId && isSessionStartEpoch(meta.startedAt)) {
+    restoreSessionStartedAt(meta.sessionId, meta.startedAt)
+    logForDebugging(`[ModsSession] ${JSON.stringify({ event: 'restore-metadata', sourceSessionId: meta.sessionId, activeSessionId: getSessionId(), startedAt: getSessionStartedAt() })}`)
+  }
   // ??= so --name (cacheSessionTitle) wins over the resumed
   // session's title. REPL.tsx clears before calling, so /resume is unaffected.
   if (meta.customTitle) project.currentSessionTitle ??= meta.customTitle
@@ -2818,6 +2941,16 @@ export function clearSessionMetadata(): void {
   project.currentSessionPrNumber = undefined
   project.currentSessionPrUrl = undefined
   project.currentSessionPrRepository = undefined
+}
+
+export async function recordSessionCostState(entry: SessionCostStateEntry): Promise<void> {
+  const project = getProject()
+  if (!project.sessionFile || project.sessionFile !== getTranscriptPath() || entry.sessionId !== getSessionId()) return
+  try {
+    await project.appendEntry(entry, entry.sessionId)
+  } catch (error) {
+    logForDebugging(`[ModsSession] cost snapshot write failed: ${error}`, { level: 'error' })
+  }
 }
 
 /**
@@ -2988,6 +3121,9 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
       prRepositories,
       modes,
       worktreeStates,
+      devModsFolders,
+      sessionStartedAts,
+      costStates,
       fileHistorySnapshots,
       attributionSnapshots,
       contentReplacements,
@@ -3034,6 +3170,11 @@ export async function loadFullLog(log: LogOption): Promise<LogOption> {
         sessionId && worktreeStates.has(sessionId)
           ? worktreeStates.get(sessionId)
           : log.worktreeSession,
+      startedAt: sessionId ? sessionStartedAts.get(sessionId) : undefined,
+      costState: sessionId ? costStates.get(sessionId) : undefined,
+      devModsFolder: sessionId
+        ? devModsFolders.get(sessionId)
+        : log.devModsFolder,
       prNumber: sessionId ? prNumbers.get(sessionId) : log.prNumber,
       prUrl: sessionId ? prUrls.get(sessionId) : log.prUrl,
       prRepository: sessionId
@@ -3135,11 +3276,14 @@ const METADATA_TYPE_MARKERS = [
   '"type":"agent-setting"',
   '"type":"mode"',
   '"type":"worktree-state"',
+  '"type":"dev-mods"',
+  '"type":"session-started-at"',
+  '"type":"cost-state"',
   '"type":"pr-link"',
 ]
 const METADATA_MARKER_BUFS = METADATA_TYPE_MARKERS.map(m => Buffer.from(m))
-// Longest marker is 22 bytes; +1 for leading `{` = 23.
-const METADATA_PREFIX_BOUND = 25
+// Include the leading `{` when deciding whether a split line can be metadata.
+const METADATA_PREFIX_BOUND = Math.max(...METADATA_MARKER_BUFS.map(marker => marker.length)) + 1
 
 // null = carry spans whole chunk. Skips concat when carry provably isn't
 // a metadata line (markers sit at byte 1 after `{`).
@@ -3487,7 +3631,7 @@ function walkChainBeforeParse(buf: Buffer): Buffer {
  */
 export async function loadTranscriptFile(
   filePath: string,
-  opts?: { keepAllLeaves?: boolean },
+  opts?: { keepAllLeaves?: boolean; buffer?: Buffer },
 ): Promise<{
   messages: Map<UUID, TranscriptMessage>
   summaries: Map<UUID, string>
@@ -3501,6 +3645,9 @@ export async function loadTranscriptFile(
   prRepositories: Map<UUID, string>
   modes: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
+  devModsFolders: Map<UUID, string>
+  sessionStartedAts: Map<UUID, number>
+  costStates: Map<UUID, SessionCostStateEntry>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3521,6 +3668,20 @@ export async function loadTranscriptFile(
   const prRepositories = new Map<UUID, string>()
   const modes = new Map<UUID, string>()
   const worktreeStates = new Map<UUID, PersistedWorktreeSession | null>()
+  const devModsFolders = new Map<UUID, string>()
+  const sessionStartedAts = new Map<UUID, number>()
+  const costStates = new Map<UUID, SessionCostStateEntry>()
+  const keepStartedAt = (sessionId: UUID, startedAt: unknown) => {
+    if (!sessionStartedAts.has(sessionId) && isSessionStartEpoch(startedAt)) {
+      sessionStartedAts.set(sessionId, startedAt)
+    }
+  }
+  const keepCostStateStart = (entry: unknown) => {
+    const state = parseSessionCostState(entry)
+    if (state) {
+      costStates.set(state.sessionId, state)
+    }
+  }
   const fileHistorySnapshots = new Map<UUID, FileHistorySnapshotMessage>()
   const attributionSnapshots = new Map<UUID, AttributionSnapshotMessage>()
   const contentReplacements = new Map<UUID, ContentReplacementRecord[]>()
@@ -3546,10 +3707,10 @@ export async function loadTranscriptFile(
     //
     // Pre-boundary metadata (agent-setting, mode, pr-link, etc.) is recovered
     // via a cheap byte-level forward scan of [0, boundary).
-    let buf: Buffer | null = null
+    let buf: Buffer | null = opts?.buffer ?? null
     let metadataLines: string[] | null = null
-    let hasPreservedSegment = false
-    if (!isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
+    let hasPreservedSegment = opts?.buffer !== undefined
+    if (buf === null && !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_PRECOMPACT_SKIP)) {
       const { size } = await stat(filePath)
       if (size > SKIP_PRECOMPACT_THRESHOLD) {
         const scan = await readTranscriptForLoad(filePath, size)
@@ -3619,6 +3780,12 @@ export async function loadTranscriptFile(
           modes.set(entry.sessionId, entry.mode)
         } else if (entry.type === 'worktree-state' && entry.sessionId) {
           worktreeStates.set(entry.sessionId, entry.worktreeSession)
+        } else if (entry.type === 'session-started-at' && entry.sessionId) {
+          keepStartedAt(entry.sessionId, entry.startedAt)
+        } else if (entry.type === 'cost-state' && entry.sessionId) {
+          keepCostStateStart(entry)
+        } else if (entry.type === 'dev-mods' && entry.sessionId) {
+          devModsFolders.set(entry.sessionId, entry.folder)
         } else if (entry.type === 'pr-link' && entry.sessionId) {
           prNumbers.set(entry.sessionId, entry.prNumber)
           prUrls.set(entry.sessionId, entry.prUrl)
@@ -3687,6 +3854,12 @@ export async function loadTranscriptFile(
         modes.set(entry.sessionId, entry.mode)
       } else if (entry.type === 'worktree-state' && entry.sessionId) {
         worktreeStates.set(entry.sessionId, entry.worktreeSession)
+      } else if (entry.type === 'session-started-at' && entry.sessionId) {
+        keepStartedAt(entry.sessionId, entry.startedAt)
+      } else if (entry.type === 'cost-state' && entry.sessionId) {
+        keepCostStateStart(entry)
+      } else if (entry.type === 'dev-mods' && entry.sessionId) {
+        devModsFolders.set(entry.sessionId, entry.folder)
       } else if (entry.type === 'pr-link' && entry.sessionId) {
         prNumbers.set(entry.sessionId, entry.prNumber)
         prUrls.set(entry.sessionId, entry.prUrl)
@@ -3818,6 +3991,9 @@ export async function loadTranscriptFile(
     prRepositories,
     modes,
     worktreeStates,
+    devModsFolders,
+    sessionStartedAts: new Map([...Array.from(costStates, ([id, state]) => [id, state.startTime] as const), ...sessionStartedAts]),
+    costStates,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3836,8 +4012,12 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   summaries: Map<UUID, string>
   customTitles: Map<UUID, string>
   tags: Map<UUID, string>
+  agentNames: Map<UUID, string>
   agentSettings: Map<UUID, string>
   worktreeStates: Map<UUID, PersistedWorktreeSession | null>
+  devModsFolders: Map<UUID, string>
+  sessionStartedAts: Map<UUID, number>
+  costStates: Map<UUID, SessionCostStateEntry>
   fileHistorySnapshots: Map<UUID, FileHistorySnapshotMessage>
   attributionSnapshots: Map<UUID, AttributionSnapshotMessage>
   contentReplacements: Map<UUID, ContentReplacementRecord[]>
@@ -3891,8 +4071,12 @@ export async function getLastSessionLog(
     summaries,
     customTitles,
     tags,
+    agentNames,
     agentSettings,
     worktreeStates,
+    devModsFolders,
+    sessionStartedAts,
+    costStates,
     fileHistorySnapshots,
     attributionSnapshots,
     contentReplacements,
@@ -3936,7 +4120,11 @@ export async function getLastSessionLog(
       agentSetting,
       contentReplacements.get(sessionId) ?? [],
     ),
+    agentName: agentNames.get(sessionId) ?? transcript[0]?.agentName,
     worktreeSession: worktreeStates.get(sessionId),
+    devModsFolder: devModsFolders.get(sessionId),
+    startedAt: sessionStartedAts.get(sessionId),
+    costState: costStates.get(lastMessage.sessionId as UUID),
     contextCollapseCommits: contextCollapseCommits.filter(
       e => e.sessionId === sessionId,
     ),
@@ -4638,6 +4826,8 @@ export async function loadAllLogsFromSessionFile(
     attributionSnapshots,
     contentReplacements,
     leafUuids,
+    sessionStartedAts,
+    costStates,
   } = await loadTranscriptFile(sessionFile, { keepAllLeaves: true })
 
   if (messages.size === 0) return []
@@ -4688,6 +4878,8 @@ export async function loadAllLogsFromSessionFile(
       messageCount: countVisibleMessages(chain),
       isSidechain: firstMessage.isSidechain ?? false,
       sessionId,
+      startedAt: sessionStartedAts.get(sessionId),
+      costState: costStates.get(sessionId),
       leafUuid: leafMessage.uuid,
       summary: summaries.get(leafMessage.uuid),
       customTitle: customTitles.get(sessionId),

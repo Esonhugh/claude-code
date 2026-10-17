@@ -1,6 +1,7 @@
 import { build } from 'esbuild';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import process from 'node:process';
 import { builtinModules } from 'node:module';
 import { fileURLToPath, pathToFileURL, URL } from 'node:url';
@@ -33,6 +34,10 @@ const sharpNativePath = path.join(
   projectDir,
   'scripts/shims/sharp-native.cjs',
 );
+const builtinModsArchiveNames = [
+  'builtin-mods-2.1.277.zip',
+  'builtin-diff-2.1.295.zip',
+];
 const defaultVersion = '0.0.0-dev';
 const buildVersion = String(
   process.env.CLAUDE_CODE_VERSION ?? packageJson.version ?? defaultVersion,
@@ -75,6 +80,8 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'MCP_SKILLS',
     'SSH_REMOTE',
     'UDS_INBOX',
+    'KAIROS_CHANNELS',
+    'TRANSCRIPT_CLASSIFIER',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())
@@ -117,7 +124,7 @@ function resolveSourceFile(basePath) {
   ));
 }
 
-const recoveryResolver = {
+const recoveryResolver = embedSharpNative => ({
   name: 'recovery-resolver',
   setup(pluginBuild) {
     pluginBuild.onLoad({ filter: /\.(md|txt)$/ }, async args => {
@@ -214,10 +221,33 @@ const recoveryResolver = {
       return null;
     });
   },
-};
+});
 
-async function buildCli() {
-  await fs.promises.mkdir(path.join(projectDir, 'dist'), { recursive: true });
+export function prepareBuildDirectory(value) {
+  const outputDir = path.resolve(projectDir, value);
+  const repository = fs.realpathSync(projectDir);
+  const parent = fs.realpathSync(path.dirname(outputDir));
+  const target = path.join(parent, path.basename(outputDir));
+  const roots = [repository, fs.realpathSync('/tmp')];
+  const home = fs.realpathSync(os.homedir());
+  const insideHome = target === home || target.startsWith(home + path.sep);
+  const insideRepository = target.startsWith(repository + path.sep);
+  if (target === repository || repository.startsWith(target + path.sep) ||
+      (insideHome && !insideRepository) || !roots.some(root => {
+    const relative = path.relative(root, target);
+    return relative && relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  })) {
+    throw new Error('CLAUDE_CODE_BUILD_DIR must be a new directory inside the repository or /tmp');
+  }
+  // Resolve the parent before creating; exclusive creation rejects existing symlinks.
+  fs.mkdirSync(target, { mode: 0o700 });
+  return outputDir;
+}
+
+export async function buildCli({ outputDir, embedSharpNative: embeddedSharp = embedSharpNative } = {}) {
+  const distDir = path.join(outputDir ?? projectDir, 'dist');
+  await fs.promises.mkdir(distDir, { recursive: true });
 
   await build({
   absWorkingDir: projectDir,
@@ -233,9 +263,9 @@ const require = __createRequire(import.meta.url);`,
   format: 'esm',
   legalComments: 'none',
   logLevel: 'info',
-  outfile: 'dist/cli.js',
+  outfile: path.join(distDir, 'cli.js'),
   platform: 'node',
-  plugins: [recoveryResolver],
+  plugins: [recoveryResolver(embeddedSharp)],
   sourcemap: true,
     target: 'node20',
   });
@@ -243,7 +273,7 @@ const require = __createRequire(import.meta.url);`,
   await build({
     absWorkingDir: projectDir,
     entryPoints: ['src/services/mods/worker.ts'],
-    outfile: 'dist/worker.js',
+    outfile: path.join(distDir, 'worker.js'),
     bundle: true,
     format: 'esm',
     platform: 'node',
@@ -251,7 +281,7 @@ const require = __createRequire(import.meta.url);`,
     legalComments: 'none',
   });
 
-  await copyRuntimeAssets({ projectDir, nodeModulesDir });
+  await copyRuntimeAssets({ projectDir, nodeModulesDir, distDir, isolated: Boolean(outputDir) });
 }
 
 async function copyDirectoryFiles(sourceDir, targetDir) {
@@ -289,15 +319,26 @@ function ripgrepSourceCandidates(nodeModulesDir) {
   ];
 }
 
-export async function copyRuntimeAssets({ projectDir, nodeModulesDir }) {
-  await fs.promises.rm(path.join(projectDir, 'dist', 'prebuilds'), {
-    recursive: true,
-    force: true,
-  });
+export async function copyRuntimeAssets({ projectDir, nodeModulesDir, distDir = path.join(projectDir, 'dist'), isolated = false }) {
+  if (!isolated) {
+    await fs.promises.rm(path.join(distDir, 'prebuilds'), {
+      recursive: true,
+      force: true,
+    });
+  }
+
+  for (const archiveName of builtinModsArchiveNames) {
+    const archive = path.join(projectDir, 'assets', archiveName);
+    if (!fs.existsSync(archive)) {
+      throw new Error(`Missing builtin Mods archive: ${archive}`);
+    }
+    const target = path.join(distDir, 'assets', archiveName);
+    await fs.promises.mkdir(path.dirname(target), { recursive: true });
+    await fs.promises.copyFile(archive, target);
+  }
 
   const ripgrepTargetDir = path.join(
-    projectDir,
-    'dist',
+    distDir,
     'vendor',
     'ripgrep',
     `${process.arch}-${process.platform}`,
@@ -308,5 +349,8 @@ export async function copyRuntimeAssets({ projectDir, nodeModulesDir }) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await buildCli();
+  const outputDir = process.env.CLAUDE_CODE_BUILD_DIR
+    ? prepareBuildDirectory(process.env.CLAUDE_CODE_BUILD_DIR)
+    : undefined;
+  await buildCli({ outputDir });
 }

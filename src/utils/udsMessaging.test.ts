@@ -7,6 +7,7 @@ import { getSessionId, switchSession } from '../bootstrap/state.js'
 import { asSessionId } from '../types/ids.js'
 import { getRegisteredSessionName, registerSession, updateSessionBridgeId, updateSessionName } from './concurrentSessions.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
+import { setInboundMessageReceiver } from './inboundMessageQueue.js'
 import { getProcessPidDomain, getProcessStart } from './genericProcessUtils.js'
 import { dequeueAll, getCommandQueue } from './messageQueueManager.js'
 import { formatPeerAddress, formatPeerMessage, peerKeyFilename } from './peerProtocol.js'
@@ -84,6 +85,55 @@ afterEach(async () => {
 })
 
 describe('peer IPC runtime', () => {
+  test('receive runs after policy hold and sanitation but before enqueue and wake', async () => {
+    const seen: unknown[] = []
+    let wakes = 0
+    const clear = setInboundMessageReceiver(async (input, admit) => {
+      seen.push(input)
+      expect(getCommandQueue()).toEqual([])
+      expect(wakes).toBe(0)
+      await admit({...input,text:input.text.replace('body','rewritten')})
+      expect(wakes).toBe(1)
+      return {text:'receipt only'}
+    })
+    try {
+      await policy('hold')
+      await startUdsMessaging(socketPath, {isExplicit:true})
+      setOnEnqueue(() => { wakes++ })
+      await sendRaw(socketPath, [JSON.stringify({type:'user',message:{role:'user',content:'body'}})+'\n'])
+      expect(seen).toEqual([])
+      expect(getHeldPeerMessageCount()).toBe(1)
+      await policy('accept')
+      expect(seen).toEqual([{origin:{kind:'peer'},text:expect.stringContaining('body')}])
+      expect(getCommandQueue()).toEqual([expect.objectContaining({value:expect.stringContaining('rewritten'),origin:{kind:'peer',from:'unknown',msg_id:undefined,name:undefined,fromMode:undefined},skipSlashCommands:true,skipAttachments:true,isMeta:true})])
+    } finally { clear() }
+  })
+
+  test('a receive withheld by a hook cannot enqueue or wake after the inbox closes', async () => {
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const finished = Promise.withResolvers<void>()
+    let wakes = 0
+    const clear = setInboundMessageReceiver(async (input, admit) => {
+      entered.resolve()
+      await release.promise
+      try { await admit(input) } finally { finished.resolve() }
+      return {text:input.text}
+    })
+    try {
+      await startUdsMessaging(socketPath, {isExplicit:true})
+      setOnEnqueue(() => { wakes++ })
+      const send = sendRaw(socketPath, [JSON.stringify({type:'user',message:{role:'user',content:'body'}})+'\n'])
+      await entered.promise
+      expect(getCommandQueue()).toEqual([])
+      await stopUdsMessaging()
+      release.resolve()
+      await finished.promise
+      await send
+      expect(getCommandQueue()).toEqual([])
+      expect(wakes).toBe(0)
+    } finally { release.resolve(); clear() }
+  })
   test('uses the official macOS socket namespace without XDG_RUNTIME_DIR', () => {
     if (process.platform !== 'darwin') return
     delete process.env.XDG_RUNTIME_DIR
@@ -311,8 +361,12 @@ describe('peer IPC runtime', () => {
     expect(getCommandQueue()).toHaveLength(1)
   })
 
-  test('does not carry queued peer input into a different conversation', async () => {
+  test.each([false, true])('does not carry queued peer input into a different conversation after restart=%s', async restart => {
     await startUdsMessaging(socketPath, { isExplicit: true })
+    if (restart) {
+      await stopUdsMessaging()
+      await startUdsMessaging(socketPath, { isExplicit: true })
+    }
     const previousSession = getSessionId()
     await sendRaw(socketPath, [JSON.stringify({ type: 'user', message: { role: 'user', content: 'old session input' } }) + '\n'])
     expect(getCommandQueue()).toHaveLength(1)

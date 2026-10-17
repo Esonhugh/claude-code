@@ -38,19 +38,23 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
+import {
+  captureModSkillPromptSnapshot,
+  renderModSkillPrompt,
+} from '../../services/mods/skillPrompt.js'
 import { buildPostCompactMessages } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { Progress as AgentProgress } from '../../tools/AgentTool/AgentTool.js'
 import { runAgent } from '../../tools/AgentTool/runAgent.js'
 import { renderToolUseProgressMessage } from '../../tools/AgentTool/UI.js'
-import type { CommandResultDisplay } from '../../types/command.js'
-import { createAbortController } from '../abortController.js'
+import { isCommandImmediate, type CommandResultDisplay } from '../../types/command.js'
 import { getAgentContext } from '../agentContext.js'
 import {
   createAttachmentMessage,
   getAttachmentMessages,
 } from '../attachments.js'
 import { logForDebugging } from '../debug.js'
+import { shouldBackgroundForkedSkill, launchBackgroundForkedSkill, getSkillAttributionName } from '../forkedSkill.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { AbortError, MalformedCommandError } from '../errors.js'
 import { getDisplayPath } from '../file.js'
@@ -63,7 +67,6 @@ import { isFullscreenEnvEnabled } from '../fullscreen.js'
 import { toArray } from '../generators.js'
 import { registerSkillHooks } from '../hooks/registerSkillHooks.js'
 import { logError } from '../log.js'
-import { enqueuePendingNotification } from '../messageQueueManager.js'
 import {
   createCommandInputMessage,
   createSyntheticUserCaveatMessage,
@@ -89,28 +92,25 @@ import {
 } from '../settings/pluginOnlyPolicy.js'
 import { parseSlashCommand } from '../slashCommandParsing.js'
 import { recordTranscript } from '../sessionStorage.js'
-import { sleep } from '../sleep.js'
 import { recordSkillUsage } from '../suggestions/skillUsageTracking.js'
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js'
 import { buildPluginCommandTelemetryFields } from '../telemetry/pluginTelemetry.js'
 import { getAssistantMessageContentLength } from '../tokens.js'
 import { createAgentId } from '../uuid.js'
-import { getWorkload } from '../workloadContext.js'
 import type {
   ProcessUserInputBaseResult,
   ProcessUserInputContext,
 } from './processUserInput.js'
 import { isAnt } from 'src/utils/userType.js'
+import {
+  runModCommand,
+  type ModCommandInvocation,
+} from '../../services/mods/commandAdapter.js'
+import { isModCommand } from '../../services/mods/commands.js'
 
-type SlashCommandResult = ProcessUserInputBaseResult & {
+export type SlashCommandResult = ProcessUserInputBaseResult & {
   command: Command
 }
-
-// Poll interval and deadline for MCP settle before launching a background
-// forked subagent. MCP servers typically connect within 1-3s of startup;
-// 10s headroom covers slow SSE handshakes.
-const MCP_SETTLE_POLL_MS = 200
-const MCP_SETTLE_TIMEOUT_MS = 10_000
 
 /**
  * Executes a slash command with context: fork in a sub-agent.
@@ -144,8 +144,9 @@ async function executeForkedSlashCommand(
     }),
   })
 
-  const { skillContent, modifiedGetAppState, baseAgent, promptMessages } =
-    await prepareForkedCommandContext(command, args, context)
+  const background = shouldBackgroundForkedSkill(command, context.options.isNonInteractiveSession)
+  const prepared = await prepareForkedCommandContext(command, args, context, canUseTool, { background })
+  const { skillContent, modifiedGetAppState, baseAgent, promptMessages } = prepared
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
@@ -154,106 +155,18 @@ async function executeForkedSlashCommand(
       : baseAgent
 
   logForDebugging(
-    `Executing forked slash command /${command.name} with agent ${agentDefinition.agentType}`,
+    `Executing forked slash command /${command.name} with agent ${agentDefinition.agentType} (agent ${agentId})`,
   )
 
-  // Assistant mode: fire-and-forget. Launch subagent in background, return
-  // immediately, re-enqueue the result as an isMeta prompt when done.
-  // Without this, N scheduled tasks on startup = N serial (subagent + main
-  // agent turn) cycles blocking user input. With this, N subagents run in
-  // parallel and results trickle into the queue as they finish.
-  //
-  // Gated on kairosEnabled (not CLAUDE_CODE_BRIEF) because the closed loop
-  // depends on assistant-mode invariants: scheduled_tasks.json exists,
-  // the main agent knows to pipe results through SendUserMessage, and
-  // isMeta prompts are hidden. Outside assistant mode, context:fork commands
-  // are user-invoked skills (/commit etc.) that should run synchronously
-  // with the progress UI.
-  if (feature('KAIROS') && (await context.getAppState()).kairosEnabled) {
-    // Standalone abortController — background subagents survive main-thread
-    // ESC (same policy as AgentTool's async path). They're cron-driven; if
-    // killed mid-run they just re-fire on the next schedule.
-    const bgAbortController = createAbortController()
-    const commandName = getCommandName(command)
-
-    // Workload: handlePromptSubmit wraps the entire turn in runWithWorkload
-    // (AsyncLocalStorage). ALS context is captured when this `void` fires
-    // and survives every await inside — isolated from the parent's
-    // continuation. The detached closure's runAgent calls see the cron tag
-    // automatically. We still capture the value here ONLY for the
-    // re-enqueued result prompt below: that second turn runs in a fresh
-    // handlePromptSubmit → fresh runWithWorkload boundary (which always
-    // establishes a new context, even for `undefined`) → so it needs its
-    // own QueuedCommand.workload tag to preserve attribution.
-    const spawnTimeWorkload = getWorkload()
-
-    // Re-enter the queue as a hidden prompt. isMeta: hides from queue
-    // preview + placeholder + transcript. skipSlashCommands: prevents
-    // re-parsing if the result text happens to start with '/'. When
-    // drained, this triggers a main-agent turn that sees the result and
-    // decides whether to SendUserMessage. Propagate workload so that
-    // second turn is also tagged.
-    const enqueueResult = (value: string): void =>
-      enqueuePendingNotification({
-        value,
-        mode: 'prompt',
-        priority: 'later',
-        isMeta: true,
-        skipSlashCommands: true,
-        workload: spawnTimeWorkload,
-      })
-
-    void (async () => {
-      // Wait for MCP servers to settle. Scheduled tasks fire at startup and
-      // all N drain within ~1ms (since we return immediately), capturing
-      // context.options.tools before MCP connects. The sync path
-      // accidentally avoided this — tasks serialized, so task N's drain
-      // happened after task N-1's 30s run, by which time MCP was up.
-      // Poll until no 'pending' clients remain, then refresh.
-      const deadline = Date.now() + MCP_SETTLE_TIMEOUT_MS
-      while (Date.now() < deadline) {
-        const s = context.getAppState()
-        if (!s.mcp.clients.some((c) => c.type === 'pending')) break
-        await sleep(MCP_SETTLE_POLL_MS)
-      }
-      const freshTools =
-        context.options.refreshTools?.() ?? context.options.tools
-
-      const agentMessages: Message[] = []
-      for await (const message of runAgent({
-        agentDefinition,
-        promptMessages,
-        toolUseContext: {
-          ...context,
-          getAppState: modifiedGetAppState,
-          abortController: bgAbortController,
-        },
-        canUseTool,
-        isAsync: true,
-        querySource: 'agent:custom',
-        model: command.model as ModelAlias | undefined,
-        availableTools: freshTools,
-        override: { agentId },
-      })) {
-        agentMessages.push(message)
-      }
-      const resultText = extractResultText(agentMessages, 'Command completed')
-      logForDebugging(
-        `Background forked command /${commandName} completed (agent ${agentId})`,
-      )
-      enqueueResult(
-        `<scheduled-task-result command="/${commandName}">\n${resultText}\n</scheduled-task-result>`,
-      )
-    })().catch((err) => {
-      logError(err)
-      enqueueResult(
-        `<scheduled-task-result command="/${commandName}" status="failed">\n${err instanceof Error ? err.message : String(err)}\n</scheduled-task-result>`,
-      )
-    })
-
-    // Nothing to render, nothing to query — the background runner re-enters
-    // the queue on its own schedule.
-    return { messages: [], shouldQuery: false, command }
+  if (background) {
+    const launched = await launchBackgroundForkedSkill({ command, prepared, agentDefinition, agentId, context, canUseTool })
+    if (launched) return {
+      command, shouldQuery: false,
+      messages: [
+        createUserMessage({ content: [...precedingInputBlocks, { type: 'text', text: formatCommandInputTags(command.name, args) }] }),
+        createCommandInputMessage(`<local-command-stdout>Running in the background as @${launched.name}</local-command-stdout>`),
+      ],
+    }
   }
 
   // Collect messages from the forked agent
@@ -301,6 +214,7 @@ async function executeForkedSlashCommand(
   updateProgress()
 
   // Run the sub-agent
+  // Do not reserve ordinary Agent capacity for the skill worker itself.
   try {
     for await (const message of runAgent({
       agentDefinition,
@@ -312,8 +226,11 @@ async function executeForkedSlashCommand(
       canUseTool,
       isAsync: false,
       querySource: 'agent:custom',
+      spawnedBySkill: getSkillAttributionName(command),
+      spawnedByForkedSkill: true,
       model: command.model as ModelAlias | undefined,
       availableTools: context.options.tools,
+      override: { agentId, readFileState: prepared.readFileState },
     })) {
       agentMessages.push(message)
       const normalizedNew = normalizeMessages([message])
@@ -402,6 +319,7 @@ export async function processSlashCommand(
   uuid?: string,
   isAlreadyProcessing?: boolean,
   canUseTool?: CanUseToolFn,
+  modInvocation?: ModCommandInvocation,
 ): Promise<ProcessUserInputBaseResult> {
   const parsed = parseSlashCommand(inputString)
   if (!parsed) {
@@ -503,6 +421,59 @@ export async function processSlashCommand(
     }
   }
 
+  const command = userInvocableCommand ?? commandExists!
+  let commandSnapshot = context.modsSnapshot
+  const core = (args: string) =>
+    getMessagesForSlashCommand(
+      commandName,
+      args,
+      setToolJSX,
+      commandSnapshot ? { ...context, modsSnapshot: commandSnapshot } : context,
+      precedingInputBlocks,
+      imageContentBlocks,
+      isAlreadyProcessing,
+      canUseTool,
+      uuid,
+    )
+  // Registered Mod commands dispatch in their local-jsx projection, including
+  // the immediate path that bypasses processSlashCommand entirely.
+  const wrapsCommand = !isModCommand(command) && command.userInvocable !== false
+  const ownedSnapshot =
+    wrapsCommand && !modInvocation && !context.modsSnapshot
+      ? captureModSkillPromptSnapshot(
+          context,
+          canUseTool ?? context.canUseTool ?? hasPermissionsToUseTool,
+        )
+      : undefined
+  commandSnapshot ??= modInvocation?.snapshot ?? ownedSnapshot
+  const invocation = modInvocation ?? (commandSnapshot ? {
+    snapshot: commandSnapshot,
+    origin: context.modCommand?.origin ?? { kind: 'unclassified' as const },
+    presentation: context.modCommand?.presentation ?? {
+      columns: process.stdout.columns ?? 80,
+      isFullscreen: isFullscreenEnvEnabled(),
+    },
+  } : undefined)
+  let slashResult: SlashCommandResult
+  try {
+    slashResult = invocation && wrapsCommand
+      ? await runModCommand({
+          snapshot: invocation.snapshot,
+          input: {
+            command: command.name,
+            args: parsedArgs,
+            origin: invocation.origin,
+            presentation: invocation.presentation,
+          },
+          command,
+          core,
+          signal: context.abortController.signal,
+        })
+      : await core(parsedArgs)
+  } finally {
+    ownedSnapshot?.release()
+  }
+
   // Track slash command usage for feature discovery
 
   const {
@@ -513,19 +484,12 @@ export async function processSlashCommand(
     effort,
     command: returnedCommand,
     resultText,
+    commandRunText,
+    commandExitCode,
+    commandContext,
     nextInput,
     submitNextInput,
-  } = await getMessagesForSlashCommand(
-    commandName,
-    parsedArgs,
-    setToolJSX,
-    context,
-    precedingInputBlocks,
-    imageContentBlocks,
-    isAlreadyProcessing,
-    canUseTool,
-    uuid,
-  )
+  } = slashResult
 
   // Local slash commands that skip messages
   if (newMessages.length === 0) {
@@ -588,6 +552,10 @@ export async function processSlashCommand(
     return {
       messages: [],
       shouldQuery: false,
+      resultText,
+      commandRunText,
+      commandExitCode,
+      commandContext,
 
       model,
       nextInput,
@@ -697,6 +665,9 @@ export async function processSlashCommand(
     model,
     effort,
     resultText,
+    commandRunText,
+    commandExitCode,
+    commandContext,
     nextInput,
     submitNextInput,
   }
@@ -759,15 +730,22 @@ async function getMessagesForSlashCommand(
               additionalMessages?: AttachmentMessage[]
               nextInput?: string
               submitNextInput?: boolean
+              commandExitCode?: number
+              commandRunText?: string
             },
           ) => {
             doneWasCalled = true
-            // If display is 'skip', don't add any messages to the conversation
+            // Skipping display still retains hidden model context.
             if (options?.display === 'skip') {
               void resolve({
-                messages: [],
+                messages: (options.metaMessages ?? []).map(content =>
+                  createUserMessage({ content, isMeta: true }),
+                ),
                 shouldQuery: false,
                 command,
+                commandExitCode:options?.commandExitCode,
+                commandRunText:options?.commandRunText,
+                commandContext:options?.metaMessages,
                 nextInput: options?.nextInput,
                 submitNextInput: options?.submitNextInput,
               })
@@ -829,6 +807,10 @@ async function getMessagesForSlashCommand(
                     ],
               shouldQuery: options?.shouldQuery ?? false,
               command,
+              resultText: skipTranscript ? undefined : result,
+              commandExitCode:options?.commandExitCode,
+              commandRunText:options?.commandRunText,
+              commandContext:options?.metaMessages,
               nextInput: options?.nextInput,
               submitNextInput: options?.submitNextInput,
             })
@@ -860,7 +842,7 @@ async function getMessagesForSlashCommand(
                 shouldHidePromptInput: true,
                 showSpinner: false,
                 isLocalJSXCommand: true,
-                isImmediate: command.immediate === true,
+                isImmediate: isCommandImmediate(command, args, context),
               })
             })
             .catch((e) => {
@@ -940,6 +922,7 @@ async function getMessagesForSlashCommand(
               ),
               shouldQuery: false,
               command,
+              resultText: result.displayText,
             }
           }
 
@@ -992,8 +975,18 @@ async function getMessagesForSlashCommand(
             uuid,
           )
         } catch (e) {
+          const { ModAuthoringPromptDismissedError } =
+            await import('../../services/mods/session.js')
+          if (e instanceof ModAuthoringPromptDismissedError) {
+            logForDebugging(
+              '[mods_authoring_cancel] slashCatch branch=dismissal',
+            )
+            throw e
+          }
+
           // Handle abort errors specially to show proper "Interrupted" message
           if (e instanceof AbortError) {
+            logForDebugging('[mods_authoring_cancel] slashCatch branch=abort')
             return {
               messages: [
                 createUserMessage({
@@ -1008,6 +1001,9 @@ async function getMessagesForSlashCommand(
               command,
             }
           }
+          logForDebugging(
+            '[mods_authoring_cancel] slashCatch branch=generic',
+          )
           return {
             messages: [
               createUserMessage({
@@ -1115,6 +1111,7 @@ export async function processPromptSlashCommand(
   commands: Command[],
   context: ToolUseContext,
   imageContentBlocks: ContentBlockParam[] = [],
+  canUseTool: CanUseToolFn = hasPermissionsToUseTool,
 ): Promise<SlashCommandResult> {
   const command = findCommand(commandName, commands)
   if (!command) {
@@ -1125,13 +1122,22 @@ export async function processPromptSlashCommand(
       `Unexpected ${command.type} command. Expected 'prompt' command. Use /${commandName} directly in the main conversation.`,
     )
   }
-  return getMessagesForPromptSlashCommand(
-    command,
-    args,
-    context,
-    [],
-    imageContentBlocks,
-  )
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : captureModSkillPromptSnapshot(context, canUseTool)
+  try {
+    return await getMessagesForPromptSlashCommand(
+      command,
+      args,
+      context,
+      [],
+      imageContentBlocks,
+      undefined,
+      context.modsSnapshot ?? ownedSnapshot,
+    )
+  } finally {
+    ownedSnapshot?.release()
+  }
 }
 
 async function getMessagesForPromptSlashCommand(
@@ -1141,6 +1147,7 @@ async function getMessagesForPromptSlashCommand(
   precedingInputBlocks: ContentBlockParam[] = [],
   imageContentBlocks: ContentBlockParam[] = [],
   uuid?: string,
+  snapshot = context.modsSnapshot,
 ): Promise<SlashCommandResult> {
   // In coordinator mode (main thread only), skip loading the full skill content
   // and permissions. The coordinator only has Agent + TaskStop tools, so the
@@ -1192,6 +1199,23 @@ async function getMessagesForPromptSlashCommand(
 
   const result = await command.getPromptForCommand(args, context)
   const shouldQuery = command.shouldQueryForCommand?.(args) ?? true
+  const coreSkillContent = result
+    .filter((block): block is TextBlockParam => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n')
+  const skillContent =
+    shouldQuery && snapshot?.hasHooks('skill.prompt')
+      ? await renderModSkillPrompt({
+          snapshot,
+          skill: command.name,
+          text: coreSkillContent,
+          signal: context.abortController.signal,
+        })
+      : coreSkillContent
+  const expandedResult: ContentBlockParam[] =
+    skillContent === coreSkillContent
+      ? result
+      : [{ type: 'text', text: skillContent }]
 
   // Register skill hooks if defined. Under ["hooks"]-only (skills not locked),
   // user skills still load and reach this point — block hook REGISTRATION here
@@ -1236,10 +1260,6 @@ async function getMessagesForPromptSlashCommand(
   const skillPath = command.source
     ? `${command.source}:${command.name}`
     : command.name
-  const skillContent = result
-    .filter((b): b is TextBlockParam => b.type === 'text')
-    .map((b) => b.text)
-    .join('\n\n')
   if (!isBuiltinGoal) {
     addInvokedSkill(
       command.name,
@@ -1258,8 +1278,8 @@ async function getMessagesForPromptSlashCommand(
   // Create content for the main message, including any pasted images
   const mainMessageContent: ContentBlockParam[] =
     imageContentBlocks.length > 0 || precedingInputBlocks.length > 0
-      ? [...imageContentBlocks, ...precedingInputBlocks, ...result]
-      : result
+      ? [...imageContentBlocks, ...precedingInputBlocks, ...expandedResult]
+      : expandedResult
 
   // Extract attachments from command arguments (@-mentions, MCP resources,
   // agent mentions in SKILL.md). skipSkillDiscovery prevents the SKILL.md
@@ -1268,7 +1288,7 @@ async function getMessagesForPromptSlashCommand(
   // adding seconds of latency to every skill invocation.
   const attachmentMessages = await toArray(
     getAttachmentMessages(
-      result
+      expandedResult
         .filter((block): block is TextBlockParam => block.type === 'text')
         .map((block) => block.text)
         .join(' '),
@@ -1326,5 +1346,6 @@ async function getMessagesForPromptSlashCommand(
     model: command.model,
     effort: command.effort,
     command,
+    resultText: shouldQuery ? undefined : skillContent,
   }
 }

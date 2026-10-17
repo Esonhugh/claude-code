@@ -6,6 +6,7 @@ import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir
 import type { Message } from '../../types/message.js'
 import {
   analyzeContextUsage,
+  type ContextBreakdownDetail,
   type ContextData,
 } from '../../utils/analyzeContext.js'
 import { formatTokens } from '../../utils/format.js'
@@ -35,7 +36,10 @@ type CollectContextDataInput = {
 
 export async function collectContextData(
   context: CollectContextDataInput,
+  options: { detail?: ContextBreakdownDetail; columns?: number } = {},
+  signal?: AbortSignal,
 ): Promise<ContextData> {
+  signal?.throwIfAborted()
   const {
     messages,
     getAppState,
@@ -66,7 +70,7 @@ export async function collectContextData(
     async () => appState.toolPermissionContext,
     tools,
     agentDefinitions,
-    undefined, // terminalWidth
+    options.columns, // terminalWidth
     // analyzeContextUsage only reads options.{customSystemPrompt,appendSystemPrompt}
     // but its signature declares the full Pick<ToolUseContext, 'options'>.
     { options: { customSystemPrompt, appendSystemPrompt } } as Pick<
@@ -75,6 +79,7 @@ export async function collectContextData(
     >,
     undefined, // mainThreadAgentDefinition
     apiView, // original messages for API usage extraction
+    { detail: options.detail, signal },
   )
 }
 

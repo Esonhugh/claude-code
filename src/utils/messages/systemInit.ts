@@ -24,7 +24,7 @@ export function sdkCompatToolName(name: string): string {
   return name === AGENT_TOOL_NAME ? LEGACY_AGENT_TOOL_NAME : name
 }
 
-type CommandLike = { name: string; userInvocable?: boolean }
+type CommandLike = { name: string; userInvocable?: boolean; isHidden?: boolean }
 
 export type SystemInitInputs = {
   tools: ReadonlyArray<{ name: string }>
@@ -67,7 +67,7 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
     model: inputs.model,
     permissionMode: inputs.permissionMode,
     slash_commands: inputs.commands
-      .filter(c => c.userInvocable !== false)
+      .filter(c => c.userInvocable !== false && !c.isHidden)
       .map(c => c.name),
     apiKeySource: getAnthropicApiKeyWithSource().source as ApiKeySource,
     betas: getSdkBetas(),

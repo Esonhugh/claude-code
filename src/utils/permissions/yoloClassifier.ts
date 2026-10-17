@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import type Anthropic from '@anthropic-ai/sdk'
+import { APIError } from '@anthropic-ai/sdk'
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages.js'
 import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
@@ -28,7 +29,10 @@ import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { extractTextContent } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
-import { getMainLoopModel } from '../model/model.js'
+import { getCanonicalName, getDefaultOpusModel, getMainLoopModel } from '../model/model.js'
+import { getModelStrings } from '../model/modelStrings.js'
+import { getAPIProvider } from '../model/providers.js'
+import { requiresAlwaysOnAdaptiveThinking } from '../thinking.js'
 import { getAutoModeConfig } from '../settings/settings.js'
 import { sideQuery } from '../sideQuery.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -87,6 +91,7 @@ function isUsingExternalPermissions(): boolean {
 export type AutoModeRules = {
   allow: string[]
   soft_deny: string[]
+  hard_deny: string[]
   environment: string[]
 }
 
@@ -102,21 +107,104 @@ export type AutoModeRules = {
 export function getDefaultExternalAutoModeRules(): AutoModeRules {
   return {
     allow: extractTaggedBullets('user_allow_rules_to_replace'),
-    soft_deny: extractTaggedBullets('user_deny_rules_to_replace'),
+    soft_deny: extractTaggedBullets('user_soft_deny_rules_to_replace'),
+    hard_deny: extractTaggedBullets('user_hard_deny_rules_to_replace'),
     environment: extractTaggedBullets('user_environment_to_replace'),
   }
 }
 
+// Mirrors the official 2.1.292 parser: a rule may continue on following non-bullet lines.
 function extractTaggedBullets(tagName: string): string[] {
   const match = EXTERNAL_PERMISSIONS_TEMPLATE.match(
     new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`),
   )
   if (!match) return []
-  return (match[1] ?? '')
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.startsWith('- '))
-    .map(line => line.slice(2))
+  const rules: string[] = []
+  for (const raw of (match[1] ?? '').split('\n')) {
+    const line = raw.replace(/\r$/, '').trimEnd()
+    if (line.startsWith('- ')) rules.push(line.slice(2))
+    else if (rules.length > 0 && line.trim().length > 0) rules[rules.length - 1] += `\n${line}`
+  }
+  return rules
+}
+
+type AutoModeSlotRules = {
+  allow: string[]
+  soft_deny: string[]
+  hard_deny: string[]
+  environment: string[]
+}
+
+const AUTO_MODE_SLOTS = {
+  user_allow_rules_to_replace: 'allow',
+  user_soft_deny_rules_to_replace: 'soft_deny',
+  user_hard_deny_rules_to_replace: 'hard_deny',
+  user_environment_to_replace: 'environment',
+} as const
+const SETTINGS_DENY_RULES_SLOT = '<settings_deny_rules>'
+
+/**
+ * Fills the permissions template slots the way the official 2.1.292 classifier does:
+ * an empty rule list keeps the slot's default text, a non-empty list replaces it
+ * (`$defaults` re-inserts the defaults), and <settings_deny_rules> takes the deny block.
+ */
+function fillAutoModeSlots(prompt: string, rules: AutoModeSlotRules, settingsDenyBlock: string): string {
+  let out = ''
+  for (let at = 0; at < prompt.length;) {
+    let start = -1, end = -1, inner = '', slot: keyof typeof AUTO_MODE_SLOTS | null = null
+    for (const name of Object.keys(AUTO_MODE_SLOTS) as (keyof typeof AUTO_MODE_SLOTS)[]) {
+      const open = `<${name}>`, close = `</${name}>`
+      const found = prompt.indexOf(open, at)
+      if (found === -1 || (start !== -1 && found > start)) continue
+      const closed = prompt.indexOf(close, found + open.length)
+      if (closed === -1) continue
+      start = found
+      end = closed + close.length
+      inner = prompt.slice(found + open.length, closed)
+      slot = name
+    }
+    const deny = prompt.indexOf(SETTINGS_DENY_RULES_SLOT, at)
+    if (deny !== -1 && (start === -1 || deny < start)) {
+      start = deny
+      end = deny + SETTINGS_DENY_RULES_SLOT.length
+      slot = null
+    }
+    if (start === -1) {
+      out += prompt.slice(at)
+      break
+    }
+    out += prompt.slice(at, start)
+    if (slot === null) out += settingsDenyBlock
+    else {
+      const list = rules[AUTO_MODE_SLOTS[slot]]
+      const defaults = inner.length > 0 ? [inner] : []
+      const lines: string[] = []
+      let expanded = false
+      for (const rule of list) {
+        if (rule === '$defaults') {
+          if (!expanded) lines.push(...defaults)
+          expanded = true
+        } else lines.push(`- ${rule}`)
+      }
+      out += (list.length ? lines : defaults).join('\n')
+    }
+    at = end
+  }
+  return out
+}
+
+function settingsDenyRulesBlock(rules: string[]): string {
+  if (rules.length === 0) return ''
+  return `- User Deny Rules: The user has configured these permission deny rules: ${rules.map(rule => `\`${rule}\``).join(', ')}. Each rule names a tool and (optionally) an argument pattern that is already hard-blocked for that tool. ` +
+    'Block the action if it accomplishes the same effect via a different tool \u2014 e.g. using Bash with ' +
+    '`python -c`, `sed -i`, `cat >`, heredocs, or similar to write or edit a file that an Edit/Write/MultiEdit deny rule covers, or otherwise routing around a deny rule by switching tools. The named tool itself is enforced separately; your job here is to catch circumvention.'
+}
+
+function composeAutoModeSystemPrompt(template: string, rules: AutoModeSlotRules, settingsDenyBlock: string): string {
+  const prompt = BASE_PROMPT
+    .replace('<permissions_template>', () => `<cc_automode_permissions>\n${template}\n</cc_automode_permissions>`)
+  return fillAutoModeSlots(prompt, rules, settingsDenyBlock)
+    .replace('<cross_session_messages_rule>', () => '')
 }
 
 /**
@@ -125,22 +213,11 @@ function extractTaggedBullets(tagName: string): string[] {
  * classifier sees its instructions.
  */
 export function buildDefaultExternalSystemPrompt(): string {
-  return BASE_PROMPT.replace(
-    '<permissions_template>',
-    () => EXTERNAL_PERMISSIONS_TEMPLATE,
+  return composeAutoModeSystemPrompt(
+    EXTERNAL_PERMISSIONS_TEMPLATE,
+    { allow: [], soft_deny: [], hard_deny: [], environment: [] },
+    '',
   )
-    .replace(
-      /<user_allow_rules_to_replace>([\s\S]*?)<\/user_allow_rules_to_replace>/,
-      (_m, defaults: string) => defaults,
-    )
-    .replace(
-      /<user_deny_rules_to_replace>([\s\S]*?)<\/user_deny_rules_to_replace>/,
-      (_m, defaults: string) => defaults,
-    )
-    .replace(
-      /<user_environment_to_replace>([\s\S]*?)<\/user_environment_to_replace>/,
-      (_m, defaults: string) => defaults,
-    )
 }
 
 function getAutoModeDumpDir(): string {
@@ -491,12 +568,6 @@ export async function buildYoloSystemPrompt(
   context: ToolPermissionContext,
 ): Promise<string> {
   const usingExternal = isUsingExternalPermissions()
-  const systemPrompt = BASE_PROMPT.replace('<permissions_template>', () =>
-    usingExternal
-      ? EXTERNAL_PERMISSIONS_TEMPLATE
-      : ANTHROPIC_PERMISSIONS_TEMPLATE,
-  )
-
   const autoMode = getAutoModeConfig()
   const includeBashPromptRules = feature('BASH_CLASSIFIER')
     ? !usingExternal
@@ -514,35 +585,17 @@ export async function buildYoloSystemPrompt(
     ...(autoMode?.soft_deny ?? []),
   ]
 
-  // All three sections use the same <foo_to_replace>...</foo_to_replace>
-  // delimiter pattern. The external template wraps its defaults inside the
-  // tags, so user-provided values REPLACE the defaults entirely. The
-  // anthropic template keeps its defaults outside the tags and uses an empty
-  // tag pair at the end of each section, so user-provided values are
-  // strictly ADDITIVE.
-  const userAllow = allowDescriptions.length
-    ? allowDescriptions.map(d => `- ${d}`).join('\n')
-    : undefined
-  const userDeny = denyDescriptions.length
-    ? denyDescriptions.map(d => `- ${d}`).join('\n')
-    : undefined
-  const userEnvironment = autoMode?.environment?.length
-    ? autoMode.environment.map(e => `- ${e}`).join('\n')
-    : undefined
-
-  return systemPrompt
-    .replace(
-      /<user_allow_rules_to_replace>([\s\S]*?)<\/user_allow_rules_to_replace>/,
-      (_m, defaults: string) => userAllow ?? defaults,
-    )
-    .replace(
-      /<user_deny_rules_to_replace>([\s\S]*?)<\/user_deny_rules_to_replace>/,
-      (_m, defaults: string) => userDeny ?? defaults,
-    )
-    .replace(
-      /<user_environment_to_replace>([\s\S]*?)<\/user_environment_to_replace>/,
-      (_m, defaults: string) => userEnvironment ?? defaults,
-    )
+  const settingsDenyRules = Object.values(context.alwaysDenyRules ?? {}).flat()
+  return composeAutoModeSystemPrompt(
+    usingExternal ? EXTERNAL_PERMISSIONS_TEMPLATE : ANTHROPIC_PERMISSIONS_TEMPLATE,
+    {
+      allow: allowDescriptions,
+      soft_deny: denyDescriptions,
+      hard_deny: [],
+      environment: autoMode?.environment ?? [],
+    },
+    settingsDenyRulesBlock(settingsDenyRules),
+  )
 }
 // ============================================================================
 // 2-Stage XML Classifier
@@ -669,6 +722,12 @@ function replaceOutputFormatWithXml(systemPrompt: string): string {
   return systemPrompt.replace(toolUseLine, xmlFormat)
 }
 
+// Official 2.1.292 samples the classifier at temperature 1 unless overridden.
+function getClassifierTemperature(): number {
+  const value = Number(process.env.CLAUDE_CODE_AUTO_MODE_TEMPERATURE)
+  return Number.isFinite(value) ? value : 1
+}
+
 /**
  * Thinking config for classifier calls. The classifier wants short text-only
  * responses — API thinking blocks are ignored by extractTextContent() and waste tokens.
@@ -689,9 +748,12 @@ function replaceOutputFormatWithXml(systemPrompt: string): string {
 function getClassifierThinkingConfig(
   model: string,
 ): [false | undefined, number] {
+  // Like official 2.1.292, any model that rejects disabled thinking gets the adaptive
+  // headroom, not only ant overrides.
   if (
     isAnt() &&
-    resolveAntModel(model)?.alwaysOnThinking
+    resolveAntModel(model)?.alwaysOnThinking ||
+    requiresAlwaysOnAdaptiveThinking(model)
   ) {
     return [undefined, 2048]
   }
@@ -787,7 +849,8 @@ async function classifyYoloActionXml(
         max_tokens: (mode === 'fast' ? 256 : 64) + thinkingPadding,
         system: systemBlocks,
         skipSystemPromptPrefix: true,
-        temperature: 0,
+        forceAttributionHeader: true,
+        temperature: getClassifierTemperature(),
         thinking: disableThinking,
         messages: [
           ...prefixMessages,
@@ -835,6 +898,7 @@ async function classifyYoloActionXml(
           return {
             shouldBlock: true,
             reason: 'Classifier stage 1 unparseable - blocking for safety',
+        unparseable: true,
             model,
             usage: stage1Usage,
             durationMs: stage1DurationMs,
@@ -874,7 +938,8 @@ async function classifyYoloActionXml(
       max_tokens: 4096 + thinkingPadding,
       system: systemBlocks,
       skipSystemPromptPrefix: true,
-      temperature: 0,
+      forceAttributionHeader: true,
+      temperature: getClassifierTemperature(),
       thinking: disableThinking,
       messages: [
         ...prefixMessages,
@@ -906,6 +971,7 @@ async function classifyYoloActionXml(
       return {
         shouldBlock: true,
         reason: 'Classifier stage 2 unparseable - blocking for safety',
+        unparseable: true,
         model,
         usage: totalUsage,
         durationMs: totalDurationMs,
@@ -985,6 +1051,7 @@ async function classifyYoloActionXml(
           : 'Classifier unavailable - blocking for safety',
       model,
       unavailable: stage1Usage === undefined,
+      unauthorized: error instanceof APIError && error.status === 401,
       transcriptTooLong: Boolean(tooLong),
       stage: stage1Usage ? 'thinking' : undefined,
       durationMs: Date.now() - overallStart,
@@ -1115,7 +1182,7 @@ export async function classifyYoloAction(
 
   // Dispatch to 2-stage XML classifier if enabled via GrowthBook
   if (isTwoStageClassifierEnabled()) {
-    return classifyYoloActionXml(
+    const classify = (model: string) => classifyYoloActionXml(
       prefixMessages,
       systemPrompt,
       userPrompt,
@@ -1133,6 +1200,19 @@ export async function classifyYoloAction(
       },
       getTwoStageMode(),
     )
+    const result = await classify(model)
+    if (sonnet5ClassifierProbe !== 'unprobed' || signal.aborted ||
+        model !== getDefaultSonnet5Classifier(getMainLoopModel())) return result
+    if (!result.unavailable) {
+      sonnet5ClassifierProbe = 'confirmed'
+      return result
+    }
+    if (result.unauthorized) return result
+    sonnet5ClassifierProbe = 'demoted'
+    const fallback = getFallbackClassifierModel(getMainLoopModel())
+    if (model === fallback) return result
+    logForDebugging(`Got error trying Sonnet 5 as auto mode classifier, using ${fallback}`, { level: 'warn' })
+    return classify(fallback)
   }
   const [disableThinking, thinkingPadding] = getClassifierThinkingConfig(model)
   try {
@@ -1148,7 +1228,8 @@ export async function classifyYoloAction(
         },
       ],
       skipSystemPromptPrefix: true,
-      temperature: 0,
+      forceAttributionHeader: true,
+      temperature: getClassifierTemperature(),
       thinking: disableThinking,
       messages: [
         ...prefixMessages,
@@ -1209,6 +1290,7 @@ export async function classifyYoloAction(
       return {
         shouldBlock: true,
         reason: 'Classifier returned no tool use block - blocking for safety',
+        unparseable: true,
         model,
         usage,
         durationMs,
@@ -1233,6 +1315,7 @@ export async function classifyYoloAction(
       return {
         shouldBlock: true,
         reason: 'Invalid classifier response - blocking for safety',
+        unparseable: true,
         model,
         usage,
         durationMs,
@@ -1315,6 +1398,8 @@ type TwoStageMode = 'both' | 'fast' | 'thinking'
 
 type AutoModeConfig = {
   model?: string
+  /** Classifier model per main-loop model (raw ID or canonical name); takes precedence over `model`. */
+  modelByMainModel?: Record<string, string>
   /**
    * Enable XML classifier. `true` runs both stages; `'fast'` and `'thinking'`
    * run only that stage; `false`/undefined uses the tool_use classifier.
@@ -1332,10 +1417,34 @@ type AutoModeConfig = {
   jsonlTranscript?: boolean
 }
 
+// Official 2.1.292 probes Sonnet 5 as the default classifier on the session's first
+// classification: an answer confirms it for the session, while a failure (other than an
+// abort or a 401) demotes it to the main-loop-based model. Later failures fail closed.
+let sonnet5ClassifierProbe: 'unprobed' | 'confirmed' | 'demoted' = 'unprobed'
+
+function getDefaultSonnet5Classifier(mainModel: string): string | undefined {
+  const canonical = getCanonicalName(mainModel)
+  if (canonical === 'claude-sonnet-4-6' || canonical === 'claude-sonnet-4-5' || canonical.startsWith('claude-haiku-'))
+    return undefined
+  const configured = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+  // These are too large to serve as the classifier; official uses the Sonnet 5 default instead.
+  if (configured && !['claude-sonnet-5-5', 'claude-opus-5-5'].includes(getCanonicalName(configured)))
+    return configured
+  return getModelStrings().sonnet50
+}
+
+function getFallbackClassifierModel(mainModel: string): string {
+  const canonical = getCanonicalName(mainModel)
+  return canonical.startsWith('claude-fable-') || canonical.startsWith('claude-mythos-')
+    ? getDefaultOpusModel()
+    : mainModel
+}
+
 /**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then GrowthBook JSON config override,
- * then the main loop model.
+ * Ant-only env var takes precedence, then the GrowthBook per-main-model and
+ * global overrides, then (outside OpenAI mode) the Sonnet 5 default, then the
+ * main-loop-based model.
  */
 function getClassifierModel(): string {
   if (isAnt()) {
@@ -1346,10 +1455,15 @@ function getClassifierModel(): string {
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
   )
+  const mainModel = getMainLoopModel()
+  const byMainModel = config?.modelByMainModel?.[mainModel] ?? config?.modelByMainModel?.[getCanonicalName(mainModel)]
+  if (byMainModel) return byMainModel
   if (config?.model) {
     return config.model
   }
-  return getMainLoopModel()
+  if (getAPIProvider() === 'openai') return mainModel
+  const sonnet5 = sonnet5ClassifierProbe === 'demoted' ? undefined : getDefaultSonnet5Classifier(mainModel)
+  return sonnet5 ?? getFallbackClassifierModel(mainModel)
 }
 
 /**
@@ -1371,7 +1485,8 @@ function resolveTwoStageClassifier():
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
   )
-  return config?.twoStageClassifier
+  // The official prompt's output contract is XML; official 2.1.292 defaults to it without a rollout value.
+  return config?.twoStageClassifier ?? true
 }
 
 /**

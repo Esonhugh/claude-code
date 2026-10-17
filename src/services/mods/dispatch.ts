@@ -1,14 +1,58 @@
+import { restoreToolCallReadOnly } from './toolCallReadOnly.js'
+import { excludesModCaller, type ModCallerChain } from './callerChain.js'
+import { isDeepStrictEqual } from 'node:util'
+import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
 import { createAbortController } from '../../utils/abortController.js'
+import { createModHookStream as createProtocolStream } from './protocol.js'
 import type {
   ModDispatchHook,
+  ModHookStream,
   ModInput,
   ModNext,
+  ModContinuation,
+  ModStreamNext,
   ModOrigin,
   ModTier,
   ModTraceEntry,
 } from './types.js'
 
 type TraceNode = { entry?: ModTraceEntry; below: TraceNode[] }
+const traces = new WeakMap<ModContinuation, Set<() => void>>()
+// A continuation expires when its frame returns. A host operation already
+// started by that frame instead follows real cancellation and failure.
+const capabilitySignals = new WeakMap<AbortSignal, AbortSignal>()
+// Public streaming hooks receive cancellation before their bounded settlement
+// completes. Explicit iterator close remains immediate.
+const settlingStreams = new WeakSet<Pick<ModNext, 'signal'>>()
+export function canSettleModStreamAfterAbort(next: Pick<ModNext, 'signal'>): boolean {
+  return settlingStreams.has(next)
+}
+export function isModStreamCancellation(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false
+  if (error === signal.reason) return true
+  if (!(error instanceof Error)) return false
+  if (error.name === 'AbortError' || error.name === 'APIUserAbortError') return true
+  return error.name === 'HooksError' && error.message ===
+    (signal.reason instanceof Error ? signal.reason.message : String(signal.reason))
+}
+export function getModCapabilitySignal(next: ModContinuation): AbortSignal {
+  return capabilitySignals.get(next.signal) ?? next.signal
+}
+export function subscribeModTrace(next: ModContinuation, changed: () => void): () => void {
+  const listeners = traces.get(next)
+  listeners?.add(changed)
+  return () => { listeners?.delete(changed) }
+}
+
+// Host-only metering state; the Worker reads it without exposing shared memory
+// or a host object to the plugin realm. Values are microseconds, except ms.
+const budgets = new WeakMap<ModContinuation, { clock: BigInt64Array; pause(): () => void }>()
+export function getModBudgetClock(next: ModContinuation): SharedArrayBuffer | undefined {
+  return budgets.get(next)?.clock.buffer as SharedArrayBuffer | undefined
+}
+export function pauseModBudget(next: ModContinuation | undefined): (() => void) | undefined {
+  return next && budgets.get(next)?.pause()
+}
 
 function traceEntries(nodes: readonly TraceNode[]): readonly ModTraceEntry[] {
   return Object.freeze(
@@ -27,22 +71,349 @@ const tiers: readonly ModTier[] = [
   'core',
 ]
 
+export function createModHookStream<C, R>(iterator: AsyncGenerator<C, R>, close?: (error: Error) => void, signal?: AbortSignal): ModHookStream<C, R> {
+  let pending: Promise<IteratorResult<C, R>> | undefined
+  return createProtocolStream(async (method, value) => {
+    if (method === 'return') {
+      const error = signal?.aborted ? signal.reason : value instanceof Error ? value : new Error('Module stream closed before completion')
+      close?.(error)
+      const closing = iterator.return(value as R)
+      // A queued generator return can succeed even when the pending next's
+      // finally failed. Observe both so teardown failures remain visible.
+      const outcomes = await Promise.allSettled([closing, ...(pending ? [pending] : [])])
+      for (const outcome of outcomes) {
+        if (outcome.status === 'rejected' && outcome.reason !== error) throw outcome.reason
+      }
+      return closing
+    }
+    pending = method === 'next' ? iterator.next(value) : iterator.throw(value)
+    try { return await pending } finally { pending = undefined }
+  }, signal) as ModHookStream<C, R>
+}
+
+export function dispatchModStream(options: {
+  event: 'turn.step' | 'process.spawn'
+  settleAfterAbort?: boolean
+  input: ModInput
+  hooks: readonly ModDispatchHook[]
+  core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>
+  signal?: AbortSignal
+  origin?: ModOrigin
+  skip?: { plugin: string; registrationId?: number }
+  callerChain?: ModCallerChain
+  budgetMs?: number
+  catchGraceMs?: number
+  validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
+  validateChunk?: (value: unknown) => void
+  validateInput?: (value: ModInput, received: ModInput) => void
+  onFailure?: (plugin: string, error: unknown) => void
+}): ModHookStream {
+  const hooks = [...options.hooks].sort((a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier))
+  const origin = Object.freeze(options.origin ?? { plugin: 'engine', tier: 'core' as const })
+  const skip = options.skip ?? (options.origin ? { plugin: options.origin.plugin } : undefined)
+  function run(start: number, input: ModInput, parent?: AbortSignal, skipped = new Set<ModTier>(), trace: TraceNode[] = [], changed = () => {}): ModHookStream {
+    const lifetime = createAbortController()
+    let operationController = createAbortController()
+    const operationSignal = parent ? capabilitySignals.get(parent) ?? parent : createAbortController().signal
+    capabilitySignals.set(lifetime.signal, operationSignal)
+    const abort = () => lifetime.abort(parent?.reason)
+    parent?.addEventListener('abort', abort, { once: true })
+    if (parent?.aborted) abort()
+    let explicitlyClosed = false
+    let rejectAbort: ((error: unknown) => void) | undefined
+    let abortGrace: ReturnType<typeof setTimeout> | undefined
+    const clearAbortGrace = () => { if (abortGrace !== undefined) clearTimeout(abortGrace); abortGrace = undefined }
+    const body = (async function* () {
+      let index = start
+      while (index < hooks.length) {
+        const hook = hooks[index]!
+        if (!skipped.has(hook.tier) && !(options.callerChain !== undefined
+          ? excludesModCaller(options.callerChain, hook.plugin, hook.registration.id)
+          : skip?.plugin === hook.plugin && (skip.registrationId === undefined || skip.registrationId === hook.registration.id)) &&
+          matchesModEventPattern(hook.registration.event, options.event) && matchesModMatcher(hook.registration.matcher ?? {}, input)) break
+        index++
+      }
+      const hook = hooks[index]
+      const children = new Set<ModHookStream>()
+      let current: AsyncGenerator<unknown, unknown> | undefined
+      let currentPull: Promise<IteratorResult<unknown, unknown>> | undefined
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let started = 0, remaining = 0, allowance = 0, pauses = 0, working = false
+      let controller = createAbortController()
+      let expire: ((error: Error) => void) | undefined
+      let clock: BigInt64Array | undefined
+      let timedOut = false
+      let last: ModHookStream | undefined
+      let lastInput: ModInput | undefined
+      let lastResult: unknown
+      let lastResolved = false
+      let lastRejected = false
+      let lastError: unknown
+      const results: unknown[] = []
+      const nextErrors = new Set<unknown>()
+      const node: TraceNode = { below: [] }
+      const listeners = new Set<() => void>()
+      const belowChanged = () => { for (const listener of listeners) listener(); changed() }
+      trace.push(node)
+      let chunks = 0
+      const record = (outcome: string, returned?: unknown) => {
+        node.entry = Object.freeze({ index, plugin: hook?.plugin ?? 'engine', tier: hook?.tier ?? 'core', event: options.event, outcome, ms: Math.max(0, allowance - remaining), chunks, received: input, returned })
+        changed()
+      }
+      const publish = () => {
+        if (!clock) return
+        Atomics.add(clock, 0, 1n)
+        Atomics.store(clock, 1, BigInt(Math.max(0, Math.floor(remaining * 1000))))
+        Atomics.store(clock, 2, timer === undefined ? 0n : BigInt(Math.floor((performance.timeOrigin + started) * 1000)))
+        Atomics.store(clock, 3, BigInt(allowance))
+        Atomics.add(clock, 0, 1n)
+      }
+      const stop = () => {
+        if (timer !== undefined) { clearTimeout(timer); timer = undefined; remaining -= performance.now() - started }
+        publish()
+      }
+      const resume = () => {
+        if (!working || pauses || timer !== undefined || controller.signal.aborted) return
+        started = performance.now()
+        timer = setTimeout(() => {
+          stop(); timedOut = true
+          const error = new Error(`Mod ${hook?.plugin} timed out for ${options.event}`)
+          operationController.abort(error); expire?.(error); controller.abort(error)
+        }, Math.max(0, remaining))
+        publish()
+      }
+      const pause = () => {
+        const metered = clock
+        pauses++; stop()
+        let active = true
+        return () => { if (active && clock === metered) { active = false; pauses--; resume() } }
+      }
+      const abandon = new Promise<never>((_resolve, reject) => {
+        rejectAbort = reject
+        const fail = () => {
+          controller.abort(lifetime.signal.reason)
+          if (!options.settleAfterAbort) return reject(lifetime.signal.reason)
+          abortGrace ??= setTimeout(() => reject(lifetime.signal.reason), 5000)
+          abortGrace.unref?.()
+        }
+        lifetime.signal.addEventListener('abort', fail, { once: true })
+        if (lifetime.signal.aborted) fail()
+      })
+      void abandon.catch(() => {})
+      const wait = <T>(promise: Promise<T>): Promise<T> => Promise.race([promise, abandon])
+      function below(rewritten: ModInput, target?: ModTier): ModHookStream {
+        if (!rewritten || typeof rewritten !== 'object' || Array.isArray(rewritten)) throw new Error(`${options.event} next requires an input object`)
+        if (options.event === 'turn.step' && rewritten.agentId === undefined && input.agentId !== undefined) rewritten = { ...rewritten, agentId: input.agentId }
+        for (const key of options.event === 'turn.step' ? ['turnId', 'index', 'messageCount', 'agentId'] : []) {
+          if (rewritten[key] !== options.input[key]) throw new Error(`Mod ${hook!.plugin} cannot rewrite ${key} for turn.step`)
+        }
+        options.validateInput?.(rewritten, input)
+        const descent = new Set(skipped)
+        if (target !== undefined) {
+          if (!(hook!.tier === 'prepend' && ['append', 'builtin', 'core'].includes(target)) && !(hook!.tier === 'append' && target === 'core')) throw new Error(`Mod ${hook!.plugin} cannot continue from ${hook!.tier} to ${target}`)
+          for (let tier = tiers.indexOf(hook!.tier) + 1; tier < tiers.indexOf(target); tier++) descent.add(tiers[tier]!)
+        }
+        lastInput = structuredClone(rewritten)
+        const branchTrace: TraceNode[] = []
+        node.below = branchTrace
+        const branch = run(index + 1, rewritten, lifetime.signal, descent, branchTrace, belowChanged)
+        children.add(branch)
+        last = branch; lastResolved = false; lastRejected = false
+        void branch.result.then(value => {
+          results.push(value)
+          if (last === branch) { lastResult = value; lastResolved = true }
+        }, error => {
+          nextErrors.add(error)
+          if (last === branch) { lastRejected = true; lastError = error }
+        })
+        return branch
+      }
+      function nextFor(catching: boolean, failure?: ModStreamNext['error']): ModStreamNext {
+        const own = controller
+        capabilitySignals.set(own.signal, AbortSignal.any([operationSignal, operationController.signal]))
+        const call = (rewritten: ModInput, target?: ModTier) => {
+          own.signal.throwIfAborted()
+          if (catching && last) {
+            if (rewritten && rewritten.agentId === undefined && input.agentId !== undefined) rewritten = { ...rewritten, agentId: input.agentId }
+            if (!isDeepStrictEqual(rewritten, lastInput)) throw new Error(`Mod ${hook!.plugin} cannot rewrite input when resuming ${options.event}`)
+          }
+          const branch = catching && last ? last : below(rewritten, target)
+          const view = createModHookStream((async function* () {
+            let thrown: { error: unknown } | undefined
+            for (;;) {
+              if (catching && branch === last) {
+                if (lastRejected) throw lastError
+                if (lastResolved) return lastResult
+              }
+              const item = await (thrown ? branch.throw(thrown.error) : branch.next())
+              thrown = undefined
+              if (item.done) return item.value
+              try { yield item.value } catch (error) { thrown = { error } }
+            }
+          })())
+          const pull = async (method: 'next' | 'return' | 'throw', value?: unknown) => {
+            // A canceled continuation still owns its iterator cleanup.
+            if (method !== 'return') own.signal.throwIfAborted()
+            const unpause = pause()
+            try {
+              // Closing a hook's view must not destroy the branch needed by failure recovery.
+              const item = await view[method](value as never)
+              if (options.event === 'process.spawn' && !catching && !item.done) {remaining = allowance; publish()}
+              return item
+            } finally { unpause() }
+          }
+          return { next: () => pull('next'), return: (value: unknown) => pull('return', value), throw: (error: unknown) => pull('throw', error), result: view.result, [Symbol.asyncIterator]() { return this } }
+        }
+        const next = Object.defineProperties((rewritten: ModInput) => call(rewritten), {
+          to: { value: (rewritten: ModInput, target: ModTier) => { if (target === undefined) throw new Error('next.to requires a tier'); return call(rewritten, target) } },
+          is: { value: (event: string) => matchesModEventPattern(event, options.event) },
+          event: { value: options.event }, origin: { value: origin }, signal: { value: own.signal },
+          trace: { get: () => traceEntries(node.below) },
+          budget: { value: Object.freeze({ ms: allowance, get remainingMs() { return Math.max(0, remaining - (timer === undefined ? 0 : performance.now() - started)) } }) },
+          ...(catching ? { error: { value: failure }, called: { value: last !== undefined } } : {}),
+        }) as ModStreamNext
+        if (options.settleAfterAbort) settlingStreams.add(next)
+        budgets.set(next, { clock: clock!, pause })
+        traces.set(next, listeners)
+        return Object.freeze(next)
+      }
+      async function* invoke(catching: boolean, failure?: ModNext['error']) {
+        controller = createAbortController()
+        operationController = createAbortController()
+        allowance = catching ? options.catchGraceMs ?? 1000 : options.budgetMs ?? 10_000
+        remaining = allowance; pauses = 0
+        clock = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT)); publish()
+        const next = nextFor(catching, failure)
+        const timeout = new Promise<never>((_resolve, reject) => { expire = reject })
+        void timeout.catch(() => {})
+        try {
+          if (!hook!.invokeStream) throw new Error(`${options.event} requires an async generator hook`)
+          current = hook!.invokeStream(input, next, catching)
+          let thrown: { error: unknown } | undefined
+          for (;;) {
+            if (options.event === 'process.spawn' && !catching) remaining = allowance
+            working = true; resume()
+            let item: IteratorResult<unknown, unknown>
+            try {
+              currentPull = thrown ? current.throw(thrown.error) : current.next()
+              item = await wait(Promise.race([currentPull, timeout]))
+              currentPull = undefined
+            }
+            finally { working = false; stop() }
+            thrown = undefined
+            if (item.done) {
+              if (catching && item.value === undefined) return undefined
+              if (item.value === undefined && !lastResolved)
+                throw new Error(`${options.event} returned no result (and read no next() stream to its end)`)
+              const result = item.value === undefined ? lastResult : item.value
+              options.validateResult?.(result, results)
+              return result
+            }
+            options.validateChunk?.(item.value)
+            chunks++
+            try { yield item.value } catch (error) { thrown = { error } }
+          }
+        } finally {
+          working = false; stop(); expire = undefined
+          controller.abort(new Error(`Mod ${hook!.plugin} invocation finished`))
+          const closing = current?.return(undefined)
+          current = undefined
+          // Cancellation owns teardown; timeout recovery must still be able to
+          // abandon an uncooperative hook and resume its retained branch.
+          if (lifetime.signal.aborted) {
+            const outcomes = await Promise.allSettled([closing, currentPull])
+            currentPull = undefined
+            for (const outcome of outcomes) {
+              // Teardown failure must replace the cancellation that entered finally.
+              // eslint-disable-next-line no-unsafe-finally
+              if (outcome.status === 'rejected' && outcome.reason !== lifetime.signal.reason) throw outcome.reason
+            }
+          } else { void closing?.catch(() => {}); currentPull = undefined }
+        }
+      }
+      try {
+        lifetime.signal.throwIfAborted()
+        if (!hook) {
+          current = options.core(input, lifetime.signal)
+          let thrown: { error: unknown } | undefined
+          for (;;) {
+            currentPull = thrown ? current.throw(thrown.error) : current.next()
+            const item = await wait(currentPull)
+            currentPull = undefined
+            thrown = undefined
+            if (item.done) { record('returned', item.value); return item.value }
+            chunks++
+            try { yield item.value } catch (error) { thrown = { error } }
+          }
+        }
+        try { const result = yield* invoke(false); record('returned', result); return result }
+        catch (error) {
+          if (lifetime.signal.aborted && (!options.settleAfterAbort || explicitlyClosed || isModStreamCancellation(error, lifetime.signal))) throw error
+          if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
+          if (hook.registration.hasCatch) {
+            try {
+              const result = yield* invoke(true, Object.freeze({ kind: timedOut ? 'timeout' : 'throw', ...(timedOut ? {} : { message: error instanceof Error ? error.message : String(error) }), budget: options.catchGraceMs ?? 1000 }))
+              if (result !== undefined) { record('caught', result); return result }
+            } catch (error) {
+              if (isModStreamCancellation(error, lifetime.signal)) throw error
+              if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
+            }
+          }
+          if (lastRejected) throw lastError
+          const result = lastResolved ? lastResult : yield* (last ?? below(input))
+          record(timedOut ? 'expired' : 'skipped', result)
+          return result
+        }
+      } finally {
+        stop(); clearAbortGrace(); rejectAbort = undefined
+        parent?.removeEventListener('abort', abort)
+        lifetime.abort(new Error('Module stream finished'))
+        controller.abort(lifetime.signal.reason)
+        const closing = await Promise.allSettled([
+          ...(current ? [current.return(undefined)] : []),
+          ...(currentPull ? [currentPull] : []),
+          ...Array.from(children, child => child.return(undefined)),
+        ])
+        const failures = closing.filter((item): item is PromiseRejectedResult => item.status === 'rejected' && item.reason !== lifetime.signal.reason)
+        // Surface teardown failures only after every owned stream has settled.
+        // eslint-disable-next-line no-unsafe-finally
+        if (failures.length === 1) throw failures[0]!.reason
+        // eslint-disable-next-line no-unsafe-finally
+        if (failures.length > 1) throw new AggregateError(failures.map(item => item.reason), 'Module stream teardown failed')
+      }
+    })()
+    return createModHookStream(body, error => {
+      explicitlyClosed = true
+      operationController.abort(error)
+      clearAbortGrace(); rejectAbort?.(error)
+      parent?.removeEventListener('abort', abort); lifetime.abort(error)
+    }, options.settleAfterAbort ? undefined : parent)
+  }
+  return run(0, options.input, options.signal)
+}
+
 export async function dispatchModEvent(options: {
   event: string
   input: ModInput
   hooks: readonly ModDispatchHook[]
-  core: (input: ModInput) => Promise<unknown>
+  core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>
   signal?: AbortSignal
   origin?: ModOrigin
   skip?: { plugin: string; registrationId?: number }
+  callerChain?: ModCallerChain
   budgetMs?: number
   catchGraceMs?: number
-  validateResult?: (value: unknown) => void
+  validateResult?: (value: unknown, nextResults: readonly unknown[]) => void
+  validateInput?: (input: ModInput, received: ModInput) => void
+  restoreInput?: (input: ModInput, received: ModInput) => ModInput
+  restoreResult?: (result: unknown, previous: unknown, called: boolean) => unknown
+  reportDirectCoreFailure?: boolean
+  /** Host-only matching origins, including hooks below a short circuit. */
+  onHooks?: (hooks: readonly ModOrigin[]) => void
   onFailure?: (plugin: string, error: unknown) => void
 }): Promise<unknown> {
   const budgetMs = options.budgetMs ?? 10_000
   const catchGraceMs = options.catchGraceMs ?? 1000
-  const permitsVoid = ['clock.sleep', 'clock.after', 'clock.every'].includes(options.event)
   const origin: ModOrigin = Object.freeze({
     ...(options.origin ?? { plugin: 'engine', tier: 'core' }),
   })
@@ -55,94 +426,186 @@ export async function dispatchModEvent(options: {
   const hooks = [...options.hooks].sort(
     (a, b) => tiers.indexOf(a.tier) - tiers.indexOf(b.tier),
   )
-  const pinned =
+  const pinned = (
     options.event === 'tool.call'
-      ? ['tool', 'tool_use_id', 'agentId'].map(
-          (key) => [key, options.input[key]] as const,
-        )
-      : []
+      ? ['tool', 'tool_use_id', 'agentId']
+      : options.event === 'tool.check'
+        ? ['tool', 'input', 'tool_use_id', 'agentId', 'ceiling']
+      : options.event === 'telemetry.log'
+        ? ['to']
+      : options.event === 'turn.complete'
+        ? ['agentId']
+      : options.event === 'plugin.register'
+        ? ['name', 'tier', 'root', 'provenance', 'version', 'uses']
+        : options.event === 'command.run'
+          ? ['command', 'origin', 'presentation']
+          : options.event === 'env.get' || options.event === 'env.set'
+            ? ['name']
+            : options.event === 'session.end'
+              ? ['reason', 'sessionId', 'resume']
+              : options.event === 'session.attach'
+                ? ['surface', 'clientId', 'viewport']
+                : options.event === 'session.detach'
+                  ? ['surface', 'clientId', 'reason']
+              : options.event === 'ui.message'
+                ? ['surface', 'component', 'requestId', 'element', 'module']
+              : options.event === 'ui.fault'
+                ? ['surface', 'component', 'requestId', 'element', 'module', 'phase', 'reason']
+              : options.event === 'ui.render'
+                ? ['surface', 'component', 'requestId', 'viewport', ...(options.input.component === 'Pane' ? ['props'] : [])]
+                : []
+  ).map(
+    (key) => [
+      key,
+      ['uses', 'origin', 'presentation', 'resume', 'viewport', 'props', 'input'].includes(key) ? structuredClone(options.input[key]) : options.input[key],
+    ] as const,
+  )
+
+  function matchesHook(hook: ModDispatchHook, input: ModInput): boolean {
+    const { registration, tier, plugin } = hook
+    const skipRegistration =
+      options.callerChain !== undefined
+        ? excludesModCaller(options.callerChain, plugin, registration.id)
+        : skip?.plugin === plugin &&
+          (skip.registrationId === undefined || skip.registrationId === registration.id)
+    const matches =
+      matchesModEventPattern(registration.event, options.event) &&
+      // A telemetry event is hooked by name: `*` and negations select none for an installed plugin.
+      (!options.event.startsWith('telemetry.') || registration.event.startsWith('telemetry.') || tier === 'builtin' || tier === 'core') &&
+      matchesModMatcher(registration.matcher ?? {}, input)
+    return matches && !skipRegistration
+  }
 
   async function run(
     index: number,
     input: ModInput,
     parent?: AbortSignal,
-    skipped: ReadonlySet<ModTier> = new Set(),
+    skipped: ReadonlyMap<ModTier, string> = new Map(),
     trace: TraceNode[] = [],
+    traceChanged: () => void = () => {},
+    position = 0,
+    directPlugin?: string,
+    parentToolFrame?: { plugin: string; results: unknown[] },
   ): Promise<unknown> {
     parent?.throwIfAborted()
     while (index < hooks.length) {
-      const { registration, tier, plugin } = hooks[index]!
-      const skipRegistration =
-        skip?.plugin === plugin &&
-        (skip.registrationId === undefined ||
-          skip.registrationId === registration.id)
-      const matches =
-        registration.event === options.event &&
-        Object.entries(registration.matcher ?? {}).every(
-          ([key, value]) => input[key] === value,
-        )
-      if (matches && !skipRegistration) {
+      const { tier, plugin } = hooks[index]!
+      if (matchesHook(hooks[index]!, input)) {
         if (!skipped.has(tier)) break
         trace.push({
           entry: Object.freeze({
+            index: position++,
             plugin,
             tier,
+            event: options.event,
             outcome: 'skipped',
+            reason: `bypassed by ${skipped.get(tier)}`,
+            ms: 0,
             received: input,
+            returned: undefined,
           }),
           below: [],
         })
+        traceChanged()
       }
       index++
     }
     const hook = hooks[index]
+    // One plugin's registrations form a single host boundary. Its own hooks
+    // see one another's raw answers; only leaving the plugin derives the fact
+    // from executions outside that plugin, never from its own claimed marker.
+    const toolFrame = options.event === 'tool.call' && hook
+      ? parentToolFrame?.plugin === hook.plugin
+        ? parentToolFrame
+        : { plugin: hook.plugin, results: [] as unknown[] }
+      : undefined
+    function settleToolResult(value: unknown): unknown {
+      if (!toolFrame || toolFrame === parentToolFrame) return value
+      return restoreToolCallReadOnly(value, toolFrame.results)
+    }
+    function publishToolResult(value: unknown): unknown {
+      if (toolFrame && toolFrame !== parentToolFrame) parentToolFrame?.results.push(value)
+      return value
+    }
     const node: TraceNode = { below: [] }
     trace.push(node)
+    const enteredAt = performance.now()
+    let belowStarted = 0
+    let belowTime = 0
+    let pending = 0
     function record(outcome: string, returned?: unknown) {
+      const now = performance.now()
       node.entry = Object.freeze({
+        index: position,
         plugin: hook?.plugin ?? 'engine',
         tier: hook?.tier ?? 'core',
+        event: options.event,
         outcome,
+        ms: Math.max(0, now - enteredAt - belowTime - (pending > 0 ? now - belowStarted : 0)),
         received: input,
         returned,
       })
+      traceChanged()
     }
     if (!hook) {
+      let abortGrace: ReturnType<typeof setTimeout> | undefined
       let abort!: () => void
       const abandoned = new Promise<never>((_resolve, reject) => {
-        abort = () => reject(parent!.reason)
+        abort = () => {
+          // Model cores settle cancellation as a receipt or a classifier diagnostic, with bounded teardown.
+          if (['model.complete','model.classify','model.fork'].includes(options.event)) {
+            abortGrace = setTimeout(() => reject(parent!.reason), 5000)
+            abortGrace.unref?.()
+          } else reject(parent!.reason)
+        }
         parent?.addEventListener('abort', abort, { once: true })
       })
       try {
         const result = await Promise.race([
           Promise.resolve().then(() => {
             parent?.throwIfAborted()
-            return options.core(input)
+            return options.core(input, parent)
           }),
           abandoned,
         ])
         record('returned', result)
+        parentToolFrame?.results.push(result)
         return result
       } catch (error) {
         record('rejected')
+        if (options.reportDirectCoreFailure && directPlugin)
+          options.onFailure?.(directPlugin, error)
         throw error
       } finally {
+        if (abortGrace) clearTimeout(abortGrace)
         parent?.removeEventListener('abort', abort)
       }
     }
 
+    const traceListeners = new Set<() => void>()
+    const belowChanged = () => {
+      for (const listener of traceListeners) listener()
+      traceChanged()
+    }
     const lifetime = createAbortController()
     let controller = createAbortController()
+    const inheritedCapabilitySignal = parent && (capabilitySignals.get(parent) ?? parent)
+    capabilitySignals.set(lifetime.signal, inheritedCapabilitySignal ?? createAbortController().signal)
     let phase: 'active' | 'recovering' | 'catch' | 'done' = 'active'
     let inFlight: Promise<unknown> | undefined
+    const nextResults: unknown[] = []
+    const nextErrors = new Set<unknown>()
     let lastResult: unknown
     let lastResolved = false
-    let pending = 0
+    let external = 0
+    let budgetClock: BigInt64Array | undefined
+    let allowance = budgetMs
     let remaining = budgetMs
     let started = 0
     let timer: ReturnType<typeof setTimeout> | undefined
     let expire: (() => void) | undefined
     let timedOut = false
+    let abortGrace: ReturnType<typeof setTimeout> | undefined
     let rejectAbandoned!: (error: unknown) => void
     const abandoned = new Promise<never>((_resolve, reject) => {
       rejectAbandoned = reject
@@ -151,18 +614,30 @@ export async function dispatchModEvent(options: {
     void abandoned.catch(() => {})
     const abort = () => {
       phase = 'done'
-      rejectAbandoned(parent!.reason)
+      if (['model.complete','model.classify','model.fork'].includes(options.event)) {
+        abortGrace = setTimeout(() => rejectAbandoned(parent!.reason), 5000)
+        abortGrace.unref?.()
+      } else rejectAbandoned(parent!.reason)
       lifetime.abort(parent!.reason)
       controller.abort(parent!.reason)
     }
     parent?.addEventListener('abort', abort, { once: true })
 
+    function publishBudget() {
+      if (!budgetClock) return
+      Atomics.add(budgetClock, 0, 1n)
+      Atomics.store(budgetClock, 1, BigInt(Math.max(0, Math.floor(remaining * 1000))))
+      Atomics.store(budgetClock, 2, timer === undefined ? 0n : BigInt(Math.floor((performance.timeOrigin + started) * 1000)))
+      Atomics.store(budgetClock, 3, BigInt(options.event === 'engine.create' ? 0 : allowance))
+      Atomics.add(budgetClock, 0, 1n)
+    }
     function stopTimer() {
       if (timer !== undefined) {
         clearTimeout(timer)
         timer = undefined
         remaining -= performance.now() - started
       }
+      publishBudget()
     }
     function startTimer() {
       if (
@@ -173,9 +648,10 @@ export async function dispatchModEvent(options: {
         phase === 'recovering'
       )
         return
-      if (phase === 'active' && pending > 0) return
+      if (pending > 0 || external > 0) return
       started = performance.now()
       timer = setTimeout(expire, Math.max(0, remaining))
+      publishBudget()
     }
     function below(rewritten: ModInput, target?: ModTier): Promise<unknown> {
       if (
@@ -187,13 +663,67 @@ export async function dispatchModEvent(options: {
           new Error(`Mod ${hook.plugin} next requires an input object`),
         )
       }
+      if (
+        options.event === 'plugin.register' &&
+        !Object.hasOwn(rewritten, 'version') &&
+        Object.hasOwn(options.input, 'version')
+      ) {
+        rewritten = { ...rewritten, version: options.input.version }
+      }
+      if (options.event === 'command.run' && !Object.hasOwn(rewritten, 'presentation')) {
+        rewritten = { ...rewritten, presentation: options.input.presentation }
+      }
+      if (['tool.call', 'turn.complete'].includes(options.event) && rewritten.agentId === undefined && input.agentId !== undefined) {
+        rewritten = { ...rewritten, agentId: input.agentId }
+      }
+      if (options.event === 'tool.check') {
+        // Official restores omitted engine metadata, but rejects explicit changes.
+        for (const key of ['tool_use_id', 'agentId', 'ceiling']) {
+          if (!Object.hasOwn(rewritten, key) && Object.hasOwn(input, key))
+            rewritten = { ...rewritten, [key]: input[key] }
+        }
+      }
+      rewritten = options.restoreInput?.(rewritten, input) ?? rewritten
       for (const [key, value] of pinned) {
-        if (rewritten[key] !== value)
+        const unchanged =
+          ['uses', 'origin', 'presentation', 'resume', 'viewport', 'props', 'input'].includes(key)
+            ? isDeepStrictEqual(rewritten[key], value)
+            : rewritten[key] === value
+        if (!unchanged)
           return Promise.reject(
-            new Error(`Mod ${hook.plugin} cannot rewrite ${key} for tool.call`),
+            options.event === 'tool.check'
+              ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed ${key} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`), {name:'HooksError'})
+              : options.event === 'telemetry.log'
+              ? Object.assign(new Error(`${hook.plugin}: next() passed an argument with a changed to (pinned)`), {name:'HooksError'})
+              : new Error(`Mod ${hook.plugin} cannot rewrite ${key} for ${options.event}`),
           )
       }
-      const descent = new Set(skipped)
+      if (options.event === 'ui.render' && options.input.component === 'AssistantMessage') {
+        const props = rewritten.props as ModInput | undefined
+        const original = options.input.props as ModInput
+        for (const key of ['text', 'isFirstOfReply', 'isSummary']) {
+          const value = props?.[key]
+          const expected = key === 'isSummary' ? 'boolean' : typeof original[key]
+          if (key !== 'isSummary' && original[key] === undefined) continue
+          if (key === 'isSummary' && value === undefined) continue
+          if (typeof value !== expected) {
+            const received = value === undefined ? 'missing' : value === null ? 'null' :
+              Array.isArray(value) ? 'an array' : typeof value === 'object' ? 'an object' : `a ${typeof value}`
+            return Promise.reject(new Error(`${hook.plugin}: next() passed an argument with a props.${key} that is ${received}, not a ${expected}${key === 'isSummary' ? ' or missing' : ''}`))
+          }
+        }
+        if (props?.isSummary !== original.isSummary) {
+          return Promise.reject(new Error(`${hook.plugin}: next() passed an argument with a props.isSummary other than the engine drew (the row names its block as a summary or not; a rewrite changes the drawing alone)`))
+        }
+      }
+      if (options.event === 'ui.render' &&
+          ['UserMessage', 'AssistantMessage', 'ToolUse', 'ToolResult', 'ToolGroup', 'CommandOutput', 'TurnDuration', 'InfoNotice'].includes(options.input.component as string) &&
+          !isDeepStrictEqual((rewritten.props as ModInput | undefined)?.onScreen, (options.input.props as ModInput | undefined)?.onScreen)) {
+        return Promise.reject(new Error(`${hook.plugin}: next() passed an argument with a props.onScreen other than the surface reported (the surface says what its viewport shows; a rewrite changes the drawing alone)`))
+      }
+      try { options.validateInput?.(rewritten, input) }
+      catch (error) { return Promise.reject(error) }
+      const descent = new Map(skipped)
       if (target !== undefined) {
         if (
           !(
@@ -213,31 +743,49 @@ export async function dispatchModEvent(options: {
           tier < tiers.indexOf(target);
           tier++
         )
-          descent.add(tiers[tier]!)
+          descent.set(tiers[tier]!, hook.plugin)
       }
-      if (pending++ === 0 && phase === 'active') stopTimer()
-      node.below = []
+      if (pending++ === 0) {
+        belowStarted = performance.now()
+        stopTimer()
+      }
+      const latest: TraceNode[] = []
+      node.below = latest
+      belowChanged()
       lastResolved = false
       const branch = run(
         index + 1,
         rewritten,
         lifetime.signal,
         descent,
-        node.below,
+        latest,
+        () => { if (node.below === latest) belowChanged() },
+        position + 1,
+        hook.plugin,
+        toolFrame,
       )
       inFlight = branch
-      void branch.then((result) => {
-        if (inFlight === branch) {
-          lastResolved = true
-          lastResult = result
-        }
-        settled()
-      }, settled)
+      void branch.then(
+        (result) => {
+          if (inFlight === branch) {
+            lastResolved = true
+            lastResult = result
+          }
+          settled()
+        },
+        (error) => {
+          nextErrors.add(error)
+          settled()
+        },
+      )
       return branch
     }
     function settled() {
       pending--
-      if (pending === 0) startTimer()
+      if (pending === 0) {
+        belowTime += performance.now() - belowStarted
+        startTimer()
+      }
     }
     const replay = (rewritten: ModInput, target?: ModTier) =>
       inFlight ?? below(rewritten, target)
@@ -249,7 +797,17 @@ export async function dispatchModEvent(options: {
       phase = catching ? 'catch' : 'active'
       controller = createAbortController()
       const ownController = controller
-      remaining = catching ? catchGraceMs : budgetMs
+      const operationController = createAbortController()
+      const operationSignal = inheritedCapabilitySignal
+        ? AbortSignal.any([inheritedCapabilitySignal, operationController.signal])
+        : operationController.signal
+      capabilitySignals.set(ownController.signal, operationSignal)
+      let settledRemaining: number | undefined
+      allowance = catching ? catchGraceMs : budgetMs
+      remaining = allowance
+      external = 0
+      budgetClock = new BigInt64Array(new SharedArrayBuffer(4 * BigInt64Array.BYTES_PER_ELEMENT))
+      publishBudget()
       const continueBelow = (rewritten: ModInput, target?: ModTier) => {
         if (
           phase !== (catching ? 'catch' : 'active') ||
@@ -260,7 +818,14 @@ export async function dispatchModEvent(options: {
               new Error(`Mod ${hook.plugin} next is no longer active`),
           )
         }
-        return catching ? replay(rewritten, target) : below(rewritten, target)
+        const result = catching
+          ? replay(rewritten, target)
+          : below(rewritten, target)
+        void result.then(
+          (value) => { nextResults.push(value) },
+          () => {},
+        )
+        return result
       }
       const next = ((rewritten: ModInput) =>
         continueBelow(rewritten)) as ModNext
@@ -275,11 +840,18 @@ export async function dispatchModEvent(options: {
             return continueBelow(rewritten, target)
           },
         },
-        is: { value: (event: string) => event === options.event },
+        is: { value: (event: string) => matchesModEventPattern(event, options.event) },
         signal: { value: ownController.signal },
         event: { get: () => options.event },
         origin: { get: () => origin },
         trace: { get: () => traceEntries(node.below) },
+        budget: { value: Object.freeze({
+          ms: options.event === 'engine.create' ? 0 : allowance,
+          get remainingMs() {
+            return options.event === 'engine.create' ? Infinity
+              : settledRemaining ?? Math.max(0, remaining - (timer === undefined ? 0 : performance.now() - started))
+          },
+        }) },
         ...(catching
           ? {
               error: { value: failure },
@@ -287,6 +859,19 @@ export async function dispatchModEvent(options: {
             }
           : {}),
       })
+      traces.set(next, traceListeners)
+      budgets.set(next, { clock: budgetClock, pause: () => {
+        if (ownController.signal.aborted) return () => {}
+        external++
+        stopTimer()
+        let resumed = false
+        return () => {
+          if (resumed || ownController.signal.aborted) return
+          resumed = true
+          external--
+          startTimer()
+        }
+      } })
       Object.freeze(next)
       const timeout = new Promise<never>((_resolve, reject) => {
         expire = () => {
@@ -296,6 +881,7 @@ export async function dispatchModEvent(options: {
           timedOut = true
           phase = 'recovering'
           reject(error)
+          operationController.abort(error)
           ownController.abort(error)
         }
       })
@@ -309,31 +895,48 @@ export async function dispatchModEvent(options: {
           timeout,
           abandoned,
         ])
+      } catch (error) {
+        operationController.abort(error)
+        throw error
       } finally {
         stopTimer()
+        settledRemaining = Math.max(0, remaining)
         expire = undefined
         phase = parent?.aborted ? 'done' : 'recovering'
         ownController.abort(new Error(`Mod ${hook.plugin} invocation finished`))
       }
     }
 
+    let returnedWithoutNext = false
     try {
       try {
-        const result = await invoke(false)
-        if (result === undefined && !permitsVoid)
+        let result = await invoke(false)
+        returnedWithoutNext = inFlight === undefined
+        if (result === undefined)
           throw new Error(
             `Mod ${hook.plugin} returned undefined for ${options.event}`,
           )
-        options.validateResult?.(result)
+        const passed = lastResolved && result === lastResult
+        result = options.restoreResult?.(result, lastResolved ? lastResult : input, inFlight !== undefined) ?? result
+        result = settleToolResult(result)
+        options.validateResult?.(result, nextResults)
         record(
-          lastResolved && result === lastResult ? 'passed' : 'returned',
+          passed ? 'passed' : 'returned',
           result,
         )
-        return result
+        return publishToolResult(result)
       } catch (error) {
+        if (parent?.aborted && ['model.complete','model.classify','model.fork'].includes(options.event)) throw error
         parent?.throwIfAborted()
-        options.onFailure?.(hook.plugin, error)
+        if (!nextErrors.has(error)) options.onFailure?.(hook.plugin, error)
         if (options.event === 'engine.create') throw error
+        // A receipt is not permission to enqueue. Even an invalid no-next
+        // receipt must not fall through to the dispatcher's normal replay.
+        if (options.event === 'session.receive' && returnedWithoutNext) {
+          const result = { consumed: `Mod ${hook.plugin} returned without next` }
+          record('returned', result)
+          return result
+        }
         let rejected = false
         let belowError: unknown
         if (inFlight) {
@@ -364,21 +967,29 @@ export async function dispatchModEvent(options: {
             budget: catchGraceMs,
           })
           try {
-            const result = await invoke(true, failure)
-            if (result !== undefined || permitsVoid) {
-              options.validateResult?.(result)
+            let result = await invoke(true, failure)
+            returnedWithoutNext = inFlight === undefined
+            if (result !== undefined) {
+              result = options.restoreResult?.(result, lastResolved ? lastResult : input, inFlight !== undefined) ?? result
+              result = settleToolResult(result)
+              options.validateResult?.(result, nextResults)
               record('caught', result)
-              return result
+              return publishToolResult(result)
             }
           } catch (catchError) {
             parent?.throwIfAborted()
-            options.onFailure?.(hook.plugin, catchError)
+            if (!nextErrors.has(catchError)) options.onFailure?.(hook.plugin, catchError)
           }
         }
+        if (options.event === 'session.receive' && returnedWithoutNext) {
+          const result = { consumed: `Mod ${hook.plugin} returned without next` }
+          record('caught', result)
+          return result
+        }
         const outcome = timedOut ? 'expired' : inFlight ? 'kept' : 'skipped'
-        const result = await Promise.race([replay(input), abandoned])
+        const result = settleToolResult(await Promise.race([replay(input), abandoned]))
         record(outcome, result)
-        return result
+        return publishToolResult(result)
       }
     } catch (error) {
       record('rejected')
@@ -386,10 +997,19 @@ export async function dispatchModEvent(options: {
     } finally {
       phase = 'done'
       stopTimer()
+      if (abortGrace) clearTimeout(abortGrace)
       parent?.removeEventListener('abort', abort)
       lifetime.abort(new Error(`Mod ${hook.plugin} frame finished`))
       controller.abort(lifetime.signal.reason)
     }
+  }
+  if (options.onHooks) {
+    const selected = new Map<string, ModOrigin>()
+    for (const hook of hooks) {
+      if (matchesHook(hook, options.input) && !selected.has(hook.plugin))
+        selected.set(hook.plugin, Object.freeze({ plugin: hook.plugin, tier: hook.tier }))
+    }
+    options.onHooks(Object.freeze([...selected.values()]))
   }
   return run(0, options.input, options.signal)
 }

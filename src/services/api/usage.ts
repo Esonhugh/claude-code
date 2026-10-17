@@ -2,11 +2,13 @@ import { getOpenAIAuthInfo } from '../../utils/auth.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   consumeChatGPTRateLimitResetCredit,
+  fetchChatGPTRateLimitResetCredits,
   fetchChatGPTUtilization,
   fetchChatGPTActivity,
 } from './usage-chatgpt.js'
 import { fetchClaudeCodeUtilization } from './usage-claude.js'
 import type {
+  RateLimitResetCreditsDetails,
   RateLimitResetResult,
   Utilization,
 } from './usage-types.js'
@@ -17,10 +19,14 @@ export type {
   ExtraUsage,
   OpenAIAccount,
   RateLimit,
+  RateLimitResetCredit,
+  RateLimitResetCreditsDetails,
   RateLimitResetResult,
   UsageLimit,
+  UsageLimitRow,
   Utilization,
 } from './usage-types.js'
+export { getModelScopedUsageLimits } from './usage-claude.js'
 
 export function isOpenAIActivityAvailable(): boolean {
   return isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) &&
@@ -51,12 +57,24 @@ export async function fetchUtilization(): Promise<Utilization | null> {
   return fetchClaudeCodeUtilization()
 }
 
-export async function consumeRateLimitResetCredit(): Promise<RateLimitResetResult | null> {
+export async function fetchRateLimitResetCredits(): Promise<RateLimitResetCreditsDetails | null> {
   if (
     !isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
     !getOpenAIAuthInfo()?.isChatGPT
   ) {
     return null
   }
-  return consumeChatGPTRateLimitResetCredit()
+  return fetchChatGPTRateLimitResetCredits()
+}
+
+export async function consumeRateLimitResetCredit(
+  creditId?: string,
+): Promise<RateLimitResetResult | null> {
+  if (
+    !isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI) ||
+    !getOpenAIAuthInfo()?.isChatGPT
+  ) {
+    return null
+  }
+  return consumeChatGPTRateLimitResetCredit(creditId)
 }

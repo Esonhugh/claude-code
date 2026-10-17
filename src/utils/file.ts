@@ -362,7 +362,7 @@ export function readFileSyncCached(filePath: string): string {
 export function writeFileSyncAndFlush_DEPRECATED(
   filePath: string,
   content: string,
-  options: { encoding: BufferEncoding; mode?: number } = { encoding: 'utf-8' },
+  options: { encoding: BufferEncoding; mode?: number; atomicOnly?: boolean } = { encoding: 'utf-8' },
 ): void {
   const fs = getFsImplementation()
 
@@ -449,6 +449,9 @@ export function writeFileSyncAndFlush_DEPRECATED(
     } catch (cleanupError) {
       logForDebugging(`Failed to clean up temp file: ${cleanupError}`)
     }
+
+    // Install commits must preserve the original file if publication fails.
+    if (options.atomicOnly) throw atomicError
 
     // Fallback to non-atomic write
     logForDebugging(`Falling back to non-atomic write for ${targetPath}`)

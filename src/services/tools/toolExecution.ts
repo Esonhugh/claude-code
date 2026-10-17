@@ -36,6 +36,7 @@ import {
   type ToolUseContext,
 } from '../../Tool.js'
 import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
+import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { startSpeculativeClassifierCheck } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
@@ -58,6 +59,7 @@ import type {
   StopHookInfo,
 } from '../../types/message.js'
 import { count } from '../../utils/array.js'
+import { createAbortController } from '../../utils/abortController.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -124,6 +126,7 @@ import {
   isMcpTool,
 } from '../mcp/utils.js'
 import {
+  type ManagedPreToolUsePass,
   resolveHookPermissionDecision,
   runPostToolUseFailureHooks,
   runPostToolUseHooks,
@@ -134,6 +137,9 @@ import {
   runModToolCall,
   type ModToolExecutionRecord,
 } from '../mods/toolAdapter.js'
+import { createToolCatalogForContext } from '../mods/toolCatalog.js'
+import { createModToolHost } from '../mods/toolHost.js'
+import { captureModSessionUsage } from '../mods/sessionUsage.js'
 
 
 /** Minimum total hook duration (ms) to show inline timing summary */
@@ -347,8 +353,12 @@ export async function* runToolUse(
   toolUseContext: ToolUseContext,
 ): AsyncGenerator<MessageUpdateLazy, void> {
   const toolName = toolUse.name
+  const refreshedTools =
+    toolUseContext.options.refreshTools?.() ?? toolUseContext.options.tools
+  const currentTools =
+    toolUseContext.mods?.tools?.projection(refreshedTools) ?? refreshedTools
   // First try to find in the available tools (what the model sees)
-  let tool = findToolByName(toolUseContext.options.tools, toolName)
+  let tool = findToolByName(currentTools, toolName)
 
   // If not found, check if it's a deprecated tool being called by alias
   // (e.g., old transcripts calling "KillShell" which is now an alias for "TaskStop")
@@ -515,14 +525,44 @@ function streamedCheckPermissionsAndCallTool(
   const stream = new Stream<MessageUpdateLazy>()
   const ownedSnapshot = toolUseContext.modsSnapshot
     ? undefined
-    : toolUseContext.mods?.capture()
+    : toolUseContext.mods?.capture({
+        toolCatalog: () => createToolCatalogForContext(toolUseContext),
+        toolHost: () => createModToolHost(toolUseContext, canUseTool),
+        captureUsage: () =>
+          captureModSessionUsage({
+            ...toolUseContext,
+            messages: [...toolUseContext.messages, assistantMessage],
+          }),
+      })
   const snapshot = toolUseContext.modsSnapshot ?? ownedSnapshot
-  const core = (args: Record<string, unknown>, record?: ModToolExecutionRecord) =>
-    checkPermissionsAndCallTool(
+  const context = snapshot
+    ? { ...toolUseContext, modsSnapshot: snapshot }
+    : toolUseContext
+  const closeNotice = snapshot?.toolNotices?.open(toolUseID, toolUseContext.modSpawnedBy)
+  const wrapped = snapshot !== undefined &&
+    (snapshot.hasHooks('tool.call') || toolUseContext.modToolCallResult !== undefined)
+  const managedPass: ManagedPreToolUsePass = {}
+  const core = (
+    args: Record<string, unknown>,
+    record?: ModToolExecutionRecord,
+    signal?: AbortSignal,
+  ) => {
+    const abortController = createAbortController()
+    const listeners = new Map<AbortSignal, () => void>()
+    for (const parent of new Set([context.abortController.signal, signal])) {
+      if (!parent) continue
+      const abort = () => abortController.abort(parent.reason)
+      if (parent.aborted) abort()
+      else {
+        parent.addEventListener('abort', abort, { once: true })
+        listeners.set(parent, abort)
+      }
+    }
+    return checkPermissionsAndCallTool(
       tool,
       toolUseID,
       args,
-      toolUseContext,
+      { ...context, abortController },
       canUseTool,
       assistantMessage,
       messageId,
@@ -566,18 +606,171 @@ function streamedCheckPermissionsAndCallTool(
         })
       },
       record,
-    )
-  const execution = snapshot?.hasHooks('tool.call')
-    ? runModToolCall({
-        snapshot,
-        tool,
-        toolUseID,
-        input,
-        toolUseContext,
-        assistantMessage,
-        core,
-      })
-    : core(input)
+      wrapped ? managedPass : undefined,
+    ).finally(() => {
+      // Dispatch may finish before a non-cooperative tool. Keep cancellation
+      // linked until the real execution, including its hooks, has settled.
+      for (const [parent, abort] of listeners)
+        parent.removeEventListener('abort', abort)
+    })
+  }
+  const execution = (async () => {
+    if (!wrapped) return core(input)
+    const before: MessageUpdateLazy[] = []
+    let args = input
+    let stopped: string | undefined
+    let deniedByHook = false
+    for await (const result of runPreToolUseHooks(
+      context,
+      tool,
+      args,
+      toolUseID,
+      messageId,
+      requestId,
+      mcpServerType,
+      mcpServerBaseUrl,
+      'managed',
+      managedPass,
+    )) {
+      if (result.type === 'message' || result.type === 'additionalContext') {
+        if (result.message.message.type === 'progress')
+          stream.enqueue(result.message)
+        else before.push(result.message)
+      } else if (result.type === 'hookPermissionResult') {
+        if (result.hookPermissionResult.behavior === 'deny') {
+          stopped = result.hookPermissionResult.message
+          deniedByHook = true
+        } else if ('updatedInput' in result.hookPermissionResult)
+          args = result.hookPermissionResult.updatedInput ?? args
+      } else if (result.type === 'hookUpdatedInput') args = result.updatedInput
+      else if (result.type === 'stopReason') stopped = result.stopReason
+      else if (result.type === 'stop' || result.type === 'preventContinuation')
+        stopped ??= 'Execution stopped by PreToolUse hook'
+    }
+    if (stopped !== undefined)
+      return [
+        ...before,
+        {
+          message: createUserMessage({
+            content: [{
+              type: 'tool_result',
+              tool_use_id: toolUseID,
+              is_error: true,
+              content: stopped,
+            }],
+            toolUseResult: `Error: ${stopped}`,
+            toolDenialKind: deniedByHook ? 'permission-rule' : undefined,
+            sourceToolAssistantUUID: assistantMessage.uuid,
+          }),
+        },
+      ]
+    context.abortController.signal.throwIfAborted()
+    // Deliver outer diagnostics once. Reused passes retain decisions/provenance,
+    // but their context was already delivered here.
+    if (managedPass.result)
+      managedPass.result = { ...managedPass.result, additionalContext: undefined }
+    const results = await runModToolCall({
+      snapshot: snapshot!,
+      tool,
+      toolUseID,
+      input: args,
+      toolUseContext: context,
+      assistantMessage,
+      core,
+      review: async (reviewInput, output, addedContext) => {
+        const messages: MessageUpdateLazy[] = []
+        for await (const result of runPostToolUseHooks(
+          context,
+          tool,
+          toolUseID,
+          messageId,
+          reviewInput,
+          output,
+          requestId,
+          mcpServerType,
+          mcpServerBaseUrl,
+          'managed',
+        )) {
+          if ('updatedToolOutput' in result) {
+            const replacement = result.updatedToolOutput
+            let invalid: string | undefined
+            if (!isMcpTool(tool)) {
+              const validation = tool.outputSchema?.safeParse(replacement)
+              if (validation && !validation.success)
+                invalid = validation.error.message
+              else {
+                try {
+                  if (
+                    tool.mapToolResultToToolResultBlockParam(
+                      replacement,
+                      toolUseID,
+                    ) === undefined
+                  )
+                    throw new Error('mapper returned undefined')
+                } catch (error) {
+                  invalid = formatError(error)
+                }
+              }
+            }
+            if (invalid === undefined) output = replacement
+            else {
+              logForDebugging(
+                `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape: ${invalid}`,
+                { level: 'error' },
+              )
+              messages.push({
+                message: createAttachmentMessage({
+                  type: 'hook_error_during_execution',
+                  content: `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape; using original output. ${invalid}`,
+                  hookName: `PostToolUse:${tool.name}`,
+                  toolUseID,
+                  hookEvent: 'PostToolUse',
+                }),
+              })
+            }
+          } else if (result.message.type === 'progress') stream.enqueue(result)
+          else messages.push(result)
+        }
+        // Additive Mod context is also an output surface, reviewed separately.
+        if (addedContext.length) {
+          for await (const result of runPostToolUseHooks(
+            context,
+            tool,
+            toolUseID,
+            messageId,
+            reviewInput,
+            [...addedContext],
+            requestId,
+            mcpServerType,
+            mcpServerBaseUrl,
+            'managed',
+          )) {
+            if ('updatedToolOutput' in result) {
+              const replacement = result.updatedToolOutput
+              addedContext =
+                typeof replacement === 'string'
+                  ? [replacement]
+                  : Array.isArray(replacement) &&
+                      replacement.every(item => typeof item === 'string')
+                    ? replacement
+                    : []
+            } else if (result.message.type === 'progress') stream.enqueue(result)
+            else messages.push(result)
+          }
+          if (
+            messages.some(
+              update =>
+                update.message.type === 'attachment' &&
+                update.message.attachment.type === 'hook_stopped_continuation',
+            )
+          )
+            addedContext = []
+        }
+        return { output, messages, context: addedContext }
+      },
+    })
+    return [...before, ...results]
+  })()
   execution
     .then(results => {
       for (const result of results) {
@@ -588,6 +781,7 @@ function streamedCheckPermissionsAndCallTool(
       stream.error(error)
     })
     .finally(() => {
+      closeNotice?.()
       ownedSnapshot?.release()
       stream.done()
     })
@@ -643,6 +837,7 @@ async function checkPermissionsAndCallTool(
     progress: ToolProgress<ToolProgressData> | ProgressMessage<HookProgress>,
   ) => void,
   executionRecord?: ModToolExecutionRecord,
+  managedPass?: ManagedPreToolUsePass,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
   const parsedInput = tool.inputSchema.safeParse(input)
@@ -823,6 +1018,14 @@ async function checkPermissionsAndCallTool(
   if (backfilledClone) {
     tool.backfillObservableInput!(backfilledClone as Record<string, unknown>)
     processedInput = backfilledClone
+    if (managedPass?.result !== undefined) {
+      const { tool: _tool, tool_use_id: _id, ...backfilledInput } = backfilledClone
+      managedPass.equivalentInputs = [{
+        ...backfilledInput,
+        tool: tool.name,
+        tool_use_id: toolUseID,
+      }]
+    }
   }
 
   let shouldPreventContinuation = false
@@ -839,6 +1042,8 @@ async function checkPermissionsAndCallTool(
     requestId,
     mcpServerType,
     mcpServerBaseUrl,
+    'all',
+    managedPass,
   )) {
     switch (result.type) {
       case 'message':
@@ -1102,6 +1307,7 @@ async function checkPermissionsAndCallTool(
         content: messageContent,
         imagePasteIds: rejectImageIds,
         toolUseResult: `Error: ${errorMessage}`,
+        toolDenialKind: permissionDecision.behavior === 'ask' ? 'user-rejected' : 'permission-rule',
         sourceToolAssistantUUID: assistantMessage.uuid,
       }),
     })
@@ -1240,14 +1446,24 @@ async function checkPermissionsAndCallTool(
     callInput = processedInput
   }
   try {
-    if (executionRecord) executionRecord.input = callInput
+    if (executionRecord) {
+      executionRecord.input = callInput
+      if (tool.isReadOnly(callInput)) executionRecord.isReadOnly = true
+    }
     const result = await tool.call(
       callInput,
       {
         ...toolUseContext,
-        // Admission belongs to this invocation, not to a background task or
-        // nested Agent/Workflow that retains the tool context after it returns.
-        ...(toolUseContext.modsSnapshot ? { modsSnapshot: undefined } : {}),
+        // ToolSearch consumes description admission and Agent consumes
+        // agent.offer dispatch admission. Other background/nested tools must not
+        // retain an invocation snapshot past the executor's release.
+        ...(toolUseContext.modsSnapshot &&
+        tool.name !== TOOL_SEARCH_TOOL_NAME &&
+        tool.name !== AGENT_TOOL_NAME &&
+        tool.name !== 'SendMessage'
+          ? { modsSnapshot: undefined }
+          : {}),
+        modToolCallResult: undefined,
         toolUseId: toolUseID,
         userModified: permissionDecision.userModified ?? false,
       },
@@ -1440,6 +1656,7 @@ async function checkPermissionsAndCallTool(
 
     // Run PostToolUse hooks
     let toolOutput = result.data
+    let toolOutputWasUpdated = false
     const hookResults = []
     const toolContextModifier = result.contextModifier
     const mcpMeta = result.mcpMeta
@@ -1522,11 +1739,6 @@ async function checkPermissionsAndCallTool(
       })
     }
 
-    // TOOD(hackyon): refactor so we don't have different experiences for MCP tools
-    if (!isMcpTool(tool)) {
-      await addToolResult(toolOutput, mappedToolResultBlock)
-    }
-
     const postToolHookInfos: StopHookInfo[] = []
     const postToolHookStart = Date.now()
     for await (const hookResult of runPostToolUseHooks(
@@ -1539,31 +1751,13 @@ async function checkPermissionsAndCallTool(
       requestId,
       mcpServerType,
       mcpServerBaseUrl,
+      managedPass ? 'non-managed' : 'all',
     )) {
-      if ('updatedMCPToolOutput' in hookResult) {
-        if (isMcpTool(tool)) {
-          toolOutput = hookResult.updatedMCPToolOutput
-        }
-      } else if (isMcpTool(tool)) {
-        hookResults.push(hookResult)
-        if (hookResult.message.type === 'attachment') {
-          const att = hookResult.message.attachment
-          if (
-            // @ts-ignore - recovered code
-            'command' in att &&
-            att.command !== undefined &&
-            'durationMs' in att &&
-            att.durationMs !== undefined
-          ) {
-            postToolHookInfos.push({
-              // @ts-ignore - recovered code
-              command: att.command,
-              durationMs: att.durationMs,
-            })
-          }
-        }
+      if ('updatedToolOutput' in hookResult) {
+        toolOutput = hookResult.updatedToolOutput
+        toolOutputWasUpdated = true
       } else {
-        resultingMessages.push(hookResult)
+        hookResults.push(hookResult)
         if (hookResult.message.type === 'attachment') {
           const att = hookResult.message.attachment
           if (
@@ -1590,9 +1784,46 @@ async function checkPermissionsAndCallTool(
       )
     }
 
-    if (isMcpTool(tool)) {
-      await addToolResult(toolOutput)
+    let finalMappedToolResultBlock = mappedToolResultBlock
+    if (!isMcpTool(tool) && toolOutputWasUpdated) {
+      const invalidOutput = (detail: string) => {
+        logForDebugging(
+          `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape: ${detail}`,
+          { level: 'error' },
+        )
+        toolOutput = result.data
+        hookResults.push({
+          message: createAttachmentMessage({
+            type: 'hook_error_during_execution',
+            content: `PostToolUse hook returned updatedToolOutput that does not match ${tool.name}'s output shape; using original output. ${detail}`,
+            hookName: `PostToolUse:${tool.name}`,
+            toolUseID,
+            hookEvent: 'PostToolUse',
+          }),
+        })
+      }
+      const validation = tool.outputSchema?.safeParse(toolOutput)
+      if (validation && !validation.success) {
+        invalidOutput(validation.error.message)
+      } else {
+        try {
+          const mapped = tool.mapToolResultToToolResultBlockParam(
+            toolOutput,
+            toolUseID,
+          )
+          if (mapped === undefined)
+            throw new Error('mapper returned undefined')
+          finalMappedToolResultBlock = mapped
+        } catch (error) {
+          invalidOutput(formatError(error))
+        }
+      }
     }
+    if (executionRecord) executionRecord.result = toolOutput
+    await addToolResult(
+      toolOutput,
+      isMcpTool(tool) ? undefined : finalMappedToolResultBlock,
+    )
 
     // Show PostToolUse hook timing inline below tool result when > 500ms.
     // Use wall-clock time (not sum of individual durations) since hooks run in parallel.

@@ -12,6 +12,7 @@ export type REPLHookContext = {
   messages: Message[] // Full message history including assistant responses
   systemPrompt: SystemPrompt
   userContext: { [k: string]: string }
+  resolvedPromptContextBlocks?: readonly { name: string; text: string }[]
   systemContext: { [k: string]: string }
   toolUseContext: ToolUseContext
   querySource?: QuerySource
@@ -49,11 +50,13 @@ export async function executePostSamplingHooks(
   systemContext: { [k: string]: string },
   toolUseContext: ToolUseContext,
   querySource?: QuerySource,
+  resolvedPromptContextBlocks?: REPLHookContext['resolvedPromptContextBlocks'],
 ): Promise<void> {
   const context: REPLHookContext = {
     messages,
     systemPrompt,
     userContext,
+    resolvedPromptContextBlocks,
     systemContext,
     toolUseContext,
     querySource,

@@ -26,6 +26,7 @@ import type {
   UserMessage,
 } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { shouldBackgroundForkedSkill, launchBackgroundForkedSkill, getSkillAttributionName } from '../../utils/forkedSkill.js'
 import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.js'
 import { getRuleByContentsForTool } from 'src/utils/permissions/permissions.js'
 import {
@@ -63,6 +64,10 @@ import {
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createUserMessage, normalizeMessages } from '../../utils/messages.js'
+import {
+  captureModSkillPromptSnapshot,
+  renderModSkillPrompt,
+} from '../../services/mods/skillPrompt.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import { resolveSkillModelOverride } from '../../utils/model/model.js'
 import { recordSkillUsage } from '../../utils/suggestions/skillUsageTracking.js'
@@ -252,14 +257,23 @@ async function executeForkedSkill(
     }),
   })
 
-  const { modifiedGetAppState, baseAgent, promptMessages, skillContent } =
-    await prepareForkedCommandContext(command, args || '', context)
+  const background = shouldBackgroundForkedSkill(command)
+  const prepared = await prepareForkedCommandContext(command, args || '', context, canUseTool, { background })
+  const { modifiedGetAppState, baseAgent, promptMessages, skillContent } = prepared
 
   // Merge skill's effort into the agent definition so runAgent applies it
   const agentDefinition =
     command.effort !== undefined
       ? { ...baseAgent, effort: command.effort }
       : baseAgent
+
+  if (background) {
+    const launched = await launchBackgroundForkedSkill({ command, prepared, agentDefinition, agentId, context, canUseTool })
+    if (launched) return { data: {
+      success: true, commandName, status: 'forked', background: true,
+      agentId: launched.agentId, result: `Running in the background as @${launched.name}`,
+    } }
+  }
 
   // Collect messages from the forked agent
   const agentMessages: Message[] = []
@@ -280,9 +294,11 @@ async function executeForkedSkill(
       canUseTool,
       isAsync: false,
       querySource: 'agent:custom',
+      spawnedBySkill: getSkillAttributionName(command),
+      spawnedByForkedSkill: true,
       model: command.model as ModelAlias | undefined,
       availableTools: context.options.tools,
-      override: { agentId },
+      override: { agentId, readFileState: prepared.readFileState },
     })) {
       agentMessages.push(message)
 
@@ -367,6 +383,7 @@ export const outputSchema = lazySchema(() => {
     success: z.boolean().describe('Whether the skill completed successfully'),
     commandName: z.string().describe('The name of the skill'),
     status: z.literal('forked').describe('Execution status'),
+    background: z.boolean().optional().describe('Whether the skill is running in the background'),
     agentId: z
       .string()
       .describe('The ID of the sub-agent that executed the skill'),
@@ -476,6 +493,10 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
+    if (resolved.command.context === 'fork' &&
+        context.options.spawnedBySkill === getSkillAttributionName(resolved.command)) {
+      return { result: false, errorCode: 9, message: forkRecursionMessage(normalizedCommandName) }
+    }
     return { result: true }
   },
 
@@ -660,7 +681,13 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     ) {
       const slug = remoteSkillModules!.stripCanonicalPrefix(commandName)
       if (slug !== null) {
-        return executeRemoteSkill(slug, commandName, parentMessage, context)
+        return executeRemoteSkill(
+          slug,
+          commandName,
+          parentMessage,
+          context,
+          canUseTool,
+        )
       }
     }
 
@@ -672,6 +699,10 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Track skill usage for ranking
     recordSkillUsage(resolvedCommandName)
 
+    if (command?.type === 'prompt' && command.context === 'fork' &&
+        context.options.spawnedBySkill === getSkillAttributionName(command)) {
+      throw new Error(forkRecursionMessage(commandName))
+    }
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {
       return executeForkedSkill(
@@ -695,6 +726,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       args || '', // Pass args if provided
       [command],
       context,
+      [],
+      canUseTool,
     )
 
     if (!processedCommand.shouldQuery) {
@@ -912,7 +945,9 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       return {
         type: 'tool_result' as const,
         tool_use_id: toolUseID,
-        content: `Skill "${result.commandName}" completed (forked execution).\n\nResult:\n${result.result}`,
+        content: result.background
+          ? `Skill "${result.commandName}" launched (forked execution, running in the background).\n\n${result.result}`
+          : `Skill "${result.commandName}" completed (forked execution).\n\nResult:\n${result.result}`,
       }
     }
 
@@ -935,6 +970,10 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
 // If a skill has any property NOT in this set with a meaningful value, it requires
 // permission. This ensures new properties added to PromptCommand in the future
 // default to requiring permission until explicitly reviewed and added here.
+function forkRecursionMessage(name: string): string {
+  return `Skill ${name} is already executing in this forked context — you are the subagent running it. Execute the instructions in the skill body directly instead of re-invoking the Skill tool.`
+}
+
 const SAFE_SKILL_PROPERTIES = new Set([
   // PromptCommand properties
   'type',
@@ -948,6 +987,8 @@ const SAFE_SKILL_PROPERTIES = new Set([
   'disableNonInteractive',
   'skillRoot',
   'context',
+  'background',
+  'unqualifiedName',
   'agent',
   'getPromptForCommand',
   'frontmatterKeys',
@@ -1047,6 +1088,7 @@ async function executeRemoteSkill(
   commandName: string,
   parentMessage: AssistantMessage,
   context: ToolUseContext,
+  canUseTool: CanUseToolFn,
 ): Promise<ToolResult<Output>> {
   const { getDiscoveredRemoteSkill, loadRemoteSkill, logRemoteSkillLoaded } =
     remoteSkillModules!
@@ -1155,6 +1197,22 @@ async function executeRemoteSkill(
     /\$\{CLAUDE_SESSION_ID\}/g,
     getSessionId(),
   )
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : captureModSkillPromptSnapshot(context, canUseTool)
+  try {
+    const snapshot = context.modsSnapshot ?? ownedSnapshot
+    if (snapshot?.hasHooks('skill.prompt')) {
+      finalContent = await renderModSkillPrompt({
+        snapshot,
+        skill: commandName,
+        text: finalContent,
+        signal: context.abortController.signal,
+      })
+    }
+  } finally {
+    ownedSnapshot?.release()
+  }
 
   // Register with compaction-preservation state. Use the cached file path so
   // post-compact restoration knows where the content came from. Must use

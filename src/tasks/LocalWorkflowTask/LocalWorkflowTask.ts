@@ -1,4 +1,5 @@
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
+import { PANEL_GRACE_MS } from '../../utils/task/framework.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import type {
   WorkflowArgs,
@@ -10,8 +11,11 @@ import type {
 import type { WorkflowScriptMeta } from '../../tools/WorkflowTool/workflowScriptParser.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
+import { isTerminalTaskStatus } from '../../taskStatus.js'
 
 const MAX_RECENT_ACTIVITIES = 5
+// Progress events are UI/SDK deltas; keep the tail so long runs stay bounded.
+export const MAX_WORKFLOW_EVENTS = 200
 export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'user-retry'
 export const WORKFLOW_AGENT_SKIPPED_ABORT_REASON = 'user-skip'
 
@@ -31,10 +35,6 @@ function createWorkflowTaskBase(
     outputOffset: 0,
     notified: false,
   }
-}
-
-function terminalStatus(status: LocalWorkflowTaskState['status']): boolean {
-  return status === 'completed' || status === 'failed' || status === 'killed'
 }
 
 function workflowAgentIsControllable(task: LocalWorkflowTaskState, agentId: string): boolean {
@@ -204,6 +204,7 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   runScriptSnapshot?: string
   prompt?: string
   pausedAt?: number
+  evictAfter?: number
   abortController?: AbortController
   phases: LocalWorkflowPhaseState[]
   results: WorkflowAgentResult[]
@@ -473,7 +474,7 @@ function appendEvent(
 ): LocalWorkflowTaskState {
   return withProgressVersion({
     ...task,
-    events: [...task.events, event],
+    events: [...task.events, event].slice(-MAX_WORKFLOW_EVENTS),
   })
 }
 
@@ -541,7 +542,7 @@ export function recordWorkflowEvent({
 }): void {
   withWorkflowTask(taskId, setAppState, task => withProgressVersion({
     ...task,
-    events: [...task.events, event],
+    events: [...task.events, event].slice(-MAX_WORKFLOW_EVENTS),
   }))
 }
 
@@ -1058,12 +1059,14 @@ export function completeWorkflowTask(
   setAppState: SetAppState,
 ): void {
   withWorkflowTask(taskId, setAppState, task => {
-    if (terminalStatus(task.status)) return task
+    if (isTerminalTaskStatus(task.status)) return task
+    const endTime = Date.now()
     return {
       ...task,
       status: 'completed',
       summary: 'Workflow completed',
-      endTime: Date.now(),
+      endTime,
+      evictAfter: endTime + PANEL_GRACE_MS,
       abortController: undefined,
       currentAgentId: undefined,
       agentControllers: undefined,
@@ -1081,12 +1084,14 @@ export function failWorkflowTask(
     if (task.status !== 'running') return task
     abortWorkflowControllers(task, 'workflow-failed')
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
+    const endTime = Date.now()
     return {
       ...solidifiedTask,
       status: 'failed',
       summary: `Workflow failed: ${error}`,
       error,
-      endTime: Date.now(),
+      endTime,
+      evictAfter: endTime + PANEL_GRACE_MS,
       abortController: undefined,
       currentAgentId: undefined,
       agentControllers: undefined,
@@ -1105,12 +1110,13 @@ function endWorkflowTask(
       return prev
     }
 
-    if (terminalStatus(task.status)) {
+    if (isTerminalTaskStatus(task.status)) {
       return prev
     }
 
     abortWorkflowControllers(task, `workflow-${status}`)
     const solidifiedTask = solidifyLiveAgentUsage(task, Object.keys(task.liveAgents ?? {}))
+    const endTime = Date.now()
     return {
       ...prev,
       tasks: {
@@ -1119,7 +1125,8 @@ function endWorkflowTask(
           ...solidifiedTask,
           status,
           summary: `Workflow ${status}`,
-          endTime: Date.now(),
+          endTime,
+          evictAfter: endTime + PANEL_GRACE_MS,
           abortController: undefined,
           currentAgentId: undefined,
           agentControllers: undefined,

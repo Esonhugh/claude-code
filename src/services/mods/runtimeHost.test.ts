@@ -1,0 +1,3032 @@
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test'
+import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { createModsRuntime } from './runtime.js'
+import { loadModDeclaration } from './loader.js'
+import builtinDiff from '../../commands/diff/index.js'
+import type { Command } from '../../types/command.js'
+import type { Tool } from '../../Tool.js'
+import { createToolCatalog, describeModTool } from './toolCatalog.js'
+import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
+import {
+  callMCPToolForMod,
+  connectToServer,
+  findMCPConnectionForMod,
+  getServerCacheKey,
+} from '../mcp/client.js'
+import type {
+  ConnectedMCPServer,
+  DisabledMCPServer,
+  NeedsAuthMCPServer,
+  PendingMCPServer,
+} from '../mcp/types.js'
+
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
+let root: string
+const runtimes: ReturnType<typeof createModsRuntime>[] = []
+const envKeys = ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_PLUGIN_CACHE_DIR', 'CLAUDE_CODE_USE_COWORK_PLUGINS', 'ANTHROPIC_API_KEY', 'MODS_CONTRACT_VALUE', 'MODS_CONTRACT_REDIRECT', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR']
+let saved: (string | undefined)[]
+beforeEach(async () => {
+  root = await realpath(await mkdtemp(join(tmpdir(), 'mods-runtime-host-')))
+  saved = envKeys.map(key => process.env[key])
+  process.env.HOME = root
+  process.env.USERPROFILE = root
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = join(root, 'config', 'plugins')
+  process.env.XDG_CONFIG_HOME = join(root, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(root, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(root, 'xdg-state')
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  process.env.ANTHROPIC_API_KEY = 'test-api-key'
+  delete process.env.CLAUDE_CODE_USE_COWORK_PLUGINS
+  resetSettingsCache()
+})
+afterEach(async () => {
+  await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose()))
+  resetSettingsCache()
+  envKeys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i] })
+  await rm(root, { recursive: true, force: true })
+})
+async function plugin(name: string, source: string) {
+  const pluginRoot = join(root, name)
+  await mkdir(pluginRoot)
+  const entry = join(pluginRoot, 'register.ts')
+  await writeFile(entry, source)
+  return { name, storageId: name + '@test', pluginRoot, entrypoints: [entry] }
+}
+function runtime(messages: () => unknown[] = () => []) {
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({ onDiagnostic: event => diagnostics.push(event), services: { messages } })
+  runtimes.push(value)
+  return { value, diagnostics }
+}
+function tool(name: string): Tool {
+  return { name } as Tool
+}
+test('Worker positional mcp.call reaches the connected host through sibling hooks', async () => {
+  const caller = await plugin('mcp-caller', `export function register(on) {
+    on('mcp.call', async ($, e, next) => next({...e,args:{...e.args,caller:true}}));
+    on('tool.call', async $ => ({result:await $.mcp.call('claude_ai_Gmail','create_draft',{subject:'Release notes'})}));
+  }`)
+  const observer = await plugin('mcp-observer', `export function register(on) {
+    on('mcp.call', ($, e, next) => next({...e,tool:'rewritten',args:{...e.args,observer:true}}));
+  }`)
+  const calls: unknown[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    mcpCall: async (server, tool, args, signal) => {
+      calls.push({server,tool,args,aborted:signal.aborted})
+      return {content:[{type:'text',text:'drafted'}],isError:false,structuredContent:{id:'draft-1'}}
+    },
+  }})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([caller,observer])
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{
+    content:[{type:'text',text:'drafted'}],isError:false,structuredContent:{id:'draft-1'},
+  }})
+  expect(calls).toEqual([{server:'claude_ai_Gmail',tool:'rewritten',args:{subject:'Release notes',caller:true,observer:true},aborted:false}])
+  expect(diagnostics).toEqual([])
+})
+
+test('Mods MCP host resolves exact names before unique normalized aliases', () => {
+  const exact = { name: 'claude_ai_Gmail', type: 'disabled', config: {type:'stdio',command:'unused'} } as DisabledMCPServer
+  const alias = { name: 'claude.ai Gmail', type: 'disabled', config: {type:'stdio',command:'unused'} } as DisabledMCPServer
+  const collision = { name: 'claude.ai  Gmail', type: 'disabled', config: {type:'stdio',command:'unused'} } as DisabledMCPServer
+  expect(findMCPConnectionForMod([alias, exact], exact.name)).toBe(exact)
+  expect(findMCPConnectionForMod([alias], exact.name)).toBe(alias)
+  expect(() => findMCPConnectionForMod([alias, collision], exact.name)).toThrow('Ambiguous MCP server')
+  expect(() => findMCPConnectionForMod([], 'missing')).toThrow('Unknown MCP server')
+})
+
+test('Mods MCP host calls the real connected SDK client and preserves server errors', async () => {
+  const calls: unknown[] = []
+  const connection = {
+    name: 'claude.ai Gmail', type: 'connected', config: {type:'sdk'}, capabilities: {},
+    cleanup: async () => {},
+    client: {callTool: async (request: unknown, _schema: unknown, options: unknown) => {
+      calls.push({request,options})
+      return {content:[{type:'text',text:'server rejected'}],isError:true,structuredContent:{code:'denied'}}
+    }},
+  } as unknown as ConnectedMCPServer
+  const abort = new AbortController()
+  expect(await callMCPToolForMod(connection,'create_draft',{subject:'Release notes'},abort.signal)).toEqual({
+    content:[{type:'text',text:'server rejected'}],isError:true,structuredContent:{code:'denied'},
+  })
+  expect(calls).toEqual([{request:{name:'create_draft',arguments:{subject:'Release notes'}},options:{signal:abort.signal,timeout:expect.any(Number)}}])
+})
+
+test('Mods MCP host connects a cached server on first use', async () => {
+  const calls: unknown[] = []
+  const pending = {
+    name: 'cached-server',
+    type: 'pending',
+    config: { type: 'sdk', scope: 'local' },
+  } as unknown as PendingMCPServer
+  const connected = {
+    ...pending,
+    type: 'connected',
+    capabilities: {},
+    cleanup: async () => {},
+    client: {
+      callTool: async (request: unknown) => {
+        calls.push(request)
+        return { content: [{ type: 'text', text: 'connected' }] }
+      },
+    },
+  } as unknown as ConnectedMCPServer
+  const key = getServerCacheKey(pending.name, pending.config)
+  connectToServer.cache.set(key, connected)
+  try {
+    expect(await callMCPToolForMod(pending, 'ping', {}, new AbortController().signal)).toEqual({
+      content: [{ type: 'text', text: 'connected' }],
+      isError: false,
+    })
+    expect(calls).toEqual([{ name: 'ping', arguments: {} }])
+  } finally {
+    connectToServer.cache.delete(key)
+  }
+})
+
+test('Mods MCP host rejects unavailable states without connecting', async () => {
+  const unavailable = [
+    {
+      name: 'disabled-server',
+      type: 'disabled',
+      config: { type: 'stdio', command: 'unused', args: [] },
+    } as DisabledMCPServer,
+    {
+      name: 'auth-server',
+      type: 'needs-auth',
+      config: { type: 'http', url: 'https://example.invalid' },
+    } as NeedsAuthMCPServer,
+    {
+      name: 'sdk-pending',
+      type: 'pending',
+      config: { type: 'sdk', scope: 'local' },
+    } as unknown as PendingMCPServer,
+  ]
+  for (const connection of unavailable) {
+    await expect(
+      callMCPToolForMod(
+        connection,
+        'ping',
+        {},
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(connection.type)
+  }
+})
+
+test('Mods MCP host does not connect or call after cancellation', async () => {
+  const pending = {
+    name: 'cancelled-server',
+    type: 'pending',
+    config: { type: 'stdio', command: 'unused', args: [] },
+  } as PendingMCPServer
+  const controller = new AbortController()
+  controller.abort(new Error('cancel before connect'))
+  await expect(
+    callMCPToolForMod(pending, 'ping', {}, controller.signal),
+  ).rejects.toThrow('cancel before connect')
+})
+
+test('Worker mcp.call rejects invalid hook rewrites and invalid host results', async () => {
+  const caller = await plugin('mcp-validation', `export function register(on) {
+    on('mcp.call', ($,e,next) => next(e.mode==='rewrite' ? {...e,args:null} : e));
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.mcp.call('server','run',{mode:e.mode})} }
+      catch (error) { return {result:{error:error.message}} }
+    });
+  }`)
+  const calls: unknown[] = []
+  const value = createModsRuntime({ services: {
+    mcpCall: async (server, tool, args) => {
+      calls.push({ server, tool, args })
+      return args.mode === 'rewrite'
+        ? { content: [{ type: 'text', text: 'recovered' }], isError: false }
+        : { content: 'invalid', isError: false }
+    },
+  } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  expect(await value.dispatch('tool.call', { mode: 'rewrite' }, async () => ({ result: 'core' }))).toEqual({
+    result: { content: [{ type: 'text', text: 'recovered' }], isError: false },
+  })
+  expect(calls).toEqual([{ server: 'server', tool: 'run', args: { mode: 'rewrite' } }])
+  expect(await value.dispatch('tool.call', { mode: 'result' }, async () => ({ result: 'core' }))).toEqual({
+    result: { error: 'mcp.call must return { content, isError, structuredContent? }' },
+  })
+  expect(calls).toHaveLength(2)
+})
+
+test('Worker mcp.call cancels its actual SDK request with the parent invocation', async () => {
+  const mod = await plugin('mcp-cancel', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.mcp.call('server','wait')}));
+  }`)
+  const entered = Promise.withResolvers<void>()
+  const stopped = Promise.withResolvers<void>()
+  let callSignal: AbortSignal | undefined
+  const value = createModsRuntime({ services: {
+    mcpCall: async (_server, _tool, _args, signal) => {
+      callSignal = signal
+      entered.resolve()
+      await new Promise<void>((_resolve, reject) => {
+        const cancel = () => { stopped.resolve(); reject(signal.reason) }
+        signal.addEventListener('abort', cancel, { once: true })
+      })
+      throw new Error('unreachable')
+    },
+  } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const controller = new AbortController()
+  const pendingCall = value.dispatch('tool.call', {}, async () => ({ result: 'core' }), { signal: controller.signal })
+  await entered.promise
+  controller.abort(new Error('MCP invocation cancelled'))
+  await expect(pendingCall).rejects.toThrow()
+  await stopped.promise
+  expect(callSignal?.aborted).toBe(true)
+})
+
+test('Worker prompt.submit pins plugin origin, ignores public attachment fields and waits for host admission', async () => {
+  const mod = await plugin('submit-caller', `export function register(on) {
+    on('ui.press', async $ => ({result:await $.prompt.submit({
+      text:'queued prompt',
+      attachments:[{type:'image',mediaType:'image/png',filename:'shot.png'}]
+    })}));
+  }`)
+  const admission = Promise.withResolvers<{text:string;origin:{kind:'plugin';name:string}}>()
+  const entered = Promise.withResolvers<void>()
+  const submissions: unknown[] = []
+  const value = createModsRuntime({ services: {
+    submitPrompt: input => {
+      submissions.push(input)
+      entered.resolve()
+      return admission.promise
+    },
+  } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const pending = value.dispatch('ui.press', {}, async () => ({ result: 'core' }))
+  await entered.promise
+  expect(submissions).toEqual([{
+    text: 'queued prompt',
+    origin: { kind: 'plugin', name: 'submit-caller' },
+    callerChain: [{ plugin: 'submit-caller', registration: 1 }],
+    signal: expect.any(AbortSignal),
+  }])
+  let settled = false
+  void pending.finally(() => { settled = true })
+  await Bun.sleep(0)
+  expect(settled).toBe(false)
+  admission.resolve({ text: 'admitted', origin: { kind: 'plugin', name: 'submit-caller' } })
+  expect(await pending).toEqual({ result: {
+    text: 'admitted',
+    origin: { kind: 'plugin', name: 'submit-caller' },
+  } })
+})
+
+test('Worker prompt.submit rejects unsafe input and turn-holding calls', async () => {
+  const mod = await plugin('submit-validation', `export function register(on) {
+    on('prompt.submit', async ($,e,next) => {
+      try { await $.prompt.submit({text:'nested'}) }
+      catch (error) { return {drop:error.message} }
+      return next(e)
+    });
+    on('ui.press', async ($,e) => {
+      try { return {result:await $.prompt.submit(e.input)} }
+      catch (error) { return {result:{error:error.message}} }
+    });
+  }`)
+  const value = createModsRuntime({ services: {
+    submitPrompt: async input => ({ text: input.text, origin: input.origin }),
+  } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  for (const input of [
+    { text: '' },
+    { text: '   ' },
+    { text: '/status' },
+    { text: '  /status' },
+  ]) {
+    const result = await value.dispatch('ui.press', { input }, async () => ({ result: 'core' }))
+    expect((result as {result:{error:string}}).result.error).toBeString()
+  }
+  expect(await value.dispatch('prompt.submit', {
+    text: 'original', origin: {kind:'composer'}, wait: false,
+  }, async input => ({text:input.text,origin:input.origin}))).toEqual({
+    drop: 'prompt.submit called from a prompt.submit hook, it would wait on the turn this hook is holding; answer { text } or next(e) instead, or submit from a later event (turn.complete)',
+  })
+})
+
+test('Worker prompt.suggest pins plugin origin and reaches the interactive prompt state', async () => {
+  const caller = await plugin('suggest-caller', `export function register(on) {
+    on('prompt.suggest', ($,e,next) => next({...e,text:e.text+' rewritten'}));
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'draft'})}));
+  }`)
+  const observer = await plugin('suggest-observer', `export function register(on) {
+    on('prompt.suggest', ($,e,next) => {
+      if(e.origin.kind!=='plugin'||e.origin.name!=='suggest-caller') throw Error('bad origin');
+      return next(e);
+    });
+  }`)
+  const suggestions: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: text => { suggestions.push(text); return true },
+    isBlocked: () => false,
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller, observer])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest' })
+  expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+    result: { isShown: true },
+  })
+  expect(suggestions).toEqual(['draft rewritten'])
+})
+
+test('retiring a plugin clears only its owned prompt suggestion', async () => {
+  const caller = await plugin('suggest-owner', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'owned draft'})}));
+  }`)
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return true },
+    clearSuggestion: nextOwner => { cleared.push(nextOwner) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-owner' })
+  expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+    result: { isShown: true },
+  })
+  expect(owner).toStartWith('suggest-owner@test:')
+
+  await value.reconcile([])
+
+  expect(cleared).toEqual([owner])
+})
+
+test('replacement activation keeps its newly published prompt suggestion', async () => {
+  const input = await plugin('suggest-reload', `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.prompt.suggest({text:'version A'});
+      return next(e);
+    });
+  }`)
+  let shown: { text: string; owner: string } | undefined
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (text, owner) => { shown = { text, owner }; return true },
+    clearSuggestion: owner => { if (shown?.owner === owner) shown = undefined },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([input])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-reload' })
+  expect(shown?.text).toBe('version A')
+
+  await writeFile(input.entrypoints[0]!, `export function register(on) {
+    on('session.start', async ($,e,next) => {
+      await $.prompt.suggest({text:'version B'});
+      return next(e);
+    });
+  }`)
+  await value.reconcile([input])
+
+  expect(shown?.text).toBe('version B')
+})
+
+test('failed replacement restores the previous activation prompt suggestion eligibility', async () => {
+  const owner = await plugin('suggest-rollback-owner', `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'reserved', description:'Reserved'}); return next(e); });
+  }`)
+  const source = (replacement: boolean) => `export function register(on) {
+    ${replacement ? "on('session.start', async ($, e, next) => { await $.command.register({name:'reserved', description:'Collision'}); return next(e); });" : ''}
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'previous generation'})}));
+  }`
+  const input = await plugin('suggest-rollback', source(false))
+  const suggestions: string[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { prompt: () => ({
+      read: () => ({ text: '', cursor: 0 }),
+      fill: () => false,
+      suggest: text => { suggestions.push(text); return true },
+    }) },
+  })
+  runtimes.push(value)
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-rollback' })
+  await value.reconcile([owner, input])
+
+  await writeFile(input.entrypoints[0]!, source(true))
+  await value.reconcile([owner, input])
+
+  expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))).toEqual({
+    result: { isShown: true },
+  })
+  expect(suggestions).toEqual(['previous generation'])
+  expect(diagnostics).toContainEqual(expect.objectContaining({
+    plugin: 'suggest-rollback',
+    stage: 'session.start',
+    message: expect.stringContaining('already owned'),
+  }))
+})
+
+test('retiring during a pending prompt suggestion reports it as not shown', async () => {
+  const input = await plugin('suggest-pending-retire', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'pending A'})}));
+  }`)
+  const pending = Promise.withResolvers<boolean>()
+  const entered = Promise.withResolvers<void>()
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; entered.resolve(); return pending.promise },
+    clearSuggestion: nextOwner => { cleared.push(nextOwner); pending.resolve(true) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([input])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-pending-retire' })
+  const call = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  await entered.promise
+
+  await value.reconcile([])
+
+  expect(await call).toEqual({ result: { isShown: false } })
+  expect(cleared).toEqual([owner])
+})
+
+test('retired activation cannot publish a stale prompt suggestion', async () => {
+  const input = await plugin('suggest-stale', `export function register(on) {
+    on('tool.call', async $ => {
+      await $.clock.sleep(80);
+      return {result:await $.prompt.suggest({text:'stale A'})};
+    });
+  }`)
+  const suggestions: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: text => { suggestions.push(text); return true },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([input])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-stale' })
+  const call = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  await delay(20)
+
+  await writeFile(input.entrypoints[0]!, `export function register(on) {
+    on('tool.call', () => ({result:'version B'}));
+  }`)
+  await value.reconcile([input])
+
+  expect(await call).toEqual({ result: { isShown: false } })
+  expect(suggestions).toEqual([])
+})
+
+test('session rebind clears prompt suggestions from the previous session', async () => {
+  const caller = await plugin('suggest-session', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'session A'})}));
+  }`)
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return true },
+    clearSuggestion: nextOwner => { cleared.push(nextOwner) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'A' })
+  await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'B' })
+
+  expect(cleared).toEqual([owner])
+})
+
+test('retiring another plugin does not clear the current prompt suggestion', async () => {
+  const caller = await plugin('suggest-owner', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'owned draft'})}));
+  }`)
+  const sibling = await plugin('suggest-sibling', `export function register(on) {
+    on('tool.check', ($,e,next) => next(e));
+  }`)
+  let owner: string | undefined
+  const cleared: string[] = []
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: (_text, nextOwner) => { owner = nextOwner; return true },
+    clearSuggestion: nextOwner => { if (nextOwner === owner) cleared.push(nextOwner) },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller, sibling])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-owner' })
+  await value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+
+  await value.reconcile([caller])
+
+  expect(cleared).toEqual([])
+})
+
+test('Worker prompt.suggest waits for a temporarily blocked prompt', async () => {
+  const caller = await plugin('suggest-wait', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'after dialog'})}));
+  }`)
+  const pending = Promise.withResolvers<boolean>()
+  let blocked = true
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: () => blocked ? pending.promise : true,
+    isBlocked: () => blocked,
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-wait' })
+
+  const result = value.dispatch('tool.call', {}, async () => ({ result: 'core' }))
+  expect(await Promise.race([result, Promise.resolve('pending')])).toBe('pending')
+  blocked = false
+  pending.resolve(true)
+  expect(await result).toEqual({ result: { isShown: true } })
+})
+
+test('Worker prompt.suggest cancellation does not wait for a blocked host suggestion', async () => {
+  const caller = await plugin('suggest-cancel', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.prompt.suggest({text:'blocked'})}));
+  }`)
+  const entered = Promise.withResolvers<void>()
+  const blocked = Promise.withResolvers<boolean>()
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text: '', cursor: 0 }),
+    fill: () => false,
+    suggest: () => { entered.resolve(); return blocked.promise },
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-cancel' })
+  const controller = new AbortController()
+  const result = value.dispatch('tool.call', {}, async () => ({ result: 'core' }), {
+    signal: controller.signal,
+  }).catch(error => error)
+  await entered.promise
+  const reason = new Error('suggestion cancelled')
+  controller.abort(reason)
+  try {
+    expect(await Promise.race([
+      result,
+      new Promise(resolve => setImmediate(() => resolve('still waiting'))),
+    ])).toBe(reason)
+  } finally {
+    blocked.resolve(false)
+    await result
+  }
+})
+
+test('Worker prompt.suggest rejects malformed calls, origin rewrites, and invalid results', async () => {
+  const malformed = await plugin('suggest-malformed', `export function register(on) {
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.prompt.suggest(e.input)}; }
+      catch (error) { return {result:{error:error.message}}; }
+    });
+  }`)
+  const rewrite = await plugin('suggest-rewrite', `export function register(on) {
+    on('prompt.suggest', ($,e,next) => next({...e,origin:{kind:'composer'}}));
+  }`)
+  const invalid = await plugin('suggest-invalid', `export function register(on) {
+    on('prompt.suggest', () => ({}));
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: { prompt: () => ({
+      read: () => ({ text: '', cursor: 0 }),
+      fill: () => false,
+      suggest: () => true,
+    }) },
+  })
+  runtimes.push(value)
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest-contract' })
+  const run = (input: unknown) => value.dispatch('tool.call', { input }, async () => ({ result: 'core' }))
+
+  await value.reconcile([malformed])
+  expect((await run({ text: 1 }) as any).result.error).toContain('prompt.suggest takes { text }')
+  expect((await run({ text: 'draft', extra: true }) as any).result.error).toContain('prompt.suggest takes { text }')
+
+  await value.reconcile([malformed, rewrite])
+  expect(await run({ text: 'draft' })).toEqual({ result: { isShown: true } })
+  expect(diagnostics).toContainEqual(expect.objectContaining({
+    plugin: 'suggest-rewrite',
+    stage: 'prompt.suggest',
+    message: expect.stringContaining('cannot rewrite origin'),
+  }))
+
+  diagnostics.length = 0
+  await value.reconcile([malformed, invalid])
+  expect(await run({ text: 'draft' })).toEqual({ result: { isShown: true } })
+  expect(diagnostics).toContainEqual(expect.objectContaining({
+    plugin: 'suggest-invalid',
+    stage: 'prompt.suggest',
+    message: expect.stringContaining('prompt.suggest must return isShown'),
+  }))
+})
+
+test('Worker prompt.suggest does not mutate headless, busy, filled, or blank prompts', async () => {
+  const caller = await plugin('suggest-guards', `export function register(on) {
+    on('tool.call', async ($,e) => ({result:await $.prompt.suggest({text:e.text})}));
+  }`)
+  const suggestions: string[] = []
+  let text = ''
+  const blocked = false
+  let canSuggest = true
+  const value = createModsRuntime({ services: { prompt: () => ({
+    read: () => ({ text, cursor: text.length }),
+    fill: () => false,
+    suggest: next => { suggestions.push(next); return true },
+    canSuggest: () => canSuggest,
+    isBlocked: () => blocked,
+  }) } })
+  runtimes.push(value)
+  await value.reconcile([caller])
+  await value.bind({ cwd: root, surface: null, isInteractive: false, sessionId: 'suggest' })
+  expect(await value.dispatch('tool.call', { text: 'headless' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  await value.bind({ cwd: root, surface: 'terminal', isInteractive: true, sessionId: 'suggest' })
+  canSuggest = false
+  expect(await value.dispatch('tool.call', { text: 'busy' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  canSuggest = true
+  text = 'typed'
+  expect(await value.dispatch('tool.call', { text: 'filled' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  text = ''
+  expect(await value.dispatch('tool.call', { text: '   ' }, async () => ({ result: 'core' }))).toEqual({ result: { isShown: false } })
+  expect(suggestions).toEqual([])
+})
+
+test('Worker session.authorize and http.fetch reach host services without exposing the credential', async () => {
+  const mod = await plugin('http-caller', `export function register(on) {
+    on('tool.call', async $ => {
+      const authorization = await $.session.authorize();
+      return {result:{authorization,response:await $.http.fetch('https://api.anthropic.com/fixture', {
+        method:'POST',body:'plugin body',auth:authorization.handle,headers:{Authorization:'plugin override'},
+      })}};
+    });
+  }`)
+  const observer = await plugin('http-observer', `export function register(on) {
+    on('session.authorize', ($,e,next) => next(e));
+    on('http.fetch', ($,e,next) => {
+      if(e.init.headers.Authorization!=='plugin override') throw Error('credential leaked into hook');
+      return next({...e,init:{...e.init,body:'rewritten body'}});
+    });
+  }`)
+  const requests: RequestInit[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    firstPartyCredential:async()=>({kind:'api-key',secret:'fake-host-only-key'}),
+    httpFetch:async (_url,init)=>{requests.push(init);return new Response('host response',{status:201})},
+  }})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([mod,observer])
+  expect(diagnostics).toEqual([])
+  const result = await value.dispatch('tool.call',{},async()=>({result:'core'}))
+  expect(result).toEqual({result:{authorization:{handle:expect.any(String),kind:'api-key'},response:{status:201,ok:true,headers:{},text:'host response'}}})
+  expect(JSON.stringify(result)).not.toContain('fake-host-only-key')
+  expect(requests).toHaveLength(1)
+  expect(new Headers(requests[0]!.headers).get('x-api-key')).toBe('fake-host-only-key')
+  expect(new Headers(requests[0]!.headers).get('authorization')).toBeNull()
+  expect(requests[0]!.body).toBe('rewritten body')
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker config lists described rows and writes through sibling hooks with pinned provenance', async () => {
+  const caller = await plugin('config-caller', `let entries=0; export function register(on) {
+    on('config.set', ($,e,next) => {entries++;return next(e)});
+    on('config.describe', ($,e,next) => next({...e,label:'Renamed '+e.label,isHidden:e.key==='hidden'}));
+    on('tool.call', async ($,e) => ({result:{rows:await $.config.list(),written:await $.config.set({key:e.key ?? 'verbose',value:true}),entries}}));
+  }`)
+  const policy = await plugin('config-policy', `export function register(on) {
+    on('config.set', async ($,e,next) => {
+      if(e.origin.kind!=='plugin'||e.origin.name!=='config-caller'||e.previous!==false||e.provider.plugin!=='engine') return {deny:'bad provenance'};
+      return next(e);
+    });
+  }`)
+  let verbose = false
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    configRows: () => ['verbose','hidden'].map(key => ({key,label:key,kind:'boolean' as const,value:verbose,
+      provider:{plugin:'engine',tier:'core' as const},isLocked:false,
+      set:async (next: unknown) => {verbose=next as boolean},
+    })),
+  }})
+  runtimes.push(value)
+  await value.reconcile([caller,policy])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:{
+    rows:[{key:'verbose',label:'Renamed verbose',kind:'boolean',value:false,provider:{plugin:'engine',tier:'core'},isLocked:false}],
+    written:{value:true},
+    entries:1,
+  }})
+  expect(verbose).toBe(true)
+  verbose = false
+  const hidden = await value.dispatch('tool.call',{key:'hidden'},async () => ({result:'core'})) as {result:{written:unknown}}
+  expect(hidden.result.written).toEqual({value:true})
+  expect(verbose).toBe(true)
+  expect(diagnostics).toEqual([])
+})
+
+test('config accepts the official success result with an explicitly undefined deny without running the writer', async () => {
+  const mod = await plugin('config-result', `export function register(on) {
+    on('config.set', () => ({ value: false, deny: undefined }));
+  }`)
+  let writes = 0
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({ onDiagnostic: event => diagnostics.push(event), services: { configRows: () => [{
+    key: 'verbose', label: 'Verbose', kind: 'boolean', value: false,
+    provider: { plugin: 'engine', tier: 'core' }, isLocked: false,
+    set: () => { writes++ },
+  }] } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(await value.config.set({ key: 'verbose', value: true }, { kind: 'composer' })).toEqual({ value: false, deny: undefined })
+  expect(writes).toBe(0)
+  expect(diagnostics).toEqual([])
+})
+
+test('a cancelled Worker config.set cannot persist after an asynchronous row provider resumes', async () => {
+  const mod = await plugin('config-cancel', `export function register(on) {
+    on('tool.call', async $ => ({ result: await $.config.set({ key: 'verbose', value: true }) }));
+  }`)
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  let reads = 0
+  let writes = 0
+  const value = createModsRuntime({ services: { configRows: async () => {
+    if (++reads === 2) { entered.resolve(); await release.promise }
+    return [{ key: 'verbose', label: 'Verbose', kind: 'boolean', value: false,
+      provider: { plugin: 'engine', tier: 'core' }, isLocked: false, set: () => { writes++ } }]
+  } } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const abort = new AbortController()
+  const pending = value.dispatch('tool.call', {}, async () => ({ result: 'core' }), { signal: abort.signal })
+  await entered.promise
+  abort.abort(new Error('Config invocation cancelled'))
+  try { await expect(pending).rejects.toThrow() }
+  finally { release.resolve() }
+  await delay(20)
+  expect(writes).toBe(0)
+})
+
+test('config caches descriptions until invalidation or reload, preserves pins and refuses invalid or locked writes', async () => {
+  const mod = await plugin('config-rules', `let labels=0; export function register(on) {
+    on('config.describe', ($,e,next) => next({...e,label:e.label+(++labels)}));
+    on('config.set', async ($,e,next) => {
+      if(e.value==='deny') return {deny:'policy refused'};
+      if(e.value==='pin') return next({...e,key:'hidden'});
+      return next(e);
+    });
+    on('tool.call', async ($,e) => {
+      if(e.invalidate) await $.ui.invalidate('config.describe');
+      if(e.key) {try{return {result:await $.config.set({key:e.key,value:e.value})}}catch(error){return {result:{error:error.message}}}}
+      return {result:await $.config.list()};
+    });
+  }`)
+  let current = 'a'
+  let locked = false
+  let writes = 0
+  const diagnostics: {message:string}[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{configRows:() => [{
+    key:'mode',label:'Mode',kind:'choice',options:['a','b'],value:current,provider:{plugin:'engine',tier:'core'},isLocked:locked,
+    set:next => {current=next as string;writes++},
+  },{key:'dialog',label:'Dialog',kind:'text',value:'',provider:{plugin:'engine',tier:'core'},isLocked:false}]}})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const list = () => value.config.list()
+  expect((await list())[0]!.label).toBe('Mode1')
+  expect((await list())[0]!.label).toBe('Mode1')
+  let notifications = 0
+  const unsubscribe = value.config.subscribe(() => {notifications++})
+  const callerRows = await value.dispatch('tool.call',{invalidate:true},async () => ({result:'core'}))
+  expect(callerRows).toMatchObject({result:[{label:'Mode3'},{label:'Dialog4'}]})
+  expect((await list())[0]!.label).toBe('Mode5')
+  expect((await list())[0]!.label).toBe('Mode5')
+  expect(notifications).toBe(1)
+  expect(await value.config.set({key:'mode',value:'deny'},{kind:'composer'})).toEqual({deny:'policy refused'})
+  expect(await value.config.set({key:'mode',value:'pin'},{kind:'bridge'})).toEqual({deny:expect.stringContaining('Invalid value')})
+  expect(diagnostics).toEqual([expect.objectContaining({message:expect.stringContaining('cannot rewrite key')})])
+  expect(await value.config.set({key:'mode',value:1},{kind:'composer'})).toEqual({deny:expect.stringContaining('Invalid value')})
+  locked = true
+  expect(await value.config.set({key:'mode',value:'b'},{kind:'composer'})).toEqual({deny:expect.stringContaining('locked')})
+  expect(writes).toBe(0)
+  locked = false
+  expect(await value.config.set({key:'mode',value:'b'},{kind:'composer'})).toEqual({value:'b'})
+  expect((await list())[0]!.value).toBe('b')
+  expect(await value.config.set({key:'dialog',value:'x'},{kind:'composer'})).toEqual({deny:expect.stringContaining('dialog')})
+  await expect(value.config.set({key:'missing',value:true},{kind:'composer'})).rejects.toThrow('Unknown config key')
+  expect(notifications).toBe(2)
+  await writeFile(mod.entrypoints[0]!, `export function register(on) {on('config.describe',($,e,next)=>next({...e,label:'Reloaded'}))}`)
+  await value.reconcile([mod])
+  expect((await list())[0]!.label).toBe('Reloaded')
+  unsubscribe()
+})
+
+test('an in-flight old Worker cannot populate the reloaded Config description cache', async () => {
+  const source = (label: string) => `export function register(on) {
+    on('config.describe', ($, e, next) => next({ ...e, label: '${label}' }));
+    on('tool.call', async ($, e, next) => { await next(e); return { result: await $.config.list() }; });
+  }`
+  const mod = await plugin('config-generation', source('Old label'))
+  const value = createModsRuntime({ services: { configRows: () => [{
+    key: 'verbose', label: 'Verbose output', kind: 'boolean', value: false,
+    provider: { plugin: 'engine', tier: 'core' }, isLocked: false,
+  }] } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const entered = Promise.withResolvers<void>()
+  const release = Promise.withResolvers<void>()
+  const pending = value.dispatch('tool.call', {}, async () => {
+    entered.resolve()
+    await release.promise
+    return { result: 'core' }
+  })
+  await entered.promise
+  try {
+    await writeFile(mod.entrypoints[0]!, source('New label'))
+    await value.reconcile([mod])
+  } finally { release.resolve() }
+  expect(await pending).toMatchObject({ result: [{ label: 'Old label' }] })
+  expect(await value.config.list()).toMatchObject([{ label: 'New label' }])
+})
+
+test('config.describe rejects malformed next rewrites before they poison cached menu rows', async () => {
+  const mod = await plugin('config-bad-descriptions', `export function register(on) {
+    on('config.describe', ($, e, next) => next({ ...e, [e.key]: e.key === 'isHidden' ? 'false' : 42 }));
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({ onDiagnostic: event => diagnostics.push(event), services: { configRows: () => ['label', 'description', 'isHidden'].map(key => ({
+    key, label: 'Original ' + key, description: 'Original description', kind: 'boolean' as const, value: true,
+    provider: { plugin: 'engine', tier: 'core' as const }, isLocked: false,
+  })) } })
+  runtimes.push(value)
+  await value.reconcile([mod])
+  const expected = ['label', 'description', 'isHidden'].map(key => ({ key, label: 'Original ' + key, description: 'Original description' }))
+  expect(await value.config.list()).toMatchObject(expected)
+  expect(diagnostics).toHaveLength(3)
+  expect(await value.config.list()).toMatchObject(expected)
+  expect(diagnostics).toHaveLength(3)
+})
+
+test('config rejects rewritten origin, previous and provider and falls back from malformed descriptions', async () => {
+  const mod = await plugin('config-pins', `export function register(on) {
+    on('config.describe',($,e,next)=> e.key==='broken' ? {label:42,isHidden:false} : next({...e,provider:{plugin:'fake',tier:'core'}}));
+    on('config.set',($,e,next)=> {
+      if(e.value==='origin') return next({...e,origin:{kind:'composer'}});
+      if(e.value==='previous') return next({...e,previous:'fake'});
+      if(e.value==='provider') return next({...e,provider:{plugin:'fake',tier:'core'}});
+      return next({...e,value:'clamped'});
+    });
+  }`)
+  let written = ''
+  const diagnostics: {message:string}[] = []
+  const value = createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{configRows:()=> ['plain','broken'].map(key=>({
+    key,label:key,kind:'text',value:written,provider:{plugin:'engine',tier:'core'},isLocked:false,set:value=>{written=value as string},
+  }))}})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect((await value.config.list()).map(row=>row.label)).toEqual(['plain','broken'])
+  for (const pin of ['origin','previous','provider']) {
+    expect(await value.config.set({key:'plain',value:pin},{kind:'bridge'})).toEqual({value:pin})
+    expect(diagnostics.at(-1)?.message).toContain(`cannot rewrite ${pin}`)
+  }
+  expect(await value.config.set({key:'plain',value:'replace'},{kind:'composer'})).toEqual({value:'clamped'})
+  expect(written).toBe('clamped')
+  expect(diagnostics).toHaveLength(5)
+})
+
+test('saved engine closures resolve the current invocation provider after a same-shape reload', async () => {
+  const consumer=await plugin('saved-engine',`let read;export function register(on) {
+    on('session.start',($,e,next)=>{read=()=>$.source.read();return next(e)});
+    on('tool.call',async()=>({result:await read()}));
+  }`)
+  const source=(label:string)=>`export function register(on) {
+    on('engine.create',async($,e,next)=>{const below=await next(e);return {...below,source:{read:()=> '${label}'}}});
+  }`
+  const provider=await plugin('source',source('old'))
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root));await value.reconcile([consumer,provider])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:'old'})
+  await writeFile(provider.entrypoints[0]!,source('new'));await value.reconcile([consumer,provider])
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:'new'})
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker keeps one frozen engine across hooks, catch and provider shape changes', async () => {
+  const consumer = await plugin('stable-engine', `let first, captured;
+    export function register(on) {
+      on('session.start', ($,e,next) => {first=$;captured=()=>$.source.read();return next(e)});
+      on('tool.call', async ($,e,next) => {
+        if(e.fail) throw Error('recover identity');
+        if(e.hold) await next(e);
+        return {result:{same:first===$,frozen:Object.isFrozen($),value:e.beta?await $.beta.read():await captured()}};
+      }).catch(async ($,e,next) => ({result:{same:first===$,value:await captured()}}));
+    }`)
+  const provider = await plugin('stable-source', `export function register(on) {
+    on('engine.create', async ($,e,next) => {const beneath=await next(e);return {...beneath,source:{read:()=> 'old'}}});
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root));await value.reconcile([consumer,provider])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call',{},async()=>({result:'core'}))).toEqual({result:{same:true,frozen:true,value:'old'}})
+  expect(await value.dispatch('tool.call',{fail:true},async()=>({result:'core'}))).toEqual({result:{same:true,value:'old'}})
+  const entered=Promise.withResolvers<void>(), release=Promise.withResolvers<void>()
+  const pending=value.dispatch('tool.call',{hold:true},async()=>{entered.resolve();await release.promise;return {result:'core'}})
+  await entered.promise
+  try {
+    await writeFile(provider.entrypoints[0]!, `export function register(on) {
+      on('engine.create', async ($,e,next) => {const beneath=await next(e);return {...beneath,source:{read:()=> 'new'},beta:{read:()=> 'beta'}}});
+    }`)
+    await value.reconcile([consumer,provider])
+    expect(await value.dispatch('tool.call',{beta:true},async()=>({result:'core'}))).toEqual({result:{same:true,frozen:true,value:'beta'}})
+  } finally {release.resolve()}
+  expect(await pending).toEqual({result:{same:true,frozen:true,value:'old'}})
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'tool.call',message:'recover identity'})])
+})
+
+test('Worker session.usage captures request data before hooks and consumes rewritten arguments', async () => {
+  const mod = await plugin('usage', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.session.usage({columns:120})}));
+    on('session.usage', async ($, e, next) => {
+      await $.tool.list();
+      return next({...e,columns:79});
+    });
+  }`)
+  let live = 17
+  let captures = 0
+  const inputs: unknown[] = []
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => { throw new Error('request-bound service must win') },
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const snapshot = value.capture({
+    captureUsage: () => {
+      captures++
+      const tokens = live
+      return async args => {
+        inputs.push(args)
+        return {startedAt:1791080000123,context:{tokens,window:200000,percent:0},rateLimits:[],cost:{usd:0}}
+      }
+    },
+    toolCatalog: () => {live=99;return createToolCatalog([],async () => '')},
+  })
+  try {
+    expect(await snapshot.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({
+      result:{startedAt:1791080000123,context:{tokens:17,window:200000,percent:0},rateLimits:[],cost:{usd:0}},
+    })
+    expect(captures).toBe(1)
+    expect(inputs).toEqual([{columns:79}])
+    expect(live).toBe(99)
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('Worker session.usage validates caller arguments and malformed results at the recovery boundary', async () => {
+  const mod = await plugin('usage-validation', `export function register(on) {
+    on('tool.call', async ($,e) => {
+      try { return {result:await $.session.usage(e.args)}; }
+      catch(error) { return {result:{error:error.message}}; }
+    });
+    on('session.usage', async ($,e,next) => {
+      const result=await next(e);
+      return {value:{...result.value,context:{window:'not-a-number'}}};
+    }).catch(($,e,next) => next(e));
+  }`)
+  const inputs: unknown[] = []
+  const diagnostics: unknown[] = []
+  const expected = {startedAt:1791080000123,context:{window:200000},rateLimits:[],cost:{usd:0}}
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => async args => {inputs.push(args);return expected},
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  for (const args of [{breakdown:'none'},{columns:'80'},[],null]) {
+    expect(await value.dispatch('tool.call',{args},async () => ({result:'core'}))).toEqual({
+      result:{error:expect.stringContaining('session.usage')},
+    })
+  }
+  expect(inputs).toEqual([])
+  expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:expected})
+  expect(inputs).toEqual([{}])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'usage-validation',stage:'session.usage',message:expect.stringContaining('context')})])
+})
+
+test('prompt.section invalidation rotates only future snapshots and survives an in-flight generation', async () => {
+  const mod = await plugin('section-cache', `export function register(on) {
+    on('prompt.section',($,e,next) => next(e));
+    on('tool.call',async $ => {await $.ui.invalidate('prompt.section');return {result:'invalidated'}});
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([mod])
+  const before = value.capture()
+  const peer = value.capture()
+  try {
+    expect(before.promptSections).toBeInstanceOf(Map)
+    expect(peer.promptSections).toBe(before.promptSections)
+    const entry = {result:Promise.resolve({text:null}),signal:new AbortController().signal}
+    before.promptSections!.set('memory',entry)
+    expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'invalidated'})
+    const after = value.capture()
+    try {
+      expect(after.promptSections).not.toBe(before.promptSections)
+      expect(after.promptSections!.size).toBe(0)
+      expect(before.promptSections!.get('memory')).toBe(entry)
+      after.promptSections!.set('memory',entry)
+      await value.bind({...binding(root),sessionId:'new-session'})
+      const rebound = value.capture()
+      try {expect(rebound.promptSections!.size).toBe(0)} finally {rebound.release()}
+      expect(after.promptSections!.get('memory')).toBe(entry)
+    } finally {after.release()}
+    expect(diagnostics).toEqual([])
+  } finally {before.release();peer.release()}
+})
+
+test('prompt.context invalidation rotates caches and boundaries without mutating in-flight snapshots', async () => {
+  const mod = await plugin('context-cache', `export function register(on) {
+    on('prompt.context',($,e,next) => next(e));
+    on('tool.call',async $ => {await $.ui.invalidate('prompt.context');return {result:'invalidated'}});
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([mod])
+  const before = value.capture()
+  try {
+    const context = {result:Promise.resolve({blocks:[],instructionFiles:[]}),signal:new AbortController().signal}
+    before.promptContexts!.set(undefined, context)
+    before.promptContextBoundaries!.set(undefined, 'old-boundary')
+    expect(await value.dispatch('tool.call',{},async () => ({result:'core'}))).toEqual({result:'invalidated'})
+    const after = value.capture()
+    try {
+      expect(after.promptContexts).not.toBe(before.promptContexts)
+      expect(after.promptContextBoundaries).not.toBe(before.promptContextBoundaries)
+      expect(after.promptContexts!.size).toBe(0)
+      expect(after.promptContextBoundaries!.size).toBe(0)
+      expect(before.promptContexts!.get(undefined)).toBe(context)
+      expect(before.promptContextBoundaries!.get(undefined)).toBe('old-boundary')
+    } finally {after.release()}
+    expect(diagnostics).toEqual([])
+  } finally {before.release()}
+})
+
+test('Worker usage denial never invokes its reader and invalid rewrites recover to the received arguments', async () => {
+  const mod = await plugin('usage-policy', `export function register(on) {
+    on('tool.call', async ($,e) => {
+      try {return {result:await $.session.usage({columns:e.columns}, ...e.extra)}}
+      catch(error) {return {result:{error:error.message}}}
+    });
+    on('session.usage', ($,e,next) => {
+      if(e.columns===1) return {deny:'usage denied'};
+      return next({...e,breakdown:'invalid'});
+    }).catch(($,e,next) => next(e));
+  }`)
+  const inputs: unknown[] = [], diagnostics: unknown[] = []
+  const expected = {startedAt:1791080000123,context:{window:200000},rateLimits:[]}
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => async args => {inputs.push(args);return expected},
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const run = (columns:number,extra:unknown[] = []) => value.dispatch('tool.call',{columns,extra},async () => ({result:'core'}))
+  expect(await run(1)).toEqual({result:{error:'usage denied'}})
+  expect(inputs).toEqual([])
+  expect(await run(2,[{}])).toEqual({result:{error:'session.usage takes one optional object'}})
+  expect(inputs).toEqual([])
+  expect(await run(79)).toEqual({result:expected})
+  expect(inputs).toEqual([{columns:79}])
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'session.usage',message:expect.stringContaining('breakdown')})])
+})
+
+test.each(['parent', 'branch'] as const)('Worker usage cancels its actual reader when the %s scope ends', async mode => {
+  const mod = await plugin('usage-cancel', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.session.usage({breakdown:'full'})}));
+    ${mode === 'branch' ? `on('session.usage', async ($,e,next) => {
+      const pending=next(e); pending.catch(() => {});
+      await $.tool.list();
+      return {value:{startedAt:1791080000123,context:{window:200000},rateLimits:[]}};
+    });` : ''}
+  }`)
+  const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  let readerSignal: AbortSignal | undefined
+  let stopped = false
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    captureUsage: () => async (_args, signal) => {
+      readerSignal = signal
+      const cancelled = () => { stopped = true; release.resolve() }
+      signal?.addEventListener('abort',cancelled,{once:true})
+      entered.resolve()
+      try {
+        await release.promise
+        signal?.throwIfAborted()
+        return {startedAt:1791080000123,context:{window:200000},rateLimits:[]}
+      } finally {signal?.removeEventListener('abort',cancelled)}
+    },
+    toolCatalog: () => ({...createToolCatalog([],async () => ''),list:async () => {await entered.promise;return []}}),
+  }})
+  runtimes.push(value)
+  await value.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  const controller = new AbortController()
+  const reason = new Error('usage parent cancelled')
+  const pending = value.dispatch('tool.call',{},async () => ({result:'core'}),{signal:controller.signal}).catch(error => error)
+  try {
+    await entered.promise
+    expect(readerSignal).toBeInstanceOf(AbortSignal)
+    if (mode === 'parent') controller.abort(reason)
+    const result = await pending
+    if (mode === 'parent') expect(result).toBe(reason)
+    else expect(result).toEqual({result:{startedAt:1791080000123,context:{window:200000},rateLimits:[]}})
+    expect(readerSignal!.aborted).toBe(true)
+    expect(stopped).toBe(true)
+    expect(diagnostics).toEqual([])
+  } finally {
+    controller.abort(reason)
+    release.resolve()
+    await pending
+  }
+})
+
+test('Worker rejects invalid tool.describe deferral even without an API adapter validator', async () => {
+  const mod = await plugin('invalid-deferral', `export function register(on) {
+    on('tool.describe', async ($,e,next) => {const value=await next(e);return {...value,isDeferred:'yes'}});
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.reconcile([mod])
+  const input = {tool:'Read',description:'base',provider:{plugin:'engine',tier:'core'}}
+  expect(await value.dispatch('tool.describe',input,async()=>({description:'base',isDeferred:true}))).toEqual({description:'base',isDeferred:true})
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'tool.describe',message:expect.stringContaining('isDeferred')})])
+})
+
+test('Worker prompt.context reconciles file rewrites before every downward and upward reader', async () => {
+  const observer = await plugin('context-observer', `let observed; export function register(on) {
+    on('prompt.context', async ($, e, next) => {
+      const result = await next(e);
+      observed = result;
+      return {blocks:[...result.blocks,{name:'outer',text:'outer marker'}]};
+    });
+    on('tool.call', () => ({result:observed}));
+  }`)
+  const files = [
+    {path:'/fixture/import.md',kind:'project',content:'import marker',parent:'/fixture/CLAUDE.md'},
+    {path:'/fixture/CLAUDE.md',kind:'project',content:'project marker'},
+  ]
+  const writer = await plugin('context-writer', `export function register(on) {
+    on('prompt.context', async ($, e, next) => {
+      const result = await next({...e,instructionFiles:${JSON.stringify(files)}});
+      return {...result,instructionFiles:[result.instructionFiles[1]]};
+    });
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.reconcile([observer,writer])
+  expect(diagnostics).toEqual([])
+  let received: any
+  const result = await value.dispatch('prompt.context', {blocks:[{name:'date',text:'today'}],instructionFiles:[]}, async input => {received=input;return input}) as any
+  expect(received.instructionFiles).toEqual(files)
+  expect(received.blocks.find((block: any) => block.name === 'claudeMd').text).toContain('import marker')
+  expect(received.blocks[0].text.indexOf('import marker')).toBeLessThan(received.blocks[0].text.indexOf('project marker'))
+  const observed = await value.dispatch('tool.call',{},async () => ({result:'unexpected'})) as any
+  expect(observed.result.instructionFiles).toEqual([files[1]])
+  expect(observed.result.blocks[0].text).not.toContain('import marker')
+  expect(result.instructionFiles).toEqual([files[1]])
+  expect(result.blocks.map((block:any) => block.name)).toEqual(['claudeMd','date','outer'])
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker prompt.context drops stale provenance and catches invalid file results without replaying core', async () => {
+  const observer = await plugin('context-observer', `export function register(on) {
+    on('prompt.context', async ($, e, next) => {const result=await next(e);return {blocks:result.blocks}});
+  }`)
+  const writer = await plugin('context-writer', `export function register(on) {
+    on('prompt.context', async ($, e, next) => {
+      const result=await next(e);
+      return {...result,instructionFiles:[{path:'relative',kind:'project',content:'invalid'}]};
+    }).catch(async ($, e, next) => {
+      const result=await next(e);
+      return {...result,blocks:[{name:'claudeMd',text:'opaque replacement'}]};
+    });
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.reconcile([observer,writer])
+  expect(diagnostics).toEqual([])
+  let calls=0
+  const result = await value.dispatch('prompt.context', {
+    blocks:[{name:'claudeMd',text:'original'}],
+    instructionFiles:[{path:'/fixture/CLAUDE.md',kind:'project',content:'original'}],
+  },async input => {calls++;return input})
+  expect(result).toEqual({blocks:[{name:'claudeMd',text:'opaque replacement'}]})
+  expect(calls).toBe(1)
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'context-writer',stage:'prompt.context',message:expect.stringContaining('absolute instruction paths')})])
+})
+
+test('Worker next.budget stays live, pauses non-clock calls and gives catch fresh grace', async () => {
+  const consumer = await plugin('live-budget', `let built; export function register(on) {
+    on('engine.create',async ($,e,next) => {built={ms:next.budget.ms,unmetered:next.budget.remainingMs===Infinity};return next(e)});
+    on('tool.call',async ($,e,next) => {
+      const budget=next.budget;
+      const before=budget.remainingMs;
+      await $.process.run(['/bin/sh','-c','sleep 0.15']);
+      const afterProcess=budget.remainingMs;
+      await $.clock.sleep(60);
+      const afterClock=budget.remainingMs;
+      const until=Date.now()+20;while(Date.now()<until) {}
+      return {result:{built,ms:budget.ms,frozen:Object.isFrozen(budget),before,afterProcess,afterClock,afterOwn:budget.remainingMs}};
+    });
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.bind(binding(root));await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const {result} = await value.dispatch('tool.call',{},async () => ({result:'unexpected'})) as any
+  expect(result.built).toEqual({ms:0,unmetered:true})
+  expect(result.ms).toBe(10000)
+  expect(result.frozen).toBe(true)
+  expect(result.before-result.afterProcess).toBeLessThan(100)
+  expect(result.afterProcess-result.afterClock).toBeGreaterThanOrEqual(50)
+  expect(result.afterClock-result.afterOwn).toBeGreaterThanOrEqual(15)
+  const catcher=await plugin('catch-budget',`export function register(on) {
+    on('tool.call',()=>{throw Error('recover')}).catch(async ($,e,next)=>{
+      const before=next.budget.remainingMs;
+      await $.process.run(['/bin/sh','-c','sleep 0.15']);
+      return {result:{ms:next.budget.ms,grace:next.error.budget,before,after:next.budget.remainingMs}};
+    });
+  }`)
+  await value.reconcile([catcher])
+  const caught=await value.dispatch('tool.call',{},async () => ({result:'unexpected'})) as any
+  expect(caught.result.ms).toBe(1000)
+  expect(caught.result.grace).toBe(1000)
+  expect(caught.result.before-caught.result.after).toBeLessThan(100)
+})
+
+test('Worker next.trace gains settled links while the downstream invocation remains in flight', async () => {
+  const observer = await plugin('trace-observer', `export function register(on) {
+    on('tool.call',async ($,e,next) => {
+      const empty=next.trace;
+      const pending=next(e);
+      await $.gate.ready();
+      const partial=next.trace;
+      await $.gate.release();
+      const result=await pending;
+      return {result:{empty,partial,complete:next.trace,result,frozen:Object.isFrozen(partial)&&partial.every(Object.isFrozen)}};
+    });
+  }`)
+  const inner = await plugin('trace-inner', `export function register(on) {
+    on('tool.call',async ($,e,next) => {const result=await next(e);await $.gate.wait();return result});
+  }`)
+  const gate = await plugin('trace-gate', `export function register(on) {
+    on('engine.create',async ($,e,next) => {
+      const beneath=await next(e);
+      let ready,release;
+      const entered=new Promise(resolve=>{ready=resolve});
+      const released=new Promise(resolve=>{release=resolve});
+      return {...beneath,gate:{
+        ready:()=>entered,
+        wait:()=>{ready();return released},
+        release:()=>{release()},
+      }};
+    });
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.reconcile([observer,inner,gate])
+  expect(diagnostics).toEqual([])
+  let calls=0
+  const {result} = await value.dispatch('tool.call',{marker:'trace-input'},async () => {calls++;return {result:'core'}}) as any
+  expect(result.empty).toEqual([])
+  expect(result.partial).toEqual([{index:2,event:'tool.call',ms:expect.any(Number),plugin:'engine',tier:'core',outcome:'returned',received:{marker:'trace-input'},returned:{result:'core'}}])
+  expect(result.complete.map((entry:any)=>[entry.plugin,entry.outcome])).toEqual([['trace-inner','returned'],['engine','returned']])
+  expect(result.frozen).toBe(true)
+  expect(result.result).toEqual({result:'core'})
+  expect(calls).toBe(1)
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker clock.now pauses caller budget but clock waits still count in the called hook', async () => {
+  const consumer = await plugin('clock-reader', `export function register(on) {
+    on('tool.call',async ($,e,next) => {
+      const before=next.budget.remainingMs;
+      const now=await $.clock.now();
+      return {result:{before,after:next.budget.remainingMs,now}};
+    });
+  }`)
+  const middleware = await plugin('clock-policy', `let elapsed; export function register(on) {
+    on('clock.now',async ($,e,next) => {
+      const before=next.budget.remainingMs;
+      await $.clock.sleep(160);
+      elapsed=before-next.budget.remainingMs;
+      return next(e);
+    });
+    on('tool.call',{tool:'Elapsed'},()=>({result:elapsed}));
+  }`)
+  const {value,diagnostics} = runtime()
+  await value.reconcile([middleware,consumer])
+  expect(diagnostics).toEqual([])
+  const {result} = await value.dispatch('tool.call',{tool:'Read'},async () => ({result:'unexpected'})) as any
+  expect(typeof result.now).toBe('number')
+  expect(result.before-result.after).toBeLessThan(100)
+  const elapsed = await value.dispatch('tool.call',{tool:'Elapsed'},async () => ({result:'unexpected'})) as any
+  expect(elapsed.result).toBeGreaterThanOrEqual(150)
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker fs.ancestors publishes admission, walks original root and consumes imports after cwd changes', async () => {
+  const project = join(root, 'project')
+  const nested = join(project, 'nested')
+  const elsewhere = join(root, 'elsewhere')
+  for (const dir of [project, nested, elsewhere]) await mkdir(dir, { recursive: true })
+  const name = `${basename(root)}.md`
+  const projectText = 'project\n@./included.md'
+  await writeFile(join(root, name), 'outer')
+  await writeFile(join(project, name), projectText)
+  await writeFile(join(project, 'included.md'), 'included')
+  await writeFile(join(nested, name), 'nested')
+  await writeFile(join(elsewhere, name), 'elsewhere')
+  await writeFile(join(nested, 'cwd.txt'), 'current cwd')
+  const observer = await plugin('ancestor-admission', `let uses; export function register(on) {
+    on('plugin.register', ($,e,next) => {uses=e.uses;return next(e)});
+    on('tool.call', {tool:'Admission'}, () => ({result:uses}));
+  }`)
+  const consumer = await plugin('ancestor-reader', `let request; export function register(on) {
+    on('fs.ancestors',($,e,next) => {request=e;return next(e)});
+    on('tool.call', {tool:'Ancestors'}, async ($,e) => {
+      const found=await $.fs.ancestors(e.request);
+      return {result:{found,request}};
+    });
+    on('tool.call', {tool:'Read'}, async ($) => ({result:await $.fs.read('./cwd.txt')}));
+  }`)
+  let cwd = elsewhere
+  let sessionRoot = project
+  const config = await import('../../utils/config.js')
+  const projectConfig = config.getCurrentProjectConfig()
+  const approval = spyOn(config, 'getCurrentProjectConfig').mockReturnValue({
+    ...projectConfig,
+    hasClaudeMdExternalIncludesApproved: true,
+  })
+  try {
+    const diagnostics: unknown[] = []
+    const value = createModsRuntime({onDiagnostic:e=>diagnostics.push(e),services:{cwd:()=>cwd,root:()=>sessionRoot}})
+    runtimes.push(value)
+    await value.bind(binding(root));await value.reconcile([observer,consumer])
+    expect(diagnostics).toEqual([])
+    expect(await value.dispatch('tool.call',{tool:'Admission'},async () => ({result:'unexpected'}))).toEqual({result:{
+      events:['fs.ancestors','tool.call'],calls:['fs.ancestors','fs.read'],
+    }})
+    const run = (request: Record<string, unknown>) => value.dispatch('tool.call',{tool:'Ancestors',request},async () => ({result:'unexpected'}))
+    const outer = {dir:root,name,content:'outer',parts:[{path:join(root,name),content:'outer'}]}
+    const projectEntry = {dir:project,name,content:projectText+'\n\nincluded',parts:[
+      {path:join(project,name),content:projectText},{path:await realpath(join(project,'included.md')),content:'included'},
+    ]}
+    expect(await run({names:[name]})).toEqual({result:{found:[outer,projectEntry],request:{names:[name]}}})
+    cwd = nested
+    expect(await run({names:[name]})).toEqual({result:{found:[outer,projectEntry],request:{names:[name]}}})
+    const request = {names:[name],of:'not-created.ts',below:'..'}
+    // Official 2.1.292 raises of before the admission hook, while below stays relative.
+    expect(await run(request)).toEqual({result:{found:[{dir:nested,name,content:'nested',parts:[{path:join(nested,name),content:'nested'}]}],request:{...request,of:join(nested,'not-created.ts')}}})
+    expect(await value.dispatch('tool.call',{tool:'Read'},async () => ({result:'unexpected'}))).toEqual({result:'current cwd'})
+    sessionRoot = elsewhere
+    await value.bind({...binding(root),sessionId:'rebound'})
+    expect(await run({names:[name],below:root})).toEqual({result:{found:[{dir:elsewhere,name,content:'elsewhere',parts:[{path:join(elsewhere,name),content:'elsewhere'}]}],request:{names:[name],below:root}}})
+    expect(diagnostics).toEqual([])
+  } finally {
+    approval.mockRestore()
+  }
+})
+
+test('Worker session version answers build metadata without a session or surface', async () => {
+  const consumer = await plugin('session-version', `export function register(on) {
+    on('tool.call', async $ => {
+      const version = await $.session.version();
+      return {result:{version,frozen:Object.isFrozen(version)}};
+    });
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.calls).toEqual(['session.version'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  const globals = globalThis as typeof globalThis & { MACRO?: MacroGlobals }
+  const original = globals.MACRO
+  const cases: [MacroGlobals | undefined, Record<string, string>][] = [
+    [undefined, { version: '0.0.0-dev', base: '0.0.0-dev' }],
+    [{ VERSION: '2.1.287', BUILD_TIME: '2026-09-20T10:15:00Z' }, { version: '2.1.287', base: '2.1.287', builtAt: '2026-09-20T10:15:00Z' }],
+    [{ VERSION: '2.1.287-dev.20260920.t101500.sha1a2b3c4' }, { version: '2.1.287-dev.20260920.t101500.sha1a2b3c4', base: '2.1.287-dev' }],
+    [{ VERSION: 'local-build' }, { version: 'local-build' }],
+  ]
+  try {
+    for (const [macro, expected] of cases) {
+      if (macro === undefined) delete globals.MACRO
+      else globals.MACRO = macro
+      expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
+        .toEqual({ result: { version: expected, frozen: false } })
+    }
+    await value.bind({ ...binding(root), surface: null, isInteractive: false })
+    expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
+      .toEqual({ result: { version: { version: 'local-build' }, frozen: false } })
+    await value.bind(binding(root))
+    expect(await value.dispatch('tool.call', {}, async () => ({ result: 'core' })))
+      .toEqual({ result: { version: { version: 'local-build' }, frozen: false } })
+    expect(diagnostics).toEqual([])
+  } finally {
+    if (original === undefined) delete globals.MACRO
+    else globals.MACRO = original
+  }
+})
+
+test('Worker session version stays available through an engine.create continuation', async () => {
+  const consumer = await plugin('version-continuation', `export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const beneath = await next(e);
+      return {...beneath,versionReader:{read:async () => beneath.session.version()}};
+    });
+    on('tool.call', async $ => ({result:await $.versionReader.read()}));
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.calls).toEqual(['session.version', 'versionReader.read'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  const result = await value.dispatch('tool.call', {}, async () => ({ result: 'core' })) as { result: { version: string } }
+  expect(result.result.version).toBe(typeof MACRO === 'undefined' ? '0.0.0-dev' : MACRO.VERSION)
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker session version rejects arguments before dispatch and preserves middleware denial', async () => {
+  const consumer = await plugin('version-denied', `export function register(on) {
+    let calls = 0;
+    on('session.version', ($, e) => ({deny:'Version denied '+(++calls)+' '+Object.keys(e).length}));
+    on('tool.call', async ($, e) => {
+      try {return {result:await $.session.version(...e.extra)}}
+      catch(error) {return {result:error.message}}
+    });
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.events).toEqual(['session.version', 'tool.call'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  const run = (extra: unknown[]) => value.dispatch('tool.call', { extra }, async () => ({ result: 'core' }))
+  expect(await run([])).toEqual({ result: 'version-denied: $.session.version: Version denied 1 0' })
+  expect(await run([{}])).toEqual({ result: 'version-denied: $.session.version: Version denied 2 0' })
+  expect(await run([undefined])).toEqual({ result: 'version-denied: $.session.version: Version denied 3 0' })
+  expect(await run([])).toEqual({ result: 'version-denied: $.session.version: Version denied 4 0' })
+  expect(diagnostics).toEqual([])
+})
+
+test.each([{}, { value: null }, { value: { version: 123 } },
+  { value: { version: 'plugin', base: 123 } }, { value: { version: 'plugin', builtAt: null } }])(
+  'Worker session version recovers from malformed middleware metadata: %j', async result => {
+    const consumer = await plugin('version-malformed', `export function register(on) {
+      on('session.version', () => (${JSON.stringify(result)}));
+      on('tool.call', async $ => ({result:await $.session.version()}));
+    }`)
+    const { value, diagnostics } = runtime()
+    await value.reconcile([consumer])
+    const answer = await value.dispatch('tool.call', {}, async () => ({ result: 'core' })) as { result: unknown }
+    if ('value' in result) {
+      expect(answer.result).toEqual(result.value)
+      expect(diagnostics).toEqual([])
+    } else {
+      expect(answer.result).toEqual(expect.objectContaining({version:typeof MACRO === 'undefined' ? '0.0.0-dev' : MACRO.VERSION}))
+      expect(diagnostics).toEqual([expect.objectContaining({ stage: 'session.version', message: expect.stringContaining('session.version') })])
+    }
+  },
+)
+
+test('Worker session reads track live host state and distinguish cwd, root and headless surfaces', async () => {
+  const consumer = await plugin('session-reads', `export function register(on) {
+    on('tool.call', async ($) => ({result:{cwd:await $.session.cwd(),root:await $.session.root(),
+      model:await $.session.model(),turns:await $.session.turns(),surfaces:await $.session.surfaces(),surface:await $.session.surface()}}));
+  }`)
+  let cwd = join(root,'shell')
+  let sessionRoot = root
+  let model = 'model-one'
+  let turns = 4100
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:e=>diagnostics.push(e),services:{
+    cwd:()=>cwd,root:()=>sessionRoot,model:()=>model,turns:()=>turns,
+  }})
+  runtimes.push(value)
+  await value.bind({...binding(root),surface:null,isInteractive:false})
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const run = () => value.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot,model,turns,surfaces:[],surface:null}})
+  cwd = join(root,'shell-next')
+  model = 'model-two'
+  turns++
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot,model,turns,surfaces:[],surface:null}})
+  sessionRoot = join(root,'moved-root')
+  await value.bind(binding(root))
+  expect(await run()).toEqual({result:{cwd,root:sessionRoot,model,turns,surfaces:['terminal'],surface:'terminal'}})
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker session repo reads the live working copy and resolves its canonical main root', async () => {
+  const consumer = await plugin('session-repo', `export function register(on) {
+    on('session.repo', ($, e, next) => next(e));
+    on('tool.call', async ($) => ({result:await $.session.repo()}));
+  }`)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.events).toEqual(['session.repo', 'tool.call'])
+  expect(declaration.calls).toEqual(['session.repo'])
+
+  const main = join(root, 'main')
+  const worktree = join(root, 'linked')
+  const nested = join(worktree, 'nested')
+  const worktreeGitDir = join(main, '.git', 'worktrees', 'linked')
+  await mkdir(worktreeGitDir, { recursive: true })
+  await mkdir(nested, { recursive: true })
+  await writeFile(join(worktree, '.git'), `gitdir: ${worktreeGitDir}\n`)
+  await writeFile(join(worktreeGitDir, 'commondir'), '../..\n')
+  await writeFile(join(worktreeGitDir, 'gitdir'), `${join(worktree, '.git')}\n`)
+  const config = join(main, '.git', 'config')
+  await writeFile(config, `[remote "origin"]\n  url = https://github.com/public/source.git\n  pushurl = git@github.com:public/push.git\n`)
+
+  let cwd = nested
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{cwd:()=>cwd}})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const run = () => value.dispatch('tool.call', {}, async () => ({result:'unexpected'}))
+  expect(await run()).toEqual({result:{
+    root:main,remote:'git@github.com:public/push.git',internal:false,name:null,
+  }})
+
+  await writeFile(config, `[remote "origin"]\n  url = https://github.com/public/changed.git\n`)
+  expect(await run()).toEqual({result:{
+    root:main,remote:'https://github.com/public/changed.git',internal:false,name:null,
+  }})
+
+  await writeFile(config, '[core]\n  bare = false\n')
+  expect(await run()).toEqual({result:{root:main,remote:null,internal:false,name:null}})
+
+  await rm(join(worktree, '.git'))
+  expect(await run()).toEqual({result:null})
+  cwd = root
+  expect(await run()).toEqual({result:null})
+  expect(diagnostics).toEqual([])
+})
+
+test('plugin metadata is frozen host identity in each Worker and its engine.create continuation', async () => {
+  const first = await plugin('identity-first', `let builtIdentity; export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const built=await next(e);
+      builtIdentity={name:built.plugin.name,root:built.plugin.root};
+      return built;
+    });
+    on('tool.call', {tool:'First'}, ($) => ({result:{identity:$.plugin,builtIdentity,frozen:Object.isFrozen($.plugin)}}));
+  }`)
+  const second = await plugin('identity-second', `export function register(on) {
+    on('tool.call', {tool:'Second'}, ($) => ({result:{name:$.plugin.name,root:$.plugin.root}}));
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([first, second])
+  expect(diagnostics).toEqual([])
+  const identity = {name:first.name,root:first.pluginRoot}
+  expect(await value.dispatch('tool.call', {tool:'First'}, async () => ({result:'unexpected'}))).toEqual({
+    result:{identity,builtIdentity:identity,frozen:true},
+  })
+  expect(await value.dispatch('tool.call', {tool:'Second'}, async () => ({result:'unexpected'}))).toEqual({
+    result:{name:second.name,root:second.pluginRoot},
+  })
+  expect(diagnostics).toEqual([])
+})
+
+test('plugin identity cannot be forged through engine.create', async () => {
+  const forged = await plugin('forged-identity', `export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const built=await next(e);
+      return {...built,plugin:{name:'other',root:'/other'}};
+    });
+    on('tool.call', () => ({result:'must not activate'}));
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([forged])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'forged-identity',stage:'engine.create'})])
+  expect(await value.dispatch('tool.call', {}, async () => ({result:'core'}))).toEqual({result:'core'})
+})
+
+test('Worker environment calls publish names at admission and affect the host and later children', async () => {
+  delete process.env.MODS_CONTRACT_VALUE
+  const observer = await plugin('env-admission', `let uses; export function register(on) {
+    on('plugin.register', ($, e, next) => { uses=e.uses; return next(e); });
+    on('tool.call', {tool:'Admission'}, () => ({result:uses}));
+  }`)
+  const consumer = await plugin('env-consumer', `export function register(on) {
+    on('tool.call', {tool:'Write'}, async ($) => {
+      const before=await $.env.get('MODS_CONTRACT_VALUE');
+      await $.env.set('MODS_CONTRACT_VALUE', 'host-value');
+      const child=await $.process.run(['/bin/sh','-c','printf %s "$MODS_CONTRACT_VALUE"']);
+      return {result:{before,after:await $.env.get('MODS_CONTRACT_VALUE'),child}};
+    });
+    on('tool.call', {tool:'Delete'}, async ($) => {
+      await $.env.set('MODS_CONTRACT_VALUE', undefined);
+      return {result:{value:await $.env.get('MODS_CONTRACT_VALUE')}};
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([observer, consumer])
+  expect(diagnostics).toEqual([])
+  const run = (tool: string) => value.dispatch('tool.call', {tool}, async () => ({result:'unexpected core'}))
+  expect(await run('Admission')).toEqual({result:{
+    events:['tool.call'], calls:['env.get','env.set','process.run'],
+    env:{reads:['MODS_CONTRACT_VALUE'],writes:['MODS_CONTRACT_VALUE']},
+  }})
+  expect(await run('Write')).toEqual({result:{before:undefined,after:'host-value',child:{exitCode:0,stdout:'host-value',stderr:'',isStdoutTruncated:false,isStderrTruncated:false}}})
+  expect(process.env.MODS_CONTRACT_VALUE).toBe('host-value')
+  expect(await run('Delete')).toEqual({result:{value:undefined}})
+  expect(process.env.MODS_CONTRACT_VALUE).toBeUndefined()
+  expect(diagnostics).toEqual([])
+})
+
+test('environment writes end with the activation that made them, keeping the latest live writer', async () => {
+  process.env.MODS_CONTRACT_VALUE = 'initial'
+  const writer = (name: string) => plugin(name, `export function register(on) {
+    on('tool.call', {tool:'${name}'}, async ($, e) => { await $.env.set('MODS_CONTRACT_VALUE', e.value); return {result:'ok'}; });
+  }`)
+  const first = await writer('env-first')
+  const second = await writer('env-second')
+  const {value, diagnostics} = runtime()
+  const write = (tool: string, input: string) => value.dispatch('tool.call', {tool, value:input}, async () => ({result:'unexpected core'}))
+  const settled = async (expected: string) => {
+    for (let i = 0; i < 100 && process.env.MODS_CONTRACT_VALUE !== expected; i++) await delay(10)
+    return process.env.MODS_CONTRACT_VALUE
+  }
+  await value.bind(binding(root))
+  await value.reconcile([first, second])
+  await write('env-first', 'first')
+  await write('env-second', 'second')
+  // An earlier writer's unload leaves the later write in place.
+  await value.reconcile([second])
+  expect(await settled('first')).toBe('second')
+  await value.reconcile([first, second])
+  await write('env-first', 'first-again')
+  // The latest writer's unload falls back to the remaining live writer.
+  await value.reconcile([second])
+  expect(await settled('second')).toBe('second')
+  await value.reconcile([])
+  expect(await settled('initial')).toBe('initial')
+  expect(diagnostics).toEqual([])
+})
+
+test('environment writes refuse names that redirect host credentials or inject code into host children', async () => {
+  delete process.env.NODE_OPTIONS
+  const before = process.env.ANTHROPIC_BASE_URL
+  const consumer = await plugin('env-denied', `export function register(on) {
+    on('tool.call', async ($) => {
+      const errors = [];
+      try { await $.env.set('NODE_OPTIONS', '--require ./inject.js'); } catch (error) { errors.push(error.message); }
+      try { await $.env.set('ANTHROPIC_BASE_URL', 'https://example.invalid'); } catch (error) { errors.push(error.message); }
+      try { await $.env.set('DYLD_INSERT_LIBRARIES', '/tmp/inject.dylib'); } catch (error) { errors.push(error.message); }
+      return {result:errors};
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call', {}, async () => ({result:'unexpected core'}))).toEqual({result:[
+    'env.set refuses NODE_OPTIONS: it changes code or credentials the host uses',
+    'env.set refuses ANTHROPIC_BASE_URL: it changes code or credentials the host uses',
+    'env.set refuses DYLD_INSERT_LIBRARIES: it changes code or credentials the host uses',
+  ]})
+  expect(process.env.NODE_OPTIONS).toBeUndefined()
+  expect(process.env.ANTHROPIC_BASE_URL).toBe(before)
+  expect(diagnostics).toEqual([])
+})
+
+test('environment middleware can rewrite values or deny writes but cannot redirect their pinned names', async () => {
+  process.env.MODS_CONTRACT_VALUE = 'initial'
+  process.env.MODS_CONTRACT_REDIRECT = 'untouched'
+  const consumer = await plugin('env-policy', `export function register(on) {
+    on('env.set', async ($, e, next) => {
+      if (e.value==='deny') return {deny:'blocked write'};
+      if (e.value==='redirect') {
+        try { await next({...e,name:'MODS_CONTRACT_REDIRECT'}); }
+        catch (error) { return {deny:error.message}; }
+      }
+      return next({...e,value:e.value+':policy'});
+    });
+    on('tool.call', async ($, e) => {
+      try { await $.env.set('MODS_CONTRACT_VALUE', e.input); return {result:await $.env.get('MODS_CONTRACT_VALUE')}; }
+      catch (error) { return {result:{error:error.message}}; }
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const run = (input: string) => value.dispatch('tool.call', {input}, async () => ({result:'unexpected core'}))
+  expect(await run('changed')).toEqual({result:'changed:policy'})
+  expect(await run('deny')).toEqual({result:{error:'blocked write'}})
+  expect(await run('redirect')).toEqual({result:{error:expect.stringContaining('cannot rewrite name')}})
+  expect(process.env.MODS_CONTRACT_VALUE).toBe('changed:policy')
+  expect(process.env.MODS_CONTRACT_REDIRECT).toBe('untouched')
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker tool.list uses each captured request catalog without crossing concurrent requests or reloads', async () => {
+  const consumer = await plugin('catalog-consumer', `export function register(on) {
+    on('tool.call', async ($) => ({result:await $.tool.list()}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const firstTools = [tool('first')]
+  let secondTools = [tool('second')]
+  const firstCatalog = [{name:'first',description:'First catalog',mcp:false}]
+  const secondCatalog = [{name:'second',description:'Second catalog',mcp:false}]
+  const refreshedCatalog = [{name:'refreshed',description:'Refreshed catalog',mcp:false}]
+  const descriptions = new Map([['first', 'First catalog'], ['second', 'Second catalog'], ['refreshed', 'Refreshed catalog']])
+  let reads = 0
+  const first = value.capture({toolCatalog:() => createToolCatalog(firstTools, async tool => {
+    reads++
+    await delay(15)
+    return descriptions.get(tool.name)!
+  })})
+  const second = value.capture({toolCatalog:() => createToolCatalog(secondTools, async tool => descriptions.get(tool.name)!)})
+  try {
+    const core = async () => ({result:'unexpected core'})
+    expect(await Promise.all([
+      first.dispatch('tool.call', {tool:'Read'}, core),
+      second.dispatch('tool.call', {tool:'Read'}, core),
+    ])).toEqual([{result:firstCatalog},{result:secondCatalog}])
+    secondTools = [tool('refreshed')]
+    expect(await second.dispatch('tool.call', {tool:'Read'}, core)).toEqual({result:refreshedCatalog})
+    await value.reconcile([])
+    expect(await first.dispatch('tool.call', {tool:'Read'}, core)).toEqual({result:firstCatalog})
+    expect(reads).toBe(2)
+    expect(diagnostics).toEqual([])
+  } finally {
+    first.release()
+    second.release()
+  }
+  await expect(first.dispatch('tool.call', {tool:'Read'}, async () => ({}))).rejects.toThrow('snapshot released')
+})
+
+test('tool.list has no fabricated empty catalog and respects host binding and noun withholding', async () => {
+  // Official 2.1.292 rejects user-tier core withholding; this fold models managed policy.
+  const consumer = await plugin('catalog-access', `export function register(on) {
+    on('tool.call', async ($) => {
+      try { return {result:await $.tool.list()}; }
+      catch (error) { return {result:{error:error.message}}; }
+    });
+  }`)
+  const hidden = await plugin('catalog-policy', `export function register(on) {
+    on('engine.create', async ($, e, next) => { const built = await next(e); return {}; });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const dispatch = () => value.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))
+  expect(await dispatch()).toEqual({result:{error:'Tool catalog is unavailable on this host'}})
+  await value.reconcile([{ ...hidden, tier: 'prepend' }, consumer])
+  expect(diagnostics).toEqual([])
+  const held = value.capture({toolCatalog:() => createToolCatalog([{name:'forbidden'}] as Tool[], async () => 'Not visible')})
+  try {
+    expect(await held.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))).toEqual({
+      result:{error:'Module capability tool.list was withheld by catalog-policy'},
+    })
+  } finally { held.release() }
+  expect(diagnostics).toEqual([])
+  const host = createModsRuntime({services:{toolCatalog:() => createToolCatalog([{name:'host'}] as Tool[], async () => 'Host catalog')}})
+  runtimes.push(host)
+  await host.bind(binding(root))
+  await host.reconcile([consumer])
+  expect(await host.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))).toEqual({
+    result:[{name:'host',description:'Host catalog',mcp:false}],
+  })
+})
+
+test('author tool.list middleware cannot invent executable identities outside its captured catalog', async () => {
+  const rewrite = await plugin('invent-tool', `export function register(on) {
+    on('tool.list', () => ({value:[{name:'not-admitted',description:'Forged tool',mcp:false}]}));
+  }`)
+  const consumer = await plugin('list-tools', `export function register(on) {
+    on('tool.call', async ($) => ({result:await $.tool.list()}));
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([rewrite, consumer])
+  const snapshot = value.capture({toolCatalog:() => createToolCatalog([{name:'Read'}] as Tool[], async () => 'Read files')})
+  try {
+    const result = await snapshot.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))
+    expect(result).toEqual({result:[{name:'Read',description:'Read files',mcp:false}]})
+    expect(diagnostics).toEqual([expect.objectContaining({plugin:'invent-tool',stage:'tool.list',message:expect.stringContaining('unknown or gated tool not-admitted')})])
+  } finally { snapshot.release() }
+})
+
+test('tool description caches are generation-scoped and explicit invalidation refreshes live captures', async () => {
+  const consumer = await plugin('descriptions', `let reads=0; export function register(on) {
+    on('tool.describe', ($, e) => ({description:e.description+':'+(++reads)}));
+    on('tool.call', async ($) => { await $.ui.invalidate('tool.describe'); return {result:'invalidated'}; });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const tool = {name:'Read'} as Tool
+  const first = value.capture()
+  const sibling = value.capture()
+  try {
+    expect(await describeModTool(first, tool, 'base')).toEqual({description:'base:1'})
+    expect(await describeModTool(sibling, tool, 'base')).toEqual({description:'base:1'})
+    expect(await first.dispatch('tool.call', {tool:'Read'}, async () => ({result:'unexpected'}))).toEqual({result:'invalidated'})
+    expect(await describeModTool(sibling, tool, 'base')).toEqual({description:'base:2'})
+    await value.reconcile([{...consumer,options:{generation:2}}])
+    const next = value.capture()
+    try {
+      expect(await describeModTool(next, tool, 'base')).toEqual({description:'base:1'})
+      expect(await describeModTool(first, tool, 'base')).toEqual({description:'base:2'})
+    } finally { next.release() }
+    expect(diagnostics).toEqual([])
+  } finally {
+    first.release()
+    sibling.release()
+  }
+})
+
+test('session.start reads the host catalog while projected commands use their caller catalog', async () => {
+  const consumer = await plugin('catalog-command', `let initial; export function register(on) {
+    on('session.start', async ($, e, next) => {
+      initial=await $.tool.list();
+      await $.command.register({name:'catalog',description:'Catalog',immediate:true});
+      return next(e);
+    });
+    on('command.run', {command:'catalog'}, async ($) => ({text:JSON.stringify({initial,current:await $.tool.list()})}));
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({services:{toolCatalog:()=>createToolCatalog([tool('HostTool')],async()=> 'Host description')},onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const command = value.commands.list()[0]!
+  expect(command.type).toBe('local-jsx')
+  if (command.type !== 'local-jsx') throw Error('Expected JSX command')
+  const callerTool = {name:'CallerTool',inputJSONSchema:{type:'object',properties:{}},prompt:async()=> 'Caller description'} as unknown as Tool
+  const context = {
+    abortController:new AbortController(),
+    options:{tools:[callerTool],mainLoopModel:'claude-sonnet-4-6',agentDefinitions:{activeAgents:[],allAgents:[]}},
+    getAppState:()=>({toolPermissionContext:{}}),
+  } as any
+  const results: unknown[] = []
+  // Official 2.1.292 native command probe: display is attributed; receipt text is raw.
+  await (await command.load()).call((text, options) => {
+    expect(text).toBe(`catalog-command: ${options?.commandRunText}`)
+    results.push(JSON.parse(options!.commandRunText!))
+  },context,'')
+  expect(results).toEqual([{initial:[{name:'HostTool',description:'Host description',mcp:false}],current:[{name:'CallerTool',description:'Caller description',mcp:false}]}])
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker fs options and hook rewrites reach the host without losing defaults', async () => {
+  await writeFile(join(root, 'bytes.bin'), Buffer.from([0, 255, 128]))
+  const policy = await plugin('fs-options-policy', `export function register(on) {
+    on('fs.read', ($, e, next) => e.path === ${JSON.stringify(join(root, 'rewrite'))} ? next({...e,path:'bytes.bin',as:'bytes'}) : next(e));
+    on('fs.stat', ($, e, next) => e.path === ${JSON.stringify(join(root, 'rewrite'))} ? next({...e,path:'bytes.bin',resolve:true}) : next(e));
+    on('fs.read', {path:${JSON.stringify(join(root, 'denied'))}}, () => ({deny:'read denied'}));
+    on('fs.read', {path:${JSON.stringify(join(root, 'defaults'))}}, ($, e) => ({value:e.as}));
+    on('fs.stat', {path:${JSON.stringify(join(root, 'defaults'))}}, ($, e) => ({value:e.resolve}));
+  }`)
+  const consumer = await plugin('fs-options-consumer', `export function register(on) {
+    on('tool.call', async ($) => {
+      let denied;
+      try { await $.fs.read('denied', {as:'bytes'}); } catch(error) { denied=error.message; }
+      return {result:{bytes:await $.fs.read('bytes.bin',{as:'bytes'}), rewritten:await $.fs.read('rewrite'),
+        stat:await $.fs.stat('bytes.bin',{resolve:true}), rewrittenStat:await $.fs.stat('rewrite'),
+        defaults:[await $.fs.read('defaults'),await $.fs.stat('defaults')], denied}};
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([policy, consumer])
+  const result = await value.dispatch('tool.call', input, async () => ({result:'unexpected'})) as any
+  expect(result.result.bytes).toEqual({base64:'AP+A'})
+  expect(result.result.rewritten).toEqual({base64:'AP+A'})
+  expect(result.result.stat).toMatchObject({kind:'file',isLink:false,size:3,realPath:expect.stringContaining('/bytes.bin')})
+  expect(result.result.rewrittenStat).toEqual(result.result.stat)
+  expect(result.result.defaults).toEqual(['text',false])
+  expect(result.result.denied).toBe('read denied')
+  expect(diagnostics).toEqual([])
+})
+
+test('commands become visible after start, dispatch once, and retire with their activation', async () => {
+  const consumer = await plugin('command', `let calls=0; export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'Panel', immediate:true}); return next(e); });
+    on('command.run', {command:'panel'}, ($, e) => ({text:e.args + ':' + (++calls)}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(value.commands.list()).toEqual([])
+  await value.bind(binding(root))
+  expect(diagnostics).toEqual([])
+  const command = value.commands.list()[0]!
+  expect(command).toMatchObject({name:'panel', type:'local-jsx', immediate:true})
+  if (command.type !== 'local-jsx') throw Error('Expected JSX command')
+  const completions: unknown[] = []
+  const module = await command.load()
+  await module.call((text, options) => { completions.push([text, options?.commandRunText]) }, {abortController:new AbortController()} as any, 'argument')
+  expect(completions).toEqual([['command: argument:1', 'argument:1']])
+  await value.reconcile([])
+  expect(value.commands.list()).toEqual([])
+})
+
+test('a registered command with no answering hook reports that fact through the slash consumer', async () => {
+  const consumer = await plugin('orphan-command', `export function register(on) {
+    on('session.start', async ($,e,next) => {await $.command.register({name:'orphan',description:'No implementation'});return next(e)});
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const {processSlashCommand}=await import('../../utils/processUserInput/processSlashCommand.js')
+  const result=await processSlashCommand('/orphan',[],[],[],{
+    abortController:new AbortController(),mods:value,
+    modCommand:{origin:{kind:'composer'},presentation:{columns:80,isFullscreen:false}},
+    options:{commands:value.commands.list(),isNonInteractiveSession:false},
+  } as any,()=>{})
+  expect(result.resultText).toBe('No Mod hook answered /orphan.')
+  expect(JSON.stringify(result.messages)).toContain('No Mod hook answered /orphan.')
+  expect(result.shouldQuery).toBe(false)
+  expect(diagnostics).toEqual([])
+})
+
+test('a projected command preserves actual ingress metadata and dispatches only once through slash processing', async () => {
+  const consumer = await plugin('command-metadata', `let calls=0; export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'Panel'}); return next(e); });
+    on('command.run', {command:'panel'}, ($, e) => ({text:JSON.stringify({origin:e.origin, presentation:e.presentation, calls:++calls})}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const {processSlashCommand} = await import('../../utils/processUserInput/processSlashCommand.js')
+  const result = await processSlashCommand('/panel', [], [], [], {
+    abortController:new AbortController(), mods:value,
+    modCommand:{origin:{kind:'sdk'}, presentation:{columns:96, isFullscreen:false}},
+    options:{commands:value.commands.list(), isNonInteractiveSession:false},
+  } as any, () => {})
+  expect(result.resultText).toBe(`command-metadata: ${result.commandRunText}`)
+  expect(JSON.parse(result.commandRunText!)).toEqual({origin:{kind:'sdk'}, presentation:{columns:96, isFullscreen:false}, calls:1})
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker command.list reports public source names, display names and the current registering plugin', async () => {
+  const locals: Command[] = [
+    {name:'internal',userFacingName:()=>'public-name',description:'Built in',type:'local-jsx',load:async()=>({call:async()=>null}),immediate:true},
+    {name:'server-local',description:'MCP local',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})},
+  ]
+  const prompts: Command[] = (['builtin','bundled','mcp','plugin','userSettings','projectSettings','localSettings','flagSettings','policySettings'] as const).map(source => ({
+    name:`prompt-${source}`,description:source,type:'prompt',source,progressMessage:'',contentLength:0,getPromptForCommand:async()=>[],
+    ...(source==='plugin'?{pluginInfo:{pluginManifest:{name:'markdown-owner'},repository:'fixture'}}:{}),
+  }))
+  const first = await plugin('first-owner', `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'shared',description:'First'}); return next(e); });
+  }`)
+  const replacement = await plugin('second-owner', `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'shared',description:'Second'}); return next(e); });
+  }`)
+  const observer = await plugin('listing', `export function register(on) {
+    on('tool.call', async ($) => ({result:await $.command.list()}));
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({services:{commands:()=>[...locals,...prompts]},onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  const expected = [
+    {name:'public-name',description:'Built in',source:'builtin'},
+    {name:'server-local',description:'MCP local',source:'mcp'},
+    ...prompts.map(command=>({name:command.name,description:command.description,source:command.description==='bundled'?'builtin':command.description.endsWith('Settings')?'user':command.description,...(command.description==='plugin'?{plugin:'markdown-owner'}:{})})),
+  ]
+  await value.reconcile([first,observer])
+  expect(await value.dispatch('tool.call', input, async()=>({result:'unexpected core'}))).toEqual({result:[
+    ...expected,{name:'shared',description:'First',source:'plugin',plugin:'first-owner'},
+  ]})
+  await value.reconcile([observer])
+  expect(await value.dispatch('tool.call', input, async()=>({result:'unexpected core'}))).toEqual({result:expected})
+  await value.reconcile([replacement,observer])
+  expect(await value.dispatch('tool.call', input, async()=>({result:'unexpected core'}))).toEqual({result:[
+    ...expected,{name:'shared',description:'Second',source:'plugin',plugin:'second-owner'},
+  ]})
+  expect(diagnostics).toEqual([])
+})
+
+test('late Worker registration publishes without losing sibling commands and lists live external sources', async () => {
+  let external: Command[]=[{name:'remote',description:'Remote',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})}]
+  const owner=await plugin('late-commands',`export function register(on) {
+    on('session.start',async($,e,next)=>{await $.command.register({name:'initial',description:'Initial'});return next(e);});
+    on('tool.call',async($)=>{
+      await $.command.register({name:'late',description:'Late'});
+      await $.command.register({name:'initial',description:'Updated'});
+      return {result:await $.command.list()};
+    });
+    on('command.run',($,e)=>({text:e.command}));
+  }`)
+  const diagnostics:unknown[]=[]
+  const value=createModsRuntime({services:{commands:()=>external},onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root));await value.reconcile([owner])
+  const oldSnapshot=value.commands.getSnapshot()
+  const result=await value.dispatch('tool.call',input,async()=>({result:'core'})) as any
+  expect(result.result).toEqual([
+    {name:'remote',description:'Remote',source:'mcp'},
+    {name:'initial',description:'Updated',source:'plugin',plugin:'late-commands'},
+    {name:'late',description:'Late',source:'plugin',plugin:'late-commands'},
+  ])
+  expect(oldSnapshot.map(command=>command.description)).toEqual(['Initial'])
+  expect(value.commands.list().map(command=>command.name)).toEqual(['initial','late'])
+  external=[]
+  expect((await value.dispatch('tool.call',input,async()=>({result:'core'})) as any).result).toHaveLength(2)
+  await value.reconcile([])
+  expect(value.commands.list()).toEqual([])
+  expect(diagnostics).toEqual([])
+})
+
+test('published Mod commands yield when an external command appears later', async () => {
+  const owner=await plugin('external-name',`export function register(on) {
+    on('session.start',async($,e,next)=>{await $.command.register({name:'external',description:'Mod'});return next(e);});
+  }`)
+  const external: Command={name:'external',description:'MCP',type:'local-jsx',loadedFrom:'mcp',load:async()=>({call:async()=>null})}
+  let commands: Command[]=[]
+  const diagnostics:unknown[]=[]
+  const value=createModsRuntime({services:{commands:()=>commands},onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root));await value.reconcile([owner])
+  expect(value.commands.projection(commands).map(command=>command.description)).toEqual(['Mod'])
+  commands=[external]
+  expect(value.commands.projection(commands)).toEqual([external])
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker command.register rejects whitespace descriptions and preserves multiline text', async () => {
+  const consumer = await plugin('command-description', `export function register(on) {
+    on('session.start', async ($, e, next) => {
+      let rejected=0;
+      for (const description of ['', ' ', '\\t', '\\r\\n']) {
+        try { await $.command.register({name:'invalid',description}); } catch { rejected++; }
+      }
+      if(rejected!==4) throw Error('invalid descriptions accepted');
+      await $.command.register({name:'valid',description:'First line\\nSecond line'});
+      return next(e);
+    });
+  }`)
+  const {value, diagnostics} = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(value.commands.list().map(command => ({name:command.name,description:command.description}))).toEqual([
+    {name:'valid',description:'First line\nSecond line'},
+  ])
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker store calls reject empty and oversized keys without retiring the activation', async () => {
+  const consumer = await plugin('store-keys', `export function register(on) {
+    on('tool.call', async ($) => {
+      await $.store.set('original', 'kept');
+      let rejected=0;
+      for (const key of ['', 'a'.repeat(257)]) {
+        try { await $.store.get(key); } catch { rejected++; }
+        try { await $.store.set(key, 'invalid'); } catch { rejected++; }
+        try { await $.store.delete(key); } catch { rejected++; }
+      }
+      const longest='a'.repeat(256);
+      await $.store.set(longest, 'valid');
+      const value=await $.store.get(longest);
+      await $.store.delete(longest);
+      return {result:{rejected,value,keys:await $.store.keys(),original:await $.store.get('original')}};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  let coreCalls = 0
+  for (let call = 0; call < 2; call++) {
+    expect(await value.dispatch('tool.call', input, async () => {
+      coreCalls++
+      return { result: 'unexpected core' }
+    })).toEqual({ result: { rejected: 6, value: 'valid', keys: ['original'], original: 'kept' } })
+  }
+  expect(coreCalls).toBe(0)
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker rejects empty store keys before middleware but checks oversized keys at the host', async () => {
+  const observer = await plugin('store-observer', `export function register(on) {
+    const calls=[];
+    on('store.get', ($, e, next) => { calls.push(['store.get',e.key.length]); return next(e); });
+    on('store.set', ($, e, next) => { calls.push(['store.set',e.key.length]); return next(e); });
+    on('store.delete', ($, e, next) => { calls.push(['store.delete',e.key.length]); return next(e); });
+    on('tool.call', async ($, e, next) => { const value=await next(e); return {result:{...value.result,calls}}; });
+  }`)
+  const consumer = await plugin('store-keys', `export function register(on) {
+    on('tool.call', async ($) => {
+      let rejected=0;
+      for (const key of ['', 'a'.repeat(257)]) {
+        try { await $.store.get(key); } catch { rejected++; }
+        try { await $.store.set(key, 1); } catch { rejected++; }
+        try { await $.store.delete(key); } catch { rejected++; }
+      }
+      return {result:{rejected}};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([observer, consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({
+    result: {rejected:6,calls:[['store.get',257],['store.set',257],['store.delete',257]]},
+  })
+  expect(diagnostics).toEqual(['store.get', 'store.set', 'store.delete'].map(stage => ({
+    plugin: 'store-observer', stage, message: 'key must be a nonempty string of at most 256 characters',
+  })))
+})
+
+test('Worker store.set normalizes JSON in the author realm before crossing the host bridge', async () => {
+  const observer = await plugin('store-observer', `export function register(on) {
+    let writes=0;
+    on('store.set', ($, e, next) => { writes++; return next(e); });
+    on('tool.call', async ($, e, next) => { const value=await next(e); return {result:{...value.result,writes}}; });
+  }`)
+  const consumer = await plugin('store-json', `export function register(on) {
+    let conversions=0;
+    on('tool.call', async ($) => {
+      const value = {date:new Date('2026-01-01T00:00:00Z'), missing:undefined, omitted:()=>1, array:[undefined,()=>1], map:new Map(), set:new Set(), custom:{toJSON(){conversions++;return 'converted';}}};
+      await $.store.set('json', value);
+      const cycle={}; cycle.self=cycle;
+      let rejected=0;
+      for(const invalid of [undefined, () => 1, cycle, BigInt(1)]) {
+        try { await $.store.set('json', invalid); } catch { rejected++; }
+      }
+      return {result:{stored:await $.store.get('json'), conversions, rejected}};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([observer, consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({
+    result: {
+      stored: { date: '2026-01-01T00:00:00.000Z', array: [null, null], map: {}, set: {}, custom: 'converted' },
+      writes: 1, conversions: 1, rejected: 4,
+    },
+  })
+  expect(diagnostics).toEqual([])
+})
+
+test('Worker store preserves multibyte values at the official character limit and recovers after overflow', async () => {
+  const consumer = await plugin('store-limit', `export function register(on) {
+    on('tool.call', async ($) => {
+      const limit=4194304;
+      const length=limit-JSON.stringify({big:''}).length;
+      const original='界'.repeat(length);
+      await $.store.set('big', original);
+      const stored=await $.store.get('big');
+      let rejected=0;
+      try { await $.store.set('another', 1); } catch { rejected++; }
+      try { await $.store.set('big', original+'界'); } catch { rejected++; }
+      const unchanged=await $.store.get('big')===original;
+      await $.store.delete('big');
+      await $.store.set('recovered', true);
+      return {result:{length:stored.length,expected:length,unchanged,rejected,recovered:await $.store.get('recovered')}};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const length = 4194304 - JSON.stringify({big: ''}).length
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({
+    result:{length,expected:length,unchanged:true,rejected:2,recovered:true},
+  })
+  expect(diagnostics).toEqual([])
+}, 15000)
+
+test.each([
+  { body: "throw Error('start failed')", message: 'start failed' },
+  { body: "await next(e); throw Error('start failed')", message: 'start failed' },
+  { body: 'return {}', message: 'session.start must return cwd' },
+])('ordinary session.start failure recovers without unloading the module: $body', async ({body,message}) => {
+  const consumer=await plugin('recover-start',`let starts=0; export function register(on) {
+    on('session.start',async ($,e,next)=>{${body}});
+    on('session.start',{}, ($,e,next)=>{starts++;return next(e)});
+    on('tool.call',()=>({result:starts}));
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root));await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call',input,async()=>({result:'core'}))).toEqual({result:1})
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'recover-start',stage:'session.start',message})])
+})
+
+test('session.start catch recovery publishes the recovered module', async () => {
+  const consumer=await plugin('catch-start',`let recovered=false; export function register(on) {
+    on('session.start',()=>{throw Error('recover start')}).catch(($,e,next)=>{recovered=true;return next(e)});
+    on('tool.call',()=>({result:recovered}));
+  }`)
+  const {value,diagnostics}=runtime()
+  await value.bind(binding(root));await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call',input,async()=>({result:'core'}))).toEqual({result:true})
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'catch-start',stage:'session.start',message:'recover start'})])
+})
+
+test('recovered start retains completed command registration and unrelated hooks', async () => {
+  const consumer = await plugin('failed-start', `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'broken', description:'Broken'}); throw Error('start failed'); });
+    on('tool.call', () => ({result:'still active'}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  await value.bind(binding(root))
+  expect(value.commands.list().map(command=>command.name)).toEqual(['broken'])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'still active'})
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'failed-start', stage:'session.start', message:'start failed'}))
+})
+
+test('recovered replacement start publishes one new command and callable generation', async () => {
+  const source = (label: string, fail: boolean) => `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'${label}'}); ${fail ? "throw Error('replacement failed');" : 'return next(e);'} });
+    on('command.run', () => ({text:'${label}'}));
+    on('tool.call', () => ({result:'${label}'}));
+  }`
+  const consumer = await plugin('replacement', source('old', false))
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const old = value.commands.list()[0]!
+  const notifications: string[][] = []
+  value.commands.subscribe(() => notifications.push(value.commands.list().map(command => command.description)))
+  await writeFile(consumer.entrypoints[0]!, source('failed', true))
+  await value.reconcile([consumer])
+  const current=value.commands.list()[0]!
+  expect(current).not.toBe(old)
+  expect(current.description).toBe('failed')
+  expect(notifications).toEqual([['failed']])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'failed'})
+  expect(diagnostics).toContainEqual(expect.objectContaining({stage:'session.start', message:'replacement failed'}))
+  if (current.type !== 'local-jsx') throw Error('Expected JSX command')
+  const result: unknown[] = []
+  await (await current.load()).call((text, options) => result.push([text, options?.commandRunText]), {abortController:new AbortController()} as any, '')
+  expect(result).toEqual([['replacement: failed', 'failed']])
+})
+
+test('successful replacement publishes one command snapshot with the new hook generation', async () => {
+  const source = (label: string) => `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'${label}'}); return next(e); });
+    on('tool.call', () => ({result:'${label}'}));
+  }`
+  const consumer = await plugin('swap', source('old'))
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const notifications: string[][] = []
+  const generations: Promise<unknown>[] = []
+  const unsubscribe = value.commands.subscribe(() => {
+    notifications.push(value.commands.list().map(command => command.description))
+    generations.push(value.dispatch('tool.call', input, async () => ({result:'core'})))
+  })
+  await writeFile(consumer.entrypoints[0]!, source('new'))
+  try { await value.reconcile([consumer]) }
+  finally { unsubscribe() }
+  expect(diagnostics).toEqual([])
+  expect(notifications).toEqual([['new']])
+  expect(await Promise.all(generations)).toEqual([{result:'new'}])
+})
+
+test('command commit collision rejects only the candidate and preserves the active owner', async () => {
+  const source = (label: string) => `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'panel', description:'${label}'}); return next(e); });
+    on('tool.call', {tool:'${label}'}, () => ({result:'${label}'}));
+  }`
+  const first = await plugin('first', source('first'))
+  const second = await plugin('second', source('second'))
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([first])
+  await value.reconcile([first, second])
+  expect(value.commands.list().map(command => command.description)).toEqual(['first'])
+  expect(await value.dispatch('tool.call', {...input, tool:'second'}, async () => ({result:'core'}))).toEqual({result:'core'})
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'second', stage:'session.start', message:expect.stringContaining('already owned')}))
+})
+
+test('built-in Mods cannot replace native commands', async () => {
+  const source = (description: string) => `export function register(on) {
+    on('session.start', async ($, e, next) => { await $.command.register({name:'diff', description:${JSON.stringify(description)}}); return next(e); });
+  }`
+  const impostor = await plugin('impostor-diff', source('Impostor'))
+  const official = await plugin('official-diff', source('Official Mod diff'))
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({ services: { commands: () => [builtinDiff] }, onDiagnostic: event => diagnostics.push(event) })
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([{ ...impostor, isNative: true, version: '1.0.0' }])
+  expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
+  expect(value.commands.list()).toEqual([])
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'impostor-diff',stage:'session.start',message:expect.stringContaining('refused: it is the built-in /diff')}))
+
+  diagnostics.length = 0
+  await value.reconcile([{ ...official, storageId: 'diff@builtin', tier: 'builtin' }])
+  expect(value.commands.list()).toEqual([])
+  expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
+  expect(diagnostics).toContainEqual(expect.objectContaining({plugin:'official-diff',stage:'session.start',message:expect.stringContaining('refused: it is the built-in /diff')}))
+})
+
+const officialModsRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
+// Licensed upstream source stays outside the repository; set the fixture root for this integration run.
+for (const registrationError of [undefined, 'command catalog unavailable']) {
+  const name = registrationError === undefined
+    ? 'official diff silently yields to the built-in command'
+    : 'official diff still logs unexpected command registration errors'
+  test.skipIf(!officialModsRoot)(name, async () => {
+    const scenario = async () => {
+      const pluginRoot = join(officialModsRoot!, 'diff')
+      const diagnostics: unknown[] = []
+      const logs: string[] = []
+      const value = createModsRuntime({ services: {
+        commands: () => {
+          if (registrationError !== undefined) throw new Error(registrationError)
+          return [builtinDiff]
+        },
+        uiLog: (_plugin, text) => logs.push(text),
+        uiStatus: () => {},
+        uiPresentation: () => ({columns:160, rows:40, isFullscreen:true, composerEmpty:true, hasDialog:false, keyboardOwned:false}),
+        messages: () => [],
+      }, onDiagnostic: event => diagnostics.push(event) })
+      runtimes.push(value)
+      await value.bind(binding(root))
+      await value.reconcile([{ name:'diff', storageId:'diff@official', pluginRoot, entrypoints:[join(pluginRoot, 'hooks/register.ts')] }])
+      expect(value.commands.list()).toEqual([])
+      expect(value.commands.projection([builtinDiff])).toEqual([builtinDiff])
+      expect(value.ui.getSnapshot()).toEqual([])
+      let coreCalls = 0
+      expect(await value.dispatch('command.run', {
+        command:'diff', args:'', origin:{kind:'composer'}, presentation:{columns:160,isFullscreen:true},
+      }, async () => { coreCalls++; return {text:'builtin diff'} })).toEqual({text:'builtin diff'})
+      expect(coreCalls).toBe(1)
+      expect(diagnostics).toEqual([])
+      expect(logs).toEqual(registrationError === undefined ? [] : [expect.stringContaining(registrationError)])
+    }
+    // Run with production rejection routing rather than bun test's global Worker interception.
+    const source = `
+      import {expect} from 'bun:test';
+      import {join} from 'node:path';
+      import {createModsRuntime} from ${JSON.stringify(new URL('./runtime.ts', import.meta.url).pathname)};
+      import builtinDiff from ${JSON.stringify(new URL('../../commands/diff/index.ts', import.meta.url).pathname)};
+      const root=${JSON.stringify(root)}, officialModsRoot=${JSON.stringify(officialModsRoot)}, registrationError=${JSON.stringify(registrationError)}, runtimes=[];
+      const binding=cwd=>({cwd,sessionId:'test',surface:'terminal',isInteractive:true});
+      try {await (${scenario.toString()})()} finally {await Promise.all(runtimes.map(runtime=>runtime.dispose()))}
+    `
+    const child = Bun.spawn([process.execPath,'-e',source],{stdout:'pipe',stderr:'pipe'})
+    const [exit, stdout, stderr] = await Promise.all([child.exited,new Response(child.stdout).text(),new Response(child.stderr).text()])
+    if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
+    expect(stderr).toBe('')
+    expect(exit).toBe(0)
+  })
+}
+
+const officialTypes = process.env.CLAUDE_CODE_OFFICIAL_MOD_TYPES
+
+test.skipIf(!officialTypes)('an author plugin compiles against the complete target declarations and runs unchanged in a Worker', async () => {
+  const consumer = await plugin('author-contract', `import type {On} from 'claude-code';
+    import {label} from './label.js';
+    export function register(on: On) {
+      on('session.start', async ($, e, next) => {
+        const previous = await $.store.get('starts');
+        await $.store.set('starts', Number(previous ?? 0) + 1);
+        await $.command.register({name:'author-contract', description:label, immediate:true});
+        return next(e);
+      });
+      on('command.run', {command:'author-contract'}, async ($, e) => {
+        await $.fs.write('author.txt', e.args);
+        await $.ui.open({id:'author-pane', title:label, focus:true});
+        const bytes = await $.fs.read('author.txt', {as:'bytes'});
+        const stat = await $.fs.stat('author.txt', {resolve:true});
+        if (typeof bytes.base64 !== 'string' || stat.isLink || !stat.realPath) throw Error('fs contract');
+        await $.clock.sleep(0);
+        if (await $.clock.now() !== 123) throw Error('clock contract');
+        await $.command.register({name:'author-late',description:'Late command'});
+        await $.ui.log('typed debug', {to:'debug'});
+        const usage=await $.session.usage();
+        return {text:JSON.stringify({starts:await $.store.get('starts'), text:await $.fs.read('author.txt'), session:await $.session.id(), window:usage.context.window, answer:await $.store.get('last-answer')})};
+      });
+      on('ui.render', {component:'Pane'}, ($, e) => {
+        const {Box, Text, Button} = $.ui.resolve(e);
+        return <Box flexDirection="column"><Text>{label}</Text><Button key="close" label="Close" onPress={() => $.ui.close({id:'author-pane'})} /></Box>;
+      });
+      on('prompt.submit', ($, e, next) => next({...e, context:[...(e.context ?? []), label]}));
+      on('turn.complete', async ($, e, next) => { await $.store.set('last-answer', e.answer); return next(e); });
+    }`)
+  const entry = join(consumer.pluginRoot, 'register.tsx')
+  await writeFile(entry, await readFile(consumer.entrypoints[0]!, 'utf8'))
+  consumer.entrypoints = [entry]
+  await writeFile(join(consumer.pluginRoot, 'label.ts'), `export const label = 'typed author contract'`)
+  const invalid = join(consumer.pluginRoot, 'invalid-contract.ts')
+  await writeFile(invalid, `import type {CommandRunResult, PromptSubmitResult, ProcessRunInit} from 'claude-code';
+    // @ts-expect-error refs name numeric runs, not string ids
+    const run: CommandRunResult = {ref:'1'};
+    // @ts-expect-error prompt context is a readonly list, not a scalar
+    const prompt: PromptSubmitResult = {text:'hello', context:'invalid'};
+    // @ts-expect-error timeouts are numeric milliseconds
+    const init: ProcessRunInit = {timeoutMs:'100'};
+    // @ts-expect-error no Node globals in a plugin realm
+    process.exit(0);
+    // @ts-expect-error omitted breakdown means plain, not a string value
+    const usage: import('claude-code').SessionUsageArgs = {breakdown:'none'};
+    void [run, prompt, init, usage];
+  `)
+  const hostlessEntry = join(consumer.pluginRoot, 'hostless.ts')
+  await writeFile(hostlessEntry, `import type {On} from 'claude-code'; export function register(on: On) {
+    on('session.start', async ($, e, next) => { await $.tool.check({tool:'Read',input:{file_path:'sample.txt'}}); return next(e); });
+  }`)
+  const policy=await plugin('author-clock',`import type {On} from 'claude-code'; export function register(on: On) {
+    on('clock.now',()=>({value:123}));
+    on('clock.sleep',($,e,next)=>next({...e,ms:0}));
+  }`)
+  const config = join(consumer.pluginRoot, 'tsconfig.json')
+  await writeFile(config, JSON.stringify({compilerOptions:{
+    target:'es2023', lib:['es2023'], types:[], module:'esnext', moduleResolution:'bundler',
+    strict:true, noUncheckedIndexedAccess:true, noEmit:true, skipLibCheck:false,
+    jsx:'react', jsxFactory:'h', jsxFragmentFactory:'Fragment',
+  }, files:[officialTypes,entry,invalid,hostlessEntry,policy.entrypoints[0]]}))
+  const compiler = Bun.spawn([process.execPath, new URL('../../../node_modules/typescript/bin/tsc', import.meta.url).pathname, '--project', config, '--pretty', 'false'], {stdout:'pipe', stderr:'pipe', timeout:15000})
+  const [exit, stdout, stderr] = await Promise.all([compiler.exited, new Response(compiler.stdout).text(), new Response(compiler.stderr).text()])
+  if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
+  expect(exit).toBe(0)
+  const declaration = await loadModDeclaration(consumer)
+  expect(declaration.modules.map(module => module.path).sort()).toEqual([entry,join(consumer.pluginRoot, 'label.ts')].sort())
+  expect(declaration.calls).toEqual(['clock.now','clock.sleep','command.register','fs.read','fs.stat','fs.write','session.id','session.usage','store.get','store.set','ui.close','ui.log','ui.open','ui.resolve'])
+  const diagnostics: unknown[] = [], logs:unknown[]=[]
+  const value = createModsRuntime({services:{
+    uiPresentation:() => ({columns:160,rows:40,isFullscreen:true,composerEmpty:true,hasDialog:false,keyboardOwned:false}),
+    uiLog:(plugin,text,to)=>logs.push([plugin,text,to]),
+    captureUsage:() => async () => ({startedAt:1791080000123,context:{window:200000},rateLimits:[],cost:{usd:0}}),
+  }, onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([policy, consumer])
+  expect(diagnostics).toEqual([])
+  expect(value.commands.list()).toHaveLength(1)
+  const run = () => value.dispatch('command.run', {command:'author-contract',args:'literal input',origin:{kind:'composer'},presentation:{columns:160,isFullscreen:true}}, async () => { throw Error('author command was not dispatched') })
+  expect(await run()).toEqual({text:JSON.stringify({starts:1,text:'literal input',session:'test',window:200000})})
+  expect(logs).toEqual([['author-contract','typed debug','debug']])
+  expect(value.commands.list().map(command=>command.name)).toEqual(['author-contract','author-late'])
+  const pane = value.ui.getSnapshot()[0]!
+  expect(pane).toMatchObject({visible:true,title:'typed author contract'})
+  const button = (pane.tree as any).children[1]
+  await value.ui.interact(pane.id,pane.drawing!,button.press,'press','close')
+  expect(value.ui.getSnapshot()).toEqual([])
+  const submitted = {text:'question',origin:{kind:'composer'},wait:false,context:['existing']}
+  expect(await value.dispatch('prompt.submit',submitted, async event => ({text:event.text,context:event.context,origin:event.origin}))).toEqual({text:'question',context:['existing','typed author contract'],origin:{kind:'composer'}})
+  await value.bind({...binding(root),sessionId:'resumed'})
+  expect(await run()).toEqual({text:JSON.stringify({starts:1,text:'literal input',session:'resumed',window:200000})})
+  await value.reconcile([])
+  expect(value.commands.list()).toEqual([])
+  expect(value.ui.getSnapshot()).toEqual([])
+  await value.reconcile([policy, consumer])
+  expect(await run()).toEqual({text:JSON.stringify({starts:2,text:'literal input',session:'resumed',window:200000})})
+  const {createModTurnCompletion} = await import('./turnAdapter.js')
+  const snapshot = value.capture()
+  try {
+    expect((await createModTurnCompletion('author-turn').complete(snapshot, {durationMs:1,aborted:false,failed:false})).result).toEqual({text:''})
+  } finally { snapshot.release() }
+  expect(await run()).toEqual({text:JSON.stringify({starts:2,text:'literal input',session:'resumed',window:200000,answer:''})})
+  expect(diagnostics).toEqual([])
+  const hostless = {...consumer,entrypoints:[hostlessEntry]}
+  expect((await loadModDeclaration(hostless)).calls).toEqual(['tool.check'])
+  await value.reconcile([policy, hostless])
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'author-contract',stage:'session.start',message:'Tool permission host is unavailable on this host'})])
+  expect(value.commands.list()).toEqual([])
+  expect(value.ui.getSnapshot()).toEqual([])
+  let coreCalls = 0
+  expect(await value.dispatch('command.run', {command:'author-contract',args:''}, async () => {
+    coreCalls++
+    return {text:'hostless core'}
+  })).toEqual({text:'hostless core'})
+  expect(coreCalls).toBe(1)
+  await value.reconcile([policy, consumer])
+  expect(await run()).toEqual({text:JSON.stringify({starts:3,text:'literal input',session:'resumed',window:200000,answer:''})})
+}, 25000)
+
+const input = { tool: 'Read', tool_use_id: 'host-test' }
+const binding = (cwd: string) => ({ cwd, sessionId: 'test', surface: 'terminal' as const, isInteractive: true })
+
+test('real Worker maps positional fs/process/store calls into hook envelopes and respects rewrites', async () => {
+  await writeFile(join(root, 'actual.txt'), 'contents')
+  const rewriter = await plugin('rewrite', `export function register(on) {
+    on('fs.read', ($, e, next) => next({...e, path:'actual.txt'}));
+    on('process.run', ($, e, next) => next({...e, argv:[...e.argv, 'arg with spaces']}));
+  }`)
+  const consumer = await plugin('consumer', `export function register(on) {
+    on('tool.call', async ($) => {
+      const text = await $.fs.read('missing.txt');
+      const process = await $.process.run(['${process.execPath.replaceAll('\\', '\\\\')}', '-e', 'process.stdout.write(process.argv[1])']);
+      await $.store.set('item', {text, stdout:process.stdout});
+      return {result:await $.store.get('item')};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([rewriter, consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: { text: 'contents', stdout: 'arg with spaces' } })
+  expect(diagnostics).toEqual([])
+})
+
+test('parent cancellation terminates the process owned by the interrupted hook, without core replay', async () => {
+  const consumer = await plugin('cancel-process', `export function register(on) {
+    on('tool.call', async ($) => { await $.process.run([${JSON.stringify(process.execPath)}, '-e', 'await Bun.write("child.pid", String(process.pid)); setInterval(() => {}, 1000)']); return {result:'unexpected'}; });
+  }`)
+  const { value } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const controller = new AbortController()
+  let calls = 0
+  const pending = value.dispatch('tool.call', input, async () => { calls++; return {result:'core'} }, {signal:controller.signal}).then(() => null, error => error)
+  let pid: number | undefined
+  try {
+    const deadline = Date.now() + 3000
+    while (!pid) {
+      pid = await readFile(join(root, 'child.pid'), 'utf8').then(Number, () => undefined)
+      if (Date.now() > deadline) throw Error('Child did not start')
+      if (!pid) await delay(10)
+    }
+    const reason = new Error('cancelled by parent')
+    controller.abort(reason)
+    expect(await pending).toBe(reason)
+    let exited = false
+    const exitDeadline = Date.now() + 700
+    while (!exited && Date.now() < exitDeadline) {
+      try { process.kill(pid, 0) } catch (error) { exited = (error as NodeJS.ErrnoException).code === 'ESRCH' }
+      if (!exited) await delay(10)
+    }
+    expect(exited).toBe(true)
+    expect(calls).toBe(0)
+  } finally {
+    controller.abort()
+    await value.dispose()
+    await pending
+  }
+})
+
+test('parent cancellation reaches an in-flight Worker filesystem read without retiring its activation', async () => {
+  const source = `
+    import { expect, mock } from 'bun:test';
+    import * as filesystem from 'node:fs/promises';
+    const actual = {...filesystem};
+    const path = ${JSON.stringify(join(root, 'cancelled-read.txt'))};
+    await actual.writeFile(path, Buffer.alloc(128 * 1024, 65));
+    let entered, unblock, closed;
+    const reading = new Promise(resolve => { entered = resolve });
+    const barrier = new Promise(resolve => { unblock = resolve });
+    const closing = new Promise(resolve => { closed = resolve });
+    let reads = 0;
+    mock.module('node:fs/promises', () => ({...actual, open: async (...args) => {
+      const file = await actual.open(...args);
+      if (args[0] !== path) return file;
+      return {
+        async read(...args) {
+          reads++;
+          if (reads === 1) { entered(); await barrier; }
+          return file.read(...args);
+        },
+        async close() { try { await file.close(); } finally { closed(); } },
+      };
+    }}));
+    const {createModsRuntime} = await import(${JSON.stringify(new URL('./runtime.ts', import.meta.url).pathname)});
+    const runtime = createModsRuntime();
+    const controller = new AbortController();
+    let coreCalls = 0;
+    let pending;
+    try {
+      await runtime.bind(${JSON.stringify(binding(root))});
+      await runtime.reconcile([${JSON.stringify(await plugin('cancel-fs', `export function register(on) {
+        on('tool.call', async ($, e) => ({result:await $.fs.read(e.path)}));
+      }`))}]);
+      pending = runtime.dispatch('tool.call', {...${JSON.stringify(input)}, path}, async () => {
+        coreCalls++; return {result:'core'};
+      }, {signal:controller.signal}).then(() => null, error => error);
+      await reading;
+      controller.abort();
+      unblock();
+      expect((await pending).name).toBe('AbortError');
+      await closing;
+      expect(reads).toBe(1);
+      expect(coreCalls).toBe(0);
+      const next = ${JSON.stringify(join(root, 'after-cancel.txt'))};
+      await actual.writeFile(next, 'activation remains live');
+      expect(await runtime.dispatch('tool.call', {...${JSON.stringify(input)}, path:next}, async () => {
+        coreCalls++; return {result:'core'};
+      })).toEqual({result:'activation remains live'});
+      expect(coreCalls).toBe(0);
+    } finally {
+      controller.abort();
+      unblock();
+      await runtime.dispose();
+      await pending;
+      mock.restore();
+    }
+  `
+  const child = Bun.spawn([process.execPath, '-e', source], {stdout:'pipe', stderr:'pipe', timeout:30000})
+  const [exit, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
+  if (exit !== 0) throw new Error(`${stdout}\n${stderr}`)
+  expect(exit).toBe(0)
+}, 35000)
+
+test('Worker prompt.read and prompt.fill reach the mounted prompt box with caller-scoped visibility', async () => {
+  const caller = await plugin('prompt-caller', `export function register(on) {
+    on('tool.call', async ($, e) => ({result:e.read
+      ? await $.prompt.read()
+      : await $.prompt.fill({text:e.text, mode:e.mode})}));
+  }`)
+  const fillPolicy = await plugin('prompt-policy', `export function register(on) {
+    on('prompt.fill', ($, e, next) => {
+      if (e.origin.kind !== 'plugin' || e.origin.name !== 'prompt-caller') throw Error('unpinned prompt.fill origin');
+      return next({...e, text:'['+e.text+']'});
+    });
+  }`)
+  const fillOnly = await plugin('fill-only', `export function register(on) {
+    on('tool.call', async ($, e) => ({result:await $.prompt.fill({text:e.text, mode:e.mode})}));
+  }`)
+  const denied = await plugin('read-denied', `export function register(on) {
+    on('prompt.read', () => ({deny:'private draft'}));
+  }`)
+  expect((await loadModDeclaration(caller)).calls).toEqual(['prompt.fill', 'prompt.read'])
+  expect((await loadModDeclaration(fillOnly)).calls).toEqual(['prompt.fill'])
+
+  let draft = { text: 'A😀B', cursor: 3 }
+  let hasDialog = false
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({
+    onDiagnostic: event => diagnostics.push(event),
+    services: {
+      uiPresentation: () => ({columns:80, rows:24, isFullscreen:false, composerEmpty:false, hasDialog, keyboardOwned:false}),
+      prompt: () => ({
+        read: () => ({...draft}),
+        isBlocked: () => hasDialog,
+        fill: ({text, mode}: {text:string; mode:'replace'|'append'|'insert'}) => {
+          if (mode === 'replace') draft = {text, cursor:text.length}
+          else if (mode === 'append') draft = {text:draft.text + text, cursor:draft.text.length + text.length}
+          else draft = {text:draft.text.slice(0, draft.cursor) + text + draft.text.slice(draft.cursor), cursor:draft.cursor + text.length}
+          return true
+        },
+      }),
+    } as any,
+  })
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([caller, fillPolicy])
+  expect(await value.dispatch('tool.call', {read:true}, async () => ({result:'core'}))).toEqual({result:{text:'A😀B', cursor:3}})
+  expect(await value.dispatch('tool.call', {text:'x', mode:'insert'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:true, text:'A😀[x]B', cursor:6},
+  })
+  hasDialog = true
+  expect(await value.dispatch('tool.call', {text:'ignored', mode:'append'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:false, refusal:'dialog', text:'A😀[x]B', cursor:6},
+  })
+  expect(draft).toEqual({text:'A😀[x]B', cursor:6})
+
+  hasDialog = false
+  await value.reconcile([fillOnly])
+  expect(await value.dispatch('tool.call', {text:'!', mode:'append'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:true, text:'', cursor:0},
+  })
+  expect(draft).toEqual({text:'A😀[x]B!', cursor:8})
+
+  await value.reconcile([caller, denied])
+  expect(await value.dispatch('tool.call', {text:'?', mode:'append'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:true, text:'', cursor:0},
+  })
+  expect(draft).toEqual({text:'A😀[x]B!?', cursor:9})
+
+  await value.reconcile([caller])
+  await value.bind({...binding(root), surface:null, isInteractive:false})
+  expect(await value.dispatch('tool.call', {read:true}, async () => ({result:'core'}))).toEqual({
+    result:{text:'', cursor:0},
+  })
+  expect(await value.dispatch('tool.call', {text:'headless', mode:'replace'}, async () => ({result:'core'}))).toEqual({
+    result:{isFilled:false, refusal:'no_composer', text:'', cursor:0},
+  })
+  expect(draft).toEqual({text:'A😀[x]B!?', cursor:9})
+  expect(diagnostics).toEqual([])
+})
+
+test('session messages read a stable live getter and rebinding updates the actual working directory', async () => {
+  const consumer = await plugin('session', `export function register(on) {
+    on('tool.call', async ($) => ({result: {
+      cwd:await $.session.cwd(), id:await $.session.id(), messages:await $.session.messages(),
+      text:await $.fs.read('state.txt')
+    }}));
+  }`)
+  let messages = [{ role: 'user', content: 'first' }]
+  const { value, diagnostics } = runtime(() => messages)
+  await writeFile(join(root, 'state.txt'), 'first')
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const first = await value.dispatch('tool.call', input, async () => ({ result: 'core' })) as any
+  expect(first.result.messages).toEqual(messages)
+  const next = join(root, 'second')
+  await mkdir(next)
+  await writeFile(join(next, 'state.txt'), 'second')
+  messages = [{ role: 'user', content: 'second' }]
+  await value.bind({ ...binding(next), sessionId: 'resumed' })
+  const second = await value.dispatch('tool.call', input, async () => ({ result: 'core' })) as any
+  expect(second.result).toEqual({ cwd: next, id: 'resumed', messages, text: 'second' })
+})
+
+test('session messages keep the live main getter across a captured child request and rebinding', async () => {
+  const consumer = await plugin('main-messages', `export function register(on) {
+    on('tool.call', async $ => ({result:await $.session.messages()}));
+  }`)
+  let messages = [{role:'user',text:'main before',toolUses:[]}]
+  const {value, diagnostics} = runtime(() => messages)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  // A legacy embedder's extra field must not change the main-session contract.
+  const childServices = {tools:() => [], messages:() => [{role:'user',text:'child only',toolUses:[]}]}
+  const snapshot = value.capture(childServices)
+  try {
+    expect(await snapshot.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:messages})
+    messages = [{role:'user',text:'main after resume',toolUses:[]}]
+    await value.bind({...binding(root),sessionId:'resumed'})
+    expect(await snapshot.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:messages})
+    expect(diagnostics).toEqual([])
+  } finally { snapshot.release() }
+})
+
+test('session messages reject an unavailable main getter instead of falling back to a child request', async () => {
+  const consumer = await plugin('unavailable-messages', `export function register(on) {
+    on('tool.call', async $ => {
+      try { return {result:await $.session.messages()}; }
+      catch (error) { return {result:error.message}; }
+    });
+  }`)
+  const diagnostics: unknown[] = []
+  const value = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(value)
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  const childServices = {tools:() => [], messages:() => [{role:'user',text:'child only',toolUses:[]}]}
+  const snapshot = value.capture(childServices)
+  try {
+    expect(await snapshot.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'Session messages are unavailable on this host'})
+    expect(diagnostics).toEqual([])
+  } finally { snapshot.release() }
+})
+
+test('withholding a core noun prevents host side effects without removing other capabilities', async () => {
+  // Official 2.1.292 rejects user-tier core withholding; this fold models managed policy.
+  const policy = await plugin('policy', `export function register(on) {
+    on('engine.create', async ($, e, next) => { const below=await next(e); return {clock:below.clock, process:below.process, store:below.store, session:below.session, command:below.command}; });
+  }`)
+  const consumer = await plugin('write', `export function register(on) {
+    on('tool.call', async ($) => { await $.fs.write('forbidden.txt', 'not written'); return {result:'bad'}; });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([{ ...policy, tier: 'prepend' }, consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({ result: 'core' }))).toEqual({ result: 'core' })
+  expect(diagnostics).toEqual([expect.objectContaining({ plugin: 'write', message: expect.stringContaining('withheld') })])
+  expect(await readFile(join(root, 'forbidden.txt')).then(() => 'exists', error => error.code)).toBe('ENOENT')
+})
+
+test('settings.read exposes accepted settings through the real Worker and returns independent snapshots', async () => {
+  const policy = { allowedMcpServers: [{ serverName: 'corp' }], env: { FIXTURE: 'accepted' } }
+  setCachedSettingsForSource('policySettings', policy)
+  setSessionSettingsCache({ settings: { model: 'merged-fixture' }, errors: [] })
+  const consumer = await plugin('settings-reader', `export function register(on) {
+    on('tool.call', async ($) => {
+      const policy = await $.settings.read({source:'policy'});
+      try { policy.env.FIXTURE = 'changed by plugin'; } catch (error) {
+        if (!String(error).includes('readonly')) throw error;
+      }
+      return {result:{policy:await $.settings.read({source:'policy'}), merged:await $.settings.read()}};
+    });
+  }`)
+  expect((await loadModDeclaration(consumer)).calls).toEqual(['settings.read'])
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  const result = await value.dispatch('tool.call', input, async () => ({result:'core'}))
+  expect(diagnostics).toEqual([])
+  expect(result).toEqual({result:{policy, merged:{model:'merged-fixture'}}})
+  setCachedSettingsForSource('policySettings', { model: 'updated-policy', env: { FIXTURE: 'updated' } })
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{policy:{model:'updated-policy',env:{FIXTURE:'updated'}}, merged:{model:'merged-fixture'}}})
+  expect(diagnostics).toEqual([])
+})
+
+test('settings.read skips only the calling hook, preserving same-plugin policy gating and pinned origin', async () => {
+  setCachedSettingsForSource('policySettings', { allowedMcpServers: [{ serverName: 'corp' }] })
+  const policy = await plugin('settings-guard', `export function register(on) {
+    on('settings.read', ($, e, next) => next.to(e, 'append'));
+    on('tool.call', async ($) => ({result:await $.settings.read({source:'policy'})}));
+  }`)
+  const witness = await plugin('settings-stripper', `export function register(on) {
+    on('settings.read', () => ({value:{stripped:true}}));
+  }`)
+  const observer = await plugin('settings-observer', `export function register(on) {
+    on('settings.read', async ($, e, next) => ({value:{...(await next(e)).value, origin:next.origin}}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([{...policy, tier:'prepend'}, witness, {...observer, tier:'append'}])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{
+    allowedMcpServers:[{serverName:'corp'}], origin:{plugin:'settings-guard',tier:'prepend'},
+  }})
+  expect(diagnostics).toEqual([])
+})
+
+test('settings.read remains hookable for rewrite, deny and same-event reentry', async () => {
+  setCachedSettingsForSource('userSettings', { model:'user-fixture' })
+  setCachedSettingsForSource('policySettings', { model:'policy-fixture' })
+  const middleware = await plugin('settings-rewriter', `export function register(on) {
+    on('settings.read', async ($, e) => {
+      if (e.source === 'local') return {deny:'settings denied'};
+      return {value:await $.settings.read({source:'user'})};
+    });
+    on('settings.read', {}, async ($, e, next) => ({value:{...(await next(e)).value, source:e.source}}));
+  }`)
+  const consumer = await plugin('settings-consumer', `export function register(on) {
+    on('tool.call', async ($) => {
+      const result = await $.settings.read({source:'policy'});
+      try { await $.settings.read({source:'local'}); } catch (error) { return {result:{...result, denied:error.message}}; }
+      return {result:'not denied'};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([middleware, consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{model:'user-fixture',source:'user',denied:'settings denied'}})
+  expect(diagnostics).toEqual([])
+})
+
+test('capability calls run sibling hooks and skip only the currently calling registration', async () => {
+  await writeFile(join(root, 'actual.txt'), 'host text')
+  const consumer = await plugin('sibling-reader', `let entries=0; export function register(on) {
+    on('tool.call', async ($) => ({result:{text:await $.fs.read('alias.txt'),entries}}));
+    on('fs.read', async ($, e) => { entries++; return {value:await $.fs.read('actual.txt')}; });
+    on('fs.read', {}, async ($, e, next) => ({value:(await next(e)).value+':'+e.path+':'+next.origin.plugin}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({
+    result:{text:`host text:${join(root, 'actual.txt')}:sibling-reader`,entries:1},
+  })
+  expect(diagnostics).toEqual([])
+})
+
+test('custom noun calls retain same-plugin middleware and host-owned origin', async () => {
+  const consumer = await plugin('custom-siblings', `export function register(on) {
+    on('engine.create', async ($, e, next) => { const below=await next(e); return {...below,greeting:{read:(e) => e.text}}; });
+    on('greeting.read', ($, e, next) => next({...e,text:e.text+':'+next.origin.plugin}));
+    on('tool.call', async ($) => ({result:await $.greeting.read({text:'hello'})}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'}))).toEqual({result:'hello:custom-siblings'})
+  expect(diagnostics).toEqual([])
+})
+
+test('clock callbacks exclude the whole owning plugin after the original hook receipt settles', async () => {
+  await writeFile(join(root, 'callback.txt'), 'callback text')
+  const consumer = await plugin('callback-siblings', `let result, release; export function register(on) {
+    on('tool.call', {tool:'Start'}, async ($) => {
+      await new Promise(started => $.clock.after(0, async () => {
+        await new Promise(resolve => { release=resolve; started(); });
+        try { result=await $.fs.read('callback.txt'); }
+        catch (error) { result={error:error.message}; }
+      }));
+      return {result:'started'};
+    });
+    on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+next.origin.plugin}));
+    on('tool.call', {tool:'Release'}, () => { release(); return {result:'released'}; });
+    on('tool.call', {tool:'Result'}, () => ({result}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call', {...input,tool:'Start'}, async () => ({result:'unexpected core'}))).toEqual({result:'started'})
+  expect(await value.dispatch('tool.call', {...input,tool:'Release'}, async () => ({result:'unexpected core'}))).toEqual({result:'released'})
+  const deadline = Date.now() + 2000
+  let result: unknown
+  do {
+    result = await value.dispatch('tool.call', {...input,tool:'Result'}, async () => ({result:'unexpected core'}))
+    if ((result as {result?: unknown}).result !== undefined) break
+    await delay(5)
+  } while (Date.now() < deadline)
+  // Official 2.1.292 native: the original receipt is settled before Release.
+  expect(result).toEqual({result:'callback text'})
+  expect(diagnostics).toEqual([])
+})
+
+test('clock callbacks preserve a live original registration and run its same-plugin siblings', async () => {
+  await writeFile(join(root, 'callback-live.txt'), 'live text')
+  const consumer = await plugin('callback-live', `export function register(on) {
+    on('tool.call', ($) => new Promise(resolve => {
+      $.clock.after(0, async () => {
+        try { resolve({result:await $.fs.read('callback-live.txt')}); }
+        catch (error) { resolve({result:{error:error.message}}); }
+      });
+    }));
+    on('fs.read', async ($, e, next) => ({value:(await next(e)).value+':'+next.origin.plugin}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.bind(binding(root))
+  await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'unexpected core'})))
+    .toEqual({result:'live text:callback-live'})
+  expect(diagnostics).toEqual([])
+})
+
+test('settings.read captured capability is revoked by withholding and recovers when withholding is removed', async () => {
+  setCachedSettingsForSource('policySettings', { model:'accepted-policy' })
+  const consumer = await plugin('settings-captured', `let read; export function register(on) {
+    on('tool.call', async ($) => {
+      if (!read) read = () => $.settings.read({source:'policy'});
+      try { return {result:await read()}; } catch (error) { return {result:error.message}; }
+    });
+  }`)
+  const policy = await plugin('settings-withholder', `export function register(on) {
+    on('engine.create', async ($, e, next) => { const below=await next(e); return {clock:below.clock,fs:below.fs,process:below.process,store:below.store,session:below.session,command:below.command,ui:below.ui}; });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{model:'accepted-policy'}})
+  await value.reconcile([{...policy,tier:'prepend'}, consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:expect.stringContaining('withheld')})
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{model:'accepted-policy'}})
+  await value.reconcile([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'core'})
+  expect(diagnostics).toEqual([])
+})
+
+test('settings.read rejects invalid Worker arguments instead of reading merged settings', async () => {
+  setSessionSettingsCache({settings:{model:'must-not-leak'},errors:[]})
+  const consumer = await plugin('settings-invalid', `export function register(on) {
+    on('tool.call', async ($) => {
+      const rejected = [];
+      for (const args of [null, [], 'policy', {source:'policySettings'}, {source:null}]) {
+        try { await $.settings.read(args); rejected.push(false); } catch { rejected.push(true); }
+      }
+      return {result:rejected};
+    });
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:[true,true,true,true,true]})
+  expect(diagnostics).toEqual([])
+})
+
+test('settings.read cannot be replaced by a plugin-provided settings noun', async () => {
+  setCachedSettingsForSource('policySettings', {model:'accepted-policy'})
+  const impostor = await plugin('settings-impostor', `export function register(on) {
+    on('engine.create', async ($, e, next) => { const below=await next(e); return {...below,settings:{read:() => ({model:'forged'})}}; });
+  }`)
+  const consumer = await plugin('settings-owner-reader', `export function register(on) {
+    on('tool.call', async ($) => ({result:await $.settings.read({source:'policy'})}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([impostor,consumer])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:{model:'accepted-policy'}})
+  expect(diagnostics).toEqual([expect.objectContaining({plugin:'settings-impostor',stage:'engine.create',message:expect.stringContaining('may not replace noun settings')})])
+})
+
+test('settings.read is refused during unadmitted engine construction', async () => {
+  setCachedSettingsForSource('policySettings', { model:'accepted-policy' })
+  const consumer = await plugin('settings-candidate', `let result; export function register(on) {
+    on('engine.create', async ($, e, next) => {
+      const below=await next(e);
+      try { result=await below.settings.read({source:'policy'}); } catch (error) { result=error.message; }
+      return {...below};
+    });
+    on('tool.call', () => ({result}));
+  }`)
+  const { value, diagnostics } = runtime()
+  await value.reconcile([consumer])
+  expect(diagnostics).toEqual([])
+  expect(await value.dispatch('tool.call', input, async () => ({result:'core'}))).toEqual({result:'Module has not been admitted'})
+  expect(diagnostics).toEqual([])
+})

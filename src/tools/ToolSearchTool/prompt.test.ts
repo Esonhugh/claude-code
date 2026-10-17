@@ -1,10 +1,21 @@
 import { describe, expect, test } from 'bun:test'
 import type { Tool } from '../../Tool.js'
-import { formatDeferredToolLines } from './prompt.js'
+import { formatDeferredToolLines, isDeferredTool } from './prompt.js'
 
 function tools(...names: string[]): Tool[] {
   return names.map(name => ({ name }) as Tool)
 }
+
+
+test('Mods placement overrides MCP/alwaysLoad defaults but cannot defer ToolSearch itself', () => {
+  const mcp = { name: 'mcp__corp__lookup', isMcp: true } as Tool
+  const eager = { name: 'Read', alwaysLoad: true } as Tool
+  expect(isDeferredTool(mcp)).toBe(true)
+  expect(isDeferredTool(mcp, false)).toBe(false)
+  expect(isDeferredTool(eager)).toBe(false)
+  expect(isDeferredTool(eager, true)).toBe(true)
+  expect(isDeferredTool({ name: 'ToolSearch' } as Tool, true)).toBe(false)
+})
 
 describe('formatDeferredToolLines', () => {
   test('keeps small namespaces and non-MCP tools exact', () => {

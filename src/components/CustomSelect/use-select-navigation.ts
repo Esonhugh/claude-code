@@ -514,7 +514,7 @@ export function useSelectNavigation<T>({
     {
       visibleOptionCount,
       options,
-      initialFocusValue: focusValue || initialFocusValue,
+      initialFocusValue: focusValue !== undefined ? focusValue : initialFocusValue,
     } as Parameters<typeof createDefaultState<T>>[0],
     createDefaultState<T>,
   )

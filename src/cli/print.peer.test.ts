@@ -1,5 +1,5 @@
 import { expect, spyOn, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import React from 'react'
@@ -23,7 +23,7 @@ if (process.env[childFlag] !== '1') {
     )
     try {
       const child = Bun.spawn(
-        [process.execPath, 'test', '--feature=UDS_INBOX', import.meta.path],
+        [process.execPath, 'test', '--feature=UDS_INBOX', '--feature=KAIROS_CHANNELS', import.meta.path],
         {
           cwd: join(import.meta.dir, '../..'),
           env: {
@@ -63,12 +63,18 @@ if (process.env[childFlag] !== '1') {
   const { createAssistantMessage } = await import('../utils/messages.js')
   const queryModule = await import('../query.js')
   const contextModule = await import('../utils/queryContext.js')
+  const userContextModule = await import('../context.js')
+  const {
+    getUserContextInstructionFiles,
+    withUserContextInstructionFiles,
+  } = userContextModule
   const commandModule = await import('../commands.js')
   const plugins = await import('../utils/plugins/pluginLoader.js')
   const hooks = await import('../utils/hooks.js')
   const attachments = await import('../utils/attachments.js')
   const storage = await import('../utils/sessionStorage.js')
   const fileHistory = await import('../utils/fileHistory.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
 
   const origin: MessageOrigin = {
     kind: 'peer',
@@ -100,17 +106,26 @@ if (process.env[childFlag] !== '1') {
         canBatchWith({ ...plain, [flag]: true }, { ...plain, [flag]: true }),
       ).toBe(true)
     }
+    expect(canBatchWith(plain, { ...plain, priority: 'later' })).toBe(false)
+    expect(canBatchWith({ ...plain, priority: 'later' }, { ...plain, priority: 'later' })).toBe(true)
     expect(canBatchWith(plain, { ...plain, workload: 'other' })).toBe(false)
     expect(canBatchWith(plain, { ...plain, mode: 'task-notification' })).toBe(
       false,
     )
     expect(canBatchWith(plain, undefined)).toBe(false)
     expect(canBatchWith(plain, plain)).toBe(true)
+    const stamped = {
+      ...plain,
+      promptSubmitMetadata: { origin: { kind: 'composer' as const }, wait: true, turnId: 'active-turn' },
+    }
+    expect(canBatchWith(stamped, plain)).toBe(false)
+    expect(canBatchWith(plain, stamped)).toBe(false)
+    expect(canBatchWith(stamped, stamped)).toBe(false)
     expect(joinPromptValues(['first', 'second'])).toBe('first\nsecond')
   })
 
-  test.each(['incoming', 'held-at-start'] as const)(
-    'headless preserves %s peer input, live permissions, and EOF cleanup',
+  test.each(['incoming', 'held-at-start', 'channel'] as const)(
+    'headless preserves %s input, live permissions, and EOF cleanup',
     async arrival => {
       const { runHeadless } = await import('./print.js')
       const engineModule = await import('../QueryEngine.js')
@@ -128,6 +143,13 @@ if (process.env[childFlag] !== '1') {
       const toolPool = await import('../tools.js')
       const { SandboxManager } =
         await import('../utils/sandbox/sandbox-adapter.js')
+      const bootstrap = await import('../bootstrap/state.js')
+      const { wrapChannelMessage } =
+        await import('../services/mcp/channelNotification.js')
+      const priorChannels = bootstrap.getAllowedChannels()
+      let channelNotification:
+        | ((notification: { params: { content: string } }) => Promise<void>)
+        | undefined
       const settingsChanges =
         await import('../utils/settings/changeDetector.js')
       const settingsApplication =
@@ -214,16 +236,38 @@ if (process.env[childFlag] !== '1') {
           } as import('../entrypoints/agentSdkTypes.js').SDKMessage
         }),
       ]
+      const expectedOrigin: MessageOrigin = arrival === 'channel'
+        ? { kind: 'channel', server: 'fixture' } : origin
       const command: QueuedCommand = {
         mode: 'prompt',
         value: '/peer-input @private-file',
-        origin,
+        origin: expectedOrigin,
         skipSlashCommands: true,
         skipAttachments: true,
         isMeta: true,
         uuid: '33333333-3333-4333-8333-333333333333',
+        promptSubmitMetadata: { origin: { kind: 'peer' }, wait: false, turnId: 'receiving-turn' },
       }
       let state = getDefaultAppState()
+      if (arrival === 'channel') {
+        bootstrap.setAllowedChannels([
+          { kind: 'server', name: 'fixture', dev: true },
+        ])
+        state.mcp.clients = [
+          {
+            name: 'fixture',
+            type: 'connected',
+            capabilities: { experimental: { 'claude/channel': {} } },
+            config: { type: 'stdio', command: 'fixture', args: [], scope: 'user' },
+            client: {
+              setNotificationHandler: (
+                _schema: unknown,
+                handler: typeof channelNotification,
+              ) => { channelNotification = handler },
+            },
+          } as unknown as import('../services/mcp/types.js').MCPServerConnection,
+        ]
+      }
       if (arrival === 'held-at-start') {
         heldCommand = command
         releaseOnRefresh = true
@@ -260,7 +304,12 @@ if (process.env[childFlag] !== '1') {
           request: { subtype: 'set_permission_mode', mode: 'default' },
         }) + '\n'
         permissionClasses.push(peers.getPeerPermissionClass())
-        if (arrival === 'incoming') {
+        if (arrival === 'channel') {
+          expect(channelNotification).toBeDefined()
+          await channelNotification!({
+            params: { content: command.value as string },
+          })
+        } else if (arrival === 'incoming') {
           enqueue(command)
           peers.notifyEnqueued()
         }
@@ -299,11 +348,18 @@ if (process.env[childFlag] !== '1') {
           } as Parameters<typeof runHeadless>[7],
         )
         expect(received).toHaveLength(2)
-        expect(received[1]?.origin).toEqual(origin)
-        expect(received[0]).toMatchObject({
+        expect(received[1]?.origin).toEqual(expectedOrigin)
+        expect(received[0]).toMatchObject(arrival === 'channel' ? {
+          prompt: wrapChannelMessage('fixture', command.value as string),
+          origin: expectedOrigin,
+          isMeta: true,
+          skipSlashCommands: true,
+          skipAttachments: true,
+        } : {
           prompt: command.value,
           promptUuid: command.uuid,
-          origin,
+          promptSubmitMetadata: command.promptSubmitMetadata,
+          origin: expectedOrigin,
           isMeta: true,
           skipSlashCommands: true,
           skipAttachments: true,
@@ -331,11 +387,80 @@ if (process.env[childFlag] !== '1') {
       } finally {
         releaseTurn.resolve()
         peers.setOnEnqueue(null)
+        bootstrap.setAllowedChannels(priorChannels)
         dequeueAllMatching(() => true)
         for (const mock of mocks) mock.mockRestore()
       }
     },
   )
+
+  test('QueryEngine preserves named default system prompt sections', async () => {
+    const { withSystemPromptSections, getSystemPromptSections } =
+      await import('../utils/systemPromptType.js')
+    const source = withSystemPromptSections([
+      { name: 'identity', text: 'CORE_IDENTITY' },
+      { name: 'language', text: null },
+    ])
+    let captured: import('../utils/systemPromptType.js').SystemPrompt | undefined
+    const mocks = [
+      spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
+        defaultSystemPrompt: source,
+        userContext: {},
+        systemContext: {},
+      }),
+      spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+      spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({
+        enabled: [],
+        disabled: [],
+        errors: [],
+      }),
+      spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(
+        async function* () {},
+      ),
+      spyOn(attachments, 'getAttachmentMessages').mockImplementation(
+        async function* () {},
+      ),
+      spyOn(queryModule, 'query').mockImplementation(async function* (params) {
+        captured = params.systemPrompt
+        yield createAssistantMessage({ content: 'done' })
+        return { reason: 'completed' }
+      }),
+    ]
+    let state = getDefaultAppState()
+    try {
+      const engine = new QueryEngine({
+        cwd: process.cwd(),
+        tools: [],
+        commands: [],
+        mcpClients: [],
+        agents: [],
+        appendSystemPrompt: 'APPEND_LITERAL',
+        canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+        getAppState: () => state,
+        setAppState: update => {
+          state = update(state)
+        },
+        readFileCache: createFileStateCacheWithSizeLimit(10),
+        userSpecifiedModel: 'claude-sonnet-4-6',
+        thinkingConfig: { type: 'disabled' },
+      })
+      for await (const _message of engine.submitMessage('section check')) {
+        // Drain the headless query.
+      }
+      expect(captured).toBeDefined()
+      expect([...captured!]).toEqual(['CORE_IDENTITY', 'APPEND_LITERAL'])
+      expect(getSystemPromptSections(captured!)).toEqual([
+        { name: 'identity', text: 'CORE_IDENTITY' },
+        { name: 'language', text: null },
+        { text: 'APPEND_LITERAL', scope: 'session' },
+      ])
+      expect([...source]).toEqual(['CORE_IDENTITY'])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
 
   test('AppStateProvider keeps peer permissions live and releases its subscription on unmount', async () => {
     const { render } = await import('../ink.js')
@@ -443,15 +568,114 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('QueryEngine consumes Worker command descriptions before input, after invalidation, and in SDK init', async () => {
+    const { createModsSession } = await import('../services/mods/session.js')
+    const root = mkdtempSync(join(tmpdir(), 'print-command-describe-'))
+    writeFileSync(join(root, 'register.ts'), `let calls=0; export function register(on) {
+      on('command.describe', {command:'sample'}, ($,e,next) => next({...e,
+        description:'Worker '+(++calls),argumentHint:'[arg '+calls+']',isHidden:calls>1}));
+      on('tool.call', async $ => {await $.ui.invalidate('command.describe');return {result:'invalidated'}});
+    }`)
+    const modsSession = createModsSession({isTrusted:true,
+      getSettings:() => ({userSettings:null,flagSettings:null,policySettings:null,hookPolicy:{managedOnly:false,allDisabled:false}}),
+      loadPlugins:async () => [{name:'print-describe',manifest:{name:'print-describe'},path:root,source:'print-describe@inline',repository:'print-describe@inline',enabled:true,hookModules:[{configPath:join(root,'hooks.json'),paths:['./register.ts']}]}],
+    })
+    let state = getDefaultAppState()
+    const ingress: import('../types/command.js').Command[][] = []
+    const queried: import('../types/command.js').Command[][] = []
+    const command: import('../types/command.js').Command = {
+      type:'local',name:'sample',description:'Original',argumentHint:'[old]',supportsNonInteractive:true,
+      load:async () => ({call:async (_args,context) => ({type:'text',value:context.options.commands[0]!.description})}),
+    }
+    const originalCommand = { ...command }
+    const processInput = inputModule.processUserInput
+    const mocks = [
+      spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({defaultSystemPrompt:[],userContext:{},systemContext:{}}),
+      spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+      spyOn(plugins, 'loadAllPluginsCacheOnly').mockResolvedValue({enabled:[],disabled:[],errors:[]}),
+      spyOn(fileHistory, 'fileHistoryEnabled').mockReturnValue(false),
+      spyOn(storage, 'recordTranscript').mockResolvedValue(undefined),
+      spyOn(hooks, 'executeUserPromptSubmitHooks').mockImplementation(async function* () {}),
+      spyOn(attachments, 'getAttachmentMessages').mockImplementation(async function* () {}),
+      spyOn(inputModule, 'processUserInput').mockImplementation(async args => {
+        ingress.push(args.context.options.commands)
+        const result = await processInput(args)
+        if (ingress.length === 1) await modsSession.runtime!.dispatch('tool.call',{},async () => ({result:null}))
+        return result
+      }),
+      spyOn(queryModule, 'query').mockImplementation(async function* (params) {
+        queried.push(params.toolUseContext.options.commands)
+        yield createAssistantMessage({content:'described'})
+        return {reason:'completed'}
+      }),
+    ]
+    try {
+      const engine = new QueryEngine({cwd:process.cwd(),tools:[],commands:[command],mcpClients:[],agents:[],
+        modsSession,canUseTool:async () => ({behavior:'allow',updatedInput:{}}),
+        getAppState:() => state,setAppState:update => {state=update(state)},
+        readFileCache:createFileStateCacheWithSizeLimit(10),userSpecifiedModel:'claude-sonnet-4-6',thinkingConfig:{type:'disabled'},
+      })
+      const outputs = []
+      for await (const message of engine.submitMessage('describe commands')) outputs.push(message)
+      expect(ingress[0]![0]).toMatchObject({description:'Worker 1',argumentHint:'[arg 1]',isHidden:false})
+      expect(queried[0]![0]).toMatchObject({description:'Worker 2',argumentHint:'[arg 2]',isHidden:true})
+      expect(outputs.find(message => message.type === 'system' && message.subtype === 'init')).toMatchObject({slash_commands:[]})
+      const local = []
+      for await (const message of engine.submitMessage('/sample')) local.push(message)
+      expect(ingress[1]![0]).toMatchObject({description:'Worker 2',isHidden:true})
+      expect(local.at(-1)).toMatchObject({type:'result',subtype:'success',result:'Worker 2'})
+      expect(queried).toHaveLength(1)
+      expect(command).toEqual(originalCommand)
+      expect(state.plugins.errors).toEqual([])
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+      await modsSession.dispose()
+      rmSync(root,{recursive:true,force:true})
+    }
+  })
+
   test.each(['engine', 'ask'] as const)(
     '%s treats peer slash text as data, skips attachments/hooks, and persists provenance before querying',
     async entry => {
       const transcripts: Message[][] = []
-      const queryInputs: Message[][] = []
+      const queryInputs: Array<{ messages: Message[]; publicTurn?: { text: string } }> = []
+      const queryUserContexts: Record<string, string>[] = []
+      const refreshCallbacks: Array<
+        (() => Promise<Record<string, string>>) | undefined
+      > = []
+      const instructionFiles = [
+        {
+          path: '/fixture/CLAUDE.md',
+          kind: 'project' as const,
+          content: 'Project instructions',
+        },
+      ]
+      const baseUserContext = withUserContextInstructionFiles(
+        { claudeMd: 'Rendered instructions', extraContext: 'base' },
+        instructionFiles,
+      )
+      const refreshedFiles = [
+        { ...instructionFiles[0]!, content: 'Updated instructions' },
+      ]
+      const refreshedBase = withUserContextInstructionFiles(
+        { claudeMd: 'Updated rendered instructions', extraContext: 'fresh' },
+        refreshedFiles,
+      )
+      const loadContext = spyOn(
+        userContextModule,
+        'getUserContext',
+      ).mockResolvedValue(refreshedBase)
+      const processInput = inputModule.processUserInput
+      const ingress: Parameters<typeof processInput>[0][] = []
       const mocks = [
+        loadContext,
+        spyOn(inputModule, 'processUserInput').mockImplementation(args => {
+          ingress.push(args)
+          return processInput(args)
+        }),
         spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({
           defaultSystemPrompt: [],
-          userContext: {},
+          userContext: baseUserContext,
           systemContext: {},
         }),
         spyOn(commandModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
@@ -469,7 +693,9 @@ if (process.env[childFlag] !== '1') {
         ),
         spyOn(queryModule, 'query').mockImplementation(
           async function* (params) {
-            queryInputs.push(structuredClone(params.messages))
+            queryInputs.push(structuredClone({ messages: params.messages, publicTurn: params.publicTurn }))
+            queryUserContexts.push(params.userContext)
+            refreshCallbacks.push(params.refreshUserContext)
             yield createAssistantMessage({ content: 'peer received' })
             return { reason: 'completed' }
           },
@@ -509,6 +735,7 @@ if (process.env[childFlag] !== '1') {
       const uuid = '22222222-2222-4222-8222-222222222222'
       const inputOptions = {
         origin,
+        promptSubmitMetadata: { origin: { kind: 'peer' as const }, wait: false, turnId: 'submitted-during-turn' },
         skipSlashCommands: true,
         skipAttachments: true,
         isMeta: true,
@@ -530,14 +757,32 @@ if (process.env[childFlag] !== '1') {
         for await (const message of stream) output.push(message)
 
         expect(queryInputs).toHaveLength(1)
-        expect(queryInputs[0]?.[0]).toMatchObject({
+        expect(queryUserContexts[0]).not.toBe(baseUserContext)
+        expect(queryUserContexts[0]).toEqual(baseUserContext)
+        expect(getUserContextInstructionFiles(queryUserContexts[0]!)).toEqual(
+          instructionFiles,
+        )
+        expect(refreshCallbacks[0]).toBeFunction()
+        const refreshed = await refreshCallbacks[0]!()
+        expect(refreshed).toEqual(refreshedBase)
+        expect(getUserContextInstructionFiles(refreshed)).toEqual(refreshedFiles)
+        loadContext.mockResolvedValue(
+          withUserContextInstructionFiles({ extraContext: 'removed' }, []),
+        )
+        const removed = await refreshCallbacks[0]!()
+        expect(removed).toEqual({ extraContext: 'removed' })
+        expect(getUserContextInstructionFiles(removed)).toEqual([])
+        expect(loadContext).toHaveBeenCalledTimes(2)
+        expect(ingress[0]?.promptSubmitMetadata).toEqual(inputOptions.promptSubmitMetadata)
+        expect(queryInputs[0]?.messages[0]).toMatchObject({
           type: 'user',
           uuid,
           origin,
           isMeta: true,
           message: { role: 'user', content: prompt },
         })
-        expect(transcripts[0]).toEqual(queryInputs[0])
+        expect(queryInputs[0]?.publicTurn).toEqual({ text: '' })
+        expect(transcripts[0]).toEqual(queryInputs[0]?.messages)
         expect(engine.getMessages()[0]).toMatchObject({ origin, isMeta: true })
         expect(hook).not.toHaveBeenCalled()
         expect(attachment).not.toHaveBeenCalled()
@@ -558,6 +803,7 @@ if (process.env[childFlag] !== '1') {
                 setReadFileCache: () => {},
               })
         for await (const message of humanStream) output.push(message)
+        expect(queryInputs[1]?.publicTurn).toEqual({ text: 'human follow-up' })
         expect(hook).toHaveBeenCalledTimes(1)
         expect(attachment).toHaveBeenCalledTimes(1)
         const human = engine

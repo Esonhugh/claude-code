@@ -19,6 +19,8 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
+import type { UsageWithOutputTokenDetails } from '../../entrypoints/sdk/sdkUtilityTypes.js'
+import { renderModPromptAttachments } from '../mods/promptAttachments.js'
 import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
@@ -54,7 +56,8 @@ import {
   type CacheScope,
   logAPIPrefix,
   splitSysPromptPrefix,
-  toolToAPISchema,
+  toolsToAPISchemas,
+  resolveModToolDescriptions,
 } from '../../utils/api.js'
 import { getOauthAccountInfo } from '../../utils/auth.js'
 import {
@@ -70,6 +73,7 @@ import {
 } from '../../utils/context.js'
 import {
   type EffortValue,
+  modelSupportsEffort,
   resolveAppliedEffort,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -139,6 +143,7 @@ import {
   CONTEXT_1M_BETA_HEADER,
   CONTEXT_MANAGEMENT_BETA_HEADER,
   EFFORT_BETA_HEADER,
+  EXTENDED_CACHE_TTL_BETA_HEADER,
   FAST_MODE_BETA_HEADER,
   PROMPT_CACHING_SCOPE_BETA_HEADER,
   REDACT_THINKING_BETA_HEADER,
@@ -165,8 +170,6 @@ import {
   shouldIncludeFirstPartyOnlyBetas,
   shouldUseGlobalCacheScope,
 } from 'src/utils/betas.js'
-import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/common.js'
-import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from 'src/utils/claudeInChrome/prompt.js'
 import { getMaxThinkingTokensForModel } from 'src/utils/context.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
@@ -178,16 +181,21 @@ import {
 } from 'src/utils/fastMode.js'
 import { returnValue } from 'src/utils/generators.js'
 import { headlessProfilerCheckpoint } from 'src/utils/headlessProfiler.js'
-import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
+  requiresAdaptiveThinkingContract,
+  requiresAlwaysOnAdaptiveThinking,
+  supportsManualThinkingBudget,
+  usesBetweenToolsWhenThinkingDisabled,
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
+  shouldEnableThinkingByDefault,
   type ThinkingConfig,
 } from 'src/utils/thinking.js'
 import {
   extractDiscoveredToolNames,
+  getDeferredToolsDelta,
   isDeferredToolsDeltaEnabled,
   isToolSearchEnabled,
 } from 'src/utils/toolSearch.js'
@@ -229,7 +237,6 @@ import {
   pinCacheEdits,
 } from '../compact/microCompact.js'
 import { getInitializationStatus } from '../lsp/manager.js'
-import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
 import {
@@ -395,6 +402,54 @@ export function getCacheControl({
  * The allowlist is cached in STATE for session stability — prevents mixed
  * TTLs when GrowthBook's disk cache updates mid-request.
  */
+export function getExtendedCacheTtlEnabled(querySource?: QuerySource): boolean {
+  return (
+    shouldIncludeFirstPartyOnlyBetas() &&
+    should1hCacheTTL(querySource)
+  )
+}
+
+type CacheControlMessage = {
+  content: string | readonly unknown[]
+}
+
+function hasOneHourCacheControl(value: unknown): boolean {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('cache_control' in value)
+  ) {
+    return false
+  }
+  const cacheControl = value.cache_control
+  return (
+    typeof cacheControl === 'object' &&
+    cacheControl !== null &&
+    'ttl' in cacheControl &&
+    cacheControl.ttl === '1h'
+  )
+}
+
+export function hasExtendedCacheTtlMarker({
+  system,
+  messages,
+  tools,
+}: {
+  system?: readonly unknown[]
+  messages: readonly CacheControlMessage[]
+  tools?: readonly unknown[]
+}): boolean {
+  return (
+    system?.some(hasOneHourCacheControl) === true ||
+    messages.some(
+      message =>
+        Array.isArray(message.content) &&
+        message.content.some(hasOneHourCacheControl),
+    ) ||
+    tools?.some(hasOneHourCacheControl) === true
+  )
+}
+
 function should1hCacheTTL(querySource?: QuerySource): boolean {
   // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
   // No GrowthBook gating needed since 3P users don't have GrowthBook configured
@@ -447,8 +502,13 @@ export function configureEffortParams(
   outputConfig: BetaOutputConfig,
   extraBodyParams: Record<string, unknown>,
   betas: string[],
+  model: string,
 ): void {
   if ('effort' in outputConfig) {
+    return
+  }
+  // Like official, a model that takes no effort parameter gets none; others get the configured value unchanged.
+  if (!modelSupportsEffort(model)) {
     return
   }
   if (
@@ -563,12 +623,22 @@ export async function verifyApiKey(
           }),
         async anthropic => {
           const messages: MessageParam[] = [{ role: 'user', content: 'test' }]
+          const verificationThinking: BetaMessageStreamParams['thinking'] | undefined =
+            requiresAlwaysOnAdaptiveThinking(model)
+              ? { type: 'adaptive' }
+              : usesBetweenToolsWhenThinkingDisabled(model)
+                ? ({ type: 'between_tools' } as unknown as BetaMessageStreamParams['thinking'])
+                : requiresAdaptiveThinkingContract(model)
+                  ? { type: 'disabled' }
+                  : undefined
           // biome-ignore lint/plugin: API key verification is intentionally a minimal direct call
           await anthropic.beta.messages.create({
             model,
             max_tokens: 1,
             messages,
-            temperature: 1,
+            ...(verificationThinking
+              ? { thinking: verificationThinking }
+              : { temperature: 1 }),
             ...(betas.length > 0 && { betas }),
             metadata: getAPIMetadata(),
             ...getExtraBodyParams(),
@@ -692,7 +762,7 @@ export function assistantMessageToMessageParam(
 export type Options = {
   getToolPermissionContext: () => Promise<ToolPermissionContext>
   model: string
-  toolChoice?: BetaToolChoiceTool | BetaToolChoiceAuto | undefined
+  toolChoice?: BetaToolChoiceTool | BetaToolChoiceAuto | { type: 'none' } | undefined
   isNonInteractiveSession: boolean
   extraToolSchemas?: BetaToolUnion[]
   maxOutputTokensOverride?: number
@@ -707,7 +777,11 @@ export type Options = {
   skipCacheWrite?: boolean
   temperatureOverride?: number
   effortValue?: EffortValue
+  /** turn.step already resolved and may have rewritten or removed effort. */
+  effortResolved?: boolean
   mcpTools: Tools
+  modsSnapshot?: import('../mods/runtime.js').ModSnapshot
+  composeSystemPrompt?: (model: string, tools: string[], signal: AbortSignal) => Promise<SystemPrompt>
   hasPendingMcpServers?: boolean
   queryTracking?: QueryChainTracking
   agentId?: AgentId // Only set for subagents
@@ -849,7 +923,7 @@ export async function* executeNonStreamingRequest(
     initialConsecutive529Errors?: number
     querySource?: QuerySource
   },
-  paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
+  paramsFromContext: (context: RetryContext) => BetaMessageStreamParams | Promise<BetaMessageStreamParams>,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
   captureRequest: (params: BetaMessageStreamParams) => void,
   /**
@@ -870,7 +944,7 @@ export async function* executeNonStreamingRequest(
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
-      const retryParams = paramsFromContext(context)
+      const retryParams = await paramsFromContext(context)
       captureRequest(retryParams)
       onAttempt(attempt, start, retryParams.max_tokens)
 
@@ -1141,6 +1215,16 @@ async function* queryModel(
     }
   }
 
+  const modDescriptions = await resolveModToolDescriptions(tools, {
+    getToolPermissionContext: options.getToolPermissionContext,
+    tools,
+    agents: options.agents,
+    allowedAgentTypes: options.allowedAgentTypes,
+    model: options.model,
+    modsSnapshot: options.modsSnapshot,
+    signal,
+  })
+
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
   let useToolSearch = await isToolSearchEnabled(
@@ -1149,13 +1233,15 @@ async function* queryModel(
     options.getToolPermissionContext,
     options.agents,
     'query',
+    modDescriptions,
   )
 
   // Precompute once — isDeferredTool does 2 GrowthBook lookups per call
   const deferredToolNames = new Set<string>()
   if (useToolSearch) {
     for (const t of tools) {
-      if (isDeferredTool(t)) deferredToolNames.add(t.name)
+      if (isDeferredTool(t, modDescriptions?.get(t)?.isDeferred))
+        deferredToolNames.add(t.name)
     }
   }
 
@@ -1236,12 +1322,37 @@ async function* queryModel(
 
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   const willDefer = (t: Tool) =>
-    useToolSearch && (deferredToolNames.has(t.name) || shouldDeferLspTool(t))
-  // MCP tools are per-user → dynamic tool section → can't globally cache.
-  // Only gate when an MCP tool will actually render (not defer_loading).
-  const needsToolBasedCacheMarker =
+    useToolSearch &&
+    (modDescriptions?.get(t)?.isDeferred ??
+      (deferredToolNames.has(t.name) || shouldDeferLspTool(t)))
+  // Pass the full tool set as prompt context, but admit only the tools surviving
+  // core/tool-search gating to Mods. A list hook cannot restore a gated tool.
+  const catalog = await toolsToAPISchemas(filteredTools, {
+    getToolPermissionContext: options.getToolPermissionContext,
+    tools,
+    agents: options.agents,
+    allowedAgentTypes: options.allowedAgentTypes,
+    model: options.model,
+    modsSnapshot: options.modsSnapshot,
+    signal,
+    deferLoadingForTool: willDefer,
+    modDescriptions,
+    allowDeferLoading: useToolSearch,
+  })
+  filteredTools = catalog.tools
+  const toolSchemas = catalog.schemas
+
+  // MCP tools are per-user → dynamic tool section → the system prompt behind
+  // them can't be globally cached, so it falls back to org-scoped markers.
+  // Tools never carry cache_control themselves: the system prompt markers
+  // already cover the tool prefix, and deferred tools (defer_loading: true)
+  // reject cache_control with a 400. Only gate when an MCP tool will actually
+  // render (not defer_loading).
+  const hasLoadedMcpTools =
     useGlobalCacheFeature &&
     filteredTools.some(t => t.isMcp === true && !willDefer(t))
+  const enablePromptCaching =
+    options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
 
   // Ensure prompt_caching_scope beta header is present when global cache is enabled.
   if (
@@ -1253,27 +1364,10 @@ async function* queryModel(
 
   // Determine global cache strategy for logging
   const globalCacheStrategy: GlobalCacheStrategy = useGlobalCacheFeature
-    ? needsToolBasedCacheMarker
+    ? hasLoadedMcpTools
       ? 'none'
       : 'system_prompt'
     : 'none'
-
-  // Build tool schemas, adding defer_loading for MCP tools when tool search is enabled
-  // Note: We pass the full `tools` list (not filteredTools) to toolToAPISchema so that
-  // ToolSearchTool's prompt can list ALL available MCP tools. The filtering only affects
-  // which tools are actually sent to the API, not what the model sees in tool descriptions.
-  const toolSchemas = await Promise.all(
-    filteredTools.map(tool =>
-      toolToAPISchema(tool, {
-        getToolPermissionContext: options.getToolPermissionContext,
-        tools,
-        agents: options.agents,
-        allowedAgentTypes: options.allowedAgentTypes,
-        model: options.model,
-        deferLoading: willDefer(tool),
-      }),
-    ),
-  )
 
   if (useToolSearch) {
     const includedDeferredTools = count(filteredTools, t =>
@@ -1303,7 +1397,62 @@ async function* queryModel(
       : undefined
 
   queryCheckpoint('query_message_normalization_start')
-  let messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
+  // Upstream delta attachments use engine placement. Re-project those entries
+  // and fill missing announcements here, without mutating retained history.
+  let schemaMessages = messages
+  if (!useToolSearch && modDescriptions) {
+    schemaMessages = messages.filter(
+      message =>
+        message.type !== 'attachment' ||
+        message.attachment.type !== 'deferred_tools_delta',
+    )
+  }
+  if (useToolSearch && modDescriptions && isDeferredToolsDeltaEnabled()) {
+    schemaMessages = messages.map(message => {
+      if (
+        message.type !== 'attachment' ||
+        message.attachment.type !== 'deferred_tools_delta'
+      )
+        return message
+      const attachment = message.attachment
+      const addedTools = tools.filter(
+        tool =>
+          attachment.addedNames.includes(tool.name) &&
+          deferredToolNames.has(tool.name),
+      )
+      return {
+        ...message,
+        attachment: {
+          ...attachment,
+          addedNames: addedTools.map(tool => tool.name),
+          addedLines: formatDeferredToolLines(addedTools),
+        },
+      }
+    })
+    const delta = getDeferredToolsDelta(
+      tools,
+      schemaMessages,
+      undefined,
+      modDescriptions,
+    )
+    if (delta) {
+      const { createAttachmentMessage } =
+        await import('../../utils/attachments.js')
+      schemaMessages = [
+        ...schemaMessages,
+        createAttachmentMessage({ type: 'deferred_tools_delta', ...delta }),
+      ]
+    }
+  }
+  if (options.modsSnapshot?.hasHooks('prompt.attachment')) {
+    schemaMessages = await renderModPromptAttachments(
+      schemaMessages,
+      options.modsSnapshot,
+      signal,
+      options.agentId,
+    )
+  }
+  let messagesForAPI = normalizeMessagesForAPI(schemaMessages, filteredTools)
   if (openAICompaction) {
     messagesForAPI = messagesForAPI.filter(
       message => message.type !== 'user' || !message.isCompactSummary,
@@ -1387,49 +1536,34 @@ async function* queryModel(
     }
   }
 
-  // Chrome tool-search instructions: when the delta attachment is enabled,
-  // these are carried as a client-side block in mcp_instructions_delta
-  // (attachments.ts) instead of here. This per-request sys-prompt append
-  // busts the prompt cache when chrome connects late.
-  const hasChromeTools = filteredTools.some(t =>
-    isToolFromMcpServer(t.name, CLAUDE_IN_CHROME_MCP_SERVER_NAME),
-  )
-  const injectChromeHere =
-    useToolSearch && hasChromeTools && !isMcpInstructionsDeltaEnabled()
-
-  // filter(Boolean) works by converting each element to a boolean - empty strings become false and are filtered out.
-  systemPrompt = asSystemPrompt(
+  const withSystemPrefix = (prompt: SystemPrompt): SystemPrompt => asSystemPrompt(
     [
       getAttributionHeader(fingerprint),
       getCLISyspromptPrefix({
         isNonInteractive: options.isNonInteractiveSession,
         hasAppendSystemPrompt: options.hasAppendSystemPrompt,
       }),
-      ...systemPrompt,
+      ...prompt,
       ...(advisorModel ? [ADVISOR_TOOL_INSTRUCTIONS] : []),
-      ...(injectChromeHere ? [CHROME_TOOL_SEARCH_INSTRUCTIONS] : []),
     ].filter(Boolean),
   )
 
+  systemPrompt = withSystemPrefix(systemPrompt)
   // Prepend system prompt block for easy API identification
   logAPIPrefix(systemPrompt)
 
-  const enablePromptCaching =
-    options.enablePromptCaching ?? getPromptCachingEnabled(options.model)
-  const system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
-    skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
+  let system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
+    skipGlobalCacheForSystemPrompt: hasLoadedMcpTools,
     querySource: options.querySource,
   })
-  const useBetas = betas.length > 0
-
   // Build minimal context for detailed tracing (when beta tracing is enabled)
   // Note: The actual new_context message extraction is done in sessionTracing.ts using
   // hash-based tracking per querySource (agent) from the messagesForAPI array
   const extraToolSchemas = [...(options.extraToolSchemas ?? [])]
   if (advisorModel) {
     // Server tools must be in the tools array by API contract. Appended after
-    // toolSchemas (which carries the cache_control marker) so toggling /advisor
-    // only churns the small suffix, not the cached prefix.
+    // toolSchemas so toggling /advisor only churns the small suffix, not the
+    // cached prefix.
     extraToolSchemas.push({
       type: 'advisor_20260301',
       name: 'advisor',
@@ -1437,6 +1571,33 @@ async function* queryModel(
     } as unknown as BetaToolUnion)
   }
   const allTools = [...toolSchemas, ...extraToolSchemas]
+  // Consume once because request params are assembled repeatedly for logging and retries.
+  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
+  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
+  const messagesWithCacheBreakpoints = addCacheBreakpoints(
+    messagesForAPI,
+    enablePromptCaching,
+    options.querySource,
+    cachedMCEnabled &&
+      getAPIProvider() === 'firstParty' &&
+      options.querySource === 'repl_main_thread',
+    consumedCacheEdits,
+    consumedPinnedEdits,
+    options.skipCacheWrite,
+  )
+  if (
+    enablePromptCaching &&
+    getExtendedCacheTtlEnabled(options.querySource) &&
+    hasExtendedCacheTtlMarker({
+      system,
+      messages: messagesWithCacheBreakpoints,
+      tools: allTools,
+    }) &&
+    !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
+  ) {
+    betas.push(EXTENDED_CACHE_TTL_BETA_HEADER)
+  }
+  const useBetas = betas.length > 0
 
   const isFastMode =
     isFastModeEnabled() &&
@@ -1500,7 +1661,7 @@ async function* queryModel(
     }
   }
 
-  const effort = resolveAppliedEffort(options.model, options.effortValue)
+  const effort = options.effortResolved ? options.effortValue : resolveAppliedEffort(options.model, options.effortValue)
 
   if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
     // Exclude defer_loading tools from the hash -- the API strips them from the
@@ -1570,12 +1731,6 @@ async function* queryModel(
     }
   }
 
-  // Consume pending cache edits ONCE before paramsFromContext is defined.
-  // paramsFromContext is called multiple times (logging, retries), so consuming
-  // inside it would cause the first call to steal edits from subsequent calls.
-  const consumedCacheEdits = cachedMCEnabled ? consumePendingCacheEdits() : null
-  const consumedPinnedEdits = cachedMCEnabled ? getPinnedCacheEdits() : []
-
   // Capture the betas sent in the last API request, including the ones that
   // were dynamically added, so we can log and send it to telemetry.
   let lastRequestBetas: string[] | undefined
@@ -1610,6 +1765,7 @@ async function* queryModel(
       outputConfig,
       extraBodyParams,
       betasParams,
+      options.model,
     )
 
     configureTaskBudgetParams(
@@ -1637,18 +1793,42 @@ async function* queryModel(
       options.maxOutputTokensOverride ||
       getMaxOutputTokensForModel(options.model)
 
+    const adaptiveOnly = requiresAdaptiveThinkingContract(options.model)
+    const alwaysOnAdaptive = requiresAlwaysOnAdaptiveThinking(options.model)
+    const manualThinkingBudget = supportsManualThinkingBudget(options.model)
+    const betweenToolsWhenDisabled = usesBetweenToolsWhenThinkingDisabled(
+      options.model,
+    )
+    const adaptiveDisabled = isEnvTruthy(
+      process.env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING,
+    )
+    const thinkingDisabled =
+      thinkingConfig.type === 'disabled' ||
+      isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING) ||
+      (adaptiveOnly && adaptiveDisabled)
+    const effortRequiresAdaptive = effort === 'xhigh' || effort === 'max'
     const hasThinking =
-      thinkingConfig.type !== 'disabled' &&
-      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_THINKING)
-    let thinking: BetaMessageStreamParams['thinking'] | undefined = undefined
+      alwaysOnAdaptive ||
+      !thinkingDisabled ||
+      (betweenToolsWhenDisabled && effortRequiresAdaptive)
+    let thinking: BetaMessageStreamParams['thinking'] | undefined =
+      alwaysOnAdaptive ||
+      (betweenToolsWhenDisabled && thinkingDisabled && effortRequiresAdaptive)
+        ? { type: 'adaptive' }
+        : betweenToolsWhenDisabled && thinkingDisabled
+          ? ({ type: 'between_tools' } as unknown as BetaMessageStreamParams['thinking'])
+          : adaptiveOnly && !hasThinking
+            ? { type: 'disabled' }
+            : undefined
 
     // IMPORTANT: Do not change the adaptive-vs-budget thinking selection below
     // without notifying the model launch DRI and research. This is a sensitive
     // setting that can greatly affect model quality and bashing.
     if (hasThinking && modelSupportsThinking(options.model)) {
       if (
-        !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING) &&
-        modelSupportsAdaptiveThinking(options.model)
+        !adaptiveDisabled &&
+        (!manualThinkingBudget || thinkingConfig.type !== 'enabled') &&
+        (adaptiveOnly || modelSupportsAdaptiveThinking(options.model))
       ) {
         // For models that support adaptive thinking, always use adaptive
         // thinking without a budget.
@@ -1720,10 +1900,6 @@ async function* queryModel(
     // Cache editing beta: header is latched session-stable; useCachedMC
     // (controls cache_edits body behavior) stays live so edits stop when
     // the feature disables but the header doesn't flip.
-    const useCachedMC =
-      cachedMCEnabled &&
-      getAPIProvider() === 'firstParty' &&
-      options.querySource === 'repl_main_thread'
     if (
       cacheEditingHeaderLatched &&
       getAPIProvider() === 'firstParty' &&
@@ -1736,9 +1912,9 @@ async function* queryModel(
       )
     }
 
-    // Only send temperature when thinking is disabled — the API requires
-    // temperature: 1 when thinking is enabled, which is already the default.
-    const temperature = !hasThinking
+    // New models reject non-default sampling, including internal temperature overrides.
+    // Explicit user extra-body parameters are still applied below without rewriting them.
+    const temperature = !hasThinking && !adaptiveOnly
       ? (options.temperatureOverride ?? 1)
       : undefined
 
@@ -1746,15 +1922,7 @@ async function* queryModel(
 
     return {
       model: normalizeModelStringForAPI(options.model),
-      messages: addCacheBreakpoints(
-        messagesForAPI,
-        enablePromptCaching,
-        options.querySource,
-        useCachedMC,
-        consumedCacheEdits,
-        consumedPinnedEdits,
-        options.skipCacheWrite,
-      ),
+      messages: messagesWithCacheBreakpoints,
       ...(openAICompaction && { openai_compaction: openAICompaction }),
       system,
       tools: allTools,
@@ -1775,6 +1943,23 @@ async function* queryModel(
       }),
       ...(speed !== undefined && { speed }),
     }
+  }
+
+  // Compose only for actual attempts, not the logging-only params calculation.
+  const paramsForAttempt = async (context: RetryContext) => {
+    if (options.composeSystemPrompt) {
+      const prompt = await options.composeSystemPrompt(
+        context.model,
+        filteredTools.map(tool => tool.name),
+        signal,
+      )
+      systemPrompt = withSystemPrefix(prompt)
+      system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
+        skipGlobalCacheForSystemPrompt: hasLoadedMcpTools,
+        querySource: options.querySource,
+      })
+    }
+    return paramsFromContext(context)
   }
 
   // Compute log scalars synchronously so the fire-and-forget .then() closure
@@ -1844,7 +2029,7 @@ async function* queryModel(
         // client_creation_start is meaningful on attempt 1.
         queryCheckpoint('query_client_creation_end')
 
-        const params = paramsFromContext(context)
+        const params = await paramsForAttempt(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
 
         maxOutputTokens = params.max_tokens
@@ -2619,7 +2804,7 @@ async function* queryModel(
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
         },
-        paramsFromContext,
+        paramsForAttempt,
         (attempt, _startTime, tokens) => {
           attemptNumber = attempt
           maxOutputTokens = tokens
@@ -2721,7 +2906,7 @@ async function* queryModel(
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
           },
-          paramsFromContext,
+          paramsForAttempt,
           (attempt, _startTime, tokens) => {
             attemptNumber = attempt
             maxOutputTokens = tokens
@@ -2992,7 +3177,7 @@ export function cleanupStream(
  */
 export function updateUsage(
   usage: Readonly<NonNullableUsage>,
-  partUsage: BetaMessageDeltaUsage | undefined,
+  partUsage: (BetaMessageDeltaUsage & Pick<UsageWithOutputTokenDetails, 'output_tokens_details'>) | undefined,
 ): NonNullableUsage {
   if (!partUsage) {
     return { ...usage }
@@ -3014,6 +3199,9 @@ export function updateUsage(
         ? partUsage.cache_read_input_tokens
         : usage.cache_read_input_tokens,
     output_tokens: partUsage.output_tokens ?? usage.output_tokens,
+    output_tokens_details: {
+      thinking_tokens: partUsage.output_tokens_details?.thinking_tokens ?? usage.output_tokens_details.thinking_tokens,
+    },
     server_tool_use: {
       web_search_requests:
         partUsage.server_tool_use?.web_search_requests ??
@@ -3077,6 +3265,9 @@ export function accumulateUsage(
     cache_read_input_tokens:
       totalUsage.cache_read_input_tokens + messageUsage.cache_read_input_tokens,
     output_tokens: totalUsage.output_tokens + messageUsage.output_tokens,
+    output_tokens_details: {
+      thinking_tokens: totalUsage.output_tokens_details.thinking_tokens + messageUsage.output_tokens_details.thinking_tokens,
+    },
     server_tool_use: {
       web_search_requests:
         // @ts-ignore - recovered code
@@ -3350,15 +3541,21 @@ export async function queryHaiku({
         }),
       ]
 
+      const model = getSmallFastModel()
       const result = await queryModelWithoutStreaming({
         messages,
         systemPrompt,
-        thinkingConfig: { type: 'disabled' },
+        thinkingConfig: {
+          type:
+            requiresAdaptiveThinkingContract(model) && shouldEnableThinkingByDefault()
+              ? 'adaptive'
+              : 'disabled',
+        },
         tools: [],
         signal,
         options: {
           ...options,
-          model: getSmallFastModel(),
+          model,
           enablePromptCaching: options.enablePromptCaching ?? false,
           outputFormat,
           async getToolPermissionContext() {
@@ -3412,7 +3609,12 @@ export async function queryWithModel({
       const result = await queryModelWithoutStreaming({
         messages,
         systemPrompt,
-        thinkingConfig: { type: 'disabled' },
+        thinkingConfig: {
+          type:
+            requiresAdaptiveThinkingContract(options.model) && shouldEnableThinkingByDefault()
+              ? 'adaptive'
+              : 'disabled',
+        },
         tools: [],
         signal,
         options: {

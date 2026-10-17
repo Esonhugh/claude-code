@@ -6,19 +6,20 @@ export type Clock = {
   subscribe: (onChange: () => void, keepAlive: boolean) => () => void
   now: () => number
   setTickInterval: (ms: number) => void
+  setTimeout: (callback: () => void, ms: number) => () => void
 }
 
 export function createClock(tickIntervalMs: number): Clock {
   const subscribers = new Map<() => void, boolean>()
   let interval: ReturnType<typeof setInterval> | null = null
   let currentTickIntervalMs = tickIntervalMs
-  let startTime = 0
+  const startTime = performance.now()
   // Snapshot of the current tick's time, ensuring all subscribers in the same
   // tick see the same value (keeps animations synchronized)
   let tickTime = 0
 
   function tick(): void {
-    tickTime = Date.now() - startTime
+    tickTime = performance.now() - startTime
     for (const onChange of subscribers.keys()) {
       onChange()
     }
@@ -28,13 +29,8 @@ export function createClock(tickIntervalMs: number): Clock {
     const anyKeepAlive = [...subscribers.values()].some(Boolean)
 
     if (anyKeepAlive) {
-      if (interval) {
-        clearInterval(interval)
-        interval = null
-      }
-      if (startTime === 0) {
-        startTime = Date.now()
-      }
+      if (interval) clearInterval(interval)
+      else tickTime = performance.now() - startTime
       interval = setInterval(tick, currentTickIntervalMs)
     } else if (interval) {
       clearInterval(interval)
@@ -53,23 +49,24 @@ export function createClock(tickIntervalMs: number): Clock {
     },
 
     now() {
-      if (startTime === 0) {
-        startTime = Date.now()
-      }
       // When the clock interval is running, return the synchronized tickTime
       // so all subscribers in the same tick see the same value.
       // When paused (no keepAlive subscribers), return real-time to avoid
       // returning a stale tickTime from the last tick before the pause.
-      if (interval && tickTime) {
+      if (interval) {
         return tickTime
       }
-      return Date.now() - startTime
+      return performance.now() - startTime
     },
 
     setTickInterval(ms) {
       if (ms === currentTickIntervalMs) return
       currentTickIntervalMs = ms
       updateInterval()
+    },
+    setTimeout(callback, ms) {
+      const timer = setTimeout(callback, ms)
+      return () => clearTimeout(timer)
     },
   }
 }

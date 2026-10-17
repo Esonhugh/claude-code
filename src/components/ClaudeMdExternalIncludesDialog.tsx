@@ -52,15 +52,15 @@ export function ClaudeMdExternalIncludesDialog({
 
   return (
     <Dialog
-      title="Allow external CLAUDE.md file imports?"
+      title="Allow external AGENTS.md / CLAUDE.md file imports?"
       color="warning"
       onCancel={handleEscape}
       hideBorder={!isStandaloneDialog}
       hideInputGuide={!isStandaloneDialog}
     >
       <Text>
-        This project&apos;s CLAUDE.md imports files outside the current working
-        directory. Never allow this for third-party repositories.
+        This project&apos;s instruction files import files outside the current
+        working directory. Never allow this for third-party repositories.
       </Text>
 
       {externalIncludes && externalIncludes.length > 0 && (

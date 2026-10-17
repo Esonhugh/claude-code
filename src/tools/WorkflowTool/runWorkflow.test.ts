@@ -27,6 +27,23 @@ import {
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
+// Terminal status/usage reach SDK consumers through the XML task notification
+// that print.ts parses into task_notification; the runtime emits no direct event.
+function dequeuedTerminalNotification(taskId: string) {
+  const text = String(
+    dequeueAllMatching(command =>
+      command.mode === 'task-notification' &&
+      String(command.value).includes(`<task-id>${taskId}</task-id>`),
+    )[0]?.value ?? '',
+  )
+  const usage = text.match(/<usage>([\s\S]*?)<\/usage>/)?.[1] ?? ''
+  return {
+    status: text.match(/<status>([^<]+)<\/status>/)?.[1],
+    total_tokens: Number(usage.match(/<total_tokens>(\d+)<\/total_tokens>/)?.[1]),
+    tool_uses: Number(usage.match(/<tool_uses>(\d+)<\/tool_uses>/)?.[1]),
+  }
+}
+
 let state = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -1676,14 +1693,8 @@ const retryProgressUsageSession = await loadWorkflowRunSession({
   cwd: retryProgressUsageCwd,
   workflowRunId: 'wf_retry_progress_usage',
 })
-const retryProgressTerminatedEvent = drainSdkEvents().find(
-  event => event.subtype === 'task_notification' &&
-    event.task_id === retryProgressUsageTask.id,
-)
-const retryProgressTerminatedUsage = retryProgressTerminatedEvent &&
-  'usage' in retryProgressTerminatedEvent
-  ? retryProgressTerminatedEvent.usage
-  : undefined
+const retryProgressTerminatedUsage = dequeuedTerminalNotification(retryProgressUsageTask.id)
+assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), false)
 const retryProgressActualExpected = {
   actual: {
     taskTotals: {
@@ -1832,14 +1843,8 @@ const retryProgressFailureUsageSession = await loadWorkflowRunSession({
   cwd: retryProgressFailureUsageCwd,
   workflowRunId: 'wf_retry_progress_failure_usage',
 })
-const retryProgressFailureTerminatedEvent = drainSdkEvents().find(
-  event => event.subtype === 'task_notification' &&
-    event.task_id === retryProgressFailureUsageTask.id,
-)
-const retryProgressFailureTerminatedUsage = retryProgressFailureTerminatedEvent &&
-  'usage' in retryProgressFailureTerminatedEvent
-  ? retryProgressFailureTerminatedEvent.usage
-  : undefined
+const retryProgressFailureTerminatedUsage = dequeuedTerminalNotification(retryProgressFailureUsageTask.id)
+assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), false)
 assert.deepEqual(
   {
     taskTotals: {
@@ -2240,27 +2245,20 @@ assert.deepEqual(
     sessionTotals: killedProgressExpectedUsage,
   },
 )
-const killedProgressSdkNotification = drainSdkEvents().find(
-  event => event.subtype === 'task_notification' &&
-    event.task_id === killedProgressUsageTask.id,
-)
-const killedProgressSdkUsage = killedProgressSdkNotification &&
-  'usage' in killedProgressSdkNotification
-  ? killedProgressSdkNotification.usage
-  : undefined
+const killedProgressNotification = dequeuedTerminalNotification(killedProgressUsageTask.id)
+assert.equal(drainSdkEvents().some(event => event.subtype === 'task_notification'), false)
 assert.deepEqual(
   {
-    sdkStatus: killedProgressSdkNotification?.subtype === 'task_notification'
-      ? killedProgressSdkNotification.status
-      : undefined,
-    sdkUsage: {
-      totalTokens: killedProgressSdkUsage?.total_tokens,
-      toolUses: killedProgressSdkUsage?.tool_uses,
+    // print.ts maps the XML 'killed' status to the SDK 'stopped' status.
+    notificationStatus: killedProgressNotification.status,
+    notificationUsage: {
+      totalTokens: killedProgressNotification.total_tokens,
+      toolUses: killedProgressNotification.tool_uses,
     },
   },
   {
-    sdkStatus: 'stopped',
-    sdkUsage: killedProgressExpectedUsage,
+    notificationStatus: 'killed',
+    notificationUsage: killedProgressExpectedUsage,
   },
 )
 

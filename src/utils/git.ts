@@ -14,10 +14,12 @@ import {
   getCachedDefaultBranch,
   getCachedHead,
   getCachedRemoteUrl,
+  getCommonDir,
   getWorktreeCountFromFs,
   isShallowClone as isShallowCloneFs,
   resolveGitDir,
 } from './git/gitFilesystem.js'
+import { parseGitConfigValue } from './git/gitConfigParser.js'
 import { logError } from './log.js'
 import { memoizeWithLRU } from './memoize.js'
 import { whichSync } from './which.js'
@@ -194,6 +196,18 @@ const resolveCanonicalRoot = memoizeWithLRU(
  */
 export const findCanonicalGitRoot = createFindCanonicalGitRoot()
 
+/**
+ * Find the canonical git root without reusing repository-discovery caches.
+ * Callers that promise live working-copy state should use this variant.
+ */
+export function findCanonicalGitRootFresh(startPath: string): string | null {
+  const resolvedStart = resolve(startPath)
+  const cachedRoot = findGitRoot.cache.get(resolvedStart)
+  if (typeof cachedRoot === 'string') resolveCanonicalRoot.cache.delete(cachedRoot)
+  findGitRoot.cache.delete(resolvedStart)
+  return findCanonicalGitRoot(resolvedStart)
+}
+
 function createFindCanonicalGitRoot(): {
   (startPath: string): string | null
   cache: typeof resolveCanonicalRoot.cache
@@ -268,6 +282,36 @@ export const getDefaultBranch = async (): Promise<string> => {
 
 export const getRemoteUrl = async (): Promise<string | null> => {
   return getCachedRemoteUrl()
+}
+
+/** Read origin from disk, preferring pushurl, without the process git caches. */
+export async function getOriginRemoteUrlFresh(cwd: string): Promise<string | null> {
+  const resolvedCwd = resolve(cwd)
+  findGitRoot.cache.delete(resolvedCwd)
+  const root = findGitRoot(resolvedCwd)
+  if (!root) return null
+
+  const gitPath = join(root, '.git')
+  let gitDir = gitPath
+  try {
+    if ((await stat(gitPath)).isFile()) {
+      const content = (await readFile(gitPath, 'utf-8')).trim()
+      if (!content.startsWith('gitdir:')) return null
+      gitDir = resolve(root, content.slice('gitdir:'.length).trim())
+    }
+  } catch {
+    return null
+  }
+
+  const commonDir = await getCommonDir(gitDir)
+  const configDirs = commonDir && commonDir !== gitDir ? [gitDir, commonDir] : [gitDir]
+  for (const key of ['pushurl', 'url']) {
+    for (const configDir of configDirs) {
+      const value = await parseGitConfigValue(configDir, 'remote', 'origin', key)
+      if (value) return value
+    }
+  }
+  return null
 }
 
 /**

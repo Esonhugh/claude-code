@@ -21,6 +21,7 @@ import {
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
 import type { AgentId } from 'src/types/ids.js'
+import { formatPluginPrompt } from '../services/mods/pluginPrompt.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
@@ -147,12 +148,14 @@ import type { PermissionMode } from '../types/permissions.js'
 import { normalizeToolInput, normalizeToolInputForAPI } from './api.js'
 import { getCurrentProjectConfig } from './config.js'
 import { logAntError, logForDebugging } from './debug.js'
+import { isAssistantNarrationSummary } from './assistantNarration.js'
 import { stripIdeContextTags } from './displayTags.js'
 import { hasEmbeddedSearchTools } from './embeddedTools.js'
 import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError, logMCPDebug } from './log.js'
+import { getAPIProvider } from './model/providers.js'
 import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
@@ -472,6 +475,7 @@ export function createUserMessage({
   isCompactSummary,
   summarizeMetadata,
   toolUseResult,
+  toolDenialKind,
   mcpMeta,
   uuid,
   timestamp,
@@ -486,6 +490,7 @@ export function createUserMessage({
   isVirtual?: true
   isCompactSummary?: true
   toolUseResult?: unknown // Matches tool's `Output` type
+  toolDenialKind?: UserMessage['toolDenialKind']
   /** MCP protocol metadata to pass through to SDK consumers (never sent to model) */
   mcpMeta?: {
     _meta?: Record<string, unknown>
@@ -521,6 +526,7 @@ export function createUserMessage({
     uuid: (uuid as UUID | undefined) || randomUUID(),
     timestamp: timestamp ?? new Date().toISOString(),
     toolUseResult,
+    toolDenialKind,
     mcpMeta,
     imagePasteIds,
     sourceToolAssistantUUID,
@@ -718,6 +724,14 @@ export function isNotEmptyMessage(message: Message): boolean {
   // @ts-ignore - recovered code
   if (message.message.content.length > 1) {
     return true
+  }
+
+  if (
+    message.type === 'assistant' &&
+    message.message.content[0]?.type === 'thinking' &&
+    'openAIReasoning' in message.message.content[0]
+  ) {
+    return false
   }
 
   // @ts-ignore - recovered code
@@ -2060,6 +2074,12 @@ function relocateToolReferenceSiblings(
   return result
 }
 
+// Request-local attachment rendering; never written into the engine transcript.
+export const attachmentMessagesForAPI = new WeakMap<
+  AttachmentMessage,
+  UserMessage[]
+>()
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
@@ -2282,11 +2302,20 @@ export function normalizeMessagesForAPI(
           // like 'caller' from tool_use blocks, as these are only valid with the
           // tool search beta header
           const toolSearchEnabled = isToolSearchEnabledOptimistic()
+          const content =
+            getAPIProvider() === 'openai'
+              ? message.message.content
+              : message.message.content.filter(
+                  block =>
+                    !('openAIReasoning' in block) &&
+                    !('openAIReasoningSummary' in block),
+                )
+          if (message.message.content.length > 0 && content.length === 0) return
           const normalizedMessage: AssistantMessage = {
             ...message,
             message: {
               ...message.message,
-              content: message.message.content.map(block => {
+              content: content.map(block => {
                 if (block.type === 'tool_use') {
                   // @ts-ignore - recovered code
                   const tool = tools.find(t => toolMatchesName(t, block.name))
@@ -2346,10 +2375,12 @@ export function normalizeMessagesForAPI(
           return
         }
         case 'attachment': {
-          const rawAttachmentMessage = normalizeAttachmentForAPI(
-            // @ts-ignore - recovered code
-            message.attachment,
-          )
+          const rawAttachmentMessage =
+            attachmentMessagesForAPI.get(message) ??
+            normalizeAttachmentForAPI(
+              // @ts-ignore - recovered code
+              message.attachment,
+            )
           const attachmentMessage = checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
             'tengu_chair_sermon',
           )
@@ -3064,13 +3095,20 @@ export function handleMessageFromStream(
       const thinkingBlock = message.message.content.find(
         block => block.type === 'thinking',
       )
-      if (thinkingBlock && thinkingBlock.type === 'thinking') {
-        onStreamingThinking?.(() => ({
-          // @ts-ignore - recovered code
-          thinking: thinkingBlock.thinking,
-          isStreaming: false,
-          streamingEndedAt: Date.now(),
-        }))
+      if (thinkingBlock?.type === 'thinking' && typeof thinkingBlock.thinking === 'string') {
+        if (isAssistantNarrationSummary(thinkingBlock)) {
+          // Narration belongs to its stored AssistantMessage row, not the private thinking preview.
+          onStreamingThinking?.(() => null)
+          logForDebugging(`[AssistantSummary] narration landed; cleared thinking preview message=${message.uuid}`)
+        } else {
+          const thinking = thinkingBlock.thinking
+          onStreamingThinking?.(current => ({
+            // The live stream may be rewritten by Mods; history keeps the signed block.
+            thinking: current?.isStreaming ? current.thinking : thinking,
+            isStreaming: false,
+            streamingEndedAt: Date.now(),
+          }))
+        }
       }
     }
     // Clear streaming text NOW so the render can switch displayedMessages
@@ -3117,6 +3155,9 @@ export function handleMessageFromStream(
       // @ts-ignore - recovered code
       switch (message.event.content_block.type) {
         case 'thinking':
+          onStreamingThinking?.(() => ({ thinking: '', isStreaming: true }))
+          onSetStreamMode('thinking')
+          return
         case 'redacted_thinking':
           onSetStreamMode('thinking')
           return
@@ -3185,10 +3226,16 @@ export function handleMessageFromStream(
           })
           return
         }
-        case 'thinking_delta':
+        case 'thinking_delta': {
           // @ts-ignore - recovered code
-          onUpdateLength(message.event.delta.thinking)
+          const delta = message.event.delta.thinking
+          onUpdateLength(delta)
+          onStreamingThinking?.(current => ({
+            thinking: (current?.isStreaming ? current.thinking : '') + delta,
+            isStreaming: true,
+          }))
           return
+        }
         case 'signature_delta':
           // Signatures are cryptographic authentication strings, not model
           // output. Excluding them from onUpdateLength prevents them from
@@ -3198,6 +3245,9 @@ export function handleMessageFromStream(
           return
       }
     case 'content_block_stop':
+      onStreamingThinking?.(current => current?.isStreaming
+        ? { ...current, isStreaming: false, streamingEndedAt: Date.now() }
+        : current)
       return
     case 'message_delta':
       onSetStreamMode('responding')
@@ -3886,9 +3936,16 @@ Read the team config to discover your teammates' names. Check the task list peri
       // hardcoded isMeta:true, which hid user-typed messages in brief mode
       // (filterForBriefTool) and in normal mode (shouldShowUserMessage).
       const metaProp =
-        origin !== undefined || attachment.isMeta
+        (origin !== undefined && origin.kind !== 'human') || attachment.isMeta
           ? ({ isMeta: true } as const)
           : {}
+
+      // Official queued input escapes a closing reminder tag before sender
+      // framing. asUser changes the sender label, not the plugin provenance.
+      const commandText = (text: string): string =>
+        (origin === undefined || origin.kind === 'human') && attachment.isMeta !== true
+          ? text
+          : text.replaceAll(/<\s*\/\s*system-reminder\s*>/gi, '&lt;/system-reminder&gt;')
 
       if (Array.isArray(attachment.prompt)) {
         // Handle content blocks (may include images)
@@ -3904,7 +3961,7 @@ Read the team config to discover your teammates' names. Check the task list peri
         const content: ContentBlockParam[] = [
           {
             type: 'text',
-            text: wrapCommandText(textContent, origin),
+            text: wrapCommandText(commandText(textContent), origin),
           },
           ...imageBlocks,
         ]
@@ -3922,7 +3979,7 @@ Read the team config to discover your teammates' names. Check the task list peri
       // String prompt
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: wrapCommandText(String(attachment.prompt), origin),
+          content: wrapCommandText(commandText(String(attachment.prompt)), origin),
           ...metaProp,
           origin,
           uuid: attachment.source_uuid,
@@ -4975,7 +5032,7 @@ function filterTrailingThinkingFromLastAssistant(
   const content = lastMessage.message.content
   const lastBlock = content.at(-1)
   // @ts-ignore - recovered code
-  if (!lastBlock || !isThinkingBlock(lastBlock)) {
+  if (!lastBlock || !isThinkingBlock(lastBlock) || 'openAIReasoning' in lastBlock) {
     return messages
   }
 
@@ -4984,7 +5041,7 @@ function filterTrailingThinkingFromLastAssistant(
   while (lastValidIndex >= 0) {
     const block = content[lastValidIndex]
     // @ts-ignore - recovered code
-    if (!block || !isThinkingBlock(block)) {
+    if (!block || !isThinkingBlock(block) || 'openAIReasoning' in block) {
       break
     }
     lastValidIndex--
@@ -5055,12 +5112,15 @@ function hasOnlyWhitespaceTextContent(
  */
 export function filterWhitespaceOnlyAssistantMessages(
   messages: (UserMessage | AssistantMessage)[],
+  options?: { mergeAdjacentUsers?: boolean },
 ): (UserMessage | AssistantMessage)[]
 export function filterWhitespaceOnlyAssistantMessages(
   messages: Message[],
+  options?: { mergeAdjacentUsers?: boolean },
 ): Message[]
 export function filterWhitespaceOnlyAssistantMessages(
   messages: Message[],
+  options?: { mergeAdjacentUsers?: boolean },
 ): Message[] {
   let hasChanges = false
 
@@ -5090,6 +5150,8 @@ export function filterWhitespaceOnlyAssistantMessages(
   if (!hasChanges) {
     return messages
   }
+
+  if (options?.mergeAdjacentUsers === false) return filtered
 
   // Removing assistant messages may leave adjacent user messages that need
   // merging (the API requires alternating user/assistant roles).
@@ -5194,7 +5256,9 @@ export function filterOrphanedThinkingOnlyMessages(
     if (!Array.isArray(content)) continue
 
     const hasNonThinking = content.some(
-      block => block.type !== 'thinking' && block.type !== 'redacted_thinking',
+      block =>
+        (block.type !== 'thinking' && block.type !== 'redacted_thinking') ||
+        'openAIReasoning' in block,
     )
     if (hasNonThinking && msg.message.id) {
       messageIdsWithNonThinkingContent.add(msg.message.id)
@@ -5699,6 +5763,8 @@ export function wrapCommandText(
 ): string {
   // @ts-ignore - recovered code
   switch (origin?.kind) {
+    case 'plugin':
+      return formatPluginPrompt(raw, origin, true)
     case 'task-notification':
       return `A background agent completed a task:\n${raw}`
     case 'coordinator':

@@ -8,6 +8,7 @@ import { getEmptyToolPermissionContext } from '../../Tool.js'
 import { asAgentId } from '../../types/ids.js'
 import { resetGitFileWatcher } from '../../utils/git/gitFilesystem.js'
 import { createUserMessage } from '../../utils/messages.js'
+import type { EffortValue } from '../../utils/effort.js'
 import {
   flushSessionStorage,
   recordSidechainTranscript,
@@ -23,14 +24,18 @@ import {
 
 let controlledPermissionMode: string | undefined
 let controlledAllowedTools: string[] | undefined
+let controlledEffort: EffortValue | undefined
+let invalidatedAgentId: string | undefined
 
 mock.module('./runAgent.js', () => ({
   async *runAgent(params: {
     permissionMode?: string
     allowedTools?: string[]
+    agentDefinition: { effort?: EffortValue }
   }) {
     controlledPermissionMode = params.permissionMode
     controlledAllowedTools = params.allowedTools
+    controlledEffort = params.agentDefinition.effort
     yield {
       type: 'assistant',
       uuid: crypto.randomUUID(),
@@ -61,10 +66,12 @@ const originalSettings = getSessionSettingsCache()
 const originalConfigDir = process.env.CLAUDE_CONFIG_DIR
 const originalTestPersistence = process.env.TEST_ENABLE_SESSION_PERSISTENCE
 const originalApiKey = process.env.ANTHROPIC_API_KEY
+const originalConcurrencyLimit = process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS
 const configDir = mkdtempSync(join(tmpdir(), 'resume-agent-permission-test-'))
 process.env.CLAUDE_CONFIG_DIR = configDir
 process.env.TEST_ENABLE_SESSION_PERSISTENCE = '1'
 process.env.ANTHROPIC_API_KEY = 'test-resume-agent-permission-key'
+process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = '1'
 
 const { resumeAgentBackground } = await import('./resumeAgent.js')
 
@@ -74,12 +81,18 @@ async function runCase({
   metadataMode,
   definitionMode,
   definitionTools,
+  metadataEffort,
+  definitionEffort,
+  parentEffort,
 }: {
   agentId: string
-  parentMode: 'default' | 'bypassPermissions' | 'plan'
-  metadataMode?: 'default' | 'acceptEdits' | 'plan'
-  definitionMode?: 'acceptEdits' | 'plan'
+  parentMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
+  metadataMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'bubble'
+  definitionMode?: 'acceptEdits' | 'plan' | 'bubble'
   definitionTools?: string[]
+  metadataEffort?: EffortValue
+  definitionEffort?: EffortValue
+  parentEffort?: EffortValue
 }) {
   const typedAgentId = asAgentId(agentId)
   await recordSidechainTranscript(
@@ -87,12 +100,13 @@ async function runCase({
     agentId,
   )
   await flushSessionStorage()
-  const usesDefinitionAgent = definitionMode !== undefined || definitionTools !== undefined
+  const usesDefinitionAgent = definitionMode !== undefined || definitionTools !== undefined || definitionEffort !== undefined
   await writeAgentMetadata(typedAgentId, {
     agentType: usesDefinitionAgent
       ? 'resume-definition-agent'
       : 'general-purpose',
     ...(metadataMode ? { permissionMode: metadataMode } : {}),
+    ...(metadataEffort !== undefined ? { effort: metadataEffort } : {}),
   })
 
   const definitionAgent = {
@@ -100,9 +114,12 @@ async function runCase({
     agentType: 'resume-definition-agent',
     permissionMode: definitionMode,
     tools: definitionTools,
+    effort: definitionEffort,
   }
   let state = {
     ...getDefaultAppState(),
+    runningSubagents: 1,
+    effortValue: parentEffort,
     toolPermissionContext: {
       ...getEmptyToolPermissionContext(),
       mode: parentMode,
@@ -119,10 +136,12 @@ async function runCase({
   const completion = new Promise<void>(resolve => {
     resolveCompletion = resolve
   })
+  const concurrencyCounts: number[] = []
   const setAppState = (
     updater: (prev: typeof state) => typeof state,
   ) => {
     state = updater(state)
+    concurrencyCounts.push(state.runningSubagents)
     if (
       Object.values(state.tasks).some(
         task =>
@@ -137,6 +156,8 @@ async function runCase({
   }
   controlledPermissionMode = undefined
   controlledAllowedTools = undefined
+  controlledEffort = undefined
+  invalidatedAgentId = undefined
 
   await resumeAgentBackground({
     agentId,
@@ -156,14 +177,25 @@ async function runCase({
       setAppState,
       toolUseId: `toolu_${agentId}`,
       contentReplacementState: undefined,
+      mods: {
+        invalidatePromptContext(id?: string) {
+          invalidatedAgentId = id
+        },
+      },
     } as never,
     canUseTool: async () => ({ behavior: 'allow' }),
   })
   await completion
+  assert.ok(concurrencyCounts.includes(2), 'resumption must reserve a slot even at the new-launch limit')
+  assert.equal(state.runningSubagents, 1)
+  assert.equal(state.effortValue, parentEffort, 'resumption must not change the caller effort')
+  assert.equal(definitionAgent.effort, definitionEffort, 'resumption must not mutate the shared agent definition')
 
   return {
     permissionMode: controlledPermissionMode,
     allowedTools: controlledAllowedTools,
+    invalidatedAgentId,
+    effort: controlledEffort,
   }
 }
 
@@ -192,6 +224,7 @@ try {
     }),
     /Plan mode is disabled.*"planModeAvailable": true/,
   )
+  // Recorded acceptEdits is clamped to the parent's default, like spawn.
   assert.equal(
     (
       await runCase({
@@ -200,7 +233,28 @@ try {
         metadataMode: 'acceptEdits',
       })
     ).permissionMode,
-    'acceptEdits',
+    'default',
+  )
+  // A recorded mode never outranks the parent session's current mode.
+  assert.equal(
+    (
+      await runCase({
+        agentId: 'resume-clamped-bypass',
+        parentMode: 'default',
+        metadataMode: 'bypassPermissions',
+      })
+    ).permissionMode,
+    'default',
+  )
+  assert.equal(
+    (
+      await runCase({
+        agentId: 'resume-clamped-accept-edits',
+        parentMode: 'plan',
+        metadataMode: 'acceptEdits',
+      })
+    ).permissionMode,
+    'plan',
   )
   for (const metadataMode of ['default', 'acceptEdits'] as const) {
     assert.equal(
@@ -223,6 +277,7 @@ try {
     ).permissionMode,
     'bypassPermissions',
   )
+  // Without a recorded mode, resume resolves the definition's mode like spawn.
   assert.equal(
     (
       await runCase({
@@ -233,16 +288,54 @@ try {
     ).permissionMode,
     'acceptEdits',
   )
-  assert.deepEqual(
+  // A bubble agent resumed under acceptEdits/auto/plan/dontAsk keeps the
+  // parent's mode, matching spawn; only a default parent yields bubble.
+  for (const parentMode of ['default', 'acceptEdits', 'auto', 'plan', 'dontAsk'] as const) {
+    for (const source of ['metadata', 'definition'] as const) {
+      assert.equal(
+        (
+          await runCase({
+            agentId: `resume-bubble-${source}-${parentMode}`,
+            parentMode,
+            ...(source === 'metadata'
+              ? { metadataMode: 'bubble' as const, definitionMode: 'bubble' as const }
+              : { definitionMode: 'bubble' as const }),
+          })
+        ).permissionMode,
+        parentMode === 'default' ? 'bubble' : parentMode,
+        `${source} bubble under ${parentMode}`,
+      )
+    }
+  }
+  assert.equal(
     (
       await runCase({
-        agentId: 'resume-definition-tools',
-        parentMode: 'default',
-        definitionTools: ['Read(example.txt)'],
+        agentId: 'resume-accept-edits-parent',
+        parentMode: 'acceptEdits',
+        metadataMode: 'acceptEdits',
       })
-    ).allowedTools,
-    ['Read(example.txt)'],
+    ).permissionMode,
+    'acceptEdits',
   )
+  const definitionTools = await runCase({
+    agentId: 'resume-definition-tools',
+    parentMode: 'default',
+    definitionTools: ['Read(example.txt)'],
+  })
+  assert.deepEqual(definitionTools.allowedTools, ['Read(example.txt)'])
+  assert.equal(definitionTools.invalidatedAgentId, 'resume-definition-tools')
+  for (const metadataEffort of ['low', 0] as const) {
+    assert.equal(
+      (await runCase({
+        agentId: `resume-effort-${metadataEffort}`,
+        parentMode: 'default',
+        metadataEffort,
+        definitionEffort: 'medium',
+        parentEffort: 'xhigh',
+      })).effort,
+      metadataEffort,
+    )
+  }
 } finally {
   if (originalSettings) setSessionSettingsCache(originalSettings)
   else resetSettingsCache()
@@ -262,6 +355,8 @@ try {
   } else {
     process.env.ANTHROPIC_API_KEY = originalApiKey
   }
+  if (originalConcurrencyLimit === undefined) delete process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS
+  else process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = originalConcurrencyLimit
   rmSync(configDir, { recursive: true, force: true })
 }
 

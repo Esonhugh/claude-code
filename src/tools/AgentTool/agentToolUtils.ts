@@ -6,7 +6,6 @@ import {
   ASYNC_AGENT_ALLOWED_TOOLS,
   CUSTOM_AGENT_DISALLOWED_TOOLS,
   IN_PROCESS_TEAMMATE_ALLOWED_TOOLS,
-  MAIN_THREAD_ONLY_TOOLS,
 } from '../../constants/tools.js'
 import { startAgentSummarization } from '../../services/AgentSummary/agentSummary.js'
 import {
@@ -62,6 +61,8 @@ import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
+import { parkAgentForChildren } from './backgroundOwner.js'
+import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
@@ -70,8 +71,24 @@ export type ResolvedAgentTools = {
   allowedAgentTypes?: string[]
 }
 
+const agentProgressObservers = new WeakMap<ToolUseContext, (message: MessageType) => void>()
+
+// The exact host call context owns this sink; child context copies do not inherit it.
+export function observeAgentProgress(context: ToolUseContext, observer: (message: MessageType) => void): () => void {
+  agentProgressObservers.set(context, observer)
+  return () => {
+    if (agentProgressObservers.get(context) === observer) agentProgressObservers.delete(context)
+  }
+}
+
+export function reportObservedAgentProgress(context: ToolUseContext, message: MessageType): void {
+  agentProgressObservers.get(context)?.(message)
+}
+
 export function filterToolsForExactAgent(tools: Tools): Tools {
-  return tools.filter(tool => !MAIN_THREAD_ONLY_TOOLS.has(tool.name))
+  // Cache-sharing forks preserve the complete parent tool definitions. Tools
+  // restricted to the main thread still reject child calls in validateInput/call.
+  return tools
 }
 
 export function filterToolsForAgent({
@@ -79,13 +96,23 @@ export function filterToolsForAgent({
   isBuiltIn,
   isAsync = false,
   permissionMode,
+  agentDepth = 0,
 }: {
   tools: Tools
   isBuiltIn: boolean
   isAsync?: boolean
   permissionMode?: PermissionMode
+  agentDepth?: number
 }): Tools {
   return tools.filter(tool => {
+    // An agent at the nesting limit cannot spawn, so it never sees the Agent tool.
+    if (
+      agentDepth >= MAX_SUBAGENT_DEPTH &&
+      (toolMatchesName(tool, AGENT_TOOL_NAME) ||
+        toolMatchesName(tool, LEGACY_AGENT_TOOL_NAME))
+    ) {
+      return false
+    }
     // Allow MCP tools for all agents
     if (tool.name.startsWith('mcp__')) {
       return true
@@ -134,6 +161,7 @@ export function resolveAgentTools(
   availableTools: Tools,
   isAsync = false,
   isMainThread = false,
+  agentDepth = 0,
 ): ResolvedAgentTools {
   const {
     tools: agentTools,
@@ -151,6 +179,7 @@ export function resolveAgentTools(
         isBuiltIn: source === 'built-in',
         isAsync,
         permissionMode,
+        agentDepth,
       })
 
   // Create a set of disallowed tool names for quick lookup
@@ -208,14 +237,12 @@ export function resolveAgentTools(
         // Parse comma-separated agent types: "worker, researcher" → ["worker", "researcher"]
         allowedAgentTypes = ruleContent.split(',').map(s => s.trim())
       }
-      // For sub-agents, Agent is excluded by filterToolsForAgent — mark the spec
-      // valid for allowedAgentTypes tracking but skip tool resolution.
-      if (!isMainThread) {
+      // A withheld Agent spec still carries type restrictions for the child.
+      // An available Agent must resolve normally so nested calls can execute.
+      if (!isMainThread && !availableToolMap.has(AGENT_TOOL_NAME)) {
         validTools.push(toolSpec)
         continue
       }
-      // For main thread, filtering was skipped so Agent is in availableToolMap —
-      // fall through to normal resolution below.
     }
 
     const tool = availableToolMap.get(toolName)
@@ -609,6 +636,9 @@ export async function runAsyncAgentLifecycle({
   agentIdForCleanup,
   enableSummarization,
   getWorktreeResult,
+  onRunSettled,
+  resume,
+  shouldNotifyOwner,
 }: {
   taskId: string
   abortController: AbortController
@@ -621,6 +651,9 @@ export async function runAsyncAgentLifecycle({
   rootSetAppState: SetAppState
   agentIdForCleanup: string
   enableSummarization: boolean
+  onRunSettled?: () => void
+  resume?: (prompt: string) => Promise<unknown>
+  shouldNotifyOwner?: () => boolean
   getWorktreeResult: () => Promise<{
     worktreePath?: string
     worktreeBranch?: string
@@ -681,6 +714,7 @@ export async function runAsyncAgentLifecycle({
         getProgressUpdate(tracker),
         rootSetAppState,
       )
+      reportObservedAgentProgress(toolUseContext, message)
       const lastToolName = getLastToolUseName(message)
       if (lastToolName) {
         emitTaskProgress(
@@ -711,7 +745,9 @@ export async function runAsyncAgentLifecycle({
     // immediately. classifyHandoffIfNeeded (API call) and getWorktreeResult
     // (git exec) are notification embellishments that can hang — they must
     // not gate the status transition (gh-20236).
+    onRunSettled?.()
     completeAsyncAgent(agentResult, rootSetAppState)
+    if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
 
     let finalMessage = extractTextContent(agentResult.content, '\n')
 
@@ -751,7 +787,7 @@ export async function runAsyncAgentLifecycle({
       finalMessage = `${postProcessingWarning}\n\n${finalMessage}`
     }
 
-    enqueueAgentNotification({
+    if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
       taskId,
       description,
       status: 'completed',
@@ -766,6 +802,7 @@ export async function runAsyncAgentLifecycle({
       ...worktreeResult,
     })
   } catch (error) {
+    onRunSettled?.()
     stopSummarization?.()
     const currentTask = toolUseContext.getAppState().tasks[taskId]
     if (isLocalAgentTask(currentTask) && currentTask.status === 'completed') {
@@ -774,7 +811,7 @@ export async function runAsyncAgentLifecycle({
         { level: 'warn' },
       )
       addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
-      enqueueAgentNotification({
+      if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
         taskId,
         description,
         status: 'completed',
@@ -819,7 +856,7 @@ export async function runAsyncAgentLifecycle({
         addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
       }
       const partialResult = extractPartialResult(agentMessages)
-      enqueueAgentNotification({
+      if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
         taskId,
         description,
         status: 'killed',
@@ -854,7 +891,7 @@ export async function runAsyncAgentLifecycle({
       )
       addAgentTaskWarning(taskId, postProcessingWarning, rootSetAppState)
     }
-    enqueueAgentNotification({
+    if (shouldNotifyOwner?.() !== false) enqueueAgentNotification({
       taskId,
       description,
       status: 'failed',
@@ -869,6 +906,7 @@ export async function runAsyncAgentLifecycle({
       ...worktreeResult,
     })
   } finally {
+    onRunSettled?.()
     clearInvokedSkillsForAgent(agentIdForCleanup)
     clearDumpState(agentIdForCleanup)
   }

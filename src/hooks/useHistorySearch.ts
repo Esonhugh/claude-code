@@ -293,6 +293,13 @@ export function useHistorySearch(
     }
   }, [historyQuery])
 
+  useEffect(() => {
+    return () => {
+      searchAbortController.current?.abort()
+      closeHistoryReader()
+    }
+  }, [closeHistoryReader])
+
   return {
     historyQuery,
     setHistoryQuery,

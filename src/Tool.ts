@@ -180,8 +180,20 @@ export type ManagedSSHRemotePermissions = {
 }
 
 export type ToolUseContext = {
+  /** Host script invocation; distinct from a model tool call in a headless child. */
+  innerCall?: boolean
+  diff?: import('./services/diff/controller.js').DiffController
   mods?: import('./services/mods/runtime.js').ModsRuntime
+  modsSession?: import('./services/mods/session.js').ModsSession
   modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
+  /** Invocation-local author result sink; never inherited by nested tools. */
+  modToolCallResult?: (result: import('./services/mods/toolAdapter.js').ToolCallResult) => void
+  /** Plugin that initiated an active host call, when the call came from Mods. */
+  modSpawnedBy?: string
+  /** A classic PreToolUse ask still requires the permission decider. */
+  hookAskFloor?: true
+  /** Resolves a Mods host spawn at AgentTool's internal launch boundary. */
+  modAgentStarted?: (result: { model: string; agentId: string; teammateId?: string }) => void
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {
@@ -206,6 +218,9 @@ export type ToolUseContext = {
     subagentDepth?: number
     /** Stable AgentTool spawn depth persisted across nested agent contexts. */
     spawnDepth?: number
+    /** Attribution retained for fork skill recursion checks across turns. */
+    spawnedBySkill?: string
+    spawnedByForkedSkill?: boolean
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
     /** Prevent workflow worker agents from recursively spawning agents/workflows. */
@@ -236,6 +251,8 @@ export type ToolUseContext = {
    * fall back to setAppState.
    */
   setAppStateForTasks?: (f: (prev: AppState) => AppState) => void
+  /** Live root-store reader paired with setAppStateForTasks. */
+  getAppStateForTasks?: () => AppState
   /**
    * Optional handler for URL elicitations triggered by tool call errors (-32042).
    * In print/SDK mode, this delegates to structuredIO.handleElicitation.
@@ -311,13 +328,17 @@ export type ToolUseContext = {
     }
   >
   queryTracking?: QueryChainTracking
+  /** Interactive consent entry used only by the bundled Mod authoring skill. */
+  requestModAuthoringConsent?: (
+    signal: AbortSignal,
+  ) => Promise<{ enabled: boolean; root?: string }>
   /** Callback factory for requesting interactive prompts from the user.
    * Returns a prompt callback bound to the given source name.
    * Only available in interactive (REPL) contexts. */
   requestPrompt?: (
     sourceName: string,
     toolInputSummary?: string | null,
-  ) => (request: PromptRequest) => Promise<PromptResponse>
+  ) => (request: PromptRequest, signal?: AbortSignal) => Promise<PromptResponse>
   toolUseId?: string
   criticalSystemReminder_EXPERIMENTAL?: string
   /** When true, preserve toolUseResult on messages even for subagents.
@@ -427,7 +448,7 @@ export type Tool<
     args: z.infer<Input>,
     context: ToolUseContext,
     canUseTool: CanUseToolFn,
-    parentMessage: AssistantMessage,
+    parentMessage: AssistantMessage | undefined,
     onProgress?: ToolCallProgress<P>,
   ): Promise<ToolResult<Output>>
   description(
@@ -501,6 +522,9 @@ export type Tool<
    */
   mcpInfo?: {
     serverName: string
+    /** Host-owned configuration provenance; never taken from MCP response metadata. */
+    scope?: import('./services/mcp/types.js').ConfigScope
+    pluginSource?: string
     /** Exact name sent back to the MCP server. */
     toolName: string
     /** Model-visible tail used by permission rules when it differs from wire name. */
@@ -579,6 +603,8 @@ export type Tool<
     tools: Tools
     agents: AgentDefinition[]
     allowedAgentTypes?: string[]
+    modsSnapshot?: import('./services/mods/runtime.js').ModSnapshot
+    signal?: AbortSignal
   }): Promise<string>
   userFacingName(input: Partial<z.infer<Input>> | undefined): string
   userFacingNameBackgroundColor?(

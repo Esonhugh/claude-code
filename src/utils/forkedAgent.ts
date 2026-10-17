@@ -9,8 +9,10 @@
  */
 
 import type { UUID } from 'crypto'
+import { getSessionId } from '../bootstrap/state.js'
 import { randomUUID } from 'crypto'
-import type { PromptCommand } from '../commands.js'
+import type { CommandBase, PromptCommand } from '../commands.js'
+import { captureModSkillPromptSnapshot, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -59,6 +61,8 @@ export type CacheSafeParams = {
   systemPrompt: SystemPrompt
   /** User context - prepended to messages, affects cache */
   userContext: { [k: string]: string }
+  /** Ordered prompt.context bytes already resolved by the parent query. */
+  resolvedPromptContextBlocks?: readonly { name: string; text: string }[]
   /** System context - appended to system prompt, affects cache */
   systemContext: { [k: string]: string }
   /** Tool use context containing tools, model, and other options */
@@ -101,10 +105,13 @@ export type ForkedAgentParams = {
    * sharing is not a goal (e.g., compact summaries).
    */
   maxOutputTokens?: number
+  toolChoice?: { type: 'none' }
   /** Optional cap on number of turns (API round-trips) */
   maxTurns?: number
   /** Optional callback invoked for each message as it arrives (for streaming UI) */
   onMessage?: (message: Message) => void
+  /** Live accumulated response usage, including a reply interrupted mid-stream. */
+  onUsage?: (usage: NonNullableUsage) => void
   /** Skip sidechain transcript recording (e.g., for ephemeral work like speculation) */
   skipTranscript?: boolean
   /** Skip writing new prompt cache entries on the last message. For
@@ -134,6 +141,7 @@ export function createCacheSafeParams(
   return {
     systemPrompt: context.systemPrompt,
     userContext: context.userContext,
+    resolvedPromptContextBlocks: context.resolvedPromptContextBlocks,
     systemContext: context.systemContext,
     toolUseContext: context.toolUseContext,
     forkContextMessages: context.messages,
@@ -147,8 +155,11 @@ export function createCacheSafeParams(
 export function createGetAppStateWithAllowedTools(
   baseGetAppState: ToolUseContext['getAppState'],
   allowedTools: string[],
+  disallowedTools: string[] = [],
+  options: { replaceCommandRules?: boolean; frozenCommandDenies?: readonly string[] } = {},
 ): ToolUseContext['getAppState'] {
-  if (allowedTools.length === 0) return baseGetAppState
+  if (!options.replaceCommandRules && options.frozenCommandDenies === undefined &&
+      allowedTools.length === 0 && disallowedTools.length === 0) return baseGetAppState
   return () => {
     const appState = baseGetAppState()
     return {
@@ -159,11 +170,19 @@ export function createGetAppStateWithAllowedTools(
           ...appState.toolPermissionContext.alwaysAllowRules,
           command: [
             ...new Set([
-              ...(appState.toolPermissionContext.alwaysAllowRules.command ||
-                []),
+              ...(options.replaceCommandRules ? [] :
+                appState.toolPermissionContext.alwaysAllowRules.command ?? []),
               ...allowedTools,
             ]),
           ],
+        },
+        alwaysDenyRules: {
+          ...appState.toolPermissionContext.alwaysDenyRules,
+          command: [...new Set([
+            ...(options.frozenCommandDenies ?? []),
+            ...(appState.toolPermissionContext.alwaysDenyRules?.command ?? []),
+            ...disallowedTools,
+          ])],
         },
       },
     }
@@ -176,6 +195,9 @@ export function createGetAppStateWithAllowedTools(
 export type PreparedForkedContext = {
   /** Skill content with args replaced */
   skillContent: string
+  /** Launch-time command denies must survive later parent permission changes. */
+  frozenCommandDenies?: string[]
+  readFileState?: ToolUseContext['readFileState']
   /** Modified getAppState with allowed tools */
   modifiedGetAppState: ToolUseContext['getAppState']
   /** The general-purpose agent to use */
@@ -189,16 +211,16 @@ export type PreparedForkedContext = {
  * This handles the common setup that both SkillTool and slash commands need.
  */
 export async function prepareForkedCommandContext(
-  command: PromptCommand,
+  command: CommandBase & PromptCommand,
   args: string,
   context: ToolUseContext,
+  canUseTool: CanUseToolFn,
+  options: { background?: boolean } = {},
 ): Promise<PreparedForkedContext> {
-  // Get skill content with $ARGUMENTS replaced
-  const skillPrompt = await command.getPromptForCommand(args, context)
-  const skillContent = skillPrompt
-    .map(block => (block.type === 'text' ? block.text : ''))
-    .join('\n')
-
+  const frozenCommandDenies = options.background
+    ? [...(context.getAppState().toolPermissionContext.alwaysDenyRules?.command ?? [])]
+    : undefined
+  const readFileState = context.readFileState ? cloneFileStateCache(context.readFileState) : undefined
   // Parse and prepare allowed tools
   const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
 
@@ -206,7 +228,33 @@ export async function prepareForkedCommandContext(
   const modifiedGetAppState = createGetAppStateWithAllowedTools(
     context.getAppState,
     allowedTools,
+    parseToolListFromCLI(command.disallowedTools ?? []),
+    { replaceCommandRules: options.background, frozenCommandDenies },
   )
+
+  // Get skill content with $ARGUMENTS replaced
+  const skillPrompt = await command.getPromptForCommand(args, { ...context, getAppState: modifiedGetAppState })
+  const coreSkillContent = skillPrompt
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n')
+  const ownedSnapshot = context.modsSnapshot
+    ? undefined
+    : captureModSkillPromptSnapshot(context, canUseTool)
+  let skillContent: string
+  try {
+    const snapshot = context.modsSnapshot ?? ownedSnapshot
+    skillContent = snapshot?.hasHooks('skill.prompt')
+      ? await renderModSkillPrompt({
+          snapshot,
+          skill: command.name,
+          text: coreSkillContent,
+          signal: context.abortController.signal,
+        })
+      : coreSkillContent
+  } finally {
+    ownedSnapshot?.release()
+  }
 
   // Use command.agent if specified, otherwise 'general-purpose'
   const agentTypeName = command.agent ?? 'general-purpose'
@@ -228,6 +276,8 @@ export async function prepareForkedCommandContext(
     modifiedGetAppState,
     baseAgent,
     promptMessages,
+    frozenCommandDenies,
+    readFileState,
   }
 }
 
@@ -415,6 +465,8 @@ export function createSubagentContext(
     // are never registered and never killed (PPID=1 zombie).
     setAppStateForTasks:
       parentContext.setAppStateForTasks ?? parentContext.setAppState,
+    getAppStateForTasks:
+      parentContext.getAppStateForTasks ?? parentContext.getAppState,
     // Async subagents whose setAppState is a no-op need local denial tracking
     // so the denial counter actually accumulates across retries.
     localDenialTracking: overrides?.shareSetAppState
@@ -505,26 +557,38 @@ export async function runForkedAgent({
   maxOutputTokens,
   maxTurns,
   onMessage,
+  onUsage,
   skipTranscript,
   skipCacheWrite,
+  toolChoice,
 }: ForkedAgentParams): Promise<ForkedAgentResult> {
   const startTime = Date.now()
   const outputMessages: Message[] = []
   let totalUsage: NonNullableUsage = { ...EMPTY_USAGE }
+  const responseUsage = new Map<string, NonNullableUsage>()
+  let currentResponse: string | undefined
+  let anonymousResponses = 0
+  const recordUsage = (id: string, usage: Parameters<typeof updateUsage>[1]) => {
+    responseUsage.set(id, updateUsage(responseUsage.get(id) ?? EMPTY_USAGE, usage))
+    totalUsage = [...responseUsage.values()].reduce(accumulateUsage, { ...EMPTY_USAGE })
+    onUsage?.(totalUsage)
+  }
 
   const {
     systemPrompt,
     userContext,
+    resolvedPromptContextBlocks,
     systemContext,
     toolUseContext,
     forkContextMessages,
   } = cacheSafeParams
 
-  // Create isolated context to prevent mutation of parent state
-  const isolatedToolUseContext = createSubagentContext(
-    toolUseContext,
-    overrides,
-  )
+  // Create isolated context to prevent mutation of parent state.
+  const isolatedToolUseContext = createSubagentContext(toolUseContext, {
+    ...overrides,
+    agentId:
+      overrides?.agentId ?? createAgentId(skipTranscript ? undefined : forkLabel),
+  })
 
   // Do NOT filterIncompleteToolCalls here — it drops the whole assistant on
   // partial tool batches, orphaning the paired results (API 400). Dangling
@@ -532,9 +596,8 @@ export async function runForkedAgent({
   // same as the main thread — identical post-repair prefix keeps the cache hit.
   const initialMessages: Message[] = [...forkContextMessages, ...promptMessages]
 
-  // Generate agent ID and record initial messages for transcript
-  // When skipTranscript is set, skip agent ID creation and all transcript I/O
-  const agentId = skipTranscript ? undefined : createAgentId(forkLabel)
+  // Transcript and runtime hooks must refer to the same logical fork.
+  const agentId = skipTranscript ? undefined : isolatedToolUseContext.agentId
   let lastRecordedUuid: UUID | null = null
   if (agentId) {
     await recordSidechainTranscript(initialMessages, agentId).catch(err =>
@@ -549,12 +612,16 @@ export async function runForkedAgent({
         : null
   }
 
+  const finishModConversation = agentId ? toolUseContext.mods?.trackConversation({
+    agentId, sessionId: getSessionId(), messages: () => [...initialMessages,...outputMessages], parentAgentId: toolUseContext.agentId,
+  }) : undefined
   // Run the query loop with isolated context (cache-safe params preserved)
   try {
     for await (const message of query({
       messages: initialMessages,
       systemPrompt,
       userContext,
+      resolvedPromptContextBlocks,
       systemContext,
       canUseTool,
       toolUseContext: isolatedToolUseContext,
@@ -562,19 +629,24 @@ export async function runForkedAgent({
       maxOutputTokensOverride: maxOutputTokens,
       maxTurns,
       skipCacheWrite,
+      toolChoice,
     })) {
-      // Extract real usage from message_delta stream events (final usage per API call)
       if (message.type === 'stream_event') {
-        if (
-          'event' in message &&
-          // @ts-ignore - recovered code
-          message.event?.type === 'message_delta' &&
-          // @ts-ignore - recovered code
-          message.event.usage
-        ) {
-          // @ts-ignore - recovered code
-          const turnUsage = updateUsage({ ...EMPTY_USAGE }, message.event.usage)
-          totalUsage = accumulateUsage(totalUsage, turnUsage)
+        if (forkLabel === 'plugin_model_fork') {
+          const delta = message.event as {type?:string;usage?:Parameters<typeof updateUsage>[1]}
+          if (delta.type === 'message_delta' && delta.usage) {
+            totalUsage = accumulateUsage(totalUsage, updateUsage({...EMPTY_USAGE}, delta.usage))
+            onUsage?.(totalUsage)
+          }
+          continue
+        }
+        const event = message.event as {type?:string;message?:{id?:string;usage?:Parameters<typeof updateUsage>[1]};usage?:Parameters<typeof updateUsage>[1]}
+        if (event?.type === 'message_start') {
+          currentResponse = event.message?.id ?? `anonymous-${++anonymousResponses}`
+          if (event.message?.usage) recordUsage(currentResponse, event.message.usage)
+        } else if (event?.type === 'message_delta' && event.usage) {
+          currentResponse ??= `anonymous-${++anonymousResponses}`
+          recordUsage(currentResponse, event.usage)
         }
         continue
       }
@@ -587,6 +659,15 @@ export async function runForkedAgent({
       )
 
       outputMessages.push(message as Message)
+      if (forkLabel !== 'plugin_model_fork' && message.type === 'assistant' && !message.isApiErrorMessage && !message.isVirtual && message.message.usage) {
+        recordUsage(message.message.id, {
+          ...message.message.usage,
+          cache_creation_input_tokens:message.message.usage.cache_creation_input_tokens ?? null,
+          cache_read_input_tokens:message.message.usage.cache_read_input_tokens ?? null,
+          iterations:message.message.usage.iterations ?? null,
+          server_tool_use:message.message.usage.server_tool_use ?? null,
+        })
+      }
       onMessage?.(message as Message)
 
       // Record transcript for recordable message types (same pattern as runAgent.ts)
@@ -609,6 +690,7 @@ export async function runForkedAgent({
       }
     }
   } finally {
+    finishModConversation?.()
     // Release cloned file state cache memory (same pattern as runAgent.ts)
     isolatedToolUseContext.readFileState.clear()
     // Release the cloned fork context messages

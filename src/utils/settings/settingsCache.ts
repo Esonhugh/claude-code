@@ -38,14 +38,49 @@ export function setCachedSettingsForSource(
  * loadSettingsFromDisk call parseSettingsFile on the same paths during
  * startup — this dedupes the disk read + zod parse.
  */
-type ParsedSettings = {
+export type ParsedSettings = {
   settings: SettingsJson | null
   errors: ValidationError[]
+  identity: string | null
 }
 const parseFileCache = new Map<string, ParsedSettings>()
+// Only pending/blocked files need a last-accepted snapshot across cache resets.
+const retainedFiles = new Map<string, ParsedSettings>()
 
 export function getCachedParsedFile(path: string): ParsedSettings | undefined {
-  return parseFileCache.get(path)
+  return retainedFiles.get(path) ?? parseFileCache.get(path)
+}
+
+export function retainSettingsFile(path: string): void {
+  if (!retainedFiles.has(path)) {
+    retainedFiles.set(
+      path,
+      parseFileCache.get(path) ?? {
+        settings: null,
+        errors: [],
+        identity: null,
+      },
+    )
+  }
+}
+
+export function isSettingsFileRetained(path: string): boolean {
+  return retainedFiles.has(path)
+}
+
+export function releaseSettingsFile(path: string): void {
+  retainedFiles.delete(path)
+}
+
+export function getParsedSettingsPaths(): string[] {
+  return [...new Set([...parseFileCache.keys(), ...retainedFiles.keys()])]
+}
+
+export function acceptSettingsFile(path: string, value: ParsedSettings): void {
+  releaseSettingsFile(path)
+  setCachedParsedFile(path, value)
+  sessionSettingsCache = null
+  perSourceCache.clear()
 }
 
 export function setCachedParsedFile(path: string, value: ParsedSettings): void {

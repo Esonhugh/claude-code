@@ -52,11 +52,11 @@ export function getCLISyspromptPrefix(options?: {
  * Check if attribution header is enabled.
  * Enabled by default, can be forced via env var, or disabled via env var / GrowthBook killswitch.
  */
-function isAttributionHeaderEnabled(): boolean {
+function isAttributionHeaderEnabled(ignoreEnvOptOut: boolean): boolean {
   if (isEnvTruthy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
     return true
   }
-  if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
+  if (!ignoreEnvOptOut && isEnvDefinedFalsy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
     return false
   }
   return getFeatureValue_CACHED_MAY_BE_STALE('tengu_attribution_header', true)
@@ -76,8 +76,8 @@ function isAttributionHeaderEnabled(): boolean {
  * We use a placeholder (instead of injecting from Zig) because same-length
  * replacement avoids Content-Length changes and buffer reallocation.
  */
-export function getAttributionHeader(fingerprint: string): string {
-  if (!isAttributionHeaderEnabled()) {
+export function getAttributionHeader(fingerprint: string, ignoreEnvOptOut = false): string {
+  if (!isAttributionHeaderEnabled(ignoreEnvOptOut)) {
     return ''
   }
 

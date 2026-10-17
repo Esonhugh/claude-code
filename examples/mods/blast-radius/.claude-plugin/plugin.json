@@ -1,0 +1,7 @@
+{
+  "name": "blast-radius",
+  "version": "0.1.0",
+  "description": "Holds a risky Bash command, shows what it would change, and lets you proceed or cancel.",
+  "author": { "name": "You" },
+  "types": "./types/index.d.ts"
+}

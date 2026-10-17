@@ -1,5 +1,14 @@
+import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
+import { createModMcpConnections } from '../services/mods/mcpConnect.js'
+import { rewindConversationTo as applyConversationRewind } from '../utils/conversationRewind.js'
+import { createModUiSelectionTracker } from '../services/mods/uiSelection.js'
+import {copyModTerminalText} from '../services/mods/uiCopy.js'
+import inkInstances from '../ink/instances.js'
+import { copyModCallerChain } from '../services/mods/callerChain.js'
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { feature } from 'bun:bundle'
+import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
+import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
 import { spawnSync } from 'child_process'
 import {
   snapshotOutputTokensForTurn,
@@ -29,9 +38,12 @@ import {
   useTheme,
   useTerminalFocus,
   useTerminalTitle,
+  useProgramStatus,
   useTabStatus,
 } from '../ink.js'
 import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
+import { selectProgramStatus, programTurnEnd, programStatusAskText, programStatusBlockedText, programStatusProgress, selectChildProgramStatuses, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
+import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
 import * as React from 'react'
@@ -65,7 +77,6 @@ import {
   getProjectRoot,
   getSessionId,
   switchSession,
-  setCostStateForRestore,
   getTurnHookDurationMs,
   getTurnHookCount,
   resetTurnHookDuration,
@@ -80,6 +91,7 @@ import {
 import { asSessionId, asAgentId } from '../types/ids.js'
 import { logForDebugging } from '../utils/debug.js'
 import { QueryGuard } from '../utils/QueryGuard.js'
+import { runImmediateModCommand } from '../services/mods/commandAdapter.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import { formatTokens, truncateToWidth } from '../utils/format.js'
 import { consumeEarlyInput } from '../utils/earlyInput.js'
@@ -119,9 +131,11 @@ import {
   getCommandName,
   isCommandEnabled,
 } from '../commands.js'
-import type { LocalJSXCommandOnDone } from '../types/command.js'
+import { isCommandImmediate, type LocalJSXCommandOnDone } from '../types/command.js'
 import type {
   PromptInputMode,
+  PromptInputHandle,
+  TextInputEdit,
   QueuedCommand,
   VimMode,
 } from '../types/textInputTypes.js'
@@ -139,6 +153,7 @@ import { ElicitationDialog } from '../components/mcp/ElicitationDialog.js'
 import { PromptDialog } from '../components/hooks/PromptDialog.js'
 import type { PromptRequest, PromptResponse } from '../types/hooks.js'
 import PromptInput from '../components/PromptInput/PromptInput.js'
+import { HoldToastsProvider, shouldHoldToasts } from '../components/PromptInput/Notifications.js'
 import { PromptInputQueuedCommands } from '../components/PromptInput/PromptInputQueuedCommands.js'
 import { useRemoteSession } from '../hooks/useRemoteSession.js'
 import { useDirectConnect } from '../hooks/useDirectConnect.js'
@@ -158,14 +173,22 @@ import {
 import { TeammateSpinnerTree } from '../components/Spinner/TeammateSpinnerTree.js'
 import { getSystemPrompt } from '../constants/prompts.js'
 import { buildEffectiveSystemPrompt } from '../utils/systemPrompt.js'
-import { getSystemContext, getUserContext } from '../context.js'
-import { getMemoryFiles } from '../utils/claudemd.js'
+import {
+  getSystemContext,
+  getUserContext,
+  getUserContextInstructionFiles,
+  withUserContextInstructionFiles,
+} from '../context.js'
+import {
+  getMemoryFiles,
+  hasExternalClaudeMdIncludes,
+} from '../utils/claudemd.js'
 import { startBackgroundHousekeeping } from '../utils/backgroundHousekeeping.js'
 import {
   getTotalCost,
   saveCurrentSessionCosts,
   resetCostState,
-  getStoredSessionCosts,
+  restoreSessionCosts,
 } from '../cost-tracker.js'
 import { useCostSummary } from '../costHook.js'
 import { useFpsMetrics } from '../context/fpsMetrics.js'
@@ -183,6 +206,7 @@ import { useApiKeyVerification } from '../hooks/useApiKeyVerification.js'
 import { GlobalKeybindingHandlers } from '../hooks/useGlobalKeybindings.js'
 import { CommandKeybindingHandlers } from '../hooks/useCommandKeybindings.js'
 import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
+import { ModsRenderProvider } from '../components/ModsRender.js'
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js'
 import { getShortcutDisplay } from '../keybindings/shortcutFormat.js'
 import { CancelRequestHandler } from '../hooks/useCancelRequest.js'
@@ -281,7 +305,7 @@ async function launchUltraplan(_opts: Record<string, unknown>): Promise<string> 
   return ''
 }
 import useCanUseTool from '../hooks/useCanUseTool.js'
-import type { ToolPermissionContext, Tool } from '../Tool.js'
+import type { ToolPermissionContext, Tool, ToolUseContext } from '../Tool.js'
 import {
   applyPermissionUpdate,
   applyPermissionUpdates,
@@ -289,6 +313,7 @@ import {
 } from '../utils/permissions/PermissionUpdate.js'
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js'
 import {
+  shouldShowAutoModeEntryWarning,
   stripDangerousPermissionsForAutoMode,
   transitionPermissionMode,
 } from '../utils/permissions/permissionSetup.js'
@@ -320,6 +345,7 @@ import {
   getMessagesAfterCompactBoundary,
   createUserMessage,
   createAssistantMessage,
+  getAssistantMessageText,
   createTurnDurationMessage,
   createAgentsKilledMessage,
   createApiMetricsMessage,
@@ -381,6 +407,7 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
+import { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } from '../utils/model/model.js'
 import {
   useAppState,
   useSetAppState,
@@ -389,7 +416,24 @@ import {
 import { getViewedAgentTask, getAgentInProgressToolUseIDs } from '../state/selectors.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js'
-import type { ModsSession } from '../services/mods/session.js'
+import {
+  ModAuthoringPromptDismissedError,
+  type ModsSession,
+} from '../services/mods/session.js'
+import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
+import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
+import { countModSessionTurns } from '../services/mods/sessionTurns.js'
+import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
+import { getConfigRows } from '../components/Settings/configRows.js'
+import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { createModToolHost } from '../services/mods/toolHost.js'
+import { fillPromptBox } from '../services/mods/promptAdapter.js'
+import { createModPromptEditQueue, runModPromptEdit } from '../services/mods/promptEdit.js'
+import { ModsPane } from '../components/ModsPane.js'
+import { ModsAbovePrompt } from '../components/ModsAbovePrompt.js'
+import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
+import { getModUiSnapshotTerminalRevision, withModUiPaneFocus, withModUiHostFocusOutcome } from '../services/mods/ui.js'
+import { getModHttpServices } from '../services/mods/hostOperations.js'
 import { getCwd } from '../utils/cwd.js'
 import type { PastedContent } from '../utils/config.js'
 import {
@@ -495,10 +539,12 @@ import { getCurrentWorktreeSession } from '../utils/worktree.js'
 import {
   popAllEditable,
   enqueue,
+  enqueueTracked,
   type SetAppState,
   getCommandQueue,
   getCommandQueueLength,
   removeByFilter,
+  remove,
 } from '../utils/messageQueueManager.js'
 import { useCommandQueue } from '../hooks/useCommandQueue.js'
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js'
@@ -562,7 +608,7 @@ import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExp
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js'
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js'
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js'
-import { AUTO_MODE_DESCRIPTION } from 'src/components/AutoModeOptInDialog.js'
+import { AUTO_MODE_DESCRIPTION } from 'src/constants/messages.js'
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js'
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js'
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js'
@@ -616,6 +662,10 @@ import {
   useUnseenDivider,
   computeUnseenDivider,
 } from '../components/FullscreenLayout.js'
+import { DiffDialog } from '../components/diff/DiffDialog.js'
+import { DiffSidebar } from '../components/diff/DiffSidebar.js'
+import { DiffController } from '../services/diff/controller.js'
+import { MIN_DIFF_SIDEBAR_COLUMNS } from '../commands/diff/index.js'
 import {
   isFullscreenEnvEnabled,
   maybeGetTmuxMouseHint,
@@ -929,6 +979,7 @@ export type Props = {
   initialContentReplacements?: ContentReplacementRecord[]
   // Initial agent context for session resume (name/color set via /rename or /color)
   initialAgentName?: string
+  initialDevModsFolder?: string
   initialAgentColor?: AgentColorName
   mcpClients?: MCPServerConnection[]
   dynamicMcpConfig?: Record<string, ScopedMcpServerConfig>
@@ -975,6 +1026,7 @@ export function REPL({
   initialFileHistorySnapshots,
   initialContentReplacements,
   initialAgentName,
+  initialDevModsFolder,
   initialAgentColor,
   mcpClients: initialMcpClients,
   dynamicMcpConfig: initialDynamicMcpConfig,
@@ -997,6 +1049,11 @@ export function REPL({
     remoteSessionConfig || directConnectConfig || sshSession,
   )
   const modsSession = isRemoteExecutionSession ? undefined : configuredModsSession
+  const initialDevModsRestored = useRef(false)
+  if (!initialDevModsRestored.current) {
+    initialDevModsRestored.current = true
+    modsSession?.restoreAuthoringConsent?.(initialDevModsFolder)
+  }
 
   // Env-var gates hoisted to mount-time — isEnvTruthy does toLowerCase+trim+
   // includes, and these were on the render path (hot during PageUp spam).
@@ -1035,6 +1092,8 @@ export function REPL({
 
   const toolPermissionContext = useAppState(s => s.toolPermissionContext)
   const verbose = useAppState(s => s.verbose)
+  const diffSidebarVisible = useAppState(s => s.diffSidebarVisible)
+  const diffDialogActive = useAppState(s => s.activeOverlays.has('diff-dialog'))
   const mcp = useAppState(s => s.mcp)
   const plugins = useAppState(s => s.plugins)
   const agentDefinitions = useAppState(s => s.agentDefinitions)
@@ -1274,17 +1333,23 @@ export function REPL({
     isRemoteExecutionSession,
   )
 
+  const emptyModTools = useMemo<Tool[]>(() => [], [])
+  const subscribeModTools = useCallback((listener: () => void) => modsSession?.tools?.subscribe(listener) ?? (() => {}), [modsSession])
+  const getModToolsSnapshot = useCallback(() => modsSession?.tools?.getSnapshot() ?? emptyModTools, [modsSession, emptyModTools])
+  const modTools = React.useSyncExternalStore(subscribeModTools, getModToolsSnapshot)
+
   // Apply agent tool restrictions if mainThreadAgentDefinition is set
   const { tools, allowedAgentTypes } = useMemo(() => {
+    const projectedTools = modsSession?.tools?.projection(mergedTools) ?? mergedTools
     if (!mainThreadAgentDefinition) {
       return {
-        tools: mergedTools,
+        tools: projectedTools,
         allowedAgentTypes: undefined as string[] | undefined,
       }
     }
     const resolved = resolveAgentTools(
       mainThreadAgentDefinition,
-      mergedTools,
+      projectedTools,
       false,
       true,
     )
@@ -1292,9 +1357,9 @@ export function REPL({
       tools: resolved.resolvedTools,
       allowedAgentTypes: resolved.allowedAgentTypes,
     }
-  }, [mainThreadAgentDefinition, mergedTools])
+  }, [mainThreadAgentDefinition, mergedTools, modsSession, modTools])
 
-  const commands = useReplCommands(
+  const baseCommands = useReplCommands(
     localCommands,
     plugins.commands as Command[],
     mcp.commands as Command[],
@@ -1302,6 +1367,16 @@ export function REPL({
     isRemoteExecutionSession,
     disableSlashCommands,
   )
+  const commands = useReplCommands(baseCommands, [], [], 0, isRemoteExecutionSession, disableSlashCommands, modsSession?.commands)
+  const baseCommandsRef = useRef(baseCommands)
+  baseCommandsRef.current = baseCommands
+  const getCurrentCommands = useCallback(() =>
+    disableSlashCommands ? [] : isRemoteExecutionSession ? baseCommandsRef.current :
+      modsSession?.commands.projection(baseCommandsRef.current) ?? baseCommandsRef.current,
+    [disableSlashCommands, isRemoteExecutionSession, modsSession],
+  )
+  const modBuiltinCommandsRef = useRef(localCommands)
+  modBuiltinCommandsRef.current = localCommands
 
   useIdeLogging(isRemoteExecutionSession ? EMPTY_MCP_CLIENTS : mcp.clients)
   useIdeSelection(
@@ -1364,10 +1439,9 @@ export function REPL({
   const scrollRef = useRef<ScrollBoxHandle>(null)
   // Separate ref for the modal slot's inner ScrollBox — passed through
   // FullscreenLayout → ModalContext so Tabs can attach it to its own
-  // ScrollBox for tall content (e.g. /status's MCP-server list). NOT
-  // keyboard-driven — ScrollKeybindingHandler stays on the outer ref so
-  // PgUp/PgDn/wheel always scroll the transcript behind the modal.
-  // Plumbing kept for future modal-scroll wiring.
+  // ScrollBox for tall content (e.g. /status's MCP-server list). The outer
+  // transcript handler remains mounted for selection and wheel routing, but
+  // yields keyboard scrolling while a local JSX modal owns those keys.
   const modalScrollRef = useRef<ScrollBoxHandle>(null)
   // Timestamp of the last user-initiated scroll (wheel, PgUp/PgDn, ctrl+u,
   // End/Home, G, drag-to-scroll). Stamped in composedOnScroll — the single
@@ -1402,6 +1476,8 @@ export function REPL({
   // loading is driven by queryGuard (reserve/tryStart/end/cancelReservation),
   // external loading by setIsExternalLoading.
   const isLoading = isQueryActive || isExternalLoading
+  const isAssistantResponding =
+    isExternalLoading || (isQueryActive && !queryGuard.isDispatching)
 
   // Elapsed time is computed by SpinnerWithVerb from these refs on each
   // animation frame, avoiding a useInterval that re-renders the entire REPL.
@@ -1616,8 +1692,10 @@ export function REPL({
       request: PromptRequest
       title: string
       toolInputSummary?: string | null
+      dismissError?: () => Error
       resolve: (response: PromptResponse) => void
-      reject: (error: Error) => void
+      reject: (error: unknown) => void
+      cleanup: () => void
     }>
   >([])
 
@@ -1711,6 +1789,42 @@ export function REPL({
     tabStatusGateEnabled && (getGlobalConfig().showStatusInTerminalTab ?? false)
   useTabStatus(titleDisabled || !showStatusInTerminalTab ? null : sessionStatus)
 
+  const programAuthVersion = useAppState(s => s.authVersion)
+  const [programTurn, setProgramTurn] = useState<{ end: ProgramTurnEnd; authVersion: number }>(
+    () => ({ end: null, authVersion: programAuthVersion }),
+  )
+  const recordProgramTurnEnd = useCallback((end: ProgramTurnEnd) => {
+    setProgramTurn({ end, authVersion: store.getState().authVersion })
+  }, [store])
+  const programBlockedOn: ProgramBlockedOn | undefined =
+    sandboxPermissionRequestQueue.length > 0 || workerSandboxPermissions.queue.length > 0 || pendingSandboxRequest
+      ? 'sandbox request'
+      : toolUseConfirmQueue[0] || pendingWorkerRequest
+        ? toolUseConfirmQueue[0]?.tool.name === ASK_USER_QUESTION_TOOL_NAME
+          ? 'input needed'
+          : toolUseConfirmQueue[0] ? 'permission prompt' : 'worker request'
+        : elicitation.queue.length > 0
+          ? 'input needed'
+          : promptQueue.length > 0 || (isShowingLocalJSXCommand && !(isLoading && streamMode === 'responding'))
+            ? 'dialog open'
+            : undefined
+  const terminalProgramStatus = selectProgramStatus({
+    busy: isLoading && programBlockedOn === undefined,
+    queued: queuedCommands.length > 0,
+    blockedOn: programBlockedOn,
+    blockedText: programStatusBlockedText({
+      blockedOn: programBlockedOn,
+      askText: toolUseConfirmQueue[0] ? programStatusAskText(toolUseConfirmQueue[0].tool, toolUseConfirmQueue[0].input) : undefined,
+      sandboxHost: sandboxPermissionRequestQueue[0]?.hostPattern.host ?? workerSandboxPermissions.queue[0]?.host ?? pendingSandboxRequest?.host,
+      worker: pendingWorkerRequest ?? undefined,
+      elicitationServer: elicitation.queue[0]?.serverName,
+    }),
+    progress: programStatusProgress(tasksV2),
+    lastTurnEnd: programTurn.end,
+    signedInSinceLastTurn: programTurn.authVersion !== programAuthVersion,
+  })
+  useProgramStatus(terminalProgramStatus, selectChildProgramStatuses(tasks))
+
   // Register the leader's setToolUseConfirmQueue for in-process teammates
   useEffect(() => {
     registerLeaderToolUseConfirmQueue(setToolUseConfirmQueue)
@@ -1741,6 +1855,7 @@ export function REPL({
       const next =
         typeof action === 'function' ? action(messagesRef.current) : action
       messagesRef.current = next
+      if (next.length === 0) recordProgramTurnEnd(null)
       if (next.length < userInputBaselineRef.current) {
         // Shrank (compact/rewind/clear) — clamp so placeholderText's length
         // check can't go stale.
@@ -1765,7 +1880,7 @@ export function REPL({
       }
       rawSetMessages(next)
     },
-    [],
+    [recordProgramTurnEnd],
   )
   // Capture the baseline message count alongside the placeholder text so
   // the render can hide it once displayedMessages grows past the baseline.
@@ -1866,9 +1981,229 @@ export function REPL({
     pendingHookMessages,
     setMessages,
   )
+  const modUiPresentationRef = useRef<ModUiPresentation>({
+    columns: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24,
+    isFullscreen: isFullscreenEnvEnabled(), composerEmpty: false, hasDialog: false, keyboardOwned: false,
+  })
+  const modToolContextRef = useRef<(() => ToolUseContext) | null>(null)
+  const modCanUseToolRef = useRef<ReturnType<typeof useCanUseTool> | null>(null)
+  const modPromptBlockedRef = useRef(true)
+  const modTypeaheadActiveRef = useRef(false)
+  const pendingModSuggestionRef = useRef<{
+    text: string
+    owner: string
+    resolve(shown: boolean): void
+  } | undefined>(undefined)
+  const clearPendingModSuggestion = useCallback(() => {
+    const pending = pendingModSuggestionRef.current
+    if (!pending) return
+    pendingModSuggestionRef.current = undefined
+    pending.resolve(false)
+  }, [])
+  useEffect(() => clearPendingModSuggestion, [clearPendingModSuggestion])
+  const isExternalLoadingRef = useRef(isExternalLoading)
+  isExternalLoadingRef.current = isExternalLoading
+  const [modAbovePromptFocused, setModAbovePromptFocused] = useState(false)
+  const emptyModPanes = useMemo<readonly ModUiPane[]>(() => Object.freeze([]), [])
+  const subscribeModUi = useCallback((listener: () => void) => modsSession?.ui.subscribe(listener) ?? (() => {}), [modsSession])
+  const getModUiSnapshot = useCallback(() => modsSession?.ui.getSnapshot() ?? emptyModPanes, [modsSession, emptyModPanes])
+  const modPanes = React.useSyncExternalStore(subscribeModUi, getModUiSnapshot)
+  const subscribeDiffOwnership = useCallback((listener: () => void) => modsSession?.commands.subscribe(listener) ?? (() => {}), [modsSession])
+  const getDiffOwnership = useCallback(() => modsSession?.isDiffOwned() ?? false, [modsSession])
+  const diffOwned = React.useSyncExternalStore(subscribeDiffOwnership, getDiffOwnership)
+  const diffOwnershipRef = useRef(getDiffOwnership)
+  diffOwnershipRef.current = getDiffOwnership
+  const modSelectionTracker = useMemo(() => createModUiSelectionTracker(
+    () => inkInstances.get(process.stdout),
+    selection => jumpRef.current?.rowHoldingSelection?.(selection),
+  ), [])
+  useEffect(() => modSelectionTracker.connect(), [modSelectionTracker])
+  const beginModSelectionRun = useCallback(() => {
+    const run = modSelectionTracker.beginRun()
+    return () => modSelectionTracker.endRun(run)
+  }, [modSelectionTracker])
+  const modMcpConnections = useMemo(() => createModMcpConnections({
+    getState: store.getState, setState: setAppState,
+    policyReason: () => strictMcpConfig ? 'This session runs with --strict-mcp-config, which connects no plugin servers.'
+      : isRemoteExecutionSession ? 'This session is a remote client, which connects no plugin servers.' : undefined,
+  }), [store, setAppState, strictMcpConfig, isRemoteExecutionSession])
   const awaitMods = useCallback(() => modsSession?.bind({
     cwd: getCwd(), surface: 'terminal', isInteractive: true, sessionId: getSessionId(),
-  }, setAppState), [modsSession, setAppState])
+  }, setAppState, {
+    messages: () => projectModSessionMessages(messagesRef.current),
+    rawMessages: () => messagesRef.current,
+    uiSelection: () => modSelectionTracker.read(),
+    uiCopy: async (input, plugin) => input.surface === 'terminal'
+      ? copyModTerminalText(input.text, plugin) : {isCopied: false, reason: 'no-clipboard'},
+    agentMessages: readModBoundAgentMessages,
+    captureUsage: () => captureModSessionUsage({
+      ...modToolContextRef.current!(),
+      messages: messagesRef.current,
+    }),
+    cwd: getCwd,
+    root: getOriginalCwd,
+    // Same value getToolUseContext receives from useMainLoopModel, without building a ToolUseContext.
+    model: () => {
+      const state = store.getState()
+      return parseUserSpecifiedModel(state.mainLoopModelForSession ?? state.mainLoopModel ?? getDefaultMainLoopModelSetting())
+    },
+    turns: () => countModSessionTurns(messagesRef.current),
+    ...getModHttpServices(),
+    mcpConnect: modMcpConnections.connect,
+    mcpRelease: modMcpConnections.release,
+    mcpCall: (server, tool, args, signal) => {
+      const clients = modToolContextRef.current!().options.mcpClients
+      return callMCPToolForMod(findMCPConnectionForMod(clients, server), tool, args, signal)
+    },
+    configRows: async () =>
+      getConfigRows({
+        getAppState: () => store.getState(),
+        setAppState,
+        options: {
+          ...modToolContextRef.current?.().options,
+          hasExternalIncludes: hasExternalClaudeMdIncludes(
+            await getMemoryFiles(true),
+          ),
+        },
+      }),
+    commands: () => baseCommandsRef.current,
+    builtinCommands: () => modBuiltinCommandsRef.current,
+    tasks: () => store.getState().tasks,
+    agentNames: () => store.getState().agentNameRegistry,
+    tools: () => modToolContextRef.current!().options.tools,
+    toolCatalog: () => createToolCatalogForContext(modToolContextRef.current!()),
+    toolHost: () => createModToolHost(modToolContextRef.current!(), modCanUseToolRef.current!),
+    commandRun: createModCommandQueue(),
+    submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
+      const uuid = randomUUID()
+      let settled = false
+      const finish = (settle: () => void) => {
+        if (settled) return
+        settled = true
+        signal.removeEventListener('abort', cancel)
+        settle()
+      }
+      const cancel = () => {
+        finish(() => {
+          logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=aborted`)
+          reject(signal.reason)
+        })
+        remove([queued])
+      }
+      const queued = enqueueTracked({
+        value: text,
+        mode: 'prompt',
+        priority: 'later',
+        uuid,
+        origin,
+        promptSubmitCallerChain: copyModCallerChain(callerChain),
+        promptSubmitMetadata: {
+          origin,
+          wait: false,
+          ...(attachments === undefined ? {} : { attachments }),
+        },
+        promptSubmitReceipt: {
+          admit: result => finish(() => {
+            logForDebugging(`[ModsPrompt] settle uuid=${uuid} status=${result.drop === undefined ? 'admitted' : 'dropped'}`)
+            resolve(result)
+          }),
+          cancel: reason => finish(() => reject(reason)),
+        },
+      })
+      logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=terminal asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
+      signal.addEventListener('abort', cancel, { once: true })
+      if (signal.aborted) cancel()
+    }),
+    prompt: () => ({
+      read: () =>
+        insertTextRef.current
+          ? {
+              text: insertTextRef.current!.text,
+              cursor: insertTextRef.current.cursorOffset,
+            }
+          : { text: '', cursor: 0 },
+      fill: input =>
+        insertTextRef.current
+          ? fillPromptBox(
+              {
+                read: () => ({
+                  text: insertTextRef.current!.text,
+                  cursor: insertTextRef.current!.cursorOffset,
+                }),
+                set: (text, cursor) =>
+                  insertTextRef.current!.setInputWithCursor(text, cursor),
+                setMode: mode => setInputMode(mode),
+                paint: (decorations, text) =>
+                  insertTextRef.current!.paintDecorations(decorations, text),
+              },
+              input,
+            )
+          : false,
+      suggest: (text, owner) => {
+        if (!insertTextRef.current || inputValueRef.current !== '' || modTypeaheadActiveRef.current) return false
+        if (modPromptBlockedRef.current) {
+          pendingModSuggestionRef.current?.resolve(false)
+          return new Promise<boolean>(resolve => {
+            pendingModSuggestionRef.current = { text, owner, resolve }
+          })
+        }
+        setAppState(previous => ({
+          ...previous,
+          promptSuggestion: {
+            text,
+            promptId: null,
+            shownAt: 0,
+            acceptedAt: 0,
+            generationRequestId: owner,
+          },
+        }))
+        return true
+      },
+      clearSuggestion: owner => {
+        if (pendingModSuggestionRef.current?.owner === owner) {
+          pendingModSuggestionRef.current.resolve(false)
+          pendingModSuggestionRef.current = undefined
+        }
+        setAppState(previous =>
+          previous.promptSuggestion.generationRequestId !== owner
+            ? previous
+            : {
+                ...previous,
+                promptSuggestion: {
+                  text: null,
+                  promptId: null,
+                  shownAt: 0,
+                  acceptedAt: 0,
+                  generationRequestId: null,
+                },
+              },
+        )
+      },
+      canSuggest: () =>
+        !isExternalLoadingRef.current &&
+        inputModeRef.current === 'prompt' &&
+        !modTypeaheadActiveRef.current &&
+        !store.getState().viewingAgentTaskId &&
+        (!queryGuard.isActive || queryGuard.isDispatching),
+      isBlocked: () => modPromptBlockedRef.current,
+    }),
+    presentation: () => modUiPresentationRef.current,
+    uiPresentation: () => modUiPresentationRef.current,
+    uiLog: (plugin, text, to) => {
+      logForDebugging(`[Mods:${plugin}] ${text}`)
+      if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
+    },
+    uiToast: (plugin, text, timeoutMs) => addNotification({
+      key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
+    }),
+    uiStatus: (plugin, text) => {
+      const key = `plugin-status-${plugin}`
+      removeNotification(key)
+      if (text !== undefined) addNotification({
+        key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
+      })
+    },
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections])
 
   useEffect(() => {
     if (!modsSession) return
@@ -1890,13 +2225,32 @@ export function REPL({
   // Initialize input with any early input that was captured before REPL was ready.
   // Using lazy initialization ensures cursor offset is set correctly in PromptInput.
   const [inputValue, setInputValueRaw] = useState(() => consumeEarlyInput())
+  const draftGenerationRef = useRef(0)
+  const onInputStateChange = useCallback(() => {
+    draftGenerationRef.current++
+  }, [])
   const inputValueRef = useRef(inputValue)
   inputValueRef.current = inputValue
-  const insertTextRef = useRef<{
-    insert: (text: string) => void
-    setInputWithCursor: (value: string, cursor: number) => void
-    cursorOffset: number
-  } | null>(null)
+  const insertTextRef = useRef<PromptInputHandle | null>(null)
+
+  const modPromptEditRuntime = modsSession?.runtime
+  const modPromptEditSessionId = getSessionId()
+  const modPromptEditQueue = useMemo(() => createModPromptEditQueue({
+    read: () => ({text: insertTextRef.current?.text ?? inputValueRef.current, cursor: insertTextRef.current?.cursorOffset ?? 0}),
+    commit: box => insertTextRef.current?.setInputWithCursor(box.text, box.cursor),
+    paint: (decorations, text) => insertTextRef.current?.paintDecorations(decorations, text),
+    carry: edit => insertTextRef.current?.carryDecorations(edit),
+    raise: async (edit, signal) => {
+      const snapshot = modPromptEditRuntime?.capture()
+      try { return await runModPromptEdit(snapshot, edit, signal) }
+      finally { snapshot?.release() }
+    },
+    report: reason => logForDebugging(`[ModsPromptEdit] session=${modPromptEditSessionId} ${reason}`),
+  }), [modPromptEditRuntime, modPromptEditSessionId])
+  useLayoutEffect(() => () => modPromptEditQueue.dispose(), [modPromptEditQueue])
+  const onModPromptEdit = useCallback((edit: TextInputEdit) => {
+    if (modPromptEditRuntime?.hasHooks('prompt.edit')) modPromptEditQueue.record(edit)
+  }, [modPromptEditRuntime, modPromptEditQueue])
 
   // Wrap setInputValue to co-locate suppression state updates.
   // Both setState calls happen in the same synchronous context so React
@@ -1924,6 +2278,7 @@ export function REPL({
       // Sync ref immediately (like setMessages) so callers that read
       // inputValueRef before React commits — e.g. the auto-restore finally
       // block's `=== ''` guard — see the fresh value, not the stale render.
+      draftGenerationRef.current++
       inputValueRef.current = value
       setInputValueRaw(value)
       setIsPromptInputActive(value.trim().length > 0)
@@ -1946,10 +2301,11 @@ export function REPL({
   const [inputMode, setInputModeState] = useState<PromptInputMode>('prompt')
   const inputModeRef = useRef<PromptInputMode>('prompt')
   const setInputMode = useCallback((mode: PromptInputMode) => {
+    draftGenerationRef.current++
     inputModeRef.current = mode
     setInputModeState(mode)
   }, [])
-  const [stashedPrompt, setStashedPrompt] = useState<
+  const [stashedPrompt, setStashedPromptState] = useState<
     | {
         text: string
         cursorOffset: number
@@ -1957,6 +2313,13 @@ export function REPL({
       }
     | undefined
   >()
+
+  const stashedPromptRef = useRef(stashedPrompt)
+  const setStashedPrompt = useCallback((value: typeof stashedPrompt) => {
+    draftGenerationRef.current++
+    stashedPromptRef.current = value
+    setStashedPromptState(value)
+  }, [])
 
   // Callback to filter commands based on CCR's available slash commands
   const handleRemoteInit = useCallback(
@@ -2025,9 +2388,20 @@ export function REPL({
 
   const hasInterruptibleToolInProgressRef = useRef(false)
 
-  const [pastedContents, setPastedContents] = useState<
+  const [pastedContents, setPastedContentsState] = useState<
     Record<number, PastedContent>
   >({})
+  const pastedContentsRef = useRef(pastedContents)
+  const setPastedContents = useCallback<React.Dispatch<
+    React.SetStateAction<Record<number, PastedContent>>
+  >>(update => {
+    const previous = pastedContentsRef.current
+    const next = typeof update === 'function' ? update(previous) : update
+    if (Object.is(next, previous)) return
+    draftGenerationRef.current++
+    pastedContentsRef.current = next
+    setPastedContentsState(next)
+  }, [])
   const [submitCount, setSubmitCount] = useState(0)
   // Ref instead of state to avoid triggering React re-renders on every
   // streaming text_delta. The spinner reads this via its animation timer.
@@ -2148,11 +2522,41 @@ export function REPL({
   >(undefined)
   const [showCostDialog, setShowCostDialog] = useState(false)
   const [conversationId, setConversationId] = useState(randomUUID())
+  const [diffController] = useState(() => isRemoteExecutionSession ? undefined : new DiffController({
+    isEnabled: () => !diffOwnershipRef.current(),
+    cwd: getCwd(),
+    notify: text => addNotification({ key: 'diff', text, priority: 'medium' }),
+    loadPreferences: root => {
+      const config = getGlobalConfig()
+      return { mode: config.diffPreferences?.[root]?.mode, open: config.diffSidebarOpen }
+    },
+    savePreferences: (root, value) => saveGlobalConfig(config => ({
+      ...config,
+      ...(value.open !== undefined ? { diffSidebarOpen: value.open } : {}),
+      ...(value.mode !== undefined ? {
+        diffPreferences: { ...config.diffPreferences, [root]: { mode: value.mode } },
+      } : {}),
+    })),
+  }))
+  useEffect(() => () => diffController?.dispose(), [diffController])
+  useEffect(() => { diffController?.setEnabled(!diffOwned) }, [diffController, diffOwned])
+  const diffSessionId = getSessionId()
+  const diffSession = useRef(diffSessionId)
+  const diffCwd = getCwd()
+  useEffect(() => {
+    if (diffSession.current !== diffSessionId || diffController?.cwd !== diffCwd) {
+      diffSession.current = diffSessionId
+      diffController?.reset(diffCwd)
+      setAppState(state => state.diffSidebarVisible ? { ...state, diffSidebarVisible: false } : state)
+    }
+  }, [diffSessionId, diffController, diffCwd, setAppState])
 
   // Idle-return dialog: shown when user submits after a long idle gap
   const [idleReturnPending, setIdleReturnPending] = useState<{
     input: string
     idleMinutes: number
+    resume: () => Promise<void>
+    restore: () => void
   } | null>(null)
   const skipIdleCheckRef = useRef(false)
   const lastQueryCompletionTimeRef = useRef(lastQueryCompletionTime)
@@ -2293,10 +2697,10 @@ export function REPL({
     }
   }, [hasRunningTeammates, setMessages])
 
-  // Show auto permissions warning when entering auto mode
-  // (either via Shift+Tab toggle or on startup). Debounced to avoid
-  // flashing when the user is cycling through modes quickly.
-  // Only shown 3 times total across sessions.
+  // Show the auto mode description when entering auto mode (either via
+  // Shift+Tab toggle or on startup). Debounced to avoid flashing when the
+  // user is cycling through modes quickly. Like official 2.1.292 it is shown
+  // once, unless trusted settings already skip it (skipAutoPermissionPrompt).
   const safeYoloMessageShownRef = useRef(false)
   useEffect(() => {
     if (feature('TRANSCRIPT_CLASSIFIER')) {
@@ -2305,20 +2709,16 @@ export function REPL({
         return
       }
       if (safeYoloMessageShownRef.current) return
-      const config = getGlobalConfig()
-      const count = config.autoPermissionsNotificationCount ?? 0
-      if (count >= 3) return
+      if (!shouldShowAutoModeEntryWarning()) return
       const timer = setTimeout(
         (ref, setMessages) => {
           ref.current = true
-          saveGlobalConfig(prev => {
-            const prevCount = prev.autoPermissionsNotificationCount ?? 0
-            if (prevCount >= 3) return prev
-            return {
-              ...prev,
-              autoPermissionsNotificationCount: prevCount + 1,
-            }
-          })
+          saveGlobalConfig(prev =>
+            prev.hasSeenAutoModeEntryWarning
+              ? prev
+              : { ...prev, hasSeenAutoModeEntryWarning: true },
+          )
+          logEvent('tengu_auto_mode_entry_warning_shown', {})
           setMessages(prev => [
             ...prev,
             createSystemMessage(AUTO_MODE_DESCRIPTION, 'warning'),
@@ -2594,10 +2994,6 @@ export function REPL({
 
         setConversationId(sessionId)
 
-        // Get target session's costs BEFORE saving current session
-        // (saveCurrentSessionCosts overwrites the config, so we need to read first)
-        const targetSessionCosts = getStoredSessionCosts(sessionId)
-
         // Save current session's costs before switching to avoid losing accumulated costs
         saveCurrentSessionCosts()
 
@@ -2625,6 +3021,8 @@ export function REPL({
         // cached name and write it to the wrong transcript on first message.
         clearSessionMetadata()
         restoreSessionMetadata(log)
+        restoreSessionCosts(log)
+        modsSession?.restoreAuthoringConsent?.(log.devModsFolder)
         // Resumed sessions shouldn't re-title from mid-conversation context
         // (same reasoning as the useRef seed), and the previous session's
         // Haiku title shouldn't carry over.
@@ -2658,6 +3056,13 @@ export function REPL({
           if (ws) saveWorktreeState(ws)
         }
 
+        // Bind the resumed identity only after the live transcript points at it.
+        setMessages(() => messages)
+        diffSession.current = getSessionId()
+        diffController?.reset(getCwd())
+        setAppState(state => state.diffSidebarVisible ? { ...state, diffSidebarVisible: false } : state)
+        getUserContext.cache.clear?.()
+        modsSession?.runtime?.invalidatePromptContext()
         if (modsSession) await awaitMods()
 
         // Persist the current mode so future resumes know what mode this session was in
@@ -2670,10 +3075,6 @@ export function REPL({
           saveMode(isCoordinatorMode() ? 'coordinator' : 'normal')
         }
 
-        // Restore target session's costs from the data we read earlier
-        if (targetSessionCosts) {
-          setCostStateForRestore(targetSessionCosts)
-        }
         restoreGoalSessionFromLog(messages, setAppState)
 
         // Reconstruct replacement state for the resumed session. Runs after
@@ -2694,10 +3095,6 @@ export function REPL({
               log.contentReplacements ?? [],
             )
         }
-
-        // Reset messages to the provided initial messages
-        // Use a callback to ensure we're not dependent on stale state
-        setMessages(() => messages)
 
         // Clear any active tool JSX
         setToolJSX(null)
@@ -2720,7 +3117,7 @@ export function REPL({
         throw error
       }
     },
-    [resetLoadingState, setAppState, modsSession, awaitMods],
+    [resetLoadingState, setAppState, modsSession, awaitMods, diffController],
   )
 
   // Lazy init: useRef(createX()) would call createX on every render and
@@ -2763,6 +3160,12 @@ export function REPL({
     },
     [],
   )
+
+  useEffect(() => {
+    setAppState(prev => ({ ...prev, sendMessagePins: restoreSendMessagePins(initialMessages ?? []) }))
+    // Initial history is restored once; later session swaps use sessionRestore.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Extract read file state from initialMessages on mount
   // This handles CLI flag resume (--resume-session) and ResumeConversation screen
@@ -2903,6 +3306,132 @@ export function REPL({
   }
 
   const focusedInputDialog = getFocusedInputDialog()
+  const otherModalOverlayActive = useAppState(state => {
+    for (const id of state.activeOverlays) {
+      if (id !== 'diff-dialog' && id !== 'autocomplete') return true
+    }
+    return false
+  })
+  const modTerminalSize = useTerminalSize()
+  const modDock = modPanes.filter(pane => pane.visible && pane.placement === 'dock')
+  const modInline = modPanes.filter(pane => pane.visible && pane.placement === 'inline')
+  const shownModDock = modDock.find(pane => pane.shown !== false)
+  const nativeDiffVisible = diffSidebarVisible && !diffOwned
+  const canShowDiffSidebar =
+    modTerminalSize.columns >= MIN_DIFF_SIDEBAR_COLUMNS && modDock.length === 0
+  const showResponsiveDiffDialog =
+    screen === 'prompt' &&
+    nativeDiffVisible &&
+    !canShowDiffSidebar &&
+    !otherModalOverlayActive &&
+    !toolJSX?.jsx &&
+    !focusedInputDialog &&
+    !showBashesDialog &&
+    !exitFlow
+  const modUiPresentation = useMemo<ModUiPresentation>(() => ({
+    columns: modTerminalSize.columns,
+    rows: modTerminalSize.rows,
+    isFullscreen: isFullscreenEnvEnabled(),
+    composerEmpty: inputValue.length === 0 && Object.keys(pastedContents).length === 0,
+    composerValue: inputValue,
+    hasDialog: Boolean(focusedInputDialog || toolJSX?.jsx || showBashesDialog || exitFlow || showResponsiveDiffDialog),
+    keyboardOwned: isSearchingHistory || isHelpOpen || cursor !== null || viewSelectionMode === 'selecting-agent',
+    agentId: viewedAgentTask?.id,
+  }), [modTerminalSize.columns, modTerminalSize.rows, inputValue, pastedContents, focusedInputDialog, toolJSX, showBashesDialog, exitFlow, showResponsiveDiffDialog, isSearchingHistory, isHelpOpen, cursor, viewSelectionMode, viewedAgentTask?.id])
+  modUiPresentationRef.current = modUiPresentation
+  modPromptBlockedRef.current =
+    modUiPresentation.hasDialog || modUiPresentation.keyboardOwned
+  useEffect(() => {
+    const pending = pendingModSuggestionRef.current
+    if (!pending || modPromptBlockedRef.current) return
+    pendingModSuggestionRef.current = undefined
+    if (
+      !insertTextRef.current ||
+      inputValueRef.current !== '' ||
+      isExternalLoadingRef.current ||
+      (queryGuard.isActive && !queryGuard.isDispatching) ||
+      inputModeRef.current !== 'prompt' ||
+      modTypeaheadActiveRef.current ||
+      store.getState().viewingAgentTaskId
+    ) {
+      pending.resolve(false)
+      return
+    }
+    setAppState(previous => ({
+      ...previous,
+      promptSuggestion: {
+        text: pending.text,
+        promptId: null,
+        shownAt: 0,
+        acceptedAt: 0,
+        generationRequestId: pending.owner,
+      },
+    }))
+    pending.resolve(true)
+  }, [modUiPresentation.hasDialog, modUiPresentation.keyboardOwned, setAppState])
+  useEffect(() => {
+    void modsSession?.ui.render(modUiPresentation).catch(logError)
+  }, [modsSession, modUiPresentation])
+  const modPaneFocused = !modUiPresentation.hasDialog &&
+    !modUiPresentation.keyboardOwned && modPanes.some(pane => pane.visible && pane.shown !== false && pane.focused)
+  const modAbovePromptCanFocus = !modUiPresentation.hasDialog &&
+    !modUiPresentation.keyboardOwned
+  const hasModSurvey = feedbackSurvey.state !== 'closed' ||
+    postCompactSurvey.state !== 'closed' || memorySurvey.state !== 'closed' ||
+    frustrationDetection.state !== 'closed' || skillImprovementSurvey.isOpen
+  const modAbovePrompt = <ModsAbovePrompt
+    ui={modsSession?.runtime?.ui}
+    hasSurvey={hasModSurvey}
+    isWorking={isLoading}
+    view={viewedAgentTask ? { agentId: viewedAgentTask.id } : {}}
+    canFocus={modAbovePromptCanFocus}
+    composerValue={inputValue}
+    onFocusChange={setModAbovePromptFocused}
+    onError={logError}
+  />
+  const renderModPane = (pane: ModUiPane) => (
+    <ModsPane
+      key={`${pane.plugin}:${pane.id}`}
+      pane={pane.focused && !modPaneFocused ? withModUiPaneFocus(pane, false) : pane}
+      isWorking={isLoading}
+      canFocus={modUiPresentation.composerEmpty && !modUiPresentation.hasDialog &&
+        !modUiPresentation.keyboardOwned && !modPanes.some(other => other.visible && other.shown !== false && other.focused && other.id !== pane.id)}
+      onInteract={(pane, drawing, callback, kind, element, value) => {
+        const ui = modsSession?.runtime?.ui
+        if (!ui) return Promise.reject(new Error('Mod UI host is unavailable'))
+        return ui.interact(pane.id, drawing, callback, kind, element, value)
+      }}
+      onClose={pane => modsSession?.runtime?.ui.close(pane.owner, pane.id, { kind: 'person' }) ?? Promise.resolve()}
+      onReleaseFocus={() => { modsSession?.runtime?.ui.focusPane(null) }}
+      onFocus={async (pane, element, origin = { kind: 'person' }, options) => {
+        const ui = modsSession?.runtime?.ui
+        if (!ui) return { focused: false }
+        const result = origin.kind === 'person' && options?.engine
+          ? await ui.focusHost(pane.owner, { requestId: pane.id, origin }, modUiPresentationRef.current, options)
+          : origin.kind === 'plugin' && origin.name !== undefined && element !== undefined
+          ? await ui.focusHost(pane.owner, { requestId: pane.id, element, origin: { kind: 'plugin', name: origin.name } }, modUiPresentationRef.current, options)
+          : origin.kind === 'person' && options?.plugin && element !== undefined
+            ? await ui.focusPerson(pane.owner, { requestId: pane.id, element }, options.plugin, modUiPresentationRef.current)
+          : await ui.focus(pane.owner, { requestId: pane.id, element, origin }, modUiPresentationRef.current)
+        const landing = ui.getSnapshot().find(current => current.id === pane.id && current.owner === pane.owner)
+        const focused = Boolean(landing?.visible && landing.shown !== false && landing.tree !== undefined && landing.focused)
+        return withModUiHostFocusOutcome(result, {
+          ...(result as Record<string, unknown>),
+          focused,
+          element: focused ? landing?.focusedElement : undefined,
+          plugin: focused ? landing?.focusedPlugin : undefined,
+          ...(landing ? { revision: landing.revision } : {}),
+        })
+      }}
+      onScroll={(pane, by, pointer) => modsSession?.runtime?.ui.scroll(pane.owner, { requestId: pane.id, by, pointer, origin: { kind: 'person' } }) ?? Promise.resolve()}
+      onReportMetrics={(pane, metrics) => {
+        if (metrics.keyRows === undefined && metrics.bodyRows === pane.bodyRows &&
+            metrics.contentRows === pane.contentRows) return
+        return modsSession?.runtime?.ui.reportMetrics(pane.id, metrics)
+      }}
+      onError={logError}
+    />
+  )
 
   // True when permission prompts exist but are hidden because the user is typing
   const hasSuppressedDialogs =
@@ -2969,6 +3498,7 @@ export function REPL({
       proactiveModule?.pauseProactive()
     }
 
+    if (queryGuard.isActive) recordProgramTurnEnd('stopped')
     queryGuard.forceEnd()
     skipIdleCheckRef.current = false
 
@@ -2998,7 +3528,7 @@ export function REPL({
     } else if (focusedInputDialog === 'prompt') {
       // Reject all pending prompts and clear the queue
       for (const item of promptQueue) {
-        item.reject(new Error('Prompt cancelled by user'))
+        item.reject(item.dismissError?.() ?? new Error('Prompt cancelled by user'))
       }
       setPromptQueue([])
       abortController?.abort('user-cancel')
@@ -3386,13 +3916,44 @@ export function REPL({
   ])
 
   const requestPrompt = useCallback(
-    (title: string, toolInputSummary?: string | null) =>
-      (request: PromptRequest): Promise<PromptResponse> =>
+    (
+      title: string,
+      toolInputSummary?: string | null,
+      dismissError?: () => Error,
+    ) =>
+      (request: PromptRequest, signal?: AbortSignal): Promise<PromptResponse> =>
         new Promise<PromptResponse>((resolve, reject) => {
-          setPromptQueue(prev => [
-            ...prev,
-            { request, title, toolInputSummary, resolve, reject },
-          ])
+          let settled = false
+          const cleanup = () => signal?.removeEventListener('abort', abort)
+          const finish = (settle: () => void) => {
+            if (settled) return
+            settled = true
+            cleanup()
+            settle()
+          }
+          const item = {
+            request,
+            title,
+            toolInputSummary,
+            dismissError,
+            resolve: (response: PromptResponse) => finish(() => resolve(response)),
+            reject: (error: unknown) => finish(() => reject(error)),
+            cleanup,
+          }
+          const abort = () => {
+            item.reject(
+              item.dismissError?.() ??
+                signal?.reason ??
+                new Error('Prompt cancelled'),
+            )
+            setPromptQueue(prev => prev.filter(candidate => candidate !== item))
+          }
+          if (signal?.aborted) {
+            abort()
+            return
+          }
+          signal?.addEventListener('abort', abort, { once: true })
+          setPromptQueue(prev => [...prev, item])
         }),
     [],
   )
@@ -3434,9 +3995,15 @@ export function REPL({
 
       return {
         abortController,
+        diff: diffController,
         mods: modsSession?.runtime,
+        modsSession,
+        modCommand: {
+          origin: { kind: 'composer' },
+          presentation: { columns: process.stdout.columns ?? 80, isFullscreen: isFullscreenEnvEnabled() },
+        },
         options: {
-          commands,
+          commands: getCurrentCommands(),
           tools: computeTools(),
           debug,
           verbose: s.verbose,
@@ -3556,13 +4123,24 @@ export function REPL({
         },
         resume,
         setConversationId,
+        requestModAuthoringConsent: modsSession
+          ? signal => modsSession.requestAuthoringConsent(
+              requestPrompt(
+                'mod_hot_reload',
+                undefined,
+                () => new ModAuthoringPromptDismissedError(),
+              ),
+              signal,
+            )
+          : undefined,
         requestPrompt: feature('HOOK_PROMPTS') ? requestPrompt : undefined,
         contentReplacementState: contentReplacementStateRef.current,
       }
     },
     [
-      commands,
+      getCurrentCommands,
       combinedInitialTools,
+      diffController,
       modsSession,
       isRemoteExecutionSession,
       mainThreadAgentDefinition,
@@ -3588,6 +4166,11 @@ export function REPL({
       sshRemote.isRemoteMode,
       sshRemote.runShellCommand,
     ],
+  )
+
+  modCanUseToolRef.current = canUseTool
+  modToolContextRef.current = () => getToolUseContext(
+    messagesRef.current, [], new AbortController(), mainLoopModel,
   )
 
   // Session backgrounding (Ctrl+B to background/foreground)
@@ -3707,6 +4290,25 @@ export function REPL({
       handleMessageFromStream(
         event,
         newMessage => {
+          const landed = getDiffOwnership() ? undefined : diffController?.observeMessage(newMessage)
+          if (landed) {
+            diffController?.scheduleRefresh()
+            if (landed.edited && !store.getState().diffSidebarVisible) {
+              const session = getSessionId()
+              void diffController?.autoOpen({
+                columns: process.stdout.columns ?? 80,
+                isFullscreen: isFullscreenEnvEnabled(),
+                hasDock: modsSession?.ui.getSnapshot().some(pane => pane.visible && pane.placement === 'dock') ?? false,
+                checkpointing: fileHistoryEnabled(),
+              }).then(open => {
+                const hasDock = modsSession?.ui.getSnapshot().some(pane => pane.visible && pane.placement === 'dock')
+                if (open && !getDiffOwnership() && session === getSessionId() && !hasDock &&
+                    (process.stdout.columns ?? 80) >= MIN_DIFF_SIDEBAR_COLUMNS) {
+                  setAppState(state => ({ ...state, diffSidebarVisible: true }))
+                }
+              }).catch(logError)
+            }
+          }
           if (isCompactBoundaryMessage(newMessage)) {
             // Fullscreen: keep pre-compact messages for scrollback. query.ts
             // slices at the boundary for API calls, Messages.tsx skips the
@@ -3813,6 +4415,11 @@ export function REPL({
       setStreamingToolUses,
       setStreamingThinking,
       onStreamingText,
+      diffController,
+      getDiffOwnership,
+      modsSession,
+      store,
+      setAppState,
     ],
   )
 
@@ -3825,6 +4432,7 @@ export function REPL({
       additionalAllowedTools: string[],
       mainLoopModelParam: string,
       effort?: EffortValue,
+      publicTurn?: { text: string },
     ) => {
       if (modsSession) await awaitMods()
       // Prepare IDE integration for new prompt. Read mcpClients fresh from
@@ -3996,21 +4604,26 @@ export function REPL({
           getUserContext(),
           getSystemContext(),
         ])
-      const userContext = {
-        ...baseUserContext,
-        ...getCoordinatorUserContext(
-          freshMcpClients,
-          isScratchpadEnabled() ? getScratchpadDir() : undefined,
-        ),
-        ...((feature('PROACTIVE') || feature('KAIROS')) &&
-        proactiveModule?.isProactiveActive() &&
-        !terminalFocusRef.current
-          ? {
-              terminalFocus:
-                'The terminal is unfocused \u2014 the user is not actively watching.',
-            }
-          : {}),
-      }
+      const buildUserContext = (base: Record<string, string>) =>
+        withUserContextInstructionFiles(
+          {
+            ...base,
+            ...getCoordinatorUserContext(
+              freshMcpClients,
+              isScratchpadEnabled() ? getScratchpadDir() : undefined,
+            ),
+            ...((feature('PROACTIVE') || feature('KAIROS')) &&
+            proactiveModule?.isProactiveActive() &&
+            !terminalFocusRef.current
+              ? {
+                  terminalFocus:
+                    'The terminal is unfocused \u2014 the user is not actively watching.',
+                }
+              : {}),
+          },
+          getUserContextInstructionFiles(base),
+        )
+      const userContext = buildUserContext(baseUserContext)
       queryCheckpoint('query_context_loading_end')
 
       const systemPrompt = buildEffectiveSystemPrompt({
@@ -4031,10 +4644,21 @@ export function REPL({
         messages: messagesIncludingNewMessages,
         systemPrompt,
         userContext,
+        refreshUserContext: async () => buildUserContext(await getUserContext()),
         systemContext,
         canUseTool,
         toolUseContext,
         querySource: getQuerySourceForREPL(),
+        publicTurn: publicTurn ?? {
+          text: newMessages
+            .filter(
+              (message): message is UserMessage =>
+                message.type === 'user' && !message.isMeta,
+            )
+            .map(message => getUserContentText(message.message.content))
+            .filter((text): text is string => text !== null && text !== '')
+            .join('\n'),
+        },
       })) {
         onQueryEvent(event)
       }
@@ -4135,6 +4759,7 @@ export function REPL({
       ) => Promise<boolean>,
       input?: string,
       effort?: EffortValue,
+      publicTurn?: { text: string },
     ): Promise<void> => {
       // If this is a teammate, mark them as active when starting a turn
       if (isAgentSwarmsEnabled()) {
@@ -4153,22 +4778,33 @@ export function REPL({
       if (thisGeneration === null) {
         logEvent('tengu_concurrent_onquery_detected', {})
 
-        // Extract and enqueue user message text, skipping meta messages
-        // (e.g. expanded skill content, tick prompts) that should not be
-        // replayed as user-visible text.
-        newMessages
-          .filter((m): m is UserMessage => m.type === 'user' && !m.isMeta)
-          .map(_ => getUserContentText(_.message.content))
-          .filter(_ => _ !== null)
-          .forEach((msg, i) => {
-            enqueue({ value: msg, mode: 'prompt' })
-            if (i === 0) {
-              logEvent('tengu_concurrent_onquery_enqueued', {})
-            }
+        // Admission already ran. Retain its messages and context instead of
+        // turning them back into raw prompts and replaying their hooks.
+        if (newMessages.length) {
+          const text = publicTurn?.text ?? newMessages
+            .filter((m): m is UserMessage => m.type === 'user' && !m.isMeta)
+            .map(message => getUserContentText(message.message.content))
+            .filter((value): value is string => value !== null)
+            .join('\n')
+          enqueue({
+            value: input ?? text,
+            mode: 'prompt',
+            admitted: {
+              messages: newMessages,
+              shouldQuery,
+              allowedTools: additionalAllowedTools,
+              model: mainLoopModelParam,
+              effort,
+              admission: { text },
+            },
           })
+          logEvent('tengu_concurrent_onquery_enqueued', {})
+        }
         return
       }
 
+      // Local commands and query-preflight refusals are not completed model turns.
+      let didQuery = false
       try {
         // isLoading is derived from queryGuard — tryStart() above already
         // transitioned dispatching→running, so no setter call needed here.
@@ -4207,6 +4843,7 @@ export function REPL({
           }
         }
 
+        didQuery = shouldQuery
         await onQueryImpl(
           latestMessages,
           newMessages,
@@ -4215,12 +4852,21 @@ export function REPL({
           additionalAllowedTools,
           mainLoopModelParam,
           effort,
+          publicTurn,
         )
       } finally {
         // queryGuard.end() atomically checks generation and transitions
         // running→idle. Returns false if a newer query owns the guard
         // (cancel+resubmit race where the stale finally fires as a microtask).
         if (queryGuard.end(thisGeneration)) {
+          if (didQuery) {
+            const last = messagesRef.current.at(-1)
+            recordProgramTurnEnd(programTurnEnd(
+              abortController.signal.aborted,
+              last,
+              last?.type === 'assistant' ? getAssistantMessageText(last) ?? '' : '',
+            ))
+          }
           setLastQueryCompletionTime(Date.now())
           skipIdleCheckRef.current = false
           // Always reset loading state in finally - this ensures cleanup even
@@ -4273,16 +4919,17 @@ export function REPL({
             snapshotOutputTokensForTurn(null)
           }
 
-          // Add turn duration message for turns longer than 30s or with a budget
-          // Skip if user aborted or if in loop mode (too noisy between ticks)
-          // Defer if swarm teammates are still running (show when they finish)
+          // Record every completed main turn, including short turns (official 2.1.292).
+          // The checkpoint remains in history even when its UI row is hidden.
+          // Skip non-query/aborted/loop turns; defer while swarm teammates are running.
           const turnDurationMs =
             Date.now() - loadingStartTimeRef.current - totalPausedMsRef.current
           if (
-            (turnDurationMs > 30000 || budgetInfo !== undefined) &&
+            didQuery &&
             !abortController.signal.aborted &&
             !proactiveActive
           ) {
+            logForDebugging(`[turn-duration] completed elapsedMs=${turnDurationMs}`)
             const hasRunningSwarmAgents = getAllInProcessTeammateTasks(
               store.getState().tasks,
             ).some(t => t.status === 'running')
@@ -4525,14 +5172,48 @@ export function REPL({
         speculationSessionTimeSavedMs: number
         setAppState: SetAppState
       },
-      options?: { fromKeybinding?: boolean },
+      options?: {
+        fromKeybinding?: boolean
+        wait?: boolean
+        // The idle-return dialog has already consumed this submission.
+        submission?: {
+          mode: PromptInputMode
+          pastedContents: Record<number, PastedContent>
+          ideSelection: typeof ideSelection
+          generation: number
+          cursorOffset: number
+          turnId?: string
+        }
+      },
     ) => {
+      const submittedTurnId = options?.submission
+        ? options.submission.turnId
+        : modsSession?.runtime?.activePublicTurnId
+      const submittedInputMode =
+        options?.submission?.mode ??
+        (options?.fromKeybinding ? 'prompt' : inputModeRef.current)
+      const submittedPastedContents =
+        options?.submission?.pastedContents ??
+        (options?.fromKeybinding ? {} : pastedContentsRef.current)
+      const submittedIDESelection = options?.submission
+        ? options.submission.ideSelection
+        : options?.fromKeybinding ? undefined : ideSelection
+      const submittedCursorOffset =
+        options?.submission?.cursorOffset ??
+        helpers.getCursorOffset?.() ?? rawInput.length
+      const submittedStash = stashedPromptRef.current
+      const canFillKeybindingInput =
+        options?.fromKeybinding &&
+        inputValueRef.current === '' && inputModeRef.current === 'prompt' &&
+        Object.keys(pastedContentsRef.current).length === 0
+
       // A full `!command` can arrive in one paste/key event before PromptInput
       // has stripped the mode prefix. Normalize it against the synchronous mode
       // ref so direct Enter and typed bash mode use the same command text.
       const input =
         !speculationAccept &&
-        inputModeRef.current === 'bash' &&
+        !options?.submission &&
+        submittedInputMode === 'bash' &&
         rawInput.startsWith('!')
           ? rawInput.slice(1)
           : rawInput
@@ -4546,7 +5227,105 @@ export function REPL({
         proactiveModule?.resumeProactive()
       }
 
-      if (modsSession) await awaitMods()
+      if (!input.trim()) return
+
+      // Consume this draft once, before either initialization barrier. Dispatch
+      // may switch between queue/direct while waiting; it never owns the editor.
+      if (!options?.fromKeybinding && !options?.submission) {
+        setInputValue('')
+        helpers.setCursorOffset(0)
+        setPastedContents({})
+        setInputMode('prompt')
+        setIDESelection(undefined)
+        helpers.resetHistory()
+        helpers.clearBuffer()
+        setSubmitCount(count => count + 1)
+        tipPickedThisTurnRef.current = false
+      }
+      const submittedGeneration =
+        options?.submission?.generation ?? draftGenerationRef.current
+      const canRestoreInput = () =>
+        (!options?.fromKeybinding || canFillKeybindingInput) &&
+        draftGenerationRef.current === submittedGeneration
+      const restoreSubmission = () => {
+        if (options?.fromKeybinding || !canRestoreInput()) return
+        setInputValue(input)
+        setInputMode(submittedInputMode)
+        setPastedContents(submittedPastedContents)
+        helpers.setCursorOffset(submittedCursorOffset)
+      }
+      let promptAdmitted = false
+      const restoreOnError = (error: unknown): never => {
+        if (!promptAdmitted) restoreSubmission()
+        throw error
+      }
+      const restoreInput = (value: string) => {
+        if (!canRestoreInput()) return
+        setInputValue(value)
+        helpers.setCursorOffset(value.length)
+      }
+      const restoreStash = () => {
+        if (
+          options?.fromKeybinding || !canRestoreInput() || submittedStash === undefined ||
+          stashedPromptRef.current !== submittedStash
+        ) return
+        setInputValue(submittedStash.text)
+        helpers.setCursorOffset(submittedStash.cursorOffset)
+        setPastedContents(submittedStash.pastedContents)
+        setStashedPrompt(undefined)
+      }
+
+      // Idle-return: prompt returning users to start fresh when the
+      // conversation is large and the cache is cold. tengu_willow_mode
+      // controls treatment: "dialog" (blocking), "hint" (notification), "off".
+      {
+        const willowMode = getFeatureValue_CACHED_MAY_BE_STALE(
+          'tengu_willow_mode',
+          'off',
+        )
+        const idleThresholdMin = Number(
+          process.env.CLAUDE_CODE_IDLE_THRESHOLD_MINUTES ?? 75,
+        )
+        const tokenThreshold = Number(
+          process.env.CLAUDE_CODE_IDLE_TOKEN_THRESHOLD ?? 100_000,
+        )
+        if (
+          willowMode !== 'off' &&
+          !getGlobalConfig().idleReturnDismissed &&
+          !skipIdleCheckRef.current &&
+          !speculationAccept &&
+          !input.trim().startsWith('/') &&
+          lastQueryCompletionTimeRef.current > 0 &&
+          getTotalInputTokens() >= tokenThreshold
+        ) {
+          const idleMs = Date.now() - lastQueryCompletionTimeRef.current
+          const idleMinutes = idleMs / 60_000
+          if (idleMinutes >= idleThresholdMin && willowMode === 'dialog') {
+            setIdleReturnPending({
+              input,
+              idleMinutes,
+              resume: () => onSubmitRef.current(input, helpers, speculationAccept, {
+                ...options,
+                submission: {
+                  mode: submittedInputMode,
+                  pastedContents: submittedPastedContents,
+                  ideSelection: submittedIDESelection,
+                  generation: submittedGeneration,
+                  cursorOffset: submittedCursorOffset,
+                  turnId: submittedTurnId,
+                },
+              }),
+              restore: restoreSubmission,
+            })
+            return
+          }
+        }
+      }
+
+      const isSlashCommand = !speculationAccept && input.trim().startsWith('/')
+      if (!isSlashCommand) restoreStash()
+
+      if (modsSession) await awaitMods().catch(restoreOnError)
 
       // Handle immediate commands - these bypass the queue and execute right away
       // even while Claude is processing. Commands opt-in via `immediate: true`.
@@ -4555,7 +5334,7 @@ export function REPL({
         // Expand [Pasted text #N] refs so immediate commands (e.g. /btw) receive
         // the pasted content, not the placeholder. The non-immediate path gets
         // this expansion later in handlePromptSubmit.
-        const trimmedInput = expandPastedTextRefs(input, pastedContents).trim()
+        const trimmedInput = expandPastedTextRefs(input, submittedPastedContents).trim()
         const spaceIndex = trimmedInput.indexOf(' ')
         const commandName =
           spaceIndex === -1
@@ -4567,7 +5346,7 @@ export function REPL({
         // Find matching command - treat as immediate if:
         // 1. Command has `immediate: true`, OR
         // 2. Command was triggered via keybinding (fromKeybinding option)
-        const matchingCommand = commands.find(
+        const matchingCommand = getCurrentCommands().find(
           cmd =>
             isCommandEnabled(cmd) &&
             (cmd.name === commandName ||
@@ -4589,31 +5368,24 @@ export function REPL({
           idleHintShownRef.current = false
         }
 
-        const shouldTreatAsImmediate =
-          queryGuard.isActive &&
-          (matchingCommand?.immediate || options?.fromKeybinding)
+        const immediateContext = queryGuard.isActive && matchingCommand?.type === 'local-jsx' &&
+          (matchingCommand.immediate || options?.fromKeybinding)
+          ? getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel)
+          : undefined
+        const shouldTreatAsImmediate = immediateContext && matchingCommand &&
+          (options?.fromKeybinding || isCommandImmediate(matchingCommand, commandArgs, immediateContext))
 
         if (
           matchingCommand &&
           shouldTreatAsImmediate &&
           matchingCommand.type === 'local-jsx'
         ) {
-          // Only clear input if the submitted text matches what's in the prompt.
-          // When a command keybinding fires, input is "/<command>" but the actual
-          // input value is the user's existing text - don't clear it in that case.
-          if (input.trim() === inputValueRef.current.trim()) {
-            setInputValue('')
-            helpers.setCursorOffset(0)
-            helpers.clearBuffer()
-            setPastedContents({})
-          }
-
           const pastedTextRefs = parseReferences(input).filter(
-            r => pastedContents[r.id]?.type === 'text',
+            r => submittedPastedContents[r.id]?.type === 'text',
           )
           const pastedTextCount = pastedTextRefs.length
           const pastedTextBytes = pastedTextRefs.reduce(
-            (sum, r) => sum + (pastedContents[r.id]?.content.length ?? 0),
+            (sum, r) => sum + (submittedPastedContents[r.id]?.content.length ?? 0),
             0,
           )
           logEvent('tengu_paste_text', { pastedTextCount, pastedTextBytes })
@@ -4675,30 +5447,22 @@ export function REPL({
               if (newMessages.length) {
                 setMessages(prev => [...prev, ...newMessages])
               }
-              // Restore stashed prompt after local-jsx command completes.
-              // The normal stash restoration path (below) is skipped because
-              // local-jsx commands return early from onSubmit.
-              if (stashedPrompt !== undefined) {
-                setInputValue(stashedPrompt.text)
-                helpers.setCursorOffset(stashedPrompt.cursorOffset)
-                setPastedContents(stashedPrompt.pastedContents)
-                setStashedPrompt(undefined)
+              if (doneOptions?.nextInput) {
+                if (doneOptions.submitNextInput) {
+                  enqueue({ value: doneOptions.nextInput, mode: 'prompt' })
+                } else {
+                  restoreInput(doneOptions.nextInput)
+                }
               }
+              restoreStash()
             }
 
-            // Build context for the command (reuses existing getToolUseContext).
-            // Read messages via ref to keep onSubmit stable across message
-            // updates — matches the pattern at L2384/L2400/L2662 and avoids
-            // pinning stale REPL render scopes in downstream closures.
-            const context = getToolUseContext(
-              messagesRef.current,
-              [],
-              createAbortController(),
-              mainLoopModel,
+            const jsx = await runImmediateModCommand(
+              matchingCommand,
+              onDone,
+              immediateContext!,
+              commandArgs,
             )
-
-            const mod = await matchingCommand.load()
-            const jsx = await mod.call(onDone, context, commandArgs)
 
             // Skip if onDone already fired — prevents stuck isLocalJSXCommand
             // (see processSlashCommand.tsx local-jsx case for full mechanism).
@@ -4713,54 +5477,11 @@ export function REPL({
               })
             }
           }
-          void executeImmediateCommand()
+          const finishSelectionRun = beginModSelectionRun()
+          try { await executeImmediateCommand().catch(restoreOnError) } finally { finishSelectionRun() }
           return // Always return early - don't add to history or queue
         }
       }
-
-      // Remote mode: skip empty input early before any state mutations
-      if (activeRemote.isRemoteMode && !input.trim()) {
-        return
-      }
-
-      // Idle-return: prompt returning users to start fresh when the
-      // conversation is large and the cache is cold. tengu_willow_mode
-      // controls treatment: "dialog" (blocking), "hint" (notification), "off".
-      {
-        const willowMode = getFeatureValue_CACHED_MAY_BE_STALE(
-          'tengu_willow_mode',
-          'off',
-        )
-        const idleThresholdMin = Number(
-          process.env.CLAUDE_CODE_IDLE_THRESHOLD_MINUTES ?? 75,
-        )
-        const tokenThreshold = Number(
-          process.env.CLAUDE_CODE_IDLE_TOKEN_THRESHOLD ?? 100_000,
-        )
-        if (
-          willowMode !== 'off' &&
-          !getGlobalConfig().idleReturnDismissed &&
-          !skipIdleCheckRef.current &&
-          !speculationAccept &&
-          !input.trim().startsWith('/') &&
-          lastQueryCompletionTimeRef.current > 0 &&
-          getTotalInputTokens() >= tokenThreshold
-        ) {
-          const idleMs = Date.now() - lastQueryCompletionTimeRef.current
-          const idleMinutes = idleMs / 60_000
-          if (idleMinutes >= idleThresholdMin && willowMode === 'dialog') {
-            setIdleReturnPending({ input, idleMinutes })
-            setInputValue('')
-            helpers.setCursorOffset(0)
-            helpers.clearBuffer()
-            return
-          }
-        }
-      }
-
-      // PromptInput switches input mode and submits within the same input event.
-      // Read the ref so this callback observes that new mode before React renders.
-      const submittedInputMode = inputModeRef.current
 
       // Add to history for direct user submissions.
       // Queued command processing (executeQueuedInput) doesn't call onSubmit,
@@ -4771,7 +5492,7 @@ export function REPL({
           display: speculationAccept
             ? input
             : prependModeCharacterToInput(input, submittedInputMode),
-          pastedContents: speculationAccept ? {} : pastedContents,
+          pastedContents: speculationAccept ? {} : submittedPastedContents,
         })
         // Add the just-submitted command to the front of the ghost-text
         // cache so it's suggested immediately (not after the 60s TTL).
@@ -4780,53 +5501,14 @@ export function REPL({
         }
       }
 
-      // Restore stash if present, but NOT for slash commands or when loading.
-      // - Slash commands (especially interactive ones like /model, /context) hide
-      //   the prompt and show a picker UI. Restoring the stash during a command would
-      //   place the text in a hidden input, and the user would lose it by typing the
-      //   next command. Instead, preserve the stash so it survives across command runs.
-      // - When loading, the submitted input will be queued and handlePromptSubmit
-      //   will clear the input field (onInputChange('')), which would clobber the
-      //   restored stash. Defer restoration to after handlePromptSubmit (below).
-      //   Remote mode is exempt: it sends via WebSocket and returns early without
-      //   calling handlePromptSubmit, so there's no clobbering risk — restore eagerly.
-      // In both deferred cases, the stash is restored after await handlePromptSubmit.
-      const isSlashCommand = !speculationAccept && input.trim().startsWith('/')
-      // Submit runs "now" (not queued) when not already loading, or when
-      // accepting speculation, or in remote mode (which sends via WS and
-      // returns early without calling handlePromptSubmit).
       const isSSHBashCommand =
         sshRemote.isRemoteMode && submittedInputMode === 'bash'
-      const submitsNow =
-        !isLoading ||
-        speculationAccept ||
-        (activeRemote.isRemoteMode && !isSSHBashCommand)
-      if (stashedPrompt !== undefined && !isSlashCommand && submitsNow) {
-        setInputValue(stashedPrompt.text)
-        helpers.setCursorOffset(stashedPrompt.cursorOffset)
-        setPastedContents(stashedPrompt.pastedContents)
-        setStashedPrompt(undefined)
-      } else if (submitsNow) {
-        if (!options?.fromKeybinding) {
-          // Clear input when not loading or accepting speculation.
-          // Preserve input for keybinding-triggered commands.
-          setInputValue('')
-          helpers.setCursorOffset(0)
-        }
-        setPastedContents({})
-      }
-
-      if (submitsNow) {
-        setInputMode('prompt')
-        setIDESelection(undefined)
-        setSubmitCount(_ => _ + 1)
-        helpers.clearBuffer()
-        tipPickedThisTurnRef.current = false
-
-        // Show the placeholder in the same React batch as setInputValue('').
-        // Skip for slash/bash (they have their own echo), speculation and remote
+      if (!options?.fromKeybinding) {
+        // Skip the processing placeholder for slash/bash (they have their own echo), speculation and remote
         // mode (both setMessages directly with no gap to bridge).
         if (
+          !queryGuard.isActive &&
+          !isExternalLoading &&
           !isSlashCommand &&
           submittedInputMode === 'prompt' &&
           !speculationAccept &&
@@ -4868,7 +5550,7 @@ export function REPL({
             readFileState,
             cwd: getOriginalCwd(),
           },
-        )
+        ).catch(restoreOnError)
         if (queryRequired) {
           const newAbortController = createAbortController()
           setAbortController(newAbortController)
@@ -4902,7 +5584,7 @@ export function REPL({
         )
       ) {
         // Build content blocks when there are pasted attachments (images)
-        const pastedValues = Object.values(pastedContents)
+        const pastedValues = Object.values(submittedPastedContents)
         const imageContents = pastedValues.filter(c => c.type === 'image')
         const imagePasteIds =
           imageContents.length > 0 ? imageContents.map(c => c.id) : undefined
@@ -4960,34 +5642,42 @@ export function REPL({
         // Send to remote session
         const sent = await activeRemote.sendMessage(remoteContent, {
           uuid: userMessage.uuid,
-        })
+        }).catch(restoreOnError)
         if (!sent) {
           setMessages(previousMessages =>
             previousMessages.filter(message => message.uuid !== userMessage.uuid),
           )
           setAbortController(null)
+          restoreSubmission()
         }
         return
       }
 
       // The managed remote child owns SessionStart hooks and attachments.
-      if (!isRemoteExecutionSession) await awaitPendingHooks()
+      if (!isRemoteExecutionSession) await awaitPendingHooks().catch(restoreOnError)
 
       await handlePromptSubmit({
+        onInputRun: beginModSelectionRun,
         input,
         helpers,
         queryGuard,
         isExternalLoading,
         mode: submittedInputMode,
-        commands,
-        onInputChange: setInputValue,
+        commands: getCurrentCommands(),
+        onPromptAdmitted: () => { promptAdmitted = true },
+        promptSubmitMetadata: {
+          origin: { kind: 'composer' },
+          wait: options?.wait === true,
+          ...(submittedTurnId === undefined ? {} : { turnId: submittedTurnId }),
+        },
+        onInputChange: restoreInput,
         setPastedContents,
         setToolJSX,
         getToolUseContext,
         messages: messagesRef.current,
         mainLoopModel,
-        pastedContents,
-        ideSelection,
+        pastedContents: submittedPastedContents,
+        ideSelection: submittedIDESelection,
         setUserInputOnProcessing,
         setAbortController,
         abortController,
@@ -5004,30 +5694,14 @@ export function REPL({
         hasInterruptibleToolInProgress:
           hasInterruptibleToolInProgressRef.current,
         skipLocalContext: isRemoteExecutionSession,
-      })
+      }).catch(restoreOnError)
 
-      // Restore stash that was deferred above. Two cases:
-      // - Slash command: handlePromptSubmit awaited the full command execution
-      //   (including interactive pickers). Restoring now places the stash back in
-      //   the visible input.
-      // - Loading (queued): handlePromptSubmit enqueued + cleared input, then
-      //   returned quickly. Restoring now places the stash back after the clear.
-      if ((isSlashCommand || isLoading) && stashedPrompt !== undefined) {
-        setInputValue(stashedPrompt.text)
-        helpers.setCursorOffset(stashedPrompt.cursorOffset)
-        setPastedContents(stashedPrompt.pastedContents)
-        setStashedPrompt(undefined)
-      }
+      restoreStash()
     },
     [
       queryGuard,
-      // isLoading is read at the !isLoading checks above for input-clearing
-      // and submitCount gating. It's derived from isQueryActive || isExternalLoading,
-      // so including it here ensures the closure captures the fresh value.
-      isLoading,
       isExternalLoading,
-      inputMode,
-      commands,
+      getCurrentCommands,
       setInputValue,
       setInputMode,
       setPastedContents,
@@ -5043,13 +5717,11 @@ export function REPL({
       // Heap analysis showed ~9 REPL scopes and ~15 messages array versions
       // accumulating after #20174/#20175, all traced to this dep.
       mainLoopModel,
-      pastedContents,
       ideSelection,
       setUserInputOnProcessing,
       setAbortController,
       addNotification,
       onQuery,
-      stashedPrompt,
       setStashedPrompt,
       setAppState,
       onBeforeQuery,
@@ -5060,6 +5732,7 @@ export function REPL({
       awaitPendingHooks,
       modsSession,
       awaitMods,
+      beginModSelectionRun,
       repinScroll,
     ],
   )
@@ -5071,14 +5744,22 @@ export function REPL({
       task: InProcessTeammateTaskState | LocalAgentTaskState,
       helpers: PromptInputHelpers,
     ) => {
+      setInputValue('')
+      helpers.setCursorOffset(0)
+      helpers.clearBuffer()
+      helpers.resetHistory()
+      setInputMode('prompt')
+      setPastedContents({})
+      const consumedGeneration = draftGenerationRef.current
       if (modsSession) await awaitMods()
+      const currentTask = store.getState().tasks[task.id]
       if (isLocalAgentTask(task)) {
         appendMessageToLocalAgent(
           task.id,
           createUserMessage({ content: input }),
           setAppState,
         )
-        if (task.status === 'running') {
+        if (isLocalAgentTask(currentTask) && currentTask.status === 'running') {
           queuePendingMessage(task.id, input, setAppState)
         } else {
           void resumeAgentBackground({
@@ -5107,21 +5788,37 @@ export function REPL({
           })
         }
       } else {
-        injectUserMessageToTeammate(task.id, input, setAppState)
+        const sent = isInProcessTeammateTask(currentTask)
+          ? currentTask.status === 'running' &&
+            injectUserMessageToTeammate(currentTask.id, input, setAppState)
+          : false
+        if (sent) return
+        if (
+          draftGenerationRef.current === consumedGeneration &&
+          inputValueRef.current === ''
+        ) {
+          setInputValue(input)
+          helpers.setCursorOffset(input.length)
+        }
+        addNotification({
+          key: `teammate-message-not-sent-${task.id}`,
+          text: 'Teammate has stopped; message was not sent.',
+          priority: 'immediate',
+        })
       }
-      setInputValue('')
-      helpers.setCursorOffset(0)
-      helpers.clearBuffer()
     },
     [
       setAppState,
       setInputValue,
+      setInputMode,
+      setPastedContents,
       getToolUseContext,
       canUseTool,
       mainLoopModel,
       addNotification,
       modsSession,
       awaitMods,
+      store,
     ],
   )
 
@@ -5219,59 +5916,25 @@ export function REPL({
   // stale closures.
   const rewindConversationTo = useCallback(
     (message: UserMessage) => {
-      const prev = messagesRef.current
-      const messageIndex = prev.lastIndexOf(message)
-      if (messageIndex === -1) return
-
-      logEvent('tengu_conversation_rewind', {
-        preRewindMessageCount: prev.length,
-        postRewindMessageCount: messageIndex,
-        messagesRemoved: prev.length - messageIndex,
-        rewindToMessageIndex: messageIndex,
-      })
-      setMessages(prev.slice(0, messageIndex))
-      // Careful, this has to happen after setMessages
-      setConversationId(randomUUID())
-      // Reset cached microcompact state so stale pinned cache edits
-      // don't reference tool_use_ids from truncated messages
-      resetMicrocompactState()
-      if (feature('CONTEXT_COLLAPSE')) {
-        // Rewind truncates the REPL array. Commits whose archived span
-        // was past the rewind point can't be projected anymore
-        // (projectView silently skips them) but the staged queue and ID
-        // maps reference stale uuids. Simplest safe reset: drop
-        // everything. The ctx-agent will re-stage on the next
-        // threshold crossing.
-        /* eslint-disable @typescript-eslint/no-require-imports */
-        ;(
-          require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')
-        ).resetContextCollapse()
-        /* eslint-enable @typescript-eslint/no-require-imports */
-      }
-
-      // Restore state from the message we're rewinding to
-      setAppState(prev => ({
-        ...prev,
-        // Restore permission mode from the message
-        toolPermissionContext:
-          message.permissionMode &&
-          prev.toolPermissionContext.mode !== message.permissionMode
-            ? {
-                ...prev.toolPermissionContext,
-                mode: message.permissionMode as typeof prev.toolPermissionContext.mode,
-              }
-            : prev.toolPermissionContext,
-        // Clear stale prompt suggestion from previous conversation state
-        promptSuggestion: {
-          text: null,
-          promptId: null,
-          shownAt: 0,
-          acceptedAt: 0,
-          generationRequestId: null,
+      applyConversationRewind(message, {
+        messages: messagesRef.current,
+        logEvent,
+        setMessages,
+        resetDiff: () => diffController?.reset(getCwd()),
+        setConversationId,
+        resetMicrocompactState,
+        resetContextCollapse: () => {
+          if (feature('CONTEXT_COLLAPSE')) {
+            // Truncating the transcript invalidates archived spans and staged IDs.
+            /* eslint-disable @typescript-eslint/no-require-imports */
+            ;(require('../services/contextCollapse/index.js') as typeof import('../services/contextCollapse/index.js')).resetContextCollapse()
+            /* eslint-enable @typescript-eslint/no-require-imports */
+          }
         },
-      }))
+        setAppState,
+      })
     },
-    [setMessages, setAppState],
+    [setMessages, setAppState, diffController],
   )
 
   // Synchronous rewind + input population. Used directly by auto-restore on
@@ -5464,6 +6127,7 @@ export function REPL({
   const executeQueuedInput = useCallback(
     async (queuedCommands: QueuedCommand[]) => {
       await handlePromptSubmit({
+        onInputRun: beginModSelectionRun,
         helpers: {
           setCursorOffset: () => {},
           clearBuffer: () => {},
@@ -5507,12 +6171,14 @@ export function REPL({
       setAppState,
       onBeforeQuery,
       isRemoteExecutionSession,
+      beginModSelectionRun,
     ],
   )
 
   useQueueProcessor({
     executeQueuedInput,
-    hasActiveLocalJsxUI: isShowingLocalJSXCommand,
+    hasActiveLocalJsxUI:
+      isShowingLocalJSXCommand || showResponsiveDiffDialog,
     queryGuard,
   })
 
@@ -5764,7 +6430,8 @@ export function REPL({
       isLoading:
         isRemoteExecutionSession || isLoading || initialMessage !== null,
       queuedCommandsLength: queuedCommands.length,
-      hasActiveLocalJsxUI: isShowingLocalJSXCommand,
+      hasActiveLocalJsxUI:
+        isShowingLocalJSXCommand || showResponsiveDiffDialog,
       isInPlanMode: toolPermissionContext.mode === 'plan',
       onSubmitTick: (prompt: string) =>
         handleIncomingPrompt(prompt, { isMeta: true }),
@@ -6126,9 +6793,10 @@ export function REPL({
   // Guard onOpenBackgroundTasks when a local-jsx dialog (e.g. /mcp) is open —
   // otherwise Shift+Down stacks BackgroundTasksDialog on top and deadlocks input.
   useBackgroundTaskNavigation({
-    onOpenBackgroundTasks: isShowingLocalJSXCommand
+    onOpenBackgroundTasks: isShowingLocalJSXCommand || showResponsiveDiffDialog
       ? undefined
       : () => setShowBashesDialog(true),
+    isActive: true,
   })
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit()
@@ -6179,7 +6847,7 @@ export function REPL({
       </Box>
     )
     const transcriptReturn = (
-      <KeybindingSetup>
+      <ModsRenderProvider session={modsSession}><KeybindingSetup>
         <AnimatedTerminalTitle
           isAnimating={titleIsAnimating}
           title={terminalTitle}
@@ -6222,6 +6890,7 @@ export function REPL({
         <CancelRequestHandler {...cancelRequestProps} />
         {transcriptScrollRef ? (
           <FullscreenLayout
+            terminalUiRevision={getModUiSnapshotTerminalRevision(modPanes)}
             scrollRef={scrollRef}
             scrollable={
               <>
@@ -6300,7 +6969,7 @@ export function REPL({
             />
           </>
         )}
-      </KeybindingSetup>
+      </KeybindingSetup></ModsRenderProvider>
     )
     // The virtual-scroll branch (FullscreenLayout above) needs
     // <AlternateScreen>'s <Box height={rows}> constraint — without it,
@@ -6395,7 +7064,19 @@ export function REPL({
   // /config, /theme, /diff, ...) both go here now.
   const toolJsxCentered =
     isFullscreenEnvEnabled() && toolJSX?.isLocalJSXCommand === true
-  const centeredModal: React.ReactNode = toolJsxCentered ? toolJSX!.jsx : null
+  const responsiveDiffDialog = showResponsiveDiffDialog ? (
+    <DiffDialog
+      messages={messages}
+      controller={diffController}
+      onDone={() => {
+        diffController?.setOpenPreference(false)
+        setAppState(state => ({ ...state, diffSidebarVisible: false }))
+      }}
+    />
+  ) : null
+  const centeredModal: React.ReactNode = toolJsxCentered
+    ? toolJSX!.jsx
+    : responsiveDiffDialog
 
   // <AlternateScreen> at the root: everything below is inside its
   // <Box height={rows}>. Handlers/contexts are zero-height so ScrollBox's
@@ -6403,7 +7084,7 @@ export function REPL({
   // early return above wraps its virtual-scroll branch the same way; only
   // the 30-cap dump branch stays unwrapped for native terminal scrollback.
   const mainReturn = (
-    <KeybindingSetup>
+    <ModsRenderProvider session={modsSession}><KeybindingSetup>
       <AnimatedTerminalTitle
         isAnimating={titleIsAnimating}
         title={terminalTitle}
@@ -6427,8 +7108,8 @@ export function REPL({
           ctrl+c-with-selection copies instead of cancelling the active task.
           Its raw useInput handler only stops propagation when a selection
           exists — without one, ctrl+c falls through to CancelRequestHandler.
-          PgUp/PgDn/wheel always scroll the transcript behind the modal —
-          the modal's inner ScrollBox is not keyboard-driven. onScroll
+          PgUp/PgDn/wheel scroll the transcript behind the modal, except
+          keyboard scrolling yields to a focused Mods pane or Diff dialog. onScroll
           stays suppressed while a modal is showing so scroll doesn't
           stamp divider/pill state. */}
       <ScrollKeybindingHandler
@@ -6439,6 +7120,7 @@ export function REPL({
             !focusedInputDialog ||
             focusedInputDialog === 'tool-permission')
         }
+        isKeyboardActive={!modPaneFocused && !modAbovePromptFocused && !diffDialogActive}
         onScroll={
           centeredModal || toolPermissionOverlay || viewedAgentTask
             ? undefined
@@ -6461,6 +7143,9 @@ export function REPL({
         disabled={sshRemote.isRemoteMode}
       >
         <FullscreenLayout
+          terminalUiRevision={getModUiSnapshotTerminalRevision(modPanes)}
+          abovePrompt={!toolJSX?.shouldHidePromptInput && !focusedInputDialog && !isExiting && !disabled && !cursor
+            ? modAbovePrompt : undefined}
           scrollRef={scrollRef}
           overlay={toolPermissionOverlay}
           bottomFloat={
@@ -6469,6 +7154,23 @@ export function REPL({
             ) : undefined
           }
           modal={centeredModal}
+          dockPane={modDock.map(renderModPane)}
+          dockWidth={shownModDock ? shownModDock.bodyColumns + 1 : undefined}
+          dockFocused={Boolean(shownModDock?.focused)}
+          inlinePane={modInline.map(renderModPane)}
+          sidebarWidth={Math.min(Math.floor(modTerminalSize.columns * 0.45), 90, modTerminalSize.columns - 70)}
+          sidebarPane={nativeDiffVisible && canShowDiffSidebar ? (
+            <DiffSidebar
+              key={conversationId}
+              messages={messages}
+              controller={diffController}
+              keyboardEnabled={false}
+              onClose={() => {
+                diffController?.setOpenPreference(false)
+                setAppState(state => ({ ...state, diffSidebarVisible: false }))
+              }}
+            />
+          ) : undefined}
           modalScrollRef={modalScrollRef}
           dividerYRef={dividerYRef}
           hidePill={!!viewedAgentTask}
@@ -6714,7 +7416,9 @@ export function REPL({
                     onAbort={() => {
                       const item = promptQueue[0]
                       if (!item) return
-                      item.reject(new Error('Prompt cancelled by user'))
+                      item.reject(
+                        item.dismissError?.() ?? new Error('Prompt cancelled by user'),
+                      )
                       setPromptQueue(([, ...tail]) => tail)
                     }}
                   />
@@ -6865,7 +7569,7 @@ export function REPL({
                         totalInputTokens: getTotalInputTokens(),
                       })
                       if (action === 'dismiss') {
-                        setInputValue(pending.input)
+                        pending.restore()
                         return
                       }
                       if (action === 'never') {
@@ -6895,11 +7599,7 @@ export function REPL({
                         bashToolsProcessedIdx.current = 0
                       }
                       skipIdleCheckRef.current = true
-                      void onSubmitRef.current(pending.input, {
-                        setCursorOffset: () => {},
-                        clearBuffer: () => {},
-                        resetHistory: () => {},
-                      })
+                      void pending.resume()
                     }}
                   />
                 )}
@@ -7153,11 +7853,16 @@ export function REPL({
                       {showIssueFlagBanner && <IssueFlagBanner />}
                       {
                       }
+                      <HoldToastsProvider hold={shouldHoldToasts(modPanes)}>
                       <PromptInput
                         debug={debug}
                         ideSelection={ideSelection}
                         hasSuppressedDialogs={!!hasSuppressedDialogs}
-                        isLocalJSXCommandActive={isShowingLocalJSXCommand}
+                        isLocalJSXCommandActive={
+                          isShowingLocalJSXCommand ||
+                          showResponsiveDiffDialog ||
+                          modAbovePromptFocused
+                        }
                         getToolUseContext={getToolUseContext}
                         toolPermissionContext={toolPermissionContext}
                         setToolPermissionContext={setToolPermissionContext}
@@ -7172,6 +7877,7 @@ export function REPL({
                             : undefined
                         }
                         isLoading={isLoading}
+                        isAssistantResponding={isAssistantResponding}
                         onExit={handleExit}
                         verbose={verbose}
                         messages={messages}
@@ -7179,6 +7885,8 @@ export function REPL({
                         autoUpdaterResult={autoUpdaterResult}
                         input={inputValue}
                         onInputChange={setInputValue}
+                        onInputStateChange={onInputStateChange}
+                        onPromptEdit={onModPromptEdit}
                         mode={inputMode}
                         onModeChange={setInputMode}
                         stashedPrompt={stashedPrompt}
@@ -7206,11 +7914,11 @@ export function REPL({
                         setIsSearchingHistory={setIsSearchingHistory}
                         helpOpen={isHelpOpen}
                         setHelpOpen={setIsHelpOpen}
-                        insertTextRef={
-                          feature('VOICE_MODE') ? insertTextRef : undefined
-                        }
+                        insertTextRef={insertTextRef}
+                        typeaheadActiveRef={modTypeaheadActiveRef}
                         voiceInterimRange={voice.interimRange}
                       />
+                      </HoldToastsProvider>
                       <SessionBackgroundHint
                         onBackgroundSession={handleBackgroundSession}
                         isLoading={isLoading}
@@ -7391,9 +8099,12 @@ export function REPL({
           }
         />
       </MCPConnectionManager>
-    </KeybindingSetup>
+    </KeybindingSetup></ModsRenderProvider>
   )
-  if (isFullscreenEnvEnabled()) {
+  if (
+    isFullscreenEnvEnabled() ||
+    (nativeDiffVisible && canShowDiffSidebar)
+  ) {
     return (
       <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
         {mainReturn}

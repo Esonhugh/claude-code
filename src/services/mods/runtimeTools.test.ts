@@ -1,0 +1,958 @@
+import { afterEach, beforeEach, expect, test } from 'bun:test'
+import { z } from 'zod/v4'
+import { buildTool, getEmptyToolPermissionContext, type Tool, type ToolUseContext } from '../../Tool.js'
+import { createModToolHost } from './toolHost.js'
+import { runModSessionCompact } from './compactAdapter.js'
+import { resetSettingsCache, setCachedSettingsForSource, setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
+import { mkdtemp, mkdir, rm, writeFile, realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { createModsRuntime, type ModsRuntime } from './runtime.js'
+import { loadModDeclaration } from './loader.js'
+import { seatNativeModPlugins } from './native.js'
+import { runToolUse } from '../tools/toolExecution.js'
+import { runPreToolUseHooks } from '../tools/toolHooks.js'
+import { ToolSearchTool } from '../../tools/ToolSearchTool/ToolSearchTool.js'
+import { createAssistantMessage } from '../../utils/messages.js'
+
+// Official 2.1.289 permits one unmatched plus exact-event matcher registrations.
+// Empty sibling matchers preserve these always-matching hooks; see registrationMultiplicity289.test.ts.
+const testEnvKeys = [
+  'HOME', 'CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+  'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR', 'CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR',
+]
+let testConfigRoot: string | undefined
+let savedTestEnvironment: (string | undefined)[] = []
+
+const roots: string[] = []
+const runtimes: ModsRuntime[] = []
+beforeEach(async () => {
+  savedTestEnvironment = testEnvKeys.map(key => process.env[key])
+  testConfigRoot = await realpath(await mkdtemp(join(tmpdir(), 'mods-test-config-')))
+  process.env.HOME = testConfigRoot
+  process.env.CLAUDE_CONFIG_DIR = join(testConfigRoot, 'config')
+  process.env.XDG_CONFIG_HOME = join(testConfigRoot, 'xdg-config')
+  process.env.XDG_CACHE_HOME = join(testConfigRoot, 'xdg-cache')
+  process.env.XDG_STATE_HOME = join(testConfigRoot, 'xdg-state')
+  process.env.ANTHROPIC_API_KEY = 'sk-test-placeholder'
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN
+  delete process.env.CLAUDE_CODE_API_KEY_FILE_DESCRIPTOR
+  delete process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+  resetSettingsCache()
+  setSessionSettingsCache({settings:{},errors:[]})
+  for (const source of ['userSettings','projectSettings','localSettings','flagSettings','policySettings'] as const)
+    setCachedSettingsForSource(source,{})
+})
+afterEach(async () => {
+  try {
+    await Promise.all(runtimes.splice(0).map(runtime => runtime.dispose()))
+    await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })))
+  } finally {
+    resetSettingsCache()
+    testEnvKeys.forEach((key, i) => {
+      if (savedTestEnvironment[i] === undefined) delete process.env[key]
+      else process.env[key] = savedTestEnvironment[i]
+    })
+    if (testConfigRoot !== undefined) {
+      await rm(testConfigRoot, { recursive: true, force: true })
+      testConfigRoot = undefined
+    }
+  }
+})
+async function plugin(name: string, source: string) {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'mods-tool-host-')))
+  roots.push(root)
+  const pluginRoot = join(root, name)
+  await mkdir(pluginRoot)
+  const entry = join(pluginRoot, 'register.ts')
+  await writeFile(entry, source)
+  return { name, storageId: name + '@test', pluginRoot, entrypoints: [entry] }
+}
+const binding = { cwd: '/tmp', surface: null, isInteractive: false, sessionId: 'offline' } as const
+
+test('agent.spawn recovers a deny beside model through the Worker result boundary', async () => {
+  const mod = await plugin('spawn-mixed', `export function register(on) { on('agent.spawn', () => ({deny:'No',model:'forged'})) }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  let calls = 0
+  expect(await runtime.dispatch('agent.spawn', {prompt:'Read fixture'}, async () => { calls++; return {model:'core',agentId:'agent-core'} })).toEqual({model:'core',agentId:'agent-core'})
+  expect(calls).toBe(1)
+  expect(diagnostics).toHaveLength(1)
+})
+
+test('tool.check rejects a non-string classic hook and projects only verdict fields', async () => {
+  const invalid = await plugin('check-invalid', `export function register(on) { on('tool.check', () => ({decision:'allow',hook:7})) }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({ onDiagnostic: event => diagnostics.push(event) })
+  runtimes.push(runtime)
+  await runtime.reconcile([invalid])
+  expect(await runtime.dispatch('tool.check',{tool:'FixtureRead',input:{file_path:'a'}},async () => ({decision:'ask',reason:'core'}))).toEqual({decision:'ask',reason:'core'})
+  expect(diagnostics).toHaveLength(1)
+  const valid = await plugin('check-valid', `export function register(on) { on('tool.check', () => ({decision:'allow',hook:'PreToolUse',extra:'discard'})) }`)
+  await runtime.reconcile([valid])
+  expect(await runtime.dispatch('tool.check',{tool:'FixtureRead',input:{file_path:'a'}},async () => ({decision:'ask'}))).toEqual({decision:'allow',hook:'PreToolUse'})
+})
+
+test('Worker author tools reach sibling middleware, executor, mapper and permission consumer with pinned identities', async () => {
+  const caller = await plugin('caller',`let entries=0; export function register(on) {
+    on('command.run',async $ => ({text:JSON.stringify({
+      check:await $.tool.check({tool:'Offline',input:{value:'probe'}}),
+      call:await $.tool.call({tool:'Offline',value:'run',agentId:'forged',tool_use_id:'forged'}),
+      entries
+    })}));
+    on('tool.call',($,e,next) => {entries++;return next({...e,value:e.value+' sibling'})});
+  }`)
+  const policy = await plugin('policy',`export function register(on) {
+    on('tool.call',($,e,next) => {
+      if(next.origin.plugin!=='caller'||e.agentId!==undefined||e.tool_use_id==='forged') throw Error('bad call identity');
+      return next({...e,value:e.value+' rewritten'});
+    });
+    on('tool.check',($,e,next) => {
+      if(next.origin.plugin!=='caller') throw Error('bad check origin');
+      return {decision:e.input.value==='probe'?'ask':'allow',reason:'policy'};
+    });
+  }`)
+  const calls: unknown[] = []
+  let dialogs = 0
+  const tool = buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),outputSchema:z.object({value:z.string()}),maxResultSizeChars:10000,
+    description:async () => 'offline',prompt:async () => 'offline',isConcurrencySafe:() => true,
+    checkPermissions:async () => ({behavior:'ask',message:'default ask'}),
+    call:async input => {calls.push(input);return {data:input}},
+    mapToolResultToToolResultBlockParam:(data,id) => ({type:'tool_result',tool_use_id:id,content:JSON.stringify(data)}),
+    renderToolUseMessage:() => null,
+  })
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  const context = {
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),getAppState:() => ({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:() => {},setInProgressToolUseIDs:() => {},
+  } as unknown as ToolUseContext
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,policy])
+  expect(diagnostics).toEqual([])
+  const snapshot = runtime.capture({toolHost:() => createModToolHost(context,async () => {dialogs++;return {behavior:'allow'}})})
+  try {
+    const result = await snapshot.dispatch('command.run',{},async () => ({})) as {text:string}
+    expect(JSON.parse(result.text)).toEqual({check:{decision:'ask',reason:'policy'},call:{result:{value:'run sibling rewritten'},text:'{"value":"run sibling rewritten"}'},entries:1})
+    expect(calls).toEqual([{value:'run sibling rewritten'}])
+    expect(dialogs).toBe(0)
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('standalone executor capture binds the current author host rather than a stale session host', async () => {
+  const mod = await plugin('observer',`export function register(on) {
+    on('tool.call',{tool:'Outer'},async ($,e,next)=>{
+      const result=await $.tool.call({tool:'Inner',value:'nested'});
+      if(result.result!=='inner:nested') throw Error('missing nested result');
+      return next(e);
+    });
+  }`)
+  const calls: string[] = [], permissions: string[] = [], diagnostics: unknown[] = []
+  const makeTool = (name:string)=>buildTool({
+    name,inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>name,prompt:async()=>name,renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(name);return {data:name.toLowerCase()+':'+input.value}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const outer=makeTool('Outer'),inner=makeTool('Inner')
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[outer,inner],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const block={type:'tool_use' as const,caller:{type:'direct' as const},id:'outer-call',name:outer.name,input:{value:'original'}}
+  const messages=await Array.fromAsync(runToolUse(block,createAssistantMessage({content:[block]}),async tool=>{
+    permissions.push(tool.name);return {behavior:'allow'}
+  },context))
+  expect(diagnostics).toEqual([])
+  expect(calls).toEqual(['Inner','Outer'])
+  expect(permissions).toEqual(['Inner','Outer'])
+  expect(JSON.stringify(messages)).toContain('outer:original')
+})
+
+test('registered command consumers bind their current author tools and permission callback', async () => {
+  const mod = await plugin('command-host',`export function register(on) {
+    on('session.start',async ($,e,next)=>{await $.command.register({name:'probe',description:'Call a current tool'});return next(e)});
+    on('command.run',{command:'probe'},async $=>({text:(await $.tool.call({tool:'Offline',value:'command'})).text}));
+  }`)
+  const calls: string[] = [], permissions: string[] = [], diagnostics: unknown[] = []
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'offline',prompt:async()=>'offline',renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(input.value);return {data:'current:'+input.value}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+    canUseTool:async()=>{permissions.push('current');return {behavior:'allow'}},
+  } as unknown as import('../../types/command.js').LocalJSXCommandContext
+  const command=runtime.commands.list().find(command=>command.name==='probe')!
+  if(command.type!=='local-jsx') throw Error('Expected registered local command')
+  const completed: unknown[]=[]
+  await (await command.load()).call((text,options)=>{completed.push([text,options?.commandRunText])},context,'')
+  expect(diagnostics).toEqual([])
+  // Official 2.1.292 attributes display text while preserving the raw receipt.
+  expect(completed).toEqual([['command-host: current:command','current:command']])
+  expect(calls).toEqual(['command'])
+  expect(permissions).toEqual(['current'])
+})
+
+test('standalone classic hook consumers bind the current tools for author permission queries', async () => {
+  const mod=await plugin('classic-host',`export function register(on) {
+    on('classic.PreToolUse',async ($,e)=>({additionalContext:[JSON.stringify(await $.tool.check({tool:e.tool,input:{value:'probe'}}))]}));
+  }`)
+  let checked=0,executed=0
+  const diagnostics: unknown[]=[]
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'offline',prompt:async()=>'offline',renderToolUseMessage:()=>null,
+    checkPermissions:async()=>{checked++;return {behavior:'ask',message:'current permission probe'}},
+    call:async()=>{executed++;return {data:'should not execute'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const results=await Array.fromAsync(runPreToolUseHooks(context,tool,{value:'input'},'pre-call','message',undefined,undefined,undefined))
+  expect(diagnostics).toEqual([])
+  expect(JSON.stringify(results)).toContain('current permission probe')
+  expect(checked).toBe(1)
+  expect(executed).toBe(0)
+})
+
+test('ToolSearch description consumers execute author calls with the current tools and permissions', async () => {
+  const mod=await plugin('search-host',`export function register(on) {
+    on('tool.describe',{tool:'Offline'},async ($,e,next)=>{
+      const result=await $.tool.call({tool:'Offline',value:'description'});
+      return {...await next(e),description:result.text,isDeferred:true};
+    });
+  }`)
+  const diagnostics: unknown[]=[],calls: string[]=[],permissions: string[]=[]
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'unrelated',prompt:async()=>'unrelated',renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(input.value);return {data:'needlecapability'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true,agentDefinitions:{activeAgents:[]}},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map(),mcp:{clients:[]}}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await ToolSearchTool.call({query:'needlecapability',max_results:5},context,async tool=>{
+    permissions.push(tool.name);return {behavior:'allow'}
+  })
+  expect(diagnostics).toEqual([])
+  expect(result.data.matches).toEqual(['Offline'])
+  expect(calls).toEqual(['description'])
+  expect(permissions).toEqual(['Offline'])
+})
+
+test('ToolSearch description consumers use the refreshed catalog for author list and calls', async () => {
+  const mod=await plugin('search-refresh-host',`export function register(on) {
+    on('tool.describe',{tool:'Fresh'},async ($,e,next)=>{
+      const listed=await $.tool.list();
+      const result=await $.tool.call({tool:'Fresh',value:'description'});
+      return {...await next(e),description:listed.map(tool=>tool.name).join(',')+':'+result.text,isDeferred:true};
+    });
+  }`)
+  const diagnostics: unknown[]=[],calls: string[]=[]
+  const makeTool=(name:string)=>buildTool({
+    name,inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>name.toLowerCase(),prompt:async()=>name.toLowerCase(),renderToolUseMessage:()=>null,
+    call:async input=>{calls.push(name+':'+input.value);return {data:'needlecapability'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const stale=makeTool('Stale'),fresh=makeTool('Fresh')
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{
+      tools:[stale],refreshTools:()=>[fresh],mcpClients:[],isNonInteractiveSession:true,
+      agentDefinitions:{activeAgents:[]},
+    },
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map(),mcp:{clients:[]}}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await ToolSearchTool.call(
+    {query:'needlecapability',max_results:5},context,
+    async (_tool,input)=>({behavior:'allow',updatedInput:input}),
+  )
+  expect(diagnostics).toEqual([])
+  expect(result.data.matches).toEqual(['Fresh'])
+  expect(calls).toEqual(['Fresh:description'])
+})
+
+test('standalone compaction consumers query author permissions from the current context', async () => {
+  const mod=await plugin('compact-host',`export function register(on) {
+    on('session.compact',async $=>({skip:(await $.tool.check({tool:'Offline',input:{value:'compact'}})).reason}));
+  }`)
+  let checked=0,compacted=0
+  const diagnostics: unknown[]=[]
+  const tool=buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async()=>'offline',prompt:async()=>'offline',renderToolUseMessage:()=>null,
+    checkPermissions:async()=>{checked++;return {behavior:'ask',message:'current compact probe'}},
+    call:async()=>{throw Error('query must not execute')},
+    mapToolResultToToolResultBlockParam:(_data,id)=>({type:'tool_result',tool_use_id:id,content:''}),
+  })
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event),services:{
+    toolHost:()=>{throw Error('stale session tool host')},
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const context={
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const result=await runModSessionCompact(context,'manual',[],undefined,async()=>{
+    compacted++;throw Error('compaction should be skipped')
+  }, async () => ({behavior:'ask',message:'current compact probe'})).then(value=>value,error=>error)
+  expect(diagnostics).toEqual([])
+  expect(result).toEqual({skip:'current compact probe'})
+  expect(checked).toBe(1)
+  expect(compacted).toBe(0)
+})
+
+test('Worker author permission queries read live rules and mode without Pre, dialogs or execution', async () => {
+  const caller = await plugin('caller',`export function register(on) {
+    on('command.run',async $ => ({text:JSON.stringify(await $.tool.check({tool:'Offline',input:{value:'probe'}}))}));
+    on('classic.PreToolUse',()=>{throw Error('query must not run Pre')});
+  }`)
+  let executed = 0, dialogs = 0
+  const tool = buildTool({
+    name:'Offline',inputSchema:z.object({value:z.string()}),maxResultSizeChars:1000,
+    description:async ()=>'offline',prompt:async ()=>'offline',renderToolUseMessage:()=>null,
+    checkPermissions:async ()=>({behavior:'ask',message:'declarative probe'}),
+    call:async ()=>{executed++;return {data:'executed'}},
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  const state = {toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}
+  const context = {
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),getAppState:()=>state,
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  await runtime.bind(binding)
+  await runtime.reconcile([caller])
+  const snapshot = runtime.capture({toolHost:()=>createModToolHost(context,async()=>{dialogs++;return {behavior:'allow'}})})
+  try {
+    const check = async()=>JSON.parse((await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}).text)
+    expect(await check()).toEqual({decision:'ask',reason:'declarative probe'})
+    state.toolPermissionContext = {...state.toolPermissionContext,mode:'bypassPermissions'}
+    expect(await check()).toMatchObject({decision:'allow'})
+    state.toolPermissionContext = {...state.toolPermissionContext,alwaysDenyRules:{policySettings:[tool.name]}}
+    expect(await check()).toMatchObject({decision:'deny',rule:tool.name})
+    expect(executed).toBe(0)
+    expect(dialogs).toBe(0)
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('author tool.call keeps its result envelope and origin while running sibling middleware', async () => {
+  const caller = await plugin('caller', `let entries=0; export function register(on) {
+    on('command.run', async $ => ({text:JSON.stringify({...await $.tool.call({tool:'Offline',value:1}),entries})}));
+    on('tool.call', ($,e,next) => {entries++;return next({...e,value:e.value+1})});
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('tool.call', ($,e,next) => {
+      if(next.origin.plugin!=='caller') throw Error('wrong origin');
+      return next({...e,value:e.value+1});
+    });
+  }`)
+  const diagnostics: unknown[] = []
+  const origins: (string | undefined)[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    toolHost: () => ({
+      call: async (input, snapshot, signal, spawnedBy) => {
+        origins.push(spawnedBy)
+        return snapshot.dispatch('tool.call',input,async e => ({result:e.value,text:'mapped'}),{signal})
+      },
+      check: async () => ({decision:'allow'}),
+    }),
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,policy])
+  expect(diagnostics).toEqual([])
+  expect(await runtime.dispatch('command.run',{},async () => ({}))).toEqual({text:JSON.stringify({result:3,text:'mapped',entries:1})})
+  expect(origins).toEqual(['caller'])
+  expect(diagnostics).toEqual([])
+})
+
+test('session.start tool.register publishes a real owned tool and replaces it atomically on reload', async () => {
+  const source = (description: string) => `export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'echo',description:'${description}',inputSchema:{type:'object',properties:{text:{type:'string'}},required:['text']}});return next(e)});
+    on('tool.call',{tool:'mcp__dynamic__echo'},($,e) => ({result:e.text}));
+  }`
+  const mod = await plugin('dynamic',source('first'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.reconcile([mod])
+  expect(diagnostics).toEqual([])
+  await runtime.bind(binding)
+  expect(diagnostics).toEqual([])
+  const original = runtime.tools.projection([])
+  expect(original.map(tool => tool.name)).toEqual(['mcp__dynamic__echo'])
+  const held = runtime.capture()
+  try {
+    await writeFile(mod.entrypoints[0]!,source('second'))
+    await runtime.reconcile([mod])
+    const replaced = runtime.tools.projection(original)
+    expect(replaced).toHaveLength(1)
+    expect(replaced[0]).not.toBe(original[0])
+    expect(await replaced[0]!.description({},{} as never)).toBe('second')
+    await runtime.reconcile([])
+    expect(runtime.tools.projection(replaced)).toEqual([])
+    expect(await held.dispatch('tool.call',{tool:'mcp__dynamic__echo',text:'pinned'},async () => ({result:'core'}))).toEqual({result:'pinned'})
+    expect(diagnostics).toEqual([])
+  } finally {held.release()}
+})
+
+test('author registration becomes callable and checkable within the same request without a context refresh', async () => {
+  const caller=await plugin('live-register',`export function register(on) {
+    on('command.run',async $=>{
+      const registered=await $.tool.register({name:'echo',description:'Live registration',inputSchema:{type:'object',properties:{value:{type:'string'}},required:['value']}});
+      return {text:JSON.stringify({check:await $.tool.check({tool:registered.tool,input:{value:'probe'}}),call:await $.tool.call({tool:registered.tool,value:'called'})})};
+    });
+  }`)
+  const implementation=await plugin('implementation',`export function register(on) {
+    on('tool.call',{tool:'mcp__live-register__echo'},($,e)=>({result:e.value}));
+  }`)
+  const diagnostics: unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,implementation])
+  const context={
+    mods:runtime,options:{tools:[],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:{...getEmptyToolPermissionContext(),alwaysAskRules:{userSettings:['mcp__live-register__echo']}},sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const snapshot=runtime.capture({toolHost:()=>createModToolHost(context,async()=>({behavior:'allow'}))})
+  try {
+    const result=await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}
+    expect(diagnostics).toEqual([])
+    expect(JSON.parse(result.text)).toMatchObject({check:{decision:'ask'},call:{result:'called'}})
+    expect(runtime.tools.list().map(tool=>tool.name)).toEqual(['mcp__live-register__echo'])
+    expect(context.options.tools).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('author hosts do not execute retired dynamic tools retained in an older request context', async () => {
+  const dynamic=await plugin('retired',`export function register(on) {
+    on('session.start',async ($,e,next)=>{await $.tool.register({name:'echo',description:'Retirable'});return next(e)});
+    on('tool.call',{tool:'mcp__retired__echo'},()=>({result:'old implementation'}));
+  }`)
+  const caller=await plugin('caller',`export function register(on) {
+    on('command.run',async $=>{
+      const errors=[];
+      try{await $.tool.check({tool:'mcp__retired__echo',input:{}})}catch(error){errors.push(String(error))}
+      try{await $.tool.call({tool:'mcp__retired__echo'})}catch(error){errors.push(String(error))}
+      return {text:JSON.stringify(errors)};
+    });
+  }`)
+  const diagnostics: unknown[]=[]
+  const runtime=createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([dynamic,caller])
+  const context={
+    mods:runtime,options:{tools:runtime.tools.projection([]),mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const host=createModToolHost(context,async()=>({behavior:'allow'}))
+  await runtime.reconcile([caller])
+  const snapshot=runtime.capture({toolHost:()=>host})
+  try {
+    const result=await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}
+    expect(JSON.parse(result.text)).toEqual([
+      'HooksError: caller: $.tool.check: no tool named "mcp__retired__echo" in this session',
+      'HooksError: caller: $.tool.call: no tool named "mcp__retired__echo" in this session',
+    ])
+    expect(host.tools()).toEqual([])
+    expect(context.options.tools).toHaveLength(1)
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('a registered tool with no answering hook fails through the real author executor', async () => {
+  const dynamic = await plugin('unanswered',`export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'echo',description:'No implementation'});return next(e)});
+  }`)
+  const caller = await plugin('caller',`export function register(on) {
+    on('command.run',async $ => ({text:JSON.stringify(await $.tool.call({tool:'mcp__unanswered__echo'}))}));
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([dynamic,caller])
+  const context = {
+    mods:runtime,options:{tools:runtime.tools.projection([]),mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const snapshot = runtime.capture({toolHost:()=>createModToolHost(context,async()=>({behavior:'allow'}))})
+  try {
+    const result = await snapshot.dispatch('command.run',{},async()=>({})) as {text:string}
+    expect(JSON.parse(result.text)).toMatchObject({isError:true,text:expect.stringContaining('must be answered by a Mods tool.call hook')})
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+test('recovered session.start retains completed tool registration and publishes its hook generation', async () => {
+  const mod = await plugin('rollback',`export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'echo',description:'previous'});return next(e)});
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const previous = runtime.tools.list()[0]
+  expect(previous).toBeDefined()
+  await writeFile(mod.entrypoints[0]!,`export function register(on) {
+    on('session.start',async ($,e,next) => {
+      await $.tool.register({name:'echo',description:'candidate'});
+      throw Error('start hook failed');
+    });
+    on('tool.call',{tool:'mcp__rollback__echo'},()=>({result:'candidate'}));
+  }`)
+  await runtime.reconcile([mod])
+  expect(runtime.tools.list()).toHaveLength(1)
+  expect(runtime.tools.list()[0]).not.toBe(previous)
+  expect(await runtime.tools.list()[0]!.description({},{} as never)).toBe('candidate')
+  expect(await runtime.dispatch('tool.call',{tool:'mcp__rollback__echo'},async()=>({result:'core'}))).toEqual({result:'candidate'})
+  expect(diagnostics).toEqual([expect.objectContaining({stage:'session.start',message:'start hook failed'})])
+})
+
+test('a conflicting replacement keeps both published owners and the prior callable generation', async () => {
+  const first = await plugin('scope.one',`export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'shared',description:'first owner'});return next(e)});
+  }`)
+  const source = (name: string, generation: string) => `export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'${name}',description:'${generation}'});return next(e)});
+    on('tool.call',{tool:'mcp__scope_one__separate'},()=>({result:'${generation}'}));
+  }`
+  const second = await plugin('scope_one',source('separate','previous'))
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([first,second])
+  expect(diagnostics).toEqual([])
+  const previous = [...runtime.tools.list()]
+  expect(previous.map(tool => tool.name)).toEqual(['mcp__scope_one__shared','mcp__scope_one__separate'])
+  await writeFile(second.entrypoints[0]!,source('shared','candidate'))
+  await runtime.reconcile([first,second])
+  expect(runtime.tools.list()).toEqual(previous)
+  expect(await runtime.dispatch('tool.call',{tool:'mcp__scope_one__separate'},async()=>({result:'core'}))).toEqual({result:'previous'})
+  expect(diagnostics).toContainEqual(expect.objectContaining({stage:'session.start',message:expect.stringContaining('already owned')}))
+})
+
+test('tool.register policy rewrites its schema but cannot forge the registering plugin ownership', async () => {
+  const caller = await plugin('owned',`export function register(on) {
+    on('session.start',async ($,e,next) => {await $.tool.register({name:'echo',description:'original'});return next(e)});
+  }`)
+  const policy = await plugin('policy',`export function register(on) {
+    on('tool.register',($,e,next) => {
+      if(next.origin.plugin!=='owned'||e.inputSchema.type!=='object') throw Error('missing identity or default schema');
+      return next({...e,name:'changed',description:'rewritten',inputSchema:{type:'object',properties:{n:{type:'integer'}},required:['n']}});
+    });
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,policy])
+  const tools = runtime.tools.list()
+  expect(tools.map(tool => tool.name)).toEqual(['mcp__owned__changed'])
+  expect(tools[0]!.inputSchema.safeParse({n:1}).success).toBe(true)
+  expect(tools[0]!.inputSchema.safeParse({n:'1'}).success).toBe(false)
+  expect(diagnostics).toEqual([])
+})
+
+test('tool.register requires binding, rejects invalid schemas, and supports later same-owner replacement', async () => {
+  const mod = await plugin('late', `export function register(on) {
+    on('command.run',async ($,e) => {
+      try {return {text:JSON.stringify(await $.tool.register(e.spec))}}
+      catch(error) {return {text:error.message}}
+    });
+  }`)
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  await runtime.reconcile([mod])
+  const spec = {name:'echo',description:'first'}
+  expect(await runtime.dispatch('command.run',{spec},async () => ({}))).toEqual({text:'tool.register requires a bound session'})
+  expect(runtime.tools.projection([])).toEqual([])
+  await runtime.bind(binding)
+  expect(await runtime.dispatch('command.run',{spec},async () => ({}))).toEqual({text:JSON.stringify({tool:'mcp__late__echo'})})
+  const first = runtime.tools.projection([])
+  expect(first).toHaveLength(1)
+  await runtime.dispatch('command.run',{spec:{...spec,description:'second'}},async () => ({}))
+  expect(await runtime.tools.projection(first)[0]!.description({},{} as never)).toBe('second')
+  const invalid = await runtime.dispatch('command.run',{spec:{...spec,inputSchema:null}},async () => ({}))
+  expect((invalid as {text:string}).text).toMatch(/schema|Schema/)
+  expect(await runtime.tools.projection(first)[0]!.description({},{} as never)).toBe('second')
+})
+
+for (const implementation of ['local','official'] as const) {
+  const officialRoot = process.env.CLAUDE_CODE_OFFICIAL_MODS_FIXTURE
+  test.skipIf(implementation === 'official' && !officialRoot)(`${implementation} native policy blocks Worker author registration before publication`, async () => {
+    const mod = await plugin('user',`export function register(on) {
+      on('command.run',async $ => {
+        try {return {text:JSON.stringify(await $.tool.register({name:'echo',description:'must not publish'}))}}
+        catch(error) {return {text:error.message}}
+      });
+    }`)
+    const policy = {allowedMcpServers:[{serverName:'corp'}]}
+    setCachedSettingsForSource('policySettings',policy)
+    const official = implementation === 'official' ? await loadModDeclaration({
+      name:'sec-default',storageId:'sec-default@fixture',pluginRoot:join(officialRoot!,'sec-default'),
+      entrypoints:[join(officialRoot!,'sec-default/hooks/register.ts')],
+    }) : undefined
+    const diagnostics: unknown[] = []
+    const runtime = createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+    runtimes.push(runtime)
+    await runtime.bind(binding)
+    await runtime.reconcile(seatNativeModPlugins([mod],{
+      userSettings:null,flagSettings:null,policySettings:policy,
+      hookPolicy:{managedOnly:false,allDisabled:false},
+    },official))
+    const result = await runtime.dispatch('command.run',{},async()=>({})) as {text:string}
+    expect(result.text).toContain('allowedMcpServers')
+    expect(runtime.tools.list()).toEqual([])
+    expect(diagnostics).toEqual([])
+  })
+}
+
+test('published author tools yield when a real session tool appears later', async () => {
+  const mod = await plugin('owned', `export function register(on) {
+    on('session.start',async ($,e,next) => {
+      await $.tool.register({name:'late',description:'Mod tool'});
+      return next(e);
+    });
+  }`)
+  let sessionTools: Tool[] = []
+  const runtime = createModsRuntime({ services: { tools: () => sessionTools } })
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const registered = runtime.tools.list()[0]!
+  expect(runtime.tools.projection(sessionTools)).toEqual([registered])
+
+  const late = buildTool({
+    name:'mcp__owned__late',inputSchema:z.object({}),maxResultSizeChars:1000,
+    description:async () => 'late session tool',prompt:async () => 'late session tool',
+    call:async () => ({data:'session'}),renderToolUseMessage:() => null,
+    mapToolResultToToolResultBlockParam:(data,id) => ({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  sessionTools = [late]
+  expect(runtime.tools.projection(sessionTools)).toEqual([late])
+})
+
+test('author registration cannot shadow a real session tool or its alias', async () => {
+  const mod = await plugin('owned', `export function register(on) {
+    on('command.run',async ($,e) => {
+      try {return {text:JSON.stringify(await $.tool.register(e.spec))}}
+      catch(error) {return {text:error.message}}
+    });
+  }`)
+  const tool = buildTool({
+    name:'mcp__owned__existing',aliases:['mcp__owned__alias'],
+    inputSchema:z.object({}),maxResultSizeChars:1000,
+    description:async () => 'session tool',prompt:async () => 'session tool',
+    call:async () => ({data:'original'}),renderToolUseMessage:() => null,
+    mapToolResultToToolResultBlockParam:(data,id) => ({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  const context = {mods:runtime,options:{tools:[tool]},abortController:new AbortController()} as unknown as ToolUseContext
+  await runtime.bind(binding)
+  await runtime.reconcile([mod])
+  const snapshot = runtime.capture({toolHost:() => createModToolHost(context,async () => ({behavior:'allow'}))})
+  try {
+    for (const name of ['existing','alias']) {
+      const result = await snapshot.dispatch('command.run',{spec:{name,description:'shadow'}},async () => ({})) as {text:string}
+      expect(result.text).toContain('conflicts')
+    }
+    expect(runtime.tools.list()).toEqual([])
+    expect(runtime.tools.projection(context.options.tools)).toEqual([tool])
+    await snapshot.dispatch('command.run',{spec:{name:'safe',description:'first'}},async () => ({}))
+    context.options.tools = runtime.tools.projection(context.options.tools)
+    const result = await snapshot.dispatch('command.run',{spec:{name:'safe',description:'second'}},async () => ({}))
+    expect(result).toEqual({text:JSON.stringify({tool:'mcp__owned__safe'})})
+    expect(await runtime.tools.list()[0]!.description({},{} as never)).toBe('second')
+    expect(runtime.tools.projection(context.options.tools).map(tool=>tool.name)).toEqual([tool.name,'mcp__owned__safe'])
+  } finally {snapshot.release()}
+})
+
+test('author tool.check refuses identity rewrites and invalid decisions at the hook boundary', async () => {
+  const caller = await plugin('caller', `export function register(on) {
+    on('command.run', async $ => ({text:JSON.stringify(await $.tool.check({tool:'Offline',input:{path:'original'}}))}));
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('tool.check', ($,e,next) => next({...e,input:{path:'rewritten'}}));
+    on('tool.check', {}, () => ({decision:'yes'}));
+  }`)
+  const questions: unknown[] = []
+  const diagnostics: {message:string}[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    toolHost: () => ({call:async () => {throw Error('no execution')},check:async input => {questions.push(input);return {decision:'deny',reason:'original'}}}),
+  }})
+  runtimes.push(runtime)
+  await runtime.reconcile([caller,policy])
+  expect(diagnostics).toEqual([])
+  expect(await runtime.dispatch('command.run',{},async () => ({}))).toEqual({text:JSON.stringify({decision:'deny',reason:'original'})})
+  expect(questions).toEqual([{tool:'Offline',input:{path:'original'}}])
+  expect(diagnostics.map(event => event.message)).toEqual([
+    'policy: next() passed an argument with a changed input (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)',
+    'tool.check must return { decision, reason?, rule?, hook? }',
+  ])
+})
+
+test('author tool.call propagates invocation abort through the Worker into the host operation', async () => {
+  const caller = await plugin('caller', `export function register(on) {
+    on('command.run',async $ => ({text:JSON.stringify(await $.tool.call({tool:'Offline'}))}));
+  }`)
+  const entered = Promise.withResolvers<void>()
+  let observed: AbortSignal | undefined
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    toolHost: () => ({
+      call:async (_input,_snapshot,signal) => {
+        observed=signal;entered.resolve()
+        return new Promise((_resolve,reject) => signal.addEventListener('abort',() => reject(signal.reason),{once:true}))
+      },
+      check:async () => ({decision:'allow'}),
+    }),
+  }})
+  runtimes.push(runtime)
+  await runtime.reconcile([caller])
+  expect(diagnostics).toEqual([])
+  const controller = new AbortController()
+  const result = runtime.dispatch('command.run',{},async () => ({}),{signal:controller.signal})
+  expect(await Promise.race([entered.promise.then(() => 'entered'),result.then(() => diagnostics)])).toBe('entered')
+  controller.abort()
+  await expect(result).rejects.toThrow()
+  expect(observed?.aborted).toBe(true)
+})
+
+test('Worker author cancellation reaches a running real tool without cancelling the session', async () => {
+  const caller = await plugin('caller',`export function register(on) {
+    on('command.run',async $ => ({text:JSON.stringify(await $.tool.call({tool:'Offline'}))}));
+  }`)
+  const entered = Promise.withResolvers<AbortSignal>()
+  const tool = buildTool({
+    name:'Offline',inputSchema:z.object({}),maxResultSizeChars:1000,
+    description:async ()=>'offline',prompt:async ()=>'offline',renderToolUseMessage:()=>null,
+    call:async (_input,context)=>{
+      const signal=context.abortController.signal
+      entered.resolve(signal)
+      await new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason),{once:true}))
+      return {data:'unreachable'}
+    },
+    mapToolResultToToolResultBlockParam:(data,id)=>({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime = createModsRuntime()
+  runtimes.push(runtime)
+  const context = {
+    mods:runtime,options:{tools:[tool],mcpClients:[],isNonInteractiveSession:true},
+    messages:[],abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{},setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  await runtime.bind(binding)
+  await runtime.reconcile([caller])
+  const snapshot = runtime.capture({toolHost:()=>createModToolHost(context,async()=>({behavior:'allow'}))})
+  const controller = new AbortController()
+  const failure = new Error('cancel real author call')
+  const running = snapshot.dispatch('command.run',{},async()=>({}),{signal:controller.signal})
+  const settled = running.then(()=>({ok:true as const}),error=>({ok:false as const,error}))
+  try {
+    const actual = await Promise.race([entered.promise,settled.then(()=>{throw Error('call did not reach tool')})])
+    controller.abort(failure)
+    expect(actual.aborted).toBe(true)
+    expect((await settled).ok).toBe(false)
+    expect(context.abortController.signal.aborted).toBe(false)
+  } finally {controller.abort(failure);await settled;snapshot.release()}
+})
+
+test('author tool.check crosses the Worker and dispatches a pinned permission question without an execution', async () => {
+  const caller = await plugin('caller', `export function register(on) {
+    on('command.run', async $ => ({text:JSON.stringify(await $.tool.check({tool:'Offline',input:{path:'file'}}))}));
+  }`)
+  const policy = await plugin('policy', `export function register(on) {
+    on('tool.check', async ($,e,next) => {
+      if(next.origin.plugin!=='caller'||e.tool_use_id!==undefined) throw Error('wrong origin');
+      const verdict=await next(e); return {...verdict,reason:'policy '+verdict.reason};
+    });
+  }`)
+  const inputs: unknown[] = []
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic:event => diagnostics.push(event),services:{
+    toolHost: () => ({
+      call: async () => { throw Error('must not execute') },
+      check: async input => {inputs.push(input);return {decision:'ask',reason:'core'}},
+    }),
+  }})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([caller,policy])
+  expect(diagnostics).toEqual([])
+  expect(await runtime.dispatch('command.run',{},async () => ({}))).toEqual({text:JSON.stringify({decision:'ask',reason:'policy core'})})
+  expect(inputs).toEqual([{tool:'Offline',input:{path:'file'}}])
+  expect(diagnostics).toEqual([])
+})
+
+// Official 2.1.292 native missing-tool calls report HooksError with the serving plugin.
+test('Worker missing-tool errors use the host-owned author for check and call', async () => {
+  const caller = await plugin('missing-author', `export function register(on) {
+    on('command.run', async $ => {
+      const result = [];
+      for (const [op, invoke] of [
+        ['check', () => $.tool.check({tool:'Missing',input:{plugin:'forged',spawnedBy:'forged'}})],
+        ['call', () => $.tool.call({tool:'Missing',plugin:'forged',spawnedBy:'forged'})],
+      ]) {
+        try { await invoke(); }
+        catch (error) { result.push({op,name:error.name,message:error.message,string:String(error)}); }
+      }
+      return {text:JSON.stringify(result)};
+    });
+  }`)
+  const diagnostics: unknown[] = []
+  const runtime = createModsRuntime({onDiagnostic: event => diagnostics.push(event)})
+  runtimes.push(runtime)
+  const context = {
+    options: {tools: [], mcpClients: [], isNonInteractiveSession: true},
+    messages: [], abortController: new AbortController(),
+  } as unknown as ToolUseContext
+  await runtime.bind(binding)
+  await runtime.reconcile([caller])
+  const snapshot = runtime.capture({toolHost: () => createModToolHost(context, async () => {throw Error('unexpected permission request')})})
+  try {
+    const receipt = await snapshot.dispatch('command.run', {}, async () => ({})) as {text: string}
+    expect(JSON.parse(receipt.text)).toEqual(['check','call'].map(op => ({
+      op, name: 'HooksError',
+      message: `missing-author: $.tool.${op}: no tool named "Missing" in this session`,
+      string: `HooksError: missing-author: $.tool.${op}: no tool named "Missing" in this session`,
+    })))
+    expect(diagnostics).toEqual([])
+  } finally {snapshot.release()}
+})
+
+// Official 2.1.292 real calls keep loop identity; author calls and queries are outside it.
+test.each([undefined, 'owned-child'] as const)('Worker keeps tool.check identity separate from author origin: %s', async agentId => {
+  const observer = await plugin('loop-observer', `let rows=[];export function register(on) {
+    on('tool.call',{tool:'Offline'},async($,e,next)=>{
+      rows.push({event:'call',agentId:e.agentId,id:e.tool_use_id});
+      await $.tool.call({tool:'Outside',value:'author'});
+      return next(e);
+    });
+    on('tool.check',{tool:'Offline'},async($,e,next)=>{
+      rows.push({event:'check',agentId:e.agentId,id:e.tool_use_id});
+      await $.tool.check({tool:'Outside',input:{value:'query'}});
+      return next(e);
+    });
+    on('command.run',{command:'loop-observer'},()=>({text:JSON.stringify(rows)}));
+  }`)
+  const audit = await plugin('loop-audit', `let rows=[];export function register(on) {
+    on('tool.call',{tool:'Outside'},async($,e,next)=>{
+      rows.push({event:'author-call',agentId:e.agentId,id:e.tool_use_id,origin:next.origin});return next(e);
+    });
+    on('tool.check',{tool:'Outside'},async($,e,next)=>{
+      rows.push({event:e.tool_use_id===undefined?'query':'author-check',agentId:e.agentId,id:e.tool_use_id,origin:next.origin});return next(e);
+    });
+    on('command.run',{command:'loop-audit'},()=>({text:JSON.stringify(rows)}));
+  }`)
+  const calls: string[] = [], diagnostics: unknown[] = []
+  const tool = (name: string) => buildTool({
+    name, inputSchema: z.object({value:z.string()}), maxResultSizeChars:1000,
+    description: async () => name, prompt: async () => name, renderToolUseMessage: () => null,
+    checkPermissions: async () => ({behavior:'allow'}),
+    call: async input => {calls.push(name+':'+input.value);return {data:input.value}},
+    mapToolResultToToolResultBlockParam: (data,id) => ({type:'tool_result',tool_use_id:id,content:data}),
+  })
+  const runtime = createModsRuntime({onDiagnostic:event=>diagnostics.push(event)})
+  runtimes.push(runtime)
+  await runtime.bind(binding)
+  await runtime.reconcile([observer,audit])
+  const context = {
+    mods:runtime, options:{tools:[tool('Offline'),tool('Outside')],mcpClients:[],isNonInteractiveSession:true},
+    agentId, messages:[], abortController:new AbortController(),
+    getAppState:()=>({toolPermissionContext:getEmptyToolPermissionContext(),sessionHooks:new Map()}),
+    setAppState:()=>{}, setInProgressToolUseIDs:()=>{},
+  } as unknown as ToolUseContext
+  const block={type:'tool_use' as const,caller:{type:'direct' as const},id:'real-loop-call',name:'Offline',input:{value:'model'}}
+  await Array.fromAsync(runToolUse(block,createAssistantMessage({content:[block]}),async()=>({behavior:'allow'}),context))
+  // Read each module's own state through the real Worker, selecting by matcher below.
+  const captured=runtime.capture()
+  try {
+    const get=async(command:string)=>JSON.parse((await captured.dispatch('command.run',{command},async()=>({})) as {text:string}).text)
+    const own=await get('loop-observer')
+    expect(own).toEqual([{event:'call',id:block.id,...(agentId===undefined?{}:{agentId})},{event:'check',id:block.id,...(agentId===undefined?{}:{agentId})}])
+    const external=await get('loop-audit')
+    expect(external.map((row: {event:string})=>row.event)).toEqual(['author-call','author-check','query'])
+    for(const row of external)expect(Object.hasOwn(row,'agentId')).toBe(false)
+    expect(external[0].id).toBeString();expect(external[0].id).not.toBe(block.id)
+    expect(external[1].id).toBe(external[0].id);expect(Object.hasOwn(external[2],'id')).toBe(false)
+    for(const row of external)expect(row.origin).toEqual({plugin:'loop-observer',tier:'user'})
+  } finally {captured.release()}
+  expect(calls).toEqual(['Outside:author','Offline:model'])
+  expect(diagnostics).toEqual([])
+})

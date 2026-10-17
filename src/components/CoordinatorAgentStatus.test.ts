@@ -7,6 +7,8 @@ assert.equal(
   'The coordinator stop/dismiss action must be reachable from the keyboard',
 )
 
+import { getAgentColorMap } from '../bootstrap/state.js'
+import { setAgentColor } from '../tools/AgentTool/agentColorManager.js'
 import type { AppState } from '../state/AppState.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { LocalWorkflowTaskState } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
@@ -231,8 +233,11 @@ assert.deepEqual(rows[0], {
   icon: '●',
   primaryText: 'main',
   secondaryText: '',
-  meta: '',
-  statusText: 'current session',
+  tokens: '',
+  tools: '',
+  elapsed: '',
+  statusText: '',
+  activity: '',
   depth: 0,
   branch: 'none',
 })
@@ -241,22 +246,28 @@ assert.equal(rows[1]?.kind, 'agent')
 assert.equal(rows[1]?.icon, '◯')
 assert.equal(rows[1]?.primaryText, 'general-purpose (+3)')
 assert.equal(rows[1]?.secondaryText, 'Research user reports')
-assert.equal(rows[1]?.meta, '1.5k tok · 2 tools')
-assert.equal(rows[1]?.statusText, 'running · 4s · Read(src/index.ts)')
+assert.equal(rows[1]?.tokens, '1.5k tokens')
+assert.equal(rows[1]?.tools, '2 tools')
+assert.equal(rows[1]?.elapsed, '4s')
+assert.equal(rows[1]?.statusText, 'running')
+assert.equal(rows[1]?.activity, 'Read(src/index.ts)')
 assert.equal(rows[2]?.id, 'top-level-depth-one-agent')
 assert.equal(rows[2]?.kind, 'agent')
 assert.equal(rows[2]?.icon, '◯')
 assert.equal(rows[2]?.primaryText, 'researcher')
 assert.equal(rows[2]?.secondaryText, 'Top level depth one agent')
-assert.equal(rows[2]?.meta, '700 tok · 3 tools')
+assert.equal(rows[2]?.tokens, '700 tokens')
+assert.equal(rows[2]?.tools, '3 tools')
 assert.equal(rows[3]?.id, 'workflow-1')
 assert.equal(rows[3]?.kind, 'workflow')
 assert.equal(rows[3]?.selected, true)
 assert.equal(rows[3]?.icon, '◯')
 assert.equal(rows[3]?.primaryText, 'tmux-agent-smoke')
 assert.equal(rows[3]?.secondaryText, 'Exercise the coordinator workflow row.')
-assert.equal(rows[3]?.meta, '1/1 agents · 19.6k tok')
-assert.equal(rows[3]?.statusText, 'done · 2s')
+assert.equal(rows[3]?.tokens, '19.6k tokens')
+assert.equal(rows[3]?.tools, '1/1 agents')
+assert.equal(rows[3]?.statusText, 'done')
+assert.equal(rows[3]?.elapsed, '2s')
 
 const stagedWorkflowRows = getCoordinatorSessionRows({
   tasks: {
@@ -275,7 +286,8 @@ const stagedWorkflowRows = getCoordinatorSessionRows({
   viewingAgentTaskId: undefined,
   now: 5_000,
 })
-assert.equal(stagedWorkflowRows[0]?.meta, '0/4 agents · 19.6k tok')
+assert.equal(stagedWorkflowRows[0]?.tools, '0/4 agents')
+assert.equal(stagedWorkflowRows[0]?.tokens, '19.6k tokens')
 
 const workflowOnlyRows = getCoordinatorSessionRows({
   tasks: { [workflowTask.id]: workflowTask } as unknown as AppState['tasks'],
@@ -578,11 +590,13 @@ for (const status of ['completed', 'failed', 'killed'] as const) {
     tasks: { 'agent-1': { ...agentTask, status, endTime: 4_000 } },
     now: 20_000,
   })[1]!
-  assert.equal(row.statusText, `${status} · 3s`)
+  assert.equal(row.statusText, status === 'killed' ? 'stopped' : status)
+  assert.equal(row.elapsed, '3s')
+  assert.equal(row.activity, '')
 }
 assert.equal(
-  getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.statusText,
-  'running · 4s · Read(src/index.ts)',
+  getCoordinatorSessionRows({ tasks: { 'agent-1': agentTask }, now: 5_000 })[1]?.activity,
+  'Read(src/index.ts)',
 )
 
 const cycleA = {
@@ -615,5 +629,22 @@ assert.deepEqual(
   getVisibleAgentTasks(invalidGraphTasks, 'cycle-a').map(task => task.id),
   ['cycle-a', 'agent-1'],
 )
+
+const coloredAgentType = 'coordinator-color-test'
+setAgentColor(coloredAgentType, 'cyan')
+try {
+  const coloredRow = getCoordinatorSessionRows({
+    tasks: { 'agent-1': { ...agentTask, agentType: coloredAgentType } },
+    selectedIndex: 1,
+    viewingAgentTaskId: 'agent-1',
+    now: 5_000,
+  })[1]!
+  assert.equal(coloredRow.color, 'cyan_FOR_SUBAGENTS_ONLY')
+  assert.equal(coloredRow.selected, true)
+  assert.equal(coloredRow.viewed, true)
+  assert.equal(rows[1]?.color, undefined)
+} finally {
+  getAgentColorMap().delete(coloredAgentType)
+}
 
 console.log('CoordinatorAgentStatus.test.ts passed')

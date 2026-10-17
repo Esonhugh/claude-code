@@ -30,6 +30,8 @@ const SUPPORTS_TERMINAL_VT_MODE =
 const MODE_CYCLE_KEY = SUPPORTS_TERMINAL_VT_MODE ? 'shift+tab' : 'meta+m'
 
 export const DEFAULT_BINDINGS: KeybindingBlock[] = [
+  { context: 'Pane', bindings: { 'ctrl+x x': 'pane:close' } },
+  { context: 'PaneField', bindings: { 'ctrl+x x': 'pane:close' } },
   {
     context: 'Global',
     bindings: {
@@ -47,6 +49,11 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
         : {}),
       'ctrl+shift+o': 'app:toggleTeammatePreview',
       'ctrl+r': 'history:search',
+      'ctrl+up': 'app:diffFileListUp',
+      'ctrl+down': 'app:diffFileListDown',
+      'meta+up': 'app:diffFileListUp',
+      'meta+down': 'app:diffFileListDown',
+      'ctrl+x b': 'app:cycleDiffBase',
       // File navigation. cmd+ bindings only fire on kitty-protocol terminals;
       // ctrl+shift is the portable fallback.
       ...(feature('QUICK_SEARCH')
@@ -66,11 +73,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       escape: 'chat:cancel',
       // ctrl+x chord prefix avoids shadowing readline editing keys (ctrl+a/b/e/f/...).
       'ctrl+x ctrl+k': 'chat:killAgents',
+      'ctrl+x ctrl+a': 'abovePrompt:toggle',
+      'ctrl+x tab': 'abovePrompt:focus',
       [MODE_CYCLE_KEY]: 'chat:cycleMode',
       'meta+p': 'chat:modelPicker',
       'meta+o': 'chat:fastMode',
       'meta+t': 'chat:thinkingToggle',
       enter: 'chat:submit',
+      'ctrl+x enter': 'chat:queueSubmit',
       up: 'history:previous',
       down: 'history:next',
       // Editing shortcuts (defined here, migration in progress)

@@ -42,6 +42,7 @@ import {
   isSyntheticMessage,
 } from '../utils/messages.js'
 import type { PermissionMode } from '../utils/permissions/PermissionMode.js'
+import type { ModUiInboundEvent } from './modUiMessages.js'
 import { getCurrentSessionTitle } from '../utils/sessionStorage.js'
 import {
   extractConversationText,
@@ -76,6 +77,7 @@ import { isAnt } from 'src/utils/userType.js'
 
 export type InitBridgeOptions = {
   onInboundMessage?: (msg: SDKMessage) => void | Promise<void>
+  onModUiEvent?: (event: ModUiInboundEvent) => void | Promise<void>
   onPermissionResponse?: (response: SDKControlResponse) => void
   onInterrupt?: () => void
   onSetModel?: (model: string | undefined) => void
@@ -114,6 +116,7 @@ export async function initReplBridge(
 ): Promise<ReplBridgeHandle | null> {
   const {
     onInboundMessage,
+    onModUiEvent,
     onPermissionResponse,
     onInterrupt,
     onSetModel,
@@ -443,6 +446,7 @@ export async function initReplBridge(
       // v1 handles this by calling previouslyFlushedUUIDs.clear() on fresh
       // session creation (replBridge.ts:768); v2 skips the param entirely.
       onInboundMessage,
+      onModUiEvent,
       onUserMessage,
       onPermissionResponse,
       onInterrupt,
@@ -538,6 +542,7 @@ export async function initReplBridge(
     initialMessages,
     previouslyFlushedUUIDs,
     onInboundMessage,
+    onModUiEvent,
     onPermissionResponse,
     onInterrupt,
     onSetModel,

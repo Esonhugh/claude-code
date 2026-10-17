@@ -1,5 +1,6 @@
 import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { basename } from 'path'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
@@ -23,7 +24,7 @@ import {
   getCommandSubcommandPrefix,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
-import { parseCommandRaw } from '../../utils/bash/parser.js'
+import { parseCommandRawForRemoval, type Node, type PARSE_ABORTED } from '../../utils/bash/parser.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -40,6 +41,7 @@ import {
   getBashPromptDenyDescriptions,
   isClassifierPermissionsEnabled,
 } from '../../utils/permissions/bashClassifier.js'
+import { requiresExplicitUserApproval } from '../../utils/permissions/PermissionResult.js'
 import type {
   PermissionDecisionReason,
   PermissionResult,
@@ -53,6 +55,7 @@ import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateS
 import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js'
 import {
   createPermissionRequestMessage,
+  getDenyRules,
   getRuleByContentsForTool,
 } from '../../utils/permissions/permissions.js'
 import {
@@ -65,7 +68,9 @@ import {
 } from '../../utils/permissions/shellRuleMatching.js'
 import { getPlatform } from '../../utils/platform.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
+import { getSessionEnvVars } from '../../utils/sessionEnvVars.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { subprocessEnv } from '../../utils/subprocessEnv.js'
 import { windowsPathToPosixPath } from '../../utils/windowsPaths.js'
 import { BashTool } from './BashTool.js'
 import { checkCommandOperatorPermissions } from './bashCommandHelpers.js'
@@ -73,8 +78,10 @@ import {
   bashCommandIsSafeAsync_DEPRECATED,
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
+import { checkDangerousRemoval } from './dangerousRemoval.js'
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
+import * as bashPathValidation from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -870,7 +877,7 @@ function filterRulesByContentsMatchingInput(
   }
 
   return Array.from(rules.entries())
-    .filter(([ruleContent]) => {
+    .filter(([ruleContent, rule]) => {
       const bashRule = bashPermissionRule(ruleContent)
 
       return commandsToTry.some(cmdToMatch => {
@@ -906,6 +913,9 @@ function filterRulesByContentsMatchingInput(
                 // and deny rules like Bash(rm:*) to block "xargs rm file".
                 // Natural word-boundary: "xargs -n1 grep" does NOT start with
                 // "xargs grep " so flagged xargs invocations are not matched.
+                if (rule.ruleBehavior === 'allow' && /^(?:\S*\/)?(?:rm|rmdir|unlink)(?: |$)/.test(bashRule.prefix)) {
+                  return false
+                }
                 const xargsPrefix = 'xargs ' + bashRule.prefix
                 if (cmdToMatch === xargsPrefix) {
                   return true
@@ -1272,6 +1282,7 @@ export async function checkCommandAndSuggestRules(
 function checkSandboxAutoAllow(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
+  astCommands?: SimpleCommand[],
 ): PermissionResult {
   const command = input.command.trim()
 
@@ -1348,7 +1359,20 @@ function checkSandboxAutoAllow(
       },
     }
   }
-  // No explicit rules, so auto-allow with sandbox
+  const pathResult = checkPathConstraints(
+    input,
+    getCwd(),
+    toolPermissionContext,
+    commandHasAnyCd(command),
+    astCommands?.flatMap(cmd => cmd.redirects),
+    astCommands,
+  )
+  if (
+    pathResult.behavior === 'deny' ||
+    requiresExplicitUserApproval(pathResult.decisionReason)
+  ) {
+    return pathResult
+  }
 
   return {
     behavior: 'allow',
@@ -1659,6 +1683,89 @@ export async function executeAsyncClassifierCheck(
   }
 }
 
+// Removal checks only add restrictions. Keep applicable deny rules ahead of the
+// mandatory prompt, without letting an exact allow mask a later subcommand deny.
+function checkRemovalPermission(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  root: Node | null | typeof PARSE_ABORTED,
+): PermissionResult | null {
+  try {
+    // Same variables the Bash child receives; never evaluated through a shell.
+    const env = { ...subprocessEnv(), ...Object.fromEntries(getSessionEnvVars()) }
+    let removal = checkDangerousRemoval(input.command, getCwd(), root, env)
+    if (!root || typeof root === 'symbol') {
+      // A literal command-position removal name is evidence, unlike an arbitrary
+      // occurrence of "rm" in echoed text, comments, or an incomplete heredoc.
+      if (/^\s*(?:\/[^\s"'\\`$;&|()<>]+\/)?(?:rm|rmdir|unlink)(?=\s|$)/.test(input.command.slice(0, 10000))) {
+        const reason = 'Removal target could not be analyzed within the syntax budget'
+        removal = {
+          behavior: 'ask', message: `${reason}. Use explicit targets or approve this invocation.`,
+          decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false },
+          suggestions: [],
+        }
+      }
+    }
+    if (removal.behavior !== 'ask') return null
+    if (getDenyRules(toolPermissionContext).length === 0) return removal
+
+    const commands = [input.command]
+    const pathNodes: Node[] = []
+    const pending = root && typeof root !== 'symbol' ? [root] : []
+    while (pending.length) {
+      const node = pending.pop()!
+      if (node.type === 'function_definition') continue
+      if (node.type === 'command' || node.type === 'declaration_command') {
+        commands.push(node.text)
+        pathNodes.push(node)
+      }
+      pending.push(...node.children)
+    }
+    const denyRules = getRuleByContentsForTool(toolPermissionContext, BashTool, 'deny')
+    for (const command of denyRules.size > 0 ? commands : []) {
+      const rule = filterRulesByContentsMatchingInput(
+        { ...input, command }, denyRules, 'prefix',
+        { stripAllEnvVars: true, skipCompoundCheck: true },
+      )[0]
+      if (rule) return {
+        behavior: 'deny',
+        message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
+        decisionReason: { type: 'rule', rule },
+      }
+    }
+    const pathResult = checkPathConstraints(input, getCwd(), toolPermissionContext)
+    if (pathResult.behavior === 'deny') return pathResult
+    // The legacy path parser can lose quoted backslashes. Reuse the existing
+    // AST path checker for statically resolved commands, for deny results only.
+    for (const node of pathNodes) {
+      const parsed = parseForSecurityFromAst(node.text, node)
+      if (parsed.kind !== 'simple') continue
+      // Normalize deletion executables only for this deny-only check. It must
+      // not broaden command allow rules or ordinary path permissions.
+      const pathCommands = parsed.commands.map(command => {
+        const argv = bashPathValidation.stripWrappersFromArgv(command.argv)
+        return argv[0] && ['rm', 'rmdir', 'unlink'].includes(basename(argv[0]))
+          ? { ...command, argv: ['rm', ...argv.slice(1)] }
+          : command
+      })
+      const denied = checkPathConstraints(
+        input, getCwd(), toolPermissionContext, false,
+        pathCommands.flatMap(command => command.redirects), pathCommands,
+      )
+      if (denied.behavior === 'deny') return denied
+    }
+    return removal
+  } catch (error) {
+    if (error instanceof AbortError || error instanceof APIUserAbortError) throw error
+    logForDebugging(`Removal safety check failed: ${String(error)}`)
+    return {
+      behavior: 'deny',
+      message: 'Removal safety check failed. Retry with explicit targets or a simpler command.',
+      decisionReason: { type: 'other', reason: 'Removal safety check failed' },
+    }
+  }
+}
+
 /**
  * The main implementation to check if we need to ask for user permission to call BashTool with a given input
  */
@@ -1680,18 +1787,20 @@ export async function bashToolHasPermission(
   const injectionCheckDisabled = isEnvTruthy(
     process.env.CLAUDE_CODE_DISABLE_COMMAND_INJECTION_CHECK,
   )
-  // GrowthBook killswitch for shadow mode — when off, skip the native parse
-  // entirely. Computed once; feature() must stay inline in the ternary below.
+  // The shadow killswitch controls ordinary policy observation, not removal
+  // protection. Computed once; feature() stays inline for build-time pruning.
   const shadowEnabled = feature('TREE_SITTER_BASH_SHADOW')
     ? getFeatureValue_CACHED_MAY_BE_STALE('tengu_birch_trellis', true)
     : false
-  // Parse once here; the resulting AST feeds both parseForSecurityFromAst
-  // and bashToolCheckCommandOperatorPermissions.
-  let astRoot = injectionCheckDisabled
-    ? null
-    : feature('TREE_SITTER_BASH_SHADOW') && !shadowEnabled
-      ? null
-      : await parseCommandRaw(input.command)
+  // Removal protection runs before ordinary approval shortcuts in every build.
+  // Inspect the original tree before the security walker rewrites command text.
+  const rawRoot = await parseCommandRawForRemoval(input.command)
+  const removalPermission = checkRemovalPermission(input, appState.toolPermissionContext, rawRoot)
+  if (removalPermission) return removalPermission
+  let astRoot = !injectionCheckDisabled &&
+    (feature('TREE_SITTER_BASH') || (feature('TREE_SITTER_BASH_SHADOW') && shadowEnabled))
+    ? rawRoot
+    : null
   let astResult: ParseForSecurityResult = astRoot
     ? parseForSecurityFromAst(input.command, astRoot)
     : { kind: 'parse-unavailable' }
@@ -1840,6 +1949,7 @@ export async function bashToolHasPermission(
     const sandboxAutoAllowResult = checkSandboxAutoAllow(
       input,
       appState.toolPermissionContext,
+      astCommands,
     )
     if (sandboxAutoAllowResult.behavior !== 'passthrough') {
       return sandboxAutoAllowResult
@@ -2285,7 +2395,10 @@ export async function bashToolHasPermission(
     astRedirects,
     astCommands,
   )
-  if (pathResult.behavior === 'deny') {
+  if (
+    pathResult.behavior === 'deny' ||
+    requiresExplicitUserApproval(pathResult.decisionReason)
+  ) {
     return pathResult
   }
 

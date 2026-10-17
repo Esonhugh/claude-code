@@ -78,31 +78,31 @@ export function appendTeammateMessage(
  * Inject a user message to a teammate's pending queue.
  * Used when viewing a teammate's transcript to send typed messages to them.
  * Also adds the message to task.messages so it appears immediately in the transcript.
+ * Returns false if the task no longer accepts messages; the caller preserves the draft.
  */
 export function injectUserMessageToTeammate(
   taskId: string,
   message: string,
   setAppState: SetAppState,
-): void {
+): boolean {
+  let injected = false
   updateTaskState<InProcessTeammateTaskState>(taskId, setAppState, task => {
-    // Allow message injection when teammate is running or idle (waiting for input)
-    // Only reject if teammate is in a terminal state
     if (isTerminalTaskStatus(task.status)) {
       logForDebugging(
-        `Dropping message for teammate task ${taskId}: task status is "${task.status}"`,
+        `Rejecting message for teammate task ${taskId}: task status is "${task.status}"`,
       )
       return task
     }
 
+    const userMessage = createUserMessage({ content: message })
+    injected = true
     return {
       ...task,
       pendingUserMessages: [...task.pendingUserMessages, message],
-      messages: appendCappedMessage(
-        task.messages,
-        createUserMessage({ content: message }),
-      ),
+      messages: appendCappedMessage(task.messages, userMessage),
     }
   })
+  return injected
 }
 
 /**
@@ -117,7 +117,7 @@ export function findTeammateTaskByAgentId(
 ): InProcessTeammateTaskState | undefined {
   let fallback: InProcessTeammateTaskState | undefined
   for (const task of Object.values(tasks)) {
-    if (isInProcessTeammateTask(task) && task.identity.agentId === agentId) {
+    if (isInProcessTeammateTask(task) && (task.identity.agentId === agentId || task.identity.resumableAgentId === agentId)) {
       // Prefer running tasks in case old killed tasks still exist in AppState
       // alongside new running ones with the same agentId
       if (task.status === 'running') {
@@ -145,7 +145,7 @@ export function getAllInProcessTeammateTasks(
 export function isViewableTeammate(
   task: TaskStateBase | undefined,
 ): task is InProcessTeammateTaskState {
-  return isInProcessTeammateTask(task) && (
+  return isInProcessTeammateTask(task) && task.evictAfter !== 0 && (
     task.status === 'running' ||
     (isTerminalTaskStatus(task.status) &&
       (task.retain === true || task.evictAfter !== undefined))

@@ -132,6 +132,10 @@ export async function loadPluginMcpServers(
   plugin: LoadedPlugin,
   errors: PluginError[] = [],
 ): Promise<Record<string, McpServerConfig> | undefined> {
+  if (plugin.skipMcpDiscovery) {
+    logForDebugging(`[SDK] skipping MCP discovery for launch plugin ${plugin.name}`)
+    return undefined
+  }
   let servers: Record<string, McpServerConfig> = {}
 
   // Check for .mcp.json in plugin directory first (lowest priority)

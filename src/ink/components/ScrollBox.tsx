@@ -42,6 +42,7 @@ export type ScrollBoxHandle = {
    * padding). Used for drag-to-scroll edge detection.
    */
   getViewportTop: () => number
+  getElement: () => DOMElement | undefined
   /**
    * True when scroll is pinned to the bottom. Set by scrollToBottom, the
    * initial stickyScroll attribute, and by the renderer when positional
@@ -170,7 +171,7 @@ function ScrollBox({
         el.stickyScroll = true
         markDirty(el)
         notify()
-        forceRender(n => n + 1)
+        forceRender((n) => n + 1)
       },
       getScrollTop() {
         return domRef.current?.scrollTop ?? 0
@@ -197,6 +198,9 @@ function ScrollBox({
       },
       getViewportTop() {
         return domRef.current?.scrollViewportTop ?? 0
+      },
+      getElement() {
+        return domRef.current ?? undefined
       },
       isSticky() {
         const el = domRef.current
@@ -234,12 +238,13 @@ function ScrollBox({
   // commit, which is too late for the first frame.
   return (
     <ink-box
-      ref={el => {
+      ref={(el) => {
         domRef.current = el
         if (el) el.scrollTop ??= 0
       }}
       style={{
         flexWrap: 'nowrap',
+        selectionScope: true,
         flexDirection: style.flexDirection ?? 'row',
         flexGrow: style.flexGrow ?? 0,
         flexShrink: style.flexShrink ?? 1,

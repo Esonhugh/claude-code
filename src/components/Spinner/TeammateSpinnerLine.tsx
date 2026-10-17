@@ -113,8 +113,9 @@ export function TeammateSpinnerLine({
 
   // Track when teammate became idle (for "Idle for X..." display)
   const idleStartRef = useRef<number | null>(null)
-  // Freeze elapsed time when entering all-idle state
-  const frozenDurationRef = useRef<string | null>(null)
+  const frozenIdleDurationRef = useRef<string | null>(null)
+  const terminalDurationRef = useRef<string | null>(null)
+  const isTerminal = teammate.status !== 'pending' && teammate.status !== 'running'
 
   // Track idle start time
   if (teammate.isIdle && idleStartRef.current === null) {
@@ -123,37 +124,40 @@ export function TeammateSpinnerLine({
     idleStartRef.current = null
   }
 
-  // Reset frozen duration when leaving all-idle state
-  if (!allIdle && frozenDurationRef.current !== null) {
-    frozenDurationRef.current = null
+  if (!allIdle && frozenIdleDurationRef.current !== null) {
+    frozenIdleDurationRef.current = null
   }
 
   // Get elapsed idle time (how long they've been idle) - for "Idle for X..." display
   const idleElapsedTime = useElapsedTime(
     idleStartRef.current ?? Date.now(),
-    teammate.isIdle && !allIdle,
+    teammate.isIdle && !allIdle && !isTerminal,
   )
 
-  // Freeze the duration when we first detect all idle
-  // Use the teammate's actual work time (since task started) for the past-tense display
-  if (allIdle && frozenDurationRef.current === null) {
-    frozenDurationRef.current = formatDuration(
+  if (allIdle && !isTerminal && frozenIdleDurationRef.current === null) {
+    frozenIdleDurationRef.current = formatDuration(
       Math.max(
         0,
         Date.now() - teammate.startTime - (teammate.totalPausedMs ?? 0),
       ),
     )
   }
+  if (isTerminal && terminalDurationRef.current === null) {
+    terminalDurationRef.current = formatDuration(
+      Math.max(
+        0,
+        (teammate.endTime ?? teammate.startTime) -
+          teammate.startTime -
+          (teammate.totalPausedMs ?? 0),
+      ),
+    )
+  }
 
-  // Use frozen work duration when all idle, otherwise use idle elapsed time
-  const displayTime = allIdle
-    ? (frozenDurationRef.current ??
-      (() => {
-        throw new Error(
-          `frozenDurationRef is null for idle teammate ${teammate.identity.agentName}`,
-        )
-      })())
-    : idleElapsedTime
+  const displayTime = isTerminal
+    ? terminalDurationRef.current
+    : allIdle
+      ? frozenIdleDurationRef.current
+      : idleElapsedTime
 
   // Layout: paddingLeft(3) + pointer(1) + space(1) + treeChar(2) + space(1) = 8 fixed chars
   // Then optionally: @name + ": " OR just ": "
@@ -224,6 +228,15 @@ export function TeammateSpinnerLine({
 
   // Status rendering logic
   const renderStatus = (): React.ReactNode => {
+    if (teammate.status === 'completed') {
+      return <Text color={nameColor}>done for {displayTime}</Text>
+    }
+    if (teammate.status === 'failed') {
+      return <Text color={nameColor}>failed for {displayTime}</Text>
+    }
+    if (teammate.status === 'killed') {
+      return <Text color={nameColor}>stopped for {displayTime}</Text>
+    }
     if (teammate.shutdownRequested) {
       return <Text dimColor>[stopping]</Text>
     }

@@ -1,15 +1,18 @@
+import type { SDKAutocompactStateMessage } from '../../entrypoints/agentSdkTypes.js'
+import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { feature } from 'bun:bundle'
 import { markPostCompaction } from 'src/bootstrap/state.js'
-import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config.js'
-import { getContextWindowForModel } from '../../utils/context.js'
+import { resolveContextWindow } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
@@ -29,6 +32,7 @@ import {
 import { compactConversationCodexStyle } from './codexCompact.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
+import { runModSessionCompact } from '../mods/compactAdapter.js'
 
 // Reserve this many tokens for output during compaction
 // Based on p99.99 of compact summary output being 17,387 tokens.
@@ -40,17 +44,12 @@ export function getEffectiveContextWindowSize(model: string): number {
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
-  let contextWindow = getContextWindowForModel(model, getSdkBetas())
+  const { window } = resolveContextWindow(
+    model,
+    getInitialSettings().autoCompactWindow,
+  )
 
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  if (autoCompactWindow) {
-    const parsed = parseInt(autoCompactWindow, 10)
-    if (!isNaN(parsed) && parsed > 0) {
-      contextWindow = Math.min(contextWindow, parsed)
-    }
-  }
-
-  return contextWindow - reservedTokensForSummary
+  return window - reservedTokensForSummary
 }
 
 export type AutoCompactTrackingState = {
@@ -75,8 +74,10 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
 export function getAutoCompactThreshold(model: string): number {
-  const effectiveContextWindow = getEffectiveContextWindowSize(model)
+  return thresholdForWindow(getEffectiveContextWindowSize(model))
+}
 
+function thresholdForWindow(effectiveContextWindow: number): number {
   const autocompactThreshold =
     effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
 
@@ -93,6 +94,25 @@ export function getAutoCompactThreshold(model: string): number {
   }
 
   return autocompactThreshold
+}
+
+/** Official remote-stream projection; the threshold shares the engine calculation. */
+export function getAutoCompactState(
+  model: string,
+  settingsWindow: number | undefined,
+  reactiveCompact: boolean,
+): SDKAutocompactStateMessage['value'] {
+  const enabled = isAutoCompactEnabled()
+  const { source } = resolveContextWindow(model, settingsWindow)
+  const { window } = resolveContextWindow(model, enabled ? settingsWindow : undefined)
+  const effectiveWindow = window - Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
+  return {
+    enabled,
+    effective_window: effectiveWindow,
+    threshold: thresholdForWindow(effectiveWindow),
+    enforced: !(reactiveCompact && source === 'auto'),
+    source,
+  }
 }
 
 export function calculateTokenWarningState(
@@ -252,6 +272,7 @@ export type AutoCompactResult = {
   compactionResult?: CompactionResult
   consecutiveFailures?: number
   compactionFailure?: AutoCompactFailure
+  skip?: string
 }
 
 export async function autoCompactIfNeeded(
@@ -261,6 +282,7 @@ export async function autoCompactIfNeeded(
   querySource?: QuerySource,
   tracking?: AutoCompactTrackingState,
   snipTokensFreed?: number,
+  canUseTool: CanUseToolFn = hasPermissionsToUseTool,
 ): Promise<AutoCompactResult> {
   if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
     return { wasCompacted: false }
@@ -296,58 +318,64 @@ export async function autoCompactIfNeeded(
     querySource,
   }
 
-  // EXPERIMENT: Try session memory compaction first
-  // Codex mode skips session memory compact to avoid mixing two compaction models.
-  const compactMode = getCompactMode()
-  if (compactMode === 'claude') {
-    const sessionMemoryResult = await trySessionMemoryCompaction(
-      messages,
-      toolUseContext.agentId,
-      recompactionInfo.autoCompactThreshold,
-    )
-    if (sessionMemoryResult) {
-      // Reset lastSummarizedMessageId since session memory compaction prunes messages
-      // and the old message UUID will no longer exist after the REPL replaces messages
-      setLastSummarizedMessageId(undefined)
-      runPostCompactCleanup(querySource)
-      // Reset cache read baseline so the post-compact drop isn't flagged as a
-      // break. compactConversation does this internally; SM-compact doesn't.
-      // BQ 2026-03-01: missing this made 20% of tengu_prompt_cache_break events
-      // false positives (systemPromptChanged=true, timeSinceLastAssistantMsg=-1).
-      if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
-        notifyCompaction(querySource ?? 'compact', toolUseContext.agentId)
-      }
-      markPostCompaction()
-      return {
-        wasCompacted: true,
-        compactionResult: sessionMemoryResult,
-      }
-    }
-  }
-
   try {
-    logForDebugging(`autocompact: running ${compactMode}-style compact`)
+    const outcome = await runModSessionCompact(
+      toolUseContext,
+      'auto',
+      messages,
+      undefined,
+      async (compactMessages, instructions, compactContext) => {
+        const compactParams = {
+          ...cacheSafeParams,
+          toolUseContext: compactContext,
+          forkContextMessages: compactMessages,
+        }
+        const compactMode = getCompactMode()
+        if (compactMode === 'claude' && !instructions) {
+          const sessionMemoryResult = await trySessionMemoryCompaction(
+            compactMessages,
+            compactContext.agentId,
+            recompactionInfo.autoCompactThreshold,
+          )
+          if (sessionMemoryResult) {
+            if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
+              notifyCompaction(
+                querySource ?? 'compact',
+                compactContext.agentId,
+              )
+            }
+            markPostCompaction()
+            return sessionMemoryResult
+          }
+        }
 
-    const compactionResult =
-      compactMode === 'codex'
-        ? await compactConversationCodexStyle(
-            messages,
-            toolUseContext,
-            cacheSafeParams,
-            true, // Suppress user questions for autocompact
-            undefined, // No custom instructions for autocompact
-            true, // isAutoCompact
-            getCodexCompactOptions(),
-          )
-        : await compactConversation(
-            messages,
-            toolUseContext,
-            cacheSafeParams,
-            true, // Suppress user questions for autocompact
-            undefined, // No custom instructions for autocompact
-            true, // isAutoCompact
-            recompactionInfo,
-          )
+        logForDebugging(`autocompact: running ${compactMode}-style compact`)
+        return compactMode === 'codex'
+          ? compactConversationCodexStyle(
+              compactMessages,
+              compactContext,
+              compactParams,
+              true,
+              instructions,
+              true,
+              getCodexCompactOptions(),
+            )
+          : compactConversation(
+              compactMessages,
+              compactContext,
+              compactParams,
+              true,
+              instructions,
+              true,
+              recompactionInfo,
+            )
+      },
+      canUseTool,
+    )
+    if (outcome.skip !== undefined) {
+      return { wasCompacted: false, skip: outcome.skip }
+    }
+    const compactionResult = outcome.compactionResult
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array
@@ -361,7 +389,9 @@ export async function autoCompactIfNeeded(
       consecutiveFailures: 0,
     }
   } catch (error) {
-    const isUserAbort = hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
+    const isUserAbort =
+      toolUseContext.abortController.signal.aborted ||
+      hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
     if (!isUserAbort) {
       logError(error)
     }

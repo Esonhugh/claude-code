@@ -3,6 +3,8 @@ import { env } from './env.js'
 
 export type Theme = {
   autoAccept: string
+  autoAcceptShimmer: string
+  skill: string
   bashBorder: string
   claude: string
   claudeShimmer: string // Lighter version of claude color for shimmer effect
@@ -22,6 +24,7 @@ export type Theme = {
   suggestion: string
   remember: string
   background: string
+  composerSidebarBackground: string
   // Semantic colors
   success: string
   error: string
@@ -68,6 +71,7 @@ export type Theme = {
   rate_limit_empty: string
   fastMode: string
   fastModeShimmer: string
+  effortUltra: string
   // Brief/assistant mode label colors
   briefLabelYou: string
   briefLabelClaude: string
@@ -113,7 +117,10 @@ export type ThemeSetting = (typeof THEME_SETTINGS)[number]
  * from users' custom terminal ANSI color definitions
  */
 const lightTheme: Theme = {
+  composerSidebarBackground: 'rgb(245,245,245)',
   autoAccept: 'rgb(135,0,255)', // Electric violet
+  skill: 'rgb(135,0,255)',
+  autoAcceptShimmer: 'rgb(208,180,255)',
   bashBorder: 'rgb(255,0,135)', // Vibrant pink
   claude: 'rgb(215,119,87)', // Claude orange
   claudeShimmer: 'rgb(245,149,117)', // Lighter claude orange for shimmer effect
@@ -123,7 +130,7 @@ const lightTheme: Theme = {
   permissionShimmer: 'rgb(137,155,255)', // Lighter blue for shimmer effect
   planMode: 'rgb(0,102,102)', // Muted teal
   ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(153,153,153)', // Medium gray
+  promptBorder: 'rgb(138,138,138)', // Medium gray
   promptBorderShimmer: 'rgb(183,183,183)', // Lighter gray for shimmer effect
   text: 'rgb(0,0,0)', // Black
   inverseText: 'rgb(255,255,255)', // White
@@ -146,12 +153,12 @@ const lightTheme: Theme = {
   diffRemovedWord: 'rgb(209,69,75)', // Medium red
   // Agent colors
   red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(106,155,204)',
   green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
   yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(130,125,189)',
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(217,119,87)',
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(196,102,134)',
   cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
   // Grove colors
   professionalBlue: 'rgb(106,155,204)',
@@ -171,6 +178,7 @@ const lightTheme: Theme = {
   rate_limit_empty: 'rgb(39,47,111)', // Dark blue
   fastMode: 'rgb(255,106,0)', // Electric orange
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
+  effortUltra: 'rgb(135,0,255)',
   // Brief/assistant mode
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelClaude: 'rgb(215,119,87)', // Brand orange
@@ -195,7 +203,10 @@ const lightTheme: Theme = {
  * for terminals without true color support
  */
 const lightAnsiTheme: Theme = {
+  composerSidebarBackground: 'ansi:white',
   autoAccept: 'ansi:magenta',
+  skill: 'ansi:magenta',
+  autoAcceptShimmer: 'ansi:magentaBright',
   bashBorder: 'ansi:magenta',
   claude: 'ansi:redBright',
   claudeShimmer: 'ansi:yellowBright',
@@ -253,6 +264,7 @@ const lightAnsiTheme: Theme = {
   rate_limit_empty: 'ansi:black',
   fastMode: 'ansi:red',
   fastModeShimmer: 'ansi:redBright',
+  effortUltra: 'ansi:magenta',
   briefLabelYou: 'ansi:blue',
   briefLabelClaude: 'ansi:redBright',
   rainbow_red: 'ansi:red',
@@ -276,7 +288,10 @@ const lightAnsiTheme: Theme = {
  * for terminals without true color support
  */
 const darkAnsiTheme: Theme = {
+  composerSidebarBackground: 'ansi:blackBright',
   autoAccept: 'ansi:magentaBright',
+  skill: 'ansi:magentaBright',
+  autoAcceptShimmer: 'ansi:magentaBright',
   bashBorder: 'ansi:magentaBright',
   claude: 'ansi:redBright',
   claudeShimmer: 'ansi:yellowBright',
@@ -324,7 +339,7 @@ const darkAnsiTheme: Theme = {
   clawd_body: 'ansi:redBright',
   clawd_background: 'ansi:black',
   userMessageBackground: 'ansi:blackBright',
-  userMessageBackgroundHover: 'ansi:white',
+  userMessageBackgroundHover: 'ansi:black',
   messageActionsBackground: 'ansi:blackBright',
   selectionBg: 'ansi:blue', // darker named bg for dark-ansi; bright fgs stay readable
   bashMessageBackgroundColor: 'ansi:black',
@@ -334,6 +349,7 @@ const darkAnsiTheme: Theme = {
   rate_limit_empty: 'ansi:white',
   fastMode: 'ansi:redBright',
   fastModeShimmer: 'ansi:redBright',
+  effortUltra: 'ansi:magentaBright',
   briefLabelYou: 'ansi:blueBright',
   briefLabelClaude: 'ansi:redBright',
   rainbow_red: 'ansi:red',
@@ -357,7 +373,10 @@ const darkAnsiTheme: Theme = {
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const lightDaltonizedTheme: Theme = {
+  composerSidebarBackground: 'rgb(235,235,235)',
   autoAccept: 'rgb(135,0,255)', // Electric violet
+  skill: 'rgb(135,0,255)',
+  autoAcceptShimmer: 'rgb(208,180,255)',
   bashBorder: 'rgb(0,102,204)', // Blue instead of pink
   claude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
   claudeShimmer: 'rgb(255,183,101)', // Lighter orange for shimmer effect
@@ -367,7 +386,7 @@ const lightDaltonizedTheme: Theme = {
   permissionShimmer: 'rgb(101,152,255)', // Lighter bright blue for shimmer
   planMode: 'rgb(51,102,102)', // Muted blue-gray (works for color-blind)
   ide: 'rgb(71,130,200)', // Muted blue
-  promptBorder: 'rgb(153,153,153)', // Medium gray
+  promptBorder: 'rgb(138,138,138)', // Medium gray
   promptBorderShimmer: 'rgb(183,183,183)', // Lighter gray for shimmer
   text: 'rgb(0,0,0)', // Black
   inverseText: 'rgb(255,255,255)', // White
@@ -415,6 +434,7 @@ const lightDaltonizedTheme: Theme = {
   rate_limit_empty: 'rgb(23,46,114)', // Dark blue
   fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
+  effortUltra: 'rgb(135,0,255)',
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelClaude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
@@ -438,7 +458,10 @@ const lightDaltonizedTheme: Theme = {
  * from users' custom terminal ANSI color definitions
  */
 const darkTheme: Theme = {
+  composerSidebarBackground: 'rgb(38,38,38)',
   autoAccept: 'rgb(175,135,255)', // Electric violet
+  skill: 'rgb(175,135,255)',
+  autoAcceptShimmer: 'rgb(208,180,255)',
   bashBorder: 'rgb(253,93,177)', // Bright pink
   claude: 'rgb(215,119,87)', // Claude orange
   claudeShimmer: 'rgb(235,159,127)', // Lighter claude orange for shimmer effect
@@ -471,12 +494,12 @@ const darkTheme: Theme = {
   diffRemovedWord: 'rgb(179,89,107)', // Softer red (less intense than bright red)
   // Agent colors
   red_FOR_SUBAGENTS_ONLY: 'rgb(220,38,38)', // Red 600
-  blue_FOR_SUBAGENTS_ONLY: 'rgb(37,99,235)', // Blue 600
+  blue_FOR_SUBAGENTS_ONLY: 'rgb(106,155,204)',
   green_FOR_SUBAGENTS_ONLY: 'rgb(22,163,74)', // Green 600
   yellow_FOR_SUBAGENTS_ONLY: 'rgb(202,138,4)', // Yellow 600
-  purple_FOR_SUBAGENTS_ONLY: 'rgb(147,51,234)', // Purple 600
-  orange_FOR_SUBAGENTS_ONLY: 'rgb(234,88,12)', // Orange 600
-  pink_FOR_SUBAGENTS_ONLY: 'rgb(219,39,119)', // Pink 600
+  purple_FOR_SUBAGENTS_ONLY: 'rgb(130,125,189)',
+  orange_FOR_SUBAGENTS_ONLY: 'rgb(217,119,87)',
+  pink_FOR_SUBAGENTS_ONLY: 'rgb(196,102,134)',
   cyan_FOR_SUBAGENTS_ONLY: 'rgb(8,145,178)', // Cyan 600
   // Grove colors
   professionalBlue: 'rgb(106,155,204)',
@@ -496,6 +519,7 @@ const darkTheme: Theme = {
   rate_limit_empty: 'rgb(80,83,112)', // Medium blue-purple
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
+  effortUltra: 'rgb(175,135,255)',
   briefLabelYou: 'rgb(122,180,232)', // Light blue
   briefLabelClaude: 'rgb(215,119,87)', // Brand orange
   rainbow_red: 'rgb(235,95,87)',
@@ -519,7 +543,10 @@ const darkTheme: Theme = {
  * to avoid inconsistencies from users' custom terminal ANSI color definitions
  */
 const darkDaltonizedTheme: Theme = {
+  composerSidebarBackground: 'rgb(38,38,38)',
   autoAccept: 'rgb(175,135,255)', // Electric violet
+  skill: 'rgb(175,135,255)',
+  autoAcceptShimmer: 'rgb(208,180,255)',
   bashBorder: 'rgb(51,153,255)', // Bright blue
   claude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia
   claudeShimmer: 'rgb(255,183,101)', // Lighter orange for shimmer effect
@@ -577,6 +604,7 @@ const darkDaltonizedTheme: Theme = {
   rate_limit_empty: 'rgb(69,92,115)', // Dark blue
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
+  effortUltra: 'rgb(175,135,255)',
   briefLabelYou: 'rgb(122,180,232)', // Light blue
   briefLabelClaude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',

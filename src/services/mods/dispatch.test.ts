@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { dispatchModEvent } from './dispatch.js'
+import { createModHookStream, dispatchModEvent, dispatchModStream } from './dispatch.js'
+import { createModHookStream as createProtocolStream } from './protocol.js'
 import type { ModDispatchHook, ModInput, ModNext, ModTier } from './types.js'
 
 function hook(
@@ -11,7 +12,7 @@ function hook(
     event?: string
     hasCatch?: boolean
     id?: number
-    matcher?: ModInput
+    matcher?: ModDispatchHook['registration']['matcher']
   } = {},
 ): ModDispatchHook {
   return {
@@ -44,7 +45,701 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+describe('mod stream cancellation lifecycle', () => {
+  it('protocol return interrupts a pending next and shares teardown with abort and repeated return', async () => {
+    for (const abortFirst of [false, true]) {
+      const parent = new AbortController()
+      const started = deferred<void>()
+      const pulling = deferred<IteratorResult<unknown>>()
+      const closing = deferred<IteratorResult<unknown>>()
+      const methods: string[] = []
+      const stream = createProtocolStream(async method => {
+        methods.push(method)
+        if (method === 'return') return closing.promise
+        started.resolve()
+        return pulling.promise
+      }, parent.signal)
+      const pending = stream.next()
+      const rejected = assert.rejects(pending, /closed|cancel/)
+      const result = assert.rejects(stream.result, /closed|cancel/)
+      await started.promise
+      if (abortFirst) parent.abort(Error('cancel'))
+      const returned = stream.return('first')
+      const repeated = stream.return('second')
+      let settled = false
+      void returned.then(() => { settled = true }, () => { settled = true })
+      try {
+        // Verify explicit return on its own before introducing the abort race.
+        await Promise.resolve()
+        assert.deepEqual(methods, ['next', 'return'])
+        parent.abort(Error('cancel'))
+        assert.equal(settled, false)
+      } finally {
+        closing.resolve({ done: true, value: 'closed' })
+        pulling.reject(Error('late pull failure'))
+        await Promise.allSettled([pending, returned, repeated, stream.result])
+      }
+      await Promise.all([rejected, result])
+      assert.deepEqual(await returned, { done: true, value: 'closed' })
+      assert.deepEqual(await repeated, await returned)
+    }
+  })
+
+  it('protocol preserves normal pull ordering and completion', async () => {
+    const first = deferred<IteratorResult<unknown>>()
+    const started = deferred<void>()
+    const values: unknown[] = []
+    const stream = createProtocolStream(async (_method, value) => {
+      values.push(value)
+      started.resolve()
+      return values.length === 1 ? first.promise : { done: true, value: 'result' }
+    })
+    const one = stream.next('one'), two = stream.next('two')
+    await started.promise
+    assert.deepEqual(values, ['one'])
+    first.resolve({ done: false, value: 'chunk' })
+    assert.deepEqual(await one, { done: false, value: 'chunk' })
+    assert.deepEqual(await two, { done: true, value: 'result' })
+    assert.equal(await stream.result, 'result')
+    assert.deepEqual(values, ['one', 'two'])
+  })
+
+  it('dispatch return waits for cooperative core and hook asynchronous finally', async () => {
+    for (const useHook of [false, true]) {
+      const started = deferred<void>(), finalizing = deferred<void>(), release = deferred<void>()
+      let finalized = false, settled = false
+      async function* body(signal?: AbortSignal) {
+        try {
+          await new Promise<void>(resolve => {
+            signal!.addEventListener('abort', () => resolve(), { once: true })
+            started.resolve()
+          })
+          yield 'late'
+          return 'done'
+        } finally {
+          finalizing.resolve()
+          await release.promise
+          finalized = true
+        }
+      }
+      const stream = dispatchModStream({ event: 'turn.step', input: {},
+        hooks: useHook ? [{ ...hook('stream', async () => {}, { event: 'turn.step' }), invokeStream: (_input, next) => body(next.signal) }] : [],
+        core: (_input, signal) => body(signal),
+      })
+      const pending = stream.next()
+      const rejected = assert.rejects(stream.result, /closed/)
+      void pending.catch(() => {})
+      await started.promise
+      const returned = stream.return(undefined)
+      void returned.then(() => { settled = true }, () => { settled = true })
+      try {
+        await finalizing.promise
+        // An event-loop turn observes premature fulfillment, not a timed success barrier.
+        await new Promise<void>(resolve => setImmediate(resolve))
+        assert.equal(settled, false)
+        assert.equal(finalized, false)
+      } finally {
+        release.resolve()
+        await Promise.allSettled([pending, returned])
+      }
+      await returned
+      await rejected
+      assert.equal(finalized, true)
+    }
+  })
+
+  it('retains teardown failures for explicit return after abort without unhandled rejection', async () => {
+    for (const protocol of [false, true]) {
+      const parent = new AbortController()
+      const failure = Error('finally failed')
+      const iterator = (async function* () {
+        try { yield 'chunk' } finally { await Promise.reject(failure) }
+      })()
+      const stream = protocol
+        ? createProtocolStream((method, value) => iterator[method](value as never), parent.signal)
+        : createModHookStream(iterator, undefined, parent.signal)
+      await stream.next()
+      const result = assert.rejects(stream.result, /cancel/)
+      parent.abort(Error('cancel'))
+      await new Promise<void>(resolve => setImmediate(resolve))
+      await assert.rejects(stream.return(undefined), error => error === failure)
+      await assert.rejects(stream.return(undefined), error => error === failure)
+      await result
+    }
+  })
+
+  it('dispatch return reports finally failure from an in-flight next', async () => {
+    for (const useHook of [false, true]) {
+      const started = deferred<void>()
+      const failure = Error('pending finally failed')
+      async function* body(signal?: AbortSignal) {
+        try {
+          await new Promise<void>(resolve => {
+            signal!.addEventListener('abort', () => resolve(), { once: true })
+            started.resolve()
+          })
+          yield 'late'
+          return 'done'
+        } finally { await Promise.reject(failure) }
+      }
+      const stream = dispatchModStream({ event: 'turn.step', input: {},
+        hooks: useHook ? [{ ...hook('stream', async () => {}, { event: 'turn.step' }), invokeStream: (_input, next) => body(next.signal) }] : [],
+        core: (_input, signal) => body(signal),
+      })
+      const pending = stream.next()
+      const result = assert.rejects(stream.result, /closed/)
+      void pending.catch(() => {})
+      await started.promise
+      await assert.rejects(stream.return(undefined), error => error === failure)
+      await result
+      await Promise.allSettled([pending])
+    }
+  })
+
+  it('does not claim an uncooperative generator has closed before its wait is released', async () => {
+    const started = deferred<void>(), release = deferred<void>()
+    let finalized = false, settled = false, cancellations = 0
+    const stream = createModHookStream((async function* () {
+      try { started.resolve(); await release.promise; yield 'late' }
+      finally { finalized = true }
+    })(), () => { cancellations++ })
+    const pending = stream.next()
+    void pending.catch(() => {})
+    await started.promise
+    const result = assert.rejects(stream.result, /closed/)
+    const returned = stream.return(undefined)
+    const repeated = stream.return(undefined)
+    void returned.then(() => { settled = true }, () => { settled = true })
+    try {
+      await new Promise<void>(resolve => setImmediate(resolve))
+      assert.equal(cancellations, 1)
+      assert.equal(settled, false)
+      assert.equal(finalized, false)
+    } finally {
+      release.resolve()
+      await Promise.allSettled([pending, returned, repeated])
+    }
+    await returned
+    await result
+    assert.equal(finalized, true)
+  })
+})
+
 describe('ordinary mod dispatch', () => {
+  it('pins agentId before lower hooks and restores omissions for tools and completions', async () => {
+    for (const event of ['tool.call','turn.complete']) for (const agentId of [undefined,'child']) {
+      const original = {...input,agentId}
+      for (const omitted of [true,false]) for (const target of [undefined,'core'] as const) {
+        const seen: ModInput[]=[]
+        const failures: unknown[]=[]
+        await dispatchModEvent({event,input:original,
+          hooks:[hook('outer',async(e,next)=>{
+            const rewritten={...e}
+            if(omitted) delete rewritten.agentId
+            else rewritten.agentId=undefined
+            return target ? next.to(rewritten,target) : next(rewritten)
+          },{event,tier:'prepend'}),hook('inner',async(e,next)=>{seen.push(e);return next(e)},{event})],
+          core:async e=>{seen.push(e);return {}},onFailure:(_plugin,error)=>failures.push(error),
+        })
+        assert.equal(seen.length,target?1:2)
+        assert.ok(seen.every(e=>e.agentId===agentId))
+        assert.deepEqual(failures,[])
+      }
+      for (const changed of [null,'forged']) {
+        const seen: ModInput[]=[]
+        const failures:unknown[]=[]
+        await dispatchModEvent({event,input:original,
+          hooks:[hook('outer',async(e,next)=>next({...e,agentId:changed}),{event}),
+            hook('inner',async e=>{seen.push(e);return {}},{event})],
+          core:async()=>{throw Error('short circuit expected')},onFailure:(_plugin,error)=>failures.push(error),
+        })
+        assert.deepEqual(seen,[original])
+        assert.equal(failures.length,1)
+      }
+    }
+  })
+
+  it('passes the branch signal to core without aborting the query or a recovered replay', async () => {
+    const parent=new AbortController()
+    const started=deferred<void>()
+    let branch: AbortSignal | undefined
+    await dispatchModEvent({event:'tool.call',input,signal:parent.signal,
+      hooks:[hook('early',async(e,next)=>{void next(e).catch(()=>{});await started.promise;return {result:'early'}})],
+      core:async (_e,signal)=>{branch=signal;started.resolve();return new Promise(resolve=>signal?.addEventListener('abort',()=>resolve({result:'canceled'}),{once:true}))},
+    })
+    assert.ok(branch)
+    assert.equal(branch.aborted,true)
+    assert.equal(parent.signal.aborted,false)
+    let runs=0
+    const observedAborted: (boolean | undefined)[]=[]
+    await dispatchModEvent({event:'tool.call',input,signal:parent.signal,
+      hooks:[hook('recover',async(e,next,catching)=>{
+        if(!catching){void next(e);throw Error('recover')}
+        return next(e)
+      },{hasCatch:true})],
+      core:async(_e,signal)=>{runs++;await new Promise(resolve=>setTimeout(resolve,5));observedAborted.push(signal?.aborted);return {result:'done'}},
+    })
+    assert.equal(runs,1)
+    assert.deepEqual(observedAborted,[false])
+  })
+
+  it('next.is shares exact, glob and negated matching in normal and catch handlers', async () => {
+    const phases: boolean[] = []
+    const matches: boolean[][] = []
+    await dispatchModEvent({event:'tool.call',input,
+      hooks:[hook('patterns',async (e,next,catching)=>{
+        phases.push(catching)
+        matches.push(['tool.call','tool.*','*','!tool.list','!session.*','tool.list','session.*','!tool.call','!tool.*','!*','invalid'].map(pattern=>next.is(pattern,e)))
+        if (!catching) throw Error('enter catch')
+        return next(e)
+      },{hasCatch:true})],core:async()=>({result:'core'}),
+    })
+    assert.deepEqual(phases,[false,true])
+    assert.deepEqual(matches,[0,1].map(()=>[true,true,true,true,true,false,false,false,false,false,false]))
+  })
+  it('validates rewritten input before any downstream short circuit and restores command presentation', async () => {
+    const initial = { command: 'diff', args: '', origin: { kind: 'composer' }, presentation: { columns: 80, isFullscreen: false } }
+    for (const changed of [
+      { ...initial, command: 'other' },
+      { ...initial, origin: { kind: 'sdk' } },
+      { ...initial, presentation: { columns: 140, isFullscreen: false } },
+    ]) {
+      const seen: ModInput[] = []
+      const failures: unknown[] = []
+      await dispatchModEvent({ event: 'command.run', input: initial,
+        hooks: [hook('rewrite', async (_e, next) => next(changed), { event: 'command.run' }),
+          hook('short', async e => { seen.push(e); return {} }, { event: 'command.run' })],
+        core: async () => { throw Error('core must not run') },
+        onFailure: (_plugin, error) => failures.push(error),
+      })
+      assert.deepEqual(seen, [initial])
+      assert.equal(failures.length, 1)
+    }
+    let received: ModInput | undefined
+    await dispatchModEvent({ event: 'command.run', input: initial,
+      hooks: [hook('omit', async (e, next) => next({ command: e.command, args: e.args, origin: structuredClone(e.origin) }), { event: 'command.run' }),
+        hook('short', async e => { received = e; return {} }, { event: 'command.run' })], core: async () => ({}),
+    })
+    assert.deepEqual(received, initial)
+  })
+
+  it('runs the per-event input validator at each next boundary, including bypassed core', async () => {
+    const seen: ModInput[] = []
+    const failure: unknown[] = []
+    const result = await dispatchModEvent({ event: 'prompt.submit', input: { text: 'text', context: ['one', 'one'] },
+      hooks: [hook('drop', async (e, next) => next({ ...e, context: ['one'] }), { event: 'prompt.submit' }),
+        hook('short', async e => { seen.push(e); return { text: e.text, context: e.context } }, { event: 'prompt.submit' })],
+      validateInput: (rewritten, received) => { assert.deepEqual(rewritten.context, received.context) },
+      onFailure: (_plugin, error) => failure.push(error), core: async () => { throw Error('core must not run') },
+    })
+    assert.deepEqual(result, { text: 'text', context: ['one', 'one'] })
+    assert.equal(failure.length, 1)
+    assert.deepEqual(seen, [{ text: 'text', context: ['one', 'one'] }])
+  })
+  it('validates against every resolved next result of the current link', async () => {
+    const first = { value: 'first' }
+    const second = { value: 'second' }
+    const answer = { value: 'answer' }
+    const validations: [unknown, readonly unknown[]][] = []
+    let effects = 0
+    const result = await dispatchModEvent({
+      event: 'example.call',
+      input: {},
+      hooks: [
+        hook('outer', async (e, next) => {
+          await next(e)
+          await next(e)
+          return answer
+        }, { event: 'example.call' }),
+        hook('inner', async (e, next) => next(e), { event: 'example.call' }),
+      ],
+      core: async () => (++effects === 1 ? first : second),
+      validateResult: (value, nextResults) => {
+        validations.push([value, nextResults])
+      },
+    })
+    assert.equal(result, answer)
+    assert.equal(effects, 2)
+    assert.deepEqual(validations, [
+      [first, [first]],
+      [second, [second]],
+      [answer, [first, second]],
+    ])
+    assert.equal(validations[2]![1][0], first)
+    assert.equal(validations[2]![1][1], second)
+  })
+
+  it('validates catch results against all resolved next calls without replaying effects', async () => {
+    for (const called of [false, true]) {
+      const validations: [unknown, readonly unknown[]][] = []
+      let effects = 0
+      const result = await dispatchModEvent({
+        event: 'example.call',
+        input: {},
+        hooks: [hook('recover', async (e, next, catching) => {
+          if (!catching) {
+            if (called) {
+              await next(e)
+              await next(e)
+            }
+            throw new Error('recover')
+          }
+          const first = next(e)
+          const replay = next({ ignored: true })
+          assert.equal(first, replay)
+          await first
+          await replay
+          return 'caught'
+        }, { event: 'example.call', hasCatch: true })],
+        core: async () => ++effects,
+        validateResult: (value, nextResults) => {
+          validations.push([value, [...nextResults]])
+        },
+      })
+      assert.equal(result, 'caught')
+      assert.equal(effects, called ? 2 : 1)
+      assert.deepEqual(validations, [['caught', called ? [1, 2, 2, 2] : [1, 1]]])
+    }
+  })
+
+  it('pins every plugin.register envelope field before continuing', async () => {
+    const admission: ModInput = {
+      name: 'candidate',
+      tier: 'user',
+      root: '/plugins/candidate',
+      provenance: 'candidate@inline',
+      version: '1.0.0',
+      uses: { events: ['tool.call'], calls: ['fs.read'], env: { reads: ['HOME'], writes: [] } },
+    }
+    for (const field of ['name', 'tier', 'root', 'provenance', 'version', 'uses']) {
+      for (const action of ['change', 'omit']) {
+        if (field === 'version' && action === 'omit') continue
+        let effects = 0
+        let checked = false
+        const failures: unknown[] = []
+        const result = await dispatchModEvent({
+          event: 'plugin.register',
+          input: admission,
+          hooks: [hook('judge', async (e, next) => {
+            const rewritten = { ...e, [field]: 'changed' }
+            if (action === 'omit') delete rewritten[field]
+            await assert.rejects(next(rewritten), new RegExp(`${field}.*plugin.register`))
+            checked = true
+            return next(e)
+          }, { event: 'plugin.register' })],
+          core: async (e) => {
+            effects++
+            assert.deepEqual(e, admission)
+            return { allow: true }
+          },
+          onFailure: (_plugin, error) => { failures.push(error) },
+        })
+        assert.deepEqual(result, { allow: true })
+        assert.ok(checked, `${action} ${field}`)
+        assert.equal(effects, 1)
+        assert.deepEqual(failures, [])
+      }
+    }
+  })
+
+  it('restores only an omitted plugin.register version and accepts cloned uses', async () => {
+    for (const version of [undefined, '1.0.0']) {
+      const uses = { events: ['tool.call'], calls: [], env: { reads: ['HOME'], writes: [] } }
+      const admission: ModInput = {
+        name: 'candidate', tier: 'user', root: '/plugins/candidate',
+        provenance: 'candidate@inline', uses,
+        ...(version === undefined ? {} : { version }),
+      }
+      const failures: unknown[] = []
+      let rewritten!: ModInput
+      let received!: ModInput
+      const result = await dispatchModEvent({
+        event: 'plugin.register',
+        input: admission,
+        hooks: [hook('judge', async (e, next) => {
+          rewritten = { ...e, uses: structuredClone(uses) }
+          delete rewritten.version
+          return next(rewritten)
+        }, { event: 'plugin.register' })],
+        core: async e => {
+          received = e
+          return { allow: true }
+        },
+        onFailure: (_plugin, error) => { failures.push(error) },
+      })
+      assert.deepEqual(result, { allow: true })
+      assert.deepEqual(received, admission)
+      assert.notEqual(received.uses, uses)
+      assert.equal(Object.hasOwn(received, 'version'), version !== undefined)
+      assert.equal(Object.hasOwn(rewritten, 'version'), false)
+      assert.deepEqual(failures, [])
+    }
+  })
+
+  it('attributes engine.create descendant failures only to the hook that failed', async () => {
+    for (const rethrow of [false, true]) {
+      for (const failure of [new Error('inner failed'), 'inner failed', undefined]) {
+        const failures: [string, unknown][] = []
+        let effects = 0
+        let catches = 0
+        let rethrows = 0
+        let observed: unknown = Symbol('not rejected')
+        await dispatchModEvent({
+          event: 'engine.create',
+          input: {},
+          hooks: [
+            hook('outer', async (e, next) => next(e), { event: 'engine.create' }),
+            hook('middle', async (e, next) => {
+              if (!rethrow) return next(e)
+              try {
+                return await next(e)
+              } catch (error) {
+                rethrows++
+                throw error
+              }
+            }, { event: 'engine.create' }),
+            hook('broken', async (_e, _next, catching) => {
+              if (catching) catches++
+              throw failure
+            }, { event: 'engine.create', hasCatch: true }),
+          ],
+          core: async () => ++effects,
+          onFailure: (plugin, error) => { failures.push([plugin, error]) },
+        }).catch(error => { observed = error })
+        assert.equal(observed, failure)
+        assert.deepEqual(failures, [['broken', failure]])
+        assert.equal(effects, 0)
+        assert.equal(catches, 0)
+        assert.equal(rethrows, rethrow ? 1 : 0)
+      }
+    }
+  })
+
+  it('compares plugin.register uses to the original structure even after in-place edits', async () => {
+    const original = { events: ['tool.call'], calls: ['fs.read'], env: { reads: ['HOME'], writes: [] } }
+    const failures: unknown[] = []
+    let checked = false
+    let effects = 0
+    const result = await dispatchModEvent({
+      event: 'plugin.register',
+      input: {
+        name: 'candidate', tier: 'user', root: '/plugins/candidate',
+        provenance: 'candidate@inline', uses: structuredClone(original),
+      },
+      hooks: [hook('judge', async (e, next) => {
+        const uses = e.uses as typeof original
+        uses.env.reads.push('OTHER')
+        await assert.rejects(next(e), /uses.*plugin.register/)
+        uses.env.reads.pop()
+        checked = true
+        return next({ ...e, uses: { env: uses.env, calls: uses.calls, events: uses.events } })
+      }, { event: 'plugin.register' })],
+      core: async () => {
+        effects++
+        return { allow: true }
+      },
+      onFailure: (_plugin, error) => { failures.push(error) },
+    })
+    assert.deepEqual(result, { allow: true })
+    assert.ok(checked)
+    assert.equal(effects, 1)
+    assert.deepEqual(failures, [])
+  })
+
+  it('collects concurrent next results on settlement and excludes rejected or pending calls', async () => {
+    const slow = deferred<unknown>()
+    const failure = new Error('branch rejected')
+    const first = { branch: 'slow' }
+    const second = { branch: 'fast' }
+    const validations: [unknown, readonly unknown[]][] = []
+    let pending!: Promise<unknown>
+    const result = await dispatchModEvent({
+      event: 'example.call',
+      input: {},
+      hooks: [hook('concurrent', async (e, next) => {
+        const earlier = next({ ...e, branch: 'slow' })
+        await next({ ...e, branch: 'fast' })
+        await assert.rejects(next({ ...e, branch: 'reject' }), error => error === failure)
+        await next({ ...e, branch: 'void' })
+        slow.resolve(first)
+        await earlier
+        pending = next({ ...e, branch: 'pending' })
+        return 'answer'
+      }, { event: 'example.call' })],
+      core: async e => {
+        if (e.branch === 'slow') return slow.promise
+        if (e.branch === 'reject') throw failure
+        if (e.branch === 'pending') return new Promise(() => {})
+        return e.branch === 'fast' ? second : undefined
+      },
+      validateResult: (value, nextResults) => { validations.push([value, [...nextResults]]) },
+    })
+    assert.equal(result, 'answer')
+    assert.deepEqual(validations, [['answer', [second, undefined, first]]])
+    await assert.rejects(pending)
+  })
+
+  it('retains resolved next results when validation fails and catch recovers', async () => {
+    const below = { value: 'below' }
+    const failure = new Error('validator refused')
+    const validations: [unknown, readonly unknown[]][] = []
+    const failures: [string, unknown][] = []
+    let effects = 0
+    const result = await dispatchModEvent({
+      event: 'example.call',
+      input: {},
+      hooks: [hook('recover', async (e, next, catching) => {
+        if (catching) return next(e)
+        await next(e)
+        return 'invalid'
+      }, { event: 'example.call', hasCatch: true })],
+      core: async () => { effects++; return below },
+      validateResult: (value, nextResults) => {
+        validations.push([value, [...nextResults]])
+        if (value === 'invalid') throw failure
+      },
+      onFailure: (plugin, error) => { failures.push([plugin, error]) },
+    })
+    assert.equal(result, below)
+    assert.equal(effects, 1)
+    assert.deepEqual(validations, [['invalid', [below]], [below, [below, below]]])
+    assert.deepEqual(failures, [['recover', failure]])
+  })
+
+  it('passes an empty next result list when an ordinary or catch hook short-circuits', async () => {
+    for (const catching of [false, true]) {
+      const validations: [unknown, readonly unknown[]][] = []
+      let effects = 0
+      const result = await dispatchModEvent({
+        event: 'example.call',
+        input: {},
+        hooks: [hook('short-circuit', async (_e, _next, isCatch) => {
+          if (catching && !isCatch) throw new Error('recover')
+          return 'answer'
+        }, { event: 'example.call', hasCatch: catching })],
+        core: async () => ++effects,
+        validateResult: (value, nextResults) => { validations.push([value, [...nextResults]]) },
+      })
+      assert.equal(result, 'answer')
+      assert.deepEqual(validations, [['answer', []]])
+      assert.equal(effects, 0)
+    }
+  })
+
+  it('does not restore an explicitly undefined or null plugin.register version', async () => {
+    for (const version of [undefined, null]) {
+      const failures: unknown[] = []
+      let checked = false
+      let effects = 0
+      const result = await dispatchModEvent({
+        event: 'plugin.register',
+        input: {
+          name: 'candidate', tier: 'user', root: '/plugins/candidate',
+          provenance: 'candidate@inline', version: '1.0.0', uses: { events: [], calls: [] },
+        },
+        hooks: [hook('judge', async (e, next) => {
+          await assert.rejects(next({ ...e, version }), /version.*plugin.register/)
+          checked = true
+          return { refuse: 'not admitted' }
+        }, { event: 'plugin.register' })],
+        core: async () => { effects++; return { allow: true } },
+        onFailure: (_plugin, error) => { failures.push(error) },
+      })
+      assert.deepEqual(result, { refuse: 'not admitted' })
+      assert.ok(checked)
+      assert.equal(effects, 0)
+      assert.deepEqual(failures, [])
+    }
+  })
+
+  it('attributes new engine.create errors after handled descendant failures independently', async () => {
+    const innerFailure = new Error('same message')
+    const outerFailure = new Error('same message')
+    const failures: [string, unknown][] = []
+    await assert.rejects(dispatchModEvent({
+      event: 'engine.create',
+      input: {},
+      hooks: [
+        hook('pass', async (e, next) => next(e), { event: 'engine.create' }),
+        hook('outer', async (e, next) => {
+          await assert.rejects(next(e), error => error === innerFailure)
+          throw outerFailure
+        }, { event: 'engine.create' }),
+        hook('inner', async () => { throw innerFailure }, { event: 'engine.create' }),
+      ],
+      core: async () => ({}),
+      onFailure: (plugin, error) => { failures.push([plugin, error]) },
+    }), error => error === outerFailure)
+    assert.deepEqual(failures, [['inner', innerFailure], ['outer', outerFailure]])
+  })
+
+  it('keeps engine.create failure attribution local to each downstream call', async () => {
+    const failure = new Error('reused failure')
+    const failures: [string, unknown][] = []
+    let calls = 0
+    await assert.rejects(dispatchModEvent({
+      event: 'engine.create',
+      input: {},
+      hooks: [
+        hook('outer', async (e, next) => {
+          await assert.rejects(next(e), error => error === failure)
+          return next(e)
+        }, { event: 'engine.create' }),
+        hook('inner', async () => { calls++; throw failure }, { event: 'engine.create' }),
+      ],
+      core: async () => ({}),
+      onFailure: (plugin, error) => { failures.push([plugin, error]) },
+    }), error => error === failure)
+    assert.equal(calls, 2)
+    assert.deepEqual(failures, [['inner', failure], ['inner', failure]])
+  })
+
+  it('attributes engine.create result and next argument validation to their own hook', async () => {
+    for (const invalidNext of [false, true]) {
+      const failure = new Error('invalid result')
+      const failures: [string, unknown][] = []
+      await assert.rejects(dispatchModEvent({
+        event: 'engine.create',
+        input: {},
+        hooks: [
+          hook('outer', async (e, next) => next(e), { event: 'engine.create' }),
+          hook('broken', async (e, next) => {
+            if (invalidNext) return next(null as unknown as ModInput)
+            return next(e)
+          }, { event: 'engine.create' }),
+        ],
+        core: async () => ({}),
+        validateResult: () => { throw failure },
+        onFailure: (plugin, error) => { failures.push([plugin, error]) },
+      }), invalidNext ? /next requires an input object/ : error => error === failure)
+      assert.equal(failures.length, 1)
+      assert.equal(failures[0]![0], 'broken')
+    }
+  })
+
+  it('does not attribute engine.create core errors or parent aborts to passing hooks', async () => {
+    for (const cancel of [false, true]) {
+      const parent = new AbortController()
+      const failure = new Error('core stopped')
+      const failures: [string, unknown][] = []
+      let validations = 0
+      await assert.rejects(dispatchModEvent({
+        event: 'engine.create',
+        input: {},
+        signal: parent.signal,
+        hooks: [hook('pass', async (e, next) => next(e), { event: 'engine.create' })],
+        core: async () => {
+          if (cancel) parent.abort(failure)
+          throw failure
+        },
+        validateResult: () => { validations++ },
+        onFailure: (plugin, error) => { failures.push([plugin, error]) },
+      }), error => error === failure)
+      assert.deepEqual(failures, [])
+      assert.equal(validations, 0)
+    }
+  })
+
   it('runs downstream and core afresh for each ordinary next call', async () => {
     let effects = 0
     let below = 0
@@ -157,6 +852,23 @@ describe('ordinary mod dispatch', () => {
     assert.equal(await result, 'second')
     first.resolve('first')
     assert.equal(effects, 2)
+  })
+
+  it('does not blame ordinary pass-through or catch replay for a downstream rejection', async () => {
+    for (const hasCatch of [false, true]) {
+      const failure = new Error('core rejected')
+      const failures: unknown[] = []
+      let effects = 0
+      const result = dispatchModEvent({
+        event: 'tool.call', input,
+        hooks: [hook('passing', async (e, next) => next(e), { hasCatch })],
+        core: async () => { effects++; throw failure },
+        onFailure: (_plugin, error) => { failures.push(error) },
+      })
+      await assert.rejects(result, error => error === failure)
+      assert.equal(effects, 1)
+      assert.deepEqual(failures, [])
+    }
   })
 
   it('propagates a downstream rejection unless catch returns a valid answer', async () => {
@@ -321,7 +1033,7 @@ describe('ordinary mod dispatch', () => {
         return e
       },
     })
-    assert.deepEqual(seen, ['literal', 'core'])
+    assert.deepEqual(seen, ['glob-event', 'literal', 'core'])
   })
 
   it('orders tiers stably and next.to preserves peers while accumulating strict skips', async () => {
@@ -497,6 +1209,74 @@ describe('ordinary mod dispatch', () => {
     })
     assert.equal(result, 'handled')
     assert.equal(outer.trace.length, 2)
+  })
+
+  it('records trace indices, event, bypass reasons and own wall time', async () => {
+    let observed!: ModNext
+    let skippedCalls = 0
+    await dispatchModEvent({event:'tool.call',input,hooks:[
+      hook('unmatched',async()=> 'wrong',{event:'turn.complete'}),
+      hook('outer',async(e,next)=>{observed=next;return next(e)},{tier:'prepend'}),
+      hook('managed',async(e,next)=>{
+        const result=await next.to(e,'core')
+        const until=performance.now()+8
+        while(performance.now()<until) { /* Charge synchronous hook work, not a suspended next. */ }
+        return result
+      },{tier:'prepend'}),
+      hook('bypassed',async()=>{skippedCalls++;return 'wrong'}),
+    ],core:async()=>{await new Promise(resolve=>setTimeout(resolve,90));return 'core'}})
+    const entries=observed.trace
+    assert.deepEqual(entries.map(({index,event,plugin,outcome,reason})=>({index,event,plugin,outcome,reason})),[
+      {index:1,event:'tool.call',plugin:'managed',outcome:'passed',reason:undefined},
+      {index:2,event:'tool.call',plugin:'bypassed',outcome:'skipped',reason:'bypassed by managed'},
+      {index:3,event:'tool.call',plugin:'engine',outcome:'returned',reason:undefined},
+    ])
+    assert.equal(skippedCalls,0)
+    assert.ok(entries[0]!.ms>=8)
+    assert.ok(entries[0]!.ms<60)
+    assert.equal(entries[1]!.ms,0)
+    assert.ok(Object.hasOwn(entries[1]!,'returned'))
+    assert.equal(entries[1]!.returned,undefined)
+    assert.ok(entries[2]!.ms>=80)
+    assert.ok(entries.every(Object.isFrozen))
+  })
+
+  it('meters trace own time for an unbudgeted engine fold and removes overlapping next waits once', async () => {
+    let observed!: ModNext
+    await dispatchModEvent({event:'engine.create',input:{},hooks:[
+      hook('outer',async(e,next)=>{observed=next;return next(e)},{event:'engine.create'}),
+      hook('inner',async(e,next)=>{
+        const first=next({...e,branch:1})
+        const second=next({...e,branch:2})
+        await Promise.all([first,second])
+        const until=performance.now()+8
+        while(performance.now()<until) { /* Charge synchronous hook work, not a suspended next. */ }
+        return {}
+      },{event:'engine.create'}),
+    ],core:async()=>{await new Promise(resolve=>setTimeout(resolve,90));return {}}})
+    assert.deepEqual(observed.trace.map(({index,event})=>({index,event})),[
+      {index:1,event:'engine.create'},{index:2,event:'engine.create'},
+    ])
+    assert.ok(observed.trace[0]!.ms>=8)
+    assert.ok(observed.trace[0]!.ms<60)
+    assert.ok(observed.trace[1]!.ms>=80)
+  })
+
+  it('keeps a settled invocation budget from reading a later catch allowance', async () => {
+    let ordinary!: ModNext['budget']
+    let caught!: ModNext['budget']
+    let beforeCatch=0
+    await dispatchModEvent({event:'tool.call',input,budgetMs:80,catchGraceMs:200,
+      hooks:[hook('budget-phases',async(_e,next,catching)=>{
+        if(!catching){ordinary=next.budget;beforeCatch=ordinary.remainingMs;throw Error('recover')}
+        caught=next.budget
+        return 'recovered'
+      },{hasCatch:true})],core:async()=> 'core',
+    })
+    assert.equal(ordinary.ms,80)
+    assert.ok(ordinary.remainingMs<=beforeCatch)
+    assert.equal(caught.ms,200)
+    assert.ok(caught.remainingMs<=200)
   })
 
   it('pauses the own budget until every concurrent downstream call settles', async () => {
@@ -861,9 +1641,9 @@ describe('ordinary mod dispatch', () => {
     never.resolve('late')
   })
 
-  it('catch grace expires during a newly-started downstream call without restarting it', async () => {
+  it('pauses catch grace during a newly-started downstream call without restarting it', async () => {
     const below = deferred<string>()
-    const expired = deferred<void>()
+    const entered = deferred<void>()
     let effects = 0
     let failures = 0
     let catchNext!: ModNext
@@ -884,16 +1664,18 @@ describe('ordinary mod dispatch', () => {
       ],
       core: async () => {
         effects++
+        entered.resolve()
         return below.promise
       },
-      onFailure: () => {
-        if (++failures === 2) expired.resolve()
-      },
+      onFailure: () => { failures++ },
     })
-    await expired.promise
-    assert.ok(catchNext.signal.aborted)
+    await entered.promise
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const aborted = catchNext.signal.aborted
     below.resolve('below')
-    assert.equal(await result, 'below')
+    assert.equal(await result, 'below transformed')
+    assert.equal(aborted, false)
+    assert.equal(failures, 1)
     assert.equal(effects, 1)
   })
 
@@ -1016,3 +1798,99 @@ describe('ordinary mod dispatch', () => {
     never.resolve('late')
   })
 })
+
+// Official 2.1.292 uses the matching plugin roster, including short-circuited hooks.
+it('reports host-only matching plugin origins without changing the public receipt', async () => {
+  const entered: string[] = []
+  let roster: readonly {plugin: string; tier: ModTier}[] | undefined
+  const deny = {decision: 'deny', reason: 'Owned refusal'}
+  const result = await dispatchModEvent({
+    event: 'tool.check', input: {tool: 'Bash', input: {}}, origin: {plugin: 'driver', tier: 'user'},
+    hooks: [
+      hook('observer', async () => {entered.push('observer'); return deny}, {event: 'tool.check', id: 1}),
+      hook('observer', async () => {throw Error('not entered')}, {event: 'tool.check', id: 2}),
+      hook('tail', async () => {throw Error('not entered')}, {event: 'tool.check'}),
+      hook('unmatched', async () => {throw Error('wrong tool')}, {event: 'tool.check', matcher: {tool: 'Read'}}),
+      hook('driver', async () => {throw Error('excluded origin')}, {event: 'tool.check', tier: 'prepend'}),
+      hook('other-event', async () => {throw Error('wrong event')}),
+    ],
+    core: async () => {throw Error('short circuited')},
+    onHooks: hooks => {roster = hooks},
+  })
+  assert.deepEqual(roster, [{plugin: 'observer', tier: 'user'}, {plugin: 'tail', tier: 'user'}])
+  assert.deepEqual(entered, ['observer'])
+  assert.deepEqual(result, deny)
+  assert.equal(Object.isFrozen(roster), true)
+  assert.equal(Object.isFrozen(roster![0]), true)
+})
+
+it('matching plugin origins respect explicit registration exclusions and keep siblings', async () => {
+  let roster: readonly {plugin: string; tier: ModTier}[] | undefined
+  const result = await dispatchModEvent({
+    event: 'tool.check', input: {tool: 'Bash', input: {}},
+    origin: {plugin: 'driver', tier: 'user'}, skip: {plugin: 'driver', registrationId: 1},
+    hooks: [
+      hook('driver', async () => {throw Error('excluded registration')}, {event: 'tool.check', id: 1}),
+      hook('driver', async () => ({decision: 'deny'}), {event: 'tool.check', id: 2}),
+      hook('tail', async () => {throw Error('short circuited')}, {event: 'tool.check'}),
+    ], core: async () => ({}), onHooks: hooks => {roster = hooks},
+  })
+  assert.deepEqual(roster, [{plugin: 'driver', tier: 'user'}, {plugin: 'tail', tier: 'user'}])
+  assert.deepEqual(result, {decision: 'deny'})
+})
+
+// Official 2.1.292 pins every ToolCheckInput identity field before next().
+for (const field of ['tool', 'input', 'tool_use_id', 'agentId', 'ceiling'] as const) {
+  it(`rejects a tool.check ${field} rewrite with the official plugin-owned error`, async () => {
+    const question = {tool: 'Bash', input: {command: 'printf original'}, tool_use_id: 'real-call', agentId: 'child-loop', ceiling: 'ask'}
+    const replacement = field === 'input' ? {command: 'printf changed'} : 'changed'
+    let enteredCore = 0
+    let failure: {name:string;message:string} | undefined
+    const result = await dispatchModEvent({
+      event: 'tool.check', input: question,
+      hooks: [hook('observer', async (event, next) => {
+        try {return await next({...event, [field]: replacement})}
+        catch (error) {
+          assert(error instanceof Error)
+          failure = {name:error.name, message:error.message}
+          return {decision:'deny',reason:'identity refused'}
+        }
+      }, {event:'tool.check'})],
+      core: async () => {enteredCore++;return {decision:'allow'}},
+    })
+    assert.deepEqual(result, {decision:'deny',reason:'identity refused'})
+    assert.equal(enteredCore,0)
+    assert.deepEqual(failure, {name:'HooksError', message:`observer: next() passed an argument with a changed ${field} (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)`})
+  })
+}
+
+it('accepts a cloned unchanged tool.check input rather than pinning its object reference', async () => {
+  const question = {tool:'Bash',input:{command:'printf original',nested:[1,2]},tool_use_id:'real-call',agentId:'child-loop',ceiling:'ask'}
+  let enteredCore = 0
+  const failures: unknown[] = []
+  const result = await dispatchModEvent({
+    event:'tool.check',input:question,
+    hooks:[hook('observer',async(event,next)=>next(structuredClone(event)),{event:'tool.check'})],
+    core:async input=>{assert.deepEqual(input,question);enteredCore++;return {decision:'allow'}},
+    onFailure:(_plugin,error)=>{failures.push(error)},
+  })
+  assert.deepEqual(result,{decision:'allow'})
+  assert.equal(enteredCore,1)
+  assert.deepEqual(failures,[])
+})
+
+for (const field of ['tool_use_id','agentId','ceiling'] as const) {
+  it(`restores an omitted tool.check ${field} before checking identity`, async () => {
+    const question = {tool:'Bash',input:{command:'printf original'},tool_use_id:'real-call',agentId:'child-loop',ceiling:'ask'}
+    const entered: unknown[] = [], failures: unknown[] = []
+    const result = await dispatchModEvent({
+      event:'tool.check',input:question,
+      hooks:[hook('observer',async(event,next)=>{const copy={...event};delete copy[field];return next(copy)},{event:'tool.check'})],
+      core:async input=>{entered.push(input);return {decision:'allow'}},
+      onFailure:(_plugin,error)=>{failures.push(error)},
+    })
+    assert.deepEqual(result,{decision:'allow'})
+    assert.deepEqual(entered,[question])
+    assert.deepEqual(failures,[])
+  })
+}

@@ -114,10 +114,21 @@ export async function getAnthropicClient({
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP
   const customHeaders = getCustomHeaders()
+  const isClaudeAIOAuth =
+    getAPIProvider() === 'firstParty' && isClaudeAISubscriber()
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(),
     'X-Claude-Code-Session-Id': getSessionId(),
+    ...(isClaudeAIOAuth && {
+      'User-Agent': 'claude-cli/2.1.280 (external, cli)',
+      'X-Stainless-Lang': 'js',
+      'X-Stainless-Package-Version': '0.112.1',
+      'X-Stainless-Runtime': 'node',
+      'X-Stainless-Runtime-Version': 'v26.3.0',
+      'X-Stainless-Retry-Count': '0',
+      'X-Stainless-Timeout': '600',
+    }),
     ...customHeaders,
     ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
     ...(remoteSessionId
@@ -371,7 +382,7 @@ async function configureApiKeyHeaders(
   }
 }
 
-function getCustomHeaders(): Record<string, string> {
+export function getCustomHeaders(): Record<string, string> {
   const customHeaders: Record<string, string> = {}
   const customHeadersEnv = process.env.ANTHROPIC_CUSTOM_HEADERS
 

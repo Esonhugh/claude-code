@@ -11,13 +11,13 @@
 
 import { mkdirSync } from 'fs'
 import { readdir, rm, stat } from 'fs/promises'
-import { delimiter, join } from 'path'
+import { delimiter, isAbsolute, join, resolve, win32 } from 'path'
 import { getUseCoworkPlugins } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
 import { errorMessage, isFsInaccessible } from '../errors.js'
 import { formatFileSize } from '../format.js'
-import { expandTilde } from '../permissions/pathValidation.js'
+import { expandTilde } from '../path.js'
 
 const PLUGINS_DIR = 'plugins'
 const COWORK_PLUGINS_DIR = 'cowork_plugins'
@@ -89,7 +89,81 @@ export function getPluginSeedDirs(): string[] {
   return raw.split(delimiter).filter(Boolean).map(expandTilde)
 }
 
+// Check before resolve(): normalizing /net/server/../.. first would hide
+// the network location that official 2.1.292 refuses to load from env.
+function isLocalPluginDirectory(path: string): boolean {
+  if (!isAbsolute(path)) return false
+  const hasTraversal = (value: string) => /(^|[\\/])\.{1,2}[. ]*([\\/]|$)/.test(value)
+  if (/^\\\\\?\\volume\{/i.test(path)) return !hasTraversal(path) && !path.includes('/')
+  const devicePrefix = /^[\\/]\?\?[\\/]/
+  if (devicePrefix.test(path) || (path.includes('??') && devicePrefix.test(win32.normalize(path)))) return false
+  const windowsPath = path.startsWith('\\\\?\\UNC\\')
+    ? '\\\\' + path.slice(8)
+    : path.startsWith('\\\\?\\') && path.length >= 7 && path[5] === ':' ? path.slice(4) : path
+  if (windowsPath !== path && (hasTraversal(windowsPath) || windowsPath.includes('/'))) return false
+  const wslShare = /^[\\/]{2}wsl(?:\$|\.localhost)[\\/]([^\\/]*)/i.exec(windowsPath)
+  const isWslShare = wslShare !== null && !/^\.{0,2}[. ]*$/.test(wslShare[1] ?? '')
+  if (/^[\\/]{2}/.test(windowsPath) && !isWslShare) return false
+
+  if (path.startsWith('/')) {
+    const parts: string[] = []
+    const fold = (part: string) => part.replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '').toUpperCase().toLowerCase()
+    for (const part of path.split('/')) {
+      if (part === '' || part === '.') continue
+      if (part === '..') { parts.pop(); continue }
+      parts.push(part)
+      if (parts.length === 1 && parts[0]!.toLowerCase() === 'network') return false
+      if (parts.length === 2 && fold(parts[0]!) === 'net') return false
+      if (parts.length === 3 && fold(parts[0]!) === 'network' && fold(parts[1]!) === 'servers') return false
+    }
+  }
+  return true
+}
+
+export function getPluginDirsFromEnvironment(raw = process.env.CLAUDE_CODE_PLUGIN_DIRS): string[] {
+  const paths = (raw ?? '').split(delimiter).map(path => expandTilde(path.trim())).filter(Boolean)
+  const invalid = paths.filter(path => !isLocalPluginDirectory(path))
+  if (invalid.length > 0) {
+    logForDebugging(`CLAUDE_CODE_PLUGIN_DIRS: skipped ${invalid.join(', ')}: a plugin folder here is an absolute local path or starts with ~`, { level: 'warn' })
+  }
+  return paths.filter(isLocalPluginDirectory).map(path => resolve(path))
+}
+
+export function settlePluginDirsEnvironment(): string[] {
+  const paths = getPluginDirsFromEnvironment()
+  if (process.env.CLAUDE_CODE_PLUGIN_DIRS !== undefined) {
+    process.env.CLAUDE_CODE_PLUGIN_DIRS = paths.join(delimiter)
+  }
+  return paths
+}
+
+export function mergePluginDirectories(...groups: ReadonlyArray<ReadonlyArray<string>>): string[] {
+  const paths = new Map<string, string>()
+  for (const path of groups.flat()) {
+    const key = resolve(path)
+    if (!paths.has(key)) paths.set(key, path)
+  }
+  return [...paths.values()]
+}
+
+/** Explicit no-MCP sources suppress overlapping environment paths, not regular CLI/SDK paths. */
+export function filterNoMcpEnvironmentPluginDirectories(
+  paths: readonly string[],
+  noMcpPaths: readonly string[],
+): string[] {
+  const excluded = new Set(noMcpPaths.map(path => resolve(path)))
+  return paths.filter(path => !excluded.has(resolve(path)))
+}
+
 function sanitizePluginId(pluginId: string): string {
+  const npmName = pluginId.slice(0, -4)
+  if (pluginId.endsWith('@npm') && !npmName.includes('..') &&
+      /^(?:@[a-z0-9][a-z0-9-._]*\/)?[a-z0-9][a-z0-9-._]*$/.test(npmName)) {
+    return `${npmName.replace(/[^a-z0-9-]/gu, char => {
+      const code = char.codePointAt(0)!
+      return code <= 255 ? `_${code.toString(16).padStart(2, '0')}` : `__${code.toString(16)}_`
+    })}-npm`
+  }
   // Same character class as the install-cache sanitizer (pluginLoader.ts)
   return pluginId.replace(/[^a-zA-Z0-9\-_]/g, '-')
 }
@@ -165,8 +239,21 @@ export async function getPluginDataDirSize(
  * cleanup side-effect surfacing as "uninstall failed". Same rationale as
  * deletePluginOptions (pluginOptionsStorage.ts).
  */
-export async function deletePluginDataDir(pluginId: string): Promise<void> {
+export async function deletePluginDataDir(
+  pluginId: string,
+  remainingPluginIds: Iterable<string> | null,
+): Promise<void> {
   const dir = pluginDataDirPath(pluginId)
+  if (remainingPluginIds === null) {
+    logForDebugging(`Keeping plugin data dir ${dir}: installed plugin records cannot be read`, { level: 'warn' })
+    return
+  }
+  for (const other of remainingPluginIds) {
+    if (other !== pluginId && pluginDataDirPath(other).toLowerCase() === dir.toLowerCase()) {
+      logForDebugging(`Keeping plugin data dir ${dir}: still used by ${other}`)
+      return
+    }
+  }
   try {
     await rm(dir, { recursive: true, force: true })
   } catch (e) {

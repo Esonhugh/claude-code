@@ -28,7 +28,6 @@ import { getErrorParts } from '../utils/toolErrors.js'
 import { zodToJsonSchema } from '../utils/zodToJsonSchema.js'
 
 type ToolInput = Tool['inputSchema']
-type ToolOutput = Tool['outputSchema']
 
 const MCP_COMMANDS: Command[] = [review]
 
@@ -65,21 +64,6 @@ export async function startMCPServer(
       return {
         tools: await Promise.all(
           tools.map(async tool => {
-            let outputSchema: ToolOutput | undefined
-            if (tool.outputSchema) {
-              const convertedSchema = zodToJsonSchema(tool.outputSchema)
-              // MCP SDK requires outputSchema to have type: "object" at root level
-              // Skip schemas with anyOf/oneOf at root (from z.union, z.discriminatedUnion, etc.)
-              // See: https://github.com/anthropics/claude-code/issues/8014
-              if (
-                typeof convertedSchema === 'object' &&
-                convertedSchema !== null &&
-                'type' in convertedSchema &&
-                convertedSchema.type === 'object'
-              ) {
-                outputSchema = convertedSchema as ToolOutput
-              }
-            }
             return {
               ...tool,
               description: await tool.prompt({
@@ -88,7 +72,9 @@ export async function startMCPServer(
                 agents: [],
               }),
               inputSchema: zodToJsonSchema(tool.inputSchema) as ToolInput,
-              outputSchema,
+              // Results carry no structuredContent, so advertising an
+              // outputSchema makes MCP SDK clients reject every call.
+              outputSchema: undefined,
             }
           }),
         ),
@@ -98,7 +84,10 @@ export async function startMCPServer(
 
   server.setRequestHandler(
     CallToolRequestSchema,
-    async ({ params: { name, arguments: args } }): Promise<CallToolResult> => {
+    async (
+      { params: { name, arguments: args } },
+      { signal },
+    ): Promise<CallToolResult> => {
       const toolPermissionContext = getEmptyToolPermissionContext()
       // TODO: Also re-expose any MCP tools
       const tools = getTools(toolPermissionContext)
@@ -107,10 +96,18 @@ export async function startMCPServer(
         throw new Error(`Tool ${name} not found`)
       }
 
+      // Client cancellation (notifications/cancelled) aborts the tool call.
+      const abortController = createAbortController()
+      if (signal.aborted) abortController.abort()
+      else
+        signal.addEventListener('abort', () => abortController.abort(), {
+          once: true,
+        })
+
       // Assume MCP servers do not read messages separately from the tool
       // call arguments.
       const toolUseContext: ToolUseContext = {
-        abortController: createAbortController(),
+        abortController,
         options: {
           commands: MCP_COMMANDS,
           tools,
@@ -133,13 +130,18 @@ export async function startMCPServer(
         updateAttributionState: () => {},
       }
 
-      // TODO: validate input types with zod
       try {
         if (!tool.isEnabled()) {
           throw new Error(`Tool ${name} is not enabled`)
         }
+        const parsedInput = tool.inputSchema.safeParse(args ?? {})
+        if (!parsedInput.success) {
+          throw new Error(
+            `Tool ${name} arguments failed schema validation: ${parsedInput.error.message}`,
+          )
+        }
         const validationResult = await tool.validateInput?.(
-          (args as never) ?? {},
+          parsedInput.data as never,
           toolUseContext,
         )
         if (validationResult && !validationResult.result) {
@@ -149,7 +151,7 @@ export async function startMCPServer(
           )
         }
         const finalResult = await tool.call(
-          (args ?? {}) as never,
+          parsedInput.data as never,
           toolUseContext,
           hasPermissionsToUseTool,
           createAssistantMessage({

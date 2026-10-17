@@ -1,5 +1,7 @@
 import { feature } from 'bun:bundle'
+import get from 'lodash-es/get.js'
 import mergeWith from 'lodash-es/mergeWith.js'
+import set from 'lodash-es/set.js'
 import { dirname, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import {
@@ -8,7 +10,7 @@ import {
   getOriginalCwd,
   getUseCoworkPlugins,
 } from '../../bootstrap/state.js'
-import { getRemoteManagedSettingsSyncFromCache } from '../../services/remoteManagedSettings/syncCacheState.js'
+import { getRemoteManagedSettingsSyncFromCache, isRemoteManagedSettingsVerified } from '../../services/remoteManagedSettings/syncCacheState.js'
 import { uniq } from '../array.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
@@ -28,17 +30,20 @@ import {
   getEnabledSettingSources,
   type SettingSource,
 } from './constants.js'
-import { markInternalWrite } from './internalWrites.js'
+import { markInternalWrite, settingsContentIdentity } from './internalWrites.js'
 import {
   getManagedFilePath,
   getManagedSettingsDropInDir,
 } from './managedPath.js'
 import { getHkcuSettings, getMdmSettings } from './mdm/settings.js'
 import {
+  acceptSettingsFile,
   getCachedParsedFile,
   getCachedSettingsForSource,
   getPluginSettingsBase,
   getSessionSettingsCache,
+  isSettingsFileRetained,
+  type ParsedSettings,
   resetSettingsCache,
   setCachedParsedFile,
   setCachedSettingsForSource,
@@ -116,6 +121,11 @@ export function loadManagedFileSettings(): {
     const code = getErrnoCode(e)
     if (code !== 'ENOENT' && code !== 'ENOTDIR') {
       logError(e)
+      errors.push({
+        file: dropInDir,
+        path: '',
+        message: `Failed to read managed settings directory: ${e instanceof Error ? e.message : String(e)}`,
+      })
     }
   }
 
@@ -190,7 +200,21 @@ export function parseSettingsFile(path: string): {
       errors: cached.errors,
     }
   }
-  const result = parseSettingsFileUncached(path)
+  let result: ParsedSettings
+  try {
+    result = readSettingsFile(path)
+  } catch (error) {
+    return {
+      settings: null,
+      errors: [
+        {
+          file: path,
+          path: '',
+          message: `Failed to read settings file: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ],
+    }
+  }
   setCachedParsedFile(path, result)
   // Clone the first return too — the caller may mutate before
   // another caller reads the same cache entry.
@@ -200,16 +224,22 @@ export function parseSettingsFile(path: string): {
   }
 }
 
-function parseSettingsFileUncached(path: string): {
-  settings: SettingsJson | null
-  errors: ValidationError[]
-} {
+/** Read and validate a candidate without publishing it into the effective cache. */
+export function readSettingsFile(
+  path: string,
+  writtenBytes?: Buffer,
+): ParsedSettings {
+  let identity: string | null = null
   try {
-    const { resolvedPath } = safeResolvePath(getFsImplementation(), path)
-    const content = readFileSync(resolvedPath)
+    const fs = getFsImplementation()
+    const { resolvedPath } = safeResolvePath(fs, path)
+    const bytes = writtenBytes ?? fs.readFileBytesSync(resolvedPath)
+    identity = settingsContentIdentity(bytes)
+    const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf16le' : 'utf8'
+    const content = bytes.toString(encoding).replaceAll('\r\n', '\n')
 
     if (content.trim() === '') {
-      return { settings: {}, errors: [] }
+      return { settings: {}, errors: [], identity }
     }
 
     const data = safeParseJSON(content, false)
@@ -222,13 +252,14 @@ function parseSettingsFileUncached(path: string): {
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
-      return { settings: null, errors: [...ruleWarnings, ...errors] }
+      return { settings: null, errors: [...ruleWarnings, ...errors], identity }
     }
 
-    return { settings: result.data, errors: ruleWarnings }
+    return { settings: result.data, errors: ruleWarnings, identity }
   } catch (error) {
     handleFileSystemError(error, path)
-    return { settings: null, errors: [] }
+    if (!isENOENT(error)) throw error
+    return { settings: null, errors: [], identity }
   }
 }
 
@@ -318,33 +349,140 @@ export function getSettingsForSource(
   return result
 }
 
+function hasSettings(settings: SettingsJson | null): settings is SettingsJson {
+  return settings !== null &&
+    Object.keys(settings).some(key => key !== 'managedSourcesBehavior')
+}
+
+function getValidatedRemotePolicySettings(): {
+  settings: SettingsJson | null
+  errors: ValidationError[]
+} {
+  const remoteSettings = getRemoteManagedSettingsSyncFromCache()
+  if (remoteSettings === null) return { settings: null, errors: [] }
+
+  const result = SettingsSchema().safeParse(remoteSettings)
+  if (!result.success) {
+    return {
+      settings: null,
+      errors: formatZodError(result.error, 'remote managed settings'),
+    }
+  }
+  return { settings: result.data, errors: [] }
+}
+
+function loadPolicySettings(
+  remoteSettings = getValidatedRemotePolicySettings().settings,
+  includeUserWritable = true,
+): SettingsJson | null {
+  const mdmSettings = getMdmSettings().settings
+  const fileSettings = loadManagedFileSettings().settings
+  const hkcuSettings = includeUserWritable ? getHkcuSettings().settings : null
+  const sources = [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
+  const behavior = sources.find(
+    settings => settings !== null &&
+      (settings.managedSourcesBehavior !== undefined || hasSettings(settings)),
+  )?.managedSourcesBehavior
+  const tiers = sources.filter(hasSettings)
+  const highest = tiers[0]
+  if (!highest) return null
+  if (behavior !== 'merge') return highest
+  const merged: SettingsJson = {}
+  for (const settings of [...tiers].reverse())
+    mergeWith(merged, settings, settingsMergeCustomizer)
+  applyRestrictiveSettings(merged, tiers)
+  delete merged.managedSourcesBehavior
+  return merged
+}
+
+// Like official 2.1.292: when managed tiers compose with managedSourcesBehavior
+// "merge", these keys keep the most restrictive value any tier sets (listed values
+// are ordered most restrictive first), and a lower tier cannot set a permissive
+// value the highest tier leaves unset. Only keys in this schema are listed.
+const RESTRICTIVE_SETTING_PATHS: {
+  path: string[]
+  restrictive: boolean | string | string[]
+}[] = [
+  { path: ['allowManagedPermissionRulesOnly'], restrictive: true },
+  { path: ['allowManagedHooksOnly'], restrictive: true },
+  { path: ['allowManagedMcpServersOnly'], restrictive: true },
+  { path: ['disableAllHooks'], restrictive: true },
+  { path: ['disableSideloadFlags'], restrictive: true },
+  { path: ['disableWorkflows'], restrictive: true },
+  { path: ['fastModePerSessionOptIn'], restrictive: true },
+  { path: ['strictPluginOnlyCustomization'], restrictive: true },
+  { path: ['disableAutoMode'], restrictive: 'disable' },
+  { path: ['disableDeepLinkRegistration'], restrictive: 'disable' },
+  { path: ['permissions', 'disableBypassPermissionsMode'], restrictive: 'disable' },
+  { path: ['permissions', 'disableAutoMode'], restrictive: 'disable' },
+  { path: ['enableWorkflows'], restrictive: false },
+  { path: ['useAutoModeDuringPlan'], restrictive: false },
+  { path: ['skipDangerousModePermissionPrompt'], restrictive: false },
+  { path: ['skipAutoPermissionPrompt'], restrictive: false },
+  { path: ['enableAllProjectMcpServers'], restrictive: false },
+  { path: ['channelsEnabled'], restrictive: false },
+  { path: ['skipWebFetchPreflight'], restrictive: false },
+  { path: ['skipWorkflowUsageWarning'], restrictive: false },
+  { path: ['crossSessionInbound'], restrictive: ['refuse', 'hold'] },
+  { path: ['sandbox', 'enabled'], restrictive: true },
+  { path: ['sandbox', 'failIfUnavailable'], restrictive: true },
+  { path: ['sandbox', 'autoAllowBashIfSandboxed'], restrictive: false },
+  { path: ['sandbox', 'allowUnsandboxedCommands'], restrictive: false },
+  { path: ['sandbox', 'enableWeakerNestedSandbox'], restrictive: false },
+  { path: ['sandbox', 'enableWeakerNetworkIsolation'], restrictive: false },
+  { path: ['sandbox', 'network', 'allowManagedDomainsOnly'], restrictive: true },
+  { path: ['sandbox', 'network', 'allowAllUnixSockets'], restrictive: false },
+  { path: ['sandbox', 'network', 'allowLocalBinding'], restrictive: false },
+  { path: ['sandbox', 'filesystem', 'allowManagedReadPathsOnly'], restrictive: true },
+]
+
+function unsetPath(settings: SettingsJson, path: string[]): void {
+  const parents: Record<string, unknown>[] = [settings]
+  for (const key of path.slice(0, -1)) {
+    const next = parents.at(-1)![key]
+    if (next === null || typeof next !== 'object') return
+    parents.push(next as Record<string, unknown>)
+  }
+  delete parents.at(-1)![path.at(-1)!]
+  // Drop parents the deletion left empty so `sandbox: {}` is not reported as set.
+  for (let i = parents.length - 1; i > 0; i--) {
+    if (Object.keys(parents[i]!).length > 0) break
+    delete parents[i - 1]![path[i - 1]!]
+  }
+}
+
+/**
+ * Applies RESTRICTIVE_SETTING_PATHS to `merged`, the plain merge of `tiers`
+ * (highest priority first). Exported for testing.
+ */
+export function applyRestrictiveSettings(
+  merged: SettingsJson,
+  tiers: SettingsJson[],
+): void {
+  const highest = tiers[0] ?? {}
+  for (const { path, restrictive } of RESTRICTIVE_SETTING_PATHS) {
+    const order = Array.isArray(restrictive) ? restrictive : [restrictive]
+    const ranks = tiers
+      .map(tier => order.indexOf(get(tier, path) as never))
+      .filter(rank => rank !== -1)
+    if (ranks.length > 0) {
+      set(merged, path, order[Math.min(...ranks)])
+    } else if (get(highest, path) === undefined && get(merged, path) !== undefined) {
+      unsetPath(merged, path)
+    }
+  }
+}
+
+/** Native guard ordering is authored by an admin or verified by the server. */
+export function getVouchedPolicySettings(): SettingsJson | null {
+  const remote = getValidatedRemotePolicySettings().settings
+  return loadPolicySettings(isRemoteManagedSettingsVerified() ? remote : null, false)
+}
+
 function getSettingsForSourceUncached(
   source: SettingSource,
 ): SettingsJson | null {
-  // For policySettings: first source wins (remote > HKLM/plist > file > HKCU)
-  if (source === 'policySettings') {
-    const remoteSettings = getRemoteManagedSettingsSyncFromCache()
-    if (remoteSettings && Object.keys(remoteSettings).length > 0) {
-      return remoteSettings
-    }
-
-    const mdmResult = getMdmSettings()
-    if (Object.keys(mdmResult.settings).length > 0) {
-      return mdmResult.settings
-    }
-
-    const { settings: fileSettings } = loadManagedFileSettings()
-    if (fileSettings) {
-      return fileSettings
-    }
-
-    const hkcu = getHkcuSettings()
-    if (Object.keys(hkcu.settings).length > 0) {
-      return hkcu.settings
-    }
-
-    return null
-  }
+  if (source === 'policySettings') return loadPolicySettings()
 
   const settingsFilePath = getSettingsFilePathForSource(source)
   const { settings: fileSettings } = settingsFilePath
@@ -382,7 +520,7 @@ export function getPolicySettingsOrigin():
   | 'hkcu'
   | null {
   // 1. Remote (highest)
-  const remoteSettings = getRemoteManagedSettingsSyncFromCache()
+  const remoteSettings = getValidatedRemotePolicySettings().settings
   if (remoteSettings && Object.keys(remoteSettings).length > 0) {
     return 'remote'
   }
@@ -418,6 +556,7 @@ export function getPolicySettingsOrigin():
 export function updateSettingsForSource(
   source: EditableSettingSource,
   settings: SettingsJson,
+  options?: { atomicOnly?: boolean },
 ): { error: Error | null } {
   if (
     (source as unknown) === 'policySettings' ||
@@ -442,7 +581,7 @@ export function updateSettingsForSource(
     let existingSettings = getSettingsForSourceUncached(source)
 
     // If validation failed, check if file exists with a JSON syntax error
-    if (!existingSettings) {
+    if (!existingSettings && !isSettingsFileRetained(filePath)) {
       let content: string | null = null
       try {
         content = readFileSync(filePath)
@@ -496,16 +635,16 @@ export function updateSettingsForSource(
       },
     )
 
-    // Mark this as an internal write before writing the file
-    markInternalWrite(filePath)
+    const content = jsonStringify(updatedSettings, null, 2) + '\n'
+    writeFileSyncAndFlush_DEPRECATED(filePath, content, {
+      encoding: 'utf-8',
+      atomicOnly: options?.atomicOnly,
+    })
+    // The synchronous write has completed before a watcher callback can run.
+    markInternalWrite(filePath, content)
 
-    writeFileSyncAndFlush_DEPRECATED(
-      filePath,
-      jsonStringify(updatedSettings, null, 2) + '\n',
-    )
-
-    // Invalidate the session cache since settings have been updated
     resetSettingsCache()
+    acceptSettingsFile(filePath, readSettingsFile(filePath, Buffer.from(content)))
 
     if (source === 'localSettings') {
       // Okay to add to gitignore async without awaiting
@@ -674,54 +813,15 @@ function loadSettingsFromDisk(): SettingsWithErrors {
 
     // Merge settings from each source in priority order with deep merging
     for (const source of getEnabledSettingSources()) {
-      // policySettings: "first source wins" — use the highest-priority source
-      // that has content. Priority: remote > HKLM/plist > managed-settings.json > HKCU
       if (source === 'policySettings') {
-        let policySettings: SettingsJson | null = null
-        const policyErrors: ValidationError[] = []
-
-        // 1. Remote (highest priority)
-        const remoteSettings = getRemoteManagedSettingsSyncFromCache()
-        if (remoteSettings && Object.keys(remoteSettings).length > 0) {
-          const result = SettingsSchema().safeParse(remoteSettings)
-          if (result.success) {
-            policySettings = result.data
-          } else {
-            // Remote exists but is invalid — surface errors even as we fall through
-            policyErrors.push(
-              ...formatZodError(result.error, 'remote managed settings'),
-            )
-          }
-        }
-
-        // 2. Admin-only MDM (HKLM / macOS plist)
-        if (!policySettings) {
-          const mdmResult = getMdmSettings()
-          if (Object.keys(mdmResult.settings).length > 0) {
-            policySettings = mdmResult.settings
-          }
-          policyErrors.push(...mdmResult.errors)
-        }
-
-        // 3. managed-settings.json + managed-settings.d/ (file-based, requires admin)
-        if (!policySettings) {
-          const { settings, errors } = loadManagedFileSettings()
-          if (settings) {
-            policySettings = settings
-          }
-          policyErrors.push(...errors)
-        }
-
-        // 4. HKCU (lowest — user-writable, only if nothing above exists)
-        if (!policySettings) {
-          const hkcu = getHkcuSettings()
-          if (Object.keys(hkcu.settings).length > 0) {
-            policySettings = hkcu.settings
-          }
-          policyErrors.push(...hkcu.errors)
-        }
-
-        // Merge the winning policy source into the settings chain
+        const remotePolicy = getValidatedRemotePolicySettings()
+        const policyErrors: ValidationError[] = [
+          ...remotePolicy.errors,
+          ...getMdmSettings().errors,
+          ...loadManagedFileSettings().errors,
+          ...getHkcuSettings().errors,
+        ]
+        const policySettings = loadPolicySettings(remotePolicy.settings)
         if (policySettings) {
           mergedSettings = mergeWith(
             mergedSettings,
@@ -888,28 +988,6 @@ export function hasSkipDangerousModePermissionPrompt(): boolean {
     getSettingsForSource('flagSettings')?.skipDangerousModePermissionPrompt ||
     getSettingsForSource('policySettings')?.skipDangerousModePermissionPrompt
   )
-}
-
-/**
- * Returns true if any trusted settings source has accepted the auto
- * mode opt-in dialog. projectSettings is intentionally excluded —
- * a malicious project could otherwise auto-bypass the dialog (RCE risk).
- */
-export function hasAutoModeOptIn(): boolean {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
-    const user = getSettingsForSource('userSettings')?.skipAutoPermissionPrompt
-    const local =
-      getSettingsForSource('localSettings')?.skipAutoPermissionPrompt
-    const flag = getSettingsForSource('flagSettings')?.skipAutoPermissionPrompt
-    const policy =
-      getSettingsForSource('policySettings')?.skipAutoPermissionPrompt
-    const result = !!(user || local || flag || policy)
-    logForDebugging(
-      `[auto-mode] hasAutoModeOptIn=${result} skipAutoPermissionPrompt: user=${user} local=${local} flag=${flag} policy=${policy}`,
-    )
-    return result
-  }
-  return false
 }
 
 /**

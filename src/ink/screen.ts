@@ -375,6 +375,7 @@ export type Screen = Size & {
 
   // Empty style ID for comparisons
   emptyStyleId: number
+  stylePool: StylePool
 
   /**
    * Bounding box of cells that were written to (not blitted) during rendering.
@@ -485,6 +486,7 @@ export function createScreen(
     charPool,
     hyperlinkPool,
     emptyStyleId: styles.none,
+    stylePool: styles,
     damage: undefined,
     noSelect: new Uint8Array(size),
     softWrap: new Int32Array(height),

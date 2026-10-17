@@ -11,6 +11,7 @@ type CoordinatorPermissionParams = {
   updatedInput: Record<string, unknown> | undefined
   suggestions: PermissionUpdate[] | undefined
   permissionMode: string | undefined
+  requiresExplicitUserApproval: boolean
 }
 
 /**
@@ -26,7 +27,15 @@ type CoordinatorPermissionParams = {
 async function handleCoordinatorPermission(
   params: CoordinatorPermissionParams,
 ): Promise<PermissionDecision | null> {
-  const { ctx, updatedInput, suggestions, permissionMode } = params
+  const {
+    ctx,
+    updatedInput,
+    suggestions,
+    permissionMode,
+    requiresExplicitUserApproval,
+  } = params
+
+  if (requiresExplicitUserApproval) return null
 
   try {
     // 1. Try permission hooks first (fast, local)

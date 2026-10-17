@@ -281,6 +281,7 @@ registerAsyncAgent({
   setAppState,
   toolUseId: 'toolu_child_running_parent',
   parentAgentId: 'parent-running-agent',
+  ownerAgentId: 'parent-running-agent',
   spawnDepth: 2,
 })
 enqueueAgentNotification({
@@ -334,6 +335,7 @@ registerAsyncAgent({
   setAppState,
   toolUseId: 'toolu_child_terminal_parent',
   parentAgentId: 'parent-terminal-agent',
+  ownerAgentId: 'parent-terminal-agent',
   spawnDepth: 2,
 })
 enqueueAgentNotification({

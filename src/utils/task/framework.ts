@@ -9,11 +9,16 @@ import {
 } from '../../constants/xml.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { TaskStatus, TaskType } from '../../Task.js'
+import { isTerminalTaskStatus } from '../../taskStatus.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
 import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
 import { canEvictTerminalTask } from './retention.js'
+import { createSignal } from '../signal.js'
+
+const taskChanged = createSignal<[string]>()
+export const subscribeToTaskChanges = taskChanged.subscribe
 
 // Standard polling interval for all tasks
 export const POLL_INTERVAL_MS = 1000
@@ -47,6 +52,7 @@ export function updateTaskState<T extends TaskState>(
   setAppState: SetAppState,
   updater: (task: T) => T,
 ): void {
+  let changed = false
   setAppState(prev => {
     const task = prev.tasks?.[taskId] as T | undefined
     if (!task) {
@@ -58,6 +64,7 @@ export function updateTaskState<T extends TaskState>(
       // spread so s.tasks subscribers don't re-render on unchanged state.
       return prev
     }
+    changed = true
     return {
       ...prev,
       tasks: {
@@ -66,6 +73,7 @@ export function updateTaskState<T extends TaskState>(
       },
     }
   })
+  if (changed) taskChanged.emit(taskId)
 }
 
 /**
@@ -75,6 +83,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
   let isReplacement = false
   setAppState(prev => {
     const existing = prev.tasks[task.id]
+    if (existing?.type === 'local_agent' && task.type === 'local_agent') existing.unregisterCleanup?.()
     isReplacement = existing !== undefined
     // Carry forward UI-held state on re-register (resumeAgentBackground
     // replaces the task; user's retain shouldn't reset). startTime keeps
@@ -90,6 +99,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
             messages: existing.messages,
             diskLoaded: existing.diskLoaded,
             pendingMessages: existing.pendingMessages,
+            keepaliveReasons: existing.keepaliveReasons,
           }
         : existing?.type === 'in_process_teammate' && task.type === 'in_process_teammate'
           ? {
@@ -101,6 +111,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
           : task
     return { ...prev, tasks: { ...prev.tasks, [task.id]: merged } }
   })
+  taskChanged.emit(task.id)
 
   // Replacement (resume) — not a new start. Skip to avoid double-emit.
   if (isReplacement) return
@@ -174,20 +185,14 @@ export async function generateTaskAttachments(state: AppState): Promise<{
 
   for (const taskState of Object.values(tasks)) {
     if (taskState.notified) {
-      switch (taskState.status) {
-        case 'completed':
-        case 'failed':
-        case 'killed':
-          // Evict terminal tasks — they've been consumed and can be GC'd
-          if (canEvictTerminalTask(taskState)) evictedTaskIds.push(taskState.id)
-          continue
-        case 'pending':
-          // Keep in map — hasn't run yet, but parent already knows about it
-          continue
-        case 'running':
-          // Fall through to running logic below
-          break
+      if (isTerminalTaskStatus(taskState.status)) {
+        // Evict terminal tasks — they've been consumed and can be GC'd
+        if (canEvictTerminalTask(taskState)) evictedTaskIds.push(taskState.id)
+        continue
       }
+      // Keep pending tasks in map — hasn't run yet, but parent already knows
+      // about it. Running tasks fall through to the logic below.
+      if (taskState.status === 'pending') continue
     }
 
     if (taskState.status === 'running') {

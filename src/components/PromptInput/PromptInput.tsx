@@ -43,7 +43,7 @@ import { isUltrareviewEnabled } from '../../commands/review/ultrareviewEnabled.j
 import { getNativeCSIuTerminalDisplayName } from '../../commands/terminalSetup/terminalSetup.js'
 import { type Command, hasCommand } from '../../commands.js'
 import { useIsModalOverlayActive } from '../../context/overlayContext.js'
-import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js'
+import { PromptDockColumnsContext, usePromptOverlayAnchor } from '../../context/promptOverlayContext.js'
 import {
   formatImageRef,
   formatPastedTextRef,
@@ -88,13 +88,17 @@ import {
 import {
   enterTeammateView,
   exitTeammateView,
-  stopOrDismissAgent,
+  dismissTerminalAgent,
 } from '../../state/teammateViewHelpers.js'
 import type { ToolPermissionContext } from '../../Tool.js'
-import { getViewableTeammatesSorted } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
+import {
+  getViewableTeammatesSorted,
+  InProcessTeammateTask,
+} from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import {
   isPanelAgentTask,
+  killAsyncAgent,
   type LocalAgentTaskState,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { isBackgroundTask } from '../../tasks/types.js'
@@ -113,6 +117,8 @@ import type {
 import type {
   BaseTextInputProps,
   PromptInputMode,
+  PromptInputHandle,
+  TextInputEdit,
   VimMode,
 } from '../../types/textInputTypes.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
@@ -157,13 +163,11 @@ import {
   isOpus1mMergeEnabled,
   modelDisplayString,
 } from '../../utils/model/model.js'
-import { setAutoModeActive } from '../../utils/permissions/autoModeState.js'
 import { getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js'
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlatform } from '../../utils/platform.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
 import { editPromptInEditor } from '../../utils/promptEditor.js'
-import { hasAutoModeOptIn } from '../../utils/settings/settings.js'
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js'
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js'
 import {
@@ -178,7 +182,11 @@ import type { TeamSummary } from '../../utils/teamDiscovery.js'
 import { getTeammateColor } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
-import type { TextHighlight } from '../../utils/textHighlighting.js'
+import { mergePromptDecorations, type TextHighlight } from '../../utils/textHighlighting.js'
+import { carryPromptDecorations, normalizePromptDecorations, type PromptDecoration } from '../../services/mods/promptEdit.js'
+import { firstGrapheme } from '../../utils/intl.js'
+import { getTheme } from '../../utils/theme.js'
+import { useTheme } from '../design-system/ThemeProvider.js'
 import type { Theme } from '../../utils/theme.js'
 import {
   findThinkingTriggerPositions,
@@ -194,7 +202,6 @@ import {
   getUltracodeNotificationText,
   getUltracodeNotificationTriggerPositions,
 } from '../../utils/ultracodeOrchestration.js'
-import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js'
 import { BridgeDialog } from '../BridgeDialog.js'
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js'
 import {
@@ -209,6 +216,7 @@ import { GlobalSearchDialog } from '../GlobalSearchDialog.js'
 import { HistorySearchDialog } from '../HistorySearchDialog.js'
 import { ModelPicker } from '../ModelPicker.js'
 import { QuickOpenDialog } from '../QuickOpenDialog.js'
+import { PinnedNotifications } from './PinnedNotifications.js'
 import TextInput from '../TextInput.js'
 import { ThinkingToggle } from '../ThinkingToggle.js'
 import { BackgroundTasksDialog } from '../tasks/BackgroundTasksDialog.js'
@@ -248,12 +256,15 @@ type Props = {
   enableLocalIOCompletions?: boolean
   remoteFileSuggestionProvider?: RemoteFileSuggestionProvider
   isLoading: boolean
+  isAssistantResponding: boolean
   verbose: boolean
   messages: Message[]
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void
   autoUpdaterResult: AutoUpdaterResult | null
   input: string
   onInputChange: (value: string) => void
+  onInputStateChange?: () => void
+  onPromptEdit?: (edit: TextInputEdit) => void
   mode: PromptInputMode
   onModeChange: (mode: PromptInputMode) => void
   stashedPrompt:
@@ -300,7 +311,7 @@ type Props = {
       speculationSessionTimeSavedMs: number
       setAppState: (f: (prev: AppState) => AppState) => void
     },
-    options?: { fromKeybinding?: boolean },
+    options?: { fromKeybinding?: boolean; wait?: boolean },
   ) => Promise<void>
   onAgentSubmit?: (
     input: string,
@@ -315,11 +326,8 @@ type Props = {
   setHelpOpen: React.Dispatch<React.SetStateAction<boolean>>
   hasSuppressedDialogs?: boolean
   isLocalJSXCommandActive?: boolean
-  insertTextRef?: React.MutableRefObject<{
-    insert: (text: string) => void
-    setInputWithCursor: (value: string, cursor: number) => void
-    cursorOffset: number
-  } | null>
+  insertTextRef?: React.MutableRefObject<PromptInputHandle | null>
+  typeaheadActiveRef?: React.MutableRefObject<boolean>
   voiceInterimRange?: { start: number; end: number } | null
 }
 
@@ -339,12 +347,15 @@ function PromptInput({
   enableLocalIOCompletions = true,
   remoteFileSuggestionProvider,
   isLoading,
+  isAssistantResponding,
   verbose,
   messages,
   onAutoUpdaterResult,
   autoUpdaterResult,
   input,
   onInputChange,
+  onInputStateChange,
+  onPromptEdit,
   mode,
   onModeChange,
   stashedPrompt,
@@ -372,8 +383,11 @@ function PromptInput({
   hasSuppressedDialogs,
   isLocalJSXCommandActive = false,
   insertTextRef,
+  typeaheadActiveRef,
   voiceInterimRange,
 }: Props): React.ReactNode {
+  const promptAnchor = usePromptOverlayAnchor()
+  const dockColumns = React.useContext(PromptDockColumnsContext)
   const mainLoopModel = useMainLoopModel()
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
@@ -387,44 +401,75 @@ function PromptInput({
     show: boolean
     key?: string
   }>({ show: false })
-  const [cursorOffset, setCursorOffset] = useState<number>(input.length)
+  const [cursorOffset, setCursorOffsetState] = useState<number>(input.length)
+  const cursorOffsetRef = useRef(cursorOffset)
+  const getCursorOffset = useCallback(() => cursorOffsetRef.current, [])
+  const setCursorOffset = useCallback((offset: number) => {
+    cursorOffsetRef.current = offset
+    onInputStateChange?.()
+    setCursorOffsetState(offset)
+  }, [onInputStateChange])
   // Track the last input value set via internal handlers so we can detect
   // external input changes (e.g. speech-to-text injection) and move cursor to end.
+  type PromptPaint = {text: string; decorations: PromptDecoration[]}
+  const [promptPaint, setPromptPaint] = useState<PromptPaint>()
+  const paintRef = useRef<PromptPaint | undefined>(undefined)
+  const previousPaintRef = useRef<PromptPaint | undefined>(undefined)
+  const [themeName] = useTheme()
   const lastInternalInputRef = React.useRef(input)
+  const clearPaintForChange = useCallback((value: string) => {
+    if (value === lastInternalInputRef.current) return
+    previousPaintRef.current = paintRef.current?.text === lastInternalInputRef.current ? paintRef.current : undefined
+    paintRef.current = undefined
+    setPromptPaint(undefined)
+  }, [])
   if (input !== lastInternalInputRef.current) {
+    clearPaintForChange(input)
     // Input changed externally (not through any internal handler) — move cursor to end
-    setCursorOffset(input.length)
+    cursorOffsetRef.current = input.length
+    setCursorOffsetState(input.length)
     lastInternalInputRef.current = input
   }
   // Wrap onInputChange to track internal changes before they trigger re-render
   const trackAndSetInput = React.useCallback(
     (value: string) => {
+      clearPaintForChange(value)
       lastInternalInputRef.current = value
       onInputChange(value)
     },
-    [onInputChange],
+    [onInputChange, clearPaintForChange],
   )
   // Expose an insertText function so callers (e.g. STT) can splice text at the
   // current cursor position instead of replacing the entire input.
   if (insertTextRef) {
     insertTextRef.current = {
-      cursorOffset,
+      get text() { return lastInternalInputRef.current },
+      get cursorOffset() { return cursorOffsetRef.current },
       insert: (text: string) => {
-        const needsSpace =
-          cursorOffset === input.length &&
-          input.length > 0 &&
-          !/\s$/.test(input)
-        const insertText = needsSpace ? ' ' + text : text
-        const newValue =
-          input.slice(0, cursorOffset) + insertText + input.slice(cursorOffset)
-        lastInternalInputRef.current = newValue
-        onInputChange(newValue)
-        setCursorOffset(cursorOffset + insertText.length)
+        const value = lastInternalInputRef.current, cursor = getCursorOffset()
+        const needsSpace = cursor === value.length && value.length > 0 && !/\s$/.test(value)
+        const inserted = needsSpace ? ' ' + text : text
+        trackAndSetInput(value.slice(0, cursor) + inserted + value.slice(cursor))
+        setCursorOffset(cursor + inserted.length)
       },
       setInputWithCursor: (value: string, cursor: number) => {
-        lastInternalInputRef.current = value
-        onInputChange(value)
+        trackAndSetInput(value)
         setCursorOffset(cursor)
+      },
+      paintDecorations: (decorations, text) => {
+        if (text !== lastInternalInputRef.current) return
+        previousPaintRef.current = undefined
+        const runs = normalizePromptDecorations(decorations, text)
+        paintRef.current = runs.length ? {text, decorations: runs} : undefined
+        setPromptPaint(paintRef.current)
+      },
+      carryDecorations: edit => {
+        const previous = previousPaintRef.current
+        previousPaintRef.current = undefined
+        if (!previous || previous.text !== edit.before.text || lastInternalInputRef.current !== edit.after.text) return
+        const runs = carryPromptDecorations(previous.decorations, edit.before, edit.after)
+        paintRef.current = runs.length ? {text: edit.after.text, decorations: runs} : undefined
+        setPromptPaint(paintRef.current)
       },
     }
   }
@@ -673,12 +718,8 @@ function PromptInput({
   const [showHistoryPicker, setShowHistoryPicker] = useState(false)
   const [showFastModePicker, setShowFastModePicker] = useState(false)
   const [showThinkingToggle, setShowThinkingToggle] = useState(false)
-  const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false)
-  const [previousModeBeforeAuto, setPreviousModeBeforeAuto] =
-    useState<PermissionMode | null>(null)
   const permissionModeIntentRef = useRef(toolPermissionContext.mode)
   const permissionModeIntentGenerationRef = useRef(0)
-  const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
   useEffect(() => {
     if (permissionModeIntentGenerationRef.current === 0) {
@@ -830,7 +871,7 @@ function PromptInput({
     markShown,
   } = usePromptSuggestion({
     inputValue: input,
-    isAssistantResponding: isLoading,
+    isAssistantResponding,
   })
 
   const displayedValue = useMemo(
@@ -1138,8 +1179,16 @@ function PromptInput({
       }
     }
 
-    return highlights
+    return mergePromptDecorations(highlights,
+      !isSearchingHistory && displayedValue === input && promptPaint?.text === displayedValue ? promptPaint.decorations : [],
+      getTheme(themeName), !footerItemSelected && !isSearchingHistory && !cursorAtImageChip
+        ? {start: cursorOffset, end: cursorOffset + (firstGrapheme(displayedValue.slice(cursorOffset)).length || 1)} : undefined)
   }, [
+    promptPaint,
+    themeName,
+    footerItemSelected,
+    cursorAtImageChip,
+    input,
     isSearchingHistory,
     historyQuery,
     historyMatch,
@@ -1271,10 +1320,19 @@ function PromptInput({
   }, [input.length, addNotification])
 
   // Initialize input buffer for undo functionality
-  const { pushToBuffer, undo, canUndo, clearBuffer } = useInputBuffer({
+  const { pushToBuffer, undo: undoBuffer, canUndo, clearBuffer: clearInputBuffer } = useInputBuffer({
     maxBufferSize: 50,
     debounceMs: 1000,
   })
+
+  const undo = useCallback(() => {
+    onInputStateChange?.()
+    return undoBuffer()
+  }, [onInputStateChange, undoBuffer])
+  const clearBuffer = useCallback(() => {
+    onInputStateChange?.()
+    clearInputBuffer()
+  }, [onInputStateChange, clearInputBuffer])
 
   useMaybeTruncateInput({
     input,
@@ -1291,11 +1349,13 @@ function PromptInput({
   })
 
   const onChange = useCallback(
-    (value: string) => {
+    (value: string, proposedCursorOffset = getCursorOffset()) => {
+      const input = lastInternalInputRef.current
+      const cursorOffset = getCursorOffset()
       if (value === '?') {
         logEvent('tengu_help_toggled', {})
         setHelpOpen(v => !v)
-        return
+        return { value: input, cursorOffset, accepted: false }
       }
       setHelpOpen(false)
 
@@ -1314,7 +1374,7 @@ function PromptInput({
       if (insertedAtStart && mode !== 'prompt') {
         if (isSingleCharInsertion) {
           onModeChange(mode)
-          return
+          return { value: input, cursorOffset, accepted: false }
         }
         // Multi-char insertion into empty input (e.g. tab-accepting "! gcloud auth login")
         if (input.length === 0) {
@@ -1326,7 +1386,10 @@ function PromptInput({
           pushToBuffer(input, cursorOffset, pastedContents)
           trackAndSetInput(valueWithoutMode)
           setCursorOffset(valueWithoutMode.length)
-          return
+          return {
+            value: valueWithoutMode,
+            cursorOffset: valueWithoutMode.length,
+          }
         }
       }
 
@@ -1345,12 +1408,17 @@ function PromptInput({
       )
 
       trackAndSetInput(processedValue)
+      const tabsBeforeCursor = value.slice(0, proposedCursorOffset).split('\t')
+        .length - 1
+      return {
+        value: processedValue,
+        cursorOffset: proposedCursorOffset + tabsBeforeCursor * 3,
+      }
     },
     [
       trackAndSetInput,
       onModeChange,
-      input,
-      cursorOffset,
+      getCursorOffset,
       pushToBuffer,
       pastedContents,
       dismissStashHint,
@@ -1359,7 +1427,7 @@ function PromptInput({
   )
 
   const {
-    resetHistory,
+    resetHistory: resetInputHistory,
     onHistoryUp,
     onHistoryDown,
     dismissSearchHint,
@@ -1379,6 +1447,11 @@ function PromptInput({
     setCursorOffset,
     mode,
   )
+
+  const resetHistory = useCallback(() => {
+    onInputStateChange?.()
+    resetInputHistory()
+  }, [onInputStateChange, resetInputHistory])
 
   // Dismiss search hint when user starts searching
   useEffect(() => {
@@ -1409,6 +1482,7 @@ function PromptInput({
       return
     }
 
+    onInputStateChange?.()
     onHistoryUp()
   }
 
@@ -1424,6 +1498,7 @@ function PromptInput({
       return
     }
 
+    onInputStateChange?.()
     // At bottom of history → enter footer at first visible pill
     if (onHistoryDown() && footerItems.length > 0) {
       const first = footerItems[0]!
@@ -1496,7 +1571,10 @@ function PromptInput({
       // Only in leader view — promptSuggestion is leader-context, not teammate.
       const suggestionText = promptSuggestionState.text
       const inputMatchesSuggestion =
-        inputParam.trim() === '' || inputParam === suggestionText
+        inputParam.trim() === '' ||
+        inputParam.localeCompare(suggestionText ?? '', undefined, {
+          sensitivity: 'accent',
+        }) === 0
       if (
         inputMatchesSuggestion &&
         suggestionText &&
@@ -1513,6 +1591,7 @@ function PromptInput({
             suggestionText,
             {
               setCursorOffset,
+              getCursorOffset,
               clearBuffer,
               resetHistory,
             },
@@ -1554,6 +1633,16 @@ function PromptInput({
             setCursorOffset(0)
             clearBuffer()
             resetHistory()
+            return
+          } else if ((result as { error?: string }).error === 'write_failed') {
+            // Keep the draft: the inbox write failed, and the message must not go to the model.
+            addNotification({
+              key: 'direct-message-failed',
+              text: `Could not deliver to @${directMessage.recipientName} — the message is still in the prompt`,
+              color: 'error',
+              priority: 'immediate',
+              timeoutMs: 5000,
+            })
             return
           } else if ((result as { error?: string }).error === 'no_team_context') {
             // No team context - fall through to normal prompt submission
@@ -1600,6 +1689,7 @@ function PromptInput({
         logEvent('tengu_transcript_input_to_teammate', {})
         await onAgentSubmit(inputParam, activeAgent.task, {
           setCursorOffset,
+          getCursorOffset,
           clearBuffer,
           resetHistory,
         })
@@ -1609,6 +1699,7 @@ function PromptInput({
       // Normal leader submission
       await onSubmitProp(inputParam, {
         setCursorOffset,
+        getCursorOffset,
         clearBuffer,
         resetHistory,
       })
@@ -1656,6 +1747,7 @@ function PromptInput({
     markAccepted,
     onModeChange,
   })
+  if (typeaheadActiveRef) typeaheadActiveRef.current = suggestions.length > 0
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
   // Hidden in teammate view — suggestion is leader-context only.
@@ -1780,10 +1872,10 @@ function PromptInput({
 
       setPastedContents(prev => ({ ...prev, [pasteId]: newContent }))
 
-      insertTextAtCursor(formatPastedTextRef(pasteId, numLines))
+      insertTextAtCursor(formatPastedTextRef(pasteId, numLines), true)
     } else {
       // For shorter pastes, just insert the text normally
-      insertTextAtCursor(text)
+      insertTextAtCursor(text, true)
     }
   }
 
@@ -1797,14 +1889,16 @@ function PromptInput({
     [],
   )
 
-  function insertTextAtCursor(text: string) {
+  function insertTextAtCursor(text: string, isTyped = false) {
+    const before = {text: lastInternalInputRef.current, cursor: getCursorOffset()}
     // Push current state to buffer before inserting
-    pushToBuffer(input, cursorOffset, pastedContents)
+    pushToBuffer(before.text, before.cursor, pastedContents)
 
     const newInput =
-      input.slice(0, cursorOffset) + text + input.slice(cursorOffset)
+      before.text.slice(0, before.cursor) + text + before.text.slice(before.cursor)
     trackAndSetInput(newInput)
-    setCursorOffset(cursorOffset + text.length)
+    setCursorOffset(before.cursor + text.length)
+    if (isTyped) onPromptEdit?.({before, after: {text: newInput, cursor: getCursorOffset()}})
   }
 
   const doublePressEscFromEmpty = useDoublePress(
@@ -2037,63 +2131,11 @@ function PromptInput({
       mode: permissionModeIntentRef.current,
     }
     logForDebugging(
-      `[auto-mode] handleCycleMode: currentMode=${intentContext.mode} isAutoModeAvailable=${intentContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
+      `[auto-mode] handleCycleMode: currentMode=${intentContext.mode} isAutoModeAvailable=${intentContext.isAutoModeAvailable}`,
     )
     const nextMode = getNextPermissionMode(intentContext, teamContext)
     const intentGeneration = ++permissionModeIntentGenerationRef.current
     permissionModeIntentRef.current = nextMode
-
-    // Check if user is entering auto mode for the first time. Gated on the
-    // persistent settings flag (hasAutoModeOptIn) rather than the broader
-    // hasAutoModeOptInAnySource so that --enable-auto-mode users still see
-    // the warning dialog once — the CLI flag should grant carousel access,
-    // not bypass the safety text.
-    let isEnteringAutoModeFirstTime = false
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
-      isEnteringAutoModeFirstTime =
-        nextMode === 'auto' &&
-        intentContext.mode !== 'auto' &&
-        !hasAutoModeOptIn() &&
-        !viewingAgentTaskId // Only show for primary agent, not subagents
-    }
-
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
-      if (isEnteringAutoModeFirstTime) {
-        setPreviousModeBeforeAuto(intentContext.mode)
-
-        if (autoModeOptInTimeoutRef.current) {
-          clearTimeout(autoModeOptInTimeoutRef.current)
-        }
-        autoModeOptInTimeoutRef.current = setTimeout(
-          (setShowAutoModeOptIn, autoModeOptInTimeoutRef) => {
-            setShowAutoModeOptIn(true)
-            autoModeOptInTimeoutRef.current = null
-          },
-          400,
-          setShowAutoModeOptIn,
-          autoModeOptInTimeoutRef,
-        )
-
-        if (helpOpen) {
-          setHelpOpen(false)
-        }
-        return
-      }
-
-      // Cycling again means the user advanced past auto mode. Dismiss any
-      // pending or visible opt-in prompt without reverting the carousel.
-      if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
-        if (showAutoModeOptIn) {
-          logEvent('tengu_auto_mode_opt_in_dialog_decline', {})
-        }
-        setShowAutoModeOptIn(false)
-        if (autoModeOptInTimeoutRef.current) {
-          clearTimeout(autoModeOptInTimeoutRef.current)
-          autoModeOptInTimeoutRef.current = null
-        }
-        setPreviousModeBeforeAuto(null)
-      }
-    }
 
     const applyModeChange = async () => {
       if (requestPermissionModeChange) {
@@ -2140,7 +2182,7 @@ function PromptInput({
           lastPlanModeUse: Date.now(),
         }))
       }
-      syncTeammateMode(nextMode, teamContext?.teamName)
+      await syncTeammateMode(nextMode, teamContext?.teamName)
     }
     void applyModeChange()
 
@@ -2157,97 +2199,6 @@ function PromptInput({
     setToolPermissionContext,
     requestPermissionModeChange,
     helpOpen,
-    showAutoModeOptIn,
-  ])
-
-  // Handler for auto mode opt-in dialog acceptance
-  const handleAutoModeOptInAccept = useCallback(() => {
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
-      const applyAutoMode = async () => {
-        if (requestPermissionModeChange) {
-          const result = await requestPermissionModeChange('auto')
-          if (result.success === false) {
-            addNotification({
-              key: 'permission-mode-rejected',
-              text: result.error,
-              color: 'error',
-              priority: 'high',
-            })
-            permissionModeIntentGenerationRef.current = 0
-            permissionModeIntentRef.current =
-              previousModeBeforeAuto ?? toolPermissionContext.mode
-            return
-          }
-        } else {
-          const strippedContext = transitionPermissionMode(
-            previousModeBeforeAuto ?? toolPermissionContext.mode,
-            'auto',
-            toolPermissionContext,
-          )
-          setToolPermissionContext({
-            ...strippedContext,
-            mode: 'auto',
-          })
-        }
-        permissionModeIntentGenerationRef.current = 0
-        permissionModeIntentRef.current = 'auto'
-        setShowAutoModeOptIn(false)
-        setPreviousModeBeforeAuto(null)
-      }
-      void applyAutoMode()
-
-      if (helpOpen) {
-        setHelpOpen(false)
-      }
-    }
-  }, [
-    addNotification,
-    helpOpen,
-    previousModeBeforeAuto,
-    requestPermissionModeChange,
-    toolPermissionContext,
-    setToolPermissionContext,
-  ])
-
-  // Handler for auto mode opt-in dialog decline
-  const handleAutoModeOptInDecline = useCallback(() => {
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
-      logForDebugging(
-        `[auto-mode] handleAutoModeOptInDecline: reverting to ${previousModeBeforeAuto}, setting isAutoModeAvailable=false`,
-      )
-      setShowAutoModeOptIn(false)
-      if (autoModeOptInTimeoutRef.current) {
-        clearTimeout(autoModeOptInTimeoutRef.current)
-        autoModeOptInTimeoutRef.current = null
-      }
-
-      // Revert to previous mode and remove auto from the carousel
-      // for the rest of this session
-      if (previousModeBeforeAuto) {
-        setAutoModeActive(false)
-        setAppState(prev => ({
-          ...prev,
-          toolPermissionContext: {
-            ...prev.toolPermissionContext,
-            mode: previousModeBeforeAuto,
-            isAutoModeAvailable: false,
-          },
-        }))
-        setToolPermissionContext({
-          ...toolPermissionContext,
-          mode: previousModeBeforeAuto,
-          isAutoModeAvailable: false,
-        })
-        permissionModeIntentGenerationRef.current = 0
-        permissionModeIntentRef.current = previousModeBeforeAuto
-        setPreviousModeBeforeAuto(null)
-      }
-    }
-  }, [
-    previousModeBeforeAuto,
-    toolPermissionContext,
-    setAppState,
-    setToolPermissionContext,
   ])
 
   // Handler for chat:imagePaste - paste image from clipboard
@@ -2274,23 +2225,39 @@ function PromptInput({
     })
   }, [addNotification, onImagePaste])
 
-  // Register chat:submit handler directly in the handler registry (not via
-  // useKeybindings) so that only the ChordInterceptor can invoke it for chord
-  // completions (e.g., "ctrl+e s"). The default Enter binding for submit is
-  // handled by TextInput directly (via onSubmit prop) and useTypeahead (for
-  // autocomplete acceptance). Using useKeybindings would cause
-  // stopImmediatePropagation on Enter, blocking autocomplete from seeing the key.
+  // Register submit handlers directly in the handler registry (not via
+  // useKeybindings) so that only the ChordInterceptor can invoke them for chord
+  // completions. The default Enter binding for submit is handled by TextInput
+  // directly (via onSubmit prop) and useTypeahead (for autocomplete acceptance).
+  // Using useKeybindings would cause stopImmediatePropagation on Enter, blocking
+  // autocomplete from seeing the key.
   const keybindingContext = useOptionalKeybindingContext()
   useEffect(() => {
     if (!keybindingContext || isModalOverlayActive) return
-    return keybindingContext.registerHandler({
+    const unregisterSubmit = keybindingContext.registerHandler({
       action: 'chat:submit',
       context: 'Chat',
       handler: () => {
         void onSubmit(input)
       },
     })
-  }, [keybindingContext, isModalOverlayActive, onSubmit, input])
+    const unregisterQueueSubmit = keybindingContext.registerHandler({
+      action: 'chat:queueSubmit',
+      context: 'Chat',
+      handler: () => {
+        void onSubmitProp(
+          input,
+          { setCursorOffset, getCursorOffset, clearBuffer, resetHistory },
+          undefined,
+          { wait: true },
+        )
+      },
+    })
+    return () => {
+      unregisterSubmit()
+      unregisterQueueSubmit()
+    }
+  }, [keybindingContext, isModalOverlayActive, onSubmit, onSubmitProp, input, setCursorOffset, getCursorOffset, clearBuffer, resetHistory])
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as
@@ -2545,38 +2512,52 @@ function PromptInput({
         selectFooterItem(null)
       },
       'footer:close': () => {
-        if (tasksSelected && selectedCoordinatorTask) {
-          const task = selectedCoordinatorTask
-          if (!task) return false
-          if (task.type === 'local_workflow') {
-            setShowBashesDialog(task.id)
-            selectFooterItem(null)
-            return
-          }
-          // When the selected row IS the viewed agent, 'x' types into the
-          // steering input. Any other row — dismiss it.
-          if (
-            viewSelectionMode === 'viewing-agent' &&
-            task.id === viewingAgentTaskId
-          ) {
-            onChange(
-              input.slice(0, cursorOffset) + 'x' + input.slice(cursorOffset),
-            )
-            setCursorOffset(cursorOffset + 1)
-            return
-          }
-          stopOrDismissAgent(task.id, setAppState)
-          if (task.status !== 'running') {
-            const nextIndex = Math.max(minCoordinatorIndex, coordinatorTaskIndex - 1)
-            setCoordinatorTaskIndex(nextIndex, {
-              targetId: resolveCoordinatorTarget(nextIndex),
-              reason: 'dismiss',
-            })
+        const task =
+          tasksSelected && isTeammateMode
+            ? teammateFooterIndex > 0
+              ? inProcessTeammates[teammateFooterIndex - 1]
+              : undefined
+            : selectedCoordinatorTask
+        if (!tasksSelected || !task) {
+          // Not handled — let 'x' fall through to type-to-exit
+          return false
+        }
+        if (task.type === 'local_workflow') {
+          setShowBashesDialog(task.id)
+          selectFooterItem(null)
+          return
+        }
+        // When the selected row IS the viewed agent, 'x' types into the
+        // steering input. Any other row stops or dismisses that task.
+        if (
+          viewSelectionMode === 'viewing-agent' &&
+          task.id === viewingAgentTaskId
+        ) {
+          onChange(
+            input.slice(0, cursorOffset) + 'x' + input.slice(cursorOffset),
+          )
+          setCursorOffset(cursorOffset + 1)
+          return
+        }
+        if (task.status === 'running') {
+          if (task.type === 'local_agent') {
+            killAsyncAgent(task.id, setAppState, 'user')
+          } else if (task.type === 'in_process_teammate') {
+            void InProcessTeammateTask.kill(task.id, setAppState)
           }
           return
         }
-        // Not handled — let 'x' fall through to type-to-exit
-        return false
+        dismissTerminalAgent(task.id, setAppState)
+        if (task.type === 'local_agent') {
+          const nextIndex = Math.max(
+            minCoordinatorIndex,
+            coordinatorTaskIndex - 1,
+          )
+          setCoordinatorTaskIndex(nextIndex, {
+            targetId: resolveCoordinatorTarget(nextIndex),
+            reason: 'dismiss',
+          })
+        }
       },
     },
     {
@@ -2586,10 +2567,11 @@ function PromptInput({
   )
 
   useInput((char, key) => {
-    // Skip all input handling when a full-screen dialog is open. These dialogs
-    // render via early return, but hooks run unconditionally — so without this
-    // guard, Escape inside a dialog leaks to the double-press message-selector.
+    // Skip legacy input handling while an overlay owns the keyboard. Keep the
+    // explicit dialog guards because these early-return dialogs do not all
+    // register with the overlay system.
     if (
+      isModalOverlayActive ||
       showTeamsDialog ||
       showQuickOpen ||
       showGlobalSearch ||
@@ -2822,7 +2804,7 @@ function PromptInput({
       })
       setShowModelPicker(false)
       const effectiveFastMode = (isFastMode ?? false) && !wasFastModeDisabled
-      let message = `Model set to ${modelDisplayString(model)}`
+      let message = `Model set to ${modelDisplayString(model)} and saved as your default for new sessions`
       if (
         isBilledAsExtraUsage(model, effectiveFastMode, isOpus1mMergeEnabled())
       ) {
@@ -2954,24 +2936,6 @@ function PromptInput({
     messages.length,
   ])
 
-  // Portal dialog to DialogOverlay in fullscreen so it escapes the bottom
-  // slot's overflowY:hidden clip (same pattern as SuggestionsOverlay).
-  // Must be called before early returns below to satisfy rules-of-hooks.
-  // Memoized so the portal useEffect doesn't churn on every PromptInput render.
-  const autoModeOptInDialog = useMemo(
-    () =>
-      feature('TRANSCRIPT_CLASSIFIER') && showAutoModeOptIn ? (
-        <AutoModeOptInDialog
-          onAccept={handleAutoModeOptInAccept}
-          onDecline={handleAutoModeOptInDecline}
-        />
-      ) : null,
-    [showAutoModeOptIn, handleAutoModeOptInAccept, handleAutoModeOptInDecline],
-  )
-  useSetPromptOverlayDialog(
-    isFullscreenEnvEnabled() ? autoModeOptInDialog : null,
-  )
-
   if (showBashesDialog) {
     return (
       <BackgroundTasksDialog
@@ -3066,6 +3030,13 @@ function PromptInput({
   }
 
   const baseProps: BaseTextInputProps = {
+    onEdit: onPromptEdit,
+    getInputBox: historyMatch
+      ? undefined
+      : () => ({
+          text: lastInternalInputRef.current,
+          cursor: cursorOffsetRef.current,
+        }),
     multiline: true,
     onSubmit,
     onChange,
@@ -3177,7 +3148,7 @@ function PromptInput({
   )
 
   return (
-    <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
+    <Box ref={promptAnchor} flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && (
         <Box marginTop={1} marginLeft={2}>
@@ -3246,6 +3217,7 @@ function PromptInput({
           </Box>
         </Box>
       )}
+      <PinnedNotifications />
       <PromptInputFooter
         apiKeyStatus={apiKeyStatus}
         debug={debug}
@@ -3281,7 +3253,6 @@ function PromptInput({
         onOpenTasksDialog={handleOpenTasksDialog}
         isLocalJSXCommandActive={isLocalJSXCommandActive}
       />
-      {isFullscreenEnvEnabled() ? null : autoModeOptInDialog}
       {isFullscreenEnvEnabled() ? (
         // position=absolute takes zero layout height so the spinner
         // doesn't shift when a notification appears/disappears. Yoga
@@ -3293,17 +3264,16 @@ function PromptInput({
         // BriefSpinner's own marginTop=1 blank row. height=1 +
         // overflow=hidden clips multi-line notifications to a single row.
         // flex-end anchors the bottom line so the visible row is always
-        // the most recent. Suppressed while the slash overlay or
-        // auto-mode opt-in dialog is up by height=0 (NOT unmount) — this
-        // Box renders later in tree order so it would paint over their
-        // bottom row. Keeping Notifications mounted prevents AutoUpdater's
+        // the most recent. Suppressed while the slash overlay is up by
+        // height=0 (NOT unmount) — this Box renders later in tree order so
+        // it would paint over its bottom row. Keeping Notifications mounted prevents AutoUpdater's
         // initial-check effect from re-firing on every slash-completion
         // toggle (PR#22413).
         <Box
           position="absolute"
           marginTop={briefOwnsGap ? -2 : -1}
-          height={suggestions.length === 0 && !showAutoModeOptIn ? 1 : 0}
-          width="100%"
+          height={suggestions.length === 0 ? 1 : 0}
+          width={columns - dockColumns}
           paddingLeft={2}
           paddingRight={1}
           flexDirection="column"
@@ -3313,7 +3283,6 @@ function PromptInput({
           <Notifications
             apiKeyStatus={apiKeyStatus}
             autoUpdaterResult={autoUpdaterResult}
-            debug={debug}
             isAutoUpdating={isAutoUpdating}
             verbose={verbose}
             messages={messages}

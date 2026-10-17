@@ -26,8 +26,8 @@ const workflowFacadeSource = readFileSync(
   'src/tools/WorkflowTool/WorkflowFacadeTool.ts',
   'utf8',
 )
-assert.match(workflowFacadeSource, /workflow-scale orchestration/)
-assert.match(workflowFacadeSource, /For focused tasks/)
+assert.match(workflowFacadeSource, /ONLY call this tool when the user has explicitly opted into multi-agent orchestration/)
+assert.match(workflowFacadeSource, /a task that would merely benefit from a workflow does not count/)
 assert.match(workflowFacadeSource, /do not call this tool/)
 assert.match(workflowFacadeSource, /avoid workflow/)
 assert.match(workflowFacadeSource, /must start with an uncommented/)
@@ -134,10 +134,15 @@ assert.deepEqual(
 )
 
 assert.equal(WorkflowFacadeTool.name, 'Workflow')
+// The plan default needs a resolvable login; tests have no OAuth plan, so it is "not Pro".
+process.env.ANTHROPIC_API_KEY ??= 'test-only-not-a-real-key'
 setSessionSettingsCache({ settings: {}, errors: [] })
+assert.equal(WorkflowFacadeTool.isEnabled(), true)
+setSessionSettingsCache({ settings: { disableWorkflows: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.isEnabled(), false)
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.isEnabled(), true)
+assert.match(await WorkflowFacadeTool.prompt(), /default workflow size guideline: medium — keep workflows under 10 agents/)
 setSessionSettingsCache({ settings: { enableWorkflows: true, planModeAvailable: true }, errors: [] })
 assert.equal(WorkflowFacadeTool.shouldDefer, true)
 assert.doesNotThrow(() => WorkflowFacadeTool.inputSchema.parse({
@@ -487,9 +492,10 @@ assert.equal(childWorkflowSession.resumeCacheEntries.length, 2)
 const childParentTask = Object.values(state.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-child-parent',
 )!
+// The plan comes from the parent's meta; the child's phase appears when the child runs it.
 assert.deepEqual(childParentTask.phases.map(phase => [phase.id, phase.agentIds]), [
-  ['Child', ['child-runtime']],
   ['Parent', ['parent-runtime']],
+  ['Child', ['child-runtime']],
 ])
 
 const colocatedParentPath = join(tempRoot, 'docs', 'workflows', 'runtime-parent.js')
@@ -527,23 +533,27 @@ const colocatedChildRun = await WorkflowFacadeTool.call(
 assert.match(String(colocatedChildRun.data), /Workflow launched in background\. Task ID: w/)
 assert.deepEqual(launchedPrompts, ['local child local'])
 
-await assert.rejects(
-  WorkflowFacadeTool.call(
-    {
-      script: `export const meta = {
-        name: 'official-empty-error',
-        description: 'Official empty error workflow',
-        phases: [{ title: 'Fail', detail: 'Fail without details' }],
-      }
-      phase('Fail')
-      throw new Error()`,
-    },
-    context,
-    async () => ({ behavior: 'allow' }),
-    { message: { id: 'msg_facade_official_empty_error' } } as never,
-  ),
-  /Workflow script failed without error details/,
+// Like official, launching only parses and compiles; the body's throw fails the run.
+const emptyErrorRun = await WorkflowFacadeTool.call(
+  {
+    script: `export const meta = {
+      name: 'official-empty-error',
+      description: 'Official empty error workflow',
+      phases: [{ title: 'Fail', detail: 'Fail without details' }],
+    }
+    phase('Fail')
+    throw new Error()`,
+  },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_official_empty_error' } } as never,
 )
+const emptyErrorTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-empty-error',
+)!
+assert.match(String(emptyErrorRun.data), /Workflow launched in background\. Task ID: w/)
+assert.equal(emptyErrorTask.status, 'failed')
+assert.match(emptyErrorTask.error ?? '', /Workflow script failed without error details/)
 
 await writeFile(
   officialSession.scriptPath,

@@ -42,7 +42,7 @@ The recovered repository contains agent, task, workflow inspection, and minimal 
 - `src/tools/TaskCreateTool`, `TaskGetTool`, `TaskUpdateTool`, and `TaskListTool` provide shared task coordination.
 - `src/tools/WorkflowTool/workflowSpec.ts` defines the declarative workflow spec and normalized dry-run plan types.
 - `src/tools/WorkflowTool/workflowScriptParser.ts` validates official-style JavaScript workflow metadata.
-- `src/tools/WorkflowTool/workflowRuntimeGlobals.ts` exposes official-compatible orchestration globals for plan-building scripts.
+- `src/tools/WorkflowTool/workflowDsl.ts` loads workflow scripts; like official, a meta script is only parsed and compiled before launch, and `workflowScriptRuntime.ts` runs its body.
 - `src/tools/WorkflowTool/workflowEvents.ts` centralizes official event names and payload constructors.
 - `src/tools/WorkflowTool/workflowResumeCache.ts` implements same-session unchanged-prefix cache reuse for completed agent calls.
 - `src/tools/WorkflowTool/validateWorkflowSpec.ts` rejects invalid workflow graphs before any worker can start.

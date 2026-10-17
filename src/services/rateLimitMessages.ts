@@ -187,6 +187,10 @@ function getLimitReachedText(limits: ClaudeAILimits, model: string): string {
     return formatLimitReachedText('Opus limit', resetMessage, model)
   }
 
+  if (limits.rateLimitType === 'seven_day_overage_included') {
+    return formatLimitReachedText('Fable limit', resetMessage, model)
+  }
+
   if (limits.rateLimitType === 'seven_day') {
     return formatLimitReachedText('weekly limit', resetMessage, model)
   }
@@ -212,6 +216,9 @@ function getEarlyWarningText(limits: ClaudeAILimits): string | null {
       break
     case 'seven_day_sonnet':
       limitName = 'Sonnet limit'
+      break
+    case 'seven_day_overage_included':
+      limitName = 'Fable limit'
       break
     case 'overage':
       limitName = 'extra usage'

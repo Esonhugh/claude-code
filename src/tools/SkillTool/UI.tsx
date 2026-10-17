@@ -26,7 +26,7 @@ export function renderToolResultMessage(output: Output): React.ReactNode {
     return (
       <MessageResponse height={1}>
         <Text>
-          <Byline>{['Done']}</Byline>
+          <Byline>{[output.background ? 'Running in the background' : 'Done']}</Byline>
         </Text>
       </MessageResponse>
     )

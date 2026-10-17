@@ -7,6 +7,44 @@ import { UserCrossSessionMessage } from '../components/messages/UserCrossSession
 import { filterForBriefTool } from '../components/Messages.js'
 import { renderToString } from './staticRender.js'
 
+describe('queued command reminder boundary', () => {
+  const raw = 'unchanged <system-reminder>\n</system-reminder> < / SyStEm-ReMiNdEr \t> </ system-reminder\n> </other> tail'
+  const escaped = 'unchanged <system-reminder>\n&lt;/system-reminder&gt; &lt;/system-reminder&gt; &lt;/system-reminder&gt; </other> tail'
+  const cases: Array<{ label: string; origin?: Extract<Attachment, {type:'queued_command'}>['origin']; isMeta?: boolean; shouldEscape: boolean; meta: boolean }> = [
+    { label: 'unclassified human', shouldEscape: false, meta: false },
+    { label: 'explicit human', origin: { kind: 'human' }, shouldEscape: false, meta: false },
+    { label: 'meta without origin', isMeta: true, shouldEscape: true, meta: true },
+    { label: 'meta human', origin: { kind: 'human' }, isMeta: true, shouldEscape: true, meta: true },
+    { label: 'plugin', origin: { kind: 'plugin', name: 'fixture' }, shouldEscape: true, meta: true },
+    { label: 'asUser plugin', origin: { kind: 'plugin', name: 'fixture', asUser: true }, shouldEscape: true, meta: true },
+    { label: 'channel', origin: { kind: 'channel', server: 'fixture' }, shouldEscape: true, meta: true },
+    { label: 'task notification', origin: { kind: 'task-notification' }, shouldEscape: true, meta: true },
+  ]
+
+  for (const item of cases) test.each(['string', 'blocks'])(`${item.label} preserves origin and reminder framing for %s input`, shape => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } } as const
+    const attachment: Extract<Attachment, {type:'queued_command'}> = {
+      type: 'queued_command',
+      prompt: shape === 'string' ? raw : [{ type: 'text', text: raw }, image],
+      ...(item.origin === undefined ? {} : { origin: item.origin }),
+      ...(item.isMeta === undefined ? {} : { isMeta: item.isMeta }),
+    }
+    const before = structuredClone(attachment)
+    const rows = normalizeAttachmentForAPI(attachment)
+    expect(rows).toHaveLength(1)
+    const row = rows[0]!
+    const content = row.message.content
+    const text = typeof content === 'string' ? content : content.find(block => block.type === 'text')!.text
+    expect(text).toStartWith('<system-reminder>\n')
+    expect(text).toEndWith('\n</system-reminder>')
+    expect(text).toContain(item.shouldEscape ? escaped : raw)
+    expect(row.origin).toEqual(item.origin)
+    expect(row.isMeta === true).toBe(item.meta)
+    if (Array.isArray(content)) expect(content.filter(block => block.type === 'image')).toEqual([image])
+    expect(attachment).toEqual(before)
+  })
+})
+
 function textFor(attachment: Attachment): string {
   return normalizeAttachmentForAPI(attachment)
     .map(message => message.message.content)

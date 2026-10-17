@@ -70,20 +70,24 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import {
   createProgressTracker,
+  isLocalAgentTask,
+  killAsyncAgent,
   getProgressUpdate,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import { applyRequestedAgentPermissionMode } from '../AgentTool/permissionMode.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
+import { sleep } from '../../utils/sleep.js'
+import { observeAgentProgress } from '../AgentTool/agentToolUtils.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
 const COMMAND_MESSAGE_RE = new RegExp(`<${COMMAND_MESSAGE_TAG}>${TAG_CONTENT_ESCAPE}<\\/${COMMAND_MESSAGE_TAG}>`)
 
 type AgentToolInput = {
+  run_in_background: false
   description: string
   prompt: string
   subagent_type?: string
@@ -180,6 +184,77 @@ function findAgentTool(tools: readonly Tool[]): Tool | undefined {
   return tools.find(
     tool => AGENT_TOOL_NAMES.has(tool.name) || tool.aliases?.some(alias => AGENT_TOOL_NAMES.has(alias)),
   )
+}
+
+export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Tool['call']>): Promise<Awaited<ReturnType<Tool['call']>>> {
+  const [input, context, canUseTool, assistantMessage, onProgress] = args
+  const signal = context.abortController.signal
+  const setTasks = context.setAppStateForTasks ?? context.setAppState
+  const owned = new Set<string>()
+  let settled = false
+  const stop = () => {
+    for (const id of owned) {
+      const task = context.getAppState().tasks[id]
+      if (!isLocalAgentTask(task)) continue
+      task.abortController?.abort(signal.reason)
+      killAsyncAgent(id, setTasks)
+    }
+  }
+  const callContext: ToolUseContext = {
+    ...context,
+    modAgentStarted: launch => {
+      setTasks(prev => {
+        const task = Object.values(prev.tasks).find(task =>
+          isLocalAgentTask(task) && task.agentId === launch.agentId,
+        )
+        if (!task) return prev
+        owned.add(task.id)
+        return { ...prev, tasks: { ...prev.tasks, [task.id]: { ...task, notified: true } } }
+      })
+      if (signal.aborted) stop()
+      context.modAgentStarted?.(launch)
+    },
+  }
+  const removeProgressObserver = observeAgentProgress(callContext, message => onProgress?.({
+    toolUseID: context.toolUseId ?? assistantMessage?.message.id ?? '',
+    data: { type: 'agent_progress', message },
+  }))
+  signal.addEventListener('abort', stop, { once: true })
+  try {
+    signal.throwIfAborted()
+    const result = await agentTool.call(input, callContext, canUseTool, assistantMessage, onProgress)
+    signal.throwIfAborted()
+    const output = result.data as { status?: string; agentId?: string }
+    if (output.status !== 'async_launched') {
+      settled = true
+      return result
+    }
+    const id = output.agentId
+    const initial = typeof id === 'string' ? Object.values(context.getAppState().tasks).find(task =>
+      isLocalAgentTask(task) && task.agentId === id && owned.has(task.id),
+    ) : undefined
+    if (!initial) throw new Error('Workflow Agent returned an unowned background task')
+    logForDebugging(`[WorkflowAgent] awaiting background task=${initial.id} agent=${id}`)
+    for (;;) {
+      signal.throwIfAborted()
+      const task = context.getAppState().tasks[initial.id]
+      if (!isLocalAgentTask(task) || task.agentId !== id) throw new Error('Workflow Agent task disappeared')
+      if (task.status === 'completed') {
+        if (!task.result) throw new Error('Workflow Agent completed without its result')
+        settled = true
+        logForDebugging(`[WorkflowAgent] completed background task=${task.id} agent=${id} tokens=${task.result.totalTokens}`)
+        return { ...result, data: { ...task.result, status: task.status } }
+      }
+      if (task.status === 'failed' || task.status === 'killed') {
+        throw new Error(task.error ?? `Workflow Agent task ${task.status}`)
+      }
+      await sleep(20, signal)
+    }
+  } finally {
+    removeProgressObserver()
+    signal.removeEventListener('abort', stop)
+    if (!settled) stop()
+  }
 }
 
 export function snapshotWorkflowAgentContext(
@@ -319,19 +394,32 @@ function escapeXmlText(value: unknown): string {
     .replace(/>/g, '&gt;')
 }
 
-function enqueueWorkflowCompletionNotification({
+async function enqueueWorkflowNotification({
   taskId,
   toolUseId,
   summary,
   outputFile,
   resultText,
+  status,
+  usage,
+  setAppState,
 }: {
   taskId: string
   toolUseId?: string
   summary: string
   outputFile: string
   resultText: string
-}): void {
+  status: 'completed' | 'failed' | 'killed'
+  usage: { total_tokens: number; tool_uses: number; duration_ms: number }
+  setAppState: ToolUseContext['setAppState']
+}): Promise<void> {
+  let shouldEnqueue = false
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    shouldEnqueue = task?.type === 'local_workflow' && !task.notified
+    return prev
+  })
+  if (!shouldEnqueue) return
   const toolUseIdLine = toolUseId
     ? `\n<${TOOL_USE_ID_TAG}>${escapeXmlText(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
@@ -342,11 +430,17 @@ function enqueueWorkflowCompletionNotification({
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${escapeXmlText(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${escapeXmlText(outputFile)}</${OUTPUT_FILE_TAG}>
-<${STATUS_TAG}>completed</${STATUS_TAG}>
+<${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${escapeXmlText(summary)}</${SUMMARY_TAG}>
 <result>${truncatedResult}</result>
+<usage><total_tokens>${usage.total_tokens}</total_tokens><tool_uses>${usage.tool_uses}</tool_uses><duration_ms>${usage.duration_ms}</duration_ms></usage>
 </${TASK_NOTIFICATION_TAG}>`
-  enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  await enqueuePendingNotification({ value: message, mode: 'task-notification' })
+  setAppState(prev => {
+    const task = prev.tasks[taskId]
+    if (task?.type !== 'local_workflow' || task.notified) return prev
+    return { ...prev, tasks: { ...prev.tasks, [taskId]: { ...task, notified: true } } }
+  })
 }
 
 function buildAgentPrompt(
@@ -467,6 +561,7 @@ async function runPhaseAgentAttempt({
   const teamName =
     plan.defaults.execution === 'team' ? workflowTeamName(context) : undefined
   const input: AgentToolInput = {
+    run_in_background: false,
     description,
     prompt,
     subagent_type: phase.agentType,
@@ -565,7 +660,7 @@ async function runPhaseAgentAttempt({
 
   let result: Awaited<ReturnType<Tool['call']>>
   try {
-    result = await agentTool.call(input as never, agentContext, canUseTool, assistantMessage, progress => {
+    result = await callWorkflowAgent(agentTool, input as never, agentContext, canUseTool, assistantMessage, progress => {
       lastProgress = Date.now()
       const metrics = agentProgressMetrics(progress)
       if (!metrics) return
@@ -1189,17 +1284,14 @@ export async function runWorkflowPlan({
         resultText,
       )
       const summary = `Dynamic workflow "${plan.description}" completed`
-      enqueueWorkflowCompletionNotification({
+      await enqueueWorkflowNotification({
         taskId: workflowTask.id,
         toolUseId: context.toolUseId,
         summary,
         outputFile,
         resultText,
-      })
-      emitTaskTerminatedSdk(workflowTask.id, 'completed', {
-        toolUseId: context.toolUseId,
-        summary,
-        outputFile,
+        status: 'completed',
+        setAppState,
         usage: {
           total_tokens: workflowTaskUsage.tokenCount ?? 0,
           tool_uses: workflowTaskUsage.toolUseCount ?? 0,
@@ -1227,9 +1319,12 @@ export async function runWorkflowPlan({
             : {}),
         })
         if (abortStatus === 'killed') {
-          emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
-            toolUseId: context.toolUseId,
-            summary: `Dynamic workflow "${plan.description}" stopped`,
+          const summary = `Dynamic workflow "${plan.description}" stopped`
+          const resultText = allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`).join('\n\n') || summary
+          const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+          await enqueueWorkflowNotification({
+            taskId: workflowTask.id, toolUseId: context.toolUseId,
+            status: 'killed', summary, resultText, outputFile, setAppState,
             usage: {
               total_tokens: abortedUsage.tokenCount ?? 0,
               tool_uses: abortedUsage.toolUseCount ?? 0,
@@ -1259,11 +1354,12 @@ export async function runWorkflowPlan({
         resumeCacheEntries: resumeRuntime.entries,
         ...workflowTaskUsage,
       })
-      const outputFile = await writeWorkflowResult(workflowTask.id, message)
-      emitTaskTerminatedSdk(workflowTask.id, 'failed', {
-        toolUseId: context.toolUseId,
-        summary: `Dynamic workflow "${plan.description}" failed: ${message}`,
-        outputFile,
+      const resultText = [message, ...allResults.map(result => `## ${result.agentId}\n${result.output ?? result.error ?? result.status}`)].join('\n\n')
+      const outputFile = await writeWorkflowResult(workflowTask.id, resultText)
+      const summary = `Dynamic workflow "${plan.description}" failed: ${message}`
+      await enqueueWorkflowNotification({
+        taskId: workflowTask.id, toolUseId: context.toolUseId,
+        status: 'failed', summary, resultText, outputFile, setAppState,
         usage: {
           total_tokens: workflowTaskUsage.tokenCount ?? 0,
           tool_uses: workflowTaskUsage.toolUseCount ?? 0,

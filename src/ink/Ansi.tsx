@@ -13,6 +13,9 @@ type Props = {
   children: string
   /** When true, force all text to be rendered with dim styling */
   dimColor?: boolean
+  onLinkPress?: (href: string) => void
+  isLinkPressable?: (href: string) => boolean
+  registerPressableLink?: (element: import('./dom.js').DOMElement, active: boolean) => void
 }
 
 type SpanProps = {
@@ -38,6 +41,9 @@ type SpanProps = {
 export const Ansi = React.memo(function Ansi({
   children,
   dimColor,
+  onLinkPress,
+  isLinkPressable,
+  registerPressableLink,
 }: Props): React.ReactNode {
   if (typeof children !== 'string') {
     return dimColor ? (
@@ -74,26 +80,39 @@ export const Ansi = React.memo(function Ansi({
     const hasTextProps = hasAnyTextProps(span.props)
 
     if (hyperlink) {
-      return hasTextProps ? (
-        <Link key={i} url={hyperlink}>
-          <StyledText
-            color={span.props.color}
-            backgroundColor={span.props.backgroundColor}
-            dim={span.props.dim}
-            bold={span.props.bold}
-            italic={span.props.italic}
-            underline={span.props.underline}
-            strikethrough={span.props.strikethrough}
-            inverse={span.props.inverse}
-          >
-            {span.text}
-          </StyledText>
-        </Link>
-      ) : (
-        <Link key={i} url={hyperlink}>
+      const content = hasTextProps ? (
+        <StyledText
+          color={span.props.color}
+          backgroundColor={span.props.backgroundColor}
+          dim={span.props.dim}
+          bold={span.props.bold}
+          italic={span.props.italic}
+          underline={span.props.underline}
+          strikethrough={span.props.strikethrough}
+          inverse={span.props.inverse}
+        >
           {span.text}
-        </Link>
-      )
+        </StyledText>
+      ) : span.text
+      if (onLinkPress && (isLinkPressable?.(hyperlink) ?? true)) {
+        let registered: import('./dom.js').DOMElement | null = null
+        return <ink-link
+          key={i}
+          ref={(element: import('./dom.js').DOMElement | null) => {
+            if (registered) registerPressableLink?.(registered, false)
+            registered = element
+            if (element) registerPressableLink?.(element, true)
+          }}
+          tabIndex={0}
+          onClick={() => onLinkPress(hyperlink)}
+          onKeyDown={(event: { key: string; preventDefault(): void }) => {
+            if (event.key !== 'return' && event.key !== ' ') return
+            event.preventDefault()
+            onLinkPress(hyperlink)
+          }}
+        >{content}</ink-link>
+      }
+      return <Link key={i} url={hyperlink}>{content}</Link>
     }
 
     return hasTextProps ? (

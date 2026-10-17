@@ -1,5 +1,6 @@
 import figures from 'figures'
 import React, { useCallback, useState } from 'react'
+import { Select } from '../../components/CustomSelect/select.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw text input for config dialog
@@ -9,9 +10,11 @@ import {
   useKeybindings,
 } from '../../keybindings/useKeybinding.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import type {
-  PluginOptionSchema,
-  PluginOptionValues,
+import { validateUserConfig } from '../../utils/plugins/mcpbHandler.js'
+import {
+  resolvePluginOptions,
+  type PluginOptionSchema,
+  type PluginOptionValues,
 } from '../../utils/plugins/pluginOptionsStorage.js'
 
 /**
@@ -85,72 +88,97 @@ export function PluginOptionsDialog({
   const initialFor = useCallback(
     (key: string): string => {
       if (configSchema[key]?.sensitive === true) return ''
-      const v = initialValues?.[key]
-      return v === undefined ? '' : String(v)
+      const field = configSchema[key]
+      const v = resolvePluginOptions(configSchema, initialValues ?? {})[key]
+      return v === undefined ? (field?.options?.[0] ?? '') : String(v)
     },
     [configSchema, initialValues],
   )
 
   const [currentFieldIndex, setCurrentFieldIndex] = useState(0)
   const [values, setValues] = useState<Record<string, string>>({})
+  const [validationError, setValidationError] = useState('')
   const [currentInput, setCurrentInput] = useState(() =>
     fields[0] ? initialFor(fields[0]) : '',
   )
 
   const currentField = fields[currentFieldIndex]
   const fieldSchema = currentField ? configSchema[currentField] : null
+  const choices =
+    fieldSchema?.type === 'string' ? fieldSchema.options : undefined
 
   // Use Settings context so 'n' key doesn't cancel (allows typing 'n' in input).
   // isCancelActive={false} on Dialog keeps its own confirm:no out of the way.
   useKeybinding('confirm:no', onCancel, { context: 'Settings' })
 
-  // Tab to next field
-  const handleNextField = useCallback(() => {
-    if (currentFieldIndex < fields.length - 1 && currentField) {
-      setValues(prev => ({ ...prev, [currentField]: currentInput }))
-      setCurrentFieldIndex(prev => prev + 1)
-      const nextKey = fields[currentFieldIndex + 1]
-      setCurrentInput(nextKey ? initialFor(nextKey) : '')
-    }
-  }, [currentFieldIndex, fields, currentField, currentInput, initialFor])
-
   // Enter to save current field and move to next, or save all if last
-  const handleConfirm = useCallback(() => {
-    if (!currentField) return
+  const handleConfirm = useCallback(
+    (selected = currentInput) => {
+      if (!currentField || !fieldSchema) return
 
-    const newValues = { ...values, [currentField]: currentInput }
+      const submitted = buildFinalValues(
+        [currentField],
+        { [currentField]: selected },
+        configSchema,
+        initialValues,
+      )
+      const preserved =
+        fieldSchema.sensitive && initialValues?.[currentField] !== undefined
+          ? { [currentField]: initialValues[currentField] }
+          : {}
+      const validation = validateUserConfig(
+        { ...preserved, ...submitted },
+        { [currentField]: fieldSchema },
+      )
+      if (!validation.valid) {
+        setValidationError(validation.errors.join('; '))
+        return
+      }
+      setValidationError('')
+      const newValues = { ...values, [currentField]: selected }
 
-    if (currentFieldIndex === fields.length - 1) {
-      onSave(buildFinalValues(fields, newValues, configSchema, initialValues))
-    } else {
-      // Move to next field
-      setValues(newValues)
-      setCurrentFieldIndex(prev => prev + 1)
-      const nextKey = fields[currentFieldIndex + 1]
-      setCurrentInput(nextKey ? initialFor(nextKey) : '')
-    }
-  }, [
-    currentField,
-    values,
-    currentInput,
-    currentFieldIndex,
-    fields,
-    configSchema,
-    onSave,
-    initialFor,
-    initialValues,
-  ])
+      if (currentFieldIndex === fields.length - 1) {
+        onSave(
+          buildFinalValues(fields, newValues, configSchema, initialValues),
+        )
+      } else {
+        // Move to next field
+        setValues(newValues)
+        setCurrentFieldIndex(prev => prev + 1)
+        const nextKey = fields[currentFieldIndex + 1]
+        setCurrentInput(nextKey ? initialFor(nextKey) : '')
+      }
+    },
+    [
+      currentField,
+      fieldSchema,
+      values,
+      currentInput,
+      currentFieldIndex,
+      fields,
+      configSchema,
+      onSave,
+      initialFor,
+      initialValues,
+    ],
+  )
 
   useKeybindings(
     {
-      'confirm:nextField': handleNextField,
-      'confirm:yes': handleConfirm,
+      'confirm:nextField': () => {
+        if (currentFieldIndex < fields.length - 1) handleConfirm()
+      },
     },
     { context: 'Confirmation' },
   )
+  useKeybinding('confirm:yes', handleConfirm, {
+    context: 'Confirmation',
+    isActive: choices === undefined,
+  })
 
   // Character input handling (backspace, typing)
   useInput((char, key) => {
+    if (choices !== undefined) return
     // Backspace
     if (key.backspace || key.delete) {
       setCurrentInput(prev => prev.slice(0, -1))
@@ -190,10 +218,25 @@ export function PluginOptionsDialog({
         )}
 
         <Box marginTop={1}>
-          <Text>{figures.pointerSmall} </Text>
-          <Text>{displayValue}</Text>
-          <Text>█</Text>
+          {choices !== undefined ? (
+            <Select
+              key={currentField}
+              options={choices.map(value => ({ label: value, value }))}
+              defaultValue={currentInput}
+              defaultFocusValue={currentInput}
+              onFocus={setCurrentInput}
+              onChange={handleConfirm}
+              onCancel={onCancel}
+            />
+          ) : (
+            <>
+              <Text>{figures.pointerSmall} </Text>
+              <Text>{displayValue}</Text>
+              <Text>█</Text>
+            </>
+          )}
         </Box>
+        {validationError && <Text color="error">{validationError}</Text>}
       </Box>
 
       <Box flexDirection="column">

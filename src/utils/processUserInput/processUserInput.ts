@@ -1,13 +1,24 @@
+import type { ModCallerChain } from '../../services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import type {
   Base64ImageSource,
   ContentBlockParam,
   ImageBlockParam,
 } from '@anthropic-ai/sdk/resources/messages.mjs'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import type { QuerySource } from 'src/constants/querySource.js'
 import { logEvent } from 'src/services/analytics/index.js'
+import {
+  runModPromptSubmit,
+  type PromptAttachment,
+  type PromptSubmitMetadata,
+  type PromptSubmitResult,
+} from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
+import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
+import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
+import { createModToolHost } from '../../services/mods/toolHost.js'
+import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import {
   findCommand,
   getCommandName,
@@ -41,6 +52,12 @@ import {
 } from '../imageResizer.js'
 import { storeImages } from '../imageStore.js'
 import {
+  buildLargeToolResultMessage,
+  generatePreview,
+  persistToolResult,
+  PREVIEW_SIZE_BYTES,
+} from '../toolResultStorage.js'
+import {
   createCommandInputMessage,
   createSystemMessage,
   createUserMessage,
@@ -61,12 +78,22 @@ export type ProcessUserInputContext = ToolUseContext & LocalJSXCommandContext
 export type ProcessUserInputBaseResult = {
   messages: Message[]
   shouldQuery: boolean
+  /** Receipt from core admission, not a middleware's post-next return value. */
+  admission?: PromptSubmitResult
+  /** Command execution is deferred until the active turn has finished. */
+  deferred?: boolean
   allowedTools?: string[]
   model?: string
   effort?: EffortValue
   // Output text for non-interactive mode (e.g., forked commands)
   // When set, this is used as the result in -p mode instead of empty string
   resultText?: string
+  /** Raw author answer retained when command display includes plugin attribution. */
+  commandRunText?: string
+  /** Final command hook status for the owning author receipt. */
+  commandExitCode?: number
+  /** Notes returned by the command, excluding transcript caveats. */
+  commandContext?: readonly string[]
   // When set, prefills or submits the next input after command completes
   // Used by /discover to chain into the selected feature's command
   nextInput?: string
@@ -92,6 +119,10 @@ export async function processUserInput({
   isMeta,
   skipAttachments,
   skipHooks,
+  promptSubmitMetadata,
+  promptSubmitCallerChain,
+  onPromptAdmission,
+  deferCommands,
 }: {
   input: string | Array<ContentBlockParam>
   /**
@@ -130,6 +161,11 @@ export async function processUserInput({
   isMeta?: boolean
   skipAttachments?: boolean
   skipHooks?: boolean
+  /** Stamped at ingress and retained while queued; unstamped is unclassified. */
+  promptSubmitMetadata?: PromptSubmitMetadata
+  promptSubmitCallerChain?: ModCallerChain
+  onPromptAdmission?: (result: ProcessUserInputBaseResult) => void
+  deferCommands?: boolean
 }): Promise<ProcessUserInputBaseResult> {
   const inputString = typeof input === 'string' ? input : null
   // Immediately show the user input prompt while we are still processing the input.
@@ -141,16 +177,26 @@ export async function processUserInput({
 
   queryCheckpoint('query_process_user_input_base_start')
 
+  if (promptSubmitMetadata) context = {
+    ...context,
+    modCommand: {
+      origin: promptSubmitMetadata.origin,
+      presentation: context.modCommand?.presentation ?? {
+        columns: process.stdout.columns ?? 80,
+        isFullscreen: false,
+      },
+    },
+  }
   const appState = context.getAppState()
   const isRemoteShellInput = Boolean(context.runRemoteShellCommand)
 
-  const result = await processUserInputBase(
+  const { isRegularPrompt, ...result } = await processUserInputBase(
     input,
     mode,
     setToolJSX,
     context,
-    pastedContents,
-    ideSelection,
+    promptSubmitMetadata?.origin.kind === 'plugin' ? undefined : pastedContents,
+    promptSubmitMetadata?.origin.kind === 'plugin' ? undefined : ideSelection,
     messages,
     uuid,
     isAlreadyProcessing,
@@ -160,114 +206,389 @@ export async function processUserInput({
     skipSlashCommands,
     bridgeOrigin,
     isMeta,
-    skipAttachments || isRemoteShellInput,
+    skipAttachments || isRemoteShellInput || promptSubmitMetadata?.origin.kind === 'plugin',
     preExpansionInput,
+    deferCommands,
   )
   queryCheckpoint('query_process_user_input_base_end')
 
   if (!result.shouldQuery || isRemoteShellInput || skipHooks) {
+    applyPluginPromptOrigin(result)
+    if (!result.deferred) onPromptAdmission?.(result)
     return result
   }
 
-  // Execute UserPromptSubmit hooks and handle blocking
-  queryCheckpoint('query_hooks_start')
-  const inputMessage = getContentText(input) || ''
-
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    inputMessage,
-    appState.toolPermissionContext.mode,
-    context,
-    context.requestPrompt,
-  )) {
-    // We only care about the result
-    // @ts-ignore - recovered code
-    if (hookResult.message?.type === 'progress') {
-      continue
-    }
-
-    // Return only a system-level error message, erasing the original user input
-    if (hookResult.blockingError) {
-      const blockingMessage = getUserPromptSubmitHookBlockingMessage(
-        hookResult.blockingError,
-      )
-      return {
-        messages: [
-          // TODO: Make this an attachment message
-          createSystemMessage(
-            `${blockingMessage}\n\nOriginal prompt: ${input}`,
-            'warning',
-          ),
-        ],
-        shouldQuery: false,
-        allowedTools: result.allowedTools,
+  const promptMessage = result.messages.find(message => message.type === 'user')
+  // Only the regular prompt branch is rewriteable. Commands have already
+  // executed in base, including bridge-safe slash and keyword routing.
+  const snapshot =
+    isRegularPrompt && promptMessage?.type === 'user'
+      ? context.mods?.capture({
+          toolCatalog: () => createToolCatalogForContext(context),
+          toolHost: () => createModToolHost(context, canUseTool ?? context.canUseTool ?? hasPermissionsToUseTool),
+        })
+      : undefined
+  const pendingAsks = new Map<Message[], { finish(accepted: boolean): void }>()
+  try {
+    if (!snapshot || !snapshot.hasHooks('prompt.submit'))
+      return await admitClassicPrompt()
+    const content = promptMessage!.message.content
+    const text =
+      typeof content === 'string'
+        ? content
+        : content
+            .filter(block => block.type === 'text')
+            .map(block => block.text)
+            .join('\n')
+    const attachments: PromptAttachment[] = []
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (
+          block.type !== 'image' &&
+          block.type !== 'audio' &&
+          block.type !== 'document'
+        )
+          continue
+        const source = block.source
+        attachments.push({
+          type: block.type,
+          ...(source &&
+          typeof source === 'object' &&
+          'media_type' in source &&
+          typeof source.media_type === 'string'
+            ? { mediaType: source.media_type }
+            : {}),
+        })
       }
     }
-
-    // If preventContinuation is set, stop processing but keep the original
-    // prompt in context.
-    if (hookResult.preventContinuation) {
-      const message = hookResult.stopReason
-        ? `Operation stopped by hook: ${hookResult.stopReason}`
-        : 'Operation stopped by hook'
-      result.messages.push(
-        createUserMessage({
-          content: message,
-        }),
-      )
-      result.shouldQuery = false
-      return result
+    // Paste names are not present in API content blocks; add only their public
+    // descriptors, never the image data or filesystem path.
+    const pastedImages = Object.values(pastedContents ?? {}).filter(
+      isValidImagePaste,
+    )
+    for (let index = 0; index < pastedImages.length; index++) {
+      const descriptor =
+        attachments[attachments.length - pastedImages.length + index]
+      if (descriptor && pastedImages[index]?.filename)
+        descriptor.filename = pastedImages[index]!.filename
     }
+    let entries = 0
+    const { outcome, submissions } = await runModPromptSubmit({
+      snapshot,
+      admit: admitPrompt,
+      callerChain: promptSubmitCallerChain,
+      signal: context.abortController.signal,
+      input: {
+        text,
+        ...(attachments.length ? { attachments } : {}),
+        ...(promptSubmitMetadata ?? {
+          origin: { kind: 'unclassified' },
+          wait: false,
+        }),
+        ...(attachments.length || !promptSubmitMetadata?.attachments
+          ? {}
+          : { attachments: promptSubmitMetadata.attachments }),
+      },
+      core: async entered => {
+        const submitted = {
+          ...result,
+          messages:
+            entries++ === 0
+              ? [...result.messages]
+              : result.messages.map(message => ({
+                  ...message,
+                  uuid: randomUUID(),
+                })),
+        }
+        const promptIndex = result.messages.indexOf(promptMessage!)
+        let rewrittenContent = content
+        if (entered.text !== text) {
+          if (typeof content === 'string') rewrittenContent = entered.text
+          else {
+            // Rewrite text once, retaining every non-text block and its order.
+            let written = false
+            rewrittenContent = content.flatMap(block => {
+              if (block.type !== 'text') return [block]
+              if (written) return []
+              written = true
+              return [{ ...block, text: entered.text }]
+            })
+            if (!written)
+              rewrittenContent = [
+                { type: 'text', text: entered.text },
+                ...rewrittenContent,
+              ]
+          }
+        }
+        submitted.messages[promptIndex] = {
+          ...promptMessage!,
+          uuid: submitted.messages[promptIndex]!.uuid,
+          message: { ...promptMessage!.message, content: rewrittenContent },
+        }
+        if (entered.context?.length) {
+          submitted.messages.splice(
+            promptIndex + 1,
+            0,
+            createAttachmentMessage({
+              type: 'hook_additional_context',
+              content: await persistModPromptContext(
+                entered.context,
+                context.abortController.signal,
+              ),
+              hookName: 'prompt.submit',
+              toolUseID: `hook-${randomUUID()}`,
+              hookEvent: 'UserPromptSubmit',
+              modEvent: 'prompt.submit',
+            }),
+          )
+        }
+        return runHooksWithAsk(submitted, entered.text, entered.context)
+      },
+    })
+    const last = submissions.at(-1)
+    const messages = submissions.flatMap(submitted => submitted.messages)
+    if (outcome.drop !== undefined)
+      messages.push(createSystemMessage(outcome.drop, 'warning'))
+    if (!last) {
+      const admission = outcome.drop !== undefined
+        ? outcome
+        : { drop: 'a hook answered without passing the prompt on' }
+      const refused = { ...result, messages, shouldQuery: false, admission }
+      admitPrompt(refused)
+      return refused
+    }
+    return {
+      ...(last ?? result),
+      messages,
+      shouldQuery: outcome.drop === undefined && !!last?.shouldQuery,
+    }
+  } finally {
+    for (const ask of pendingAsks.values()) ask.finish(false)
+    snapshot?.release()
+  }
 
-    // Collect additional contexts
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      result.messages.push(
-        createAttachmentMessage({
+  function admitPrompt(settled: ProcessUserInputBaseResult): void {
+    if (isRegularPrompt && !context.agentId)
+      context.abortController.signal.throwIfAborted()
+    const ask = pendingAsks.get(settled.messages)
+    pendingAsks.delete(settled.messages)
+    ask?.finish(settled.shouldQuery)
+    applyPluginPromptOrigin(settled)
+    onPromptAdmission?.(settled)
+  }
+
+  function applyPluginPromptOrigin(settled: ProcessUserInputBaseResult): void {
+    const origin = settled.admission?.origin ?? promptSubmitMetadata?.origin
+    if (!isRegularPrompt || !settled.shouldQuery || origin?.kind !== 'plugin') return
+    const index = settled.messages.findIndex(message => message.type === 'user')
+    const message = settled.messages[index]
+    if (message?.type !== 'user') return
+    let content = message.message.content
+    if (!origin.asUser) {
+      const text = typeof content === 'string' ? content : content.flatMap(block =>
+        block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
+      ).join('\n')
+      const framed = formatPluginPrompt(text, origin)
+      if (typeof content === 'string') content = framed
+      else {
+        let written = false
+        content = content.flatMap(block => {
+          if (block.type !== 'text') return [block]
+          if (written) return []
+          written = true
+          return [{ ...block, text: framed }]
+        })
+        if (!written) content = [{ type: 'text', text: framed }, ...content]
+      }
+    }
+    settled.messages = [...settled.messages]
+    settled.messages[index] = { ...message, origin, message: { ...message.message, content } }
+  }
+
+  async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {
+    const settled = await runHooksWithAsk(result, getContentText(input) || '')
+    if (isRegularPrompt) {
+      const content = promptMessage?.type === 'user' ? promptMessage.message.content : input
+      settled.admission = settled.shouldQuery
+        ? {
+            text: typeof content === 'string'
+              ? content
+              : content.flatMap(block =>
+                  block.type === 'text' && 'text' in block && typeof block.text === 'string'
+                    ? [block.text]
+                    : [],
+                ).join('\n'),
+            origin: promptSubmitMetadata?.origin ?? { kind: 'unclassified' },
+          }
+        : { drop: settled.resultText ?? 'Prompt blocked by UserPromptSubmit hook' }
+    }
+    admitPrompt(settled)
+    return settled
+  }
+
+  async function runHooksWithAsk(
+    submitted: ProcessUserInputBaseResult,
+    text: string,
+    modContext: readonly string[] = [],
+  ): Promise<ProcessUserInputBaseResult> {
+    // Ask is fitted against Mod context but attached separately: changing
+    // entered.context here would invalidate prompt.submit's immutable receipt.
+    const ask = isRegularPrompt && !context.agentId
+      ? context.diff?.beginAsk(modContext)
+      : undefined
+    let pendingAdmission = false
+    try {
+      if (isRegularPrompt && !context.agentId)
+        context.abortController.signal.throwIfAborted()
+      const settled = await runClassicHooks(submitted, text)
+      if (isRegularPrompt && !context.agentId)
+        context.abortController.signal.throwIfAborted()
+      if (settled.shouldQuery && ask) {
+        settled.messages.push(createAttachmentMessage({
           type: 'hook_additional_context',
-          content: hookResult.additionalContexts.map(applyTruncation),
-          hookName: 'UserPromptSubmit',
+          content: [ask.text],
+          hookName: 'prompt.submit',
           toolUseID: `hook-${randomUUID()}`,
           hookEvent: 'UserPromptSubmit',
-        }),
-      )
-    }
-
-    // TODO: Clean this up
-    if (hookResult.message) {
-      // @ts-ignore - recovered code
-      switch (hookResult.message.attachment.type) {
-        case 'hook_success':
-          // @ts-ignore - recovered code
-          if (!hookResult.message.attachment.content) {
-            // Skip if there is no content
-            break
-          }
-          // @ts-ignore - recovered code
-          result.messages.push({
-            ...hookResult.message,
-            attachment: {
-              // @ts-ignore - recovered code
-              ...hookResult.message.attachment,
-              // @ts-ignore - recovered code
-              content: applyTruncation(hookResult.message.attachment.content),
-            },
-          })
-          break
-        default:
-          // @ts-ignore - recovered code
-          result.messages.push(hookResult.message)
-          break
+        }))
+        // The adapter shallow-copies results before admission; messages retain
+        // identity, including when several next calls are in flight together.
+        pendingAsks.set(settled.messages, ask)
+        pendingAdmission = true
       }
+      return settled
+    } finally {
+      if (!pendingAdmission) ask?.finish(false)
     }
   }
-  queryCheckpoint('query_hooks_end')
 
-  // Happy path: onQuery will clear userInputOnProcessing via startTransition
-  // so it resolves in the same frame as deferredMessages (no flicker gap).
-  // Error paths are handled by handlePromptSubmit's finally block.
-  return result
+  async function runClassicHooks(
+    result: ProcessUserInputBaseResult,
+    inputMessage: string,
+  ): Promise<ProcessUserInputBaseResult> {
+    // Execute UserPromptSubmit hooks and handle blocking
+    queryCheckpoint('query_hooks_start')
+
+    for await (const hookResult of executeUserPromptSubmitHooks(
+      inputMessage,
+      appState.toolPermissionContext.mode,
+      context,
+      context.requestPrompt,
+    )) {
+      // We only care about the result
+      // @ts-ignore - recovered code
+      if (hookResult.message?.type === 'progress') {
+        continue
+      }
+
+      // Return only a system-level error message, erasing the original user input
+      if (hookResult.blockingError) {
+        const blockingMessage = getUserPromptSubmitHookBlockingMessage(
+          hookResult.blockingError,
+        )
+        return {
+          messages: [
+            // TODO: Make this an attachment message
+            createSystemMessage(
+              `${blockingMessage}\n\nOriginal prompt: ${input}`,
+              'warning',
+            ),
+          ],
+          shouldQuery: false,
+          resultText: blockingMessage,
+          allowedTools: result.allowedTools,
+        }
+      }
+
+      // If preventContinuation is set, stop processing but keep the original
+      // prompt in context.
+      if (hookResult.preventContinuation) {
+        const message = hookResult.stopReason
+          ? `Operation stopped by hook: ${hookResult.stopReason}`
+          : 'Operation stopped by hook'
+        result.messages.push(
+          createUserMessage({
+            content: message,
+          }),
+        )
+        result.shouldQuery = false
+        result.resultText = message
+        return result
+      }
+
+      // Collect additional contexts
+      if (
+        hookResult.additionalContexts &&
+        hookResult.additionalContexts.length > 0
+      ) {
+        result.messages.push(
+          createAttachmentMessage({
+            type: 'hook_additional_context',
+            content: hookResult.additionalContexts.map(applyTruncation),
+            hookName: 'UserPromptSubmit',
+            toolUseID: `hook-${randomUUID()}`,
+            hookEvent: 'UserPromptSubmit',
+          }),
+        )
+      }
+
+      // TODO: Clean this up
+      if (hookResult.message) {
+        // @ts-ignore - recovered code
+        switch (hookResult.message.attachment.type) {
+          case 'hook_success':
+            // @ts-ignore - recovered code
+            if (!hookResult.message.attachment.content) {
+              // Skip if there is no content
+              break
+            }
+            // @ts-ignore - recovered code
+            result.messages.push({
+              ...hookResult.message,
+              attachment: {
+                // @ts-ignore - recovered code
+                ...hookResult.message.attachment,
+                // @ts-ignore - recovered code
+                content: applyTruncation(hookResult.message.attachment.content),
+              },
+            })
+            break
+          default:
+            // @ts-ignore - recovered code
+            result.messages.push(hookResult.message)
+            break
+        }
+      }
+    }
+    queryCheckpoint('query_hooks_end')
+
+    // Happy path: onQuery will clear userInputOnProcessing via startTransition
+    // so it resolves in the same frame as deferredMessages (no flicker gap).
+    // Error paths are handled by handlePromptSubmit's finally block.
+    return result
+  }
+}
+
+
+async function persistModPromptContext(
+  context: readonly string[],
+  signal: AbortSignal,
+): Promise<string[]> {
+  async function persist(content: string): Promise<string> {
+    signal.throwIfAborted()
+    const id = `mods-prompt-context-${createHash('sha256').update(content).digest('hex')}`
+    const saved = await persistToolResult(content, id)
+    signal.throwIfAborted()
+    return 'error' in saved
+      ? `[prompt.submit context persistence failed: ${saved.error}. Full context was not saved; showing only the head.]\n${generatePreview(content, PREVIEW_SIZE_BYTES).preview}`
+      : buildLargeToolResultMessage(saved)
+  }
+  signal.throwIfAborted()
+  if (context.reduce((total, item) => total + item.length, 0) > 200_000)
+    return [await persist(JSON.stringify(context))]
+  const persisted = await Promise.all(context.map(item => item.length > 100_000 ? persist(item) : item))
+  signal.throwIfAborted()
+  return persisted
 }
 
 const MAX_HOOK_OUTPUT_LENGTH = 10000
@@ -297,7 +618,8 @@ async function processUserInputBase(
   isMeta?: boolean,
   skipAttachments?: boolean,
   preExpansionInput?: string,
-): Promise<ProcessUserInputBaseResult> {
+  deferCommands?: boolean,
+): Promise<ProcessUserInputBaseResult & { isRegularPrompt?: boolean }> {
   let inputString: string | null = null
   let precedingInputBlocks: ContentBlockParam[] = []
 
@@ -476,6 +798,7 @@ async function processUserInputBase(
     !context.getAppState().ultraplanLaunching &&
     hasUltraplanKeyword(preExpansionInput ?? inputString)
   ) {
+    if (deferCommands) return { messages: [], shouldQuery: false, deferred: true }
     logEvent('tengu_ultraplan_keyword', {})
     const rewritten = replaceUltraplanKeyword(inputString).trim()
     const { processSlashCommand } = await import('./processSlashCommand.js')
@@ -516,6 +839,7 @@ async function processUserInputBase(
 
   // Bash commands
   if (inputString !== null && mode === 'bash') {
+    if (deferCommands) return { messages: [], shouldQuery: false, deferred: true }
     const { processBashCommand } = await import('./processBashCommand.js')
     return addImageMetadataMessage(
       await processBashCommand(
@@ -536,6 +860,7 @@ async function processUserInputBase(
     !effectiveSkipSlash &&
     inputString.startsWith('/')
   ) {
+    if (deferCommands) return { messages: [], shouldQuery: false, deferred: true }
     const { processSlashCommand } = await import('./processSlashCommand.js')
     const slashResult = await processSlashCommand(
       inputString,
@@ -603,7 +928,10 @@ async function processUserInputBase(
     logEvent('tengu_ultracode_keyword', {})
     promptResult.effort = 'ultracode'
   }
-  return addImageMetadataMessage(promptResult, imageMetadataTexts)
+  return {
+    ...addImageMetadataMessage(promptResult, imageMetadataTexts),
+    isRegularPrompt: true,
+  }
 }
 
 // Adds image metadata texts as isMeta message to result

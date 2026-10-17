@@ -3,6 +3,7 @@
  * Extracts and parses YAML frontmatter between --- delimiters
  */
 
+import { isEnvTruthy, isEnvDefinedFalsy } from './envUtils.js'
 import { logForDebugging } from './debug.js'
 import type { HooksSettings } from './settings/types.js'
 import { parseYaml } from './yaml.js'
@@ -323,6 +324,14 @@ export function coerceDescriptionToString(
     level: 'warn',
   })
   return null
+}
+
+/** Preserve absent/invalid values so background defaults can be applied later. */
+export function parseOptionalBooleanFrontmatter(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined
+  const text = String(value)
+  return isEnvTruthy(text) ? true : isEnvDefinedFalsy(text) ? false : undefined
 }
 
 /**
