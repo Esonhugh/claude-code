@@ -106,6 +106,10 @@ import {
   resolveAgentTools,
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import {
+  resolveDeclaredAgentPermissionMode,
+  shouldBubbleAgentPermissionPrompts,
+} from './permissionMode.js'
 import { getCurrentSubagentDepth } from './subagentDepth.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -540,9 +544,10 @@ export async function* runAgent({
   const appState = toolUseContext.getAppState()
   const permissionMode =
     requestedPermissionMode ??
-    (appState.toolPermissionContext.mode === 'bypassPermissions'
-      ? 'bypassPermissions'
-      : (agentDefinition.permissionMode ?? appState.toolPermissionContext.mode))
+    resolveDeclaredAgentPermissionMode(
+      appState.toolPermissionContext.mode,
+      agentDefinition.permissionMode,
+    )
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
@@ -657,12 +662,15 @@ export async function* runAgent({
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
-    //   - bubble mode: always show prompts (bubbles to parent terminal)
+    //   - requested bubble: always show prompts (bubbles to parent terminal),
+    //     even when the parent's mode was kept
     //   - default: !isAsync (sync agents show prompts, async agents don't)
     const shouldAvoidPrompts =
       canShowPermissionPrompts !== undefined
         ? !canShowPermissionPrompts
-        : permissionMode === 'bubble'
+        : shouldBubbleAgentPermissionPrompts(
+              requestedPermissionMode ?? agentDefinition.permissionMode,
+            )
           ? false
           : isAsync
     if (shouldAvoidPrompts) {

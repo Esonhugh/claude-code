@@ -15,6 +15,7 @@ import {
 } from './AgentTool.js'
 import {
   applyRequestedAgentPermissionMode,
+  resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
 
@@ -221,10 +222,34 @@ assert.equal(
   'bubble',
 )
 
-assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'auto'), true)
-assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'default'), true)
-assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'plan'), false)
-assert.equal(shouldBubbleAgentPermissionPrompts('bubble', 'dontAsk'), false)
-assert.equal(shouldBubbleAgentPermissionPrompts(undefined, 'default'), false)
+// Official 2.1.292 derives prompt bubbling from the requested mode alone, so a
+// bubble agent kept in its parent's plan/dontAsk mode still bubbles prompts.
+assert.equal(shouldBubbleAgentPermissionPrompts('bubble'), true)
+assert.equal(shouldBubbleAgentPermissionPrompts('plan'), false)
+assert.equal(shouldBubbleAgentPermissionPrompts(undefined), false)
+
+// Declared agent permissionMode, official 2.1.292 resolution.
+const declaredModeMatrix = {
+  default: { none: 'default', bubble: 'bubble', acceptEdits: 'acceptEdits', plan: 'plan', bypassPermissions: 'default' },
+  plan: { none: 'plan', bubble: 'plan', acceptEdits: 'acceptEdits', plan: 'plan', bypassPermissions: 'plan' },
+  dontAsk: { none: 'dontAsk', bubble: 'dontAsk', acceptEdits: 'acceptEdits', plan: 'plan', bypassPermissions: 'dontAsk' },
+  acceptEdits: { none: 'acceptEdits', bubble: 'acceptEdits', acceptEdits: 'acceptEdits', plan: 'acceptEdits', bypassPermissions: 'acceptEdits' },
+  auto: { none: 'auto', bubble: 'auto', acceptEdits: 'auto', plan: 'auto', bypassPermissions: 'auto' },
+  bypassPermissions: { none: 'bypassPermissions', bubble: 'bypassPermissions', acceptEdits: 'bypassPermissions', plan: 'bypassPermissions', bypassPermissions: 'bypassPermissions' },
+} as const
+for (const [parentMode, row] of Object.entries(declaredModeMatrix)) {
+  for (const [declared, expected] of Object.entries(row)) {
+    assert.equal(
+      resolveDeclaredAgentPermissionMode(
+        parentMode as keyof typeof declaredModeMatrix,
+        declared === 'none'
+          ? undefined
+          : (declared as Exclude<keyof typeof row, 'none'>),
+      ),
+      expected,
+      `parent ${parentMode} declared ${declared}`,
+    )
+  }
+}
 
 console.log('agentLaunchParams.test.ts passed')

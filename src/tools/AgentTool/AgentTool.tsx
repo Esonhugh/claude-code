@@ -144,6 +144,7 @@ import { getPrompt } from './prompt.js'
 import { runAgent } from './runAgent.js'
 import {
   applyRequestedAgentPermissionMode,
+  resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
 import {
@@ -708,11 +709,11 @@ export const AgentTool = buildTool({
         ? spawnMode
         : undefined
     const permissionMode =
-      appState.toolPermissionContext.mode === 'bypassPermissions'
-        ? 'bypassPermissions'
-        : (explicitPermissionMode ??
-          selectedAgent.permissionMode ??
-          appState.toolPermissionContext.mode)
+      explicitPermissionMode ??
+      resolveDeclaredAgentPermissionMode(
+        appState.toolPermissionContext.mode,
+        selectedAgent.permissionMode,
+      )
     if (
       permissionMode === 'plan' &&
       appState.toolPermissionContext.mode !== 'plan' &&
@@ -1214,8 +1215,7 @@ export const AgentTool = buildTool({
       canUseTool,
       isAsync: shouldRunAsync,
       canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
-        selectedAgent.permissionMode,
-        permissionMode,
+        explicitPermissionMode ?? selectedAgent.permissionMode,
       )
         ? true
         : undefined,
