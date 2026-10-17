@@ -15,11 +15,17 @@ afterEach(() => {
 })
 afterAll(() => get.mockRestore())
 
-test('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0 does not skip the registry fetch', async () => {
-  process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '0'
+test('without CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC the registry is fetched', async () => {
+  delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
   await prefetchOfficialMcpUrls()
   expect(get).toHaveBeenCalledTimes(1)
   expect(isOfficialMcpUrl('https://mcp.example.com/sse')).toBe(true)
+})
+
+test('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=0 still skips the registry fetch, like the privacy level', async () => {
+  process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '0'
+  await prefetchOfficialMcpUrls()
+  expect(get).not.toHaveBeenCalled()
 })
 
 test('CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 skips the registry fetch', async () => {
