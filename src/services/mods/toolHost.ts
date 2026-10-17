@@ -82,12 +82,16 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }
     },
-    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<ToolCallResult> {
+    /** `person` marks a call the person raised themselves (a press or answer); only then does `consent` speak for them. */
+    async call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask', person?: boolean): Promise<ToolCallResult> {
       if (!input || typeof input !== 'object' || Array.isArray(input) ||
         typeof input.tool !== 'string' || !input.tool.trim() ||
         (input.consent !== undefined && typeof input.consent !== 'string'))
         throw new TypeError('tool.call requires a tool name and optional string consent')
-      const { tool: name, tool_use_id: _id, agentId: _agent, consent, ...args } = input
+      const { tool: name, tool_use_id: _id, agentId: _agent, consent: offered, ...args } = input
+      const consent = person === true ? offered : undefined
+      if (offered !== undefined && consent === undefined)
+        logForDebugging(`[ModsTool] author=${spawnedBy ?? 'unknown'} tool=${name} dropped consent: the call did not come from the person`)
       const tools = getTools()
       const tool = findToolByName(tools, name)
       const refusal = authorCallRefusals.get(tool?.name ?? name)

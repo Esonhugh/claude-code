@@ -127,7 +127,7 @@ export type ModRequestServices = {
   toolHost?(): {
     tools?(): readonly Tool[]
     spawn?(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, leftRunning?: (agentId: string) => void): Promise<{ model: string; agentId?: string; teammateId?: string } | { deny: string }>
-    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask'): Promise<unknown>
+    call(input: ModInput, snapshot: ModSnapshot, signal: AbortSignal, spawnedBy?: string, entry?: 'ui.ask', person?: boolean): Promise<unknown>
     check(input: ModInput, signal: AbortSignal, author?: string): Promise<{ decision: 'allow' | 'ask' | 'deny'; reason?: string; rule?: string; hook?: string }>
   }
   toolCatalog?(): ToolCatalog
@@ -323,6 +323,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     const started = Date.now()
     let taskId: string | undefined
     for (;;) {
+      if (stopped) return
       const task = Object.values(services.tasks?.() ?? {}).find(task => task.type === 'local_agent' && task.agentId === agentId)
       if (task) {
         taskId = task.id
@@ -926,6 +927,18 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     return owner.uiRelease
   }
 
+  function mcpSource(owner: Activation) {
+    return declarations.find(input => input.storageId === owner.declaration.storageId)?.mcpPlugin?.source ?? owner.declaration.storageId
+  }
+
+  // The host owns servers per plugin source, not per activation: a reload's
+  // replacement reuses the old activation's connections, so only the last
+  // live activation of a plugin gives them back.
+  function releaseMcp(owner: Activation) {
+    if (active.some(item => item !== owner && item.state === 'active' && item.declaration.storageId === owner.declaration.storageId)) return
+    return services.mcpRelease?.(mcpSource(owner))
+  }
+
   function disposeActivation(owner: Activation): Promise<void> {
     if (owner.dispose) return owner.dispose
     owner.state = 'disposed'
@@ -934,7 +947,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       () => tools.release(owner),
       () => agents.release(owner),
       () => owner.controller.abort(),
-      () => services.mcpRelease?.(declarations.find(input => input.storageId === owner.declaration.storageId)?.mcpPlugin?.source ?? owner.declaration.storageId),
+      () => releaseMcp(owner),
       ...[...owner.waits.keys()].map(id => () => cancelWait(owner, id)),
       () => releaseUi(owner),
       () => owner.environment.dispose(),
@@ -1778,6 +1791,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           ? combineModModelSignals((args[1] as {signal?:AbortSignal} | undefined)?.signal)
           : undefined
         const modelInvocation = modelAbort ? combineModModelSignals(signal, modelAbort.signal) : undefined
+        // A model call outside any hook (a timer callback) still ends with its activation.
+        const modelOwned = fn === hostIdentity && (op === 'model.complete' || op === 'model.fork' || op === 'model.classify')
+          ? createCombinedAbortSignal(modelInvocation?.signal ?? signal, { signalB: owner.controller.signal })
+          : undefined
+        const coreSignal = modelOwned?.signal ?? modelInvocation?.signal ?? signal
         try {
           // State and drawing belong to this runtime, not to production host providers.
           if (testTerminal(op)) {
@@ -2079,7 +2097,10 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             }
             try {
               combined.signal.throwIfAborted()
-              const receipt = await withReference(owner, () => host.call(toolInput, callSnapshot, combined.signal, owner.declaration.name, ask ? 'ui.ask' : undefined))
+              // Only a call descending from the person's own interaction may speak consent for them.
+              const uiOrigin = uiContext.getStore()
+              const person = Boolean(uiOrigin?.person && uiOrigin.active !== false)
+              const receipt = await withReference(owner, () => host.call(toolInput, callSnapshot, combined.signal, owner.declaration.name, ask ? 'ui.ask' : undefined, person))
               if (ask) {
                 const answer = ask.answer(receipt as import('./toolAdapter.js').ToolCallResult)
                 logForDebugging(`[ModsUI] ui.ask plugin=${owner.declaration.name} answered chars=${answer.length}`)
@@ -2114,7 +2135,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                     : plugin ? {isConnected:false as const,reason:'failed' as const,message:'MCP connection host is unavailable on this host'}
                     : unlistedModMcpServer(rewritten.server as string)
                   if (owner.state !== 'active' && value.isConnected) {
-                    await services.mcpRelease?.(plugin?.source ?? owner.declaration.storageId)
+                    await releaseMcp(owner)
                     return {isConnected:false as const,reason:'failed' as const,message:`The MCP server "${value.server}" was taken out: its plugin unloaded while it connected.`}
                   }
                   return value
@@ -2228,7 +2249,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             } finally { provider.active = false }
           }, snapshot, table, {
             origin: { plugin: owner.declaration.name, tier: owner.declaration.tier },
-            ...(fn === hostIdentity && (modelInvocation?.signal ?? signal) && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal: modelInvocation?.signal ?? signal } : {}),
+            ...(fn === hostIdentity && coreSignal && !(op === 'ui.invalidate' && (input as ModInput).event === 'ui.render') ? { signal: coreSignal } : {}),
             reportDirectCoreFailure: fn === hostIdentity && ['store.get', 'store.set', 'store.delete'].includes(op),
             ...(catalog ? { validateResult: catalog.validateResult } : {}),
           })) as { value?: unknown; deny?: string }
@@ -2238,7 +2259,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             throw new Error(result.deny)
           }
           return result.value
-        } finally { modelInvocation?.cleanup(); modelAbort?.cleanup(); resumeBudget?.() }
+        } finally { modelOwned?.cleanup(); modelInvocation?.cleanup(); modelAbort?.cleanup(); resumeBudget?.() }
       }
       for (const [method, fn] of Object.entries(methods))
         if (fn !== hostIdentity) createModInterfaceBridge(wrapped[method]!, `${noun}.${method}`)
@@ -3538,6 +3559,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       agents.release(owner)
       owner.controller.abort()
       for (const id of owner.waits.keys()) cancelWait(owner, id)
+      void Promise.resolve().then(() => services.mcpRelease?.(mcpSource(owner)))
+        .catch(error => logForDebugging(`[Mods:${owner.declaration.name}] mcp release after worker death failed: ${String(error)}`))
     }
     active = []
     nouns = {}

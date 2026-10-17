@@ -312,8 +312,8 @@ describe('author tool host through the real executor', () => {
     const f = fixture([hook('tool.call', async (event, next) => { seen.push(event); return next(event) })])
     f.context.agentId = 'parent-agent' as ToolUseContext['agentId']
     const input = { tool: f.tool.name, value: 'yes', tool_use_id: 'forged-id', agentId: 'forged-agent', consent: 'The user pressed Yes' }
-    await f.host.call(input, f.snapshot, new AbortController().signal)
-    await f.host.call(input, f.snapshot, new AbortController().signal)
+    await f.host.call(input, f.snapshot, new AbortController().signal, undefined, undefined, true)
+    await f.host.call(input, f.snapshot, new AbortController().signal, undefined, undefined, true)
     expect(f.calls.map(call => call.input)).toEqual([{ value: 'yes' }, { value: 'yes' }])
     expect(new Set(seen.map(event => event.tool_use_id)).size).toBe(2)
     for (const event of seen) {
@@ -327,6 +327,20 @@ describe('author tool host through the real executor', () => {
     expect(consent?.type === 'user' && consent.message.content).toBe('The user pressed Yes')
     expect(f.context.messages).toEqual([])
     expect(f.context.agentId).toBe('parent-agent' as ToolUseContext['agentId'])
+  })
+
+  test('carries consent as a human turn only for a call the person raised', async () => {
+    const f = fixture()
+    const input = { tool: f.tool.name, value: 'yes', consent: 'The user pressed Yes' }
+    await f.host.call(input, f.snapshot, new AbortController().signal, 'author')
+    await f.host.call(input, f.snapshot, new AbortController().signal, 'author', undefined, false)
+    await f.host.call(input, f.snapshot, new AbortController().signal, 'author', undefined, true)
+    expect(f.calls.map(call => call.input)).toEqual([{ value: 'yes' }, { value: 'yes' }, { value: 'yes' }])
+    expect(f.permissions).toHaveLength(3)
+    expect(f.permissions[0]![2].messages).toEqual([])
+    expect(f.permissions[1]![2].messages).toEqual([])
+    const consent = f.permissions[2]![2].messages.at(-1)
+    expect(consent?.type === 'user' && consent.message.content).toBe('The user pressed Yes')
   })
 
   test('rejects unknown tools and malformed envelopes before any hook or tool runs', async () => {

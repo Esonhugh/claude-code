@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { LoadedPlugin } from '../../types/plugin.js'
 import { disposeModsHosts } from '../../utils/gracefulShutdown.js'
 import * as shutdown from '../../utils/gracefulShutdown.js'
@@ -741,6 +742,39 @@ describe('Mods CLI session host', () => {
     await host.bind(binding)
     expect(host.runtime).toBeUndefined()
     expect(events).toEqual(['unsupported'])
+  })
+
+  test('receive admits without a binding when the host is disabled', async () => {
+    const host = session({
+      getDisabledReason: () => 'Mods are unsupported in remote/SSH sessions',
+      createRuntime: () => {
+        throw new Error('unexpected Worker')
+      },
+    })
+    const admitted: string[] = []
+    const result = await Promise.race([
+      host.receive({ origin: { kind: 'peer' }, text: 'hello' }, input => { admitted.push(input.text) }),
+      delay(500).then(() => 'timeout' as const),
+    ])
+    expect(result).not.toBe('timeout')
+    expect(admitted).toEqual(['hello'])
+  })
+
+  test('receive admits after the first bind fails to refresh', async () => {
+    const host = session({
+      loadPlugins: async () => {
+        throw new Error('discovery failed')
+      },
+      onDiagnostic: () => {},
+    })
+    await expect(host.bind(binding)).rejects.toThrow('discovery failed')
+    const admitted: string[] = []
+    const result = await Promise.race([
+      host.receive({ origin: { kind: 'peer' }, text: 'hello' }, input => { admitted.push(input.text) }),
+      delay(500).then(() => 'timeout' as const),
+    ])
+    expect(result).not.toBe('timeout')
+    expect(admitted).toEqual(['hello'])
   })
 
   test('config exposes plugin fields, writes scoped options and reloads the next activation', async () => {
