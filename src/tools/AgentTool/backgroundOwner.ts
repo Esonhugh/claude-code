@@ -1,5 +1,6 @@
 import type { ToolUseContext } from '../../Tool.js'
 import {
+  drainPendingMessages,
   enqueueAgentNotification,
   isLocalAgentTask,
   type LocalAgentTaskState,
@@ -14,6 +15,7 @@ import {
   subscribeToCommandQueue,
 } from '../../utils/messageQueueManager.js'
 import { extractTextContent } from '../../utils/messages.js'
+import { evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { PANEL_GRACE_MS, subscribeToTaskChanges, updateTaskState } from '../../utils/task/framework.js'
 
 /** Keep a stopped turn addressable until owned notifications can start its next turn. */
@@ -39,15 +41,20 @@ export function parkAgentForChildren({
   if (!isLocalAgentTask(parent) || parent.status !== 'completed') return false
 
   // A delivered child is no longer live, but its queued notification still owns a wake.
-  const reasons = new Set([...parent.keepaliveReasons ?? []].filter(reason => {
-    if (!reason.startsWith('agent:')) return true
-    const childId = reason.slice(6)
-    const child = state.tasks[childId]
-    return isLocalAgentTask(child) && child.ownerAgentId === taskId &&
-      (!child.notified || queued.some(command => command.taskId === childId))
-  }))
+  const liveReasons = (owner: LocalAgentTaskState, commands: typeof queued) => {
+    const tasks = get().tasks
+    return new Set([...owner.keepaliveReasons ?? []].filter(reason => {
+      if (!reason.startsWith('agent:')) return true
+      const childId = reason.slice(6)
+      const child = tasks[childId]
+      return isLocalAgentTask(child) && child.ownerAgentId === taskId &&
+        (!child.notified || commands.some(command => command.taskId === childId))
+    }))
+  }
+  const reasons = liveReasons(parent, queued)
   updateTaskState<LocalAgentTaskState>(taskId, set, task => ({ ...task, keepaliveReasons: reasons }))
-  if (reasons.size === 0 && queued.length === 0) return false
+  // SendMessage text queued after the last tool round also starts the next turn.
+  if (reasons.size === 0 && queued.length === 0 && parent.pendingMessages.length === 0) return false
 
   let disposed = false
   let scheduled = false
@@ -65,7 +72,7 @@ export function parkAgentForChildren({
   }
   const notifyTerminal = async (
     task: LocalAgentTaskState,
-    status: 'failed' | 'killed',
+    status: 'completed' | 'failed' | 'killed',
     error = task.error,
   ) => {
     let worktree: Awaited<ReturnType<typeof getWorktreeResult>> = {}
@@ -109,7 +116,31 @@ export function parkAgentForChildren({
     }
     if (task.resuming || task.finalizing) return
     const commands = dequeueAllMatching(addressed)
-    if (commands.length === 0) return
+    const stranded = drainPendingMessages(taskId, get, set)
+    if (commands.length === 0 && stranded.length === 0) {
+      // Children can be marked notified without a queued command (batch kill, inline reply).
+      const remaining = liveReasons(task, [])
+      if (remaining.size > 0) {
+        if (remaining.size < (task.keepaliveReasons?.size ?? 0)) {
+          updateTaskState<LocalAgentTaskState>(taskId, set, current => ({ ...current, keepaliveReasons: remaining }))
+        }
+        return
+      }
+      dispose()
+      task.unregisterCleanup?.()
+      updateTaskState<LocalAgentTaskState>(taskId, set, current => ({
+        ...current,
+        keepaliveReasons: new Set(),
+        evictAfter: current.retain ? undefined : Date.now() + PANEL_GRACE_MS,
+        abortController: undefined,
+        unregisterCleanup: undefined,
+        selectedAgent: undefined,
+      }))
+      void evictTaskOutput(taskId)
+      logForDebugging(`[AgentLifecycle] owner_unparked agent_id=${taskId}`)
+      await notifyTerminal(task, 'completed')
+      return
+    }
     const delivered = new Set(commands.flatMap(command => command.taskId ? [`agent:${command.taskId}`] : []))
     updateTaskState<LocalAgentTaskState>(taskId, set, current => ({
       ...current,
@@ -119,9 +150,12 @@ export function parkAgentForChildren({
     // Stop listening before starting the next turn: bursts cannot resume the same owner twice.
     dispose()
     task.unregisterCleanup?.()
-    logForDebugging(`[AgentLifecycle] owner_wake agent_id=${taskId} notifications=${commands.length}`)
+    logForDebugging(`[AgentLifecycle] owner_wake agent_id=${taskId} notifications=${commands.length} messages=${stranded.length}`)
     try {
-      await resume(commands.map(command => typeof command.value === 'string' ? command.value : '').join('\n\n'))
+      await resume([
+        ...stranded,
+        ...commands.map(command => typeof command.value === 'string' ? command.value : ''),
+      ].join('\n\n'))
     } catch (error) {
       const message = errorMessage(error)
       updateTaskState<LocalAgentTaskState>(taskId, set, current => ({

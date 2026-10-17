@@ -62,6 +62,7 @@ import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutp
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
+import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
 export type ResolvedAgentTools = {
   hasWildcard: boolean
   validTools: string[]
@@ -95,13 +96,23 @@ export function filterToolsForAgent({
   isBuiltIn,
   isAsync = false,
   permissionMode,
+  agentDepth = 0,
 }: {
   tools: Tools
   isBuiltIn: boolean
   isAsync?: boolean
   permissionMode?: PermissionMode
+  agentDepth?: number
 }): Tools {
   return tools.filter(tool => {
+    // An agent at the nesting limit cannot spawn, so it never sees the Agent tool.
+    if (
+      agentDepth >= MAX_SUBAGENT_DEPTH &&
+      (toolMatchesName(tool, AGENT_TOOL_NAME) ||
+        toolMatchesName(tool, LEGACY_AGENT_TOOL_NAME))
+    ) {
+      return false
+    }
     // Allow MCP tools for all agents
     if (tool.name.startsWith('mcp__')) {
       return true
@@ -150,6 +161,7 @@ export function resolveAgentTools(
   availableTools: Tools,
   isAsync = false,
   isMainThread = false,
+  agentDepth = 0,
 ): ResolvedAgentTools {
   const {
     tools: agentTools,
@@ -167,6 +179,7 @@ export function resolveAgentTools(
         isBuiltIn: source === 'built-in',
         isAsync,
         permissionMode,
+        agentDepth,
       })
 
   // Create a set of disallowed tool names for quick lookup

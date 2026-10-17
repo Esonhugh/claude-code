@@ -4,7 +4,7 @@ import type { InProcessTeammateTaskState } from '../tasks/InProcessTeammateTask/
 import type { TaskState } from '../tasks/types.js'
 import { PANEL_GRACE_MS } from '../utils/task/framework.js'
 import { canEvictTerminalTask } from '../utils/task/retention.js'
-import { completeTeammateTasksOnShutdown } from './useInboxPoller.js'
+import { completeTeammateTasksOnShutdown } from '../utils/swarm/teammateShutdown.js'
 
 function teammateTask(
   id: string,

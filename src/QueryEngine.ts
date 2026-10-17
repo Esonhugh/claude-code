@@ -1,4 +1,5 @@
 import { createModCommandQueue } from './services/mods/commandRunQueue.js'
+import { createModMcpConnections } from './services/mods/mcpConnect.js'
 import { copyModCallerChain, type ModCallerChain } from './services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
@@ -55,6 +56,7 @@ import type { ModsSession } from './services/mods/session.js'
 import { UNSUBMITTED_PROMPT_DROP, type PromptSubmitMetadata } from './services/mods/promptAdapter.js'
 import { projectModSessionMessages } from './services/mods/sessionMessages.js'
 import { readModBoundAgentMessages } from './services/mods/sessionTranscript.js'
+import { countModSessionTurns } from './services/mods/sessionTurns.js'
 import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
@@ -225,6 +227,8 @@ export class QueryEngine {
   private discoveredSkillNames = new Set<string>()
   private loadedNestedMemoryPaths = new Set<string>()
   private readonly promptSubmitOwner = Symbol('QueryEngine prompt submit owner')
+  // Mods input this engine queues is drained only while submitMessage runs.
+  private submitting = 0
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -247,6 +251,18 @@ export class QueryEngine {
       skipSlashCommands?: boolean
       skipAttachments?: boolean
     },
+  ): AsyncGenerator<SDKMessage, void, unknown> {
+    this.submitting++
+    try {
+      yield* this.submitQueued(prompt, options)
+    } finally {
+      this.submitting--
+    }
+  }
+
+  private async *submitQueued(
+    prompt: string | ContentBlockParam[],
+    options?: Parameters<QueryEngine['submitMessage']>[1],
   ): AsyncGenerator<SDKMessage, void, unknown> {
     yield* this.submitTurn(prompt, options)
 
@@ -288,6 +304,14 @@ export class QueryEngine {
         if (!admitted) queued.promptSubmitReceipt?.admit({drop:UNSUBMITTED_PROMPT_DROP})
       }
     }
+  }
+
+  /** Queued Mods input runs in this engine's drain, or through its host's wake once the engine is idle. */
+  private wakeModsHost(): void | Promise<void> {
+    if (this.submitting) return
+    const wake = this.config.modsSession?.hostService('wake')
+    if (!wake) throw new Error('QueryEngine is idle and its host runs no queued Mods input; queue it from a hook that runs during submitMessage')
+    return wake()
   }
 
   private async *submitTurn(
@@ -509,6 +533,9 @@ export class QueryEngine {
         tools: this.config.modsSession?.tools?.projection(this.config.tools) ?? this.config.tools,
       },
     })
+    const modMcpConnections = this.config.modsSession?.hostService('mcpConnect')
+      ? undefined
+      : createModMcpConnections({ getState: getAppState, setState: setAppState })
     if (this.config.modsSession) await this.config.modsSession.bind({
       cwd, surface: null, isInteractive: false, sessionId: getSessionId(),
     }, setAppState, {
@@ -519,10 +546,14 @@ export class QueryEngine {
       cwd: getCwd,
       root: getOriginalCwd,
       model: () => getModToolContext().options.mainLoopModel,
-      turns: () => this.mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual &&
-        message.toolUseResult === undefined &&
-        (typeof message.message.content === 'string' || !message.message.content.every(block => block.type === 'tool_result'))).length,
+      turns: () => countModSessionTurns(this.mutableMessages),
       ...getModHttpServices(),
+      // print binds first with its output sink and MCP ownership; keep them when present.
+      uiLog: this.config.modsSession.hostService('uiLog') ?? ((plugin, text, to) => {
+        logForDebugging(`[${plugin}] $.ui.log${to === 'debug' ? ' (to debug)' : ''}: ${text}`)
+      }),
+      mcpConnect: modMcpConnections?.connect ?? this.config.modsSession.hostService('mcpConnect'),
+      mcpRelease: modMcpConnections?.release ?? this.config.modsSession.hostService('mcpRelease'),
       configRows: () =>
         getConfigRows({
           getAppState: this.config.getAppState,
@@ -542,7 +573,7 @@ export class QueryEngine {
           args,
           signal,
         ),
-      commandRun: createModCommandQueue({owner:this.promptSubmitOwner}),
+      commandRun: createModCommandQueue({owner:this.promptSubmitOwner,wake:()=>this.wakeModsHost()}),
     submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
         const uuid = randomUUID()
         let settled = false
@@ -582,7 +613,17 @@ export class QueryEngine {
         })
         logForDebugging(`[ModsPrompt] enqueue uuid=${uuid} surface=engine asUser=${origin.asUser === true} priority=later callerChain=${JSON.stringify(queued.promptSubmitCallerChain)}`)
         signal.addEventListener('abort', cancel, { once: true })
+        const refuse = (reason: unknown) => {
+          finish(() => reject(reason))
+          remove([queued])
+        }
         if (signal.aborted) cancel()
+        else
+          try {
+            void Promise.resolve(this.wakeModsHost()).catch(refuse)
+          } catch (error) {
+            refuse(error)
+          }
       }),
       presentation: () => ({columns:80, isFullscreen:false}),
     })

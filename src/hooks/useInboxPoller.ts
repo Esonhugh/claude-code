@@ -12,11 +12,6 @@ import {
   useSetAppState,
 } from '../state/AppState.js'
 import { findToolByName } from '../Tool.js'
-import { isTerminalTaskStatus } from '../taskStatus.js'
-import {
-  type InProcessTeammateTaskState,
-  isInProcessTeammateTask,
-} from '../tasks/InProcessTeammateTask/types.js'
 import { getAllBaseTools } from '../tools.js'
 import type { PermissionUpdate } from '../types/permissions.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -30,7 +25,6 @@ import {
   toExternalPermissionMode,
 } from '../utils/permissions/PermissionMode.js'
 import { applyPermissionUpdate } from '../utils/permissions/PermissionUpdate.js'
-import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isInsideTmux } from '../utils/swarm/backends/detection.js'
 import {
@@ -41,12 +35,8 @@ import type { PaneBackendType } from '../utils/swarm/backends/types.js'
 import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js'
 import { getLeaderToolUseConfirmQueue } from '../utils/swarm/leaderPermissionBridge.js'
 import { sendPermissionResponseViaMailbox } from '../utils/swarm/permissionSync.js'
-import {
-  removeTeammateFromTeamFile,
-  setMemberMode,
-} from '../utils/swarm/teamHelpers.js'
-import { PANEL_GRACE_MS } from '../utils/task/framework.js'
-import { unassignTeammateTasks } from '../utils/tasks.js'
+import { setMemberMode } from '../utils/swarm/teamHelpers.js'
+import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.js'
 import {
   getAgentName,
   isPlanModeRequired,
@@ -111,43 +101,6 @@ function getAgentNameToPoll(appState: AppState): string | undefined {
 }
 
 const INBOX_POLL_INTERVAL_MS = 1000
-
-/**
- * Mark a shut-down teammate's in-process tasks terminal so hasRunningTeammates
- * becomes false and the spinner stops. Without this, out-of-process (tmux)
- * teammate tasks stay status:'running' forever because only in-process
- * teammates have a runner that sets 'completed'. notified + evictAfter mirror
- * killInProcessTeammate so retention evicts the task after the panel grace
- * period. Tasks the runner or a kill already ended are left alone. Returns the
- * tasks that were still running so the caller can close their SDK bookend once.
- */
-export function completeTeammateTasksOnShutdown(
-  tasks: AppState['tasks'],
-  teammateId: string,
-  now = Date.now(),
-): { tasks: AppState['tasks']; shutDown: InProcessTeammateTaskState[] } {
-  const updatedTasks = { ...tasks }
-  const shutDown: InProcessTeammateTaskState[] = []
-  for (const [tid, task] of Object.entries(updatedTasks)) {
-    if (
-      !isInProcessTeammateTask(task) ||
-      task.identity.agentId !== teammateId ||
-      isTerminalTaskStatus(task.status)
-    ) {
-      continue
-    }
-    shutDown.push(task)
-    updatedTasks[tid] = {
-      ...task,
-      status: 'completed' as const,
-      notified: true,
-      endTime: now,
-      retain: task.retain ?? false,
-      evictAfter: task.retain ? undefined : now + PANEL_GRACE_MS,
-    }
-  }
-  return { tasks: updatedTasks, shutDown }
-}
 
 type Props = {
   enabled: boolean
@@ -767,43 +720,16 @@ export function useInboxPoller({
           ).find(([, t]) => t.name === teammateToRemove)?.[0]
 
           if (teammateId) {
-            // Remove from team file (leader owns team file mutations)
-            const teamName = currentAppState.teamContext?.teamName
-            if (teamName) {
-              await removeTeammateFromTeamFile(teamName, {
-                agentId: teammateId,
-                name: teammateToRemove,
+            const { notificationMessage, removed } =
+              await handleTeammateShutdownApproved({
+                teamName: currentAppState.teamContext?.teamName,
+                teammateId,
+                teammateName: teammateToRemove,
+                setAppState,
               })
-            }
-
-            // Unassign tasks and build notification message
-            const { notificationMessage } = teamName
-              ? await unassignTeammateTasks(
-                  teamName,
-                  teammateId,
-                  teammateToRemove,
-                  'shutdown',
-                )
-              : { notificationMessage: `${teammateToRemove} has shut down.` }
-
-            let shutDownTasks: InProcessTeammateTaskState[] = []
-            setAppState(prev => {
-              if (!prev.teamContext?.teammates) return prev
-              if (!(teammateId in prev.teamContext.teammates)) return prev
-              const { [teammateId]: _, ...remainingTeammates } =
-                prev.teamContext.teammates
-
-              const { tasks: updatedTasks, shutDown } =
-                completeTeammateTasksOnShutdown(prev.tasks, teammateId)
-              shutDownTasks = shutDown
-
-              return {
+            if (removed) {
+              setAppState(prev => ({
                 ...prev,
-                tasks: updatedTasks,
-                teamContext: {
-                  ...prev.teamContext,
-                  teammates: remainingTeammates,
-                },
                 inbox: {
                   messages: [
                     ...prev.inbox.messages,
@@ -819,19 +745,11 @@ export function useInboxPoller({
                     },
                   ],
                 },
-              }
-            })
-            // notified:true pre-set → no XML notification → print.ts won't emit
-            // the SDK task_notification. Close the task_started bookend directly.
-            for (const task of shutDownTasks) {
-              emitTaskTerminatedSdk(task.id, 'completed', {
-                toolUseId: task.toolUseId,
-                summary: task.identity.agentId,
-              })
+              }))
+              logForDebugging(
+                `[InboxPoller] Removed ${teammateToRemove} (${teammateId}) from teamContext`,
+              )
             }
-            logForDebugging(
-              `[InboxPoller] Removed ${teammateToRemove} (${teammateId}) from teamContext`,
-            )
           }
         }
 

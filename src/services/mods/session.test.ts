@@ -829,6 +829,34 @@ describe('Mods CLI session host', () => {
     expect(write).toHaveBeenCalledTimes(1)
   })
 
+  test('one refresh invalidates config descriptions once whether or not the runtime publishes', async () => {
+    const declaration = await plugin(`export function register(on) {
+      on('config.describe', ($, e, next) => next(e));
+    }`)
+    let invalidations = 0
+    const host = session({
+      loadPlugins: async () => [declaration],
+      createRuntime: options => {
+        const runtime = createModsRuntime(options)
+        const invalidate = runtime.config.invalidate
+        runtime.config.invalidate = () => { invalidations++; invalidate() }
+        return runtime
+      },
+    })
+    await host.bind(binding)
+    expect(invalidations).toBe(1)
+    invalidations = 0
+    // Unchanged declarations do not publish, but plugin config rows may still have changed.
+    await host.refresh([declaration])
+    expect(invalidations).toBe(1)
+    invalidations = 0
+    await writeFile(join(declaration.path, 'register.ts'), `export function register(on) {
+      on('config.describe', ($, e, next) => next({ ...e, label: 'changed' }));
+    }`)
+    await host.refresh([declaration])
+    expect(invalidations).toBe(1)
+  })
+
   test('config keeps descriptions cached across ordinary settings changes while publishing live values', async () => {
     const declaration = await plugin(`let descriptions = 0; export function register(on) {
       on('config.describe', ($, e, next) => next({ ...e, label: e.label + ++descriptions }));
@@ -1813,6 +1841,38 @@ describe('Mods CLI session host', () => {
     expect(watching.watch).not.toHaveBeenCalled()
     expect(watching.watchers).toEqual([])
     await host.dispose()
+  })
+
+  test('plugin root polling skips node_modules and files that cannot change a module graph', async () => {
+    const watching = watchEvents()
+    const declaration = await plugin()
+    // An npm-installed plugin root can itself sit beneath node_modules.
+    const npmRoot = join(declaration.path, 'node_modules', 'npm-plugin')
+    await mkdir(npmRoot, { recursive: true })
+    await writeFile(join(npmRoot, 'register.ts'), await readFile(join(declaration.path, 'register.ts'), 'utf8'))
+    declaration.path = npmRoot
+    declaration.hookModules = [{ configPath: join(npmRoot, 'hooks.json'), paths: ['./register.ts'] }]
+    const host = session({ loadPlugins: async () => [declaration] })
+    await host.bind(binding)
+    expect(watching.watch).toHaveBeenCalledTimes(1)
+    const [roots, options] = watching.watch.mock.calls[0]!
+    expect(roots).toEqual([declaration.path])
+    // Bun's fs.watch can deadlock on close (see skillChangeDetector), so polling stays.
+    expect(options).toMatchObject({ usePolling: true })
+    const ignored = options!.ignored as (path: string, stats?: { isFile(): boolean; isDirectory(): boolean }) => boolean
+    const file = { isFile: () => true, isDirectory: () => false }
+    const directory = { isFile: () => false, isDirectory: () => true }
+    const at = (...parts: string[]) => join(declaration.path, ...parts)
+    expect(ignored(at('node_modules'))).toBe(true)
+    expect(ignored(at('node_modules', 'pkg', 'index.js'), file)).toBe(true)
+    expect(ignored(at('.git', 'HEAD'), file)).toBe(true)
+    expect(ignored(at('README.md'), file)).toBe(true)
+    expect(ignored(at('assets', 'logo.png'), file)).toBe(true)
+    expect(ignored(at('lib'), directory)).toBe(false)
+    expect(ignored(at('lib'))).toBe(false)
+    for (const name of ['register.ts', 'value.mjs', 'view.tsx', 'hooks.json', join('.claude-plugin', 'plugin.json')])
+      expect(ignored(at(name), file)).toBe(false)
+    await Promise.all(watching.ready)
   })
 
   test('owned import changes reload with polling, idle polls do not reload plugins', async () => {

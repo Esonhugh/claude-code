@@ -635,61 +635,6 @@ function createDefaultGlobalConfig(): GlobalConfig {
 
 export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = createDefaultGlobalConfig()
 
-export const GLOBAL_CONFIG_KEYS = [
-  'apiKeyHelper',
-  'installMethod',
-  'autoUpdates',
-  'autoUpdatesProtectedForNative',
-  'theme',
-  'verbose',
-  'preferredNotifChannel',
-  'shiftEnterKeyBindingInstalled',
-  'editorMode',
-  'hasUsedBackslashReturn',
-  'autoCompactEnabled',
-  'showTurnDuration',
-  'diffTool',
-  'env',
-  'tipsHistory',
-  'todoFeatureEnabled',
-  'showExpandedTodos',
-  'messageIdleNotifThresholdMs',
-  'autoConnectIde',
-  'autoInstallIdeExtension',
-  'fileCheckpointingEnabled',
-  'terminalProgressBarEnabled',
-  'showStatusInTerminalTab',
-  'taskCompleteNotifEnabled',
-  'inputNeededNotifEnabled',
-  'agentPushNotifEnabled',
-  'respectGitignore',
-  'claudeInChromeDefaultEnabled',
-  'hasCompletedClaudeInChromeOnboarding',
-  'lspRecommendationDisabled',
-  'lspRecommendationNeverPlugins',
-  'lspRecommendationIgnoredCount',
-  'copyFullResponse',
-  'copyOnSelect',
-  'permissionExplainerEnabled',
-  'prStatusFooterEnabled',
-  'remoteControlAtStartup',
-  'remoteDialogSeen',
-] as const
-
-export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]
-
-export function isGlobalConfigKey(key: string): key is GlobalConfigKey {
-  return GLOBAL_CONFIG_KEYS.includes(key as GlobalConfigKey)
-}
-
-export const PROJECT_CONFIG_KEYS = [
-  'allowedTools',
-  'hasTrustDialogAccepted',
-  'hasCompletedProjectOnboarding',
-] as const
-
-export type ProjectConfigKey = (typeof PROJECT_CONFIG_KEYS)[number]
-
 /**
  * Check if the user has already accepted the trust dialog for the cwd.
  *
@@ -778,10 +723,6 @@ const TEST_GLOBAL_CONFIG_FOR_TESTING: GlobalConfig = {
 }
 const TEST_PROJECT_CONFIG_FOR_TESTING: ProjectConfig = {
   ...DEFAULT_PROJECT_CONFIG,
-}
-
-export function isProjectConfigKey(key: string): key is ProjectConfigKey {
-  return PROJECT_CONFIG_KEYS.includes(key as ProjectConfigKey)
 }
 
 /**

@@ -5,6 +5,7 @@ import { AgentTool } from './AgentTool.js'
 import { SET_GOAL_TOOL_NAME } from '../SetGoalTool/constants.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import { AGENT_TOOL_NAME } from './constants.js'
+import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
 
 const agentTool = AgentTool
 const readTool = { name: 'Read' } as Tool
@@ -105,4 +106,19 @@ test('nested Agent availability does not bypass adjacent main-thread tool restri
     hasWildcard: false, validTools: [specification], invalidTools: [SET_GOAL_TOOL_NAME],
     resolvedTools: [agentTool], allowedAgentTypes: ['worker', 'researcher'],
   })
+})
+
+test('an agent at the maximum nesting depth does not receive the Agent tool', () => {
+  for (const isAsync of [false, true]) {
+    for (const tools of [undefined, [specification, 'Read']]) {
+      const atLimit = resolveAgentTools(
+        { tools, source: 'projectSettings' }, [agentTool, readTool], isAsync, false, MAX_SUBAGENT_DEPTH,
+      )
+      expect(atLimit.resolvedTools).toEqual([readTool])
+      const belowLimit = resolveAgentTools(
+        { tools, source: 'projectSettings' }, [agentTool, readTool], isAsync, false, MAX_SUBAGENT_DEPTH - 1,
+      )
+      expect(belowLimit.resolvedTools).toEqual([agentTool, readTool])
+    }
+  }
 })

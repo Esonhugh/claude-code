@@ -534,18 +534,19 @@ export function killAsyncAgent(
 }
 
 /**
- * Kill all running agent tasks.
+ * Kill all live agent tasks, including completed owners parked for children.
  * Used by ESC cancellation in coordinator mode to stop all subagents.
+ * Returns the tasks it killed so the caller can report exactly those.
  */
 export function killAllRunningAgentTasks(
   tasks: Record<string, TaskState>,
   setAppState: SetAppState,
-): void {
-  for (const [taskId, task] of Object.entries(tasks)) {
-    if (isLiveLocalAgentTask(task)) {
-      killAsyncAgent(taskId, setAppState, 'user')
-    }
+): LocalAgentTaskState[] {
+  const killed = Object.values(tasks).filter(isLiveLocalAgentTask)
+  for (const task of killed) {
+    killAsyncAgent(task.id, setAppState, 'user')
   }
+  return killed
 }
 
 /**

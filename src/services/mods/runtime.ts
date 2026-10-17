@@ -165,6 +165,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiSelection?(): ModUiSelection | undefined
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
+  /** Runs queued input while the host is idle; QueryEngine calls it for input it queued after its turn ended. */
+  wake?(): void | Promise<void>
   uiStatus?(plugin: string, text: string | undefined): void
   uiToast?(plugin: string, text: string, timeoutMs: number): void
   prompt?(): ModPromptHost | undefined
@@ -1892,7 +1894,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           }
           if (fn === hostIdentity && op === 'command.run') {
             const event = context?.active ? context.next?.event : undefined
-            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
+            // session.start and plugin.register run inside the load the host awaits before it runs queued input.
+            const held = event && (['prompt.submit','command.run','classic.PreToolUse','tool.call','agent.spawn','session.send','prompt.section','prompt.context','prompt.attachment','prompt.mention','prompt.compose','tool.describe','command.describe','config.describe','config.set','turn.start','turn.step','session.start','plugin.register'].includes(event) || event.startsWith('classic.') && !['classic.SessionStart','classic.Setup','classic.SessionEnd'].includes(event)) ? event : undefined
             const prefix = `${owner.declaration.name}: $.command.run`
             if (held) throw Object.assign(new Error(`${owner.declaration.name}: command.run: called from a ${held} hook, it would wait on the turn this hook is holding; ${held === 'command.run' ? 'answer { text } instead, or run it' : 'run it'} from a later event (turn.complete) (host check)`),{name:'HooksError'})
             if (typeof (input as ModInput).args !== 'string') throw Object.assign(new Error(`${prefix} takes { command, args? } (the name without the slash)`),{name:'HooksError'})
@@ -1928,7 +1931,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             const holdsTurn = held === 'prompt.submit' || (held !== undefined && (
               ['classic.PreToolUse', 'tool.call', 'agent.spawn', 'session.send', 'prompt.section', 'prompt.context',
                 'prompt.attachment', 'prompt.mention', 'prompt.compose', 'tool.describe', 'command.run',
-                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step'].includes(held) ||
+                'command.describe', 'config.describe', 'config.set', 'turn.start', 'turn.step', 'session.start', 'plugin.register'].includes(held) ||
               (held.startsWith('classic.') && !['classic.SessionStart', 'classic.Setup', 'classic.SessionEnd'].includes(held))
             ))
             if (holdsTurn) {
@@ -3522,7 +3525,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
     }
     candidates.sort(seatOrder)
-    if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) return
+    if (!releasedWithholding && candidates.length === previous.length && candidates.every((owner, index) => owner === previous[index])) {
+      // publish() invalidates on every other path; the host's plugin config rows may still have changed.
+      config.invalidate()
+      return
+    }
     const changed = new Set(candidates.filter(owner => !previous.includes(owner)))
     const refresh = previous.length ? { previous, changed } : undefined
     if (cold) await buildBootstrap()

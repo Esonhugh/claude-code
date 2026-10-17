@@ -407,6 +407,7 @@ import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { resolveAgentTools } from '../tools/AgentTool/agentToolUtils.js'
 import { resumeAgentBackground } from '../tools/AgentTool/resumeAgent.js'
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js'
+import { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } from '../utils/model/model.js'
 import {
   useAppState,
   useSetAppState,
@@ -421,6 +422,7 @@ import {
 } from '../services/mods/session.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
+import { countModSessionTurns } from '../services/mods/sessionTurns.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
@@ -2040,13 +2042,12 @@ export function REPL({
     }),
     cwd: getCwd,
     root: getOriginalCwd,
-    model: () => modToolContextRef.current!().options.mainLoopModel,
-    turns: () => messagesRef.current.filter(message =>
-      isHumanTurn(message) &&
-      !message.isVirtual &&
-      (typeof message.message.content === 'string' ||
-        !message.message.content.every(block => block.type === 'tool_result')),
-    ).length,
+    // Same value getToolUseContext receives from useMainLoopModel, without building a ToolUseContext.
+    model: () => {
+      const state = store.getState()
+      return parseUserSpecifiedModel(state.mainLoopModelForSession ?? state.mainLoopModel ?? getDefaultMainLoopModelSetting())
+    },
+    turns: () => countModSessionTurns(messagesRef.current),
     ...getModHttpServices(),
     mcpConnect: modMcpConnections.connect,
     mcpRelease: modMcpConnections.release,
