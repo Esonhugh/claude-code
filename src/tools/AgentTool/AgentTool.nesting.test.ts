@@ -744,7 +744,9 @@ await AgentTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_trusted_definition_elevation_worker' } } as never,
 )
-assert.equal(controlledPermissionMode, 'bypassPermissions')
+// Official 2.1.292: a declared bypassPermissions is not authorized unless the
+// parent already runs in bypassPermissions; the parent mode is kept.
+assert.equal(controlledPermissionMode, 'default')
 
 controlledPermissionMode = undefined
 await AgentTool.call(
@@ -760,7 +762,7 @@ await AgentTool.call(
     message: { id: 'msg_definition_elevation_after_blocked_request_worker' },
   } as never,
 )
-assert.equal(controlledPermissionMode, 'bypassPermissions')
+assert.equal(controlledPermissionMode, 'default')
 
 const explicitDefaultDefinitionContext =
   createContext(0) as never as TestContext & {
@@ -861,10 +863,12 @@ await AgentTool.call(
   async () => ({ behavior: 'allow' }),
   { message: { id: 'msg_bubble_prompt_worker' } } as never,
 )
-assert.equal(controlledPermissionMode, 'bubble')
+// Official 2.1.292: a declared mode never replaces a parent in auto,
+// acceptEdits or bypassPermissions; bubble still lets prompts surface.
+assert.equal(controlledPermissionMode, 'auto')
 assert.equal(controlledCanShowPermissionPrompts, true)
 
-for (const parentMode of ['plan', 'dontAsk'] as const) {
+for (const parentMode of ['default', 'plan', 'dontAsk', 'acceptEdits'] as const) {
   const restrictedBubbleContext = createContext(0) as never as TestContext & {
     options: typeof autoBubbleContext.options
   }
@@ -892,7 +896,12 @@ for (const parentMode of ['plan', 'dontAsk'] as const) {
     async () => ({ behavior: 'allow' }),
     { message: { id: `msg_${parentMode}_bubble_prompt_worker` } } as never,
   )
-  assert.equal(controlledPermissionMode, 'bubble')
+  // bubble becomes the agent's mode only under a default parent; plan and
+  // dontAsk keep their restriction and acceptEdits keeps its fast path.
+  assert.equal(
+    controlledPermissionMode,
+    parentMode === 'default' ? 'bubble' : parentMode,
+  )
   assert.equal(controlledCanShowPermissionPrompts, true)
 }
 

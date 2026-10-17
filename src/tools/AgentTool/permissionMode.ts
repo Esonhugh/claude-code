@@ -14,13 +14,29 @@ const AGENT_PERMISSION_MODE_RANK: Record<PermissionMode, number> = {
 
 export function shouldBubbleAgentPermissionPrompts(
   requestedMode: PermissionMode | undefined,
-  effectiveMode: PermissionMode,
 ): boolean {
-  return (
-    requestedMode === 'bubble' &&
-    effectiveMode !== 'plan' &&
-    effectiveMode !== 'dontAsk'
-  )
+  return requestedMode === 'bubble'
+}
+
+// Official 2.1.292: a definition's permissionMode never replaces a parent in
+// bypassPermissions, acceptEdits or auto, never grants bypassPermissions, and
+// bubble keeps a plan/dontAsk parent's mode.
+export function resolveDeclaredAgentPermissionMode(
+  parentMode: PermissionMode,
+  declaredMode: PermissionMode | undefined,
+): PermissionMode {
+  if (
+    !declaredMode ||
+    parentMode === 'bypassPermissions' ||
+    parentMode === 'acceptEdits' ||
+    parentMode === 'auto' ||
+    declaredMode === 'bypassPermissions' ||
+    (declaredMode === 'bubble' &&
+      (parentMode === 'plan' || parentMode === 'dontAsk'))
+  ) {
+    return parentMode
+  }
+  return declaredMode
 }
 
 export function applyRequestedAgentPermissionMode(

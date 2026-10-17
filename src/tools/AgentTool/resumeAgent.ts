@@ -56,6 +56,7 @@ import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
 import {
   applyRequestedAgentPermissionMode,
+  resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
 
@@ -230,21 +231,23 @@ export async function resumeAgentBackground({
     }
   }
 
-  const requestedPermissionMode =
-    meta?.permissionMode ??
-    selectedAgent.permissionMode ??
-    appState.toolPermissionContext.mode
-  // Like spawn, a recorded or definition mode never outranks the parent's
-  // current mode. Plan is the lowest rank, so it bypasses the clamp and keeps
-  // the gate below.
+  const recordedPermissionMode = meta?.permissionMode
+  // Like spawn, a recorded mode never outranks the parent's current mode. Plan
+  // is the lowest rank, so it bypasses the clamp and keeps the gate below. A
+  // recorded bubble or a missing record resolves like a declared spawn mode.
   const permissionMode = appState.toolPermissionContext.mode === 'bypassPermissions'
     ? 'bypassPermissions'
-    : requestedPermissionMode === 'plan'
-      ? 'plan'
-      : applyRequestedAgentPermissionMode(
-          appState.toolPermissionContext,
-          requestedPermissionMode,
-        ).mode
+    : recordedPermissionMode === undefined || recordedPermissionMode === 'bubble'
+      ? resolveDeclaredAgentPermissionMode(
+          appState.toolPermissionContext.mode,
+          recordedPermissionMode ?? selectedAgent.permissionMode,
+        )
+      : recordedPermissionMode === 'plan'
+        ? 'plan'
+        : applyRequestedAgentPermissionMode(
+            appState.toolPermissionContext,
+            recordedPermissionMode,
+          ).mode
   // Preserve recorded/inherited Plan restrictions, but gate a new definition entry.
   if (
     permissionMode === 'plan' &&
@@ -299,7 +302,6 @@ export async function resumeAgentBackground({
     spawnedByForkedSkill: scope ? true : undefined,
     canShowPermissionPrompts: shouldBubbleAgentPermissionPrompts(
       selectedAgent.permissionMode,
-      permissionMode,
     )
       ? true
       : undefined,

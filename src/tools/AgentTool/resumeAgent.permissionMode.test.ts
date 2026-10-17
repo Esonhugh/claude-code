@@ -86,9 +86,9 @@ async function runCase({
   parentEffort,
 }: {
   agentId: string
-  parentMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
-  metadataMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
-  definitionMode?: 'acceptEdits' | 'plan'
+  parentMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'auto' | 'dontAsk'
+  metadataMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'bubble'
+  definitionMode?: 'acceptEdits' | 'plan' | 'bubble'
   definitionTools?: string[]
   metadataEffort?: EffortValue
   definitionEffort?: EffortValue
@@ -277,6 +277,7 @@ try {
     ).permissionMode,
     'bypassPermissions',
   )
+  // Without a recorded mode, resume resolves the definition's mode like spawn.
   assert.equal(
     (
       await runCase({
@@ -285,8 +286,27 @@ try {
         definitionMode: 'acceptEdits',
       })
     ).permissionMode,
-    'default',
+    'acceptEdits',
   )
+  // A bubble agent resumed under acceptEdits/auto/plan/dontAsk keeps the
+  // parent's mode, matching spawn; only a default parent yields bubble.
+  for (const parentMode of ['default', 'acceptEdits', 'auto', 'plan', 'dontAsk'] as const) {
+    for (const source of ['metadata', 'definition'] as const) {
+      assert.equal(
+        (
+          await runCase({
+            agentId: `resume-bubble-${source}-${parentMode}`,
+            parentMode,
+            ...(source === 'metadata'
+              ? { metadataMode: 'bubble' as const, definitionMode: 'bubble' as const }
+              : { definitionMode: 'bubble' as const }),
+          })
+        ).permissionMode,
+        parentMode === 'default' ? 'bubble' : parentMode,
+        `${source} bubble under ${parentMode}`,
+      )
+    }
+  }
   assert.equal(
     (
       await runCase({
