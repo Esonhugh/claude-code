@@ -7,13 +7,36 @@ import { join } from 'node:path'
 import type { AppState } from '../../state/AppState.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { setIsInteractive } from '../../bootstrap/state.js'
-import { dequeue, dequeueAllMatching } from '../../utils/messageQueueManager.js'
+import { dequeue, dequeueAllMatching, peek } from '../../utils/messageQueueManager.js'
 import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
 import { runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
+
+// Terminal status/usage/output reach SDK consumers through the XML task
+// notification that print.ts parses into task_notification; the runtime emits
+// no direct SDK event on those paths. Read the queued XML without consuming it.
+function parseTerminalNotification(text: string) {
+  const usage = text.match(/<usage>([\s\S]*?)<\/usage>/)?.[1] ?? ''
+  return {
+    status: text.match(/<status>([^<]+)<\/status>/)?.[1],
+    output_file: text.match(/<output-file>([^<]+)<\/output-file>/)?.[1] ?? '',
+    usage: {
+      total_tokens: Number(usage.match(/<total_tokens>(\d+)<\/total_tokens>/)?.[1]),
+      tool_uses: Number(usage.match(/<tool_uses>(\d+)<\/tool_uses>/)?.[1]),
+    },
+  }
+}
+function peekTerminalNotification(taskId: string | undefined) {
+  const command = peek(
+    command =>
+      command.mode === 'task-notification' &&
+      String(command.value).includes(`<task-id>${taskId}</task-id>`),
+  )
+  return command ? parseTerminalNotification(String(command.value)) : undefined
+}
 import {
   classifyWorkflowAgentError,
   killWorkflowTask,
@@ -276,14 +299,15 @@ assert.equal(
   true,
 )
 
-const notification = events.find(event => event.subtype === 'task_notification')
-assert.equal(notification?.task_id, started?.task_id)
-assert.equal(notification?.tool_use_id, 'toolu_workflow_test')
-assert.equal(notification?.status, 'completed')
-assert.match(notification?.summary ?? '', /Dynamic workflow "Small real workflow covering phase log args budget agent parallel pipeline workflow\." completed/)
-assert.ok(notification?.output_file)
+// The terminal bookend reaches SDK consumers through the XML notification that
+// print.ts parses into task_notification; no direct event is emitted here.
+assert.equal(events.some(event => event.subtype === 'task_notification'), false)
 const completionNotification = dequeue(command => command.mode === 'task-notification')
 assert.ok(completionNotification)
+assert.match(String(completionNotification.value), new RegExp(`<task-id>${started?.task_id}</task-id>`))
+assert.match(String(completionNotification.value), /<tool-use-id>toolu_workflow_test<\/tool-use-id>/)
+assert.match(String(completionNotification.value), /<status>completed<\/status>/)
+assert.match(String(completionNotification.value), /<output-file>[^<]+<\/output-file>/)
 assert.match(String(completionNotification.value), /<summary>Dynamic workflow "Small real workflow covering phase log args budget agent parallel pipeline workflow\." completed<\/summary>/)
 assert.match(String(completionNotification.value), /"alpha": "alpha-ok"/)
 
@@ -1196,16 +1220,13 @@ const functionResultNotification = dequeue(
 )
 assert.ok(functionResultNotification)
 assert.match(String(functionResultNotification.value), /<status>failed<\/status>/)
-const functionResultSdkNotification = drainSdkEvents().find(
-  event =>
-    event.subtype === 'task_notification' &&
-    event.task_id === functionResultTask.id,
-)
 assert.equal(
-  functionResultSdkNotification?.subtype === 'task_notification'
-    ? functionResultSdkNotification.status
-    : undefined,
-  'failed',
+  drainSdkEvents().some(
+    event =>
+      event.subtype === 'task_notification' &&
+      event.task_id === functionResultTask.id,
+  ),
+  false,
 )
 
 const unserializableResultScript = `export const meta = {
@@ -1488,12 +1509,9 @@ const userRetryUsageTask = Object.values(userRetryUsageState.tasks).find(
 )
 assert.ok(userRetryUsageTask)
 const userRetryUsageEvents = drainSdkEvents()
-const userRetryUsageSdkTermination = userRetryUsageEvents.find(
-  event =>
-    event.subtype === 'task_notification' &&
-    event.task_id === userRetryUsageTask.id,
-)
-assert.equal(userRetryUsageSdkTermination?.subtype, 'task_notification')
+assert.equal(userRetryUsageEvents.some(event => event.subtype === 'task_notification'), false)
+const userRetryUsageSdkTermination = peekTerminalNotification(userRetryUsageTask.id)
+assert.ok(userRetryUsageSdkTermination)
 assert.ok(userRetryUsageSdkTermination.output_file)
 const userRetryUsageOutput = await readFile(
   userRetryUsageSdkTermination.output_file,
@@ -2017,12 +2035,9 @@ assert.deepEqual({
   toolUseCount: 3,
 })
 const automaticRetryUsageEvents = drainSdkEvents()
-const automaticRetryUsageSdkTermination = automaticRetryUsageEvents.find(
-  event =>
-    event.subtype === 'task_notification' &&
-    event.task_id === automaticRetryUsageTask?.id,
-)
-assert.equal(automaticRetryUsageSdkTermination?.subtype, 'task_notification')
+assert.equal(automaticRetryUsageEvents.some(event => event.subtype === 'task_notification'), false)
+const automaticRetryUsageSdkTermination = peekTerminalNotification(automaticRetryUsageTask?.id)
+assert.ok(automaticRetryUsageSdkTermination)
 assert.ok(automaticRetryUsageSdkTermination.output_file)
 const automaticRetryUsageTranscriptDir = automaticRetryUsageResult.match(/Transcript dir: (.+)/)?.[1]
 assert.ok(automaticRetryUsageTranscriptDir)
@@ -2439,12 +2454,9 @@ assert.deepEqual({
   toolUseCount: 2,
 })
 const missingSchemaUsageEvents = drainSdkEvents()
-const missingSchemaUsageSdkTermination = missingSchemaUsageEvents.find(
-  event =>
-    event.subtype === 'task_notification' &&
-    event.task_id === missingSchemaUsageTask?.id,
-)
-assert.equal(missingSchemaUsageSdkTermination?.subtype, 'task_notification')
+assert.equal(missingSchemaUsageEvents.some(event => event.subtype === 'task_notification'), false)
+const missingSchemaUsageSdkTermination = peekTerminalNotification(missingSchemaUsageTask?.id)
+assert.ok(missingSchemaUsageSdkTermination)
 assert.equal(missingSchemaUsageSdkTermination.status, 'completed')
 assert.ok(missingSchemaUsageSdkTermination.output_file)
 assert.equal(missingSchemaUsageResult.includes('runtime-missing-schema-usage-workflow'), true)
@@ -2636,12 +2648,8 @@ const skipTask = Object.values(skipState.tasks).find(
 )
 assert.ok(skipTask)
 const skipSdkEvents = drainSdkEvents()
-const skipSdkTermination = skipSdkEvents.find(
-  event =>
-    event.subtype === 'task_notification' &&
-    event.task_id === skipTask.id,
-)
-assert.equal(skipSdkTermination?.subtype, 'task_notification')
+assert.equal(skipSdkEvents.some(event => event.subtype === 'task_notification'), false)
+const skipSdkTermination = parseTerminalNotification(String(skipNotification.value))
 assert.ok(skipSdkTermination.output_file)
 const skipOutput = await readFile(skipSdkTermination.output_file, 'utf8')
 const skipSession = await loadWorkflowRunSession({
@@ -2809,14 +2817,11 @@ assert.match(String(failedNotification.value), /<status>completed<\/status>/)
 assert.match(String(failedNotification.value), /<result>\[\n {2}null,\n {2}null\n\]<\/result>/)
 assert.match(String(failedNotification.value), /\[failed-agent-a\] failed: agent failed intentionally/)
 assert.match(String(failedNotification.value), /\[failed-agent-b\] failed: agent failed intentionally/)
-const failedSdkNotification = drainSdkEvents().find(
-  event => event.subtype === 'task_notification' && event.task_id === failedTask?.id,
-)
 assert.equal(
-  failedSdkNotification?.subtype === 'task_notification'
-    ? failedSdkNotification.status
-    : undefined,
-  'completed',
+  drainSdkEvents().some(
+    event => event.subtype === 'task_notification' && event.task_id === failedTask?.id,
+  ),
+  false,
 )
 
 const promptTooLongScript = `export const meta = {
@@ -3117,16 +3122,13 @@ const stalledParallelNotification = dequeue(
 assert.ok(stalledParallelNotification)
 assert.match(String(stalledParallelNotification.value), /<status>completed<\/status>/)
 assert.match(String(stalledParallelNotification.value), /<failures>\[stalled-agent\] failed: /)
-const stalledParallelSdkNotification = drainSdkEvents().find(
-  event =>
-    event.subtype === 'task_notification' &&
-    event.task_id === stalledParallelTask?.id,
-)
 assert.equal(
-  stalledParallelSdkNotification?.subtype === 'task_notification'
-    ? stalledParallelSdkNotification.status
-    : undefined,
-  'completed',
+  drainSdkEvents().some(
+    event =>
+      event.subtype === 'task_notification' &&
+      event.task_id === stalledParallelTask?.id,
+  ),
+  false,
 )
 releaseStalledAgent?.()
 await Promise.resolve()
@@ -3654,15 +3656,14 @@ assert.equal(
   }))?.status,
   'killed',
 )
-const unawaitedKillSdkNotification = drainSdkEvents().find(
-  event => event.subtype === 'task_notification' && event.task_id === unawaitedKillTask?.id,
-)
 assert.equal(
-  unawaitedKillSdkNotification?.subtype === 'task_notification'
-    ? unawaitedKillSdkNotification.status
-    : undefined,
-  'stopped',
+  drainSdkEvents().some(
+    event => event.subtype === 'task_notification' && event.task_id === unawaitedKillTask?.id,
+  ),
+  false,
 )
+// print.ts maps the XML 'killed' status to the SDK 'stopped' status.
+assert.equal(peekTerminalNotification(unawaitedKillTask?.id)?.status, 'killed')
 
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')
@@ -3728,16 +3729,14 @@ const killedTask = Object.values(killedState.tasks).find(
 assert.ok(killedTask)
 assert.equal(killedTask.status, 'killed')
 assert.equal(killedAgentCallCount, 1)
-const killedSdkNotification = drainSdkEvents().find(
-  event =>
-    event.subtype === 'task_notification' && event.task_id === killedTask.id,
-)
 assert.equal(
-  killedSdkNotification?.subtype === 'task_notification'
-    ? killedSdkNotification.status
-    : undefined,
-  'stopped',
+  drainSdkEvents().some(
+    event =>
+      event.subtype === 'task_notification' && event.task_id === killedTask.id,
+  ),
+  false,
 )
+assert.equal(peekTerminalNotification(killedTask.id)?.status, 'killed')
 
 const largeFanoutCount = 1_001
 const largeFanoutScript = `export const meta = {

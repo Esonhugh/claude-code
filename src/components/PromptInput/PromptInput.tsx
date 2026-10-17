@@ -2182,7 +2182,7 @@ function PromptInput({
           lastPlanModeUse: Date.now(),
         }))
       }
-      syncTeammateMode(nextMode, teamContext?.teamName)
+      await syncTeammateMode(nextMode, teamContext?.teamName)
     }
     void applyModeChange()
 

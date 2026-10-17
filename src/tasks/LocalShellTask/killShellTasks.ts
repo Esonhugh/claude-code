@@ -6,6 +6,7 @@ import type { AppState } from '../../state/AppState.js'
 import type { AgentId } from '../../types/ids.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { logError } from '../../utils/log.js'
+import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { updateTaskState } from '../../utils/task/framework.js'
@@ -14,10 +15,18 @@ import { isLocalShellTask } from './guards.js'
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
 export function killTask(taskId: string, setAppState: SetAppStateFn): void {
+  let killed = false
+  let wasNotified = false
+  let toolUseId: string | undefined
+  let description: string | undefined
   updateTaskState(taskId, setAppState, task => {
     if (task.status !== 'running' || !isLocalShellTask(task)) {
       return task
     }
+    killed = true
+    wasNotified = task.notified
+    toolUseId = task.toolUseId
+    description = task.description
 
     try {
       logForDebugging(`LocalShellTask ${taskId} kill requested`)
@@ -43,6 +52,14 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
     }
   })
   void evictTaskOutput(taskId)
+  // notified:true above suppresses the "exit code 137" XML notification, so
+  // print.ts never emits the SDK task_notification — close the bookend here.
+  if (killed && !wasNotified) {
+    emitTaskTerminatedSdk(taskId, 'stopped', {
+      toolUseId,
+      summary: description,
+    })
+  }
 }
 
 /**

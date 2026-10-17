@@ -7,6 +7,8 @@ import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import type { Message } from '../types/message.js'
 import { createUserMessage } from '../utils/messages.js'
+import { PANEL_GRACE_MS } from '../utils/task/framework.js'
+import { canEvictTerminalTask } from '../utils/task/retention.js'
 
 type QueryCall = {
   params: QueryParams
@@ -153,6 +155,7 @@ test('isolates background main query context and agent identity', async () => {
     assert.equal(firstTaskAfterCancel.messages, undefined)
   }
 
+  const beforeCompletion = Date.now()
   queryCalls[1]!.release()
   await waitFor(() => state.tasks[secondTaskId]?.status === 'completed')
 
@@ -162,6 +165,11 @@ test('isolates background main query context and agent identity', async () => {
     assert.equal(secondTaskAfterCompletion.agentId, secondTaskId)
     assert.equal(secondTaskAfterCompletion.selectedAgent, agentDefinition)
     assert.equal(secondTaskAfterCompletion.abortController?.signal.aborted, false)
+    // retain:false without a deadline would keep the task forever.
+    assert.equal(secondTaskAfterCompletion.notified, true)
+    assert.ok(secondTaskAfterCompletion.evictAfter! >= beforeCompletion + PANEL_GRACE_MS)
+    assert.equal(canEvictTerminalTask(secondTaskAfterCompletion, secondTaskAfterCompletion.evictAfter! - 1), false)
+    assert.equal(canEvictTerminalTask(secondTaskAfterCompletion, secondTaskAfterCompletion.evictAfter!), true)
   }
   assert.equal(parentToolUseContext.agentId, undefined)
   assert.equal(parentToolUseContext.abortController, parentAbortController)

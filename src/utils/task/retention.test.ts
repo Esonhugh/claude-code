@@ -8,6 +8,22 @@ assert.equal(canEvictTerminalTask({
   notified: true,
 }), false)
 
+// retain:false alone keeps the task until an evictAfter deadline passes.
+assert.equal(canEvictTerminalTask({
+  type: 'local_agent',
+  status: 'completed',
+  notified: true,
+  retain: false,
+}, 100), false)
+
+assert.equal(canEvictTerminalTask({
+  type: 'local_agent',
+  status: 'completed',
+  notified: true,
+  retain: false,
+  evictAfter: 100,
+}, 100), true)
+
 assert.equal(canEvictTerminalTask({
   type: 'local_bash',
   status: 'completed',

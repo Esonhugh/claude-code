@@ -98,8 +98,9 @@ for (const entry of ['plan', 'script'] as const) {
       expect(text).toContain('<total_tokens>110</total_tokens><tool_uses>1</tool_uses>')
       expect(text).toMatch(/<duration_ms>\d+<\/duration_ms>/)
       expect(finished.notified).toBe(true)
-      expect(sdk).toHaveLength(1)
-      expect(sdk[0]).toMatchObject({ task_id: finished.id, status: status === 'killed' ? 'stopped' : status, usage: { total_tokens: 110, tool_uses: 1 } })
+      // print.ts turns the <status>-bearing XML into the SDK task_notification;
+      // a direct emit on the same path would close the task twice.
+      expect(notifications.length + sdk.length).toBe(1)
       if (status === 'completed') expect(text).toContain('result &lt;ok&gt;')
       if (status === 'failed') expect(text).toContain('terminal &lt;failure&gt;')
       expect(await readFile(finished.outputFile, 'utf8')).not.toBe('')

@@ -364,9 +364,10 @@ export function killInProcessTeammate(
     }
   })
 
-  // Remove from team file (outside state updater to avoid file I/O in callback)
+  // Remove from team file (outside state updater to avoid file I/O in callback).
+  // Fire-and-forget: the removal is best-effort and logs its own failures.
   if (teamName && agentId) {
-    removeMemberByAgentId(teamName, agentId)
+    void removeMemberByAgentId(teamName, agentId)
   }
 
   if (killed) {

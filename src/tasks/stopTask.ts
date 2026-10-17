@@ -4,7 +4,6 @@
 import type { AppState } from '../state/AppState.js'
 import type { TaskStateBase } from '../Task.js'
 import { getTaskByType } from '../tasks.js'
-import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import { isLocalShellTask } from './LocalShellTask/guards.js'
 import { isLiveLocalAgentTask, isLocalAgentTask, killAsyncAgent } from './LocalAgentTask/LocalAgentTask.js'
 import { readAgentMetadata } from '../utils/sessionStorage.js'
@@ -74,35 +73,10 @@ export async function stopTask(
     await taskImpl.kill(taskId, setAppState)
   }
 
-  // Bash: suppress the "exit code 137" notification (noise). Agent tasks: don't
-  // suppress — the AbortError catch sends a notification carrying
+  // Bash: killTask pre-sets notified (suppresses the "exit code 137" noise)
+  // and emits the SDK 'stopped' event itself. Agent tasks: don't suppress —
+  // the AbortError catch sends a notification carrying
   // extractPartialResult(agentMessages), which is the payload not noise.
-  if (isLocalShellTask(task)) {
-    let suppressed = false
-    setAppState(prev => {
-      const prevTask = prev.tasks[taskId]
-      if (!prevTask || prevTask.notified) {
-        return prev
-      }
-      suppressed = true
-      return {
-        ...prev,
-        tasks: {
-          ...prev.tasks,
-          [taskId]: { ...prevTask, notified: true },
-        },
-      }
-    })
-    // Suppressing the XML notification also suppresses print.ts's parsed
-    // task_notification SDK event — emit it directly so SDK consumers see
-    // the task close.
-    if (suppressed) {
-      emitTaskTerminatedSdk(taskId, 'stopped', {
-        toolUseId: task.toolUseId,
-        summary: task.description,
-      })
-    }
-  }
 
   const command = isLocalShellTask(task) ? task.command : task.description
 

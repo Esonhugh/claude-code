@@ -126,24 +126,22 @@ export function TeamsDialog({ initialTeams, onDone }: Props): React.ReactNode {
   // Handler for confirm:cycleMode - cycle teammate permission modes
   const handleCycleMode = useCallback(() => {
     if (dialogLevel.type === 'teammateDetail' && currentTeammate) {
-      // Detail view: cycle just this teammate
-      cycleTeammateMode(
+      // Detail view: cycle just this teammate; refresh once config.json is written
+      void cycleTeammateMode(
         currentTeammate,
         dialogLevel.teamName,
         isBypassAvailable,
-      )
-      setRefreshKey(k => k + 1)
+      ).then(() => setRefreshKey(k => k + 1))
     } else if (
       dialogLevel.type === 'teammateList' &&
       teammateStatuses.length > 0
     ) {
-      // List view: cycle all teammates in tandem
-      cycleAllTeammateModes(
+      // List view: cycle all teammates in tandem; refresh once config.json is written
+      void cycleAllTeammateModes(
         teammateStatuses,
         dialogLevel.teamName,
         isBypassAvailable,
-      )
-      setRefreshKey(k => k + 1)
+      ).then(() => setRefreshKey(k => k + 1))
     }
   }, [dialogLevel, currentTeammate, teammateStatuses, isBypassAvailable])
 
@@ -617,7 +615,7 @@ async function killTeammate(
     )
   }
   // Remove from team config file
-  removeMemberFromTeam(teamName, paneId)
+  await removeMemberFromTeam(teamName, paneId)
 
   // Unassign tasks and build notification message
   const { notificationMessage } = await unassignTeammateTasks(
@@ -715,13 +713,13 @@ async function showTeammate(
  * Send a mode change message to a single teammate
  * Also updates config.json directly so the UI reflects the change immediately
  */
-function sendModeChangeToTeammate(
+async function sendModeChangeToTeammate(
   teammateName: string,
   teamName: string,
   targetMode: PermissionMode,
-): void {
+): Promise<void> {
   // Update config.json directly so UI shows the change immediately
-  setMemberMode(teamName, teammateName, targetMode)
+  await setMemberMode(teamName, teammateName, targetMode)
 
   // Also send message so teammate updates their local permission context
   const message = createModeSetRequestMessage({
@@ -745,11 +743,11 @@ function sendModeChangeToTeammate(
 /**
  * Cycle a single teammate's mode
  */
-function cycleTeammateMode(
+async function cycleTeammateMode(
   teammate: TeammateStatus,
   teamName: string,
   isBypassAvailable: boolean,
-): void {
+): Promise<void> {
   const currentMode = teammate.mode
     ? permissionModeFromString(teammate.mode)
     : 'default'
@@ -759,7 +757,7 @@ function cycleTeammateMode(
     isBypassPermissionsModeAvailable: isBypassAvailable,
   }
   const nextMode = getNextPermissionMode(context)
-  sendModeChangeToTeammate(teammate.name, teamName, nextMode)
+  await sendModeChangeToTeammate(teammate.name, teamName, nextMode)
 }
 
 /**
@@ -768,11 +766,11 @@ function cycleTeammateMode(
  * If same, cycle all to next mode
  * Uses batch update to avoid race conditions
  */
-function cycleAllTeammateModes(
+async function cycleAllTeammateModes(
   teammates: TeammateStatus[],
   teamName: string,
   isBypassAvailable: boolean,
-): void {
+): Promise<void> {
   if (teammates.length === 0) return
 
   const modes = teammates.map(t =>
@@ -794,7 +792,7 @@ function cycleAllTeammateModes(
     memberName: t.name,
     mode: targetMode,
   }))
-  setMultipleMemberModes(teamName, modeUpdates)
+  await setMultipleMemberModes(teamName, modeUpdates)
 
   // Send mailbox messages to each teammate
   for (const teammate of teammates) {

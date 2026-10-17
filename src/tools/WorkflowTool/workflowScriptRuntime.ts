@@ -66,7 +66,6 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
-import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import { getProjectTempDir } from '../../utils/permissions/filesystem.js'
 import {
@@ -1722,16 +1721,6 @@ export async function runWorkflowScript({
         duration_ms: Date.now() - workflowTask.startTime,
       },
     })
-    emitTaskTerminatedSdk(workflowTask.id, 'completed', {
-      toolUseId: context.toolUseId,
-      summary,
-      outputFile,
-      usage: {
-        total_tokens: completedUsage.tokenCount,
-        tool_uses: completedUsage.toolUseCount,
-        duration_ms: Date.now() - workflowTask.startTime,
-      },
-    })
 
     } catch (error) {
     const abortStatus = workflowAbortStatus(abortController.signal.reason)
@@ -1767,16 +1756,6 @@ export async function runWorkflowScript({
             duration_ms: Date.now() - workflowTask.startTime,
           },
         })
-        emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
-          toolUseId: context.toolUseId,
-          summary,
-          outputFile,
-          usage: {
-            total_tokens: abortedUsage.tokenCount,
-            tool_uses: abortedUsage.toolUseCount,
-            duration_ms: Date.now() - workflowTask.startTime,
-          },
-        })
       }
       return
     }
@@ -1806,16 +1785,6 @@ export async function runWorkflowScript({
       outputFile,
       resultText: message,
       setAppState,
-      usage: {
-        total_tokens: failedUsage.tokenCount,
-        tool_uses: failedUsage.toolUseCount,
-        duration_ms: Date.now() - workflowTask.startTime,
-      },
-    })
-    emitTaskTerminatedSdk(workflowTask.id, 'failed', {
-      toolUseId: context.toolUseId,
-      summary,
-      outputFile,
       usage: {
         total_tokens: failedUsage.tokenCount,
         tool_uses: failedUsage.toolUseCount,
