@@ -48,6 +48,7 @@ async function runIsolatedTests(): Promise<void> {
   const recordedMessages: unknown[] = []
   const queryContexts: Record<string, string>[] = []
   const queryAgentIds: Array<string | undefined> = []
+  const queryAgentDefinitions: Array<Record<string, unknown> | undefined> = []
   const transcriptAgentIds: string[] = []
   const refreshCallbacks: Array<
     (() => Promise<Record<string, string>>) | undefined
@@ -65,6 +66,7 @@ async function runIsolatedTests(): Promise<void> {
       })
       queryContexts.push(params.userContext)
       queryAgentIds.push(params.toolUseContext.agentId)
+      queryAgentDefinitions.push(params.toolUseContext.options.agentDefinitions as Record<string, unknown> | undefined)
       refreshCallbacks.push(params.refreshUserContext)
       if (queryMode === 'assistant_then_throw' || queryMode === 'model_error') {
         yield {
@@ -240,9 +242,18 @@ async function runIsolatedTests(): Promise<void> {
     recordedMessages.length = 0
     queryContexts.length = 0
     queryAgentIds.length = 0
+    queryAgentDefinitions.length = 0
     transcriptAgentIds.length = 0
     refreshCallbacks.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  test('C6 narrows the child agentDefinitions to the resolved allowedAgentTypes', async () => {
+    queryMode = 'complete'
+    await drainAgent({ allowedAgentTypes: ['worker'] })
+    expect(queryAgentDefinitions.at(-1)?.allowedAgentTypes).toEqual(['worker'])
+    await drainAgent()
+    expect(queryAgentDefinitions.at(-1)?.allowedAgentTypes).toBeUndefined()
   })
 
   test('instruction provenance survives child overrides and forks while omit stays explicitly empty', async () => {

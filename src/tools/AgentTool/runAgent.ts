@@ -354,6 +354,7 @@ export async function* runAgent({
   availableTools,
   permissionMode: requestedPermissionMode,
   allowedTools,
+  allowedAgentTypes,
   onCacheSafeParams,
   contentReplacementState,
   useExactTools,
@@ -410,6 +411,9 @@ export async function* runAgent({
    * When provided, replaces ALL allow rules so the agent only has what's
    * explicitly listed (parent approvals don't leak through). */
   allowedTools?: string[]
+  /** Agent types this agent's definition allows it to spawn (`Agent(a, b)`).
+   * Replaces the parent's allowedAgentTypes in the child context. */
+  allowedAgentTypes?: string[]
   /** Optional callback invoked with CacheSafeParams after constructing the agent's
    * system prompt, context, and tools. Used by background summarization to fork
    * the agent's conversation for periodic progress summaries. */
@@ -908,7 +912,9 @@ export async function* runAgent({
       : { type: 'disabled' as const },
     mcpClients: mergedMcpClients,
     mcpResources: toolUseContext.options.mcpResources,
-    agentDefinitions: toolUseContext.options.agentDefinitions,
+    agentDefinitions: allowedAgentTypes
+      ? { ...toolUseContext.options.agentDefinitions, allowedAgentTypes }
+      : toolUseContext.options.agentDefinitions,
     subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
     spawnDepth:
       spawnDepth ?? getAgentOptionsSubagentDepthForTesting(toolUseContext),

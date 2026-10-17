@@ -14,7 +14,7 @@ import {
   subscribeToCommandQueue,
 } from '../../utils/messageQueueManager.js'
 import { extractTextContent } from '../../utils/messages.js'
-import { subscribeToTaskChanges, updateTaskState } from '../../utils/task/framework.js'
+import { PANEL_GRACE_MS, subscribeToTaskChanges, updateTaskState } from '../../utils/task/framework.js'
 
 /** Keep a stopped turn addressable until owned notifications can start its next turn. */
 export function parkAgentForChildren({
@@ -129,6 +129,8 @@ export function parkAgentForChildren({
         status: 'failed',
         resuming: false,
         error: message,
+        endTime: Date.now(),
+        evictAfter: current.retain ? undefined : Date.now() + PANEL_GRACE_MS,
         keepaliveReasons: new Set(),
         abortController: undefined,
         unregisterCleanup: undefined,

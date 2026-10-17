@@ -285,6 +285,7 @@ export type AgentMetadata = {
   effort?: import('./effort.js').EffortValue
   /** Worktree path if the agent was spawned with isolation: "worktree" */
   worktreePath?: string
+  worktreeBranch?: string
   /** Effective cwd when the agent was spawned with an explicit cwd override. */
   cwd?: string
   /** Original task description from the AgentTool input. Persisted so a
@@ -356,6 +357,14 @@ export async function writeAgentMetadata(agentId: AgentId, metadata: AgentMetada
   await mutateAgentMetadata(agentId, current => current?.stoppedByUser
     ? { ...metadata, stoppedByUser: true }
     : metadata)
+}
+
+/** Drop the worktree fields but keep everything else the spawn recorded. */
+export async function clearAgentMetadataWorktree(agentId: AgentId, fallback: AgentMetadata): Promise<void> {
+  await mutateAgentMetadata(agentId, current => {
+    const { worktreePath: _path, worktreeBranch: _branch, ...rest } = current ?? fallback
+    return rest
+  })
 }
 
 export async function markAgentMetadataStoppedByUser(agentId: AgentId, agentType: string): Promise<void> {

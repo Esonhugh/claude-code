@@ -86,8 +86,8 @@ async function runCase({
   parentEffort,
 }: {
   agentId: string
-  parentMode: 'default' | 'bypassPermissions' | 'plan'
-  metadataMode?: 'default' | 'acceptEdits' | 'plan'
+  parentMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan'
+  metadataMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
   definitionMode?: 'acceptEdits' | 'plan'
   definitionTools?: string[]
   metadataEffort?: EffortValue
@@ -224,6 +224,7 @@ try {
     }),
     /Plan mode is disabled.*"planModeAvailable": true/,
   )
+  // Recorded acceptEdits is clamped to the parent's default, like spawn.
   assert.equal(
     (
       await runCase({
@@ -232,7 +233,28 @@ try {
         metadataMode: 'acceptEdits',
       })
     ).permissionMode,
-    'acceptEdits',
+    'default',
+  )
+  // A recorded mode never outranks the parent session's current mode.
+  assert.equal(
+    (
+      await runCase({
+        agentId: 'resume-clamped-bypass',
+        parentMode: 'default',
+        metadataMode: 'bypassPermissions',
+      })
+    ).permissionMode,
+    'default',
+  )
+  assert.equal(
+    (
+      await runCase({
+        agentId: 'resume-clamped-accept-edits',
+        parentMode: 'plan',
+        metadataMode: 'acceptEdits',
+      })
+    ).permissionMode,
+    'plan',
   )
   for (const metadataMode of ['default', 'acceptEdits'] as const) {
     assert.equal(
@@ -261,6 +283,16 @@ try {
         agentId: 'resume-legacy-definition',
         parentMode: 'default',
         definitionMode: 'acceptEdits',
+      })
+    ).permissionMode,
+    'default',
+  )
+  assert.equal(
+    (
+      await runCase({
+        agentId: 'resume-accept-edits-parent',
+        parentMode: 'acceptEdits',
+        metadataMode: 'acceptEdits',
       })
     ).permissionMode,
     'acceptEdits',
