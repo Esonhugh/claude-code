@@ -58,7 +58,7 @@ supportedCalls.add('config.list')
 supportedCalls.add('mcp.call')
 const scanOnlyCalls = new Set(['settings.read', 'tool.list', 'tool.call', 'tool.register'])
 const reserved = new Set(['__proto__', 'prototype', 'constructor'])
-const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']
+export const esmModuleExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.mts', '.cjs', '.cts']
 
 function fail(path: string, message: string): never {
   throw new Error(`Mod ${path}: ${message}`)

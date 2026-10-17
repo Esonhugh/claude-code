@@ -189,3 +189,80 @@ test("command.run from turn.complete lets the turn end so the queued command can
   await settled;
   expect(logs.map((text) => JSON.parse(text))).toEqual([{ text: "ran", exitCode: 7 }]);
 });
+
+test("command.run and prompt.submit from session.start refuse instead of waiting on the load that runs the hook", async () => {
+  const entry = join(root, "start.mjs");
+  await writeFile(
+    entry,
+    `export function register(on){
+      on('session.start',async($,e,next)=>{
+        const out={};
+        try{out.command=await $.command.run({command:'fixture',args:''})}catch(error){out.command={error:String(error),name:error.name}}
+        try{out.prompt=await $.prompt.submit({text:'hello'})}catch(error){out.prompt={error:String(error)}}
+        await $.ui.log(JSON.stringify(out));return next(e)});
+    }`,
+  );
+  const binding = { cwd: root, surface: "terminal" as const, isInteractive: true, sessionId: "command-start" };
+  const logs: string[] = [];
+  // Like REPL and print: queued input runs only after the host's Mods bind settles.
+  const afterBind = async <T>(value: T) => {
+    await runtime!.bind({ ...binding });
+    return value;
+  };
+  runtime = createModsRuntime({
+    services: {
+      commands: () => [{ type: "local", name: "fixture", description: "fixture", supportsNonInteractive: true, load: async () => ({ call: async () => ({ type: "skip" }) }) }],
+      uiLog: (_plugin, text) => logs.push(text),
+      commandRun: () => afterBind({ text: "ran" }),
+      submitPrompt: () => afterBind({ text: "hello", origin: { kind: "plugin" as const, name: "start" } }),
+    },
+  });
+  await runtime.bind(binding);
+  const reconciled = runtime.reconcile([{ name: "start", storageId: "start@fixture", pluginRoot: root, entrypoints: [entry] }]);
+  const outcome = await Promise.race([reconciled.then(() => "settled"), Bun.sleep(3000).then(() => "deadlocked")]);
+  expect(outcome).toBe("settled");
+  await runtime.settle();
+  expect(logs.map((text) => JSON.parse(text))).toEqual([{
+    command: {
+      name: "HooksError",
+      error: "HooksError: start: command.run: called from a session.start hook, it would wait on the turn this hook is holding; run it from a later event (turn.complete) (host check)",
+    },
+    prompt: {
+      error: "Error: prompt.submit called from a session.start hook, it would wait on the turn this hook is holding; submit from a later event (turn.complete)",
+    },
+  }]);
+});
+
+test("command.run from a plugin.register judge refuses instead of waiting on the load that admits the plugin", async () => {
+  const dir = async (name: string, body: string) => {
+    const entry = join(root, `${name}.mjs`);
+    await writeFile(entry, `export function register(on){${body}}`);
+    return { name, storageId: `${name}@fixture`, pluginRoot: root, entrypoints: [entry] };
+  };
+  const judge = await dir(
+    "judge",
+    `on('plugin.register',async($,e,next)=>{let out;try{out=await $.command.run({command:'fixture'})}catch(error){out={error:String(error)}}await $.ui.log(JSON.stringify(out));return next(e)})`,
+  );
+  const binding = { cwd: root, surface: "terminal" as const, isInteractive: true, sessionId: "command-register" };
+  const logs: string[] = [];
+  runtime = createModsRuntime({
+    services: {
+      commands: () => [{ type: "local", name: "fixture", description: "fixture", supportsNonInteractive: true, load: async () => ({ call: async () => ({ type: "skip" }) }) }],
+      uiLog: (_plugin, text) => logs.push(text),
+      commandRun: async () => {
+        await runtime!.bind({ ...binding });
+        return { text: "ran" };
+      },
+    },
+  });
+  await runtime.bind(binding);
+  await runtime.reconcile([judge]);
+  const candidate = await dir("candidate", "");
+  const reconciled = runtime.reconcile([judge, candidate]);
+  const outcome = await Promise.race([reconciled.then(() => "settled"), Bun.sleep(3000).then(() => "deadlocked")]);
+  expect(outcome).toBe("settled");
+  await runtime.settle();
+  expect(logs.map((text) => JSON.parse(text))).toEqual([{
+    error: "HooksError: judge: command.run: called from a plugin.register hook, it would wait on the turn this hook is holding; run it from a later event (turn.complete) (host check)",
+  }]);
+});

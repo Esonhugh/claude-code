@@ -69,6 +69,7 @@ import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { projectModSessionMessages } from '../services/mods/sessionMessages.js'
 import { readModBoundAgentMessages } from '../services/mods/sessionTranscript.js'
+import { countModSessionTurns } from '../services/mods/sessionTurns.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import {
   getSessionState,
@@ -2905,7 +2906,7 @@ function runHeadlessStreaming(
     agentMessages: readModBoundAgentMessages,
     captureUsage: () => captureModSessionUsage(getModToolContext()),
     model: () => activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
-    turns: () => mutableMessages.filter(message => message.type === 'user' && !message.isMeta && !message.isVirtual && message.toolUseResult === undefined).length,
+    turns: () => countModSessionTurns(mutableMessages),
     ...getModHttpServices(),
     configRows: () =>
       getConfigRows({
@@ -2952,6 +2953,8 @@ function runHeadlessStreaming(
         signal,
       ),
     commandRun: createModCommandQueue({wake:()=>run()}),
+    // QueryEngine replaces commandRun/submitPrompt per turn; it calls this for input it queues once idle.
+    wake: () => run(),
     submitPrompt: ({ text, attachments, origin, callerChain, signal }) => new Promise((resolve, reject) => {
       const uuid = randomUUID()
       let settled = false

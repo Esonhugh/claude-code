@@ -198,6 +198,20 @@ export function validateModProcessSpawnRequest(value: unknown): asserts value is
     throw new TypeError('process.spawn input is a string')
 }
 
+// Names the host reads per request for its model credentials and endpoint, or that
+// make every later host child (Bash, MCP, hooks) load other code.
+const DENIED_ENV_NAMES = new Set([
+  'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN',
+  'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_OPTIONS', 'LD_PRELOAD',
+])
+// Per written name: the host value before the first live write, and live writers with their values, latest last.
+const envWrites = new Map<string, { original: string | undefined; writers: Map<object, string | undefined> }>()
+
+function setProcessEnv(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name]
+  else process.env[name] = value
+}
+
 const MAX_BYTES = 4 * 1024 * 1024
 const MAX_STORE_CHARACTERS = 4 * 1024 * 1024
 
@@ -255,6 +269,20 @@ export function createModHostOperations({
   const activationSignal = signal
   const authorizations = new Map<string, { session: string; credential: ModCredential }>()
   signal.addEventListener('abort', () => authorizations.clear(), { once: true })
+  const envWriter = {}
+  signal.addEventListener('abort', () => {
+    for (const [name, entry] of envWrites) {
+      if (!entry.writers.has(envWriter)) continue
+      const isLatest = [...entry.writers.keys()].at(-1) === envWriter
+      entry.writers.delete(envWriter)
+      if (!isLatest) continue
+      if (entry.writers.size) setProcessEnv(name, [...entry.writers.values()].at(-1))
+      else {
+        setProcessEnv(name, entry.original)
+        envWrites.delete(name)
+      }
+    }
+  }, { once: true })
   const storeName = `mod-store-${createHash('sha256').update(storageId).digest('hex')}.json`
   const storePath = () => join(getPluginDataDir(storageId), storeName)
 
@@ -411,11 +439,15 @@ export function createModHostOperations({
         signal.throwIfAborted()
         checkedString(name, 'environment name')
         if (!name || name.includes('=')) throw new TypeError('Invalid environment name')
-        if (value === undefined) delete process.env[name]
-        else {
-          checkedString(value, 'environment value')
-          process.env[name] = value
-        }
+        const canonical = process.platform === 'win32' ? name.toUpperCase() : name
+        if (DENIED_ENV_NAMES.has(canonical) || canonical.startsWith('DYLD_'))
+          throw new Error(`env.set refuses ${name}: it changes code or credentials the host uses`)
+        if (value !== undefined) checkedString(value, 'environment value')
+        const entry = envWrites.get(name) ?? { original: process.env[name], writers: new Map() }
+        envWrites.set(name, entry)
+        entry.writers.delete(envWriter)
+        entry.writers.set(envWriter, value)
+        setProcessEnv(name, value)
       },
     },
     settings: {

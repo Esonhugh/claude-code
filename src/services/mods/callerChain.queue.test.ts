@@ -31,7 +31,7 @@ function producer(path: string): NonNullable<ModRequestServices['submitPrompt']>
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   return new Function('scope', `with(scope) { ${js}; return submit }`).call(
-    { promptSubmitOwner: Symbol('owned test consumer') },
+    { promptSubmitOwner: Symbol('owned test consumer'), wakeModsHost: () => {} },
     { enqueueTracked: queue.enqueueTracked, remove: queue.remove, randomUUID, copyModCallerChain, logForDebugging: () => {}, run: () => {} },
   )
 }

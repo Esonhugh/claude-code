@@ -2358,6 +2358,7 @@ test('QueryEngine drains its own proactive prompt through real input admission',
         projection: (commands: unknown) => commands,
         describe: async (commands: unknown) => commands,
       },
+      hostService: () => undefined,
       bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
     } as any,
   })
@@ -2427,6 +2428,7 @@ test('QueryEngine settles a Mods command.run receipt when its queued slash comma
         projection: (commands: unknown) => commands,
         describe: async (commands: unknown) => commands,
       },
+      hostService: () => undefined,
       bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
     } as any,
   })
@@ -2440,6 +2442,80 @@ test('QueryEngine settles a Mods command.run receipt when its queued slash comma
   } finally {
     queue.resetCommandQueue()
     for (const mock of mocks) mock.mockRestore()
+  }
+})
+
+async function bindIdleModsEngine(hostServices: Record<string, unknown>) {
+  const { QueryEngine } = await import('../QueryEngine.js')
+  const contextModule = await import('../utils/queryContext.js')
+  const inputModule = await import('../utils/processUserInput/processUserInput.js')
+  const commandsModule = await import('../commands.js')
+  const pluginsModule = await import('../utils/plugins/pluginLoader.js')
+  const bootstrap = await import('../bootstrap/state.js')
+  const initModule = await import('../utils/messages/systemInit.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../utils/fileStateCache.js')
+  let state = getDefaultAppState()
+  let services: any
+  const mocks = [
+    spyOn(bootstrap, 'isSessionPersistenceDisabled').mockReturnValue(true),
+    spyOn(initModule, 'buildSystemInitMessage').mockReturnValue({ type: 'system', subtype: 'init', tools: [] } as any),
+    spyOn(contextModule, 'fetchSystemPromptParts').mockResolvedValue({ defaultSystemPrompt: [], userContext: {}, systemContext: {} } as any),
+    spyOn(inputModule, 'processUserInput').mockResolvedValue({ messages: [], shouldQuery: false, allowedTools: [], resultText: 'done' }),
+    spyOn(commandsModule, 'getSlashCommandToolSkills').mockResolvedValue([]),
+    spyOn(pluginsModule, 'loadAllPluginsCacheOnly').mockResolvedValue({ enabled: [], disabled: [], errors: [] }),
+  ]
+  const engine = new QueryEngine({
+    cwd: process.cwd(), tools: [], commands: [], mcpClients: [], agents: [],
+    canUseTool: async (_tool, input) => ({ behavior: 'allow', updatedInput: input }),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    readFileCache: createFileStateCacheWithSizeLimit(10), thinkingConfig: { type: 'disabled' },
+    modsSession: {
+      commands: {
+        projection: (commands: unknown) => commands,
+        describe: async (commands: unknown) => commands,
+      },
+      hostService: (key: string) => hostServices[key],
+      bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
+    } as any,
+  })
+  try {
+    for await (const _message of engine.submitMessage('bind', { skipAttachments: true })) void _message
+  } finally {
+    for (const mock of mocks) mock.mockRestore()
+  }
+  return services
+}
+
+test('QueryEngine supplies Mods log and MCP connection services without replacing its host\'s', async () => {
+  const own = await bindIdleModsEngine({})
+  expect(() => own.uiLog('fixture', 'logged', 'transcript')).not.toThrow()
+  await expect(own.mcpConnect(undefined, 'docs', new AbortController().signal)).resolves.toMatchObject({ isConnected: false })
+  await expect(own.mcpRelease('fixture')).resolves.toBeUndefined()
+  const host = { uiLog: () => {}, mcpConnect: async () => ({ isConnected: true, server: 'docs' }), mcpRelease: async () => {} }
+  const hosted = await bindIdleModsEngine(host)
+  expect(hosted.uiLog).toBe(host.uiLog)
+  expect(hosted.mcpConnect).toBe(host.mcpConnect)
+  expect(hosted.mcpRelease).toBe(host.mcpRelease)
+})
+
+test('QueryEngine wakes its host for Mods input queued while idle, and refuses it without one', async () => {
+  const queue = await import('../utils/messageQueueManager.js')
+  const request = () => ({ command: 'hello', args: '', origin: { kind: 'plugin' as const, name: 'fixture' }, signal: new AbortController().signal })
+  const prompt = () => ({ text: 'follow-up', origin: { kind: 'plugin' as const, name: 'fixture' }, callerChain: [], signal: new AbortController().signal })
+  try {
+    const alone = await bindIdleModsEngine({})
+    await expect(alone.commandRun(request())).rejects.toThrow('QueryEngine is idle')
+    await expect(alone.submitPrompt(prompt())).rejects.toThrow('QueryEngine is idle')
+    expect(queue.getCommandQueue()).toEqual([])
+    let wakes = 0
+    const hosted = await bindIdleModsEngine({ wake: () => { wakes++ } })
+    // The queue reset below cancels both receipts.
+    hosted.commandRun(request()).catch(noop)
+    hosted.submitPrompt(prompt()).catch(noop)
+    expect(wakes).toBe(2)
+    expect(queue.getCommandQueue().map(command => command.value)).toEqual(['/hello', 'follow-up'])
+  } finally {
+    queue.resetCommandQueue()
   }
 })
 
@@ -2473,6 +2549,33 @@ test('REPL binds Mods MCP calls to the current connection and forwards cancellat
   controller.abort(new Error('cancel MCP'))
   await expect(services.mcpCall('fixture-server', 'ping', {}, controller.signal)).rejects.toThrow('cancel MCP')
   expect(calls).toHaveLength(1)
+})
+
+test('REPL Mods session model and turns read live state without building a ToolUseContext', async () => {
+  const { getDefaultMainLoopModelSetting, parseUserSpecifiedModel } = await import('../utils/model/model.js')
+  const { countModSessionTurns } = await import('../services/mods/sessionTurns.js')
+  const { createUserMessage } = await import('../utils/messages.js')
+  let services: any
+  let state: any = { ...getDefaultAppState(), mainLoopModel: 'claude-opus-4-1', mainLoopModelForSession: null }
+  const messagesRef = { current: [
+    createUserMessage({ content: 'prompt' }),
+    createUserMessage({ content: [{ type: 'tool_result', tool_use_id: 'call', content: 'done' }] }),
+  ] }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo',
+    getSessionId: () => 'session', setAppState: noop, messagesRef,
+    store: { getState: () => state },
+    modToolContextRef: { current: () => { throw new Error('built a ToolUseContext') } },
+    getDefaultMainLoopModelSetting, parseUserSpecifiedModel, countModSessionTurns,
+  })
+  await awaitMods()
+  expect(services.model()).toBe(parseUserSpecifiedModel('claude-opus-4-1'))
+  state = { ...state, mainLoopModelForSession: 'claude-sonnet-4-5' }
+  expect(services.model()).toBe(parseUserSpecifiedModel('claude-sonnet-4-5'))
+  state = { ...state, mainLoopModel: null, mainLoopModelForSession: null }
+  expect(services.model()).toBe(parseUserSpecifiedModel(getDefaultMainLoopModelSetting()))
+  expect(services.turns()).toBe(1)
 })
 
 test('QueryEngine binds Mods MCP calls to its configured connection', async () => {
@@ -2519,6 +2622,7 @@ test('QueryEngine binds Mods MCP calls to its configured connection', async () =
         projection: (commands: unknown) => commands,
         describe: async (commands: unknown) => commands,
       },
+      hostService: () => undefined,
       bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host },
     } as any,
   })

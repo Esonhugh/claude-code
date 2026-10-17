@@ -1,5 +1,5 @@
 import chokidar, { type FSWatcher } from 'chokidar'
-import { basename, isAbsolute, join, relative, sep } from 'node:path'
+import { basename, extname, isAbsolute, join, relative, sep } from 'node:path'
 import { createHash } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
 import type { AppState } from '../../state/AppState.js'
@@ -14,6 +14,7 @@ import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { subscribeRateLimitUsage } from '../claudeAiLimits.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { seatNativeModPlugins } from './native.js'
+import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
 import {
@@ -457,9 +458,13 @@ export function createModsSession(options: ModsSessionOptions) {
       usePolling: true,
       interval: 500,
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
-      ignored: (path, stats) =>
-        path.split(sep).includes('.git') ||
-        Boolean(stats && !stats.isFile() && !stats.isDirectory()),
+      // Only module sources and JSON (hooks.json, plugin.json) can change a declaration.
+      ignored: (path, stats) => {
+        const root = roots.find(root => path === root || path.startsWith(root + sep))
+        return (root === undefined ? path : relative(root, path)).split(sep).some(part => part === '.git' || part === 'node_modules') ||
+          Boolean(stats && !stats.isFile() && !stats.isDirectory()) ||
+          Boolean(stats?.isFile() && extname(path) !== '.json' && !esmModuleExtensions.includes(extname(path)))
+      },
     })
     watcher.on('all', (_event, path: string) => {
       // Invalidate the declaration cache only on an actual owned-file change,
@@ -636,7 +641,6 @@ export function createModsSession(options: ModsSessionOptions) {
       // A clear can bind the runtime directly through ToolUseContext. Do not
       // replay the host's older binding when only declarations are refreshed.
       await runtime.reconcile(inputs)
-      runtime.config.invalidate()
       if (stopped) return
       if (binding && !runtimeBound) {
         await runtime.bind(binding)
@@ -890,6 +894,10 @@ export function createModsSession(options: ModsSessionOptions) {
     renderHooks,
     get runtime() {
       return stopped ? undefined : runtime
+    },
+    /** A service an earlier bind installed, so a nested host (QueryEngine under print) can keep it. */
+    hostService<K extends keyof ModHostServices>(key: K): ModHostServices[K] {
+      return services[key]
     },
     /** Await before processing a prompt, including slash commands that fork. */
     async bind(next: ModBinding, updateState?: SetAppState, hostServices?: ModHostServices): Promise<void> {
