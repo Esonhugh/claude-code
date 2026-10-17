@@ -88,7 +88,7 @@ export const McpWebSocketIDEServerConfigSchema = lazySchema(() =>
 
 export const McpHTTPServerConfigSchema = lazySchema(() =>
   z.object({
-    type: z.literal('http'),
+    type: z.enum(['http', 'streamable-http']).transform(() => 'http' as const),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),

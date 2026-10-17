@@ -29,6 +29,7 @@ import {
   type JSONRPCMessage,
   type ListPromptsResult,
   ListPromptsResultSchema,
+  type ListResourcesResult,
   ListResourcesResultSchema,
   ListRootsRequestSchema,
   type ListToolsResult,
@@ -1476,10 +1477,11 @@ export const connectToServer = memoize(
           stdioTransport.stderr?.off('data', stderrHandler)
         }
 
-        // For stdio transports, explicitly terminate the child process with proper signals
-        // NOTE: StdioClientTransport.close() only sends an abort signal, but many MCP servers
-        // (especially Docker containers) need explicit SIGINT/SIGTERM signals to trigger graceful shutdown
-        if (serverRef.type === 'stdio') {
+        // For stdio transports (type omitted defaults to stdio), explicitly terminate the child.
+        // StdioClientTransport.close() ends stdin, waits 2s, sends SIGTERM, waits 2s, then
+        // SIGKILL — too slow to finish before CLI exit, and many servers (especially Docker
+        // containers) need SIGINT to shut down gracefully.
+        if (serverRef.type === 'stdio' || !serverRef.type) {
           try {
             const stdioTransport = transport as StdioClientTransport
             const childPid = stdioTransport.pid
@@ -1832,6 +1834,51 @@ export function areMcpConfigsEqual(
 // reconnects), bounded to prevent unbounded growth with many MCP servers.
 const MCP_FETCH_CACHE_SIZE = 20
 
+const MAX_MCP_LIST_PAGES = 20
+
+async function requestAllPages<Page extends { nextCursor?: string }, Item>(
+  client: Client,
+  serverName: string,
+  method: 'tools/list' | 'resources/list' | 'prompts/list',
+  resultSchema: Parameters<Client['request']>[1],
+  pickItems: (page: Page) => Item[] | undefined,
+): Promise<Item[]> {
+  const items: Item[] = []
+  let cursor: string | undefined
+  let pageCount = 0
+  const logPaginated = (outcome: 'complete' | 'capped' | 'error') =>
+    logEvent('tengu_mcp_list_paginated', {
+      method:
+        method as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      pageCount,
+      itemCount: items.length,
+      outcome:
+        outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+  try {
+    do {
+      const page = (await client.request(
+        { method, ...(cursor && { params: { cursor } }) },
+        resultSchema,
+      )) as Page
+      pageCount++
+      items.push(...(pickItems(page) ?? []))
+      cursor = page.nextCursor
+    } while (cursor && pageCount < MAX_MCP_LIST_PAGES)
+  } catch (error) {
+    if (pageCount > 0) logPaginated('error')
+    throw error
+  }
+  if (cursor) {
+    logMCPDebug(
+      serverName,
+      `${method} still returning nextCursor after ${MAX_MCP_LIST_PAGES} pages; stopping`,
+    )
+  }
+  if (pageCount > 1) logPaginated(cursor ? 'capped' : 'complete')
+  return items
+}
+
 const CODEX_APPS_FETCH_CACHE_SUFFIX = '#host-owned-codex-apps'
 
 export function getFetchToolsCacheKey(client: MCPServerConnection): string {
@@ -1885,13 +1932,16 @@ export const fetchToolsForClient = memoizeWithLRU(
         return []
       }
 
-      const result = (await client.client.request(
-        { method: 'tools/list' },
+      const tools = await requestAllPages(
+        client.client,
+        client.name,
+        'tools/list',
         ListToolsResultSchema,
-      )) as ListToolsResult
+        (page: ListToolsResult) => page.tools,
+      )
 
       // Sanitize tool data from MCP server
-      const toolsToProcess = recursivelySanitizeUnicode(result.tools)
+      const toolsToProcess = recursivelySanitizeUnicode(tools)
 
       // Check if we should skip the mcp__ prefix for SDK MCP servers
       const skipPrefix =
@@ -2199,15 +2249,16 @@ export const fetchResourcesForClient = memoizeWithLRU(
         return []
       }
 
-      const result = await client.client.request(
-        { method: 'resources/list' },
+      const resources = await requestAllPages(
+        client.client,
+        client.name,
+        'resources/list',
         ListResourcesResultSchema,
+        (page: ListResourcesResult) => page.resources,
       )
 
-      if (!result.resources) return []
-
       // Add server name to each resource
-      return result.resources.map(resource => ({
+      return resources.map(resource => ({
         ...resource,
         server: client.name,
       }))
@@ -2233,15 +2284,16 @@ export const fetchCommandsForClient = memoizeWithLRU(
       }
 
       // Request prompts list from client
-      const result = (await client.client.request(
-        { method: 'prompts/list' },
+      const prompts = await requestAllPages(
+        client.client,
+        client.name,
+        'prompts/list',
         ListPromptsResultSchema,
-      )) as ListPromptsResult
-
-      if (!result.prompts) return []
+        (page: ListPromptsResult) => page.prompts,
+      )
 
       // Sanitize prompt data from MCP server
-      const promptsToProcess = recursivelySanitizeUnicode(result.prompts)
+      const promptsToProcess = recursivelySanitizeUnicode(prompts)
 
       // Convert MCP prompts to our Command format
       return promptsToProcess.map(prompt => {
