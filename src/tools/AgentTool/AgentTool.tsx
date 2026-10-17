@@ -82,7 +82,7 @@ import {
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { filterDeniedAgents } from '../../utils/permissions/permissions.js'
 import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
-import { writeAgentMetadata } from '../../utils/sessionStorage.js'
+import { clearAgentMetadataWorktree } from '../../utils/sessionStorage.js'
 import { sleep } from '../../utils/sleep.js'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import { buildEffectiveSystemPrompt } from '../../utils/systemPrompt.js'
@@ -1244,6 +1244,7 @@ export const AgentTool = buildTool({
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
       permissionMode,
       allowedTools,
+      allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
       // Pass parent conversation when the fork-subagent path needs full
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,
@@ -1296,7 +1297,7 @@ export const AgentTool = buildTool({
           // Clear worktreePath from metadata so resume doesn't try to use
           // a deleted directory. Fire-and-forget to match runAgent's
           // writeAgentMetadata handling.
-          void writeAgentMetadata(asAgentId(earlyAgentId), {
+          void clearAgentMetadataWorktree(asAgentId(earlyAgentId), {
             agentType: selectedAgent.agentType,
             description,
             effort: selectedAgent.effort,

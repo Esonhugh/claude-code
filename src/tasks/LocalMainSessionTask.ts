@@ -48,7 +48,11 @@ import {
   getTaskOutputPath,
   initTaskOutputAsSymlink,
 } from '../utils/task/diskOutput.js'
-import { registerTask, updateTaskState } from '../utils/task/framework.js'
+import {
+  PANEL_GRACE_MS,
+  registerTask,
+  updateTaskState,
+} from '../utils/task/framework.js'
 import type { LocalAgentTaskState } from './LocalAgentTask/LocalAgentTask.js'
 
 // Main session tasks use LocalAgentTaskState with agentType='main-session'
@@ -189,6 +193,8 @@ export function completeMainSessionTask(
       ...task,
       status: success ? 'completed' : 'failed',
       endTime: Date.now(),
+      // retain:false needs a deadline or retention never evicts the task.
+      evictAfter: Date.now() + PANEL_GRACE_MS,
       messages: task.messages?.length ? [task.messages.at(-1)!] : undefined,
     }
   })

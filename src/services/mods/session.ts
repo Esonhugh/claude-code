@@ -936,15 +936,19 @@ export function createModsSession(options: ModsSessionOptions) {
       if (changed) runtimeBound = false
       const first = !initialized
       initialize()
-      if (first || timer || authoringRestoreRequested) await refresh()
-      else if (runtime)
-        await enqueue(async () => {
-          await runtime!.bind(next)
-          runtimeBound = true
-        })
-      else await queue
+      try {
+        if (first || timer || authoringRestoreRequested) await refresh()
+        else if (runtime)
+          await enqueue(async () => {
+            await runtime!.bind(next)
+            runtimeBound = true
+          })
+        else await queue
+      } finally {
+        // A failed first refresh must not hold inbound messages forever.
+        firstBinding.resolve()
+      }
       publishAgents()
-      firstBinding.resolve()
     },
     async receive(input: SessionReceiveInput, admit: (input: SessionReceiveInput) => void | SessionReceiveResult | Promise<void | SessionReceiveResult>, signal?: AbortSignal) {
       const lifetime = receiveController.signal
@@ -953,7 +957,8 @@ export function createModsSession(options: ModsSessionOptions) {
       let snapshot: ReturnType<ModsRuntime['capture']> | undefined
       try {
         combined.signal.throwIfAborted()
-        if (options.isTrusted) {
+        // A disabled host (remote/SSH) never binds, so there is no runtime to wait for.
+        if (options.isTrusted && !options.getDisabledReason?.()) {
           const aborted = new Promise<never>((_, reject) => {
             abort = () => reject(combined.signal.reason)
             combined.signal.addEventListener('abort', abort, { once: true })

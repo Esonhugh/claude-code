@@ -54,7 +54,10 @@ import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
 import { runAgent } from './runAgent.js'
-import { shouldBubbleAgentPermissionPrompts } from './permissionMode.js'
+import {
+  applyRequestedAgentPermissionMode,
+  shouldBubbleAgentPermissionPrompts,
+} from './permissionMode.js'
 
 export type ResumeAgentResult = {
   agentId: string
@@ -227,11 +230,21 @@ export async function resumeAgentBackground({
     }
   }
 
+  const requestedPermissionMode =
+    meta?.permissionMode ??
+    selectedAgent.permissionMode ??
+    appState.toolPermissionContext.mode
+  // Like spawn, a recorded or definition mode never outranks the parent's
+  // current mode. Plan is the lowest rank, so it bypasses the clamp and keeps
+  // the gate below.
   const permissionMode = appState.toolPermissionContext.mode === 'bypassPermissions'
     ? 'bypassPermissions'
-    : (meta?.permissionMode ??
-      selectedAgent.permissionMode ??
-      appState.toolPermissionContext.mode)
+    : requestedPermissionMode === 'plan'
+      ? 'plan'
+      : applyRequestedAgentPermissionMode(
+          appState.toolPermissionContext,
+          requestedPermissionMode,
+        ).mode
   // Preserve recorded/inherited Plan restrictions, but gate a new definition entry.
   if (
     permissionMode === 'plan' &&
@@ -305,6 +318,7 @@ export async function resumeAgentBackground({
     availableTools: workerTools,
     permissionMode,
     allowedTools,
+    allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
     // Transcript already contains the parent context slice from the
     // original fork. Re-supplying it would cause duplicate tool_use IDs.
     forkContextMessages: undefined,

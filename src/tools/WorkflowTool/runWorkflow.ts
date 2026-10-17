@@ -75,7 +75,6 @@ import {
   getProgressUpdate,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import { emitTaskTerminatedSdk } from '../../utils/sdkEventQueue.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
 import { applyRequestedAgentPermissionMode } from '../AgentTool/permissionMode.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -1299,16 +1298,6 @@ export async function runWorkflowPlan({
           duration_ms: Date.now() - workflowTask.startTime,
         },
       })
-      emitTaskTerminatedSdk(workflowTask.id, 'completed', {
-        toolUseId: context.toolUseId,
-        summary,
-        outputFile,
-        usage: {
-          total_tokens: workflowTaskUsage.tokenCount ?? 0,
-          tool_uses: workflowTaskUsage.toolUseCount ?? 0,
-          duration_ms: Date.now() - workflowTask.startTime,
-        },
-      })
     } catch (error) {
     const abortStatus = workflowAbortStatus(workflowTask.abortController?.signal.reason)
     const allResults = [...resultsByPhase.values()].flat()
@@ -1336,16 +1325,6 @@ export async function runWorkflowPlan({
           await enqueueWorkflowNotification({
             taskId: workflowTask.id, toolUseId: context.toolUseId,
             status: 'killed', summary, resultText, outputFile, setAppState,
-            usage: {
-              total_tokens: abortedUsage.tokenCount ?? 0,
-              tool_uses: abortedUsage.toolUseCount ?? 0,
-              duration_ms: Date.now() - workflowTask.startTime,
-            },
-          })
-          emitTaskTerminatedSdk(workflowTask.id, 'stopped', {
-            toolUseId: context.toolUseId,
-            summary,
-            outputFile,
             usage: {
               total_tokens: abortedUsage.tokenCount ?? 0,
               tool_uses: abortedUsage.toolUseCount ?? 0,
@@ -1381,16 +1360,6 @@ export async function runWorkflowPlan({
       await enqueueWorkflowNotification({
         taskId: workflowTask.id, toolUseId: context.toolUseId,
         status: 'failed', summary, resultText, outputFile, setAppState,
-        usage: {
-          total_tokens: workflowTaskUsage.tokenCount ?? 0,
-          tool_uses: workflowTaskUsage.toolUseCount ?? 0,
-          duration_ms: Date.now() - workflowTask.startTime,
-        },
-      })
-      emitTaskTerminatedSdk(workflowTask.id, 'failed', {
-        toolUseId: context.toolUseId,
-        summary,
-        outputFile,
         usage: {
           total_tokens: workflowTaskUsage.tokenCount ?? 0,
           tool_uses: workflowTaskUsage.toolUseCount ?? 0,

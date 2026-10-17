@@ -320,12 +320,15 @@ export async function markMessagesAsRead(
       `[TeammateMailbox] markMessagesAsRead: ${unreadCount} unread of ${messages.length} total`,
     )
 
-    // messages comes from jsonParse — fresh, unshared objects safe to mutate
-    for (const m of messages) m.read = true
+    // Read messages are never read back (only resume drops them), so drop the
+    // ones already read instead of rewriting an ever-growing inbox each poll.
+    const kept = messages
+      .filter(m => !m.read)
+      .map(m => ({ ...m, read: true }))
 
-    await writeFile(inboxPath, jsonStringify(messages, null, 2), 'utf-8')
+    await writeFile(inboxPath, jsonStringify(kept, null, 2), 'utf-8')
     logForDebugging(
-      `[TeammateMailbox] markMessagesAsRead: WROTE ${unreadCount} message(s) as read to ${inboxPath}`,
+      `[TeammateMailbox] markMessagesAsRead: WROTE ${unreadCount} message(s) as read to ${inboxPath} (dropped ${messages.length - kept.length} already read)`,
     )
   } catch (error) {
     const code = getErrnoCode(error)
@@ -358,9 +361,14 @@ export async function clearMailbox(
 ): Promise<void> {
   const inboxPath = getInboxPath(agentName, teamName)
 
+  let release: (() => Promise<void>) | undefined
   try {
-    // flag 'r+' throws ENOENT if the file doesn't exist, so we don't
-    // accidentally create an inbox file that wasn't there.
+    // Same lock as writeToMailbox so a concurrent append is not clobbered.
+    // Locking a missing inbox throws ENOENT, so we don't create one here.
+    release = await lockfile.lock(inboxPath, {
+      lockfilePath: `${inboxPath}.lock`,
+      ...LOCK_OPTIONS,
+    })
     await writeFile(inboxPath, '[]', { encoding: 'utf-8', flag: 'r+' })
     logForDebugging(`[TeammateMailbox] Cleared inbox for ${agentName}`)
   } catch (error) {
@@ -370,6 +378,12 @@ export async function clearMailbox(
     }
     logForDebugging(`Failed to clear inbox for ${agentName}: ${error}`)
     logError(error)
+  } finally {
+    if (release) {
+      await release().catch(error => {
+        logForDebugging(`Failed to release inbox lock for ${agentName}: ${error}`)
+      })
+    }
   }
 }
 

@@ -12,6 +12,8 @@ import type { AppState } from '../../state/AppStateStore.js'
 import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
 
 const MAX_RECENT_ACTIVITIES = 5
+// Progress events are UI/SDK deltas; keep the tail so long runs stay bounded.
+export const MAX_WORKFLOW_EVENTS = 200
 export const WORKFLOW_AGENT_USER_RETRY_ABORT_REASON = 'user-retry'
 export const WORKFLOW_AGENT_SKIPPED_ABORT_REASON = 'user-skip'
 
@@ -473,7 +475,7 @@ function appendEvent(
 ): LocalWorkflowTaskState {
   return withProgressVersion({
     ...task,
-    events: [...task.events, event],
+    events: [...task.events, event].slice(-MAX_WORKFLOW_EVENTS),
   })
 }
 
@@ -541,7 +543,7 @@ export function recordWorkflowEvent({
 }): void {
   withWorkflowTask(taskId, setAppState, task => withProgressVersion({
     ...task,
-    events: [...task.events, event],
+    events: [...task.events, event].slice(-MAX_WORKFLOW_EVENTS),
   }))
 }
 

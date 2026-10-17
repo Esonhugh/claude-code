@@ -202,6 +202,25 @@ export class PtySessionManager {
     return this.cloneRecord(session.record)
   }
 
+  closeAll(): void {
+    for (const [sessionId, session] of this.sessions) {
+      if (
+        session.record.state === 'running' ||
+        session.record.state === 'starting'
+      ) {
+        const status =
+          this.driver.kill?.(sessionId, 'SIGTERM') ?? this.driver.close(sessionId)
+        this.applyDriverStatus(session.record, status)
+      }
+      this.driver.dispose?.(sessionId)
+    }
+    for (const timer of this.reapTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.reapTimers.clear()
+    this.sessions.clear()
+  }
+
   reapExpiredSessions(now = Date.now()): void {
     for (const [sessionId, session] of this.sessions) {
       if (

@@ -277,3 +277,36 @@ test('invalid signals reject while unused local options are ignored',async()=>{
   expect(outcome.result).toEqual(['answered','answered','answered','consumer: options.signal must be an AbortSignal','answered'])
   expect(calls).toBe(4)
 })
+
+// model.complete carries the environment's own cancellation; fork and classify rely on the activation signal.
+test('worker death aborts a model fork a clock callback started outside any hook',async () => {
+  const entered=Promise.withResolvers<AbortSignal|undefined>()
+  const died=Promise.withResolvers<void>()
+  const RealWorker=globalThis.Worker
+  const natives:Worker[]=[]
+  globalThis.Worker=class extends RealWorker {
+    constructor(url:string|URL,options?:WorkerOptions) {super(url,options);natives.push(this)}
+  } as typeof Worker
+  let runtime:ReturnType<typeof createModsRuntime>
+  try {
+    runtime=createModsRuntime({onDiagnostic:event=>{if(event.stage==='worker')died.resolve()},services:{modelFork:async (_request,signal)=>{
+      entered.resolve(signal)
+      await new Promise<void>((_,reject)=>{
+        if(signal?.aborted)reject(new Error('aborted'))
+        else signal?.addEventListener('abort',()=>reject(new Error('aborted')),{once:true})
+      })
+      return {isAnswered:true,text:'never',usage}
+    }}})
+  } finally {globalThis.Worker=RealWorker}
+  await bind(runtime)
+  const consumer=await plugin('consumer',`export function register(on) {
+    on('session.start',($,e,next)=>{$.clock.after(100,async()=>{try{await $.model.fork({prompt:'late'})}catch{}});return next(e)});
+  }`)
+  await runtime.reconcile([consumer])
+  const signal=await entered.promise
+  expect(signal?.aborted).toBe(false)
+  natives[0]!.terminate()
+  await died.promise
+  await new Promise(resolve=>setTimeout(resolve,20))
+  expect(signal?.aborted).toBe(true)
+})

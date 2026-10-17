@@ -54,9 +54,10 @@ async function plugin(name: string) {
 }
 async function fixture(names = ['author']) {
   let calls = 0
+  let polls = 0
   const launch = Promise.withResolvers<void>()
   const runtime = createModsRuntime({ services: {
-    tasks: () => state.tasks,
+    tasks: () => { polls++; return state.tasks },
     agentSpawn: async (input, _snapshot, signal, _plugin, leftRunning) => {
       signal.throwIfAborted()
       calls++
@@ -78,7 +79,7 @@ async function fixture(names = ['author']) {
   await runtime.bind({cwd:root,surface:null,isInteractive:false,sessionId:'owned'})
   const plugins = await Promise.all(names.map(plugin))
   await runtime.reconcile(plugins)
-  return { runtime, plugins, launch, calls: () => calls,
+  return { runtime, plugins, launch, calls: () => calls, polls: () => polls,
     invoke: async (name = names[0]!, count = 1, mode = 'running', signal?: AbortSignal) => {
       const result = await runtime.dispatch('command.run', {command:name,count,mode}, async () => ({}), {signal}) as {text:string}
       return JSON.parse(result.text) as {results: ({model:string;agentId?:string}|{deny:string})[];error?:string}
@@ -132,6 +133,17 @@ for (const status of ['completed', 'failed', 'killed', 'evicted'] as const) {
     expect(f.calls()).toBe(2)
   })
 }
+
+test('the spawn observer stops polling tasks once the runtime is disposed', async () => {
+  const f = await fixture()
+  expect((await f.invoke()).results).toHaveLength(1)
+  await delay(200)
+  expect(f.polls()).toBeGreaterThan(0)
+  await f.runtime.dispose()
+  const after = f.polls()
+  await delay(400)
+  expect(f.polls()).toBe(after)
+})
 
 test('failed, denied and nonasync launches release their reservations immediately', async () => {
   process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS = '1'

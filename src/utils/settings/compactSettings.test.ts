@@ -23,6 +23,17 @@ describe('settings schema', () => {
     expect(result.data.enableWorkflows).toBe(true)
   })
 
+  test('declares the workflow keyword trigger and usage warning keys as booleans', () => {
+    const shape = SettingsSchema().shape
+    expect(shape.workflowKeywordTriggerEnabled.description).toContain('keyword trigger')
+    expect(shape.skipWorkflowUsageWarning.description).toContain('warning')
+    expect(SettingsSchema().safeParse({ workflowKeywordTriggerEnabled: 'yes' }).success).toBe(false)
+    expect(SettingsSchema().safeParse({ skipWorkflowUsageWarning: 'yes' }).success).toBe(false)
+    expect(
+      SettingsSchema().parse({ workflowKeywordTriggerEnabled: false, skipWorkflowUsageWarning: true }),
+    ).toMatchObject({ workflowKeywordTriggerEnabled: false, skipWorkflowUsageWarning: true })
+  })
+
   test('describes exclusions for instruction files rather than two basenames', () => {
     const description = SettingsSchema().shape.claudeMdExcludes.description
 

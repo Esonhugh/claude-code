@@ -11,6 +11,10 @@
  */
 
 import type { TaskContext } from '../../Task.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../../services/analytics/index.js'
 import { updateAgentSummary } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { filterIncompleteToolCalls } from '../../tools/AgentTool/runAgent.js'
 import type { AgentId } from '../../types/ids.js'
@@ -57,6 +61,8 @@ export function startAgentSummarization(
   let timeoutId: ReturnType<typeof setTimeout> | null = null
   let stopped = false
   let previousSummary: string | null = null
+  let lastTranscriptKey: string | null = null
+  let unchangedSkipLogged = false
 
   async function runSummary(): Promise<void> {
     if (stopped) return
@@ -76,6 +82,24 @@ export function startAgentSummarization(
 
       // Filter to clean message state
       const cleanMessages = filterIncompleteToolCalls(transcript.messages)
+
+      // Nothing new since the last fork — the summary would not change.
+      const transcriptKey = `${cleanMessages.length}:${cleanMessages.at(-1)?.uuid ?? ''}`
+      if (transcriptKey === lastTranscriptKey) {
+        logForDebugging(
+          `[AgentSummary] Skipping summary for ${taskId}: transcript unchanged (${cleanMessages.length} messages)`,
+        )
+        if (!unchangedSkipLogged) {
+          logEvent('tengu_agent_summary_skipped', {
+            reason:
+              'unchanged' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+          unchangedSkipLogged = true
+        }
+        return
+      }
+      unchangedSkipLogged = false
+      lastTranscriptKey = transcriptKey
 
       // Build fork params with current messages
       const forkParams: CacheSafeParams = {

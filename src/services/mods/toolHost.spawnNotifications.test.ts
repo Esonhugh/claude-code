@@ -84,6 +84,8 @@ const childSource = `
     assert.ok(queue[0].value.includes('<total_tokens>5</total_tokens>'))
     enqueueAgentNotification(notice)
     assert.equal(getCommandQueue().length, 1)
+    // notified is set once the main-thread enqueue settles.
+    await new Promise(resolve => setTimeout(resolve, 0))
     assert.equal(root.tasks['ordinary-agent'].notified, true)
   } finally {
     settled.resolve()

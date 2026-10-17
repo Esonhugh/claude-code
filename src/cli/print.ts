@@ -1342,14 +1342,14 @@ function runHeadlessStreaming(
   let pendingModelSwitches = Promise.resolve()
 
   const streamState = createSdkStreamState({
-    remote: Boolean(process.env.CLAUDE_CODE_REMOTE),
+    remote: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE),
     readInputs: () => ({
       goal: getAppState().goalStatus,
       model: activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
       autoCompactWindow: getAppState().autoCompactWindow,
     }),
     enqueue: message => output.enqueue(message),
-    configurationReady: process.env.CLAUDE_CODE_REMOTE ? initializeGrowthBook() : Promise.resolve(),
+    configurationReady: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? initializeGrowthBook() : Promise.resolve(),
   })
   const unregisterStreamStateCleanup = registerCleanup(async () => { streamState.dispose() })
   async function finishOutput(): Promise<void> {
@@ -2749,7 +2749,7 @@ function runHeadlessStreaming(
 
                 if (teammateId) {
                   // Remove from team file
-                  removeTeammateFromTeamFile(teamName, {
+                  await removeTeammateFromTeamFile(teamName, {
                     agentId: teammateId,
                     name: teammateToRemove,
                   })

@@ -350,18 +350,20 @@ describe('Plan mode opt-in', () => {
     })).not.toThrow()
   })
 
-  test('rejects new Plan entries through CLI, defaults, and permission transitions', async () => {
+  test('rejects new Plan entries through CLI and permission transitions, degrading settings defaults', async () => {
     const context = getEmptyToolPermissionContext()
     const actionable = /Plan mode is disabled.*"planModeAvailable": true.*settings\.json/
     expect(() => initialPermissionModeFromCLI({
       permissionModeCli: 'plan',
       dangerouslySkipPermissions: false,
     })).toThrow(actionable)
+    // A repo's permissions.defaultMode "plan" must not make claude unstartable:
+    // like a disabled bypass mode it degrades to default with a notification.
     configure({ permissions: { defaultMode: 'plan' } })
-    expect(() => initialPermissionModeFromCLI({
+    expect(initialPermissionModeFromCLI({
       permissionModeCli: undefined,
       dangerouslySkipPermissions: false,
-    })).toThrow(actionable)
+    })).toEqual({ mode: 'default', notification: expect.stringMatching(actionable) })
     expect(initialPermissionModeFromCLI({
       permissionModeCli: 'default',
       dangerouslySkipPermissions: false,

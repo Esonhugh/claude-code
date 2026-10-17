@@ -27,9 +27,13 @@ import {
 } from '../../utils/abortController.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { getToolSearchOrReadInfo } from '../../utils/collapseReadSearch.js'
-import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
+import {
+  dequeueAllMatching,
+  enqueuePendingNotification,
+} from '../../utils/messageQueueManager.js'
 import { getAgentTranscriptPath, markAgentMetadataStoppedByUser } from '../../utils/sessionStorage.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { escapeXml } from '../../utils/xml.js'
 import {
   evictTaskOutput,
   getTaskOutputPath,
@@ -338,6 +342,10 @@ export function drainPendingMessages(
   return drained
 }
 
+// Task ids whose terminal notification is being enqueued (see enqueueAgentNotification).
+const notificationsInFlight = new Set<string>()
+const NOTIFICATION_RESULT_MAX_CHARS = 8000
+
 /**
  * Enqueue an agent notification to the message queue.
  */
@@ -369,13 +377,14 @@ export function enqueueAgentNotification({
   worktreeBranch?: string
 }): void {
   // Check whether another terminal path already delivered this notification.
-  // The flag is set only after queue insertion succeeds so a transient enqueue
-  // failure remains retryable instead of permanently suppressing delivery.
+  // `notified` is set only after the enqueue settles successfully so a failed
+  // enqueue stays retryable; the in-flight set dedupes concurrent terminal
+  // paths synchronously while that enqueue is pending.
   let shouldEnqueue = false
   let routedAgentId: AgentId | undefined
   setAppState(prev => {
     const task = prev.tasks[taskId]
-    if (!isLocalAgentTask(task) || task.notified) {
+    if (!isLocalAgentTask(task) || task.notified || notificationsInFlight.has(taskId)) {
       return prev
     }
 
@@ -397,42 +406,76 @@ export function enqueueAgentNotification({
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState)
 
-  const summary =
+  const summary = escapeXml(
     status === 'completed'
       ? `Agent "${description}" completed`
       : status === 'failed'
         ? `Agent "${description}" failed: ${error || 'Unknown error'}`
-        : `Agent "${description}" was stopped`
+        : `Agent "${description}" was stopped`,
+  )
 
   const outputPath = getTaskOutputPath(taskId)
   const toolUseIdLine = toolUseId
-    ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>`
+    ? `\n<${TOOL_USE_ID_TAG}>${escapeXml(toolUseId)}</${TOOL_USE_ID_TAG}>`
     : ''
-  const resultSection = finalMessage ? `\n<result>${finalMessage}</result>` : ''
+  const escapedResult = finalMessage ? escapeXml(finalMessage) : ''
+  const truncatedResult = escapedResult.length > NOTIFICATION_RESULT_MAX_CHARS
+    ? `${escapedResult.slice(0, NOTIFICATION_RESULT_MAX_CHARS)}\n... (truncated ${escapedResult.length - NOTIFICATION_RESULT_MAX_CHARS} chars, full result in ${escapeXml(outputPath)})`
+    : escapedResult
+  const resultSection = finalMessage ? `\n<result>${truncatedResult}</result>` : ''
   const usageSection = usage
     ? `\n<usage><total_tokens>${usage.totalTokens}</total_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>`
     : ''
   const worktreeSection = worktreePath
-    ? `\n<${WORKTREE_TAG}><${WORKTREE_PATH_TAG}>${worktreePath}</${WORKTREE_PATH_TAG}>${worktreeBranch ? `<${WORKTREE_BRANCH_TAG}>${worktreeBranch}</${WORKTREE_BRANCH_TAG}>` : ''}</${WORKTREE_TAG}>`
+    ? `\n<${WORKTREE_TAG}><${WORKTREE_PATH_TAG}>${escapeXml(worktreePath)}</${WORKTREE_PATH_TAG}>${worktreeBranch ? `<${WORKTREE_BRANCH_TAG}>${escapeXml(worktreeBranch)}</${WORKTREE_BRANCH_TAG}>` : ''}</${WORKTREE_TAG}>`
     : ''
 
   const message = `<${TASK_NOTIFICATION_TAG}>
-<${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
-<${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
+<${TASK_ID_TAG}>${escapeXml(taskId)}</${TASK_ID_TAG}>${toolUseIdLine}
+<${OUTPUT_FILE_TAG}>${escapeXml(outputPath)}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
 <${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`
 
-  enqueuePendingNotification({
+  const markNotified = () =>
+    updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
+      ...task,
+      notified: true,
+    }))
+  const pending = enqueuePendingNotification({
     value: message,
     mode: 'task-notification',
     agentId: routedAgentId,
     taskId,
   })
-  updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => ({
-    ...task,
-    notified: true,
-  }))
+  if (!pending) {
+    markNotified()
+    return
+  }
+  notificationsInFlight.add(taskId)
+  void pending
+    .then(markNotified, error => {
+      logForDebugging(
+        `[AgentLifecycle] notification_enqueue_failed agent_id=${taskId}: ${error}`,
+        { level: 'warn' },
+      )
+    })
+    .finally(() => {
+      notificationsInFlight.delete(taskId)
+    })
+}
+
+/**
+ * Hand notifications addressed to a no-longer-live owner to the main thread.
+ * Nothing else drains owner-addressed commands once the owner stops.
+ */
+function rerouteOwnedNotifications(taskId: string): void {
+  const owned = dequeueAllMatching(
+    cmd => cmd.mode === 'task-notification' && cmd.agentId === taskId,
+  )
+  for (const command of owned) {
+    void enqueuePendingNotification({ ...command, agentId: undefined })
+  }
 }
 
 /**
@@ -487,6 +530,7 @@ export function killAsyncAgent(
   if (killed) {
     void evictTaskOutput(taskId)
   }
+  rerouteOwnedNotifications(taskId)
 }
 
 /**
@@ -692,6 +736,7 @@ export function failAgentTask(
     }
   })
   void evictTaskOutput(taskId)
+  rerouteOwnedNotifications(taskId)
   // Note: Notification is sent by AgentTool via enqueueAgentNotification
 }
 

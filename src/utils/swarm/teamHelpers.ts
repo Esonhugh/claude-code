@@ -1,6 +1,6 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { readFileSync } from 'fs'
 import { mkdir, readFile, rm, writeFile } from 'fs/promises'
-import { lock as lockFile, lockSync as lockFileSync } from '../lockfile.js'
+import { lock as lockFile } from '../lockfile.js'
 import { join } from 'path'
 import { z } from 'zod/v4'
 import { getSessionCreatedTeams } from '../../bootstrap/state.js'
@@ -195,16 +195,6 @@ export async function readTeamFileAsync(
 }
 
 /**
- * Writes a team file (sync — for sync contexts)
- */
-// sync IO: called from sync context
-function writeTeamFile(teamName: string, teamFile: TeamFile): void {
-  const teamDir = getTeamDir(teamName)
-  mkdirSync(teamDir, { recursive: true })
-  writeFileSync(getTeamFilePath(teamName), jsonStringify(teamFile, null, 2))
-}
-
-/**
  * Writes a team file (async — for tool handlers)
  */
 export async function writeTeamFileAsync(
@@ -258,91 +248,12 @@ function createTeamMutationLog(
   return `[TeammateTool] ${fields.join(' ')}`
 }
 
-function readTeamFileOrThrow(teamName: string): TeamFile {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
-    throw new Error(`Team \"${teamName}\" does not exist`)
-  }
-  return teamFile
-}
-
 async function readTeamFileAsyncOrThrow(teamName: string): Promise<TeamFile> {
   const teamFile = await readTeamFileAsync(teamName)
   if (!teamFile) {
     throw new Error(`Team \"${teamName}\" does not exist`)
   }
   return teamFile
-}
-
-export function mutateTeamFile<T>(
-  teamName: string,
-  params: TeamMutationParams<T>,
-): T {
-  const teamFilePath = getTeamFilePath(teamName)
-  const teamDir = getTeamDir(teamName)
-  mkdirSync(teamDir, { recursive: true })
-  const lockStartedAt = Date.now()
-  const release = lockFileSync(teamFilePath, TEAM_FILE_LOCK_OPTIONS)
-  const timing: TeamMutationTiming = { waitMs: Date.now() - lockStartedAt }
-  let resolvedAgentId: string | undefined
-
-  try {
-    const latestTeamFile = readTeamFileOrThrow(teamName)
-    resolvedAgentId =
-      typeof params.agentId === 'function'
-        ? params.agentId(latestTeamFile)
-        : params.agentId
-    const context: TeamMutationContext = {
-      teamName,
-      beforeCount: latestTeamFile.members.length,
-    }
-    logForDebugging(
-      createTeamMutationLog('start', params.mutation, {
-        teamName,
-        agentId: resolvedAgentId,
-        beforeCount: context.beforeCount,
-        waitMs: timing.waitMs,
-      }),
-    )
-
-    const { result, changed } = params.mutate(latestTeamFile, context)
-    if (changed) {
-      writeTeamFile(teamName, latestTeamFile)
-      logForDebugging(
-        createTeamMutationLog('commit', params.mutation, {
-          teamName,
-          agentId: resolvedAgentId,
-          beforeCount: context.beforeCount,
-          afterCount: latestTeamFile.members.length,
-          waitMs: timing.waitMs,
-        }),
-      )
-    } else {
-      logForDebugging(
-        createTeamMutationLog('abort', params.mutation, {
-          teamName,
-          agentId: resolvedAgentId,
-          beforeCount: context.beforeCount,
-          afterCount: latestTeamFile.members.length,
-          waitMs: timing.waitMs,
-          reason: 'no_change',
-        }),
-      )
-    }
-    return result
-  } catch (error) {
-    logForDebugging(
-      createTeamMutationLog('abort', params.mutation, {
-        teamName,
-        agentId: resolvedAgentId,
-        waitMs: timing.waitMs,
-        reason: 'mutation_failed',
-      }),
-    )
-    throw error
-  } finally {
-    release()
-  }
 }
 
 export async function mutateTeamFileAsync<T>(
@@ -439,17 +350,6 @@ function upsertTeamMember(
   return { result: undefined, changed }
 }
 
-export function appendOrUpdateTeamMember(
-  teamName: string,
-  member: TeamMember,
-): void {
-  mutateTeamFile(teamName, {
-    mutation: 'appendOrUpdateMember',
-    agentId: member.agentId,
-    mutate: teamFile => upsertTeamMember(teamFile, member),
-  })
-}
-
 export async function appendOrUpdateTeamMemberAsync(
   teamName: string,
   member: TeamMember,
@@ -465,10 +365,10 @@ export async function appendOrUpdateTeamMemberAsync(
  * Removes a teammate from the team file by agent ID or name.
  * Used by the leader when processing shutdown approvals.
  */
-export function removeTeammateFromTeamFile(
+export async function removeTeammateFromTeamFile(
   teamName: string,
   identifier: { agentId?: string; name?: string },
-): boolean {
+): Promise<boolean> {
   const identifierStr = identifier.agentId || identifier.name
   if (!identifierStr) {
     logForDebugging(
@@ -478,7 +378,7 @@ export function removeTeammateFromTeamFile(
   }
 
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'removeTeammate',
       agentId: teamFile =>
         identifier.agentId ??
@@ -515,9 +415,12 @@ export function removeTeammateFromTeamFile(
  * @param paneId - The pane ID to hide
  * @returns true if the pane was added to hidden list, false if team doesn't exist
  */
-export function addHiddenPaneId(teamName: string, paneId: string): boolean {
+export async function addHiddenPaneId(
+  teamName: string,
+  paneId: string,
+): Promise<boolean> {
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'addHiddenPane',
       mutate(teamFile) {
         const hiddenPaneIds = teamFile.hiddenPaneIds ?? []
@@ -543,9 +446,12 @@ export function addHiddenPaneId(teamName: string, paneId: string): boolean {
  * @param paneId - The pane ID to show (remove from hidden list)
  * @returns true if the pane was removed from hidden list, false if team doesn't exist
  */
-export function removeHiddenPaneId(teamName: string, paneId: string): boolean {
+export async function removeHiddenPaneId(
+  teamName: string,
+  paneId: string,
+): Promise<boolean> {
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'removeHiddenPane',
       mutate(teamFile) {
         const hiddenPaneIds = teamFile.hiddenPaneIds ?? []
@@ -573,12 +479,12 @@ export function removeHiddenPaneId(teamName: string, paneId: string): boolean {
  * @param tmuxPaneId - The pane ID of the teammate to remove
  * @returns true if the member was removed, false if team or member doesn't exist
  */
-export function removeMemberFromTeam(
+export async function removeMemberFromTeam(
   teamName: string,
   tmuxPaneId: string,
-): boolean {
+): Promise<boolean> {
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'removeMemberByPane',
       agentId: teamFile =>
         teamFile.members.find(member => member.tmuxPaneId === tmuxPaneId)?.agentId,
@@ -616,12 +522,12 @@ export function removeMemberFromTeam(
  * @param agentId - The agent ID of the teammate to remove (e.g., "researcher@my-team")
  * @returns true if the member was removed, false if team or member doesn't exist
  */
-export function removeMemberByAgentId(
+export async function removeMemberByAgentId(
   teamName: string,
   agentId: string,
-): boolean {
+): Promise<boolean> {
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'removeMemberByAgentId',
       agentId,
       mutate(teamFile) {
@@ -649,13 +555,13 @@ export function removeMemberByAgentId(
  * @param memberName - The name of the member to update
  * @param mode - The new permission mode
  */
-export function setMemberMode(
+export async function setMemberMode(
   teamName: string,
   memberName: string,
   mode: PermissionMode,
-): boolean {
+): Promise<boolean> {
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'setMemberMode',
       agentId: teamFile =>
         teamFile.members.find(member => member.name === memberName)?.agentId,
@@ -690,15 +596,15 @@ export function setMemberMode(
  * @param mode - The permission mode to sync
  * @param teamNameOverride - Optional team name override (uses env var if not provided)
  */
-export function syncTeammateMode(
+export async function syncTeammateMode(
   mode: PermissionMode,
   teamNameOverride?: string,
-): void {
+): Promise<void> {
   if (!isTeammate()) return
   const teamName = teamNameOverride ?? getTeamName()
   const agentName = getAgentName()
   if (teamName && agentName) {
-    setMemberMode(teamName, agentName, mode)
+    await setMemberMode(teamName, agentName, mode)
   }
 }
 
@@ -708,12 +614,12 @@ export function syncTeammateMode(
  * @param teamName - The name of the team
  * @param modeUpdates - Array of {memberName, mode} to update
  */
-export function setMultipleMemberModes(
+export async function setMultipleMemberModes(
   teamName: string,
   modeUpdates: Array<{ memberName: string; mode: PermissionMode }>,
-): boolean {
+): Promise<boolean> {
   try {
-    return mutateTeamFile(teamName, {
+    return await mutateTeamFileAsync(teamName, {
       mutation: 'setMultipleMemberModes',
       mutate(teamFile) {
         const updateMap = new Map(modeUpdates.map(u => [u.memberName, u.mode]))

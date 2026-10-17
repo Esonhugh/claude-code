@@ -79,5 +79,12 @@ async function main(): Promise<void> {
   profileCheckpoint('cli_after_main_complete')
 }
 
+// A rejection here would otherwise only be logged by the unhandledRejection
+// handler, leaving the process alive with nothing left to do.
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
-void main()
+void main().catch((error: unknown) => {
+  // biome-ignore lint/suspicious/noConsole:: intentional console output
+  console.error(error instanceof Error ? error.message : String(error))
+  // eslint-disable-next-line custom-rules/no-process-exit
+  process.exit(1)
+})
