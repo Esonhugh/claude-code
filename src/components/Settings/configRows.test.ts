@@ -191,7 +191,7 @@ test('conditional rows retain menu order, use live state, and leave dialogs read
     const conditionalKeys = ['fastMode', 'promptSuggestionEnabled', 'showStatusInTerminalTab', 'copyOnSelect', 'diffTool', 'autoConnectIde', 'teammateMode', 'teammateDefaultModel', 'showExternalIncludesDialog', 'apiKey']
     expect(keys.filter(key => conditionalKeys.includes(key))).toEqual(conditionalKeys)
     expect(rows.find(row => row.key === 'model')?.value).toBe('custom-model')
-    for (const key of ['teammateDefaultModel', 'showExternalIncludesDialog']) expect(rows.find(row => row.key === key)?.set).toBeUndefined()
+    expect(rows.find(row => row.key === 'showExternalIncludesDialog')?.set).toBeUndefined()
     await rows.find(row => row.key === 'fastMode')!.set!(true)
     expect(state.fastMode).toBe(true)
     expect(state.mainLoopModel).toBe('custom-model')
@@ -341,6 +341,49 @@ test('/config without Mods uses production writers and rejects unknown, invalid 
   expect(replies.at(-1)).toBe('Usage: /config key=value')
   expect(readFileSync(getGlobalClaudeFile(), 'utf8')).toBe(saved)
   expect(state.mainLoopModel).toBeNull()
+})
+
+test('/config teammateDefaultModel writes auto, inherit and listed models like the dialog', async () => {
+  const { call } = await import('../../commands/config/config.js')
+  const config = await import('../../utils/config.js')
+  const swarms = await import('../../utils/agentSwarmsEnabled.js')
+  const modelOptions = await import('../../utils/model/modelOptions.js')
+  const { getGlobalClaudeFile } = await import('../../utils/env.js')
+  const mocks = [
+    spyOn(swarms, 'isAgentSwarmsEnabled').mockReturnValue(true),
+    spyOn(modelOptions, 'getModelOptions').mockReturnValue([
+      { value: null, label: 'Default', description: 'Provider default' },
+      { value: 'sonnet', label: 'Sonnet', description: 'Balanced' },
+    ]),
+  ]
+  let state = { settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState
+  const context = {
+    getAppState: () => state,
+    setAppState: (update: (state: AppState) => AppState) => { state = update(state) },
+    options: { mcpClients: [] },
+  } as Parameters<typeof call>[1]
+  const replies: (string | undefined)[] = []
+  const done: Parameters<typeof call>[0] = text => { replies.push(text) }
+  const onDisk = () => JSON.parse(readFileSync(getGlobalClaudeFile(), 'utf8'))
+  try {
+    await call(done, context, 'teammateDefaultModel=sonnet')
+    expect(replies.at(-1)).toBe('teammateDefaultModel = "sonnet"')
+    expect(config.getGlobalConfig().teammateDefaultModel).toBe('sonnet')
+    expect(onDisk().teammateDefaultModel).toBe('sonnet')
+    await call(done, context, 'teammateDefaultModel=inherit')
+    expect(replies.at(-1)).toBe('teammateDefaultModel = "inherit"')
+    expect(config.getGlobalConfig().teammateDefaultModel).toBeNull()
+    expect(onDisk().teammateDefaultModel).toBeNull()
+    await call(done, context, 'teammateDefaultModel=auto')
+    expect(replies.at(-1)).toBe('teammateDefaultModel = "auto"')
+    expect('teammateDefaultModel' in config.getGlobalConfig()).toBe(false)
+    expect('teammateDefaultModel' in onDisk()).toBe(false)
+    await call(done, context, 'teammateDefaultModel=unlisted-model')
+    expect(replies.at(-1)).toContain('Invalid value')
+    expect(await call(done, context, 'teammateDefaultModel=null')).toBeNull()
+    expect(replies.at(-1)).toContain('Invalid value')
+    expect('teammateDefaultModel' in config.getGlobalConfig()).toBe(false)
+  } finally { for (const mock of mocks) mock.mockRestore() }
 })
 
 test('official autoCompact and tips keys address the existing production settings', async () => {

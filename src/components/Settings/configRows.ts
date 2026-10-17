@@ -28,6 +28,7 @@ import {
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import { hasAccessToIDEExtensionDiffFeature, isSupportedTerminal } from '../../utils/ide.js'
 import { modelDisplayString } from '../../utils/model/model.js'
+import { getModelOptions } from '../../utils/model/modelOptions.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js'
@@ -246,6 +247,21 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
         key: 'teammateDefaultModel', label: 'Default teammate model', kind: 'text' as const,
         value: global.teammateDefaultModel === undefined ? 'Auto (explicit leader model, otherwise provider default)'
           : global.teammateDefaultModel === null ? "Inherit leader's model" : modelDisplayString(global.teammateDefaultModel),
+        // Accepts the dialog's choices: auto, inherit, a listed model or the current custom model.
+        validate(value: ModConfigValue) {
+          if (value === 'auto' || value === 'inherit' || value === getGlobalConfig().teammateDefaultModel) return undefined
+          return getModelOptions().some(option => option.value !== null && option.value === value)
+            ? undefined : 'Invalid value for teammateDefaultModel (auto, inherit or a model from the picker)'
+        },
+        set(value: ModConfigValue) {
+          saveGlobalConfig(current => {
+            if (value === 'auto') {
+              const { teammateDefaultModel: _previous, ...rest } = current
+              return rest
+            }
+            return { ...current, teammateDefaultModel: value === 'inherit' ? null : value as string }
+          })
+        },
       },
     ] : []),
     ...(feature('BRIDGE_MODE') && isBridgeEnabled() ? [{
@@ -309,7 +325,7 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
       if (row.kind === 'boolean' ? typeof value !== 'boolean'
         : row.kind === 'choice' ? typeof value !== 'string' || !row.options?.includes(value)
         : typeof value !== 'string') return `Invalid value for ${row.key} (${row.kind})`
-      return undefined
+      return row.validate?.(value)
     }
     return {
       ...row,
