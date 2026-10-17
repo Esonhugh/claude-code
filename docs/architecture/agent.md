@@ -584,15 +584,19 @@ const toolCallback = async (toolName: string) => {
 
 ### 11.1 递归深度限制
 
-**位置**: agentToolUtils.ts 约 L100-122
+**位置**: `subagentDepth.ts`（`MAX_SUBAGENT_DEPTH = 5`）、`agentToolUtils.ts` `filterToolsForAgent`、`AgentTool.tsx` 调用时 `assertCanSpawnNestedSubagent`
 
-防止 Agent 调用 Agent 调用 Agent ... 的无限递归：
+防止 Agent 调用 Agent 调用 Agent ... 的无限递归，分两层：
+
+1. 构建工具池时：`runAgent` 用 `getCurrentSubagentDepth` 算出子代理深度传给 `resolveAgentTools`，深度达到 `MAX_SUBAGENT_DEPTH` 的代理拿不到 `Agent`/`Task` 工具（fork 路径 `useExactTools` 不过滤）。
+2. 调用时：`AgentTool.call` 通过 `assertCanSpawnNestedSubagent` 读同一深度，超限直接抛错，作为兜底。
 
 ```typescript
-// 检查当前嵌套深度
-if (currentDepth >= MAX_AGENT_DEPTH) {
-  // 从工具列表中移除 Agent 工具
-  tools = tools.filter(t => t.name !== 'Agent');
+if (
+  agentDepth >= MAX_SUBAGENT_DEPTH &&
+  (toolMatchesName(tool, AGENT_TOOL_NAME) || toolMatchesName(tool, LEGACY_AGENT_TOOL_NAME))
+) {
+  return false
 }
 ```
 

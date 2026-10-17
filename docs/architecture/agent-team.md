@@ -299,7 +299,7 @@ type LocalAgentTaskState = TaskStateBase & {
   }
   messages?: Message[]        // 对话历史
   isBackgrounded: boolean     // 前台/后台切换
-  pendingMessages: string[]   // SendMessage 队列（等待 Agent 空闲时注入）
+  pendingMessages: string[]   // SendMessage 队列：下一轮工具调用间注入；后台 Agent 结束时仍有残留则用它们续跑一轮
   retain: boolean             // UI 是否持有（阻止驱逐）
 }
 ```

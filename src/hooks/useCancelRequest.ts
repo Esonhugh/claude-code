@@ -23,6 +23,7 @@ import { useKeybinding } from '../keybindings/useKeybinding.js'
 import type { Screen } from '../screens/REPL.js'
 import { exitTeammateView } from '../state/teammateViewHelpers.js'
 import {
+  isLiveLocalAgentTask,
   killAllRunningAgentTasks,
   markAgentsNotified,
 } from '../tasks/LocalAgentTask/LocalAgentTask.js'
@@ -170,17 +171,13 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // emit SDK events, enqueue a single aggregate model-facing notification.
   // Returns true if anything was killed.
   const killAllAgentsAndNotify = useCallback((): boolean => {
-    const tasks = store.getState().tasks
-    const running = Object.entries(tasks).filter(
-      ([, t]) => t.type === 'local_agent' && t.status === 'running',
-    )
-    if (running.length === 0) return false
-    killAllRunningAgentTasks(tasks, setAppState)
+    const killed = killAllRunningAgentTasks(store.getState().tasks, setAppState)
+    if (killed.length === 0) return false
     const descriptions: string[] = []
-    for (const [taskId, task] of running) {
-      markAgentsNotified(taskId, setAppState)
+    for (const task of killed) {
+      markAgentsNotified(task.id, setAppState)
       descriptions.push(task.description)
-      emitTaskTerminatedSdk(taskId, 'stopped', {
+      emitTaskTerminatedSdk(task.id, 'stopped', {
         toolUseId: task.toolUseId,
         summary: task.description,
       })
@@ -224,9 +221,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
   // agents. Reads tasks from the store directly to avoid stale closures.
   const handleKillAgents = useCallback(() => {
     const tasks = store.getState().tasks
-    const hasRunningAgents = Object.values(tasks).some(
-      t => t.type === 'local_agent' && t.status === 'running',
-    )
+    const hasRunningAgents = Object.values(tasks).some(isLiveLocalAgentTask)
     if (!hasRunningAgents) {
       addNotification({
         key: 'kill-agents-none',

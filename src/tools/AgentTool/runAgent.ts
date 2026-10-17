@@ -100,6 +100,7 @@ import {
   resolveAgentTools,
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import { getCurrentSubagentDepth } from './subagentDepth.js'
 import { isAnt } from 'src/utils/userType.js'
 
 /**
@@ -675,6 +676,12 @@ export async function* runAgent({
         { ...agentDefinition, permissionMode },
         availableTools,
         isAsync,
+        false,
+        // Same depth the Agent tool's call-time limit check reads.
+        getCurrentSubagentDepth({
+          subagentDepth: getAgentOptionsSubagentDepthForTesting(toolUseContext),
+          spawnDepth,
+        }),
       ).resolvedTools
 
   logForDebugging(

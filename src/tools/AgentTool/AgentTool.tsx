@@ -1219,8 +1219,10 @@ export const AgentTool = buildTool({
       )
         ? true
         : undefined,
+      // options.querySource is set only on fork children; a normal agent they
+      // spawn must not report itself as a fork.
       querySource:
-        toolUseContext.options.querySource ??
+        (isForkPath ? toolUseContext.options.querySource : undefined) ??
         getQuerySourceForAgent(
           selectedAgent.agentType,
           isBuiltInAgent(selectedAgent),
@@ -1676,6 +1678,8 @@ export const AgentTool = buildTool({
                     const resolveActivity2 = createActivityDescriptionResolver(
                       toolUseContext.options.tools,
                     )
+                    const postProcessingWarning =
+                      'Agent post-processing could not complete. Review the agent output before continuing.'
                     try {
                       // Continue the same iterator in the background. Restarting
                       // runAgent here would replay the original prompt and repeat
@@ -1708,6 +1712,21 @@ export const AgentTool = buildTool({
                           toolUseContext.options.tools,
                         )
                         agentMessages.push(msg)
+                        // Same retain stream-append as runAsyncAgentLifecycle.
+                        rootSetAppState(prev => {
+                          const t = prev.tasks[backgroundedTaskId]
+                          if (!isLocalAgentTask(t) || !t.retain) return prev
+                          return {
+                            ...prev,
+                            tasks: {
+                              ...prev.tasks,
+                              [backgroundedTaskId]: {
+                                ...t,
+                                messages: [...(t.messages ?? []), msg],
+                              },
+                            },
+                          }
+                        })
 
                         // Track progress for backgrounded agents
                         updateProgressFromMessage(
@@ -1774,8 +1793,6 @@ export const AgentTool = buildTool({
                         agentResult.content,
                         '\n',
                       )
-                      const postProcessingWarning =
-                        'Agent post-processing could not complete. Review the agent output before continuing.'
 
                       if (feature('TRANSCRIPT_CLASSIFIER')) {
                         try {
@@ -1842,6 +1859,37 @@ export const AgentTool = buildTool({
                       })
                     } catch (error) {
                       releaseSlot()
+                      const currentTask =
+                        toolUseContext.getAppState().tasks[backgroundedTaskId]
+                      if (
+                        isLocalAgentTask(currentTask) &&
+                        currentTask.status === 'completed'
+                      ) {
+                        logForDebugging(
+                          `Agent post-processing failed after completion: ${errorMessage(error)}`,
+                          { level: 'warn' },
+                        )
+                        addAgentTaskWarning(
+                          backgroundedTaskId,
+                          postProcessingWarning,
+                          rootSetAppState,
+                        )
+                        enqueueAgentNotification({
+                          taskId: backgroundedTaskId,
+                          description,
+                          status: 'completed',
+                          setAppState: rootSetAppState,
+                          finalMessage: postProcessingWarning,
+                          toolUseId: toolUseContext.toolUseId,
+                        })
+                        return
+                      }
+                      refreshLastAssistantProgress(
+                        tracker,
+                        agentMessages,
+                        resolveActivity2,
+                        toolUseContext.options.tools,
+                      )
                       if (error instanceof AbortError) {
                         // Transition status BEFORE worktree cleanup so
                         // TaskOutput unblocks even if git hangs (gh-20236).
@@ -1963,11 +2011,15 @@ export const AgentTool = buildTool({
               }
 
               // Process the message from the race result
-              if (raceResult.type !== 'message') {
-                // This shouldn't happen - background case handled above
-                continue
+              let result: Awaited<typeof nextMessagePromise>
+              if (raceResult.type === 'message') {
+                result = raceResult.result
+              } else {
+                // The signal stays resolved for a task that no longer qualifies:
+                // stop racing it and keep the item already in flight.
+                backgroundPromise = undefined
+                result = await nextMessagePromise
               }
-              const { result } = raceResult
               if (result.done) break
               const message = result.value
               if (!message) continue

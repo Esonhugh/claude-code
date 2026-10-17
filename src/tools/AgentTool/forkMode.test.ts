@@ -202,6 +202,13 @@ test('missing general-purpose requires a type and offers fork only when availabl
   expect(observedParams).toHaveLength(0)
 })
 
+test('a normal agent spawned inside a fork child does not inherit the fork query source', async () => {
+  const context = setup().context
+  context.options.querySource = 'agent:builtin:fork'
+  const { params } = await execute({ subagent_type: 'general-purpose', run_in_background: false }, context)
+  expect(params.querySource).toBe('agent:builtin:general-purpose')
+})
+
 test('allowed types, explicit deny, recursion and remote isolation reject before execution', async () => {
   if (!forkEnabled) return
   for (const guard of ['allowed', 'deny', 'recursive', 'remote']) {
