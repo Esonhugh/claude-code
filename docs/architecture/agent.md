@@ -150,16 +150,22 @@ AgentTool 是一个 Tool 类实例，导出给 Claude 的工具注册系统。�
 ### 3.2 输入参数设计
 
 ```typescript
-// AgentTool.tsx 约 L50-90（输入 schema）
+// AgentTool.tsx baseInputSchema / multiAgentInputSchema（输入 schema）
 {
-  prompt: string;          // 发送给子代理的任务描述
-  agent?: string;          // 子代理名称（如 "Explore", "Task"）
-  background?: boolean;    // 是否以后台模式启动
-  fork?: boolean;          // 是否使用 fork 模式
-  resume?: string;         // 恢复的 agentId
-  teammate?: string;       // teammate 模式标识
+  description: string;          // 3-5 词任务描述
+  prompt: string;               // 发送给子代理的任务描述
+  subagent_type?: string;       // 子代理类型（如 "Explore", "general-purpose"）
+  model?: string;               // 模型覆盖
+  effort?: string | number;     // effort 覆盖
+  run_in_background?: boolean;  // 是否以后台模式启动
+  name?: string;                // teammate 名称（team 场景）
+  isolation?: '' | 'worktree' | 'remote';
+  cwd?: string;
+  mode?: PermissionMode;        // spawned teammate 的权限模式
 }
 ```
+
+没有 `fork` / `resume` 入参：fork 由未指定 `subagent_type` 且 fork 模式开启时走 fork 路径；恢复已有子代理通过 `SendMessage` 发给其 agentId 完成（`resumeAgent.ts`）。
 
 ### 3.3 路由决策树
 
@@ -502,16 +508,11 @@ runAsyncAgentLifecycle(task, runFn)
 
 **位置**: LocalAgentTask.tsx 约 L400-500
 
-```typescript
-// 原子 flag 确保终端状态只通知一次
-private notified = false;
+实际实现（`LocalAgentTask.tsx` `enqueueAgentNotification`）：
 
-private notify(event: TaskEvent) {
-  if (this.notified) return;  // 去重
-  this.notified = true;
-  this.listeners.forEach(l => l(event));
-}
-```
+- 同步检查 `task.notified` 与进程内 in-flight 集合，命中则不再入队；
+- 发往主线程的通知经 inbound 接收路径异步入队，入队成功后才把 `notified` 置为 true，失败时保持可重试；路由给 owner agent 的通知同步入队后立即置位；
+- 通知文本中的描述、结果、路径均做 XML 转义，结果超过 8000 字符时截断并指向输出文件。
 
 这防止了以下竞态场景：
 - 子代理完成 + 用户同时点击停止 -> 只触发一个通知

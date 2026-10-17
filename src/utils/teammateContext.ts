@@ -5,12 +5,12 @@
  * enabling concurrent teammate execution without global state conflicts.
  *
  * Relationship with other teammate identity mechanisms:
- * - Env vars (CLAUDE_CODE_AGENT_ID): Process-based teammates spawned via tmux
- * - dynamicTeamContext (teammate.ts): Process-based teammates joining at runtime
+ * - dynamicTeamContext (teammate.ts): Process-based teammates (tmux/iTerm2),
+ *   set from the --agent-id/--team-name CLI flags or at runtime
  * - TeammateContext (this file): In-process teammates via AsyncLocalStorage
  *
  * The helper functions in teammate.ts check AsyncLocalStorage first, then
- * dynamicTeamContext, then env vars.
+ * dynamicTeamContext.
  */
 
 import { AsyncLocalStorage } from 'async_hooks'
