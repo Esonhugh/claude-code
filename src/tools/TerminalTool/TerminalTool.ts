@@ -6,6 +6,7 @@ import {
   enqueueTerminalTaskNotification,
   registerTerminalTaskRuntimeKiller,
 } from '../../tasks/TerminalTask.js'
+import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { createBunPtyDriver } from '../../utils/pty/bunPtyDriver.js'
 import { PtySessionManager } from '../../utils/pty/PtySessionManager.js'
 import type {
@@ -65,16 +66,25 @@ type ErrorOutput = {
 type Output = SuccessOutput | ErrorOutput
 
 let terminalManagerInstance: PtySessionManager | undefined
+let unregisterTerminalManagerCleanup: (() => void) | undefined
 
 export function getTerminalManager(): PtySessionManager {
-  terminalManagerInstance ??= new PtySessionManager({
-    driver: createBunPtyDriver(),
-    maxBufferedChunks: DEFAULT_MAX_BUFFERED_CHUNKS,
-  })
+  if (!terminalManagerInstance) {
+    const manager = new PtySessionManager({
+      driver: createBunPtyDriver(),
+      maxBufferedChunks: DEFAULT_MAX_BUFFERED_CHUNKS,
+    })
+    terminalManagerInstance = manager
+    unregisterTerminalManagerCleanup = registerCleanup(async () => {
+      manager.closeAll()
+    })
+  }
   return terminalManagerInstance
 }
 
 export function resetTerminalManagerForTesting(manager?: PtySessionManager): void {
+  unregisterTerminalManagerCleanup?.()
+  unregisterTerminalManagerCleanup = undefined
   terminalManagerInstance = manager
   for (const poller of terminalTaskPollers.values()) {
     clearInterval(poller)

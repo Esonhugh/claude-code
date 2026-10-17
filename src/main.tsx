@@ -894,15 +894,6 @@ export async function main() {
   process.on('exit', () => {
     resetCursor()
   })
-  process.on('SIGINT', () => {
-    // In print mode, print.ts registers its own SIGINT handler that aborts
-    // the in-flight query and calls gracefulShutdown; skip here to avoid
-    // preempting it with a synchronous process.exit().
-    if (process.argv.includes('-p') || process.argv.includes('--print')) {
-      return
-    }
-    process.exit(0)
-  })
   profileCheckpoint('main_warning_handler_initialized')
 
   // Check for cc:// or cc+unix:// URL in argv — rewrite so the main command

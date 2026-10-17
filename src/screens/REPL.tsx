@@ -2245,7 +2245,7 @@ export function REPL({
       finally { snapshot?.release() }
     },
     report: reason => logForDebugging(`[ModsPromptEdit] session=${modPromptEditSessionId} ${reason}`),
-  }), [modPromptEditRuntime, modPromptEditSessionId, viewingAgentTaskId])
+  }), [modPromptEditRuntime, modPromptEditSessionId])
   useLayoutEffect(() => () => modPromptEditQueue.dispose(), [modPromptEditQueue])
   const onModPromptEdit = useCallback((edit: TextInputEdit) => {
     if (modPromptEditRuntime?.hasHooks('prompt.edit')) modPromptEditQueue.record(edit)
