@@ -293,6 +293,27 @@ test('Dynamic workflows rows write the same settings as the Config dialog', asyn
   expect(row('workflows')?.value).toBe(true)
 })
 
+test('a policy enableWorkflows under CLAUDE_CODE_DISABLE_WORKFLOWS locks the row off, not on', async () => {
+  const { getConfigRows } = await import('./configRows.js')
+  const policyFile = join(home, 'managed-settings.json')
+  const context = {
+    getAppState: () => ({ settings: {}, verbose: false, thinkingEnabled: true, mainLoopModel: null } as AppState),
+    setAppState: () => {},
+  }
+  const saved = process.env.CLAUDE_CODE_DISABLE_WORKFLOWS
+  process.env.CLAUDE_CODE_DISABLE_WORKFLOWS = '1'
+  try {
+    writeFileSync(policyFile, JSON.stringify({ enableWorkflows: true }))
+    resetSettingsCache()
+    expect(getConfigRows(context).find(row => row.key === 'workflows')).toMatchObject({ value: false, isLocked: true })
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_DISABLE_WORKFLOWS
+    else process.env.CLAUDE_CODE_DISABLE_WORKFLOWS = saved
+    rmSync(policyFile, { force: true })
+    resetSettingsCache()
+  }
+})
+
 test('/config without Mods uses production writers and rejects unknown, invalid and dialog-only writes', async () => {
   const { call } = await import('../../commands/config/config.js')
   const config = await import('../../utils/config.js')

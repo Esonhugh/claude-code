@@ -39,7 +39,7 @@ import {
   workflowsDefaultOn,
   type WorkflowSizeGuideline,
 } from '../../tools/WorkflowTool/workflowFeatureFlags.js'
-import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'
+import { getInitialSettings, getSettingsForSource, getUseAutoModeDuringPlan, updateSettingsForSource } from '../../utils/settings/settings.js'
 import type { EditableSettingSource } from '../../utils/settings/constants.js'
 import type { SettingsJson } from '../../utils/settings/types.js'
 import { clearCliTeammateModeOverride, getCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
@@ -159,7 +159,8 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     },
     ...(feature('TRANSCRIPT_CLASSIFIER') ? [{
       key: 'useAutoModeDuringPlan', label: 'Use auto mode during plan', kind: 'boolean' as const,
-      value: settings.useAutoModeDuringPlan ?? true,
+      // The runtime value: project settings are ignored and any trusted source set to false wins.
+      value: getUseAutoModeDuringPlan(),
       set(value: ModConfigValue) {
         writeSettings('userSettings', { useAutoModeDuringPlan: value as boolean })
         context.setAppState(current => ({ ...current, toolPermissionContext: transitionPlanAutoMode(current.toolPermissionContext) }))
@@ -289,7 +290,16 @@ export function getConfigRows(context: Context): ModConfigRowProvider[] {
     if (key === 'defaultPermissionMode') return policy?.permissions?.defaultMode
     if (key === 'thinkingEnabled') return policy?.alwaysThinkingEnabled
     if (key === 'notifChannel') return policy?.preferredNotifChannel
-    if (key === 'workflows') return policy?.disableWorkflows === true ? false : policy?.enableWorkflows
+    if (key === 'workflows') {
+      return policy?.disableWorkflows === undefined && policy?.enableWorkflows === undefined
+        ? undefined
+        : shouldEnableWorkflows(policy)
+    }
+    if (key === 'useAutoModeDuringPlan') {
+      // A flag-settings false forces the runtime value off just like policy, so lock the row too.
+      return policy?.useAutoModeDuringPlan
+        ?? (getSettingsForSource('flagSettings')?.useAutoModeDuringPlan === false ? false : undefined)
+    }
     return policy?.[key]
   }
 

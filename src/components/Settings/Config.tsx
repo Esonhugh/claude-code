@@ -95,6 +95,7 @@ import {
 import {
   getInitialSettings,
   getSettingsForSource,
+  getUseAutoModeDuringPlan,
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
 import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js'
@@ -453,6 +454,11 @@ export function Config({
           ...prev,
           spinnerTipsEnabled,
         }))
+        // Sync to AppState so the spinner reacts immediately
+        setAppState(prev => ({
+          ...prev,
+          settings: { ...prev.settings, spinnerTipsEnabled },
+        }))
         logEvent('tengu_tips_setting_changed', {
           enabled: spinnerTipsEnabled,
         })
@@ -698,11 +704,10 @@ export function Config({
         const validatedMode = isExternalPermissionMode(parsedMode)
           ? toExternalPermissionMode(parsedMode)
           : parsedMode
+        // Write only defaultMode: settingsData is the merged view, so spreading
+        // its permissions would copy project/policy rules into the user file.
         const result = updateSettingsForSource('userSettings', {
-          permissions: {
-            ...settingsData?.permissions,
-            defaultMode: validatedMode as ExternalPermissionMode,
-          },
+          permissions: { defaultMode: validatedMode as ExternalPermissionMode },
         })
 
         if (result.error) {
@@ -736,9 +741,13 @@ export function Config({
           {
             id: 'useAutoModeDuringPlan',
             label: 'Use auto mode during plan',
-            value:
-              (settingsData as { useAutoModeDuringPlan?: boolean } | undefined)
-                ?.useAutoModeDuringPlan ?? true,
+            // The runtime value: project settings are ignored and any trusted
+            // source set to false wins, so a policy/flag false locks the row.
+            value: getUseAutoModeDuringPlan(),
+            isLocked: (['policySettings', 'flagSettings'] as const).some(
+              source =>
+                getSettingsForSource(source)?.useAutoModeDuringPlan === false,
+            ),
             type: 'boolean' as const,
             onChange(useAutoModeDuringPlan: boolean) {
               updateSettingsForSource('userSettings', {
@@ -1632,16 +1641,12 @@ export function Config({
       // ThemePicker's Ctrl+T writes this key directly — include it so the
       // disk state reverts along with the in-memory AppState.settings restore.
       syntaxHighlightingDisabled: iu?.syntaxHighlightingDisabled,
-      // permissions: the defaultMode onChange (above) spreads the MERGED
-      // settingsData.permissions into userSettings — project/policy allow/deny
-      // arrays can leak to disk. Spread the full initial snapshot so the
-      // mergeWith array-customizer (settings.ts:375) replaces leaked arrays.
-      // Explicitly include defaultMode so undefined triggers the customizer's
-      // delete path even when iu.permissions lacks that key.
+      // permissions: the defaultMode onChange (above) writes only defaultMode,
+      // so restoring that one key (undefined deletes it) is enough.
       permissions:
         iu?.permissions === undefined
           ? undefined
-          : { ...iu.permissions, defaultMode: iu.permissions.defaultMode },
+          : { defaultMode: iu.permissions.defaultMode },
     })
     // AppState: batch-restore all possibly-touched fields.
     const ia = initialAppState
@@ -1724,6 +1729,11 @@ export function Config({
         setConfigCursorOffset(text.length)
         setTabsHidden(true)
       }
+      return
+    }
+
+    // Built-in rows locked by a non-user source are read-only.
+    if (!setting.configRow && setting.isLocked) {
       return
     }
 

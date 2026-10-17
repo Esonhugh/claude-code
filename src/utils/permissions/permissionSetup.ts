@@ -806,7 +806,13 @@ export function initialPermissionModeFromCLI({
 
   for (const mode of orderedModes) {
     if (mode === 'plan' && !isPlanModeAvailable()) {
-      throw new Error(PLAN_MODE_DISABLED_MESSAGE)
+      // Only settings can reach here (an explicit --permission-mode plan threw
+      // above), so degrade like a disabled bypass mode instead of refusing to start.
+      logForDebugging('plan mode from settings is disabled (planModeAvailable is not set)', {
+        level: 'warn',
+      })
+      notification = PLAN_MODE_DISABLED_MESSAGE
+      continue
     }
     if (mode === 'bypassPermissions' && disableBypassPermissionsMode) {
       if (growthBookDisableBypassPermissionsMode) {

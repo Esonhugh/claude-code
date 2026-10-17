@@ -11,7 +11,6 @@ type WorkflowSettings = {
   workflowSizeGuideline?: WorkflowSizeGuideline
   workflowKeywordTriggerEnabled?: boolean
   ultracodeKeywordTrigger?: boolean
-  skipWorkflowUsageWarning?: boolean
 }
 
 type SubscriptionType = ReturnType<typeof getSubscriptionType>
@@ -23,8 +22,9 @@ export function isWorkflowScriptsFeatureEnabled(): boolean {
     .includes('WORKFLOW_SCRIPTS')
 }
 
+// Like official 2.1.292: CLAUDE_CODE_WORKFLOWS=1 makes workflows default on regardless of plan.
 export function workflowsDefaultOn(subscriptionType: SubscriptionType = getSubscriptionType()): boolean {
-  return subscriptionType !== 'pro'
+  return isEnvTruthy(process.env.CLAUDE_CODE_WORKFLOWS) || subscriptionType !== 'pro'
 }
 
 // Like official 2.1.292: on by default except on the Pro plan; disableWorkflows,
@@ -71,8 +71,4 @@ export function isWorkflowKeywordTriggerEnabled(settings: WorkflowSettings | und
     return settings.ultracodeKeywordTrigger
   }
   return true
-}
-
-export function shouldShowWorkflowUsageWarning(settings: WorkflowSettings | undefined): boolean {
-  return settings?.skipWorkflowUsageWarning !== true
 }

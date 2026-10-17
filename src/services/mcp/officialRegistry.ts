@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { logForDebugging } from '../../utils/debug.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 
 type RegistryServer = {
@@ -31,7 +32,7 @@ function normalizeUrl(url: string): string | undefined {
  * Populates officialUrls for isOfficialMcpUrl lookups.
  */
 export async function prefetchOfficialMcpUrls(): Promise<void> {
-  if (process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC)) {
     return
   }
 

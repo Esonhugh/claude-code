@@ -801,6 +801,16 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Enable the "ultracode" keyword trigger. Default: true.'),
+      workflowKeywordTriggerEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'Enable the workflow keyword trigger. Default: true. Takes precedence over ultracodeKeywordTrigger.',
+        ),
+      skipWorkflowUsageWarning: z
+        .boolean()
+        .optional()
+        .describe('Skip the usage warning shown before a dynamic workflow runs. Default: false.'),
       enableWorkflows: z
         .boolean()
         .optional()

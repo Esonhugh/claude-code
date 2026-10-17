@@ -1,5 +1,7 @@
 import { feature } from 'bun:bundle'
+import get from 'lodash-es/get.js'
 import mergeWith from 'lodash-es/mergeWith.js'
+import set from 'lodash-es/set.js'
 import { dirname, join, resolve } from 'path'
 import { z } from 'zod/v4'
 import {
@@ -388,8 +390,87 @@ function loadPolicySettings(
   const merged: SettingsJson = {}
   for (const settings of [...tiers].reverse())
     mergeWith(merged, settings, settingsMergeCustomizer)
+  applyRestrictiveSettings(merged, tiers)
   delete merged.managedSourcesBehavior
   return merged
+}
+
+// Like official 2.1.292: when managed tiers compose with managedSourcesBehavior
+// "merge", these keys keep the most restrictive value any tier sets (listed values
+// are ordered most restrictive first), and a lower tier cannot set a permissive
+// value the highest tier leaves unset. Only keys in this schema are listed.
+const RESTRICTIVE_SETTING_PATHS: {
+  path: string[]
+  restrictive: boolean | string | string[]
+}[] = [
+  { path: ['allowManagedPermissionRulesOnly'], restrictive: true },
+  { path: ['allowManagedHooksOnly'], restrictive: true },
+  { path: ['allowManagedMcpServersOnly'], restrictive: true },
+  { path: ['disableAllHooks'], restrictive: true },
+  { path: ['disableSideloadFlags'], restrictive: true },
+  { path: ['disableWorkflows'], restrictive: true },
+  { path: ['fastModePerSessionOptIn'], restrictive: true },
+  { path: ['strictPluginOnlyCustomization'], restrictive: true },
+  { path: ['disableAutoMode'], restrictive: 'disable' },
+  { path: ['disableDeepLinkRegistration'], restrictive: 'disable' },
+  { path: ['permissions', 'disableBypassPermissionsMode'], restrictive: 'disable' },
+  { path: ['permissions', 'disableAutoMode'], restrictive: 'disable' },
+  { path: ['enableWorkflows'], restrictive: false },
+  { path: ['useAutoModeDuringPlan'], restrictive: false },
+  { path: ['skipDangerousModePermissionPrompt'], restrictive: false },
+  { path: ['skipAutoPermissionPrompt'], restrictive: false },
+  { path: ['enableAllProjectMcpServers'], restrictive: false },
+  { path: ['channelsEnabled'], restrictive: false },
+  { path: ['skipWebFetchPreflight'], restrictive: false },
+  { path: ['skipWorkflowUsageWarning'], restrictive: false },
+  { path: ['crossSessionInbound'], restrictive: ['refuse', 'hold'] },
+  { path: ['sandbox', 'enabled'], restrictive: true },
+  { path: ['sandbox', 'failIfUnavailable'], restrictive: true },
+  { path: ['sandbox', 'autoAllowBashIfSandboxed'], restrictive: false },
+  { path: ['sandbox', 'allowUnsandboxedCommands'], restrictive: false },
+  { path: ['sandbox', 'enableWeakerNestedSandbox'], restrictive: false },
+  { path: ['sandbox', 'enableWeakerNetworkIsolation'], restrictive: false },
+  { path: ['sandbox', 'network', 'allowManagedDomainsOnly'], restrictive: true },
+  { path: ['sandbox', 'network', 'allowAllUnixSockets'], restrictive: false },
+  { path: ['sandbox', 'network', 'allowLocalBinding'], restrictive: false },
+  { path: ['sandbox', 'filesystem', 'allowManagedReadPathsOnly'], restrictive: true },
+]
+
+function unsetPath(settings: SettingsJson, path: string[]): void {
+  const parents: Record<string, unknown>[] = [settings]
+  for (const key of path.slice(0, -1)) {
+    const next = parents.at(-1)![key]
+    if (next === null || typeof next !== 'object') return
+    parents.push(next as Record<string, unknown>)
+  }
+  delete parents.at(-1)![path.at(-1)!]
+  // Drop parents the deletion left empty so `sandbox: {}` is not reported as set.
+  for (let i = parents.length - 1; i > 0; i--) {
+    if (Object.keys(parents[i]!).length > 0) break
+    delete parents[i - 1]![path[i - 1]!]
+  }
+}
+
+/**
+ * Applies RESTRICTIVE_SETTING_PATHS to `merged`, the plain merge of `tiers`
+ * (highest priority first). Exported for testing.
+ */
+export function applyRestrictiveSettings(
+  merged: SettingsJson,
+  tiers: SettingsJson[],
+): void {
+  const highest = tiers[0] ?? {}
+  for (const { path, restrictive } of RESTRICTIVE_SETTING_PATHS) {
+    const order = Array.isArray(restrictive) ? restrictive : [restrictive]
+    const ranks = tiers
+      .map(tier => order.indexOf(get(tier, path) as never))
+      .filter(rank => rank !== -1)
+    if (ranks.length > 0) {
+      set(merged, path, order[Math.min(...ranks)])
+    } else if (get(highest, path) === undefined && get(merged, path) !== undefined) {
+      unsetPath(merged, path)
+    }
+  }
 }
 
 /** Native guard ordering is authored by an admin or verified by the server. */

@@ -4,7 +4,7 @@ import {
   isWorkflowKeywordTriggerEnabled,
   isWorkflowScriptsFeatureEnabled,
   shouldEnableWorkflows,
-  shouldShowWorkflowUsageWarning,
+  workflowsDefaultOn,
   workflowSizeGuidelinePrompt,
 } from './workflowFeatureFlags.js'
 
@@ -61,7 +61,21 @@ assert.equal(workflowSizeGuidelinePrompt({}, 'unrestricted', null), '')
 assert.equal(isWorkflowKeywordTriggerEnabled({ workflowKeywordTriggerEnabled: false }), false)
 assert.equal(isWorkflowKeywordTriggerEnabled({ workflowKeywordTriggerEnabled: true }), true)
 assert.equal(isWorkflowKeywordTriggerEnabled({ ultracodeKeywordTrigger: false }), false)
-assert.equal(shouldShowWorkflowUsageWarning({ skipWorkflowUsageWarning: true }), false)
-assert.equal(shouldShowWorkflowUsageWarning({ skipWorkflowUsageWarning: false }), true)
+
+// Like official, CLAUDE_CODE_WORKFLOWS=1 makes workflows default on (even on Pro) unless
+// disableWorkflows or enableWorkflows: false turns them off.
+{
+  const saved = process.env.CLAUDE_CODE_WORKFLOWS
+  process.env.CLAUDE_CODE_WORKFLOWS = '1'
+  try {
+    assert.equal(workflowsDefaultOn('pro'), true)
+    assert.equal(shouldEnableWorkflows({}, 'pro'), true)
+    assert.equal(shouldEnableWorkflows({ enableWorkflows: false }, 'pro'), false)
+    assert.equal(shouldEnableWorkflows({ disableWorkflows: true }, 'pro'), false)
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_WORKFLOWS
+    else process.env.CLAUDE_CODE_WORKFLOWS = saved
+  }
+}
 
 console.log('workflowFeatureFlags.test.ts passed')
