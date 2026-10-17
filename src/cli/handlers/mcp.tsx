@@ -28,8 +28,10 @@ import {
 import {
   addMcpConfig,
   getAllMcpConfigs,
+  getConfiguredMcpConfigByName,
   getMcpConfigByName,
   getMcpConfigsByScope,
+  isMcpServerDisabled,
   removeMcpConfig,
 } from '../../services/mcp/config.js'
 import type {
@@ -39,6 +41,7 @@ import type {
 import {
   describeMcpConfigFilePath,
   ensureConfigScope,
+  getProjectMcpServerStatus,
   getScopeLabel,
 } from '../../services/mcp/utils.js'
 import { AppStateProvider } from '../../state/AppState.js'
@@ -107,7 +110,7 @@ export async function mcpRemoveHandler(
   options: { scope?: string },
 ): Promise<void> {
   // Look up config before removing so we can clean up secure storage
-  const serverBeforeRemoval = getMcpConfigByName(name)
+  const serverBeforeRemoval = getConfiguredMcpConfigByName(name)
 
   const cleanupSecureStorage = () => {
     if (
@@ -238,9 +241,11 @@ export async function mcpGetHandler(name: string): Promise<void> {
   logEvent('tengu_mcp_get', {
     name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
-  const server = getMcpConfigByName(name)
+  const server = getMcpConfigByName(name, {
+    includeUnapprovedProjectServers: true,
+  })
   if (!server) {
-    cliError(`No MCP server found with name: ${name}`)
+    return cliError(`No MCP server found with name: ${name}`)
   }
 
   // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -248,8 +253,17 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // biome-ignore lint/suspicious/noConsole:: intentional console output
   console.log(`  Scope: ${getScopeLabel(server.scope)}`)
 
-  // Check server health
-  const status = await checkMcpServerHealth(name, server)
+  // Only health-check (connect to) servers the session would connect to
+  const projectStatus =
+    server.scope === 'project' ? getProjectMcpServerStatus(name) : 'approved'
+  const status =
+    projectStatus === 'pending'
+      ? '⏸ Pending approval (run `claude` to approve)'
+      : projectStatus === 'rejected'
+        ? '✗ Rejected (see disabledMcpjsonServers in settings)'
+        : isMcpServerDisabled(name)
+          ? '⊘ Disabled for this project (re-enable via /mcp)'
+          : await checkMcpServerHealth(name, server)
   // biome-ignore lint/suspicious/noConsole:: intentional console output
   console.log(`  Status: ${status}`)
 
@@ -304,7 +318,7 @@ export async function mcpGetHandler(name: string): Promise<void> {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  OAuth: ${parts.join(', ')}`)
     }
-  } else if (server.type === 'stdio') {
+  } else if ('command' in server) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`  Type: stdio`)
     // biome-ignore lint/suspicious/noConsole:: intentional console output

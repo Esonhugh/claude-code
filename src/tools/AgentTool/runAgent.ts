@@ -29,7 +29,12 @@ import {
   connectToServer,
   fetchToolsForClient,
 } from '../../services/mcp/client.js'
-import { getMcpConfigByName } from '../../services/mcp/config.js'
+import {
+  doesEnterpriseMcpConfigExist,
+  filterMcpServersByPolicy,
+  getMcpConfigByName,
+  isMcpServerDisabled,
+} from '../../services/mcp/config.js'
 import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
@@ -51,6 +56,7 @@ import type {
   UserMessage,
 } from '../../types/message.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
+import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
 import { AbortError } from '../../utils/errors.js'
 import { getDisplayPath } from '../../utils/file.js'
 import {
@@ -140,16 +146,31 @@ async function initializeAgentMcpServers(
   // surface. Blocking them (as the first cut did) breaks plugin agents that
   // legitimately need MCP, contradicting "plugin-provided always loads."
   const agentIsAdminTrusted = isSourceAdminTrusted(agentDefinition.source)
+  const specServerNames = agentDefinition.mcpServers.map((spec) =>
+    typeof spec === 'string' ? spec : Object.keys(spec)[0]!,
+  )
   if (isRestrictedToPluginOnly('mcp') && !agentIsAdminTrusted) {
-    const blockedServerNames = agentDefinition.mcpServers.map((spec) =>
-      typeof spec === 'string' ? spec : Object.keys(spec)[0]!,
-    )
     logForDebugging(
       `[Agent: ${agentDefinition.agentType}] Skipping MCP servers: strictPluginOnlyCustomization locks MCP to plugin-only (agent source: ${agentDefinition.source})`,
     )
-    if (blockedServerNames.length > 0) {
-      await onMcpServersBlocked?.(blockedServerNames, 'plugin-only policy')
+    if (specServerNames.length > 0) {
+      await onMcpServersBlocked?.(specServerNames, 'plugin-only policy')
     }
+    return {
+      clients: parentClients,
+      tools: [],
+      cleanup: async () => {},
+    }
+  }
+
+  // An enterprise MCP config has exclusive control over MCP servers — the same
+  // rule that rejects --mcp-config (main.tsx) and getClaudeCodeMcpConfigs.
+  if (doesEnterpriseMcpConfigExist()) {
+    logForDebugging(
+      `[Agent: ${agentDefinition.agentType}] Skipping MCP servers: blocked by enterprise MCP config (agent source: ${agentDefinition.source})`,
+      { level: 'warn' },
+    )
+    await onMcpServersBlocked?.(specServerNames, 'enterprise MCP config')
     return {
       clients: parentClients,
       tools: [],
@@ -200,12 +221,57 @@ async function initializeAgentMcpServers(
         )
         continue
       }
+      let isReservedName = isClaudeInChromeMCPServer(serverName)
+      if (!isReservedName && feature('CHICAGO_MCP')) {
+        const { isComputerUseMCPServer } = await import(
+          'src/utils/computerUse/common.js'
+        )
+        isReservedName = isComputerUseMCPServer(serverName)
+      }
+      if (isReservedName) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Skipping reserved MCP server name '${serverName}' in frontmatter`,
+          { level: 'warn' },
+        )
+        continue
+      }
+      // Host-provided transports (SDK, IDE) and claude.ai connectors cannot be
+      // defined by an agent file.
+      if (
+        serverConfig.type === 'sdk' ||
+        serverConfig.type === 'sse-ide' ||
+        serverConfig.type === 'ws-ide' ||
+        serverConfig.type === 'claudeai-proxy'
+      ) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Skipping unsupported MCP transport '${serverConfig.type}' for '${serverName}' in frontmatter`,
+          { level: 'warn' },
+        )
+        continue
+      }
       name = serverName
       config = {
         ...serverConfig,
         scope: 'dynamic' as const,
       } as ScopedMcpServerConfig
       isNewlyCreated = true
+    }
+
+    if (isMcpServerDisabled(name)) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] MCP server '${name}' is disabled for this project`,
+        { level: 'warn' },
+      )
+      await onMcpServersBlocked?.([name], 'disabled')
+      continue
+    }
+    if (filterMcpServersByPolicy({ [name]: config }).blocked.length > 0) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] MCP server '${name}' blocked by managed settings MCP policy`,
+        { level: 'warn' },
+      )
+      await onMcpServersBlocked?.([name], 'managed settings MCP policy')
+      continue
     }
 
     // Connect to the server
@@ -256,6 +322,8 @@ async function initializeAgentMcpServers(
     cleanup,
   }
 }
+
+export const initializeAgentMcpServersForTesting = initializeAgentMcpServers
 
 type QueryMessage =
   | StreamEvent
