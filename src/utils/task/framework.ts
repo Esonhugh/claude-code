@@ -9,6 +9,7 @@ import {
 } from '../../constants/xml.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { TaskStatus, TaskType } from '../../Task.js'
+import { isTerminalTaskStatus } from '../../taskStatus.js'
 import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
@@ -184,20 +185,14 @@ export async function generateTaskAttachments(state: AppState): Promise<{
 
   for (const taskState of Object.values(tasks)) {
     if (taskState.notified) {
-      switch (taskState.status) {
-        case 'completed':
-        case 'failed':
-        case 'killed':
-          // Evict terminal tasks — they've been consumed and can be GC'd
-          if (canEvictTerminalTask(taskState)) evictedTaskIds.push(taskState.id)
-          continue
-        case 'pending':
-          // Keep in map — hasn't run yet, but parent already knows about it
-          continue
-        case 'running':
-          // Fall through to running logic below
-          break
+      if (isTerminalTaskStatus(taskState.status)) {
+        // Evict terminal tasks — they've been consumed and can be GC'd
+        if (canEvictTerminalTask(taskState)) evictedTaskIds.push(taskState.id)
+        continue
       }
+      // Keep pending tasks in map — hasn't run yet, but parent already knows
+      // about it. Running tasks fall through to the logic below.
+      if (taskState.status === 'pending') continue
     }
 
     if (taskState.status === 'running') {

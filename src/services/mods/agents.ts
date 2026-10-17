@@ -5,6 +5,7 @@ import { isAbsolute } from 'node:path'
 import { readTeamFileAsync } from '../../utils/swarm/teamHelpers.js'
 import type { ModInput } from './types.js'
 import type { AppState } from '../../state/AppState.js'
+import { isTerminalTaskStatus } from '../../taskStatus.js'
 
 export type ModAgentStatus = 'pending' | 'running' | 'waiting' | 'idle' | 'completed' | 'failed' | 'killed'
 export type ModAgentInfo = { id: string; teammateId?: string; description: string; type: string; status: ModAgentStatus; parentId?: string; spawnedBy?: string; name?: string }
@@ -22,7 +23,7 @@ export async function listModAgents(tasks: AppState['tasks'], names: AppState['a
     if (task.type !== 'local_agent' && task.type !== 'in_process_teammate') continue
     const teammate = task.type === 'in_process_teammate'
     const id = teammate ? task.identity.resumableAgentId ?? task.identity.agentId : task.agentId
-    const terminal = ['completed', 'failed', 'killed'].includes(task.status)
+    const terminal = isTerminalTaskStatus(task.status)
     if (terminal && activeIds.has(id)) continue
     if (!terminal) activeIds.add(id)
     const name = teammate ? task.identity.agentName : namesById.get(id)

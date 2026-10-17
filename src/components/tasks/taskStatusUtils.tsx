@@ -14,13 +14,6 @@ import { isAnt } from 'src/utils/userType.js'
 
 
 /**
- * Returns true if the given task status represents a terminal (finished) state.
- */
-export function isTerminalStatus(status: TaskStatus): boolean {
-  return status === 'completed' || status === 'failed' || status === 'killed'
-}
-
-/**
  * Returns the appropriate icon for a task based on status and state flags.
  */
 export function getTaskStatusIcon(

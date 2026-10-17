@@ -256,8 +256,7 @@ import {
   isTeamLead,
 } from './teammate.js'
 import { isInProcessTeammate } from './teammateContext.js'
-import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
-import { unassignTeammateTasks } from './tasks.js'
+import { handleTeammateShutdownApproved } from './swarm/teammateShutdown.js'
 import { getCompanionIntroAttachment } from '../buddy/prompt.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -3912,37 +3911,15 @@ async function getTeammateMailboxAttachments(
           : undefined
 
         if (teammateId) {
-          // Remove from team file
-          await removeTeammateFromTeamFile(teamName, {
-            agentId: teammateId,
-            name: teammateToRemove,
-          })
-          logForDebugging(
-            `[SwarmMailbox] Removed ${teammateToRemove} from team file`,
-          )
-
-          // Unassign tasks owned by this teammate
-          await unassignTeammateTasks(
+          await handleTeammateShutdownApproved({
             teamName,
             teammateId,
-            teammateToRemove,
-            'shutdown',
-          )
-
-          // Remove from teamContext in AppState
-          toolUseContext.setAppState(prev => {
-            if (!prev.teamContext?.teammates) return prev
-            if (!(teammateId in prev.teamContext.teammates)) return prev
-            const { [teammateId]: _, ...remainingTeammates } =
-              prev.teamContext.teammates
-            return {
-              ...prev,
-              teamContext: {
-                ...prev.teamContext,
-                teammates: remainingTeammates,
-              },
-            }
+            teammateName: teammateToRemove,
+            setAppState: toolUseContext.setAppState,
           })
+          logForDebugging(
+            `[SwarmMailbox] Removed ${teammateToRemove} from team`,
+          )
         }
       }
     }
