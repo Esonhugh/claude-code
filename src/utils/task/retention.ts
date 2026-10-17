@@ -14,7 +14,7 @@ export type RetainableTaskState = {
 export function canEvictTerminalTask(task: RetainableTaskState, now = Date.now()): boolean {
   if (!isTerminalTaskStatus(task.status)) return false
   if (!task.notified) return false
-  if (task.type === 'local_workflow') return false
+  if (task.type === 'local_workflow' && (task.evictAfter ?? 0) > now) return false
   if (task.viewingAgentTaskId && task.id && task.viewingAgentTaskId === task.id) {
     return false
   }

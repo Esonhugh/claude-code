@@ -6,6 +6,7 @@ import {
   getWorkflowPageItems,
 } from './workflowsPageModel.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import type { WorkflowRunSession } from '../../tools/WorkflowTool/workflowRunSessions.js'
 
 function workflowTask(
   overrides: Partial<LocalWorkflowTaskState>,
@@ -93,5 +94,49 @@ const stagedRunning = getWorkflowPageItems({
 })
 assert.equal(stagedRunning[0]!.totalAgents, 4)
 assert.match(stagedRunning[0]!.metricsText, /4 agents/)
+
+function persistedSession(overrides: Partial<WorkflowRunSession>): WorkflowRunSession {
+  return {
+    taskId: 'w-persisted',
+    workflowRunId: 'wf_persisted',
+    workflowName: 'Persisted',
+    status: 'completed',
+    resumeCacheEntries: [],
+    startedAt: 500,
+    updatedAt: 900,
+    results: [
+      { phaseId: 'scan', agentId: 'p1', index: 0, status: 'completed', output: 'ok', tokenCount: 7 },
+      { phaseId: 'scan', agentId: 'p2', index: 1, status: 'failed', error: 'bad', tokenCount: 3 },
+    ],
+    events: [],
+    agentCount: 2,
+    ...overrides,
+  }
+}
+
+// Persisted runs that are no longer live are listed after live ones,
+// deduped against live tasks by workflowRunId.
+const withPersisted = getWorkflowPageItems(
+  {
+    [running.id]: { ...running, workflowRunId: 'wf_live' },
+  },
+  [
+    persistedSession({ taskId: 'w-stale-copy', workflowRunId: 'wf_live', workflowName: 'Stale copy', startedAt: 9_000 }),
+    persistedSession({}),
+  ],
+)
+assert.deepEqual(withPersisted.map(item => [item.id, item.source]), [
+  ['w-running', 'live'],
+  ['w-persisted', 'persisted'],
+])
+const persistedItem = withPersisted[1]!
+assert.equal(persistedItem.title, 'Persisted')
+assert.equal(persistedItem.status, 'completed')
+assert.equal(persistedItem.icon, '✓')
+assert.equal(persistedItem.completedAgents, 2)
+assert.equal(persistedItem.totalAgents, 2)
+assert.equal(persistedItem.task.workflowRunId, 'wf_persisted')
+assert.equal(persistedItem.task.endTime, 900)
+assert.match(persistedItem.metricsText, /2 agents · 10 tok/)
 
 console.log('workflowsPageModel.test.ts passed')
