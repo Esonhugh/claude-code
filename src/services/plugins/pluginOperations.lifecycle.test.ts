@@ -37,7 +37,7 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
         new Response(child.stderr).text(),
       ])
       console.log(stdout, stderr)
-      expect(stderr).toMatch(/(?:^|\n) 5 pass(?:\n|$)/)
+      expect(stderr).toMatch(/(?:^|\n) 6 pass(?:\n|$)/)
       expect(code).toBe(0)
     } finally {
       rmSync(home, { recursive: true, force: true })
@@ -172,5 +172,23 @@ if (!process.env.PLUGIN_OPS_LIFECYCLE_TEST_CHILD) {
         ],
       ),
     ).toEqual([['project', project]])
+  })
+  test('startup selection installs record the original project after a cd', async () => {
+    const { installSelectedPlugins } = await import(
+      '../../utils/plugins/pluginStartupCheck.js'
+    )
+    state.setCwdState(join(project, 'sub'))
+    try {
+      const result = await installSelectedPlugins(['p@mkt'], undefined, 'local')
+      expect(result.failed).toEqual([])
+      expect(
+        records()
+          .filter(r => r.scope === 'local')
+          .map(r => r.projectPath),
+      ).toEqual([project])
+    } finally {
+      state.setCwdState(project)
+    }
+    expect((await ops.uninstallPluginOp('p@mkt', 'local')).success).toBe(true)
   })
 }

@@ -1,5 +1,5 @@
 import { join } from 'path'
-import { getCwd } from '../cwd.js'
+import { getOriginalCwd } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import { logError } from '../log.js'
 import type { SettingSource } from '../settings/constants.js'
@@ -274,7 +274,7 @@ export async function installSelectedPlugins(
   scope: InstallableScope = 'user',
 ): Promise<PluginInstallResult> {
   // Get projectPath for non-user scopes
-  const projectPath = scope !== 'user' ? getCwd() : undefined
+  const projectPath = scope !== 'user' ? getOriginalCwd() : undefined
 
   // Get the correct settings source for this scope
   const settingSource = scopeToSettingSource(scope)
