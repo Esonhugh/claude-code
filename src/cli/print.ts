@@ -1747,6 +1747,24 @@ function runHeadlessStreaming(
     return mcpChangesPromise
   }
 
+  // Config for mcp_reconnect / mcp_toggle (official ownerConfig): the
+  // session's active entry wins, except for disk scopes whose file may have
+  // been edited since connect.
+  function getControlMcpServerConfig(
+    serverName: string,
+  ): ScopedMcpServerConfig | null {
+    const active = [
+      ...getAppState().mcp.clients,
+      ...dynamicMcpState.clients,
+      ...mcpClients,
+      ...sdkClients,
+    ].find(c => c.name === serverName)
+    if (active && !DISK_MCP_SCOPES.has(active.config.scope)) {
+      return active.config
+    }
+    return getMcpConfigByName(serverName) ?? active?.config ?? null
+  }
+
   // Build McpServerStatus[] for control responses. Shared by mcp_status and
   // reload_plugins handlers. Reads closure state: sdkClients, dynamicMcpState.
   function buildMcpServerStatuses(): McpServerStatus[] {
@@ -3692,7 +3710,6 @@ function runHeadlessStreaming(
             sendControlResponseError(message, errorMessage(error))
           }
         } else if (message.request.subtype === 'mcp_reconnect') {
-          const currentAppState = getAppState()
           const serverName = message.request.serverName as string
           // @ts-ignore - recovered code
           elicitationRegistered.delete(serverName)
@@ -3701,15 +3718,7 @@ function runHeadlessStreaming(
           // and dynamically-added servers were missing here, so
           // toggleMcpServer/reconnect returned "Server not found" even though
           // the disconnect/reconnect would have worked (gh-31339 / CC-314).
-          const config =
-            // @ts-ignore - recovered code
-            getMcpConfigByName(serverName) ??
-            mcpClients.find(c => c.name === serverName)?.config ??
-            sdkClients.find(c => c.name === serverName)?.config ??
-            dynamicMcpState.clients.find(c => c.name === serverName)?.config ??
-            currentAppState.mcp.clients.find(c => c.name === serverName)
-              ?.config ??
-            null
+          const config = getControlMcpServerConfig(serverName)
           if (!config) {
             sendControlResponseError(message, `Server not found: ${serverName}`)
           } else {
@@ -3744,19 +3753,22 @@ function runHeadlessStreaming(
               },
             }))
             // Also update dynamicMcpState so run() picks up the new tools
-            // on the next turn (run() reads dynamicMcpState, not appState)
-            dynamicMcpState = {
-              ...dynamicMcpState,
-              clients: [
-                ...dynamicMcpState.clients.filter(c => c.name !== serverName),
-                result.client,
-              ],
-              tools: [
-                ...dynamicMcpState.tools.filter(
-                  t => !t.name?.startsWith(prefix),
+            // on the next turn (run() reads dynamicMcpState, not appState).
+            // Only for mcp_set_servers servers: reconcileMcpServers re-adds
+            // every dynamicMcpState client, which would duplicate others.
+            if (dynamicMcpState.clients.some(c => c.name === serverName)) {
+              dynamicMcpState = {
+                ...dynamicMcpState,
+                clients: dynamicMcpState.clients.map(c =>
+                  c.name === serverName ? result.client : c,
                 ),
-                ...result.tools,
-              ],
+                tools: [
+                  ...dynamicMcpState.tools.filter(
+                    t => !t.name?.startsWith(prefix),
+                  ),
+                  ...result.tools,
+                ],
+              }
             }
             if (result.client.type === 'connected') {
               registerElicitationHandlers([result.client])
@@ -3779,15 +3791,7 @@ function runHeadlessStreaming(
           // Gate must match the client-lookup spread below (which
           // includes sdkClients and dynamicMcpState.clients). Same fix as
           // mcp_reconnect above (gh-31339 / CC-314).
-          const config =
-            // @ts-ignore - recovered code
-            getMcpConfigByName(serverName) ??
-            mcpClients.find(c => c.name === serverName)?.config ??
-            sdkClients.find(c => c.name === serverName)?.config ??
-            dynamicMcpState.clients.find(c => c.name === serverName)?.config ??
-            currentAppState.mcp.clients.find(c => c.name === serverName)
-              ?.config ??
-            null
+          const config = getControlMcpServerConfig(serverName)
 
           if (!config) {
             sendControlResponseError(message, `Server not found: ${serverName}`)
@@ -5449,6 +5453,15 @@ function handleChannelEnable(
   })
 }
 
+// Scopes whose config is read from a settings file and may change after connect.
+const DISK_MCP_SCOPES: ReadonlySet<string> = new Set([
+  'enterprise',
+  'managed',
+  'local',
+  'user',
+  'project',
+])
+
 /**
  * Re-register the channel notification handler after mcp_reconnect /
  * mcp_toggle creates a new client. handleChannelEnable bound the handler to
@@ -6086,7 +6099,7 @@ export async function handleMcpSetServers(
         await client.cleanup()
       }
       newSdkClients = newSdkClients.filter(c => c.name !== name)
-      const prefix = `mcp__${name}__`
+      const prefix = getMcpPrefix(name)
       newSdkTools = newSdkTools.filter(t => !t.name.startsWith(prefix))
       delete newSdkConfigs[name]
       sdkRemoved.push(name)
@@ -6183,7 +6196,7 @@ export async function reconcileMcpServers(
     }
 
     // Remove tools from this server
-    const prefix = `mcp__${name}__`
+    const prefix = getMcpPrefix(name)
     newTools = newTools.filter(t => !t.name.startsWith(prefix))
 
     // Remove from clients list
@@ -6253,7 +6266,7 @@ export async function reconcileMcpServers(
     // Remove old dynamic tools
     const nonDynamicTools = prev.mcp.tools.filter(t => {
       for (const serverName of allDynamicServerNames) {
-        if (t.name.startsWith(`mcp__${serverName}__`)) {
+        if (t.name.startsWith(getMcpPrefix(serverName))) {
           return false
         }
       }

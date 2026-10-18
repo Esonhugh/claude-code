@@ -113,6 +113,11 @@ import {
 import { getCurrentSubagentDepth } from './subagentDepth.js'
 import { isAnt } from 'src/utils/userType.js'
 
+// connectToServer memoizes by name+config, so concurrent agents with the same
+// inline server share one connection. Count the agents using it so only the
+// last one to finish cleans it up.
+const inlineMcpClientUsers = new Map<MCPServerConnection, number>()
+
 /**
  * Initialize agent-specific MCP servers
  * Agents can define their own MCP servers in their frontmatter that are additive
@@ -283,6 +288,10 @@ async function initializeAgentMcpServers(
     agentClients.push(client)
     if (isNewlyCreated) {
       newlyCreatedClients.push(client)
+      inlineMcpClientUsers.set(
+        client,
+        (inlineMcpClientUsers.get(client) ?? 0) + 1,
+      )
     }
 
     // Fetch tools if connected
@@ -305,7 +314,13 @@ async function initializeAgentMcpServers(
   // Only clean up newly created clients (inline definitions), not shared/referenced ones
   // Shared clients (referenced by string name) are memoized and used by the parent context
   const cleanup = async () => {
-    for (const client of newlyCreatedClients) {
+    for (const client of newlyCreatedClients.splice(0)) {
+      const users = (inlineMcpClientUsers.get(client) ?? 1) - 1
+      if (users > 0) {
+        inlineMcpClientUsers.set(client, users)
+        continue
+      }
+      inlineMcpClientUsers.delete(client)
       if (client.type === 'connected') {
         try {
           await client.cleanup()
