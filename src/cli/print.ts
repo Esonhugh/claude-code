@@ -1872,9 +1872,11 @@ function runHeadlessStreaming(
   }
 
   // Background plugin installation for all headless users
-  // Installs marketplaces from extraKnownMarketplaces and missing enabled plugins
-  // CLAUDE_CODE_SYNC_PLUGIN_INSTALL=true: resolved in run() before the first
-  // query so plugins are guaranteed available on the first ask().
+  // Installs marketplaces from extraKnownMarketplaces. Missing enabled plugins
+  // are cached only with CLAUDE_CODE_SYNC_PLUGIN_INSTALL=true: resolved in run()
+  // before the first query, whose refreshPluginState() runs the full loader, so
+  // plugins are guaranteed available on the first ask(). Without it only the
+  // plugin MCP servers are re-diffed from the cache-only load.
   let pluginInstallPromise: Promise<void> | null = null
   // --bare / SIMPLE: skip plugin install. Scripted calls don't add plugins
   // mid-session; the next interactive run reconciles.
@@ -1894,8 +1896,8 @@ function runHeadlessStreaming(
   let currentAgents = agents
 
   // Clear all plugin-related caches, reload commands/agents/hooks.
-  // Called after CLAUDE_CODE_SYNC_PLUGIN_INSTALL completes (before first query)
-  // and after non-sync background install finishes.
+  // Called after CLAUDE_CODE_SYNC_PLUGIN_INSTALL completes (before first query);
+  // the non-sync background install only calls applyPluginMcpDiff().
   // refreshActivePlugins calls clearAllCaches() which is required because
   // loadAllPlugins() may have run during main.tsx startup BEFORE managed
   // settings were fetched. Without clearing, getCommands() would rebuild

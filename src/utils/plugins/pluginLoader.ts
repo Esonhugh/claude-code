@@ -108,6 +108,7 @@ import { checkGitAvailable } from './gitAvailability.js'
 import {
   getInMemoryInstalledPlugins,
   getInstalledPluginsFilePath,
+  isInstallationRelevantToCurrentProject,
   readInstalledPluginsForContractValidation,
 } from './installedPluginsManager.js'
 import { getInPlacePluginSource, getManagedPluginNames, getMarketplaceDeclarationRefusal } from './managedPlugins.js'
@@ -2213,8 +2214,15 @@ async function loadPluginsFromMarketplaces({
 
       // installed_plugins.json records what's actually cached on disk
       // (version for the full loader's first-pass probe, installPath for
-      // the cache-only loader's direct read).
-      const installEntry = installedPluginsData.plugins[pluginId]?.[0]
+      // the cache-only loader's direct read). One file records every
+      // project's installs; use this project's local/project install, then
+      // user, then managed.
+      const relevantInstalls = (
+        installedPluginsData.plugins[pluginId] ?? []
+      ).filter(isInstallationRelevantToCurrentProject)
+      const installEntry = (['local', 'project', 'user', 'managed'] as const)
+        .flatMap(scope => relevantInstalls.filter(inst => inst.scope === scope))
+        .at(0)
       return cacheOnly
         ? loadPluginFromMarketplaceEntryCacheOnly(
             result.entry,
@@ -3221,7 +3229,11 @@ export async function loadSessionOnlyPlugins(
       // Update source to use the actual plugin name from manifest
       plugin.source = `${plugin.name}@inline`
       plugin.repository = `${plugin.name}@inline`
-      plugin.enabled = enabledPlugins?.[plugin.source] !== false
+      const explicitlyEnabled = enabledPlugins?.[plugin.source]
+      plugin.enabled =
+        explicitlyEnabled === undefined
+          ? plugin.manifest.defaultEnabled !== false
+          : explicitlyEnabled !== false
       if (!contractOnly) sessionOnlyPluginIdentities.set(plugin, sessionOnlyCoordinates(plugin))
 
       plugins.push(plugin)
@@ -3359,8 +3371,8 @@ export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
   )
   // A fresh full-load result is strictly valid for cache-only callers
   // (both variants share assemblePluginLoadResult). Warm the separate
-  // memoize so refreshActivePlugins()'s downstream getPluginCommands() /
-  // getAgentDefinitionsWithOverrides() — which now call
+  // memoize so refreshActivePlugins({ materialize })'s downstream
+  // getPluginCommands() / getAgentDefinitionsWithOverrides() — which now call
   // loadAllPluginsCacheOnly — see just-cloned plugins instead of reading
   // an installed_plugins.json that nothing writes mid-session.
   loadAllPluginsCacheOnly.cache?.set(undefined, Promise.resolve(result))
@@ -3377,8 +3389,10 @@ export const loadAllPlugins = memoize(async (): Promise<PluginLoadResult> => {
  *
  * Use this in startup consumers (getCommands, loadPluginAgents, MCP/LSP
  * config) so interactive startup never blocks on git clones for ref-tracked
- * plugins. Use loadAllPlugins() in explicit refresh paths (/plugins,
- * refresh.ts, headlessPluginInstall) where fresh source is the intent.
+ * plugins. Use loadAllPlugins() where fresh source is the intent: the
+ * initial interactive load (useManagePlugins), the /plugin UI, and
+ * refreshActivePlugins({ materialize: true }) after a background marketplace
+ * install. /reload-plugins reloads cache-only.
  *
  * CLAUDE_CODE_SYNC_PLUGIN_INSTALL=1 delegates to the full loader — that
  * mode explicitly opts into blocking install before first query, and
@@ -3615,6 +3629,7 @@ function mergePluginSettings(
  */
 export function cachePluginSettings(plugins: LoadedPlugin[]): void {
   const settings = mergePluginSettings(plugins)
+  const hadSettings = Object.keys(getPluginSettingsBase() ?? {}).length > 0
   setPluginSettingsBase(settings)
   // Only bust the session settings cache if there are actually plugin settings
   // to merge. In the common case (no plugins, or plugins without settings) the
@@ -3626,6 +3641,10 @@ export function cachePluginSettings(plugins: LoadedPlugin[]): void {
     logForDebugging(
       `Cached plugin settings with keys: ${Object.keys(settings).join(', ')}`,
     )
+  } else if (hadSettings) {
+    // The previous base still sits in the merged session settings cache.
+    resetSettingsCache()
+    logForDebugging('Dropped plugin settings: no enabled plugin supplies any')
   }
 }
 

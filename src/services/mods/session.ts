@@ -716,7 +716,9 @@ export function createModsSession(options: ModsSessionOptions) {
     unregisterCleanup = registerCleanup(dispose)
     unsubscribeUsage = subscribeRateLimitUsage(() => { if (!stopped) void runtime?.measure() })
     unsubscribePlugins = subscribePluginRefresh(plugins => {
-      if (plugins) return refresh(plugins)
+      // The caller rebuilt AppState agents without Mod agents; project them
+      // again even when this refresh changed none.
+      if (plugins) return refresh(plugins).then(publishAgents)
       scheduleRefresh()
     })
     unsubscribeOptions = subscribePluginOptionsChange(scheduleRefresh)
