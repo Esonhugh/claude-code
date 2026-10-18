@@ -76,18 +76,18 @@ function shouldRetryInstallation(
   config: ReturnType<typeof getGlobalConfig>,
 ): boolean {
   // If never attempted, should try
-  if (!config.officialMarketplaceAutoInstallAttempted) {
+  if (!config.esonhughMarketplaceAutoInstallAttempted) {
     return true
   }
 
   // If already installed successfully, don't retry
-  if (config.officialMarketplaceAutoInstalled) {
+  if (config.esonhughMarketplaceAutoInstalled) {
     return false
   }
 
-  const failReason = config.officialMarketplaceAutoInstallFailReason
-  const retryCount = config.officialMarketplaceAutoInstallRetryCount || 0
-  const nextRetryTime = config.officialMarketplaceAutoInstallNextRetryTime
+  const failReason = config.esonhughMarketplaceAutoInstallFailReason
+  const retryCount = config.esonhughMarketplaceAutoInstallRetryCount || 0
+  const nextRetryTime = config.esonhughMarketplaceAutoInstallNextRetryTime
   const now = Date.now()
 
   // Check if we've exceeded max attempts
@@ -149,7 +149,7 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
   // Check if we should retry installation
   if (!shouldRetryInstallation(config)) {
     const reason: OfficialMarketplaceSkipReason =
-      config.officialMarketplaceAutoInstallFailReason ?? 'already_attempted'
+      config.esonhughMarketplaceAutoInstallFailReason ?? 'already_attempted'
     logForDebugging(`Official marketplace auto-install skipped: ${reason}`)
     return {
       installed: false,
@@ -166,9 +166,9 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
       )
       saveGlobalConfig(current => ({
         ...current,
-        officialMarketplaceAutoInstallAttempted: true,
-        officialMarketplaceAutoInstalled: false,
-        officialMarketplaceAutoInstallFailReason: 'policy_blocked',
+        esonhughMarketplaceAutoInstallAttempted: true,
+        esonhughMarketplaceAutoInstalled: false,
+        esonhughMarketplaceAutoInstallFailReason: 'policy_blocked',
       }))
       logEvent('tengu_official_marketplace_auto_install', {
         installed: false,
@@ -187,8 +187,8 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
       // Mark as attempted so we don't check again
       saveGlobalConfig(current => ({
         ...current,
-        officialMarketplaceAutoInstallAttempted: true,
-        officialMarketplaceAutoInstalled: true,
+        esonhughMarketplaceAutoInstallAttempted: true,
+        esonhughMarketplaceAutoInstalled: true,
       }))
       return { installed: false, skipped: true, reason: 'already_installed' }
     }
@@ -200,9 +200,9 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
       )
       saveGlobalConfig(current => ({
         ...current,
-        officialMarketplaceAutoInstallAttempted: true,
-        officialMarketplaceAutoInstalled: false,
-        officialMarketplaceAutoInstallFailReason: 'policy_blocked',
+        esonhughMarketplaceAutoInstallAttempted: true,
+        esonhughMarketplaceAutoInstalled: false,
+        esonhughMarketplaceAutoInstallFailReason: 'policy_blocked',
       }))
       logEvent('tengu_official_marketplace_auto_install', {
         installed: false,
@@ -222,7 +222,7 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
         'Git not available, skipping official marketplace auto-install',
       )
       const retryCount =
-        (config.officialMarketplaceAutoInstallRetryCount || 0) + 1
+        (config.esonhughMarketplaceAutoInstallRetryCount || 0) + 1
       const now = Date.now()
       const nextRetryDelay = calculateNextRetryDelay(retryCount)
       const nextRetryTime = now + nextRetryDelay
@@ -231,12 +231,12 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
       try {
         saveGlobalConfig(current => ({
           ...current,
-          officialMarketplaceAutoInstallAttempted: true,
-          officialMarketplaceAutoInstalled: false,
-          officialMarketplaceAutoInstallFailReason: 'git_unavailable',
-          officialMarketplaceAutoInstallRetryCount: retryCount,
-          officialMarketplaceAutoInstallLastAttemptTime: now,
-          officialMarketplaceAutoInstallNextRetryTime: nextRetryTime,
+          esonhughMarketplaceAutoInstallAttempted: true,
+          esonhughMarketplaceAutoInstalled: false,
+          esonhughMarketplaceAutoInstallFailReason: 'git_unavailable',
+          esonhughMarketplaceAutoInstallRetryCount: retryCount,
+          esonhughMarketplaceAutoInstallLastAttemptTime: now,
+          esonhughMarketplaceAutoInstallNextRetryTime: nextRetryTime,
         }))
       } catch (saveError) {
         configSaveFailed = true
@@ -270,16 +270,16 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
     // Success
     logForDebugging('Successfully auto-installed official marketplace')
     const previousRetryCount =
-      config.officialMarketplaceAutoInstallRetryCount || 0
+      config.esonhughMarketplaceAutoInstallRetryCount || 0
     saveGlobalConfig(current => ({
       ...current,
-      officialMarketplaceAutoInstallAttempted: true,
-      officialMarketplaceAutoInstalled: true,
+      esonhughMarketplaceAutoInstallAttempted: true,
+      esonhughMarketplaceAutoInstalled: true,
       // Clear retry metadata on success
-      officialMarketplaceAutoInstallFailReason: undefined,
-      officialMarketplaceAutoInstallRetryCount: undefined,
-      officialMarketplaceAutoInstallLastAttemptTime: undefined,
-      officialMarketplaceAutoInstallNextRetryTime: undefined,
+      esonhughMarketplaceAutoInstallFailReason: undefined,
+      esonhughMarketplaceAutoInstallRetryCount: undefined,
+      esonhughMarketplaceAutoInstallLastAttemptTime: undefined,
+      esonhughMarketplaceAutoInstallNextRetryTime: undefined,
     }))
     logEvent('tengu_official_marketplace_auto_install', {
       installed: true,
@@ -323,7 +323,7 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
     logError(toError(error))
 
     const retryCount =
-      (config.officialMarketplaceAutoInstallRetryCount || 0) + 1
+      (config.esonhughMarketplaceAutoInstallRetryCount || 0) + 1
     const now = Date.now()
     const nextRetryDelay = calculateNextRetryDelay(retryCount)
     const nextRetryTime = now + nextRetryDelay
@@ -332,12 +332,12 @@ export async function checkAndInstallOfficialMarketplace(): Promise<OfficialMark
     try {
       saveGlobalConfig(current => ({
         ...current,
-        officialMarketplaceAutoInstallAttempted: true,
-        officialMarketplaceAutoInstalled: false,
-        officialMarketplaceAutoInstallFailReason: 'unknown',
-        officialMarketplaceAutoInstallRetryCount: retryCount,
-        officialMarketplaceAutoInstallLastAttemptTime: now,
-        officialMarketplaceAutoInstallNextRetryTime: nextRetryTime,
+        esonhughMarketplaceAutoInstallAttempted: true,
+        esonhughMarketplaceAutoInstalled: false,
+        esonhughMarketplaceAutoInstallFailReason: 'unknown',
+        esonhughMarketplaceAutoInstallRetryCount: retryCount,
+        esonhughMarketplaceAutoInstallLastAttemptTime: now,
+        esonhughMarketplaceAutoInstallNextRetryTime: nextRetryTime,
       }))
     } catch (saveError) {
       configSaveFailed = true
