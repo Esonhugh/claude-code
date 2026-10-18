@@ -34,6 +34,7 @@ import {
   type ToolProgress,
   type ToolProgressData,
   type ToolUseContext,
+  type Tools,
 } from '../../Tool.js'
 import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
@@ -88,6 +89,7 @@ import {
   stopSessionActivity,
 } from '../../utils/sessionActivity.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { sleep } from '../../utils/sleep.js'
 import { Stream } from '../../utils/stream.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
 import {
@@ -114,6 +116,7 @@ import {
   isToolSearchToolAvailable,
 } from '../../utils/toolSearch.js'
 import {
+  getConnectionTimeoutMs,
   McpAuthError,
   McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../mcp/client.js'
@@ -346,6 +349,61 @@ function getMcpServerBaseUrlFromToolName(
   return getLoggingSafeMcpBaseUrl(serverConnection.config)
 }
 
+const PENDING_MCP_TOOL_MAX_WAIT_MS = 10_000
+const PENDING_MCP_TOOL_POLL_MS = 50
+// Pending server entries that already used up a full wait; later calls to
+// their tools fail fast instead of waiting again.
+const exhaustedPendingMcpServers = new WeakSet<MCPServerConnection>()
+
+function isWaitablePendingMcpServer(
+  server: MCPServerConnection | undefined,
+): server is MCPServerConnection {
+  return (
+    server?.type === 'pending' &&
+    server.reconnectAttempt === undefined &&
+    !exhaustedPendingMcpServers.has(server)
+  )
+}
+
+/**
+ * The model can call an MCP tool whose server is still connecting (e.g. a
+ * tool named in the prompt or from a previous session). Poll the refreshed
+ * tool pool until the tool appears, the server stops connecting, or the wait
+ * limit passes.
+ */
+async function waitForPendingMcpTool(
+  toolName: string,
+  pendingServer: MCPServerConnection,
+  toolUseContext: ToolUseContext,
+  refreshTools: () => Tools,
+): Promise<{ tool: Tool | undefined; tools: Tools; waitedMs: number }> {
+  const { signal } = toolUseContext.abortController
+  const getServer = () =>
+    findMcpServerConnection(toolName, toolUseContext.getAppState().mcp.clients)
+  const maxWaitMs = Math.min(
+    getConnectionTimeoutMs(),
+    PENDING_MCP_TOOL_MAX_WAIT_MS,
+  )
+  const start = Date.now()
+  let tools = refreshTools()
+  let tool = findToolByName(tools, toolName)
+  while (
+    !tool &&
+    !signal.aborted &&
+    isWaitablePendingMcpServer(getServer()) &&
+    Date.now() - start < maxWaitMs
+  ) {
+    await sleep(PENDING_MCP_TOOL_POLL_MS, signal)
+    tools = refreshTools()
+    tool = findToolByName(tools, toolName)
+  }
+  const waitedMs = Date.now() - start
+  if (!tool && !signal.aborted && waitedMs >= maxWaitMs) {
+    exhaustedPendingMcpServers.add(pendingServer)
+  }
+  return { tool: signal.aborted ? undefined : tool, tools, waitedMs }
+}
+
 export async function* runToolUse(
   toolUse: ToolUseBlock,
   assistantMessage: AssistantMessage,
@@ -370,6 +428,58 @@ export async function* runToolUse(
       tool = fallbackTool
     }
   }
+  const refreshTools = toolUseContext.options.refreshTools
+  if (!tool && refreshTools) {
+    const server = findMcpServerConnection(
+      toolName,
+      toolUseContext.getAppState().mcp.clients,
+    )
+    if (isWaitablePendingMcpServer(server)) {
+      const wait = await waitForPendingMcpTool(
+        toolName,
+        server,
+        toolUseContext,
+        refreshTools,
+      )
+      const latestClients = toolUseContext.getAppState().mcp.clients
+      logEvent('tengu_mcp_pending_tool_wait', {
+        found: wait.tool !== undefined,
+        aborted: toolUseContext.abortController.signal.aborted,
+        waited_ms: wait.waitedMs,
+        server_state: (findMcpServerConnection(toolName, latestClients)
+          ?.type ?? 'absent') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        server_state_at_start:
+          server.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      if (wait.tool) {
+        yield* runToolUse(toolUse, assistantMessage, canUseTool, {
+          ...toolUseContext,
+          options: {
+            ...toolUseContext.options,
+            tools: wait.tools,
+            mcpClients: toolUseContext.options.mcpClients.map(
+              client =>
+                latestClients.find(c => c.name === client.name) ?? client,
+            ),
+          },
+        })
+        return
+      }
+      if (toolUseContext.abortController.signal.aborted) {
+        const content = createToolResultStopMessage(toolUse.id)
+        content.content = withMemoryCorrectionHint(CANCEL_MESSAGE)
+        yield {
+          message: createUserMessage({
+            content: [content],
+            toolUseResult: CANCEL_MESSAGE,
+            sourceToolAssistantUUID: assistantMessage.uuid,
+          }),
+        }
+        return
+      }
+    }
+  }
+
   const messageId = assistantMessage.message.id
   const requestId = assistantMessage.requestId
   const mcpServerType = getMcpServerType(

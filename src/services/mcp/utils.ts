@@ -283,6 +283,8 @@ export function describeMcpConfigFilePath(scope: ConfigScope): string {
       return getEnterpriseMcpFilePath()
     case 'claudeai':
       return 'claude.ai'
+    case 'agent':
+      return 'agent frontmatter'
     default:
       return scope
   }
@@ -302,6 +304,8 @@ export function getScopeLabel(scope: ConfigScope): string {
       return 'Enterprise config (managed by your organization)'
     case 'claudeai':
       return 'claude.ai config'
+    case 'agent':
+      return 'Agent config (from agent frontmatter)'
     default:
       return scope
   }

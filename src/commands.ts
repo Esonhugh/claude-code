@@ -35,7 +35,7 @@ import logout from './commands/logout/index.js'
 import installGitHubApp from './commands/install-github-app/index.js'
 import installSlackApp from './commands/install-slack-app/index.js'
 import breakCache from './commands/break-cache/index.js'
-import mcp from './commands/mcp/index.js'
+import mcp, { mcpNonInteractive } from './commands/mcp/index.js'
 import mobile from './commands/mobile/index.js'
 import onboarding from './commands/onboarding/index.js'
 import pr_comments from './commands/pr_comments/index.js'
@@ -306,6 +306,7 @@ const COMMANDS = memoize((): Command[] => [
   installGitHubApp,
   installSlackApp,
   mcp,
+  mcpNonInteractive,
   memory,
   mobile,
   model,

@@ -27,13 +27,14 @@ if (process.env[childEnv] === '1') {
               disabled: stdio('disabled'),
               denied: stdio('denied'),
               typeless: stdio('typeless'),
+              timed: { ...stdio('timed'), timeout: 500 },
             },
           }),
         )
         await writeFile(
           join(project, '.claude', 'settings.local.json'),
           JSON.stringify({
-            enabledMcpjsonServers: ['disabled', 'denied', 'typeless'],
+            enabledMcpjsonServers: ['disabled', 'denied', 'typeless', 'timed'],
             disabledMcpjsonServers: ['rejected'],
           }),
         )
@@ -160,5 +161,14 @@ async function runChild(): Promise<void> {
     expect(typeless.output).toContain('Type: stdio')
     expect(typeless.output).toContain('Command: echo')
     expect(typeless.output).toContain('Args: typeless')
+  })
+
+  test('a per-server timeout is shown, flagged when below the minimum', async () => {
+    const timed = await get('timed')
+    expect(timed.output).toContain(
+      'Timeout: 500ms (ignored: below 1000ms minimum)',
+    )
+    const typeless = await get('typeless')
+    expect(typeless.output).not.toContain('Timeout:')
   })
 }

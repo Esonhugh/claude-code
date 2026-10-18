@@ -94,6 +94,23 @@ export function onChangeAppState({
     notifyPermissionModeChanged(newMode)
   }
 
+  // Additional working directories are MCP roots; tell connected servers.
+  const additionalDirectories = newState.toolPermissionContext
+    .additionalWorkingDirectories as unknown as ReadonlyMap<string, unknown>
+  if (
+    additionalDirectories !==
+    (oldState.toolPermissionContext
+      .additionalWorkingDirectories as unknown as ReadonlyMap<string, unknown>)
+  ) {
+    void import('../services/mcp/client.js')
+      .then(({ notifyMcpRootsListChanged }) =>
+        notifyMcpRootsListChanged([...additionalDirectories.keys()]),
+      )
+      .catch(error => {
+        logError(toError(error))
+      })
+  }
+
   // mainLoopModel: remove it from settings?
   if (
     newState.mainLoopModel !== oldState.mainLoopModel &&

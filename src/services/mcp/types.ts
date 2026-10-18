@@ -16,6 +16,9 @@ export const ConfigScopeSchema = lazySchema(() =>
     'enterprise',
     'claudeai',
     'managed',
+    // Inline servers from agent frontmatter: separate from 'dynamic' so they
+    // never share (and on cleanup close) a parent session's connection.
+    'agent',
   ]),
 )
 export type ConfigScope = z.infer<ReturnType<typeof ConfigScopeSchema>>
@@ -25,12 +28,19 @@ export const TransportSchema = lazySchema(() =>
 )
 export type Transport = z.infer<ReturnType<typeof TransportSchema>>
 
+// Per-server tool-call timeout (ms). Overrides MCP_TOOL_TIMEOUT for the server;
+// values below 1000ms are ignored at call time (see getMcpToolTimeoutMs).
+const McpToolTimeoutSchema = lazySchema(() => z.number().int().positive())
+
 export const McpStdioServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('stdio').optional(), // Optional for backwards compatibility
     command: z.string().min(1, 'Command cannot be empty'),
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
+    bareElicitationCapability: z.boolean().optional(),
   }),
 )
 
@@ -51,6 +61,7 @@ const McpOAuthConfigSchema = lazySchema(() =>
         message: 'authServerMetadataUrl must use https://',
       })
       .optional(),
+    scopes: z.string().min(1).optional(),
     xaa: McpXaaConfigSchema().optional(),
   }),
 )
@@ -62,6 +73,9 @@ export const McpSSEServerConfigSchema = lazySchema(() =>
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),
     oauth: McpOAuthConfigSchema().optional(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
+    bareElicitationCapability: z.boolean().optional(),
   }),
 )
 
@@ -72,6 +86,8 @@ export const McpSSEIDEServerConfigSchema = lazySchema(() =>
     url: z.string(),
     ideName: z.string(),
     ideRunningInWindows: z.boolean().optional(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
   }),
 )
 
@@ -83,6 +99,8 @@ export const McpWebSocketIDEServerConfigSchema = lazySchema(() =>
     ideName: z.string(),
     authToken: z.string().optional(),
     ideRunningInWindows: z.boolean().optional(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
   }),
 )
 
@@ -93,6 +111,9 @@ export const McpHTTPServerConfigSchema = lazySchema(() =>
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),
     oauth: McpOAuthConfigSchema().optional(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
+    bareElicitationCapability: z.boolean().optional(),
   }),
 )
 
@@ -102,6 +123,9 @@ export const McpWebSocketServerConfigSchema = lazySchema(() =>
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
+    bareElicitationCapability: z.boolean().optional(),
   }),
 )
 
@@ -109,6 +133,8 @@ export const McpSdkServerConfigSchema = lazySchema(() =>
   z.object({
     type: z.literal('sdk'),
     name: z.string(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
   }),
 )
 
@@ -118,6 +144,8 @@ export const McpClaudeAIProxyServerConfigSchema = lazySchema(() =>
     type: z.literal('claudeai-proxy'),
     url: z.string(),
     id: z.string(),
+    timeout: McpToolTimeoutSchema().optional(),
+    alwaysLoad: z.boolean().optional(),
   }),
 )
 
@@ -182,6 +210,28 @@ export const McpJsonConfigSchema = lazySchema(() =>
 )
 
 export type McpJsonConfig = z.infer<ReturnType<typeof McpJsonConfigSchema>>
+
+// Only the top-level shape: parseMcpConfig validates each server entry on its
+// own so one invalid entry is skipped instead of dropping the whole file.
+export const McpJsonConfigShapeSchema = lazySchema(() =>
+  z.object({
+    mcpServers: z.record(z.string(), z.unknown()),
+  }),
+)
+
+// Per-type schemas so an invalid entry reports its own issues rather than a
+// generic union mismatch. Entries without a type are stdio.
+export const McpServerConfigSchemaByType = {
+  stdio: McpStdioServerConfigSchema,
+  sse: McpSSEServerConfigSchema,
+  'sse-ide': McpSSEIDEServerConfigSchema,
+  'ws-ide': McpWebSocketIDEServerConfigSchema,
+  http: McpHTTPServerConfigSchema,
+  'streamable-http': McpHTTPServerConfigSchema,
+  ws: McpWebSocketServerConfigSchema,
+  sdk: McpSdkServerConfigSchema,
+  'claudeai-proxy': McpClaudeAIProxyServerConfigSchema,
+} as const
 
 // Server connection types
 export type ConnectedMCPServer = {

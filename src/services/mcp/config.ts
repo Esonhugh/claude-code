@@ -47,9 +47,10 @@ import {
   type ConfigScope,
   type McpHTTPServerConfig,
   type McpJsonConfig,
-  McpJsonConfigSchema,
+  McpJsonConfigShapeSchema,
   type McpServerConfig,
   McpServerConfigSchema,
+  McpServerConfigSchemaByType,
   type McpSSEServerConfig,
   type McpStdioServerConfig,
   type McpWebSocketServerConfig,
@@ -1106,6 +1107,8 @@ function findMcpConfigByName(
  * critical path. The optional extraDedupTargets promise (e.g. the in-flight
  * claude.ai connector fetch) is awaited only after loadAllPluginsCacheOnly() completes,
  * so the two overlap rather than serialize.
+ * @param options.includePendingProjectServers Also return .mcp.json servers
+ *   awaiting approval, for status display only — never connect to them.
  * @returns Claude Code server configurations with appropriate scopes
  */
 export async function getClaudeCodeMcpConfigs(
@@ -1113,6 +1116,9 @@ export async function getClaudeCodeMcpConfigs(
   extraDedupTargets: Promise<
     Record<string, ScopedMcpServerConfig>
   > = Promise.resolve({}),
+  {
+    includePendingProjectServers = false,
+  }: { includePendingProjectServers?: boolean } = {},
 ): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
@@ -1203,9 +1209,13 @@ export async function getClaudeCodeMcpConfigs(
 
   // Filter project servers to only include approved ones
   const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
+  const pendingProjectServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(projectServers)) {
-    if (getProjectMcpServerStatus(name) === 'approved') {
+    const status = getProjectMcpServerStatus(name)
+    if (status === 'approved') {
       approvedProjectServers[name] = config
+    } else if (includePendingProjectServers && status === 'pending') {
+      pendingProjectServers[name] = config
     }
   }
 
@@ -1268,9 +1278,10 @@ export async function getClaudeCodeMcpConfigs(
     })
   }
 
-  // Merge in order of precedence: plugin < user < project < local
+  // Merge in order of precedence: pending project < plugin < user < project < local
   const configs = Object.assign(
     {},
+    pendingProjectServers,
     dedupedPluginServers,
     userServers,
     approvedProjectServers,
@@ -1293,9 +1304,12 @@ export async function getClaudeCodeMcpConfigs(
 /**
  * Get all MCP configurations across all scopes, including claude.ai servers.
  * This may be slow due to network calls - use getClaudeCodeMcpConfigs() for fast startup.
+ * @param options.includePendingProjectServers See getClaudeCodeMcpConfigs.
  * @returns All server configurations with appropriate scopes
  */
-export async function getAllMcpConfigs(): Promise<{
+export async function getAllMcpConfigs({
+  includePendingProjectServers = false,
+}: { includePendingProjectServers?: boolean } = {}): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
@@ -1310,6 +1324,7 @@ export async function getAllMcpConfigs(): Promise<{
   const { servers: claudeCodeServers, errors } = await getClaudeCodeMcpConfigs(
     {},
     claudeaiPromise,
+    { includePendingProjectServers },
   )
   const { allowed: claudeaiMcpServers } = filterMcpServersByPolicy(
     await claudeaiPromise,
@@ -1318,10 +1333,20 @@ export async function getAllMcpConfigs(): Promise<{
   // Suppress claude.ai connectors that duplicate an enabled manual server.
   // Keys never collide (`slack` vs `claude.ai Slack`) so the merge below
   // won't catch this — need content-based dedup by URL signature.
+  // Pending .mcp.json servers won't connect, so they must not suppress one.
+  const dedupTargets = includePendingProjectServers
+    ? Object.fromEntries(
+        Object.entries(claudeCodeServers).filter(
+          ([name, config]) =>
+            config.scope !== 'project' ||
+            getProjectMcpServerStatus(name) === 'approved',
+        ),
+      )
+    : claudeCodeServers
   const { servers: dedupedClaudeAi } = dedupClaudeAiMcpServers(
     // @ts-ignore - recovered code
     claudeaiMcpServers,
-    claudeCodeServers,
+    dedupTargets,
   )
 
   // Merge with claude.ai having lowest precedence
@@ -1345,7 +1370,7 @@ export function parseMcpConfig(params: {
   errors: ValidationError[]
 } {
   const { configObject, expandVars, scope, filePath } = params
-  const schemaResult = McpJsonConfigSchema().safeParse(configObject)
+  const schemaResult = McpJsonConfigShapeSchema().safeParse(configObject)
   if (!schemaResult.success) {
     return {
       config: null,
@@ -1364,8 +1389,70 @@ export function parseMcpConfig(params: {
   // Validate each server and expand variables if requested
   const errors: ValidationError[] = []
   const validatedServers: Record<string, McpServerConfig> = {}
+  const skip = (
+    name: string,
+    message: string,
+    skipReason: 'invalid_config' | 'unknown_type' | 'url_missing_type',
+  ) => {
+    errors.push({
+      ...(filePath && { file: filePath }),
+      path: `mcpServers.${name}`,
+      message,
+      mcpErrorMetadata: { scope, serverName: name, severity: 'warning', skipReason },
+    })
+  }
 
-  for (const [name, config] of Object.entries(schemaResult.data.mcpServers)) {
+  for (const [name, rawConfig] of Object.entries(
+    schemaResult.data.mcpServers,
+  )) {
+    const type =
+      rawConfig &&
+      typeof rawConfig === 'object' &&
+      'type' in rawConfig &&
+      typeof rawConfig.type === 'string'
+        ? rawConfig.type
+        : 'stdio'
+    if (!Object.hasOwn(McpServerConfigSchemaByType, type)) {
+      skip(
+        name,
+        `Skipped — unknown MCP server type "${type}" for server "${name}"`,
+        'unknown_type',
+      )
+      continue
+    }
+    const parsed =
+      McpServerConfigSchemaByType[
+        type as keyof typeof McpServerConfigSchemaByType
+      ]().safeParse(rawConfig)
+    if (!parsed.success) {
+      if (
+        rawConfig &&
+        typeof rawConfig === 'object' &&
+        !('type' in rawConfig) &&
+        'url' in rawConfig &&
+        !('command' in rawConfig)
+      ) {
+        skip(
+          name,
+          `Skipped — MCP server "${name}" has a "url" but no "type"; add "type": "http" (or "sse" / "ws") to this entry`,
+          'url_missing_type',
+        )
+        continue
+      }
+      const issues = parsed.error.issues
+        .map(
+          issue =>
+            `${issue.path.join('.') || '(root)'}: ${issue.message.replace(/^Invalid input: /, '')}`,
+        )
+        .join('; ')
+      skip(
+        name,
+        `Skipped — invalid MCP server config for "${name}": ${issues}`,
+        'invalid_config',
+      )
+      continue
+    }
+    const config: McpServerConfig = parsed.data
     let configToCheck = config
 
     if (expandVars) {

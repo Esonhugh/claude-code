@@ -871,7 +871,8 @@ export async function performMCPOAuthFlow(
   abortSignal?: AbortSignal,
   options?: {
     skipBrowserOpen?: boolean
-    onWaitingForCallback?: (submit: (callbackUrl: string) => void) => void
+    // submit returns false when the pasted URL isn't a callback for this flow
+    onWaitingForCallback?: (submit: (callbackUrl: string) => boolean) => void
   },
 ): Promise<void> {
   // XAA (SEP-990): if configured, bypass the per-server consent dance.
@@ -1089,12 +1090,12 @@ export async function performMCPOAuthFlow(
               rejectOnce(
                 new Error(`OAuth error: ${error} - ${errorDescription}`),
               )
-              return
+              return true
             }
 
             if (!code) {
               // Not a valid callback URL, ignore so the user can try again
-              return
+              return false
             }
 
             if (state !== oauthState) {
@@ -1102,7 +1103,7 @@ export async function performMCPOAuthFlow(
               rejectOnce(
                 new Error('OAuth state mismatch - possible CSRF attack'),
               )
-              return
+              return true
             }
 
             logMCPDebug(
@@ -1111,8 +1112,10 @@ export async function performMCPOAuthFlow(
             )
             cleanup()
             resolveOnce(code)
+            return true
           } catch {
             // Invalid URL, ignore so the user can try again
+            return false
           }
         })
       }
@@ -1895,6 +1898,20 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   }
 
   async redirectToAuthorization(authorizationUrl: URL): Promise<void> {
+    // Configured oauth.scopes override the discovered scope, except during a
+    // step-up, which must request the scope the server asked for.
+    const configuredScopes = this._pendingStepUpScope
+      ? undefined
+      : this.serverConfig.oauth?.scopes
+    const requestedScopes = authorizationUrl.searchParams.get('scope')
+    if (configuredScopes && configuredScopes !== requestedScopes) {
+      authorizationUrl.searchParams.set('scope', configuredScopes)
+      logMCPDebug(
+        this.serverName,
+        `Overrode authorization scope from ${requestedScopes || 'NONE'} to configured: ${configuredScopes}`,
+      )
+    }
+
     // Store the authorization URL
     this._authorizationUrl = authorizationUrl.toString()
 

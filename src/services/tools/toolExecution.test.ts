@@ -979,3 +979,65 @@ describe('Mods at the whole tool execution boundary', () => {
     expect(f.releases()).toBe(1)
   })
 })
+
+// Official 2.1.292 (tengu_mcp_pending_tool_wait): a call to an MCP tool whose
+// server is still connecting waits (min(MCP_TIMEOUT, 10s), 50ms polls) for the
+// tool to appear instead of failing with "No such tool available".
+describe('MCP tools of a server that is still connecting', () => {
+  const pendingFixture = (serverType: 'pending' | 'failed') => {
+    const f = fixture(async (event, next) => next(event), 'mcp__slow__echo')
+    let published = false
+    const config = { type: 'stdio', command: 'unused', args: [], scope: 'dynamic' }
+    const clients = () => [
+      published
+        ? { name: 'slow', type: 'connected', config, capabilities: {} }
+        : { name: 'slow', type: serverType, config },
+    ]
+    f.context.options.tools = []
+    f.context.options.refreshTools = () => (published ? [f.tool] : [])
+    const appState = f.context.getAppState
+    f.context.getAppState = () =>
+      ({ ...appState(), mcp: { clients: clients(), tools: [], commands: [], resources: {} } }) as never
+    return { ...f, publish: () => { published = true } }
+  }
+
+  test('waits for the pending server and runs the tool once it is published', async () => {
+    const f = pendingFixture('pending')
+    setTimeout(f.publish, 150)
+    const started = Date.now()
+    const updates = await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100)
+    expect(f.calls).toEqual([{ value: 'original' }])
+    expect(JSON.stringify(updates)).not.toContain('No such tool available')
+  })
+
+  test('gives up after the connection timeout and reports the tool as unavailable', async () => {
+    const previous = process.env.MCP_TIMEOUT
+    process.env.MCP_TIMEOUT = '200'
+    try {
+      const f = pendingFixture('pending')
+      const started = Date.now()
+      const updates = await Array.fromAsync(runToolUse(
+        f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+      ))
+      expect(Date.now() - started).toBeGreaterThanOrEqual(180)
+      expect(f.calls).toEqual([])
+      expect(JSON.stringify(updates)).toContain('No such tool available: mcp__slow__echo')
+    } finally {
+      if (previous === undefined) delete process.env.MCP_TIMEOUT
+      else process.env.MCP_TIMEOUT = previous
+    }
+  })
+
+  test('does not wait when the server is not connecting', async () => {
+    const f = pendingFixture('failed')
+    setTimeout(f.publish, 150)
+    const updates = await Array.fromAsync(runToolUse(
+      f.block, f.assistant, async () => ({ behavior: 'allow' }), f.context,
+    ))
+    expect(f.calls).toEqual([])
+    expect(JSON.stringify(updates)).toContain('No such tool available: mcp__slow__echo')
+  })
+})

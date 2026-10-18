@@ -13,7 +13,9 @@ import {
   fetchToolsForClient,
   getFetchToolsCacheKey,
   getMcpToolsCommandsAndResources,
+  getServerCacheKey,
   reconnectMcpServerImpl,
+  syncMcpResourceTools,
 } from './client.js'
 import type {
   MCPServerConnection,
@@ -159,6 +161,19 @@ export function useManageMCPConnections(
 
   // Track active reconnection attempts to allow cancellation
   const reconnectTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map())
+  // Per-server generation. Bumped when a manual reconnect, toggle, config
+  // change or newer close supersedes an automatic reconnect, so an attempt
+  // already awaiting reconnectMcpServerImpl discards its late result.
+  const reconnectGenerationRef = useRef<Map<string, number>>(new Map())
+  const supersedeReconnect = useCallback((serverName: string) => {
+    const timer = reconnectTimersRef.current.get(serverName)
+    if (timer) {
+      clearTimeout(timer)
+      reconnectTimersRef.current.delete(serverName)
+    }
+    const generations = reconnectGenerationRef.current
+    generations.set(serverName, (generations.get(serverName) ?? 0) + 1)
+  }, [])
 
   // Dedup the --channels blocked warning per skip kind so that a user who
   // sees "run /login" (auth skip), logs in, then hits the policy gate
@@ -285,6 +300,7 @@ export function useManageMCPConnections(
           resources: updatedResources,
         }
       }
+      mcp = { ...mcp, tools: syncMcpResourceTools(mcp.clients, mcp.tools) }
 
       return { ...prevState, mcp }
     })
@@ -361,11 +377,12 @@ export function useManageMCPConnections(
               )
 
               // Cancel any existing reconnection attempt for this server
-              const existingTimer = reconnectTimersRef.current.get(client.name)
-              if (existingTimer) {
-                clearTimeout(existingTimer)
-                reconnectTimersRef.current.delete(client.name)
-              }
+              supersedeReconnect(client.name)
+              const generation = reconnectGenerationRef.current.get(
+                client.name,
+              )
+              const isSuperseded = () =>
+                reconnectGenerationRef.current.get(client.name) !== generation
 
               // Attempt reconnection with exponential backoff
               const reconnectWithBackoff = async () => {
@@ -383,6 +400,7 @@ export function useManageMCPConnections(
                     reconnectTimersRef.current.delete(client.name)
                     return
                   }
+                  if (isSuperseded()) return
 
                   updateServer({
                     ...client,
@@ -398,6 +416,33 @@ export function useManageMCPConnections(
                       client.config,
                     )
                     const elapsed = Date.now() - reconnectStartTime
+
+                    const disabled = isMcpServerDisabled(client.name)
+                    if (disabled || isSuperseded()) {
+                      logMCPDebug(
+                        client.name,
+                        `Server ${disabled ? 'disabled' : 'changed'} during reconnection attempt ${attempt}, discarding result`,
+                      )
+                      // Close the late connection unless the newer flow
+                      // shares it (same name+config memo key).
+                      const current = store
+                        .getState()
+                        .mcp.clients.find(c => c.name === client.name)
+                      if (
+                        result.client.type === 'connected' &&
+                        (disabled ||
+                          !current ||
+                          getServerCacheKey(client.name, current.config) !==
+                            getServerCacheKey(client.name, result.client.config))
+                      ) {
+                        result.client.client.onclose = undefined
+                        clearServerCache(
+                          client.name,
+                          result.client.config,
+                        ).catch(() => {})
+                      }
+                      return
+                    }
 
                     if (result.client.type === 'connected') {
                       logMCPDebug(
@@ -430,6 +475,7 @@ export function useManageMCPConnections(
                       client.name,
                       `${transportType} reconnection attempt ${attempt} failed after ${elapsed}ms: ${error}`,
                     )
+                    if (isSuperseded()) return
 
                     // On final attempt, mark as failed
                     if (attempt === MAX_RECONNECT_ATTEMPTS) {
@@ -759,7 +805,7 @@ export function useManageMCPConnections(
           break
       }
     },
-    [updateServer],
+    [store, updateServer, supersedeReconnect],
   )
 
   // Initialize all servers to pending state if they don't exist in appState.
@@ -805,13 +851,17 @@ export function useManageMCPConnections(
         //      but config-changed servers aren't disabled, so it'd race the
         //      fresh connection and last updateServer wins.
         for (const s of stale) {
-          const timer = reconnectTimersRef.current.get(s.name)
-          if (timer) {
-            clearTimeout(timer)
-            reconnectTimersRef.current.delete(s.name)
-          }
+          supersedeReconnect(s.name)
           if (s.type === 'connected') s.client.onclose = undefined
           cleanups.push(clearServerCache(s.name, s.config))
+        }
+        // Batched updates queued under the old config (e.g. a reconnect's
+        // 'pending') would otherwise flush over the fresh entry below.
+        if (stale.length > 0) {
+          const staleNames = new Set(stale.map(s => s.name))
+          pendingUpdatesRef.current = pendingUpdatesRef.current.filter(
+            u => !staleNames.has(u.name),
+          )
         }
 
         const existingServerNames = new Set(
@@ -855,6 +905,7 @@ export function useManageMCPConnections(
     isStrictMcpConfig,
     dynamicMcpConfig,
     setAppState,
+    supersedeReconnect,
     sessionId,
     _pluginReconnectKey,
   ])
@@ -1061,12 +1112,11 @@ export function useManageMCPConnections(
         throw new Error(`MCP server ${serverName} not found`)
       }
 
-      // Cancel any pending automatic reconnection attempt
-      const existingTimer = reconnectTimersRef.current.get(serverName)
-      if (existingTimer) {
-        clearTimeout(existingTimer)
-        reconnectTimersRef.current.delete(serverName)
-      }
+      // Cancel any automatic reconnection attempt and detach the old onclose:
+      // reconnectMcpServerImpl closes the old client, and for remote
+      // transports that onclose would start a second, concurrent reconnect.
+      supersedeReconnect(serverName)
+      if (client.type === 'connected') client.client.onclose = undefined
 
       const result = await reconnectMcpServerImpl(serverName, client.config)
 
@@ -1076,7 +1126,7 @@ export function useManageMCPConnections(
       // (Detailed logs are within the reconnectMcpServerImpl via --debug)
       return result
     },
-    [store, onConnectionAttempt],
+    [store, onConnectionAttempt, supersedeReconnect],
   )
 
   // Expose function to toggle server enabled/disabled state
@@ -1091,14 +1141,10 @@ export function useManageMCPConnections(
 
       const isCurrentlyDisabled = client.type === 'disabled'
 
-      if (!isCurrentlyDisabled) {
-        // Cancel any pending automatic reconnection attempt
-        const existingTimer = reconnectTimersRef.current.get(serverName)
-        if (existingTimer) {
-          clearTimeout(existingTimer)
-          reconnectTimersRef.current.delete(serverName)
-        }
+      // Cancel any pending or in-flight automatic reconnection attempt
+      supersedeReconnect(serverName)
 
+      if (!isCurrentlyDisabled) {
         // Persist disabled state to disk FIRST before clearing cache
         // This is important because the onclose handler checks disk state
         setMcpServerEnabled(serverName, false)
@@ -1131,7 +1177,7 @@ export function useManageMCPConnections(
         onConnectionAttempt(result)
       }
     },
-    [store, updateServer, onConnectionAttempt],
+    [store, updateServer, onConnectionAttempt, supersedeReconnect],
   )
 
   return { reconnectMcpServer, toggleMcpServer }

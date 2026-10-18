@@ -1,9 +1,15 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { MCPSettings } from '../../components/mcp/index.js'
 import { MCPReconnect } from '../../components/mcp/MCPReconnect.js'
-import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js'
-import { useAppState } from '../../state/AppState.js'
+import { Spinner } from '../../components/Spinner.js'
+import { Box, Text } from '../../ink.js'
+import {
+  useMcpReconnect,
+  useMcpToggleEnabled,
+} from '../../services/mcp/MCPConnectionManager.js'
+import { useAppState, useAppStateStore } from '../../state/AppState.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
+import { plural } from '../../utils/stringUtils.js'
 import { PluginSettings } from '../plugin/PluginSettings.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -60,6 +66,60 @@ function MCPToggle({
   return null
 }
 
+function MCPReconnectAll({
+  onComplete,
+}: {
+  onComplete: (result: string) => void
+}): React.ReactNode {
+  const store = useAppStateStore()
+  const reconnectMcpServer = useMcpReconnect()
+  // Snapshot targets once: reconnecting updates mcp.clients.
+  const [targets] = useState(() =>
+    store
+      .getState()
+      .mcp.clients.filter(
+        c => c.name !== 'ide' && (c.type === 'failed' || c.type === 'needs-auth'),
+      ),
+  )
+  const didRun = useRef(false)
+
+  useEffect(() => {
+    if (didRun.current) return
+    didRun.current = true
+    if (targets.length === 0) {
+      onComplete('No MCP servers need reconnecting')
+      return
+    }
+    void Promise.allSettled(targets.map(c => reconnectMcpServer(c.name))).then(
+      results => {
+        const connected = results.filter(
+          r => r.status === 'fulfilled' && r.value.client.type === 'connected',
+        ).length
+        const summary = `Reconnected ${connected} of ${targets.length} MCP ${plural(targets.length, 'server')}`
+        const remaining = targets.length - connected
+        onComplete(
+          remaining === 0
+            ? summary
+            : `${summary} (${remaining} still not connected — run /mcp to check)`,
+        )
+      },
+    )
+  }, [targets, reconnectMcpServer, onComplete])
+
+  if (targets.length === 0) return null
+  return (
+    <Box flexDirection="column" padding={1}>
+      <Box>
+        <Spinner />
+        <Text>
+          {' '}
+          Reconnecting {targets.length} MCP {plural(targets.length, 'server')}
+        </Text>
+      </Box>
+    </Box>
+  )
+}
+
 export async function call(
   onDone: LocalJSXCommandOnDone,
   _context: unknown,
@@ -71,6 +131,10 @@ export async function call(
     // Allow /mcp no-redirect to bypass the redirect for testing
     if (parts[0] === 'no-redirect') {
       return <MCPSettings onComplete={onDone} />
+    }
+
+    if (parts[0] === 'reconnect' && parts.slice(1).join(' ') === 'all') {
+      return <MCPReconnectAll onComplete={onDone} />
     }
 
     if (parts[0] === 'reconnect' && parts[1]) {
