@@ -871,7 +871,7 @@ test('serializes direct shell commands with model turns and records their histor
   assert.match(printSource, /if \(!running && !shellCommandRunning\)/)
   assert.match(
     printSource,
-    /else if \(inputClosed\) \{[\s\S]{0,240}output\.done\(\)/,
+    /else if \(inputClosed\) \{[\s\S]{0,240}await finishOutput\(\)/,
   )
 })
 

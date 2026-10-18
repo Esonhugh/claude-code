@@ -23,7 +23,11 @@ const update = mock((data: { claudeAiOauth?: OAuthTokens }) => {
   return { success: true }
 })
 
+const oauthClient = await import('../services/oauth/client.js')
+const authFileDescriptor = await import('./authFileDescriptor.js')
+
 mock.module('../services/oauth/client.js', () => ({
+  ...oauthClient,
   isOAuthTokenExpired: (expiresAt: number | null) =>
     expiresAt !== null && expiresAt <= Date.now(),
   refreshOAuthToken,
@@ -37,6 +41,12 @@ mock.module('./secureStorage/index.js', () => ({
     readAsync: () => Promise.resolve({ claudeAiOauth: storedTokens }),
     update,
   }),
+}))
+// Keep a CCR-injected token on this machine from shadowing the stored tokens.
+mock.module('./authFileDescriptor.js', () => ({
+  ...authFileDescriptor,
+  getOAuthTokenFromFileDescriptor: () => null,
+  getApiKeyFromFileDescriptor: () => null,
 }))
 mock.module('./lockfile.js', () => ({
   lock: async () => {

@@ -2,11 +2,16 @@ import { afterAll, expect, mock, test } from 'bun:test'
 
 let analyzeArguments: unknown[] = []
 
+const microCompact = await import('../../services/compact/microCompact.js')
+const analyzeContext = await import('../../utils/analyzeContext.js')
+
 mock.module('../../services/compact/microCompact.js', () => ({
+  ...microCompact,
   microcompactMessages: async (messages: unknown[]) => ({ messages }),
 }))
 
 mock.module('../../utils/analyzeContext.js', () => ({
+  ...analyzeContext,
   analyzeContextUsage: async (...args: unknown[]) => {
     analyzeArguments = args
     return { marker: true }
