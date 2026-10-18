@@ -964,3 +964,14 @@ test('only keeps remote cancel active while the remote turn is loading', () => {
     /abortSignal:\s+activeRemote\.isRemoteMode && !isLoading\s+\? undefined\s+: abortController\?\.signal/,
   )
 })
+
+test('session plugin flags take their value and still find ssh', () => {
+  for (const flag of ['--plugin-dir', '--plugin-url']) {
+    const parsed = parseRootSSHArgv([flag, 'https://plugins.test/p.zip', 'ssh', 'host.example'])
+    assert.equal(parsed.type, 'ssh', flag)
+    if (parsed.type !== 'ssh') continue
+    assert.equal(parsed.pending.host, 'host.example')
+    assert.deepEqual(parsed.pending.extraCliArgs, [flag, 'https://plugins.test/p.zip'])
+    assert.deepEqual(parsed.remainingArgs, [])
+  }
+})

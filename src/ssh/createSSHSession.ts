@@ -141,6 +141,7 @@ const REMOTE_OPTIONS_WITH_REQUIRED_VALUES = new Set([
   '--model',
   '--permission-mode',
   '--plugin-dir',
+  '--plugin-url',
   '--resume-session-at',
   '--rewind-files',
   '--session-id',

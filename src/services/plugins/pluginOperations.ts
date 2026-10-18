@@ -12,7 +12,11 @@
  * - Can throw errors for unexpected failures
  */
 import { dirname, join } from 'path'
-import { getInlinePlugins, getOriginalCwd } from '../../bootstrap/state.js'
+import {
+  getInlinePluginUrls,
+  getInlinePlugins,
+  getOriginalCwd,
+} from '../../bootstrap/state.js'
 import { isBuiltinPluginId } from '../../plugins/builtinPlugins.js'
 import type { LoadedPlugin, PluginManifest } from '../../types/plugin.js'
 import { isENOENT, toError } from '../../utils/errors.js'
@@ -667,7 +671,7 @@ export async function setPluginEnabledOp(
   let resolvedScope: InstallableScope
 
   let inlinePlugin: LoadedPlugin | undefined
-  if (getInlinePlugins().length > 0) {
+  if (getInlinePlugins().length > 0 || getInlinePluginUrls().length > 0) {
     const loaded = await loadAllPluginsCacheOnly()
     inlinePlugin = [...loaded.enabled, ...loaded.disabled].find(
       candidate => candidate.source.endsWith('@inline') &&

@@ -1,9 +1,13 @@
-import { createHash } from "node:crypto";
-import { open, readdir, readFile, rm, stat } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { createWriteStream } from "node:fs";
+import { open, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { registerCleanup } from "../cleanupRegistry.js";
 import { logForDebugging } from "../debug.js";
 import { getErrnoCode } from "../errors.js";
+import { getProxyFetchOptions } from "../proxy.js";
 import { publishDirectory } from "./stagingDirectory.js";
 import {
   cleanupSessionPluginCache,
@@ -153,16 +157,105 @@ async function directoryExists(path: string): Promise<boolean> {
   }
 }
 
+const MAX_PLUGIN_URL_BYTES = 268435456;
+const PLUGIN_URL_TIMEOUT_MS = 30000;
+
+/** Official 2.1.292: logs and errors name a plugin URL by origin + path only. */
+export function redactPluginUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.origin + parsed.pathname;
+  } catch {
+    return "<invalid URL>";
+  }
+}
+
+export function redactPluginUrlText(text: string, url: string): string {
+  const raw = [url];
+  try {
+    raw.push(new URL(url).href);
+  } catch {
+    // An unparsable URL only appears verbatim.
+  }
+  const display = redactPluginUrl(url);
+  return raw.reduce((result, value) => result.split(value).join(display), text);
+}
+
+/**
+ * Official 2.1.292 --plugin-url: download into the session cache as
+ * url-<index>-<name>.zip via a .part file. A failed re-fetch reuses the
+ * archive from an earlier load; preview loads never replace that archive.
+ * `source` is the file holding this load's bytes (a .part file in preview).
+ */
+export async function fetchSessionPluginUrl(
+  url: string,
+  index: number,
+  preview: boolean,
+): Promise<{ path: string; source: string }> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+    throw new Error(
+      `Unsupported plugin URL scheme "${parsed.protocol}" (only http and https are allowed)`,
+    );
+  const display = redactPluginUrl(url);
+  const name = basename(parsed.pathname).replace(/\.zip$/i, "") || "download";
+  const archive = join(
+    await getSessionPluginCachePath(),
+    `url-${index}-${name.replace(/[^a-zA-Z0-9_-]/g, "-")}.zip`,
+  );
+  const partial = `${archive}.${preview ? "preview-" : ""}${randomBytes(4).toString("hex")}.part`;
+  try {
+    const response = await fetch(url, {
+      ...getProxyFetchOptions({ url }),
+      signal: AbortSignal.timeout(PLUGIN_URL_TIMEOUT_MS),
+    });
+    if (!response.ok || !response.body)
+      throw new Error(
+        `HTTP ${response.status} ${response.statusText} from ${display}`,
+      );
+    const declared = Number(response.headers.get("content-length"));
+    if (declared > MAX_PLUGIN_URL_BYTES)
+      throw new Error(
+        `Plugin archive too large (${declared} bytes, max ${MAX_PLUGIN_URL_BYTES}) from ${display}`,
+      );
+    let received = 0;
+    const body = Readable.fromWeb(response.body as never);
+    body.on("data", (chunk: Uint8Array) => {
+      received += chunk.byteLength;
+      if (received > MAX_PLUGIN_URL_BYTES)
+        body.destroy(
+          new Error(
+            `Plugin archive exceeded ${MAX_PLUGIN_URL_BYTES} bytes from ${display}`,
+          ),
+        );
+    });
+    await pipeline(body, createWriteStream(partial));
+    logForDebugging(`Downloaded inline plugin from ${display}`);
+    if (preview) return { path: archive, source: partial };
+    await rename(partial, archive);
+    return { path: archive, source: archive };
+  } catch (error) {
+    await rm(partial, { force: true });
+    if ((await presence(archive)) !== "present") throw error;
+    logForDebugging(
+      `Re-fetch of inline plugin from ${display} failed; reusing cached ${archive}`,
+      { level: "warn" },
+    );
+    return { path: archive, source: archive };
+  }
+}
+
 /** Extract captured bytes, preserving the previous complete tree on any failure. */
 export async function resolveSessionPluginPath(
   path: string,
   index: number,
   preview: boolean,
+  source = path,
 ): Promise<{ path: string; fallbackName: string }> {
   const fallbackName = basename(path).replace(/\.zip$/i, "");
   if (!path.toLowerCase().endsWith(".zip")) return { path, fallbackName };
   const sequence = ++nextSequence;
-  const bytes = await readFile(path);
+  const bytes = await readFile(source);
   const hash = createHash("sha256").update(bytes).digest("hex");
   const cache = await getSessionPluginCachePath();
   const destination = join(

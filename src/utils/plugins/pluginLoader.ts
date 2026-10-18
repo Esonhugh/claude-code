@@ -45,13 +45,23 @@ import {
   symlink,
 } from 'fs/promises'
 import { publishDirectory } from './stagingDirectory.js'
-import { expandSessionPluginPaths, resolveSessionPluginPath } from './sessionPluginPaths.js'
+import {
+  expandSessionPluginPaths,
+  fetchSessionPluginUrl,
+  redactPluginUrl,
+  redactPluginUrlText,
+  resolveSessionPluginPath,
+} from './sessionPluginPaths.js'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { readOfficialBuiltinModDefinitions, unzipArchive } from '../../plugins/builtinMods.js'
 import { readOfficialShippedDiffContract, isOfficialShippedDiffCatalogAllowed } from '../../plugins/builtinShippedMods.js'
 import { builtinModsArchive, builtinDiffArchive } from '../../plugins/bundled/index.js'
-import { getInlinePlugins, getInlinePluginsNoMcp } from '../../bootstrap/state.js'
+import {
+  getInlinePluginUrls,
+  getInlinePlugins,
+  getInlinePluginsNoMcp,
+} from '../../bootstrap/state.js'
 import {
   BUILTIN_MARKETPLACE_NAME,
   getBuiltinPlugins,
@@ -3182,21 +3192,28 @@ export async function loadSessionOnlyPlugins(
   enabledPlugins = getSettings_DEPRECATED().enabledPlugins,
   contractOnly = false,
   noMcpPaths: ReadonlySet<string> = new Set(),
+  sessionPluginUrls: readonly string[] = [],
 ): Promise<{ plugins: LoadedPlugin[]; errors: PluginError[] }> {
-  if (sessionPluginPaths.length === 0) {
+  if (sessionPluginPaths.length === 0 && sessionPluginUrls.length === 0) {
     return { plugins: [], errors: [] }
   }
 
   const plugins: LoadedPlugin[] = []
   const errors: PluginError[] = []
 
-  const expandedPaths = await expandSessionPluginPaths(sessionPluginPaths, noMcpPaths)
-  for (const [index, spec] of expandedPaths.entries()) {
-    const pluginPath = spec.path
+  // --plugin-url entries follow the path entries, as in official 2.1.292.
+  const specs: Array<{ path: string; skipMcpDiscovery: boolean; url?: string }> = [
+    ...(await expandSessionPluginPaths(sessionPluginPaths, noMcpPaths)),
+    ...sessionPluginUrls.map(url => ({ path: url, skipMcpDiscovery: false, url })),
+  ]
+  for (const [index, spec] of specs.entries()) {
+    const pluginPath = spec.url ? redactPluginUrl(spec.url) : spec.path
+    let download: { path: string; source: string } | undefined
     try {
-      const resolvedPath = resolve(pluginPath)
+      if (spec.url) download = await fetchSessionPluginUrl(spec.url, index, contractOnly)
+      const resolvedPath = download?.path ?? resolve(pluginPath)
 
-      if (!(await pathExists(resolvedPath))) {
+      if (!download && !(await pathExists(resolvedPath))) {
         logForDebugging(
           `Plugin path does not exist: ${resolvedPath}, skipping`,
           { level: 'warn' },
@@ -3210,7 +3227,7 @@ export async function loadSessionOnlyPlugins(
         continue
       }
 
-      const resolved = await resolveSessionPluginPath(resolvedPath, index, contractOnly)
+      const resolved = await resolveSessionPluginPath(resolvedPath, index, contractOnly, download?.source)
       const dirName = resolved.fallbackName
       const { plugin, errors: pluginErrors } = await createPluginFromPath(
         resolved.path,
@@ -3241,7 +3258,9 @@ export async function loadSessionOnlyPlugins(
 
       logForDebugging(`Loaded inline plugin from path: ${plugin.name}`)
     } catch (error) {
-      const errorMsg = errorMessage(error)
+      const errorMsg = spec.url
+        ? redactPluginUrlText(errorMessage(error), spec.url)
+        : errorMessage(error)
       logForDebugging(
         `Failed to load session plugin from ${pluginPath}: ${errorMsg}`,
         { level: 'warn' },
@@ -3251,6 +3270,10 @@ export async function loadSessionOnlyPlugins(
         source: `inline[${index}]`,
         error: `Failed to load plugin: ${errorMsg}`,
       })
+    } finally {
+      if (download && download.source !== download.path) {
+        await rm(download.source, { force: true })
+      }
     }
   }
 
@@ -3475,14 +3498,16 @@ async function assemblePluginLoadResult(
   const noMcpPaths = new Set(getInlinePluginsNoMcp().map(path => resolve(path))
     .filter(path => !regularResolved.has(path)))
   const configuredInlinePlugins = [...regularPaths, ...noMcpPaths]
-  if (restricted && configuredInlinePlugins.length > 0) {
+  const configuredPluginUrls = getInlinePluginUrls()
+  if (restricted && configuredInlinePlugins.length + configuredPluginUrls.length > 0) {
     logForDebugging(`disableSideloadFlags: dropping @inline plugin specs at load time (parse-site gate should have caught this earlier): ${getSideloadFlagsError(['--plugin-dir', '--plugin-url'])}`, { level: 'warn' })
   }
   const inlinePlugins = restricted ? [] : configuredInlinePlugins
+  const pluginUrls = restricted ? [] : configuredPluginUrls
   const [marketplaceResult, sessionResult] = await Promise.all([
     marketplaceLoader(),
-    inlinePlugins.length > 0
-      ? loadSessionOnlyPlugins(inlinePlugins, undefined, contractOnly, noMcpPaths)
+    inlinePlugins.length + pluginUrls.length > 0
+      ? loadSessionOnlyPlugins(inlinePlugins, undefined, contractOnly, noMcpPaths, pluginUrls)
       : Promise.resolve({ plugins: [], errors: [] }),
   ])
   // 3. Load built-in plugins that ship with the CLI

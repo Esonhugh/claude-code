@@ -5,10 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getEmptyToolPermissionContext, type ToolUseContext } from '../../Tool.js'
 import { getDefaultAppState } from '../../state/AppStateStore.js'
-import { setMainLoopModelOverride, setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
+import { setInlinePluginUrls, setMainLoopModelOverride, setSessionBypassPermissionsMode } from '../../bootstrap/state.js'
 import { handlePlanApprovalResponse } from '../../utils/inProcessTeammateHelpers.js'
 import { getInboxPath } from '../../utils/teammateMailbox.js'
 import { buildInheritedCliFlags } from '../../utils/swarm/spawnUtils.js'
+import { quote } from '../../utils/bash/shellQuote.js'
 import { spawnInProcessTeammate } from '../../utils/swarm/spawnInProcess.js'
 import { setCliTeammateModeOverride } from '../../utils/swarm/backends/teammateModeSnapshot.js'
 import type { InProcessRunnerConfig } from '../../utils/swarm/inProcessRunner.js'
@@ -692,6 +693,16 @@ async function isolatedAssertions() {
     buildInheritedCliFlags({ permissionMode: 'default', allowedTools: [] }),
     /--allowedTools/,
   )
+  const pluginUrl = 'https://plugins.test/a.zip?x=1&y=2'
+  setInlinePluginUrls([pluginUrl])
+  try {
+    assert.ok(
+      buildInheritedCliFlags().includes(`--plugin-url ${quote([pluginUrl])}`),
+    )
+  } finally {
+    setInlinePluginUrls([])
+  }
+  assert.doesNotMatch(buildInheritedCliFlags(), /--plugin-url/)
 
   setSessionBypassPermissionsMode(true)
   try {
