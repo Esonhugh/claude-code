@@ -2613,11 +2613,11 @@ export async function callIdeRpc(
   return result.content
 }
 
-const MCP_RESOURCE_TOOLS = [
-  ListMcpResourcesTool,
-  ReadMcpResourceTool,
-  ReadMcpResourceDirTool,
-] as const
+// A function, not a module-level array: the resource tools import this module,
+// so they are not initialized yet while it evaluates.
+function getMcpResourceTools() {
+  return [ListMcpResourcesTool, ReadMcpResourceTool, ReadMcpResourceDirTool]
+}
 
 /**
  * The resource helper tools carry no mcp__<server>__ prefix, so per-server
@@ -2628,9 +2628,10 @@ export function syncMcpResourceTools(
   clients: readonly MCPServerConnection[],
   tools: readonly Tool[],
 ): Tool[] {
+  const resourceTools = getMcpResourceTools()
   const serverTools = tools.filter(
     tool =>
-      !MCP_RESOURCE_TOOLS.some(resourceTool =>
+      !resourceTools.some(resourceTool =>
         toolMatchesName(tool, resourceTool.name),
       ),
   )
@@ -2641,7 +2642,7 @@ export function syncMcpResourceTools(
       getHostOwnedCodexAppsKind(client.config) !== 'plugins',
   )
   return supportsResources
-    ? [...serverTools, ...MCP_RESOURCE_TOOLS]
+    ? [...serverTools, ...resourceTools]
     : serverTools
 }
 
