@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { Notification } from '../context/notifications.js'
 import { Text } from '../ink.js'
 import { logForDebugging } from '../utils/debug.js'
+import { ESONHUGH_MARKETPLACE_NAME } from '../utils/plugins/esonhughMarketplace.js'
 import { checkAndInstallOfficialMarketplace } from '../utils/plugins/officialMarketplaceStartupCheck.js'
 import { useStartupNotification } from './notifs/useStartupNotification.js'
 
@@ -36,7 +37,7 @@ export function useOfficialMarketplaceNotification(): void {
         key: 'marketplace-installed',
         jsx: (
           <Text color="success">
-            ✓ Anthropic marketplace installed · /plugin to see available plugins
+            ✓ {ESONHUGH_MARKETPLACE_NAME} installed · /plugin to see available plugins
           </Text>
         ),
         priority: 'immediate',
@@ -48,7 +49,7 @@ export function useOfficialMarketplaceNotification(): void {
         key: 'marketplace-install-failed',
         jsx: (
           <Text color="warning">
-            Failed to install Anthropic marketplace · Will retry on next startup
+            Failed to install {ESONHUGH_MARKETPLACE_NAME} · Will retry on next startup
           </Text>
         ),
         priority: 'immediate',
