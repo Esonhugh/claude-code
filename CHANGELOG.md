@@ -1,8 +1,5 @@
 # 变更日志
 
-- 验收基础设施：新增 Darwin shared-slot 原生采集器，保持原 write/writev/NOCANCEL 及 errno；丢失、截断、来源或时序不明继续拒收。修复 native probe 的空 packet 收据和异常回收，新增 live CAS/循环复用与 partial/EFAULT 回归。21 项局部 probe 通过；完整无 ACK Ink/TTY/输入验收未闭合，不宣称 Mods/UI 发布通过。
-
-
 本文档记录基于 Claude Code `2.1.88` 恢复源码之后的本地变更。
 
 记录规则：
@@ -15,19 +12,98 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
-## 2026-10-07 - v2.1.280 - 未发布
-
+## 2026-10-18 - v2.1.292 - 未发布
 
 ### 版本状态
 
-- 未发布；汇总 2026-09-30 至 2026-10-13 的变更，本地构建版本保持 `2.1.280`。完整官方兼容与发布验收仍在进行。
+- 未发布；尚未打 tag，`release-validation` 发布门禁尚未执行。版本号 `2.1.292` 与本 fork 跟踪的官方基线一致，`Makefile VERSION` 与 README 候选版本同步为 `2.1.292`，`package.json` 保持 `0.0.0-dev`。
+- 汇总 `v2.1.219..cf50f5c`（截至 2026-10-18）的变更：原 `v2.1.280` 候选从未打 tag，其 2026-09-30 至 2026-10-13 的内容并入本条目；新增 2026-10-14 至 2026-10-17 的直接提交及 PR #5、#6、#8、#10、#11、#13、#14、#15。同一范围内下方 2026-09-15、2026-09-18、2026-09-19 三个未归版本条目保持原样，也属于本版本。
 
 ### 关联提交
 
-- 本轮原有 Mods 分组包含 `e3e0c8f`、`338d488`、`8ff3c3f`、`b325dd2`、`8a94a5a`、`3a4929d`、`d757015`、`5acd2a3`、`6f8d8da`、`e3b2ff1`、`0bb0e00`、`8059f4a`；邻近夹具修复与剩余测试覆盖分别提交。
-- 累计范围为 `v2.1.219..HEAD`；逐批提交与验证细节见[历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。
+- PR 合并提交：`6d96b73`（#5）、`b369eb8`（#6）生命周期审查；`5560c3d`（#8）MCP 准入与 Agent 权限模式；`7166e74`（#10）插件生命周期；`34d1599`（#13）MCP 完整性；`fd11faf`（#11）、`6a1cdbc`（#14）、`cf50f5c`（#15）Esonhugh-Marketplace。逐 PR 提交见[v2.1.292 详细记录](docs/archive/implementation-records/changelogs/2026-10-18-v2.1.292-details.md)。
+- 2026-10-14 至 2026-10-17 直接提交 `cbb28b0`..`fecf45f`（自动模式、模型目录、Workflow 语义、Channels、teammate mailbox、Mods Pane 交互、用量面板），列表同见上述详细记录。
+- 原 `v2.1.280` 阶段的 Mods 分组包含 `e3e0c8f`、`338d488`、`8ff3c3f`、`b325dd2`、`8a94a5a`、`3a4929d`、`d757015`、`5acd2a3`、`6f8d8da`、`e3b2ff1`、`0bb0e00`、`8059f4a`；邻近夹具修复与剩余测试覆盖分别提交。
+- 2026-09-30 至 2026-10-07 的逐批提交与验证细节见[v2.1.280 阶段历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。
 
 ### 变更内容
+
+#### 需要用户处理的行为变化
+
+- 插件选项与插件 MCP 的 `${user_config.*}` 值（`pluginConfigs`）只从用户设置、`--settings` 和托管设置读取；仓库 `.claude/settings.json` 中的 `pluginConfigs` 不再生效，需要时移到 `~/.claude/settings.json`。保存插件选项只写该插件条目，不再把合并后的 project/local 键（hooks、permissions、env）复制进用户设置。
+- 安装插件时按 manifest/marketplace 的 `defaultEnabled` 写入依赖闭包内各插件的启用状态：`defaultEnabled: false` 的插件安装后为禁用（已启用的依赖方需要它时除外），需要时用 `/plugin enable` 启用；内联插件没有显式设置时也遵循该字段。
+- Agent 声明的 `permissionMode` 对齐官方 2.1.292：父会话为 `bypassPermissions`、`acceptEdits` 或 `auto` 时不生效，声明 `bypassPermissions` 不再提升普通会话的权限；`bubble` 保留 plan/dontAsk 父会话的模式。spawn、runAgent 回退与 resume 共用这一规则，恢复的 Agent 模式同样钳制到父会话当前模式。
+- 存在企业 MCP 配置时跳过 Agent frontmatter 中的 MCP 服务器；其余情况遵循 `allowedMcpServers`/`deniedMcpServers` 与项目禁用，并拒绝保留名称及仅宿主可用的传输（sdk、IDE、claude.ai 代理）。
+- `CLAUDE_CODE_REMOTE` 改为真值判定，`0` 不再视为远程会话；`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC` 与 `DISABLE_TELEMETRY` 仍按变量是否存在判定（与官方及 `v2.1.219` 一致）。
+- Esonhugh-Marketplace 只在 `enabledPlugins` 引用它时声明（同官方 `claude-plugins-official` 的 fallback 声明方式），首次安装由交互式启动检查负责；删除后不会在下次启动被重新克隆，`CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL` 与启动检查的重试退避恢复生效，离线启动不再每次安装失败。
+- Esonhugh-Marketplace 自动安装状态改存 `~/.claude.json` 的 `esonhughMarketplaceAutoInstall*`，不再与官方 CLI 共用 `officialMarketplaceAutoInstall*`，两边不再互相跳过安装；升级后启动检查会按新键重新执行一次。
+- project/local 设置中的 `defaultMode: "auto"` 被忽略，只有 policy、用户和 flag 设置可授予自动模式；其他权限模式仍按设置层级生效。
+- Workflow 对齐官方 2.1.292 默认开启（Pro 计划除外），不再需要 `enableWorkflows: true`；可用 `disableWorkflows`、`CLAUDE_CODE_DISABLE_WORKFLOWS` 或 `CLAUDE_CODE_WORKFLOWS=0` 关闭，README 的 Workflow 章节列出全部方式。
+
+#### MCP
+
+- 按名称查找 MCP 配置时应用会话准入规则（企业独占、仅插件锁定、`.mcp.json` 批准、`allowedMcpServers`/`deniedMcpServers`）：`claude mcp get` 对待批准、已拒绝或已禁用的服务器显示状态而不启动；Agent 按名引用与 print 模式 reconnect/auth 不再连接未批准服务器；`mcp remove` 仍可清理已保存凭据。
+- `claude mcp get` 对省略 `type` 的 stdio 服务器显示 Type/Command/Args；未写 `type` 的 stdio 服务器退出时同样执行 SIGINT/SIGTERM/SIGKILL 回收，CLI 退出后不再残留子进程。
+- `tools/list`、`resources/list`、`prompts/list` 跟随 `nextCursor` 最多读取 20 页；配置接受 `type: "streamable-http"` 并按 http 处理。
+- `claude mcp serve` 不再声明 outputSchema，按输入 schema 校验参数，客户端取消时中止工具；`/mcp enable X`、`/mcp disable X` 对已处于目标状态的服务器提示 already enabled/disabled，不再反向切换。
+- MCP 配置文件按服务器逐项校验：无效条目带原因（`invalid_config`、`unknown_type`、`url_missing_type`）跳过，不再丢弃整个文件；`--mcp-config` 输出跳过警告，`claude mcp list` 显示被跳过的条目。
+- 服务器配置支持 `timeout`（单服务器工具超时，不小于 1000ms，优先于 `MCP_TOOL_TIMEOUT`）、服务器级 `alwaysLoad`、`oauth.scopes`（在 OAuth 流程中请求）与 `bareElicitationCapability`。
+- 新增 `claude mcp login <name>` 与 `claude mcp logout <name>`（支持 `--no-browser`），用于 HTTP/SSE 服务器并复用 `/mcp` 的 OAuth 流程；claude.ai connector 仍提示到 `/mcp` 处理。
+- `claude mcp list` 显示待批准和已禁用的项目服务器且不连接它们；`/mcp reconnect all` 重连失败及需要认证的服务器；`-p` 模式下 `/mcp` 输出状态摘要，控制操作与官方一样仅限交互模式。
+- Agent frontmatter 服务器使用 `agent` scope，与父会话 `--mcp-config` 配置相同的内联服务器不再共用并关闭父会话连接；并发 Agent 共用的内联连接改由最后结束的 Agent 关闭。
+- print 模式 `mcp_reconnect`、`mcp_toggle` 使用会话当前配置（来自设置文件的服务器除外），不再重复创建 client 和工具；`mcp_set_servers` 与 reconcile 按规范化前缀移除工具，名称含 `.` 或空格的服务器不再遗留工具。
+- 工具结果对齐官方 2.1.292：带 `structuredContent` 的结果保留图片和资源块，并在末尾追加 JSON 文本；`isError` 合并全部文本块与资源链接；资源工具在任一已连接服务器支持资源时只保留一份，重连后不再累积。
+- 客户端能力对齐官方 2.1.292：roots 包含附加工作目录并在目录变化时发送 `notifications/roots/list_changed`；声明 URL 模式 elicitation（主机名黑名单或 `bareElicitationCapability` 时为 `{}`，拒绝该字段的 Java SDK 服务器以 `{}` 重连一次）。
+- http 服务器的 initialize 收到非 JSON-RPC 的 4xx（401/403/429 除外）时回退旧 HTTP+SSE 传输；调用仍在连接中的服务器的工具时最多等待 min(连接超时, 10s)，不再立即报 "No such tool"。
+- 手动重连先解除旧 client 的 onclose，不再与自动重连并行而泄漏连接；被禁用、切换或配置变更取代的自动重连丢弃结果并关闭该连接，不覆盖较新的状态。
+
+#### 插件与 Marketplace
+
+- 新增 `--plugin-url <url>`（可重复，按空白拆分，同官方）为本次会话加载插件 ZIP：仅 http/https，30 秒超时，声明与实际大小上限 256 MiB，先写 `.part` 再改名进 0700 会话缓存，重新下载失败时复用上次归档，日志只记录 URL 的 origin 和 path；遵循 `NO_PROXY`，`disableSideloadFlags` 拒绝该参数，受限策略与 `--plugin-dir` 一样丢弃 URL 插件。
+- 插件加载按 local > project > user > managed 选择与当前会话相关的安装记录，不再采用共享 `installed_plugins.json` 中其他项目的过期项目级记录；project/local 安装（含启动时选择的安装）记录会话原始 cwd，`cd` 后安装的插件可以正常卸载。
+- `/reload-plugins` 先写 AppState 再让 Mods 重新投影运行时注册的 Agent，不再覆盖它们；禁用最后一个提供设置的插件时重置设置缓存；后台 marketplace 安装后运行完整加载器，新声明的 github/url 插件无需重启即可缓存；重载计数不含内置插件。
+- Marketplace 重新克隆先写入临时目录，成功后才替换，离线或远端不可达时保留现有克隆；`known_marketplaces.json` 在跨进程锁下合并写入，并发 autoupdate/add/remove 不再丢失或复活条目。
+- 已是最新版本的插件更新不再重建版本目录，同版本跨 scope 安装复用已有目录；自动更新按 marketplace 原始名称刷新，含大写字母的名称（包括 Esonhugh-Marketplace）恢复刷新，失败次数计入统计。
+- LSP 配置接受官方 `requestTimeout`（默认 60 秒，按请求生效）与 `diagnostics`（为 false 时忽略 publishDiagnostics），使用这些字段的插件不再被 schema 拒绝。
+- Esonhugh-Marketplace 插件的 hook 遥测按官方 marketplace 计数（名称比较改为大小写无关）；启动安装提示改为显示 Esonhugh-Marketplace，不再写作 "Anthropic marketplace"。
+
+#### Agent、任务与 Teams
+
+- 发往已终止或失败 owner 的子 Agent 通知改投主线程；owner 结束时只清理自身的非 Agent 通知，后台子 Agent 的结果保持排队；通知入队后才标记已通知，并发终态路径去重；Agent 通知与 Workflow 一样转义并限长。
+- 后台 Agent 结束时仍有待发的 SendMessage 文本，会再运行一轮投递（官方 stranded resume）；ESC 批量终止覆盖 parked owner，只报告实际终止的 Agent；子任务均已标记通知但没有结果的 parked owner 解除等待并报告完成。
+- 达到 `MAX_SUBAGENT_DEPTH` 的 Agent 不再获得 Agent 工具（调用时检查保留）；解析后的 `Agent(x, y)` 子集传入子上下文；只有 fork 子 Agent 向下传递 querySource；移除 worktree 时只清除 worktree 字段；transcript 无变化时跳过周期性摘要 fork。
+- 前后台续接为保留任务追加流式消息，后处理抛错时保持 completed，killed/failed 前刷新进度用量；恢复失败的 parked owner 获得结束时间与回收宽限期。
+- Team 文件改用异步锁写入，成员移除、模式同步与隐藏面板可以持久化，TeamDelete 不再因残留成员被拒；TaskStop 与 SDK `stop_task` 可以停止 in-process teammate；交互、`-p` 与 mailbox attachment 三条 shutdown_approved 路径统一结束 teammate 任务。
+- 任务收尾：bash 任务由 killTask 发出 SDK stopped 事件；Workflow 不再在 XML 通知之外重复发送 SDK `task_notification`；完成的后台主会话任务获得回收期限；Workflow 进度事件只保留最近 200 条；清空 mailbox 加锁，已读消息不再在每次轮询时重写。
+- teammate mailbox 写入失败不再视为已投递：spawn 写入初始指令失败即中止并关闭新面板，shutdown 与 plan 审批报告未发送，广播列出写入失败的收件人；resume 能找回内置 teammate 定义，并拒绝 resume 无法恢复的 teammate 名称。
+
+#### 启动、设置、Workflow 与 Mods
+
+- 移除 `main()` 提前注册的 SIGINT 处理器，Ctrl+C 进入 graceful shutdown，SessionEnd hook、清理注册表与 Mods 释放得以执行；`main()` 拒绝时以错误退出；退出时关闭 InteractiveTerminal PTY 会话。
+- CI/测试环境只在没有其他凭据来源（`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、OAuth token 文件或非一方 provider）时才要求 Anthropic 凭据，`claude -p` 不再因此挂起。
+- `/config` 修改默认权限模式只写 `defaultMode`，不再把 project/policy 的 allow/deny 规则复制进用户文件；"Use auto mode during plan" 显示运行时值，在策略或 flag 强制关闭时锁定；托管设置 `managedSourcesBehavior: "merge"` 对限制性键取最严格值。
+- 设置来源的 plan 默认模式在 planModeAvailable 关闭时降级为 default 并提示，不再拒绝启动；显式 `--permission-mode plan` 仍报错。
+- `/config teammateDefaultModel=<auto|inherit|model>` 与对话框写入相同值，拒绝选择器未列出的模型，行校验器在写入时执行；`workflowKeywordTriggerEnabled`、`skipWorkflowUsageWarning` 进入设置 schema，Dynamic workflows 行锁定为策略有效值。
+- Workflow 终态任务在结束时间加面板宽限期后回收；交互式 `/workflows` 合并已持久化的运行记录，回收后的运行仍可只读查看。
+- Workflow 启动只解析 meta 并编译脚本，不再预执行脚本体；失败的 `agent()` 返回 null 并列入完成通知的 `<failures>`，单次运行最多 1000 次 `agent()` 调用；resume 拒绝运行中或没有 journal 的运行。
+- Mods 热重载期间不释放替换激活仍在使用的 MCP 服务器，Worker 退出时释放；`tool.call` 只在调用源自用户本人交互时附加 `consent`；hook 外启动的模型调用随激活卸载中止；首次 bind 失败不再让 `receive()` 永久等待。
+- Mods `$.session.turns` 在 REPL、print 与 QueryEngine 共用计数；`$.env.set` 的写入随激活结束失效，拒绝重定向宿主凭据或向子进程注入代码的变量名；插件根目录轮询忽略 `node_modules`、`.git`。
+- Mods 在 session.start、plugin.register 中调用 `command.run`、`prompt.submit`，以及在 turn.start、turn.step、prompt.mention 中调用 `prompt.submit`，均改为拒绝而非死锁；turn.complete 中可以提交 prompt。
+- Mods Pane：点击未聚焦面板正文获取键盘焦点、点击外部释放；空 composer 且无对话框时 Escape 请求关闭未聚焦的可关闭面板；滚轮按 transcript 方式加速，重叠滚动按顺序应用。
+
+#### 权限、模型与 Channels
+
+- 自动模式对齐官方 2.1.292：Claude 登录与 API key 均可使用，移除 "Enable auto mode?" 确认，Shift+Tab 与 `--permission-mode auto` 直接进入，首次说明只显示一次；OpenAI 模式只在 ChatGPT OAuth 登录时以 "auto (Approve for me)" 提供；Claude 4.0 模型不进入自动模式。
+- Claude OAuth 下获取服务端模型目录（按组织缓存，失败时回退旧缓存），`/model` 与 `--model` 列出并接受目录模型，Default 跟随账户或组织默认模型；effort 符号改为官方 xHigh/Max 样式。
+- Channels 消息中的 `@path` 和 `@server:uri` 不再作为附件读取；内容中的闭合标签被转义，不能伪造其他来源的消息块。
+
+#### 已知缺口（本轮）
+
+- 已知缺口：Coordinator 模式不在默认构建中，需要构建时设置 `CLAUDE_CODE_RECOVER_FEATURES=COORDINATOR_MODE` 并在运行时设置 `CLAUDE_CODE_COORDINATOR_MODE=1`；MCP step-up 重新认证对话框、resource templates 与 completion、`mcp_tool` hooks、MCP Tasks、空闲超时、协议版本协商及 claude.ai connector 的 `mcp login` 仍未实现；前台 Agent 结束时待发的 SendMessage 仍会丢弃；headless 模式的非 sync 插件刷新尚未对齐；保留 marketplace 名称同时接受 anthropics 与 esonhugh 组织来源，此为有意保留。
+
+#### 原 v2.1.280 阶段（2026-09-30 至 2026-10-16）
+
+- 验收基础设施：新增 Darwin shared-slot 原生采集器，保持原 write/writev/NOCANCEL 及 errno；丢失、截断、来源或时序不明继续拒收。修复 native probe 的空 packet 收据和异常回收，新增 live CAS/循环复用与 partial/EFAULT 回归。21 项局部 probe 通过；完整无 ACK Ink/TTY/输入验收未闭合，不宣称 Mods/UI 发布通过。
 
 - 用量面板：对齐固定官方 2.1.292，读取 usage 接口 `limits[]` 中按模型划分的周窗口，在 `/usage` 的 Sonnet 行之后显示 `Current week (Fable)` 等允许列表内模型的用量；允许列表取 `tengu_usage_overage_included_models`，缺省为 Fable 系列，surface 行和其他模型不显示。响应头 `7d_oi` 窗口进入原始用量，`seven_day_overage_included` 限额文案为 `Fable limit`，SDK 限额类型同步。达到 Fable 限额后的 usage credits 确认对话仍未实现。
 - 终端选区：选区滚动、输入跟随与复制去重已合入；`$.ui.selection()` 读取当前选中文字，存在可确定的消息归属时附带 `requestId`，并保留已持有的 VM 回调。完整 terminal/diff/browser Client 生命周期仍未通过验收。
@@ -162,6 +238,12 @@
 - 原生验收对零写入观察新增原始 marker/全部 syscall 前缀证明和明确的 pre-layout 比较边界；实际输出事务与 resize 重叠继续拒收。专项修正官方 Button 点击后的键盘焦点前置，增加关闭位置往返；本地焦点差异及完整发布仍未通过。
 
 ### 测试覆盖
+
+- PR #5、#6、#8、#10、#11、#13、#14、#15：每项修复都有先在修复前失败、修复后通过的回归测试；PR #8 中断言旧 Agent 权限模式行为的测试按官方 2.1.292 预期更新。
+- 上述 PR 合并后，全量测试按文件隔离运行，剩余失败与合并前基线一致，未新增失败；`make release-check` 通过。
+- 每个 PR 均用新构建的 binary 与合并前 binary 做 scripted tmux A/B 交互验证；该验证按 PR 分别进行，不等同于完整发布门禁。
+- 2026-10-14 至 2026-10-17 的直接提交除 `8153447`、`3b0a568`、`d326fc5` 外均附带定向测试，结果以各提交为准，本条目不另作完整验收结论。
+- 尚未执行：`release-validation` 发布门禁，以及固定 Bun 1.3.14 下的测试；在其完成前不宣称发布验收通过。
 
 - 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。
 - 各提交在纯 HEAD 加候选补丁中通过类型检查、lint、对应测试及提交门禁。runner 的清理场景在真实子进程中连续五轮通过；相同成功/失败场景的三端 CLI 结果一致，候选清理范围更接近官方。
@@ -972,7 +1054,7 @@
 #### Coordinator 与 Agent 生命周期
 
 - Coordinator 主视图聚合递归子 Agent，支持 root、child、grandchild transcript 导航，并隔离 Workflow Agent 子树；Agent 行显示真实类型、description、焦点状态和运行中后代数量。
-- Coordinator 模式恢复内置 `worker` Agent，提供自主执行任务所需的工具、权限和运行轮次，并约束 Worker 的任务范围、子 Agent 派生、错误处理和结果汇报。
+- Coordinator 模式（受 `COORDINATOR_MODE` 构建特性控制，不在默认构建中）恢复内置 `worker` Agent，提供自主执行任务所需的工具、权限和运行轮次，并约束 Worker 的任务范围、子 Agent 派生、错误处理和结果汇报。
 - nested Agent 在父 Agent 仍运行时将终态 notification 路由到父 Agent；父 Agent 已结束、不存在或不可消费时回退主线程，避免结果在 Coordinator 上下文中重复展示。
 - Agent 结束时检查未匹配的 `tool_use`；工具调用尚未完成时进入 failed 状态，不再使用旧文本结果错误生成 completed 状态。
 
