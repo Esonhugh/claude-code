@@ -79,7 +79,7 @@ export function getAutoUpdatedPluginNames(): string[] {
 
 /**
  * Get the set of marketplaces that have autoUpdate enabled.
- * Returns the marketplace names that should be auto-updated.
+ * Returns the marketplace names, as registered, that should be auto-updated.
  */
 async function getAutoUpdateEnabledMarketplaces(): Promise<Set<string>> {
   const config = await loadKnownMarketplacesConfig()
@@ -94,7 +94,7 @@ async function getAutoUpdateEnabledMarketplaces(): Promise<Set<string>> {
         ? declaredAutoUpdate
         : isMarketplaceAutoUpdate(name, entry)
     if (autoUpdate) {
-      enabled.add(name.toLowerCase())
+      enabled.add(name)
     }
   }
 
@@ -240,33 +240,39 @@ export function autoUpdateMarketplacesAndPluginsInBackground(): void {
         return
       }
 
-      // Refresh only marketplaces with autoUpdate enabled
+      // Refresh only marketplaces with autoUpdate enabled. Refresh looks the
+      // marketplace up by its registered name, which may be mixed-case.
+      const marketplaceNames = Array.from(autoUpdateEnabledMarketplaces)
       const refreshResults = await Promise.allSettled(
-        Array.from(autoUpdateEnabledMarketplaces).map(async name => {
-          try {
-            await refreshMarketplace(name, undefined, {
-              disableCredentialHelper: true,
-            })
-          } catch (error) {
-            logForDebugging(
-              `Plugin autoupdate: failed to refresh marketplace ${name}: ${errorMessage(error)}`,
-              { level: 'warn' },
-            )
-          }
-        }),
+        marketplaceNames.map(name =>
+          refreshMarketplace(name, undefined, {
+            disableCredentialHelper: true,
+          }),
+        ),
       )
 
       // Log any refresh failures
-      const failures = refreshResults.filter(r => r.status === 'rejected')
-      if (failures.length > 0) {
+      let failureCount = 0
+      refreshResults.forEach((result, index) => {
+        if (result.status !== 'rejected') return
+        failureCount++
         logForDebugging(
-          `Plugin autoupdate: ${failures.length} marketplace refresh(es) failed`,
+          `Plugin autoupdate: failed to refresh marketplace ${marketplaceNames[index]}: ${errorMessage(result.reason)}`,
+          { level: 'warn' },
+        )
+      })
+      if (failureCount > 0) {
+        logForDebugging(
+          `Plugin autoupdate: ${failureCount} marketplace refresh(es) failed`,
           { level: 'warn' },
         )
       }
 
       logForDebugging('Plugin autoupdate: checking installed plugins')
-      const updatedPlugins = await updatePlugins(autoUpdateEnabledMarketplaces)
+      // Plugin ids are matched case-insensitively against marketplace names.
+      const updatedPlugins = await updatePlugins(
+        new Set(marketplaceNames.map(name => name.toLowerCase())),
+      )
 
       if (updatedPlugins.length > 0) {
         if (pluginUpdateCallback) {

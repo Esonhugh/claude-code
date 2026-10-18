@@ -34,9 +34,12 @@ import {
   toError,
 } from '../errors.js'
 import { execFileNoThrow, execFileNoThrowWithCwd } from '../execFileNoThrow.js'
+import { pathExists } from '../file.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
+import { lock } from '../lockfile.js'
 import { logError } from '../log.js'
+import { sequential } from '../sequential.js'
 import {
   getInitialSettings,
   getSettingsForSource,
@@ -93,6 +96,7 @@ import {
   PluginMarketplaceSchema,
   validateOfficialNameSource,
 } from './schemas.js'
+import { publishDirectory } from './stagingDirectory.js'
 
 /**
  * Result of loading and caching a marketplace
@@ -378,6 +382,59 @@ export async function saveKnownMarketplacesConfig(
 }
 
 /**
+ * Read known_marketplaces.json, apply `mutate` and save the result, under a
+ * lock shared with other processes and serialized within this one. Callers
+ * that ran slow work (clone, download) after an earlier read use this so they
+ * write only their own change instead of a stale snapshot that would drop
+ * entries other writers added or resurrect entries they removed.
+ *
+ * `mutate` returns false to skip the write.
+ */
+export const updateKnownMarketplacesConfig = sequential(
+  async (
+    mutate: (config: KnownMarketplacesConfig) => boolean | void,
+  ): Promise<void> => {
+    const configFile = getKnownMarketplacesFile()
+    await getFsImplementation().mkdir(dirname(configFile))
+    let release: (() => Promise<void>) | undefined
+    try {
+      release = await lock(configFile, {
+        lockfilePath: `${configFile}.lock`,
+        realpath: false,
+        retries: { retries: 5, minTimeout: 100, maxTimeout: 1000 },
+        onCompromised: error => {
+          logForDebugging(
+            `known_marketplaces.json lock compromised: ${errorMessage(error)}`,
+            { level: 'error' },
+          )
+        },
+      })
+    } catch (error) {
+      logForDebugging(
+        `Failed to acquire known_marketplaces.json lock, writing without it: ${errorMessage(error)}`,
+        { level: 'error' },
+      )
+    }
+    try {
+      const config = await loadKnownMarketplacesConfig()
+      if (mutate(config) === false) return
+      await saveKnownMarketplacesConfig(config)
+    } finally {
+      await release?.()
+    }
+  },
+)
+
+/** Stamp lastUpdated on an entry that still exists, without recreating it. */
+async function touchKnownMarketplace(name: string): Promise<void> {
+  await updateKnownMarketplacesConfig(latest => {
+    const entry = latest[name]
+    if (!entry) return false
+    latest[name] = { ...entry, lastUpdated: new Date().toISOString() }
+  })
+}
+
+/**
  * Register marketplaces from the read-only seed directories into the primary
  * known_marketplaces.json.
  *
@@ -409,11 +466,10 @@ export async function registerSeedMarketplaces(): Promise<boolean> {
   const seedDirs = getPluginSeedDirs()
   if (seedDirs.length === 0) return false
 
-  const primary = await loadKnownMarketplacesConfig()
   // First-seed-wins across this registration pass. Can't use the isEqual check
   // alone — two seeds with the same name will have different installLocations.
   const claimed = new Set<string>()
-  let changed = 0
+  const seedEntries: Array<[string, KnownMarketplace]> = []
 
   for (const seedDir of seedDirs) {
     const seedConfig = await readSeedKnownMarketplaces(seedDir)
@@ -437,13 +493,22 @@ export async function registerSeedMarketplaces(): Promise<boolean> {
       }
       claimed.add(name)
 
-      const desired: KnownMarketplace = {
-        source: seedEntry.source,
-        installLocation: resolvedLocation,
-        lastUpdated: seedEntry.lastUpdated,
-        autoUpdate: false,
-      }
+      seedEntries.push([
+        name,
+        {
+          source: seedEntry.source,
+          installLocation: resolvedLocation,
+          lastUpdated: seedEntry.lastUpdated,
+          autoUpdate: false,
+        },
+      ])
+    }
+  }
+  if (seedEntries.length === 0) return false
 
+  let changed = 0
+  await updateKnownMarketplacesConfig(primary => {
+    for (const [name, desired] of seedEntries) {
       // Skip if primary already matches — idempotent no-op, no write.
       if (isEqual(primary[name], desired)) continue
 
@@ -451,10 +516,10 @@ export async function registerSeedMarketplaces(): Promise<boolean> {
       primary[name] = desired
       changed++
     }
-  }
+    return changed > 0
+  })
 
   if (changed > 0) {
-    await saveKnownMarketplacesConfig(primary)
     logForDebugging(`Synced ${changed} marketplace(s) from seed dir(s)`)
     return true
   }
@@ -1051,7 +1116,7 @@ function safeCallProgress(
  *
  * Runs before gitPull to handle transitions:
  * - Full→Sparse or SparseA→SparseB: run `sparse-checkout set --cone` (idempotent)
- * - Sparse→Full: return non-zero so caller falls back to rm+reclone. Avoids
+ * - Sparse→Full: return non-zero so caller falls back to a re-clone. Avoids
  *   `sparse-checkout disable` on a --filter=blob:none partial clone, which would
  *   trigger a lazy fetch of every blob in the monorepo.
  * - Full→Full (common case): single local `git config --get` check, no-op.
@@ -1093,7 +1158,8 @@ export async function reconcileSparseCheckout(
  *
  * Clones or updates a git repository containing marketplace data.
  * If the repository already exists at cachePath, pulls the latest changes.
- * If pulling fails, removes the directory and re-clones.
+ * If pulling fails, re-clones into a staging directory and replaces cachePath
+ * only when the clone succeeds; a failed clone keeps the existing directory.
  *
  * Example repository structure:
  * ```
@@ -1117,8 +1183,6 @@ async function cacheMarketplaceFromGit(
   onProgress?: MarketplaceProgressCallback,
   options?: { disableCredentialHelper?: boolean },
 ): Promise<void> {
-  const fs = getFsImplementation()
-
   // Attempt incremental update; fall back to re-clone if the repo is absent,
   // stale, or otherwise not updatable. Using pull-first avoids a stat-before-operate
   // TOCTOU check: gitPull returns non-zero when cachePath is missing or has no .git.
@@ -1130,7 +1194,7 @@ async function cacheMarketplaceFromGit(
 
   // Reconcile sparse-checkout config before pulling. If this requires a re-clone
   // (Sparse→Full transition) or fails (missing dir, not a repo), skip straight
-  // to the rm+clone fallback.
+  // to the clone fallback.
   const reconcileResult = await reconcileSparseCheckout(cachePath, sparsePaths)
   if (reconcileResult.code === 0) {
     const pullStarted = performance.now()
@@ -1155,53 +1219,31 @@ async function cacheMarketplaceFromGit(
     )
   }
 
-  try {
-    await fs.rm(cachePath, { recursive: true })
-    // rm succeeded — a stale or partially-cloned directory existed; log for diagnostics
-    logForDebugging(
-      `Found stale marketplace directory at ${cachePath}, cleaning up to allow re-clone`,
-      { level: 'warn' },
-    )
-    safeCallProgress(
-      onProgress,
-      'Found stale directory, cleaning up and re-cloning…',
-    )
-  } catch (rmError) {
-    if (!isENOENT(rmError)) {
-      const rmErrorMsg = errorMessage(rmError)
-      throw new Error(
-        `Failed to clean up existing marketplace directory. Please manually delete the directory at ${cachePath} and try again.\n\nTechnical details: ${rmErrorMsg}`,
-      )
-    }
-    // ENOENT — cachePath didn't exist, this is a fresh install, nothing to clean up
-  }
-
-  // Clone the repository (one attempt — no internal retry loop)
+  // Clone the repository (one attempt — no internal retry loop) into a sibling
+  // staging directory. Any existing directory (a stale or partial clone, or a
+  // working clone whose remote is unreachable) is replaced only after the new
+  // clone succeeds, so a failed refresh never loses the cached marketplace.
   const refMessage = ref ? ` (ref: ${ref})` : ''
   safeCallProgress(
     onProgress,
     `Cloning repository (timeout: ${timeoutSec}s): ${redactUrlCredentials(gitUrl)}${refMessage}`,
   )
-  const cloneStarted = performance.now()
-  const result = await gitClone(gitUrl, cachePath, ref, sparsePaths)
-  logPluginFetch(
-    'marketplace_clone',
-    gitUrl,
-    result.code === 0 ? 'success' : 'failure',
-    performance.now() - cloneStarted,
-    result.code === 0 ? undefined : classifyFetchError(result.stderr),
-  )
-  if (result.code !== 0) {
-    // Clean up any partial directory created by the failed clone so the next
-    // attempt starts fresh. Best-effort: if this fails, the stale dir will be
-    // auto-detected and removed at the top of the next call.
-    try {
-      await fs.rm(cachePath, { recursive: true, force: true })
-    } catch {
-      // ignore
+  await publishDirectory(cachePath, async stagingPath => {
+    const cloneStarted = performance.now()
+    const result = await gitClone(gitUrl, stagingPath, ref, sparsePaths)
+    logPluginFetch(
+      'marketplace_clone',
+      gitUrl,
+      result.code === 0 ? 'success' : 'failure',
+      performance.now() - cloneStarted,
+      result.code === 0 ? undefined : classifyFetchError(result.stderr),
+    )
+    if (result.code !== 0) {
+      throw new Error(
+        `Failed to clone marketplace repository: ${result.stderr}`,
+      )
     }
-    throw new Error(`Failed to clone marketplace repository: ${result.stderr}`)
-  }
+  })
   safeCallProgress(onProgress, 'Clone complete, validating marketplace…')
 }
 
@@ -1497,7 +1539,10 @@ async function loadAndCacheMarketplace(
         const sshUrl = `git@github.com:${source.repo}.git`
         const httpsUrl = `https://github.com/${source.repo}.git`
         temporaryCachePath = join(cacheDir, tempName)
-        cleanupNeeded = true
+        // The fetch path can already hold this marketplace's live clone (repo
+        // "owner/name" for a marketplace named "owner-name"); a failed fetch
+        // must not delete it.
+        cleanupNeeded = !(await pathExists(temporaryCachePath))
 
         let lastError: Error | null = null
 
@@ -1533,7 +1578,9 @@ async function loadAndCacheMarketplace(
             )
 
             // Clean up failed SSH attempt if it created anything
-            await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            if (cleanupNeeded) {
+              await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            }
 
             // Try HTTPS
             try {
@@ -1592,7 +1639,9 @@ async function loadAndCacheMarketplace(
             )
 
             // Clean up failed HTTPS attempt if it created anything
-            await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            if (cleanupNeeded) {
+              await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            }
 
             // Try SSH
             try {
@@ -1939,12 +1988,13 @@ export async function addMarketplaceSource(
   }
 
   // Update config using the marketplace's actual name
-  config[marketplace.name] = {
-    source: resolvedSource,
-    installLocation: cachePath,
-    lastUpdated: new Date().toISOString(),
-  }
-  await saveKnownMarketplacesConfig(config)
+  await updateKnownMarketplacesConfig(latest => {
+    latest[marketplace.name] = {
+      source: resolvedSource,
+      installLocation: cachePath,
+      lastUpdated: new Date().toISOString(),
+    }
+  })
 
   logForDebugging(`Added marketplace source: ${marketplace.name}`)
 
@@ -1983,8 +2033,9 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
   }
 
   // Remove from config
-  delete config[name]
-  await saveKnownMarketplacesConfig(config)
+  await updateKnownMarketplacesConfig(latest => {
+    delete latest[name]
+  })
 
   // Clean up cached files (both directory and JSON formats)
   const fs = getFsImplementation()
@@ -2198,8 +2249,7 @@ export const getMarketplace = memoize(
     }
 
     // Update lastUpdated only when we actually fetch
-    config[name]!.lastUpdated = new Date().toISOString()
-    await saveKnownMarketplacesConfig(config)
+    await touchKnownMarketplace(name)
 
     return marketplace
   },
@@ -2323,6 +2373,7 @@ export async function getPluginById(pluginId: string): Promise<{
  */
 export async function refreshAllMarketplaces(): Promise<void> {
   const config = await loadKnownMarketplacesConfig()
+  const refreshed = new Map<string, Partial<KnownMarketplace>>()
 
   for (const [name, entry] of Object.entries(config)) {
     // Seed-managed marketplaces are controlled by the seed image — refreshing
@@ -2345,7 +2396,7 @@ export async function refreshAllMarketplaces(): Promise<void> {
         getMarketplacesCacheDir(),
       )
       if (sha !== null) {
-        config[name]!.lastUpdated = new Date().toISOString()
+        refreshed.set(name, { lastUpdated: new Date().toISOString() })
         continue
       }
       if (
@@ -2363,8 +2414,10 @@ export async function refreshAllMarketplaces(): Promise<void> {
     }
     try {
       const { cachePath } = await loadAndCacheMarketplace(entry.source)
-      config[name]!.lastUpdated = new Date().toISOString()
-      config[name]!.installLocation = cachePath
+      refreshed.set(name, {
+        lastUpdated: new Date().toISOString(),
+        installLocation: cachePath,
+      })
     } catch (error) {
       logForDebugging(
         `Failed to refresh marketplace ${name}: ${errorMessage(error)}`,
@@ -2375,7 +2428,11 @@ export async function refreshAllMarketplaces(): Promise<void> {
     }
   }
 
-  await saveKnownMarketplacesConfig(config)
+  await updateKnownMarketplacesConfig(latest => {
+    for (const [name, update] of refreshed) {
+      if (latest[name]) latest[name] = { ...latest[name], ...update }
+    }
+  })
 }
 
 /**
@@ -2463,8 +2520,7 @@ export async function refreshMarketplace(
         getMarketplacesCacheDir(),
       )
       if (sha !== null) {
-        config[name] = { ...entry, lastUpdated: new Date().toISOString() }
-        await saveKnownMarketplacesConfig(config)
+        await touchKnownMarketplace(name)
         return
       }
       // GCS failed — fall through to git ONLY if the kill-switch allows.
@@ -2589,8 +2645,7 @@ export async function refreshMarketplace(
     }
 
     // Update lastUpdated timestamp
-    config[name]!.lastUpdated = new Date().toISOString()
-    await saveKnownMarketplacesConfig(config)
+    await touchKnownMarketplace(name)
 
     logForDebugging(`Successfully refreshed marketplace: ${name}`)
   } catch (error) {
@@ -2642,11 +2697,11 @@ export async function setMarketplaceAutoUpdate(
     return
   }
 
-  config[name] = {
-    ...entry,
-    autoUpdate,
-  }
-  await saveKnownMarketplacesConfig(config)
+  await updateKnownMarketplacesConfig(latest => {
+    const current = latest[name]
+    if (!current) return false
+    latest[name] = { ...current, autoUpdate }
+  })
 
   // Also update intent in settings if declared there — write to the SAME
   // source that declared it to avoid creating duplicates at wrong scope

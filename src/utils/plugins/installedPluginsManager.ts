@@ -50,7 +50,6 @@ type InstalledPluginsMapV2 = Record<string, PluginInstallationEntry[]>
 export type PersistableScope = Exclude<PluginScope, never> // All scopes are persistable in the schema
 
 import { getOriginalCwd } from '../../bootstrap/state.js'
-import { getCwd } from '../cwd.js'
 import { getHeadForDir } from '../git/gitFilesystem.js'
 import type { EditableSettingSource } from '../settings/constants.js'
 import {
@@ -1419,7 +1418,7 @@ export async function migrateFromEnabledPlugins(): Promise<void> {
   )
 
   const now = new Date().toISOString()
-  const projectPath = getCwd()
+  const projectPath = getOriginalCwd()
 
   // Step 1: Build a map of pluginId -> scope from all settings.json files
   // Settings.json is the source of truth for scope

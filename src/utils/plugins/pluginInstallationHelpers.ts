@@ -7,15 +7,15 @@
 
 import { rename, rm } from 'fs/promises'
 import { resolve, sep } from 'path'
+import { getOriginalCwd } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
 } from '../../services/analytics/index.js'
-import { getCwd } from '../cwd.js'
 import { logForDebugging } from '../debug.js'
 import { getErrnoCode, toError } from '../errors.js'
-import { writeFileSyncAndFlush_DEPRECATED } from '../file.js'
+import { pathExists, writeFileSyncAndFlush_DEPRECATED } from '../file.js'
 import { resetSettingsCache } from '../settings/settingsCache.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
@@ -136,7 +136,8 @@ export async function cacheAndRegisterPlugin(
   projectPath?: string,
   localSourcePath?: string,
 ): Promise<string> {
-  const collision = findPluginFolderCollision([pluginId], loadInstalledPluginsFromDisk().plugins)
+  const installedPlugins = loadInstalledPluginsFromDisk().plugins
+  const collision = findPluginFolderCollision([pluginId], installedPlugins)
   if (collision) throw new PluginFolderCollisionError(collision, pluginId)
   const source: PluginSource =
     typeof entry.source === 'string' && localSourcePath
@@ -167,12 +168,23 @@ export async function cacheAndRegisterPlugin(
     const zipPath = isPluginZipCacheEnabled()
       ? getVersionedZipCachePath(pluginId, version)
       : undefined
-    await publishDirectory(
-      versionedPath,
-      staging => rename(cached.path, staging),
-      zipPath,
+    const publishedPath = zipPath ?? versionedPath
+    // Another scope's installation of this version may be in use by a running
+    // session; reuse its tree instead of replacing it. Reinstalling at the
+    // same scope still republishes.
+    const sharedWithOtherInstall = (installedPlugins[pluginId] ?? []).some(
+      inst =>
+        inst.installPath === publishedPath &&
+        !(inst.scope === scope && inst.projectPath === projectPath),
     )
-    finalPath = zipPath ?? versionedPath
+    if (!sharedWithOtherInstall || !(await pathExists(publishedPath))) {
+      await publishDirectory(
+        versionedPath,
+        staging => rename(cached.path, staging),
+        zipPath,
+      )
+    }
+    finalPath = publishedPath
     addInstalledPlugin(
       pluginId,
       {
@@ -455,7 +467,8 @@ export async function installResolvedPlugin({
     members.push({ id, entry: info.entry, localSourcePath })
   }
 
-  const projectPath = scope !== 'user' ? getCwd() : undefined
+  // Same project key that uninstall, update and relevance checks match on.
+  const projectPath = scope !== 'user' ? getOriginalCwd() : undefined
   for (const member of members) {
     await cacheAndRegisterPlugin(
       member.id,

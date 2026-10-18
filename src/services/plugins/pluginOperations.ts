@@ -1098,8 +1098,9 @@ async function performPluginUpdate({
       installation.installPath === versionedPath ||
       installation.installPath === zipPath
     if (isUpToDate) {
-      // Old interrupted updates can have a recorded version with incomplete
-      // contents. Rebuild the canonical cache from the resolved source.
+      // Leave a cached version that is already present alone: a running
+      // session may be reading it. Only restore it when it is missing or
+      // empty, e.g. after the cache was cleaned out from under the record.
       if (
         installation.installPath === versionedPath ||
         installation.installPath === zipPath
@@ -1109,8 +1110,6 @@ async function performPluginUpdate({
           pluginId,
           newVersion,
           entry,
-          undefined,
-          { replaceExisting: true },
         )
       }
       return {
