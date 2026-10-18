@@ -14,6 +14,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import {
   StreamableHTTPClientTransport,
   type StreamableHTTPClientTransportOptions,
+  StreamableHTTPError,
 } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import {
   createFetchWithInit,
@@ -27,6 +28,7 @@ import {
   type ElicitResult,
   ErrorCode,
   type JSONRPCMessage,
+  JSONRPCMessageSchema,
   type ListPromptsResult,
   ListPromptsResultSchema,
   type ListResourcesResult,
@@ -42,7 +44,12 @@ import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
-import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
+import { pathToFileURL } from 'url'
+import {
+  getAdditionalDirectoriesForClaudeMd,
+  getOriginalCwd,
+  getSessionId,
+} from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { PRODUCT_URL } from '../../constants/product.js'
@@ -75,6 +82,7 @@ import {
 import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
+import { safeParseJSON } from '../../utils/json.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import {
   getBinaryBlobSavedMessage,
@@ -107,6 +115,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import {
   type ElicitationWaitingState,
   runElicitationHooks,
@@ -162,7 +171,9 @@ import { SdkControlClientTransport } from './SdkControlTransport.js'
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
+  McpHTTPServerConfig,
   McpSdkServerConfig,
+  McpSSEServerConfig,
   ScopedMcpServerConfig,
   ServerResource,
 } from './types.js'
@@ -510,8 +521,161 @@ const IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ])
 
-function getConnectionTimeoutMs(): number {
+export function getConnectionTimeoutMs(): number {
   return parseInt(process.env.MCP_TIMEOUT || '', 10) || 30000
+}
+
+// Clients that completed initialize and have not closed; they receive
+// notifications/roots/list_changed.
+const liveMcpClients = new Set<Client>()
+// Additional working directories reported in roots/list. Published by
+// notifyMcpRootsListChanged when the permission context changes; until then
+// the --add-dir directories from startup apply.
+let mcpRootsAdditionalDirectories: readonly string[] | undefined
+
+function getMcpRoots(): { roots: Array<{ uri: string }> } {
+  const additionalDirectories =
+    mcpRootsAdditionalDirectories ?? getAdditionalDirectoriesForClaudeMd()
+  const directories = [getOriginalCwd(), ...additionalDirectories]
+  const uris = new Set(directories.map(dir => pathToFileURL(dir).href))
+  return { roots: [...uris].map(uri => ({ uri })) }
+}
+
+export function notifyMcpRootsListChanged(
+  additionalDirectories: readonly string[],
+): void {
+  mcpRootsAdditionalDirectories = additionalDirectories
+  for (const client of liveMcpClients) {
+    client.sendRootsListChanged().catch(error => {
+      logForDebugging(
+        `MCP: failed to send roots/list_changed: ${errorMessage(error)}`,
+      )
+    })
+  }
+}
+
+// Java MCP SDK <= 0.17.0 (Spring AI) has a field-less
+// ClientCapabilities.Elicitation class and rejects {form, url} at initialize.
+const LEGACY_ELICITATION_REJECTION =
+  /Unrecognized field \\?"(?:form|url)\\?" \(class [\w.$]*ClientCapabilities\$Elicitation\)/
+
+function isUrlElicitationDenylisted(
+  serverRef: ScopedMcpServerConfig,
+): boolean {
+  const denylist = getFeatureValue_CACHED_MAY_BE_STALE<unknown>(
+    'tengu_mcp_legacy_url_elicitation_server_denylist',
+    [],
+  )
+  if (!Array.isArray(denylist) || denylist.length === 0) return false
+  if (denylist.includes('*')) return true
+  if (!('url' in serverRef) || typeof serverRef.url !== 'string') return false
+  try {
+    const hostname = new URL(serverRef.url).hostname.toLowerCase()
+    return denylist.some(entry => {
+      if (typeof entry !== 'string' || entry === '') return false
+      const host = entry.toLowerCase()
+      return hostname === host || hostname.endsWith(`.${host}`)
+    })
+  } catch {
+    return false
+  }
+}
+
+function getMcpClientCapabilities(
+  serverRef: ScopedMcpServerConfig,
+  bareElicitation: boolean,
+) {
+  const capabilities = { roots: { listChanged: true }, elicitation: {} }
+  const type = serverRef.type
+  if (
+    bareElicitation ||
+    !getFeatureValue_CACHED_MAY_BE_STALE(
+      'tengu_mcp_legacy_url_elicitation',
+      true,
+    ) ||
+    !getFeatureValue_CACHED_MAY_BE_STALE('tengu_mcp_url_elicitation', true) ||
+    !(
+      type === undefined ||
+      type === 'stdio' ||
+      type === 'sse' ||
+      type === 'http' ||
+      type === 'ws'
+    ) ||
+    ('bareElicitationCapability' in serverRef &&
+      serverRef.bareElicitationCapability === true) ||
+    isUrlElicitationDenylisted(serverRef)
+  ) {
+    return capabilities
+  }
+  return { ...capabilities, elicitation: { form: {}, url: {} } }
+}
+
+const POST_ERROR_PREFIX = 'Streamable HTTP error: Error POSTing to endpoint: '
+
+function getPostErrorBody(error: StreamableHTTPError): string | undefined {
+  return error.message.startsWith(POST_ERROR_PREFIX)
+    ? error.message.slice(POST_ERROR_PREFIX.length)
+    : undefined
+}
+
+function isElicitationCapabilityRejection(error: unknown): boolean {
+  if (
+    (error instanceof McpError || error instanceof StreamableHTTPError) &&
+    LEGACY_ELICITATION_REJECTION.test(error.message)
+  ) {
+    return true
+  }
+  if (!(error instanceof StreamableHTTPError) || error.code !== 400) {
+    return false
+  }
+  // Java's HTTP transports answer 400 with a serialized exception instead.
+  const body = getPostErrorBody(error)
+  if (body === undefined || body.length > 262144) return false
+  const parsed = safeParseJSON(body, false) as {
+    message?: unknown
+    stackTrace?: unknown
+  } | null
+  return (
+    parsed?.message === 'Invalid message format' &&
+    Array.isArray(parsed.stackTrace) &&
+    parsed.stackTrace.some(
+      frame =>
+        typeof frame?.className === 'string' &&
+        frame.className.startsWith('io.modelcontextprotocol.server.transport.'),
+    )
+  )
+}
+
+// A 4xx answer to the initialize POST that is not a JSON-RPC message means the
+// endpoint does not speak Streamable HTTP; it may be a legacy HTTP+SSE server.
+function isLegacySseFallbackError(
+  error: unknown,
+): error is StreamableHTTPError {
+  if (!(error instanceof StreamableHTTPError) || error.code === undefined) {
+    return false
+  }
+  const status = error.code
+  if (
+    status < 400 ||
+    status >= 500 ||
+    status === 401 ||
+    status === 403 ||
+    status === 429
+  ) {
+    return false
+  }
+  const body = getPostErrorBody(error)
+  if (body === undefined) return true
+  const dataLine = body.split(/\r?\n/).find(line => line.startsWith('data:'))
+  const parsed = safeParseJSON(
+    dataLine === undefined ? body : dataLine.slice(5),
+    false,
+  )
+  const message =
+    parsed && typeof parsed === 'object' && 'id' in parsed && parsed.id === null
+      ? { ...parsed, id: undefined }
+      : parsed
+  return !JSONRPCMessageSchema.safeParse(message).success
 }
 
 /**
@@ -643,6 +807,67 @@ export function getServerCacheKey(
   return `${name}-${trust}-${jsonStringify(serverRef)}`
 }
 
+// Also used for the legacy HTTP+SSE fallback of `http` servers.
+async function createSSETransport(
+  name: string,
+  serverRef: McpSSEServerConfig | McpHTTPServerConfig,
+): Promise<SSEClientTransport> {
+  // Create an auth provider for this server
+  const authProvider = new ClaudeAuthProvider(name, serverRef)
+
+  // Get combined headers (static + dynamic)
+  const combinedHeaders = await getMcpServerHeaders(name, serverRef)
+
+  // Use the auth provider with SSEClientTransport
+  const transportOptions: SSEClientTransportOptions = {
+    authProvider,
+    // Use fresh timeout per request to avoid stale AbortSignal bug.
+    // Step-up detection wraps innermost so the 403 is seen before the
+    // SDK's handler calls auth() → tokens().
+    fetch: wrapFetchWithTimeout(
+      wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
+    ),
+    requestInit: {
+      headers: {
+        'User-Agent': getMCPUserAgent(),
+        ...combinedHeaders,
+      },
+    },
+  }
+
+  // IMPORTANT: Always set eventSourceInit with a fetch that does NOT use the
+  // timeout wrapper. The EventSource connection is long-lived (stays open indefinitely
+  // to receive server-sent events), so applying a 60-second timeout would kill it.
+  // The timeout is only meant for individual API requests (POST, auth refresh), not
+  // the persistent SSE stream.
+  transportOptions.eventSourceInit = {
+    fetch: async (url: string | URL, init?: RequestInit) => {
+      // Get auth headers from the auth provider
+      const authHeaders: Record<string, string> = {}
+      const tokens = await authProvider.tokens()
+      if (tokens) {
+        authHeaders.Authorization = `Bearer ${tokens.access_token}`
+      }
+
+      const proxyOptions = getProxyFetchOptions()
+      // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
+      return fetch(url, {
+        ...init,
+        ...proxyOptions,
+        headers: {
+          'User-Agent': getMCPUserAgent(),
+          ...authHeaders,
+          ...init?.headers,
+          ...combinedHeaders,
+          Accept: 'text/event-stream',
+        },
+      })
+    },
+  }
+
+  return new SSEClientTransport(new URL(serverRef.url), transportOptions)
+}
+
 /**
  * TODO (ollie): The memoization here increases complexity by a lot, and im not sure it really improves performance
  * Attempts to connect to a single MCP server
@@ -662,6 +887,9 @@ export const connectToServer = memoize(
       sseIdeCount: number
       wsIdeCount: number
     },
+    // Internal: set on the single reconnect after a server rejected the
+    // {form, url} elicitation capability at initialize.
+    options: { bareElicitation?: boolean } = {},
   ): Promise<MCPServerConnection> => {
     const connectStartTime = Date.now()
     let inProcessServer:
@@ -678,63 +906,7 @@ export const connectToServer = memoize(
         transport = createCodexAppsTransport(serverRef)
         logMCPDebug(name, `Host-owned Codex Apps transport initialized`)
       } else if (serverRef.type === 'sse') {
-        // Create an auth provider for this server
-        const authProvider = new ClaudeAuthProvider(name, serverRef)
-
-        // Get combined headers (static + dynamic)
-        const combinedHeaders = await getMcpServerHeaders(name, serverRef)
-
-        // Use the auth provider with SSEClientTransport
-        const transportOptions: SSEClientTransportOptions = {
-          authProvider,
-          // Use fresh timeout per request to avoid stale AbortSignal bug.
-          // Step-up detection wraps innermost so the 403 is seen before the
-          // SDK's handler calls auth() → tokens().
-          fetch: wrapFetchWithTimeout(
-            wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
-          ),
-          requestInit: {
-            headers: {
-              'User-Agent': getMCPUserAgent(),
-              ...combinedHeaders,
-            },
-          },
-        }
-
-        // IMPORTANT: Always set eventSourceInit with a fetch that does NOT use the
-        // timeout wrapper. The EventSource connection is long-lived (stays open indefinitely
-        // to receive server-sent events), so applying a 60-second timeout would kill it.
-        // The timeout is only meant for individual API requests (POST, auth refresh), not
-        // the persistent SSE stream.
-        transportOptions.eventSourceInit = {
-          fetch: async (url: string | URL, init?: RequestInit) => {
-            // Get auth headers from the auth provider
-            const authHeaders: Record<string, string> = {}
-            const tokens = await authProvider.tokens()
-            if (tokens) {
-              authHeaders.Authorization = `Bearer ${tokens.access_token}`
-            }
-
-            const proxyOptions = getProxyFetchOptions()
-            // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-            return fetch(url, {
-              ...init,
-              ...proxyOptions,
-              headers: {
-                'User-Agent': getMCPUserAgent(),
-                ...authHeaders,
-                ...init?.headers,
-                ...combinedHeaders,
-                Accept: 'text/event-stream',
-              },
-            })
-          },
-        }
-
-        transport = new SSEClientTransport(
-          new URL(serverRef.url),
-          transportOptions,
-        )
+        transport = await createSSETransport(name, serverRef)
         logMCPDebug(name, `SSE transport initialized, awaiting connection`)
       } else if (serverRef.type === 'sse-ide') {
         logMCPDebug(name, `Setting up SSE-IDE transport to ${serverRef.url}`)
@@ -1049,40 +1221,34 @@ export const connectToServer = memoize(
         }
       }
 
-      const client = new Client(
-        {
-          name: 'claude-code',
-          title: 'Claude Code',
-          version: MACRO.VERSION ?? 'unknown',
-          description: "Anthropic's agentic coding tool",
-          websiteUrl: PRODUCT_URL,
-        },
-        {
-          capabilities: {
-            roots: {},
-            // Empty object declares the capability. Sending {form:{},url:{}}
-            // breaks Java MCP SDK servers (Spring AI) whose Elicitation class
-            // has zero fields and fails on unknown properties.
-            elicitation: {},
+      const createClient = () => {
+        const newClient = new Client(
+          {
+            name: 'claude-code',
+            title: 'Claude Code',
+            version: MACRO.VERSION ?? 'unknown',
+            description: "Anthropic's agentic coding tool",
+            websiteUrl: PRODUCT_URL,
           },
-        },
-      )
+          {
+            capabilities: getMcpClientCapabilities(
+              serverRef,
+              options.bareElicitation === true,
+            ),
+          },
+        )
+        newClient.setRequestHandler(ListRootsRequestSchema, async () => {
+          logMCPDebug(name, `Received ListRoots request from server`)
+          return getMcpRoots()
+        })
+        return newClient
+      }
+      let client = createClient()
 
       // Add debug logging for client events if available
       if (serverRef.type === 'http') {
         logMCPDebug(name, `Client created, setting up request handler`)
       }
-
-      client.setRequestHandler(ListRootsRequestSchema, async () => {
-        logMCPDebug(name, `Received ListRoots request from server`)
-        return {
-          roots: [
-            {
-              uri: `file://${getOriginalCwd()}`,
-            },
-          ],
-        }
-      })
 
       // Add a timeout to connection attempts to prevent tests from hanging indefinitely
       logMCPDebug(
@@ -1112,42 +1278,87 @@ export const connectToServer = memoize(
         }
       }
 
-      if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
-        prepareChannelTransport(transport)
-      }
-      const connectPromise = client.connect(transport)
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        const timeoutId = setTimeout(() => {
-          const elapsed = Date.now() - connectStartTime
-          logMCPDebug(
-            name,
-            `Connection timeout triggered after ${elapsed}ms (limit: ${getConnectionTimeoutMs()}ms)`,
-          )
-          if (inProcessServer) {
-            inProcessServer.close().catch(() => {})
-          }
-          transport.close().catch(() => {})
-          reject(
-            new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" connection timed out after ${getConnectionTimeoutMs()}ms`,
-              'MCP connection timeout',
-            ),
-          )
-        }, getConnectionTimeoutMs())
+      const connectWithTimeout = (timeoutMs: number) => {
+        if (feature('KAIROS') || feature('KAIROS_CHANNELS')) {
+          prepareChannelTransport(transport)
+        }
+        const connectPromise = client.connect(transport)
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          const timeoutId = setTimeout(() => {
+            const elapsed = Date.now() - connectStartTime
+            logMCPDebug(
+              name,
+              `Connection timeout triggered after ${elapsed}ms (limit: ${getConnectionTimeoutMs()}ms)`,
+            )
+            if (inProcessServer) {
+              inProcessServer.close().catch(() => {})
+            }
+            transport.close().catch(() => {})
+            reject(
+              new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+                `MCP server "${name}" connection timed out after ${getConnectionTimeoutMs()}ms`,
+                'MCP connection timeout',
+              ),
+            )
+          }, timeoutMs)
 
-        // Clean up timeout if connect resolves or rejects
-        connectPromise.then(
-          () => {
-            clearTimeout(timeoutId)
-          },
-          _error => {
-            clearTimeout(timeoutId)
-          },
-        )
-      })
+          // Clean up timeout if connect resolves or rejects
+          connectPromise.then(
+            () => {
+              clearTimeout(timeoutId)
+            },
+            _error => {
+              clearTimeout(timeoutId)
+            },
+          )
+        })
+        return Promise.race([connectPromise, timeoutPromise])
+      }
 
       try {
-        await Promise.race([connectPromise, timeoutPromise])
+        try {
+          await connectWithTimeout(getConnectionTimeoutMs())
+        } catch (error) {
+          if (
+            serverRef.type !== 'http' ||
+            !isLegacySseFallbackError(error) ||
+            isElicitationCapabilityRejection(error) ||
+            !getFeatureValue_CACHED_MAY_BE_STALE(
+              'tengu_mcp_legacy_sse_fallback',
+              true,
+            )
+          ) {
+            throw error
+          }
+          logMCPDebug(
+            name,
+            `initialize POST rejected (${errorMessage(error)}); trying legacy HTTP+SSE`,
+          )
+          await transport.close().catch(() => {})
+          transport = await createSSETransport(name, serverRef)
+          client = createClient()
+          try {
+            await connectWithTimeout(
+              Math.max(
+                1000,
+                getConnectionTimeoutMs() - (Date.now() - connectStartTime),
+              ),
+            )
+          } catch (sseError) {
+            // A server that refused the POST outright (405) and then asks for
+            // auth on its SSE stream needs auth; otherwise the POST failure is
+            // the more useful error.
+            if (sseError instanceof UnauthorizedError && error.code === 405) {
+              throw sseError
+            }
+            logMCPDebug(
+              name,
+              `legacy HTTP+SSE not confirmed (${errorMessage(sseError)}); surfacing the POST failure`,
+            )
+            throw error
+          }
+          logMCPDebug(name, 'connected over legacy HTTP+SSE')
+        }
         if (stderrOutput) {
           logMCPError(name, `Server stderr: ${stderrOutput}`)
           stderrOutput = '' // Release accumulated string to prevent memory growth
@@ -1221,9 +1432,24 @@ export const connectToServer = memoize(
         if (stderrOutput) {
           logMCPError(name, `Server stderr: ${stderrOutput}`)
         }
+        if (
+          !options.bareElicitation &&
+          isElicitationCapabilityRejection(error) &&
+          'url' in getMcpClientCapabilities(serverRef, false).elicitation
+        ) {
+          logMCPDebug(
+            name,
+            'server rejected elicitation form and url at initialize (Java MCP SDK 0.17.0 or older); reconnecting once without elicitation form and url',
+          )
+          connectToServer.cache.delete(getServerCacheKey(name, serverRef))
+          return connectToServer(name, serverRef, serverStats, {
+            bareElicitation: true,
+          })
+        }
         throw error
       }
 
+      liveMcpClients.add(client)
       const capabilities = client.getServerCapabilities()
       const serverVersion = client.getServerVersion()
       const instructions = getMcpServerInstructions(client.getInstructions(), name)
@@ -1430,6 +1656,7 @@ export const connectToServer = memoize(
 
       // Enhanced close handler with connection drop context
       client.onclose = () => {
+        liveMcpClients.delete(client)
         const uptime = Date.now() - connectionStartTime
         const transportType = serverRef.type ?? 'unknown'
 
@@ -2386,6 +2613,38 @@ export async function callIdeRpc(
   return result.content
 }
 
+const MCP_RESOURCE_TOOLS = [
+  ListMcpResourcesTool,
+  ReadMcpResourceTool,
+  ReadMcpResourceDirTool,
+] as const
+
+/**
+ * The resource helper tools carry no mcp__<server>__ prefix, so per-server
+ * tool replacement never removes them. Strip every copy and add a single one
+ * back when at least one connected server offers generic resources.
+ */
+export function syncMcpResourceTools(
+  clients: readonly MCPServerConnection[],
+  tools: readonly Tool[],
+): Tool[] {
+  const serverTools = tools.filter(
+    tool =>
+      !MCP_RESOURCE_TOOLS.some(resourceTool =>
+        toolMatchesName(tool, resourceTool.name),
+      ),
+  )
+  const supportsResources = clients.some(
+    client =>
+      client.type === 'connected' &&
+      !!client.capabilities?.resources &&
+      getHostOwnedCodexAppsKind(client.config) !== 'plugins',
+  )
+  return supportsResources
+    ? [...serverTools, ...MCP_RESOURCE_TOOLS]
+    : serverTools
+}
+
 /**
  * Note: This should not be called by UI components directly, they should use the reconnectMcpServer
  * function from useManageMcpConnections.
@@ -2442,27 +2701,11 @@ export async function reconnectMcpServerImpl(
     ])
     const commands = [...mcpCommands, ...mcpSkills]
 
-    // Check if we need to add resource tools
-    const resourceTools: Tool[] = []
-    if (supportsGenericResources) {
-      // Only add resource tools if no other server has them
-      const hasResourceTools = [
-        ListMcpResourcesTool,
-        ReadMcpResourceTool,
-        ReadMcpResourceDirTool,
-      ].some(tool => tools.some(t => toolMatchesName(t, tool.name)))
-      if (!hasResourceTools) {
-        resourceTools.push(
-          ListMcpResourcesTool,
-          ReadMcpResourceTool,
-          ReadMcpResourceDirTool,
-        )
-      }
-    }
-
     return {
       client,
-      tools: [...tools, ...resourceTools],
+      // Callers merge these into a pool shared with other servers; the merge
+      // must run syncMcpResourceTools over all clients to keep a single copy.
+      tools: syncMcpResourceTools([client], tools),
       commands,
       resources: resources.length > 0 ? resources : undefined,
     }
@@ -2959,8 +3202,34 @@ export async function transformMCPResult(
       'structuredContent' in result &&
       result.structuredContent !== undefined
     ) {
+      const structuredText = jsonStringify(result.structuredContent)
+      // Text blocks duplicate the structured content, but images/resources
+      // would be lost; keep them and append the structured JSON.
+      if ('content' in result && Array.isArray(result.content)) {
+        const nonTextContent = (
+          await Promise.all(
+            result.content
+              .filter(
+                item =>
+                  item && typeof item === 'object' && item.type !== 'text',
+              )
+              .map(item => transformResultContent(item, name)),
+          )
+        ).flat()
+        if (nonTextContent.length > 0) {
+          const content: ContentBlockParam[] = [
+            ...nonTextContent,
+            { type: 'text', text: structuredText },
+          ]
+          return {
+            content,
+            type: 'contentArray',
+            schema: inferCompactSchema(content),
+          }
+        }
+      }
       return {
-        content: jsonStringify(result.structuredContent),
+        content: structuredText,
         type: 'structuredContent',
         schema: inferCompactSchema(result.structuredContent),
       }
@@ -3412,13 +3681,17 @@ async function callMCPTool({
         Array.isArray(result.content) &&
         result.content.length > 0
       ) {
-        const firstContent = result.content[0]
-        if (
-          firstContent &&
-          typeof firstContent === 'object' &&
-          'text' in firstContent
-        ) {
-          errorDetails = firstContent.text
+        const details = result.content.flatMap(item => {
+          if (!item || typeof item !== 'object') return []
+          if ('text' in item) return [String(item.text)]
+          if (item.type === 'resource_link') {
+            const link = `[Resource link: ${item.name}] ${item.uri}`
+            return [item.description ? `${link} (${item.description})` : link]
+          }
+          return []
+        })
+        if (details.length > 0) {
+          errorDetails = details.join('\n')
         }
       } else if ('error' in result) {
         // Fallback for legacy error format
