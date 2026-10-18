@@ -57,7 +57,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from 'src/services/analytics/index.js'
 import { logOTelEvent } from './telemetry/events.js'
-import { ALLOWED_OFFICIAL_MARKETPLACE_NAMES } from './plugins/schemas.js'
+import { isOfficialMarketplaceName } from './plugins/pluginIdentifier.js'
 import {
   startHookSpan,
   endHookSpan,
@@ -1473,7 +1473,7 @@ function hookDedupKey(m: MatchedHook, payload: string): string {
  * Build a map of {sanitizedPluginName: hookCount} from matched hooks.
  * Only logs actual names for official marketplace plugins; others become 'third-party'.
  */
-function getPluginHookCounts(
+export function getPluginHookCounts(
   hooks: MatchedHook[],
 ): Record<string, number> | undefined {
   const pluginHooks = hooks.filter(h => h.pluginId)
@@ -1484,8 +1484,7 @@ function getPluginHookCounts(
   for (const h of pluginHooks) {
     const atIndex = h.pluginId!.lastIndexOf('@')
     const isOfficial =
-      atIndex > 0 &&
-      ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(h.pluginId!.slice(atIndex + 1))
+      atIndex > 0 && isOfficialMarketplaceName(h.pluginId!.slice(atIndex + 1))
     const key = isOfficial ? h.pluginId! : 'third-party'
     counts[key] = (counts[key] || 0) + 1
   }
