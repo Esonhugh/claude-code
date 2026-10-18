@@ -484,7 +484,19 @@ export type GlobalConfig = {
 
   // Skill usage tracking for autocomplete ranking
   skillUsage?: Record<string, { usageCount: number; lastUsedAt: number }>
-  // Official marketplace auto-install tracking
+  // Esonhugh-Marketplace auto-install tracking (this fork's startup check)
+  esonhughMarketplaceAutoInstallAttempted?: boolean
+  esonhughMarketplaceAutoInstalled?: boolean
+  esonhughMarketplaceAutoInstallFailReason?:
+    | 'policy_blocked'
+    | 'git_unavailable'
+    | 'gcs_unavailable'
+    | 'unknown'
+  esonhughMarketplaceAutoInstallRetryCount?: number
+  esonhughMarketplaceAutoInstallLastAttemptTime?: number
+  esonhughMarketplaceAutoInstallNextRetryTime?: number
+  // Official CLI's claude-plugins-official auto-install tracking. Written by
+  // the official CLI sharing ~/.claude.json; this fork only preserves it.
   officialMarketplaceAutoInstallAttempted?: boolean // Whether auto-install was attempted
   officialMarketplaceAutoInstalled?: boolean // Whether auto-install succeeded
   officialMarketplaceAutoInstallFailReason?:
