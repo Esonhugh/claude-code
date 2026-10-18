@@ -68,6 +68,8 @@ export type ValidationError = {
     serverName?: string
     /** Severity of the error */
     severity?: 'fatal' | 'warning'
+    /** Set when the server entry was skipped (not loaded) because of this error */
+    skipReason?: 'invalid_config' | 'unknown_type' | 'url_missing_type'
   }
 }
 

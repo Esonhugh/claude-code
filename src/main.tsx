@@ -2214,6 +2214,7 @@ async function run(): Promise<CommanderCommand> {
 
         let allConfigs: Record<string, McpServerConfig> = {}
         const allErrors: ValidationError[] = []
+        const skippedEntries: ValidationError[] = []
 
         for (const configItem of processedConfigs) {
           let configs: Record<string, McpServerConfig> | null = null
@@ -2230,6 +2231,7 @@ async function run(): Promise<CommanderCommand> {
             })
             if (result.config) {
               configs = result.config.mcpServers
+              skippedEntries.push(...result.errors.filter(e => e.mcpErrorMetadata?.skipReason))
             } else {
               errors = result.errors
             }
@@ -2243,6 +2245,7 @@ async function run(): Promise<CommanderCommand> {
             })
             if (result.config) {
               configs = result.config.mcpServers
+              skippedEntries.push(...result.errors.filter(e => e.mcpErrorMetadata?.skipReason))
             } else {
               errors = result.errors
             }
@@ -2268,6 +2271,21 @@ async function run(): Promise<CommanderCommand> {
             `Error: Invalid MCP configuration:\n${formattedErrors}\n`,
           )
           process.exit(1)
+        }
+
+        // Invalid entries are skipped, not fatal; warn unless a later config defined the name validly.
+        const skipped = new Map(
+          skippedEntries
+            .filter(e => !Object.hasOwn(allConfigs, e.mcpErrorMetadata!.serverName!))
+            .map(e => [e.mcpErrorMetadata!.serverName!, e.message]),
+        )
+        if (skipped.size > 0) {
+          logForDebugging(`--mcp-config: ${skipped.size} entry warning(s): ${[...skipped.values()].join('; ')}`, { level: 'warn' })
+          if (process.stderr.isTTY) {
+            // eslint-disable-next-line no-control-regex -- server names come from config; don't echo terminal controls
+            const clean = (message: string) => message.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim()
+            process.stderr.write(`Warning: ${skipped.size} ${plural(skipped.size, 'MCP server')} skipped due to invalid config:\n${[...skipped.values()].map(m => `  - ${clean(m)}`).join('\n')}\n`)
+          }
         }
 
         if (Object.keys(allConfigs).length > 0) {
@@ -5504,7 +5522,7 @@ async function run(): Promise<CommanderCommand> {
   mcp
     .command('list')
     .description(
-      'List configured MCP servers. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.',
+      'List configured MCP servers. Unapproved .mcp.json servers are shown as ⏸ Pending approval and not connected to; approved servers are health-checked unless disabled for this project.',
     )
     .action(async () => {
       const { mcpListHandler } = await import('./cli/handlers/mcp.js')
@@ -5514,11 +5532,31 @@ async function run(): Promise<CommanderCommand> {
   mcp
     .command('get <name>')
     .description(
-      'Get details about an MCP server. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.',
+      'Get details about an MCP server. Unapproved .mcp.json servers are shown as ⏸ Pending approval and not connected to; approved servers are health-checked unless disabled for this project.',
     )
     .action(async (name: string) => {
       const { mcpGetHandler } = await import('./cli/handlers/mcp.js')
       await mcpGetHandler(name)
+    })
+
+  mcp
+    .command('login <name>')
+    .description('Authenticate with an MCP server (HTTP or SSE)')
+    .option(
+      '--no-browser',
+      'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)',
+    )
+    .action(async (name: string, options: { browser?: boolean }) => {
+      const { mcpLoginHandler } = await import('./cli/handlers/mcp.js')
+      await mcpLoginHandler(name, options)
+    })
+
+  mcp
+    .command('logout <name>')
+    .description('Clear stored OAuth credentials for an MCP server')
+    .action(async (name: string) => {
+      const { mcpLogoutHandler } = await import('./cli/handlers/mcp.js')
+      await mcpLogoutHandler(name)
     })
 
   mcp

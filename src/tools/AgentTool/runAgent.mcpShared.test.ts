@@ -33,9 +33,9 @@ if (process.env[childFlag] !== '1') {
   const { initializeAgentMcpServersForTesting } = await import('./runAgent.js')
   const alive = (pid: number) => { try { process.kill(pid, 0); return true } catch { return false } }
 
-  test('the first agent to finish does not stop the server the other agent still uses', async () => {
-    const server = join(root, 'server.mjs')
-    const pids = join(root, 'pids')
+  function writeServer(name: string): { server: string; pids: string } {
+    const server = join(root, `${name}.mjs`)
+    const pids = join(root, `${name}.pids`)
     writeFileSync(pids, '')
     writeFileSync(server, `
       import { appendFileSync } from 'node:fs'
@@ -56,6 +56,11 @@ if (process.env[childFlag] !== '1') {
         }
       })
     `)
+    return { server, pids }
+  }
+
+  test('the first agent to finish does not stop the server the other agent still uses', async () => {
+    const { server, pids } = writeServer('shared')
     const agent = {
       agentType: 'mcp-shared',
       whenToUse: 'probe',
@@ -80,6 +85,36 @@ if (process.env[childFlag] !== '1') {
       expect(alive(pid!)).toBe(false)
       expect(spawned()).toHaveLength(1)
     } finally {
+      for (const pid of spawned()) if (alive(pid)) process.kill(pid, 'SIGKILL')
+    }
+  })
+
+  test('an agent inline server identical to a parent --mcp-config server gets its own connection', async () => {
+    const { server, pids } = writeServer('parent')
+    const { connectToServer, clearServerCache } = await import('../../services/mcp/client.js')
+    const inline = { type: 'stdio' as const, command: process.execPath, args: [server] }
+    const parentConfig = { ...inline, scope: 'dynamic' as const }
+    const parent = await connectToServer('same-inline', parentConfig)
+    const agent = {
+      agentType: 'mcp-parent-twin',
+      whenToUse: 'probe',
+      source: 'userSettings',
+      getSystemPrompt: () => '',
+      mcpServers: [{ 'same-inline': inline }],
+    } as never
+    const spawned = () => readFileSync(pids, 'utf8').split('\n').filter(Boolean).map(Number)
+    try {
+      expect(parent.type).toBe('connected')
+      const child = await initializeAgentMcpServersForTesting(agent, [])
+      expect(child.tools.map(t => t.name)).toEqual(['mcp__same-inline__echo'])
+      expect(spawned()).toHaveLength(2)
+      const [parentPid, agentPid] = spawned()
+      await child.cleanup()
+      for (let i = 0; i < 100 && alive(agentPid!); i++) await new Promise(resolve => setTimeout(resolve, 50))
+      expect(alive(agentPid!)).toBe(false)
+      expect(alive(parentPid!)).toBe(true)
+    } finally {
+      await clearServerCache('same-inline', parentConfig)
       for (const pid of spawned()) if (alive(pid)) process.kill(pid, 'SIGKILL')
     }
   })

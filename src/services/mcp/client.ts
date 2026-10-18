@@ -261,12 +261,16 @@ function getMcpServerInstructions(
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
- * Uses MCP_TOOL_TIMEOUT environment variable if set, otherwise defaults to ~27.8 hours.
+ * A server's own `timeout` (>= 1000ms) wins; otherwise MCP_TOOL_TIMEOUT if set,
+ * otherwise defaults to ~27.8 hours.
  */
-function getMcpToolTimeoutMs(): number {
+export function getMcpToolTimeoutMs(config?: ScopedMcpServerConfig): number {
   return (
-    parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
-    DEFAULT_MCP_TOOL_TIMEOUT_MS
+    (config?.timeout !== undefined && config.timeout >= 1000
+      ? config.timeout
+      : undefined) ??
+    (parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
+      DEFAULT_MCP_TOOL_TIMEOUT_MS)
   )
 }
 
@@ -1798,7 +1802,7 @@ export async function callMCPToolForMod(
   const result = await connected.client.callTool(
     { name: tool, arguments: args },
     CallToolResultSchema,
-    { signal, timeout: getMcpToolTimeoutMs() },
+    { signal, timeout: getMcpToolTimeoutMs(connected.config) },
   )
   return {
     content: result.content,
@@ -1993,7 +1997,17 @@ export const fetchToolsForClient = memoizeWithLRU(
                     .replace(/\s+/g, ' ')
                     .trim() || undefined
                 : undefined,
-            alwaysLoad: tool._meta?.['anthropic/alwaysLoad'] === true,
+            // Server-level alwaysLoad: false defers every tool; true loads every
+            // tool, except one a dynamic (--mcp-config/SDK/plugin) server's
+            // tool opts out of via _meta.
+            alwaysLoad:
+              client.config.alwaysLoad !== false &&
+              ((client.config.alwaysLoad === true &&
+                !(
+                  client.config.scope === 'dynamic' &&
+                  tool._meta?.['anthropic/alwaysLoad'] === false
+                )) ||
+                tool._meta?.['anthropic/alwaysLoad'] === true),
             async description() {
               return tool.description ?? ''
             },
@@ -3336,7 +3350,7 @@ async function callMCPTool({
 
     // Use Promise.race with our own timeout to handle cases where SDK's
     // internal timeout doesn't work (e.g., SSE stream breaks mid-request)
-    const timeoutMs = getMcpToolTimeoutMs()
+    const timeoutMs = getMcpToolTimeoutMs(config)
     let timeoutId: NodeJS.Timeout | undefined
 
     const timeoutPromise = new Promise<never>((_, reject) => {

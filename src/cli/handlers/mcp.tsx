@@ -7,7 +7,10 @@ import { stat } from 'fs/promises'
 import pMap from 'p-map'
 import { cwd } from 'process'
 import React from 'react'
+import { createInterface } from 'readline'
 import { MCPServerDesktopImportDialog } from '../../components/MCPServerDesktopImportDialog.js'
+import { McpParsingWarnings } from '../../components/mcp/McpParsingWarnings.js'
+import { getOauthConfig } from '../../constants/oauth.js'
 import { render } from '../../ink.js'
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js'
 import {
@@ -15,13 +18,17 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import {
+  AuthenticationCancelledError,
   clearMcpClientConfig,
   clearServerTokensFromLocalStorage,
   getMcpClientConfig,
+  performMCPOAuthFlow,
   readClientSecret,
+  revokeServerTokens,
   saveMcpClientSecret,
 } from '../../services/mcp/auth.js'
 import {
+  clearMcpAuthCache,
   connectToServer,
   getMcpServerConnectionBatchSize,
 } from '../../services/mcp/client.js'
@@ -36,6 +43,8 @@ import {
 } from '../../services/mcp/config.js'
 import type {
   ConfigScope,
+  McpHTTPServerConfig,
+  McpSSEServerConfig,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
 import {
@@ -50,10 +59,11 @@ import {
   getGlobalConfig,
   saveCurrentProjectConfig,
 } from '../../utils/config.js'
-import { isFsInaccessible } from '../../utils/errors.js'
+import { errorMessage, isFsInaccessible } from '../../utils/errors.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { getPlatform } from '../../utils/platform.js'
+import { renderToString } from '../../utils/staticRender.js'
 import { cliError, cliOk } from '../exit.js'
 
 async function checkMcpServerHealth(
@@ -188,10 +198,16 @@ export async function mcpRemoveHandler(
   }
 }
 
+const PENDING_APPROVAL_STATUS = '⏸ Pending approval (run `claude` to approve)'
+const REJECTED_STATUS = '✗ Rejected (see disabledMcpjsonServers in settings)'
+const DISABLED_STATUS = '⊘ Disabled for this project (re-enable via /mcp)'
+
 // mcp list (lines 4641–4688)
 export async function mcpListHandler(): Promise<void> {
   logEvent('tengu_mcp_list', {})
-  const { servers: configs } = await getAllMcpConfigs()
+  const { servers: configs } = await getAllMcpConfigs({
+    includePendingProjectServers: true,
+  })
   if (Object.keys(configs).length === 0) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(
@@ -201,14 +217,20 @@ export async function mcpListHandler(): Promise<void> {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('Checking MCP server health...\n')
 
-    // Check servers concurrently
+    // Check servers concurrently; only connect to servers the session would
     const entries = Object.entries(configs)
     const results = await pMap(
       entries,
       async ([name, server]) => ({
         name,
         server,
-        status: await checkMcpServerHealth(name, server),
+        status:
+          server.scope === 'project' &&
+          getProjectMcpServerStatus(name) === 'pending'
+            ? PENDING_APPROVAL_STATUS
+            : isMcpServerDisabled(name)
+              ? DISABLED_STATUS
+              : await checkMcpServerHealth(name, server),
       }),
       { concurrency: getMcpServerConnectionBatchSize() },
     )
@@ -230,6 +252,13 @@ export async function mcpListHandler(): Promise<void> {
         console.log(`${name}: ${server.command} ${args.join(' ')} - ${status}`)
       }
     }
+  }
+  const diagnostics = (
+    await renderToString(<McpParsingWarnings />, process.stdout.columns)
+  ).trim()
+  if (diagnostics) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(`\n${diagnostics}`)
   }
   // Use gracefulShutdown to properly clean up MCP server connections
   // (process.exit bypasses cleanup handlers, leaving child processes orphaned)
@@ -258,11 +287,11 @@ export async function mcpGetHandler(name: string): Promise<void> {
     server.scope === 'project' ? getProjectMcpServerStatus(name) : 'approved'
   const status =
     projectStatus === 'pending'
-      ? '⏸ Pending approval (run `claude` to approve)'
+      ? PENDING_APPROVAL_STATUS
       : projectStatus === 'rejected'
-        ? '✗ Rejected (see disabledMcpjsonServers in settings)'
+        ? REJECTED_STATUS
         : isMcpServerDisabled(name)
-          ? '⊘ Disabled for this project (re-enable via /mcp)'
+          ? DISABLED_STATUS
           : await checkMcpServerHealth(name, server)
   // biome-ignore lint/suspicious/noConsole:: intentional console output
   console.log(`  Status: ${status}`)
@@ -335,6 +364,12 @@ export async function mcpGetHandler(name: string): Promise<void> {
       }
     }
   }
+  if (server.timeout !== undefined) {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(
+      `  Timeout: ${server.timeout}ms${server.timeout < 1000 ? ' (ignored: below 1000ms minimum)' : ''}`,
+    )
+  }
   // biome-ignore lint/suspicious/noConsole:: intentional console output
   console.log(
     `\nTo remove this server, run: claude mcp remove "${name}" -s ${server.scope}`,
@@ -342,6 +377,172 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // Use gracefulShutdown to properly clean up MCP server connections
   // (process.exit bypasses cleanup handlers, leaving child processes orphaned)
   await gracefulShutdown(0)
+}
+
+// Looks a server up for `mcp login`/`mcp logout`: configured scopes first,
+// then plugin and claude.ai servers. Unapproved .mcp.json servers are refused.
+async function getServerForAuth(
+  name: string,
+): Promise<ScopedMcpServerConfig | undefined> {
+  const server =
+    getMcpConfigByName(name, { includeUnapprovedProjectServers: true }) ??
+    (await getAllMcpConfigs()).servers[name]
+  if (!server) {
+    return cliError(`No MCP server found with name: ${name}`)
+  }
+  const projectStatus =
+    server.scope === 'project' ? getProjectMcpServerStatus(name) : 'approved'
+  if (projectStatus === 'rejected') {
+    return cliError(
+      `"${name}" is from .mcp.json and was rejected. Run \`claude mcp reset-project-choices\` to review it again.`,
+    )
+  }
+  if (projectStatus === 'pending') {
+    return cliError(
+      `"${name}" is from .mcp.json and awaiting approval. Run \`claude\` in this directory to review it first.`,
+    )
+  }
+  return server
+}
+
+function hasStaticAuthorizationHeader(
+  server: McpSSEServerConfig | McpHTTPServerConfig,
+): boolean {
+  return Object.keys(server.headers ?? {}).some(
+    key => key.toLowerCase() === 'authorization',
+  )
+}
+
+function authorizationUrlMessage(browser: boolean, url: string): string {
+  return `${browser ? "If the browser didn't open, visit:" : 'Visit this URL to authorize:'}\n  ${url}\n`
+}
+
+// mcp login
+export async function mcpLoginHandler(
+  name: string,
+  options: { browser?: boolean },
+): Promise<void> {
+  logEvent('tengu_mcp_login', {})
+  const server = await getServerForAuth(name)
+  if (!server) return
+  if (server.type === 'claudeai-proxy') {
+    return cliError(
+      `"${name}" is a claude.ai connector — authenticate it from /mcp in an interactive session.`,
+    )
+  }
+  if (server.type !== 'http' && server.type !== 'sse') {
+    return cliError(
+      `"${name}" doesn't support OAuth login — it's only available for HTTP and SSE servers.`,
+    )
+  }
+  if (hasStaticAuthorizationHeader(server)) {
+    return cliError(
+      `"${name}" authenticates with the \`Authorization\` header in its configuration, so there's no separate login. Update that header to change its credentials.`,
+    )
+  }
+
+  const browser = options.browser !== false
+  process.stdout.write(`Starting authentication for "${name}"…\n`)
+  const controller = new AbortController()
+  let stdinNotTerminal = false
+  let pastePrompt: ReturnType<typeof createInterface> | undefined
+  // The OAuth callback server is unref'd; keep the process alive while waiting.
+  const keepAlive = setInterval(() => {}, 60_000)
+  try {
+    await revokeServerTokens(name, server, { preserveStepUpState: true })
+    await performMCPOAuthFlow(
+      name,
+      server,
+      url => {
+        process.stdout.write(
+          `${authorizationUrlMessage(browser, url)}Waiting for authorization… (^C to cancel)\n`,
+        )
+        pastePrompt?.prompt()
+      },
+      controller.signal,
+      {
+        skipBrowserOpen: !browser,
+        onWaitingForCallback: submit => {
+          if (!process.stdin.isTTY) {
+            stdinNotTerminal = true
+            controller.abort()
+            return
+          }
+          if (!process.stdout.isTTY) return
+          const prompt = createInterface({
+            input: process.stdin,
+            output: process.stdout,
+            prompt: 'Or paste the redirect URL here: ',
+          })
+          prompt.on('SIGINT', () => controller.abort())
+          prompt.on('close', () => controller.abort())
+          prompt.on('line', line => {
+            const callbackUrl = line.trim()
+            if (callbackUrl && submit(callbackUrl)) return
+            if (callbackUrl) {
+              process.stdout.write(
+                "That doesn't look like a redirect URL for this sign-in — paste the full address from the browser page this sign-in opened.\n",
+              )
+            }
+            prompt.prompt()
+          })
+          pastePrompt = prompt
+        },
+      },
+    )
+  } catch (error) {
+    if (error instanceof AuthenticationCancelledError) {
+      if (stdinNotTerminal) {
+        return cliError(
+          `Couldn't complete authentication for "${name}": stdin isn't a terminal, so authentication can't be completed here. ` +
+            'Re-run in an interactive terminal — e.g. `ssh -t` — and paste the redirect URL when prompted.',
+        )
+      }
+      return gracefulShutdown(130)
+    }
+    return cliError(
+      `Couldn't complete authentication for "${name}": ${errorMessage(error)}`,
+    )
+  } finally {
+    clearInterval(keepAlive)
+    if (pastePrompt) {
+      pastePrompt.removeAllListeners('close')
+      pastePrompt.close()
+      process.stdout.write('\n')
+    }
+  }
+
+  // Drop cached needs-auth results so the next session connects right away.
+  clearMcpAuthCache()
+  cliOk(
+    isMcpServerDisabled(name)
+      ? `Authenticated with "${name}", but it's currently disabled. Enable it in /mcp for its tools to load.`
+      : `Authenticated with "${name}". Its tools are now available in Claude Code.`,
+  )
+}
+
+// mcp logout
+export async function mcpLogoutHandler(name: string): Promise<void> {
+  logEvent('tengu_mcp_logout', {})
+  const server = await getServerForAuth(name)
+  if (!server) return
+  if (server.type === 'claudeai-proxy') {
+    return cliOk(
+      `"${name}" is a claude.ai connector — its credentials live on claude.ai, not this machine. ` +
+        `Disconnect it at ${getOauthConfig().CLAUDE_AI_ORIGIN}/customize/connectors`,
+    )
+  }
+  if (server.type !== 'http' && server.type !== 'sse') {
+    return cliError(
+      `"${name}" doesn't use OAuth — there are no stored credentials to clear.`,
+    )
+  }
+  await revokeServerTokens(name, server)
+  const loginHint =
+    !hasStaticAuthorizationHeader(server) && /^\w[\w.@-]*$/.test(name)
+      ? ` Run \`claude mcp login ${name}\` to authenticate again.`
+      : ''
+  cliOk(`Signed out of "${name}".${loginHint}`)
 }
 
 // mcp add-json (lines 4801–4870)

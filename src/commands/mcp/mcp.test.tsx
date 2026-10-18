@@ -21,10 +21,15 @@ afterAll(() => {
 
 Object.defineProperty(globalThis, 'MACRO', { configurable: true, value: { VERSION: 'test' } })
 const toggled: string[] = []
+const reconnected: string[] = []
 const realManager = await import('../../services/mcp/MCPConnectionManager.js')
 mock.module('../../services/mcp/MCPConnectionManager.js', () => ({
   ...realManager,
   useMcpToggleEnabled: () => async (name: string) => { toggled.push(name) },
+  useMcpReconnect: () => async (name: string) => {
+    reconnected.push(name)
+    return { client: { name, type: name === 'broken' ? 'connected' : 'needs-auth', config }, tools: [], commands: [] }
+  },
 }))
 const { call } = await import('./mcp.js')
 const { render } = await import('../../ink.js')
@@ -37,14 +42,14 @@ const clients: MCPServerConnection[] = [
   { name: 'off', type: 'disabled', config },
 ]
 
-async function runMcp(args: string): Promise<string | undefined> {
+async function runMcp(args: string, mcpClients = clients): Promise<string | undefined> {
   const defaults = getDefaultAppState()
   let result: string | undefined
   const element = await call(r => { result = r }, {}, args)
   const stdout = Object.assign(new Writable({ write(_chunk, _encoding, done) { done() } }), { columns: 100, rows: 30 })
   const stdin = Object.assign(new Readable({ read() {} }), { isTTY: true, setRawMode() {}, ref() {}, unref() {} })
   const instance = await render(
-    <AppStateProvider initialState={{ ...defaults, mcp: { ...defaults.mcp, clients } }}>{element}</AppStateProvider>,
+    <AppStateProvider initialState={{ ...defaults, mcp: { ...defaults.mcp, clients: mcpClients } }}>{element}</AppStateProvider>,
     { stdout: stdout as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, patchConsole: false, exitOnCtrlC: false },
   )
   try {
@@ -64,4 +69,25 @@ test.each([
   toggled.length = 0
   expect(await runMcp(args)).toBe(expected)
   expect(toggled).toEqual([...toggles])
+})
+
+// Official 2.1.292 /mcp reconnect all retries failed and needs-auth servers.
+test('/mcp reconnect all reconnects servers that are not connected', async () => {
+  reconnected.length = 0
+  const mixed: MCPServerConnection[] = [
+    ...clients,
+    { name: 'broken', type: 'failed', config },
+    { name: 'locked', type: 'needs-auth', config },
+    { name: 'ide', type: 'failed', config },
+  ]
+  expect(await runMcp('reconnect all', mixed)).toBe(
+    'Reconnected 1 of 2 MCP servers (1 still not connected — run /mcp to check)',
+  )
+  expect(reconnected).toEqual(['broken', 'locked'])
+})
+
+test('/mcp reconnect all with nothing to reconnect', async () => {
+  reconnected.length = 0
+  expect(await runMcp('reconnect all')).toBe('No MCP servers need reconnecting')
+  expect(reconnected).toEqual([])
 })

@@ -261,7 +261,7 @@ async function initializeAgentMcpServers(
       name = serverName
       config = {
         ...serverConfig,
-        scope: 'dynamic' as const,
+        scope: 'agent' as const,
       } as ScopedMcpServerConfig
       isNewlyCreated = true
     }
