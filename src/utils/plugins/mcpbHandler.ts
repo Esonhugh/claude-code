@@ -11,10 +11,12 @@ import { errorMessage, getErrnoCode, isENOENT, toError } from '../errors.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { getSecureStorage } from '../secureStorage/index.js'
+import { getEnabledSettingSources } from '../settings/constants.js'
 import {
-  getSettings_DEPRECATED,
+  getSettingsForSource,
   updateSettingsForSource,
 } from '../settings/settings.js'
+import type { SettingsJson } from '../settings/types.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getSystemDirectories } from '../systemDirectories.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
@@ -128,6 +130,38 @@ function serverSecretsKey(pluginId: string, serverName: string): string {
   return `${pluginId}/${serverName}`
 }
 
+type PluginConfig = NonNullable<SettingsJson['pluginConfigs']>[string]
+
+/**
+ * `pluginConfigs` entries a repository cannot write (project/local settings
+ * are excluded), from enabled sources only, lowest precedence first. Inline
+ * plugins are also read under their bare name.
+ */
+export function getTrustedPluginConfigs(pluginId: string): PluginConfig[] {
+  const enabled = new Set(getEnabledSettingSources())
+  const inlineName = pluginId.endsWith('@inline')
+    ? pluginId.slice(0, -'@inline'.length)
+    : ''
+  const ids =
+    inlineName !== '' && !inlineName.includes('@')
+      ? [inlineName, pluginId]
+      : [pluginId]
+  const configs: PluginConfig[] = []
+  for (const source of [
+    'userSettings',
+    'flagSettings',
+    'policySettings',
+  ] as const) {
+    if (!enabled.has(source)) continue
+    const pluginConfigs = getSettingsForSource(source)?.pluginConfigs
+    for (const id of ids) {
+      const config = pluginConfigs?.[id]
+      if (config) configs.push(config)
+    }
+  }
+  return configs
+}
+
 /**
  * Load user configuration for an MCP server, merging non-sensitive values
  * (from settings.json) with sensitive values (from secureStorage keychain).
@@ -146,9 +180,13 @@ export function loadMcpServerUserConfig(
   serverName: string,
 ): UserConfigValues | null {
   try {
-    const settings = getSettings_DEPRECATED()
+    const serverConfigs = getTrustedPluginConfigs(pluginId).flatMap(config =>
+      config.mcpServers?.[serverName] ?? [],
+    )
     const nonSensitive =
-      settings.pluginConfigs?.[pluginId]?.mcpServers?.[serverName]
+      serverConfigs.length > 0
+        ? (Object.assign({}, ...serverConfigs) as UserConfigValues)
+        : undefined
 
     const sensitive =
       // @ts-ignore - recovered code
@@ -299,9 +337,12 @@ export function saveMcpServerUserConfig(
     // sensitive keys doesn't scrub them, the disk copy merges back in. Instead:
     // set each sensitive key to explicit `undefined` — mergeWith (with the
     // customizer at settings.ts:349) treats explicit undefined as a delete.
-    const settings = getSettings_DEPRECATED()
+    //
+    // Only this plugin's entry is written: merged settings would copy
+    // project/local keys into user settings.
     const existingInSettings =
-      settings.pluginConfigs?.[pluginId]?.mcpServers?.[serverName] ?? {}
+      getSettingsForSource('userSettings')?.pluginConfigs?.[pluginId]
+        ?.mcpServers?.[serverName] ?? {}
     const keysToScrubFromSettings = Object.keys(existingInSettings).filter(k =>
       sensitiveKeysInThisSave.has(k),
     )
@@ -309,15 +350,6 @@ export function saveMcpServerUserConfig(
       Object.keys(nonSensitive).length > 0 ||
       keysToScrubFromSettings.length > 0
     ) {
-      if (!settings.pluginConfigs) {
-        settings.pluginConfigs = {}
-      }
-      if (!settings.pluginConfigs[pluginId]) {
-        settings.pluginConfigs[pluginId] = {}
-      }
-      if (!settings.pluginConfigs[pluginId].mcpServers) {
-        settings.pluginConfigs[pluginId].mcpServers = {}
-      }
       // Build the scrub-via-undefined map. The UserConfigValues type doesn't
       // include undefined, but updateSettingsForSource's mergeWith customizer
       // needs explicit undefined to delete — cast is deliberate internal
@@ -326,11 +358,15 @@ export function saveMcpServerUserConfig(
       const scrubbed = Object.fromEntries(
         keysToScrubFromSettings.map(k => [k, undefined]),
       ) as Record<string, undefined>
-      settings.pluginConfigs[pluginId].mcpServers![serverName] = {
+      const serverConfig = {
         ...nonSensitive,
         ...scrubbed,
       } as UserConfigValues
-      const result = updateSettingsForSource('userSettings', settings)
+      const result = updateSettingsForSource('userSettings', {
+        pluginConfigs: {
+          [pluginId]: { mcpServers: { [serverName]: serverConfig } },
+        },
+      })
       if (result.error) {
         throw result.error
       }
