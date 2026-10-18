@@ -35,7 +35,7 @@ import { loadPluginHooks } from './loadPluginHooks.js'
 import { loadPluginLspServers } from './lspPluginIntegration.js'
 import { loadPluginMcpServers } from './mcpPluginIntegration.js'
 import { clearPluginCacheExclusions } from './orphanedPluginFilter.js'
-import { loadAllPluginsCacheOnly } from './pluginLoader.js'
+import { loadAllPlugins, loadAllPluginsCacheOnly } from './pluginLoader.js'
 
 type SetAppState = (updater: (prev: AppState) => AppState) => void
 
@@ -71,9 +71,14 @@ export type RefreshActivePluginsResult = {
  *
  * LSP: if plugins now contribute LSP servers, reinitializeLspServerManager()
  * re-reads config. Servers are lazy-started so this is just config parsing.
+ *
+ * materialize: run the full loader, which caches enabled plugins that are not
+ * on disk yet (e.g. github/url plugins of a marketplace installed in the
+ * background). Without it only already-installed components are reloaded.
  */
 export async function refreshActivePlugins(
   setAppState: SetAppState,
+  { materialize = false }: { materialize?: boolean } = {},
 ): Promise<RefreshActivePluginsResult> {
   await refreshSettings()
   logForDebugging('refreshActivePlugins: clearing all plugin caches')
@@ -83,9 +88,12 @@ export async function refreshActivePlugins(
   // an explicit "disk changed, re-read it" signal — recompute them too.
   clearPluginCacheExclusions()
 
-  // Reload installed components only; marketplace materialization belongs to
-  // the install/reconcile layer, not a session refresh.
-  const pluginResult = await loadAllPluginsCacheOnly()
+  // By default reload installed components only; marketplace materialization
+  // belongs to the install/reconcile layer, not a session refresh. The full
+  // loader also warms the cache-only memo the component loaders below read.
+  const pluginResult = await (materialize
+    ? loadAllPlugins()
+    : loadAllPluginsCacheOnly())
   const [pluginCommands, pluginSkills, agentDefinitions] = await Promise.all([
     getPluginCommands(),
     getPluginSkills(),
@@ -93,7 +101,6 @@ export async function refreshActivePlugins(
   ])
 
   const { enabled, disabled, errors } = pluginResult
-  await refreshPluginRuntimes(enabled)
 
   // Populate mcpServers/lspServers on each enabled plugin. These are lazy
   // cache slots NOT filled by loadAllPlugins() — they're written later by
@@ -138,6 +145,9 @@ export async function refreshActivePlugins(
       pluginReconnectKey: prev.mcp.pluginReconnectKey + 1,
     },
   }))
+  // After the agentDefinitions write: hosts (Mods) re-project the agents
+  // they registered at run time onto the rebuilt definitions.
+  await refreshPluginRuntimes(enabled)
 
   // Re-initialize LSP manager so newly-loaded plugin LSP servers are picked
   // up. No-op if LSP was never initialized (headless subcommand path).
@@ -180,8 +190,8 @@ export async function refreshActivePlugins(
   )
 
   return {
-    enabled_count: enabled.length,
-    disabled_count: disabled.length,
+    enabled_count: enabled.filter(p => p.isBuiltin !== true).length,
+    disabled_count: disabled.filter(p => p.isBuiltin !== true).length,
     command_count: pluginCommands.length,
     skill_count: pluginSkills.length,
     agent_count: agentDefinitions.allAgents.length,

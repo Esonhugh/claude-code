@@ -137,13 +137,15 @@ export async function performBackgroundPluginInstallations(
       // "Plugin not found in marketplace" errors from the initial cache-only
       // load (e.g., fresh homespace where marketplace cache was empty).
       // refreshActivePlugins clears all caches, reloads plugins, and bumps
-      // pluginReconnectKey so MCP connections are re-established.
+      // pluginReconnectKey so MCP connections are re-established. The full
+      // load (materialize) caches newly declared github/url/npm plugins,
+      // which a cache-only reload would report as plugin-cache-miss.
       clearMarketplacesCache()
       logForDebugging(
         `Auto-refreshing plugins after ${result.installed.length} new marketplace(s) installed`,
       )
       try {
-        await refreshActivePlugins(setAppState)
+        await refreshActivePlugins(setAppState, { materialize: true })
       } catch (refreshError) {
         // If auto-refresh fails, fall back to needsRefresh notification so
         // the user can manually run /reload-plugins to recover.

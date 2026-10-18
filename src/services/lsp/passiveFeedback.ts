@@ -138,6 +138,11 @@ export function registerLSPNotificationHandlers(
 
   for (const [serverName, serverInstance] of servers.entries()) {
     try {
+      if (serverInstance?.config?.diagnostics === false) {
+        logForDebugging(`Diagnostics disabled for ${serverName}, skipping`)
+        continue
+      }
+
       // Validate server instance has onNotification method
       if (
         !serverInstance ||

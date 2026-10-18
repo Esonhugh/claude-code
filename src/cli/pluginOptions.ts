@@ -9,3 +9,12 @@ export function createPluginDirNoMcpOption() {
     .default([] as string[])
     .hideHelp()
 }
+
+export function createPluginUrlOption() {
+  return new Option(
+    '--plugin-url <url>',
+    'Fetch a plugin .zip from a URL for this session only (repeatable: --plugin-url A --plugin-url B)',
+  )
+    .argParser((value: string, urls: string[]) => [...urls, ...value.split(/\s+/).filter(Boolean)])
+    .default([] as string[])
+}

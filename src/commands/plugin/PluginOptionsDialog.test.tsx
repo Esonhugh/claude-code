@@ -154,8 +154,8 @@ beforeEach(() => {
   savedSettings = {}
   secureStorage.read.mockClear()
   secureStorage.update.mockClear()
-  spyOn(settings, 'getSettings_DEPRECATED').mockImplementation(
-    () => savedSettings,
+  spyOn(settings, 'getSettingsForSource').mockImplementation(source =>
+    source === 'userSettings' ? savedSettings : null,
   )
   spyOn(settings, 'updateSettingsForSource').mockImplementation(
     (_source, values) => {

@@ -287,6 +287,8 @@ export function getWebSocketProxyUrl(url: string): string | undefined {
 export function getProxyFetchOptions(opts?: {
   forAnthropicAPI?: boolean
   forOpenAIAPI?: boolean
+  /** Target URL; a NO_PROXY match skips the proxy. */
+  url?: string
 }): {
   tls?: TLSConfig
   dispatcher?: undici.Dispatcher
@@ -311,7 +313,7 @@ export function getProxyFetchOptions(opts?: {
   const proxyUrl = getProxyUrl()
 
   // If we have a proxy, use the proxy agent (which includes mTLS config)
-  if (proxyUrl) {
+  if (proxyUrl && !(opts?.url && shouldBypassProxy(opts.url))) {
     if (typeof Bun !== 'undefined') {
       return { ...base, proxy: proxyUrl, ...getTLSFetchOptions() }
     }

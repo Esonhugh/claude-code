@@ -56,6 +56,11 @@ mock.module('../../utils/settings/settings.js', () => ({
 mock.module('../../utils/plugins/pluginLoader.js', () => ({
   ...pluginLoaderModule,
   loadAllPlugins: async () => ({ enabled: [], disabled: [] }),
+  loadAllPluginsCacheOnly: async () => ({
+    enabled: [{ name: 'url-probe', source: 'url-probe@inline', enabled: true }],
+    disabled: [],
+    errors: [],
+  }),
 }))
 mock.module('../../utils/plugins/installedPluginsManager.js', () => ({
   ...installedPluginsModule,
@@ -167,5 +172,17 @@ settingsBySource.policySettings.enabledPlugins['blocked@marketplace'] = false
 const policyEnable = await setPluginEnabledOp('blocked@marketplace', true)
 assert.equal(policyEnable.success, false)
 assert.match(policyEnable.message, /organization policy/i)
+
+// A --plugin-url session plugin is addressable by its bare name, like --plugin-dir.
+const { setInlinePluginUrls } = await import('../../bootstrap/state.js')
+setInlinePluginUrls(['https://plugins.test/url-probe.zip'])
+const urlDisable = await setPluginEnabledOp('url-probe', false)
+setInlinePluginUrls([])
+assert.equal(urlDisable.success, true, urlDisable.message)
+assert.equal(urlDisable.pluginId, 'url-probe@inline')
+assert.equal(
+  settingsBySource.userSettings.enabledPlugins['url-probe@inline'],
+  false,
+)
 
 console.log('pluginOperations.test.ts passed')

@@ -336,6 +336,7 @@ async function runIsolatedTests(): Promise<void> {
   } as AppState["agentDefinitions"];
   const reinitialize = mock(() => {});
   const loadHooks = mock(async () => {});
+  let refreshRuntimes = async (_plugins: readonly Plugin[]) => {};
   const readSnapshot = () =>
     installed.getInMemoryInstalledPlugins().plugins["fixture@market"]![0]!
       .version!;
@@ -367,6 +368,8 @@ async function runIsolatedTests(): Promise<void> {
     clearAllCaches: () => {
       observations.push(`caches:${readSnapshot()}`);
     },
+    refreshPluginRuntimes: (plugins: readonly Plugin[]) =>
+      refreshRuntimes(plugins),
   }));
   mock.module("./orphanedPluginFilter.js", () => ({
     clearPluginCacheExclusions: () => {},
@@ -463,6 +466,46 @@ async function runIsolatedTests(): Promise<void> {
     } as AppState["agentDefinitions"];
     reinitialize.mockClear();
     loadHooks.mockClear();
+    refreshRuntimes = async () => {};
+  });
+
+  test("reload counts only non-built-in plugins", async () => {
+    enabled = [...enabled, { name: "builtin-on", isBuiltin: true }] as Plugin[];
+    disabled = [
+      ...disabled,
+      { name: "builtin-off", isBuiltin: true },
+    ] as Plugin[];
+    let state = initialState();
+    const result = await refreshActivePlugins((update) => {
+      state = update(state);
+    });
+    expect(state.plugins.enabled).toBe(enabled);
+    expect(result.enabled_count).toBe(1);
+    expect(result.disabled_count).toBe(1);
+  });
+
+  test("agents a plugin runtime publishes during refresh survive the reload", async () => {
+    let state = initialState();
+    const setAppState = (update: (prev: AppState) => AppState) => {
+      state = update(state);
+    };
+    const modAgent = { agentType: "mod:reviewer" } as never;
+    // A Mods runtime re-projects its registered agents onto the AppState
+    // agents when the explicit refresh hands it the enabled plugins.
+    refreshRuntimes = async () => {
+      setAppState((prev) => ({
+        ...prev,
+        agentDefinitions: {
+          ...prev.agentDefinitions,
+          allAgents: [...prev.agentDefinitions.allAgents, modAgent],
+        },
+      }));
+    };
+    await refreshActivePlugins(setAppState);
+    expect(state.agentDefinitions.allAgents).toEqual([
+      ...agents.allAgents,
+      modAgent,
+    ]);
   });
 
   test("refresh reloads the real installed snapshot before caches and loaders", async () => {

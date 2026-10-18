@@ -45,3 +45,20 @@ test('a missing no-MCP path produces a normal Commander argument error', async (
   const cli = await command()
   expect(() => cli.parse(['--plugin-dir-no-mcp'], { from: 'user' })).toThrow('argument missing')
 })
+
+// Official 2.1.292: --plugin-url is public, repeatable, and splits each value on whitespace.
+test('plugin URLs collect across repeats and whitespace-separated values', async () => {
+  const { createPluginUrlOption } = await import('./pluginOptions.js')
+  const cli = new Command()
+    .exitOverride()
+    .configureOutput({ writeErr: () => {} })
+    .addOption(createPluginUrlOption())
+    .argument('[prompt]')
+  cli.parse(['--plugin-url', ' https://a.test/a.zip  https://b.test/b.zip ', '--plugin-url', 'https://c.test/c.zip', 'hello'], { from: 'user' })
+  expect(cli.getOptionValue('pluginUrl')).toEqual(['https://a.test/a.zip', 'https://b.test/b.zip', 'https://c.test/c.zip'])
+  expect(cli.args).toEqual(['hello'])
+  expect(cli.helpInformation()).toContain('--plugin-url <url>')
+  const empty = new Command().addOption(createPluginUrlOption())
+  empty.parse([], { from: 'user' })
+  expect(empty.getOptionValue('pluginUrl')).toEqual([])
+})

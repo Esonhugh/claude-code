@@ -7,15 +7,16 @@
 
 import { rename, rm } from 'fs/promises'
 import { resolve, sep } from 'path'
+import { getOriginalCwd } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_PII_TAGGED,
   logEvent,
 } from '../../services/analytics/index.js'
-import { getCwd } from '../cwd.js'
 import { logForDebugging } from '../debug.js'
 import { getErrnoCode, toError } from '../errors.js'
-import { writeFileSyncAndFlush_DEPRECATED } from '../file.js'
+import { pathExists, writeFileSyncAndFlush_DEPRECATED } from '../file.js'
+import { getEnabledSettingSources } from '../settings/constants.js'
 import { resetSettingsCache } from '../settings/settingsCache.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
@@ -27,8 +28,10 @@ import {
 import { buildPluginTelemetryFields } from '../telemetry/pluginTelemetry.js'
 import { clearAllCaches } from './cacheUtils.js'
 import {
+  dependencyMatchesPlugin,
   formatDependencyCountSuffix,
   getEnabledPluginIdsForScope,
+  qualifyDependency,
   type ResolutionResult,
   resolveDependencyClosure,
 } from './dependencyResolver.js'
@@ -50,11 +53,13 @@ import {
   cachePlugin,
   getVersionedCachePath,
   getVersionedZipCachePath,
+  loadAllPluginsCacheOnly,
 } from './pluginLoader.js'
 import { isPluginBlockedByPolicy } from './pluginPolicy.js'
 import { calculatePluginVersion } from './pluginVersioning.js'
 import {
   isLocalPluginSource,
+  type PluginManifest,
   type PluginMarketplaceEntry,
   type PluginScope,
   type PluginSource,
@@ -127,7 +132,7 @@ export function validatePathWithinBase(
  *                'managed' scope is used for plugins installed automatically from managed settings.
  * @param projectPath - Project path (required for project/local scopes)
  * @param localSourcePath - For local plugins, the resolved absolute path to the source directory
- * @returns The installation path
+ * @returns The installation path and the plugin's manifest
  */
 export async function cacheAndRegisterPlugin(
   pluginId: string,
@@ -135,8 +140,9 @@ export async function cacheAndRegisterPlugin(
   scope: PluginScope = 'user',
   projectPath?: string,
   localSourcePath?: string,
-): Promise<string> {
-  const collision = findPluginFolderCollision([pluginId], loadInstalledPluginsFromDisk().plugins)
+): Promise<{ path: string; manifest: PluginManifest }> {
+  const installedPlugins = loadInstalledPluginsFromDisk().plugins
+  const collision = findPluginFolderCollision([pluginId], installedPlugins)
   if (collision) throw new PluginFolderCollisionError(collision, pluginId)
   const source: PluginSource =
     typeof entry.source === 'string' && localSourcePath
@@ -167,12 +173,23 @@ export async function cacheAndRegisterPlugin(
     const zipPath = isPluginZipCacheEnabled()
       ? getVersionedZipCachePath(pluginId, version)
       : undefined
-    await publishDirectory(
-      versionedPath,
-      staging => rename(cached.path, staging),
-      zipPath,
+    const publishedPath = zipPath ?? versionedPath
+    // Another scope's installation of this version may be in use by a running
+    // session; reuse its tree instead of replacing it. Reinstalling at the
+    // same scope still republishes.
+    const sharedWithOtherInstall = (installedPlugins[pluginId] ?? []).some(
+      inst =>
+        inst.installPath === publishedPath &&
+        !(inst.scope === scope && inst.projectPath === projectPath),
     )
-    finalPath = zipPath ?? versionedPath
+    if (!sharedWithOtherInstall || !(await pathExists(publishedPath))) {
+      await publishDirectory(
+        versionedPath,
+        staging => rename(cached.path, staging),
+        zipPath,
+      )
+    }
+    finalPath = publishedPath
     addInstalledPlugin(
       pluginId,
       {
@@ -197,7 +214,7 @@ export async function cacheAndRegisterPlugin(
   if (errors.length === 1) throw errors[0]
   if (errors.length > 1)
     throw new AggregateError(errors, `Plugin installation failed: ${pluginId}`)
-  return finalPath!
+  return { path: finalPath!, manifest: cached.manifest }
 }
 
 /**
@@ -302,6 +319,58 @@ export function formatResolutionError(
 }
 
 /**
+ * Official 2.1.292 install rule for manifest `defaultEnabled`: a member with a
+ * value in the target scope keeps it enabled unless it is `false` on a
+ * disabled-by-default plugin; otherwise it is enabled when set in any settings
+ * source, enabled by default, or (the root) required by an enabled dependent.
+ * Dependencies of enabled members are then enabled too.
+ */
+function resolveClosureEnabled({
+  closure,
+  rootId,
+  rootRequiredByDependent,
+  priorEnabled,
+  explicitAnywhere,
+  defaultsById,
+  dependenciesById,
+}: {
+  closure: readonly string[]
+  rootId: string
+  rootRequiredByDependent: boolean
+  priorEnabled: Readonly<Record<string, unknown>>
+  explicitAnywhere: ReadonlySet<string>
+  defaultsById: ReadonlyMap<string, boolean>
+  dependenciesById: ReadonlyMap<string, readonly string[]>
+}): Map<string, boolean> {
+  const members = new Set(closure)
+  const enabled = new Set<string>()
+  for (const id of closure) {
+    const prior = priorEnabled[id]
+    const byDefault = defaultsById.get(id) ?? true
+    if (prior !== undefined) {
+      if (prior !== false || byDefault) enabled.add(id)
+      continue
+    }
+    if (
+      explicitAnywhere.has(id) ||
+      byDefault ||
+      (id === rootId && rootRequiredByDependent)
+    )
+      enabled.add(id)
+  }
+  const pending = [...enabled]
+  while (pending.length > 0) {
+    for (const dep of dependenciesById.get(pending.pop()!) ?? []) {
+      if (members.has(dep) && !enabled.has(dep)) {
+        enabled.add(dep)
+        pending.push(dep)
+      }
+    }
+  }
+  return new Map(closure.map(id => [id, enabled.has(id)]))
+}
+
+/**
  * Core plugin install logic, shared by the CLI path (`installPluginOp`) and
  * the interactive UI path (`installPluginFromMarketplace`). Given a
  * pre-resolved marketplace entry, this:
@@ -312,7 +381,8 @@ export function formatResolutionError(
  *      is on; trivial single-plugin closure otherwise).
  *   3. Validates the source paths of the entire closure.
  *   4. Publishes and registers every closure member, then clears caches.
- *   5. Enables the closure in one settings update, restoring bytes on failure.
+ *   5. Writes the closure's enabled state (honoring manifest defaultEnabled)
+ *      in one settings update, restoring bytes on failure.
  *
  * Returns a structured result. Message formatting, analytics, and top-level
  * error wrapping stay in the caller-specific wrappers.
@@ -455,20 +525,73 @@ export async function installResolvedPlugin({
     members.push({ id, entry: info.entry, localSourcePath })
   }
 
-  const projectPath = scope !== 'user' ? getCwd() : undefined
+  // Same project key that uninstall, update and relevance checks match on.
+  const projectPath = scope !== 'user' ? getOriginalCwd() : undefined
+  const manifests = new Map<string, PluginManifest>()
   for (const member of members) {
-    await cacheAndRegisterPlugin(
+    const { manifest } = await cacheAndRegisterPlugin(
       member.id,
       member.entry,
       scope,
       projectPath,
       member.localSourcePath,
     )
+    manifests.set(member.id, manifest)
   }
 
   const depNote = formatDependencyCountSuffix(
     resolution.closure.filter(id => id !== pluginId),
   )
+  const priorEnabled = getSettingsForSource(settingSource)?.enabledPlugins ?? {}
+  const mergedEnabled: Record<string, unknown> = {}
+  for (const source of getEnabledSettingSources()) {
+    Object.assign(mergedEnabled, getSettingsForSource(source)?.enabledPlugins)
+  }
+  const defaultsById = new Map<string, boolean>()
+  const dependenciesById = new Map<string, string[]>()
+  for (const member of members) {
+    const manifest = manifests.get(member.id)
+    defaultsById.set(
+      member.id,
+      member.entry.defaultEnabled ?? manifest?.defaultEnabled ?? true,
+    )
+    dependenciesById.set(
+      member.id,
+      [...(member.entry.dependencies ?? []), ...(manifest?.dependencies ?? [])]
+        .map(dep => qualifyDependency(dep, member.id)),
+    )
+  }
+  const explicitAnywhere = new Set(
+    Object.keys(mergedEnabled).filter(id => mergedEnabled[id] !== undefined),
+  )
+  // Only consulted for a disabled-by-default root with no setting anywhere.
+  let rootRequiredByDependent = false
+  if (!explicitAnywhere.has(pluginId) && defaultsById.get(pluginId) === false) {
+    const { enabled, disabled } = await loadAllPluginsCacheOnly()
+    rootRequiredByDependent = [...enabled, ...disabled].some(p => {
+      if (p.source === pluginId) return false
+      const value = mergedEnabled[p.source]
+      const active = value !== undefined
+        ? value === true || Array.isArray(value)
+        : p.manifest.defaultEnabled !== false
+      return active && (p.manifest.dependencies ?? []).some(dep =>
+        dependencyMatchesPlugin(qualifyDependency(dep, p.source), pluginId))
+    })
+  }
+  const enabledById = resolveClosureEnabled({
+    closure: resolution.closure,
+    rootId: pluginId,
+    rootRequiredByDependent,
+    priorEnabled,
+    explicitAnywhere,
+    defaultsById,
+    dependenciesById,
+  })
+  const closureEnabled: Record<string, boolean | string[]> = {}
+  for (const id of resolution.closure) {
+    const prior = priorEnabled[id]
+    closureEnabled[id] = Array.isArray(prior) ? prior : enabledById.get(id) ?? true
+  }
   // Snapshot immediately around this synchronous write so earlier cache work
   // cannot overwrite unrelated settings changes made while downloads run.
   const settingsPath = getSettingsFilePathForSource(settingSource)
@@ -503,8 +626,6 @@ export async function installResolvedPlugin({
       )
     }
   }
-  const closureEnabled: Record<string, true> = {}
-  for (const id of resolution.closure) closureEnabled[id] = true
   const { error } = updateSettingsForSource(
     settingSource,
     {

@@ -328,6 +328,12 @@ const PluginManifestMetadataSchema = lazySchema(() =>
       .array(z.string())
       .optional()
       .describe('Tags for plugin discovery and categorization'),
+    defaultEnabled: z
+      .boolean()
+      .optional()
+      .describe(
+        'Whether the plugin starts enabled when the user has no explicit enabled/disabled setting for it (default: true). Explicit enabledPlugins values always win, and a plugin required by an enabled dependent is enabled regardless of this value.',
+      ),
     dependencies: z
       .array(DependencyRefSchema())
       .optional()
@@ -808,6 +814,15 @@ export const LspServerConfigSchema = lazySchema(() =>
       .positive()
       .optional()
       .describe('Maximum time to wait for graceful shutdown (milliseconds)'),
+    requestTimeout: z
+      .number()
+      .int()
+      .positive()
+      .max(2147483647)
+      .optional()
+      .describe(
+        'Maximum time to wait for the server to answer a request (milliseconds). Defaults to 60000.',
+      ),
     restartOnCrash: z
       .boolean()
       .optional()
@@ -818,6 +833,12 @@ export const LspServerConfigSchema = lazySchema(() =>
       .nonnegative()
       .optional()
       .describe('Maximum number of restart attempts before giving up'),
+    diagnostics: z
+      .boolean()
+      .optional()
+      .describe(
+        'Whether to push publishDiagnostics into the agent context after edits. Set to false to keep LSP navigation (goToDefinition, hover, etc.) but suppress automatic diagnostic injection. Defaults to true.',
+      ),
   }),
 )
 

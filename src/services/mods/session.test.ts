@@ -703,6 +703,25 @@ describe('Mods CLI session host', () => {
     } finally { snapshot.release() }
   })
 
+  test('an explicit plugin refresh re-projects unchanged registered agents onto rebuilt AppState agents', async () => {
+    const mod = await plugin(`export function register(on) {
+      on('command.run', async $ => ({text:JSON.stringify(await $.agent.register({name:'reviewer',description:'Review',prompt:'Review carefully',model:'inherit'}))}));
+    }`)
+    const host = session({loadPlugins:async()=>[mod]})
+    let state = {agentDefinitions:{activeAgents:[],allAgents:[]},plugins:{errors:[]}} as unknown as import('../../state/AppState.js').AppState
+    await host.bind(binding, update => { state = update(state) })
+    const snapshot = host.runtime!.capture()
+    try {
+      await snapshot.dispatch('command.run',{},async()=>({}))
+      // /reload-plugins rebuilds the AppState agents from disk loaders, which know nothing of Mod agents.
+      const disk = {agentType:'disk'} as never
+      state = {...state, agentDefinitions:{activeAgents:[disk],allAgents:[disk]}}
+      await refreshPluginRuntimes([mod])
+      expect(state.agentDefinitions.allAgents.map(agent => agent.agentType)).toEqual(['disk','fixture:reviewer'])
+      expect(state.agentDefinitions.activeAgents.map(agent => agent.agentType)).toEqual(['disk','fixture:reviewer'])
+    } finally { snapshot.release() }
+  })
+
   test('does not load or instantiate a Worker before trust, or without declarations', async () => {
     let loads = 0
     let creates = 0

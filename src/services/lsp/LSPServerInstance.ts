@@ -26,6 +26,10 @@ const MAX_RETRIES_FOR_TRANSIENT_ERRORS = 3
  * Actual delays: 500ms, 1000ms, 2000ms
  */
 const RETRY_BASE_DELAY_MS = 500
+
+/** Default for the per-server `requestTimeout`. */
+const DEFAULT_REQUEST_TIMEOUT_MS = 60000
+
 /**
  * LSP server instance interface returned by createLSPServerInstance.
  * Manages the lifecycle of a single LSP server with state tracking and health monitoring.
@@ -373,6 +377,10 @@ export function createLSPServerInstance(
     }
 
     let lastAttemptError: Error | undefined
+    const requestTimeout =
+      typeof config.requestTimeout === 'number'
+        ? config.requestTimeout
+        : DEFAULT_REQUEST_TIMEOUT_MS
 
     for (
       let attempt = 0;
@@ -380,7 +388,11 @@ export function createLSPServerInstance(
       attempt++
     ) {
       try {
-        return await client.sendRequest(method, params)
+        return await withTimeout(
+          client.sendRequest<T>(method, params),
+          requestTimeout,
+          `no response after ${requestTimeout}ms`,
+        )
       } catch (error) {
         lastAttemptError = error as Error
 

@@ -6,6 +6,7 @@ import {
   getChromeFlagOverride,
   getFlagSettingsPath,
   getInlinePlugins,
+  getInlinePluginUrls,
   getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
 } from '../../bootstrap/state.js'
@@ -81,6 +82,9 @@ export function buildInheritedCliFlags(options?: {
   const inlinePlugins = getInlinePlugins()
   for (const pluginDir of inlinePlugins) {
     flags.push(`--plugin-dir ${quote([pluginDir])}`)
+  }
+  for (const pluginUrl of getInlinePluginUrls()) {
+    flags.push(`--plugin-url ${quote([pluginUrl])}`)
   }
 
   // Propagate --teammate-mode so tmux teammates use the same mode as leader

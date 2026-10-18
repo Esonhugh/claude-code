@@ -368,7 +368,7 @@ import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js'
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js'
 import { getStdinStream } from 'src/utils/stdin.js'
 import { captureLaunchInitialize } from './entrypoints/sdk/launchInitialize.js'
-import { createPluginDirNoMcpOption } from './cli/pluginOptions.js'
+import { createPluginDirNoMcpOption, createPluginUrlOption } from './cli/pluginOptions.js'
 import { setCwd } from 'src/utils/Shell.js'
 import {
   type ProcessedResume,
@@ -394,6 +394,7 @@ import {
   setInitialMainLoopModel,
   setInlinePlugins,
   setInlinePluginsNoMcp,
+  setInlinePluginUrls,
   setIsInteractive,
   setKairosActive,
   setOriginalCwd,
@@ -1261,6 +1262,12 @@ async function run(): Promise<CommanderCommand> {
       clearPluginCache('preAction: session plugins without MCP discovery')
     }
 
+    const pluginUrls = thisCommand.getOptionValue('pluginUrl')
+    if (Array.isArray(pluginUrls) && pluginUrls.length > 0 && pluginUrls.every(u => typeof u === 'string')) {
+      setInlinePluginUrls(pluginUrls)
+      clearPluginCache('preAction: --plugin-url inline plugins')
+    }
+
     runMigrations()
     profileCheckpoint('preAction_after_migrations')
 
@@ -1666,6 +1673,7 @@ async function run(): Promise<CommanderCommand> {
       [] as string[],
     )
     .addOption(createPluginDirNoMcpOption())
+    .addOption(createPluginUrlOption())
     .option('--disable-slash-commands', 'Disable all skills', () => true)
     .option('--chrome', 'Enable Claude in Chrome integration')
     .option('--no-chrome', 'Disable Claude in Chrome integration')

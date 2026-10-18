@@ -79,6 +79,7 @@ addOptions(
     '--max-thinking-tokens',
     '--max-turns',
     '--plugin-dir',
+    '--plugin-url',
     '--resume-session-at',
     '--rewind-files',
     '--session-id',

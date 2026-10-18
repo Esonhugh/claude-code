@@ -129,9 +129,12 @@ export async function installPluginsForHeadless(): Promise<boolean> {
         reconcileResult.installed.length + reconcileResult.updated.length
 
       // Clear caches so newly-installed marketplace plugins are discoverable.
-      // Plugin caching is the loader's job — after caches clear, the caller's
-      // refreshPluginState() → loadAllPlugins() will cache any missing plugins
-      // from the newly-materialized marketplaces.
+      // Plugin caching is the loader's job. Only with
+      // CLAUDE_CODE_SYNC_PLUGIN_INSTALL does the caller's refreshPluginState()
+      // run the full loader (loadAllPluginsCacheOnly delegates to it) and cache
+      // missing plugins; the non-sync caller only re-diffs MCP from the
+      // cache-only load, so enabled remote plugins that were never installed
+      // stay plugin-cache-miss there.
       if (marketplacesChanged > 0) {
         clearMarketplacesCache()
         clearPluginCache('headlessPluginInstall: marketplaces reconciled')
