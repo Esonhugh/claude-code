@@ -166,33 +166,31 @@ export type DeclaredMarketplace = {
  * Get declared marketplace intent from merged settings and --add-dir sources.
  * This is what SHOULD exist — used by the reconciler to find gaps.
  *
- * The official marketplace is implicitly declared with `sourceIsFallback: true`
- * when any enabled plugin references it.
+ * The official marketplaces (Esonhugh-Marketplace and claude-plugins-official)
+ * are implicitly declared with `sourceIsFallback: true` only when an enabled
+ * plugin references them. Their first install belongs to the startup check,
+ * which honors its disable env var and retry backoff, so a removed marketplace
+ * does not come back on the next reconcile.
  */
 export function getDeclaredMarketplaces(): Record<string, DeclaredMarketplace> {
-  const implicit: Record<string, DeclaredMarketplace> = {
-    [ESONHUGH_MARKETPLACE_NAME]: {
-      source: ESONHUGH_MARKETPLACE_SOURCE,
-      sourceIsFallback: true,
-    },
+  const implicit: Record<string, DeclaredMarketplace> = {}
+  const implicitSources: Record<string, DeclaredMarketplace['source']> = {
+    [ESONHUGH_MARKETPLACE_NAME]: ESONHUGH_MARKETPLACE_SOURCE,
+    [OFFICIAL_MARKETPLACE_NAME]: OFFICIAL_MARKETPLACE_SOURCE,
   }
 
-  // The official marketplace is implicitly declared when enabled plugins need it.
   // Explicitly-disabled entries (value: false) don't count.
   const enabledPlugins = {
     ...getAddDirEnabledPlugins(),
     ...(getInitialSettings().enabledPlugins ?? {}),
   }
   for (const [pluginId, value] of Object.entries(enabledPlugins)) {
-    if (
-      value &&
-      parsePluginIdentifier(pluginId).marketplace === OFFICIAL_MARKETPLACE_NAME
-    ) {
-      implicit[OFFICIAL_MARKETPLACE_NAME] = {
-        source: OFFICIAL_MARKETPLACE_SOURCE,
+    const marketplace = parsePluginIdentifier(pluginId).marketplace
+    if (value && marketplace && Object.hasOwn(implicitSources, marketplace)) {
+      implicit[marketplace] = {
+        source: implicitSources[marketplace]!,
         sourceIsFallback: true,
       }
-      break
     }
   }
 

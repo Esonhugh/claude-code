@@ -77,11 +77,16 @@ if (!process.env.PIM_BACKGROUND_TEST_CHILD) {
       ],
     })
     commit(marketplace)
+    // Declaring the marketplace makes it a pending install for the background
+    // reconcile.
     updateSettingsForSource('userSettings', {
       enabledPlugins: { 'rp@gm': true },
+      extraKnownMarketplaces: {
+        gm: { source: { source: 'git', url: `file://${marketplace}` } },
+      },
     })
-    // Materialize only the fixture marketplace; implicitly declared remote
-    // marketplaces stay untouched so the test never reaches the network.
+    // Materialize only the fixture marketplace so the test never reaches the
+    // network.
     mock.module('../../utils/plugins/reconciler.js', () => ({
       ...reconciler,
       reconcileMarketplaces: async () => {
