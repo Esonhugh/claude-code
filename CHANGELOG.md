@@ -105,7 +105,7 @@
 
 #### 已知缺口（本轮）
 
-- 已知缺口：Coordinator 模式不在默认构建中，需要构建时设置 `CLAUDE_CODE_RECOVER_FEATURES=COORDINATOR_MODE` 并在运行时设置 `CLAUDE_CODE_COORDINATOR_MODE=1`；MCP step-up 重新认证对话框、resource templates 与 completion、`mcp_tool` hooks、MCP Tasks、空闲超时、协议版本协商及 claude.ai connector 的 `mcp login` 仍未实现；前台 Agent 结束时待发的 SendMessage 仍会丢弃；headless 模式的非 sync 插件刷新尚未对齐；保留 marketplace 名称同时接受 anthropics 与 esonhugh 组织来源，此为有意保留；官方 `/code-review` 不走 workflow、官方 workflow worker 类型为 `workflow-subagent`，以及进入 REPL 前等待 served 模型目录（最多约 1.75 秒）尚未对齐。
+- 已知缺口：Coordinator 模式不在默认构建中，需要构建时设置 `CLAUDE_CODE_RECOVER_FEATURES=COORDINATOR_MODE` 并在运行时设置 `CLAUDE_CODE_COORDINATOR_MODE=1`；MCP step-up 重新认证对话框、resource templates 与 completion、`mcp_tool` hooks、MCP Tasks、空闲超时、协议版本协商及 claude.ai connector 的 `mcp login` 仍未实现；前台 Agent 结束时待发的 SendMessage 仍会丢弃；headless 模式的非 sync 插件刷新尚未对齐；保留 marketplace 名称同时接受 anthropics 与 esonhugh 组织来源，此为有意保留；官方 `/code-review` 不走 workflow、官方 workflow worker 类型为 `workflow-subagent`，以及进入 REPL 前等待 served 模型目录（最多约 1.75 秒）尚未对齐。`/workflows show` 与 `/workflows dry-run` 指向不存在或无效的 workflow 时没有任何输出（错误只写入 debug 日志），此为 v2.1.219 起的既有问题。
 - 已知缺口：发布门禁的 `terminal-interaction`、`terminal-canonical-diff` 只差 `full_terminal_coverage`，`builtin-mods` 只差 `terminalEvidence` 的产品时序保留；两者要求完整 termios、无观测时序与真实 child read/parser/owner 证明，原生采集协议在 macOS 与 Linux 上都尚未实现，相关断言保持不变。
 
 #### 原 v2.1.280 阶段（2026-09-30 至 2026-10-16）

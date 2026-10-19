@@ -799,6 +799,23 @@ def input_prompt_ready(pane):
     return 'esc to interrupt' not in trailing
 
 
+
+def goal_escape_outcome(pane, condition):
+    """Escape after /goal: an idle prompt once the goal turn ended, or, when it
+    interrupted the turn before any answer, the auto-restored /goal draft."""
+    if input_prompt_ready(pane):
+        return 'idle'
+    lines = strip_ansi(pane).replace('\u00a0', ' ').splitlines()
+    composer = [index for index, line in enumerate(lines) if line.lstrip().startswith('❯')]
+    if not composer:
+        return None
+    trailing = '\n'.join(lines[composer[-1] + 1:]).lower()
+    if 'esc to interrupt' in trailing:
+        return None
+    if re.fullmatch(r'\s*❯\s*/goal ' + re.escape(condition) + r'\s*', lines[composer[-1]]):
+        return 'restored'
+    return None
+
 def parse_target_list(raw, *, option_name='targets'):
     if raw is None:
         return []
@@ -7367,12 +7384,22 @@ else:
             )
             if active:
                 self.tmux('send-keys', '-t', target, 'Escape')
-                prompt_restored = self.wait_until(
-                    lambda: input_prompt_ready(
-                        self.capture(target, run_dir / '04-goal-cancelled-pane.txt')
-                    ),
-                    60,
-                )
+                outcome = None
+                def escaped():
+                    nonlocal outcome
+                    outcome = goal_escape_outcome(
+                        self.capture(target, run_dir / '04-goal-cancelled-pane.txt'), condition)
+                    return outcome is not None
+                prompt_restored = self.wait_until(escaped, 60)
+                result['goal_escape_outcome'] = outcome
+                if outcome == 'restored':
+                    self.tmux('send-keys', '-t', target, 'C-u')
+                    prompt_restored = self.wait_until(
+                        lambda: input_prompt_ready(
+                            self.capture(target, run_dir / '04b-goal-draft-cleared-pane.txt')
+                        ),
+                        30,
+                    )
             if prompt_restored:
                 self.send(target, run_dir, '/goal', 'input-goal-status.txt')
                 status_visible = self.wait_until(
@@ -7456,6 +7483,8 @@ else:
                     [
                         run_dir / '03-goal-active-pane.txt',
                         run_dir / '04-goal-cancelled-pane.txt',
+                        *([run_dir / '04b-goal-draft-cleared-pane.txt']
+                          if result.get('goal_escape_outcome') == 'restored' else []),
                         run_dir / '05-goal-status-pane.txt',
                         run_dir / '05b-goal-status-dismissed-pane.txt',
                         run_dir / '06-goal-cleared-pane.txt',

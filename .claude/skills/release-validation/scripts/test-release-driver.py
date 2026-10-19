@@ -8653,6 +8653,22 @@ def test_retained_process_spawn_real_entry_is_required_for_its_runtime_and_valid
     assert 'builtin-mods' in module.required_targets_for_paths(['scripts/linux-sandbox-exec.py'])
 
 
+def test_retained_goal_escape_accepts_an_idle_prompt_or_the_restored_goal_draft():
+    module = load_driver()
+    # Escape before the goal turn answers rewinds it and restores the submitted /goal as a
+    # draft (the auto-restore on cancel); after the turn ended it leaves an empty prompt.
+    condition = 'wait for token'
+    assert module.goal_escape_outcome('❯ /goal wait for token\n  ⎿  Goal set: wait for token\n❯ \nGoal is set\n', condition) == 'idle'
+    assert module.goal_escape_outcome(
+        '❯ /goal wait for token\n  ⎿  Goal set: wait for token\n───\n❯ /goal wait for token \n───\n'
+        '⏵⏵ bypass permissions on · Goal is set\n', condition) == 'restored'
+    assert module.goal_escape_outcome(
+        '❯ /goal wait for token\n✶ Working…\n❯ \nesc to interrupt · Goal is set\n', condition) is None
+    assert module.goal_escape_outcome(
+        '❯ /goal wait for token\n───\n❯ /goal wait for other\n───\nGoal is set\n', condition) is None
+    assert module.goal_escape_outcome('❯ draft typed later\nGoal is set\n', condition) is None
+
+
 def test_retained_process_spawn_closed_receipts_cannot_pass_without_their_child_and_stream_contracts():
     spec = importlib.util.spec_from_file_location('process_spawn_probe', SCRIPTS_DIR.parents[3] / 'scripts/validate-mods-process-spawn.py')
     probe = importlib.util.module_from_spec(spec)
@@ -8685,6 +8701,27 @@ def test_retained_process_spawn_closed_receipts_cannot_pass_without_their_child_
         else:
             raise AssertionError('rewritten closed report was accepted')
 
+
+
+def test_retained_process_spawn_normal_exit_re_signals_a_tmux_server_that_missed_the_pane_reap():
+    spec = importlib.util.spec_from_file_location('process_spawn_exit_probe', SCRIPTS_DIR.parents[3] / 'scripts/validate-mods-process-spawn.py')
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+    # tmux 3.4 occasionally misses SIGCHLD: the pane is dead (pty EOF) but never reaped, so no status.
+    nudges = []
+    states = iter(['0', '1', '1', '1', '1', '1', '1', '1'])
+    def state_of():
+        return '1 0' if nudges else next(states, '1')
+    assert probe.await_normal_exit(state_of, lambda: nudges.append(1), 5) == '1 0'
+    assert len(nudges) == 1
+    # A live pane is never signalled, and the server's own status is kept as reported.
+    for reported in ['1 0', '1 3']:
+        nudges.clear()
+        assert probe.await_normal_exit(lambda: reported, lambda: nudges.append(1), 5) == reported
+        assert nudges == []
+    nudges.clear()
+    assert probe.await_normal_exit(lambda: '0', lambda: nudges.append(1), .3) == '0'
+    assert nudges == []
 
 
 def test_retained_process_spawn_final_rechecks_all_registered_originals_and_exact_assertion():

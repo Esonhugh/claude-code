@@ -35,6 +35,20 @@ def recheck_process_spawn_report(root, expected_report_sha256, expected_binary_s
     checks['script_identity']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()==report.get('driverSHA256')
     return checks
 
+# tmux reports pane_dead_status only once it reaps the pane. A server that missed
+# SIGCHLD (seen with tmux 3.4) keeps a dead pane's process as an unreaped zombie
+# and never reports one, so the owned server is re-signalled to reap it itself.
+def await_normal_exit(state_of,nudge_reaper,seconds):
+    deadline=time.monotonic()+seconds;state='';dead_since=None
+    while time.monotonic()<deadline:
+        state=state_of()
+        if state.startswith('1 '):break
+        if state=='1':
+            dead_since=dead_since or time.monotonic()
+            if time.monotonic()-dead_since>=.5:nudge_reaper();dead_since=time.monotonic()
+        time.sleep(.1)
+    return state
+
 def process_spawn_checks(record):
     rows=record.get('caseResults',[])
     cases=['normal','twice','deny','afterdeny','before','pending','break','badreceipt']
@@ -239,11 +253,8 @@ def main():
      try:
       if identity:
        capture('90-before-normal-exit');send(b'\x1b[27u','90-escape-for-normal-exit');command('/exit','91-exit')
-       deadline=time.monotonic()+5;state=''
-       while time.monotonic()<deadline:
-        state=tmux('display-message','-p','-t',target,'#{pane_dead} #{pane_dead_status}',check=False).stdout.strip()
-        if state.startswith('1 '):break
-        time.sleep(.1)
+       def nudge_reaper():os.kill(server.pid,signal.SIGCHLD);record.setdefault('reaperNudges',[]).append(time.monotonic()-start)
+       state=await_normal_exit(lambda:tmux('display-message','-p','-t',target,'#{pane_dead} #{pane_dead_status}',check=False).stdout.strip(),nudge_reaper,5)
        record['normalExitState']=state;record['normalExitPassed']=state=='1 0';capture('92-final')
      except BaseException as e:record['normalExitError']=str(e)
      debug=(ev/'debug.log').read_text(errors='replace')if(ev/'debug.log').exists()else''

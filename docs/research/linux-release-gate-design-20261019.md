@@ -190,7 +190,7 @@
 
 **`observer.so`**（新文件 `scripts/native-terminal-journal-linux.c`，Darwin 的 `.c` 不动）：
 - `cc_terminal_journal_mark`：在产品进程内写入，要求 `header[8]==getpid()`、fd 1/2 在登记端点上，时钟用 CLOCK_MONOTONIC。
-- `cc_terminal_journal_consume`：逻辑与 Darwin 相同，可变 header 字额外加上 20/22/23。
+- `cc_terminal_journal_consume`：逻辑与 Darwin 相同，可变 header 字额外加上 22/23/24/25（header[20] 是登记的不可变字段）。
 - `cc_terminal_native_resize`：用 CLOCK_MONOTONIC，`receipt[10..11]=1,1`。
   - TIOCSWINSZ 在返回前就向产品发出 SIGWINCH；宿主繁忙时 broker 会被唤醒的产品抢占，产品对 resize 的反应写入（如 `ink.tsx` 重发鼠标模式）落进 broker 的 `[entry, return]` 区间，校验器判 "overlaps an output syscall"。
   - 因此 broker 在共享 header[24] 发布区间（打开时为奇数，CAS 打开、关闭时 +1）；追踪器在区间打开期间扣住产品的 SIGWINCH 信号投递停止和新的端点写入，区间关闭后才放行并记 entry。区间遗留打开（broker 死亡）超过 1 秒计为丢失，此后不再等待。
