@@ -19,7 +19,7 @@ spec.loader.exec_module(driver)
 
 class ArchiveTest(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='ba-', dir='/private/tmp')
+        self.temporary = tempfile.TemporaryDirectory(prefix='ba-', dir=driver.HOST_TMP_ROOT)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / 'source'
@@ -88,29 +88,29 @@ class ArchiveTest(unittest.TestCase):
         for name in ('frame-request.fifo', 'frame-response.fifo', 'tmux.sock'):
             self.assertEqual((self.archive / 'runs/r-012345abcdef' / name).read_bytes(), b'durable content')
 
+    def assert_recorded_unexpected(self, relative, kind):
+        receipt = self.copy()
+        self.assertTrue(receipt['archiveComplete'])
+        self.assertEqual(receipt['excludedTransports'], [])
+        self.assertEqual([(row['path'], row['type']) for row in receipt['unexpectedSpecialFiles']],
+                         [(relative, kind)])
+        self.assertEqual(self.snapshot['unexpectedSpecialFiles'], receipt['unexpectedSpecialFiles'])
+        self.assertEqual((self.source / relative).lstat().st_ino, receipt['unexpectedSpecialFiles'][0]['inode'])
+        self.assertFalse((self.archive / relative).exists())
+
     def test_unknown_fifo_is_not_silently_discarded(self):
         os.mkfifo(self.run / 'unknown.fifo', 0o600)
-        with self.assertRaises(shutil.Error):
-            self.copy()
-        receipt = json.loads(self.receipt.read_text())
-        self.assertFalse(receipt['archiveComplete'])
-        self.assertEqual(receipt['excludedTransports'], [])
+        self.assert_recorded_unexpected('runs/r-012345abcdef/unknown.fifo', 'fifo')
 
     def test_named_fifo_outside_the_exact_run_location_is_rejected(self):
         os.mkfifo(self.source / 'frame-request.fifo', 0o600)
-        with self.assertRaises(shutil.Error):
-            self.copy()
-        self.assertFalse(json.loads(self.receipt.read_text())['archiveComplete'])
+        self.assert_recorded_unexpected('frame-request.fifo', 'fifo')
 
     def test_unknown_socket_is_not_silently_discarded(self):
         transport = socket.socket(socket.AF_UNIX)
         self.addCleanup(transport.close)
         transport.bind(str(self.run / 'unknown.sock'))
-        with self.assertRaises(shutil.Error):
-            self.copy()
-        receipt = json.loads(self.receipt.read_text())
-        self.assertFalse(receipt['archiveComplete'])
-        self.assertEqual(receipt['excludedTransports'], [])
+        self.assert_recorded_unexpected('runs/r-012345abcdef/unknown.sock', 'socket')
 
     def test_symlink_is_preserved_without_copying_its_foreign_target(self):
         foreign = self.root / 'foreign.bin'
@@ -162,7 +162,7 @@ class ArchiveTest(unittest.TestCase):
 class BuiltinArchiveIntegrationTest(unittest.TestCase):
     """Actual builtin_mods bookkeeping with a controlled acceptance producer."""
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='bi-', dir='/private/tmp')
+        self.temporary = tempfile.TemporaryDirectory(prefix='bi-', dir=driver.HOST_TMP_ROOT)
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.gate = object.__new__(driver.BinaryGate)
@@ -287,9 +287,15 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
         archived = self.gate.evidence_root / 'builtin-mods/acceptance-cache/runs/r-012345abcdef/native-pty.raw'
         self.assertEqual(archived.read_bytes(), b'bad copy')
 
-    def test_unknown_fifo_failure_retains_the_source_cache(self):
+    def test_unknown_fifo_is_reported_as_failed_cleanup_and_the_cache_removed(self):
         self.unknown_fifo = True
-        self.assert_retained_failure(self.execute(), self.raw)
+        result = self.execute()
+        self.assertTrue(result['checks']['report'])
+        self.assertFalse(result['checks']['cache_cleanup'])
+        self.assertFalse(self.cache.exists())
+        checks = json.loads((self.gate.evidence_root / 'builtin-mods/builtin-mods-checks.json').read_text())
+        self.assertIn('runs/r-012345abcdef/unknown.fifo (fifo)', checks['report_error'])
+        self.assertIsNone(checks['retained_cache'])
 
     def test_missing_report_retains_the_unarchived_source_cache(self):
         self.produce_report = False
@@ -417,7 +423,7 @@ class BuiltinArchiveIntegrationTest(unittest.TestCase):
 class NativeCacheClosureTest(unittest.TestCase):
     """Synthetic closure/type tests; the original seven-run RED is separate."""
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(prefix='bn-close-', dir='/private/tmp')
+        self.temporary = tempfile.TemporaryDirectory(prefix='bn-close-', dir=driver.HOST_TMP_ROOT)
         self.addCleanup(self.temporary.cleanup)
         self.cache = Path(self.temporary.name)
         self.run = self.cache / 'runs/r-012345abcdef'

@@ -2702,29 +2702,44 @@ def builtin_cache_producers_closed(cache, binary_sha256):
     return True
 
 
-def builtin_cache_endpoints_match(root, expected):
-    """Only the original, explicitly excluded IPC nodes may remain in the source."""
-    if root.is_symlink() or not root.is_dir() or not isinstance(expected, list):
+def builtin_cache_special_kind(mode):
+    return ('fifo' if stat.S_ISFIFO(mode) else 'socket' if stat.S_ISSOCK(mode)
+            else 'char-device' if stat.S_ISCHR(mode) else 'block-device' if stat.S_ISBLK(mode)
+            else None)
+
+
+def builtin_cache_known_transport(row):
+    parts = Path(row['path']).parts
+    return (len(parts) == 3 and parts[0] == 'runs'
+            and re.fullmatch(r'r-[0-9a-f]{12}', parts[1]) is not None
+            and ((row['type'] == 'fifo' and parts[2] in ('frame-request.fifo', 'frame-response.fifo'))
+                 or (row['type'] == 'socket' and parts[2] == 'tmux.sock')))
+
+
+def builtin_cache_endpoints_match(root, expected, unexpected=()):
+    """Only the original, explicitly recorded special nodes may remain in the source."""
+    if (root.is_symlink() or not root.is_dir() or not isinstance(expected, list)
+            or not isinstance(unexpected, (list, tuple))):
         return False
     allowed = {}
-    for row in expected:
-        if (not isinstance(row, dict) or set(row) != {'path', 'type', 'device', 'inode', 'mode'}
-                or not isinstance(row['path'], str)):
-            return False
-        parts = Path(row['path']).parts
-        if (len(parts) != 3 or parts[0] != 'runs'
-                or not re.fullmatch(r'r-[0-9a-f]{12}', parts[1])
-                or not ((row['type'] == 'fifo' and parts[2] in ('frame-request.fifo', 'frame-response.fifo'))
-                        or (row['type'] == 'socket' and parts[2] == 'tmux.sock'))
-                or any(type(row[key]) is not int for key in ('device', 'inode', 'mode'))
-                or row['path'] in allowed):
-            return False
-        allowed[row['path']] = row
+    for known, rows in ((True, expected), (False, unexpected)):
+        for row in rows:
+            if (not isinstance(row, dict) or set(row) != {'path', 'type', 'device', 'inode', 'mode'}
+                    or not isinstance(row['path'], str)):
+                return False
+            path = Path(row['path'])
+            if (path.is_absolute() or '..' in path.parts or str(path) != row['path']
+                    or row['type'] not in ('fifo', 'socket', 'char-device', 'block-device')
+                    or builtin_cache_known_transport(row) is not known
+                    or any(type(row[key]) is not int for key in ('device', 'inode', 'mode'))
+                    or row['path'] in allowed):
+                return False
+            allowed[row['path']] = row
     for path in sorted(root.rglob('*')):
         info = path.lstat()
         if stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode):
             continue
-        kind = 'fifo' if stat.S_ISFIFO(info.st_mode) else 'socket' if stat.S_ISSOCK(info.st_mode) else None
+        kind = builtin_cache_special_kind(info.st_mode)
         relative = str(path.relative_to(root))
         actual = {'path': relative, 'type': kind, 'device': info.st_dev,
                   'inode': info.st_ino, 'mode': stat.S_IMODE(info.st_mode)}
@@ -2743,14 +2758,16 @@ def builtin_cache_archive_matches(source, archive, receipt, expected_snapshot):
             return False
         expected_manifest = expected_snapshot.get('sourceManifest')
         expected_endpoints = expected_snapshot.get('excludedTransports')
+        expected_unexpected = expected_snapshot.get('unexpectedSpecialFiles')
         if (not isinstance(saved, dict) or not isinstance(expected_manifest, dict)
                 or saved.get('source') != str(source) or saved.get('archive') != str(archive)
                 or any(saved.get(key) is not True for key in (
                     'archiveComplete', 'sourceFilesStable', 'archiveFilesMatch'))
                 or saved.get('sourceManifest') != expected_manifest
-                or saved.get('excludedTransports') != expected_endpoints):
+                or saved.get('excludedTransports') != expected_endpoints
+                or saved.get('unexpectedSpecialFiles') != expected_unexpected):
             return False
-        return (builtin_cache_endpoints_match(source, expected_endpoints)
+        return (builtin_cache_endpoints_match(source, expected_endpoints, expected_unexpected)
                 and builtin_cache_endpoints_match(archive, [])
                 and tree_manifest(source) == expected_manifest
                 and tree_manifest(archive) == expected_manifest)
@@ -2763,31 +2780,24 @@ def archive_builtin_cache(source, archive, receipt):
     if archive.exists() or receipt.exists():
         raise FileExistsError('builtin evidence archive or receipt already exists')
     before = tree_manifest(source)
-    excluded = []
+    excluded, unexpected = [], []
     stable = matched = False
     completed = False
 
     def ignore(directory, names):
+        # Never open an endpoint or device at any depth; anything beyond the run's
+        # known transports is recorded as unexpected so the gate can fail on it.
         ignored = []
         for name in sorted(names):
             path = Path(directory) / name
-            relative = path.relative_to(source)
-            parts = relative.parts
-            if (len(parts) != 3 or parts[0] != 'runs'
-                    or not re.fullmatch(r'r-[0-9a-f]{12}', parts[1])):
-                continue
             info = path.lstat()
-            kind = None
-            if (name in ('frame-request.fifo', 'frame-response.fifo')
-                    and stat.S_ISFIFO(info.st_mode)):
-                kind = 'fifo'
-            elif name == 'tmux.sock' and stat.S_ISSOCK(info.st_mode):
-                kind = 'socket'
-            if kind is not None:
-                ignored.append(name)
-                excluded.append({'path': str(relative), 'type': kind,
-                                 'device': info.st_dev, 'inode': info.st_ino,
-                                 'mode': stat.S_IMODE(info.st_mode)})
+            kind = builtin_cache_special_kind(info.st_mode)
+            if kind is None:
+                continue
+            ignored.append(name)
+            row = {'path': str(path.relative_to(source)), 'type': kind, 'device': info.st_dev,
+                   'inode': info.st_ino, 'mode': stat.S_IMODE(info.st_mode)}
+            (excluded if builtin_cache_known_transport(row) else unexpected).append(row)
         return ignored
 
     try:
@@ -2809,10 +2819,12 @@ def archive_builtin_cache(source, archive, receipt):
                        'archiveComplete': completed, 'sourceFilesStable': stable,
                        'archiveFilesMatch': matched, 'sourceManifest': before,
                        'excludedTransports': excluded,
+                       'unexpectedSpecialFiles': unexpected,
                        'scope': 'File preservation only; EOF, reap, timing and business verdicts remain separate.'},
                       stream, indent=2)
             stream.write('\n')
-    return {'sourceManifest': before, 'excludedTransports': excluded}
+    return {'sourceManifest': before, 'excludedTransports': excluded,
+            'unexpectedSpecialFiles': unexpected}
 
 
 def remap_path_strings(value, source_root, target_root):
@@ -6277,6 +6289,12 @@ else:
                     cache_removed = not cache.exists()
                 except OSError as error:
                     report_error = report_error or f'cache cleanup failed: {error}'
+        # A product endpoint left in a finished run is a cleanup failure, even once the cache is gone.
+        leftovers = (archived_snapshot or {}).get('unexpectedSpecialFiles', [])
+        if leftovers:
+            note = 'unexpected special files left in builtin cache: ' + ', '.join(
+                f"{row['path']} ({row['type']})" for row in leftovers)
+            report_error = f'{report_error}; {note}' if report_error else note
 
         expected_assertions = BUILTIN_ASSERTIONS
         checks = {
@@ -6286,7 +6304,7 @@ else:
             'binary': False,
             'sides': False,
             'evidence_ownership': False,
-            'cache_cleanup': cache_removed,
+            'cache_cleanup': cache_removed and not leftovers,
             'independent_frame_replay': False,
         }
         recheck_path = run_dir / 'builtin-terminal-recheck.json'

@@ -53,6 +53,67 @@ def test_retained_builtin_archive_real_filesystem():
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
+def test_retained_builtin_archive_skips_and_reports_special_files_at_any_depth():
+    import socket
+    module = load_driver()
+    with tempfile.TemporaryDirectory(prefix='bsk-', dir=module.HOST_TMP_ROOT) as name:
+        root = Path(name)
+        gate = object.__new__(module.BinaryGate)
+        gate.evidence_root = root / 'evidence'
+        gate.evidence_root.mkdir()
+        gate.repo, gate.binary = root / 'repo', root / 'binary'
+        gate.manifest = {'binary_sha256': 'a' * 64}
+        gate.stamp, gate.pid, gate.registered_runs = 'unit', os.getpid(), {}
+        recorded = []
+        gate.record = recorded.append
+        endpoints, produced = [], {}
+
+        def producer(command, **options):
+            if '--cache' not in command:
+                # Terminal recheck: [..., output, archive receipt]; the receipt stays untouched.
+                Path(command[-2]).write_text('{"verdict":"failed","sides":{}}\n')
+                return subprocess.CompletedProcess(command, 1, '', 'controlled recheck')
+            cache = produced['cache'] = Path(command[command.index('--cache') + 1])
+            run = cache / 'runs/r-012345abcdef'
+            (run / 'tmp/cc-socks').mkdir(parents=True)
+            (run / 'evidence.txt').write_text('durable evidence\n')
+            (run / 'acceptance.json').write_text('{"pair":{},"assertions":{}}\n')
+            # The known tmux transport plus product leftovers below the run's own directory.
+            for path in (run / 'tmux.sock', run / 'tmp/cc-socks/product.sock'):
+                endpoint = socket.socket(socket.AF_UNIX)
+                endpoint.bind(str(path))
+                endpoints.append(endpoint)
+            os.mkfifo(run / 'tmp/leftover.fifo', 0o600)
+            return subprocess.CompletedProcess(command, 1, 'controlled producer', '')
+
+        try:
+            with patch.object(module.subprocess, 'run', side_effect=producer):
+                gate.builtin_mods()
+        finally:
+            for endpoint in endpoints:
+                endpoint.close()
+            if 'cache' in produced:
+                shutil.rmtree(produced['cache'], ignore_errors=True)
+        assert len(recorded) == 1 and recorded[0]['validation_verdict'] == 'failed'
+        evidence = gate.evidence_root / 'builtin-mods'
+        receipt = json.loads((evidence / 'builtin-cache-archive.json').read_text())
+        assert receipt['archiveComplete'] and receipt['sourceFilesStable'] and receipt['archiveFilesMatch'], receipt
+        assert [(row['path'], row['type']) for row in receipt['excludedTransports']] == [
+            ('runs/r-012345abcdef/tmux.sock', 'socket')]
+        unexpected = sorted((row['path'], row['type']) for row in receipt['unexpectedSpecialFiles'])
+        assert unexpected == [('runs/r-012345abcdef/tmp/cc-socks/product.sock', 'socket'),
+                              ('runs/r-012345abcdef/tmp/leftover.fifo', 'fifo')], unexpected
+        archived = evidence / 'acceptance-cache/runs/r-012345abcdef'
+        assert (archived / 'evidence.txt').read_text() == 'durable evidence\n'
+        assert not any(path.is_socket() or path.is_fifo() for path in archived.rglob('*'))
+        result = recorded[0]['checks']
+        # The business report survives; the leftover endpoints still fail the target.
+        assert result['report'] is True and result['cache_cleanup'] is False, result
+        checks = json.loads((evidence / 'builtin-mods-checks.json').read_text())
+        assert 'tmp/cc-socks/product.sock' in checks['report_error'], checks
+        assert checks['retained_cache'] is None and not produced['cache'].exists(), checks
+
+
 def test_retained_g5_contract():
     driver = load_driver()
     root = '/private/tmp/owned/config/dev-mods/session-id'
