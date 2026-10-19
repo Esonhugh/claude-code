@@ -8585,7 +8585,7 @@ def test_retained_process_spawn_real_entry_is_required_for_its_runtime_and_valid
         'src/services/mods/dispatch.ts', 'src/services/mods/protocol.ts',
         'src/services/mods/loader.ts', 'src/services/mods/environment.ts',
         'src/services/mods/worker.ts', 'src/services/mods/testing/runner.ts',
-        'scripts/validate-mods-process-spawn.py',
+        'scripts/validate-mods-process-spawn.py', 'scripts/linux-sandbox-exec.py',
     ]:
         assert 'mods-process-spawn' in module.required_targets_for_paths([path]), path
 

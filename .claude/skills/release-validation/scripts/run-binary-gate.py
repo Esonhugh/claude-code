@@ -366,6 +366,7 @@ TARGET_PATH_RULES += (('mods-process-spawn', (
     'src/services/mods/loader', 'src/services/mods/environment',
     'src/services/mods/worker', 'src/services/mods/testing/runner',
     'src/services/mods/processSpawn', 'scripts/validate-mods-process-spawn.py',
+    'scripts/linux-sandbox-exec.py',
 )),)
 SSH_LIFECYCLE_IDS = {
     'session_id': 'release-ssh-session-0001',

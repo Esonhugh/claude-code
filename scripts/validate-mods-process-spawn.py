@@ -93,23 +93,36 @@ def main():
     root=args.evidence_root.resolve();root.mkdir(mode=0o700)
     for name in ('home','config','tmp','cache','runtime','cwd','evidence'):(root/name).mkdir(mode=0o700)
     bun_path=shutil.which('bun');tmux_path=shutil.which('tmux')
-    if not bun_path or not tmux_path or not shutil.which('sandbox-exec'):raise ValueError('macOS sandbox-exec, Bun and tmux are required')
+    sandbox_helper=Path(__file__).resolve().with_name('linux-sandbox-exec.py')
+    if sys.platform=='darwin':
+     if not bun_path or not tmux_path or not shutil.which('sandbox-exec'):raise ValueError('macOS sandbox-exec, Bun and tmux are required')
+    elif sys.platform=='linux':
+     if not bun_path or not tmux_path or not sandbox_helper.is_file() or not Path('/usr/bin/python3').is_file():raise ValueError('Linux sandbox helper, /usr/bin/python3, Bun and tmux are required')
+    else:raise ValueError('process.spawn requires macOS sandbox-exec or the Linux sandbox helper; no unisolated fallback')
     originalBinary=binary
     (root/'bin').mkdir(mode=0o700)
     shutil.copyfile(binary,root/'bin/claude')
     binary=root/'bin/claude';binary.chmod(0o700)
     ev=root/'evidence';dummy='owned-panes-native-dummy-key'
     env={'PATH':'/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin','SHELL':'/bin/sh','TERM':'xterm-256color','LANG':'en_US.UTF-8','HOME':str(root/'home'),'CLAUDE_CONFIG_DIR':str(root/'config'),'XDG_CONFIG_HOME':str(root/'config'),'XDG_CACHE_HOME':str(root/'cache'),'XDG_RUNTIME_DIR':str(root/'runtime'),'TMPDIR':str(root/'tmp'),'CLAUDE_CODE_TMPDIR':str(root/'tmp'),'ANTHROPIC_API_KEY':dummy,'ANTHROPIC_BASE_URL':'http://127.0.0.1:9','DISABLE_TELEMETRY':'1','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1','CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL':'1','SSH_CONNECTION':'127.0.0.1 1 127.0.0.1 2','PRIVACY_MODE':'1','CLAUDE_CODE_NO_FLICKER':'1','CLAUDE_CODE_MAX_RETRIES':'0','GIT_CONFIG_GLOBAL':'/dev/null','GIT_CONFIG_NOSYSTEM':'1','CLAUDE_CODE_FRAME_EVIDENCE_PATH':str(ev/'frames.jsonl')}
+    if sys.platform=='linux':env['PATH']=os.path.dirname(bun_path)+':/usr/bin:/bin:/usr/sbin:/sbin'
+    if os.getuid()==0:env['IS_SANDBOX']='1'
     (root/'config/.claude.json').write_text(json.dumps({'numStartups':1,'installMethod':'local','hasCompletedOnboarding':True,'customApiKeyResponses':{'approved':[dummy[-20:]],'rejected':[]},'cachedGrowthBookFeatures':{'tengu_quiet_dolphin':True},'projects':{str(root/'cwd'):{'hasTrustDialogAccepted':True,'hasCompletedProjectOnboarding':True}}}))
     (root/'config/settings.json').write_text(json.dumps({'skipDangerousModePermissionPrompt':True,'model':'claude-sonnet-4-6','tui':'fullscreen','theme':'dark','env':{'CLAUDE_CODE_MAX_RETRIES':'0'}}))
     helper=Path(__file__).resolve().parents[1]/'.claude/skills/release-validation/scripts/run-binary-gate.py'
     spec=importlib.util.spec_from_file_location('process_spawn_socket_owner',helper)
     socket_owner=importlib.util.module_from_spec(spec);spec.loader.exec_module(socket_owner)
     (ev/'socket-cleanup-helper.py').write_bytes(helper.read_bytes())
-    socketRoot=Path(tempfile.mkdtemp(prefix='mps-',dir='/private/tmp'));socketRoot.chmod(0o700)
+    socketRoot=Path(tempfile.mkdtemp(prefix='mps-',dir=socket_owner.HOST_TMP_ROOT));socketRoot.chmod(0o700)
     socketCapture={'socketRoot':str(socketRoot),'socket':str(socketRoot/'s')}
 
-    profile=root/'sandbox.sb';profile.write_text('(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* (subpath '+json.dumps(str(root))+'))\n(allow file-write* (subpath '+json.dumps(str(socketRoot))+'))\n(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (regex #"^/dev/ttys"))\n(deny network*)\n(allow network* (local unix-socket) (remote unix-socket))\n(deny process-exec (literal "/usr/bin/security"))\n(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))\n(deny file-read* (regex #"/Library/Keychains(/|$)"))\n(deny file-read* (subpath '+json.dumps(str(Path(pwd.getpwuid(os.getuid()).pw_dir)/'.claude'))+'))\n')
+    if sys.platform=='darwin':
+     profile=root/'sandbox.sb';profile.write_text('(version 1)\n(allow default)\n(deny file-write*)\n(allow file-write* (subpath '+json.dumps(str(root))+'))\n(allow file-write* (subpath '+json.dumps(str(socketRoot))+'))\n(allow file-write* (literal "/dev/null") (literal "/dev/ptmx") (regex #"^/dev/ttys"))\n(deny network*)\n(allow network* (local unix-socket) (remote unix-socket))\n(deny process-exec (literal "/usr/bin/security"))\n(deny mach-lookup (global-name "com.apple.securityd") (global-name "com.apple.securityd.xpc"))\n(deny file-read* (regex #"/Library/Keychains(/|$)"))\n(deny file-read* (subpath '+json.dumps(str(Path(pwd.getpwuid(os.getuid()).pw_dir)/'.claude'))+'))\n')
+     sandbox_argv=['/usr/bin/sandbox-exec','-f',str(profile)]
+    else:
+     (ev/'linux-sandbox-exec.py').write_bytes(sandbox_helper.read_bytes())
+     policy={'runDir':str(root),'repo':str(Path(__file__).resolve().parents[1]),'bindReadOnly':[str(Path(bun_path).resolve().parents[1])],'writeTrees':[str(socketRoot)],'writeExisting':['/dev/null','/dev/ptmx','/dev/pts'],'network':{'mode':'none'}}
+     sandbox_argv=['/usr/bin/python3',str(ev/'linux-sandbox-exec.py'),'--policy',json.dumps(policy),'--']
     child=root/'cwd/child.mjs'
     child.write_text("""import {appendFileSync} from 'node:fs';
     appendFileSync('children.jsonl', JSON.stringify({pid:process.pid,case:process.env.CASE})+'\\n');
@@ -201,7 +214,7 @@ def main():
      return {'pid':int(v),'pgid':int(f[0]),'started':' '.join(f[1:6])}if p.returncode==0 and len(f)>=7 else None
     log=(ev/'tmux-server.log').open('x');save()
     try:
-     server=subprocess.Popen(['/usr/bin/sandbox-exec','-f',str(profile),tm,'-D','-S',socket,'-f','/dev/null'],cwd=root/'cwd',env=env,stdout=log,stderr=log,start_new_session=True);record['serverPID']=server.pid;save()
+     server=subprocess.Popen([*sandbox_argv,tm,'-D','-S',socket,'-f','/dev/null'],cwd=root/'cwd',env=env,stdout=log,stderr=log,start_new_session=True);record['serverPID']=server.pid;save()
      deadline=time.monotonic()+8
      while not(socketRoot/'s').exists()and server.poll()is None and time.monotonic()<deadline:time.sleep(.05)
      socketCapture.update(serverPid=server.pid,socketIdentity=socket_owner.terminal_socket_identity(socketCapture))
