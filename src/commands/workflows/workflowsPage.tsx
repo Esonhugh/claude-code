@@ -23,6 +23,7 @@ import type {
   LocalJSXCommandContext,
   LocalJSXCommandOnDone,
 } from '../../types/command.js'
+import { getSessionId } from '../../bootstrap/state.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logError } from '../../utils/log.js'
 import { call as callTextWorkflows } from './workflows.js'
@@ -106,7 +107,7 @@ export function WorkflowsPage({ onComplete }: Props): React.ReactNode {
   }, [liveWorkflowKey])
   const persistedLoaded = persisted?.key === liveWorkflowKey
   const workflowItems = useMemo(
-    () => getWorkflowPageItems(tasks, persisted?.sessions),
+    () => getWorkflowPageItems(tasks, persisted?.sessions, getSessionId()),
     [tasks, persisted],
   )
   const autoJumped = useRef(false)

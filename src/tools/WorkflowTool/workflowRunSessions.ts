@@ -1,6 +1,7 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { getSessionId } from '../../bootstrap/state.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { isENOENT } from '../../utils/errors.js'
 import * as lockfile from '../../utils/lockfile.js'
@@ -17,6 +18,8 @@ export type WorkflowRunSession = {
   taskId: string
   workflowRunId: string
   workflowName: string
+  /** The Claude session that started the run; /workflows lists only the current session's runs. */
+  sessionId?: string
   status: 'running' | 'paused' | 'completed' | 'failed' | 'killed'
   runArgs?: WorkflowArgs
   scriptPath?: string
@@ -317,6 +320,7 @@ export async function tryStartWorkflowRunSession({
       taskId,
       workflowRunId,
       workflowName: plan.name,
+      sessionId: getSessionId(),
       status: 'running' as const,
       runArgs,
       scriptPath,

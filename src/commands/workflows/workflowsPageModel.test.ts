@@ -115,15 +115,19 @@ function persistedSession(overrides: Partial<WorkflowRunSession>): WorkflowRunSe
 }
 
 // Persisted runs that are no longer live are listed after live ones,
-// deduped against live tasks by workflowRunId.
+// deduped against live tasks by workflowRunId. Like official, only runs
+// from the current session are listed.
 const withPersisted = getWorkflowPageItems(
   {
     [running.id]: { ...running, workflowRunId: 'wf_live' },
   },
   [
-    persistedSession({ taskId: 'w-stale-copy', workflowRunId: 'wf_live', workflowName: 'Stale copy', startedAt: 9_000 }),
-    persistedSession({}),
+    persistedSession({ taskId: 'w-stale-copy', workflowRunId: 'wf_live', workflowName: 'Stale copy', startedAt: 9_000, sessionId: 'session-current' }),
+    persistedSession({ sessionId: 'session-current' }),
+    persistedSession({ taskId: 'w-other-session', workflowRunId: 'wf_other', sessionId: 'session-other' }),
+    persistedSession({ taskId: 'w-no-session', workflowRunId: 'wf_no_session' }),
   ],
+  'session-current',
 )
 assert.deepEqual(withPersisted.map(item => [item.id, item.source]), [
   ['w-running', 'live'],
@@ -137,6 +141,7 @@ assert.equal(persistedItem.completedAgents, 2)
 assert.equal(persistedItem.totalAgents, 2)
 assert.equal(persistedItem.task.workflowRunId, 'wf_persisted')
 assert.equal(persistedItem.task.endTime, 900)
-assert.match(persistedItem.metricsText, /2 agents · 10 tok/)
+// Like official, the elapsed time leads the row metrics.
+assert.equal(persistedItem.metricsText, '0s · 2 agents · 10 tok')
 
 console.log('workflowsPageModel.test.ts passed')

@@ -31,6 +31,7 @@ import {
   loadWorkflowRunSession,
   type WorkflowRunSession,
 } from '../../tools/WorkflowTool/workflowRunSessions.js'
+import { getSessionId } from '../../bootstrap/state.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { persistedWorkflowTask } from './workflowsPageModel.js'
@@ -162,7 +163,8 @@ async function workflowRunItems(
     source: 'live',
   }))
   for (const session of await listWorkflowRunSessions(cwd)) {
-    if (liveRunIds.has(session.workflowRunId)) continue
+    // Like official, only the current session's persisted runs are listed.
+    if (session.sessionId !== getSessionId() || liveRunIds.has(session.workflowRunId)) continue
     items.push({
       taskId: session.taskId,
       workflowRunId: session.workflowRunId,

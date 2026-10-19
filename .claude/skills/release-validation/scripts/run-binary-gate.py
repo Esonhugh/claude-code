@@ -508,7 +508,8 @@ def code_review_scope_identity(*, run_args, task_id, run_id, artifact, parents, 
         require(len(actual) == len(params) == 1, 'one actual native child execution')
         agent_id, model = actual[0].groups()
         require(all(params[0].get(key) == value for key, value in {
-            'selectedAgentType': 'general-purpose', 'permissionMode': 'plan', 'toolUseId': tool_id,
+            # Like official 2.1.292, workflow workers follow the parent session's mode.
+            'selectedAgentType': 'general-purpose', 'permissionMode': 'bypassPermissions', 'toolUseId': tool_id,
             'spawnDepth': 1, 'model': model,
         }.items()) and isinstance(params[0].get('isAsync'), bool), 'Agent launch metadata links parent tool')
         candidates = [child for child in children if child.get('session_id') == cli_session
@@ -517,7 +518,7 @@ def code_review_scope_identity(*, run_args, task_id, run_id, artifact, parents, 
         child = candidates[0]
         require(all(child['meta'].get(key) == value for key, value in {
             'agentType': 'general-purpose', 'description': 'code-review: scope', 'toolUseId': tool_id,
-            'permissionMode': 'plan', 'spawnDepth': 1, 'model': model,
+            'permissionMode': 'bypassPermissions', 'spawnDepth': 1, 'model': model,
         }.items()), 'native child meta links Scope and parent')
         entries = [entry for entry in child['entries'] if entry.get('type') in ('user', 'assistant')]
         child_uuids = [entry.get('uuid') for entry in entries]
@@ -7692,6 +7693,7 @@ else:
                     lambda: (
                         'release-inline-workflow'
                         in strip_ansi(self.capture(target, run_dir / '05-workflows-page-pane.txt'))
+                        # A single run in this session opens straight into detail, which shows 2/2.
                         and '2/2' in strip_ansi(self.capture(target, run_dir / '05-workflows-page-pane.txt'))
                     ),
                     60,
@@ -9557,7 +9559,26 @@ else:
         current_path = run_dir / '05-model-current-pane.txt'
         analysis_path = run_dir / 'model-discovery-analysis.json'
         picker_visible = selected = current = False
-        if ready:
+
+        # Like official, an open picker does not refresh when discovery lands later,
+        # so open it only once the discovered options are cached.
+        def discovery_cached():
+            for path in (run_dir / 'config').glob('*.json'):
+                try:
+                    cached = json.loads(path.read_text()).get('additionalModelOptionsCache')
+                except (OSError, json.JSONDecodeError, AttributeError):
+                    continue
+                if isinstance(cached, list) and any(
+                    isinstance(option, dict) and option.get('value') == 'gpt-release-discovered'
+                    for option in cached
+                ):
+                    return True
+            return False
+
+        result['discovery_cached_before_picker'] = discovery_cached_before_picker = (
+            ready and self.wait_until(discovery_cached, 30, 0.25)
+        )
+        if discovery_cached_before_picker:
             (run_dir / 'input-model-picker.txt').write_text(
                 'M-p (default chat:modelPicker keybinding)\n'
             )

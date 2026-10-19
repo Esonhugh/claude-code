@@ -61,10 +61,9 @@ function toWorkflowPageItem(
   const total = visibleAgentTotal(task)
   const { icon, color } = statusIcon(task.status)
   const tokenCount = task.tokenCount ?? task.results.reduce((sum, r) => sum + (r.tokenCount ?? 0), 0)
-  const parts: string[] = []
+  const parts = [formatDuration(elapsedMs(task))]
   if (total > 0) parts.push(`${total} ${total === 1 ? 'agent' : 'agents'}`)
   if (tokenCount > 0) parts.push(`${formatNumber(tokenCount)} tok`)
-  parts.push(formatDuration(elapsedMs(task)))
   return {
     id: task.id,
     task,
@@ -138,12 +137,15 @@ export function formatWorkflowEmptyState(): string {
 export function getWorkflowPageItems(
   tasks: Record<string, TaskState> | Record<string, unknown> | undefined,
   persistedSessions: WorkflowRunSession[] = [],
+  sessionId?: string,
 ): WorkflowPageItem[] {
   const live = Object.values(tasks ?? {}).filter(isLocalWorkflowTask)
   const liveIds = new Set(live.flatMap(task =>
     task.workflowRunId ? [task.id, task.workflowRunId] : [task.id],
   ))
+  // Like official, persisted runs are listed only for the session that started them.
   const persisted = persistedSessions
+    .filter(session => session.sessionId === sessionId)
     .filter(session => !liveIds.has(session.workflowRunId) && !liveIds.has(session.taskId))
     .map(session => toWorkflowPageItem(persistedWorkflowTask(session), 'persisted'))
   return [...live.map(task => toWorkflowPageItem(task, 'live')), ...persisted]

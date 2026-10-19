@@ -3,6 +3,7 @@ import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import { getSessionId } from '../../bootstrap/state.js'
 import { call } from './workflows.js'
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflows-command-test-'))
@@ -140,6 +141,7 @@ await writeFile(
     taskId: persistedTaskId,
     workflowRunId: persistedRunId,
     workflowName: 'Persisted Workflow',
+    sessionId: getSessionId(),
     status: 'failed',
     resumeCacheEntries: [],
     startedAt: workflowTask.startTime - 1000,
@@ -172,8 +174,27 @@ await writeFile(
     events: [],
   }, null, 2)}\n`,
 )
+// Like official, a run persisted by another session is not listed.
+const otherSessionRunDir = join(tempRoot, '.claude', 'workflow-runs', 'wf_other_session')
+await mkdir(otherSessionRunDir, { recursive: true })
+await writeFile(
+  join(otherSessionRunDir, 'session.json'),
+  `${JSON.stringify({
+    taskId: 'w-other-session',
+    workflowRunId: 'wf_other_session',
+    workflowName: 'Other Session Workflow',
+    sessionId: 'another-session',
+    status: 'completed',
+    resumeCacheEntries: [],
+    startedAt: workflowTask.startTime - 2000,
+    updatedAt: workflowTask.startTime - 1500,
+    results: [],
+    events: [],
+  }, null, 2)}\n`,
+)
 const mergedRunsResult = await call('', context)
 assert.equal(mergedRunsResult.type, 'text')
+assert.doesNotMatch(mergedRunsResult.value, /Other Session Workflow/)
 assert.match(mergedRunsResult.value, /2 workflows in this session/)
 assert.match(mergedRunsResult.value, /w-test: Research Workflow \[running\]/)
 assert.match(mergedRunsResult.value, /w-persisted: Persisted Workflow \[failed\] 1\/1 agents · persisted/)
