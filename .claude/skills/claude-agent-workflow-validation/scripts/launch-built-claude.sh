@@ -78,6 +78,11 @@ if [ -n "${CC_VALIDATION_FRAME_BROKER_DIR:-}" ]; then
   /usr/bin/python3 "$CC_VALIDATION_REPO_ROOT/scripts/terminal-capture-launch-check.py"
 fi
 
+case "$(uname -s)" in
+  Darwin) default_tmpdir=/private/tmp ;;
+  *) default_tmpdir=/tmp ;;
+esac
+
 cd "${CC_VALIDATION_CWD:-$CC_VALIDATION_REPO_ROOT}"
 set -- env -i \
   HOME="$CC_VALIDATION_HOME" \
@@ -85,10 +90,10 @@ set -- env -i \
   XDG_CACHE_HOME="$CC_VALIDATION_HOME/.cache" \
   XDG_CONFIG_HOME="$CC_VALIDATION_HOME/.config" \
   XDG_DATA_HOME="$CC_VALIDATION_HOME/.local/share" \
-  TMPDIR="${CC_VALIDATION_TMPDIR:-${TMPDIR:-/private/tmp}}" \
-  TMP="${CC_VALIDATION_TMPDIR:-${TMPDIR:-/private/tmp}}" \
-  TEMP="${CC_VALIDATION_TMPDIR:-${TMPDIR:-/private/tmp}}" \
-  CLAUDE_CODE_TMPDIR="${CC_VALIDATION_TMPDIR:-${TMPDIR:-/private/tmp}}" \
+  TMPDIR="${CC_VALIDATION_TMPDIR:-${TMPDIR:-$default_tmpdir}}" \
+  TMP="${CC_VALIDATION_TMPDIR:-${TMPDIR:-$default_tmpdir}}" \
+  TEMP="${CC_VALIDATION_TMPDIR:-${TMPDIR:-$default_tmpdir}}" \
+  CLAUDE_CODE_TMPDIR="${CC_VALIDATION_TMPDIR:-${TMPDIR:-$default_tmpdir}}" \
   PATH="${CC_VALIDATION_PATH_PREFIX:+$CC_VALIDATION_PATH_PREFIX:}${CC_VALIDATION_SSH_BIN:+$CC_VALIDATION_SSH_BIN:}${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}" \
   SHELL="${SHELL:-/bin/sh}" \
   USER="${USER:-}" \
@@ -143,6 +148,11 @@ if [ -n "${CC_VALIDATION_LOCAL_OAUTH_API_BASE:-}" ]; then
   set -- "$@" \
     USE_LOCAL_OAUTH=1 \
     CLAUDE_LOCAL_OAUTH_API_BASE="$CC_VALIDATION_LOCAL_OAUTH_API_BASE"
+fi
+
+# The product rejects the bypass flag for uid 0 unless the host marks itself as a sandbox.
+if [ "${CC_VALIDATION_SKIP_PERMISSIONS:-0}" != "1" ] && [ "$(id -u)" = 0 ]; then
+  set -- "$@" IS_SANDBOX=1
 fi
 
 if [ -n "${CC_VALIDATION_FRAME_BROKER_DIR:-}" ]; then

@@ -41,6 +41,7 @@ AUTH_ENV_VARS = (
     'OPENAI_AUTH_TOKEN',
 )
 WORKFLOW_RUNS_ROOT = '.claude/workflow-runs'
+HOST_TMP_ROOT = '/private/tmp' if sys.platform == 'darwin' else '/tmp'
 IGNORED_FILES_EXCLUDED_ROOTS = (
     'node_modules',
     WORKFLOW_RUNS_ROOT,
@@ -974,7 +975,7 @@ def revalidate_builtin_assertion(source_root, acceptance_path, binary_sha256):
              str(source_root / 'builtin-cache-archive.json')],
             cwd=script.parent.parent,
             env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
-                 'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
+                 'TMPDIR': HOST_TMP_ROOT, 'DISABLE_TELEMETRY': '1',
                  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
             capture_output=True, text=True, timeout=60,
         )
@@ -1044,7 +1045,7 @@ def revalidate_terminal_assertion(source_root):
              str(source_root / 'capture-launch.json')],
             cwd=script.parent.parent,
             env={'PATH': '/opt/homebrew/bin:/usr/bin:/bin', 'HOME': str(source_root),
-                 'TMPDIR': '/private/tmp', 'DISABLE_TELEMETRY': '1',
+                 'TMPDIR': HOST_TMP_ROOT, 'DISABLE_TELEMETRY': '1',
                  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1'},
             capture_output=True, text=True, timeout=60,
         )
@@ -5101,6 +5102,8 @@ else:
             }
             if label == 'openai-stats-api-key':
                 env['OPENAI_API_KEY'] = DUMMY_OPENAI_API_KEY
+            if os.getuid() == 0:
+                env['IS_SANDBOX'] = '1'
             args.append(shlex.join(['env', '-i', *[f'{k}={v}' for k, v in env.items()],
                                     str(self.binary), '--dangerously-skip-permissions',
                                     '--debug', '--debug-file', str(run_dir / 'debug.log')]))
@@ -5109,7 +5112,7 @@ else:
         if label in {'terminal-interaction', 'terminal-canonical-diff'}:
             if self.terminal_capture is not None:
                 raise RuntimeError('terminal captures must be serial')
-            socket_root = Path(tempfile.mkdtemp(prefix='cc-term-', dir='/private/tmp'))
+            socket_root = Path(tempfile.mkdtemp(prefix='cc-term-', dir=HOST_TMP_ROOT))
             binary = run_dir / 'bin/claude'
             binary.parent.mkdir()
             shutil.copy2(self.binary, binary)
@@ -5127,6 +5130,7 @@ else:
             descriptor.write_text(json.dumps(launch, indent=2) + '\n')
             prepared = self.terminal_capture_command('prepare', descriptor)
             if prepared.returncode:
+                socket_root.rmdir()
                 raise RuntimeError('terminal capture preparation failed')
             self.terminal_capture = json.loads(descriptor.read_text())
             args[-1] = self.terminal_capture['capture']['wrapper']
@@ -6145,7 +6149,9 @@ else:
     def builtin_mods(self):
         run_dir = self.evidence_root / 'builtin-mods'
         run_dir.mkdir()
-        cache = Path(tempfile.mkdtemp(prefix='mods-release-', dir='/private/tmp'))
+        cache = Path(tempfile.mkdtemp(prefix='mods-release-', dir='/private/tmp')
+                     if sys.platform == 'darwin'
+                     else tempfile.mkdtemp(prefix='mods-release-', dir=HOST_TMP_ROOT))
         metadata_path = run_dir / 'run-metadata.json'
         metadata_path.write_text(json.dumps({
             'label': 'builtin-mods',
@@ -11620,7 +11626,29 @@ else:
         }
         self.record(result)
 
+    def record_target_error(self, target, run_count, error):
+        # A post-readiness target exception fails only that target; the gate stays failed.
+        cleanup = self.close_active_runs()
+        self.target_error_cleanup.extend(cleanup)
+        self.manifest.setdefault('target_errors', []).append(
+            {'label': target, 'error': repr(error)})
+        runs = self.manifest['runs']
+        if len(runs) > run_count and runs[-1].get('label') == target:
+            result = runs[-1]
+        else:
+            result = {'label': target, 'evidence_dir': None, 'assertions': [],
+                      'driver_run': f'{self.stamp}-{self.pid}'}
+            runs.append(result)
+        result['validation_verdict'] = 'failed'
+        result['reason'] = f'driver exception: {error!r}'
+        result['driver_error'] = repr(error)
+        result['emergency_cleanup'] = cleanup
+        (self.evidence_root / 'driver-progress.json').write_text(
+            json.dumps(self.manifest, indent=2) + '\n'
+        )
+
     def run(self, targets):
+        self.target_error_cleanup = []
         self.acquire_lease()
         try:
             self.evidence_root.mkdir(parents=True, exist_ok=False)
@@ -11684,7 +11712,11 @@ else:
                 'evidence_dir': readiness_result['evidence_dir'],
             }
             for target in targets:
-                self.run_target(target, actions[target])
+                run_count = len(self.manifest['runs'])
+                try:
+                    self.run_target(target, actions[target])
+                except Exception as error:
+                    self.record_target_error(target, run_count, error)
         except Exception as error:
             self.manifest['driver_error'] = repr(error)
             self.manifest['completion_reason'] = repr(error)
@@ -11702,7 +11734,9 @@ else:
                 self.manifest['completion_state'] = (
                     'interrupted' if self.cleanup_started else 'failed'
                 )
-            self.manifest['emergency_cleanup'] = self.close_active_runs()
+            self.manifest['emergency_cleanup'] = [
+                *self.target_error_cleanup, *self.close_active_runs(),
+            ]
             self.manifest['auth_cleanup'] = self.remove_auth_homes()
             self.manifest['workflow_runs_cleanup'] = (
                 self.archive_and_remove_workflow_runs()
@@ -11742,6 +11776,7 @@ else:
                     self.manifest['normal_exit']
                     and self.manifest['matrix_complete']
                     and 'driver_error' not in self.manifest
+                    and not self.manifest.get('target_errors')
                     and len(self.manifest['runs']) == expected_runs
                     and required_coverage['passed']
                     and planned_coverage['passed']
