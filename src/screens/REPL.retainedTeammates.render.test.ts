@@ -95,7 +95,7 @@ async function renderBranch(bindings: Record<string, unknown> = {}) {
   }
 }
 
-test('REPL child-view pane keeps stdin focus while selection and Escape retain navigation ownership', async () => {
+test('REPL child-view pane hands focus back on the first Escape and the second Escape leaves the view', async () => {
   const declarations: ts.VariableDeclaration[] = []
   const effects: ts.CallExpression[] = []
   function findPresentation(node: ts.Node): void {
@@ -203,6 +203,11 @@ test('REPL child-view pane keeps stdin focus while selection and Escape retain n
       ? node.nodeValue
       : node.childNodes.map(textContent).join('')
     const key = async (value: string) => { stdin.write(value); await settle() }
+    // Tab from the composer no longer takes pane focus (d5dba33a); re-focus through the public API.
+    const refocus = async () => {
+      await ui.focus(owner, { requestId: 'persistent', element: 'view', origin: { kind: 'person' } })
+      await settle()
+    }
     const assertView = (agentId?: string) => {
       expect((inputs.at(-1)!.props as { view: object }).view).toEqual(agentId ? { agentId } : {})
       expect(ui.getSnapshot()).toHaveLength(1)
@@ -231,9 +236,16 @@ test('REPL child-view pane keeps stdin focus while selection and Escape retain n
     await press('x')
     const focusCount = focusDispatches
     await key('\u001b')
-    expect(focusDispatches).toBe(focusCount)
+    expect(focusDispatches).toBe(focusCount + 1)
+    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
+    expect(store.getState().viewingAgentTaskId).toBe('actual-task-id')
+    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', focused: false })
+    expect(getFocusManager(ink.rootNode).activeElement).not.toBe(focused)
+    await key('\u001b')
+    expect(focusDispatches).toBe(focusCount + 1)
     expect(store.getState().viewSelectionMode).toBe('none')
     expect(store.getState().viewingAgentTaskId).toBeUndefined()
+    await refocus()
     assertView()
 
     // Exercise the production Shift+Down / Enter path, not a fabricated mode.
@@ -249,15 +261,21 @@ test('REPL child-view pane keeps stdin focus while selection and Escape retain n
     expect(store.getState().viewSelectionMode).toBe('viewing-agent')
     expect(store.getState().viewingAgentTaskId).toBe('teammate')
     expect(invoked).toHaveLength(count)
-    // Selection intentionally relinquishes pane focus; Tab reacquires it.
-    await key('\t')
+    // Selection intentionally relinquishes pane focus.
+    await refocus()
     assertView('teammate')
     await press('\r')
     await press('x')
     const teammateFocusCount = focusDispatches
     await key('\u001b')
-    expect(focusDispatches).toBe(teammateFocusCount)
+    expect(focusDispatches).toBe(teammateFocusCount + 1)
+    expect(store.getState().viewSelectionMode).toBe('viewing-agent')
+    expect(store.getState().viewingAgentTaskId).toBe('teammate')
+    expect(ui.getSnapshot()[0]).toMatchObject({ id: 'persistent', focused: false })
+    await key('\u001b')
+    expect(focusDispatches).toBe(teammateFocusCount + 1)
     expect(store.getState().viewSelectionMode).toBe('none')
+    await refocus()
     assertView()
 
     // The composer surrogate is gated by the extracted production modPaneFocused value.
@@ -284,7 +302,7 @@ test('REPL child-view pane keeps stdin focus while selection and Escape retain n
     expect(invoked).toHaveLength(beforeTyping)
     setComposerValue('')
     await settle()
-    await key('\t')
+    await refocus()
     assertView()
     await press('\r')
     for (const [binding, blocked, unblocked] of [
@@ -304,7 +322,7 @@ test('REPL child-view pane keeps stdin focus while selection and Escape retain n
       stableBindings[binding] = unblocked
       store.setState(previous => ({ ...previous }))
       await settle()
-      await key('\t')
+      await refocus()
       assertView()
     }
     store.setState(previous => ({ ...previous, viewingAgentTaskId: 'missing' }))
