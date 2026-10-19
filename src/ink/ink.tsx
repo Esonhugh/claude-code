@@ -579,6 +579,20 @@ export default class Ink {
     // an extra React re-render cycle.
     flushInteractionTime()
 
+    // The runtime dispatches SIGWINCH (and so 'resize') only from the event
+    // loop; while a long microtask chain runs, stdout.columns/rows stay at the
+    // old size. _refreshSize is the runtime's own SIGWINCH handler: a fresh
+    // TIOCGWINSZ that updates columns/rows and synchronously emits 'resize'
+    // (→ handleResize) when they changed, so this frame is laid out and
+    // painted at the real size and the later dispatch is a no-op.
+    const stdout = this.options.stdout as NodeJS.WriteStream & {
+      _refreshSize?: () => void
+    }
+    if (stdout.isTTY && typeof stdout._refreshSize === 'function') {
+      stdout._refreshSize()
+      if (this.isUnmounted || this.isPaused) return
+    }
+
     const renderStart = performance.now()
     const terminalWidth = this.options.stdout.columns || 80
     const terminalRows = this.options.stdout.rows || 24
