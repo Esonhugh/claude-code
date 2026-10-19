@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -59,6 +60,7 @@ type TabsContextValue = {
   selectedTab: string | undefined
   width: number | undefined
   headerFocused: boolean
+  isHeaderFocused: () => boolean
   focusHeader: () => void
   blurHeader: () => void
   registerOptIn: () => () => void
@@ -70,6 +72,7 @@ const TabsContext = createContext<TabsContextValue>({
   // Default for components rendered outside a Tabs (tests, standalone):
   // content has focus, focusHeader is a no-op.
   headerFocused: false,
+  isHeaderFocused: () => false,
   focusHeader: () => {},
   blurHeader: () => {},
   registerOptIn: () => () => {},
@@ -117,16 +120,32 @@ export function Tabs({
     : internalSelectedTab
 
   const modalScrollRef = useModalScrollRef()
+  const parentTabs = useContext(TabsContext)
 
   // Header focus: left/right/tab only switch tabs when the header row is
   // focused. Children with interactive content call focusHeader() (via
   // useTabHeaderFocus) on up-arrow to hand focus back here; down-arrow
   // returns it. Tabs that never call the hook see no behavior change —
   // initialHeaderFocused defaults to true so nav always works.
-  const [headerFocused, setHeaderFocused] = useState(initialHeaderFocused)
+  //
+  // Key ownership reads headerFocusedRef, which focus changes update
+  // synchronously: a key from a later stdin read can arrive before React
+  // commits the previous key's focus change. A nested Tabs (Settings → Stats)
+  // only navigates once its parent header has released focus.
+  const [headerFocused, setHeaderFocusedState] = useState(initialHeaderFocused)
+  const headerFocusedRef = useRef(initialHeaderFocused)
+  const setHeaderFocused = useCallback((focused: boolean) => {
+    headerFocusedRef.current = focused
+    setHeaderFocusedState(focused)
+  }, [])
   useEffect(() => onHeaderFocusChange?.(headerFocused), [headerFocused, onHeaderFocusChange])
-  const focusHeader = useCallback(() => setHeaderFocused(true), [])
-  const blurHeader = useCallback(() => setHeaderFocused(false), [])
+  const isHeaderFocused = useCallback(() => headerFocusedRef.current, [])
+  const focusHeader = useCallback(() => setHeaderFocused(true), [setHeaderFocused])
+  const blurHeader = useCallback(() => setHeaderFocused(false), [setHeaderFocused])
+  const ownsHeaderKeys = () =>
+    headerFocusedRef.current && !parentTabs.isHeaderFocused()
+  const ownsContentKeys = () =>
+    !headerFocusedRef.current && !parentTabs.isHeaderFocused()
   // Count of mounted children using useTabHeaderFocus(). Down-arrow blur and
   // the ↓ hint only engage when at least one child has opted in — otherwise
   // pressing down on a legacy tab would strand the user with nav disabled.
@@ -153,25 +172,33 @@ export function Tabs({
 
   useKeybindings(
     {
-      'tabs:next': () => handleTabChange(1),
-      'tabs:previous': () => handleTabChange(-1),
+      'tabs:next': () => {
+        if (!ownsHeaderKeys()) return false
+        handleTabChange(1)
+      },
+      'tabs:previous': () => {
+        if (!ownsHeaderKeys()) return false
+        handleTabChange(-1)
+      },
     },
     {
       context: 'Tabs',
-      isActive: !hidden && !disableNavigation && headerFocused,
+      isActive: !hidden && !disableNavigation,
     },
   )
 
   // When the header is focused, down-arrow returns focus to content. Use the
   // global input stream rather than Box.onKeyDown so nested Tabs can receive
-  // the key after their parent header has released focus.
+  // the key after their parent header has released focus. The header consumes
+  // this Down so a nested Tabs later in the same dispatch cannot also blur.
   useInput(
-    (_input, key) => {
-      if (key.downArrow) setHeaderFocused(false)
+    (_input, key, event) => {
+      if (!key.downArrow || !ownsHeaderKeys()) return
+      event.stopImmediatePropagation()
+      setHeaderFocused(false)
     },
     {
-      isActive:
-        headerFocused && optedIn && !hidden && !disableNavigation,
+      isActive: optedIn && !hidden && !disableNavigation,
     },
   )
 
@@ -180,22 +207,19 @@ export function Tabs({
   useKeybindings(
     {
       'tabs:next': () => {
+        if (!ownsContentKeys()) return false
         handleTabChange(1)
         setHeaderFocused(true)
       },
       'tabs:previous': () => {
+        if (!ownsContentKeys()) return false
         handleTabChange(-1)
         setHeaderFocused(true)
       },
     },
     {
       context: 'Tabs',
-      isActive:
-        navFromContent &&
-        !headerFocused &&
-        optedIn &&
-        !hidden &&
-        !disableNavigation,
+      isActive: navFromContent && optedIn && !hidden && !disableNavigation,
     },
   )
 
@@ -217,6 +241,7 @@ export function Tabs({
         selectedTab: tabs[selectedTabIndex]![0],
         width: contentWidth,
         headerFocused,
+        isHeaderFocused,
         focusHeader,
         blurHeader,
         registerOptIn,
