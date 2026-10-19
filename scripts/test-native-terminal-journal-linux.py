@@ -232,6 +232,16 @@ int main(int argc,char **argv){
   if(splice(pipefd[0],NULL,1,NULL,7,0)!=7)return 143;
  }else if(!strcmp(mode,"io-uring")){
   uring_write();
+ }else if(!strcmp(mode,"child-uring-null")||!strcmp(mode,"child-uring-endpoint")){
+  pid_t child=fork();if(child<0)return 144;
+  if(!child){
+   // Like a spawned helper with piped/null stdio: no descriptor on the endpoint.
+   int null=open("/dev/null",O_RDWR);
+   if(!strcmp(mode,"child-uring-null")&&(null<0||dup2(null,0)<0||dup2(null,1)<0||dup2(null,2)<0))_exit(1);
+   uring_write();_exit(0);
+  }
+  int status;if(waitpid(child,&status,0)!=child||!WIFEXITED(status)||WEXITSTATUS(status))return 145;
+  if(write(1,"parent\n",7)!=7)return 146;
  }else{
   uint64_t *changed=NULL;uint64_t saved_capacity=0;
   if(!strcmp(mode,"corrupt-layout")){
@@ -1188,6 +1198,22 @@ class LinuxNativeJournalTest(unittest.TestCase):
         records = journal.decode_records(header, packets, registration, pid)
         self.assertEqual(journal.verify_raw(records, raw, OUTPUT_FLAGS)['verdict'], 'passed')
         self.assertEqual(self.tracer['status'], 0)
+
+    def test_descendant_io_uring_without_an_endpoint_descriptor_is_ignored_and_still_traced(self):
+        header, packets, registration, pid, raw = self.capture('child-uring-null')
+        self.assertEqual(raw, b'parent\r\n')
+        self.assertEqual((header[22], header[23]), (0, 0))
+        records = journal.decode_records(header, packets, registration, pid)
+        self.assertEqual(journal.verify_raw(records, raw, OUTPUT_FLAGS)['verdict'], 'passed')
+        self.assertEqual(self.tracer['status'], 0)
+
+    def test_descendant_io_uring_holding_the_endpoint_is_unsupported(self):
+        header, packets, registration, pid, raw = self.capture('child-uring-endpoint')
+        # io_uring may be disabled by the host; when enabled its write still lands.
+        self.assertIn(raw, (b'parent\r\n', b'uring\r\nparent\r\n'))
+        self.assertGreater(header[23], 0)
+        with self.assertRaisesRegex(journal.JournalError, 'Unsupported native endpoint transfer'):
+            journal.decode_records(header, packets, registration, pid)
 
     def test_sendfile_splice_and_io_uring_to_the_endpoint_are_unsupported(self):
         for mode, output in [('sendfile', b'sendfile\r\n'), ('splice', b'splice\r\n'), ('io-uring', None)]:
