@@ -131,60 +131,64 @@ test.each([144, 80])('embedded Stats preserves chart rows and nested focus at %s
       exitOnCtrlC: false,
     },
   )
-  const settle = async () => { await new Promise(resolve => setTimeout(resolve, 100)) }
+  const output = () => stripAnsi(stdout.output)
+  async function waitFor(predicate: () => boolean) {
+    const deadline = Date.now() + 3000
+    while (!predicate() && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    assert.ok(predicate(), output())
+  }
+  // For keys whose effect has no plain-text change (header focus styling),
+  // wait for the frame the key produces before sending the next one.
+  async function press(key: string) {
+    const length = stdout.output.length
+    stdin.push(key)
+    await waitFor(() => stdout.output.length > length)
+  }
   try {
-    await settle()
-    assert.doesNotMatch(stripAnsi(stdout.output), /No model usage data available/)
-    stdin.push('\u001b[B')
-    await settle()
+    await waitFor(() => /Total tokens:/.test(output()))
+    assert.doesNotMatch(output(), /No model usage data available/)
+    await press('\u001b[B')
     stdin.push('\u001b[C')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /No model usage data available/)
+    await waitFor(() => /No model usage data available/.test(output()))
     stdin.push('\u001b[C')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
+    await waitFor(() => /Lifetime tokens: 42/.test(output()))
     stdout.output = ''
     stdin.push('\u001b[B')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /↑\/↓ ±1 day/)
-    assert.match(stripAnsi(stdout.output), /^\s*Longest turn: 1h 14m\s*$/m)
-    assert.match(stripAnsi(stdout.output), /^\s*Streak: 31 days\s+Longest streak: 37 days\s*$/m)
+    await waitFor(() => /↑\/↓ ±1 day/.test(output()))
+    assert.match(output(), /^\s*Longest turn: 1h 14m\s*$/m)
+    assert.match(output(), /^\s*Streak: 31 days\s+Longest streak: 37 days\s*$/m)
     for (const day of ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa']) {
-      assert.match(stripAnsi(stdout.output), new RegExp(`^ *${day} [·■ ]+$`, 'm'))
+      assert.match(output(), new RegExp(`^ *${day} [·■ ]+$`, 'm'))
     }
-    assert.match(stripAnsi(stdout.output), /^ *Intensity: low → medium → high · · = zero · blank = future · inverse =\s+selected *$/m)
-    assert.match(stripAnsi(stdout.output), /^ *K = thousand · M = million · B = billion *$/m)
-    assert.match(stripAnsi(stdout.output), /^ *Weeks \d+–\d+ of 52 *$/m)
-    assert.doesNotMatch(stripAnsi(stdout.output), /14mngest|of 52 = million/)
+    assert.match(output(), /^ *Intensity: low → medium → high · · = zero · blank = future · inverse =\s+selected *$/m)
+    assert.match(output(), /^ *K = thousand · M = million · B = billion *$/m)
+    assert.match(output(), /^ *Weeks \d+–\d+ of 52 *$/m)
+    assert.doesNotMatch(output(), /14mngest|of 52 = million/)
     stdin.push('\u001b[A')
-    await settle()
     const yesterday = new Date()
     yesterday.setDate(yesterday.getDate() - 1)
-    assert.match(
-      stripAnsi(stdout.output),
-      new RegExp(`${yesterday.toLocaleDateString('en-CA')}: 0 tokens`),
-    )
+    await waitFor(() => output().includes(`${yesterday.toLocaleDateString('en-CA')}: 0 tokens`))
     stdout.output = ''
     stdin.push('v')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /Weekly \(Sunday/)
-    assert.match(stripAnsi(stdout.output), /^ *Longest turn: 1h 14m *$/m)
-    assert.match(stripAnsi(stdout.output), /^ *Day \d{4}-\d{2}-\d{2}: 0 tokens *$/m)
-    assert.match(stripAnsi(stdout.output), /^ *Weeks \d+–\d+ of 52 *$/m)
-    assert.doesNotMatch(stripAnsi(stdout.output), /14mngest|of 52 = million/)
+    await waitFor(() => /Weekly \(Sunday/.test(output()))
+    assert.match(output(), /^ *Longest turn: 1h 14m *$/m)
+    assert.match(output(), /^ *Day \d{4}-\d{2}-\d{2}: 0 tokens *$/m)
+    assert.match(output(), /^ *Weeks \d+–\d+ of 52 *$/m)
+    assert.doesNotMatch(output(), /14mngest|of 52 = million/)
     stdin.push('\t')
-    await settle()
-    stdin.push('\u001b[A')
-    await settle()
+    await waitFor(() => output().includes('Tabs: ←/→ or Tab/Shift+Tab · ↓ enter chart'))
+    await press('\u001b[A')
     stdout.output = ''
     stdin.push('\u001b[Z')
-    await settle()
-    assert.match(stripAnsi(stdout.output), /Usage data is unavailable for the current OpenAI authentication\./)
-    assert.doesNotMatch(stripAnsi(stdout.output), /Codex activity/)
+    await waitFor(() => /Usage data is unavailable for the current OpenAI authentication\./.test(output()))
+    assert.doesNotMatch(output(), /Codex activity/)
+    stdout.output = ''
     stdin.push('\t')
-    await settle()
+    await waitFor(() => /Total tokens:/.test(output()))
     stdin.push('\u001b')
-    await settle()
+    await waitFor(() => closeCount > 0)
     assert.equal(closeCount, 1)
   } finally {
     instance.unmount()
