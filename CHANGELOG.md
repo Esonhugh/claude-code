@@ -21,7 +21,7 @@
 
 ### 关联提交
 
-- PR 合并提交：`6d96b73`（#5）、`b369eb8`（#6）生命周期审查；`5560c3d`（#8）MCP 准入与 Agent 权限模式；`7166e74`（#10）插件生命周期；`34d1599`（#13）MCP 完整性；`fd11faf`（#11）、`6a1cdbc`（#14）、`cf50f5c`（#15）Esonhugh-Marketplace。逐 PR 提交、2026-10-08 起的直接提交和发布准备提交见[v2.1.292 详细记录](docs/archive/implementation-records/changelogs/2026-10-18-v2.1.292-details.md)。
+- PR 合并提交：`6d96b73`（#5）、`b369eb8`（#6）生命周期审查；`5560c3d`（#8）MCP 准入与 Agent 权限模式；`7166e74`（#10）插件生命周期；`34d1599`（#13）MCP 完整性；`fd11faf`（#11）、`6a1cdbc`（#14）、`cf50f5c`（#15）Esonhugh-Marketplace。逐 PR 提交与直接提交见[v2.1.292 详细记录](docs/archive/implementation-records/changelogs/2026-10-18-v2.1.292-details.md)。
 - 2026-10-14 至 2026-10-17 直接提交 `cbb28b0`..`fecf45f`（自动模式、模型目录、Workflow 语义、Channels、teammate mailbox、Mods Pane 交互、用量面板），列表同见上述详细记录。
 - 原 `v2.1.280` 阶段的 Mods 分组包含 `e3e0c8f`、`338d488`、`8ff3c3f`、`b325dd2`、`8a94a5a`、`3a4929d`、`d757015`、`5acd2a3`、`6f8d8da`、`e3b2ff1`、`0bb0e00`、`8059f4a`；邻近夹具修复与剩余测试覆盖分别提交。
 - 2026-09-30 至 2026-10-07 的逐批提交与验证细节见[v2.1.280 阶段历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。

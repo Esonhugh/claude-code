@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { getSessionId } from '../../bootstrap/state.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { createWorkflowScriptAgentChainIdentity } from './workflowResumeCache.js'
 import { createWorkflowRunId } from './workflowScriptPersistence.js'
@@ -203,6 +204,8 @@ const staleSnapshot = await startWorkflowRunSession({
     totalAgents: 1,
   },
 })
+// The record keeps the session that started the run; /workflows lists by it.
+assert.equal(staleSnapshot.sessionId, getSessionId())
 const terminalResults = [{
   phaseId: 'phase-1',
   agentId: 'agent-1',

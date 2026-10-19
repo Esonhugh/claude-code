@@ -303,4 +303,32 @@ assert.throws(
   /global concurrency can reach 17, exceeding defaults.maxConcurrency 16/,
 )
 
+// Without an explicit budget a phase or defaults.concurrency may exceed the host default;
+// an explicit budget still bounds both.
+const wideDefaults = validateWorkflowSpec({
+  name: 'Wide Defaults',
+  description: 'defaults.concurrency above any host-derived default.',
+  defaults: { fanout: 17, concurrency: 17 },
+  phases: [independentPhases[0]!],
+})
+assert.equal(wideDefaults.defaults.concurrency, 17)
+assert.throws(
+  () => validateWorkflowSpec({
+    name: 'Explicit Defaults Budget',
+    description: 'defaults.concurrency above the explicit budget.',
+    defaults: { maxConcurrency: 2, fanout: 3, concurrency: 3 },
+    phases: [independentPhases[0]!],
+  }),
+  /defaults.concurrency must be less than or equal to defaults.maxConcurrency/,
+)
+assert.throws(
+  () => validateWorkflowSpec({
+    name: 'Explicit Phase Budget',
+    description: 'A phase wider than the explicit budget.',
+    defaults: { maxConcurrency: 2 },
+    phases: [{ ...independentPhases[0]!, fanout: 3, concurrency: 3 }],
+  }),
+  /Workflow phase phase-0 concurrency must be less than or equal to defaults.maxConcurrency/,
+)
+
 console.log('workflowSpec.test.ts passed')
