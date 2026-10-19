@@ -232,6 +232,7 @@ describe('built-in Mods archive', () => {
     expect(await readFile(join(first, 'agents-md/hooks/register.ts'), 'utf8')).toBe('official source')
   })
 
+  // Twelve cold Bun processes each transpile the builtinMods module graph.
   test('independent processes replace the same damaged target with one complete tree', async () => {
     const fixture = await archive({
       'agents-md/hooks/register.ts': 'official source',
@@ -286,7 +287,7 @@ describe('built-in Mods archive', () => {
     expect(await readFile(join(target, '.complete'), 'utf8')).toMatch(new RegExp(`^${digest}\\n[a-f0-9]{64}$`))
     await expect(readFile(join(target, 'damaged'), 'utf8')).rejects.toThrow()
     expect(await readdir(fixture.cache)).toEqual([digest])
-  })
+  }, 30_000)
 
   test('waits for the active publisher before replacing a damaged tree', async () => {
     const fixture = await archive({ 'agents-md/hooks/register.ts': 'official source' })

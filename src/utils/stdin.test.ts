@@ -23,10 +23,15 @@ console.log(JSON.stringify({ data, kind, original: input === process.stdin, file
     const file = join(home, 'input.jsonl')
     await writeFile(file, data)
     const descriptor = inputKind === 'file' ? openSync(file, 'r') : undefined
+    // A Blob stdin is a memfd file on Linux, so the pipe case writes a real stream.
     const child = Bun.spawn([process.execPath, entry], {
       env: { PATH: process.env.PATH, HOME: home },
-      stdin: descriptor ?? new Blob([data]), stdout: 'pipe', stderr: 'pipe',
+      stdin: descriptor ?? 'pipe', stdout: 'pipe', stderr: 'pipe',
     })
+    if (descriptor === undefined && typeof child.stdin !== 'number') {
+      child.stdin.write(data)
+      child.stdin.end()
+    }
     try {
       const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()])
       expect({ code, stderr }).toEqual({ code: 0, stderr: '' })

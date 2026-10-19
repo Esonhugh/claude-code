@@ -6978,11 +6978,11 @@ def _code_review_scope_fixture(module):
                               'result': output, 'completedAt': 1791405661484}]}
     children = [{'session_id': 'session-one', 'agent_id': 'agent-one',
         'meta': {'agentType': 'general-purpose', 'description': 'code-review: scope',
-                 'toolUseId': 'launch-one', 'permissionMode': 'plan', 'spawnDepth': 1, 'model': 'test-model'},
+                 'toolUseId': 'launch-one', 'permissionMode': 'bypassPermissions', 'spawnDepth': 1, 'model': 'test-model'},
         'entries': [entry('user', '435', child_prompt, agentId='agent-one', isSidechain=True),
             entry('assistant', '463', [{'type': 'tool_use', 'id': 'scope-output', 'name': 'StructuredOutput', 'input': output}], agentId='agent-one', parentUuid='user-435', isSidechain=True),
             entry('user', '464', [{'type': 'tool_result', 'tool_use_id': 'scope-output', 'content': 'Structured output provided successfully'}], agentId='agent-one', parentUuid='assistant-463', sourceToolAssistantUUID='assistant-463', isSidechain=True)]}]
-    params = {'selectedAgentType': 'general-purpose', 'permissionMode': 'plan', 'toolUseId': 'launch-one', 'spawnDepth': 1, 'isAsync': True, 'model': 'test-model'}
+    params = {'selectedAgentType': 'general-purpose', 'permissionMode': 'bypassPermissions', 'toolUseId': 'launch-one', 'spawnDepth': 1, 'isAsync': True, 'model': 'test-model'}
     log = ('2026-10-07T20:41:01.415Z [DEBUG] workflow_worker_start task=task-one run=wf_one phase=Scope logical=scope agent=scope attempt=0 worker=0\n'
         '2026-10-07T20:41:01.436Z [DEBUG] AgentTool launch params ' + json.dumps(params) + '\n'
         '2026-10-07T20:41:01.439Z [DEBUG] [runAgent] agentId=agent-one, agentType=general-purpose, model=test-model, tools=StructuredOutput\n'
