@@ -1153,9 +1153,10 @@ export async function runWorkflowPlan({
         status: 'running',
       }))
       const results: WorkflowAgentResult[] = []
-      for (let index = 0; index < phase.fanout; index += phase.concurrency) {
+      const batchSize = Math.min(phase.concurrency, plan.defaults.maxConcurrency)
+      for (let index = 0; index < phase.fanout; index += batchSize) {
         const batchIndexes = Array.from(
-          { length: Math.min(phase.concurrency, phase.fanout - index) },
+          { length: Math.min(batchSize, phase.fanout - index) },
           (_, offset) => index + offset,
         )
         const batchRuns = batchIndexes.map(batchIndex => ({

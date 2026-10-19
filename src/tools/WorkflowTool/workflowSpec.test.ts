@@ -40,7 +40,7 @@ const deepResearchWorkflow = {
   },
 } satisfies WorkflowSpec
 
-const officialDefaultConcurrency = Math.min(16, Math.max(1, availableParallelism() - 2))
+const officialDefaultConcurrency = Math.min(16, Math.max(2, availableParallelism() - 2))
 const officialDefaultMaxAgents = 1000
 
 const plan = validateWorkflowSpec(deepResearchWorkflow)
@@ -269,6 +269,38 @@ assert.throws(
     ],
   }),
   /global concurrency/i,
+)
+
+// Like official, the host-derived default only gates agents at run time: it
+// never rejects a spec, so a spec's validity does not depend on the CPU count.
+const independentPhases = Array.from({ length: 17 }, (_, index) => ({
+  id: `phase-${index}`,
+  description: `Independent phase ${index}.`,
+  prompt: `Run phase ${index}.`,
+}))
+const hostIndependentPlan = validateWorkflowSpec({
+  name: 'Host Independent Concurrency',
+  description: 'More independent phases than any host-derived default allows.',
+  phases: [
+    ...independentPhases,
+    {
+      id: 'wide',
+      description: 'A phase wider than any host-derived default.',
+      prompt: 'Run wide.',
+      fanout: 17,
+      concurrency: 17,
+    },
+  ],
+})
+assert.equal(hostIndependentPlan.defaults.maxConcurrency, officialDefaultConcurrency)
+assert.throws(
+  () => validateWorkflowSpec({
+    name: 'Explicit Concurrency Budget',
+    description: 'An explicit budget still bounds independent phases.',
+    defaults: { maxConcurrency: 16 },
+    phases: independentPhases,
+  }),
+  /global concurrency can reach 17, exceeding defaults.maxConcurrency 16/,
 )
 
 console.log('workflowSpec.test.ts passed')

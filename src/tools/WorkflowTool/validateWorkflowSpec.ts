@@ -26,7 +26,7 @@ const SUPPORTED_PERMISSION_MODES = new Set<WorkflowPermissionMode>([
 ])
 
 const DEFAULTS = {
-  maxConcurrency: Math.min(16, Math.max(1, availableParallelism() - 2)),
+  maxConcurrency: Math.min(16, Math.max(2, availableParallelism() - 2)),
   maxAgents: 1000,
   maxRetries: 2,
   fanout: 1,
@@ -71,7 +71,7 @@ function normalizeDefaults(defaults: WorkflowDefaults | undefined): WorkflowDryR
     throw new Error('defaults.concurrency must be less than or equal to defaults.fanout')
   }
 
-  if (normalized.concurrency > normalized.maxConcurrency) {
+  if (defaults?.maxConcurrency !== undefined && normalized.concurrency > normalized.maxConcurrency) {
     throw new Error('defaults.concurrency must be less than or equal to defaults.maxConcurrency')
   }
 
@@ -223,6 +223,9 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
   }
 
   const defaults = normalizeDefaults(spec.defaults)
+  // Like official, the host-derived default only gates agents at run time;
+  // only a spec's own budget can reject it.
+  const hasExplicitMaxConcurrency = spec.defaults?.maxConcurrency !== undefined
   const knownPhaseIds = new Set<string>()
 
   for (const phase of spec.phases) {
@@ -272,7 +275,7 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
       throw new Error(`Workflow phase ${id} concurrency must be less than or equal to fanout`)
     }
 
-    if (concurrency > defaults.maxConcurrency) {
+    if (hasExplicitMaxConcurrency && concurrency > defaults.maxConcurrency) {
       throw new Error(`Workflow phase ${id} concurrency must be less than or equal to defaults.maxConcurrency`)
     }
 
@@ -305,7 +308,7 @@ export function validateWorkflowSpec(spec: WorkflowSpec): WorkflowDryRunPlan {
   })
 
   assertAcyclic(phases)
-  assertGlobalConcurrencyLimit(phases, defaults.maxConcurrency)
+  if (hasExplicitMaxConcurrency) assertGlobalConcurrencyLimit(phases, defaults.maxConcurrency)
 
   const totalAgents = phases.reduce((sum, phase) => sum + phase.fanout, 0)
   if (totalAgents > defaults.maxAgents) {

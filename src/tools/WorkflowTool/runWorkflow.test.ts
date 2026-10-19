@@ -2262,4 +2262,64 @@ assert.deepEqual(
   },
 )
 
+// Like official, the workflow concurrency budget queues a wider phase's agents
+// rather than running them all at once.
+let gatedState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+let gatedInFlight = 0
+let gatedPeak = 0
+const gatedAgentTool = {
+  name: 'Agent',
+  async call() {
+    gatedInFlight++
+    gatedPeak = Math.max(gatedPeak, gatedInFlight)
+    await new Promise(resolve => setTimeout(resolve, 5))
+    gatedInFlight--
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: 'gated output' }],
+        totalTokens: 1,
+        totalToolUseCount: 0,
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+await runWorkflowPlan({
+  plan: {
+    ...plan,
+    name: 'gated-wide-phase',
+    description: 'Queue agents beyond the concurrency budget.',
+    defaults: { ...plan.defaults, maxConcurrency: 2, maxAgents: 5 },
+    phases: [{ ...plan.phases[0]!, id: 'wide', fanout: 5, concurrency: 5 }],
+    totalAgents: 5,
+  },
+  context: {
+    getAppState: () => gatedState,
+    setAppState: (updater: (prev: AppState) => AppState) => {
+      gatedState = updater(gatedState)
+    },
+    getCwd: () => workflowCwd,
+    options: {
+      tools: [gatedAgentTool],
+      mainLoopModel: 'claude-sonnet-4-6',
+      workflowRunInForeground: true,
+    },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_gated_wide_phase',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_gated_wide_phase' } } as never,
+  workflowRunId: 'wf_gated_wide_phase',
+})
+const gatedTask = Object.values(gatedState.tasks).find(
+  task => task.type === 'local_workflow',
+) as LocalWorkflowTaskState | undefined
+assert.equal(gatedTask?.status, 'completed')
+assert.equal(gatedTask?.results.filter(result => result.status === 'completed').length, 5)
+assert.equal(gatedPeak, 2)
+
 console.log('runWorkflow.test.ts passed')
