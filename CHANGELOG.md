@@ -80,6 +80,7 @@
 
 #### 启动、设置、Workflow 与 Mods
 
+- 每帧开始时同步读取真实终端尺寸：此前产品繁忙时 Bun 推迟派发 SIGWINCH，resize 后仍可能按旧尺寸绘制数帧（实测最长约 250ms）；尺寸变化时沿用原有 resize 处理。
 - 标签页的按键归属改为读取同步更新的焦点与 opt-in 状态：此前 `/config` → Stats 中快速按 ↓ 再按 Tab（或在 React 提交前到达的后续按键）会被外层设置页抢走，OpenAI 图表加载后的第一次 ↓ 可能被丢弃，刚进入图表就按 ↑ 也会把焦点交回外层。
 - 提交输入时通过输入框句柄同步清空草稿；此前 Mods `prompt.read()` 要等输入框重新渲染才看到空草稿，提交的本地命令（如 Mods 建议）抢先执行时会读到刚提交的文本，高负载下偶发 `suggestion=hidden`。
 - 原生终端采集的帧边界标记库在 Linux 上同样加载（仍只在设置 `CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY` 的采集环境中生效，普通会话不受影响），供 Linux 发布门禁记录逐帧证据。
