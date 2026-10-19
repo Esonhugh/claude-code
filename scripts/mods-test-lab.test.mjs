@@ -5,6 +5,7 @@ import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
 import { homedir, tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { join, dirname } from 'node:path'
+import { URL } from 'node:url'
 import { zipSync } from 'fflate'
 import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, linuxSandboxPolicy, parseArgs, prepareFixture, sandboxCommand, sandboxProfile, startAcceptanceProvider, startBuiltinRun } from './mods-test-lab.mjs'
 import {createBuiltinCapture} from './builtin-terminal-evidence.mjs'
