@@ -80,6 +80,7 @@
 
 #### 启动、设置、Workflow 与 Mods
 
+- 原生终端采集的帧边界标记库在 Linux 上同样加载（仍只在设置 `CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY` 的采集环境中生效，普通会话不受影响），供 Linux 发布门禁记录逐帧证据。
 - 移除 `main()` 提前注册的 SIGINT 处理器，Ctrl+C 进入 graceful shutdown，SessionEnd hook、清理注册表与 Mods 释放得以执行；`main()` 拒绝时以错误退出；退出时关闭 InteractiveTerminal PTY 会话。
 - CI/测试环境只在没有其他凭据来源（`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、OAuth token 文件或非一方 provider）时才要求 Anthropic 凭据，`claude -p` 不再因此挂起。
 - `/config` 修改默认权限模式只写 `defaultMode`，不再把 project/policy 的 allow/deny 规则复制进用户文件；"Use auto mode during plan" 显示运行时值，在策略或 flag 强制关闭时锁定；托管设置 `managedSourcesBehavior: "merge"` 对限制性键取最严格值。
@@ -246,8 +247,9 @@
 - 上述 PR 合并后，全量测试按文件隔离运行，剩余失败与合并前基线一致，未新增失败；`make release-check` 通过。
 - 每个 PR 均用新构建的 binary 与合并前 binary 做 A/B 验证，交互场景（如 PR #10 的 REPL 插件重载）用脚本驱动 tmux，PR #13 等以非交互 CLI 对照为主；该验证按 PR 分别进行，不等同于完整发布门禁。
 - 2026-10-14 至 2026-10-17 的直接提交除 `8153447`、`3b0a568`、`d326fc5` 外均附带定向测试，结果以各提交为准，本条目不另作完整验收结论。
+- 发布构建所用 Bun 从 1.3.14 升级到 1.4.2（`packageManager` 与 release workflow），`bun install --frozen-lockfile` 在 1.4.2 下沿用现有 `bun.lock`。
 - 固定 Bun 1.3.14 下按文件隔离运行全量 753 个测试文件，与 Bun 1.4.2 对照：发现并修复 1.3.14 下 Workflow 语法预检失效；基线失败中 5 个过时测试按代码与官方 2.1.292 行为更新，`workflowSpec` 随 Workflow 并发修复通过，其余失败均归因于环境（需 macOS、root 运行、容器缺 zsh 或不回收孤儿进程、4 核下的固定超时），另有 `Stats.openai` 依赖固定 100ms 等待而不稳定；Bun 1.3.14 构建的 binary 通过 `--version`、`--help`、`mcp list`、`plugin marketplace list` 冒烟。
-- 发布门禁新增 Linux 实现（`docs/research/linux-release-gate-design-20261019.md`）：`scripts/linux-sandbox-exec.py` 以 user/mount/net 命名空间、Landlock 与 seccomp 替代 `sandbox-exec`，执行前逐项自检越界；`scripts/native-terminal-journal-linux.c` 以 seccomp `RET_TRACE` + ptrace 采集 Bun 的裸 write 系统调用，写入与 Darwin 相同的共享槽日志并以 `LINUX_V1` 区分方法集；`mods-process-spawn`、`builtin-mods` 与两个终端 target 在 Linux 上运行，机制不可用时直接失败。Darwin 路径保持不变，Linux 原生 normal origin 记录实际 tmux 版本。
+- 发布门禁新增 Linux 实现（`docs/research/linux-release-gate-design-20261019.md`）：`scripts/linux-sandbox-exec.py` 以 user/mount/net 命名空间与 Landlock 替代 `sandbox-exec`（禁网模式另加 seccomp 拒绝 IP/packet socket 与 io_uring），执行前逐项自检越界；`scripts/native-terminal-journal-linux.c` 以 seccomp `RET_TRACE` + ptrace 采集 Bun 的裸 write 系统调用，写入与 Darwin 相同的共享槽日志并以 `LINUX_V1` 区分方法集；`mods-process-spawn`、`builtin-mods` 与两个终端 target 在 Linux 上运行，机制不可用时直接失败，retained 模式仍只支持 macOS。Darwin 的隔离与采集方式不变；`builtin-mods` 的终端证据对原生采集改用原生校验器，这一修正在两个平台同样生效（产品时序要求不变，结论仍为未通过）。Linux 原生 normal origin 记录实际 tmux 版本，Darwin 仍固定 tmux 3.6b。Linux 门禁的环境要求见 README。
 - 尚未执行：`release-validation` 最终四路门禁；在其完成前不宣称发布验收通过。
 
 - 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。

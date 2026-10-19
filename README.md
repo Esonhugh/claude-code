@@ -951,7 +951,9 @@ validation_tmp="$(mktemp -d /tmp/claude-release-tests.XXXXXX)"
 TMPDIR="$validation_tmp" python3 .claude/skills/release-validation/scripts/test-release-driver.py
 ```
 
-逐帧验证器回归可运行 `bun test ./scripts/verify-pty-terminal-evidence.test.mjs ./scripts/builtin-terminal-evidence.test.mjs ./scripts/terminal-input-evidence.test.mjs ./scripts/mods-test-lab.test.mjs`。测试需要私有短路径 TMPDIR、sandbox-exec 及仅本机 loopback/Unix socket 权限；使用 dummy 凭据。帧比较、输入归属、收尾和 fresh replay 各自保留原始证据，保存的 passed 字段不能替代重算。
+逐帧验证器回归可运行 `bun test ./scripts/verify-pty-terminal-evidence.test.mjs ./scripts/builtin-terminal-evidence.test.mjs ./scripts/terminal-input-evidence.test.mjs ./scripts/mods-test-lab.test.mjs`。测试需要私有短路径 TMPDIR、隔离机制（macOS 为 sandbox-exec，Linux 为 `scripts/linux-sandbox-exec.py`）及仅本机 loopback/Unix socket 权限；使用 dummy 凭据。帧比较、输入归属、收尾和 fresh replay 各自保留原始证据，保存的 passed 字段不能替代重算。
+
+Linux 上运行完整 `run-binary-gate.py` 矩阵需要：内核允许非特权 user namespace（例如 Ubuntu 需放开 apparmor 的 `restrict_unprivileged_userns`）、Landlock ABI ≥ 3、允许 ptrace（原生终端采集用 seccomp `RET_TRACE` + ptrace），以及 `@xterm/headless` 文件不是硬链接（独立回放要求 nlink 为 1；Bun 在 Linux 默认以硬链接安装，请用 `bun install --frozen-lockfile --backend=copyfile`）。以 root 运行时启动器会为二进制注入 `IS_SANDBOX=1`。任一条件不满足时相关目标直接失败，不回退到不隔离运行；retained 模式（S7、readiness）仍只支持 macOS。
 
 该入口执行所有已定义的 retained 回归。真实门禁仍须新构建、动态 baseline 和完整 `run-binary-gate.py` 矩阵；`--targets` 只追加目标，不能缩减必验范围。缺失、跨运行或仅空文件/目录的证据不能通过。code-review 的空变更 Scope 核对本案真实父子调用、请求及通知，最终汇总重验输入快照与证明 JSON 的哈希；其完整后续阶段仍需验收。该历史 Scope 轮矩阵为 28 项完成、26通过、2失败，整体未通过（不是最新门禁结果），见[Scope 与封存复核](docs/research/release-scope-identity-validity-20261008.md)；[上一批验收记录](docs/research/release-acceptance-validity-20261008.md)保留历史结果。
 
@@ -1169,7 +1171,7 @@ bun scripts/mods-test-lab.mjs run sample
 其他 Claude 正在使用仓库的制品时，使用独立构建目录；`output` 交给构建脚本创建，不要预先创建。后续运行、validate、test 必须使用同一个 `MODS_CLI`：
 
 ```bash
-MODS_BUILD_ROOT=$(mktemp -d /private/tmp/mods-build.XXXXXX)
+MODS_BUILD_ROOT=$(mktemp -d /private/tmp/mods-build.XXXXXX)  # Linux: mktemp -d /tmp/mods-build.XXXXXX
 make build CLAUDE_CODE_BUILD_DIR="$MODS_BUILD_ROOT/output"
 MODS_CLI="$MODS_BUILD_ROOT/output/built-claude"
 "$MODS_CLI" plugin validate /absolute/path/to/my-mod

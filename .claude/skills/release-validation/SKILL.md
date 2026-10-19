@@ -29,6 +29,10 @@ version: 0.1.0
 13. Binary driver 必须按 committed release range + staged/unstaged/untracked 合并路径计算 required targets。release range 优先使用 baseline 中可用 upstream/merge-base；若无法安全推导，必须 fail closed 或要求显式 `--base-ref`。`--targets` 只能在默认完整矩阵之后追加额外 target，不得缩减默认矩阵，且必须拒绝空值与重复。修改 team registry、workflow retry/failure、coordinator selection 或 transcript retention 时，分别强制 `team-concurrency`、`workflow-retry-partial-failure`、`workflow-failure-detail`、`coordinator-selector`、`transcript-retention`；required target 未执行、无 assertions、缺稳定 ID/marker/evidence path、跨 run 拼接或仅有 pane 文本时必须 fail closed。
 14. Skill prose、eval assertions 和 executable target 是三层独立覆盖。报告必须区分 `spec exists`、`unit covered`、`fault injection covered`、`binary tmux covered`；任何一层存在不自动代表其他层通过。
 
+## Linux 运行条件
+
+Linux 上同一 driver 使用 `scripts/linux-sandbox-exec.py`（user/mount/net 命名空间 + Landlock）替代 `sandbox-exec`，用 seccomp `RET_TRACE` + ptrace 观察器替代 Darwin 原生采集。宿主须允许非特权 user namespace、Landlock ABI ≥ 3 与 ptrace，且 `@xterm/headless` 文件 nlink 为 1（`bun install --frozen-lockfile --backend=copyfile`）；条件不满足时目标失败，不得改用不隔离运行。retained 模式仍只支持 macOS。
+
 ## Diff 到 executable target 映射
 
 | 变更区域 | Required target | Binary-side 必要证据 |

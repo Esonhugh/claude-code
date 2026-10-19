@@ -52,7 +52,7 @@ test(`actual Bun caller clock falls within independent ${linux ? 'CLOCK_MONOTONI
     expect(() => readNativeDriverClock({ ...launch, driverPid: process.pid + 1 })).toThrow(caller)
     expect(() => readNativeDriverClock({ ...launch, capture: { ...launch.capture, nativeJournal: '1' } })).toThrow(caller)
     // A capture prepared for the other platform's observer never yields this host's clock.
-    const { observer, ...unlabelled } = launch.capture
+    const { observer: _observer, ...unlabelled } = launch.capture
     expect(() => readNativeDriverClock({ ...launch, capture: linux ? unlabelled
       : { ...launch.capture, observer: 'linux-seccomp-ptrace-v1' } })).toThrow(caller)
     expect(() => readNativeDriverClock({ ...launch, capture: { ...launch.capture, observer: 'foreign-observer-v1' } })).toThrow(caller)

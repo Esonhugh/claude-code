@@ -11,7 +11,7 @@ import {
   linkSync,
   rmSync,
 } from 'node:fs'
-import { join, resolve, relative, isAbsolute } from 'node:path'
+import { join, relative, isAbsolute } from 'node:path'
 import { release } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -906,9 +906,7 @@ export function validateBuiltinTerminalEvidence(side) {
       )
     )
       return false
-    const inputs = jsonl(files['inputs.jsonl'].path),
-      sends = inputs.filter((input) => input.phase === 'send'),
-      sent = inputs.filter((input) => input.phase === 'sent')
+    const inputs = jsonl(files['inputs.jsonl'].path)
     const physical = JSON.parse(
       readOwnedNativeFile(files['frame-physical-report.json'].path).toString('utf8'),
     )

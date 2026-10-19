@@ -14,7 +14,7 @@ This guide explains how to install dependencies, build the recovered Claude Code
 
 Required:
 
-- Bun `>=1.3.14`
+- Bun `>=1.4.2`
 - Node.js `>=18` for Node-compatible tooling and inspector flows
 - Network access to the configured npm registry
 
