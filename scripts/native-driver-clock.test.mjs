@@ -2,25 +2,45 @@ import { test, expect } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { dlopen, FFIType } from 'bun:ffi'
+import { dlopen, FFIType, ptr } from 'bun:ffi'
 import { readNativeDriverClock } from './native-driver-clock.mjs'
 
-test('actual Bun caller clock falls within independent Mach samples', () => {
+const linux = process.platform === 'linux'
+// Independent samples of the clock the platform observer stamps records with.
+function independentClock() {
+  if (!linux) {
+    const system = dlopen('/usr/lib/libSystem.B.dylib', { mach_absolute_time: { args: [], returns: FFIType.u64 } })
+    return { sample: () => BigInt(system.symbols.mach_absolute_time()), thread: undefined, close: () => system.close() }
+  }
+  const libc = dlopen('libc.so.6', { clock_gettime: { args: [FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
+    gettid: { args: [], returns: FFIType.i32 } }), time = Buffer.alloc(16)
+  return { sample: () => {
+    expect(libc.symbols.clock_gettime(1, ptr(time))).toBe(0)
+    return time.readBigInt64LE(0) * 1000000000n + time.readBigInt64LE(8)
+  }, thread: String(libc.symbols.gettid()), close: () => libc.close() }
+}
+
+test(`actual Bun caller clock falls within independent ${linux ? 'CLOCK_MONOTONIC' : 'Mach'} samples`, () => {
   const run = mkdtempSync(join(tmpdir(), 'native-clock-bun-')),
-    system = dlopen('/usr/lib/libSystem.B.dylib', { mach_absolute_time: { args: [], returns: FFIType.u64 } }),
+    system = independentClock(),
     launch = { run, driverPid: process.pid, binarySha256: 'a'.repeat(64),
-      capture: { nativeJournal: true, captureId: 'synthetic-enrollment-actual-caller-clock' } }
+      capture: { nativeJournal: true, captureId: 'synthetic-enrollment-actual-caller-clock',
+        ...(linux ? { observer: 'linux-seccomp-ptrace-v1' } : {}) } }
   try {
     writeFileSync(join(run, 'registration.json'), JSON.stringify({ nonce: 'b'.repeat(32) }), { mode: 0o600 })
     writeFileSync(join(run, 'start.json'), JSON.stringify({ childPid: process.pid + 1, binarySha256: launch.binarySha256 }), { mode: 0o600 })
-    const before = BigInt(system.symbols.mach_absolute_time()), clock = readNativeDriverClock(launch),
-      after = BigInt(system.symbols.mach_absolute_time()), next = readNativeDriverClock(launch)
+    const before = system.sample(), clock = readNativeDriverClock(launch),
+      after = system.sample(), next = readNativeDriverClock(launch)
     expect(before <= BigInt(clock.tick) && BigInt(clock.tick) <= after).toBe(true)
     expect(BigInt(next.tick) >= BigInt(clock.tick)).toBe(true)
-    expect(clock).toMatchObject({ method: 'driver-mach-absolute-time-v1', callerPid: process.pid,
-      childPid: process.pid + 1, nonce: 'b'.repeat(32), captureId: launch.capture.captureId })
+    expect(clock).toMatchObject({ method: linux ? 'driver-linux-monotonic-v1' : 'driver-mach-absolute-time-v1',
+      callerPid: process.pid, childPid: process.pid + 1, nonce: 'b'.repeat(32), captureId: launch.capture.captureId })
     expect(next.callerThreadId).toBe(clock.callerThreadId)
     expect(clock.timebaseNumer > 0 && clock.timebaseDenom > 0).toBe(true)
+    if (linux) {
+      expect(clock.callerThreadId).toBe(system.thread)
+      expect([clock.timebaseNumer, clock.timebaseDenom]).toEqual([1, 1])
+    }
     const evidence = process.env.BROKER_TEST_EVIDENCE_DIR
     if (evidence) {
       mkdirSync(evidence, { recursive: true })
@@ -28,8 +48,14 @@ test('actual Bun caller clock falls within independent Mach samples', () => {
         scope: 'actual caller clock; enrollment is synthetic, not CLI/UI proof',
         before: before.toString(), clock, after: after.toString(), next }) + '\n', { mode: 0o600, flag: 'wx' })
     }
-    expect(() => readNativeDriverClock({ ...launch, driverPid: process.pid + 1 })).toThrow('original Darwin caller')
-    expect(() => readNativeDriverClock({ ...launch, capture: { ...launch.capture, nativeJournal: '1' } })).toThrow('original Darwin caller')
+    const caller = linux ? 'original Linux caller' : 'original Darwin caller'
+    expect(() => readNativeDriverClock({ ...launch, driverPid: process.pid + 1 })).toThrow(caller)
+    expect(() => readNativeDriverClock({ ...launch, capture: { ...launch.capture, nativeJournal: '1' } })).toThrow(caller)
+    // A capture prepared for the other platform's observer never yields this host's clock.
+    const { observer, ...unlabelled } = launch.capture
+    expect(() => readNativeDriverClock({ ...launch, capture: linux ? unlabelled
+      : { ...launch.capture, observer: 'linux-seccomp-ptrace-v1' } })).toThrow(caller)
+    expect(() => readNativeDriverClock({ ...launch, capture: { ...launch.capture, observer: 'foreign-observer-v1' } })).toThrow(caller)
     writeFileSync(join(run, 'start.json'), JSON.stringify({ childPid: process.pid, binarySha256: launch.binarySha256 }))
     expect(() => readNativeDriverClock(launch)).toThrow('enrollment')
   } finally { rmSync(run, { recursive: true, force: true }); system.close() }

@@ -48,7 +48,12 @@ def main():
     capture_id = os.environ.get('CLAUDE_CODE_FRAME_CAPTURE_ID')
     if not capture_id:
         raise ValueError('terminal capture identity is required')
-    executable = Path(argv[3] if argv[0] == '/usr/bin/sandbox-exec' else argv[0]).resolve(strict=True)
+    # Sandboxed layouts: sandbox-exec -f PROFILE BINARY ... and
+    # /usr/bin/python3 .../linux-sandbox-exec.py --policy JSON -- BINARY ...
+    linux_sandbox = (len(argv) > 5 and argv[0] == '/usr/bin/python3' and
+                     Path(argv[1]).name == 'linux-sandbox-exec.py' and argv[2] == '--policy' and argv[4] == '--')
+    executable = Path(argv[3] if argv[0] == '/usr/bin/sandbox-exec' else
+                      argv[5] if linux_sandbox else argv[0]).resolve(strict=True)
     binary_sha = hashlib.sha256(executable.read_bytes()).hexdigest()
     expected_sha = os.environ.get('CLAUDE_CODE_FRAME_BINARY_SHA256')
     if expected_sha and binary_sha != expected_sha:

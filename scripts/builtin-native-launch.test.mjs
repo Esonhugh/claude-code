@@ -27,8 +27,12 @@ test('native sandbox launcher holds exact original helpers and forwards the full
 
 test('changed native helper is rejected before capture-ready releases the producer', () => {
   const root = run(), nativeLauncher = createBuiltinNativeLauncher(root), env = {}
-  const capture = createBuiltinCapture(root, ['/usr/bin/sandbox-exec', '-f', join(root, 'sandbox.sb'), nativeLauncher.path, '/fixture/native'], env,
+  const sandbox = process.platform === 'linux'
+    ? ['/usr/bin/python3', join(root, 'linux-sandbox-exec.py'), '--policy', '{}', '--']
+    : ['/usr/bin/sandbox-exec', '-f', join(root, 'sandbox.sb')]
+  const capture = createBuiltinCapture(root, [...sandbox, nativeLauncher.path, '/fixture/native'], env,
     { nativeJournal: true, brokerPlacement: 'launcher-final-native-exec', nativeLauncher, binarySha256: 'b'.repeat(64) })
+  expect(capture.observer).toBe(process.platform === 'linux' ? 'linux-seccomp-ptrace-v1' : undefined)
   writeFileSync(nativeLauncher.broker, 'changed helper')
   const calls = []
   expect(() => installBuiltinCapture({ run: root, socket: join(root, 'tmux.sock'), target: 'mods:0.0', tmux: '/fixture/tmux', env }, capture,

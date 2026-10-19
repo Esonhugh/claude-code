@@ -7,9 +7,10 @@ import { verifyNativeNormalOrigin, createNativeNormalRoots } from './native-norm
 const Terminal = xterm.Terminal ?? xterm.default?.Terminal ?? xterm['module.exports']?.Terminal
 const roots = [], hash = bytes => createHash('sha256').update(bytes).digest('hex')
 afterAll(() => { for (const root of roots) rmSync(root, { recursive: true, force: true }) })
+const hostTmp = process.platform === 'darwin' ? '/private/tmp' : '/tmp'
 const write = (terminal, bytes) => new Promise(resolve => terminal.write(bytes, resolve))
 function fixture() {
-  const run = mkdtempSync('/private/tmp/normal-origin-unit-'); roots.push(run)
+  const run = mkdtempSync(hostTmp + '/normal-origin-unit-'); roots.push(run)
   const expected = { captureId: 'owned', binarySha256: 'b'.repeat(64), columns: 20, rows: 10 }
   const origin = { method: 'builtin-fresh-tmux-normal-origin-v1', ...expected,
     driverPid: 1, serverPid: 2, panePid: 3, pane: '%1', target: 'mods:0.0',

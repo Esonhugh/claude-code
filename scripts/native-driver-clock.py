@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
+import time
 import importlib.util
 
 spec = importlib.util.spec_from_file_location('native_clock_owned_files', Path(__file__).with_name('verify-native-frame-journal.py'))
@@ -15,9 +17,11 @@ _system = None
 def read_native_driver_clock(launch):
     global _system
     capture = launch.get('capture', {})
-    if (sys.platform != 'darwin' or capture.get('nativeJournal') is not True or
-            type(launch.get('driverPid')) is not int or launch['driverPid'] != os.getpid()):
-        raise ValueError('Native driver clock requires the original Darwin caller')
+    linux = sys.platform.startswith('linux')
+    if ((sys.platform != 'darwin' and not linux) or capture.get('nativeJournal') is not True or
+            type(launch.get('driverPid')) is not int or launch['driverPid'] != os.getpid() or
+            capture.get('observer') != ('linux-seccomp-ptrace-v1' if linux else None)):
+        raise ValueError('Native driver clock requires the original ' + ('Linux' if linux else 'Darwin') + ' caller')
     run = Path(launch['run'])
     registration = json.loads(files.read_native_regular(run / 'registration.json', 0o600))
     start = json.loads(files.read_native_regular(run / 'start.json', 0o600))
@@ -29,6 +33,15 @@ def read_native_driver_clock(launch):
             start.get('binarySha256') != launch.get('binarySha256') or
             not isinstance(capture.get('captureId'), str) or not capture['captureId']):
         raise ValueError('Native driver clock enrollment differs from prepared capture')
+    if linux:
+        # Same CLOCK_MONOTONIC nanoseconds as the Linux observer (header[12]=[13]=1).
+        thread, tick = threading.get_native_id(), time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+        if not thread or not 0 < tick < 1 << 64:
+            raise ValueError('Actual native driver clock identity is unavailable')
+        return {'method': 'driver-linux-monotonic-v1', 'tick': str(tick),
+                'captureId': capture['captureId'], 'nonce': nonce, 'childPid': start['childPid'],
+                'callerPid': os.getpid(), 'callerThreadId': str(thread),
+                'timebaseNumer': 1, 'timebaseDenom': 1}
     if _system is None:
         _system = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
         _system.mach_absolute_time.restype = ctypes.c_uint64

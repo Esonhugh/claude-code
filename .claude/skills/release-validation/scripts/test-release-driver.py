@@ -8708,6 +8708,62 @@ def test_retained_capture_roster_uses_prepared_protocol_not_report_labels():
     assert module.terminal_capture_required_files({**legacy, 'backend': 'native-shared-slot-v1'}) == module.TERMINAL_CAPTURE_FILES
 
 
+def test_retained_linux_capture_roster_follows_the_prepared_observer_platform():
+    module = load_driver()
+    linux = {'capture': {'nativeJournal': True, 'captureId': 'owned', 'observer': 'linux-seccomp-ptrace-v1'}}
+    darwin = module.terminal_capture_required_files({'capture': {'nativeJournal': True, 'captureId': 'owned'}})
+    selected = module.terminal_capture_required_files(linux)
+    assert selected == (darwin - {'observer.dylib'}) | {'observer.so', 'observer-exec'}
+    assert len(selected) == 27 and 'observer.dylib' not in selected
+    for label in (None, 'legacy', 'unknown'):
+        assert module.terminal_capture_required_files({**linux, 'backend': label}) == selected
+    # A capture never mixes protocols: only a native Linux capture may name its observer.
+    for invalid in ({'capture': {**linux['capture'], 'observer': value}}
+                    for value in (None, '', 'darwin-interpose-v1', 'linux-seccomp-ptrace-v2')):
+        assert module.terminal_capture_required_files(invalid) is None, invalid
+    assert module.terminal_capture_required_files(
+        {'capture': {**linux['capture'], 'nativeJournal': False}}) is None
+    assert module.NATIVE_GEOMETRY_METHOD == ('native-driver-linux-frame-geometry-v2'
+        if sys.platform.startswith('linux') else 'native-driver-mach-frame-geometry-v2')
+
+
+def test_retained_native_exit_receipts_require_the_platform_tracer_close():
+    module = load_driver()
+    digest = 'a' * 64
+    with tempfile.TemporaryDirectory(prefix='native-exit-platform-') as directory:
+        run = Path(directory)
+        darwin = {'nativeJournal': True, 'captureId': 'owned'}
+        linux = {**darwin, 'observer': 'linux-seccomp-ptrace-v1'}
+        tracer = {'observer': 'linux-seccomp-ptrace-v1', 'tracerPid': 43, 'tracerExitCode': 0, 'tracerReaped': True}
+        closes = {'nativeClose': {'method': 'owned-broker-closed-native-v1'}, 'ioClose': {'method': 'owned-broker-closed-io-v1'}}
+        closed = {'backend': 'native-shared-slot-v1', 'captureId': 'owned', 'childPid': 42, 'childExitCode': 0,
+                  'childReaped': True, 'physicalEof': True, 'normalCompletion': True, 'failure': None,
+                  'signalsSent': [], 'cleanupErrors': [], **closes}
+        producer = {'backend': 'native-shared-slot-v1', 'captureId': 'owned', 'childPid': 42,
+                    'binarySha256': digest, **closes}
+        def receipts(cleanup):
+            for name, value in (('start.json', {'childPid': 42, 'childPgid': 42, 'binarySha256': digest}),
+                                ('cleanup.json', cleanup), ('broker-cleanup.json', cleanup),
+                                ('producer-expected-native.json', producer)):
+                path = run / name
+                path.unlink(missing_ok=True)
+                path.write_text(json.dumps(value))
+                path.chmod(0o600)
+        for capture, cleanup, expected in [
+                (darwin, closed, True), (linux, {**closed, **tracer}, True),
+                (linux, closed, False), (darwin, {**closed, **tracer}, False),
+                (linux, {**closed, **tracer, 'tracerExitCode': 3}, False),
+                (linux, {**closed, **tracer, 'tracerExitCode': None}, False),
+                (linux, {**closed, **tracer, 'tracerReaped': False}, False),
+                (linux, {**closed, **tracer, 'tracerPid': None}, False),
+                (linux, {**closed, **tracer, 'observer': 'darwin-interpose-v1'}, False)]:
+            receipts(cleanup)
+            assert module.terminal_native_producer_exit_passed(run, capture, digest) is expected, (capture, cleanup)
+        launch = {'run': str(run.resolve()), 'binarySha256': digest, 'capture': {**linux, 'wrapper': 'held'}}
+        assert module.terminal_native_exit_identity(run, launch, digest)['capture'] == linux
+        assert module.terminal_native_exit_identity(run, {**launch, 'capture': darwin}, digest)['capture'] == darwin
+
+
 def test_retained_capture_roster_missing_or_ambiguous_intent_fails_closed():
     module = load_driver()
     for invalid in (None, {}, {'capture': {}}, {'capture': {'nativeJournal': True}},

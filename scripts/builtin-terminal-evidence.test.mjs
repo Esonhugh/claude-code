@@ -7,7 +7,7 @@ import {
   existsSync,
   rmSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, release } from 'node:os'
 import { join } from 'node:path'
 import {
   createBuiltinCapture,
@@ -18,6 +18,8 @@ import {
   validateCaptureInputs,
 } from './builtin-terminal-evidence.mjs'
 const roots = []
+const linux = process.platform === 'linux'
+const sha = (path) => createHash('sha256').update(readFileSync(path)).digest('hex')
 const fixture = () => {
   const run = mkdtempSync(join(tmpdir(), 'frame-cap-'))
   roots.push(run)
@@ -69,22 +71,48 @@ test('native capture prepares a pinned observer before launcher startup', () => 
   expect(env.CC_VALIDATION_FRAME_NATIVE_JOURNAL).toBe('1')
   expect(env.CLAUDE_CODE_FRAME_NATIVE_JOURNAL).toBe('1')
   expect(observer.method).toBe('native-shared-slot-v1')
-  expect(observer.library).toBe(join(run, 'observer.dylib'))
+  expect(observer.library).toBe(join(run, linux ? 'observer.so' : 'observer.dylib'))
   expect(observer.librarySha256).toBe(createHash('sha256').update(readFileSync(observer.library)).digest('hex'))
+  if (linux) {
+    expect(capture.observer).toBe('linux-seccomp-ptrace-v1')
+    expect(observer.observer).toBe('linux-seccomp-ptrace-v1')
+    expect(observer.observerExec).toBe(join(run, 'observer-exec'))
+    expect(observer.observerExecSha256).toBe(sha(observer.observerExec))
+    expect(observer.kernel).toBe(release())
+    expect(observer.probe).toMatchObject({ command: ['/bin/true'], childExitCode: 0, tracerExitCode: 0 })
+    expect(observer.probe.tracerPid).not.toBe(observer.probe.childPid)
+    expect(existsSync(join(run, 'observer.dylib'))).toBe(false)
+  } else {
+    expect(capture.observer).toBeUndefined()
+    expect(observer.observer).toBeUndefined()
+  }
   expect(existsSync(join(run, 'journal.bin'))).toBe(false)
   expect(readFileSync(capture.wrapper, 'utf8')).not.toContain('FRAME_JOURNAL')
 })
-test('native prepare refuses preexisting observer bytes before compiling', () => {
+test('native capture fails closed on a platform without an observer', () => {
+  const run = mkdtempSync(join(tmpdir(), 'native-platform-'))
+  roots.push(run)
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform')
+  Object.defineProperty(process, 'platform', { value: 'win32' })
+  try {
+    expect(() => createBuiltinCapture(run, ['/owned/launcher.sh'], {}, {
+      binarySha256: 'b'.repeat(64), brokerPlacement: 'launcher-final-native-exec', nativeJournal: true,
+    })).toThrow('Native shared-slot capture requires Darwin or Linux')
+  } finally { Object.defineProperty(process, 'platform', platform) }
+  expect(existsSync(join(run, 'native-observer.json'))).toBe(false)
+})
+for (const name of linux ? ['observer.so', 'observer-exec'] : ['observer.dylib'])
+test(`native prepare refuses preexisting ${name} bytes before compiling`, () => {
   const run = mkdtempSync(join(tmpdir(), 'native-existing-'))
   roots.push(run)
   const sentinel = 'preexisting observer must survive'
   const enrollment = JSON.stringify({ ownedBy: 'older capture' })
-  writeFileSync(join(run, 'observer.dylib'), sentinel)
+  writeFileSync(join(run, name), sentinel)
   writeFileSync(join(run, 'native-observer.json'), enrollment)
   expect(() => createBuiltinCapture(run, ['/owned/launcher.sh'], {}, {
     binarySha256: 'b'.repeat(64), brokerPlacement: 'launcher-final-native-exec', nativeJournal: true,
   })).toThrow('Preexisting terminal capture artifact')
-  expect(readFileSync(join(run, 'observer.dylib'), 'utf8')).toBe(sentinel)
+  expect(readFileSync(join(run, name), 'utf8')).toBe(sentinel)
   expect(readFileSync(join(run, 'native-observer.json'), 'utf8')).toBe(enrollment)
   expect(existsSync(join(run, 'observer-compile.log'))).toBe(false)
 })
@@ -102,6 +130,22 @@ test('native first seal refuses missing producer expectation without rebuilding 
   expect(existsSync(join(launch.run, 'expected-native.json'))).toBe(false)
   expect(report.productTimingEquivalent).toBe(false)
   expect(report.fullNativeGatePassed).toBe(false)
+})
+test('native seal hashes only the prepared platform observer and labels its report', async () => {
+  const run = mkdtempSync(join(tmpdir(), 'native-seal-platform-'))
+  roots.push(run)
+  const capture = createBuiltinCapture(run, ['/owned/launcher.sh'], {}, {
+    binarySha256: 'b'.repeat(64), brokerPlacement: 'launcher-final-native-exec', nativeJournal: true,
+  })
+  writeFileSync(join(run, 'capture-eof'), '0\n')
+  const report = await sealBuiltinCapture({ run, capture, binarySha256: 'b'.repeat(64), target: 'mods:0.0', pane: '%1' }, 0)
+  const names = linux ? ['observer.so', 'observer-exec'] : ['observer.dylib']
+  for (const name of [...names, 'observer-compile.log', 'native-observer.json'])
+    expect(report.files[name]).toEqual({ path: join(run, name), bytes: readFileSync(join(run, name)).length, sha256: sha(join(run, name)) })
+  for (const name of linux ? ['observer.dylib'] : ['observer.so', 'observer-exec'])
+    expect(report.files[name]).toBeUndefined()
+  expect(report.observer).toBe(linux ? 'linux-seccomp-ptrace-v1' : undefined)
+  expect(report.boundedVerdict).toBe('failed')
 })
 test('paste evidence requires exact owned bytes, both successful commands and actual forwarded native input', () => {
   const launch = fixture(), path = join(launch.run, 'input.bin'),

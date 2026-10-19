@@ -31,7 +31,15 @@ function fixture() {
     { frameId: 2, columns: 109, rows: 34, outputBytes: 10, verdict: 'passed' }]
   return { geometry, io, events, entries, frames, target: 'owned:0.0' }
 }
-const verify = f => verifyNativeGeometryRequests(f.geometry, f.io, f.events, f.entries, f.frames, f.target, 900)
+const verify = (f, platform) => verifyNativeGeometryRequests(f.geometry, f.io, f.events, f.entries, f.frames, f.target, 900, platform)
+// The same request/ACK/paint ledger as recorded by the Linux observer and driver clocks.
+function linuxFixture() {
+  const f = fixture()
+  for (const row of [...f.io, ...f.events]) if (row.nativeBracket) row.nativeBracket.method = 'native-linux-ioctl-resize-v1'
+  for (const row of f.geometry) if (row.nativeDriverClock) row.nativeDriverClock.method = 'driver-linux-monotonic-v1'
+  f.entries[1].nativeSpan.clock.observer = 'linux-seccomp-ptrace-v1'
+  return f
+}
 
 describe('native original resize request and physical frame contracts', () => {
   test('uses the verified kernel write prefix when the broker read tail lags behind it', () => {
@@ -87,7 +95,29 @@ describe('native original resize request and physical frame contracts', () => {
 
   test('missing request ledger remains not covered', () => {
     const f = fixture(); f.geometry = null
-    expect(verify(f).verdict).toBe('not covered')
+    expect(verify(f)).toEqual({ method: 'native-driver-mach-frame-geometry-v2', verdict: 'not covered' })
+    expect(verify(f, 'linux')).toEqual({ method: 'native-driver-linux-frame-geometry-v2', verdict: 'not covered' })
+  })
+
+  test('Linux ioctl brackets and monotonic driver clocks use the Linux method set', () => {
+    const result = verify(linuxFixture(), 'linux')
+    expect(result).toMatchObject({ method: 'native-driver-linux-frame-geometry-v2', verdict: 'passed',
+      requested: 1, acknowledged: 1, actualInputOwnerCovered: false, productTimingEquivalent: false,
+      sizes: [{ columns: 109, rows: 34, actionId: 1, ioId: 3, geometryId: 1, frameId: 2 }] })
+  })
+  for (const [name, platform, change] of [
+    ['Darwin evidence verified as Linux', 'linux', () => fixture()],
+    ['Linux evidence verified as Darwin', 'darwin', () => linuxFixture()],
+    ['a Mach driver clock with Linux brackets', 'linux', () => {
+      const f = linuxFixture(); f.geometry[1].nativeDriverClock.method = 'driver-mach-absolute-time-v1'; return f }],
+    ['a Linux driver clock with Mach brackets', 'darwin', () => {
+      const f = fixture(); f.geometry[2].nativeDriverClock.method = 'driver-linux-monotonic-v1'; return f }],
+    ['a Mach resize bracket in Linux evidence', 'linux', () => {
+      const f = linuxFixture(); f.io[2].nativeBracket = { ...f.io[2].nativeBracket, method: 'native-mach-ioctl-resize-v1' }; return f }],
+  ]) test(`rejects platform mixing: ${name}`, () => { expect(() => verify(change(), platform)).toThrow() })
+  test('rejects an unknown observer platform', () => {
+    expect(() => verify(fixture(), 'win32')).toThrow('Unknown native observer platform')
+    expect(() => verify({ ...fixture(), geometry: null }, 'toString')).toThrow('Unknown native observer platform')
   })
 
   test('a paint crossing the next kernel resize cannot acknowledge the earlier request', () => {
