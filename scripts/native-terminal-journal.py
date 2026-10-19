@@ -18,6 +18,17 @@ RECORD = struct.Struct('<20Q')
 TERMIOS_PREFIX = struct.Struct('<6Q')
 TERMIOS_VALUE = struct.Struct('<6Q20B')
 MUTABLE_HEADER = {8, 9, 10, 11, 12, 13, 19, 21}
+# Registered header[20] selects exactly one observer method set. Darwin keeps 0.
+LINUX_V1 = 0x31565F58554E494C  # b'LINUX_V1', little-endian
+LINUX_OBSERVER = 'linux-seccomp-ptrace-v1'
+METHODS = {
+    0: {'mutable': MUTABLE_HEADER, 'operations': (1, 2, 3, 4),
+        'termiosPrefix': (1, 20), 'termiosValue': TERMIOS_VALUE,
+        'frameSpan': 'native-mach-frame-span-v1', 'resize': 'native-mach-ioctl-resize-v1'},
+    LINUX_V1: {'mutable': MUTABLE_HEADER | {22, 23}, 'operations': (1, 2, 5, 6, 7),
+               'termiosPrefix': (2, 19), 'termiosValue': struct.Struct('<6Q19B'),
+               'frameSpan': 'native-linux-frame-span-v1', 'resize': 'native-linux-ioctl-resize-v1'},
+}
 
 
 class JournalError(ValueError):
@@ -29,7 +40,14 @@ def require(condition, reason):
         raise JournalError(reason)
 
 
-def create_journal(path, endpoint, output_mask, capacity=64, payload_bytes=65536):
+def methods(registration):
+    platform = registration['header'][20]
+    require(platform in METHODS, 'Unknown native observer platform')
+    return METHODS[platform]
+
+
+def create_journal(path, endpoint, output_mask, capacity=64, payload_bytes=65536, platform='darwin'):
+    require(platform in ('darwin', 'linux'), 'Unknown native observer platform')
     require(type(capacity) is int and 1 <= capacity <= 4096, 'Invalid slot count')
     require(type(payload_bytes) is int and 1 <= payload_bytes <= 1048576,
             'Invalid immutable payload capacity')
@@ -43,6 +61,8 @@ def create_journal(path, endpoint, output_mask, capacity=64, payload_bytes=65536
     require(all(type(value) is int and -(1 << 63) <= value < 1 << 64 for value in identity),
             'Invalid native endpoint identity')
     header[14:19] = [value & ((1 << 64) - 1) for value in identity] + [output_mask]
+    if platform == 'linux':
+        header[20] = LINUX_V1
     path = Path(path)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
@@ -90,10 +110,16 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
     require(type(expected_pid) is int and expected_pid > 0, 'Independent main PID required')
     require(len(header) == 32 and all(type(word) is int and 0 <= word < 1 << 64
             for word in header), 'Invalid header')
+    method = methods(registration)
+    linux = method is METHODS[LINUX_V1]
     require(all(header[index] == word for index, word in enumerate(registration['header'])
-                if index not in MUTABLE_HEADER), 'Native registration changed')
+                if index not in method['mutable']), 'Native registration changed')
     require(header[8] == expected_pid, 'Foreign or absent native producer')
     require(header[10] == 0, 'Lost native journal record')
+    if linux:
+        require(header[22] == 0, 'Foreign native endpoint writer')
+        require(header[23] == 0, 'Unsupported native endpoint transfer')
+        require(header[12] == header[13] == 1, 'Linux native clock is not monotonic nanoseconds')
     if closed:
         require(header[11] == 1 and header[19] > 0 and header[21] >= header[19] and
                 header[12] > 0 and header[13] > 0, 'Missing native clock or close boundary')
@@ -106,6 +132,9 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
             require(header[21] >= header[19], 'Missing closed native prefix boundary')
     clock = {'nonce': f'{header[6]:016x}{header[7]:016x}', 'pid': expected_pid,
              'timebaseNumer': header[12], 'timebaseDenom': header[13], 'openedAt': str(header[19])}
+    if linux:
+        clock['observer'] = LINUX_OBSERVER
+    termios_value = method['termiosValue']
     decoded = []
     for sequence, data in enumerate(records, 1):
         require(len(data) >= RECORD.size, 'Truncated native metadata')
@@ -123,25 +152,25 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
                 'Immutable payload bounds mismatch')
         result = returned if returned < 1 << 63 else returned - (1 << 64)
         if kind == 1:
-            require(mask == registration['header'][18] and operation in (1, 2, 3, 4)
+            require(mask == registration['header'][18] and operation in method['operations']
                     and fd < 1 << 31 and -1 <= result <= requested <= registration['payloadBytes']
                     and length == max(0, result), 'Original write result/prefix mismatch')
             require(result != -1 or error > 0, 'Failed write lacks original errno')
         elif kind == 3:
             error = error if error < 1 << 63 else error - (1 << 64)
             require(-(1 << 31) <= error < 1 << 31, 'Noncanonical native read errno')
-            require(mask == 4 and operation in (1, 2, 3, 4) and span == 0
+            require(mask == 4 and operation in method['operations'] and span == 0
                     and fd < 1 << 31 and -1 <= result <= requested
                     and length == max(0, result), 'Original read result/prefix mismatch')
             require(result != -1 or error > 0, 'Failed read lacks original errno')
         elif kind == 2:
             require(mask == registration['header'][18] and fd < 1 << 31 and span == 0 and
                     -1 <= result <= 0 and (operation in (0, 1, 2) or result == -1) and
-                    requested == length == TERMIOS_PREFIX.size + 3 * TERMIOS_VALUE.size,
+                    requested == length == TERMIOS_PREFIX.size + 3 * termios_value.size,
                     'Original tcsetattr result or canonical payload mismatch')
             require(result != -1 or error > 0, 'Failed tcsetattr lacks original errno')
             prefix = TERMIOS_PREFIX.unpack_from(data, RECORD.size)
-            require(prefix[:2] == (1, 20) and prefix[2] == prefix[4] == 0,
+            require(prefix[:2] == method['termiosPrefix'] and prefix[2] == prefix[4] == 0,
                     'Native termios kernel query failed')
         else:
             require(10 <= kind <= 20 and fd == mask == operation == returned == error == 0
@@ -157,7 +186,7 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
             decoded[-1]['nativeClock'] = clock
         if kind == 2:
             for index, name in enumerate(('modeBefore', 'modeRequested', 'modeAfter')):
-                values = TERMIOS_VALUE.unpack_from(data, RECORD.size + TERMIOS_PREFIX.size + index * TERMIOS_VALUE.size)
+                values = termios_value.unpack_from(data, RECORD.size + TERMIOS_PREFIX.size + index * termios_value.size)
                 decoded[-1][name] = dict(zip(('inputFlags', 'outputFlags', 'controlFlags', 'localFlags',
                                              'inputSpeed', 'outputSpeed'), values[:6])) | {'controlChars': list(values[6:])}
     return decoded
@@ -316,7 +345,8 @@ def ink_frame_entries(records, raw, capture_id, output_flags):
         clock = layout.get('nativeClock')
         require(type(clock) is dict and all(row.get('nativeClock') == clock for row in (begin, end, snapshot)),
                 'Native Ink frame lacks its original clock identity')
-        native_span = {'method': 'native-mach-frame-span-v1', 'clock': dict(clock),
+        method = METHODS[LINUX_V1 if clock.get('observer') == LINUX_OBSERVER else 0]['frameSpan']
+        native_span = {'method': method, 'clock': dict(clock),
                        'threadId': layout['threadId'],
                        'observationKind': 'output-transaction' if count else 'logical-observation',
                        'markers': [{'kind': row['kind'], 'sequence': row['sequence'],
@@ -416,7 +446,8 @@ class NativeConsumer:
     def check_registration(self):
         header = HEADER.unpack_from(self.mapping)
         require(all(header[index] == word for index, word in enumerate(self.registration['header'])
-                    if index not in MUTABLE_HEADER), 'Native collector registration changed')
+                    if index not in methods(self.registration)['mutable']),
+                'Native collector registration changed')
         return header
 
     def bind_producer(self, pid):
@@ -461,7 +492,7 @@ class NativeConsumer:
                 struct.pack('<Q', receipt[5]) == size and
                 0 < receipt[0] <= receipt[1] and receipt[10] > 0 and receipt[11] > 0,
                 'Actual native resize or acknowledgement failed')
-        return {'method': 'native-mach-ioctl-resize-v1', 'entry': str(receipt[0]), 'return': str(receipt[1]),
+        return {'method': methods(self.registration)['resize'], 'entry': str(receipt[0]), 'return': str(receipt[1]),
                 'result': returned, 'errno': receipt[3], 'beforeSizeHex': struct.pack('<Q', receipt[4]).hex(),
                 'afterSizeHex': struct.pack('<Q', receipt[5]).hex(),
                 'timebaseNumer': receipt[10], 'timebaseDenom': receipt[11],
