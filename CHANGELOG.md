@@ -80,6 +80,7 @@
 
 #### 启动、设置、Workflow 与 Mods
 
+- 标签页的按键归属改为读取同步更新的焦点与 opt-in 状态：此前 `/config` → Stats 中快速按 ↓ 再按 Tab（或在 React 提交前到达的后续按键）会被外层设置页抢走，OpenAI 图表加载后的第一次 ↓ 可能被丢弃，刚进入图表就按 ↑ 也会把焦点交回外层。
 - 提交输入时通过输入框句柄同步清空草稿；此前 Mods `prompt.read()` 要等输入框重新渲染才看到空草稿，提交的本地命令（如 Mods 建议）抢先执行时会读到刚提交的文本，高负载下偶发 `suggestion=hidden`。
 - 原生终端采集的帧边界标记库在 Linux 上同样加载（仍只在设置 `CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY` 的采集环境中生效，普通会话不受影响），供 Linux 发布门禁记录逐帧证据。
 - 移除 `main()` 提前注册的 SIGINT 处理器，Ctrl+C 进入 graceful shutdown，SessionEnd hook、清理注册表与 Mods 释放得以执行；`main()` 拒绝时以错误退出；退出时关闭 InteractiveTerminal PTY 会话。
@@ -89,7 +90,7 @@
 - `/config teammateDefaultModel=<auto|inherit|model>` 与对话框写入相同值，拒绝选择器未列出的模型，行校验器在写入时执行；`workflowKeywordTriggerEnabled`、`skipWorkflowUsageWarning` 进入设置 schema，Dynamic workflows 行锁定为策略有效值。
 - 声明式 Workflow 的默认并发上限 `min(16, max(2, CPU 数-2))` 与官方一样只在运行时排队，不再拒绝 spec：4 核及以下机器上含多个独立 phase 的 workflow 不再被静默丢弃，只有 spec 显式写 `defaults.maxConcurrency` 时才校验；单个 phase 的并发也受该上限约束。
 - Workflow 终态任务在结束时间加面板宽限期后回收；交互式 `/workflows` 合并已持久化的运行记录，回收后的运行仍可只读查看；与官方一样只列出当前会话发起的运行（其他会话的运行可按 run id 查看），列表行指标以耗时开头（`0s · 2 agents · 4 tok`）。
-- Workflow 启动只解析 meta 并编译脚本，不再预执行脚本体，语法检查在发布所用的 Bun 1.3 运行时下同样生效；失败的 `agent()` 返回 null 并列入完成通知的 `<failures>`，单次运行最多 1000 次 `agent()` 调用；resume 拒绝运行中或没有 journal 的运行。
+- Workflow 启动只解析 meta 并编译脚本，不再预执行脚本体，语法检查在 Bun 1.3.14 与 1.4.2 下均生效，内联脚本（含覆盖已保存 workflow 的内联脚本）编译失败时不再在 `.claude/workflow-runs` 留下文件；失败的 `agent()` 返回 null 并列入完成通知的 `<failures>`，单次运行最多 1000 次 `agent()` 调用；resume 拒绝运行中或没有 journal 的运行。
 - Mods 热重载期间不释放替换激活仍在使用的 MCP 服务器，Worker 退出时释放；`tool.call` 只在调用源自用户本人交互时附加 `consent`；hook 外启动的模型调用随激活卸载中止；首次 bind 失败不再让 `receive()` 永久等待。
 - Mods `$.session.turns` 在 REPL、print 与 QueryEngine 共用计数；`$.env.set` 的写入随激活结束失效，拒绝重定向宿主凭据或向子进程注入代码的变量名；插件根目录轮询忽略 `node_modules`、`.git`。
 - Mods 在 session.start、plugin.register 中调用 `command.run`、`prompt.submit`，以及在 turn.start、turn.step、prompt.mention 中调用 `prompt.submit`，均改为拒绝而非死锁；turn.complete 中可以提交 prompt。

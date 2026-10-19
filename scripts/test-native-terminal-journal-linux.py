@@ -13,6 +13,7 @@ from pathlib import Path
 import pty
 import selectors
 import signal
+import shutil
 import struct
 import subprocess
 import sys
@@ -344,6 +345,10 @@ def blocked_in_read(pid):
 
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux observer only')
 class LinuxNativeJournalTest(unittest.TestCase):
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.root, ignore_errors=True)
+
     @classmethod
     def setUpClass(cls):
         cls.root = Path(tempfile.mkdtemp(prefix='cc-journal-linux-'))

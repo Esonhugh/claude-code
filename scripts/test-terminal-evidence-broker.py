@@ -236,8 +236,10 @@ original_read, original_write, original_waitpid = os.read, os.write, os.waitpid
 run = Path(%r)
 def observe_write(fd, data):
     if os.getpid() == parent and fd == 1:
-        (run/'outer-write-entered.json').write_text(json.dumps({
+        # Publish atomically: the test polls for the file and reads it at once.
+        (run/'outer-write-entered.tmp').write_text(json.dumps({
             'parentPid': parent, 'bytes': len(data), 'fd': fd}))
+        os.replace(run/'outer-write-entered.tmp', run/'outer-write-entered.json')
     try:
         return original_write(fd, data)
     except BlockingIOError as error:
