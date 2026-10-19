@@ -87,7 +87,7 @@ async function runOrchestrationExport(
 
 // Official 2.1.292 launches a meta script after parsing its meta and compiling the
 // body; only the workflow runtime runs the body, so no agent() call happens here.
-function loadOfficialWorkflowScriptSpec(filePath: string, source: string): WorkflowSpec {
+export function preflightWorkflowScript(source: string, filePath: string): ReturnType<typeof parseWorkflowScript> {
   const parsed = parseWorkflowScript(source)
   try {
     // vm.Script compiles lazily on Bun 1.3, so it would not surface syntax errors here.
@@ -95,6 +95,11 @@ function loadOfficialWorkflowScriptSpec(filePath: string, source: string): Workf
   } catch (error) {
     throw new Error(`Workflow script has a syntax error and was not launched:\n${workflowErrorMessage(error, 'Workflow script failed to compile')}`)
   }
+  return parsed
+}
+
+function loadOfficialWorkflowScriptSpec(filePath: string, source: string): WorkflowSpec {
+  const parsed = preflightWorkflowScript(source, filePath)
   return {
     name: parsed.meta.name,
     description: parsed.meta.description,

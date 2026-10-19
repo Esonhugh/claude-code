@@ -2,7 +2,7 @@
 // Official 2.1.292 Workflow semantics that the facade must keep: launch parses meta and
 // compiles only, agent failures leave the run completed, and resume is guarded.
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, readdir, readFile, realpath } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -119,6 +119,29 @@ function notificationOf(task: LocalWorkflowTaskState): string {
 function script(name: string, body: string, phases = ''): string {
   return `export const meta = { name: '${name}', description: '${name} probe', phases: [${phases}] }\n${body}\n`
 }
+
+// An inline script whose body does not compile is reported and leaves no run directory
+// behind; a valid inline script is still persisted under .claude/workflow-runs.
+const runDirs = async (): Promise<string[]> =>
+  (await readdir(join(cwd, '.claude', 'workflow-runs')).catch(() => [])).filter(entry => entry.startsWith('wf_'))
+const runDirsBefore = await runDirs()
+const tasksBefore = Object.keys(state.tasks).length
+prompts.length = 0
+await assert.rejects(
+  run({ script: script('syntax-error', `export const later = 1`) }),
+  /Workflow script has a syntax error and was not launched/,
+)
+assert.deepEqual(await runDirs(), runDirsBefore)
+assert.equal(Object.keys(state.tasks).length, tasksBefore)
+assert.deepEqual(prompts, [])
+
+const persistedSource = script('persisted', `return agent('persist me')`)
+const persisted = await run({ script: persistedSource })
+assert.equal(scriptPathOf(persisted), join(await realpath(cwd), '.claude', 'workflow-runs', runIdOf(persisted), 'persisted.js'))
+assert.equal(await readFile(scriptPathOf(persisted), 'utf8'), persistedSource)
+assert.deepEqual((await runDirs()).sort(), [...runDirsBefore, runIdOf(persisted)].sort())
+assert.equal(taskOf(persisted).status, 'completed')
+dequeueAllMatching(command => command.mode === 'task-notification')
 
 // Launch parses meta and compiles only: these valid scripts used to be rejected by a
 // dry run of their body (too many agents in a phase, alternating pipeline phases, a

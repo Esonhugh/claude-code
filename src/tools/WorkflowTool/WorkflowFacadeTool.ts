@@ -5,7 +5,7 @@ import { getCwd } from '../../utils/cwd.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import type { WorkflowArgs, WorkflowDryRunPlan, WorkflowSpec } from './workflowSpec.js'
-import { loadWorkflowScriptSpec } from './workflowDsl.js'
+import { loadWorkflowScriptSpec, preflightWorkflowScript } from './workflowDsl.js'
 import { loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript } from './workflowScriptParser.js'
 import { validateWorkflowSpec } from './validateWorkflowSpec.js'
@@ -366,6 +366,10 @@ For any other task — even one that would clearly benefit from parallelism — 
       ? await loadWorkflowScriptResume({ cwd, workflowRunId: normalized.resumeFromRunId, context })
       : undefined
     const workflowRunId = resume ? normalized.resumeFromRunId! : createWorkflowRunId()
+    // Compile an inline meta script before persisting it, so a syntax error leaves no file behind.
+    if (normalized.kind !== 'script-path' && hasWorkflowScriptMeta(normalized.script)) {
+      preflightWorkflowScript(normalized.script, 'workflow.js')
+    }
     const scriptPath =
       normalized.kind === 'script-path'
         ? await resolveWorkflowScriptPath({ cwd, scriptPath: normalized.scriptPath })
