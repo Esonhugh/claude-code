@@ -5,9 +5,11 @@ from pathlib import Path
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -191,6 +193,74 @@ print(json.dumps({'inside': True, 'host': host}))
         self.assertEqual(result['host'], 111)
         self.assertFalse(self.probe_report()['seccomp'])
 
+    def test_forwarded_loopback_port_reaches_only_its_unix_socket(self):
+        path = str(self.scratch / 'provider.sock')
+        provider = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        provider.bind(path); provider.listen(8)
+        self.addCleanup(provider.close)
+        # The forwarded port is also bound on the host, as the real provider's TCP listener is.
+        host_twin = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        host_twin.bind(('127.0.0.1', 0)); host_twin.listen(8)
+        self.addCleanup(host_twin.close)
+        port = host_twin.getsockname()[1]
+        peers = []
+        def serve():
+            conn, _ = provider.accept()
+            with conn:
+                pid = struct.unpack('3i', conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[0]
+                status = dict(line.split(':\t', 1) for line in Path(f'/proc/{pid}/status').read_text().splitlines()
+                              if ':\t' in line)
+                peers.append({'pid': pid, 'netns': os.readlink(f'/proc/{pid}/ns/net'),
+                              'noNewPrivs': status['NoNewPrivs'].strip(), 'capEff': int(status['CapEff'], 16)})
+                request = b''
+                while chunk := conn.recv(1024):
+                    request += chunk
+                conn.sendall(b'provider:' + request)
+        server = threading.Thread(target=serve, daemon=True)
+        server.start()
+        script = r'''
+import json, socket, sys
+def ask(port):
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=5) as client:
+            client.sendall(b'ping'); client.shutdown(socket.SHUT_WR)
+            reply = b''
+            while chunk := client.recv(1024):
+                reply += chunk
+            return reply.decode()
+    except OSError as error:
+        return error.errno
+print(json.dumps({'forwarded': ask(int(sys.argv[1])), 'other': ask(int(sys.argv[2]))}))
+'''
+        policy = self.policy(network={'mode': 'loopback'}, forwardLoopback=[{'port': port, 'unix': path}])
+        completed = self.helper(policy, [PYTHON, '-c', script, str(port), str(self.listener.getsockname()[1])])
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout), {'forwarded': 'provider:ping', 'other': 111})
+        server.join(timeout=5)
+        report = self.probe_report()
+        self.assertTrue(report['ok'])
+        self.assertEqual([{k: row[k] for k in ('port', 'unix')} for row in report['forwarders']],
+                         [{'port': port, 'unix': path}])
+        # The relay ran inside the sandbox netns, confined, and ends with the target.
+        self.assertEqual(peers[0]['pid'], report['forwarders'][0]['pid'])
+        self.assertNotEqual(peers[0]['netns'], os.readlink('/proc/self/ns/net'))
+        self.assertEqual((peers[0]['noNewPrivs'], peers[0]['capEff']), ('1', 0))
+        deadline = time.monotonic() + 5
+        def alive(pid):
+            try:
+                return Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[0] not in ('Z', 'X')
+            except FileNotFoundError:
+                return False
+        while alive(peers[0]['pid']) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(peers[0]['pid']))
+
+    def test_forward_to_a_non_socket_fails_closed(self):
+        plain = self.scratch / 'plain'
+        plain.write_text('not a socket')
+        policy = self.policy(network={'mode': 'loopback'}, forwardLoopback=[{'port': 9, 'unix': str(plain)}])
+        self.assert_fails_closed(self.helper(policy, self.target()), f'forward target {plain} is not a unix socket')
+
     def test_outside_tmux_client_drives_inside_server_through_path_socket(self):
         tmux = shutil.which('tmux')
         self.assertIsNotNone(tmux, 'tmux is required for the owned socket contract')
@@ -267,7 +337,11 @@ print(json.dumps({'inside': True, 'host': host}))
     def test_invalid_policies_fail_closed(self):
         for policy, reason in [({**self.policy(), 'network': {'mode': 'host'}}, 'network.mode must be none or loopback'),
                                ({**self.policy(), 'runDir': 'relative'}, 'runDir must be an absolute directory'),
-                               ({**self.policy(), 'unknown': True}, 'unknown policy keys: unknown')]:
+                               ({**self.policy(), 'unknown': True}, 'unknown policy keys: unknown'),
+                               (self.policy(forwardLoopback=[{'port': 9, 'unix': str(self.scratch / 's')}]),
+                                'forwardLoopback requires network.mode loopback'),
+                               (self.policy(network={'mode': 'loopback'}, forwardLoopback=[{'port': 0, 'unix': 'rel'}]),
+                                'forwardLoopback must list {port, unix}')]:
             completed = self.helper(policy, self.target())
             self.assert_fails_closed(completed, reason)
 

@@ -1,13 +1,21 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createHash } from 'node:crypto'
-import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { chmodSync, chownSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { createServer } from 'node:net'
 import { join, dirname } from 'node:path'
+import { URL } from 'node:url'
 import { zipSync } from 'fflate'
-import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, parseArgs, prepareFixture, sandboxProfile, startBuiltinRun } from './mods-test-lab.mjs'
+import { COMMIT, OFFICIAL, assessBuiltinAcceptance, check, cleanRun, cleanupAcceptanceSide, createRun, fetchOfficial, findOfficial, fixtureEnvironment, inventory, isIdlePrompt, linuxSandboxPolicy, parseArgs, prepareFixture, sandboxCommand, sandboxProfile, startAcceptanceProvider, startBuiltinRun } from './mods-test-lab.mjs'
 import {createBuiltinCapture} from './builtin-terminal-evidence.mjs'
+
+const REPO = dirname(dirname(import.meta.path))
+function withPlatform(platform, action) {
+  const original = Object.getOwnPropertyDescriptor(process, 'platform')
+  Object.defineProperty(process, 'platform', { ...original, value: platform })
+  try { return action() } finally { Object.defineProperty(process, 'platform', original) }
+}
 
 const roots = []
 function temp() {
@@ -16,7 +24,7 @@ function temp() {
   return root
 }
 function shortTemp() {
-  const root = realpathSync(mkdtempSync('/private/tmp/mlt-'))
+  const root = realpathSync(mkdtempSync(process.platform === 'darwin' ? '/private/tmp/mlt-' : '/tmp/mlt-'))
   roots.push(root)
   return root
 }
@@ -135,6 +143,13 @@ describe('offline fixed-commit cache', () => {
       expect(existsSync(join(cache, 'escape'))).toBe(false)
     }
   })
+  test('rejects a shared-tmp cache owned by another user', () => {
+    expect(parseArgs(['fetch-official']).cache).toBe(process.platform === 'linux' ? '/tmp/mods-test-lab' : join(homedir(), 'Library/Caches/mods-test-lab'))
+    if (process.getuid() !== 0) return // only root can hand a directory to another owner
+    const cache = temp()
+    chownSync(cache, 65534, 65534)
+    expect(() => fetchOfficial(cache, () => { throw new Error('network must not be used') })).toThrow('Cache must be owned by the current user')
+  })
   test('content identity is independent of absolute location and detects extra files/links', () => {
     const one = fetchOfficial(temp(), upstream().download)
     const two = fetchOfficial(temp(), upstream().download)
@@ -164,6 +179,7 @@ describe('private fixtures without a compiled TTY', () => {
     expect(env.HTTP_PROXY).toBeUndefined()
     expect(env.SSH_AUTH_SOCK).toBeUndefined()
     expect(env.HOME).toBe(join(run, 'home'))
+    expect(env.IS_SANDBOX).toBe(process.platform === 'linux' && process.getuid() === 0 ? '1' : undefined)
     expect(fixtureEnvironment(run)).toEqual(env)
     const profile = sandboxProfile(run)
     expect(profile).toContain('(deny network*)')
@@ -177,17 +193,24 @@ describe('private fixtures without a compiled TTY', () => {
     const root = temp()
     const run = createRun(root, 'check')
     const env = prepareFixture(run, plugin(root, 'export function register(on) { throw new Error("CHECK_MUST_NOT_ACTIVATE") }'))
+    const linux = process.platform === 'linux'
     const profile = join(run, 'check.sb')
-    writeFileSync(profile, sandboxProfile(run, true))
+    if (!linux) writeFileSync(profile, sandboxProfile(run, true))
     const script = import.meta.path.replace('.test.mjs', '.mjs')
+    // Linux has no /usr/bin/security; its counterpart denial is the hidden repository .claude.
+    const denied = linux
+      ? `try { (await import('node:fs')).readdirSync(${JSON.stringify(join(REPO, '.claude'))}); throw new Error('Repository .claude was readable') } catch (error) { if (error.code !== 'EACCES') throw error }`
+      : `const actualSecurity = spawnSync('/usr/bin/security', ['--help']);
+      if (!actualSecurity.error || actualSecurity.error.code !== 'EPERM') throw new Error('Real security executable was not denied');`
     const expression = `const {spawnSync} = await import('node:child_process');
       const emptyKeychain = spawnSync('security', []);
       if (emptyKeychain.status !== 44) throw new Error('Empty keychain stub did not run');
-      const actualSecurity = spawnSync('/usr/bin/security', ['--help']);
-      if (!actualSecurity.error || actualSecurity.error.code !== 'EPERM') throw new Error('Real security executable was not denied');
+      ${denied}
       const {inspectPlugin} = await import(${JSON.stringify(script)}); console.log(JSON.stringify(await inspectPlugin(${JSON.stringify(join(run, 'plugin'))})))`
-    const child = spawnSync('/usr/bin/sandbox-exec', ['-f', profile, process.execPath, '--eval', expression], { cwd: join(run, 'project'), env, encoding: 'utf8', timeout: 60000 })
+    const argv = linux ? sandboxCommand(run, [process.execPath, '--eval', expression], true) : ['/usr/bin/sandbox-exec', '-f', profile, process.execPath, '--eval', expression]
+    const child = spawnSync(argv[0], argv.slice(1), { cwd: join(run, 'project'), env, encoding: 'utf8', timeout: 60000 })
     if (child.status !== 0) throw new Error(`${child.error ?? ''}\n${child.stderr}\n${child.stdout}`)
+    if (linux) expect(JSON.parse(readFileSync(join(run, 'sandbox-probe.json'), 'utf8')).ok).toBe(true)
     const report = JSON.parse(child.stdout)
     if (report.errors.length) throw new Error(JSON.stringify(report, null, 2))
     expect(report.discovery).toBe('passed')
@@ -242,7 +265,12 @@ describe('builtin-only compiled launcher', () => {
     expect(calls[0].file).toBe('/usr/local/bin/tmux')
     expect(calls[0].args).toContain('new-session')
     expect(calls[0].options.cwd).toBeUndefined()
-    expect(report.argv[0]).toBe('/usr/bin/sandbox-exec')
+    if (process.platform === 'linux') {
+      const helper = join(report.run, 'linux-sandbox-exec.py')
+      expect(report.argv.slice(0, 5)).toEqual(['/usr/bin/python3', helper, '--policy', JSON.stringify(linuxSandboxPolicy(report.run)), '--'])
+      expect(report.argv[5]).toBe(join(report.run, 'launch-native.sh'))
+      expect(readFileSync(helper)).toEqual(readFileSync(join(REPO, 'scripts/linux-sandbox-exec.py')))
+    } else expect(report.argv[0]).toBe('/usr/bin/sandbox-exec')
     expect(report.argv).not.toContain('--plugin-dir')
     expect(report.argv).toContain('--dangerously-skip-permissions')
     expect(report.mode).toBe('builtin-only')
@@ -297,6 +325,29 @@ describe('builtin-only compiled launcher', () => {
     expect(report.plugin.sha256).toBe(inventory(fixture).sha256)
     expect(report.note).toContain('copied inline acceptance fixture')
     expect(report.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
+  })
+
+  test('Linux pins the sandbox helper into the run and passes the loopback-only policy', () => {
+    const run = createRun(temp(), 'run')
+    const bunRoot = dirname(dirname(realpathSync(process.execPath)))
+    const forward = [{ port: 43210, unix: join(run, 'provider.sock') }]
+    const argv = withPlatform('linux', () => sandboxCommand(run, ['/bin/true', '--flag'], true, forward))
+    const helper = join(run, 'linux-sandbox-exec.py')
+    expect(argv).toEqual(['/usr/bin/python3', helper, '--policy', argv[3], '--', '/bin/true', '--flag'])
+    expect(JSON.parse(argv[3])).toEqual({ runDir: run, repo: REPO, bindReadOnly: [bunRoot, REPO], writeTrees: ['/dev'], network: { mode: 'loopback' }, forwardLoopback: forward })
+    expect(linuxSandboxPolicy(run)).toEqual({ runDir: run, repo: REPO, bindReadOnly: [bunRoot], writeTrees: ['/dev'], network: { mode: 'loopback' } })
+    expect(readFileSync(helper)).toEqual(readFileSync(join(REPO, 'scripts/linux-sandbox-exec.py')))
+    expect(statSync(helper).mode & 0o777).toBe(0o600)
+    expect(existsSync(join(run, 'sandbox.sb'))).toBe(false)
+    // The pinned copy is never replaced.
+    expect(() => withPlatform('linux', () => sandboxCommand(run, ['/bin/true']))).toThrow('EEXIST')
+  })
+
+  test('other platforms have no unisolated fallback', () => {
+    const run = createRun(temp(), 'run')
+    for (const platform of ['freebsd', 'win32']) expect(() => withPlatform(platform, () => sandboxCommand(run, ['/bin/true']))).toThrow('no unisolated fallback')
+    expect(existsSync(join(run, 'sandbox.sb'))).toBe(false)
+    expect(existsSync(join(run, 'linux-sandbox-exec.py'))).toBe(false)
   })
 
   test('fails clearly before tmux when the selected binary is missing', () => {
@@ -581,6 +632,54 @@ exit 1
       expect((await globalThis.fetch(`${provider.url}/unexpected`)).status).toBe(404)
     } finally { await provider.close() }
   })
+
+  test('only Linux bridges the provider through provider.sock with the same ledger', async () => {
+    const root = temp()
+    const provider = await startAcceptanceProvider(root)
+    const unix = join(root, 'provider.sock')
+    try {
+      if (process.platform !== 'linux') {
+        expect(provider.forwardLoopback).toBeUndefined()
+        expect(existsSync(unix)).toBe(false)
+        return
+      }
+      expect(provider.forwardLoopback).toEqual([{ port: Number(new URL(provider.url).port), unix }])
+      const text = await globalThis.fetch('http://provider/v1/messages', { unix, method: 'POST', body: JSON.stringify({ model: 'claude-sonnet-4-5-20250929', messages: [{ role: 'user', content: 'MODS_ACCEPT_PROMPT' }] }) }).then(response => response.text())
+      expect(text).toContain('MODS_ACCEPT_RESPONSE')
+      expect(provider.requests).toHaveLength(1)
+      expect(readFileSync(join(root, 'requests.jsonl'), 'utf8').split('\n').filter(Boolean)).toHaveLength(1)
+    } finally { await provider.close() }
+    expect(existsSync(unix)).toBe(false)
+  })
+
+  test.if(process.platform === 'linux')('a sandboxed client reaches the provider only through its forwarded port', async () => {
+    const provider = await startAcceptanceProvider(temp())
+    try {
+      const client = `import json, sys, urllib.request
+body = json.dumps({'model': 'claude-sonnet-4-5-20250929', 'messages': [{'role': 'user', 'content': 'MODS_ACCEPT_PROMPT'}]}).encode()
+print(urllib.request.urlopen(urllib.request.Request(sys.argv[1] + '/v1/messages', data=body), timeout=10).read().decode())`
+      // Asynchronous: the provider answers from this process while the client runs.
+      const sandboxed = async (run, forward) => {
+        const argv = sandboxCommand(run, ['/usr/bin/python3', '-c', client, provider.url], false, forward)
+        const child = spawn(argv[0], argv.slice(1), { cwd: '/', env: { PATH: '/usr/bin:/bin' } })
+        let stdout = '', stderr = ''
+        child.stdout.on('data', chunk => { stdout += chunk })
+        child.stderr.on('data', chunk => { stderr += chunk })
+        const status = await new Promise(resolve => child.on('close', resolve))
+        return { status, stdout, stderr }
+      }
+      const run = createRun(shortTemp(), 'run')
+      const forwarded = await sandboxed(run, provider.forwardLoopback)
+      expect(forwarded.stderr).toBe('')
+      expect(forwarded.status).toBe(0)
+      expect(forwarded.stdout).toContain('MODS_ACCEPT_RESPONSE')
+      expect(JSON.parse(readFileSync(join(run, 'sandbox-probe.json'), 'utf8')).forwarders).toHaveLength(1)
+      const unforwarded = await sandboxed(createRun(shortTemp(), 'run'), undefined)
+      expect(unforwarded.status).not.toBe(0)
+      expect(unforwarded.stderr).toContain('Connection refused')
+      expect(provider.requests).toHaveLength(1)
+    } finally { await provider.close() }
+  }, 60000)
 })
 
 describe('clean only stopped owned runs', () => {

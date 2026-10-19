@@ -16,11 +16,13 @@ import os
 import platform
 import pwd
 import secrets
+import signal
 import socket
 import stat
 import struct
 import subprocess
 import sys
+import threading
 
 # Test-only switch; each value can only force a failure, never relax isolation.
 FAULT = os.environ.pop('LINUX_SANDBOX_EXEC_TEST_FAULT', '')
@@ -30,7 +32,7 @@ CLONE_NEWNS, CLONE_NEWUSER, CLONE_NEWNET = 0x00020000, 0x10000000, 0x40000000
 MS_RDONLY, MS_NOSUID, MS_NODEV, MS_NOEXEC = 1, 2, 4, 8
 MS_REMOUNT, MS_BIND, MS_REC, MS_PRIVATE, MS_RELATIME = 32, 4096, 16384, 1 << 18, 1 << 21
 MNT_DETACH = 2
-PR_CAPBSET_DROP, PR_SET_NO_NEW_PRIVS, PR_SET_SECCOMP, PR_CAP_AMBIENT = 24, 38, 22, 47
+PR_SET_PDEATHSIG, PR_CAPBSET_DROP, PR_SET_NO_NEW_PRIVS, PR_SET_SECCOMP, PR_CAP_AMBIENT = 1, 24, 38, 22, 47
 PR_CAP_AMBIENT_CLEAR_ALL, SECCOMP_MODE_FILTER = 4, 2
 SIOCGIFFLAGS, SIOCSIFFLAGS, IFF_UP = 0x8913, 0x8914, 1
 SYS_LANDLOCK_CREATE_RULESET, SYS_LANDLOCK_ADD_RULE, SYS_LANDLOCK_RESTRICT_SELF = 444, 445, 446
@@ -45,7 +47,7 @@ ARCHES = {'x86_64': (0xC000003E, 41), 'aarch64': (0xC00000B7, 198)}
 KEYRING_TOOLS = ('secret-tool', 'gnome-keyring-daemon', 'kwallet-query')
 TOOL_DIRS = ('/usr/bin', '/bin', '/usr/local/bin', '/usr/sbin', '/sbin')
 POLICY_KEYS = {'runDir', 'repo', 'hideDirs', 'hideFiles', 'hideExecutables', 'bindReadOnly',
-               'bindReadWrite', 'writeTrees', 'writeExisting', 'network'}
+               'bindReadWrite', 'writeTrees', 'writeExisting', 'network', 'forwardLoopback'}
 
 
 class Unavailable(Exception):
@@ -116,6 +118,14 @@ def effective_policy(policy):
     mode = network.get('mode') if isinstance(network, dict) else None
     if mode not in ('none', 'loopback'):
         raise Unavailable('network.mode must be none or loopback')
+    forwards = policy.get('forwardLoopback', [])
+    if (not isinstance(forwards, list) or not all(
+            isinstance(row, dict) and set(row) == {'port', 'unix'} and type(row['port']) is int
+            and 0 < row['port'] < 65536 and isinstance(row['unix'], str) and os.path.isabs(row['unix'])
+            for row in forwards) or len({row['port'] for row in forwards}) != len(forwards)):
+        raise Unavailable('forwardLoopback must list {port, unix} with unique ports and absolute unix paths')
+    if forwards and mode != 'loopback':
+        raise Unavailable('forwardLoopback requires network.mode loopback')
 
     def paths(key):
         values = policy.get(key, [])
@@ -148,6 +158,7 @@ def effective_policy(policy):
         'writeTrees': unique([run, *paths('writeTrees')]),
         'writeExisting': unique(paths('writeExisting')),
         'network': {'mode': mode},
+        'forwardLoopback': [{'port': row['port'], 'unix': os.path.realpath(row['unix'])} for row in forwards],
     }
     hidden = {*effective['hideDirs'], *effective['hideFiles'], *effective['hideExecutables']}
     bound = {*effective['bindReadOnly'], *effective['bindReadWrite']}
@@ -306,6 +317,77 @@ def bring_up_loopback():
         raise Unavailable(f'cannot bring up lo: {error}') from error
     if not flags & IFF_UP:
         raise Unavailable('cannot bring up lo: flag not set')
+
+
+def relay(source, target):
+    try:
+        while data := source.recv(65536):
+            target.sendall(data)
+        target.shutdown(socket.SHUT_WR)
+    except OSError:
+        for endpoint in (source, target):
+            try:
+                endpoint.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+
+def relay_connection(client, path):
+    with client, socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
+        try:
+            upstream.connect(path)
+        except OSError:
+            return
+        reverse = threading.Thread(target=relay, args=(upstream, client), daemon=True)
+        reverse.start()
+        relay(client, upstream)
+        reverse.join()
+
+
+def serve_forward(listener, path, parent):
+    """Forwarder child: off the terminal, without write access or capabilities, killed with the target."""
+    os.setsid()
+    check(prctl(PR_SET_PDEATHSIG, signal.SIGKILL), 'PR_SET_PDEATHSIG')
+    if os.getppid() != parent:
+        return
+    null = os.open('/dev/null', os.O_RDWR)
+    for fd in (0, 1, 2):
+        os.dup2(null, fd)
+    for fd in map(int, os.listdir('/proc/self/fd')):
+        if fd > 2 and fd != listener.fileno():
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+    restrict_writes({'writeTrees': [], 'writeExisting': []})
+    drop_capabilities()
+    while True:
+        client, _ = listener.accept()
+        threading.Thread(target=relay_connection, args=(client, path), daemon=True).start()
+
+
+def start_forwarders(effective):
+    """Inside the new netns, 127.0.0.1:port relays to a host unix socket such as a loopback provider's."""
+    started = []
+    for row in effective['forwardLoopback']:
+        try:
+            if not stat.S_ISSOCK(os.stat(row['unix']).st_mode):
+                raise Unavailable(f'forward target {row["unix"]} is not a unix socket')
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.bind(('127.0.0.1', row['port']))
+            listener.listen(64)
+        except OSError as error:
+            raise Unavailable(f'cannot forward 127.0.0.1:{row["port"]}: {error}') from error
+        parent = os.getpid()
+        child = os.fork()
+        if child == 0:
+            try:
+                serve_forward(listener, row['unix'], parent)
+            finally:
+                os._exit(1)
+        listener.close()
+        started.append({**row, 'pid': child})
+    return started
 
 
 def restrict_writes(effective):
@@ -479,6 +561,7 @@ def main(argv):
     enter_namespaces()
     mounts = apply_mounts(effective, host)
     bring_up_loopback()
+    forwarders = start_forwarders(effective)
     restrict_writes(effective)
     seccomp = effective['network']['mode'] == 'none'
     if seccomp:
@@ -488,7 +571,8 @@ def main(argv):
     escaped = [row['name'] for row in attempts if row['escaped']]
     create_exclusive(os.path.join(run, 'sandbox-probe.json'), json.dumps({
         'version': 1, 'ok': not escaped, 'uid': os.getuid(), 'gid': os.getgid(), 'landlockABI': abi,
-        'seccomp': seccomp, 'networkMode': effective['network']['mode'], 'mounts': mounts, 'attempts': attempts,
+        'seccomp': seccomp, 'networkMode': effective['network']['mode'], 'forwarders': forwarders,
+        'mounts': mounts, 'attempts': attempts,
     }, indent=2) + '\n', 'probe')
     for listener in host['listeners']:
         listener.close()
