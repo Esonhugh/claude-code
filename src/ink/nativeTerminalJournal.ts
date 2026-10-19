@@ -28,7 +28,7 @@ export function initializeNativeTerminalJournal(): void {
   library = null
   try {
     const path = process.env.CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY
-    if (!path || process.platform !== 'darwin') return
+    if (!path || (process.platform !== 'darwin' && process.platform !== 'linux')) return
     const ffi = createRequire(import.meta.url)('bun:ffi') as typeof import('bun:ffi')
     library = ffi.dlopen(path, functions)
   } catch {
