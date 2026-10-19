@@ -101,7 +101,8 @@
 
 #### 已知缺口（本轮）
 
-- 已知缺口：Coordinator 模式不在默认构建中，需要构建时设置 `CLAUDE_CODE_RECOVER_FEATURES=COORDINATOR_MODE` 并在运行时设置 `CLAUDE_CODE_COORDINATOR_MODE=1`；MCP step-up 重新认证对话框、resource templates 与 completion、`mcp_tool` hooks、MCP Tasks、空闲超时、协议版本协商及 claude.ai connector 的 `mcp login` 仍未实现；前台 Agent 结束时待发的 SendMessage 仍会丢弃；headless 模式的非 sync 插件刷新尚未对齐；保留 marketplace 名称同时接受 anthropics 与 esonhugh 组织来源，此为有意保留。
+- 已知缺口：Coordinator 模式不在默认构建中，需要构建时设置 `CLAUDE_CODE_RECOVER_FEATURES=COORDINATOR_MODE` 并在运行时设置 `CLAUDE_CODE_COORDINATOR_MODE=1`；MCP step-up 重新认证对话框、resource templates 与 completion、`mcp_tool` hooks、MCP Tasks、空闲超时、协议版本协商及 claude.ai connector 的 `mcp login` 仍未实现；前台 Agent 结束时待发的 SendMessage 仍会丢弃；headless 模式的非 sync 插件刷新尚未对齐；保留 marketplace 名称同时接受 anthropics 与 esonhugh 组织来源，此为有意保留；官方 `/code-review` 不走 workflow、官方 workflow worker 类型为 `workflow-subagent`，以及进入 REPL 前等待 served 模型目录（最多约 1.75 秒）尚未对齐。
+- 已知缺口：发布门禁的 `terminal-interaction`、`terminal-canonical-diff` 只差 `full_terminal_coverage`，`builtin-mods` 只差 `terminalEvidence` 的产品时序保留；两者要求完整 termios、无观测时序与真实 child read/parser/owner 证明，原生采集协议在 macOS 与 Linux 上都尚未实现，相关断言保持不变。
 
 #### 原 v2.1.280 阶段（2026-09-30 至 2026-10-16）
 
@@ -246,7 +247,8 @@
 - 每个 PR 均用新构建的 binary 与合并前 binary 做 A/B 验证，交互场景（如 PR #10 的 REPL 插件重载）用脚本驱动 tmux，PR #13 等以非交互 CLI 对照为主；该验证按 PR 分别进行，不等同于完整发布门禁。
 - 2026-10-14 至 2026-10-17 的直接提交除 `8153447`、`3b0a568`、`d326fc5` 外均附带定向测试，结果以各提交为准，本条目不另作完整验收结论。
 - 固定 Bun 1.3.14 下按文件隔离运行全量 753 个测试文件，与 Bun 1.4.2 对照：发现并修复 1.3.14 下 Workflow 语法预检失效；基线失败中 5 个过时测试按代码与官方 2.1.292 行为更新，`workflowSpec` 随 Workflow 并发修复通过，其余失败均归因于环境（需 macOS、root 运行、容器缺 zsh 或不回收孤儿进程、4 核下的固定超时），另有 `Stats.openai` 依赖固定 100ms 等待而不稳定；Bun 1.3.14 构建的 binary 通过 `--version`、`--help`、`mcp list`、`plugin marketplace list` 冒烟。
-- 尚未执行：`release-validation` 发布门禁；在其完成前不宣称发布验收通过。
+- 发布门禁新增 Linux 实现（`docs/research/linux-release-gate-design-20261019.md`）：`scripts/linux-sandbox-exec.py` 以 user/mount/net 命名空间、Landlock 与 seccomp 替代 `sandbox-exec`，执行前逐项自检越界；`scripts/native-terminal-journal-linux.c` 以 seccomp `RET_TRACE` + ptrace 采集 Bun 的裸 write 系统调用，写入与 Darwin 相同的共享槽日志并以 `LINUX_V1` 区分方法集；`mods-process-spawn`、`builtin-mods` 与两个终端 target 在 Linux 上运行，机制不可用时直接失败。Darwin 路径保持不变，Linux 原生 normal origin 记录实际 tmux 版本。
+- 尚未执行：`release-validation` 最终四路门禁；在其完成前不宣称发布验收通过。
 
 - 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。
 - 各提交在纯 HEAD 加候选补丁中通过类型检查、lint、对应测试及提交门禁。runner 的清理场景在真实子进程中连续五轮通过；相同成功/失败场景的三端 CLI 结果一致，候选清理范围更接近官方。
