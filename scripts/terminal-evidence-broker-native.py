@@ -4,6 +4,7 @@
 Overflow invalidates evidence while PTY forwarding continues. Native geometry
 history, OS input ownership and schedule equivalence are separate open gates.
 """
+import ctypes
 import errno
 import fcntl
 import hashlib
@@ -14,9 +15,12 @@ from pathlib import Path
 import pty
 import select
 import selectors
+import shutil
 import signal
 import struct
 import subprocess
+import sys
+import tempfile
 import termios
 import time
 import tty
@@ -47,15 +51,94 @@ class EvidenceBuffer:
         return True
 
 
+def set_child_subreaper():
+    # observer-exec double-forks its tracer; the reparented tracer is ours to reap.
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0):  # PR_SET_CHILD_SUBREAPER
+        raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER')
+
+
+def read_tracer_pid(fd, timeout=5):
+    report, deadline = b'', time.monotonic() + timeout
+    with selectors.DefaultSelector() as report_selector:
+        report_selector.register(fd, selectors.EVENT_READ)
+        while time.monotonic() < deadline and report_selector.select(deadline - time.monotonic()):
+            chunk = os.read(fd, 64)
+            if not chunk:
+                break
+            report += chunk
+    if not report.endswith(b'\n') or not report[:-1].isdigit() or int(report) <= 0:
+        raise RuntimeError('Linux native tracer did not attach')
+    return int(report)
+
+
+def reap_tracer(pid, timeout=2):
+    """Return (exit code, killed). A tracer that outlives its tracees is killed."""
+    deadline, killed = time.monotonic() + timeout, False
+    while True:
+        reaped, status = os.waitpid(pid, os.WNOHANG)
+        if reaped == pid:
+            return os.waitstatus_to_exitcode(status), killed
+        if time.monotonic() >= deadline:
+            if killed:
+                raise TimeoutError('Linux native tracer was not reaped')
+            os.kill(pid, signal.SIGKILL)
+            killed, deadline = True, time.monotonic() + timeout
+        time.sleep(.01)
+
+
+def probe_linux_observer(run):
+    """Trace /bin/true on an owned PTY with the prepared observer-exec, or fail."""
+    run = Path(run).resolve(strict=True)
+    set_child_subreaper()
+    root = Path(tempfile.mkdtemp(prefix='.observer-probe-', dir=run))
+    master, slave = pty.openpty()
+    report_read, report_write = os.pipe()
+    child = None
+    try:
+        registration = journal.create_journal(root / 'journal.bin', os.fstat(slave), 3, 4, 4096, 'linux')
+        child = subprocess.Popen([str(run / 'observer-exec'), '--journal', str(root / 'journal.bin'),
+                                  '--binary', '/bin/true', '--tracer-pid-fd', str(report_write), '--', '/bin/true'],
+                                 env={'PATH': '/usr/bin:/bin'}, stdin=slave, stdout=slave, stderr=slave,
+                                 start_new_session=True, pass_fds=(report_write,))
+        os.close(report_write)
+        report_write = None
+        tracer = read_tracer_pid(report_read)
+        child.wait(timeout=10)
+        tracer_exit, killed = reap_tracer(tracer, 10)
+        header, records = journal.final_records(root / 'journal.bin', registration)
+        journal.decode_records(header, records, registration, child.pid)
+        if child.returncode != 0 or tracer_exit != 0 or killed:
+            raise RuntimeError('Linux native observer probe did not complete normally')
+        return {'command': ['/bin/true'], 'childPid': child.pid, 'childExitCode': child.returncode,
+                'tracerPid': tracer, 'tracerExitCode': tracer_exit, 'recordCount': header[9]}
+    finally:
+        if child is not None and child.poll() is None:
+            child.kill()
+            child.wait(timeout=5)
+        for fd in (master, slave, report_read, report_write):
+            if fd is not None:
+                os.close(fd)
+        shutil.rmtree(root)
+
+
 def capture_native(run, argv):
     run = Path(run).resolve(strict=True)
     if (run / 'native-observer.json').is_symlink():
         raise ValueError('Native observer descriptor must be owned by this capture')
     observer = json.loads((run / 'native-observer.json').read_text())
     library = Path(observer['library'])
-    if (observer.get('method') != 'native-shared-slot-v1' or library != run / 'observer.dylib'
+    linux = observer.get('observer') == journal.LINUX_OBSERVER
+    if linux != sys.platform.startswith('linux') or (not linux and 'observer' in observer):
+        raise ValueError('Native observer platform differs from this host')
+    if (observer.get('method') != 'native-shared-slot-v1' or library != run / ('observer.so' if linux else 'observer.dylib')
             or library.is_symlink() or not library.is_file()
             or hashlib.sha256(library.read_bytes()).hexdigest() != observer['librarySha256']):
+        raise ValueError('Native observer enrollment identity changed')
+    observer_exec = run / 'observer-exec'
+    if linux and (observer.get('observerExec') != str(observer_exec) or observer_exec.is_symlink()
+                  or not observer_exec.is_file()
+                  or hashlib.sha256(observer_exec.read_bytes()).hexdigest() != observer['observerExecSha256']):
         raise ValueError('Native observer enrollment identity changed')
     capture_id = os.environ['CLAUDE_CODE_FRAME_CAPTURE_ID']
     binary = Path(argv[0]).resolve(strict=True)
@@ -91,6 +174,7 @@ def capture_native(run, argv):
         # Hold this pre-Popen identity. Closing never regenerates an origin from frames.
         normal_origin = {'path': str(origin_path), 'sha256': hashlib.sha256(origin_bytes).hexdigest()}
     child = master = slave = consumer = selector = publisher = None
+    tracer = tracer_exit = tracer_read = tracer_write = None
     outer_attrs = native_attrs = None
     initial = registration = header = None
     evidence = EvidenceBuffer()
@@ -172,20 +256,33 @@ def capture_native(run, argv):
         native_attrs = termios.tcgetattr(slave)
         initial = {'sizeHex': fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8).hex(),
                    'outputFlags': native_attrs[1]}
-        registration = journal.create_journal(run / 'journal.bin', os.fstat(slave), 3, 256, 1048576)
+        registration = journal.create_journal(run / 'journal.bin', os.fstat(slave), 3, 256, 1048576,
+                                              'linux' if linux else 'darwin')
         # Immutable enrollment is available before producer startup. Driver
         # clocks never depend on registration first appearing at final close.
         save_json('registration.json', registration)
         consumer = journal.NativeConsumer(run / 'journal.bin', registration, library)
-        env = {**os.environ, 'DYLD_INSERT_LIBRARIES': str(library),
+        env = {**os.environ, **({} if linux else {'DYLD_INSERT_LIBRARIES': str(library)}),
                'CLAUDE_PRIVATE_NATIVE_JOURNAL': str(run / 'journal.bin'),
                'CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY': str(library),
                'CLAUDE_CODE_FRAME_BROKER_DIR': str(run / 'no-legacy-fifos')}
         def own_controlling_tty():
             fcntl.ioctl(0, termios.TIOCSCTTY, 0)
             signal.pthread_sigmask(signal.SIG_SETMASK, startup_mask)
-        child = subprocess.Popen(argv, env=env, stdin=slave, stdout=slave, stderr=slave,
-                                 start_new_session=True, preexec_fn=own_controlling_tty)
+        command, pass_fds = argv, ()
+        if linux:
+            # observer-exec execs the product in place: childPid stays the product pid and pgid.
+            set_child_subreaper()
+            tracer_read, tracer_write = os.pipe()
+            command = [str(observer_exec), '--journal', str(run / 'journal.bin'), '--binary', str(binary),
+                       '--tracer-pid-fd', str(tracer_write), '--', *argv]
+            pass_fds = (tracer_write,)
+        child = subprocess.Popen(command, env=env, stdin=slave, stdout=slave, stderr=slave,
+                                 start_new_session=True, preexec_fn=own_controlling_tty, pass_fds=pass_fds)
+        if linux:
+            os.close(tracer_write)
+            tracer_write = None
+            tracer = read_tracer_pid(tracer_read)
         consumer.bind_producer(child.pid)
         save_json('start.json', {'childPid': child.pid, 'childPgid': child.pid, 'binarySha256': digest})
         publisher = live.NativeLivePublisher(run, journal, registration, child.pid, capture_id,
@@ -260,6 +357,16 @@ def capture_native(run, argv):
                         pass
                 cleanup('stop-owned-child-group', stop)
             cleanup('wait-owned-child', lambda: child.wait(timeout=2))
+        if tracer is not None:
+            def reap_owned_tracer():
+                nonlocal tracer_exit
+                tracer_exit, killed = reap_tracer(tracer)
+                if killed:
+                    signals_sent.append('SIGKILL')
+            cleanup('reap-observer-tracer', reap_owned_tracer)
+        for fd in (tracer_read, tracer_write):
+            if fd is not None:
+                cleanup('close-tracer-report', lambda fd=fd: os.close(fd))
         if master is not None and selector is not None:
             deadline = time.monotonic() + 2
             while not eof and time.monotonic() < deadline:
@@ -310,7 +417,7 @@ def capture_native(run, argv):
         if failure is None:
             failure = capture_failure
         normal = bool(completed and failure is None and not cleanup_errors and eof and child is not None
-                      and child.returncode == 0 and not signals_sent)
+                      and child.returncode == 0 and not signals_sent and (not linux or tracer_exit == 0))
         entries = []
         if normal:
             try:
@@ -339,6 +446,8 @@ def capture_native(run, argv):
                               'sha256': hashlib.sha256(io).hexdigest(), 'rawBytes': raw_offset,
                               'finalGeometryId': geometry_id},
                   'nativeClose': native_close,
+                  **({'observer': journal.LINUX_OBSERVER, 'tracerPid': tracer, 'tracerExitCode': tracer_exit,
+                      'tracerReaped': tracer_exit is not None} if linux else {}),
                   'productTimingEquivalent': False, 'fullNativeGatePassed': False}
         # Publish the expectation from the broker's memory before any sealer
         # consumes mutable cleanup/IO files. Never regenerate it at first seal.
@@ -355,3 +464,9 @@ def capture_native(run, argv):
         save_json('cleanup.json', result)
         save_json('broker-cleanup.json', result)
     return 0 if result['normalCompletion'] else 1
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3 or sys.argv[1] != '--probe':
+        raise SystemExit('usage: terminal-evidence-broker-native.py --probe RUN')
+    print(json.dumps(probe_linux_observer(sys.argv[2])))

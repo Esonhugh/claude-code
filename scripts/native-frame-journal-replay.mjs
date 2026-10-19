@@ -14,10 +14,19 @@ import { nativeEvidenceLocation, checkNativeEvidenceLocation } from './native-ev
 const Terminal = xterm.Terminal ?? xterm.default?.Terminal ?? xterm['module.exports']?.Terminal
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
 const parserDigest = '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'
+// One method set per registered observer platform; never mixed.
+const METHODS = {
+  darwin: { frameSpan: 'native-mach-frame-span-v1', resize: 'native-mach-ioctl-resize-v1',
+    clock: 'driver-mach-absolute-time-v1', geometry: 'native-driver-mach-frame-geometry-v2' },
+  linux: { frameSpan: 'native-linux-frame-span-v1', resize: 'native-linux-ioctl-resize-v1',
+    clock: 'driver-linux-monotonic-v1', geometry: 'native-driver-linux-frame-geometry-v2' },
+}
 
 /** Requests, measured ioctl brackets and actual painted frames are distinct evidence. */
-export function verifyNativeGeometryRequests(geometry, io, events, entries, frames, target, driverPid) {
-  if (geometry === null) return { method: 'native-driver-mach-frame-geometry-v2', verdict: 'not covered' }
+export function verifyNativeGeometryRequests(geometry, io, events, entries, frames, target, driverPid, platform = 'darwin') {
+  if (!Object.hasOwn(METHODS, platform)) throw Error('Unknown native observer platform')
+  const methods = METHODS[platform]
+  if (geometry === null) return { method: methods.geometry, verdict: 'not covered' }
   const initial = io[0], launch = geometry[0]
   if (!launch || launch.phase !== 'launch' || launch.geometryId !== 0 || launch.rawOffset !== 0 ||
       initial?.kind !== 'initial-geometry' || launch.columns !== initial.columns || launch.rows !== initial.rows ||
@@ -32,7 +41,7 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
   const tick = value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value) && BigInt(value) < 2n ** 64n
   const callerClock = (row, bracket) => {
     const clock = row?.nativeDriverClock
-    return clock?.method === 'driver-mach-absolute-time-v1' && tick(clock.tick) &&
+    return clock?.method === methods.clock && tick(clock.tick) &&
       clock.captureId === initial.captureId && clock.nonce === bracket.nonce &&
       clock.childPid === initial.childPid && clock.childPid === bracket.childPid &&
       Number.isSafeInteger(driverPid) && driverPid > 0 && clock.callerPid === driverPid &&
@@ -73,7 +82,7 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
         !Number.isSafeInteger(ack.ioId) || ack.geometryId !== index + 1 ||
         ack.ioId <= send.lastObservedIoId || ack.rawOffset < send.observedRawBytes ||
         ack.columns !== send.columns || ack.rows !== send.rows ||
-        bracket?.method !== 'native-mach-ioctl-resize-v1' || bracket.result !== 0 ||
+        bracket?.method !== methods.resize || bracket.result !== 0 ||
         bracket.childPid !== initial.childPid || event.ioId !== ack.ioId || event.geometryId !== ack.geometryId ||
         // The broker's consumed tail may lag the kernel write prefix verified
         // from the original non-overlapping Mach write/resize brackets.
@@ -104,7 +113,7 @@ export function verifyNativeGeometryRequests(geometry, io, events, entries, fram
     sizes.push({ columns: ack.columns, rows: ack.rows, actionId: send.actionId,
       ioId: ack.ioId, geometryId: ack.geometryId, frameId: frame.frameId })
   }
-  return { method: 'native-driver-mach-frame-geometry-v2', verdict: 'passed',
+  return { method: methods.geometry, verdict: 'passed',
     requested: sends.length, acknowledged: acks.length, sizes,
     actualInputOwnerCovered: false, productTimingEquivalent: false }
 }
@@ -123,6 +132,9 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
     throw Error('Independent native geometry is required')
   const entries = readOwnedNativeFile(path).toString('utf8').split('\n').filter(Boolean).map(JSON.parse)
   if (!entries.length) throw Error('No native Ink frames')
+  const platform = Object.keys(METHODS).find(name => METHODS[name].frameSpan === entries[0].nativeSpan?.method)
+  if (!platform || entries.some(entry => entry.nativeSpan?.method !== METHODS[platform].frameSpan))
+    throw Error('Native frame spans lack one registered observer platform')
   const checked = spawnSync('python3', [join(import.meta.dir, 'verify-native-frame-journal.py'), run, expectedPath,
     ...(location.receiptPath ? [location.receiptPath] : [])],
                             { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: 60000 })
@@ -207,14 +219,15 @@ export async function replayNativeFrameJournal(run, expectedPath, path = join(ru
     requestGeometry = bytes.toString('utf8').split('\n').filter(Boolean).map(JSON.parse)
     const launch = JSON.parse(location.read('capture-launch.json'))
     if (launch.run !== location.originalRun || launch.binarySha256 !== expected.binarySha256 ||
-        launch.capture?.captureId !== expected.captureId || launch.capture?.nativeJournal !== true)
+        launch.capture?.captureId !== expected.captureId || launch.capture?.nativeJournal !== true ||
+        launch.capture.observer !== (platform === 'linux' ? 'linux-seccomp-ptrace-v1' : undefined))
       throw Error('Native resize request capture identity differs from original launch')
     target = launch.target
     driverPid = launch.driverPid
   } catch (error) {
     if (error.code !== 'ENOENT' || requestGeometry !== null) throw error
   }
-  const nativeGeometryProof = verifyNativeGeometryRequests(requestGeometry, native.io, geometry, entries, frames, target, driverPid)
+  const nativeGeometryProof = verifyNativeGeometryRequests(requestGeometry, native.io, geometry, entries, frames, target, driverPid, platform)
   return { method: 'native-journal-ioctl-geometry-replay-v1',
            framePhysicalBoundary: 'native-per-frame-boundary-v2',
            parserSHA256, semanticSource: 'independent-xterm-native-per-frame-v2',

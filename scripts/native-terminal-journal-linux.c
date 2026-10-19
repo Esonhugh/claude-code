@@ -164,6 +164,7 @@ __attribute__((constructor)) static void open_journal(void){
  errno=saved;
 }
 #else
+#include <dirent.h>
 #include <limits.h>
 #include <signal.h>
 #include <stddef.h>
@@ -268,6 +269,19 @@ static void unsupported_if_endpoint(struct tracee *tracee,uint64_t first,uint64_
  if(a==1||b==1)count_word(23);
  else if(a==-1||b==-1)lose();
 }
+// 1 when any descriptor of the thread group is the endpoint, -1 when unknown.
+static int holds_endpoint(pid_t tgid){
+ char path[64];snprintf(path,sizeof(path),"/proc/%d/fd",(int)tgid);
+ DIR *fds=opendir(path);
+ if(!fds)return -1;
+ int held=0;struct dirent *entry;struct stat identity;
+ while(!held && (entry=readdir(fds))){
+  if(entry->d_name[0]=='.')continue;
+  if(fstatat(dirfd(fds),entry->d_name,&identity,0))continue;
+  held=same_endpoint(&identity);
+ }
+ closedir(fds);return held;
+}
 static int kernel_termios(int fd,struct kernel_termios *mode){return ioctl(fd,TCGETS,mode);}
 static void pack_termios(unsigned char *target,const struct kernel_termios *value){
  // Linux keeps baud rates in c_cflag (CBAUD/CIBAUD); the speed words stay 0.
@@ -327,8 +341,15 @@ static int syscall_entry(struct tracee *tracee){
   case SYS_sendfile:case SYS_tee:unsupported_if_endpoint(tracee,arg[0],arg[1]);return PTRACE_CONT;
   case SYS_splice:case SYS_copy_file_range:unsupported_if_endpoint(tracee,arg[0],arg[2]);return PTRACE_CONT;
   case SYS_vmsplice:unsupported_if_endpoint(tracee,arg[0],arg[0]);return PTRACE_CONT;
-  // Submissions live in shared rings or user iocbs; v1 never claims them.
-  case SYS_io_uring_setup:case SYS_io_uring_enter:case SYS_io_submit:count_word(23);return PTRACE_CONT;
+  // Submissions live in shared rings or user iocbs; v1 never claims them. A
+  // descendant without an endpoint descriptor (a helper with piped stdio) is
+  // ignored like its other I/O; raw byte equality still covers its output.
+  case SYS_io_uring_setup:case SYS_io_uring_enter:case SYS_io_submit:{
+   int held=tracee->tgid==product?1:holds_endpoint(tracee->tgid);
+   if(held==1)count_word(23);
+   else if(held<0)lose();
+   return PTRACE_CONT;
+  }
   default:return PTRACE_CONT;
  }
  int copy=-1,matched=endpoint(tracee,arg[0],kind==2?&copy:NULL);

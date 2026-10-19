@@ -750,6 +750,11 @@ def _terminal_native_exit_receipts_passed(run, capture, binary_sha256, collector
                 json.dumps(producer['ioClose'], sort_keys=True) == json.dumps(closed.get('ioClose'), sort_keys=True) and
                 producer['nativeClose'].get('method') == 'owned-broker-closed-native-v1' and
                 producer['ioClose'].get('method') == 'owned-broker-closed-io-v1' and
+                (closed.get('observer') == capture.get('observer') == LINUX_NATIVE_OBSERVER and
+                 type(closed.get('tracerPid')) is int and closed['tracerPid'] > 0 and
+                 type(closed.get('tracerExitCode')) is int and closed['tracerExitCode'] == 0 and
+                 closed.get('tracerReaped') is True
+                 if 'observer' in capture else 'observer' not in closed) and
                 (not collector_closed or values['capture-eof'] == '0'))
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
@@ -765,7 +770,8 @@ def terminal_native_exit_identity(run, launch, binary_sha256):
     if (not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool or
             not isinstance(capture.get('captureId'), str) or not capture['captureId']):
         return None
-    return {'capture': {'nativeJournal': capture['nativeJournal'], 'captureId': capture['captureId']},
+    return {'capture': {'nativeJournal': capture['nativeJournal'], 'captureId': capture['captureId'],
+                        **({'observer': capture['observer']} if 'observer' in capture else {})},
             'binarySha256': binary_sha256}
 
 
@@ -1386,6 +1392,9 @@ NATIVE_TERMINAL_CAPTURE_FILES = frozenset({
     'producer-expected-native.json', 'native-observer.json', 'observer.dylib',
     'observer-compile.log', 'frame-stream-map.json', 'frame-physical-report.json',
 })
+LINUX_NATIVE_OBSERVER = 'linux-seccomp-ptrace-v1'
+LINUX_NATIVE_TERMINAL_CAPTURE_FILES = (NATIVE_TERMINAL_CAPTURE_FILES - {'observer.dylib'}) | {
+    'observer.so', 'observer-exec'}
 
 
 def terminal_capture_required_files(launch):
@@ -1394,6 +1403,10 @@ def terminal_capture_required_files(launch):
     if (not isinstance(capture, dict) or type(capture.get('nativeJournal')) is not bool
             or not isinstance(capture.get('captureId'), str) or not capture['captureId']):
         return None
+    if 'observer' in capture:
+        # Only a native Linux capture names its observer; Darwin keeps the original roster.
+        return (LINUX_NATIVE_TERMINAL_CAPTURE_FILES
+                if capture['nativeJournal'] and capture['observer'] == LINUX_NATIVE_OBSERVER else None)
     return NATIVE_TERMINAL_CAPTURE_FILES if capture['nativeJournal'] else TERMINAL_CAPTURE_FILES
 
 TERMINAL_ACCEPTANCE = {
@@ -1809,8 +1822,11 @@ def canonical_native_context(run, launch, binary_sha256):
         if (identity.st_dev, identity.st_ino, identity.st_size) != (reread.st_dev, reread.st_ino, reread.st_size):
             return None
         again = schema.HEADER.unpack(data)
-        stable = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 19)
+        stable = (0, 1, 2, 3, 4, 5, 6, 7, 8, 12, 13, 19, 20)
+        linux = launch_identity['capture'].get('observer') == schema.LINUX_OBSERVER
         if (any(words[key] != again[key] for key in stable) or words[0] != schema.MAGIC or
+                words[20] != (schema.LINUX_V1 if linux else 0) or
+                (not linux and 'observer' in launch_identity['capture']) or
                 words[1] != 1 or words[2] != schema.HEADER.size or words[8] != pid or
                 not 1 <= words[4] <= 4096 or not 1 <= words[5] <= 1048576 or
                 words[3] < schema.RECORD.size + words[5] or words[3] % 64 or
@@ -1823,7 +1839,8 @@ def canonical_native_context(run, launch, binary_sha256):
         return {'nativeJournal': True, 'captureId': launch_identity['capture']['captureId'],
                 'binarySha256': binary_sha256, 'childPid': pid,
                 'clock': {'nonce': f'{words[6]:016x}{words[7]:016x}', 'pid': pid,
-                          'timebaseNumer': words[12], 'timebaseDenom': words[13], 'openedAt': str(words[19])},
+                          'timebaseNumer': words[12], 'timebaseDenom': words[13], 'openedAt': str(words[19]),
+                          **({'observer': schema.LINUX_OBSERVER} if linux else {})},
                 'initialSize': dict(initial)}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, OverflowError, struct.error):
         return None
@@ -1844,6 +1861,9 @@ def canonical_native_frame_binding(entry, entries, io, context):
                 type(context.get('binarySha256')) is not str or not re.fullmatch(r'[a-f0-9]{64}', context['binarySha256'])):
             return None
         clock = context['clock']
+        linux = type(clock) is dict and clock.get('observer') == LINUX_NATIVE_OBSERVER
+        resize_method, span_method = (('native-linux-ioctl-resize-v1', 'native-linux-frame-span-v1') if linux else
+                                      ('native-mach-ioctl-resize-v1', 'native-mach-frame-span-v1'))
         if (type(clock) is not dict or type(clock.get('nonce')) is not str or
                 not re.fullmatch(r'[a-f0-9]{32}', clock['nonce']) or
                 any(type(clock.get(key)) is not int or clock[key] <= 0 for key in ('pid', 'timebaseNumer', 'timebaseDenom')) or
@@ -1881,7 +1901,7 @@ def canonical_native_frame_binding(entry, entries, io, context):
             bracket = row['nativeBracket']
             a, b = tick(bracket['entry']), tick(bracket['return'])
             if (row.get('succeeded') is not True or row.get('nativeClockCorrelationCovered') is not True or
-                    bracket.get('method') != 'native-mach-ioctl-resize-v1' or bracket.get('nonce') != clock['nonce'] or
+                    bracket.get('method') != resize_method or bracket.get('nonce') != clock['nonce'] or
                     type(bracket.get('childPid')) is not int or bracket['childPid'] != context['childPid'] or
                     any(type(bracket.get(key)) is not int or bracket[key] != clock[key] for key in ('timebaseNumer', 'timebaseDenom')) or
                     type(bracket.get('result')) is not int or bracket['result'] != 0 or
@@ -1903,7 +1923,7 @@ def canonical_native_frame_binding(entry, entries, io, context):
             if ('broker' in value or type(frame_id) is not int or frame_id <= 0 or
                     native.get('profile') != 'ink-post-write-v1' or native.get('captureId') != context['captureId'] or
                     any(type(native.get(key)) is not int or native[key] <= 0 for key in ('spanId','rendererId','rootEpoch','columns','rows')) or
-                    native['spanId'] != frame_id or data.get('method') != 'native-mach-frame-span-v1' or
+                    native['spanId'] != frame_id or data.get('method') != span_method or
                     json.dumps(data.get('clock'), sort_keys=True) != json.dumps(clock, sort_keys=True) or
                     type(data.get('threadId')) is not int or data['threadId'] <= 0):
                 return None
@@ -2356,6 +2376,11 @@ def native_physical_boundaries_valid(report):
     return True
 
 
+# The host's own capture pipeline produced and replays the report: one method set.
+NATIVE_GEOMETRY_METHOD = ('native-driver-linux-frame-geometry-v2' if sys.platform.startswith('linux')
+                          else 'native-driver-mach-frame-geometry-v2')
+
+
 def terminal_resize_sizes(report):
     """Keep native request/ACK/paint proof distinct from legacy broker proof."""
     if not isinstance(report, dict) or report.get('verdict') != 'passed':
@@ -2365,7 +2390,7 @@ def terminal_resize_sizes(report):
         return None
     proof = report.get('nativeGeometryProof' if native else 'geometryProof', {})
     if (not isinstance(proof, dict) or proof.get('verdict') != 'passed' or
-            (native and (proof.get('method') != 'native-driver-mach-frame-geometry-v2' or
+            (native and (proof.get('method') != NATIVE_GEOMETRY_METHOD or
                          not native_physical_boundaries_valid(report) or
                          report.get('parserSHA256') != '17a90b650cf6b77cce2b98c4063884d43545e4ce177a54b76ccfc906f1aacaed'))):
         return None

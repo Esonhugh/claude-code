@@ -12,6 +12,7 @@ import {
   rmSync,
 } from 'node:fs'
 import { join, resolve, relative, isAbsolute } from 'node:path'
+import { release } from 'node:os'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { isDeepStrictEqual } from 'node:util'
@@ -21,6 +22,10 @@ import { readOwnedNativeFile } from './native-evidence-files.mjs'
 import { readNativeDriverClock } from './native-driver-clock.mjs'
 import { nativeEvidenceLocation, checkNativeEvidenceLocation } from './native-evidence-location.mjs'
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex')
+const LINUX_OBSERVER = 'linux-seccomp-ptrace-v1'
+// Linux header[20] LINUX_V1 as JSON.parse reads it; Python verifies the exact word.
+const LINUX_V1_WORD = Number(0x31565f58554e494cn)
+const observerFiles = (linux) => linux ? ['observer.so', 'observer-exec'] : ['observer.dylib']
 const quote = (text) => `'${String(text).replaceAll("'", "'\\''")}'`
 const append = (path, value) =>
   appendFileSync(path, JSON.stringify(value) + '\n', { mode: 0o600 })
@@ -77,8 +82,9 @@ export function createBuiltinNativeLauncher(run) {
 
 export function createBuiltinCapture(run, argv, env, identity = {}) {
   const nativeJournal = identity.nativeJournal === true
-  if (nativeJournal && process.platform !== 'darwin')
-    throw Error('Native shared-slot capture requires Darwin')
+  const linux = nativeJournal && process.platform === 'linux'
+  if (nativeJournal && process.platform !== 'darwin' && !linux)
+    throw Error('Native shared-slot capture requires Darwin or Linux')
   const initialSize = identity.initialSize ?? { columns: 160, rows: 50 }
   if (!['columns', 'rows'].every((key) =>
     Number.isSafeInteger(initialSize[key]) && initialSize[key] > 0 &&
@@ -88,7 +94,7 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
   if (!['direct-native-exec', 'launcher-final-native-exec'].includes(placement))
     throw Error('Unknown native PTY broker placement')
   if (nativeJournal) {
-    for (const name of ['observer.dylib', 'observer-compile.log', 'native-observer.json',
+    for (const name of [...observerFiles(linux), 'observer-compile.log', 'native-observer.json',
       'pty.raw', 'inputs.jsonl', 'observations.jsonl', 'geometry.jsonl',
       'launch-captured.sh', 'capture-output.sh']) {
       try { lstatSync(join(run, name)) }
@@ -117,7 +123,8 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     env.CC_VALIDATION_FRAME_BINARY_SHA256 = identity.binarySha256
     env.CC_VALIDATION_FRAME_NATIVE_JOURNAL = env.CLAUDE_CODE_FRAME_NATIVE_JOURNAL
   }
-  if (nativeJournal) {
+  if (linux) prepareLinuxObserver(run)
+  else if (nativeJournal) {
     const library = join(run, 'observer.dylib')
     const compileRoot = mkdtempSync(join(run, '.native-observer-'))
     const compiled = join(compileRoot, 'observer.dylib')
@@ -179,10 +186,45 @@ export function createBuiltinCapture(run, argv, env, identity = {}) {
     brokerPlacement: placement,
     nativeTerminalFlagsChanged: false,
     nativeJournal,
+    ...(linux ? { observer: LINUX_OBSERVER } : {}),
     ...(identity.nativeLauncher ? { nativeLauncher: identity.nativeLauncher } : {}),
     transport:
       'owned PTY broker; outer transport raw mode, native initial flags preserved',
   }
+}
+// Same shared-slot ring as Darwin: observer.so holds frame marks and the
+// collector API; observer-exec is the seccomp/ptrace tracer the broker prepends.
+function prepareLinuxObserver(run) {
+  const library = join(run, 'observer.so'), observerExec = join(run, 'observer-exec')
+  const compileRoot = mkdtempSync(join(run, '.native-observer-'))
+  const source = fileURLToPath(new URL('./native-terminal-journal-linux.c', import.meta.url))
+  try {
+    let output = ''
+    for (const [name, flags] of [['observer.so', ['-fPIC', '-shared']], ['observer-exec', ['-DCC_OBSERVER_EXEC']]])
+      output += execFileSync('/usr/bin/cc', [
+        '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2', ...flags, source, '-o', join(compileRoot, name),
+      ], { encoding: 'utf8', timeout: 30000 })
+    linkSync(join(compileRoot, 'observer.so'), library)
+    linkSync(join(compileRoot, 'observer-exec'), observerExec)
+    writeFileSync(join(run, 'observer-compile.log'), output, { flag: 'wx', mode: 0o600 })
+  } catch (error) {
+    writeFileSync(join(run, 'observer-compile.log'), String(error), { flag: 'wx', mode: 0o600 })
+    throw error
+  } finally {
+    rmSync(compileRoot, { recursive: true, force: true })
+  }
+  const librarySha256 = hash(readOwnedNativeFile(library)), observerExecSha256 = hash(readOwnedNativeFile(observerExec))
+  // Fail closed before enrollment when this host cannot trace a PTY product.
+  const probe = JSON.parse(execFileSync('/usr/bin/python3', [
+    fileURLToPath(new URL('./terminal-evidence-broker-native.py', import.meta.url)), '--probe', run,
+  ], { encoding: 'utf8', timeout: 30000 }))
+  if (hash(readOwnedNativeFile(library)) !== librarySha256 ||
+      hash(readOwnedNativeFile(observerExec)) !== observerExecSha256)
+    throw Error('Linux native observer changed during its probe')
+  writeFileSync(join(run, 'native-observer.json'), JSON.stringify({
+    method: 'native-shared-slot-v1', observer: LINUX_OBSERVER, library, librarySha256,
+    observerExec, observerExecSha256, kernel: release(), probe,
+  }) + '\n', { flag: 'wx', mode: 0o600 })
 }
 export function installBuiltinCapture(launch, capture, execute = execFileSync) {
   const base = ['-S', launch.socket]
@@ -571,7 +613,7 @@ export async function sealBuiltinCapture(launch, timeout = 5000) {
 }
 
 function sealNativeBuiltinCapture(launch) {
-  const run = launch.run, files = {}
+  const run = launch.run, files = {}, linux = launch.capture.observer === LINUX_OBSERVER
   const expectedPath = join(run, 'expected-native.json')
   let expected, physical, failure, normal = false
   try {
@@ -606,7 +648,7 @@ function sealNativeBuiltinCapture(launch) {
     'broker-cleanup.json', 'pty-io.jsonl', 'frames.jsonl', 'inputs.jsonl', 'geometry.jsonl',
     'observations.jsonl', 'initial-termios.txt', 'capture-eof', 'expected-native.json',
     'producer-expected-native.json',
-    'native-observer.json', 'observer.dylib', 'observer-compile.log', 'frame-physical-report.json',
+    'native-observer.json', ...observerFiles(linux), 'observer-compile.log', 'frame-physical-report.json',
   ]) {
     const path = join(run, name)
     if (existsSync(path)) {
@@ -631,7 +673,7 @@ function sealNativeBuiltinCapture(launch) {
     files['pty-io.jsonl']?.sha256 === expected.ioClose.sha256
   const boundedPassed = !failure && normal && eofPassed && rawMatched && nativeContentMatched && nativeIOMatched && physical?.verdict === 'passed'
   const report = {
-    backend: 'native-shared-slot-v1', binarySha256: launch.binarySha256,
+    backend: 'native-shared-slot-v1', ...(linux ? { observer: LINUX_OBSERVER } : {}), binarySha256: launch.binarySha256,
     captureId: launch.capture.captureId, target: launch.target, pane: launch.pane,
     files, frameCount: physical?.frameCount ?? 0, eofPassed: Boolean(eofPassed),
     requestedInitialSize: launch.capture.initialSize,
@@ -657,8 +699,9 @@ function sealNativeBuiltinCapture(launch) {
 export function validateNativeTerminalEvidence(side, diagnostics, evidenceLocation) {
   let phase = 'capture', error
   try {
-    const capture = side?.cleanup?.terminalCapture
+    const capture = side?.cleanup?.terminalCapture, linux = capture?.observer === LINUX_OBSERVER
     if (capture?.backend !== 'native-shared-slot-v1' || capture.boundedVerdict !== 'passed' ||
+        (!linux && capture.observer !== undefined) ||
         capture.framePhysicalVerdict !== 'passed' || capture.eofPassed !== true ||
         capture.stream?.method !== 'native-shared-slot-v1' || capture.stream.verdict !== 'passed' ||
         capture.nativeContentMatched !== true || capture.nativeIOMatched !== true ||
@@ -697,6 +740,9 @@ export function validateNativeTerminalEvidence(side, diagnostics, evidenceLocati
         cleanup.childReaped !== true || cleanup.physicalEof !== true || cleanup.normalCompletion !== true ||
         cleanup.failure !== null || !isDeepStrictEqual(cleanup.cleanupErrors, []) ||
         !isDeepStrictEqual(cleanup.signalsSent, []) || !isDeepStrictEqual(json('broker-cleanup.json'), cleanup) ||
+        (linux ? cleanup.observer !== LINUX_OBSERVER || !Number.isSafeInteger(cleanup.tracerPid) ||
+          cleanup.tracerPid <= 0 || cleanup.tracerExitCode !== 0 || cleanup.tracerReaped !== true
+          : cleanup.observer !== undefined) ||
         data.get('capture-eof').toString('utf8').trim() !== '0' ||
         expected.backend !== 'native-shared-slot-v1' || expected.childPid !== start.childPid ||
         expected.binarySha256 !== side.binarySha256 || expected.captureId !== side.captureId ||
@@ -717,6 +763,7 @@ export function validateNativeTerminalEvidence(side, diagnostics, evidenceLocati
         !data.get('pty.raw').equals(data.get('raw.bin')) || !data.get('pty.raw').equals(data.get('native-pty.raw')) ||
         !Array.isArray(header) || header.length !== 32 || header[8] !== start.childPid ||
         header[9] !== content.recordCount || header[10] !== 0 || header[11] !== 1 ||
+        header[20] !== (linux ? LINUX_V1_WORD : 0) || (linux && (header[22] !== 0 || header[23] !== 0)) ||
         !isDeepStrictEqual(json('frame-stream-map.json'), capture.stream))
       return false
     phase = 'native-physical-report'

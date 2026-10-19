@@ -45,7 +45,7 @@ def read_native_regular(path, mode=None):
         return data
 
 
-def verify_fixed_geometry_io(run, expected, native_brackets=False):
+def verify_fixed_geometry_io(run, expected, native_brackets=False, resize_method='native-mach-ioctl-resize-v1'):
     """Reject resize rather than infer native ordering from a raw read offset."""
     try:
         data = read_native_regular(run / 'pty-io.jsonl')
@@ -62,7 +62,7 @@ def verify_fixed_geometry_io(run, expected, native_brackets=False):
     for index, row in enumerate(io, 1):
         if row.get('kind') == 'resize-ack':
             journal.require(native_brackets and type(row.get('nativeBracket')) is dict and
-                            row['nativeBracket'].get('method') == 'native-mach-ioctl-resize-v1',
+                            row['nativeBracket'].get('method') == resize_method,
                             'Fixed-geometry replay cannot accept resize without native brackets '
                             f"(ioId={row.get('ioId')}, geometryId={row.get('geometryId')}, "
                             f"size={row.get('columns')}x{row.get('rows')})")
@@ -139,6 +139,9 @@ def native_resize_events(io, header, registration, records, initial):
     by_sequence = {row['sequence']: row for row in records}
     events = []
     previous_return, size = header[19], initial['sizeHex']
+    # decode_records bound header[20] to the registration; it selects the one method set.
+    journal.require(header[20] in journal.METHODS, 'Unknown native observer platform')
+    resize_method = journal.METHODS[header[20]]['resize']
     for row in io:
         if row['kind'] != 'resize-ack':
             continue
@@ -152,7 +155,7 @@ def native_resize_events(io, header, registration, records, initial):
             ticks.append(int(value))
         entry, returned = ticks
         journal.require(row.get('succeeded') is True and row.get('nativeClockCorrelationCovered') is True and
-                        bracket.get('method') == 'native-mach-ioctl-resize-v1' and
+                        bracket.get('method') == resize_method and
                         bracket.get('nonce') == registration['nonce'] and
                         type(bracket.get('childPid')) is int and bracket['childPid'] == header[8] and
                         type(bracket.get('timebaseNumer')) is int and bracket['timebaseNumer'] == header[12] and
@@ -254,7 +257,9 @@ def derive_frames(run, expected, archive_receipt=None):
     if 'backend' in expected or 'backend' in cleanup:
         journal.require(expected.get('backend') == cleanup.get('backend') == 'native-shared-slot-v1',
                         'Native capture backend differs from independent expectation')
-        io = verify_fixed_geometry_io(run, expected, native_brackets=True)
+        # Registered header[20] selects one method set; content below re-binds these bytes.
+        method = journal.methods(json.loads(read_native_regular(run / 'registration.json')))
+        io = verify_fixed_geometry_io(run, expected, native_brackets=True, resize_method=method['resize'])
         closed = json.loads(read_native_regular(run / 'broker-cleanup.json'))
         journal.require(json.dumps(closed, sort_keys=True) == json.dumps(cleanup, sort_keys=True) and
                         json.dumps(cleanup.get('ioClose'), sort_keys=True) == json.dumps(expected['ioClose'], sort_keys=True) and
@@ -265,6 +270,8 @@ def derive_frames(run, expected, archive_receipt=None):
         return content[name] if content is not None else read_native_regular(run / name)
     initial = json.loads(native_bytes('native-initial.json'))
     registration = json.loads(native_bytes('registration.json'))
+    journal.require(native_close is None or journal.methods(registration) is method,
+                    'Native observer platform changed during verification')
     rows, columns, _, _ = struct.unpack('HHHH', bytes.fromhex(initial['sizeHex']))
     journal.require(columns == expected['columns'] and rows == expected['rows'],
                     'Actual initial native geometry differs from independent expectation')

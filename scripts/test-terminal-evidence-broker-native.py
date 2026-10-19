@@ -79,16 +79,25 @@ class NativeBrokerBufferTest(unittest.TestCase):
         self.assertEqual(evidence.dropped, 9)
         self.assertEqual(evidence.values, {'raw': [b'original'], 'packets': [], 'io': []})
 
+    @staticmethod
+    def observer_descriptor(run, platform):
+        library = run / ('observer.so' if platform == 'linux' else 'observer.dylib')
+        library.write_bytes(b'private observer fixture')
+        descriptor = {'method': 'native-shared-slot-v1', 'library': str(library),
+                      'librarySha256': hashlib.sha256(library.read_bytes()).hexdigest()}
+        if platform == 'linux':
+            tracer = run / 'observer-exec'
+            tracer.write_bytes(b'private tracer fixture')
+            descriptor.update(observer='linux-seccomp-ptrace-v1', observerExec=str(tracer),
+                              observerExecSha256=hashlib.sha256(tracer.read_bytes()).hexdigest())
+        (run / 'native-observer.json').write_text(json.dumps(descriptor))
+
     def test_preexisting_raw_is_never_registered_or_overwritten(self):
         with tempfile.TemporaryDirectory(prefix='native-preexisting-') as directory:
             run = Path(directory)
-            library, binary = run / 'observer.dylib', run / 'binary'
-            library.write_bytes(b'private observer fixture')
+            binary = run / 'binary'
+            self.observer_descriptor(run, 'linux' if sys.platform.startswith('linux') else 'darwin')
             binary.write_bytes(b'private binary fixture')
-            (run / 'native-observer.json').write_text(json.dumps({
-                'method': 'native-shared-slot-v1', 'library': str(library),
-                'librarySha256': hashlib.sha256(library.read_bytes()).hexdigest(),
-            }))
             for name in ('raw.bin', 'producer-expected-native.json'):
                 with self.subTest(name=name):
                     original = run / name
@@ -104,6 +113,45 @@ class NativeBrokerBufferTest(unittest.TestCase):
                     self.assertFalse((run / 'cleanup.json').exists())
                     original.unlink()
 
+
+    def test_observer_descriptor_of_another_platform_is_refused_before_registration(self):
+        host = 'linux' if sys.platform.startswith('linux') else 'darwin'
+        for platform, change in [('darwin' if host == 'linux' else 'linux', None),
+                                 (host, 'foreign-observer'), (host, 'changed-tracer')]:
+            with self.subTest(platform=platform, change=change), \
+                    tempfile.TemporaryDirectory(prefix='native-platform-') as directory:
+                run = Path(directory)
+                binary = run / 'binary'
+                binary.write_bytes(b'private binary fixture')
+                self.observer_descriptor(run, platform)
+                if change == 'foreign-observer':
+                    descriptor = json.loads((run / 'native-observer.json').read_text())
+                    descriptor['observer'] = 'foreign-observer-v1'
+                    (run / 'native-observer.json').write_text(json.dumps(descriptor))
+                if change == 'changed-tracer':
+                    if host != 'linux':
+                        continue
+                    (run / 'observer-exec').write_bytes(b'changed tracer fixture')
+                with patch.dict(os.environ, {
+                    'CLAUDE_CODE_FRAME_CAPTURE_ID': 'owned-capture',
+                    'CLAUDE_CODE_FRAME_BINARY_SHA256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+                }):
+                    with self.assertRaisesRegex(ValueError, 'enrollment identity changed' if change == 'changed-tracer'
+                                                else 'Native observer platform differs from this host'):
+                        broker.capture_native(run, [str(binary)])
+                self.assertFalse((run / 'journal.bin').exists())
+                self.assertFalse((run / 'launch.json').exists())
+
+    @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux observer-exec probe')
+    def test_linux_probe_fails_closed_without_an_attached_tracer(self):
+        with tempfile.TemporaryDirectory(prefix='native-probe-') as directory:
+            run = Path(directory)
+            tracer = run / 'observer-exec'
+            tracer.write_text('#!/bin/sh\nexit 0\n')
+            tracer.chmod(0o700)
+            with self.assertRaisesRegex(RuntimeError, 'Linux native tracer did not attach'):
+                broker.probe_linux_observer(run)
+            self.assertEqual(sorted(path.name for path in run.iterdir()), ['observer-exec'])
 
 
 if __name__ == '__main__':

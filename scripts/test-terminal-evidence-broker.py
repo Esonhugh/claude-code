@@ -611,5 +611,31 @@ os.write(1, b'actual native bytes\n')
         self.assertFalse((self.run / 'native-pty-eof.json').exists())
 
 
+class SandboxedArgvTest(unittest.TestCase):
+    def test_sandbox_layouts_bind_the_wrapped_native_binary_identity(self):
+        broker = str(Path(__file__).with_name('terminal-evidence-broker.py'))
+        with tempfile.TemporaryDirectory(prefix='broker-sandbox-argv-') as directory:
+            run = Path(directory)
+            binary = run / 'native'
+            binary.write_bytes(b'wrapped native fixture')
+            digest = __import__('hashlib').sha256(binary.read_bytes()).hexdigest()
+            layouts = {
+                'darwin': ['/usr/bin/sandbox-exec', '-f', str(run / 'sandbox.sb'), str(binary)],
+                'linux': ['/usr/bin/python3', str(run / 'linux-sandbox-exec.py'), '--policy', '{}', '--', str(binary)],
+            }
+            for name, argv in layouts.items():
+                for expected, changed in ((digest, False), ('0' * 64, True)):
+                    with self.subTest(layout=name, changed=changed):
+                        result = subprocess.run(['/usr/bin/env', 'python3', broker, '--run', str(run), '--', *argv, '--flag'],
+                                                stdin=subprocess.DEVNULL, capture_output=True, timeout=10,
+                                                env={**os.environ, 'CLAUDE_CODE_FRAME_CAPTURE_ID': 'owned-capture',
+                                                     'CLAUDE_CODE_FRAME_BINARY_SHA256': expected})
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(b'copied native binary identity changed' in result.stderr, changed,
+                                         result.stderr.decode(errors='replace'))
+                        for leftover in ('frame-request.fifo', 'frame-response.fifo'):
+                            self.assertFalse((run / leftover).exists())
+
+
 if __name__ == '__main__':
     unittest.main()

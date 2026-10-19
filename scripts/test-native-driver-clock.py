@@ -4,12 +4,26 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
+import threading
+import time
 import unittest
 
 spec = importlib.util.spec_from_file_location('clock', Path(__file__).with_name('native-driver-clock.py'))
 clock = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(clock)
+LINUX = sys.platform.startswith('linux')
+OBSERVER = {'observer': 'linux-seccomp-ptrace-v1'} if LINUX else {}
+
+
+def independent_sample():
+    """The clock the platform observer stamps native records with."""
+    if LINUX:
+        return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+    system = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+    system.mach_absolute_time.restype = ctypes.c_uint64
+    return system.mach_absolute_time()
 
 
 class DriverClockTest(unittest.TestCase):
@@ -17,29 +31,37 @@ class DriverClockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='native-clock-python-') as directory:
             run = Path(directory)
             launch = {'run': str(run), 'driverPid': os.getpid(), 'binarySha256': 'a' * 64,
-                      'capture': {'nativeJournal': True, 'captureId': 'synthetic-enrollment-actual-caller-clock'}}
+                      'capture': {'nativeJournal': True, 'captureId': 'synthetic-enrollment-actual-caller-clock',
+                                  **OBSERVER}}
             for name, data in [('registration.json', {'nonce': 'b' * 32}),
                                ('start.json', {'childPid': os.getpid()+1, 'binarySha256': launch['binarySha256']})]:
                 (run / name).write_text(json.dumps(data));(run / name).chmod(0o600)
-            system = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
-            system.mach_absolute_time.restype = ctypes.c_uint64
-            before = system.mach_absolute_time();value = clock.read_native_driver_clock(launch)
-            after = system.mach_absolute_time();following = clock.read_native_driver_clock(launch)
+            before = independent_sample();value = clock.read_native_driver_clock(launch)
+            after = independent_sample();following = clock.read_native_driver_clock(launch)
             self.assertTrue(before <= int(value['tick']) <= after)
             self.assertGreaterEqual(int(following['tick']), int(value['tick']))
             self.assertEqual(value['callerPid'], os.getpid())
             self.assertEqual(value['callerThreadId'], following['callerThreadId'])
             self.assertGreater(int(value['callerThreadId']), 0)
             self.assertGreater(value['timebaseNumer'], 0);self.assertGreater(value['timebaseDenom'], 0)
+            self.assertEqual(value['method'], 'driver-linux-monotonic-v1' if LINUX else 'driver-mach-absolute-time-v1')
+            if LINUX:
+                self.assertEqual(value['callerThreadId'], str(threading.get_native_id()))
+                self.assertEqual((value['timebaseNumer'], value['timebaseDenom']), (1, 1))
             evidence = os.environ.get('BROKER_TEST_EVIDENCE_DIR')
             if evidence:
                 destination = Path(evidence);destination.mkdir(parents=True, exist_ok=True)
                 with (destination / 'actual-python-driver-clock.json').open('x') as output:
                     output.write(json.dumps({'scope': 'actual caller clock; enrollment is synthetic, not CLI/UI proof',
                         'before': str(before), 'clock': value, 'after': str(after), 'next': following})+'\n')
+            other = ({'nativeJournal': True, 'captureId': launch['capture']['captureId']} if LINUX
+                     else {**launch['capture'], 'observer': 'linux-seccomp-ptrace-v1'})
             for bad in [{**launch,'driverPid':os.getpid()+1},
-                        {**launch,'capture':{**launch['capture'],'nativeJournal':'1'}}]:
-                with self.assertRaisesRegex(ValueError,'original Darwin caller'):clock.read_native_driver_clock(bad)
+                        {**launch,'capture':{**launch['capture'],'nativeJournal':'1'}},
+                        {**launch,'capture':other},
+                        {**launch,'capture':{**launch['capture'],'observer':'foreign-observer-v1'}}]:
+                with self.assertRaisesRegex(ValueError,'original Linux caller' if LINUX else 'original Darwin caller'):
+                    clock.read_native_driver_clock(bad)
             (run / 'start.json').write_text(json.dumps({'childPid':os.getpid(),'binarySha256':launch['binarySha256']}))
             with self.assertRaisesRegex(ValueError,'enrollment'):clock.read_native_driver_clock(launch)
 
@@ -55,7 +77,7 @@ class DriverClockTest(unittest.TestCase):
                 run = Path(directory)
                 launch = {'run':str(run),'driverPid':os.getpid(),'binarySha256':'a'*64,
                           'target':'owned:0.0','socket':str(run/'synthetic-socket'),
-                          'capture':{'nativeJournal':True,'captureId':'synthetic-command-actual-clock'}}
+                          'capture':{'nativeJournal':True,'captureId':'synthetic-command-actual-clock',**OBSERVER}}
                 for name,data in [('registration.json',{'nonce':'b'*32}),
                                   ('start.json',{'childPid':os.getpid()+1,'binarySha256':launch['binarySha256']})]:
                     (run/name).write_text(json.dumps(data));(run/name).chmod(0o600)

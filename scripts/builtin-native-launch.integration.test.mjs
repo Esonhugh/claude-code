@@ -1,6 +1,6 @@
 import { test, expect } from 'bun:test'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readlinkSync } from 'node:fs'
+import { join, dirname, basename } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { setTimeout as delay } from 'node:timers/promises'
 import { createHash } from 'node:crypto'
@@ -11,10 +11,11 @@ import { startBuiltinRun, parseArgs, isIdlePrompt, cleanupAcceptanceSide } from 
 const binary = process.env.BUILTIN_NATIVE_TEST_BINARY
 const hash = path => createHash('sha256').update(readFileSync(path)).digest('hex')
 const selected = binary ? test : test.skip
+const linux = process.platform === 'linux'
 
 // This opt-in integration needs a freshly built binary. Keep its originals as evidence.
 selected('builtin compiled launch uses native journal inside its existing sandbox', async () => {
-  const root = mkdtempSync('/private/tmp/bn-')
+  const root = mkdtempSync(linux ? '/tmp/bn-' : '/private/tmp/bn-')
   const cache = join(root, 'cache')
   mkdirSync(cache)
   let launch, cleanup, firstFailure
@@ -41,7 +42,10 @@ selected('builtin compiled launch uses native journal inside its existing sandbo
     expect(launch.capture.nativeJournal).toBe(true)
     expect(launch.capture.brokerPlacement).toBe('launcher-final-native-exec')
     expect(launch.capture.initialSize).toEqual({ columns: 160, rows: 50 })
-    expect(launch.argv[0]).toBe('/usr/bin/sandbox-exec')
+    if (linux) expect([launch.argv[0], basename(launch.argv[1]), launch.argv[2], launch.argv[4]])
+      .toEqual(['/usr/bin/python3', 'linux-sandbox-exec.py', '--policy', '--'])
+    else expect(launch.argv[0]).toBe('/usr/bin/sandbox-exec')
+    expect(launch.capture.observer).toBe(linux ? 'linux-seccomp-ptrace-v1' : undefined)
     expect(launch.argv).not.toContain('--plugin-dir')
     expect(launch.env.CLAUDE_CODE_BUILTIN_MODS_ARCHIVE).toBeUndefined()
     expect(hash(join(launch.run, 'bin/claude'))).toBe(hash(binary))
@@ -49,11 +53,11 @@ selected('builtin compiled launch uses native journal inside its existing sandbo
     expect(start.binarySha256).toBe(hash(binary))
     expect(Number.isSafeInteger(start.childPid)).toBe(true)
     expect(start.childPgid).toBe(start.childPid)
-    const executable = execFileSync('/bin/ps', ['-p', String(start.childPid), '-o', 'comm='],
-      { encoding: 'utf8', timeout: 10000 }).trim()
+    const executable = linux ? readlinkSync(`/proc/${start.childPid}/exe`)
+      : execFileSync('/bin/ps', ['-p', String(start.childPid), '-o', 'comm='], { encoding: 'utf8', timeout: 10000 }).trim()
     expect(executable).toBe(join(launch.run, 'bin/claude'))
     for (const name of ['journal.bin', 'registration.json', 'native-observer.json',
-      'frames.jsonl'])
+      'frames.jsonl', ...(linux ? ['observer.so', 'observer-exec'] : ['observer.dylib'])])
       expect(existsSync(join(launch.run, name))).toBe(true)
     const originPath = join(launch.run, 'native-normal-origin.json')
     expect(existsSync(originPath)).toBe(true)
