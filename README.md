@@ -1158,7 +1158,7 @@ export const register: Register = on => {
 
 #### 可复用测试 Mod
 
-仓库自带 [`examples/mods/mods-test-lab`](examples/mods/mods-test-lab)，用于观察真实插件生命周期、命令、prompt/工具/turn 事件和 Pane 交互。构建后可在独立配置、私有 Git fixture 和 tmux 中启动，不读取个人认证或调用真实模型。`check/run` 当前需要 macOS `sandbox-exec`，`run` 另需已安装的 tmux；没有不隔离的 fallback：
+仓库自带 [`examples/mods/mods-test-lab`](examples/mods/mods-test-lab)，用于观察真实插件生命周期、命令、prompt/工具/turn 事件和 Pane 交互。构建后可在独立配置、私有 Git fixture 和 tmux 中启动，不读取个人认证或调用真实模型。`check/run` 在 macOS 需要 `sandbox-exec`，在 Linux 需要 `/usr/bin/python3` 运行 `scripts/linux-sandbox-exec.py`（user/mount/net 命名空间 + Landlock，网络只有沙箱内 loopback；`accept-builtin` 的 provider 经 `provider.sock` 转发进沙箱，`run`/`run-builtin` 的 `--api-url` 在 Linux 上不可达），`run` 另需已安装的 tmux；没有不隔离的 fallback：
 
 ```bash
 make build
@@ -1177,7 +1177,7 @@ MODS_CLI="$MODS_BUILD_ROOT/output/built-claude"
 bun scripts/mods-test-lab.mjs run sample --binary "$MODS_CLI" --cache "$MODS_BUILD_ROOT/lab"
 ```
 
-`run` 输出 session/socket、调试日志和连接命令；可用 `--binary /absolute/path/to/built-claude` 指定制品。默认缓存为 `~/Library/Caches/mods-test-lab`，各命令支持 `--cache /private/tmp/mods-test-lab`；路径过长无法创建 Unix socket 时改用短缓存目录。进入会话后使用：
+`run` 输出 session/socket、调试日志和连接命令；可用 `--binary /absolute/path/to/built-claude` 指定制品。默认缓存在 macOS 为 `~/Library/Caches/mods-test-lab`、在 Linux 为 `/tmp/mods-test-lab`（须为当前用户所有），各命令支持 `--cache /private/tmp/mods-test-lab`（Linux 为 `/tmp/mods-test-lab`）；路径过长无法创建 Unix socket 时改用短缓存目录。进入会话后使用：
 
 ```text
 /mods-test

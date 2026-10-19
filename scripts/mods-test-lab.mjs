@@ -1,4 +1,5 @@
 import {createBuiltinNativeLauncher,createBuiltinCapture,installBuiltinCapture,recordedBuiltinTmux,sealBuiltinCapture,validateBuiltinTerminalEvidence} from './builtin-terminal-evidence.mjs'
+import { readOwnedNativeFile } from './native-evidence-files.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
@@ -14,6 +15,7 @@ export const OFFICIAL = ['diff', 'agents-md', 'sec-default', 'telemetry']
 const OWNER = 'mods-test-lab/v1'
 const SCRIPT = fileURLToPath(import.meta.url)
 const REPO = resolve(dirname(SCRIPT), '..')
+const HOST_TMP = process.platform === 'darwin' ? '/private/tmp' : '/tmp'
 const SOURCE = `https://github.com/anthropics/claude-code/tree/${COMMIT}/mods`
 const TREE = `https://api.github.com/repos/anthropics/claude-code/git/trees/${COMMIT}?recursive=1`
 const ARCHIVE = `https://codeload.github.com/anthropics/claude-code/zip/${COMMIT}`
@@ -27,7 +29,8 @@ const within = (root, path) => { const part = relative(root, path); return part 
 export function parseArgs(args) {
   const [command, ...rest] = args
   if (!['fetch-official', 'check', 'run', 'run-builtin', 'accept-builtin', 'clean'].includes(command)) throw new Error('Usage: fetch-official | check <sample|diff|agents-md|sec-default|telemetry> | run <name> [--binary PATH] [--api-url http://127.0.0.1:PORT] | run-builtin [--binary PATH] [--api-url http://127.0.0.1:PORT] | accept-builtin [--binary PATH] | clean <run-id>; all accept --cache DIR')
-  const options = { command, cache: join(homedir(), 'Library', 'Caches', 'mods-test-lab'), binary: join(REPO, 'built-claude'), apiUrl: 'http://127.0.0.1:1' }
+  // On Linux the default keeps run socket paths under 100 bytes.
+  const options = { command, cache: process.platform === 'linux' ? `${HOST_TMP}/mods-test-lab` : join(homedir(), 'Library', 'Caches', 'mods-test-lab'), binary: join(REPO, 'built-claude'), apiUrl: 'http://127.0.0.1:1' }
   const seen = new Set()
   for (let i = 0; i < rest.length; i++) {
     const arg = rest[i]
@@ -56,6 +59,7 @@ function cacheDirectory(path) {
   if (within(REPO, resolve(path))) throw new Error('Cache must be outside the repository')
   const root = directory(path)
   if (within(realpathSync(REPO), root)) throw new Error('Cache must be outside the repository')
+  if (process.getuid && lstatSync(root).uid !== process.getuid()) throw new Error('Cache must be owned by the current user')
   return root
 }
 
@@ -162,6 +166,8 @@ export function fixtureEnvironment(run, apiUrl = 'http://127.0.0.1:1') {
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_AUTOUPDATER: '1',
     GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
+    // A root Linux host keeps uid 0 inside the identity-mapped sandbox (as in the gate launcher).
+    ...(process.platform === 'linux' && process.getuid() === 0 ? { IS_SANDBOX: '1' } : {}),
   }
 }
 
@@ -224,8 +230,22 @@ function pluginPath(cache, name) {
   return join(snapshot, 'mods', name)
 }
 
-function sandboxCommand(run, argv, inspect = false) {
-  if (process.platform !== 'darwin') throw new Error('check/run currently require macOS sandbox-exec; no unisolated fallback')
+// The scripts/linux-sandbox-exec.py counterpart of sandboxProfile: home, ~/.claude, REPO/.claude and
+// REPO/.env stay hidden (the helper adds them), writes only to the run and /dev, network only loopback.
+export function linuxSandboxPolicy(run, inspect = false, forwardLoopback) {
+  const bunRoot = dirname(dirname(realpathSync(process.execPath)))
+  return { runDir: run, repo: REPO, bindReadOnly: [bunRoot, ...(inspect ? [REPO] : [])], writeTrees: ['/dev'],
+    network: { mode: 'loopback' }, ...(forwardLoopback ? { forwardLoopback } : {}) }
+}
+
+export function sandboxCommand(run, argv, inspect = false, forwardLoopback) {
+  if (process.platform === 'linux') {
+    const bytes = readOwnedNativeFile(join(REPO, 'scripts/linux-sandbox-exec.py')), helper = join(run, 'linux-sandbox-exec.py')
+    writeFileSync(helper, bytes, { flag: 'wx', mode: 0o600 })
+    if (sha256(readOwnedNativeFile(helper, 0o600)) !== sha256(bytes)) throw new Error('Copied Linux sandbox helper differs from source')
+    return ['/usr/bin/python3', helper, '--policy', JSON.stringify(linuxSandboxPolicy(run, inspect, forwardLoopback)), '--', ...argv]
+  }
+  if (process.platform !== 'darwin') throw new Error('check/run require macOS sandbox-exec or the Linux sandbox helper; no unisolated fallback')
   const profile = join(run, 'sandbox.sb')
   writeFileSync(profile, sandboxProfile(run, inspect), { flag: 'wx', mode: 0o600 })
   return ['/usr/bin/sandbox-exec', '-f', profile, ...argv]
@@ -251,7 +271,7 @@ export function startRun(options) {
   const source = pluginPath(cacheDirectory(options.cache), options.target)
   const run = createRun(options.cache, 'run')
   const socket = join(run, 'tmux.sock')
-  if (Buffer.byteLength(socket) >= 100) throw new Error(`Socket path too long; use --cache /private/tmp/mods-test-lab. Preserved ${run}`)
+  if (Buffer.byteLength(socket) >= 100) throw new Error(`Socket path too long; use --cache ${HOST_TMP}/mods-test-lab. Preserved ${run}`)
   const tmux = execFileSync('/usr/bin/which', ['tmux'], { encoding: 'utf8' }).trim()
   const env = prepareFixture(run, source)
   env.ANTHROPIC_BASE_URL = options.apiUrl
@@ -278,7 +298,7 @@ export function startBuiltinRun(options, execute = execFileSync, findTmux = () =
   if (!existsSync(options.binary) || !lstatSync(options.binary).isFile()) throw new Error(`Built Claude binary not found: ${options.binary}`)
   const run = createRun(cache, 'run-builtin')
   const socket = join(run, 'tmux.sock')
-  if (Buffer.byteLength(socket) >= 100) throw new Error(`Socket path too long; use --cache /private/tmp/mods-test-lab. Preserved ${run}`)
+  if (Buffer.byteLength(socket) >= 100) throw new Error(`Socket path too long; use --cache ${HOST_TMP}/mods-test-lab. Preserved ${run}`)
   const tmux = findTmux()
   const env = prepareFixture(run, inlinePlugin)
   env.ANTHROPIC_BASE_URL = options.apiUrl
@@ -290,7 +310,7 @@ export function startBuiltinRun(options, execute = execFileSync, findTmux = () =
   const copiedPlugin = inlinePlugin === undefined ? undefined : join(run, 'plugin')
   const pluginArgs = copiedPlugin === undefined ? [] : ['--plugin-dir', copiedPlugin]
   const nativeLauncher = createBuiltinNativeLauncher(run)
-  const argv = sandboxCommand(run, [nativeLauncher.path, binary, '--dangerously-skip-permissions', ...pluginArgs, '--setting-sources', 'user,project,local', '--debug-file', debug])
+  const argv = sandboxCommand(run, [nativeLauncher.path, binary, '--dangerously-skip-permissions', ...pluginArgs, '--setting-sources', 'user,project,local', '--debug-file', debug], false, options.forwardLoopback)
   const metadata = { run, socket, session: 'mods', mode: inlinePlugin === undefined ? 'builtin-only' : 'builtin-with-inline-acceptance-fixture', binary: options.binary, binarySha256: sha256(readFileSync(binary)), ...(copiedPlugin === undefined ? {} : { plugin: inventory(copiedPlugin) }), debug, env, argv, uiOnly: options.apiUrl === 'http://127.0.0.1:1', activation: 'not-verified', trigger: 'not-run' }
   const tmuxConfig = join(run, 'tmux.conf')
   writeFileSync(tmuxConfig, 'set-option -g default-shell /bin/sh\nset-option -g remain-on-exit on\n', { flag: 'wx', mode: 0o600 })
@@ -317,7 +337,7 @@ export async function startAcceptanceProvider(root) {
   const requests = []
   const ledger = join(root, 'requests.jsonl')
   writeFileSync(ledger, '', { flag: 'wx', mode: 0o600 })
-  const server = createServer(async (req, res) => {
+  const handler = async (req, res) => {
     if (req.method !== 'POST' || !['/v1/messages', '/v1/messages/count_tokens'].includes(new URL(req.url, 'http://127.0.0.1').pathname)) {
       res.writeHead(404).end(); return
     }
@@ -362,9 +382,17 @@ export async function startAcceptanceProvider(root) {
       ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
       res.end()
     } catch { res.writeHead(400).end() }
-  })
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
-  return { url: `http://127.0.0.1:${server.address().port}`, requests, close: () => new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() }) }
+  }
+  const listen = (server, ...address) => new Promise((resolve, reject) => { server.once('error', reject); server.listen(...address, resolve) })
+  const stop = server => new Promise((resolve, reject) => { server.close(error => error ? reject(error) : resolve()); server.closeAllConnections() })
+  const server = createServer(handler)
+  await listen(server, 0, '127.0.0.1')
+  const url = `http://127.0.0.1:${server.address().port}`
+  if (process.platform !== 'linux') return { url, requests, close: () => stop(server) }
+  // The Linux sandbox has its own loopback; its forwarder reaches this handler through provider.sock.
+  const bridge = createServer(handler), unix = join(root, 'provider.sock')
+  try { await listen(bridge, unix) } catch (error) { await stop(server); throw error }
+  return { url, requests, forwardLoopback: [{ port: server.address().port, unix }], close: () => Promise.all([stop(server), stop(bridge)]) }
 }
 
 export function isIdlePrompt(text) {
@@ -504,7 +532,7 @@ export async function acceptBuiltin(options) {
     try {
       provider = await startAcceptanceProvider(root)
       side.requests = provider.requests
-      launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
+      launch = startBuiltinRun({ ...options, apiUrl: provider.url, forwardLoopback: provider.forwardLoopback }, execFileSync, undefined, (run, env) => {
         ledgerPath = join(run, 'host.jsonl')
         writeFileSync(ledgerPath, '', { flag: 'wx', mode: 0o600 })
         env.CLAUDE_CODE_MODS_ACCEPTANCE_LEDGER = ledgerPath
@@ -565,7 +593,7 @@ export async function acceptBuiltin(options) {
     try {
       provider = await startAcceptanceProvider(root)
       side.requests = provider.requests
-      launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
+      launch = startBuiltinRun({ ...options, apiUrl: provider.url, forwardLoopback: provider.forwardLoopback }, execFileSync, undefined, (run, env) => {
         env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
         const path = join(run, 'config/settings.json')
         const settings = json(path)
@@ -652,7 +680,7 @@ export async function acceptBuiltin(options) {
     try {
       provider = await startAcceptanceProvider(root)
       side.requests = provider.requests
-      launch = startBuiltinRun({ ...options, apiUrl: provider.url }, execFileSync, undefined, (run, env) => {
+      launch = startBuiltinRun({ ...options, apiUrl: provider.url, forwardLoopback: provider.forwardLoopback }, execFileSync, undefined, (run, env) => {
         env.ANTHROPIC_MODEL = 'claude-sonnet-4-5-20250929'
         const configPath = join(run, 'config/.claude.json')
         writeFileSync(configPath, JSON.stringify({ ...json(configPath), projects: { [join(run, 'project')]: { hasTrustDialogAccepted: true } } }))

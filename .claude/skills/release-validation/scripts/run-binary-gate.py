@@ -330,6 +330,7 @@ TARGET_PATH_RULES = (
     )),
     ('builtin-mods', (
         'scripts/mods-test-lab',
+        'scripts/linux-sandbox-exec.py',
         'scripts/builtin-terminal-evidence',
         'scripts/terminal-evidence-broker',
         'scripts/test-terminal-evidence-broker',

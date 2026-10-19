@@ -8588,6 +8588,8 @@ def test_retained_process_spawn_real_entry_is_required_for_its_runtime_and_valid
         'scripts/validate-mods-process-spawn.py', 'scripts/linux-sandbox-exec.py',
     ]:
         assert 'mods-process-spawn' in module.required_targets_for_paths([path]), path
+    # accept-builtin runs under the same Linux helper.
+    assert 'builtin-mods' in module.required_targets_for_paths(['scripts/linux-sandbox-exec.py'])
 
 
 def test_retained_process_spawn_closed_receipts_cannot_pass_without_their_child_and_stream_contracts():
