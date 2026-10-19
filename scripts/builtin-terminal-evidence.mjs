@@ -260,10 +260,13 @@ export function installBuiltinCapture(launch, capture, execute = execFileSync) {
         names.map(name => '#{' + name + '}').join('\t')]
       const measured = execute(launch.tmux, args,
         { env: launch.env, encoding: 'utf8', timeout: 10000 }).trimEnd().split('\t')
+      // Darwin runs the pinned tmux 3.6b; Linux records the version its tmux reports.
+      const linux = process.platform === 'linux',
+        tmuxVersion = linux && /^[0-9]+\.[0-9]+[a-z]?$/.test(measured[16] ?? '') ? measured[16] : '3.6b'
       const wanted = [launch.pane, null, String(launch.serverPid), '0', '0',
         String(capture.initialSize.columns), String(capture.initialSize.rows),
         '0', '0', '0', '0', '1', '0', '1', '0', String(capture.initialSize.rows - 1),
-        '3.6b', capture.wrapper]
+        tmuxVersion, capture.wrapper]
       if (measured.length !== wanted.length || !/^[1-9][0-9]*$/.test(measured[1]) ||
           wanted.some((value, index) => value !== null && measured[index] !== value))
         throw Error('Native normal origin has unknown or noninitial tmux state')
@@ -291,7 +294,8 @@ export function installBuiltinCapture(launch, capture, execute = execFileSync) {
         pendingEncoding: 'tmux-capture-p-P-C-v1',
         files: [screenPath, pendingPath, capture.wrapper].map(path =>
           ({ path, sha256: hash(readOwnedNativeFile(path)) })),
-        initialStateBasis: 'owned new-session; waiting no-output wrapper; tmux 3.6b screen_init/input_init',
+        initialStateBasis: `owned new-session; waiting no-output wrapper; tmux ${tmuxVersion} screen_init/input_init`,
+        ...(linux ? { platform: 'linux', tmuxVersion } : {}),
         productTimingEquivalent: false, fullNativeGatePassed: false }
       writeFileSync(join(launch.run, 'native-normal-origin.json'), JSON.stringify(origin) + '\n',
         { flag: 'wx', mode: 0o600 })

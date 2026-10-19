@@ -41,6 +41,29 @@ test('changed native helper is rejected before capture-ready releases the produc
   expect(calls.at(-1)).toContain('kill-server')
 })
 
+test('the normal origin records the tmux version the platform reports', () => {
+  const root = run(), nativeLauncher = createBuiltinNativeLauncher(root), env = {}
+  const sandbox = process.platform === 'linux'
+    ? ['/usr/bin/python3', join(root, 'linux-sandbox-exec.py'), '--policy', '{}', '--']
+    : ['/usr/bin/sandbox-exec', '-f', join(root, 'sandbox.sb')]
+  const capture = createBuiltinCapture(root, [...sandbox, nativeLauncher.path, '/fixture/native'], env,
+    { nativeJournal: true, brokerPlacement: 'launcher-final-native-exec', nativeLauncher, binarySha256: 'b'.repeat(64) })
+  const { columns, rows } = capture.initialSize, reported = process.platform === 'linux' ? '3.4' : '3.6b'
+  installBuiltinCapture({ run: root, socket: join(root, 'tmux.sock'), target: 'mods:0.0', tmux: '/fixture/tmux', env,
+    freshPane: true, pane: '%1', serverPid: 2 }, capture, (_file, args) => {
+    if (args.at(-1) === '#{pane_pipe}') return '1\n'
+    if (args.includes('display-message')) return ['%1', '3', '2', '0', '0', String(columns), String(rows),
+      '0', '0', '0', '0', '1', '0', '1', '0', String(rows - 1), reported, capture.wrapper].join('\t') + '\n'
+    if (args.includes('capture-pane')) return args.includes('-P') ? '\n' : '\n'.repeat(rows)
+    return ''
+  })
+  const origin = JSON.parse(readFileSync(join(root, 'native-normal-origin.json'), 'utf8'))
+  expect(origin.measurements.version).toBe(reported)
+  expect(origin.initialStateBasis).toContain(`tmux ${reported} `)
+  if (process.platform === 'linux') expect([origin.platform, origin.tmuxVersion]).toEqual(['linux', '3.4'])
+  else expect('platform' in origin || 'tmuxVersion' in origin).toBe(false)
+})
+
 test('native helper preparation preserves a preexisting directory and its contents', () => {
   const root = run(), folder = join(root, 'native-broker'), sentinel = join(folder, 'sentinel')
   mkdirSync(folder)

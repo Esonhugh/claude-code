@@ -1,4 +1,4 @@
-import {createBuiltinNativeLauncher,createBuiltinCapture,installBuiltinCapture,recordedBuiltinTmux,sealBuiltinCapture,validateBuiltinTerminalEvidence} from './builtin-terminal-evidence.mjs'
+import {createBuiltinNativeLauncher,createBuiltinCapture,installBuiltinCapture,recordedBuiltinTmux,sealBuiltinCapture,validateBuiltinTerminalEvidence,validateNativeTerminalEvidence} from './builtin-terminal-evidence.mjs'
 import { readOwnedNativeFile } from './native-evidence-files.mjs'
 import { createHash, randomBytes } from 'node:crypto'
 import { execFileSync, spawnSync } from 'node:child_process'
@@ -466,7 +466,9 @@ export function assessBuiltinAcceptance(pair) {
     privacyOn[1]?.sequence === 2 && privacyOn[1]?.operation === 'authorize' && privacyOn[1]?.granted === true &&
     privacyOn[2]?.sequence === 3 && privacyOn[2]?.operation === 'http' && privacyOn[2]?.method === 'POST' &&
     privacyOn[2]?.host === 'api.anthropic.com' && privacyOn[2]?.path === '/api/event_logging/v2/batch' && privacyOn[2]?.authorized === true
-  const frameEvidence = sides.every(side => validateBuiltinTerminalEvidence(side))
+  // Native captures carry closed shared-slot evidence; only PTY-recorder captures use the legacy files.
+  const frameEvidence = sides.every(side => side?.cleanup?.terminalCapture?.backend === 'native-shared-slot-v1'
+    ? validateNativeTerminalEvidence(side) : validateBuiltinTerminalEvidence(side))
   const timingEquivalent = sides.every(side => side?.cleanup?.terminalCapture?.productTimingEquivalent === true)
   const terminalEvidence = frameEvidence && timingEquivalent
   return {

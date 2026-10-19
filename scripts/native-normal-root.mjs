@@ -14,12 +14,17 @@ export function verifyNativeNormalOrigin(run, expected, evidenceLocation) {
   const bytes = location.read('native-normal-origin.json', 0o600)
   if (hash(bytes) !== receipt.sha256) throw Error('Native normal origin changed after enrollment')
   const origin = JSON.parse(bytes), m = origin.measurements
+  // Darwin runs the pinned tmux 3.6b; Linux records the version its tmux reported.
+  const linux = origin.platform === 'linux'
+  if ((origin.platform !== undefined && !linux) ||
+      (linux ? !/^[0-9]+\.[0-9]+[a-z]?$/.test(origin.tmuxVersion ?? '') : origin.tmuxVersion !== undefined))
+    throw Error('Native normal origin platform or tmux version is unknown')
   const wanted = { pane_id: origin.pane, pid: String(origin.serverPid),
     pane_pid: String(origin.panePid), cursor_x: '0', cursor_y: '0',
     pane_width: String(expected.columns), pane_height: String(expected.rows),
     alternate_on: '0', pane_in_mode: '0', history_size: '0', origin_flag: '0',
     wrap_flag: '1', insert_flag: '0', cursor_flag: '1', scroll_region_upper: '0',
-    scroll_region_lower: String(expected.rows - 1), version: '3.6b',
+    scroll_region_lower: String(expected.rows - 1), version: linux ? origin.tmuxVersion : '3.6b',
     pane_start_command: join(originalRun, 'launch-captured.sh') }
   if (origin.method !== 'builtin-fresh-tmux-normal-origin-v1' ||
       origin.captureId !== expected.captureId || origin.binarySha256 !== expected.binarySha256 ||

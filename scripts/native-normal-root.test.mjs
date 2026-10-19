@@ -47,6 +47,22 @@ for (const [name, change] of [
   const f = fixture(); change(f); f.save()
   expect(() => verifyNativeNormalOrigin(f.run, f.expected)).toThrow()
 })
+// Linux has no pinned tmux build; its origin records the version tmux reported and must match it.
+const linuxOrigin = f => { f.origin.platform = 'linux'; f.origin.tmuxVersion = '3.4'; f.origin.measurements.version = '3.4' }
+test('a Linux origin accepts the tmux version it measured', () => {
+  const f = fixture(); linuxOrigin(f); f.save()
+  expect(verifyNativeNormalOrigin(f.run, f.expected).rawOffset).toBe(0)
+})
+for (const [name, change] of [
+  ['a Linux origin whose measured version differs from the recorded tmux', f => { linuxOrigin(f); f.origin.tmuxVersion = '3.5' }],
+  ['a Linux origin with a malformed tmux version', f => { linuxOrigin(f); f.origin.tmuxVersion = f.origin.measurements.version = 'next' }],
+  ['an unpinned tmux version on the pinned platform', f => { f.origin.measurements.version = '3.4' }],
+  ['a recorded tmux version without the Linux platform', f => { f.origin.tmuxVersion = '3.6b' }],
+  ['an unknown origin platform', f => { linuxOrigin(f); f.origin.platform = 'freebsd' }],
+]) test('rejects ' + name, () => {
+  const f = fixture(); change(f); f.save()
+  expect(() => verifyNativeNormalOrigin(f.run, f.expected)).toThrow()
+})
 test('encoded pending control bytes are rejected even with a fresh matching receipt', () => {
   const f = fixture(), file = f.origin.files[1]
   writeFileSync(file.path, '\\033[31\n'); file.sha256 = hash(readFileSync(file.path)); f.save()
