@@ -19,6 +19,8 @@
 #define LINUX_V1 UINT64_C(0x31565f58554e494c)
 #define HEADER_WORDS 32
 #define RECORD_WORDS 20
+// header[24]: collector resize brackets, odd while one is open (see await_resize).
+#define RESIZE_WORD 24
 #define MAX_IOVECS 1024
 _Static_assert(__atomic_always_lock_free(8, 0), "Observer requires lock-free 64-bit atomics");
 static uint64_t *journal;
@@ -104,23 +106,33 @@ uint64_t cc_terminal_journal_mark(uint64_t kind,uint64_t span,const void *bytes,
 // A missing/foreign sequence is never synthesized from a later record.
 static int registered_header(uint64_t *header,const uint64_t *expected){
  for(int i=0;i<HEADER_WORDS;i++){
-  if(i==8||i==9||i==10||i==11||i==12||i==13||i==19||i==21||i==22||i==23)continue;
+  if(i==8||i==9||i==10||i==11||i==12||i==13||i==19||i==21||i==22||i==23||i==RESIZE_WORD)continue;
   if(load_word(header+i)!=expected[i])return 0;
  }
  return 1;
 }
 // The collector performs the real resize here, on the producer records' clock.
-int cc_terminal_native_resize(int fd,uint64_t packed_size,uint64_t *receipt){
+// TIOCSWINSZ sends SIGWINCH before it returns, and a loaded collector can be
+// preempted by the woken product until after the product already reacted. So
+// the bracket is published in the shared header (odd while open) and the
+// tracer holds the product's SIGWINCH and new endpoint writes until it closes.
+int cc_terminal_native_resize(int fd,uint64_t packed_size,uint64_t *receipt,uint64_t *header){
  struct winsize requested,before={0},after={0};
  _Static_assert(sizeof(struct winsize)==8,"Linux winsize receipt must be eight bytes");
  memcpy(&requested,&packed_size,sizeof(requested));
- if(!receipt)return ioctl(fd,TIOCSWINSZ,&requested);
+ if(!receipt || !header || load_word(header)!=MAGIC || load_word(header+1)!=1 ||
+    load_word(header+2)!=HEADER_WORDS*8 || load_word(header+20)!=LINUX_V1){errno=EINVAL;return -1;}
+ uint64_t opened=load_word(header+RESIZE_WORD);
+ if((opened&1) || !__atomic_compare_exchange_n(header+RESIZE_WORD,&opened,opened+1,0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST)){
+  errno=EBUSY;return -1;
+ }
  int incoming=errno;memset(receipt,0,12*sizeof(uint64_t));
  receipt[10]=1;receipt[11]=1;
  errno=incoming;int prior=ioctl(fd,TIOCGWINSZ,&before);int prior_errno=errno;
  errno=incoming;receipt[0]=now();
  int returned=ioctl(fd,TIOCSWINSZ,&requested);int outcome=errno;
  receipt[1]=now();
+ __atomic_store_n(header+RESIZE_WORD,opened+2,__ATOMIC_SEQ_CST);
  errno=outcome;int confirmed=ioctl(fd,TIOCGWINSZ,&after);int confirmed_errno=errno;
  receipt[2]=(uint64_t)(int64_t)returned;receipt[3]=(uint64_t)outcome;
  memcpy(receipt+4,&before,sizeof(before));memcpy(receipt+5,&after,sizeof(after));
@@ -264,6 +276,21 @@ static int endpoint(struct tracee *tracee,uint64_t fd,int *copy_out){
  return matched;
 }
 static void count_word(int index){__atomic_fetch_add(journal+index,1,__ATOMIC_RELAXED);}
+// The product cannot observe a resize (its SIGWINCH stop) or start an endpoint
+// write while the collector's resize bracket is open, so neither can fall
+// inside it; the record's entry is stamped after this returns. A bracket left
+// open (collector died) is a loss after RESIZE_WAIT_NS and is never awaited again.
+#define RESIZE_WAIT_NS UINT64_C(1000000000)
+static int resize_abandoned;
+static void await_resize(void){
+ uint64_t started=0;
+ while(!resize_abandoned && (__atomic_load_n(journal+RESIZE_WORD,__ATOMIC_SEQ_CST)&1)){
+  uint64_t current=now();
+  if(!started)started=current;
+  else if(current-started>RESIZE_WAIT_NS){resize_abandoned=1;lose();return;}
+  struct timespec pause={0,20000};nanosleep(&pause,NULL);
+ }
+}
 static void unsupported_if_endpoint(struct tracee *tracee,uint64_t first,uint64_t second){
  int a=endpoint(tracee,first,NULL),b=second==first?a:endpoint(tracee,second,NULL);
  if(a==1||b==1)count_word(23);
@@ -377,6 +404,7 @@ static int syscall_entry(struct tracee *tracee){
   }
   memcpy(tracee->prefix,prefix,sizeof(prefix));
  }
+ if(kind==1)await_resize();
  tracee->active=1;tracee->entry=now();
  return PTRACE_SYSCALL;
 }
@@ -502,6 +530,7 @@ static int trace(const struct stat *binary){
    case 0:
     if(signal==(SIGTRAP|0x80))syscall_exit(tracee);
     else if(!(signal==SIGTRAP && stepped && stepped_trap(tracee))){
+     if(signal==SIGWINCH && accepted)await_resize();
      data=signal;
      if(tracee->restart){request=PTRACE_SINGLESTEP;tracee->stepping=1;}
     }
