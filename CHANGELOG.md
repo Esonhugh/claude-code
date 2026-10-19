@@ -17,11 +17,11 @@
 ### 版本状态
 
 - 未发布；尚未打 tag，`release-validation` 发布门禁尚未执行。版本号 `2.1.292` 与本 fork 跟踪的官方基线一致，`Makefile VERSION` 与 README 候选版本同步为 `2.1.292`，`package.json` 保持 `0.0.0-dev`。
-- 汇总 `v2.1.219..cf50f5c`（截至 2026-10-18）的变更：原 `v2.1.280` 候选从未打 tag，其 2026-09-30 至 2026-10-13 的内容并入本条目；新增 2026-10-14 至 2026-10-17 的直接提交及 PR #5、#6、#8、#10、#11、#13、#14、#15。同一范围内下方 2026-09-15、2026-09-18、2026-09-19 三个未归版本条目保持原样，也属于本版本。
+- 汇总 `v2.1.219` 之后至本版本 tag 的变更：原 `v2.1.280` 候选从未打 tag，其 2026-09-30 至 2026-10-13 的内容并入本条目；新增 2026-10-14 至 2026-10-17 的直接提交、PR #5、#6、#8、#10、#11、#13、#14、#15，以及 `release/v2.1.292` 上的发布准备修复。同一范围内下方 2026-09-15、2026-09-18、2026-09-19 三个未归版本条目保持原样，也属于本版本。
 
 ### 关联提交
 
-- PR 合并提交：`6d96b73`（#5）、`b369eb8`（#6）生命周期审查；`5560c3d`（#8）MCP 准入与 Agent 权限模式；`7166e74`（#10）插件生命周期；`34d1599`（#13）MCP 完整性；`fd11faf`（#11）、`6a1cdbc`（#14）、`cf50f5c`（#15）Esonhugh-Marketplace。逐 PR 提交见[v2.1.292 详细记录](docs/archive/implementation-records/changelogs/2026-10-18-v2.1.292-details.md)。
+- PR 合并提交：`6d96b73`（#5）、`b369eb8`（#6）生命周期审查；`5560c3d`（#8）MCP 准入与 Agent 权限模式；`7166e74`（#10）插件生命周期；`34d1599`（#13）MCP 完整性；`fd11faf`（#11）、`6a1cdbc`（#14）、`cf50f5c`（#15）Esonhugh-Marketplace。逐 PR 提交、2026-10-08 起的直接提交和发布准备提交见[v2.1.292 详细记录](docs/archive/implementation-records/changelogs/2026-10-18-v2.1.292-details.md)。
 - 2026-10-14 至 2026-10-17 直接提交 `cbb28b0`..`fecf45f`（自动模式、模型目录、Workflow 语义、Channels、teammate mailbox、Mods Pane 交互、用量面板），列表同见上述详细记录。
 - 原 `v2.1.280` 阶段的 Mods 分组包含 `e3e0c8f`、`338d488`、`8ff3c3f`、`b325dd2`、`8a94a5a`、`3a4929d`、`d757015`、`5acd2a3`、`6f8d8da`、`e3b2ff1`、`0bb0e00`、`8059f4a`；邻近夹具修复与剩余测试覆盖分别提交。
 - 2026-09-30 至 2026-10-07 的逐批提交与验证细节见[v2.1.280 阶段历史记录](docs/archive/implementation-records/changelogs/2026-10-07-v2.1.280-details.md)。
@@ -48,7 +48,7 @@
 - `claude mcp serve` 不再声明 outputSchema，按输入 schema 校验参数，客户端取消时中止工具；`/mcp enable X`、`/mcp disable X` 对已处于目标状态的服务器提示 already enabled/disabled，不再反向切换。
 - MCP 配置文件按服务器逐项校验：无效条目带原因（`invalid_config`、`unknown_type`、`url_missing_type`）跳过，不再丢弃整个文件；`--mcp-config` 输出跳过警告，`claude mcp list` 显示被跳过的条目。
 - 服务器配置支持 `timeout`（单服务器工具超时，不小于 1000ms，优先于 `MCP_TOOL_TIMEOUT`）、服务器级 `alwaysLoad`、`oauth.scopes`（在 OAuth 流程中请求）与 `bareElicitationCapability`。
-- 新增 `claude mcp login <name>` 与 `claude mcp logout <name>`（支持 `--no-browser`），用于 HTTP/SSE 服务器并复用 `/mcp` 的 OAuth 流程；claude.ai connector 仍提示到 `/mcp` 处理。
+- 新增 `claude mcp login <name>`（支持 `--no-browser`）与 `claude mcp logout <name>`，用于 HTTP/SSE 服务器并复用 `/mcp` 的 OAuth 流程；claude.ai connector 仍提示到 `/mcp` 处理。
 - `claude mcp list` 显示待批准和已禁用的项目服务器且不连接它们；`/mcp reconnect all` 重连失败及需要认证的服务器；`-p` 模式下 `/mcp` 输出状态摘要，控制操作与官方一样仅限交互模式。
 - Agent frontmatter 服务器使用 `agent` scope，与父会话 `--mcp-config` 配置相同的内联服务器不再共用并关闭父会话连接；并发 Agent 共用的内联连接改由最后结束的 Agent 关闭。
 - print 模式 `mcp_reconnect`、`mcp_toggle` 使用会话当前配置（来自设置文件的服务器除外），不再重复创建 client 和工具；`mcp_set_servers` 与 reconcile 按规范化前缀移除工具，名称含 `.` 或空格的服务器不再遗留工具。
@@ -243,7 +243,7 @@
 
 - PR #5、#6、#8、#10、#11、#13、#14、#15：每项修复都有先在修复前失败、修复后通过的回归测试；PR #8 中断言旧 Agent 权限模式行为的测试按官方 2.1.292 预期更新。
 - 上述 PR 合并后，全量测试按文件隔离运行，剩余失败与合并前基线一致，未新增失败；`make release-check` 通过。
-- 每个 PR 均用新构建的 binary 与合并前 binary 做 scripted tmux A/B 交互验证；该验证按 PR 分别进行，不等同于完整发布门禁。
+- 每个 PR 均用新构建的 binary 与合并前 binary 做 A/B 验证，交互场景（如 PR #10 的 REPL 插件重载）用脚本驱动 tmux，PR #13 等以非交互 CLI 对照为主；该验证按 PR 分别进行，不等同于完整发布门禁。
 - 2026-10-14 至 2026-10-17 的直接提交除 `8153447`、`3b0a568`、`d326fc5` 外均附带定向测试，结果以各提交为准，本条目不另作完整验收结论。
 - 固定 Bun 1.3.14 下按文件隔离运行全量 753 个测试文件，与 Bun 1.4.2 对照：发现并修复 1.3.14 下 Workflow 语法预检失效；基线失败中 5 个过时测试按代码与官方 2.1.292 行为更新，`workflowSpec` 随 Workflow 并发修复通过，其余失败均归因于环境（需 macOS、root 运行、容器缺 zsh 或不回收孤儿进程、4 核下的固定超时），另有 `Stats.openai` 依赖固定 100ms 等待而不稳定；Bun 1.3.14 构建的 binary 通过 `--version`、`--help`、`mcp list`、`plugin marketplace list` 冒烟。
 - 尚未执行：`release-validation` 发布门禁；在其完成前不宣称发布验收通过。

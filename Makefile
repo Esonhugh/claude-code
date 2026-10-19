@@ -1,6 +1,8 @@
 
 VERSION := 2.1.292
-FILE := ./dist/release/claude-code-v$(VERSION)-darwin-arm64
+BUILD_OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
+BUILD_ARCH := $(shell uname -m | sed -e 's/^aarch64$$/arm64/' -e 's/^x86_64$$/x64/')
+FILE := ./dist/release/claude-code-v$(VERSION)-$(BUILD_OS)-$(BUILD_ARCH)
 CLAUDE_NPM_PACKAGE := @anthropic-ai/claude-code
 CLAUDE_VERSION ?= latest
 CLAUDE_PACK_DIR ?= package/npm
