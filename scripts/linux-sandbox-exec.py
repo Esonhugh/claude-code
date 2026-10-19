@@ -126,6 +126,10 @@ def effective_policy(policy):
         raise Unavailable('forwardLoopback must list {port, unix} with unique ports and absolute unix paths')
     if forwards and mode != 'loopback':
         raise Unavailable('forwardLoopback requires network.mode loopback')
+    for row in forwards:
+        # The forwarder could never connect, and its clients would only see a reset.
+        if len(os.fsencode(row['unix'])) > 107:
+            raise Unavailable(f"forward target {row['unix']} is longer than the 107-byte unix socket limit")
 
     def paths(key):
         values = policy.get(key, [])

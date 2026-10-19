@@ -255,6 +255,12 @@ print(json.dumps({'forwarded': ask(int(sys.argv[1])), 'other': ask(int(sys.argv[
             time.sleep(0.05)
         self.assertFalse(alive(peers[0]['pid']))
 
+    def test_forward_to_a_unix_path_beyond_sun_path_fails_closed(self):
+        # The forwarder could never connect, and clients would only see a reset.
+        long_path = str(self.scratch / ('x' * 120) / 'provider.sock')
+        policy = self.policy(network={'mode': 'loopback'}, forwardLoopback=[{'port': 9, 'unix': long_path}])
+        self.assert_fails_closed(self.helper(policy, self.target()), f'forward target {long_path} is longer than the 107-byte unix socket limit')
+
     def test_forward_to_a_non_socket_fails_closed(self):
         plain = self.scratch / 'plain'
         plain.write_text('not a socket')

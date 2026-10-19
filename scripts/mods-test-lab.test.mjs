@@ -653,7 +653,7 @@ exit 1
   })
 
   test.if(process.platform === 'linux')('a sandboxed client reaches the provider only through its forwarded port', async () => {
-    const provider = await startAcceptanceProvider(temp())
+    const provider = await startAcceptanceProvider(shortTemp())
     try {
       const client = `import json, sys, urllib.request
 body = json.dumps({'model': 'claude-sonnet-4-5-20250929', 'messages': [{'role': 'user', 'content': 'MODS_ACCEPT_PROMPT'}]}).encode()
