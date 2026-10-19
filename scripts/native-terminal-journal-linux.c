@@ -21,6 +21,11 @@
 #define RECORD_WORDS 20
 // header[24]: collector resize brackets, odd while one is open (see await_resize).
 #define RESIZE_WORD 24
+// header[25]: product endpoint writes let past a closed bracket whose return
+// the tracer has not stamped yet (see enter_output).
+#define OUTPUT_WORD 25
+// A bracket left open, or a write never stamped, is waited on at most this long.
+#define RESIZE_WAIT_NS UINT64_C(1000000000)
 #define MAX_IOVECS 1024
 _Static_assert(__atomic_always_lock_free(8, 0), "Observer requires lock-free 64-bit atomics");
 static uint64_t *journal;
@@ -106,7 +111,7 @@ uint64_t cc_terminal_journal_mark(uint64_t kind,uint64_t span,const void *bytes,
 // A missing/foreign sequence is never synthesized from a later record.
 static int registered_header(uint64_t *header,const uint64_t *expected){
  for(int i=0;i<HEADER_WORDS;i++){
-  if(i==8||i==9||i==10||i==11||i==12||i==13||i==19||i==21||i==22||i==23||i==RESIZE_WORD)continue;
+  if(i==8||i==9||i==10||i==11||i==12||i==13||i==19||i==21||i==22||i==23||i==RESIZE_WORD||i==OUTPUT_WORD)continue;
   if(load_word(header+i)!=expected[i])return 0;
  }
  return 1;
@@ -116,15 +121,26 @@ static int registered_header(uint64_t *header,const uint64_t *expected){
 // preempted by the woken product until after the product already reacted. So
 // the bracket is published in the shared header (odd while open) and the
 // tracer holds the product's SIGWINCH and new endpoint writes until it closes.
+// A write that already returned can still reach the tracer's exit stop after
+// the bracket opens, so the bracket only stays open once no started write is
+// unstamped; otherwise it is withdrawn while those writes drain.
 int cc_terminal_native_resize(int fd,uint64_t packed_size,uint64_t *receipt,uint64_t *header){
  struct winsize requested,before={0},after={0};
  _Static_assert(sizeof(struct winsize)==8,"Linux winsize receipt must be eight bytes");
  memcpy(&requested,&packed_size,sizeof(requested));
  if(!receipt || !header || load_word(header)!=MAGIC || load_word(header+1)!=1 ||
     load_word(header+2)!=HEADER_WORDS*8 || load_word(header+20)!=LINUX_V1){errno=EINVAL;return -1;}
- uint64_t opened=load_word(header+RESIZE_WORD);
- if((opened&1) || !__atomic_compare_exchange_n(header+RESIZE_WORD,&opened,opened+1,0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST)){
-  errno=EBUSY;return -1;
+ uint64_t opened=load_word(header+RESIZE_WORD),started=now();
+ for(;;){
+  if((opened&1) || !__atomic_compare_exchange_n(header+RESIZE_WORD,&opened,opened+1,0,__ATOMIC_SEQ_CST,__ATOMIC_SEQ_CST)){
+   errno=EBUSY;return -1;
+  }
+  if(!__atomic_load_n(header+OUTPUT_WORD,__ATOMIC_SEQ_CST))break;
+  __atomic_store_n(header+RESIZE_WORD,opened,__ATOMIC_SEQ_CST);
+  while(__atomic_load_n(header+OUTPUT_WORD,__ATOMIC_SEQ_CST)){
+   if(now()-started>RESIZE_WAIT_NS){errno=EBUSY;return -1;}
+   struct timespec pause={0,20000};nanosleep(&pause,NULL);
+  }
  }
  int incoming=errno;memset(receipt,0,12*sizeof(uint64_t));
  receipt[10]=1;receipt[11]=1;
@@ -208,7 +224,7 @@ _Static_assert(sizeof(struct kernel_termios)==36 && sizeof(struct kernel_termios
                  PTRACE_O_TRACEVFORK|PTRACE_O_TRACEEXEC|PTRACE_O_TRACEEXIT|PTRACE_O_TRACESYSGOOD)
 // Per thread: an endpoint syscall waiting for its exit (or restart outcome).
 struct tracee{
- pid_t tid,tgid;int pidfd,active,restart,stepping,dupfd,count;
+ pid_t tid,tgid;int pidfd,active,restart,stepping,dupfd,count,output;
  uint64_t nr,kind,operation,fd,channel,requested,truncated,address,entry,returned_at;
  uint64_t prefix[6];struct kernel_termios before,requested_mode;
  unsigned char *buffer;struct iovec *vectors;
@@ -230,7 +246,12 @@ static pid_t thread_group(pid_t tid){
  while(fgets(line,sizeof(line),status))if(sscanf(line,"Tgid: %d",&tgid)==1)break;
  fclose(status);return tgid;
 }
+static void leave_output(struct tracee *tracee){
+ if(tracee->output)__atomic_fetch_sub(journal+OUTPUT_WORD,1,__ATOMIC_SEQ_CST);
+ tracee->output=0;
+}
 static void forget(struct tracee *tracee){
+ leave_output(tracee);
  if(tracee->dupfd>=0)close(tracee->dupfd);
  tracee->dupfd=-1;tracee->active=tracee->restart=0;
 }
@@ -280,7 +301,6 @@ static void count_word(int index){__atomic_fetch_add(journal+index,1,__ATOMIC_RE
 // write while the collector's resize bracket is open, so neither can fall
 // inside it; the record's entry is stamped after this returns. A bracket left
 // open (collector died) is a loss after RESIZE_WAIT_NS and is never awaited again.
-#define RESIZE_WAIT_NS UINT64_C(1000000000)
 static int resize_abandoned;
 static void await_resize(void){
  uint64_t started=0;
@@ -290,6 +310,17 @@ static void await_resize(void){
   else if(current-started>RESIZE_WAIT_NS){resize_abandoned=1;lose();return;}
   struct timespec pause={0,20000};nanosleep(&pause,NULL);
  }
+}
+// Counted before the bracket check, so a collector that opens a bracket after
+// this check sees the write until its return is stamped (syscall_exit).
+static void enter_output(struct tracee *tracee){
+ for(;;){
+  __atomic_fetch_add(journal+OUTPUT_WORD,1,__ATOMIC_SEQ_CST);
+  if(resize_abandoned || !(__atomic_load_n(journal+RESIZE_WORD,__ATOMIC_SEQ_CST)&1))break;
+  __atomic_fetch_sub(journal+OUTPUT_WORD,1,__ATOMIC_SEQ_CST);
+  await_resize();
+ }
+ tracee->output=1;
 }
 static void unsupported_if_endpoint(struct tracee *tracee,uint64_t first,uint64_t second){
  int a=endpoint(tracee,first,NULL),b=second==first?a:endpoint(tracee,second,NULL);
@@ -404,7 +435,7 @@ static int syscall_entry(struct tracee *tracee){
   }
   memcpy(tracee->prefix,prefix,sizeof(prefix));
  }
- if(kind==1)await_resize();
+ if(kind==1)enter_output(tracee);
  tracee->active=1;tracee->entry=now();
  return PTRACE_SYSCALL;
 }
@@ -456,7 +487,7 @@ static void syscall_exit(struct tracee *tracee){
  if(ptrace(PTRACE_GET_SYSCALL_INFO,tracee->tid,sizeof(info),&info)<=0 || info.op!=PTRACE_SYSCALL_INFO_EXIT){
   lose();forget(tracee);return;
  }
- tracee->returned_at=returned_at;
+ tracee->returned_at=returned_at;leave_output(tracee);
  int64_t value=info.exit.rval;
  // The kernel either restarts (a new seccomp event) or turns this into EINTR
  // while delivering a signal; stepped_trap() decides which.

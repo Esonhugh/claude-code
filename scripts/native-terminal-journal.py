@@ -25,8 +25,9 @@ METHODS = {
     0: {'mutable': MUTABLE_HEADER, 'operations': (1, 2, 3, 4),
         'termiosPrefix': (1, 20), 'termiosValue': TERMIOS_VALUE,
         'frameSpan': 'native-mach-frame-span-v1', 'resize': 'native-mach-ioctl-resize-v1'},
-    # Linux header[24] counts collector resize brackets (odd while one is open).
-    LINUX_V1: {'mutable': MUTABLE_HEADER | {22, 23, 24}, 'operations': (1, 2, 5, 6, 7),
+    # Linux header[24] counts collector resize brackets (odd while one is open);
+    # header[25] counts started endpoint writes the tracer has not stamped yet.
+    LINUX_V1: {'mutable': MUTABLE_HEADER | {22, 23, 24, 25}, 'operations': (1, 2, 5, 6, 7),
                'termiosPrefix': (2, 19), 'termiosValue': struct.Struct('<6Q19B'),
                'frameSpan': 'native-linux-frame-span-v1', 'resize': 'native-linux-ioctl-resize-v1'},
 }

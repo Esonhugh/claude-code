@@ -309,6 +309,23 @@ int __wrap_ioctl(int fd,unsigned long request,...){
  errno=saved;return result;
 }
 '''
+# Test-only observer-exec fault (-Wl,--wrap=waitpid): every syscall-exit stop
+# reaches the tracer 50ms late, as a loaded tracer meets it after the product's
+# write already returned and its bytes are readable on the master.
+SLOW_EXIT = r'''
+#define _GNU_SOURCE
+#include <signal.h>
+#include <sys/wait.h>
+#include <time.h>
+pid_t __real_waitpid(pid_t pid,int *status,int options);
+pid_t __wrap_waitpid(pid_t pid,int *status,int options){
+ pid_t result=__real_waitpid(pid,status,options);
+ if(result>0 && WIFSTOPPED(*status) && WSTOPSIG(*status)==(SIGTRAP|0x80)){
+  struct timespec pause={0,50000000};nanosleep(&pause,NULL);
+ }
+ return result;
+}
+'''
 DENY_PTRACE = r'''
 #define _GNU_SOURCE
 #include <errno.h>
@@ -364,6 +381,8 @@ class LinuxNativeJournalTest(unittest.TestCase):
         (cls.root / 'probe.c').write_text(PROBE)
         (cls.root / 'deny-ptrace.c').write_text(DENY_PTRACE)
         (cls.root / 'held-resize.c').write_text(HELD_RESIZE)
+        (cls.root / 'slow-exit.c').write_text(SLOW_EXIT)
+        cls.slow_exit_observer = cls.root / 'observer-exec-slow-exit'
         cls.held_library = cls.root / 'observer-held-resize.so'
         cls.held_poke_library = cls.root / 'observer-held-resize-poke.so'
         source = str(SOURCE / 'native-terminal-journal-linux.c')
@@ -374,6 +393,8 @@ class LinuxNativeJournalTest(unittest.TestCase):
             ([*held, '-o', str(cls.held_library)], 'held-resize'),
             ([*held, '-DPOKE', '-o', str(cls.held_poke_library)], 'held-resize-poke'),
             ([*strict, '-O2', '-DCC_OBSERVER_EXEC', source, '-o', str(cls.observer)], 'observer-exec'),
+            ([*strict, '-O2', '-DCC_OBSERVER_EXEC', source, str(cls.root / 'slow-exit.c'), '-Wl,--wrap=waitpid',
+              '-o', str(cls.slow_exit_observer)], 'observer-exec-slow-exit'),
             ([*strict, str(cls.root / 'probe.c'), '-o', str(cls.probe), '-lpthread', '-ldl'], 'probe'),
             ([*strict, str(cls.root / 'deny-ptrace.c'), '-o', str(cls.deny_ptrace)], 'deny-ptrace'),
         ]:
@@ -390,6 +411,47 @@ class LinuxNativeJournalTest(unittest.TestCase):
                           'librarySHA256': hashlib.sha256(cls.library.read_bytes()).hexdigest(),
                           'observerExecSHA256': hashlib.sha256(cls.observer.read_bytes()).hexdigest()}),
               flush=True)
+
+    def test_native_resize_opens_only_after_in_flight_endpoint_writes_are_stamped(self):
+        import threading
+        library = ctypes.CDLL(str(self.library), use_errno=True)
+        function = library.cc_terminal_native_resize
+        function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64),
+                             ctypes.POINTER(ctypes.c_uint64)]
+        function.restype = ctypes.c_int
+        master, slave = pty.openpty()
+        try:
+            original = struct.pack('HHHH', 30, 100, 0, 0)
+            requested = struct.pack('HHHH', 34, 110, 0, 0)
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, original)
+            header = (ctypes.c_uint64 * 32)(journal.MAGIC, 1, journal.HEADER.size)
+            header[20] = journal.LINUX_V1
+            # header[25]: endpoint writes the tracer let start but has not stamped a return for.
+            header[25] = 1
+            receipt = (ctypes.c_uint64 * 12)()
+            started = time.monotonic()
+            self.assertEqual(function(master, struct.unpack('<Q', requested)[0], receipt, header), -1)
+            self.assertEqual(ctypes.get_errno(), errno.EBUSY)
+            self.assertLess(time.monotonic() - started, 3, 'A stuck in-flight write bounds the wait')
+            self.assertEqual(header[24], 0, 'A refused resize leaves no bracket behind')
+            self.assertEqual(fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8), original)
+            stamped = []
+            def finish():
+                time.sleep(.1)
+                stamped.append(time.clock_gettime_ns(time.CLOCK_MONOTONIC))
+                header[25] = 0
+            thread = threading.Thread(target=finish)
+            thread.start()
+            try:
+                self.assertEqual(function(master, struct.unpack('<Q', requested)[0], receipt, header), 0)
+            finally:
+                thread.join()
+            self.assertGreaterEqual(receipt[0], stamped[0], 'The bracket opens after the last in-flight return')
+            self.assertEqual(header[24], 2)
+            self.assertEqual(fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8), requested)
+        finally:
+            os.close(master)
+            os.close(slave)
 
     def test_native_resize_brackets_real_ioctl_and_preserves_errno(self):
         library = ctypes.CDLL(str(self.library), use_errno=True)
@@ -443,7 +505,7 @@ class LinuxNativeJournalTest(unittest.TestCase):
     def capture(self, mode='large', capacity=64, payload=65536, observed=True, binary=None, arguments=None,
                 registered=None, prefix=(), platform='linux', extra_env=None, exit_code=0, interact=None,
                 fail_after_start=False, fail_after_receipt=False, live=False, fail_after_live_records=0,
-                input_bytes=None):
+                input_bytes=None, observer=None):
         run = self.root / f'case-{len(list(self.root.glob("case-*")))}'
         run.mkdir()
         master = slave = None
@@ -482,7 +544,7 @@ class LinuxNativeJournalTest(unittest.TestCase):
                 pass_fds.append(report_write)
                 env.update(CLAUDE_PRIVATE_NATIVE_JOURNAL=str(path),
                            CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY=str(self.library))
-                command = [*map(str, prefix), str(self.observer), '--journal', str(path),
+                command = [*map(str, prefix), str(observer or self.observer), '--journal', str(path),
                            '--binary', str(registered or product[0]),
                            '--tracer-pid-fd', str(report_write), '--', *product]
             partial_expected = None
@@ -592,7 +654,7 @@ class LinuxNativeJournalTest(unittest.TestCase):
                       'elapsedSeconds': time.monotonic() - started,
                       'observed': observed, 'header': list(header), 'rawBytes': len(raw),
                       'librarySHA256': hashlib.sha256(self.library.read_bytes()).hexdigest(),
-                      'observerExecSHA256': hashlib.sha256(self.observer.read_bytes()).hexdigest(),
+                      'observerExecSHA256': hashlib.sha256((observer or self.observer).read_bytes()).hexdigest(),
                       'binarySHA256': hashlib.sha256(Path(product[0]).read_bytes()).hexdigest(),
                       'registration': registration, 'scope': 'bounded native probe only',
                       'inputBytesHex': input_bytes.hex() if input_bytes is not None else None,
@@ -1256,7 +1318,7 @@ class LinuxNativeJournalTest(unittest.TestCase):
         self.assertLessEqual(reads[0]['return'], handler['entry'])
         journal.verify_raw(records, raw, OUTPUT_FLAGS)
 
-    def held_resize(self, mode, library):
+    def held_resize(self, mode, library, observer=None):
         """One owned-collector resize whose bracket the fault library holds open."""
         state = {}
         def interact(context):
@@ -1265,7 +1327,7 @@ class LinuxNativeJournalTest(unittest.TestCase):
             with journal.NativeConsumer(context['path'], context['registration'], library,
                                         expected_pid=context['child'].pid) as consumer:
                 state['receipt'] = consumer.resize(context['master'], struct.pack('HHHH', 34, 110, 0, 0))
-        header, packets, registration, pid, raw = self.capture(mode, interact=interact)
+        header, packets, registration, pid, raw = self.capture(mode, interact=interact, observer=observer)
         return header, packets, registration, pid, raw, state['receipt']
 
     def resize_events(self, header, registration, records, receipt):
@@ -1308,6 +1370,22 @@ class LinuxNativeJournalTest(unittest.TestCase):
                         'The input that drives the write arrived inside the open bracket')
         self.assertGreaterEqual(echo['entry'], int(receipt['return']))
         self.assertEqual(header[24], 2)
+
+    def test_resize_waits_for_a_returned_write_the_tracer_has_not_stamped(self):
+        # The product's write already returned and its bytes reached the master,
+        # but the tracer meets the syscall-exit stop late. A bracket opened then
+        # would precede that write's return stamp.
+        header, packets, registration, pid, raw, receipt = self.held_resize(
+            'input-resize-winch', self.library, observer=self.slow_exit_observer)
+        records = journal.decode_records(header, packets, registration, pid)
+        events = self.resize_events(header, registration, records, receipt)
+        self.assertEqual(events[0]['rawOffset'], len(b'input-ready\r\n'))
+        self.assertEqual(raw, b'input-ready\r\nwinch\r\n')
+        ready = next(row for row in records if row['kind'] == 1 and row['bytes'] == b'input-ready\n')
+        self.assertLessEqual(ready['return'], int(receipt['entry']))
+        self.assertEqual(header[24], 2)
+        self.assertEqual(header[25], 0, 'Every stamped write left the in-flight count')
+        self.assertEqual(self.tracer['status'], 0)
 
     def test_abandoned_resize_bracket_bounds_the_wait_and_fails_closed(self):
         def abandon(context):

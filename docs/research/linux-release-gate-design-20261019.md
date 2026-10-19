@@ -194,6 +194,7 @@
 - `cc_terminal_native_resize`：用 CLOCK_MONOTONIC，`receipt[10..11]=1,1`。
   - TIOCSWINSZ 在返回前就向产品发出 SIGWINCH；宿主繁忙时 broker 会被唤醒的产品抢占，产品对 resize 的反应写入（如 `ink.tsx` 重发鼠标模式）落进 broker 的 `[entry, return]` 区间，校验器判 "overlaps an output syscall"。
   - 因此 broker 在共享 header[24] 发布区间（打开时为奇数，CAS 打开、关闭时 +1）；追踪器在区间打开期间扣住产品的 SIGWINCH 信号投递停止和新的端点写入，区间关闭后才放行并记 entry。区间遗留打开（broker 死亡）超过 1 秒计为丢失，此后不再等待。
+  - 产品写入已返回、字节已可读，但追踪器可能稍后才处理该 syscall-exit 停止并记下返回时间；此时打开区间会让该写入的 return 晚于区间 entry。因此追踪器在检查区间之前先把放行的端点写入计入 header[25]，记下返回时间后减一；broker CAS 打开区间后若 header[25] 非零，先撤回区间（恢复原值，不计入 resize 次数），等其归零后重试，等待超过 1 秒返回 `EBUSY`。
 - 追踪器和 observer-exec 用同一份源码以 `-DCC_OBSERVER_EXEC` 编译。
 
 **日志格式兼容策略**：
@@ -209,7 +210,7 @@
 | 帧边界方法名 | `native-mach-frame-span-v1` | `native-linux-frame-span-v1` |
 | 驱动时钟方法名 | `driver-mach-absolute-time-v1` | `driver-linux-monotonic-v1` |
 | 几何方法名 | `native-driver-mach-frame-geometry-v2` | `native-driver-linux-frame-geometry-v2` |
-| Linux 额外要求 | — | `header[22]==header[23]==0`；关闭时 `header[24]` 为偶数且等于 2×resize ACK 数 |
+| Linux 额外要求 | — | `header[22]==header[23]==0`；关闭时 `header[24]` 为偶数且等于 2×resize ACK 数；`header[25]` 为可变的在途写入计数 |
 
 - `native-observer.json` 在 Linux 上增加字段：`observer:'linux-seccomp-ptrace-v1'`、`observer.so`/`observer-exec` 的路径和 sha、内核版本。
 - broker 的 cleanup 记录 tracer pid 和退出码，Linux 校验要求退出码为 0。
