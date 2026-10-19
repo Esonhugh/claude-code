@@ -28,7 +28,7 @@ const usage = await import('../services/api/usage.js')
 const { Stats } = await import('./Stats.js')
 const status = await import('./Settings/Status.js')
 const { Settings } = await import('./Settings/Settings.js')
-const { render } = await import('../ink.js')
+const { render, Text } = await import('../ink.js')
 class Output extends Writable {
   columns = 60
   rows = 40
@@ -295,6 +295,125 @@ test('local empty leaves OpenAI available, lazy cached and refreshable', async (
     stdin.push('r')
     await settle()
     assert.equal(requests, 3)
+  } finally {
+    instance.unmount()
+    mock.restore()
+  }
+})
+
+const localStatsFixture = {
+  totalSessions: 1,
+  totalDays: 1,
+  activeDays: 0,
+  modelUsage: {},
+  dailyActivity: [],
+  dailyModelTokens: [],
+  longestSession: null,
+  peakActivityDay: null,
+  streaks: { currentStreak: 0, longestStreak: 0 },
+  totalSpeculationTimeSavedMs: 0,
+} as unknown as import('../utils/stats.js').ClaudeCodeStats
+
+async function renderSettings(defaultTab: 'Stats' | 'Status') {
+  spyOn(status, 'Status').mockImplementation(() => <Text>Status tab marker</Text>)
+  spyOn(status, 'buildDiagnostics').mockResolvedValue([])
+  spyOn(status, 'buildStatusUsage').mockResolvedValue(null)
+  spyOn(usage, 'fetchUtilization').mockResolvedValue(null)
+  const stdout = new Output()
+  stdout.columns = 100
+  const stdin = new Input()
+  const instance = await render(
+    <KeybindingProvider
+      bindings={bindings}
+      pendingChordRef={{ current: null }}
+      pendingChord={null}
+      setPendingChord={() => {}}
+      activeContexts={new Set()}
+      registerActiveContext={() => {}}
+      unregisterActiveContext={() => {}}
+      handlerRegistryRef={{ current: new Map() }}
+    >
+      <Settings
+        defaultTab={defaultTab}
+        context={{} as React.ComponentProps<typeof Settings>['context']}
+        onClose={() => {}}
+      />
+    </KeybindingProvider>,
+    {
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+      exitOnCtrlC: false,
+    },
+  )
+  return { stdout, stdin, instance }
+}
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 100))
+
+// Each chunk after the first becomes its own stdin read while React's commit
+// for the previous key is still queued, as with back-to-back tmux send-keys
+// under load.
+async function pushReads(stdin: Input, chunks: string[]) {
+  for (const [index, chunk] of chunks.entries()) {
+    if (index > 0) await new Promise(resolve => process.nextTick(resolve))
+    stdin.push(chunk)
+  }
+}
+
+test.each([
+  ['one stdin chunk', ['\u001b[B\t']],
+  ['two reads before commit', ['\u001b[B', '\t']],
+])('Down then Tab in %s stays with the Stats inner tabs', async (_name, chunks) => {
+  spyOn(localStats, 'aggregateClaudeCodeStatsForRange').mockResolvedValue(localStatsFixture)
+  spyOn(usage, 'isOpenAIActivityAvailable').mockReturnValue(false)
+  const { stdout, stdin, instance } = await renderSettings('Stats')
+  try {
+    await settle()
+    stdout.output = ''
+    await pushReads(stdin, chunks)
+    await settle()
+    const output = stripAnsi(stdout.output)
+    assert.match(output, /No model usage data available/)
+    assert.doesNotMatch(output, /Status tab marker/)
+  } finally {
+    instance.unmount()
+    mock.restore()
+  }
+})
+
+test('nested Stats tabs leave each header key to one owner', async () => {
+  spyOn(localStats, 'aggregateClaudeCodeStatsForRange').mockResolvedValue(localStatsFixture)
+  spyOn(usage, 'isOpenAIActivityAvailable').mockReturnValue(true)
+  spyOn(usage, 'fetchOpenAIActivity').mockResolvedValue({
+    lifetime_tokens: 42,
+    daily_usage_buckets: [],
+  })
+  // Entering Stats from Status mounts the inner Tabs after the outer one, so
+  // the outer header sees each key first.
+  const { stdout, stdin, instance } = await renderSettings('Status')
+  try {
+    await settle()
+    stdin.push('\u001b[Z')
+    await settle()
+    stdin.push('\u001b[B')
+    await settle()
+    stdin.push('\u001b[C')
+    await settle()
+    stdin.push('\u001b[C')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /Lifetime tokens: 42/)
+    stdin.push('\u001b[A')
+    await settle()
+    stdout.output = ''
+    stdin.push('\u001b[B')
+    await settle()
+    assert.match(stripAnsi(stdout.output), /Tabs: ←\/→ or Tab\/Shift\+Tab · ↓ enter chart/)
+    assert.doesNotMatch(stripAnsi(stdout.output), /↑\/↓ ±1 day/)
+    stdout.output = ''
+    await pushReads(stdin, ['\u001b[A', '\t'])
+    await settle()
+    assert.match(stripAnsi(stdout.output), /Status tab marker/)
   } finally {
     instance.unmount()
     mock.restore()

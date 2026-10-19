@@ -102,7 +102,6 @@ export function Stats({ onClose, embedded = false }: Props): React.ReactNode {
       allTimePromise={allTimePromise}
       onClose={onClose}
       embedded={embedded}
-      parentHeaderFocused={parentTabs.headerFocused}
       focusParentHeader={parentTabs.focusHeader}
     />
   )
@@ -112,7 +111,6 @@ type StatsContentProps = {
   allTimePromise: Promise<StatsResult>
   onClose: Props['onClose']
   embedded: boolean
-  parentHeaderFocused: boolean
   focusParentHeader: () => void
 }
 
@@ -121,7 +119,6 @@ function StatsContent({
   allTimePromise,
   onClose,
   embedded,
-  parentHeaderFocused,
   focusParentHeader,
 }: StatsContentProps): React.ReactNode {
   const [allTimeResult, setAllTimeResult] = useState<StatsResult | null>(null)
@@ -258,7 +255,6 @@ function StatsContent({
           color="claude"
           selectedTab={activeTab}
           onTabChange={setActiveTab}
-          disableNavigation={embedded && parentHeaderFocused}
           onHeaderFocusChange={setInnerHeaderFocused}
         >
           {[
