@@ -6,6 +6,7 @@ import React, {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import stripAnsi from 'strip-ansi'
@@ -140,7 +141,12 @@ function StatsContent({
   const [isLoadingFiltered, setIsLoadingFiltered] = useState(false)
   const [activeTab, setActiveTab] = useState<string>('Overview')
   const [copyStatus, setCopyStatus] = useState<string | null>(null)
-  const [innerHeaderFocused, setInnerHeaderFocused] = useState(true)
+  // Read when a key arrives, so it must already reflect a focus change made
+  // by an earlier key whose re-render has not committed yet.
+  const innerHeaderFocusedRef = useRef(true)
+  const handleInnerHeaderFocusChange = useCallback((focused: boolean) => {
+    innerHeaderFocusedRef.current = focused
+  }, [])
 
   const [activityRequested, setActivityRequested] = useState(false)
   useEffect(() => {
@@ -219,7 +225,7 @@ function StatsContent({
   })
 
   useInput((input, key) => {
-    if (embedded && innerHeaderFocused && key.upArrow) {
+    if (embedded && innerHeaderFocusedRef.current && key.upArrow) {
       focusParentHeader()
     }
     // Handle ctrl+c and ctrl+d for closing in the standalone command.
@@ -255,7 +261,7 @@ function StatsContent({
           color="claude"
           selectedTab={activeTab}
           onTabChange={setActiveTab}
-          onHeaderFocusChange={setInnerHeaderFocused}
+          onHeaderFocusChange={handleInnerHeaderFocusChange}
         >
           {[
           <Tab title="Overview" key="Overview">

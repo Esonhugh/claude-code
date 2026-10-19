@@ -2,7 +2,7 @@ import React, {
   createContext,
   useCallback,
   useContext,
-  useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react'
@@ -53,6 +53,7 @@ type TabsProps = {
    * needed. Switching from content focuses the header.
    */
   navFromContent?: boolean
+  /** Called synchronously with each header focus change, before re-render. */
   onHeaderFocusChange?: (focused: boolean) => void
 }
 
@@ -137,8 +138,8 @@ export function Tabs({
   const setHeaderFocused = useCallback((focused: boolean) => {
     headerFocusedRef.current = focused
     setHeaderFocusedState(focused)
-  }, [])
-  useEffect(() => onHeaderFocusChange?.(headerFocused), [headerFocused, onHeaderFocusChange])
+    onHeaderFocusChange?.(focused)
+  }, [onHeaderFocusChange])
   const isHeaderFocused = useCallback(() => headerFocusedRef.current, [])
   const focusHeader = useCallback(() => setHeaderFocused(true), [setHeaderFocused])
   const blurHeader = useCallback(() => setHeaderFocused(false), [setHeaderFocused])
@@ -149,12 +150,17 @@ export function Tabs({
   // Count of mounted children using useTabHeaderFocus(). Down-arrow blur and
   // the ↓ hint only engage when at least one child has opted in — otherwise
   // pressing down on a legacy tab would strand the user with nav disabled.
-  const [optInCount, setOptInCount] = useState(0)
+  // A ref registered at commit: content mounted by an async update (e.g.
+  // fetched data) is on screen before passive effects run, and a key can
+  // arrive in that window.
+  const optInCountRef = useRef(0)
   const registerOptIn = useCallback(() => {
-    setOptInCount(n => n + 1)
-    return () => setOptInCount(n => n - 1)
+    optInCountRef.current++
+    return () => {
+      optInCountRef.current--
+    }
   }, [])
-  const optedIn = optInCount > 0
+  const optedIn = () => optInCountRef.current > 0
 
   const handleTabChange = (offset: number) => {
     const newIndex = (selectedTabIndex + tabs.length + offset) % tabs.length
@@ -193,12 +199,12 @@ export function Tabs({
   // this Down so a nested Tabs later in the same dispatch cannot also blur.
   useInput(
     (_input, key, event) => {
-      if (!key.downArrow || !ownsHeaderKeys()) return
+      if (!key.downArrow || !optedIn() || !ownsHeaderKeys()) return
       event.stopImmediatePropagation()
       setHeaderFocused(false)
     },
     {
-      isActive: optedIn && !hidden && !disableNavigation,
+      isActive: !hidden && !disableNavigation,
     },
   )
 
@@ -207,19 +213,19 @@ export function Tabs({
   useKeybindings(
     {
       'tabs:next': () => {
-        if (!ownsContentKeys()) return false
+        if (!optedIn() || !ownsContentKeys()) return false
         handleTabChange(1)
         setHeaderFocused(true)
       },
       'tabs:previous': () => {
-        if (!ownsContentKeys()) return false
+        if (!optedIn() || !ownsContentKeys()) return false
         handleTabChange(-1)
         setHeaderFocused(true)
       },
     },
     {
       context: 'Tabs',
-      isActive: navFromContent && optedIn && !hidden && !disableNavigation,
+      isActive: navFromContent && !hidden && !disableNavigation,
     },
   )
 
@@ -362,6 +368,6 @@ export function useTabHeaderFocus(): {
 } {
   const { headerFocused, focusHeader, blurHeader, registerOptIn } =
     useContext(TabsContext)
-  useEffect(registerOptIn, [registerOptIn])
+  useLayoutEffect(registerOptIn, [registerOptIn])
   return { headerFocused, focusHeader, blurHeader }
 }
