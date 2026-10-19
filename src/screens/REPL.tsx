@@ -5232,8 +5232,13 @@ export function REPL({
       // Consume this draft once, before either initialization barrier. Dispatch
       // may switch between queue/direct while waiting; it never owns the editor.
       if (!options?.fromKeybinding && !options?.submission) {
-        setInputValue('')
-        helpers.setCursorOffset(0)
+        // The handle's text (Mods prompt.read) otherwise follows setInputValue only
+        // after PromptInput re-renders; a local command run by this submit reads it first.
+        if (insertTextRef.current) insertTextRef.current.setInputWithCursor('', 0)
+        else {
+          setInputValue('')
+          helpers.setCursorOffset(0)
+        }
         setPastedContents({})
         setInputMode('prompt')
         setIDESelection(undefined)

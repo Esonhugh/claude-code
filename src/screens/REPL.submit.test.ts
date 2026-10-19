@@ -346,6 +346,68 @@ test('REPL Mods prompt host reads the live PromptInput handle before React commi
   expect(prompt.isBlocked()).toBe(true)
 })
 
+test('submit consumes the draft through the live PromptInput handle before React commits', async () => {
+  let services: any
+  const inputValueRef = { current: '/mods-test suggest basecheck' }
+  // PromptInput's handle text only follows REPL state on its next render;
+  // its own setInputWithCursor updates it synchronously and calls setInputValue.
+  let handleText = inputValueRef.current
+  const setInputValue = (value: string) => { inputValueRef.current = value }
+  const insertTextRef = {
+    current: {
+      get text() { return handleText },
+      cursorOffset: handleText.length,
+      insert: noop,
+      setInputWithCursor: (text: string, cursor: number) => {
+        handleText = text
+        setInputValue(text)
+        insertTextRef.current.cursorOffset = cursor
+      },
+      paintDecorations: noop,
+      carryDecorations: noop,
+    },
+  }
+  const awaitMods = extract('./REPL.tsx', 'awaitMods')({
+    modsSession: { bind: async (_binding: unknown, _set: unknown, host: unknown) => { services = host } },
+    getCwd: () => '/repo', getOriginalCwd: () => '/repo', getSessionId: () => 'session',
+    setAppState: noop, messagesRef: { current: [] }, modToolContextRef: { current: noop },
+    inputValueRef, insertTextRef, modPromptBlockedRef: { current: false },
+  })
+  await awaitMods()
+  const consumeDraft = extract('./REPL.tsx', '!options?.fromKeybinding && !options?.submission', 'block')({
+    options: undefined,
+    insertTextRef,
+    setInputValue,
+    helpers: {
+      setCursorOffset: (offset: number) => { insertTextRef.current.cursorOffset = offset },
+      resetHistory: noop,
+      clearBuffer: noop,
+    },
+    setPastedContents: noop,
+    setInputMode: noop,
+    setIDESelection: noop,
+    setSubmitCount: noop,
+    tipPickedThisTurnRef: { current: true },
+  })
+
+  consumeDraft()
+
+  // The local command's prompt.suggest runs in this window and must see an empty composer.
+  expect(services.prompt().read()).toEqual({ text: '', cursor: 0 })
+  expect(inputValueRef.current).toBe('')
+
+  // Without a mounted PromptInput the REPL draft is still consumed.
+  inputValueRef.current = 'initial message'
+  const unmounted = { current: null }
+  extract('./REPL.tsx', '!options?.fromKeybinding && !options?.submission', 'block')({
+    options: undefined, insertTextRef: unmounted, setInputValue,
+    helpers: { setCursorOffset: noop, resetHistory: noop, clearBuffer: noop },
+    setPastedContents: noop, setInputMode: noop, setIDESelection: noop, setSubmitCount: noop,
+    tipPickedThisTurnRef: { current: true },
+  })()
+  expect(inputValueRef.current).toBe('')
+})
+
 test('PromptInput keeps Mod suggestions visible during local command dispatch', () => {
   const source = readFileSync(new URL('./REPL.tsx', import.meta.url), 'utf8')
   const file = ts.createSourceFile(
@@ -1018,6 +1080,11 @@ function harness({ active = true, gap = 'mods', input = 'submitted', mode = 'pro
     ...lowerScope, inputValueRef: ref, inputModeRef: modeRef,
     draftGenerationRef: epoch, pastedContentsRef: pasteRef, stashedPromptRef: stashRef,
     inputMode: mode, pastedContents: draft.paste, stashedPrompt: stash,
+    // PromptInput's handle: setInputWithCursor is trackAndSetInput (onInputChange) + setCursorOffset.
+    insertTextRef: { current: { get text() { return draft.text }, setInputWithCursor: (text: string, cursor: number) => {
+      setText(text)
+      helpers.setCursorOffset(cursor)
+    } } },
     setInputValue: setText, setInputMode: setMode, setPastedContents: setPaste, setStashedPrompt: setStash,
     repinScroll: noop, feature: () => false,
     modsSession: { runtime: { activePublicTurnId: active ? 'turn-active' : undefined } }, awaitMods: () => mods.promise,
