@@ -80,6 +80,7 @@
 
 #### 启动、设置、Workflow 与 Mods
 
+- 提交输入时通过输入框句柄同步清空草稿；此前 Mods `prompt.read()` 要等输入框重新渲染才看到空草稿，提交的本地命令（如 Mods 建议）抢先执行时会读到刚提交的文本，高负载下偶发 `suggestion=hidden`。
 - 原生终端采集的帧边界标记库在 Linux 上同样加载（仍只在设置 `CLAUDE_PRIVATE_NATIVE_JOURNAL_LIBRARY` 的采集环境中生效，普通会话不受影响），供 Linux 发布门禁记录逐帧证据。
 - 移除 `main()` 提前注册的 SIGINT 处理器，Ctrl+C 进入 graceful shutdown，SessionEnd hook、清理注册表与 Mods 释放得以执行；`main()` 拒绝时以错误退出；退出时关闭 InteractiveTerminal PTY 会话。
 - CI/测试环境只在没有其他凭据来源（`ANTHROPIC_AUTH_TOKEN`、apiKeyHelper、OAuth token 文件或非一方 provider）时才要求 Anthropic 凭据，`claude -p` 不再因此挂起。
