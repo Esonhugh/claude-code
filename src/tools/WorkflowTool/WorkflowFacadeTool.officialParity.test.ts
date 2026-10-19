@@ -134,6 +134,14 @@ await assert.rejects(
 assert.deepEqual(await runDirs(), runDirsBefore)
 assert.equal(Object.keys(state.tasks).length, tasksBefore)
 assert.deepEqual(prompts, [])
+// The same holds when a saved workflow is run with an inline script override.
+await assert.rejects(
+  run({ name: 'deep-research', script: script('saved-syntax-error', `export const later = 1`) }),
+  /Workflow script has a syntax error and was not launched/,
+)
+assert.deepEqual(await runDirs(), runDirsBefore)
+assert.equal(Object.keys(state.tasks).length, tasksBefore)
+assert.deepEqual(prompts, [])
 
 const persistedSource = script('persisted', `return agent('persist me')`)
 const persisted = await run({ script: persistedSource })

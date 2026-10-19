@@ -310,6 +310,9 @@ For any other task — even one that would clearly benefit from parallelism — 
       const workflowRunId = resume
         ? normalized.resumeFromRunId
         : normalized.script ? createWorkflowRunId() : undefined
+      if (normalized.script && hasWorkflowScriptMeta(normalized.script)) {
+        preflightWorkflowScript(normalized.script, 'workflow.js')
+      }
       const scriptPath = normalized.script
         ? await persistWorkflowScript({
             cwd,
