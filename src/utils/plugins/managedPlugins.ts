@@ -6,6 +6,7 @@ import { readFile, realpath, stat } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import isEqual from 'lodash-es/isEqual.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
+import { isENOENT } from '../errors.js'
 
 function sameDirectory(a: string, b: string): boolean {
   return isAbsolute(a) && isAbsolute(b) && resolve(a) === resolve(b)
@@ -61,7 +62,11 @@ export async function getInPlacePluginSource(
   if (!entry || typeof entry.source !== 'string' || isAbsolute(entry.source)) return undefined
   const candidate=relative(root,join(root,entry.source))
   if (candidate==='..' || candidate.startsWith(`..${sep}`) || isAbsolute(candidate)) return undefined
-  const path=await realpath(join(root,entry.source))
+  const entryPath=join(root,entry.source)
+  const path=await realpath(entryPath).catch(error => {
+    if (!isENOENT(error)) throw error
+    throw new Error(`Plugin directory not found at path: ${entryPath}. Check that the marketplace entry has the correct path.`)
+  })
   const child=relative(root,path)
   if (child==='..' || child.startsWith(`..${sep}`) || isAbsolute(child) || !(await stat(path)).isDirectory()) return undefined
   const managedSource=policy?.enabledPlugins?.[pluginId]===true && policySource?.source==='directory' &&

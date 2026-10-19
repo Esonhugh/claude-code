@@ -252,13 +252,18 @@ async function runInstallUpdateTests(): Promise<void> {
     expect(v1.command_count).toBe(1);
     expect(v1.skill_count).toBe(1);
     writeVersion("2.0.0");
-    // Editing the marketplace alone must not advance the installed version.
+    // Like official, a directory marketplace plugin is read in place: editing
+    // it advances the loaded content but not the installed version.
     const beforeUpdate = await refreshActivePlugins(setAppState);
     expect(beforeUpdate.error_count).toBe(0);
-    expect(state.plugins.enabled[0]!.manifest.version).toBe("1.0.0");
+    expect(state.plugins.enabled[0]!.manifest.version).toBe("2.0.0");
     expect(
       state.plugins.commands.map((command) => command.description),
-    ).toEqual(["command 1.0.0", "skill 1.0.0"]);
+    ).toEqual(["command 2.0.0", "skill 2.0.0"]);
+    const diskBeforeUpdate =
+      installed.loadInstalledPluginsFromDisk().plugins[id]![0]!;
+    expect(diskBeforeUpdate.version).toBe("1.0.0");
+    expect(diskBeforeUpdate.installPath).toBe(diskV1.installPath);
     const refreshedSnapshot = installed.getInMemoryInstalledPlugins();
     const commandsBeforeUpdate = state.plugins.commands;
     const update = await updatePluginOp(id, "user");
@@ -276,24 +281,26 @@ async function runInstallUpdateTests(): Promise<void> {
     expect(installed.getInMemoryInstalledPlugins()).toBe(refreshedSnapshot);
     expect(refreshedSnapshot.plugins[id]![0]!.version).toBe("1.0.0");
     expect(state.plugins.commands).toBe(commandsBeforeUpdate);
-    // Keep marketplace metadata, but remove source: refresh cannot reinstall it.
+    // Keep marketplace metadata, but remove the source: like official, the
+    // in-place plugin fails to load instead of falling back to the cache.
     rmSync(plugin, { recursive: true, force: true });
     const v2 = await refreshActivePlugins(setAppState);
-    expect(state.plugins.errors).toEqual([]);
-    expect(v2.error_count).toBe(0);
-    expect(v2.enabled_count).toBe(1);
-    expect(v2.command_count).toBe(1);
-    expect(v2.skill_count).toBe(1);
-    expect(state.plugins.enabled[0]!.manifest.version).toBe("2.0.0");
-    expect(
-      state.plugins.commands.map((command) => command.description),
-    ).toEqual(["command 2.0.0", "skill 2.0.0"]);
+    expect(state.plugins.errors).toEqual([
+      expect.objectContaining({
+        type: "generic-error",
+        source: id,
+        error: `Plugin directory not found at path: ${plugin}. Check that the marketplace entry has the correct path.`,
+      }),
+    ]);
+    expect(v2.error_count).toBe(1);
+    expect(v2.enabled_count).toBe(0);
+    expect(v2.command_count).toBe(0);
+    expect(v2.skill_count).toBe(0);
     expect(
       state.agentDefinitions.allAgents.some(
         (agent) => agent.whenToUse === "agent 2.0.0",
       ),
-    ).toBe(true);
-    expect(state.mcp.pluginReconnectKey).toBe(3);
+    ).toBe(false);
     expect(state.plugins.needsRefresh).toBe(false);
     expect(
       installed.getInMemoryInstalledPlugins().plugins[id]![0]!.version,

@@ -64,6 +64,7 @@
 - `/reload-plugins` 先写 AppState 再让 Mods 重新投影运行时注册的 Agent，不再覆盖它们；禁用最后一个提供设置的插件时重置设置缓存；后台 marketplace 安装后运行完整加载器，新声明的 github/url 插件无需重启即可缓存；重载计数不含内置插件。
 - Marketplace 重新克隆先写入临时目录，成功后才替换，离线或远端不可达时保留现有克隆；`known_marketplaces.json` 在跨进程锁下合并写入，并发 autoupdate/add/remove 不再丢失或复活条目。
 - 已是最新版本的插件更新不再重建版本目录，同版本跨 scope 安装复用已有目录；自动更新按 marketplace 原始名称刷新，含大写字母的名称（包括 Esonhugh-Marketplace）恢复刷新，失败次数计入统计。
+- 已注册 directory marketplace 的插件与官方一样原地读取源目录（`installed_plugins.json` 版本不随之前进）；源目录被删除时报告官方文案 `Plugin directory not found at path: …`，不再显示原始 ENOENT。
 - LSP 配置接受官方 `requestTimeout`（默认 60 秒，按请求生效）与 `diagnostics`（为 false 时忽略 publishDiagnostics），使用这些字段的插件不再被 schema 拒绝。
 - Esonhugh-Marketplace 插件的 hook 遥测按官方 marketplace 计数（名称比较改为大小写无关）；启动安装提示改为显示 Esonhugh-Marketplace，不再写作 "Anthropic marketplace"。
 
