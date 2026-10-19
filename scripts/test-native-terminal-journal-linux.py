@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import mmap
 import os
 from pathlib import Path
 import pty
@@ -73,6 +74,8 @@ static int blocked_in_read(int tid){
  return n>1&&line[0]=='0'&&line[1]==' ';
 }
 static void on_signal(int unused){(void)unused;if(write(1,"sig\n",4)!=4)_exit(122);}
+static volatile sig_atomic_t winched;
+static void on_winch(int unused){(void)unused;winched=1;}
 static int uring_write(void){
  struct io_uring_params params;memset(&params,0,sizeof(params));
  int fd=(int)syscall(SYS_io_uring_setup,4,&params);if(fd<0)return -1;
@@ -121,6 +124,20 @@ int main(int argc,char **argv){
   if(!strcmp(mode,"restart")){if(returned!=10||memcmp(bytes,"\x1b[A\x1b[Btest",10))return 120;}
   else if(returned!=-1||errno!=EINTR||write(1,"eintr\n",6)!=6)return 121;
   close(fd);
+ }else if(!strcmp(mode,"input-resize-winch")){
+  // Writes only once it has observed the resize, like Ink's SIGWINCH handler.
+  struct sigaction action;memset(&action,0,sizeof(action));action.sa_handler=on_winch;
+  sigset_t blocked,waiting;sigemptyset(&blocked);sigaddset(&blocked,SIGWINCH);
+  if(sigaction(SIGWINCH,&action,NULL)||sigprocmask(SIG_BLOCK,&blocked,&waiting))return 150;
+  if(write(1,"input-ready\n",12)!=12)return 151;
+  sigdelset(&waiting,SIGWINCH);
+  while(!winched)sigsuspend(&waiting);
+  if(write(1,"winch\n",6)!=6)return 152;
+ }else if(!strcmp(mode,"input-resize-write")){
+  // SIGWINCH stays blocked: only the input-driven write can meet the resize.
+  sigset_t blocked;sigemptyset(&blocked);sigaddset(&blocked,SIGWINCH);char byte;
+  if(sigprocmask(SIG_BLOCK,&blocked,NULL)||write(1,"input-ready\n",12)!=12)return 153;
+  if(read(0,&byte,1)!=1||write(1,"echo\n",5)!=5)return 154;
  }else if(!strncmp(mode,"input-",6)){
   int fd=dup(0);if(fd<0)return 101;
   char bytes[256];memset(bytes,'X',sizeof(bytes));
@@ -267,6 +284,30 @@ int main(int argc,char **argv){
  return 0;
 }
 '''
+# Fault injection linked into a test-only observer.so (-Wl,--wrap=ioctl): the
+# collector is held between the kernel resize and its return stamp, as wakeup
+# preemption of a loaded broker holds it, until product output reaches the
+# master or 300ms pass. POKE first sends one input byte from inside the bracket.
+HELD_RESIZE = r'''
+#define _GNU_SOURCE
+#include <errno.h>
+#include <poll.h>
+#include <stdarg.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+int __real_ioctl(int fd,unsigned long request,...);
+int __wrap_ioctl(int fd,unsigned long request,...){
+ va_list list;va_start(list,request);void *argument=va_arg(list,void*);va_end(list);
+ int result=__real_ioctl(fd,request,argument),saved=errno;
+ if(request==TIOCSWINSZ&&!result){
+#ifdef POKE
+  if(write(fd,"w",1)!=1)return -1;
+#endif
+  struct pollfd ready={fd,POLLIN,0};(void)poll(&ready,1,300);
+ }
+ errno=saved;return result;
+}
+'''
 DENY_PTRACE = r'''
 #define _GNU_SOURCE
 #include <errno.h>
@@ -287,6 +328,11 @@ int main(int argc,char **argv){
  execv(argv[1],argv+1);return 127;
 }
 '''
+
+
+def controlling_tty():
+    # Like the broker: the kernel signals a resize only to the terminal's foreground group.
+    fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
 
 def blocked_in_read(pid):
@@ -312,10 +358,16 @@ class LinuxNativeJournalTest(unittest.TestCase):
         cls.deny_ptrace = cls.root / 'deny-ptrace'
         (cls.root / 'probe.c').write_text(PROBE)
         (cls.root / 'deny-ptrace.c').write_text(DENY_PTRACE)
+        (cls.root / 'held-resize.c').write_text(HELD_RESIZE)
+        cls.held_library = cls.root / 'observer-held-resize.so'
+        cls.held_poke_library = cls.root / 'observer-held-resize-poke.so'
         source = str(SOURCE / 'native-terminal-journal-linux.c')
         strict = ['/usr/bin/cc', '-std=c11', '-Wall', '-Wextra', '-Werror']
+        held = [*strict, '-O2', '-fPIC', '-shared', source, str(cls.root / 'held-resize.c'), '-Wl,--wrap=ioctl']
         for command, name in [
             ([*strict, '-O2', '-fPIC', '-shared', source, '-o', str(cls.library)], 'library'),
+            ([*held, '-o', str(cls.held_library)], 'held-resize'),
+            ([*held, '-DPOKE', '-o', str(cls.held_poke_library)], 'held-resize-poke'),
             ([*strict, '-O2', '-DCC_OBSERVER_EXEC', source, '-o', str(cls.observer)], 'observer-exec'),
             ([*strict, str(cls.root / 'probe.c'), '-o', str(cls.probe), '-lpthread', '-ldl'], 'probe'),
             ([*strict, str(cls.root / 'deny-ptrace.c'), '-o', str(cls.deny_ptrace)], 'deny-ptrace'),
@@ -337,19 +389,33 @@ class LinuxNativeJournalTest(unittest.TestCase):
     def test_native_resize_brackets_real_ioctl_and_preserves_errno(self):
         library = ctypes.CDLL(str(self.library), use_errno=True)
         function = library.cc_terminal_native_resize
-        function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64)]
+        function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64),
+                             ctypes.POINTER(ctypes.c_uint64)]
         function.restype = ctypes.c_int
         master, slave = pty.openpty()
         try:
             original = struct.pack('HHHH', 30, 100, 0, 0)
             requested = struct.pack('HHHH', 34, 110, 0, 0)
             fcntl.ioctl(slave, termios.TIOCSWINSZ, original)
+            header = (ctypes.c_uint64 * 32)(journal.MAGIC, 1, journal.HEADER.size)
+            header[20] = journal.LINUX_V1
+            # Only a registered Linux mapping whose last bracket is closed orders a resize.
+            for word, value, reason in ((20, 0, errno.EINVAL), (24, 1, errno.EBUSY)):
+                with self.subTest(word=word):
+                    saved, header[word] = header[word], value
+                    refused = (ctypes.c_uint64 * 12)()
+                    self.assertEqual(function(master, struct.unpack('<Q', requested)[0], refused, header), -1)
+                    self.assertEqual(ctypes.get_errno(), reason)
+                    self.assertEqual(fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8), original)
+                    self.assertEqual(header[24], value if word == 24 else 0)
+                    header[word] = saved
             receipt = (ctypes.c_uint64 * 12)()
             ctypes.set_errno(errno.EALREADY)
             before = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
-            result = function(master, struct.unpack('<Q', requested)[0], receipt)
+            result = function(master, struct.unpack('<Q', requested)[0], receipt, header)
             after = time.clock_gettime_ns(time.CLOCK_MONOTONIC)
             self.assertEqual(result, 0)
+            self.assertEqual(header[24], 2, 'One opened and closed resize bracket')
             self.assertEqual(ctypes.get_errno(), errno.EALREADY)
             self.assertTrue(before <= receipt[0] <= receipt[1] <= after)
             self.assertEqual(receipt[2:4], [0, errno.EALREADY])
@@ -358,8 +424,9 @@ class LinuxNativeJournalTest(unittest.TestCase):
             self.assertEqual(receipt[10:12], [1, 1])
             self.assertEqual(fcntl.ioctl(slave, termios.TIOCGWINSZ, b'\0' * 8), requested)
             failed = (ctypes.c_uint64 * 12)()
-            self.assertEqual(function(-1, struct.unpack('<Q', requested)[0], failed), -1)
+            self.assertEqual(function(-1, struct.unpack('<Q', requested)[0], failed, header), -1)
             self.assertEqual(ctypes.get_errno(), errno.EBADF)
+            self.assertEqual(header[24], 4, 'A failed resize still closes its bracket')
             self.assertEqual(failed[2], (1 << 64) - 1)
             self.assertEqual(failed[3], errno.EBADF)
             self.assertEqual(failed[6], (1 << 64) - 1)
@@ -444,7 +511,7 @@ class LinuxNativeJournalTest(unittest.TestCase):
             selector = selectors.DefaultSelector()
             child = subprocess.Popen(command, env=env, cwd=run, stdin=slave,
                                      stdout=slave, stderr=slave, start_new_session=True,
-                                     pass_fds=pass_fds)
+                                     pass_fds=pass_fds, preexec_fn=controlling_tty if mode.startswith('input-resize') else None)
             if observed:
                 os.close(report_write)
                 control_fds.remove(report_write)
@@ -480,7 +547,8 @@ class LinuxNativeJournalTest(unittest.TestCase):
             selector.register(master, selectors.EVENT_READ)
             os.close(slave)
             slave = None
-            context = {'raw': raw, 'child': child, 'master': master, 'tracer': tracer, 'path': path}
+            context = {'raw': raw, 'child': child, 'master': master, 'tracer': tracer, 'path': path,
+                       'registration': registration}
             while not eof and time.monotonic() - started < 20:
                 collect_live()
                 if interact is not None:
@@ -1182,6 +1250,82 @@ class LinuxNativeJournalTest(unittest.TestCase):
         handler = next(row for row in records if row['kind'] == 1 and row['bytes'] == b'sig\n')
         self.assertLessEqual(reads[0]['return'], handler['entry'])
         journal.verify_raw(records, raw, OUTPUT_FLAGS)
+
+    def held_resize(self, mode, library):
+        """One owned-collector resize whose bracket the fault library holds open."""
+        state = {}
+        def interact(context):
+            if 'receipt' in state or b'input-ready\r\n' not in context['raw']:
+                return
+            with journal.NativeConsumer(context['path'], context['registration'], library,
+                                        expected_pid=context['child'].pid) as consumer:
+                state['receipt'] = consumer.resize(context['master'], struct.pack('HHHH', 34, 110, 0, 0))
+        header, packets, registration, pid, raw = self.capture(mode, interact=interact)
+        return header, packets, registration, pid, raw, state['receipt']
+
+    def resize_events(self, header, registration, records, receipt):
+        """The release validator's own write/resize ordering over these originals."""
+        verifier = importlib.util.module_from_spec(
+            importlib.util.spec_from_file_location('linux_resize_verifier', SOURCE / 'verify-native-frame-journal.py'))
+        verifier.__spec__.loader.exec_module(verifier)
+        ack = {'kind': 'resize-ack', 'ioId': 1, 'geometryId': 1, 'rows': 34, 'columns': 110, 'succeeded': True,
+               'nativeClockCorrelationCovered': True, 'nativeBracket': receipt}
+        initial = {'outputFlags': OUTPUT_FLAGS, 'sizeHex': struct.pack('HHHH', 30, 100, 0, 0).hex()}
+        # The probe's fixed frame marks are not Ink spans; only syscall records are ordered here.
+        return verifier.native_resize_events([ack], list(header), registration,
+                                             [row for row in records if row['kind'] in (1, 2, 3)], initial)
+
+    def test_sigwinch_reaction_waits_for_a_held_resize_bracket(self):
+        # Run 2 shape: SIGWINCH wakes the product inside TIOCSWINSZ; under load the
+        # broker resumes after the product has already written its reaction.
+        header, packets, registration, pid, raw, receipt = self.held_resize('input-resize-winch', self.held_library)
+        records = journal.decode_records(header, packets, registration, pid)
+        events = self.resize_events(header, registration, records, receipt)
+        self.assertEqual(events[0]['rawOffset'], len(b'input-ready\r\n'))
+        self.assertEqual(raw, b'input-ready\r\nwinch\r\n')
+        reaction = next(row for row in records if row['kind'] == 1 and row['bytes'] == b'winch\n')
+        self.assertGreaterEqual(int(receipt['return']) - int(receipt['entry']), 250_000_000,
+                                'The product must not observe the resize while its bracket is open')
+        self.assertGreaterEqual(reaction['entry'], int(receipt['return']))
+        self.assertEqual(header[24], 2)
+        self.assertEqual(self.tracer['status'], 0)
+
+    def test_endpoint_write_entering_a_held_resize_bracket_starts_after_it(self):
+        header, packets, registration, pid, raw, receipt = self.held_resize('input-resize-write', self.held_poke_library)
+        records = journal.decode_records(header, packets, registration, pid)
+        events = self.resize_events(header, registration, records, receipt)
+        self.assertEqual(events[0]['rawOffset'], len(b'input-ready\r\n'))
+        self.assertEqual(raw, b'input-ready\r\necho\r\n')
+        read = next(row for row in records if row['kind'] == 3)
+        echo = next(row for row in records if row['kind'] == 1 and row['bytes'] == b'echo\n')
+        self.assertEqual(read['bytes'], b'w')
+        self.assertTrue(int(receipt['entry']) < read['return'] < int(receipt['return']),
+                        'The input that drives the write arrived inside the open bracket')
+        self.assertGreaterEqual(echo['entry'], int(receipt['return']))
+        self.assertEqual(header[24], 2)
+
+    def test_abandoned_resize_bracket_bounds_the_wait_and_fails_closed(self):
+        def abandon(context):
+            # A collector that died inside its bracket leaves header[24] odd.
+            with open(context['path'], 'r+b') as file, mmap.mmap(file.fileno(), 0) as mapping:
+                struct.pack_into('<Q', mapping, 24 * 8, 1)
+            os.write(context['master'], b'w')
+        state = {'abandoned': False}
+        def interact(context):
+            if not state['abandoned'] and b'input-ready\r\n' in context['raw']:
+                abandon(context)
+                state['abandoned'] = True
+        header, packets, registration, pid, raw = self.capture('input-resize-write', interact=interact)
+        self.assertEqual(raw, b'input-ready\r\necho\r\n', 'The product is never held indefinitely')
+        self.assertEqual(self.tracer['status'], 0)
+        self.assertEqual(header[24], 1)
+        self.assertGreater(header[10], 0)
+        with self.assertRaisesRegex(journal.JournalError, 'Lost native journal record'):
+            journal.decode_records(header, packets, registration, pid)
+        header = list(header)
+        header[10] = 0
+        with self.assertRaisesRegex(journal.JournalError, 'Native resize bracket left open'):
+            journal.decode_records(header, packets, registration, pid)
 
     def test_descendant_writing_the_endpoint_is_counted_foreign(self):
         header, packets, registration, pid, raw = self.capture('child-endpoint')

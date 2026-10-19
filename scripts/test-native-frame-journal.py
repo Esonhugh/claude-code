@@ -80,6 +80,18 @@ class NativeResizeOrderingTest(unittest.TestCase):
                     verifier.native_resize_events(*arguments)
                 bracket[key] = original
 
+    def test_linux_resize_requires_one_observer_ordered_bracket_per_ack(self):
+        verifier, io, header, *rest = self.fixture()
+        header[20], header[12], header[13] = journal.LINUX_V1, 1, 1
+        io[0]['nativeBracket'].update(method='native-linux-ioctl-resize-v1', timebaseNumer=1, timebaseDenom=1)
+        for brackets in (0, 1, 3, 4):
+            with self.subTest(brackets=brackets):
+                header[24] = brackets
+                with self.assertRaisesRegex(verifier.journal.JournalError, 'observer-ordered'):
+                    verifier.native_resize_events(io, header, *rest)
+        header[24] = 2
+        self.assertEqual(verifier.native_resize_events(io, header, *rest)[0]['beforeFrameId'], 2)
+
     def test_resize_inside_no_write_observation_compares_before_layout(self):
         verifier, *arguments = self.fixture()
         arguments[3][:] = [row for row in arguments[3] if not (row['spanId'] == 1 and row['kind'] == 1)]

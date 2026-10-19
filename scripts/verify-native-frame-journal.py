@@ -142,6 +142,10 @@ def native_resize_events(io, header, registration, records, initial):
     # decode_records bound header[20] to the registration; it selects the one method set.
     journal.require(header[20] in journal.METHODS, 'Unknown native observer platform')
     resize_method = journal.METHODS[header[20]]['resize']
+    if header[20] == journal.LINUX_V1:
+        # Each ACK must be a bracket the tracer ordered the product's writes and SIGWINCH against.
+        journal.require(header[24] == 2 * sum(row['kind'] == 'resize-ack' for row in io),
+                        'Native resize brackets differ from observer-ordered resizes')
     for row in io:
         if row['kind'] != 'resize-ack':
             continue

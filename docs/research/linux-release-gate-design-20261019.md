@@ -192,6 +192,8 @@
 - `cc_terminal_journal_mark`：在产品进程内写入，要求 `header[8]==getpid()`、fd 1/2 在登记端点上，时钟用 CLOCK_MONOTONIC。
 - `cc_terminal_journal_consume`：逻辑与 Darwin 相同，可变 header 字额外加上 20/22/23。
 - `cc_terminal_native_resize`：用 CLOCK_MONOTONIC，`receipt[10..11]=1,1`。
+  - TIOCSWINSZ 在返回前就向产品发出 SIGWINCH；宿主繁忙时 broker 会被唤醒的产品抢占，产品对 resize 的反应写入（如 `ink.tsx` 重发鼠标模式）落进 broker 的 `[entry, return]` 区间，校验器判 "overlaps an output syscall"。
+  - 因此 broker 在共享 header[24] 发布区间（打开时为奇数，CAS 打开、关闭时 +1）；追踪器在区间打开期间扣住产品的 SIGWINCH 信号投递停止和新的端点写入，区间关闭后才放行并记 entry。区间遗留打开（broker 死亡）超过 1 秒计为丢失，此后不再等待。
 - 追踪器和 observer-exec 用同一份源码以 `-DCC_OBSERVER_EXEC` 编译。
 
 **日志格式兼容策略**：
@@ -207,7 +209,7 @@
 | 帧边界方法名 | `native-mach-frame-span-v1` | `native-linux-frame-span-v1` |
 | 驱动时钟方法名 | `driver-mach-absolute-time-v1` | `driver-linux-monotonic-v1` |
 | 几何方法名 | `native-driver-mach-frame-geometry-v2` | `native-driver-linux-frame-geometry-v2` |
-| Linux 额外要求 | — | `header[22]==header[23]==0` |
+| Linux 额外要求 | — | `header[22]==header[23]==0`；关闭时 `header[24]` 为偶数且等于 2×resize ACK 数 |
 
 - `native-observer.json` 在 Linux 上增加字段：`observer:'linux-seccomp-ptrace-v1'`、`observer.so`/`observer-exec` 的路径和 sha、内核版本。
 - broker 的 cleanup 记录 tracer pid 和退出码，Linux 校验要求退出码为 0。

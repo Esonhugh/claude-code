@@ -25,7 +25,8 @@ METHODS = {
     0: {'mutable': MUTABLE_HEADER, 'operations': (1, 2, 3, 4),
         'termiosPrefix': (1, 20), 'termiosValue': TERMIOS_VALUE,
         'frameSpan': 'native-mach-frame-span-v1', 'resize': 'native-mach-ioctl-resize-v1'},
-    LINUX_V1: {'mutable': MUTABLE_HEADER | {22, 23}, 'operations': (1, 2, 5, 6, 7),
+    # Linux header[24] counts collector resize brackets (odd while one is open).
+    LINUX_V1: {'mutable': MUTABLE_HEADER | {22, 23, 24}, 'operations': (1, 2, 5, 6, 7),
                'termiosPrefix': (2, 19), 'termiosValue': struct.Struct('<6Q19B'),
                'frameSpan': 'native-linux-frame-span-v1', 'resize': 'native-linux-ioctl-resize-v1'},
 }
@@ -120,6 +121,7 @@ def _decode_records(header, records, registration, expected_pid, *, closed):
         require(header[22] == 0, 'Foreign native endpoint writer')
         require(header[23] == 0, 'Unsupported native endpoint transfer')
         require(header[12] == header[13] == 1, 'Linux native clock is not monotonic nanoseconds')
+        require(not closed or header[24] % 2 == 0, 'Native resize bracket left open')
     if closed:
         require(header[11] == 1 and header[19] > 0 and header[21] >= header[19] and
                 header[12] > 0 and header[13] > 0, 'Missing native clock or close boundary')
@@ -427,7 +429,9 @@ class NativeConsumer:
                                       ctypes.c_void_p, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_uint64]
             self.function.restype = ctypes.c_int
             self.resize_function = self.library.cc_terminal_native_resize
-            self.resize_function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64)]
+            # Linux publishes the bracket in this mapping; its tracer orders the product after it.
+            self.resize_function.argtypes = [ctypes.c_int, ctypes.c_uint64, ctypes.POINTER(ctypes.c_uint64),
+                                             *([ctypes.c_void_p] if methods(self.registration) is METHODS[LINUX_V1] else [])]
             self.resize_function.restype = ctypes.c_int
             self.size = size
             self.expected = (ctypes.c_uint64 * 32)(*self.registration['header'])
@@ -487,7 +491,8 @@ class NativeConsumer:
         require(not self.closed and self.expected_pid is not None and len(size) == 8,
                 'Native resize requires the owned collector and winsize')
         receipt = (ctypes.c_uint64 * 12)()
-        returned = self.resize_function(fd, struct.unpack('<Q', size)[0], receipt)
+        ordered = (self.pin,) if methods(self.registration) is METHODS[LINUX_V1] else ()
+        returned = self.resize_function(fd, struct.unpack('<Q', size)[0], receipt, *ordered)
         require(returned == 0 and receipt[2] == receipt[6] == receipt[8] == 0 and
                 struct.pack('<Q', receipt[5]) == size and
                 0 < receipt[0] <= receipt[1] and receipt[10] > 0 and receipt[11] > 0,
