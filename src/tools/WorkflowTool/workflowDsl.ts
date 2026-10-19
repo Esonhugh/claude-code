@@ -90,7 +90,8 @@ async function runOrchestrationExport(
 function loadOfficialWorkflowScriptSpec(filePath: string, source: string): WorkflowSpec {
   const parsed = parseWorkflowScript(source)
   try {
-    new vm.Script(`(async () => {\n${parsed.scriptBody}\n})()`, { filename: filePath })
+    // vm.Script compiles lazily on Bun 1.3, so it would not surface syntax errors here.
+    vm.compileFunction(`(async () => {\n${parsed.scriptBody}\n})`, [], { filename: filePath })
   } catch (error) {
     throw new Error(`Workflow script has a syntax error and was not launched:\n${workflowErrorMessage(error, 'Workflow script failed to compile')}`)
   }

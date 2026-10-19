@@ -85,7 +85,7 @@
 - 设置来源的 plan 默认模式在 planModeAvailable 关闭时降级为 default 并提示，不再拒绝启动；显式 `--permission-mode plan` 仍报错。
 - `/config teammateDefaultModel=<auto|inherit|model>` 与对话框写入相同值，拒绝选择器未列出的模型，行校验器在写入时执行；`workflowKeywordTriggerEnabled`、`skipWorkflowUsageWarning` 进入设置 schema，Dynamic workflows 行锁定为策略有效值。
 - Workflow 终态任务在结束时间加面板宽限期后回收；交互式 `/workflows` 合并已持久化的运行记录，回收后的运行仍可只读查看。
-- Workflow 启动只解析 meta 并编译脚本，不再预执行脚本体；失败的 `agent()` 返回 null 并列入完成通知的 `<failures>`，单次运行最多 1000 次 `agent()` 调用；resume 拒绝运行中或没有 journal 的运行。
+- Workflow 启动只解析 meta 并编译脚本，不再预执行脚本体，语法检查在发布所用的 Bun 1.3 运行时下同样生效；失败的 `agent()` 返回 null 并列入完成通知的 `<failures>`，单次运行最多 1000 次 `agent()` 调用；resume 拒绝运行中或没有 journal 的运行。
 - Mods 热重载期间不释放替换激活仍在使用的 MCP 服务器，Worker 退出时释放；`tool.call` 只在调用源自用户本人交互时附加 `consent`；hook 外启动的模型调用随激活卸载中止；首次 bind 失败不再让 `receive()` 永久等待。
 - Mods `$.session.turns` 在 REPL、print 与 QueryEngine 共用计数；`$.env.set` 的写入随激活结束失效，拒绝重定向宿主凭据或向子进程注入代码的变量名；插件根目录轮询忽略 `node_modules`、`.git`。
 - Mods 在 session.start、plugin.register 中调用 `command.run`、`prompt.submit`，以及在 turn.start、turn.step、prompt.mention 中调用 `prompt.submit`，均改为拒绝而非死锁；turn.complete 中可以提交 prompt。
