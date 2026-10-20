@@ -90,6 +90,7 @@ function fixture() {
   // Commands listed here exit with the given code instead of printing JSON.
   const exits = new Map<string, { code: number; stderr?: string }>()
   const envs = new Map<string, NodeJS.ProcessEnv>()
+  const logs: string[] = []
   const state = { sessionHooks: new Map() } as unknown as AppState
   const context = {
     getAppState: () => state,
@@ -293,7 +294,19 @@ function fixture() {
     },
     '../types/hooks.js': schemas,
     './hooks/hooksSettings.js': hookSettings,
-    './debug.js': { logForDebugging: noop },
+    './debug.js': {
+      logForDebugging: (message: string) => {
+        logs.push(message)
+      },
+    },
+    // Effort resolution is unit-tested elsewhere; here every model takes
+    // effort and the applied value is the app state's.
+    './effort.js': {
+      modelSupportsEffort: () => true,
+      resolveAppliedEffort: (_model: string, value: unknown) => value,
+      convertEffortValueToLevel: (value: unknown) => String(value),
+    },
+    './model/model.js': { getMainLoopModel: () => 'main-model' },
     './diagLogs.js': { logForDiagnosticsNoPII: noop },
     './stringUtils.js': { firstLineOf: (text: string) => text.split('\n')[0] },
     './permissions/permissionRuleParser.js': {
@@ -438,6 +451,7 @@ function fixture() {
     commands,
     exits,
     envs,
+    logs,
     addHook,
     calls,
     controls,
@@ -1797,4 +1811,48 @@ test('SessionStart hooks can set the session title and ask to reload skills', as
     'Release prep',
   )
   expect(results.some((result) => result.reloadSkills)).toBe(true)
+})
+
+describe('effort and debug logging', () => {
+  test('command hooks get the effort level as $CLAUDE_EFFORT and effort.level', async () => {
+    const f = fixture()
+    ;(f.state as { effortValue?: string }).effortValue = 'xhigh'
+    f.add('userSettings', 'PreToolUse', 'effort')
+    f.commands.set('effort', {})
+    await collect(pre(f))
+    expect(f.envs.get('effort')?.CLAUDE_EFFORT).toBe('xhigh')
+    expect(f.calls[0]?.input.effort).toEqual({ level: 'xhigh' })
+  })
+
+  test('without an effort value the variable and field are absent', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'effort')
+    f.commands.set('effort', {})
+    await collect(pre(f))
+    expect(f.envs.get('effort')?.CLAUDE_EFFORT).toBeUndefined()
+    expect(f.calls[0]?.input.effort).toBeUndefined()
+  })
+
+  test('--debug logs each command hook outcome and duration', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'ok')
+    f.add('userSettings', 'PreToolUse', 'broken')
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'slow',
+      timeout: 0.05,
+    })
+    f.commands.set('ok', {})
+    f.exits.set('broken', { code: 3 })
+    f.commands.set('slow', () => new Promise(() => {}))
+    await collect(pre(f))
+    const finished = f.logs.filter((line) => /^Hooks: PreToolUse:Read \[/.test(line))
+    expect(finished).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[ok\] finished with status 0 \(\d+ms\)$/),
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[broken\] finished with status 3 \(\d+ms\)$/),
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[slow\] timed out after 50ms \(\d+ms\)$/),
+      ]),
+    )
+  })
 })

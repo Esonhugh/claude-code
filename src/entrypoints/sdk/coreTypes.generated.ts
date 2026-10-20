@@ -126,6 +126,7 @@ export type BaseHookInput = {
   permission_mode?: string
   agent_id?: string
   agent_type?: string
+  effort?: { level: string }
 }
 export type PreToolUseHookInput = BaseHookInput & { hook_event_name: 'PreToolUse'; tool_name: string; tool_input: unknown; tool_use_id: string }
 export type PostToolUseHookInput = BaseHookInput & { hook_event_name: 'PostToolUse'; tool_name: string; tool_input: unknown; tool_response: unknown; tool_use_id: string }

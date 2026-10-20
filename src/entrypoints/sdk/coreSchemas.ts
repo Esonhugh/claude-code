@@ -421,6 +421,12 @@ export const BaseHookInputSchema = lazySchema(() =>
           'hook fires from within a subagent (alongside agent_id), or on the main thread ' +
           'of a session started with --agent (without agent_id).',
       ),
+    effort: z
+      .object({ level: z.string() })
+      .optional()
+      .describe(
+        'Active effort level, when the session model supports effort. Command hooks also get it as $CLAUDE_EFFORT.',
+      ),
   }),
 )
 

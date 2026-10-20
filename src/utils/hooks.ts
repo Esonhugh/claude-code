@@ -165,6 +165,12 @@ import {
 import type { AppState } from '../state/AppState.js'
 import { jsonStringify, jsonParse } from './slowOperations.js'
 import { isEnvTruthy, isSSHLocalUI } from './envUtils.js'
+import {
+  convertEffortValueToLevel,
+  modelSupportsEffort,
+  resolveAppliedEffort,
+} from './effort.js'
+import { getMainLoopModel } from './model/model.js'
 import { errorMessage, getErrnoCode } from './errors.js'
 
 export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
@@ -333,6 +339,22 @@ export function createBaseHookInput(
     agent_id: agentInfo?.agentId,
     agent_type: resolvedAgentType,
   }
+}
+
+/**
+ * The effort level hooks see as `effort.level` and `$CLAUDE_EFFORT`: what the
+ * next request would send for the session model, if that model takes effort.
+ */
+function getHookEffortLevel(
+  appState: AppState | undefined,
+  model: string | undefined,
+): string | undefined {
+  if (!appState) return undefined
+  const resolvedModel = model ?? getMainLoopModel()
+  if (!modelSupportsEffort(resolvedModel)) return undefined
+  const effort = resolveAppliedEffort(resolvedModel, appState.effortValue)
+  if (effort === undefined) return undefined
+  return typeof effort === 'number' ? convertEffortValueToLevel(effort) : effort
 }
 
 export interface HookBlockingError {
@@ -814,6 +836,7 @@ async function execCommandHook(
   skillRoot?: string,
   forceSyncExecution?: boolean,
   requestPrompt?: (request: PromptRequest) => Promise<PromptResponse>,
+  effortLevel?: string,
 ): Promise<{
   stdout: string
   stderr: string
@@ -963,6 +986,9 @@ async function execCommandHook(
   }
   if (skillRoot) {
     envVars.CLAUDE_PLUGIN_ROOT = toHookPath(skillRoot)
+  }
+  if (effortLevel) {
+    envVars.CLAUDE_EFFORT = effortLevel
   }
 
   // CLAUDE_ENV_FILE points to a .sh file that the hook writes env var
@@ -2028,6 +2054,18 @@ export function getUserPromptSubmitHookBlockingMessage(
  * @param messages Optional conversation history for prompt/function hooks
  * @returns Async generator that yields progress messages and hook results
  */
+function logCommandHookFinished(
+  hookName: string,
+  command: string,
+  pluginId: string | undefined,
+  outcome: string,
+  durationMs: number,
+): void {
+  logForDebugging(
+    `Hooks: ${hookName} [${command}]${pluginId ? ` (plugin ${pluginId})` : ''} ${outcome} (${durationMs}ms)`,
+  )
+}
+
 const NON_BLOCKING_STATUS_PREFIX = 'Failed with non-blocking status code: '
 
 // Events whose blocking error means "keep going", so a failed hook must not
@@ -2275,6 +2313,11 @@ async function* executeHooks({
   // Track wall-clock time for the entire hook batch
   const batchStartTime = Date.now()
 
+  const effortLevel = getHookEffortLevel(
+    appState,
+    toolUseContext?.options?.mainLoopModel,
+  )
+
   // Lazy-once stringify of hookInput. Shared across all command/prompt/agent/http
   // hooks in this batch (hookInput is never mutated). Callback/function hooks
   // return before reaching this, so batches with only those pay no stringify cost.
@@ -2287,7 +2330,12 @@ async function* executeHooks({
       return jsonInputResult
     }
     try {
-      return (jsonInputResult = { ok: true, value: jsonStringify(hookInput) })
+      return (jsonInputResult = {
+        ok: true,
+        value: jsonStringify(
+          effortLevel ? { ...hookInput, effort: { level: effortLevel } } : hookInput,
+        ),
+      })
     } catch (error) {
       logError(
         Error(`Failed to stringify hook ${hookName} input`, { cause: error }),
@@ -2357,6 +2405,7 @@ async function* executeHooks({
     const hookId = randomUUID()
     const hookStartMs = Date.now()
     const hookCommand = getHookDisplayText(hook)
+    let finishLogged = false
 
     try {
       const jsonInputRes = getJsonInput()
@@ -2632,9 +2681,24 @@ async function* executeHooks({
         skillRoot,
         forceSyncExecution,
         boundRequestPrompt,
+        effortLevel,
       )
       cleanup?.()
       const durationMs = Date.now() - hookStartMs
+      finishLogged = true
+      logCommandHookFinished(
+        hookName,
+        hookCommand,
+        pluginId,
+        result.aborted
+          ? signal?.aborted
+            ? 'cancelled'
+            : `timed out after ${commandTimeoutMs}ms`
+          : result.backgrounded
+            ? 'moved to the background'
+            : `finished with status ${result.status}`,
+        durationMs,
+      )
 
       if (result.backgrounded) {
         yield {
@@ -2880,6 +2944,15 @@ async function* executeHooks({
 
       const errorMessage =
         error instanceof Error ? error.message : String(error)
+      if (hook.type === 'command' && !finishLogged) {
+        logCommandHookFinished(
+          hookName,
+          hookCommand,
+          pluginId,
+          'failed to start',
+          Date.now() - hookStartMs,
+        )
+      }
       emitHookResponse({
         hookId,
         hookName,
@@ -3287,10 +3360,14 @@ async function executeHooksOutsideREPL({
     })
   }
 
+  const effortLevel = getHookEffortLevel(appState, undefined)
+
   // Validate and stringify the hook input
   let jsonInput: string
   try {
-    jsonInput = jsonStringify(hookInput)
+    jsonInput = jsonStringify(
+      effortLevel ? { ...hookInput, effort: { level: effortLevel } } : hookInput,
+    )
   } catch (error) {
     logError(error)
     return []
@@ -3499,6 +3576,7 @@ async function executeHooksOutsideREPL({
         { timeoutMs: commandTimeoutMs },
       )
       try {
+        const hookStartMs = Date.now()
         const result = await execCommandHook(
           hook,
           hookEvent,
@@ -3509,13 +3587,27 @@ async function executeHooksOutsideREPL({
           hookIndex,
           pluginRoot,
           pluginId,
+          undefined,
+          undefined,
+          undefined,
+          effortLevel,
         )
 
         // Clear timeout if hook completes
         cleanup?.()
+        logCommandHookFinished(
+          hookName,
+          hook.command,
+          pluginId,
+          result.aborted
+            ? signal?.aborted
+              ? 'cancelled'
+              : `timed out after ${commandTimeoutMs}ms`
+            : `finished with status ${result.status}`,
+          Date.now() - hookStartMs,
+        )
 
         if (result.aborted) {
-          logForDebugging(`${hookName} [${hook.command}] cancelled`)
           return {
             command: hook.command,
             succeeded: false,
@@ -3523,10 +3615,6 @@ async function executeHooksOutsideREPL({
             blocked: false,
           }
         }
-
-        logForDebugging(
-          `${hookName} [${hook.command}] completed with status ${result.status}`,
-        )
 
         // Parse JSON for any messages to print out.
         const { json, validationError } = parseHookOutput(result.stdout)
