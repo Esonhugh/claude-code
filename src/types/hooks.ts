@@ -84,9 +84,16 @@ export const syncHookResponseSchema = lazySchema(() =>
           hookEventName: z.literal('SessionStart'),
           additionalContext: z.string().optional(),
           initialUserMessage: z.string().optional(),
+          sessionTitle: z.string().describe('Set the session title').optional(),
           watchPaths: z
             .array(z.string())
             .describe('Absolute paths to watch for FileChanged hooks')
+            .optional(),
+          reloadSkills: z
+            .boolean()
+            .describe(
+              'Re-scan skill and command directories after SessionStart hooks complete, so skills installed by the hook are available in the same session',
+            )
             .optional(),
         }),
         z.object({

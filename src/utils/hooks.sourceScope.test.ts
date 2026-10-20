@@ -1781,3 +1781,20 @@ test('model switch hooks match on to_model', async () => {
   })
   expect(f.calls.map((call) => call.command)).toEqual(['mine'])
 })
+
+test('SessionStart hooks can set the session title and ask to reload skills', async () => {
+  const f = fixture()
+  f.add('userSettings', 'SessionStart', 'setup')
+  f.commands.set('setup', {
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      sessionTitle: 'Release prep',
+      reloadSkills: true,
+    },
+  })
+  const results = await collect(f.hooks.executeSessionStartHooks('startup'))
+  expect(results.find((result) => result.sessionTitle)?.sessionTitle).toBe(
+    'Release prep',
+  )
+  expect(results.some((result) => result.reloadSkills)).toBe(true)
+})

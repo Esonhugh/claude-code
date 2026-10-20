@@ -364,6 +364,8 @@ export interface HookResult {
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
   displayContent?: string
+  sessionTitle?: string
+  reloadSkills?: boolean
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -388,6 +390,8 @@ export type AggregatedHookResult = {
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
   displayContent?: string
+  sessionTitle?: string
+  reloadSkills?: boolean
 }
 
 /**
@@ -644,6 +648,8 @@ function processHookJSONOutput({
       case 'SessionStart':
         result.additionalContext = json.hookSpecificOutput.additionalContext
         result.initialUserMessage = json.hookSpecificOutput.initialUserMessage
+        result.sessionTitle = json.hookSpecificOutput.sessionTitle
+        result.reloadSkills = json.hookSpecificOutput.reloadSkills
         if (
           'watchPaths' in json.hookSpecificOutput &&
           json.hookSpecificOutput.watchPaths
@@ -3007,6 +3013,14 @@ async function* executeHooks({
         ...hookMetadata,
         initialUserMessage: result.initialUserMessage,
       }
+    }
+
+    if (result.sessionTitle) {
+      yield { ...hookMetadata, sessionTitle: result.sessionTitle }
+    }
+
+    if (result.reloadSkills) {
+      yield { ...hookMetadata, reloadSkills: true }
     }
 
     if (result.watchPaths && result.watchPaths.length > 0) {
