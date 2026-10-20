@@ -86,7 +86,8 @@ bun ./dist/cli.js --help
 | Hook 可靠性 | Stop hook 连续阻止结束时默认在第 9 次终止续跑，可用 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 调整或禁用上限；正常 tool round 会重置计数，`maxTurns` 保持更高优先级。 |
 | 会话命令 | 提供 `/goal`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
-| 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
+| 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task；`/loop` 不带间隔时由模型通过 `ScheduleWakeup` 自行决定下次唤醒（60–3600 秒）。 |
+| Monitor | `Monitor` 工具在后台运行监看脚本，stdout 每行（200ms 内合并）作为一则任务通知唤醒模型；默认 5 分钟、最长 30 分钟（`-p` 下 10 分钟）到期并通知，可重新 arm；输出过多时自动抑制并停止。权限规则与 Bash 相同。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
 | Channels | 默认开放 `--channels`、交互式开发频道和 IDE/SDK `channel_enable`；支持 Anthropic API Key、OpenAI 兼容接口等已配置 provider，保留组织策略、插件来源验证和逐项授权；支持独立能力声明的远程工具审批。 |
 | Mods / Function Hooks | 可信插件可通过 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令和 terminal Pane；提供 scoped host capabilities、热重载、在途 generation 保留、取消与卸载。支持范围与官方运行时兼容性边界见下方 Mods 章节。 |
