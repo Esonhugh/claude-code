@@ -3,6 +3,7 @@
  * critique user-written rules. Dynamically imported when `claude auto-mode ...` runs.
  */
 
+import { createInterface } from 'readline'
 import { errorMessage } from '../../utils/errors.js'
 import {
   getMainLoopModel,
@@ -13,7 +14,12 @@ import {
   buildDefaultExternalSystemPrompt,
   getDefaultExternalAutoModeRules,
 } from '../../utils/permissions/yoloClassifier.js'
-import { getAutoModeConfig } from '../../utils/settings/settings.js'
+import {
+  getAutoModeConfig,
+  getSettingsFilePathForSource,
+  getSettingsForSource,
+  updateSettingsForSource,
+} from '../../utils/settings/settings.js'
 import { sideQuery } from '../../utils/sideQuery.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 
@@ -40,7 +46,9 @@ export function autoModeConfigHandler(): void {
     soft_deny: config?.soft_deny?.length
       ? config.soft_deny
       : defaults.soft_deny,
-    hard_deny: defaults.hard_deny,
+    hard_deny: config?.hard_deny?.length
+      ? config.hard_deny
+      : defaults.hard_deny,
     environment: config?.environment?.length
       ? config.environment
       : defaults.environment,
@@ -52,10 +60,11 @@ const CRITIQUE_SYSTEM_PROMPT =
   '\n' +
   'Claude Code has an "auto mode" that uses an AI classifier to decide whether ' +
   'tool calls should be auto-approved or require user confirmation. Users can ' +
-  'write custom rules in three categories:\n' +
+  'write custom rules in four categories:\n' +
   '\n' +
   '- **allow**: Actions the classifier should auto-approve\n' +
-  '- **soft_deny**: Actions the classifier should block (require user confirmation)\n' +
+  '- **soft_deny**: Destructive/irreversible actions the classifier should block unless clear user intent authorizes them\n' +
+  '- **hard_deny**: Security-boundary actions the classifier should block unconditionally (user intent does not clear these)\n' +
   "- **environment**: Context about the user's setup that helps the classifier make decisions\n" +
   '\n' +
   "Your job is to critique the user's custom rules for clarity, completeness, " +
@@ -78,12 +87,13 @@ export async function autoModeCritiqueHandler(options: {
   const hasCustomRules =
     (config?.allow?.length ?? 0) > 0 ||
     (config?.soft_deny?.length ?? 0) > 0 ||
+    (config?.hard_deny?.length ?? 0) > 0 ||
     (config?.environment?.length ?? 0) > 0
 
   if (!hasCustomRules) {
     process.stdout.write(
       'No custom auto mode rules found.\n\n' +
-        'Add rules to your settings file under autoMode.{allow, soft_deny, environment}.\n' +
+        'Add rules to your settings file under autoMode.{allow, soft_deny, hard_deny, environment}.\n' +
         'Run `claude auto-mode defaults` to see the default rules for reference.\n',
     )
     return
@@ -102,6 +112,11 @@ export async function autoModeCritiqueHandler(options: {
       'soft_deny',
       config?.soft_deny ?? [],
       defaults.soft_deny,
+    ) +
+    formatRulesForCritique(
+      'hard_deny',
+      config?.hard_deny ?? [],
+      defaults.hard_deny,
     ) +
     formatRulesForCritique(
       'environment',
@@ -147,6 +162,56 @@ export async function autoModeCritiqueHandler(options: {
   } else {
     process.stdout.write('No critique was generated. Please try again.\n')
   }
+}
+
+function confirm(question: string): Promise<boolean> {
+  return new Promise(resolve => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+    rl.question(`${question} [y/N] `, answer => {
+      const normalized = answer.trim().toLowerCase()
+      resolve(normalized === 'y' || normalized === 'yes')
+      rl.close()
+    })
+    rl.once('close', () => resolve(false))
+  })
+}
+
+/**
+ * `claude auto-mode reset`: remove the autoMode section from the user settings
+ * file so the shipped defaults apply again (official 2.1.2xx). Asks first
+ * unless --yes. Other settings sources are left alone, like official.
+ */
+export async function autoModeResetHandler(options: {
+  yes?: boolean
+}): Promise<void> {
+  const path = getSettingsFilePathForSource('userSettings')
+  if (!path) {
+    process.stderr.write('Could not resolve the user settings file path.\n')
+    process.exitCode = 1
+    return
+  }
+  if (getSettingsForSource('userSettings')?.autoMode === undefined) {
+    process.stdout.write(
+      `Auto mode configuration is already at defaults \u2014 ${path} has no autoMode section.\n`,
+    )
+    return
+  }
+  if (!options.yes && !(await confirm('Reset auto mode configuration to defaults?'))) {
+    process.stderr.write('Aborted.\n')
+    process.exitCode = 1
+    return
+  }
+  const { error } = updateSettingsForSource('userSettings', {
+    autoMode: undefined,
+  })
+  if (error) {
+    process.stderr.write(`Could not reset auto mode configuration: ${error.message}\n`)
+    process.exitCode = 1
+    return
+  }
+  process.stdout.write(
+    `Auto mode configuration reset to defaults \u2014 autoMode section removed from ${path}.\n`,
+  )
 }
 
 function formatRulesForCritique(

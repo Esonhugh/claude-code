@@ -591,7 +591,7 @@ export async function buildYoloSystemPrompt(
     {
       allow: allowDescriptions,
       soft_deny: denyDescriptions,
-      hard_deny: [],
+      hard_deny: autoMode?.hard_deny ?? [],
       environment: autoMode?.environment ?? [],
     },
     settingsDenyRulesBlock(settingsDenyRules),
@@ -1442,15 +1442,11 @@ function getFallbackClassifierModel(mainModel: string): string {
 
 /**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then the GrowthBook per-main-model and
- * global overrides, then (outside OpenAI mode) the Sonnet 5 default, then the
- * main-loop-based model.
+ * GrowthBook per-main-model and global overrides first, then
+ * CLAUDE_CODE_AUTO_MODE_MODEL (all users, as in official 2.1.303), then the
+ * OpenAI main model or the Sonnet 5 default, then the main-loop-based model.
  */
 function getClassifierModel(): string {
-  if (isAnt()) {
-    const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
-    if (envModel) return envModel
-  }
   const config = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
@@ -1461,6 +1457,8 @@ function getClassifierModel(): string {
   if (config?.model) {
     return config.model
   }
+  const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
+  if (envModel) return envModel
   if (getAPIProvider() === 'openai') return mainModel
   const sonnet5 = sonnet5ClassifierProbe === 'demoted' ? undefined : getDefaultSonnet5Classifier(mainModel)
   return sonnet5 ?? getFallbackClassifierModel(mainModel)

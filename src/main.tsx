@@ -6191,12 +6191,12 @@ async function run(): Promise<CommanderCommand> {
     if (getAutoModeEnabledStateIfCached() !== 'disabled') {
       const autoModeCmd = program
         .command('auto-mode')
-        .description('Inspect auto mode classifier configuration')
+        .description('Inspect or reset auto mode classifier configuration')
 
       autoModeCmd
         .command('defaults')
         .description(
-          'Print the default auto mode environment, allow, and deny rules as JSON',
+          'Print the default auto mode environment, allow, soft_deny, and hard_deny rules as JSON',
         )
         .action(async () => {
           const { autoModeDefaultsHandler } = await import(
@@ -6228,6 +6228,20 @@ async function run(): Promise<CommanderCommand> {
             './cli/handlers/autoMode.js'
           )
           await autoModeCritiqueHandler(options)
+          process.exit()
+        })
+
+      autoModeCmd
+        .command('reset')
+        .description(
+          'Reset auto mode configuration to the shipped defaults by removing the autoMode section from your user settings file',
+        )
+        .option('-y, --yes', 'Skip the confirmation prompt')
+        .action(async options => {
+          const { autoModeResetHandler } = await import(
+            './cli/handlers/autoMode.js'
+          )
+          await autoModeResetHandler(options)
           process.exit()
         })
     }

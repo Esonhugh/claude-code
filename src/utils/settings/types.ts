@@ -1117,6 +1117,12 @@ export const SettingsSchema = lazySchema(() =>
                   .array(z.string())
                   .optional()
                   .describe('Rules for the auto mode classifier deny section'),
+                hard_deny: z
+                  .array(z.string())
+                  .optional()
+                  .describe(
+                    'Rules for the auto mode classifier HARD BLOCK section \u2014 security boundaries that user intent does NOT clear. Include the literal string "$defaults" to inherit the built-in rules at that position.',
+                  ),
                 ...(isAnt()
                   ? {
                       // Back-compat alias for ant users; external users use soft_deny
@@ -1128,6 +1134,12 @@ export const SettingsSchema = lazySchema(() =>
                   .optional()
                   .describe(
                     'Entries for the auto mode classifier environment section',
+                  ),
+                classifyAllShell: z
+                  .boolean()
+                  .optional()
+                  .describe(
+                    'When true, every Bash/PowerShell allow rule is suspended while auto mode is active so all shell commands are routed through the classifier (higher safety, more classifier calls). Default: false.',
                   ),
               })
               .optional()

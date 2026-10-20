@@ -23,6 +23,7 @@ import {
   getSettingsFilePathForSource,
   getSettingsForSource,
   getUseAutoModeDuringPlan,
+  isAutoModeClassifyAllShellEnabled,
 } from '../settings/settings.js'
 import { getGlobalConfig } from '../config.js'
 import {
@@ -287,6 +288,13 @@ function isDangerousClassifierPermission(
   if (isAnt()) {
     // Tmux send-keys executes arbitrary shell, bypassing the classifier same as Bash(*)
     if (toolName === 'Tmux') return true
+  }
+  // autoMode.classifyAllShell suspends every shell allow rule in auto mode.
+  if (
+    (toolName === BASH_TOOL_NAME || toolName === POWERSHELL_TOOL_NAME) &&
+    isAutoModeClassifyAllShellEnabled()
+  ) {
+    return true
   }
   return (
     isDangerousBashPermission(toolName, ruleContent) ||

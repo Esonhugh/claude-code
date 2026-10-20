@@ -13,6 +13,7 @@ import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { extractOutputRedirections } from '../bash/commands.js'
+import { requestClassifierOverflowCompaction } from '../../services/compact/classifierOverflow.js'
 import { logForDebugging } from '../debug.js'
 import { AbortError, toError } from '../errors.js'
 import { logError } from '../log.js'
@@ -880,6 +881,30 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         // error, won't recover on retry. Skip iron_gate and fall back to
         // normal prompting so the user can approve/deny manually.
         if (classifierResult.transcriptTooLong) {
+          // Deny this call and compact before the next request; once a
+          // compaction was attempted for this transcript head, fall through.
+          if (
+            requestClassifierOverflowCompaction(
+              context.agentId,
+              context.messages,
+              tool.name,
+            )
+          ) {
+            logForDebugging(
+              `Auto mode classifier transcript too long for ${tool.name}, denying and compacting before the next request`,
+              { level: 'warn' },
+            )
+            return {
+              behavior: 'deny',
+              decisionReason: {
+                type: 'classifier',
+                classifier: 'auto-mode',
+                reason:
+                  'Auto mode classifier transcript exceeded context window — compacting before the next request',
+              },
+              message: `${tool.name} was not reviewed and did not run: the conversation is too long for auto mode's classifier. Claude Code will try to compact the conversation before the next request; if this action is still needed after that, issue it again and it will be reviewed normally.`,
+            }
+          }
           if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
             // Permanent condition (transcript only grows) — deny-retry-deny
             // wastes tokens without ever hitting the denial-limit abort.
