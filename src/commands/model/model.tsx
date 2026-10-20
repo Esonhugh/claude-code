@@ -1,12 +1,16 @@
 import chalk from 'chalk'
 import * as React from 'react'
 import type { CommandResultDisplay } from '../../commands.js'
+import { Select } from '../../components/CustomSelect/select.js'
+import { Dialog } from '../../components/design-system/Dialog.js'
 import { ModelPicker } from '../../components/ModelPicker.js'
 import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
+import type { LocalJSXCommandContext } from '../../commands.js'
+import { Text } from '../../ink.js'
 import { useAppState, useSetAppState } from '../../state/AppState.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import type { EffortLevel } from '../../utils/effort.js'
@@ -28,20 +32,92 @@ import {
   renderDefaultModelSetting,
 } from '../../utils/model/model.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
+import {
+  checkModelSwitch,
+  getModelSwitchHookInfo,
+  getPostModelSwitchContext,
+} from '../../utils/model/modelSwitchHooks.js'
 import { validateModel } from '../../utils/model/validateModel.js'
+import type { ModelSwitchHookInfo } from '../../utils/hooks.js'
 
-function ModelPickerWrapper({
-  onDone,
+type PendingModelSwitch = {
+  info: ModelSwitchHookInfo
+  reason?: string
+  apply: () => void
+}
+
+function ConfirmModelSwitch({
+  pending,
+  onCancel,
 }: {
+  pending: PendingModelSwitch
+  onCancel: () => void
+}): React.ReactNode {
+  return (
+    <Dialog title="Switch model?" onCancel={onCancel} color="warning">
+      <Text>
+        A PreModelSwitch hook asks you to confirm switching to{' '}
+        <Text bold>{pending.info.toModel}</Text>.
+      </Text>
+      {pending.reason ? <Text dimColor>{pending.reason}</Text> : null}
+      <Select
+        onChange={value => (value === 'yes' ? pending.apply() : onCancel())}
+        onCancel={onCancel}
+        options={[
+          { label: 'Yes, switch', value: 'yes' },
+          { label: 'No, keep the current model', value: 'no' },
+        ]}
+      />
+    </Dialog>
+  )
+}
+
+/**
+ * Run PreModelSwitch hooks for a /model switch. Returns true when the switch
+ * may proceed now; otherwise it was blocked (onDone already called) or a
+ * confirmation was queued via setPending.
+ */
+async function preModelSwitch(
+  info: ModelSwitchHookInfo,
+  source: 'command' | 'picker',
+  context: LocalJSXCommandContext,
   onDone: (
     result?: string,
     options?: { display?: CommandResultDisplay },
+  ) => void,
+  setPending: (pending: PendingModelSwitch) => void,
+  apply: () => void,
+): Promise<boolean> {
+  const verdict = await checkModelSwitch(info, source, context)
+  if (verdict.decision === 'block') {
+    onDone(
+      `Model switch blocked by PreModelSwitch hook: ${verdict.reason ?? 'no reason given'}`,
+      { display: 'system' },
+    )
+    return false
+  }
+  if (verdict.decision === 'ask') {
+    setPending({ info, reason: verdict.reason, apply })
+    return false
+  }
+  return true
+}
+
+function ModelPickerWrapper({
+  onDone,
+  context,
+}: {
+  onDone: (
+    result?: string,
+    options?: { display?: CommandResultDisplay; metaMessages?: string[] },
   ) => void
+  context: LocalJSXCommandContext
 }): React.ReactNode {
   const mainLoopModel = useAppState(s => s.mainLoopModel)
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession)
   const isFastMode = useAppState(s => s.fastMode)
   const setAppState = useSetAppState()
+  const [pending, setPending] = React.useState<PendingModelSwitch>()
 
   function handleCancel(): void {
     logEvent('tengu_model_command_menu', {
@@ -58,6 +134,20 @@ function ModelPickerWrapper({
     model: string | null,
     effort: EffortLevel | undefined,
   ): void {
+    const info = getModelSwitchHookInfo(model, context.messages)
+    const apply = () => void applySelect(model, effort, info)
+    void preModelSwitch(info, 'picker', context, onDone, setPending, apply).then(
+      proceed => {
+        if (proceed) apply()
+      },
+    )
+  }
+
+  async function applySelect(
+    model: string | null,
+    effort: EffortLevel | undefined,
+    info: ModelSwitchHookInfo,
+  ): Promise<void> {
     logEvent('tengu_model_command_menu', {
       action:
         model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -113,7 +203,13 @@ function ModelPickerWrapper({
       message += ` · Fast mode OFF`
     }
 
-    onDone(message)
+    onDone(message, {
+      metaMessages: await getPostModelSwitchContext(info, 'picker', context),
+    })
+  }
+
+  if (pending) {
+    return <ConfirmModelSwitch pending={pending} onCancel={handleCancel} />
   }
 
   return (
@@ -136,15 +232,18 @@ function ModelPickerWrapper({
 function SetModelAndClose({
   args,
   onDone,
+  context,
 }: {
   args: string
   onDone: (
     result?: string,
-    options?: { display?: CommandResultDisplay },
+    options?: { display?: CommandResultDisplay; metaMessages?: string[] },
   ) => void
+  context: LocalJSXCommandContext
 }): React.ReactNode {
   const isFastMode = useAppState(s => s.fastMode)
   const setAppState = useSetAppState()
+  const [pending, setPending] = React.useState<PendingModelSwitch>()
   const model = args === 'default' ? null : args
 
   React.useEffect(() => {
@@ -176,13 +275,13 @@ function SetModelAndClose({
 
       // Skip validation for default model
       if (!model) {
-        setModel(null)
+        await switchModel(null)
         return
       }
 
       // Skip validation for known aliases - they're predefined and should work
       if (isKnownAlias(model)) {
-        setModel(model)
+        await switchModel(model)
         return
       }
 
@@ -193,7 +292,7 @@ function SetModelAndClose({
         const { valid, error } = await validateModel(model)
 
         if (valid) {
-          setModel(model)
+          await switchModel(model)
         } else {
           onDone(error || `Model '${model}' not found`, {
             display: 'system',
@@ -206,7 +305,20 @@ function SetModelAndClose({
       }
     }
 
-    function setModel(modelValue: string | null): void {
+    async function switchModel(modelValue: string | null): Promise<void> {
+      const info = getModelSwitchHookInfo(modelValue, context.messages)
+      const apply = () => void setModel(modelValue, info)
+      if (
+        await preModelSwitch(info, 'command', context, onDone, setPending, apply)
+      ) {
+        apply()
+      }
+    }
+
+    async function setModel(
+      modelValue: string | null,
+      info: ModelSwitchHookInfo,
+    ): Promise<void> {
       setAppState(prev => ({
         ...prev,
         mainLoopModel: modelValue,
@@ -245,12 +357,26 @@ function SetModelAndClose({
         message += ` · Fast mode OFF`
       }
 
-      onDone(message)
+      onDone(message, {
+        metaMessages: await getPostModelSwitchContext(info, 'command', context),
+      })
     }
 
     void handleModelChange()
-  }, [model, onDone, setAppState])
+  }, [model, onDone, setAppState, context])
 
+  if (pending) {
+    return (
+      <ConfirmModelSwitch
+        pending={pending}
+        onCancel={() =>
+          onDone(`Kept model as ${chalk.bold(renderModelLabel(pending.info.fromModel))}`, {
+            display: 'system',
+          })
+        }
+      />
+    )
+  }
   return null
 }
 
@@ -303,7 +429,7 @@ function ShowModelAndClose({
   return null
 }
 
-export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   args = args?.trim() || ''
   if (COMMON_INFO_ARGS.includes(args)) {
     logEvent('tengu_model_command_inline_help', {
@@ -323,10 +449,10 @@ export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
     logEvent('tengu_model_command_inline', {
       args: args as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    return <SetModelAndClose args={args} onDone={onDone} />
+    return <SetModelAndClose args={args} onDone={onDone} context={context} />
   }
 
-  return <ModelPickerWrapper onDone={onDone} />
+  return <ModelPickerWrapper onDone={onDone} context={context} />
 }
 
 function renderModelLabel(model: string | null): string {

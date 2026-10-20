@@ -287,7 +287,15 @@ import {
   toInternalMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
-import { createModelSwitchBreadcrumbs } from 'src/utils/messages.js'
+import {
+  createModelSwitchBreadcrumbs,
+  createUserMessage,
+} from 'src/utils/messages.js'
+import {
+  checkModelSwitch,
+  getModelSwitchHookInfo,
+  getPostModelSwitchContext,
+} from 'src/utils/model/modelSwitchHooks.js'
 import { collectContextData } from 'src/commands/context/context-noninteractive.js'
 import { LOCAL_COMMAND_STDOUT_TAG } from 'src/constants/xml.js'
 import {
@@ -3494,12 +3502,30 @@ function runHeadlessStreaming(
                 return
               }
             }
+            const switchInfo = getModelSwitchHookInfo(
+              requestedModel === 'default' ? null : requestedModel,
+              mutableMessages,
+            )
+            const verdict = await checkModelSwitch(switchInfo, 'sdk')
+            if (verdict.decision !== 'proceed') {
+              // Headless set_model has no prompt to confirm an "ask" on.
+              sendControlResponseError(
+                message,
+                verdict.decision === 'ask'
+                  ? `PreModelSwitch hook asked for confirmation, which set_model cannot show${verdict.reason ? `: ${verdict.reason}` : ''}`
+                  : `Model switch blocked by PreModelSwitch hook: ${verdict.reason ?? 'no reason given'}`,
+              )
+              return
+            }
             const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
             activeUserSpecifiedModel = model
             setMainLoopModelOverride(model)
             streamState.refresh()
             notifySessionMetadataChanged({ model })
             injectModelSwitchBreadcrumbs(requestedModel, model)
+            for (const content of (await getPostModelSwitchContext(switchInfo, 'sdk')) ?? []) {
+              mutableMessages.push(createUserMessage({ content, isMeta: true }))
+            }
             sendControlResponseSuccess(message)
           }).catch(error => {
             logError(error)

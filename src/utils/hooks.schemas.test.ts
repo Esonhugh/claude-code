@@ -30,3 +30,13 @@ describe('hook settings schema', () => {
     expect(parsed.success).toBe(false)
   })
 })
+
+test.each(['PreModelSwitch', 'PostModelSwitch', 'DirectoryAdded', 'MessageDisplay'])(
+  'settings accept %s hooks',
+  (event) => {
+    const parsed = HooksSchema().safeParse({
+      [event]: [{ hooks: [{ type: 'command', command: 'echo ok' }] }],
+    })
+    expect(parsed.success).toBe(true)
+  },
+)

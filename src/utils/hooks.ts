@@ -84,6 +84,10 @@ import type {
   PermissionDeniedHookInput,
   PreCompactHookInput,
   PostCompactHookInput,
+  PreModelSwitchHookInput,
+  PostModelSwitchHookInput,
+  DirectoryAddedHookInput,
+  MessageDisplayHookInput,
   PreToolUseHookInput,
   SessionStartHookInput,
   SessionEndHookInput,
@@ -359,6 +363,7 @@ export interface HookResult {
   watchPaths?: string[]
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
+  displayContent?: string
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -382,6 +387,7 @@ export type AggregatedHookResult = {
   elicitationResponse?: ElicitationResponse
   elicitationResultResponse?: ElicitationResponse
   retry?: boolean
+  displayContent?: string
 }
 
 /**
@@ -580,7 +586,7 @@ function processHookJSONOutput({
       default:
         // Handle unknown decision types as errors
         throw new Error(
-          `Unknown hook permissionDecision type: ${json.hookSpecificOutput.permissionDecision}. Valid types are: allow, deny, ask`,
+          `Unknown hook permissionDecision type: ${String((json.hookSpecificOutput as { permissionDecision?: unknown }).permissionDecision)}. Valid types are: allow, deny, ask`,
         )
     }
   }
@@ -668,6 +674,35 @@ function processHookJSONOutput({
         break
       case 'PermissionDenied':
         result.retry = json.hookSpecificOutput.retry
+        break
+      case 'PreModelSwitch':
+        switch (json.hookSpecificOutput.permissionDecision) {
+          case 'allow':
+          case 'ask':
+            result.permissionBehavior =
+              json.hookSpecificOutput.permissionDecision
+            break
+          case 'deny':
+            result.permissionBehavior = 'deny'
+            result.blockingError = {
+              blockingError:
+                json.hookSpecificOutput.permissionDecisionReason ||
+                json.reason ||
+                'Blocked by hook',
+              command,
+            }
+            break
+        }
+        if (json.hookSpecificOutput.permissionDecisionReason) {
+          result.hookPermissionDecisionReason =
+            json.hookSpecificOutput.permissionDecisionReason
+        }
+        break
+      case 'PostModelSwitch':
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
+      case 'MessageDisplay':
+        result.displayContent = json.hookSpecificOutput.displayContent
         break
       case 'PermissionRequest':
         // Extract the permission request decision
@@ -1690,6 +1725,13 @@ export async function getMatchingHooks(
       case 'FileChanged':
         matchQuery = basename(hookInput.file_path)
         break
+      case 'PreModelSwitch':
+      case 'PostModelSwitch':
+        matchQuery = hookInput.to_model
+        break
+      case 'DirectoryAdded':
+        matchQuery = hookInput.source
+        break
       default:
         break
     }
@@ -2024,10 +2066,11 @@ function applyHookOnFailure(
   }
   const hook = result.hook as HookCommand & { type: 'command' | 'http' }
   const command = hook.type === 'http' ? hook.url : hook.command
+  const message = result.message as
+    | { type: string; attachment?: { type: string; stderr?: string } }
+    | undefined
   const attachment =
-    result.message?.type === 'attachment'
-      ? (result.message.attachment as { type: string; stderr?: string })
-      : undefined
+    message?.type === 'attachment' ? message.attachment : undefined
   const stderr =
     attachment?.type === 'hook_non_blocking_error'
       ? (attachment.stderr ?? '').trim()
@@ -3042,6 +3085,12 @@ async function* executeHooks({
       yield {
         ...hookMetadata,
         permissionRequestResult: result.permissionRequestResult,
+      }
+    }
+    if (result.displayContent !== undefined) {
+      yield {
+        ...hookMetadata,
+        displayContent: result.displayContent,
       }
     }
     // Yield retry flag if provided (from PermissionDenied hooks)
@@ -4294,6 +4343,162 @@ export async function executePostCompactHooks(
     userDisplayMessage:
       displayMessages.length > 0 ? displayMessages.join('\n') : undefined,
   }
+}
+
+export type ModelSwitchHookInfo = {
+  fromModel: string
+  toModel: string
+  requestedModel: string | null
+  contextTokens: number
+}
+
+function createModelSwitchHookFields(info: ModelSwitchHookInfo) {
+  return {
+    from_model: info.fromModel,
+    to_model: info.toModel,
+    requested_model: info.requestedModel,
+    context_tokens: info.contextTokens,
+  }
+}
+
+export function hasPreModelSwitchHook(appState?: AppState): boolean {
+  return hasHookForEvent('PreModelSwitch', appState, getSessionId())
+}
+
+/**
+ * Run PreModelSwitch hooks before a requested model switch. A hook blocks with
+ * exit code 2 or permissionDecision "deny" (a timeout also blocks), and asks
+ * for confirmation with permissionDecision "ask".
+ */
+export async function executePreModelSwitchHooks(
+  info: ModelSwitchHookInfo & { source: PreModelSwitchHookInput['source'] },
+  toolUseContext?: ToolUseContext,
+  signal?: AbortSignal,
+): Promise<{ decision: 'proceed' | 'ask' | 'block'; reason?: string }> {
+  const hookInput: PreModelSwitchHookInput = {
+    ...createBaseHookInput(undefined, undefined, toolUseContext),
+    hook_event_name: 'PreModelSwitch',
+    ...createModelSwitchHookFields(info),
+    source: info.source,
+  }
+  let blockReason: string | undefined
+  let ask = false
+  let askReason: string | undefined
+  for await (const result of executeHooks({
+    hookInput,
+    toolUseID: randomUUID(),
+    matchQuery: info.toModel,
+    signal,
+    toolUseContext,
+    messages: toolUseContext?.messages,
+  })) {
+    const message = result.message as
+      | { type: string; attachment?: { type: string; hookName?: string } }
+      | undefined
+    const attachment =
+      message?.type === 'attachment' ? message.attachment : undefined
+    if (attachment?.type === 'hook_cancelled' && !signal?.aborted) {
+      blockReason ??= `PreModelSwitch hook ${attachment.hookName ?? ''} did not respond before its timeout`
+    }
+    if (result.blockingError) {
+      blockReason ??= result.blockingError.blockingError
+    } else if (result.permissionBehavior === 'ask') {
+      ask = true
+      askReason ??= result.hookPermissionDecisionReason
+    }
+  }
+  if (blockReason !== undefined) return { decision: 'block', reason: blockReason }
+  if (ask) return { decision: 'ask', reason: askReason }
+  return { decision: 'proceed' }
+}
+
+/**
+ * Run PostModelSwitch hooks after the session model changed.
+ * @returns additionalContext strings to show Claude on the next request
+ */
+export async function executePostModelSwitchHooks(
+  info: ModelSwitchHookInfo & { source: PostModelSwitchHookInput['source'] },
+  toolUseContext?: ToolUseContext,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const hookInput: PostModelSwitchHookInput = {
+    ...createBaseHookInput(undefined, undefined, toolUseContext),
+    hook_event_name: 'PostModelSwitch',
+    ...createModelSwitchHookFields(info),
+    source: info.source,
+  }
+  const contexts: string[] = []
+  for await (const result of executeHooks({
+    hookInput,
+    toolUseID: randomUUID(),
+    matchQuery: info.toModel,
+    signal,
+    toolUseContext,
+    messages: toolUseContext?.messages,
+  })) {
+    if (result.additionalContexts) contexts.push(...result.additionalContexts)
+  }
+  return contexts
+}
+
+/**
+ * Run DirectoryAdded hooks after a working directory was added mid-session.
+ */
+export async function executeDirectoryAddedHooks(
+  directory: string,
+  source: DirectoryAddedHookInput['source'],
+  getAppState?: () => AppState,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): Promise<HookOutsideReplResult[]> {
+  const hookInput: DirectoryAddedHookInput = {
+    ...createBaseHookInput(undefined),
+    hook_event_name: 'DirectoryAdded',
+    directory,
+    source,
+  }
+  return executeHooksOutsideREPL({
+    getAppState,
+    hookInput,
+    matchQuery: source,
+    timeoutMs,
+  })
+}
+
+export function hasMessageDisplayHook(appState?: AppState): boolean {
+  return hasHookForEvent('MessageDisplay', appState, getSessionId())
+}
+
+/**
+ * Run MessageDisplay hooks on assistant text before it is displayed.
+ * Display-only: the stored message and what the model sees are untouched.
+ */
+export async function* executeMessageDisplayHooks(
+  display: {
+    turnId: string
+    messageId: string
+    index: number
+    final: boolean
+    delta: string
+  },
+  toolUseContext?: ToolUseContext,
+  signal?: AbortSignal,
+): AsyncGenerator<AggregatedHookResult> {
+  const hookInput: MessageDisplayHookInput = {
+    ...createBaseHookInput(undefined, undefined, toolUseContext),
+    hook_event_name: 'MessageDisplay',
+    turn_id: display.turnId,
+    message_id: display.messageId,
+    index: display.index,
+    final: display.final,
+    delta: display.delta,
+  }
+  yield* executeHooks({
+    hookInput,
+    toolUseID: `${display.messageId}-${display.index}`,
+    signal,
+    toolUseContext,
+    forceSyncExecution: true,
+  })
 }
 
 /**

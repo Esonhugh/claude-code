@@ -400,7 +400,9 @@ import { processSessionStartHooks } from '../utils/sessionStart.js'
 import {
   executeSessionEndHooks,
   getSessionEndHookTimeoutMs,
+  hasMessageDisplayHook,
 } from '../utils/hooks.js'
+import { applyMessageDisplayHooks } from '../utils/hooks/messageDisplay.js'
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js'
 import { getTools, assembleToolPool } from '../tools.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
@@ -4660,6 +4662,13 @@ export function REPL({
             .join('\n'),
         },
       })) {
+        // MessageDisplay hooks transform assistant text before it is shown.
+        if (
+          event.type === 'assistant' &&
+          hasMessageDisplayHook(toolUseContext.getAppState())
+        ) {
+          await applyMessageDisplayHooks(event, toolUseContext)
+        }
         onQueryEvent(event)
       }
 

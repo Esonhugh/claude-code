@@ -116,7 +116,7 @@ export type PermissionResult =
 export type PermissionMode = 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan' | 'dontAsk' | 'auto'
 
 // Hook Types
-export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Notification' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged'
+export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure' | 'Notification' | 'UserPromptSubmit' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'StopFailure' | 'SubagentStart' | 'SubagentStop' | 'PreCompact' | 'PostCompact' | 'PreModelSwitch' | 'PostModelSwitch' | 'PermissionRequest' | 'PermissionDenied' | 'Setup' | 'TeammateIdle' | 'TaskCreated' | 'TaskCompleted' | 'Elicitation' | 'ElicitationResult' | 'ConfigChange' | 'WorktreeCreate' | 'WorktreeRemove' | 'InstructionsLoaded' | 'CwdChanged' | 'FileChanged' | 'DirectoryAdded' | 'MessageDisplay'
 export type ExitReason = 'clear' | 'resume' | 'logout' | 'prompt_input_exit' | 'other' | 'bypass_permissions_disabled'
 
 export type BaseHookInput = {
@@ -154,8 +154,13 @@ export type WorktreeCreateHookInput = BaseHookInput & { hook_event_name: 'Worktr
 export type WorktreeRemoveHookInput = BaseHookInput & { hook_event_name: 'WorktreeRemove'; worktree_path: string }
 export type CwdChangedHookInput = BaseHookInput & { hook_event_name: 'CwdChanged'; old_cwd: string; new_cwd: string }
 export type FileChangedHookInput = BaseHookInput & { hook_event_name: 'FileChanged'; file_path: string; event: 'change' | 'add' | 'unlink' }
+export type ModelSwitchHookFields = { from_model: string; to_model: string; requested_model: string | null; context_tokens: number }
+export type PreModelSwitchHookInput = BaseHookInput & { hook_event_name: 'PreModelSwitch' } & ModelSwitchHookFields & { source: 'command' | 'picker' | 'sdk' }
+export type PostModelSwitchHookInput = BaseHookInput & { hook_event_name: 'PostModelSwitch' } & ModelSwitchHookFields & { source: 'command' | 'picker' | 'sdk' | 'auto' | 'resume' }
+export type DirectoryAddedHookInput = BaseHookInput & { hook_event_name: 'DirectoryAdded'; directory: string; source: 'slash_command' | 'register_repo_root' }
+export type MessageDisplayHookInput = BaseHookInput & { hook_event_name: 'MessageDisplay'; turn_id: string; message_id: string; index: number; final: boolean; delta: string }
 
-export type HookInput = PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput | PermissionRequestHookInput | PermissionDeniedHookInput | NotificationHookInput | UserPromptSubmitHookInput | SessionStartHookInput | SessionEndHookInput | StopHookInput | StopFailureHookInput | SubagentStartHookInput | SubagentStopHookInput | PreCompactHookInput | PostCompactHookInput | SetupHookInput | TeammateIdleHookInput | TaskCreatedHookInput | TaskCompletedHookInput | ElicitationHookInput | ElicitationResultHookInput | ConfigChangeHookInput | InstructionsLoadedHookInput | WorktreeCreateHookInput | WorktreeRemoveHookInput | CwdChangedHookInput | FileChangedHookInput
+export type HookInput = PreToolUseHookInput | PostToolUseHookInput | PostToolUseFailureHookInput | PermissionRequestHookInput | PermissionDeniedHookInput | NotificationHookInput | UserPromptSubmitHookInput | SessionStartHookInput | SessionEndHookInput | StopHookInput | StopFailureHookInput | SubagentStartHookInput | SubagentStopHookInput | PreCompactHookInput | PostCompactHookInput | SetupHookInput | TeammateIdleHookInput | TaskCreatedHookInput | TaskCompletedHookInput | ElicitationHookInput | ElicitationResultHookInput | ConfigChangeHookInput | InstructionsLoadedHookInput | WorktreeCreateHookInput | WorktreeRemoveHookInput | CwdChangedHookInput | FileChangedHookInput | PreModelSwitchHookInput | PostModelSwitchHookInput | DirectoryAddedHookInput | MessageDisplayHookInput
 
 // Hook Output Types
 export type AsyncHookJSONOutput = { async: true; asyncTimeout?: number }
@@ -173,6 +178,9 @@ export type NotificationHookSpecificOutput = { hookEventName: 'Notification'; ad
 export type PermissionRequestHookSpecificOutput = { hookEventName: 'PermissionRequest'; decision: { behavior: 'allow'; updatedInput?: Record<string, unknown>; updatedPermissions?: PermissionUpdate[] } | { behavior: 'deny'; message?: string; interrupt?: boolean } }
 export type ElicitationHookSpecificOutput = { hookEventName: 'Elicitation'; action?: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
 export type ElicitationResultHookSpecificOutput = { hookEventName: 'ElicitationResult'; action?: 'accept' | 'decline' | 'cancel'; content?: Record<string, unknown> }
+export type PreModelSwitchHookSpecificOutput = { hookEventName: 'PreModelSwitch'; permissionDecision?: 'allow' | 'deny' | 'ask'; permissionDecisionReason?: string }
+export type PostModelSwitchHookSpecificOutput = { hookEventName: 'PostModelSwitch'; additionalContext?: string }
+export type MessageDisplayHookSpecificOutput = { hookEventName: 'MessageDisplay'; displayContent?: string }
 export type CwdChangedHookSpecificOutput = { hookEventName: 'CwdChanged'; watchPaths?: string[] }
 export type FileChangedHookSpecificOutput = { hookEventName: 'FileChanged'; watchPaths?: string[] }
 export type WorktreeCreateHookSpecificOutput = { hookEventName: 'WorktreeCreate'; worktreePath: string }
@@ -184,7 +192,7 @@ export type SyncHookJSONOutput = {
   decision?: 'approve' | 'block'
   systemMessage?: string
   reason?: string
-  hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | StopHookSpecificOutput | SubagentStopHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput
+  hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | StopHookSpecificOutput | SubagentStopHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | PreModelSwitchHookSpecificOutput | PostModelSwitchHookSpecificOutput | MessageDisplayHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput
 }
 export type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 

@@ -1616,3 +1616,168 @@ test.each(['Stop', 'SubagentStop'] as const)(
     ).toEqual(['also run the tests'])
   },
 )
+
+describe('model switch hooks', () => {
+  const info = {
+    fromModel: 'model-a',
+    toModel: 'model-b',
+    requestedModel: 'b',
+    contextTokens: 1234,
+  }
+
+  test('PreModelSwitch receives the switch and proceeds by default', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'watch')
+    f.commands.set('watch', {})
+    const verdict = await f.hooks.executePreModelSwitchHooks(
+      { ...info, source: 'command' },
+      f.context,
+    )
+    expect(verdict).toEqual({ decision: 'proceed' })
+    expect(f.calls[0]?.input).toMatchObject({
+      hook_event_name: 'PreModelSwitch',
+      from_model: 'model-a',
+      to_model: 'model-b',
+      requested_model: 'b',
+      context_tokens: 1234,
+      source: 'command',
+    })
+  })
+
+  test.each([
+    ['deny', { decision: 'block', reason: 'too expensive' }],
+    ['ask', { decision: 'ask', reason: 'too expensive' }],
+    ['allow', { decision: 'proceed' }],
+  ] as const)('permissionDecision %s', async (permissionDecision, expected) => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'decide')
+    f.commands.set('decide', {
+      hookSpecificOutput: {
+        hookEventName: 'PreModelSwitch',
+        permissionDecision,
+        permissionDecisionReason: 'too expensive',
+      },
+    })
+    expect(
+      await f.hooks.executePreModelSwitchHooks(
+        { ...info, source: 'picker' },
+        f.context,
+      ),
+    ).toEqual(expected)
+  })
+
+  test('exit code 2 blocks the switch with stderr', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'no-switch')
+    f.exits.set('no-switch', { code: 2, stderr: 'stay on model-a' })
+    expect(
+      await f.hooks.executePreModelSwitchHooks({ ...info, source: 'sdk' }),
+    ).toEqual({ decision: 'block', reason: '[no-switch]: stay on model-a' })
+  })
+
+  test('PostModelSwitch returns additionalContext', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PostModelSwitch', 'note')
+    f.commands.set('note', {
+      hookSpecificOutput: {
+        hookEventName: 'PostModelSwitch',
+        additionalContext: 'now on model-b',
+      },
+    })
+    expect(
+      await f.hooks.executePostModelSwitchHooks(
+        { ...info, source: 'command' },
+        f.context,
+      ),
+    ).toEqual(['now on model-b'])
+    expect(f.calls[0]?.input.hook_event_name).toBe('PostModelSwitch')
+  })
+})
+
+test('DirectoryAdded hooks receive the directory and match on source', async () => {
+  const f = fixture()
+  f.addHook(
+    'userSettings',
+    'DirectoryAdded',
+    { type: 'command', command: 'added' },
+    'slash_command',
+  )
+  f.addHook(
+    'userSettings',
+    'DirectoryAdded',
+    { type: 'command', command: 'sdk-only' },
+    'register_repo_root',
+  )
+  f.commands.set('added', { systemMessage: 'indexed' })
+  const results = await f.hooks.executeDirectoryAddedHooks(
+    '/work/extra',
+    'slash_command',
+  )
+  expect(f.calls.map((call) => call.command)).toEqual(['added'])
+  expect(f.calls[0]?.input).toMatchObject({
+    hook_event_name: 'DirectoryAdded',
+    directory: '/work/extra',
+    source: 'slash_command',
+  })
+  expect(results).toEqual([
+    expect.objectContaining({ succeeded: true, systemMessage: 'indexed' }),
+  ])
+})
+
+test('MessageDisplay hooks can replace the displayed text', async () => {
+  const f = fixture()
+  f.add('userSettings', 'MessageDisplay', 'redact')
+  f.commands.set('redact', {
+    hookSpecificOutput: {
+      hookEventName: 'MessageDisplay',
+      displayContent: 'hello [redacted]',
+    },
+  })
+  const results = await collect(
+    f.hooks.executeMessageDisplayHooks(
+      {
+        turnId: 'turn-1',
+        messageId: 'message-1',
+        index: 0,
+        final: true,
+        delta: 'hello secret',
+      },
+      f.context,
+    ),
+  )
+  expect(f.calls[0]?.input).toMatchObject({
+    hook_event_name: 'MessageDisplay',
+    turn_id: 'turn-1',
+    message_id: 'message-1',
+    index: 0,
+    final: true,
+    delta: 'hello secret',
+  })
+  expect(results.find((result) => result.displayContent)?.displayContent).toBe(
+    'hello [redacted]',
+  )
+})
+
+test('model switch hooks match on to_model', async () => {
+  const f = fixture()
+  f.addHook(
+    'userSettings',
+    'PostModelSwitch',
+    { type: 'command', command: 'other' },
+    'model-z',
+  )
+  f.addHook(
+    'userSettings',
+    'PostModelSwitch',
+    { type: 'command', command: 'mine' },
+    'model-b',
+  )
+  await f.hooks.executePostModelSwitchHooks({
+    fromModel: 'model-a',
+    toModel: 'model-b',
+    requestedModel: null,
+    contextTokens: 0,
+    source: 'sdk',
+  })
+  expect(f.calls.map((call) => call.command)).toEqual(['mine'])
+})

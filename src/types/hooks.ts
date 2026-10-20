@@ -145,6 +145,19 @@ export const syncHookResponseSchema = lazySchema(() =>
           ]),
         }),
         z.object({
+          hookEventName: z.literal('PreModelSwitch'),
+          permissionDecision: z.enum(['allow', 'deny', 'ask']).optional(),
+          permissionDecisionReason: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('PostModelSwitch'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('MessageDisplay'),
+          displayContent: z.string().optional(),
+        }),
+        z.object({
           hookEventName: z.literal('Elicitation'),
           action: z.enum(['accept', 'decline', 'cancel']).optional(),
           content: z.record(z.string(), z.unknown()).optional(),

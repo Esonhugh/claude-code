@@ -376,6 +376,8 @@ export const HOOK_EVENTS = [
   'SubagentStop',
   'PreCompact',
   'PostCompact',
+  'PreModelSwitch',
+  'PostModelSwitch',
   'PermissionRequest',
   'PermissionDenied',
   'Setup',
@@ -390,6 +392,8 @@ export const HOOK_EVENTS = [
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  'DirectoryAdded',
+  'MessageDisplay',
 ] as const
 
 export const HookEventSchema = lazySchema(() => z.enum(HOOK_EVENTS))
@@ -754,6 +758,103 @@ export const FileChangedHookInputSchema = lazySchema(() =>
   ),
 )
 
+const ModelSwitchFieldsSchema = lazySchema(() =>
+  z.object({
+    from_model: z
+      .string()
+      .describe('Resolved model id the session was running before the switch'),
+    to_model: z
+      .string()
+      .describe('Resolved model id the session runs after the switch'),
+    requested_model: z
+      .string()
+      .nullable()
+      .describe(
+        'What was asked for (alias such as "opus", a full id, or null for "default")',
+      ),
+    context_tokens: z
+      .number()
+      .describe(
+        "Prompt tokens the next request re-sends: the last main-thread response's input + cache_read + cache_creation + output tokens (0 before the first response)",
+      ),
+  }),
+)
+
+export const PreModelSwitchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(z.object({ hook_event_name: z.literal('PreModelSwitch') }))
+    .and(
+      ModelSwitchFieldsSchema().extend({
+        source: z
+          .enum(['command', 'picker', 'sdk'])
+          .describe(
+            'command: /model <name>; picker: an interactive model picker; sdk: headless set_model',
+          ),
+      }),
+    ),
+)
+
+export const PostModelSwitchHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(z.object({ hook_event_name: z.literal('PostModelSwitch') }))
+    .and(
+      ModelSwitchFieldsSchema().extend({
+        source: z
+          .enum(['command', 'picker', 'sdk', 'auto', 'resume'])
+          .describe(
+            'command: /model <name>; picker: an interactive model picker; sdk: headless set_model; auto: automatic fallback or other programmatic change; resume: model restored while resuming a session',
+          ),
+      }),
+    ),
+)
+
+export const DirectoryAddedHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('DirectoryAdded'),
+      directory: z
+        .string()
+        .describe('Absolute path of the directory that was added.'),
+      source: z
+        .enum(['slash_command', 'register_repo_root'])
+        .describe(
+          'How the directory was added: "slash_command" for /add-dir, "register_repo_root" for the SDK control_request.',
+        ),
+    }),
+  ),
+)
+
+export const MessageDisplayHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema()
+    .and(
+      z.object({
+        hook_event_name: z.literal('MessageDisplay'),
+        turn_id: z.string().describe('UUID of the current turn.'),
+        message_id: z
+          .string()
+          .describe(
+            'UUID of the assistant message being displayed. Stable across every flush of the same message. Not the API msg_... id.',
+          ),
+        index: z
+          .number()
+          .describe(
+            'Zero-based index of this delta within the message. Increments by one per flush.',
+          ),
+        final: z
+          .boolean()
+          .describe(
+            "True on the message's last flush. Exactly one flush per message has it.",
+          ),
+        delta: z
+          .string()
+          .describe('The newly completed lines since the prior flush.'),
+      }),
+    )
+    .describe(
+      'Hook input for the MessageDisplay event. Display-only: the stored message and what the model sees are untouched.',
+    ),
+)
+
 export const EXIT_REASONS = [
   'clear',
   'resume',
@@ -790,6 +891,8 @@ export const HookInputSchema = lazySchema(() =>
     SubagentStopHookInputSchema(),
     PreCompactHookInputSchema(),
     PostCompactHookInputSchema(),
+    PreModelSwitchHookInputSchema(),
+    PostModelSwitchHookInputSchema(),
     PermissionRequestHookInputSchema(),
     SetupHookInputSchema(),
     TeammateIdleHookInputSchema(),
@@ -803,6 +906,8 @@ export const HookInputSchema = lazySchema(() =>
     WorktreeRemoveHookInputSchema(),
     CwdChangedHookInputSchema(),
     FileChangedHookInputSchema(),
+    DirectoryAddedHookInputSchema(),
+    MessageDisplayHookInputSchema(),
   ]),
 )
 
@@ -923,6 +1028,31 @@ export const PermissionRequestHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
+export const PreModelSwitchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PreModelSwitch'),
+    permissionDecision: z.enum(['allow', 'deny', 'ask']).optional(),
+    permissionDecisionReason: z.string().optional(),
+  }),
+)
+
+export const PostModelSwitchHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('PostModelSwitch'),
+    additionalContext: z.string().optional(),
+  }),
+)
+
+export const MessageDisplayHookSpecificOutputSchema = lazySchema(() =>
+  z.object({
+    hookEventName: z.literal('MessageDisplay'),
+    displayContent: z
+      .string()
+      .describe('Replaces the delta on screen; the stored message is untouched')
+      .optional(),
+  }),
+)
+
 export const CwdChangedHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('CwdChanged'),
@@ -959,6 +1089,9 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
         PermissionDeniedHookSpecificOutputSchema(),
         NotificationHookSpecificOutputSchema(),
         PermissionRequestHookSpecificOutputSchema(),
+        PreModelSwitchHookSpecificOutputSchema(),
+        PostModelSwitchHookSpecificOutputSchema(),
+        MessageDisplayHookSpecificOutputSchema(),
         ElicitationHookSpecificOutputSchema(),
         ElicitationResultHookSpecificOutputSchema(),
         CwdChangedHookSpecificOutputSchema(),
