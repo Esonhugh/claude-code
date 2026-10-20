@@ -2,6 +2,8 @@ import { resolve } from 'node:path'
 import { modTelemetryArgs, modTelemetryCoreResult, modTelemetryResult, validateModTelemetryResult } from './telemetry.js'
 import type { ModCommandRequest } from './commandRunQueue.js'
 import { createModUiAskRequest } from './uiAsk.js'
+import { validatePromptMentionResult } from './promptMention.js'
+import { modSessionAppendArgs, modSessionAppendNote, restoreSessionAppendInput, validateSessionAppendInput, validateSessionAppendResult, type SessionAppendMessage } from './sessionAppend.js'
 import { modSessionSendArgs, resolveModSessionSendAddress, sessionSendToolResult, validateSessionSendResult } from './sessionSend.js'
 import { unlistedModMcpServer, type ModMcpConnectResult } from './mcpConnect.js'
 import type { LoadedPlugin } from '../../types/plugin.js'
@@ -165,6 +167,8 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   uiSelection?(): ModUiSelection | undefined
   uiCopy?(input: ModUiCopyArgs & {surface: ModRenderSurface}, plugin: string, signal: AbortSignal): Promise<ModUiCopyResult>
   uiLog?(plugin: string, text: string, to: 'transcript' | 'debug'): void
+  /** Keeps a plugin's own row (door `note`) in the main conversation. */
+  appendMessage?(row: { message: SessionAppendMessage; uuid: string }): void | Promise<void>
   /** Runs queued input while the host is idle; QueryEngine calls it for input it queued after its turn ended. */
   wake?(): void | Promise<void>
   uiStatus?(plugin: string, text: string | undefined): void
@@ -283,7 +287,7 @@ const coreHost: Nouns = {
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { compact: hostIdentity, send: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
+  session: { compact: hostIdentity, send: hostIdentity, append: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { run: hostIdentity, register: hostIdentity, list: hostIdentity },
@@ -1140,6 +1144,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return entry?.instructions === undefined ? {} : {instructions:entry.instructions}
       }
       case 'session.send': return modSessionSendArgs(args[0], plugin)
+      case 'session.append': return modSessionAppendArgs(args[0], plugin)
       case 'session.usage': {
         const input = args[0] === undefined ? {} : args[0]
         if (args.length > 1) throw new TypeError('session.usage takes one optional object')
@@ -1992,6 +1997,33 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
               },
             ))
           }
+          if (fn === hostIdentity && op === 'session.append') {
+            const plugin = owner.declaration.name
+            const args = input as ReturnType<typeof modSessionAppendArgs>
+            const append = services.appendMessage
+            if (args.agentId !== undefined)
+              throw Object.assign(new Error(`${plugin}: $.session.append: no running loop is ${args.agentId}`), {name:'HooksError'})
+            if (!append)
+              throw Object.assign(new Error(`${plugin}: $.session.append: this session keeps no conversation to append to`), {name:'HooksError'})
+            const row = modSessionAppendNote(args)
+            if ('reason' in row)
+              throw Object.assign(new Error(`${plugin}: $.session.append: ${row.reason}`), {name:'HooksError'})
+            const eventInput = { message: row.message, door: 'note', origin: { kind: 'plugin', name: plugin }, uuid: randomUUID() }
+            return withReference(owner, () => dispatch(op, eventInput, async rewritten => {
+              const kept = modSessionAppendNote({ message: rewritten.message as ReturnType<typeof modSessionAppendArgs>['message'] })
+              if ('reason' in kept) return { deny: kept.reason }
+              const stored = { message: kept.message, uuid: eventInput.uuid }
+              await append(stored)
+              logForDebugging(`[ModsAppend] plugin=${plugin} kept ${kept.message.type} row uuid=${stored.uuid}`)
+              return stored
+            }, snapshot, table, {
+              signal,
+              origin: { plugin, tier: owner.declaration.tier },
+              ...(caller ? { caller } : {}),
+              restoreInput: restoreSessionAppendInput,
+              validateInput: validateSessionAppendInput,
+            }))
+          }
           if (fn === hostIdentity && op === 'agent.spawn') {
             const request = requestServices.getStore()
             const spawn = request?.agentSpawn ?? services.agentSpawn ?? request?.toolHost?.()?.spawn ?? services.toolHost?.()?.spawn
@@ -2628,6 +2660,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }
     if (event === 'session.receive') return validateSessionReceiveResult(result)
     if (event === 'session.send') return validateSessionSendResult(result)
+    if (event === 'session.append') return validateSessionAppendResult(result)
+    if (event === 'prompt.mention') return validatePromptMentionResult(result)
     if (event === 'session.attach' || event === 'session.detach') {
       if (!result || typeof result !== 'object' || Array.isArray(result) || typeof (result as ModInput).clientId !== 'string')
         throw new TypeError(`${event} must return clientId`)

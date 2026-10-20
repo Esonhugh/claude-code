@@ -426,6 +426,7 @@ import { countModSessionTurns } from '../services/mods/sessionTurns.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { sessionAppendEngineMessage } from '../services/mods/sessionAppend.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { createModPromptEditQueue, runModPromptEdit } from '../services/mods/promptEdit.js'
@@ -2193,6 +2194,7 @@ export function REPL({
       logForDebugging(`[Mods:${plugin}] ${text}`)
       if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
     },
+    appendMessage: row => setMessages(previous => [...previous, sessionAppendEngineMessage(row)]),
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),

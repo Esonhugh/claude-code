@@ -27,7 +27,17 @@ export type SetAppState = (f: (prev: AppState) => AppState) => void
 // Logging helper
 // ============================================================================
 
-function logOperation(operation: QueueOperation, content?: string): void {
+/** Rewrites a queue record's text before it is kept (mods `session.append`, door `queue`). */
+export type QueueRecordRewriter = (text: string, origin: QueuedCommand['origin']) => Promise<string> | undefined
+
+let queueRecordRewriter: QueueRecordRewriter | undefined
+let pendingRecords: Promise<void> | undefined
+
+export function setQueueRecordRewriter(rewriter: QueueRecordRewriter | undefined): void {
+  queueRecordRewriter = rewriter
+}
+
+function logOperation(operation: QueueOperation, content?: string, origin?: QueuedCommand['origin']): void {
   const sessionId = getSessionId()
   const queueOp: QueueOperationMessage = {
     type: 'queue-operation',
@@ -36,7 +46,20 @@ function logOperation(operation: QueueOperation, content?: string): void {
     sessionId,
     ...(content !== undefined && { content }),
   }
-  void recordQueueOperation(queueOp)
+  const rewritten = content === undefined ? undefined : queueRecordRewriter?.(content, origin)
+  if (!rewritten && !pendingRecords) {
+    void recordQueueOperation(queueOp)
+    return
+  }
+  // Records keep their order while one waits on its hooks.
+  const record = (pendingRecords ?? Promise.resolve()).then(async () => {
+    const text = rewritten ? await rewritten.catch(() => content) : content
+    await recordQueueOperation(text === undefined ? queueOp : { ...queueOp, content: text })
+  }).catch(() => {})
+  pendingRecords = record
+  void record.then(() => {
+    if (pendingRecords === record) pendingRecords = undefined
+  })
 }
 
 // ============================================================================
@@ -142,6 +165,7 @@ function enqueueCommand(command: QueuedCommand): QueuedCommand {
   logOperation(
     'enqueue',
     typeof command.value === 'string' ? command.value : undefined,
+    command.origin,
   )
   return queued
 }
@@ -499,6 +523,7 @@ export function popAllEditable(
     logOperation(
       'popAll',
       typeof command.value === 'string' ? command.value : undefined,
+      command.origin,
     )
   }
 

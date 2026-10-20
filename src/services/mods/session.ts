@@ -14,6 +14,8 @@ import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { subscribeRateLimitUsage } from '../claudeAiLimits.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { seatNativeModPlugins } from './native.js'
+import { appendModQueueRecord } from './sessionAppend.js'
+import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
@@ -618,6 +620,15 @@ export function createModsSession(options: ModsSessionOptions) {
         return
       }
       runtime = created
+      setQueueRecordRewriter((text, origin) => {
+        const snapshot = runtime?.capture()
+        if (!snapshot?.hasHooks('session.append')) {
+          snapshot?.release()
+          return undefined
+        }
+        const promptOrigin = origin === undefined ? { kind: 'unclassified' } : origin.kind === 'human' ? { kind: 'composer' } : structuredClone(origin)
+        return appendModQueueRecord(snapshot, text, promptOrigin).finally(() => snapshot.release())
+      })
       unsubscribeRender = runtime.renderHooks.subscribe(publishRender)
       publishRender()
       runtimeBound = binding !== undefined
@@ -860,6 +871,7 @@ export function createModsSession(options: ModsSessionOptions) {
     unsubscribeSettings?.()
     unsubscribePlugins?.()
     unsubscribeOptions?.()
+    setQueueRecordRewriter(undefined)
     const close = Promise.all([watcherClosing, watcher?.close()])
     watcher = undefined
     // Close watchers before the first awaited runtime teardown. Async loads and

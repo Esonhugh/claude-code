@@ -29,13 +29,13 @@ const coreNouns = new Set([
   'prompt', 'model', 'turn', 'ui', 'fs', 'http', 'process', 'store', 'state', 'settings', 'env',
 ])
 const supportedEvents = new Set([
-  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
+  'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.send', 'session.compact', 'session.append', 'session.attach', 'session.detach', 'session.measure', 'tool.call', 'tool.check',
   'clock.now', 'clock.sleep', 'clock.after', 'clock.every', 'mcp.call',
   'config.set', 'config.describe', 'session.authorize', 'http.fetch',
   'fs.read', 'fs.write', 'fs.list', 'fs.exists', 'fs.stat', 'fs.ancestors', 'process.run', 'process.spawn',
   'store.get', 'store.set', 'store.delete', 'store.keys', 'state.get', 'state.set', 'env.get', 'env.set',
   'session.cwd', 'session.root', 'session.model', 'session.turns', 'session.id', 'session.repo', 'session.surface', 'session.surfaces', 'session.messages', 'session.usage', 'session.version',
-  'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
+  'agent.spawn', 'agent.register', 'agent.list', 'command.register', 'command.list', 'command.run', 'prompt.compose', 'prompt.autocomplete', 'prompt.edit', 'prompt.submit', 'prompt.mention', 'prompt.fill', 'prompt.read', 'prompt.suggest', 'model.complete', 'model.classify', 'model.fork', 'turn.start', 'turn.step', 'turn.complete', 'turn.abort',
   'ui.resolve', 'ui.render', 'ui.open', 'ui.close', 'ui.panes', 'ui.blit', 'ui.scroll', 'ui.focus', 'ui.invalidate', 'ui.notice', 'ui.log', 'ui.status', 'ui.toast', 'ui.selection', 'ui.copy',
   'mcp.connect',
   'ui.press', 'ui.input', 'ui.select', 'ui.message', 'ui.fault',
@@ -51,7 +51,7 @@ const scanOnlyEvents = new Set([
 ])
 const supportedCalls = new Set([...supportedEvents].filter(event => ![
   'engine.create', 'plugin.register', 'session.start', 'session.end', 'session.receive', 'session.compact', 'session.measure', 'tool.call', 'command.run', 'turn.start', 'turn.complete', 'ui.render',
-  'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit',
+  'ui.press', 'ui.input', 'ui.select', 'ui.fault', 'config.describe', 'prompt.autocomplete', 'prompt.edit', 'prompt.mention',
 ].includes(event)))
 for (const call of OFFICIAL_CORE_CALLS) supportedCalls.add(call)
 supportedCalls.add('config.list')

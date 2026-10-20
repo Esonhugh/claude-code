@@ -52,6 +52,7 @@ import type { PromptComposeInput, PromptComposeResult, PromptComposeSection } fr
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './constants/prompts.js'
 import { shouldUseGlobalCacheScope } from './utils/betas.js'
 import { renderModPromptAttachments } from './services/mods/promptAttachments.js'
+import { appendModToolResult } from './services/mods/sessionAppend.js'
 import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
   AssistantMessage,
@@ -364,6 +365,7 @@ export async function* query(
   const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
   const handlesStep = (isPublicTurn || registeredTurn !== undefined) && snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
   const handlesCompact = snapshot?.hasHooks('session.compact') === true
+  const handlesAppend = snapshot?.hasHooks('session.append') === true
   if (
     !isPublicTurn &&
     !handlesStart &&
@@ -376,7 +378,8 @@ export async function* query(
     !handlesCompose &&
     !handlesAttachments &&
     !handlesStep &&
-    !handlesCompact
+    !handlesCompact &&
+    !handlesAppend
   ) {
     snapshot?.release()
     const terminal = yield* queryLoop(params, consumedCommandUuids)
@@ -1927,8 +1930,10 @@ async function* queryLoop(
       ? streamingToolExecutor.getRemainingResults()
       : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
 
-    for await (const update of toolUpdates) {
+    for await (let update of toolUpdates) {
       if (update.message) {
+        if (update.message.type === 'user' && snapshot?.hasHooks('session.append'))
+          update = { ...update, message: await appendModToolResult(snapshot, update.message, toolUseBlocks, toolUseContext) }
         yield update.message
 
         if (
