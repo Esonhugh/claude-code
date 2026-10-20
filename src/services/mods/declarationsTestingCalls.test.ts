@@ -67,10 +67,10 @@ plugin.prompt.edit({origin:{kind:'composer'},text:'',cursor:0,start:0,end:0,inpu
  expect(output.map(({file,line,code})=>({file,line,code}))).toEqual([{file:'author.ts',line:5,code:2322},{file:'author.ts',line:6,code:18046},{file:'author.ts',line:7,code:2339},{file:'author.ts',line:8,code:2339}])
 })
 
-test('testing helpers preserve the complete pinned 292 testing module without an auxiliary module',async()=>{
+test('testing helpers preserve the complete pinned 303 testing module without an auxiliary module',async()=>{
  const files=generateModDeclarationFiles('2.1.289',schemaTools())
  const main=files.find(file=>file.path==='claude-code/index.d.ts')!
- const official=await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt',import.meta.url),'utf8')
+ const official=await readFile(new URL('../../../assets/mods-2.1.303.d.ts.txt',import.meta.url),'utf8')
  const start=official.indexOf("declare module 'claude-code/testing' {")
  expect(start).toBeGreaterThanOrEqual(0)
  expect(main.text).toContain(official.slice(start))

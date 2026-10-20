@@ -434,7 +434,7 @@ const bootstrap = `((bridge, invokeUi, isProxy, isPromise, plugin, environment, 
     const selected = event.startsWith('!') ? event.slice(1) : event;
     if (selected !== '*' && !selected.endsWith('.*')) {
       const [noun, method] = selected.split('.');
-      if (reserved.has(noun) || reserved.has(method) || core.has(noun) && !supported.has(selected)) throw Error('Unsupported hook event');
+      if (reserved.has(noun) || reserved.has(method) || core.has(noun) && !supported.has(selected)) throw Error('Unsupported hook event ' + selected);
     }
     let checkedMatcher;
     if (matcher !== undefined) {

@@ -1,4 +1,4 @@
-// Public methods from assets/mods-2.1.292.d.ts.txt CoreEngineInterface.
+// Public methods from assets/mods-2.1.303.d.ts.txt CoreEngineInterface.
 // coreCallContract.test.ts checks every member against that same declaration.
 export const OFFICIAL_CORE_CALLS = [
   "agent.list",
@@ -33,6 +33,7 @@ export const OFFICIAL_CORE_CALLS = [
   "process.spawn",
   "prompt.compose",
   "prompt.fill",
+  "prompt.media",
   "prompt.read",
   "prompt.submit",
   "prompt.suggest",
@@ -41,6 +42,7 @@ export const OFFICIAL_CORE_CALLS = [
   "session.compact",
   "session.cwd",
   "session.id",
+  "session.identity",
   "session.messages",
   "session.model",
   "session.repo",
@@ -73,6 +75,7 @@ export const OFFICIAL_CORE_CALLS = [
   "ui.invalidate",
   "ui.log",
   "ui.notice",
+  "ui.notify",
   "ui.open",
   "ui.panes",
   "ui.resolve",
@@ -80,6 +83,7 @@ export const OFFICIAL_CORE_CALLS = [
   "ui.selection",
   "ui.status",
   "ui.toast",
+  "ui.view",
 ] as const
 
 export const officialCoreCalls: ReadonlySet<string> = new Set(OFFICIAL_CORE_CALLS)

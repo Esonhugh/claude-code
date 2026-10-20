@@ -36,12 +36,12 @@ test('strict complete author declarations separate ordinary next from caught nex
           return next(e)
         }).catch((_$,e,next)=>{
           const caught:Caught=next, failure:HookFailure=next.error, called:boolean=next.called
-          // Official 2.1.292 adds re-entry and the optional lent cause.
-          const kind:'throw'|'timeout'|'re-entry'=failure.kind, message:string|undefined=failure.message, budget:number=failure.budget
-          const cause:'lent'|undefined=failure.cause
-          const reEntry:HookFailure={kind:'re-entry',cause:'lent',budget:25}
-          // @ts-expect-error Failure cause is read only too.
-          failure.cause='lent'
+          // Official 2.1.301 drops re-entry and its cause: a catch runs on a throw or a timeout.
+          const kind:'throw'|'timeout'=failure.kind, message:string|undefined=failure.message, budget:number=failure.budget
+          // @ts-expect-error A failure no longer carries a cause.
+          const cause=failure.cause
+          // @ts-expect-error re-entry is no longer a failure kind.
+          const reEntry:HookFailure={kind:'re-entry',budget:25}
           // @ts-expect-error Caught metadata is read only.
           next.called=false
           // @ts-expect-error Failure metadata is read only.

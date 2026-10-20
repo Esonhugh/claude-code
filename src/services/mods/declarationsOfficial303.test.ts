@@ -4,9 +4,9 @@ import {readFileSync} from 'node:fs'
 import ts from 'typescript'
 import {generateModDeclarationFiles} from './declarations.js'
 
-const canonical = readFileSync(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
-const hash = 'ec9fb8b86b52427c134e267749aa04ca84e419735e75810f5d2e5fa23f657ab3'
-const author = readFileSync(new URL('./fixtures/author292-contract.ts.txt', import.meta.url), 'utf8')
+const canonical = readFileSync(new URL('../../../assets/mods-2.1.303.d.ts.txt', import.meta.url), 'utf8')
+const hash = '8afa71883ecfa52901eb7a04cf31fef700d8ba565eaad244f4884cc620f8d56e'
+const author = readFileSync(new URL('./fixtures/author303-contract.ts.txt', import.meta.url), 'utf8')
 const sha = (text: string) => createHash('sha256').update(text).digest('hex')
 
 function project(source: string, official = false) {
@@ -35,17 +35,17 @@ function surface(program: ts.Program) {
     exports: checker.getExportsOfModule(module).map(symbol => symbol.name).sort()}))
 }
 
-test('pinned 292 source matches the verified native declaration asset', () => {
-  expect(Buffer.byteLength(canonical)).toBe(612117)
+test('pinned 303 source matches the verified native declaration asset', () => {
+  expect(Buffer.byteLength(canonical)).toBe(651852)
   expect(sha(canonical)).toBe(hash)
 })
 
-test('generated declarations preserve292 with only the pinned official295 Button extension', () => {
+test('generated declarations are the pinned official 303 source byte for byte', () => {
   const text = generateModDeclarationFiles('2.1.280', [])[0]!.text
   expect(text.startsWith('// Written by Claude Code 2.1.280.\n')).toBe(true)
   const start = text.indexOf('// Claude Code function hooks:')
   expect(start).toBeGreaterThanOrEqual(0)
-  expect(sha(text.slice(start, text.lastIndexOf('\n// Claude Code owned declaration sha256=')))).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
+  expect(sha(text.slice(start, text.lastIndexOf('\n// Claude Code owned declaration sha256=')))).toBe(hash)
 })
 
 test('all current public names and testing exports match the official checker', () => {
@@ -53,11 +53,11 @@ test('all current public names and testing exports match the official checker', 
   expect(diagnostics(official)).toEqual([])
   expect(diagnostics(local)).toEqual([])
   expect(surface(local)).toEqual(surface(official))
-  expect(surface(local).find(module => module.name === '"claude-code"')!.exports).toHaveLength(565)
-  expect(surface(local).find(module => module.name === '"claude-code/testing"')!.exports).toHaveLength(51)
-})
+  expect(surface(local).find(module => module.name === '"claude-code"')!.exports).toHaveLength(585)
+  expect(surface(local).find(module => module.name === '"claude-code/testing"')!.exports).toHaveLength(52)
+}, 30_000)
 
-test('strict authors type cache blocks, autocomplete, workflow facts and re-entry guards exactly', () => {
+test('strict authors type cache blocks, autocomplete, workflow facts and caught failures exactly', () => {
   expect(diagnostics(project(author, true))).toEqual([])
   expect(diagnostics(project(author))).toEqual([])
 })
@@ -67,7 +67,7 @@ test('invalid latest author inputs produce the same precise diagnostics as offic
     const cache:ModelTextBlock={text:'x',cache:false};
     const hook:ModelCompleteInput={model:'sonnet',prompt:[{text:'x'}]};
     const complete:PromptAutocompleteInput={text:'#',cursor:1,start:0};
-    const failure:HookFailure={kind:'re-entry',cause:'direct'};`
+    const failure:HookFailure={kind:'re-entry'};`
   const expected = diagnostics(project(invalid, true))
   expect(expected).toHaveLength(4)
   expect(diagnostics(project(invalid))).toEqual(expected)
