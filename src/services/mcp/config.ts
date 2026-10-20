@@ -14,6 +14,7 @@ import {
   saveGlobalConfig,
 } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
+import { isSafeMode } from '../../utils/envUtils.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getErrnoCode } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
@@ -1123,6 +1124,10 @@ export async function getClaudeCodeMcpConfigs(
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
+  // Safe mode disables every MCP server, enterprise ones included.
+  if (isSafeMode()) {
+    return { servers: {}, errors: [] }
+  }
   const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
 
   // If an enterprise mcp config exists, do not use any others; this has exclusive control over all MCP servers

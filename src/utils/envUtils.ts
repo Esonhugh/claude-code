@@ -66,6 +66,24 @@ export function isBareMode(): boolean {
   )
 }
 
+/**
+ * --safe-mode / CLAUDE_CODE_SAFE_MODE — start with every customization off
+ * (CLAUDE.md, skills, installed plugins, non-managed hooks, MCP servers,
+ * custom agents, output styles, workflows, keybindings, LSP, auto-memory) to
+ * troubleshoot a broken configuration. Policy settings, auth, model selection,
+ * built-in tools/plugins and permissions keep working.
+ *
+ * Like isBareMode, reads argv too (only before a `--` separator, as official
+ * does) so gates evaluated before the action handler see the flag.
+ */
+export function isSafeMode(): boolean {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_SAFE_MODE)) return true
+  const separator = process.argv.indexOf('--')
+  const argv =
+    separator === -1 ? process.argv : process.argv.slice(0, separator)
+  return argv.includes('--safe-mode')
+}
+
 export function isSSHLocalUI(): boolean {
   return process.env.CLAUDE_CODE_SSH_LOCAL_UI === '1'
 }

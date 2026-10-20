@@ -83,7 +83,7 @@ export function isLoadedSessionOnlyPlugin(plugin:LoadedPlugin): boolean {
   return sessionOnlyPluginIdentities.get(plugin) === sessionOnlyCoordinates(plugin)
 }
 import { logForDebugging } from '../debug.js'
-import { isEnvTruthy } from '../envUtils.js'
+import { isEnvTruthy, isSafeMode } from '../envUtils.js'
 import {
   errorMessage,
   getErrnoPath,
@@ -3502,10 +3502,16 @@ async function assemblePluginLoadResult(
   if (restricted && configuredInlinePlugins.length + configuredPluginUrls.length > 0) {
     logForDebugging(`disableSideloadFlags: dropping @inline plugin specs at load time (parse-site gate should have caught this earlier): ${getSideloadFlagsError(['--plugin-dir', '--plugin-url'])}`, { level: 'warn' })
   }
-  const inlinePlugins = restricted ? [] : configuredInlinePlugins
-  const pluginUrls = restricted ? [] : configuredPluginUrls
+  // Safe mode disables installed and --plugin-dir plugins (and with them
+  // their hooks, MCP servers and Mods); built-in plugins still load.
+  const safeMode = isSafeMode()
+  if (safeMode) {
+    logForDebugging('Safe mode: installed plugins are disabled; built-in plugins load regardless')
+  }
+  const inlinePlugins = restricted || safeMode ? [] : configuredInlinePlugins
+  const pluginUrls = restricted || safeMode ? [] : configuredPluginUrls
   const [marketplaceResult, sessionResult] = await Promise.all([
-    marketplaceLoader(),
+    safeMode ? Promise.resolve({ plugins: [], errors: [] }) : marketplaceLoader(),
     inlinePlugins.length + pluginUrls.length > 0
       ? loadSessionOnlyPlugins(inlinePlugins, undefined, contractOnly, noMcpPaths, pluginUrls)
       : Promise.resolve({ plugins: [], errors: [] }),

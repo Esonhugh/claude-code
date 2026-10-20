@@ -12,6 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
+
+### 版本状态
+
+- 未发布；版本与依赖保持不变。对齐官方 2.1.303 的 `--safe-mode`、权限规则与自动模式本地分类器行为；服务器端分类器不在范围内。
+
+### 变更内容
+
+- 新增 `--safe-mode` 与 `CLAUDE_CODE_SAFE_MODE`（对齐官方 2.1.169）：停用 CLAUDE.md、自定义 skills/commands、已安装与 `--plugin-dir` 插件（含其 hooks、MCP 与 Mods）、非托管 hooks、全部 MCP 服务器（含 `--mcp-config` 与 claude.ai 连接器）、`--agents` 与自定义 agents、output styles、自定义 workflows、keybindings、LSP 与自动记忆；托管（policy）设置、认证、模型选择、内置工具与内置插件、权限照常，启动时显示安全模式提示。
+
+### 测试覆盖
+
+- 新增 `src/utils/safeMode.test.ts`，覆盖环境变量与 `--` 之前的旗标、托管 hooks、自动记忆、keybindings、agents、skills、output styles、workflows 与 MCP 的停用及非安全模式对照；构建后 `node ./dist/cli.js --help` 显示官方帮助文案。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态

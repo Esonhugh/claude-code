@@ -19,7 +19,7 @@ import {
   type EffortValue,
   parseEffortValue,
 } from '../../utils/effort.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvTruthy, isSafeMode } from '../../utils/envUtils.js'
 import { parsePositiveIntFromFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
@@ -298,8 +298,8 @@ async function initializeAgentMemorySnapshots(
 
 export const getAgentDefinitionsWithOverrides = memoize(
   async (cwd: string): Promise<AgentDefinitionsResult> => {
-    // Simple mode: skip custom agents, only return built-ins
-    if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
+    // Simple and safe mode: skip custom agents, only return built-ins
+    if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE) || isSafeMode()) {
       const builtInAgents = getBuiltInAgents()
       return {
         activeAgents: builtInAgents,

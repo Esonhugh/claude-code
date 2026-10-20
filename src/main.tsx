@@ -239,6 +239,7 @@ import {
   isBareMode,
   isEnvTruthy,
   isInProtectedNamespace,
+  isSafeMode,
   isSSHLocalUI,
 } from './utils/envUtils.js'
 import { refreshExampleCommands } from './utils/exampleCommands.js'
@@ -1335,6 +1336,11 @@ async function run(): Promise<CommanderCommand> {
       'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.',
       () => true,
     )
+    .option(
+      '--safe-mode',
+      'Start with all customizations (CLAUDE.md, skills, installed plugins, hooks, MCP servers, custom commands and agents, output styles, workflows, keybindings, and more) disabled \u2014 useful for troubleshooting a broken configuration. Admin-managed (policy) settings still apply. Auth, model selection, built-in tools and plugins, and permissions work normally. Sets CLAUDE_CODE_SAFE_MODE=1.',
+      () => true,
+    )
     .addOption(
       new Option(
         '--init',
@@ -1690,6 +1696,12 @@ async function run(): Promise<CommanderCommand> {
       // dir-walk). Must be set before setup() / any of the gated work runs.
       if ((options as { bare?: boolean }).bare) {
         process.env.CLAUDE_CODE_SIMPLE = '1'
+      }
+      // --safe-mode / CLAUDE_CODE_SAFE_MODE: CLAUDE.md loading is gated on
+      // CLAUDE_CODE_DISABLE_CLAUDE_MDS; the other loaders check isSafeMode().
+      if (isSafeMode()) {
+        process.env.CLAUDE_CODE_SAFE_MODE = '1'
+        process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS = '1'
       }
 
       // Ignore "code" as a prompt - treat it the same as no prompt
@@ -3004,9 +3016,9 @@ async function run(): Promise<CommanderCommand> {
       )
       profileCheckpoint('action_commands_loaded')
 
-      // Parse CLI agents if provided via --agents flag
+      // Parse CLI agents if provided via --agents flag (safe mode ignores them)
       let cliAgents: typeof agentDefinitionsResult.activeAgents = []
-      if (agentsJson) {
+      if (agentsJson && !isSafeMode()) {
         try {
           const parsedAgents = safeParseJSON(agentsJson)
           if (parsedAgents) {
@@ -3414,6 +3426,15 @@ async function run(): Promise<CommanderCommand> {
       logForDebugging(
         `[STARTUP] MCP configs resolved in ${mcpConfigResolvedMs}ms (awaited at +${Date.now() - mcpConfigStart}ms)`,
       )
+      // Safe mode drops every MCP server, --mcp-config included. SDK servers
+      // are in-process host tools, not user configuration, so they stay.
+      if (isSafeMode()) {
+        dynamicMcpConfig = Object.fromEntries(
+          Object.entries(dynamicMcpConfig).filter(
+            ([, config]) => (config as { type?: string }).type === 'sdk',
+          ),
+        )
+      }
       // CLI flag (--mcp-config) should override file-based configs, matching settings precedence
       const allMcpConfigs = { ...existingMcpConfigs, ...dynamicMcpConfig }
 
@@ -4019,6 +4040,14 @@ async function run(): Promise<CommanderCommand> {
         color?: 'warning'
         priority: 'high'
       }> = []
+      if (isSafeMode()) {
+        initialNotifications.push({
+          key: 'safe-mode',
+          text: `Safe mode: all customizations are disabled (CLAUDE.md, skills, plugins, hooks, MCP, agents, and more) \u00b7 ${process.argv.includes('--safe-mode') ? 'restart without --safe-mode' : 'unset CLAUDE_CODE_SAFE_MODE'} to re-enable`,
+          color: 'warning',
+          priority: 'high',
+        })
+      }
       if (permissionModeNotification) {
         initialNotifications.push({
           key: 'permission-mode-notification',
