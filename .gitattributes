@@ -1,0 +1,2 @@
+# Vendored assets are pinned by SHA-256; never convert their line endings.
+/assets/** -text
