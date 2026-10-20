@@ -553,7 +553,7 @@ async function fetchResponsesWithRetry(
       if (resp.ok) return resp
 
       const errText = await resp.text()
-      lastError = new HttpResponseError(resp.status, `OpenAI API ${resp.status}: ${errText}`)
+      lastError = new HttpResponseError(resp.status, `OpenAI API ${resp.status}: ${errText}`, resp.headers)
       if (!isRetryableOpenAIResponse(resp.status) || attempt >= maxRetries) {
         throw lastError
       }
