@@ -19,6 +19,19 @@ export {
   type PermissionMode,
 }
 
+// Official 2.1.200 shows the `default` mode as "Manual" and accepts `manual`
+// wherever a mode is configured; internally it stays `default`.
+export const MANUAL_PERMISSION_MODE_ALIAS = 'manual'
+
+/** --permission-mode choices as --help lists them (`manual` for `default`). */
+export const PERMISSION_MODE_CHOICES = PERMISSION_MODES.map(mode =>
+  mode === 'default' ? MANUAL_PERMISSION_MODE_ALIAS : mode,
+)
+
+export function normalizePermissionModeAlias(mode: string): string {
+  return mode === MANUAL_PERMISSION_MODE_ALIAS ? 'default' : mode
+}
+
 export const permissionModeSchema = lazySchema(() => z.enum(PERMISSION_MODES))
 export const externalPermissionModeSchema = lazySchema(() =>
   z.enum(EXTERNAL_PERMISSION_MODES),
@@ -44,8 +57,8 @@ const PERMISSION_MODE_CONFIG: Partial<
   Record<PermissionMode, PermissionModeConfig>
 > = {
   default: {
-    title: 'Default',
-    shortTitle: 'Default',
+    title: 'Manual',
+    shortTitle: 'Manual',
     symbol: '',
     color: 'text',
     external: 'default',
@@ -112,8 +125,9 @@ export function toExternalPermissionMode(
 }
 
 export function permissionModeFromString(str: string): PermissionMode {
-  return (PERMISSION_MODES as readonly string[]).includes(str)
-    ? (str as PermissionMode)
+  const mode = normalizePermissionModeAlias(str)
+  return (PERMISSION_MODES as readonly string[]).includes(mode)
+    ? (mode as PermissionMode)
     : 'default'
 }
 

@@ -58,11 +58,13 @@ export const PermissionsSchema = lazySchema(() =>
           'List of permission rules that should always prompt for confirmation',
         ),
       defaultMode: z
-        .enum(
-          feature('TRANSCRIPT_CLASSIFIER')
+        .enum([
+          ...(feature('TRANSCRIPT_CLASSIFIER')
             ? PERMISSION_MODES
-            : EXTERNAL_PERMISSION_MODES,
-        )
+            : EXTERNAL_PERMISSION_MODES),
+          // Public name of `default` since official 2.1.200.
+          'manual',
+        ])
         .optional()
         .describe('Default permission mode when Claude Code needs access'),
       disableBypassPermissionsMode: z

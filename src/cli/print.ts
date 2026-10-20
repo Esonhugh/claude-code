@@ -167,6 +167,7 @@ import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
+import { normalizePermissionModeAlias } from 'src/utils/permissions/PermissionMode.js'
 import { safeParseJSON } from 'src/utils/json.js'
 import {
   outputSchema as permissionToolOutputSchema,
@@ -521,6 +522,7 @@ export async function runHeadless(
     outputFormat: string | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
+    permissionPrompts?: 'host' | 'none'
     allowedTools: string[] | undefined
     thinkingConfig: ThinkingConfig | undefined
     maxTurns: number | undefined
@@ -882,10 +884,31 @@ export async function runHeadless(
   )
   let filteredTools = [...tools, ...allowedMcpTools]
 
+  // --permission-prompts none (official 2.1.259): nobody answers prompts, so
+  // anything that would prompt is denied locally (PermissionRequest hooks
+  // still run) instead of reaching the SDK host or --permission-prompt-tool.
+  const permissionPromptsNone = options.permissionPrompts === 'none'
+  if (permissionPromptsNone) {
+    if (options.sdkUrl || options.permissionPromptToolName) {
+      logForDebugging(
+        `--permission-prompts none: permission prompts are answered with a local deny; the ${options.sdkUrl ? 'SDK host' : '--permission-prompt-tool'} is not consulted`,
+      )
+    }
+    setAppState(prev => ({
+      ...prev,
+      toolPermissionContext: {
+        ...prev.toolPermissionContext,
+        shouldAvoidPermissionPrompts: true,
+      },
+    }))
+  }
+
   // When using SDK URL, always use stdio permission prompting to delegate to the SDK
-  const effectivePermissionPromptToolName = options.sdkUrl
-    ? 'stdio'
-    : options.permissionPromptToolName
+  const effectivePermissionPromptToolName = permissionPromptsNone
+    ? undefined
+    : options.sdkUrl
+      ? 'stdio'
+      : options.permissionPromptToolName
 
   // Callback for when a permission prompt is shown
   const onPermissionPrompt = (details: RequiresActionDetails) => {
@@ -1090,6 +1113,7 @@ function runHeadlessStreaming(
     verbose: boolean | undefined
     jsonSchema: Record<string, unknown> | undefined
     permissionPromptToolName: string | undefined
+    permissionPrompts?: 'host' | 'none'
     allowedTools: string[] | undefined
     thinkingConfig: ThinkingConfig | undefined
     maxTurns: number | undefined
@@ -5245,6 +5269,10 @@ function handleSetPermissionMode(
   toolPermissionContext: ToolPermissionContext,
   output: Stream<StdoutMessage>,
 ): ToolPermissionContext {
+  request = {
+    ...request,
+    mode: normalizePermissionModeAlias(request.mode) as InternalPermissionMode,
+  }
   // Check if trying to switch to bypassPermissions mode
   if (request.mode === 'bypassPermissions') {
     if (isBypassPermissionsModeDisabled()) {

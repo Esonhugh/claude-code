@@ -261,6 +261,16 @@ function toolMatchesRule(
     return true
   }
 
+  // Like official, deny and ask rules may glob the tool name ("*" covers
+  // every tool); allow rules only take the MCP wildcard below.
+  if (
+    rule.ruleBehavior !== 'allow' &&
+    rule.ruleValue.toolName.includes('*') &&
+    matchesWildcard(rule.ruleValue.toolName, nameForRuleMatch)
+  ) {
+    return true
+  }
+
   // MCP server-level permission: rule "mcp__server1" matches tool "mcp__server1__tool1"
   // Also supports wildcard: rule "mcp__server1__*" matches all tools from server1
   const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
@@ -305,6 +315,62 @@ export function getAskRuleForTool(
   tool: Pick<Tool, 'name' | 'mcpInfo'>,
 ): PermissionRule | null {
   return getAskRules(context).find(rule => toolMatchesRule(tool, rule)) || null
+}
+
+// Input fields each tool's own content matcher already reads (Bash(command),
+// Read(path), WebFetch(domain:...)). Tool(param:value) rules skip them, like
+// official, instead of comparing them as raw strings.
+const TOOL_RULE_CONTENT_FIELDS: Record<string, string> = {
+  Bash: 'command',
+  PowerShell: 'command',
+  Read: 'file_path',
+  Edit: 'file_path',
+  Write: 'file_path',
+  NotebookEdit: 'notebook_path',
+  Grep: 'path',
+  Glob: 'path',
+  WebFetch: 'url',
+}
+
+function matchesWildcard(pattern: string, value: string): boolean {
+  const source = pattern
+    .split('*')
+    .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*')
+  return new RegExp(`^${source}$`, 's').test(value)
+}
+
+/**
+ * Find a deny or ask rule written as Tool(param:value) whose param is a
+ * primitive input field matching value (`*` wildcards allowed), e.g.
+ * Agent(model:opus). Official 2.1.178 syntax.
+ */
+function getParamRuleForTool(
+  context: ToolPermissionContext,
+  tool: Pick<Tool, 'name' | 'mcpInfo'>,
+  input: { [key: string]: unknown },
+  behavior: 'deny' | 'ask',
+): PermissionRule | null {
+  const toolName = getToolNameForPermissionCheck(tool)
+  const rules = getRuleByContentsForToolName(context, toolName, behavior)
+  for (const [content, rule] of rules) {
+    const colon = content.indexOf(':')
+    if (colon <= 0) continue
+    const key = content.slice(0, colon).trim()
+    const expected = content.slice(colon + 1).trim()
+    if (!key || !expected || key === TOOL_RULE_CONTENT_FIELDS[toolName]) continue
+    if (!Object.hasOwn(input, key)) continue
+    const value = input[key]
+    if (
+      typeof value !== 'string' &&
+      typeof value !== 'number' &&
+      typeof value !== 'boolean'
+    ) {
+      continue
+    }
+    if (matchesWildcard(expected, String(value).trim())) return rule
+  }
+  return null
 }
 
 /**
@@ -1091,6 +1157,22 @@ export async function checkRuleBasedPermissions(
       message: `Permission to use ${tool.name} has been denied.`,
     }
   }
+  const paramDenyRule = getParamRuleForTool(
+    appState.toolPermissionContext,
+    tool,
+    input,
+    'deny',
+  )
+  if (paramDenyRule) {
+    return {
+      behavior: 'deny',
+      decisionReason: {
+        type: 'rule',
+        rule: paramDenyRule,
+      },
+      message: `Permission to use ${tool.name} with ${paramDenyRule.ruleValue.ruleContent} has been denied.`,
+    }
+  }
 
   // 1b. Defer the whole-tool ask until tool denies and mandatory asks are checked.
   let wholeToolAsk: PermissionAskDecision | undefined
@@ -1143,6 +1225,24 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
   if (wholeToolAsk) return wholeToolAsk
+  // Tool(param:value) ask rules prompt even in bypass mode, like the
+  // content-specific ask rules at 1f.
+  const paramAskRule = getParamRuleForTool(
+    appState.toolPermissionContext,
+    tool,
+    input,
+    'ask',
+  )
+  if (paramAskRule) {
+    return {
+      behavior: 'ask',
+      decisionReason: {
+        type: 'rule',
+        rule: paramAskRule,
+      },
+      message: createPermissionRequestMessage(tool.name),
+    }
+  }
 
   // 1f. Content-specific ask rules from tool.checkPermissions
   // (e.g. Bash(npm publish:*) → {ask, type:'rule', ruleBehavior:'ask'})
@@ -1190,6 +1290,22 @@ async function hasPermissionsToUseToolInner(
         rule: denyRule,
       },
       message: `Permission to use ${tool.name} has been denied.`,
+    }
+  }
+  const paramDenyRule = getParamRuleForTool(
+    appState.toolPermissionContext,
+    tool,
+    input,
+    'deny',
+  )
+  if (paramDenyRule) {
+    return {
+      behavior: 'deny',
+      decisionReason: {
+        type: 'rule',
+        rule: paramDenyRule,
+      },
+      message: `Permission to use ${tool.name} with ${paramDenyRule.ruleValue.ruleContent} has been denied.`,
     }
   }
 
@@ -1248,6 +1364,24 @@ async function hasPermissionsToUseToolInner(
     return toolPermissionResult
   }
   if (wholeToolAsk) return wholeToolAsk
+  // Tool(param:value) ask rules prompt even in bypass mode, like the
+  // content-specific ask rules at 1f.
+  const paramAskRule = getParamRuleForTool(
+    appState.toolPermissionContext,
+    tool,
+    input,
+    'ask',
+  )
+  if (paramAskRule) {
+    return {
+      behavior: 'ask',
+      decisionReason: {
+        type: 'rule',
+        rule: paramAskRule,
+      },
+      message: createPermissionRequestMessage(tool.name),
+    }
+  }
 
   // 1e. Tool requires user interaction even in bypass mode
   if (

@@ -262,7 +262,11 @@ import {
   parseUserSpecifiedModel,
 } from './utils/model/model.js'
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js'
-import { PERMISSION_MODES } from './utils/permissions/PermissionMode.js'
+import {
+  normalizePermissionModeAlias,
+  PERMISSION_MODE_CHOICES,
+  PERMISSION_MODES,
+} from './utils/permissions/PermissionMode.js'
 import {
   checkAndDisableBypassPermissions,
   getAutoModeEnabledStateIfCached,
@@ -1495,6 +1499,14 @@ async function run(): Promise<CommanderCommand> {
     )
     .addOption(
       new Option(
+        '--permission-prompts <target>',
+        'Who answers permission prompts with --print: "host" (the SDK host or --permission-prompt-tool) or "none" (nobody: anything that would prompt is denied automatically; the permission mode still decides everything else)',
+      )
+        .choices(['host', 'none'] as const)
+        .default('host' as const),
+    )
+    .addOption(
+      new Option(
         '--system-prompt <prompt>',
         'System prompt to use for the session',
       ).argParser(String),
@@ -1526,8 +1538,20 @@ async function run(): Promise<CommanderCommand> {
         '--permission-mode <mode>',
         'Permission mode to use for the session',
       )
-        .argParser(String)
-        .choices(PERMISSION_MODES),
+        .choices(PERMISSION_MODE_CHOICES)
+        // Help lists `manual`; `default` stays accepted, like official.
+        .argParser(mode => {
+          if (
+            !(PERMISSION_MODES as readonly string[]).includes(
+              normalizePermissionModeAlias(mode),
+            )
+          ) {
+            throw new InvalidArgumentError(
+              `Allowed choices are ${PERMISSION_MODE_CHOICES.join(', ')}.`,
+            )
+          }
+          return mode
+        }),
     )
     .option(
       '-c, --continue',
@@ -3986,6 +4010,7 @@ async function run(): Promise<CommanderCommand> {
             outputFormat: outputFormat,
             jsonSchema,
             permissionPromptToolName: options.permissionPromptTool,
+            permissionPrompts: options.permissionPrompts,
             allowedTools,
             thinkingConfig,
             maxTurns: options.maxTurns,
