@@ -87,6 +87,9 @@ function fixture() {
     SyncHookJSONOutput | (() => Promise<SyncHookJSONOutput>)
   >()
   const calls: { command: string; input: Record<string, unknown> }[] = []
+  // Commands listed here exit with the given code instead of printing JSON.
+  const exits = new Map<string, { code: number; stderr?: string }>()
+  const envs = new Map<string, NodeJS.ProcessEnv>()
   const state = { sessionHooks: new Map() } as unknown as AppState
   const context = {
     getAppState: () => state,
@@ -213,7 +216,12 @@ function fixture() {
     path: require('node:path'),
     crypto: require('node:crypto'),
     child_process: {
-      spawn: (command: string) => {
+      spawn: (
+        command: string,
+        _args: string[],
+        options: { env: NodeJS.ProcessEnv },
+      ) => {
+        envs.set(command, options.env)
         const child = Object.assign(new EventEmitter(), {
           pid: ++pid,
           stdin: new PassThrough(),
@@ -226,10 +234,18 @@ function fixture() {
         })
         child.stdin.on('finish', () => {
           calls.push({ command, input: JSON.parse(input) })
+          const exit = exits.get(command)
+          if (exit) {
+            child.stdout.end()
+            child.stderr.end(exit.stderr ?? '')
+            child.emit('close', exit.code)
+            return
+          }
           const response = commands.get(command)
           void Promise.resolve(
             typeof response === 'function' ? response() : (response ?? {}),
           ).then((json) => {
+            if (child.stdout.writableEnded) return
             child.stdout.end(JSON.stringify(json) + '\n')
             child.stderr.end()
             child.emit('close', 0)
@@ -240,7 +256,18 @@ function fixture() {
     },
     './gracefulShutdown.js': { endModsSessions },
     './file.js': { pathExists: async () => true },
-    './ShellCommand.js': { wrapSpawn: () => ({ cleanup: noop }) },
+    // Like the real wrapper, an abort (timeout) kills the child.
+    './ShellCommand.js': {
+      wrapSpawn: (child: EventEmitter & { stdout: PassThrough; stderr: PassThrough }, signal: AbortSignal) => {
+        signal.addEventListener('abort', () => {
+          if (child.stdout.writableEnded) return
+          child.stdout.end()
+          child.stderr.end()
+          child.emit('close', 143)
+        })
+        return { cleanup: noop }
+      },
+    },
     './task/TaskOutput.js': { TaskOutput: class {} },
     './cwd.js': { getCwd: () => home },
     './sessionEnvironment.js': {
@@ -383,12 +410,26 @@ function fixture() {
       hooks: [{ type: 'command', command }],
     })
   }
+  const addHook = (
+    source: SettingSource,
+    event: HookEvent,
+    hook: HookCommand,
+    matcher = '',
+  ) => {
+    settings[source] ??= {}
+    settings[source]!.hooks ??= {}
+    settings[source]!.hooks![event] ??= []
+    settings[source]!.hooks![event]!.push({ matcher, hooks: [hook] })
+  }
   return {
     hooks,
     snapshot,
     settings,
     registered,
     commands,
+    exits,
+    envs,
+    addHook,
     calls,
     controls,
     context,
@@ -1379,5 +1420,93 @@ describe('source-scoped hook executor', () => {
     )
     expect(f.calls.map((call) => call.command)).toEqual(['policy'])
     expect(sdkCalls).toBe(0)
+  })
+})
+
+describe('onFailure', () => {
+  test('block turns a command hook that exits 1 into a blocking error', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'guard',
+      onFailure: 'block',
+    })
+    f.exits.set('guard', { code: 1, stderr: 'guard crashed' })
+    const results = await collect(pre(f))
+    const blocked = results.find((result) => result.blockingError)
+    expect(blocked?.blockingError).toEqual({
+      blockingError:
+        '[guard]: failed; blocking because onFailure is "block"\nguard crashed',
+      command: 'guard',
+    })
+  })
+
+  test('default and continue keep letting a failed hook through', async () => {
+    for (const onFailure of [undefined, 'continue'] as const) {
+      const f = fixture()
+      f.addHook('userSettings', 'PreToolUse', {
+        type: 'command',
+        command: 'guard',
+        ...(onFailure && { onFailure }),
+      })
+      f.exits.set('guard', { code: 1, stderr: 'guard crashed' })
+      const results = await collect(pre(f))
+      expect(results.some((result) => result.blockingError)).toBe(false)
+    }
+  })
+
+  test('block turns a timed-out command hook into a blocking error', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'slow',
+      timeout: 0.05,
+      onFailure: 'block',
+    })
+    f.commands.set('slow', () => new Promise(() => {}))
+    const results = await collect(pre(f))
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: '[slow]: timed out; blocking because onFailure is "block"',
+        command: 'slow',
+      })
+  })
+
+  test('block is ignored on Stop, where blocking means continuing the turn', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'Stop', {
+      type: 'command',
+      command: 'stop-guard',
+      onFailure: 'block',
+    })
+    f.exits.set('stop-guard', { code: 1 })
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+
+  test('block marks a failed hook outside the REPL as blocked', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'ConfigChange', {
+      type: 'command',
+      command: 'audit',
+      onFailure: 'block',
+    })
+    f.exits.set('audit', { code: 3, stderr: 'audit down' })
+    const [result] = await f.hooks.executeConfigChangeHooks('user_settings')
+    expect(result).toMatchObject({
+      succeeded: false,
+      blocked: true,
+      output: 'failed; blocking because onFailure is "block"\naudit down',
+    })
   })
 })

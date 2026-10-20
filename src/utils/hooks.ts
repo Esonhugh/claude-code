@@ -1976,6 +1976,77 @@ export function getUserPromptSubmitHookBlockingMessage(
  * @param messages Optional conversation history for prompt/function hooks
  * @returns Async generator that yields progress messages and hook results
  */
+const NON_BLOCKING_STATUS_PREFIX = 'Failed with non-blocking status code: '
+
+// Events whose blocking error means "keep going", so a failed hook must not
+// turn into one (official 2.1.295 ignores onFailure there).
+const ON_FAILURE_IGNORED_EVENTS = new Set<HookEvent>([
+  'Stop',
+  'SubagentStop',
+  'TaskCompleted',
+  'TeammateIdle',
+])
+
+function hookBlocksOnFailure(hook: HookResult['hook']): boolean {
+  if (hook.type === 'command') {
+    return hook.onFailure === 'block' && !hook.async && !hook.asyncRewake
+  }
+  return hook.type === 'http' && hook.onFailure === 'block'
+}
+
+/**
+ * Turn a failed or timed-out command/HTTP hook with `onFailure: "block"` into
+ * a blocking result, as if it had exited with code 2.
+ */
+function applyHookOnFailure(
+  result: HookResult,
+  hookEvent: HookEvent,
+  signal: AbortSignal | undefined,
+): HookResult {
+  if (!hookBlocksOnFailure(result.hook)) return result
+  const failure =
+    result.outcome === 'cancelled' && !signal?.aborted
+      ? 'timed out'
+      : result.outcome === 'non_blocking_error'
+        ? 'failed'
+        : undefined
+  if (!failure) return result
+  if (ON_FAILURE_IGNORED_EVENTS.has(hookEvent)) {
+    logForDebugging(
+      `Hooks: ${hookEvent} ${result.hook.type} hook ${failure}; not blocking (onFailure: "block" is ignored on ${hookEvent})`,
+      { level: 'warn' },
+    )
+    return result
+  }
+  const hook = result.hook as HookCommand & { type: 'command' | 'http' }
+  const command = hook.type === 'http' ? hook.url : hook.command
+  const attachment =
+    result.message?.type === 'attachment'
+      ? (result.message.attachment as { type: string; stderr?: string })
+      : undefined
+  const stderr =
+    attachment?.type === 'hook_non_blocking_error'
+      ? (attachment.stderr ?? '').trim()
+      : ''
+  const detail = stderr.startsWith(NON_BLOCKING_STATUS_PREFIX)
+    ? stderr.slice(NON_BLOCKING_STATUS_PREFIX.length)
+    : stderr
+  const blockingError = `[${command}]: ${failure}; blocking because onFailure is "block"${detail ? `\n${detail}` : ''}`
+  logForDebugging(
+    `Hooks: ${hookEvent} ${hook.type} hook ${failure}; blocking (onFailure: "block")`,
+    { level: 'warn' },
+  )
+  return {
+    ...result,
+    message: undefined,
+    blockingError: { blockingError, command },
+    ...(hookEvent === 'PermissionRequest' && {
+      permissionRequestResult: { behavior: 'deny', message: blockingError },
+    }),
+    outcome: 'blocking',
+  }
+}
+
 async function* executeHooks({
   hookInput,
   toolUseID,
@@ -2740,7 +2811,7 @@ async function* executeHooks({
           hookName,
           toolUseID,
           hookEvent,
-          stderr: `Failed with non-blocking status code: ${result.stderr.trim() || 'No stderr output'}`,
+          stderr: `${NON_BLOCKING_STATUS_PREFIX}${result.stderr.trim() || 'No stderr output'}`,
           stdout: result.stdout,
           exitCode: result.status,
           command: hookCommand,
@@ -2807,7 +2878,8 @@ async function* executeHooks({
       }
     })(),
   )
-  for await (const { result, hookIndex } of all(hookResults)) {
+  for await (const { result: rawResult, hookIndex } of all(hookResults)) {
+    const result = applyHookOnFailure(rawResult, hookEvent, signal)
     outcomes[result.outcome]++
     const matchedHook = matchingHooks[hookIndex]
     const firstResult = unmatchedHookIndices.delete(hookIndex)
@@ -3440,7 +3512,26 @@ async function executeHooksOutsideREPL({
   )
 
   // Wait for all hooks to complete and collect results
-  return await Promise.all(hookPromises)
+  const results = await Promise.all(hookPromises)
+  return results.map((result, index) => {
+    const { hook } = matchingHooks[index]!
+    if (
+      !hookBlocksOnFailure(hook) ||
+      result.succeeded ||
+      result.blocked ||
+      signal?.aborted ||
+      ON_FAILURE_IGNORED_EVENTS.has(hookEvent)
+    ) {
+      return result
+    }
+    const timedOut = result.output === 'Hook cancelled'
+    const detail = timedOut ? '' : result.output.trim()
+    return {
+      ...result,
+      blocked: true,
+      output: `${timedOut ? 'timed out' : 'failed'}; blocking because onFailure is "block"${detail ? `\n${detail}` : ''}`,
+    }
+  })
 }
 
 /**
