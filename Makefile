@@ -36,9 +36,11 @@ release-check:
 	$(MAKE) check-mods-control-types
 	bun run lint
 	bun run audit:missing
-	CLAUDE_CODE_VERSION=$(VERSION) bun run build
-	bun run start --version | grep -F "$(VERSION) (Claude Code)"
-	bun run start --help >/dev/null
+	mkdir -p dist; dir=$$(mktemp -d dist/release-check.XXXXXX) || exit 1; \
+	CLAUDE_CODE_VERSION=$(VERSION) CLAUDE_CODE_BUILD_DIR="$$dir/build" bun run build && \
+	node "$$dir/build/dist/cli.js" --version | grep -F "$(VERSION) (Claude Code)" && \
+	node "$$dir/build/dist/cli.js" --help >/dev/null; \
+	status=$$?; rm -rf "$$dir"; exit $$status
 	git diff --check
 
 check-mods-control-types:

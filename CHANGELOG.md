@@ -16,7 +16,7 @@
 
 ### 版本状态
 
-- 发布版本：`v2.1.292`。`release-validation` 四路发布门禁在 `97ed301` 上通过（详见下方测试覆盖），其后有记录门禁结果与发布状态的文档提交；首次推送 tag 后 release workflow 的 Node 构建启动失败，修复提交后复跑相关测试、release-check、文档审计与 `plugin test` 二进制冒烟，并将 tag 移到修复后的提交。版本号 `2.1.292` 与本 fork 跟踪的官方基线一致，`Makefile VERSION` 与 README 发布版本同步为 `2.1.292`，`package.json` 保持 `0.0.0-dev`。
+- 发布版本：`v2.1.292`。`release-validation` 四路发布门禁在 `97ed301` 上通过（详见下方测试覆盖），其后有记录门禁结果与发布状态的文档提交；首次推送 tag 后 release workflow 的 Node 构建产物启动失败，修复提交后复跑相关测试、release-check、文档审计与 `plugin test` 二进制冒烟，并将 tag 移到修复后的提交。版本号 `2.1.292` 与本 fork 跟踪的官方基线一致，`Makefile VERSION` 与 README 发布版本同步为 `2.1.292`，`package.json` 保持 `0.0.0-dev`。
 - 汇总 `v2.1.219` 之后至本版本 tag 的变更：原 `v2.1.280` 候选从未打 tag，其 2026-09-30 至 2026-10-13 的内容并入本条目；新增 2026-10-14 至 2026-10-17 的直接提交、PR #5、#6、#8、#10、#11、#13、#14、#15，以及 `release/v2.1.292` 上的发布准备修复。同一范围内下方 2026-09-15、2026-09-18、2026-09-19 三个未归版本条目保持原样，也属于本版本。
 
 ### 关联提交
@@ -254,7 +254,7 @@
 - 固定 Bun 1.3.14 下按文件隔离运行全量 753 个测试文件，与 Bun 1.4.2 对照：发现并修复 1.3.14 下 Workflow 语法预检失效；基线失败中 5 个过时测试按代码与官方 2.1.292 行为更新，`workflowSpec` 随 Workflow 并发修复通过，其余失败均归因于环境（需 macOS、root 运行、容器缺 zsh 或不回收孤儿进程、4 核下的固定超时），另有 `Stats.openai` 依赖固定 100ms 等待而不稳定；Bun 1.3.14 构建的 binary 通过 `--version`、`--help`、`mcp list`、`plugin marketplace list` 冒烟。
 - 发布门禁新增 Linux 实现（`docs/research/linux-release-gate-design-20261019.md`）：`scripts/linux-sandbox-exec.py` 以 user/mount/net 命名空间与 Landlock 替代 `sandbox-exec`（禁网模式另加 seccomp 拒绝 IP/packet socket 与 io_uring），执行前逐项自检越界；`scripts/native-terminal-journal-linux.c` 以 seccomp `RET_TRACE` + ptrace 采集 Bun 的裸 write 系统调用，写入与 Darwin 相同的共享槽日志并以 `LINUX_V1` 区分方法集；`mods-process-spawn`、`builtin-mods` 与两个终端 target 在 Linux 上运行，机制不可用时直接失败，retained 模式仍只支持 macOS。Darwin 的隔离与采集方式不变；`builtin-mods` 的终端证据对原生采集改用原生校验器，这一修正在两个平台同样生效（产品时序要求不变，结论仍为未通过）。Linux 原生 normal origin 记录实际 tmux 版本，Darwin 仍固定 tmux 3.6b。Linux resize 区间打开期间，追踪器扣住产品的 SIGWINCH 与新写入；已返回但追踪器尚未记下返回时间的写入完成登记后，区间才会打开，避免负载下误判写入与 resize 重叠。Linux 门禁的环境要求见 README。
 - `release-validation` 四路门禁在 `97ed301` 上通过：相关测试按文件隔离在 Bun 1.4.2 下运行（694 个文件，除 DiffSidebar、processRunPsFailure 环境基线外通过；`examples/mods` 下 3 个需 Mods 测试运行器的文件运行方式不匹配、未计入；关键测试另在 Bun 1.3.14 下通过）；`make release-check` 通过；`built-claude` 两轮完整 binary 矩阵（一轮加 CPU 负载）29 个 target 全部记录，除已知缺口中的 `full_terminal_coverage` 与 `builtin-mods` 产品时序外全部通过，另有脚本驱动的 tmux 场景覆盖 Workflow 语法预检与并发、目录 marketplace、`/workflows` 会话范围、提交草稿、Stats 嵌套 Tabs 与启动期 resize；版本与文档审计通过。门禁期间修复的 Linux resize 区间、tmux 漏收 SIGCHLD、`/goal` 草稿恢复均附回归测试；三个仅在 Linux 暴露的测试改为在 Linux 上实际覆盖其契约。
-- 首次推送 `v2.1.292` 后 release workflow 四个平台均在 `Verify CLI version` 失败：Mods 测试运行器对 `node:vm` 使用具名导入，打包后 `dist/cli.js` 在未开启 `--experimental-vm-modules` 的 Node 22 下链接失败；npm 未发布。改为命名空间导入，`make release-check` 增加与 CI 相同的 Node 构建、`--version`、`--help` 检查，修复前该检查失败、修复后通过。
+- 首次推送 `v2.1.292` 后 release workflow 四个平台均在 `Verify CLI version` 失败：Mods 测试运行器对 `node:vm` 使用具名导入，打包后 `dist/cli.js` 在未开启 `--experimental-vm-modules` 的 Node 22 下链接失败；npm 未发布。改为命名空间导入，`make release-check` 增加与 CI 相同的 Node 构建、`--version`、`--help` 检查（构建到 `dist/` 下独立临时目录，不覆盖与 `make build` 共用的 `dist/cli.js`），修复前该检查失败、修复后通过。
 
 - 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。
 - 各提交在纯 HEAD 加候选补丁中通过类型检查、lint、对应测试及提交门禁。runner 的清理场景在真实子进程中连续五轮通过；相同成功/失败场景的三端 CLI 结果一致，候选清理范围更接近官方。
