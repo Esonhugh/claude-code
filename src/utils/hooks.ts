@@ -2043,17 +2043,7 @@ export function getUserPromptSubmitHookBlockingMessage(
 ): string {
   return `UserPromptSubmit operation blocked by hook:\n${blockingError.blockingError}`
 }
-/**
- * Common logic for executing hooks
- * @param hookInput The structured hook input that will be validated and converted to JSON
- * @param toolUseID The ID for tracking this hook execution
- * @param matchQuery The query to match against hook matchers
- * @param signal Optional AbortSignal to cancel hook execution
- * @param timeoutMs Optional timeout in milliseconds for hook execution
- * @param toolUseContext Optional ToolUseContext for prompt-based hooks (required if using prompt hooks)
- * @param messages Optional conversation history for prompt/function hooks
- * @returns Async generator that yields progress messages and hook results
- */
+
 function logCommandHookFinished(
   hookName: string,
   command: string,
@@ -2138,6 +2128,17 @@ function applyHookOnFailure(
   }
 }
 
+/**
+ * Common logic for executing hooks
+ * @param hookInput The structured hook input that will be validated and converted to JSON
+ * @param toolUseID The ID for tracking this hook execution
+ * @param matchQuery The query to match against hook matchers
+ * @param signal Optional AbortSignal to cancel hook execution
+ * @param timeoutMs Optional timeout in milliseconds for hook execution
+ * @param toolUseContext Optional ToolUseContext for prompt-based hooks (required if using prompt hooks)
+ * @param messages Optional conversation history for prompt/function hooks
+ * @returns Async generator that yields progress messages and hook results
+ */
 async function* executeHooks({
   hookInput,
   toolUseID,
