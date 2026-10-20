@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { isNativeError, isRegExp, isProxy } from 'node:util/types'
 import { pathToFileURL } from 'node:url'
-import { SourceTextModule, SyntheticModule, createContext, type Module } from 'node:vm'
+import * as vm from 'node:vm'
 import { createPluginFromPath } from '../../../utils/plugins/pluginLoader.js'
 import { validateUserConfig, type UserConfigValues } from '../../../utils/plugins/mcpbHandler.js'
 import { errorMessage } from '../../../utils/errors.js'
@@ -183,7 +183,7 @@ function createRegistry(): TestRegistry {
 }
 
 async function loadTestFile(file: string, root: string, registry: TestRegistry): Promise<void> {
-  const context = createContext({
+  const context = vm.createContext({
     AbortController,
     AbortSignal,
     ArrayBuffer,
@@ -226,8 +226,8 @@ async function loadTestFile(file: string, root: string, registry: TestRegistry):
       return handle
     },
   })
-  const cache = new Map<string, Module>()
-  const testing = new SyntheticModule(
+  const cache = new Map<string, vm.Module>()
+  const testing = new vm.SyntheticModule(
     ['describe', 'test', 'expect', 'mock', 'tier'],
     function () {
       const describe = (name: string, body: () => void) => {
@@ -270,14 +270,14 @@ async function loadTestFile(file: string, root: string, registry: TestRegistry):
     { context, identifier: 'claude-code/testing' },
   )
   cache.set('claude-code/testing', testing)
-  const state = new SourceTextModule(modStateLibrarySource, { context, identifier: 'claude-code' })
+  const state = new vm.SourceTextModule(modStateLibrarySource, { context, identifier: 'claude-code' })
   await state.link(() => { throw new Error('Unexpected state library import') })
 
   const inside = (path: string) => {
     const child = relative(root, path)
     return child === '' || child !== '..' && !child.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
   }
-  async function load(path: string): Promise<Module> {
+  async function load(path: string): Promise<vm.Module> {
     const canonical = await realpath(path)
     if (!inside(canonical)) throw new Error(`Test import escapes plugin root: ${path}`)
     const known = cache.get(canonical)
@@ -285,7 +285,7 @@ async function loadTestFile(file: string, root: string, registry: TestRegistry):
     const source = await readFile(canonical, 'utf8')
     const loader = canonical.endsWith('x') ? 'tsx' : canonical.endsWith('.ts') ? 'ts' : 'js'
     const transformed = await new Bun.Transpiler({ loader }).transform(source)
-    const module = new SourceTextModule(transformed, {
+    const module = new vm.SourceTextModule(transformed, {
       context,
       identifier: pathToFileURL(canonical).href,
       initializeImportMeta(meta) { meta.url = pathToFileURL(canonical).href },

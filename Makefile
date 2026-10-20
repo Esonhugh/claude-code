@@ -36,6 +36,9 @@ release-check:
 	$(MAKE) check-mods-control-types
 	bun run lint
 	bun run audit:missing
+	CLAUDE_CODE_VERSION=$(VERSION) bun run build
+	bun run start --version | grep -F "$(VERSION) (Claude Code)"
+	bun run start --help >/dev/null
 	git diff --check
 
 check-mods-control-types:
