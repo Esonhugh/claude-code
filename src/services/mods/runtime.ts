@@ -73,6 +73,7 @@ import { projectModApiMessages, projectModSessionMessages, validateModSessionMes
 import { validateModCompactInput, validateModCompactResult } from './compactAdapter.js'
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { getMaxConcurrentSubagents } from '../../utils/subagentConcurrency.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
@@ -1343,7 +1344,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         const presentation = binding?.surface === 'terminal' && binding.isInteractive && services.uiPresentation
           ? services.uiPresentation()
           : {columns: 1, rows: 1, isFullscreen: false, composerEmpty: true, hasDialog: false, keyboardOwned: false, headless: true as const}
-        return ui.open(owner, input as ModUiOpenArgs, origin, presentation)
+        const opened = await ui.open(owner, input as ModUiOpenArgs, origin, presentation) as { isPlaced: boolean; reason?: string }
+        if (!opened.isPlaced || attachedSurfaces().length > 0) return opened
+        return {isPlaced: false, reason: 'no-surface: no surface is attached ($.session.surfaces() is empty)'}
       }
       case 'ui.close': {
         if (owner.state !== 'active') throw new Error('Mod UI activation is retired')
@@ -2235,8 +2238,13 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
             return modTelemetryResult(op, result, owner.declaration.name)
           }
           if (fn === hostIdentity && op === 'session.compact') {
+            const refuse = (reason: string) => Object.assign(new Error(`${owner.declaration.name}: $.session.compact: ${reason}`), {name:'HooksError'})
+            if (isEnvTruthy(process.env.DISABLE_COMPACT))
+              throw refuse('compaction is switched off in this session (DISABLE_COMPACT), for /compact and plugins alike')
+            if (publicTurn)
+              throw refuse(`a turn is running (${publicTurn.turnId}); the conversation compacts between turns, so call it from turn.complete or later`)
             if (binding && !binding.isInteractive)
-              throw Object.assign(new Error(`${owner.declaration.name}: $.session.compact: not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on`), {name:'HooksError'})
+              throw refuse('not available in a headless (-p / SDK) session yet: compaction here runs inside a turn (a /compact prompt); catch it and carry on')
             throw new Error('$.session.compact is not available in this build')
           }
           const catalog = fn === hostIdentity && op === 'tool.list'
@@ -2722,9 +2730,11 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (event === 'env.get' || event === 'env.set') {
       if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(`${event} must return value or deny`)
       if ('deny' in result && typeof result.deny === 'string') return
+      const written = (result as { value?: { deny?: unknown } }).value
       if (!('value' in result) || (event === 'env.get'
         ? result.value !== undefined && typeof result.value !== 'string'
-        : result.value !== undefined)) throw new Error(`${event} must return ${event === 'env.get' ? 'a string or undefined' : 'undefined'} in value or deny`)
+        : !written || typeof written !== 'object' || Array.isArray(written) || (written.deny !== undefined && typeof written.deny !== 'string')))
+        throw new Error(`${event} must return ${event === 'env.get' ? 'a string or undefined' : '{} or { deny }'} in value or deny`)
       return
     }
     if (event.startsWith('clock.')) {

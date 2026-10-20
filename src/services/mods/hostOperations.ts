@@ -506,19 +506,20 @@ export function createModHostOperations({
         if (!name || name.includes('=')) throw new TypeError('Invalid environment name')
         return process.env[name]
       },
-      async set(name: string, value: string | undefined): Promise<void> {
+      async set(name: string, value: string | undefined): Promise<{ deny?: string }> {
         signal.throwIfAborted()
         checkedString(name, 'environment name')
         if (!name || name.includes('=')) throw new TypeError('Invalid environment name')
         const canonical = process.platform === 'win32' ? name.toUpperCase() : name
         if (DENIED_ENV_NAMES.has(canonical) || canonical.startsWith('DYLD_'))
-          throw new Error(`env.set refuses ${name}: it changes code or credentials the host uses`)
+          return { deny: `env.set refuses ${name}: it changes code or credentials the host uses` }
         if (value !== undefined) checkedString(value, 'environment value')
         const entry = envWrites.get(name) ?? { original: process.env[name], writers: new Map() }
         envWrites.set(name, entry)
         entry.writers.delete(envWriter)
         entry.writers.set(envWriter, value)
         setProcessEnv(name, value)
+        return {}
       },
     },
     settings: {
