@@ -3,6 +3,7 @@ import { APIError } from '@anthropic-ai/sdk'
 import { HttpResponseError } from '../../utils/errors.js'
 import {
   CannotRetryError,
+  FallbackTriggeredError,
   getDefaultMaxRetries,
   getRetryDelay,
   withRetry,
@@ -41,6 +42,7 @@ function apiError(status: number, headers: Record<string, string> = {}) {
 async function run(
   fail: (attempt: number) => unknown,
   maxRetries?: number,
+  fallbackModel?: string,
 ): Promise<{ attempts: number; result?: string; error?: unknown }> {
   let attempts = 0
   const gen = withRetry(
@@ -56,6 +58,7 @@ async function run(
       thinkingConfig: { type: 'disabled' },
       querySource: 'sdk',
       ...(maxRetries !== undefined && { maxRetries }),
+      ...(fallbackModel !== undefined && { fallbackModel }),
     },
   )
   try {
@@ -193,4 +196,18 @@ test('OpenAI-compatible transient errors are retried and keep the original error
     5,
   )
   expect(auth.attempts).toBe(1)
+})
+
+test('a configured fallback model triggers after repeated 529s for any primary model', async () => {
+  const overloaded = () => apiError(529, { 'retry-after': '0' })
+  const triggered = await run(overloaded, 10, 'claude-haiku-4-5')
+  expect(triggered.error).toBeInstanceOf(FallbackTriggeredError)
+  expect(triggered.error).toMatchObject({
+    originalModel: 'claude-sonnet-4-6',
+    fallbackModel: 'claude-haiku-4-5',
+  })
+  expect(triggered.attempts).toBe(3)
+
+  const sameModel = await run(overloaded, 4, 'claude-sonnet-4-6')
+  expect(sameModel.error).not.toBeInstanceOf(FallbackTriggeredError)
 })

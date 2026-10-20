@@ -16,6 +16,7 @@ import {
   getTurnOutputTokens,
   getBudgetContinuationCount,
   getTotalInputTokens,
+  getSessionFallbackModels,
 } from '../bootstrap/state.js'
 import { parseTokenBudget } from '../utils/tokenBudget.js'
 import { count } from '../utils/array.js'
@@ -4648,6 +4649,7 @@ export function REPL({
         systemContext,
         canUseTool,
         toolUseContext,
+        fallbackModel: getSessionFallbackModels()[0],
         querySource: getQuerySourceForREPL(),
         publicTurn: publicTurn ?? {
           text: newMessages

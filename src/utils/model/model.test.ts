@@ -63,6 +63,7 @@ const {
   getMarketingNameForModel,
   renderDefaultModelSetting,
   getClaudeAiUserDefaultModelDescription,
+  resolveFallbackModels,
 } = await import('./model.js')
 
 const envKeys = [
@@ -169,6 +170,22 @@ describe('provider defaults and explicit model selection', () => {
     process.env.CLAUDE_CODE_USE_OPENAI = '1'
     process.env.ANTHROPIC_DEFAULT_MODEL = 'gpt-5.4-mini'
     expect(getMainLoopModel()).toBe('gpt-5.4-mini')
+  })
+
+  test('fallback chain: CLI list beats the fallbackModel setting, resolves aliases, dedupes and caps at three', () => {
+    expect(resolveFallbackModels(undefined, undefined)).toEqual([])
+    expect(resolveFallbackModels(undefined, 'sonnet')).toEqual([])
+    expect(resolveFallbackModels(undefined, ['sonnet', 'default', 'sonnet', 'custom-id', 'haiku'])).toEqual([
+      'claude-sonnet-5-5', 'claude-opus-5-5', 'custom-id',
+    ])
+    expect(resolveFallbackModels(' haiku, ,sonnet ', ['opus'])).toEqual([
+      'claude-haiku-4-5-20251001', 'claude-sonnet-5-5',
+    ])
+    settings = { availableModels: ['sonnet'] }
+    expect(resolveFallbackModels('haiku,sonnet', undefined)).toEqual(['claude-sonnet-5-5'])
+    settings = {}
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    expect(resolveFallbackModels('gpt-5.4-mini', undefined)).toEqual(['gpt-5.4-mini'])
   })
 
   test('OpenAI defaults and role aliases resolve before transport', () => {

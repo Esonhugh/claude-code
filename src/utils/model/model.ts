@@ -586,6 +586,39 @@ export function parseUserSpecifiedModel(
   return modelInputTrimmed
 }
 
+const MAX_FALLBACK_MODELS = 3
+
+/**
+ * Ordered fallback chain: --fallback-model (comma-separated) wins over the
+ * fallbackModel setting. Entries are resolved like --model ("default" expands
+ * to the default model), de-duplicated, filtered by the availableModels
+ * allowlist and capped at three.
+ */
+export function resolveFallbackModels(
+  cliValue: string | undefined,
+  settingsValue: unknown,
+): string[] {
+  const raw =
+    cliValue !== undefined
+      ? cliValue.split(',')
+      : Array.isArray(settingsValue)
+        ? settingsValue
+        : []
+  const models: string[] = []
+  for (const entry of raw) {
+    const trimmed = typeof entry === 'string' ? entry.trim() : ''
+    if (!trimmed) continue
+    const model =
+      trimmed === 'default'
+        ? getDefaultMainLoopModel()
+        : parseUserSpecifiedModel(trimmed)
+    if (models.includes(model) || !isModelAllowed(model)) continue
+    models.push(model)
+    if (models.length === MAX_FALLBACK_MODELS) break
+  }
+  return models
+}
+
 /**
  * Resolves a skill's `model:` frontmatter against the current model, carrying
  * the `[1m]` suffix over when the target family supports it.

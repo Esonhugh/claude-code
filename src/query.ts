@@ -133,6 +133,7 @@ import { feature } from 'bun:bundle'
 import {
   getCurrentTurnTokenBudget,
   getTurnOutputTokens,
+  getSessionFallbackModels,
   incrementBudgetContinuationCount,
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
@@ -516,11 +517,12 @@ async function* queryLoop(
   const {
     systemContext,
     canUseTool,
-    fallbackModel,
     querySource,
     maxTurns,
     skipCacheWrite,
   } = params
+  // Advances along the session fallback chain each time a fallback triggers.
+  let fallbackModel = params.fallbackModel
   // Query assembly is complete; cache-sharing forks inherit bytes, not plans.
   let systemPrompt = getSystemPromptSections(params.systemPrompt)
     ? asSystemPrompt([...params.systemPrompt])
@@ -1432,6 +1434,10 @@ async function* queryLoop(
               `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
               'warning',
             )
+
+            const chain = getSessionFallbackModels()
+            const chainIndex = chain.indexOf(fallbackModel)
+            fallbackModel = chainIndex >= 0 ? chain[chainIndex + 1] : undefined
 
             continue
           }

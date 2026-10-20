@@ -382,31 +382,33 @@ export async function* withRetry<T>(
         throw new CannotRetryError(caught, retryContext)
       }
 
-      // Track consecutive 529 errors
+      // Track consecutive 529 errors. A configured fallback model applies to
+      // any primary model; otherwise only non-custom Opus (or every model
+      // with FALLBACK_FOR_ALL_PRIMARY_MODELS) counts toward the 529 limit.
+      const fallbackModel =
+        options.fallbackModel && options.fallbackModel !== options.model
+          ? options.fallbackModel
+          : undefined
       if (
         is529Error(error) &&
-        // If FALLBACK_FOR_ALL_PRIMARY_MODELS is not set, fall through only if the primary model is a non-custom Opus model.
-        // TODO: Revisit if the isNonCustomOpusModel check should still exist, or if isNonCustomOpusModel is a stale artifact of when Claude Code was hardcoded on Opus.
         (process.env.FALLBACK_FOR_ALL_PRIMARY_MODELS ||
+          fallbackModel !== undefined ||
           (!isClaudeAISubscriber() && isNonCustomOpusModel(options.model)))
       ) {
         consecutive529Errors++
         if (consecutive529Errors >= MAX_529_RETRIES) {
           // Check if fallback model is specified
-          if (options.fallbackModel) {
+          if (fallbackModel) {
             logEvent('tengu_api_opus_fallback_triggered', {
               original_model:
                 options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               fallback_model:
-                options.fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               provider: getAPIProviderForStatsig(),
             })
 
             // Throw special error to indicate fallback was triggered
-            throw new FallbackTriggeredError(
-              options.model,
-              options.fallbackModel,
-            )
+            throw new FallbackTriggeredError(options.model, fallbackModel)
           }
 
           if (

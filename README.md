@@ -221,6 +221,20 @@ OpenAI discovery、first-party Anthropic bootstrap 和 Anthropic gateway discove
 
 发现请求超时、失败、响应无效或没有认证时，会保留原缓存内容，但 Model Picker 仅在缓存 identity 与当前运行身份完全匹配时读取；成功响应但没有可用模型时会清空当前 identity 的旧模型列表。OpenRouter 仅可作为普通 OpenAI-compatible endpoint 使用，本项目没有为它增加独立 provider 或专用环境变量。
 
+### 请求韧性：重试、回退模型与默认模型
+
+以下行为与官方 2.1.303 对齐，Anthropic 与 OpenAI provider 均适用：
+
+- **Stream idle watchdog** 默认开启：响应流 5 分钟没有事件时中止并重试。`CLAUDE_ENABLE_STREAM_WATCHDOG=0` 关闭；`CLAUDE_STREAM_IDLE_TIMEOUT_MS` 只能把窗口调长（下限 300000）。
+- `CLAUDE_CODE_MAX_RETRIES` 上限 15（默认 10）。
+- `CLAUDE_CODE_RETRY_WATCHDOG=1`（无人值守重试）：429/529 不受重试次数限制，持续退避重试（单次最长 5 分钟、并定期输出 keep-alive），其他瞬时错误默认重试 300 次且解除 15 次上限；组织 spend cap 等不会自动恢复的 429 立即失败。
+  - `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS`：一次请求在 429/529 上累计等待的上限，耗尽后返回错误。
+  - `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS`：用量窗口（usage limit）重置时间超过该值时不再等待。
+- `CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS` / `CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS`：529 重试退避的基础与最大延迟（默认 500 / 32000）。
+- OpenAI provider 的 408/409/429/5xx 也走同一重试策略（`usage_limit_reached`、`insufficient_quota` 与认证错误仍立即失败）。
+- 回退模型：`--fallback-model a,b,c`（交互式与 `--print` 均生效）或 settings `"fallbackModel": ["sonnet", "haiku"]`，CLI 优先，最多 3 个，按顺序尝试；`default` 表示默认模型。配置后任何主模型连续 3 次 529 都会切换到链上下一个模型，下一轮用户输入重新从主模型开始。
+- `ANTHROPIC_DEFAULT_MODEL`：新会话的默认模型。`--model`、`ANTHROPIC_MODEL`、settings `model`（含 `/model` 的选择）与组织默认模型优先于它；`default`/`inherit` 视为未设置。
+
 ### Codex Apps mention
 
 当前模型使用 OpenAI provider 和 ChatGPT OAuth，且 `codex_apps` MCP 已连接时，在 PromptInput 输入以下前缀即可浏览已发现 Apps：

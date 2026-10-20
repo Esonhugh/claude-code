@@ -12,6 +12,26 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
+
+### 变更内容
+
+- Stream idle watchdog 改为默认开启（Anthropic 与 OpenAI provider 均适用），响应流 5 分钟无事件即中止重试；`CLAUDE_ENABLE_STREAM_WATCHDOG=0` 关闭，`CLAUDE_STREAM_IDLE_TIMEOUT_MS` 只能延长窗口（对齐官方 2.1.303）。
+- 新增无人值守重试模式 `CLAUDE_CODE_RETRY_WATCHDOG`：429/529 不受重试次数限制持续退避，其他瞬时错误默认重试 300 次；组织 spend cap 等不会自动恢复的 429 立即失败。
+- 新增 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` 与 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS`，分别限制无人值守模式在 429/529 上的累计等待与等待用量窗口重置的时长。
+- 新增 `CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS` 与 `CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS`，调整 529 重试退避的基础与最大延迟。
+- `CLAUDE_CODE_MAX_RETRIES` 上限改为 15，仅在 `CLAUDE_CODE_RETRY_WATCHDOG` 下解除。
+- OpenAI provider 的 408/409/429/5xx 请求错误改走统一重试策略（此前主对话请求不重试）；`usage_limit_reached`、`insufficient_quota` 与认证错误仍立即失败。
+- 新增 settings `fallbackModel`（数组，最多 3 个），`--fallback-model` 接受逗号分隔列表并在交互式会话中生效；配置回退模型后任何主模型连续 529 都按链依次切换，下一轮用户输入重新使用主模型。
+- 新增 `ANTHROPIC_DEFAULT_MODEL`：设置新会话默认模型，优先级低于 `--model`、`ANTHROPIC_MODEL`、settings `model`（含 `/model` 选择）与组织默认模型。
+
+### 测试覆盖
+
+- `bun test src/services/api/withRetry.test.ts`：重试上限与 watchdog 默认值、529 退避覆盖、watchdog 下 429 持续重试、累计等待与用量窗口上限、spend cap 立即失败、OpenAI 瞬时错误重试与原始错误保留、任意主模型的 529 回退触发。
+- `bun test src/services/api/claude-stream-watchdog.test.ts`：watchdog 默认开启、`=0` 关闭与 5 分钟下限。
+- `bun test src/services/api/claude-model-contract.test.ts`：真实 query 循环按会话回退链依次切换模型。
+- `bun test src/utils/model/model.test.ts`：`ANTHROPIC_DEFAULT_MODEL` 优先级与 allowlist，`resolveFallbackModels` 的 CLI/settings 优先级、别名解析、去重与 3 个上限。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态
