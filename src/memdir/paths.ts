@@ -62,12 +62,17 @@ export function isAutoMemoryEnabled(): boolean {
  * skips that range (hasMemoryWritesSince in extractMemories.ts); when it
  * doesn't, the background agent catches anything missed.
  *
+ * Local builds follow isAutoMemoryEnabled() instead of the remote
+ * tengu_passport_quail gate, so CLAUDE_CODE_DISABLE_AUTO_MEMORY and the
+ * autoMemoryEnabled setting turn extraction off. Non-interactive sessions
+ * still need tengu_slate_thimble to avoid draining an extraction before exit.
+ *
  * Callers must also gate on feature('EXTRACT_MEMORIES') — that check cannot
  * live inside this helper because feature() only tree-shakes when used
  * directly in an `if` condition.
  */
 export function isExtractModeActive(): boolean {
-  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_passport_quail', false)) {
+  if (!isAutoMemoryEnabled()) {
     return false
   }
   return (
