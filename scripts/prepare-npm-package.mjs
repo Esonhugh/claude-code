@@ -51,6 +51,8 @@ await fs.promises.rm(outDir, { recursive: true, force: true })
 await fs.promises.mkdir(outDir, { recursive: true })
 
 const publishConfig = { access: 'public' }
+// npm trusted publishing verifies provenance against this repository.
+const repository = { type: 'git', url: 'git+https://github.com/Esonhugh/claude-code.git' }
 
 for (const entry of binaryEntries) {
   const packageDir = path.join(outDir, `${entry.platform}-${entry.arch}`)
@@ -72,6 +74,7 @@ for (const entry of binaryEntries) {
       os: [entry.platform],
       cpu: [entry.arch],
       files: ['bin/'],
+      repository,
       publishConfig,
     }, null, 2)}\n`,
   )
@@ -107,6 +110,7 @@ await fs.promises.writeFile(
       'README.md',
     ],
     optionalDependencies,
+    repository,
     publishConfig,
   }, null, 2)}\n`,
 )

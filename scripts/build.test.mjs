@@ -251,6 +251,12 @@ assert.match(
 );
 assert.doesNotMatch(releaseWorkflowSource, /sha256sum \* > SHA256SUMS\.txt/);
 assert.match(releaseWorkflowSource, /group: release-/);
+const publishJobSource = releaseWorkflowSource.slice(
+  releaseWorkflowSource.indexOf('\n  release:\n'),
+);
+assert.match(publishJobSource, /permissions:\n {6}contents: write\n {6}id-token: write/);
+assert.match(publishJobSource, /node-version: 24/);
+assert.doesNotMatch(releaseWorkflowSource, /NPM_TOKEN|NODE_AUTH_TOKEN|_authToken|npm whoami/);
 
 const prepareNpmPackageSource = readFileSync(
   new URL('./prepare-npm-package.mjs', import.meta.url),
@@ -290,6 +296,16 @@ try {
   assert.deepEqual(mainPackage.optionalDependencies, {
     '@esonhugh/claude-code-darwin-arm64': '2.1.209',
   });
+  const repository = {
+    type: 'git',
+    url: 'git+https://github.com/Esonhugh/claude-code.git',
+  };
+  assert.deepEqual(mainPackage.repository, repository);
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(outDir, 'darwin-arm64', 'package.json'), 'utf8'))
+      .repository,
+    repository,
+  );
 } finally {
   rmSync(packageDir, { recursive: true, force: true });
 }

@@ -253,6 +253,9 @@ jobs:
       - source-checks
       - build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
     steps:
       - name: Checkout tag metadata
         uses: actions/checkout@v4
@@ -315,6 +318,12 @@ jobs:
           sha256sum "${expected[@]}" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # npm trusted publishing (OIDC) needs npm 11.5.1+, bundled with Node 24.
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -336,12 +345,8 @@ jobs:
           node ./dist/npm/main/bin/claude.js --help
 
       - name: Publish npm packages
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm config set registry https://registry.npmjs.org/
-          npm config set //registry.npmjs.org/:_authToken "$NODE_AUTH_TOKEN"
-          npm whoami
+          npm --version
 
           publish_if_missing() {
             package_dir="$1"

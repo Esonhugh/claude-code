@@ -16,7 +16,7 @@
 
 ### 版本状态
 
-- 发布版本：`v2.1.292`。`release-validation` 四路发布门禁在 `97ed301` 上通过（详见下方测试覆盖），其后有记录门禁结果与发布状态的文档提交；首次推送 tag 后 release workflow 的 Node 构建产物启动失败；修复后第二次运行仅 Windows 在 `--help` 失败（CRLF 检出改变了哈希固定的 Mods 声明资产）。两次修复后均复跑相关测试、release-check 与文档审计，并将 tag 移到最终修复提交。版本号 `2.1.292` 与本 fork 跟踪的官方基线一致，`Makefile VERSION` 与 README 发布版本同步为 `2.1.292`，`package.json` 保持 `0.0.0-dev`。
+- 发布版本：`v2.1.292`。`release-validation` 四路发布门禁在 `97ed301` 上通过（详见下方测试覆盖），其后有记录门禁结果与发布状态的文档提交；首次推送 tag 后 release workflow 的 Node 构建产物启动失败；修复后第二次运行仅 Windows 在 `--help` 失败（CRLF 检出改变了哈希固定的 Mods 声明资产）。第三次运行四个平台构建与 release 产物上传均通过，npm 发布因 `NPM_TOKEN` 被拒（401）失败，改为 npm trusted publishing（OIDC）。修复后均复跑相关测试与 release-check，并将 tag 移到最终修复提交。版本号 `2.1.292` 与本 fork 跟踪的官方基线一致，`Makefile VERSION` 与 README 发布版本同步为 `2.1.292`，`package.json` 保持 `0.0.0-dev`。
 - 汇总 `v2.1.219` 之后至本版本 tag 的变更：原 `v2.1.280` 候选从未打 tag，其 2026-09-30 至 2026-10-13 的内容并入本条目；新增 2026-10-14 至 2026-10-17 的直接提交、PR #5、#6、#8、#10、#11、#13、#14、#15，以及 `release/v2.1.292` 上的发布准备修复。同一范围内下方 2026-09-15、2026-09-18、2026-09-19 三个未归版本条目保持原样，也属于本版本。
 
 ### 关联提交
@@ -256,6 +256,7 @@
 - `release-validation` 四路门禁在 `97ed301` 上通过：相关测试按文件隔离在 Bun 1.4.2 下运行（694 个文件，除 DiffSidebar、processRunPsFailure 环境基线外通过；`examples/mods` 下 3 个需 Mods 测试运行器的文件运行方式不匹配、未计入；关键测试另在 Bun 1.3.14 下通过）；`make release-check` 通过；`built-claude` 两轮完整 binary 矩阵（一轮加 CPU 负载）29 个 target 全部记录，除已知缺口中的 `full_terminal_coverage` 与 `builtin-mods` 产品时序外全部通过，另有脚本驱动的 tmux 场景覆盖 Workflow 语法预检与并发、目录 marketplace、`/workflows` 会话范围、提交草稿、Stats 嵌套 Tabs 与启动期 resize；版本与文档审计通过。门禁期间修复的 Linux resize 区间、tmux 漏收 SIGCHLD、`/goal` 草稿恢复均附回归测试；三个仅在 Linux 暴露的测试改为在 Linux 上实际覆盖其契约。
 - 首次推送 `v2.1.292` 后 release workflow 四个平台均在 `Verify CLI version` 失败：Mods 测试运行器对 `node:vm` 使用具名导入，打包后 `dist/cli.js` 在未开启 `--experimental-vm-modules` 的 Node 22 下链接失败；npm 未发布。改为命名空间导入，`make release-check` 增加与 CI 相同的 Node 构建、`--version`、`--help` 检查（构建到 `dist/` 下独立临时目录，不覆盖与 `make build` 共用的 `dist/cli.js`），修复前该检查失败、修复后通过。
 - 移动 tag 后的第二次 release workflow 中，Linux 与 macOS 构建通过，Windows 在 `Verify CLI help` 报 `Mods Button declaration source identity changed`：仓库没有 `.gitattributes`，Windows runner 默认 `core.autocrlf=true`，检出时把 `assets/mods-2.1.292.d.ts.txt` 与 `assets/mods-button-2.1.295.json.txt` 转为 CRLF，SHA-256 与 `buttonChildrenDeclarations.ts` 中固定值不符。新增 `.gitattributes` 将 `/assets/**` 标为 `-text`；回归测试用 `git -c core.autocrlf=true cat-file --filters` 模拟该检出并比对存储内容，修复前失败、修复后通过。
+- 第三次 release workflow 的 `npm whoami` 返回 401：npm 已撤销 classic token，granular token 有效期上限 90 天，不再适合长期存放在 CI。发布 job 改为 trusted publishing：job 级 `id-token: write`，发布前用 Node 24（npm 11.5.1+），删除 `NPM_TOKEN`、`_authToken` 与 `npm whoami`；`prepare-npm-package` 为主包与平台包写入指向本仓库的 `repository` 以通过 provenance 校验。`scripts/build.test.mjs` 断言上述 workflow 与包元数据，修改前失败、修改后通过；需在 npmjs.com 为 5 个包配置 GitHub Actions trusted publisher（`Esonhugh/claude-code`、`release.yml`）。
 
 - 用量面板新增投影函数、Ink 渲染和响应头/文案三组测试，先在 HEAD 复现缺失行后通过；真实 CLI 的 `/usage` 面板与固定官方 2.1.292 对照见本次提交记录。
 - 各提交在纯 HEAD 加候选补丁中通过类型检查、lint、对应测试及提交门禁。runner 的清理场景在真实子进程中连续五轮通过；相同成功/失败场景的三端 CLI 结果一致，候选清理范围更接近官方。
