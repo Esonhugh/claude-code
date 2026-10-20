@@ -1,6 +1,7 @@
 import { feature } from 'bun:bundle'
 import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
+import { neutralizeMemoryContent } from './neutralizeMemoryContent.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -305,7 +306,7 @@ export function buildMemoryPrompt(params: {
       memory_type:
         memoryType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
-    lines.push(`## ${ENTRYPOINT_NAME}`, '', t.content)
+    lines.push(`## ${ENTRYPOINT_NAME}`, '', neutralizeMemoryContent(t.content))
   } else {
     lines.push(
       `## ${ENTRYPOINT_NAME}`,
