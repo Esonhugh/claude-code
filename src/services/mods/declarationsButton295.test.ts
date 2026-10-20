@@ -1,5 +1,7 @@
 import {expect,test} from 'bun:test'
 import {readFileSync} from 'node:fs'
+import {execFileSync} from 'node:child_process'
+import {fileURLToPath} from 'node:url'
 import {createHash} from 'node:crypto'
 import {withButtonChildrenDeclarations,buttonChildrenDeclarationNote} from './buttonChildrenDeclarations.js'
 import ts from 'typescript'
@@ -50,4 +52,13 @@ test('only pinned official295 Button blocks change; all other292 declarations st
   expect(body).not.toContain("'ui.notify'")
   expect(body).not.toContain('export type RegisteredToolSpec')
   expect(()=>withButtonChildrenDeclarations(canonical+'\n')).toThrow('source identity changed')
+})
+
+test('hash-pinned declaration assets keep their bytes in a CRLF checkout',()=>{
+  const root=fileURLToPath(new URL('../../../',import.meta.url))
+  for(const path of ['assets/mods-2.1.292.d.ts.txt','assets/mods-button-2.1.295.json.txt']){
+    const stored=execFileSync('git',['cat-file','blob',`HEAD:${path}`],{cwd:root})
+    const checkedOut=execFileSync('git',['-c','core.autocrlf=true','cat-file','--filters',`HEAD:${path}`],{cwd:root})
+    expect(sha(checkedOut.toString('utf8'))).toBe(sha(stored.toString('utf8')))
+  }
 })
