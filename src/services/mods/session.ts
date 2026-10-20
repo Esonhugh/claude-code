@@ -396,7 +396,6 @@ export function createModsSession(options: ModsSessionOptions) {
       })),
       settings.hasManagedSettings === true || (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0),
       settings.policySettings?.hooks,
-      settings.policySettings?.strictPluginOnlyCustomization,
       settings.hookPolicy,
       settings.subscriptionType,
       settings.enabledOptionSources,
@@ -562,10 +561,7 @@ export function createModsSession(options: ModsSessionOptions) {
   async function reconcile(plugins?: readonly LoadedPlugin[], deferAuthoring = false) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
-    const policy = settings.policySettings
     const disabled = options.getDisabledReason?.()
-      ?? (policy?.strictPluginOnlyCustomization
-        ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
     const configured = options.bare ? [] : plugins ?? (await loadPlugins())
     const authoringErrors = deferAuthoring || options.bare
       ? []
