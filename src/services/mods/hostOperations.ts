@@ -245,6 +245,37 @@ async function readBytes(path: string, signal: AbortSignal, maxBytes = MAX_BYTES
   }
 }
 
+const REDIRECT_STATUSES = [301, 302, 303, 307, 308]
+const EMPTY_BODY_STATUSES = [204, 205, 304]
+const CROSS_ORIGIN_HEADERS = ['accept', 'accept-language', 'content-type', 'user-agent']
+const MAX_REDIRECTS = 5
+
+// Reads at most MAX_BYTES of a response body; a longer stream is cut off there.
+async function readCappedText(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    for (;;) {
+      signal.throwIfAborted()
+      const { done, value } = await reader.read()
+      if (done) break
+      const room = MAX_BYTES - size
+      if (value.byteLength >= room) {
+        chunks.push(value.subarray(0, room))
+        await reader.cancel()
+        break
+      }
+      chunks.push(value)
+      size += value.byteLength
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks))
+}
+
 async function readText(path: string, signal: AbortSignal, maxBytes = MAX_BYTES): Promise<string> {
   return (await readBytes(path, signal, maxBytes)).toString('utf8')
 }
@@ -418,12 +449,52 @@ export function createModHostOperations({
           const { kind, secret } = authorization.credential
           headers.set(kind === 'bearer' ? 'authorization' : 'x-api-key', kind === 'bearer' ? `Bearer ${secret}` : secret)
         }
-        const response = await httpFetch(target.href, {
-          method: init.method, headers, body: init.body, redirect: 'manual', signal: requestSignal,
-        })
+        if (init.body !== undefined && init.body.length > MAX_BYTES)
+          throw new Error(`http.fetch: ${target.href} refused: a request body of ${init.body.length} characters is over the ${MAX_BYTES}-character limit`)
+        // Follow redirects by hand, as the official host does: credentials stay
+        // on their HTTPS host and cross-origin hops keep only safe headers.
+        let location = target
+        let method = (init.method ?? 'GET').toUpperCase()
+        let body = init.body
+        let isCredentialed = init.auth !== undefined
+        let response: Response
+        for (let redirects = 0; ; redirects++) {
+          if (isCredentialed && (location.protocol !== 'https:' || location.host !== target.host)) {
+            isCredentialed = false
+            headers.delete('authorization')
+            headers.delete('x-api-key')
+          }
+          response = await httpFetch(location.href, {
+            method,
+            headers, body, redirect: 'manual', signal: requestSignal,
+          })
+          const next = response.headers.get('location')
+          if (!REDIRECT_STATUSES.includes(response.status) || next === null) break
+          await response.body?.cancel()
+          if (redirects + 1 > MAX_REDIRECTS)
+            throw new Error(`http.fetch: more than ${MAX_REDIRECTS} redirects from ${url}`)
+          const previousOrigin = location.origin
+          location = new URL(next, location)
+          if (location.protocol !== 'http:' && location.protocol !== 'https:')
+            throw new Error(`http.fetch: redirect to ${location.href} refused: takes an http or https URL`)
+          if (response.status === 303 || ([301, 302].includes(response.status) && method === 'POST')) {
+            method = 'GET'
+            body = undefined
+          }
+          if (location.origin !== previousOrigin) {
+            const names: string[] = []
+            headers.forEach((_, name) => names.push(name))
+            for (const name of names) if (!CROSS_ORIGIN_HEADERS.includes(name)) headers.delete(name)
+          }
+        }
+        const length = Number(response.headers.get('content-length') ?? NaN)
+        if (method !== 'HEAD' && !EMPTY_BODY_STATUSES.includes(response.status) && Number.isFinite(length) && length > MAX_BYTES) {
+          await response.body?.cancel()
+          throw new Error(`http.fetch: ${location.href} refused: body of ${length} bytes is over the ${MAX_BYTES}-byte limit`)
+        }
         const responseHeaders: Record<string, string> = {}
-        response.headers.forEach((value, name) => { responseHeaders[name] = value })
-        const result = { status: response.status, ok: response.ok, headers: responseHeaders, text: await response.text() }
+        response.headers.forEach((value, name) => { responseHeaders[name.toLowerCase()] = value })
+        const result = { status: response.status, ok: response.ok, headers: responseHeaders, text: await readCappedText(response, requestSignal) }
         signal.throwIfAborted()
         return result
       },
