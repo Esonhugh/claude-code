@@ -74,6 +74,7 @@ import { validateModCompactInput, validateModCompactResult } from './compactAdap
 import { validateSessionReceiveResult } from './receiveAdapter.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import type { ModSessionIdentity } from './sessionIdentity.js'
 import { getMaxConcurrentSubagents } from '../../utils/subagentConcurrency.js'
 import { createModConfig, type ModConfigRowProvider, type ModConfigValue } from './config.js'
 import { createModState } from './state.js'
@@ -174,6 +175,10 @@ export type ModHostServices = ModRequestServices & ModHttpServices & {
   wake?(): void | Promise<void>
   uiStatus?(plugin: string, text: string | undefined): void
   uiToast?(plugin: string, text: string, timeoutMs: number): void
+  /** Sends a native notification through the person's channel; resolves the channel's method word. */
+  uiNotify?(notification: { message: string; title: string; notificationType: 'plugin_notification' }): Promise<string>
+  /** Answers $.session.identity() for a mod managed settings enable and load in place; undefined for any other. */
+  sessionIdentity?(storageId: string): ModSessionIdentity | undefined
   prompt?(): ModPromptHost | undefined
 }
 export type ModDiagnostic = { plugin: string; stage: string; message: string; workerFault?: ModWorkerFault }
@@ -288,7 +293,7 @@ const coreHost: Nouns = {
   env: { get: hostIdentity, set: hostIdentity },
   store: { get: hostIdentity, set: hostIdentity, delete: hostIdentity, keys: hostIdentity },
   state: { get: hostIdentity, set: hostIdentity },
-  session: { compact: hostIdentity, send: hostIdentity, append: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
+  session: { compact: hostIdentity, send: hostIdentity, append: hostIdentity, identity: hostIdentity, cwd: hostIdentity, root: hostIdentity, model: hostIdentity, turns: hostIdentity, id: hostIdentity, repo: hostIdentity, surface: hostIdentity, surfaces: hostIdentity, messages: hostIdentity, usage: hostIdentity, version: hostIdentity, authorize: hostIdentity },
   http: { fetch: hostIdentity },
   agent: { spawn: hostIdentity, register: hostIdentity, list: hostIdentity },
   command: { run: hostIdentity, register: hostIdentity, list: hostIdentity },
@@ -298,7 +303,7 @@ const coreHost: Nouns = {
   mcp: { connect: hostIdentity, call: hostIdentity },
   turn: { step: hostIdentity, abort: hostIdentity },
   tool: { list: hostIdentity, check: hostIdentity, call: hostIdentity, register: hostIdentity },
-  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
+  ui: { ask: hostIdentity, notice: hostIdentity, open: hostIdentity, close: hostIdentity, panes: hostIdentity, blit: hostIdentity, scroll: hostIdentity, focus: hostIdentity, invalidate: hostIdentity, log: hostIdentity, status: hostIdentity, toast: hostIdentity, notify: hostIdentity, selection: hostIdentity, copy: hostIdentity, resolve: hostIdentity },
 }
 
 async function runCleanups(cleanups: (() => unknown)[]): Promise<void> {
@@ -1249,6 +1254,14 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (to !== 'transcript' && to !== 'debug') throw new TypeError('ui.log to must be transcript or debug')
         return { text: args[0], to }
       }
+      case 'ui.notify': {
+        const options = args[1] as ModInput | undefined
+        if (typeof args[0] !== 'string')
+          throw Object.assign(new Error(`${plugin}: $.ui.notify takes a string text`), {name:'HooksError'})
+        if (options !== undefined && (!options || typeof options !== 'object' || options.title !== undefined && typeof options.title !== 'string'))
+          throw Object.assign(new Error(`${plugin}: $.ui.notify title is a string, when given`), {name:'HooksError'})
+        return { text: args[0], title: (options?.title as string | undefined) || plugin }
+      }
       case 'ui.toast': {
         const options = args[1] as ModInput | undefined
         return { text: args[0], ...(typeof options?.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}) }
@@ -1274,6 +1287,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         return {...input}
       }
       case 'session.version': return {}
+      case 'session.identity': return {}
       case 'agent.list': case 'tool.list': case 'command.list': case 'store.keys': case 'session.cwd': case 'session.root': case 'session.model': case 'session.turns': case 'session.id': case 'session.repo': case 'session.surface': case 'session.surfaces': case 'prompt.read': {
         if (args.length) throw new TypeError(`${op} takes no arguments`)
         return {}
@@ -1496,6 +1510,26 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         } finally { combined.cleanup() }
       }
       case 'ui.selection': return services.uiSelection?.()
+      case 'session.identity': {
+        const plugin = owner.declaration.name
+        const identity = services.sessionIdentity?.(owner.declaration.storageId)
+        if (identity) return identity
+        logForDebugging(`[Mods] $.session.identity (${plugin}): refused; not a plugin managed settings enable and name the source of`)
+        return { deny: `$.session.identity answers only a mod that managed settings enable and that is loaded in place from a source they name; ${plugin} is not one` }
+      }
+      case 'ui.notify': {
+        const plugin = owner.declaration.name
+        const text = input.text as string
+        const channel = binding && !stopped && !ending && services.uiNotify
+          ? await services.uiNotify({ message: text, title: (input.title as string | undefined) || plugin, notificationType: 'plugin_notification' })
+          : 'no_surface'
+        if (channel === 'error') throw Object.assign(new Error(`${plugin}: $.ui.notify: the channel's write failed`), {name:'HooksError'})
+        const result = ['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell'].includes(channel)
+          ? { isSent: true, channel }
+          : { isSent: false, reason: channel === 'disabled' ? 'disabled' : channel === 'no_surface' ? 'no-surface' : 'no-channel' }
+        logForDebugging(`[Mods] $.ui.notify (${plugin}): ${text.length} chars: ${result.isSent ? `sent by ${channel}` : result.reason}`)
+        return result
+      }
       case 'ui.panes': return ui.panes(owner)
       case 'agent.list': {
         if (!services.tasks) throw new Error('Agent session state is unavailable on this host')
@@ -2630,6 +2664,23 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
 
   function validateResult(event: string, result: unknown, input?: ModInput) {
     if (event === 'telemetry.log' || event === 'telemetry.mark') return validateModTelemetryResult(event, result)
+    if (event === 'session.identity') {
+      const value = (result as { value?: { kind?: unknown; isVerified?: unknown; deny?: unknown } } | undefined)?.value
+      if (!value || typeof value !== 'object' || (typeof value.deny !== 'string' &&
+          (typeof value.kind !== 'string' || typeof value.isVerified !== 'boolean')))
+        throw new TypeError('session.identity must return { kind, isVerified, ... } or { deny } in value')
+      return
+    }
+    if (event === 'ui.notify') {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) throw new TypeError('ui.notify must return value or deny')
+      if ('deny' in result && typeof result.deny === 'string') return
+      const value = (result as { value?: { isSent?: unknown; channel?: unknown; reason?: unknown } }).value
+      if (!value || typeof value !== 'object' || (value.isSent === true
+        ? !['iterm2', 'iterm2_with_bell', 'kitty', 'ghostty', 'terminal_bell'].includes(value.channel as string)
+        : value.isSent !== false || !['disabled', 'no-channel', 'no-surface', 'refused'].includes(value.reason as string)))
+        throw new TypeError('ui.notify must return { isSent: true, channel } or { isSent: false, reason } in value, or deny')
+      return
+    }
     if (event === 'prompt.edit') return validatePromptEditResult(result)
     if (event === 'prompt.autocomplete') return validatePromptAutocompleteResult(result)
     if (event === 'prompt.compose') {
@@ -2987,7 +3038,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         core = async () => { throw new Error(`Unhandled plugin test event: ${event}`) }
       const runDispatch = () => requestServices.run(dispatchServices, () => dispatchModEvent({
         event, input, hooks: hooksFor(snapshot, table, options.only, options.drawing, options.skipOwner, callerChain)
-          .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name), core,
+          .filter(hook => !['ui.fault', 'ui.message'].includes(event) || !options.only || hook.plugin === options.only.declaration.name)
+          // Only managed and built-in tiers hook the session's identity.
+          .filter(hook => event !== 'session.identity' || hook.tier !== 'user'), core,
         signal: combined.signal, origin, callerChain,
         ...(event === 'prompt.edit' ? {budgetMs: promptEditBudgetMs} : {}),
         reportDirectCoreFailure: options.reportDirectCoreFailure,
@@ -3001,6 +3054,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         validateInput: (value, received) => {
           if (event === 'prompt.autocomplete') validatePromptAutocompleteInput(value, received)
           if (event === 'ui.copy') validateModUiCopyArgs(value)
+          if (event === 'ui.notify' && (typeof value.text !== 'string' || value.title !== undefined && typeof value.title !== 'string'))
+            throw new TypeError('ui.notify takes { text, title? } as strings')
           if (event === 'prompt.edit') validatePromptEditInput(value, received)
           if (event === 'agent.spawn') validateModAgentSpawnInput(value, received)
           if (event === 'tool.check' && !isDeepStrictEqual(value, input)) throw new Error('tool.check cannot rewrite tool, input or tool_use_id')

@@ -2959,6 +2959,11 @@ function runHeadlessStreaming(
         uuid: randomUUID(), session_id: getSessionId(),
       })
     },
+    // No terminal draws here: the person's Notification hooks alone run.
+    uiNotify: async notification => {
+      await executeNotificationHooks(notification)
+      return 'no_surface'
+    },
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
     toolHost: () => createModToolHost(getModToolContext(), canUseTool),

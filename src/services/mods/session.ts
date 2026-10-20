@@ -15,6 +15,7 @@ import { subscribeRateLimitUsage } from '../claudeAiLimits.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { seatNativeModPlugins } from './native.js'
 import { appendModQueueRecord } from './sessionAppend.js'
+import { modSessionIdentity } from './sessionIdentity.js'
 import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -591,6 +592,9 @@ export function createModsSession(options: ModsSessionOptions) {
     const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
       .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
     services.pluginOrigin = storageId => origins.get(storageId)
+    const managed = new Set(loaded.filter(plugin => plugin.enabled !== false && plugin.managedSource === true &&
+      settings.policySettings?.enabledPlugins?.[getPluginStorageId(plugin)] === true).map(getPluginStorageId))
+    services.sessionIdentity = storageId => managed.has(storageId) ? modSessionIdentity() : undefined
     diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
     for (const error of prepared.errors) diagnostic(error)

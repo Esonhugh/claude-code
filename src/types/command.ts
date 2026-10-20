@@ -45,6 +45,8 @@ export type PromptCommand = {
   hooks?: HooksSettings
   // Base directory for skill resources (used to set CLAUDE_PLUGIN_ROOT environment variable for skill hooks)
   skillRoot?: string
+  // The file the prompt was loaded from and its frontmatter as parsed, for Mods skill.prompt
+  skillFile?: { path: string; frontmatter: Readonly<Record<string, unknown>> }
   // Execution context: 'inline' (default) or 'fork' (run as sub-agent)
   // 'inline' = skill content expands into the current conversation
   // 'fork' = skill runs in a sub-agent with separate context and token budget

@@ -2198,6 +2198,7 @@ export function REPL({
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),
+    uiNotify: notification => sendNotification(notification, terminal),
     uiStatus: (plugin, text) => {
       const key = `plugin-status-${plugin}`
       removeNotification(key)
@@ -2205,7 +2206,7 @@ export function REPL({
         key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
       })
     },
-  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections])
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections, terminal])
 
   useEffect(() => {
     if (!modsSession) return
