@@ -988,6 +988,12 @@ export async function* runAgent({
     canonicalModel === 'claude-opus-5' ||
     canonicalModel === 'claude-sonnet-5'
 
+  // The agent's autoCompactWindow caps the window it would inherit.
+  const autoCompactWindowCeilings = [
+    agentDefinition.autoCompactWindow,
+    toolUseContext.options.autoCompactWindow,
+  ].filter((window): window is number => window !== undefined)
+
   // Build agent-specific options
   const agentOptions: ToolUseContext['options'] = {
     isNonInteractiveSession: useExactTools
@@ -1003,6 +1009,9 @@ export async function* runAgent({
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
     mainLoopModel: resolvedAgentModel,
+    autoCompactWindow: autoCompactWindowCeilings.length
+      ? Math.min(...autoCompactWindowCeilings)
+      : undefined,
     // Forks preserve the request prefix. Opus/Sonnet 5 preserve the user's
     // adaptive thinking choice; older regular subagents keep the cost default.
     thinkingConfig: inheritThinking

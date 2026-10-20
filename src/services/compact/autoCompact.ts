@@ -2,17 +2,23 @@ import type { SDKAutocompactStateMessage } from '../../entrypoints/agentSdkTypes
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from '../../utils/permissions/permissions.js'
 import { feature } from 'bun:bundle'
-import { markPostCompaction } from 'src/bootstrap/state.js'
+import { getSdkBetas, markPostCompaction } from 'src/bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { getGlobalConfig } from '../../utils/config.js'
-import { resolveContextWindow } from '../../utils/context.js'
+import {
+  getContextWindowForModel,
+  resolveContextWindow,
+} from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getCanonicalName } from '../../utils/model/model.js'
+import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
+import { getEnabledSettingSources } from '../../utils/settings/constants.js'
+import { getSettingsForSource } from '../../utils/settings/settings.js'
 import { logError } from '../../utils/log.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
@@ -38,16 +44,80 @@ import { runModSessionCompact } from '../mods/compactAdapter.js'
 // Based on p99.99 of compact summary output being 17,387 tokens.
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
+/** Settings key for per-model values: canonical name without the [1m] suffix. */
+export function getAutoCompactWindowModelKey(model: string): string {
+  return getCanonicalName(model).replace(/\[1m\]$/i, '')
+}
+
+/**
+ * Official F9t/Ob: walk settings sources from low to high priority. A
+ * source's top-level autoCompactWindow replaces per-model values from lower
+ * sources; within a source, modelSettings.<model>.autoCompactWindow wins.
+ * Returns undefined for "auto".
+ */
+export function getConfiguredAutoCompactWindow(
+  model: string,
+): number | undefined {
+  const key = getAutoCompactWindowModelKey(model)
+  let topLevel: number | undefined
+  let perModel: number | 'auto' | undefined
+  for (const source of getEnabledSettingSources()) {
+    const settings = getSettingsForSource(source)
+    if (!settings) continue
+    let sourcePerModel: number | 'auto' | undefined
+    for (const [name, value] of Object.entries(settings.modelSettings ?? {})) {
+      const window = value?.autoCompactWindow
+      if (window === undefined) continue
+      if (name === key) {
+        sourcePerModel = window
+        break
+      }
+      if (getAutoCompactWindowModelKey(name) === key) sourcePerModel ??= window
+    }
+    if (settings.autoCompactWindow !== undefined) {
+      topLevel = settings.autoCompactWindow
+      perModel = sourcePerModel
+    } else if (sourcePerModel !== undefined) {
+      perModel = sourcePerModel
+    }
+  }
+  const configured = perModel ?? topLevel
+  return configured === 'auto' ? undefined : configured
+}
+
+/**
+ * Resolves the auto-compact window. `ceiling` is an agent definition's
+ * autoCompactWindow: it can only lower the window, and the environment
+ * override still wins.
+ */
+export function resolveAutoCompactWindow(
+  model: string,
+  ceiling?: number,
+): ReturnType<typeof resolveContextWindow> {
+  const resolved = resolveContextWindow(
+    model,
+    getConfiguredAutoCompactWindow(model),
+  )
+  if (
+    ceiling === undefined ||
+    resolved.source === 'env' ||
+    resolved.window <= ceiling
+  ) {
+    return resolved
+  }
+  return { window: ceiling, source: 'settings' }
+}
+
 // Returns the context window size minus the max output tokens for the model
-export function getEffectiveContextWindowSize(model: string): number {
+export function getEffectiveContextWindowSize(
+  model: string,
+  autoCompactWindowCeiling?: number,
+): number {
   const reservedTokensForSummary = Math.min(
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
-  const { window } = resolveContextWindow(
-    model,
-    getInitialSettings().autoCompactWindow,
-  )
+  const { window } = resolveAutoCompactWindow(model, autoCompactWindowCeiling)
 
   return window - reservedTokensForSummary
 }
@@ -73,8 +143,13 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
-export function getAutoCompactThreshold(model: string): number {
-  return thresholdForWindow(getEffectiveContextWindowSize(model))
+export function getAutoCompactThreshold(
+  model: string,
+  autoCompactWindowCeiling?: number,
+): number {
+  return thresholdForWindow(
+    getEffectiveContextWindowSize(model, autoCompactWindowCeiling),
+  )
 }
 
 function thresholdForWindow(effectiveContextWindow: number): number {
@@ -118,6 +193,7 @@ export function getAutoCompactState(
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,
+  autoCompactWindowCeiling?: number,
 ): {
   percentLeft: number
   isAboveWarningThreshold: boolean
@@ -125,10 +201,13 @@ export function calculateTokenWarningState(
   isAboveAutoCompactThreshold: boolean
   isAtBlockingLimit: boolean
 } {
-  const autoCompactThreshold = getAutoCompactThreshold(model)
+  const autoCompactThreshold = getAutoCompactThreshold(
+    model,
+    autoCompactWindowCeiling,
+  )
   const threshold = isAutoCompactEnabled()
     ? autoCompactThreshold
-    : getEffectiveContextWindowSize(model)
+    : getEffectiveContextWindowSize(model, autoCompactWindowCeiling)
 
   const percentLeft = Math.max(
     0,
@@ -144,7 +223,10 @@ export function calculateTokenWarningState(
   const isAboveAutoCompactThreshold =
     isAutoCompactEnabled() && tokenUsage >= autoCompactThreshold
 
-  const actualContextWindow = getEffectiveContextWindowSize(model)
+  const actualContextWindow = getEffectiveContextWindowSize(
+    model,
+    autoCompactWindowCeiling,
+  )
   const defaultBlockingLimit =
     actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
 
@@ -190,6 +272,7 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
+  autoCompactWindowCeiling?: number,
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -248,8 +331,11 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
-  const threshold = getAutoCompactThreshold(model)
-  const effectiveWindow = getEffectiveContextWindowSize(model)
+  const threshold = getAutoCompactThreshold(model, autoCompactWindowCeiling)
+  const effectiveWindow = getEffectiveContextWindowSize(
+    model,
+    autoCompactWindowCeiling,
+  )
 
   logForDebugging(
     `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
@@ -258,9 +344,48 @@ export async function shouldAutoCompact(
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
     tokenCount,
     model,
+    autoCompactWindowCeiling,
   )
 
   return isAboveAutoCompactThreshold
+}
+
+/**
+ * Official 2.1.301 (Sqr): after switching to a model with a smaller context
+ * window, a conversation already too long for it is summarized by the model
+ * that answered last, provided that model has the larger window and is still
+ * allowed.
+ */
+export function getLargerContextSummaryModel(
+  messages: Message[],
+  model: string,
+  autoCompactWindowCeiling?: number,
+  snipTokensFreed = 0,
+): string | undefined {
+  const lastAssistant = messages.findLast(
+    message => message.type === 'assistant' && !message.isApiErrorMessage,
+  )
+  const previousModel =
+    lastAssistant?.type === 'assistant'
+      ? lastAssistant.requestedModel
+      : undefined
+  if (typeof previousModel !== 'string' || previousModel === model) {
+    return undefined
+  }
+  const betas = getSdkBetas()
+  if (
+    getContextWindowForModel(previousModel, betas) <=
+    getContextWindowForModel(model, betas)
+  ) {
+    return undefined
+  }
+  const { isAtBlockingLimit } = calculateTokenWarningState(
+    tokenCountWithEstimation(messages) - snipTokensFreed,
+    model,
+    autoCompactWindowCeiling,
+  )
+  if (!isAtBlockingLimit || !isModelAllowed(previousModel)) return undefined
+  return previousModel
 }
 
 export type AutoCompactFailure = {
@@ -299,11 +424,13 @@ export async function autoCompactIfNeeded(
   }
 
   const model = toolUseContext.options.mainLoopModel
+  const autoCompactWindowCeiling = toolUseContext.options.autoCompactWindow
   const shouldCompact = await shouldAutoCompact(
     messages,
     model,
     querySource,
     snipTokensFreed,
+    autoCompactWindowCeiling,
   )
 
   if (!shouldCompact) {
@@ -314,13 +441,26 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model),
+    autoCompactThreshold: getAutoCompactThreshold(
+      model,
+      autoCompactWindowCeiling,
+    ),
     querySource,
   }
 
-  try {
-    const outcome = await runModSessionCompact(
-      toolUseContext,
+  const summaryModel =
+    (tracking?.consecutiveFailures ?? 0) > 0
+      ? undefined
+      : getLargerContextSummaryModel(
+          messages,
+          model,
+          autoCompactWindowCeiling,
+          snipTokensFreed,
+        )
+
+  const runCompaction = (context: ToolUseContext) =>
+    runModSessionCompact(
+      context,
       'auto',
       messages,
       undefined,
@@ -372,6 +512,24 @@ export async function autoCompactIfNeeded(
       },
       canUseTool,
     )
+
+  try {
+    let outcome: Awaited<ReturnType<typeof runCompaction>> | undefined
+    if (summaryModel !== undefined) {
+      try {
+        outcome = await runCompaction({
+          ...toolUseContext,
+          options: { ...toolUseContext.options, mainLoopModel: summaryModel },
+        })
+      } catch (error) {
+        if (toolUseContext.abortController.signal.aborted) throw error
+        logForDebugging(
+          `autocompact: summary by ${summaryModel} failed (${errorMessage(error)}); retrying with ${model}`,
+          { level: 'warn' },
+        )
+      }
+    }
+    outcome ??= await runCompaction(toolUseContext)
     if (outcome.skip !== undefined) {
       return { wasCompacted: false, skip: outcome.skip }
     }

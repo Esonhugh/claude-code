@@ -440,3 +440,39 @@ test.each(['replace','skip','late-skip'] as const)('real query consumes compact 
   else expect(memory.trySessionMemoryCompaction).not.toHaveBeenCalled()
   expect(diagnostics).toEqual([])
 })
+
+test('auto compact after switching to a smaller-window model summarizes with the previous model first', async () => {
+  const ctx = context()
+  ctx.options.mainLoopModel = 'claude-haiku-4-5'
+  const previous = createAssistantMessage({ content: 'long answer' })
+  previous.requestedModel = 'claude-sonnet-4-6[1m]'
+  ctx.messages = [createUserMessage({ content: 'original' }), previous]
+  spyOn(memory, 'trySessionMemoryCompaction').mockResolvedValue(null)
+  const models: string[] = []
+  spyOn(compact, 'compactConversation').mockImplementation(async (_messages, context) => {
+    models.push(context.options.mainLoopModel)
+    return coreResult()
+  })
+  const result = await autoCompactIfNeeded(ctx.messages, ctx, params(ctx), 'repl_main_thread')
+  expect(result.wasCompacted).toBe(true)
+  expect(models).toEqual(['claude-sonnet-4-6[1m]'])
+  expect(ctx.options.mainLoopModel).toBe('claude-haiku-4-5')
+})
+
+test('a failed previous-model summary falls back to the current model', async () => {
+  const ctx = context()
+  ctx.options.mainLoopModel = 'claude-haiku-4-5'
+  const previous = createAssistantMessage({ content: 'long answer' })
+  previous.requestedModel = 'claude-sonnet-4-6[1m]'
+  ctx.messages = [createUserMessage({ content: 'original' }), previous]
+  spyOn(memory, 'trySessionMemoryCompaction').mockResolvedValue(null)
+  const models: string[] = []
+  spyOn(compact, 'compactConversation').mockImplementation(async (_messages, context) => {
+    models.push(context.options.mainLoopModel)
+    if (models.length === 1) throw new Error('previous model unavailable')
+    return coreResult()
+  })
+  const result = await autoCompactIfNeeded(ctx.messages, ctx, params(ctx), 'repl_main_thread')
+  expect(result.wasCompacted).toBe(true)
+  expect(models).toEqual(['claude-sonnet-4-6[1m]', 'claude-haiku-4-5'])
+})

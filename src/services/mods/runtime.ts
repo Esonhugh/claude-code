@@ -1072,7 +1072,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
           throw new TypeError('agent.register takes a short name of letters, digits, _ or - (up to 64)')
         const input = value as ModInput
         return Object.fromEntries(['name', 'description', 'prompt', 'tools', 'disallowedTools', 'model', 'effort',
-          'permissionMode', 'mcpServers', 'hooks', 'maxTurns', 'skills', 'initialPrompt', 'memory', 'background', 'omitClaudeMd', 'isolation']
+          'permissionMode', 'mcpServers', 'hooks', 'maxTurns', 'autoCompactWindow', 'skills', 'initialPrompt', 'memory', 'background', 'omitClaudeMd', 'isolation']
           .filter(key => input[key] !== undefined).map(key => [key, Array.isArray(input[key]) ? [...input[key]] : input[key]]))
       }
       case 'tool.register': {
