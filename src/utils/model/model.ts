@@ -177,9 +177,23 @@ export function getRuntimeMainLoopModel(params: {
   return mainLoopModel
 }
 
-/** Provider fallback only; explicit session, environment and settings win. */
+/**
+ * Provider fallback only; explicit session, environment and settings win.
+ * An org-configured served default outranks ANTHROPIC_DEFAULT_MODEL, which in
+ * turn outranks the account's served default and the built-in default.
+ */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
-  return getUsableServedDefaultModel()?.model ?? getDefaultOpusModel()
+  const served = getUsableServedDefaultModel()
+  if (served?.orgConfigured) return served.model
+  return getEnvDefaultModelSetting() ?? served?.model ?? getDefaultOpusModel()
+}
+
+function getEnvDefaultModelSetting(): ModelName | undefined {
+  const value = process.env.ANTHROPIC_DEFAULT_MODEL?.trim()
+  if (!value) return undefined
+  const normalized = value.toLowerCase()
+  if (normalized === 'default' || normalized === 'inherit') return undefined
+  return isModelAllowed(value) ? value : undefined
 }
 
 // Official builds take the served default unless an env override pins the
