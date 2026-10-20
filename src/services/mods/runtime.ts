@@ -2674,8 +2674,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     if (event === 'tool.check') {
       if (!result || typeof result !== 'object' || Array.isArray(result) ||
           !['allow', 'ask', 'deny'].includes((result as ModInput).decision as string) ||
-          ['reason', 'rule', 'hook'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string'))
-        throw new TypeError('tool.check must return { decision, reason?, rule?, hook? }')
+          ['reason', 'rule', 'hook', 'setting'].some(key => (result as ModInput)[key] !== undefined && typeof (result as ModInput)[key] !== 'string') ||
+          ((result as ModInput).decider !== undefined && (result as ModInput).decider !== 'host'))
+        throw new TypeError('tool.check must return { decision, reason?, rule?, hook?, setting?, decider? }')
       return
     }
     if (event === 'config.describe') {
@@ -3052,7 +3053,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ? (result: unknown) => {
                       if (!result || typeof result !== 'object' || Array.isArray(result)) return result
                       const value = result as ModInput
-                      return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
+                      // A hook's own ceiling is dropped: the ceiling is the engine's, and none is set in this build.
+                      return { decision: value.decision, ...Object.fromEntries(['reason', 'rule', 'hook', 'setting', 'decider'].filter(key => value[key] !== undefined).map(key => [key, value[key]])) }
                     }
                   : options.restoreResult,
         onFailure: (plugin, error) => { diagnostic(plugin, event, error); options.onFailure?.(error) },
@@ -3984,8 +3986,8 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     /** Resolves once turns ended early by a turn.complete hook's queued input have finished their completion. */
     settleTurns: async (): Promise<void> => { await Promise.all([...settlingTurns]) },
     beginAgentTurn(agentId: string): ModRegisteredTurn | undefined {
-      if (stopped || ending || ![...hostHooks].some(hook => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
-          !active.some(owner => owner.environment.registrations.some(registration => ['turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
+      if (stopped || ending || ![...hostHooks].some(hook => ['turn.start', 'turn.step', 'turn.complete'].some(event => matchesModEventPattern(hook.registration.event, event))) &&
+          !active.some(owner => owner.environment.registrations.some(registration => ['turn.start', 'turn.step', 'turn.complete'].some(event => matchesModEventPattern(registration.event, event))))) return undefined
       return beginRegisteredTurn(randomUUID(), agentId)
     },
     beginPublicTurn(turnId: string, abort?: () => void): () => void {

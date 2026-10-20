@@ -23,7 +23,7 @@ import type {
   AttachmentMessage,
   ProgressMessage,
 } from '../../types/message.js'
-import type { PermissionDecision, PermissionRule } from '../../types/permissions.js'
+import type { PermissionDecision, PermissionRule, ToolPermissionContext } from '../../types/permissions.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -58,6 +58,21 @@ export type ModToolCheckResult = {
   reason?: string
   rule?: string
   hook?: string
+  setting?: string
+  decider?: 'host'
+}
+
+let permissionHost = false
+
+/** Set by a headless host whose own program answers permission asks (SDK callback or prompt tool). */
+export function setModToolCheckPermissionHost(isHosted: boolean): void {
+  permissionHost = isHosted
+}
+
+// Core's ask goes to the host only where a host would be asked: not under dontAsk or no-prompt loops.
+function modToolCheckDecider(behavior: PermissionDecision['behavior'], permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): { decider?: 'host' } {
+  return behavior === 'ask' && permissionHost && permission !== undefined &&
+    permission.mode !== 'dontAsk' && permission.shouldAvoidPermissionPrompts !== true ? { decider: 'host' } : {}
 }
 
 /** Rules, mode and the tool's own check only; no prompt, hooks or mode classifier. */
@@ -104,13 +119,13 @@ function modDecisionRule(reason: PermissionDecisionReason | undefined, behavior:
   return undefined
 }
 
-export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string): ModToolCheckResult {
+export function modToolCheckResult(decision: PermissionDecision, hookAskFloor?: string, permission?: Pick<ToolPermissionContext, 'mode' | 'shouldAvoidPermissionPrompts'>): ModToolCheckResult {
   const why = decision.decisionReason
   const hook = (why?.type === 'hook' && why.hookName !== 'tool.check' ? why.hookName.split(':').at(0) : undefined) || hookAskFloor
   const matchedRule = (why?.type === 'rule' ? why.rule : undefined) ?? modDecisionRule(why, decision.behavior) ??
     (decision.behavior === 'deny' ? undefined : decision.matchedAskRule)
   const reason = decision.behavior === 'allow' ? why && 'reason' in why ? why.reason : undefined : decision.message
-  return { decision: decision.behavior, ...(reason ? { reason } : {}), ...(matchedRule ? { rule:permissionRuleValueToString(matchedRule.ruleValue) } : {}), ...(hook ? { hook } : {}) }
+  return { decision: decision.behavior, ...(reason ? { reason } : {}), ...(matchedRule ? { rule:permissionRuleValueToString(matchedRule.ruleValue) } : {}), ...(hook ? { hook } : {}), ...modToolCheckDecider(decision.behavior, permission) }
 }
 
 type ClassicToolEvent = 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
@@ -840,10 +855,12 @@ export async function resolveHookPermissionDecision(
         !['allow', 'ask', 'deny'].includes(value.decision) ||
         ('reason' in value && value.reason !== undefined && typeof value.reason !== 'string') ||
         ('rule' in value && value.rule !== undefined && typeof value.rule !== 'string') ||
-        ('hook' in value && value.hook !== undefined && typeof value.hook !== 'string'))
-        throw new Error('tool.check must return a decision and optional string reason/rule/hook')
+        ('hook' in value && value.hook !== undefined && typeof value.hook !== 'string') ||
+        ('setting' in value && value.setting !== undefined && typeof value.setting !== 'string') ||
+        ('decider' in value && value.decider !== undefined && value.decider !== 'host'))
+        throw new Error('tool.check must return a decision and optional string reason/rule/hook/setting and decider host')
     }
-    const projected = modToolCheckResult(core, toolUseContext.hookAskFloor === true ? 'PreToolUse' : undefined)
+    const projected = modToolCheckResult(core, toolUseContext.hookAskFloor === true ? 'PreToolUse' : undefined, toolUseContext.getAppState().toolPermissionContext)
     let coreWasCalled = false
     let hooked: readonly string[] = []
     const verdict = await snapshot.dispatch('tool.check', event, async value => {

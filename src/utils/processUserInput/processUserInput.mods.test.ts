@@ -128,6 +128,7 @@ function fixture(
             .join('\n'),
     formatPluginPrompt,
     queryCheckpoint: () => {},
+    logForDebugging: () => {},
     logEvent: () => {},
     feature: () => false,
     executeUserPromptSubmitHooks: async function* (text: string) {
@@ -636,6 +637,19 @@ describe('processUserInput prompt.submit', () => {
     expect(f.calls.releases).toBe(1)
   })
 
+  test('a meta prompt carries isMeta pinned and keeps its text when a hook rewrites it', async () => {
+    const seen: unknown[] = []
+    const f = fixture([
+      async (event, next) => { seen.push(event.isMeta); return next({ ...event, text: 'rewritten' }) },
+    ])
+    const meta = await f.run({ isMeta: true })
+    expect(seen).toEqual([true])
+    expect(userTexts(meta)).toEqual(['original'])
+    const typed = await f.run()
+    expect(seen).toEqual([true, undefined])
+    expect(userTexts(typed)).toEqual(['rewritten'])
+  })
+
   test('rewrites actual model content and passes full downward context separately from classic truncation', async () => {
     const added = ['hunk notes\n' + 'x'.repeat(100001), 'y'.repeat(100000)]
     const f = fixture([
@@ -959,6 +973,7 @@ describe('processUserInput prompt.submit', () => {
       text: 'original',
       origin: { kind: 'unclassified' },
       wait: false,
+      isMeta: true,
     })
   })
 

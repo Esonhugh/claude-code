@@ -1,4 +1,5 @@
 import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
 import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
@@ -907,6 +908,8 @@ export async function runHeadless(
     () => getAppState().mcp.tools,
     onPermissionPrompt,
   )
+  // tool.check names the host as the decider of core's ask when its program answers asks.
+  setModToolCheckPermissionHost(effectivePermissionPromptToolName !== undefined)
   if (options.permissionPromptToolName) {
     // Remove the permission prompt tool from the list of available tools.
     filteredTools = filteredTools.filter(
