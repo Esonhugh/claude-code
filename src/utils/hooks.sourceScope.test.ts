@@ -1549,3 +1549,70 @@ test('runs at most 12 prompt hooks of one event at a time without holding comman
   expect(f.model.max).toBe(12)
   expect(f.model.active).toBe(0)
 })
+
+describe('PreCompact blocking', () => {
+  test('exit code 2 blocks compaction with the hook stderr', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreCompact', 'no-compact')
+    f.add('userSettings', 'PreCompact', 'instructions')
+    f.exits.set('no-compact', { code: 2, stderr: 'not now' })
+    f.commands.set('instructions', {})
+    const result = await f.hooks.executePreCompactHooks({
+      trigger: 'manual',
+      customInstructions: null,
+    })
+    expect(result.blockedBy).toBe('[no-compact]: not now')
+  })
+
+  test('decision block blocks compaction and is not used as instructions', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreCompact', 'json-block')
+    f.commands.set('json-block', { decision: 'block', reason: 'busy' })
+    const result = await f.hooks.executePreCompactHooks({
+      trigger: 'auto',
+      customInstructions: null,
+    })
+    expect(result.blockedBy).toStartWith('[json-block]')
+    expect(result.newCustomInstructions).toBeUndefined()
+  })
+
+  test('a successful hook does not block', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreCompact', 'fine')
+    f.commands.set('fine', {})
+    const result = await f.hooks.executePreCompactHooks({
+      trigger: 'manual',
+      customInstructions: null,
+    })
+    expect(result.blockedBy).toBeUndefined()
+  })
+})
+
+test.each(['Stop', 'SubagentStop'] as const)(
+  '%s hooks can return additionalContext without a blocking error',
+  async (event) => {
+    const f = fixture()
+    f.add('userSettings', event, 'feedback')
+    f.commands.set('feedback', {
+      hookSpecificOutput: {
+        hookEventName: event,
+        additionalContext: 'also run the tests',
+      },
+    })
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        event === 'SubagentStop' ? ('agent-1' as never) : undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+    expect(
+      results.flatMap((result) => result.additionalContexts ?? []),
+    ).toEqual(['also run the tests'])
+  },
+)

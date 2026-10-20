@@ -869,6 +869,28 @@ export const PostToolUseFailureHookSpecificOutputSchema = lazySchema(() =>
   }),
 )
 
+export const StopHookSpecificOutputSchema = lazySchema(() =>
+  z
+    .object({
+      hookEventName: z.literal('Stop'),
+      additionalContext: z.string().optional(),
+    })
+    .describe(
+      'Hook-specific output for the Stop event. additionalContext is non-error feedback delivered to the model; the conversation continues so the model can act on it.',
+    ),
+)
+
+export const SubagentStopHookSpecificOutputSchema = lazySchema(() =>
+  z
+    .object({
+      hookEventName: z.literal('SubagentStop'),
+      additionalContext: z.string().optional(),
+    })
+    .describe(
+      'Hook-specific output for the SubagentStop event. additionalContext is non-error feedback delivered to the subagent; the subagent continues so it can act on it.',
+    ),
+)
+
 export const PermissionDeniedHookSpecificOutputSchema = lazySchema(() =>
   z.object({
     hookEventName: z.literal('PermissionDenied'),
@@ -932,6 +954,8 @@ export const SyncHookJSONOutputSchema = lazySchema(() =>
         SubagentStartHookSpecificOutputSchema(),
         PostToolUseHookSpecificOutputSchema(),
         PostToolUseFailureHookSpecificOutputSchema(),
+        StopHookSpecificOutputSchema(),
+        SubagentStopHookSpecificOutputSchema(),
         PermissionDeniedHookSpecificOutputSchema(),
         NotificationHookSpecificOutputSchema(),
         PermissionRequestHookSpecificOutputSchema(),

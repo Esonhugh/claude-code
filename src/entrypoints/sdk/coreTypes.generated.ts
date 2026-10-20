@@ -166,6 +166,8 @@ export type SetupHookSpecificOutput = { hookEventName: 'Setup'; additionalContex
 export type SubagentStartHookSpecificOutput = { hookEventName: 'SubagentStart'; additionalContext?: string }
 export type PostToolUseHookSpecificOutput = { hookEventName: 'PostToolUse'; additionalContext?: string; updatedToolOutput?: unknown; updatedMCPToolOutput?: unknown }
 export type PostToolUseFailureHookSpecificOutput = { hookEventName: 'PostToolUseFailure'; additionalContext?: string }
+export type StopHookSpecificOutput = { hookEventName: 'Stop'; additionalContext?: string }
+export type SubagentStopHookSpecificOutput = { hookEventName: 'SubagentStop'; additionalContext?: string }
 export type PermissionDeniedHookSpecificOutput = { hookEventName: 'PermissionDenied'; retry?: boolean }
 export type NotificationHookSpecificOutput = { hookEventName: 'Notification'; additionalContext?: string }
 export type PermissionRequestHookSpecificOutput = { hookEventName: 'PermissionRequest'; decision: { behavior: 'allow'; updatedInput?: Record<string, unknown>; updatedPermissions?: PermissionUpdate[] } | { behavior: 'deny'; message?: string; interrupt?: boolean } }
@@ -182,7 +184,7 @@ export type SyncHookJSONOutput = {
   decision?: 'approve' | 'block'
   systemMessage?: string
   reason?: string
-  hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput
+  hookSpecificOutput?: PreToolUseHookSpecificOutput | UserPromptSubmitHookSpecificOutput | SessionStartHookSpecificOutput | SetupHookSpecificOutput | SubagentStartHookSpecificOutput | PostToolUseHookSpecificOutput | PostToolUseFailureHookSpecificOutput | StopHookSpecificOutput | SubagentStopHookSpecificOutput | PermissionDeniedHookSpecificOutput | NotificationHookSpecificOutput | PermissionRequestHookSpecificOutput | ElicitationHookSpecificOutput | ElicitationResultHookSpecificOutput | CwdChangedHookSpecificOutput | FileChangedHookSpecificOutput | WorktreeCreateHookSpecificOutput
 }
 export type HookJSONOutput = AsyncHookJSONOutput | SyncHookJSONOutput
 

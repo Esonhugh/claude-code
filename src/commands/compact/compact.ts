@@ -10,9 +10,11 @@ import {
   type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_INCOMPLETE_RESPONSE,
+  CompactionBlockedError,
   ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
   ERROR_MESSAGE_USER_ABORT,
   mergeHookInstructions,
+  throwIfCompactionBlocked,
 } from '../../services/compact/compact.js'
 import {
   getCodexCompactOptions,
@@ -145,6 +147,8 @@ export const call: LocalCommandCall = async (args, context) => {
   } catch (error) {
     if (abortController.signal.aborted) {
       throw new Error('Compaction canceled.')
+    } else if (error instanceof CompactionBlockedError) {
+      throw error
     } else if (hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
     } else if (hasExactErrorMessage(error, ERROR_MESSAGE_INCOMPLETE_RESPONSE)) {
@@ -183,6 +187,7 @@ async function compactViaReactive(
       ),
       getCacheSharingParams(context, messages),
     ])
+    throwIfCompactionBlocked(hookResult, context)
     const mergedInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
