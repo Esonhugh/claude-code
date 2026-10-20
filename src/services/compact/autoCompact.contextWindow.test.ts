@@ -57,3 +57,9 @@ test.each([
   expect(state).toEqual({ enabled: true, source, enforced, effective_window: window - 4096, threshold: window - 4096 - 13_000 })
   expect(getAutoCompactState(model, undefined, false)).toEqual({ ...state, enforced: true })
 })
+
+test('a subagent autoCompactWindow only lowers the window', () => {
+  expect(getEffectiveContextWindowSize('custom-model', 120_000)).toBe(115_904)
+  expect(getAutoCompactThreshold('custom-model', 120_000)).toBe(102_904)
+  expect(getEffectiveContextWindowSize('custom-model', 900_000)).toBe(145_904)
+})

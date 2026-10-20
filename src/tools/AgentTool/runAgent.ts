@@ -1023,6 +1023,7 @@ export async function* runAgent({
     // reads undefined and only the message-scan fallback fires — which
     // autocompact defeats by replacing the fork-boilerplate message.
     ...(useExactTools && { querySource }),
+    ...(agentDefinition.autoCompactWindow !== undefined && { autoCompactWindow: agentDefinition.autoCompactWindow }),
   }
 
   // Create subagent context using shared helper

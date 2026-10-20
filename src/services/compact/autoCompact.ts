@@ -39,7 +39,8 @@ import { runModSessionCompact } from '../mods/compactAdapter.js'
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
 // Returns the context window size minus the max output tokens for the model
-export function getEffectiveContextWindowSize(model: string): number {
+// agentWindow is a subagent definition's autoCompactWindow: it only lowers the window.
+export function getEffectiveContextWindowSize(model: string, agentWindow?: number): number {
   const reservedTokensForSummary = Math.min(
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
@@ -49,7 +50,7 @@ export function getEffectiveContextWindowSize(model: string): number {
     getInitialSettings().autoCompactWindow,
   )
 
-  return window - reservedTokensForSummary
+  return Math.min(window, agentWindow ?? window) - reservedTokensForSummary
 }
 
 export type AutoCompactTrackingState = {
@@ -73,8 +74,8 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
 
-export function getAutoCompactThreshold(model: string): number {
-  return thresholdForWindow(getEffectiveContextWindowSize(model))
+export function getAutoCompactThreshold(model: string, agentWindow?: number): number {
+  return thresholdForWindow(getEffectiveContextWindowSize(model, agentWindow))
 }
 
 function thresholdForWindow(effectiveContextWindow: number): number {
@@ -118,6 +119,7 @@ export function getAutoCompactState(
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,
+  agentWindow?: number,
 ): {
   percentLeft: number
   isAboveWarningThreshold: boolean
@@ -125,10 +127,10 @@ export function calculateTokenWarningState(
   isAboveAutoCompactThreshold: boolean
   isAtBlockingLimit: boolean
 } {
-  const autoCompactThreshold = getAutoCompactThreshold(model)
+  const autoCompactThreshold = getAutoCompactThreshold(model, agentWindow)
   const threshold = isAutoCompactEnabled()
     ? autoCompactThreshold
-    : getEffectiveContextWindowSize(model)
+    : getEffectiveContextWindowSize(model, agentWindow)
 
   const percentLeft = Math.max(
     0,
@@ -144,7 +146,7 @@ export function calculateTokenWarningState(
   const isAboveAutoCompactThreshold =
     isAutoCompactEnabled() && tokenUsage >= autoCompactThreshold
 
-  const actualContextWindow = getEffectiveContextWindowSize(model)
+  const actualContextWindow = getEffectiveContextWindowSize(model, agentWindow)
   const defaultBlockingLimit =
     actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
 
@@ -190,6 +192,7 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
+  agentWindow?: number,
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -248,8 +251,8 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
-  const threshold = getAutoCompactThreshold(model)
-  const effectiveWindow = getEffectiveContextWindowSize(model)
+  const threshold = getAutoCompactThreshold(model, agentWindow)
+  const effectiveWindow = getEffectiveContextWindowSize(model, agentWindow)
 
   logForDebugging(
     `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
@@ -258,6 +261,7 @@ export async function shouldAutoCompact(
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
     tokenCount,
     model,
+    agentWindow,
   )
 
   return isAboveAutoCompactThreshold
@@ -304,6 +308,7 @@ export async function autoCompactIfNeeded(
     model,
     querySource,
     snipTokensFreed,
+    toolUseContext.options.autoCompactWindow,
   )
 
   if (!shouldCompact) {
@@ -314,7 +319,7 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(model),
+    autoCompactThreshold: getAutoCompactThreshold(model, toolUseContext.options.autoCompactWindow),
     querySource,
   }
 
