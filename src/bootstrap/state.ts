@@ -1348,6 +1348,10 @@ export type SessionCronTask = {
    * instead of the main REPL command queue. Session-only — never written to disk.
    */
   agentId?: string
+  /** 'loop' marks a ScheduleWakeup (dynamic /loop) wakeup. */
+  kind?: 'loop'
+  /** Exact epoch ms to fire at; overrides the cron-derived (jittered) time. */
+  scheduledFor?: number
 }
 
 export function getSessionCronTasks(): SessionCronTask[] {
