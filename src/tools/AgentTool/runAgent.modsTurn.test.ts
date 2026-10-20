@@ -209,9 +209,10 @@ async function isolatedTests(): Promise<void> {
       expect(modelCalls).toHaveLength(1)
       expect(coreClosed).toBe(1)
       expect(messages.some(message => message.type === 'assistant')).toBe(true)
-      expect(events.map(event => event.event)).toEqual(['turn.step', 'turn.complete'])
-      const [step, complete] = events
+      expect(events.map(event => event.event)).toEqual(['turn.start', 'turn.step', 'turn.complete'])
+      const [start, step, complete] = events
       expect(step!.input.agentId).toBe(modelCalls[0]!.options.agentId)
+      expect(start!.input).toMatchObject({ agentId: step!.input.agentId, turnId: step!.input.turnId })
       expect(complete!.input.agentId).toBe(step!.input.agentId)
       expect(complete!.input.turnId).toBe(step!.input.turnId)
       expect(complete!.input).toMatchObject({ reason: 'answer', isAborted: false, answer: 'FINITE_AGENT_ANSWER',
@@ -228,11 +229,11 @@ async function isolatedTests(): Promise<void> {
     const options = params(runtime)
     for (let i = 0; i < 2; i++) await drain(runAgent({ ...options, override: { ...options.override, agentId } }))
     expect(modelCalls).toHaveLength(2)
-    expect(events.map(event => event.event)).toEqual(['turn.step', 'turn.complete', 'turn.step', 'turn.complete'])
-    expect(events.map(event => event.input.agentId)).toEqual([agentId, agentId, agentId, agentId])
-    expect(events[0]!.input.turnId).toBe(events[1]!.input.turnId)
-    expect(events[2]!.input.turnId).toBe(events[3]!.input.turnId)
-    expect(events[0]!.input.turnId).not.toBe(events[2]!.input.turnId)
+    expect(events.map(event => event.event)).toEqual(['turn.start', 'turn.step', 'turn.complete', 'turn.start', 'turn.step', 'turn.complete'])
+    expect(events.map(event => event.input.agentId)).toEqual([agentId, agentId, agentId, agentId, agentId, agentId])
+    expect(new Set(events.slice(0, 3).map(event => event.input.turnId)).size).toBe(1)
+    expect(new Set(events.slice(3).map(event => event.input.turnId)).size).toBe(1)
+    expect(events[0]!.input.turnId).not.toBe(events[3]!.input.turnId)
     expect(coreClosed).toBe(2)
   })
 
@@ -562,7 +563,7 @@ async function isolatedTests(): Promise<void> {
         const agentId=modelCalls[0]!.options.agentId!
         const owner=runtime.currentTurn(agentId)
         expect(owner).toBeDefined()
-        expect(events.map(event=>event.event)).toEqual(['turn.step'])
+        expect(events.map(event=>event.event)).toEqual(['turn.start','turn.step'])
         if(retirement==='session-change')await runtime.bind({cwd:project,sessionId:'pm1-retired-new-session',surface:null,isInteractive:false})
         else disposal=runtime.dispose()
         expect(runtime.currentTurn(agentId)).toBeUndefined()
@@ -571,11 +572,11 @@ async function isolatedTests(): Promise<void> {
         await disposal
         expect(modelCalls).toHaveLength(1)
         expect(coreClosed).toBe(1)
-        expect(events.map(event=>event.event)).toEqual(['turn.step'])
+        expect(events.map(event=>event.event)).toEqual(['turn.start','turn.step'])
         expect(runtime.currentTurn(agentId)).toBeUndefined()
         expect(leases.every(lease=>lease.released===1)).toBe(true)
         expect(await owner!.finish({aborted:false,failed:false})).toBeUndefined()
-        expect(events.map(event=>event.event)).toEqual(['turn.step'])
+        expect(events.map(event=>event.event)).toEqual(['turn.start','turn.step'])
       } finally {
         resume.resolve();options.toolUseContext.abortController.abort()
         await pending.catch(()=>{});await iterator.return(undefined);await disposal
@@ -698,9 +699,9 @@ async function isolatedTests(): Promise<void> {
     expect(probe.result.events.map(event=>event.event)).toEqual(['step','complete'])
     expect(probe.result.events.map(event=>event.agentId)).toEqual([agentId,agentId])
     expect(probe.result.events[0]!.turnId).toBe(probe.result.events[1]!.turnId)
-    expect(independentEvents.map(event=>event.event)).toEqual(['turn.step','turn.complete'])
-    expect(independentEvents.map(event=>event.input.agentId)).toEqual([agentId,agentId])
-    expect(independentEvents.map(event=>event.input.turnId)).toEqual([probe.result.events[0]!.turnId,probe.result.events[0]!.turnId])
+    expect(independentEvents.map(event=>event.event)).toEqual(['turn.start','turn.step','turn.complete'])
+    expect(independentEvents.map(event=>event.input.agentId)).toEqual([agentId,agentId,agentId])
+    expect(independentEvents.map(event=>event.input.turnId)).toEqual([probe.result.events[0]!.turnId,probe.result.events[0]!.turnId,probe.result.events[0]!.turnId])
     expect(independentEvents.filter(event=>event.input.agentId===modelCalls[1]!.options.agentId)).toEqual([])
     expect(leases.every(lease=>lease.released===1)).toBe(true)
     expect(probe.result.receipt).toEqual({isAnswered:true,text:'FINITE_AGENT_ANSWER',
