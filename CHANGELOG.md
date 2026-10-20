@@ -12,6 +12,30 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - Hooks 失败阻止、并发上限与新事件对齐官方
+
+### 变更内容
+
+- command 与 HTTP hook 新增 `onFailure`（`continue` 默认 / `block`）：设为 `block` 时，hook 无法启动、超时、以 0/2 以外的退出码结束或输出无效 JSON 会按 exit 2 阻止对应动作（tool 调用、权限请求、prompt 等）；async hook 以及 Stop、SubagentStop、TaskCompleted、TeammateIdle 上忽略该设置。
+- 同一事件的 prompt/agent hook 最多 12 个同时执行，其余排队，排队期间不计超时；command、HTTP 与 callback hook 不受限制。
+- PreCompact hook 以 exit 2 或 `decision: "block"` 阻止压缩：手动 `/compact` 显示 `Compaction blocked by PreCompact hook: [命令]: 原因` 与警告通知，自动压缩静默跳过；被阻止的 hook 输出不再作为压缩指令。
+- Stop 与 SubagentStop hook 可返回 `hookSpecificOutput.additionalContext`，作为非错误反馈交给模型并继续回合。
+- 新增 `PreModelSwitch` hook：在 `/model`（命令或选择器）与 SDK `set_model` 切换前执行，输入 `from_model`、`to_model`、`requested_model`、`source`、`context_tokens`；exit 2、`permissionDecision: "deny"` 或超时会阻止切换，`"ask"` 在 `/model` 中弹出确认（headless `set_model` 直接拒绝）。
+- 新增 `PostModelSwitch` hook：上述切换完成后执行，`additionalContext` 在下一次请求时交给模型。
+- 新增 `DirectoryAdded` hook：`/add-dir` 加入目录并刷新 sandbox 后执行，输入 `directory` 与 `source`；hook 的 `systemMessage` 与失败计数以有长度上限的上下文交给模型。
+- 新增 `MessageDisplay` hook：每个完成的 assistant 文本块显示前执行，`hookSpecificOutput.displayContent` 只替换屏幕上的文字，不改变存储的消息与模型看到的内容；与官方逐行刷新不同，本实现每个文本块只触发一次（`index: 0`、`final: true`）。
+- SessionStart hook 可返回 `hookSpecificOutput.sessionTitle`（startup 与 resume 时设置会话标题）与 `reloadSkills: true`（hook 结束后重新扫描 skill 与命令目录）。
+- command hook 获得 `$CLAUDE_EFFORT` 环境变量，hook JSON 输入新增 `effort.level`（当前模型支持 effort 时）。
+- `--debug` 为每个 command hook 记录 `Hooks: <事件> [<命令>] <结果> (<毫秒>ms)`，结果包括退出码、超时、取消、转入后台与启动失败。
+- `/hooks` 列出四个新事件及其 matcher（`to_model`、`source`）；设置 schema、插件 hook 加载与 SDK 类型同步新增上述事件与字段。
+
+### 测试覆盖
+
+- `bun test src/utils/hooks.sourceScope.test.ts`：onFailure 阻止/放行/超时/Stop 忽略/REPL 外执行，prompt hook 12 并发上限，PreCompact 阻止，Stop/SubagentStop additionalContext，PreModelSwitch/PostModelSwitch 决策与 matcher，DirectoryAdded 与 MessageDisplay 输入输出，SessionStart sessionTitle/reloadSkills，`$CLAUDE_EFFORT` 与 `--debug` 记录。
+- `bun test src/utils/hooks.schemas.test.ts src/utils/hooks/hooksConfigManager.test.ts`：设置 schema 接受 `onFailure` 与新事件，`/hooks` 元数据。
+- `bun test src/services/compact/compactApiError.test.ts`：PreCompact 阻止时不调用模型，手动压缩显示警告通知，自动压缩不通知。
+- `bun test src/utils/sessionStart.test.ts`：会话标题只在 startup/resume 设置，`reloadSkills` 只重载一次。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态
