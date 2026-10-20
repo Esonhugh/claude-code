@@ -167,6 +167,8 @@ export type { HookSourceScope } from './hooks/hooksConfigSnapshot.js'
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
+export const PROMPT_AGENT_HOOK_CONCURRENCY = 12
+
 /**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
  * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. This value is used by callers as both
@@ -2878,7 +2880,21 @@ async function* executeHooks({
       }
     })(),
   )
-  for await (const { result: rawResult, hookIndex } of all(hookResults)) {
+  // At most PROMPT_AGENT_HOOK_CONCURRENCY prompt/agent hooks of one event run
+  // at a time (each is a model call); the rest wait. Other hooks never wait.
+  const isModelHook = (hookIndex: number) => {
+    const type = matchingHooks[hookIndex]!.hook.type
+    return type === 'prompt' || type === 'agent'
+  }
+  const modelHookResults = hookResults.filter((_, i) => isModelHook(i))
+  const scheduledHookResults =
+    modelHookResults.length <= 1
+      ? all(hookResults)
+      : all([
+          ...hookResults.filter((_, i) => !isModelHook(i)),
+          all(modelHookResults, PROMPT_AGENT_HOOK_CONCURRENCY),
+        ])
+  for await (const { result: rawResult, hookIndex } of scheduledHookResults) {
     const result = applyHookOnFailure(rawResult, hookEvent, signal)
     outcomes[result.outcome]++
     const matchedHook = matchingHooks[hookIndex]

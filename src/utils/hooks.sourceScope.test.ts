@@ -330,6 +330,11 @@ function fixture() {
     './errors.js': { errorMessage: String, getErrnoCode: () => undefined },
     './messages.js': { getLastAssistantMessage: () => undefined },
   }
+  // Tracks concurrent evaluator calls; set `gate` to hold them.
+  const model: { active: number; max: number; gate?: Promise<void> } = {
+    active: 0,
+    max: 0,
+  }
   const evaluatorResponse = {
     ok: false,
     reason: 'goal pending',
@@ -354,9 +359,13 @@ function fixture() {
       if (name === 'crypto') return dependencies.crypto
       if (name.endsWith('api/claude.js'))
         return {
-          queryModelWithoutStreaming: async () => ({
-            message: { content: JSON.stringify(evaluatorResponse) },
-          }),
+          queryModelWithoutStreaming: async () => {
+            model.active++
+            model.max = Math.max(model.max, model.active)
+            await model.gate
+            model.active--
+            return { message: { content: JSON.stringify(evaluatorResponse) } }
+          },
         }
       if (name.endsWith('attachments.js'))
         return dependencies['./attachments.js']
@@ -437,6 +446,7 @@ function fixture() {
     session,
     add,
     evaluatorResponse,
+    model,
   }
 }
 
@@ -1509,4 +1519,33 @@ describe('onFailure', () => {
       output: 'failed; blocking because onFailure is "block"\naudit down',
     })
   })
+})
+
+test('runs at most 12 prompt hooks of one event at a time without holding command hooks', async () => {
+  const f = fixture()
+  for (let i = 0; i < 15; i++)
+    f.addHook('userSettings', 'Stop', { type: 'prompt', prompt: `check ${i}` })
+  f.addHook('userSettings', 'Stop', { type: 'command', command: 'plain' })
+  const gate = deferred<void>()
+  f.model.gate = gate.promise
+  const run = collect(
+    f.hooks.executeStopHooks(
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      f.context,
+      [],
+    ),
+  )
+  for (let i = 0; i < 50 && f.model.active < 12; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  expect(f.model.active).toBe(f.hooks.PROMPT_AGENT_HOOK_CONCURRENCY)
+  expect(f.calls.map((call) => call.command)).toEqual(['plain'])
+  gate.resolve()
+  await run
+  expect(f.model.max).toBe(12)
+  expect(f.model.active).toBe(0)
 })
