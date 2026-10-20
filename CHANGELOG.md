@@ -12,6 +12,36 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - Mods API 对齐官方最新声明基线
+
+### 变更内容
+
+- Mods 作者声明改用官方 2.1.303 完整声明体（585 个主模块导出、52 个 testing 导出），移除 2.1.295 Button children 叠加层；声明中本构建未实现的调用会以点名该调用的错误拒绝。
+- `$.http.fetch` 响应正文上限为 4 MiB 并按官方处理重定向。
+- 新增 `$.session.append` 与 `session.append` hook：插件可追加 user 角色 isMeta 文本或单块 notice（door `note`），工具结果（door `tool-result`）与消息队列记录（door `queue`）也经过该 hook，可改写或拒绝。
+- 新增 `prompt.mention` hook：`@` 提及的文件在读取前经过 hook，可改读其他文件、追加上下文或拒绝。
+- `agent.spawn` 现在也覆盖 workflow 脚本的 agent（可改写 `prompt` 与 `model`）和 Agent resume（`resume` 固定），并固定 `workflow` 字段。
+- Agent 定义支持 `autoCompactWindow`（100000 至 1000000 token），该 Agent 的自动压缩按此窗口触发。
+- `tool.check` 回执新增 `setting` 与 `decider: 'host'`（SDK 权限提示工具裁决时）；hook 自带的 `ceiling` 被丢弃。
+- subagent 与 teammate 的回合也触发 `turn.start`，并带固定的 `agentId`。
+- `prompt.submit` 对 meta 提示固定 `isMeta: true`，其文本改写不生效。
+- headless 会话没有可绘制 surface 时，`$.ui.open` 回执为 `isPlaced: false` 与 `no-surface` 原因。
+- `$.env.set` 改为返回 `{}` 或 `{ deny }`：宿主保护的变量名不再抛错，hook 自身的 deny 仍拒绝调用。
+- `$.session.compact` 先报告 `DISABLE_COMPACT` 与正在运行的 turn，再报告 headless 不可用；交互式 REPL 中仍不可用。
+- 新增 `$.ui.notify`：按用户的通知渠道发送原生通知并返回渠道或原因（`disabled`、`no-channel`、`no-surface`、`refused`）；headless 只运行 Notification hooks。
+- `$.tool.register` 支持 `isDeferred`：`false` 时工具 schema 从首轮起就在提示词中，不再藏在 ToolSearch 之后。
+- Mods `Text` 支持 `size`、`weight`、`mono`、`tabular`、`dir`（终端把 `semibold`/`bold` 画成粗体，其余按终端能力忽略）；`Box` 间距接受 `xs`..`xl` 步长。
+- Mods `Input` 支持 `rows`：多行输入框，Shift+Enter 或回车前的反斜杠换行，上下键在行间移动。
+- `skill.prompt` 事件新增 `frontmatter`、`source`、`pluginName`、`path`；`text` 与 `frontmatter` 可改写，其余字段固定。
+- 新增 `$.session.identity()`：只回答 managed settings 启用并原地加载的 Mod，其余 Mod 得到 `{ deny }`；user 层的 `session.identity` hook 不运行。
+- `strictPluginOnlyCustomization` 不再停用全部外部 Mods：与官方一致，它只锁定非插件来源的 hooks，插件 Mods 照常加载。
+
+### 测试覆盖
+
+- `bun test src/services/mods`：新增 `sessionAppend`、`promptMention`、`agents`、`toolCheckReceipt303`、`uiRemotePanes`、`sessionCompactEntry`、`uiNotify`、`skillPrompt`、`sessionIdentity`、`catchSemantics301`、`unsupported303`、`declarationsOfficial303` 等用例；已知与本批无关的失败为 root 环境下的 `store` 跨进程权限用例与 `processRunPsFailure`。
+- `bun test src/components/ModsPane.test.tsx src/components/ModsPane.inputPresentation.test.tsx`、`src/services/mods/tools.test.ts`、`src/query.mods.test.ts`、`src/utils/processUserInput`、`src/services/compact/autoCompact.contextWindow.test.ts`、`src/tools/AgentTool/loadAgentsDir.autoCompactWindow.test.ts`。
+- `bun ./node_modules/typescript/bin/tsc --noEmit -p .`、`make check-mods-control-types`、`bun run build`、`bun run check:changelog`。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态
