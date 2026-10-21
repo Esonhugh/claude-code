@@ -29,7 +29,13 @@ import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { extractTextContent } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
-import { getCanonicalName, getDefaultOpusModel, getMainLoopModel } from '../model/model.js'
+import {
+  getCanonicalName,
+  getDefaultOpusModel,
+  getMainLoopModel,
+  parseUserSpecifiedModel,
+} from '../model/model.js'
+import { isModelAllowed } from '../model/modelAllowlist.js'
 import { getModelStrings } from '../model/modelStrings.js'
 import { getAPIProvider } from '../model/providers.js'
 import { requiresAlwaysOnAdaptiveThinking } from '../thinking.js'
@@ -654,14 +660,6 @@ function parseXmlReason(text: string): string | null {
   return matches[0]![1]!.trim()
 }
 
-/**
- * Parse XML thinking content: <thinking>...</thinking>
- */
-function parseXmlThinking(text: string): string | null {
-  const match = /<thinking>([\s\S]*?)<\/thinking>/.exec(text)
-  return match ? match[1]!.trim() : null
-}
-
 // Official 2.1.303 block rule categories that telemetry may report.
 const CLASSIFIER_CATEGORIES = new Set([
   'account_standing_rule_changes', 'auto_mode_bypass', 'blind_apply',
@@ -707,6 +705,14 @@ export function getClassifierCategory(reason: string): string | undefined {
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
   return CLASSIFIER_CATEGORIES.has(category) ? category : undefined
+}
+
+/**
+ * Parse XML thinking content: <thinking>...</thinking>
+ */
+function parseXmlThinking(text: string): string | null {
+  const match = /<thinking>([\s\S]*?)<\/thinking>/.exec(text)
+  return match ? match[1]!.trim() : null
 }
 
 /**
@@ -1487,6 +1493,41 @@ function getFallbackClassifierModel(mainModel: string): string {
     : mainModel
 }
 
+// Like official 2.1.303, the API's safeguards refuse the classifier's
+// escalated check on these models.
+const AUTO_MODE_MODEL_ENV_REFUSED = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-5']
+const loggedAutoModeModelEnvSkips = new Set<string>()
+
+/**
+ * CLAUDE_CODE_AUTO_MODE_MODEL, unless the organization's model policy does not
+ * allow it or the classifier cannot run on it; then the default model is used.
+ */
+function vetAutoModeModelEnv(model: string | undefined): string | undefined {
+  if (!model) return undefined
+  const skip = !isModelAllowed(model)
+    ? {
+        why: "your organization's model policy does not allow it",
+        next: "Unset it or pin a model your organization's policy allows.",
+      }
+    : AUTO_MODE_MODEL_ENV_REFUSED.includes(
+          getCanonicalName(parseUserSpecifiedModel(model)),
+        )
+      ? {
+          why: "the API's safeguards refuse the classifier's escalated check on it",
+          next: `Unset it or pin a different model, such as ${getModelStrings().sonnet50}.`,
+        }
+      : undefined
+  if (!skip) return model
+  if (!loggedAutoModeModelEnvSkips.has(model)) {
+    loggedAutoModeModelEnvSkips.add(model)
+    logForDebugging(
+      `Auto mode classifier: ignoring CLAUDE_CODE_AUTO_MODE_MODEL=${model} because ${skip.why}; using the default classifier model instead. ${skip.next}`,
+      { level: 'warn' },
+    )
+  }
+  return undefined
+}
+
 /**
  * Get the model for the classifier.
  * GrowthBook per-main-model and global overrides first, then
@@ -1504,7 +1545,7 @@ function getClassifierModel(): string {
   if (config?.model) {
     return config.model
   }
-  const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
+  const envModel = vetAutoModeModelEnv(process.env.CLAUDE_CODE_AUTO_MODE_MODEL)
   if (envModel) return envModel
   if (getAPIProvider() === 'openai') return mainModel
   const sonnet5 = sonnet5ClassifierProbe === 'demoted' ? undefined : getDefaultSonnet5Classifier(mainModel)
