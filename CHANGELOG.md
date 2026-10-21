@@ -12,6 +12,23 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - Bash 权限规则包装命令与放行范围加固
+
+### 变更内容
+
+- Bash deny/ask 规则现在能匹配 `sudo`、`doas`、`env`、`setsid`、`watch`、`ionice`、`chrt`、`taskset`、`flock`、`command`、`exec`、`nohup` 等执行包装命令后面的命令，以及带展开值的环境变量前缀（如 `TZ="$HOME" rm -rf build`）；在 bypassPermissions 模式下同样拒绝（对齐官方 2.1.113、2.1.214）。
+- bypassPermissions 模式下，`sh -c`、`bash -c`、`zsh -c` 脚本里删除 `/` 或主目录等受保护路径的 `rm` 会要求明确确认（对齐官方 2.1.246）。
+- `Bash(find:*)` 这类前缀或通配 allow 规则不再自动放行 `find -exec`、`-execdir`、`-ok`、`-delete` 等会执行命令或删除文件的动作（对齐官方 2.1.113）。
+- `tee`（含 `-a`）的目标文件按写入路径检查：工作目录之外需要确认，`Edit()` deny 规则直接拒绝；`Bash(tee:*)` 不再覆盖工作目录外的目标（对齐官方 2.1.269）。
+- `Read()` deny 规则现在覆盖 `tac`、`egrep`、`fgrep`、`< file` 输入重定向，以及 `--ignore-revs-file=.env` 这类选项值里的路径（对齐官方 2.1.257、2.1.259）。
+- `sandbox.excludedCommands` 只有在复合命令的每一段都命中时才让整条命令脱离沙箱（对齐官方 2.1.277）。
+- 超过 10,000 个字符的命令，以及带悬空 `&&`、`||`、`|` 的命令一律要求确认，deny 规则仍然优先（对齐官方 2.1.214、2.1.246）。
+
+### 测试覆盖
+
+- 新增 `src/tools/BashTool/bashPermissionHardening.test.ts`，分别在 legacy 与 `TREE_SITTER_BASH` 解析模式下通过 `hasPermissionsToUseTool` 覆盖包装命令 deny（default 与 bypass）、bypass 下 `sh -c` 危险删除、`find` 动作、`tee` 写入目标、`Read()` deny 新覆盖范围、超长命令与悬空运算符。
+- 新增 `src/tools/BashTool/shouldUseSandbox.test.ts` 覆盖 `excludedCommands` 的逐段匹配；`src/tools/BashTool/dangerousRemoval.test.ts` 改为期望 `bash -c "rm /"` 需要明确确认。
+
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 
 ### 版本状态
