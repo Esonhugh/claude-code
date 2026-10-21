@@ -678,7 +678,7 @@ async function checkTerminal(
 }
 
 const TOUCH_KEYS = {
-  action: 'send-keys',
+  action: 'send-keys' as const,
   target: 'sess-1',
   text: 'touch x',
   enter: true,
