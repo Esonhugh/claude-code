@@ -2,6 +2,7 @@ import { feature } from 'bun:bundle'
 import { relative } from 'path'
 import {
   getOriginalCwd,
+  getPermissionModeSetByCli,
   handleAutoModeTransition,
   handlePlanModeTransition,
   setHasExitedPlanMode,
@@ -704,6 +705,38 @@ export function transitionPermissionModeWithGates(
     throw new Error(reason ? `auto mode is unavailable: ${getAutoModeUnavailableNotification(reason)}` : 'auto mode is unavailable')
   }
   return { ...transitionPermissionMode(context.mode, toMode, context), mode: toMode }
+}
+
+/**
+ * The context a resumed or continued session starts with: the permission mode
+ * its transcript last recorded, entered through the same gates as any other
+ * mode switch (bypass must be available, auto must be enabled, plan must be
+ * available). Like official, an explicit --permission-mode or
+ * --dangerously-skip-permissions wins, and a mode this launch cannot enter
+ * keeps the startup mode.
+ */
+export function restorePermissionModeForResume(
+  context: ToolPermissionContext,
+  savedMode: PermissionMode | undefined,
+): ToolPermissionContext {
+  if (!savedMode || savedMode === context.mode) return context
+  if (getPermissionModeSetByCli()) {
+    logForDebugging(
+      `Resume: keeping the command-line permission mode '${context.mode}' over the session's '${savedMode}'`,
+    )
+    return context
+  }
+  try {
+    const next = transitionPermissionModeWithGates(context, savedMode)
+    logForDebugging(`Resume: restored permission mode '${savedMode}'`)
+    return next
+  } catch (error) {
+    logForDebugging(
+      `Resume: permission mode '${savedMode}' not restored (${error instanceof Error ? error.message : String(error)}); staying in '${context.mode}'`,
+      { level: 'warn' },
+    )
+    return context
+  }
 }
 
 /**

@@ -139,6 +139,7 @@ type State = {
   useCoworkPlugins: boolean
   // Session-only bypass permissions mode flag (not persisted)
   sessionBypassPermissionsMode: boolean
+  permissionModeSetByCli: boolean
   // Session-only flag gating the .claude/scheduled_tasks.json watcher
   // (useScheduledTasks). Set by cronScheduler.start() when the JSON has
   // entries, or by CronCreateTool. Not persisted.
@@ -368,6 +369,7 @@ function getInitialState(): State {
     useCoworkPlugins: false,
     // Session-only bypass permissions mode flag (not persisted)
     sessionBypassPermissionsMode: false,
+    permissionModeSetByCli: false,
     // Scheduled tasks disabled until flag or dialog enables them
     scheduledTasksEnabled: false,
     sessionCronTasks: [],
@@ -1337,6 +1339,15 @@ export function setSessionBypassPermissionsMode(enabled: boolean): void {
 
 export function getSessionBypassPermissionsMode(): boolean {
   return STATE.sessionBypassPermissionsMode
+}
+
+/** --permission-mode or --dangerously-skip-permissions picked this launch's mode. */
+export function setPermissionModeSetByCli(value: boolean): void {
+  STATE.permissionModeSetByCli = value
+}
+
+export function getPermissionModeSetByCli(): boolean {
+  return STATE.permissionModeSetByCli
 }
 
 export function setScheduledTasksEnabled(enabled: boolean): void {

@@ -214,6 +214,7 @@ import {
   getAutoModeUnavailableNotification,
   getAutoModeUnavailableReason,
   isBypassPermissionsModeDisabled,
+  restorePermissionModeForResume,
   transitionPermissionMode,
 } from 'src/utils/permissions/permissionSetup.js'
 import { logPermissionModeChange } from 'src/utils/permissions/PermissionUpdate.js'
@@ -248,6 +249,7 @@ import {
   recordAttributionSnapshot,
   saveAgentSetting,
   saveMode,
+  savePermissionMode,
   saveAiGeneratedTitle,
   restoreSessionMetadata,
   recordTranscript,
@@ -5779,6 +5781,14 @@ async function loadInitialMessages(
             : result,
         )
         restoreSessionCosts(result, { forkSession: options.forkSession })
+        setAppState(prev => {
+          const toolPermissionContext = restorePermissionModeForResume(
+            prev.toolPermissionContext,
+            result.permissionMode,
+          )
+          savePermissionMode(toolPermissionContext.mode)
+          return { ...prev, toolPermissionContext }
+        })
         restoreGoalSessionFromLog(result.messages, setAppState)
 
         // Write mode entry for the resumed session
@@ -5981,6 +5991,14 @@ async function loadInitialMessages(
           : result,
       )
       restoreSessionCosts(result, { forkSession: options.forkSession })
+      setAppState(prev => {
+        const toolPermissionContext = restorePermissionModeForResume(
+          prev.toolPermissionContext,
+          result.permissionMode,
+        )
+        savePermissionMode(toolPermissionContext.mode)
+        return { ...prev, toolPermissionContext }
+      })
       restoreGoalSessionFromLog(result.messages, setAppState)
 
       // Write mode entry for the resumed session
