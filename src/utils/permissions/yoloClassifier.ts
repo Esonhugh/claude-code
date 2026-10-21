@@ -16,7 +16,6 @@ import { logEvent } from '../../services/analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/metadata.js'
 import { getCacheControl } from '../../services/api/claude.js'
 import { parsePromptTooLongTokenCounts } from '../../services/api/errors.js'
-import { getDefaultMaxRetries } from '../../services/api/withRetry.js'
 import type { Tool, ToolPermissionContext, Tools } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import type {
@@ -668,6 +667,9 @@ export function getClassifierSeverityThresholds(
   }
 }
 
+// Official 2.1.303 default: 4 retries per classifier request, no outer retries.
+const CLASSIFIER_MAX_RETRIES = 4
+
 /**
  * Strip thinking content so that <block>/<reason> tags inside
  * the model's chain-of-thought don't get matched by parsers.
@@ -1031,7 +1033,7 @@ async function classifyYoloActionXml(
           ...prefixMessages,
           { role: 'user' as const, content: stage1Content },
         ],
-        maxRetries: getDefaultMaxRetries(),
+        maxRetries: CLASSIFIER_MAX_RETRIES,
         signal,
         ...(mode !== 'fast' && {
           stop_sequences: [severity ? '</severity>' : '</block>'],
@@ -1129,7 +1131,7 @@ async function classifyYoloActionXml(
         ...prefixMessages,
         { role: 'user' as const, content: stage2Content },
       ],
-      maxRetries: getDefaultMaxRetries(),
+      maxRetries: CLASSIFIER_MAX_RETRIES,
       signal,
       querySource: 'auto_mode' as const,
     }
@@ -1263,7 +1265,7 @@ async function classifyYoloActionXml(
  *
  * On API errors, returns shouldBlock: true with unavailable: true so callers
  * can distinguish "classifier actively blocked" from "classifier couldn't respond".
- * Transient errors (429, 500) are retried by sideQuery internally (see getDefaultMaxRetries).
+ * Transient errors (429, 500) are retried by sideQuery internally (CLASSIFIER_MAX_RETRIES).
  *
  * @param messages - The conversation history
  * @param action - The action being evaluated (tool name + input)
@@ -1429,7 +1431,7 @@ export async function classifyYoloAction(
         type: 'tool' as const,
         name: YOLO_CLASSIFIER_TOOL_NAME,
       },
-      maxRetries: getDefaultMaxRetries(),
+      maxRetries: CLASSIFIER_MAX_RETRIES,
       signal,
       querySource: 'auto_mode' as const,
     }

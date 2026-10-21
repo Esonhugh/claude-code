@@ -102,6 +102,7 @@ if (process.env[childFlag] === undefined) {
     const [stage1] = requests
     expect(stage1!.model).toBe('claude-sonnet-5')
     expect(stage1!.stop_sequences).toEqual(['</severity>'])
+    expect(stage1!.maxRetries).toBe(4)
     const system = stage1!.system[0]!.text
     expect(system).toContain('\n## Output Format\n\nOutput <severity>N</severity> where N is an integer 0-100')
     expect(system.endsWith('Do NOT include a <category> tag when no BLOCK rule matches.')).toBe(true)
