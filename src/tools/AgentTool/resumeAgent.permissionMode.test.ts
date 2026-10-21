@@ -16,7 +16,7 @@ import {
 } from '../../utils/sessionStorage.js'
 import { FileReadTool } from '../FileReadTool/FileReadTool.js'
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
-import { resolveDeclaredAgentPermissionMode } from './permissionMode.js'
+import { capAgentPermissionMode, resolveDeclaredAgentPermissionMode } from './permissionMode.js'
 import type { PermissionMode } from '../../types/permissions.js'
 import {
   getSessionSettingsCache,
@@ -38,10 +38,12 @@ mock.module('./runAgent.js', () => ({
     agentDefinition: { effort?: EffortValue; permissionMode?: PermissionMode }
     toolUseContext: { getAppState(): { toolPermissionContext: { mode: PermissionMode } } }
   }) {
-    // runAgent's contract: a fixed mode, else the definition's mode resolved
-    // against the parent's current mode on every read.
+    // runAgent's contract: an explicit mode caps the parent's current mode,
+    // else the definition's mode is resolved against it, on every read.
     const resolve = (parentMode: PermissionMode) =>
-      params.permissionMode ?? resolveDeclaredAgentPermissionMode(parentMode, params.agentDefinition.permissionMode)
+      params.permissionMode
+        ? capAgentPermissionMode(parentMode, params.permissionMode)
+        : resolveDeclaredAgentPermissionMode(parentMode, params.agentDefinition.permissionMode)
     controlledPermissionMode = resolve(params.toolUseContext.getAppState().toolPermissionContext.mode)
     controlledFollowsParent = params.permissionMode === undefined
     controlledLiveMode = parentMode => resolve(parentMode as PermissionMode)
@@ -323,8 +325,8 @@ try {
       )
     }
   }
-  // A resumed agent without a fixed mode keeps following the parent after
-  // resume, in both directions; a clamped recorded mode stays fixed.
+  // A resumed agent keeps following the parent after resume, in both
+  // directions; a recorded explicit mode caps it.
   const legacy = await runCase({ agentId: 'resume-follows-parent', parentMode: 'default' })
   assert.equal(legacy.followsParent, true)
   assert.equal(legacy.liveMode?.('bypassPermissions'), 'bypassPermissions')
@@ -334,7 +336,9 @@ try {
   assert.equal(fromBypass.liveMode?.('default'), 'default')
   const clamped = await runCase({ agentId: 'resume-fixed-clamp', parentMode: 'default', metadataMode: 'acceptEdits' })
   assert.equal(clamped.followsParent, false)
-  assert.equal(clamped.liveMode?.('bypassPermissions'), 'default')
+  assert.equal(clamped.permissionMode, 'default')
+  assert.equal(clamped.liveMode?.('bypassPermissions'), 'acceptEdits')
+  assert.equal(clamped.liveMode?.('plan'), 'plan')
   assert.equal(
     (
       await runCase({

@@ -109,6 +109,7 @@ import {
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import {
+  capAgentPermissionMode,
   resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
@@ -561,14 +562,14 @@ export async function* runAgent({
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
-  // Like official Xn(R): only a spawn-time mode is fixed; otherwise the mode
-  // follows the parent session's current mode.
+  // Like official Xn(R), the mode follows the parent session's current mode.
+  // An explicit spawn mode caps it (official ignores the Agent `mode` input).
   let resolvedFor: { parentMode: PermissionMode; mode: PermissionMode } | undefined
   const resolvePermissionMode = (parentMode: PermissionMode): PermissionMode => {
     if (resolvedFor?.parentMode === parentMode) return resolvedFor.mode
-    const mode =
-      requestedPermissionMode ??
-      resolveDeclaredAgentPermissionMode(parentMode, agentDefinition.permissionMode)
+    const mode = requestedPermissionMode
+      ? capAgentPermissionMode(parentMode, requestedPermissionMode)
+      : resolveDeclaredAgentPermissionMode(parentMode, agentDefinition.permissionMode)
     if (resolvedFor) {
       logPermissionModeChange('parent', resolvedFor.mode, mode, `subagent ${agentDefinition.agentType}, parent mode ${parentMode}`)
     }

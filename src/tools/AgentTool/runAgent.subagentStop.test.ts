@@ -295,10 +295,21 @@ async function runIsolatedTests(): Promise<void> {
       expect(switchParent('default')).toBe('acceptEdits')
     })
 
-    test('an explicit spawn mode stays fixed', async () => {
-      const switchParent = await spawn({ permissionMode: 'plan' })
-      expect(switchParent('bypassPermissions')).toBe('plan')
-      expect(switchParent('default')).toBe('plan')
+    test('an explicit spawn mode caps the parent current mode', async () => {
+      const plan = await spawn({ permissionMode: 'plan' })
+      expect(plan('bypassPermissions')).toBe('plan')
+      expect(plan('default')).toBe('plan')
+
+      const acceptEdits = await spawn({ permissionMode: 'acceptEdits' })
+      expect(acceptEdits('bypassPermissions')).toBe('acceptEdits')
+      expect(acceptEdits('default')).toBe('default')
+      expect(acceptEdits('plan')).toBe('plan')
+      expect(acceptEdits('auto')).toBe('auto')
+      expect(acceptEdits('acceptEdits')).toBe('acceptEdits')
+
+      const manual = await spawn({ permissionMode: 'default' })
+      expect(manual('bypassPermissions')).toBe('default')
+      expect(manual('plan')).toBe('plan')
     })
   })
 

@@ -635,6 +635,32 @@ const explicitInheritedAcceptEditsSnapshot = snapshotWorkflowAgentContext(
 assert.equal(explicitInheritedAcceptEditsSnapshot.inputMode, 'acceptEdits')
 assert.equal(explicitInheritedAcceptEditsSnapshot.identityMode, 'acceptEdits')
 
+// Workflow agents follow the parent's current mode after launch; a phase
+// permissionMode caps it, like an explicit Agent mode.
+function liveSnapshotMode(
+  mode: Parameters<typeof snapshotWorkflowAgentContext>[0],
+  launchMode: string,
+) {
+  let parentMode = launchMode
+  const snapshot = snapshotWorkflowAgentContext(mode, {
+    getAppState: () => ({ toolPermissionContext: { mode: parentMode } }),
+  } as unknown as ToolUseContext)
+  return (nextMode: string) => {
+    parentMode = nextMode
+    return snapshot.context.getAppState().toolPermissionContext.mode
+  }
+}
+const omittedLive = liveSnapshotMode(undefined, 'default')
+assert.equal(omittedLive('bypassPermissions'), 'bypassPermissions')
+assert.equal(omittedLive('plan'), 'plan')
+const explicitDefaultLive = liveSnapshotMode('default', 'bypassPermissions')
+assert.equal(explicitDefaultLive('plan'), 'plan')
+assert.equal(explicitDefaultLive('bypassPermissions'), 'default')
+const blockedAcceptEditsLive = liveSnapshotMode('acceptEdits', 'default')
+assert.equal(blockedAcceptEditsLive('default'), 'default')
+assert.equal(blockedAcceptEditsLive('bypassPermissions'), 'acceptEdits')
+assert.equal(blockedAcceptEditsLive('auto'), 'auto')
+
 let queuedDefaultModeState = {
   tasks: {},
   toolPermissionContext: { mode: 'plan' },
