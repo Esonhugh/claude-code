@@ -194,7 +194,10 @@ import {
   getSettingsWithSources,
 } from 'src/utils/settings/settings.js'
 import { settingsChangeDetector } from 'src/utils/settings/changeDetector.js'
-import { applySettingsChange } from 'src/utils/settings/applySettingsChange.js'
+import {
+  applySettingsChange,
+  recheckAutoModeGate,
+} from 'src/utils/settings/applySettingsChange.js'
 import {
   isFastModeAvailable,
   isFastModeEnabled,
@@ -3524,6 +3527,11 @@ function runHeadlessStreaming(
             streamState.refresh()
             notifySessionMetadataChanged({ model })
             injectModelSwitchBreadcrumbs(requestedModel, model)
+            if (feature('TRANSCRIPT_CLASSIFIER')) {
+              // Like official 2.1.299, a model without auto mode support leaves auto.
+              const { toolPermissionContext, fastMode } = getAppState()
+              await recheckAutoModeGate(toolPermissionContext, fastMode, setAppState)
+            }
             sendControlResponseSuccess(message)
           }).catch(error => {
             logError(error)

@@ -1197,11 +1197,10 @@ export async function verifyAutoModeGateAccess(
   }>('tengu_auto_mode_config', {})
   const enabledState = parseAutoModeEnabledState(autoModeConfig?.enabled)
   const disabledBySettings = isAutoModeDisabledBySettings()
-  // Treat settings-disable the same as GrowthBook 'disabled' for circuit-breaker
-  // semantics — blocks SDK/explicit re-entry via isAutoModeGateEnabled().
-  autoModeStateModule?.setAutoModeCircuitBroken(
-    enabledState === 'disabled' || disabledBySettings,
-  )
+  // Only GrowthBook trips the circuit breaker. disableAutoMode is read live by
+  // isAutoModeGateEnabled(), so like official 2.1.295 removing it lets SDK and
+  // explicit entry back into auto without a restart.
+  autoModeStateModule?.setAutoModeCircuitBroken(enabledState === 'disabled')
 
   // Carousel availability: not circuit-broken, not disabled-by-settings,
   // model supports it, and disableFastMode breaker not firing
