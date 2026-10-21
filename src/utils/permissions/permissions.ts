@@ -612,9 +612,30 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   context,
   assistantMessage,
   toolUseID,
-): Promise<PermissionDecision> => {
-  const result = await hasPermissionsToUseToolInner(tool, input, context)
+): Promise<PermissionDecision> =>
+  applyPermissionModeToResult(
+    await hasPermissionsToUseToolInner(tool, input, context),
+    tool,
+    input,
+    context,
+    assistantMessage,
+    toolUseID,
+  )
 
+/**
+ * The mode stage of hasPermissionsToUseTool: dontAsk, auto (classifier and
+ * acceptEdits fast path) and no-prompt contexts turn an ask into a decision.
+ * Exported so a permission owner that computed its own ask (mods tool.check)
+ * keeps the same mode semantics.
+ */
+export async function applyPermissionModeToResult(
+  result: PermissionDecision,
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+  assistantMessage: AssistantMessage,
+  toolUseID: string,
+): Promise<PermissionDecision> {
 
   // Reset consecutive denials on any allowed tool use in auto mode.
   // This ensures that a successful tool use (even one auto-allowed by rules)

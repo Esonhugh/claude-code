@@ -43,6 +43,7 @@ import {
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
 import {
+  applyPermissionModeToResult,
   checkRuleBasedPermissions,
   createPermissionRequestMessage,
   hasPermissionsToUseTool,
@@ -823,7 +824,7 @@ export async function resolveHookPermissionDecision(
   const requiresInteraction = tool.requiresUserInteraction?.()
   const requireCanUseTool = toolUseContext.requireCanUseTool
   const snapshot = toolUseContext.modsSnapshot
-  if (snapshot?.hasHooks('tool.check')) {
+  if (snapshot?.hasHooks('tool.check', { tool: tool.name, agentId: toolUseContext.agentId })) {
     const declarative = await resolveHookPermissionDecision(
       hookPermissionResult, tool, input,
       { ...toolUseContext, modsSnapshot: undefined },
@@ -911,6 +912,12 @@ export async function resolveHookPermissionDecision(
     if (decision.behavior === 'ask' && requiresExplicitUserApproval(decision.decisionReason)) {
       decision = await hasPermissionsToUseTool(
         tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
+      )
+    } else if (decision.behavior === 'ask' && hookPermissionResult?.behavior !== 'ask') {
+      // An ask left open by core or a plugin still meets the session's mode
+      // (dontAsk, auto, no-prompt contexts); a PreToolUse ask keeps its dialog.
+      decision = await applyPermissionModeToResult(
+        decision, tool, declarative.input, toolUseContext, assistantMessage, toolUseID,
       )
     }
     if (decision.behavior === 'ask' || (decision.behavior === 'allow' &&
