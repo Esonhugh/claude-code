@@ -1,5 +1,6 @@
 import { homedir } from 'os'
 import { basename, isAbsolute, resolve } from 'path'
+import { getParserModule } from '../../utils/bash/bashParser.js'
 import type { Node, PARSE_ABORTED } from '../../utils/bash/parser.js'
 import { logForDebugging } from '../../utils/debug.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
@@ -514,6 +515,52 @@ function assignsVariables(root: Node): boolean {
   return false
 }
 
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'ash', 'mksh'])
+// Nesting depth for `sh -c '...'` scripts analyzed as their own command.
+const MAX_SCRIPT_DEPTH = 3
+
+// Returns the script operand of `sh -c SCRIPT`, or undefined when the shell
+// runs a file or stdin instead.
+function shellScript(argv: Argument[]): Argument | undefined {
+  let script = false
+  for (let i = 1; i < argv.length; i++) {
+    const { value } = argv[i]!
+    if (value === '--' || value === '-') return script ? argv[i + 1] : undefined
+    if (/^[-+]o$|^[-+]O$/.test(value)) {
+      i++
+      continue
+    }
+    if (/^[-+][A-Za-z]+$/.test(value)) {
+      if (value[0] === '-' && value.includes('c')) script = true
+      continue
+    }
+    if (value.startsWith('--')) continue
+    return script ? argv[i] : undefined
+  }
+  return undefined
+}
+
+function checkScript(
+  script: Argument,
+  cwd: string,
+  changed: boolean,
+  env: Variables,
+  depth: number,
+): PermissionResult | undefined {
+  if (depth >= MAX_SCRIPT_DEPTH)
+    return /\b(?:rm|rmdir|unlink)\b/.test(script.value)
+      ? mandatory('Shell -c script nested too deeply to analyze')
+      : undefined
+  const root = getParserModule()?.parse(script.value)
+  if (!root) {
+    return /\b(?:rm|rmdir|unlink)\b/.test(script.value)
+      ? mandatory('Shell -c script could not be analyzed')
+      : undefined
+  }
+  const result = checkRoot(root, cwd, env, depth + 1, changed)
+  return result.behavior === 'passthrough' ? undefined : result
+}
+
 export function checkDangerousRemoval(
   command: string,
   cwd: string,
@@ -525,14 +572,30 @@ export function checkDangerousRemoval(
     logForDebugging(message)
     return { behavior: 'passthrough', message }
   }
+  return checkRoot(root, cwd, env, 0, false)
+}
+
+function checkRoot(
+  root: Node,
+  cwd: string,
+  env: Variables,
+  depth: number,
+  changed: boolean,
+): PermissionResult {
   const vars = assignsVariables(root) ? {} : env
   for (const { words, scope } of commands(root)) {
+    scope.changed ||= changed
     const { argv, unknown, input } = unwrap(
       words.map(child => argument(child.text, vars)),
     )
     if (!argv[0] || argv[0].unknown) continue
     const name = basename(argv[0].value)
     if (['cd', 'pushd', 'popd'].includes(name)) scope.changed = true
+    const script = SHELLS.has(name) ? shellScript(argv) : undefined
+    if (script) {
+      const result = checkScript(script, cwd, scope.changed, vars, depth)
+      if (result) return result
+    }
     if (name === 'find') {
       const result = checkFind(argv, cwd, scope.changed, unknown || !!input)
       if (result) return result

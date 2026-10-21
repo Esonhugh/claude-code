@@ -169,6 +169,27 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('bypass mode still asks for a dangerous rm inside a shell -c script', async () => {
+    for (const command of [
+      "sh -c 'rm -rf /'",
+      "bash -c 'rm -rf ~'",
+      'zsh -c "rm -rf ~"',
+      "bash -lc 'cd /tmp; rm -rf /'",
+      "sh -c 'sh -c \"rm -rf /\"'",
+    ]) {
+      const result = await expectBehavior(
+        command,
+        'bypassPermissions',
+        {},
+        'ask',
+      )
+      expect(requiresExplicitUserApproval(result.decisionReason)).toBe(true)
+    }
+    for (const command of ["sh -c 'rm -rf ./dist'", "bash -c 'echo rm -rf /'"]) {
+      await expectBehavior(command, 'bypassPermissions', {}, 'allow')
+    }
+  })
+
   test('cleanup', () => {
     process.chdir(tmpdir())
     rmSync(project, { recursive: true, force: true })
