@@ -12,6 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - 受保护文件清单与 WebFetch 域名规则对齐官方
+
+### 变更内容
+
+- 受保护文件清单补齐官方 2.1.303 的 37 项：新增 `.zshenv`、`.zlogin`、`.zlogout`、`.bash_login`、`.bash_aliases`、`.bash_logout`、`.envrc`、`.npmrc`、`.yarnrc(.yml)`、`.pnp.cjs`、`.pnp.loader.mjs`、`.pnpmfile.cjs`、`bunfig.toml`、`.bunfig.toml`、`.bazelrc`、`.bazelversion`、`.bazeliskrc`、`.pre-commit-config.yaml`、lefthook 配置、`gradle-wrapper.properties`、`maven-wrapper.properties`、`.devcontainer.json`、`pyrightconfig.json`，acceptEdits 等自动编辑模式下写入这些文件前会询问。
+- 受保护目录新增 `.husky`、`.cargo`、`.devcontainer`、`.yarn`、`.mvn`，以及任意位置的 `.config/git/`（如 `~/.config/git/config`）。
+
+### 测试覆盖
+
+- `bun test src/utils/permissions/filesystem.protectedFiles.test.ts`：新增文件名（大小写不敏感）、受保护目录、`.config/git/` 路径均需审批，相似但无关的路径仍可自动编辑。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容
