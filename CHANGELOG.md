@@ -12,6 +12,32 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-21 - 自动模式安全行为与官方对齐
+
+### 变更内容
+
+- 读取 UNC 网络路径（`//host/share`、`\\host\share`）时改为强制人工确认（对齐官方 2.1.292）：自动模式分类器、PreToolUse hook 与 allow 规则都不能放行，无法提示时直接拒绝；含可疑 Windows 路径写法（8.3 短名、设备名、长路径前缀等）的读取也同样处理（比官方更严，官方只对写入这样做）。
+- 自动模式分类器规则（`autoMode.allow`/`soft_deny`/`hard_deny`/`environment`）不再读取 `.claude/settings.local.json`，只认用户、`--settings` 与托管设置（对齐官方 2.1.207）；项目或本地设置含 `autoMode` 时在调试日志记录一次警告 `settings autoMode in localSettings ignored — only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`。
+- 子代理定义声明 `permissionMode: auto` 时，若自动模式不可用（`disableAutoMode`、circuit breaker、模型不支持或 OpenAI 未登录 ChatGPT），改为沿用父会话模式（对齐官方 2.1.292），并在调试日志说明原因。
+- 内置 soft_deny 规则同步官方 2.1.303（`claude auto-mode defaults` 输出与官方一致）：Self-Modification 新增 `.claude/dev-mods/`（会话 Mods）为配置面；Unrequested Commit 与 External System Writes 允许把本会话自己开的 PR 在 draft 与 ready 之间切换。
+- 进入自动模式时搁置全部 `Monitor` allow 规则（对齐官方 2.1.236），同时搁置 `Terminal`（InteractiveTerminal）allow 规则，避免 PTY 输入绕过分类器；离开自动模式后恢复。
+- 自动模式分类器拒绝消息对齐官方：前缀改为 `Permission for this action was denied by the Claude Code auto mode classifier. Reason: `，新增“先尝试更安全的做法、尽量完成其余工作再停下说明”的指引；权限规则提示按工具给出（Write/NotebookEdit 指向 Edit），自动模式会搁置的规则（`classifyAllShell` 下的 Bash/PowerShell、Agent、Monitor、Terminal）与 MCP 工具不再提示，`CLAUDE_CODE_HIDE_SETTINGS_HINT` 或 `allowManagedPermissionRulesOnly` 时省略。
+- OTel `tool_decision` 事件新增 `permission_mode` 与 `classifier_verdict`（`allow`/`block`/`unavailable`/`no_verdict`，对齐官方 2.1.301）；`OTEL_LOG_TOOL_DETAILS=1` 时 block 判定另带 `classifier_category`（仅官方内置规则名）。
+- `CLAUDE_CODE_AUTO_MODE_MODEL` 设为 `claude-sonnet-5-5`、`claude-opus-5-5`、`claude-opus-5`（含别名与 `[1m]`）或不在 `availableModels` 内的模型时改用默认分类器模型，并在调试日志说明一次（对齐官方 2.1.303）。
+- `disableAutoMode` 不再写入 circuit breaker（对齐官方 2.1.295）：移除设置后无需重启即可回到自动模式；会话中途新增该设置会立即退出自动模式并通知（对齐官方 2.1.251）。SDK `set_model` 切到不支持自动模式的模型时退出自动模式（对齐官方 2.1.299）。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/permissions.autoModeSafety.test.ts`，覆盖自动模式下 UNC 与 8.3 短名读取不经分类器、无法提示时拒绝。
+- `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 新增 `settings.local.json` 的 `autoMode` 规则不进入分类器提示且只警告一次。
+- 新增 `src/tools/AgentTool/permissionMode.autoMode.test.ts`，覆盖自动模式可用时进入 auto，`disableAutoMode`、circuit breaker 与不支持的模型时沿用父模式。
+- `src/utils/permissions/fixtures/autoModeDefaults303.json` 为官方 2.1.303 `claude auto-mode defaults` 输出，`yoloClassifier.officialPrompt.test.ts` 逐项比对。
+- `yoloClassifier.officialPrompt.test.ts` 新增 Monitor 与 Terminal allow 规则（设置与 `--allowed-tools`）在自动模式被搁置并可恢复。
+- `permissions.autoModeSafety.test.ts` 新增拒绝消息前缀、安全做法指引、Bash/Edit 规则提示，以及 `classifyAllShell` 与 `CLAUDE_CODE_HIDE_SETTINGS_HINT` 下省略提示、旧前缀仍识别为分类器拒绝。
+- 新增 `src/hooks/toolPermission/permissionLogging.test.ts`，覆盖 `classifier_verdict`、`permission_mode`、只在 `OTEL_LOG_TOOL_DETAILS` 下输出的 `classifier_category` 与内置规则名映射。
+- `src/utils/permissions/permissions.approveForMe.test.ts` 新增被否决的 `CLAUDE_CODE_AUTO_MODE_MODEL` 改用默认 Sonnet 5 分类器、`availableModels` 不允许时同样否决。
+- `src/utils/permissions/approveForMe.test.ts` 新增移除 `disableAutoMode` 后可重新进入自动模式，以及设置变更时退出与恢复自动模式可用。
+
 ## 2026-10-20 - Bash 权限规则包装命令与放行范围加固
 
 ### 变更内容

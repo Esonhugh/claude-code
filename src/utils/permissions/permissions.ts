@@ -25,6 +25,7 @@ import {
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
 import { requiresExplicitUserApproval } from './PermissionResult.js'
+import { getAutoModeDenialRuleToolName } from './permissionSetup.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -105,6 +106,7 @@ import {
 import {
   classifyYoloAction,
   formatActionForClassifier,
+  getClassifierCategory,
 } from './yoloClassifier.js'
 import { isAnt } from 'src/utils/userType.js'
 import { isApproveForMeAvailable } from './approveForMe.js'
@@ -901,6 +903,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
                 classifier: 'auto-mode',
                 reason:
                   'Auto mode classifier transcript exceeded context window — compacting before the next request',
+                noVerdict: true,
               },
               message: `${tool.name} was not reviewed and did not run: the conversation is too long for auto mode's classifier. Claude Code will try to compact the conversation before the next request; if this action is still needed after that, issue it again and it will be reviewed normally.`,
             }
@@ -995,14 +998,19 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           return denialLimitResult
         }
 
+        const category = getClassifierCategory(classifierResult.reason)
         return {
           behavior: 'deny',
           decisionReason: {
             type: 'classifier',
             classifier: 'auto-mode',
             reason: classifierResult.reason,
+            ...(category !== undefined && { category }),
           },
-          message: buildYoloRejectionMessage(classifierResult.reason),
+          message: buildYoloRejectionMessage(
+            classifierResult.reason,
+            getAutoModeDenialRuleToolName(tool),
+          ),
         }
       }
 

@@ -1,5 +1,7 @@
 import type { ToolPermissionContext } from '../../Tool.js'
 import type { PermissionMode } from '../../types/permissions.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { getAutoModeUnavailableReason } from '../../utils/permissions/permissionSetup.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../../utils/planModeV2.js'
 
 const AGENT_PERMISSION_MODE_RANK: Record<PermissionMode, number> = {
@@ -19,8 +21,9 @@ export function shouldBubbleAgentPermissionPrompts(
 }
 
 // Official 2.1.292: a definition's permissionMode never replaces a parent in
-// bypassPermissions, acceptEdits or auto, never grants bypassPermissions, and
-// bubble keeps a plan/dontAsk parent's mode.
+// bypassPermissions, acceptEdits or auto, never grants bypassPermissions,
+// bubble keeps a plan/dontAsk parent's mode, and auto keeps the parent's mode
+// while auto mode is unavailable.
 export function resolveDeclaredAgentPermissionMode(
   parentMode: PermissionMode,
   declaredMode: PermissionMode | undefined,
@@ -35,6 +38,16 @@ export function resolveDeclaredAgentPermissionMode(
       (parentMode === 'plan' || parentMode === 'dontAsk'))
   ) {
     return parentMode
+  }
+  if (declaredMode === 'auto') {
+    const reason = getAutoModeUnavailableReason()
+    if (reason !== null) {
+      logForDebugging(
+        `Subagent definition's permissionMode would put it in auto mode, but auto mode is unavailable to this subagent (reason=${reason}); keeping parent mode '${parentMode}'.`,
+        { level: 'warn' },
+      )
+      return parentMode
+    }
   }
   return declaredMode
 }

@@ -12,6 +12,10 @@ import {
 } from '../../bootstrap/state.js'
 import { getRemoteManagedSettingsSyncFromCache, isRemoteManagedSettingsVerified } from '../../services/remoteManagedSettings/syncCacheState.js'
 import { uniq } from '../array.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../../services/analytics/index.js'
 import { logForDebugging } from '../debug.js'
 import { logForDiagnosticsNoPII } from '../diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../envUtils.js'
@@ -1008,11 +1012,13 @@ export function getUseAutoModeDuringPlan(): boolean {
   return true
 }
 
+let autoModeUntrustedSourceWarned = false
+
 /**
  * Returns the merged autoMode config from trusted settings sources.
  * Only available when TRANSCRIPT_CLASSIFIER is active; returns undefined otherwise.
- * projectSettings is intentionally excluded — a malicious project could
- * otherwise inject classifier allow/deny rules (RCE risk).
+ * Like official, projectSettings and localSettings are excluded — a repo could
+ * otherwise inject classifier allow/environment rules (RCE risk).
  */
 export function getAutoModeConfig():
   | {
@@ -1031,6 +1037,33 @@ export function getAutoModeConfig():
       environment: z.array(z.string()).optional(),
     })
 
+    if (!autoModeUntrustedSourceWarned) {
+      for (const source of ['projectSettings', 'localSettings'] as const) {
+        // In the home directory the project settings file is the user's own.
+        if (
+          source === 'projectSettings' &&
+          getSettingsFilePathForSource('projectSettings') ===
+            getSettingsFilePathForSource('userSettings')
+        ) {
+          continue
+        }
+        const autoMode = (
+          getSettingsForSource(source) as Record<string, unknown> | null
+        )?.autoMode
+        if (autoMode && schema.safeParse(autoMode).success) {
+          autoModeUntrustedSourceWarned = true
+          logForDebugging(
+            `settings autoMode in ${source} ignored \u2014 only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`,
+            { level: 'warn' },
+          )
+          logEvent('tengu_settings_auto_mode_rules_untrusted_source_ignored', {
+            source:
+              source as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+        }
+      }
+    }
+
     const allow: string[] = []
     const soft_deny: string[] = []
     const hard_deny: string[] = []
@@ -1038,7 +1071,6 @@ export function getAutoModeConfig():
 
     for (const source of [
       'userSettings',
-      'localSettings',
       'flagSettings',
       'policySettings',
     ] as const) {

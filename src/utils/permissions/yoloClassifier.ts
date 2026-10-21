@@ -29,7 +29,13 @@ import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
 import { extractTextContent } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
-import { getCanonicalName, getDefaultOpusModel, getMainLoopModel } from '../model/model.js'
+import {
+  getCanonicalName,
+  getDefaultOpusModel,
+  getMainLoopModel,
+  parseUserSpecifiedModel,
+} from '../model/model.js'
+import { isModelAllowed } from '../model/modelAllowlist.js'
 import { getModelStrings } from '../model/modelStrings.js'
 import { getAPIProvider } from '../model/providers.js'
 import { requiresAlwaysOnAdaptiveThinking } from '../thinking.js'
@@ -652,6 +658,53 @@ function parseXmlReason(text: string): string | null {
   ]
   if (matches.length === 0) return null
   return matches[0]![1]!.trim()
+}
+
+// Official 2.1.303 block rule categories that telemetry may report.
+const CLASSIFIER_CATEGORIES = new Set([
+  'account_standing_rule_changes', 'auto_mode_bypass', 'blind_apply',
+  'browser_file_upload_exfil', 'browser_input_exfil', 'browser_js_exfil',
+  'browser_navigate_exfil', 'browser_shortcut_execution',
+  'chatops_trigger_comments', 'ci_bypass', 'cloud_storage_mass_delete',
+  'cluster_wide_workload_creation', 'code_from_external',
+  'code_that_leaks_when_run', 'command_network_lists', 'containment_escape',
+  'create_public_surface', 'create_rce_surface', 'create_unsafe_agents',
+  'credential_exploration', 'credential_leakage',
+  'credential_materialization', 'data_exfiltration',
+  'dns_domain_cert_changes', 'excess_sensitive_detail', 'exfil_scouting',
+  'expose_local_services', 'external_ingress_tunnel',
+  'external_system_writes', 'feature_flag_writes', 'git_destructive',
+  'instruction_poisoning', 'interfere_with_workloads',
+  'irreversible_deletion_general', 'irreversible_local_destruction',
+  'live_shared_artifact_sensitive_delta', 'logging_audit_tampering',
+  'merge_without_review', 'modify_shared_resources',
+  'node_lifecycle_operations', 'out_of_place_publication',
+  'package_registry_bypass', 'permission_grant', 'pii_data_handling',
+  'production_deploy', 'production_reads', 'protected_scope_iac_apply',
+  'public_data_sharing_upload', 'real_world_transactions', 'remote_repoint',
+  'remote_shell_writes', 'safety_bypass_flag', 'sandbox_network_callback',
+  'secret_store_writes', 'security_test_removal', 'security_weaken',
+  'self_approval', 'self_modification', 'sensitive_remote_exec',
+  'sensitive_source_provenance', 'session_transcript_tampering',
+  'shared_cluster_mutation', 'shared_scratch_sweep', 'third_party_attack',
+  'tls_auth_weaken', 'tmux_self_drive', 'traffic_redirection',
+  'unauthorized_persistence', 'unrequested_artifact_publish',
+  'unrequested_commit_in_a_connected_app', 'untrusted_code_integration',
+  'unverifiable_deletion_scope', 'unverifiable_deletion_target',
+])
+
+/**
+ * The built-in block rule a denial reason names in its `[Rule Name]` prefix,
+ * as official's snake-case category; undefined for custom or unknown rules.
+ */
+export function getClassifierCategory(reason: string): string | undefined {
+  const name = /^\[([^[\]]{1,80})\]/.exec(reason)?.[1]
+  if (!name) return undefined
+  const category = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return CLASSIFIER_CATEGORIES.has(category) ? category : undefined
 }
 
 /**
@@ -1440,6 +1493,41 @@ function getFallbackClassifierModel(mainModel: string): string {
     : mainModel
 }
 
+// Like official 2.1.303, the API's safeguards refuse the classifier's
+// escalated check on these models.
+const AUTO_MODE_MODEL_ENV_REFUSED = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-opus-5']
+const loggedAutoModeModelEnvSkips = new Set<string>()
+
+/**
+ * CLAUDE_CODE_AUTO_MODE_MODEL, unless the organization's model policy does not
+ * allow it or the classifier cannot run on it; then the default model is used.
+ */
+function vetAutoModeModelEnv(model: string | undefined): string | undefined {
+  if (!model) return undefined
+  const skip = !isModelAllowed(model)
+    ? {
+        why: "your organization's model policy does not allow it",
+        next: "Unset it or pin a model your organization's policy allows.",
+      }
+    : AUTO_MODE_MODEL_ENV_REFUSED.includes(
+          getCanonicalName(parseUserSpecifiedModel(model)),
+        )
+      ? {
+          why: "the API's safeguards refuse the classifier's escalated check on it",
+          next: `Unset it or pin a different model, such as ${getModelStrings().sonnet50}.`,
+        }
+      : undefined
+  if (!skip) return model
+  if (!loggedAutoModeModelEnvSkips.has(model)) {
+    loggedAutoModeModelEnvSkips.add(model)
+    logForDebugging(
+      `Auto mode classifier: ignoring CLAUDE_CODE_AUTO_MODE_MODEL=${model} because ${skip.why}; using the default classifier model instead. ${skip.next}`,
+      { level: 'warn' },
+    )
+  }
+  return undefined
+}
+
 /**
  * Get the model for the classifier.
  * GrowthBook per-main-model and global overrides first, then
@@ -1457,7 +1545,7 @@ function getClassifierModel(): string {
   if (config?.model) {
     return config.model
   }
-  const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
+  const envModel = vetAutoModeModelEnv(process.env.CLAUDE_CODE_AUTO_MODE_MODEL)
   if (envModel) return envModel
   if (getAPIProvider() === 'openai') return mainModel
   const sonnet5 = sonnet5ClassifierProbe === 'demoted' ? undefined : getDefaultSonnet5Classifier(mainModel)

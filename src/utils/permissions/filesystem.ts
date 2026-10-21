@@ -1057,8 +1057,9 @@ export function checkReadPermissionForTool(
         behavior: 'ask',
         message: `Claude requested permissions to read from ${path}, which appears to be a UNC path that could access network resources.`,
         decisionReason: {
-          type: 'other',
+          type: 'safetyCheck',
           reason: 'UNC path detected (defense-in-depth check)',
+          classifierApprovable: false,
         },
       }
     }
@@ -1071,9 +1072,10 @@ export function checkReadPermissionForTool(
         behavior: 'ask',
         message: `Claude requested permissions to read from ${path}, which contains a suspicious Windows path pattern that requires manual approval.`,
         decisionReason: {
-          type: 'other',
+          type: 'safetyCheck',
           reason:
             'Path contains suspicious Windows-specific patterns (alternate data streams, short names, long path prefixes, or three or more consecutive dots) that require manual verification',
+          classifierApprovable: false,
         },
       }
     }
