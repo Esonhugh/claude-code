@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import type { Tool } from '../../Tool.js'
+import { isDeferredTool } from '../../tools/ToolSearchTool/prompt.js'
 import { createModTools } from './tools.js'
 
 function createRegistry(
@@ -327,5 +328,21 @@ describe('mod tool ownership', () => {
     expect(registry.ownerOf(after[0]!)).toBe(owner)
     expect(Object.isFrozen(before)).toBe(true)
     expect(observed).toEqual([after])
+  })
+})
+
+test('isDeferred false lists a mod tool in the prompt from the start; true or absent waits behind ToolSearch', () => {
+  const owner = {}
+  const registry = createRegistry()
+  registry.register(owner, { name: 'front', description: 'Front.', isDeferred: false })
+  registry.register(owner, { name: 'behind', description: 'Behind.', isDeferred: true })
+  registry.register(owner, { name: 'rule', description: 'Rule.' })
+  expect(() => registry.register(owner, { name: 'bad', description: 'Bad.', isDeferred: 'no' as never }))
+    .toThrow('Mod tool isDeferred must be a boolean')
+  registry.commit(owner)
+  expect(Object.fromEntries(registry.list().map(tool => [tool.name, isDeferredTool(tool)]))).toEqual({
+    mcp__weather__front: false,
+    mcp__weather__behind: true,
+    mcp__weather__rule: true,
   })
 })

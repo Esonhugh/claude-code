@@ -1771,3 +1771,70 @@ describe('fs', () => {
     expect(await host.fs.stat('chain0', { resolve: true })).toEqual(expected)
   })
 })
+
+describe('http.fetch body cap and redirects (official 2.1.303)', () => {
+  const cap = 4194304
+  function fetchWith(httpFetch: (url: string, init: RequestInit) => Promise<Response>) {
+    return createModHostOperations({ cwd: () => cwd, storageId: 'http@test', signal: controller.signal, httpFetch })
+  }
+
+  test('refuses a declared body over 4 MiB, except for HEAD and 204/205/304', async () => {
+    const big = { 'content-length': String(cap + 1) }
+    await expect(fetchWith(async () => new Response('x', { headers: big })).http.fetch('https://example.test/a'))
+      .rejects.toThrow(`https://example.test/a refused: body of ${cap + 1} bytes is over the ${cap}-byte limit`)
+    expect((await fetchWith(async () => new Response(null, { headers: big })).http.fetch('https://example.test/a', { method: 'HEAD' })).status).toBe(200)
+    for (const status of [204, 205, 304])
+      expect((await fetchWith(async () => new Response(null, { status, headers: big })).http.fetch('https://example.test/a')).status).toBe(status)
+  })
+
+  test('cuts an undeclared streamed body off at 4 MiB', async () => {
+    const chunk = new Uint8Array(1024 * 1024).fill(97)
+    let sent = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 6) controller.enqueue(chunk)
+        else controller.close()
+      },
+    })
+    const result = await fetchWith(async () => new Response(stream)).http.fetch('https://example.test/s')
+    expect(result.text.length).toBe(cap)
+  })
+
+  test('refuses a request body over 4 MiB characters', async () => {
+    await expect(fetchWith(async () => new Response('')).http.fetch('https://example.test/b', { method: 'POST', body: 'x'.repeat(cap + 1) }))
+      .rejects.toThrow(`a request body of ${cap + 1} characters is over the ${cap}-character limit`)
+  })
+
+  test('follows redirects, turns a POST into GET on 303 and strips cross-origin headers', async () => {
+    const requests: { url: string; method?: string; headers: Headers; body?: unknown }[] = []
+    const operations = fetchWith(async (url, init) => {
+      requests.push({ url, method: init.method, headers: new Headers(init.headers), body: init.body })
+      if (url === 'https://a.test/start') return new Response(null, { status: 303, headers: { location: 'https://b.test/next' } })
+      if (url === 'https://b.test/next') return new Response(null, { status: 307, headers: { location: '/end' } })
+      return new Response('done', { headers: { 'X-Upper': 'kept' } })
+    })
+    const result = await operations.http.fetch('https://a.test/start', {
+      method: 'POST', body: 'payload', headers: { 'content-type': 'text/plain', 'x-secret': 'drop' },
+    })
+    expect(result).toEqual({ status: 200, ok: true, headers: { 'x-upper': 'kept' }, text: 'done' })
+    expect(requests.map(r => [r.url, r.method, r.body])).toEqual([
+      ['https://a.test/start', 'POST', 'payload'],
+      ['https://b.test/next', 'GET', undefined],
+      ['https://b.test/end', 'GET', undefined],
+    ])
+    expect(requests[1]!.headers.get('content-type')).toBe('text/plain')
+    expect(requests[1]!.headers.get('x-secret')).toBeNull()
+  })
+
+  test('gives up after five redirects', async () => {
+    let hops = 0
+    const operations = fetchWith(async () => new Response(null, { status: 302, headers: { location: `https://a.test/${++hops}` } }))
+    await expect(operations.http.fetch('https://a.test/0')).rejects.toThrow('more than 5 redirects from https://a.test/0')
+    expect(hops).toBe(6)
+  })
+
+  test('returns a redirect without a location as is', async () => {
+    const result = await fetchWith(async () => new Response('', { status: 301 })).http.fetch('https://a.test/x')
+    expect(result.status).toBe(301)
+  })
+})

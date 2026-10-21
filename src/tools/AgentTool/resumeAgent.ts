@@ -59,6 +59,7 @@ import {
   resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
+import { raiseModAgentResume } from '../../services/mods/agents.js'
 
 export type ResumeAgentResult = {
   agentId: string
@@ -274,6 +275,17 @@ export async function resumeAgentBackground({
     meta?.model,
     permissionMode,
   )
+
+  // A hook can refuse the resume; a deny starts no run and leaves the agent parked.
+  await raiseModAgentResume(toolUseContext, {
+    agentId,
+    prompt,
+    description: uiDescription,
+    subagentType: selectedAgent.agentType,
+    model: meta?.model,
+    permissionMode,
+    fork: isResumedFork,
+  })
 
   const workerTools = isResumedFork
     ? toolUseContext.options.tools

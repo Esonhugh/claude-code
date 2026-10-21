@@ -52,6 +52,7 @@ import type { PromptComposeInput, PromptComposeResult, PromptComposeSection } fr
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from './constants/prompts.js'
 import { shouldUseGlobalCacheScope } from './utils/betas.js'
 import { renderModPromptAttachments } from './services/mods/promptAttachments.js'
+import { appendModToolResult } from './services/mods/sessionAppend.js'
 import type { CacheSafeParams } from './utils/forkedAgent.js'
 import type {
   AssistantMessage,
@@ -133,6 +134,7 @@ import { feature } from 'bun:bundle'
 import {
   getCurrentTurnTokenBudget,
   getTurnOutputTokens,
+  getSessionFallbackModels,
   incrementBudgetContinuationCount,
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
@@ -262,6 +264,15 @@ type State = {
   transition: Continue | undefined
 }
 
+/** The prompt a subagent's run begins with: its last user row's text ("" when none). */
+function modAgentTurnText(messages: readonly Message[]): string {
+  const last = messages.findLast(message => message.type === 'user')
+  if (last?.type !== 'user') return ''
+  const content = last.message.content
+  return typeof content === 'string' ? content : content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n')
+}
+
+
 export async function* query(
   params: QueryParams,
 ): AsyncGenerator<
@@ -353,7 +364,9 @@ export async function* query(
   const snapshot = catalogContext.mods?.capture(queryServices)
   let registeredTurn = catalogContext.mods?.currentTurn?.(catalogContext.agentId)
   const isPublicTurn = params.publicTurn !== undefined && !params.toolUseContext.agentId
-  const handlesStart = isPublicTurn && snapshot?.hasHooks('turn.start') === true
+  // A subagent's or teammate's run is one turn too (2.1.299), carrying its agentId.
+  const agentTurn = params.toolUseContext.agentId !== undefined && registeredTurn !== undefined
+  const handlesStart = (isPublicTurn || agentTurn) && snapshot?.hasHooks('turn.start') === true
   const handlesMeasure = !params.toolUseContext.agentId &&
     (isPublicTurn || params.querySource.startsWith('repl_main_thread') || params.querySource === 'sdk') && snapshot?.hasHooks('session.measure') === true
   const handlesCatalog = snapshot?.hasHooks('tool.list') === true || snapshot?.hasHooks('tool.describe') === true
@@ -364,6 +377,7 @@ export async function* query(
   const handlesAttachments = snapshot?.hasHooks('prompt.attachment') === true
   const handlesStep = (isPublicTurn || registeredTurn !== undefined) && snapshot?.hasHooks('turn.step') === true && snapshot.stream !== undefined
   const handlesCompact = snapshot?.hasHooks('session.compact') === true
+  const handlesAppend = snapshot?.hasHooks('session.append') === true
   if (
     !isPublicTurn &&
     !handlesStart &&
@@ -376,7 +390,8 @@ export async function* query(
     !handlesCompose &&
     !handlesAttachments &&
     !handlesStep &&
-    !handlesCompact
+    !handlesCompact &&
+    !handlesAppend
   ) {
     snapshot?.release()
     const terminal = yield* queryLoop(params, consumedCommandUuids)
@@ -411,10 +426,17 @@ export async function* query(
       try {
         await snapshot!.dispatch(
           'turn.start',
-          { turnId, text: params.publicTurn!.text },
+          isPublicTurn
+            ? { turnId, text: params.publicTurn!.text }
+            : { turnId, text: modAgentTurnText(params.messages), agentId: params.toolUseContext.agentId },
           async () => ({ turnId }),
           {
             signal: params.toolUseContext.abortController.signal,
+            restoreInput: (value, received) =>
+              Object.hasOwn(value, 'agentId') || !Object.hasOwn(received, 'agentId') ? value : { ...value, agentId: received.agentId },
+            validateInput(value) {
+              if (value.agentId !== params.toolUseContext.agentId) throw new Error('turn.start cannot rewrite agentId')
+            },
             validateResult(value) {
               const result = value as Record<string, unknown> | null
               if (!result || Array.isArray(result) || result.turnId !== turnId)
@@ -516,11 +538,12 @@ async function* queryLoop(
   const {
     systemContext,
     canUseTool,
-    fallbackModel,
     querySource,
     maxTurns,
     skipCacheWrite,
   } = params
+  // Advances along the session fallback chain each time a fallback triggers.
+  let fallbackModel = params.fallbackModel
   // Query assembly is complete; cache-sharing forks inherit bytes, not plans.
   let systemPrompt = getSystemPromptSections(params.systemPrompt)
     ? asSystemPrompt([...params.systemPrompt])
@@ -1051,6 +1074,7 @@ async function* queryLoop(
       const { isAtBlockingLimit } = calculateTokenWarningState(
         tokenCountWithEstimation(projectedMessagesForQuery) - snipTokensFreed,
         toolUseContext.options.mainLoopModel,
+        toolUseContext.options.autoCompactWindow,
       )
       if (isAtBlockingLimit) {
         if (
@@ -1432,6 +1456,10 @@ async function* queryLoop(
               `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
               'warning',
             )
+
+            const chain = getSessionFallbackModels()
+            const chainIndex = chain.indexOf(fallbackModel)
+            fallbackModel = chainIndex >= 0 ? chain[chainIndex + 1] : undefined
 
             continue
           }
@@ -1927,8 +1955,10 @@ async function* queryLoop(
       ? streamingToolExecutor.getRemainingResults()
       : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
 
-    for await (const update of toolUpdates) {
+    for await (let update of toolUpdates) {
       if (update.message) {
+        if (update.message.type === 'user' && snapshot?.hasHooks('session.append'))
+          update = { ...update, message: await appendModToolResult(snapshot, update.message, toolUseBlocks, toolUseContext) }
         yield update.message
 
         if (

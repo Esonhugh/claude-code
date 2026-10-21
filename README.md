@@ -84,10 +84,13 @@ bun ./dist/cli.js --help
 | 状态与用量 UI | 当前模型使用 ChatGPT OAuth 且用量请求成功时，自动识别 `Plus`、`Pro`、`Team`、`Business`、`Enterprise` 等 plan，并在启动 pane 和 `/status` Usage 展示权威订阅及 Codex limits，同时展示 ChatGPT 用量窗口与 rate-limit reset credits；用量不可用时启动 pane 回退到 OAuth token 中的 plan，`/status` 显示不可用状态。reset 操作经二次确认后消耗一个 credit 并刷新显示；使用 API key 或 bearer token 时显示 `API Usage Billing`，不展示 ChatGPT subscription usage。Model Picker 支持 effort 显示、切换和持久化。 |
 | 自主 Goal | `/goal` 或 `SetGoal` 注册 StopHook 并驱动自主执行；Goal 状态通过 transcript attachment 持久化，resume/continue 可恢复 active Goal 与 hook；交互式 `/goal` 展示进行中、完成或失败状态及耗时、turn、token 和最后检查原因，支持 clear、impossible 终态、后台任务延后检查与自动清理。 |
 | Hook 可靠性 | Stop hook 连续阻止结束时默认在第 9 次终止续跑，可用 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 调整或禁用上限；正常 tool round 会重置计数，`maxTurns` 保持更高优先级。 |
+| Hook 事件与输出 | 对齐官方 2.1.303：command/HTTP hook 可设 `onFailure: "block"`，启动失败、超时或非预期退出码时阻止动作（Stop、SubagentStop、TaskCompleted、TeammateIdle 与 async hook 除外）；同一事件的 prompt/agent hook 最多 12 个并行；PreCompact 以 exit 2 或 `decision: "block"` 阻止压缩；Stop/SubagentStop 可返回 `additionalContext` 继续回合；新增 `PreModelSwitch`（可 deny/ask/allow）、`PostModelSwitch`、`DirectoryAdded`、`MessageDisplay`（每个完成的文本块整体替换显示）事件；SessionStart 可返回 `sessionTitle` 与 `reloadSkills`；command hook 获得 `$CLAUDE_EFFORT`，hook 输入含 `effort.level`；`--debug` 记录每个 command hook 的结果与耗时。`terminalSequence` 未实现。 |
 | 权限与安全模式 | `--safe-mode` / `CLAUDE_CODE_SAFE_MODE` 停用 CLAUDE.md、插件、MCP、非托管 hooks、自定义 agents/skills 等定制；`default` 模式对外称 Manual（`--permission-mode manual`）；deny/ask 规则支持 `Tool(param:value)` 与工具名 `*` 通配；`-p --permission-prompts none` 在本地拒绝需审批的操作。自动模式支持 `autoMode.hard_deny`、`autoMode.classifyAllShell`、分类器上下文溢出时先压缩再重审、`claude auto-mode reset` 与 `CLAUDE_CODE_AUTO_MODE_MODEL`。 |
-| 会话命令 | 提供 `/goal`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
+| 会话命令 | 提供 `/goal`、`/recap`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
-| 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
+| 记忆 | 交互会话默认启用 auto memory、后台记忆提取、Session Memory 与离开回顾，不依赖 GrowthBook；`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` 或 `autoMemoryEnabled: false` 关闭记忆，`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或 `awaySummaryEnabled: false` 关闭自动回顾；载入记忆文件时会删除不可见字符并转义伪造的 harness 标签。 |
+| 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task；`/loop` 不带间隔时由模型通过 `ScheduleWakeup` 自行决定下次唤醒（60–3600 秒）。 |
+| Monitor | `Monitor` 工具在后台运行监看脚本，stdout 每行（200ms 内合并）作为一则任务通知唤醒模型；默认 5 分钟、最长 30 分钟（`-p` 下 10 分钟）到期并通知，可重新 arm；输出过多时自动抑制并停止。权限规则与 Bash 相同。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
 | Channels | 默认开放 `--channels`、交互式开发频道和 IDE/SDK `channel_enable`；支持 Anthropic API Key、OpenAI 兼容接口等已配置 provider，保留组织策略、插件来源验证和逐项授权；支持独立能力声明的远程工具审批。 |
 | Mods / Function Hooks | 可信插件可通过 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令和 terminal Pane；提供 scoped host capabilities、热重载、在途 generation 保留、取消与卸载。支持范围与官方运行时兼容性边界见下方 Mods 章节。 |
@@ -221,6 +224,20 @@ claude
 OpenAI discovery、first-party Anthropic bootstrap 和 Anthropic gateway discovery 使用各自的缓存身份或文件。identity 包含 provider、规范化 endpoint、认证模式以及 credential/account identity；不同 provider、base URL、账户或 credential 不共享模型目录。first-party bootstrap 返回的 `additional_model_options` 只在当前 first-party identity 匹配时追加到内置 Claude catalog，相关 client data 与 compaction window 同样受该 identity 约束。gateway 使用独立磁盘缓存，失败时不会回退到 official bootstrap，也不会覆盖 first-party 数据。
 
 发现请求超时、失败、响应无效或没有认证时，会保留原缓存内容，但 Model Picker 仅在缓存 identity 与当前运行身份完全匹配时读取；成功响应但没有可用模型时会清空当前 identity 的旧模型列表。OpenRouter 仅可作为普通 OpenAI-compatible endpoint 使用，本项目没有为它增加独立 provider 或专用环境变量。
+
+### 请求韧性：重试、回退模型与默认模型
+
+以下行为与官方 2.1.303 对齐，Anthropic 与 OpenAI provider 均适用：
+
+- **Stream idle watchdog** 默认开启：响应流 5 分钟没有事件时中止并重试。`CLAUDE_ENABLE_STREAM_WATCHDOG=0` 关闭；`CLAUDE_STREAM_IDLE_TIMEOUT_MS` 只能把窗口调长（下限 300000）。
+- `CLAUDE_CODE_MAX_RETRIES` 上限 15（默认 10）。
+- `CLAUDE_CODE_RETRY_WATCHDOG=1`（无人值守重试）：429/529 不受重试次数限制，持续退避重试（单次最长 5 分钟、并定期输出 keep-alive），其他瞬时错误默认重试 300 次且解除 15 次上限；组织 spend cap 等不会自动恢复的 429 立即失败。
+  - `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS`：一次请求在 429/529 上累计等待的上限，耗尽后返回错误。
+  - `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS`：用量窗口（usage limit）重置时间超过该值时不再等待。
+- `CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS` / `CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS`：529 重试退避的基础与最大延迟（默认 500 / 32000）。
+- OpenAI provider 的 408/409/429/5xx 也走同一重试策略（`usage_limit_reached`、`insufficient_quota` 与认证错误仍立即失败）。
+- 回退模型：`--fallback-model a,b,c`（交互式与 `--print` 均生效）或 settings `"fallbackModel": ["sonnet", "haiku"]`，CLI 优先，最多 3 个，按顺序尝试；`default` 表示默认模型。配置后任何主模型连续 3 次 529 都会切换到链上下一个模型，下一轮用户输入重新从主模型开始。
+- `ANTHROPIC_DEFAULT_MODEL`：新会话的默认模型。`--model`、`ANTHROPIC_MODEL`、settings `model`（含 `/model` 的选择）与组织默认模型优先于它；`default`/`inherit` 视为未设置。
 
 ### Codex Apps mention
 
@@ -608,6 +625,28 @@ Agent 还支持前台执行、后台执行、命名续跑和可选隔离。模�
 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 ```
 
+自定义 Agent（`.claude/agents/<名称>.md`、插件 agents 或 `--agents` JSON）可设置 `omitClaudeMd` 与 `autoCompactWindow`：
+
+```yaml
+---
+name: reviewer
+description: Review the staged diff
+omitClaudeMd: true        # 作为子代理运行时不加载 CLAUDE.md
+autoCompactWindow: 150000 # 子代理的自动压缩窗口上限（100000 到 1000000）
+---
+Review the diff.
+```
+
+`autoCompactWindow` 只能把继承到的窗口调小；`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍优先。超出范围的值会被忽略并写入 debug 日志。
+
+Worktree 设置 `worktree.baseRef` 决定 `--worktree`、`EnterWorktree` 和 agent `isolation: "worktree"` 新建分支的起点：`fresh`（默认）基于 `origin/<默认分支>`，`head` 基于当前工作目录（包括 linked worktree）的本地 HEAD，保留未推送提交：
+
+```json
+{ "worktree": { "baseRef": "head" } }
+```
+
+`EnterWorktree` 也可传 `path` 进入已在 `git worktree list` 中的 worktree；`.claude/worktrees/` 之外的路径会先请求确认。以 `path` 进入的 worktree 不归当前会话所有，`ExitWorktree` 只能 `keep`，不会删除它。
+
 ### fork 技能的代理名称
 
 在 `.claude/skills/review/SKILL.md` 中指定 `context: fork` 和 `agent`，再输入 `/review <任务>`；模型的 SkillTool 调用也使用同一配置。用户技能目录和旧 `.claude/commands/review.md` 使用同一解析器。代理定义放在 `.claude/agents/<名称>.md`，配置方法见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents)。
@@ -633,6 +672,7 @@ Review $ARGUMENTS.
 /goal
 /goal clear
 
+/recap
 /cd ../another-project
 /reload-skills
 /reload-plugins
@@ -644,8 +684,11 @@ Review $ARGUMENTS.
 - `/goal <condition>`：保存当前自主目标，并在停止前检查目标是否完成；主线程也可通过 `SetGoal` 设置同一目标。Goal 状态和 hook 会写入 transcript 并可在 resume/continue 后恢复。
 - `/goal`：打开交互式状态视图，展示当前 Goal 的状态、耗时、turn、token 和最后检查原因。
 - `/goal clear`：清除当前 Goal 及其 Stop hook，并持久化 cleared 状态。
+- `/recap`：立即生成一到两句会话回顾（上限 400 字符），复用主对话的模型与 provider（含 OpenAI），支持 `-p`。终端失焦 5 分钟后也会自动生成回顾；`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或设置 `awaySummaryEnabled: false` 关闭自动回顾，`=1` 强制开启。
 - `/fast`：切换 Fast mode；OpenAI provider 下发送 `service_tier: "priority"`，API key 与 ChatGPT OAuth 均可使用。
 - `/compact`：压缩当前会话；OpenAI provider 下支持手动 remote compaction，并在重复压缩时保留 opaque compaction history。
+- `/autocompact [auto|<tokens>]`：查看或设置当前模型的自动压缩窗口（100k 到 1M，例如 `500k`、`200000` 或简写 `200`）；无参数时打开对话框，←/→ 调整、Enter 应用。设置按模型写入用户设置 `modelSettings.<model>.autoCompactWindow`，切换模型后各自保留；`auto`/`reset` 恢复自动窗口。非交互模式（`-p`）输出文本结果。OpenAI 等第三方模型同样适用。
+- 切换到上下文窗口更小的模型后，若会话已超出新模型的上限，自动压缩会先由上一个（窗口更大的）模型生成摘要；该模型已不在 `availableModels` 中或摘要失败时，改用当前模型。
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
 - `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
 - `/reload-plugins`：应用 `/plugin manage` 中的安装、更新和启停变更，重新加载 plugin commands、skills、hooks、MCP 和 LSP；已安装插件使用本地安装缓存，不会因 reload 自动下载。
@@ -655,13 +698,28 @@ Review $ARGUMENTS.
 
 PromptInput 按 UTF-8 stream 处理普通文本、中文等宽字符、Kitty CSI-u 和 bracketed paste。同一个 stdin chunk 中的文本与 Enter/Backspace/方向键按顺序生效；未闭合 paste 会在有界空闲恢复后释放 literal payload 并回到普通输入，避免后续按键被永久吞掉。
 
+### 快捷键与 Vim 模式
+
+- 自定义快捷键对所有用户默认启用（对齐官方 2.1.303）：`/keybindings` 创建或打开 `~/.claude/keybindings.json`，保存后热重载，`/doctor` 显示配置错误。格式见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)。
+- `Enter` 提交；回合进行中提交的消息排队，在工具边界送入。`Ctrl+Enter`（需终端支持 Kitty 键盘协议）或 `Ctrl+X` 后按 `Ctrl+S` 为 `chat:sendNow`：中断当前回合并立即送出；输入为空时立即送出已排队的消息。`Ctrl+X` 后按 `Enter` 为 `chat:queueSubmit`，等当前回合结束后再送出。
+- `Ctrl+J`（`chat:newline`）插入换行，与 `Shift+Enter`、`Option+Enter` 相同。
+- Vim 模式（`/config` 中 Editor mode 设为 vim）：NORMAL 下 `%` 跳到配对的 `()`/`[]`/`{}`，可与 `d`/`c`/`y` 组合；`v` / `V` 进入 VISUAL / VISUAL LINE，选区反色显示，支持移动、`iw`/`i"` 等文本对象、`d`/`x`/`y`/`c`/`s`/`r`/`~`/`u`/`U`/`p`/`P`/`J`/`>`/`<`/`o`，`Esc` 或再按同一键退出。footer 与 statusLine 的 `vim.mode` 会显示 `VISUAL` / `VISUAL LINE`。
+
 ### Mods / Function Hooks
 
 Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针对当前源码构建，不代表已发布的 `@esonhugh/claude-code` launcher 已包含这些能力。
 
 对齐目标包括官方 Mods 的函数、参数和回执、上下文传递、加载生命周期、作者测试及 UI 行为。除用户明确指定的 Privacy Mode 等差异外，现有本地行为不能自动视为例外。下文的未实现项是待完成工作；当前结果与分批修复顺序见 [兼容性清单](docs/research/mods-parity.md)，实际验收记录见 [mods-test.md](mods-test.md)。
 
-当前 Mods/API 批次固定以官方 **2.1.292** 为基准；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不改变其余 API 的基线，也不表示全部 UI 已完成迁移。作者声明以 2.1.292 完整声明体为基础，只投影已核对的 2.1.295 Button children 定义。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+当前 Mods/API 支持基线为官方 **2.1.303**：作者声明直接采用 2.1.303 原生制品内的完整声明体，不再叠加 2.1.295 Button children 投影；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不表示全部 UI 已完成迁移。声明列出但本构建未实现的调用会以点名该调用的运行时错误拒绝，不会静默成功：
+
+- `$.ui.view`、`$.prompt.media`、`$.audio.play`、`$.audio.speak`：拒绝为 `$.<call> is not available in this build`（本构建没有音频输出路径）。
+- `prompt.change` 事件：注册时加载失败并报告 `unsupported core event prompt.change`；prompt 装饰的 `virtualText` 拒绝为 `Prompt decoration virtualText is not available in this build`。
+- 交互式 REPL 中的 `$.session.compact`：拒绝为 `$.session.compact is not available in this build`；headless（`-p`/SDK）按官方依次报告 `DISABLE_COMPACT`、正在运行的 turn 和 headless 不可用。
+- `prompt.submit` 的 `command` 字段：斜杠命令不经过 `prompt.submit`，该字段不会出现。
+- `$.session.identity()` 只回答 managed settings 启用并原地加载的 Mod；本构建不保存服务器校验过的账号资料，`isVerified` 恒为 `false`。
+
+兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 本轮完成了终端选区读取与跟随、持有中的 VM 回调、作者声明覆盖和测试 runner 的临时文件清理。Client 故障次数与焦点恢复、session transcript 的公开接线、caller chain 的完整传播、Worker reload，以及 teammate 身份和恢复流程仍有未提交部分。官方 diff Mod 的完整终端效果和浏览器 Client 生命周期尚未验收通过。
 
@@ -707,9 +765,9 @@ export const register: Register = on => {
 
 `plugin validate` 静态扫描 hook 模块，不执行模块的顶层代码。`hooks:` 按注册顺序列出每个事件及 matcher，重复事件的不同 matcher 分别保留；`calls:` 列出能力调用，仅在该能力没有直接调用时补充已排序的 helper 来源，例如 `$.fs.read (via alpha, zebra)`。matcher 中的正则、列表和嵌套字段保留结构；无法静态确定的值显示 `?`，诊断字符串进行转义并限制长度。这些输出已与固定官方 2.1.292 的七个真实 CLI 场景对照；gating-hook 警告及其他诊断尚未纳入本项兼容结论。回归入口为 `bun test ./src/services/mods/validateDescriptions.test.ts ./src/cli/handlers/plugins.validate.test.ts`。插件目录与 manifest 字段参考 [Anthropic plugin manifest reference](https://code.claude.com/docs/en/plugins-reference)。
 
-作者主声明采用官方 2.1.292 原生制品内的完整声明体作为基线：565 个主模块导出、51 个 testing 导出，以及完整事件、操作和全局定义。仅 ButtonProps 与 RenderElement 的 Button 分支追加固定 2.1.295 制品核对过的 children 定义；基线、增量和片段摘要均在生成前校验，文件头明确两者来源。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
+作者主声明采用官方 2.1.303 原生制品内的完整声明体作为基线：585 个主模块导出、52 个 testing 导出，以及完整事件、操作和全局定义，Button children 已由该声明体原生提供；资产摘要在生成前校验。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
 
-新增的 `PromptAutocompleteInput/Result/Suggestion`、`ModelTextBlock/ModelCompleteInput`、`AgentSpawnInput.workflow` 和 `HookFailure` 重入定义均来自官方原文。它们的运行时生产、分发和上下文仍须按功能验收；声明增量的历史差异见[声明专项](docs/research/mods-declarations-292-20261007.md)，本批 prompt.autocomplete 的实际实现与有限验收见[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)，不能仅凭类型检查通过推断其他功能支持。
+新增的 `PromptAutocompleteInput/Result/Suggestion`、`ModelTextBlock/ModelCompleteInput` 和 `AgentSpawnInput.workflow` 定义均来自官方原文；2.1.301 起 `HookFailure` 只有 `throw`/`timeout`，`.catch` 只在 hook 自身抛错或超时时运行，hook 自身调用之下触发的事件跳过该 hook 且不询问其 `.catch`。它们的运行时生产、分发和上下文仍须按功能验收；声明增量的历史差异见[声明专项](docs/research/mods-declarations-292-20261007.md)，本批 prompt.autocomplete 的实际实现与有限验收见[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)，不能仅凭类型检查通过推断其他功能支持。
 
 依赖插件在自己的 `.claude-plugin/plugin.json` 中设置 `"types": "./types/index.d.ts"`，使用方在 `"dependencies": ["shared-state"]` 中声明它；普通来源的裸名称继承 marketplace，inline 等会话来源按名称查找。同名 inline 插件也可满足带 marketplace 的依赖。生成目录内优先链接依赖的真实契约文件；链接失败时只复制不超过 256 KiB 的普通文件，并去掉 BOM。契约必须留在依赖插件的真实目录内。
 
@@ -893,6 +951,7 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - Worker 故障恢复：识别到造成 CPU 阻塞的插件后，自动恢复其余插件，已挂载的 AbovePrompt 会使用恢复后的插件重新绘制，无需额外输入或调用 invalidate。正在执行的失败调用不会自动重放；显式 reload 会重新尝试崩溃插件，刷新等待恢复完成，有 transcript 日志的宿主会提示崩溃插件已卸载。恢复本身失败仍返回错误；完整终端呈现仍待对照。
 - 环境目录：`CLAUDE_CODE_PLUGIN_DIRS` 加载绝对目录，macOS/Linux 用 `:` 分隔，Windows 用 `;`；与重复的 `--plugin-dir` 合并去重，相对路径会输出配置错误并以非零状态退出。交互会话自动观察模块变化；长期非交互会话需设置 `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` 才自动重载，未设置时仍可显式刷新。
 - 缓存清理：按官方 289 的暂存目录命名和时间边界保留有效安装暂存区，孤立版本使用 14 天期限。清理先读取有效安装记录；缺失、损坏或没有安装记录时不继续删除。安装路径按真实文件系统位置比较，marker 和递归删除不跟随链接。运行中的 `.in_use` 生命周期、发布链及平台专属边界仍待补齐。 当前加载契约可运行 `bun test ./src/utils/plugins/pluginLoader.contract.test.ts`。历史工作区 GC 的20案子进程夹具尚未交付，不能计入当前提交的可复现覆盖。
+- `strictPluginOnlyCustomization`：与官方一致，只锁定 settings/skills/agents 等非插件来源的 hooks；Mods 是插件 hook 模块，设置后照常加载。
 - Managed 加载：组织 Mods 必须由 managed `enabledPlugins` 启用，并通过 managed `extraKnownMarketplaces` 中的绝对目录市场、相对插件路径原地加载。远程或复制到缓存的插件保留用户身份；设置 `allowManagedHooksOnly` 时不运行这些模块。`disableAllHooks` 在个人设置中保留组织 Mods，在 managed settings 中阻止全部安装插件的 Mods；宿主内置 Mods 和 guard 仍按自身开关与 seating 规则加载。
 - 当前接线：tool 注册、列举、描述、调用与检查；prompt compose/edit/read/fill/suggest/submit/context/section/attachment；turn middleware 与流式 model step；agent offer/register/list/spawn；MCP 调用；动态 slash commands；session receive/measure/usage/compact/end/authorize；config/options、accepted settings、fs、受限 HTTP、argv process、env、版本化 state/JSON store，以及 terminal/remote UI 与 terminal media。state 写入支持 owner-only、JSON/大小限制和 `ifVersion` CAS；订阅失效只重绘读取对应 key 的 UI instance。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
 - 会话版本：`await $.session.version()` 返回 `{ version, base?, builtAt? }`，不接受参数，terminal、非交互和未绑定 session 时均可读取。`version` 与当前 binary 的 `--version` 一致；`base` 沿用引擎 analytics 的基础版本提取规则，`builtAt` 使用 binary 内嵌的构建时间戳，源码运行没有时间戳时省略。调用经过 `session.version` 中间件；作者测试需用 `on('session.version', () => ({ value: { version: 'test-engine' } }))` 提供桩。
@@ -924,7 +983,7 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - Pane 入场与宽度：自动打开的未入场面板通常等待144列；保留人工打开资格的面板等待110列。已入场的面板缩窄后仍保留，低于110列切换 inline，实际关闭后重新打开才重新计算入场条件。默认 dock outer 宽度为 `min(floor(columns * 0.45), 90, columns - 70)`，正文减去一列 grip；插件的 `columns` 请求正文宽度，dock outer 在24列至终端宽度减24列之间限制。inline 按实际自然内容高度与官方预算取较小值，正文边框和 padding 占4列、2行；多 tab 另占1行，空正文可为0行。fullscreen 输入区保持全宽；按官方2.1.289，dock 顶部始终预留1行，正文预算为输入区上方实际空间减1行。右上角 ✕ 与正文独立绘制，为人工关闭，不受 `closeOnEscape` 限制。用户手动尺寸持久化、grip拖拽和完整 resize 交互仍待对齐。
 - Button：`onPress(press)` 收到中间件处理后的 `UiPressArgument`，包含 `plugin/element/component/requestId/surface`；可用 `press.surface` 判断点击来自哪里。`variant: 'primary'` 在终端使用 `suggestion` 主题色，`secondary` 或省略时保留普通样式；`plain: true` 优先，hover 样式最后覆盖。`role: 'dismiss'` 只是绘制提示，关闭仍由回调调用 `$.ui.close({ id })` 完成。生成声明导出 `ButtonProps`、`UiPressArgument`、`RenderSurface`、`PressedLink` 和 `TextHoverProps`。
 - Diff action：插件声明相应 Button `action` 时，默认 Ctrl/Opt+Up/Down 切换文件，Ctrl+x 后按 b 切换 diff base；沿用现有 keybindings 配置，可重绑或解绑。显示用 `hotkey` 文本本身不会注册动作。
-- Pane 关闭：面板实际持有键盘焦点时，按 `Ctrl+X` 后按 `x` 请求人工关闭；Input/Select 字段持焦时也可使用。关闭先释放字段与宿主焦点，再执行 `ui.close`；插件保持面板打开或抛错时，旧的挂起焦点请求不能恢复焦点，后续新的聚焦请求仍可进入。AbovePrompt Band 不注册这组关闭上下文。自定义 keybindings 已启用的构建可在 `~/.claude/keybindings.json` 的 `Pane` / `PaneField` bindings 中把 `pane:close` 重绑或设为 `null`；两种上下文须分别配置。格式与上下文说明见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)，Mods API 见 [官方参考](https://code.claude.com/docs/en/plugins/mods/reference)。本批的测试与尚未完成的真实终端验收见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
+- Pane 关闭：面板实际持有键盘焦点时，按 `Ctrl+X` 后按 `x` 请求人工关闭；Input/Select 字段持焦时也可使用。关闭先释放字段与宿主焦点，再执行 `ui.close`；插件保持面板打开或抛错时，旧的挂起焦点请求不能恢复焦点，后续新的聚焦请求仍可进入。AbovePrompt Band 不注册这组关闭上下文。可在 `~/.claude/keybindings.json` 的 `Pane` / `PaneField` bindings 中把 `pane:close` 重绑或设为 `null`；两种上下文须分别配置。格式与上下文说明见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)，Mods API 见 [官方参考](https://code.claude.com/docs/en/plugins/mods/reference)。本批的测试与尚未完成的真实终端验收见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
 - 官方 diff 使用：运行 `/diff` 打开面板。全屏中可用 `Ctrl+X` 后按 `b` 切换 base，`Ctrl/Opt+Up/Down` 翻动文件列表，点击文件定位正文；点击 `ask` 后选中 diff 随下一条被接受的 prompt 传入。再次点击 `asked ✓` 取消附加。按键仍遵循当前 keybindings 和插件实际声明的 action。已验证的接受路径与待验证的取消、内联及 resize 路径分别记录在 `mods-test.md`。
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：已提供自动作者声明、`claude plugin validate`、`claude plugin test` 和 `/plugin-authoring`，但不宣称实现全部官方 API、模型流、桌面/远端 surface 或官方 binary 动态 parity。Node `dist/cli.js` 不是当前作者工具验收目标；跨平台、完整 release gate、逐帧 logical/physical 与未执行的官方 rollout 分支仍记为未覆盖。

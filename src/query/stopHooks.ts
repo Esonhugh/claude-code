@@ -390,6 +390,21 @@ export async function* handleStopHooks(
           hookErrors.push(result.blockingError.blockingError)
         }
       }
+      // additionalContext is non-error feedback: the turn continues with it,
+      // without labeling it a hook error.
+      if (result.additionalContexts && result.additionalContexts.length > 0) {
+        const hookEvent = toolUseContext.agentId ? 'SubagentStop' : 'Stop'
+        const contextMessage = createAttachmentMessage({
+          type: 'hook_additional_context',
+          content: result.additionalContexts,
+          hookName: hookEvent,
+          toolUseID: stopHookToolUseID,
+          hookEvent,
+        })
+        blockingErrors.push(contextMessage)
+        yield contextMessage
+        hasOutput = true
+      }
       // Check if hook wants to prevent continuation
       if (result.preventContinuation) {
         preventedContinuation = true

@@ -208,6 +208,8 @@ export type ToolUseContext = {
     isNonInteractiveSession: boolean
     agentDefinitions: AgentDefinitionsResult
     maxBudgetUsd?: number
+    /** Agent definition autoCompactWindow: caps the auto-compact window. */
+    autoCompactWindow?: number
     /** Custom system prompt that replaces the default system prompt */
     customSystemPrompt?: string
     /** Additional system prompt appended after the main system prompt */

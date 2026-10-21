@@ -63,10 +63,11 @@ const {
   getMarketingNameForModel,
   renderDefaultModelSetting,
   getClaudeAiUserDefaultModelDescription,
+  resolveFallbackModels,
 } = await import('./model.js')
 
 const envKeys = [
-  'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
   'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_USE_OPENAI',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY',
@@ -133,6 +134,58 @@ describe('provider defaults and explicit model selection', () => {
     process.env.CLAUDE_CODE_USE_BEDROCK = '1'
     servedDefault = { model: 'claude-mythos-5-1', orgConfigured: false }
     expect(getDefaultMainLoopModel()).not.toBe('claude-mythos-5-1')
+  })
+
+  test('ANTHROPIC_DEFAULT_MODEL sets the start model below explicit choices and org defaults', () => {
+    process.env.ANTHROPIC_DEFAULT_MODEL = 'sonnet'
+    expect(getDefaultMainLoopModel()).toBe('claude-sonnet-5-5')
+    expect(getMainLoopModel()).toBe('claude-sonnet-5-5')
+
+    servedDefault = { model: 'claude-mythos-5-1', orgConfigured: false }
+    expect(getMainLoopModel()).toBe('claude-sonnet-5-5')
+    servedDefault = { model: 'claude-mythos-5-1', orgConfigured: true }
+    expect(getMainLoopModel()).toBe('claude-mythos-5-1')
+    servedDefault = undefined
+
+    settings = { model: 'haiku' }
+    expect(getMainLoopModel()).toBe('claude-haiku-4-5-20251001')
+    process.env.ANTHROPIC_MODEL = 'opus'
+    expect(getMainLoopModel()).toBe('claude-opus-5-5')
+    modelOverride = 'fable'
+    expect(getMainLoopModel()).toBe('claude-fable-5-1')
+    modelOverride = undefined
+    delete process.env.ANTHROPIC_MODEL
+    settings = {}
+
+    for (const value of ['default', ' inherit ', '']) {
+      process.env.ANTHROPIC_DEFAULT_MODEL = value
+      expect(getDefaultMainLoopModel()).toBe('claude-opus-5-5')
+    }
+
+    settings = { availableModels: ['opus'] }
+    process.env.ANTHROPIC_DEFAULT_MODEL = 'haiku'
+    expect(getDefaultMainLoopModel()).toBe('claude-opus-5-5')
+    settings = {}
+
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    process.env.ANTHROPIC_DEFAULT_MODEL = 'gpt-5.4-mini'
+    expect(getMainLoopModel()).toBe('gpt-5.4-mini')
+  })
+
+  test('fallback chain: CLI list beats the fallbackModel setting, resolves aliases, dedupes and caps at three', () => {
+    expect(resolveFallbackModels(undefined, undefined)).toEqual([])
+    expect(resolveFallbackModels(undefined, 'sonnet')).toEqual([])
+    expect(resolveFallbackModels(undefined, ['sonnet', 'default', 'sonnet', 'custom-id', 'haiku'])).toEqual([
+      'claude-sonnet-5-5', 'claude-opus-5-5', 'custom-id',
+    ])
+    expect(resolveFallbackModels(' haiku, ,sonnet ', ['opus'])).toEqual([
+      'claude-haiku-4-5-20251001', 'claude-sonnet-5-5',
+    ])
+    settings = { availableModels: ['sonnet'] }
+    expect(resolveFallbackModels('haiku,sonnet', undefined)).toEqual(['claude-sonnet-5-5'])
+    settings = {}
+    process.env.CLAUDE_CODE_USE_OPENAI = '1'
+    expect(resolveFallbackModels('gpt-5.4-mini', undefined)).toEqual(['gpt-5.4-mini'])
   })
 
   test('OpenAI defaults and role aliases resolve before transport', () => {

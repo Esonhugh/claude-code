@@ -81,6 +81,11 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'meta+t': 'chat:thinkingToggle',
       enter: 'chat:submit',
       'ctrl+x enter': 'chat:queueSubmit',
+      // ctrl+enter needs a terminal that reports modifiers on Enter (kitty
+      // keyboard protocol); ctrl+x ctrl+s is the portable fallback.
+      'ctrl+x ctrl+s': 'chat:sendNow',
+      'ctrl+enter': 'chat:sendNow',
+      'ctrl+j': 'chat:newline',
       up: 'history:previous',
       down: 'history:next',
       // Editing shortcuts (defined here, migration in progress)

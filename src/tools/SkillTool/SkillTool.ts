@@ -1207,6 +1207,7 @@ async function executeRemoteSkill(
         snapshot,
         skill: commandName,
         text: finalContent,
+        origin: { frontmatter: {}, source: 'syncedSkills', path: skillPath },
         signal: context.abortController.signal,
       })
     }

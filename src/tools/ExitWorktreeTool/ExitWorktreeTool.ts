@@ -189,6 +189,14 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
       }
     }
 
+    if (input.action === 'remove' && session.enteredExisting) {
+      return {
+        result: false,
+        message: `This session is not the owner of the worktree at ${session.worktreePath} — it entered a pre-existing worktree via EnterWorktree({path}) — so this tool will not remove it. Use action: "keep" to return to ${session.originalCwd}. If no other session is using it, remove it yourself with \`git worktree remove\`.`,
+        errorCode: 4,
+      }
+    }
+
     if (input.action === 'remove' && !input.discard_changes) {
       const summary = await countWorktreeChanges(
         session.worktreePath,

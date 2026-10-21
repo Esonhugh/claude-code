@@ -84,9 +84,16 @@ export const syncHookResponseSchema = lazySchema(() =>
           hookEventName: z.literal('SessionStart'),
           additionalContext: z.string().optional(),
           initialUserMessage: z.string().optional(),
+          sessionTitle: z.string().describe('Set the session title').optional(),
           watchPaths: z
             .array(z.string())
             .describe('Absolute paths to watch for FileChanged hooks')
+            .optional(),
+          reloadSkills: z
+            .boolean()
+            .describe(
+              'Re-scan skill and command directories after SessionStart hooks complete, so skills installed by the hook are available in the same session',
+            )
             .optional(),
         }),
         z.object({
@@ -114,6 +121,14 @@ export const syncHookResponseSchema = lazySchema(() =>
           additionalContext: z.string().optional(),
         }),
         z.object({
+          hookEventName: z.literal('Stop'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('SubagentStop'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
           hookEventName: z.literal('PermissionDenied'),
           retry: z.boolean().optional(),
         }),
@@ -135,6 +150,19 @@ export const syncHookResponseSchema = lazySchema(() =>
               interrupt: z.boolean().optional(),
             }),
           ]),
+        }),
+        z.object({
+          hookEventName: z.literal('PreModelSwitch'),
+          permissionDecision: z.enum(['allow', 'deny', 'ask']).optional(),
+          permissionDecisionReason: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('PostModelSwitch'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('MessageDisplay'),
+          displayContent: z.string().optional(),
         }),
         z.object({
           hookEventName: z.literal('Elicitation'),

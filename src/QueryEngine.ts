@@ -61,6 +61,7 @@ import { captureModSessionUsage } from './services/mods/sessionUsage.js'
 import { getConfigRows } from './components/Settings/configRows.js'
 import { createToolCatalogForContext } from './services/mods/toolCatalog.js'
 import { createModToolHost } from './services/mods/toolHost.js'
+import { sessionAppendEngineMessage } from './services/mods/sessionAppend.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import type { Message, MessageOrigin, UserMessage } from './types/message.js'
@@ -541,6 +542,10 @@ export class QueryEngine {
     }, setAppState, {
       messages: () => projectModSessionMessages(this.mutableMessages),
       rawMessages: () => this.mutableMessages,
+      appendMessage: row => {
+        this.mutableMessages.push(sessionAppendEngineMessage(row))
+        void recordTranscript(this.mutableMessages)
+      },
       agentMessages: readModBoundAgentMessages,
       captureUsage: () => captureModSessionUsage(getModToolContext()),
       cwd: getCwd,

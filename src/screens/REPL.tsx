@@ -16,6 +16,7 @@ import {
   getTurnOutputTokens,
   getBudgetContinuationCount,
   getTotalInputTokens,
+  getSessionFallbackModels,
 } from '../bootstrap/state.js'
 import { parseTokenBudget } from '../utils/tokenBudget.js'
 import { count } from '../utils/array.js'
@@ -400,7 +401,9 @@ import { processSessionStartHooks } from '../utils/sessionStart.js'
 import {
   executeSessionEndHooks,
   getSessionEndHookTimeoutMs,
+  hasMessageDisplayHook,
 } from '../utils/hooks.js'
+import { applyMessageDisplayHooks } from '../utils/hooks/messageDisplay.js'
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js'
 import { getTools, assembleToolPool } from '../tools.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
@@ -426,6 +429,7 @@ import { countModSessionTurns } from '../services/mods/sessionTurns.js'
 import { captureModSessionUsage } from '../services/mods/sessionUsage.js'
 import { getConfigRows } from '../components/Settings/configRows.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { sessionAppendEngineMessage } from '../services/mods/sessionAppend.js'
 import { createModToolHost } from '../services/mods/toolHost.js'
 import { fillPromptBox } from '../services/mods/promptAdapter.js'
 import { createModPromptEditQueue, runModPromptEdit } from '../services/mods/promptEdit.js'
@@ -2193,9 +2197,11 @@ export function REPL({
       logForDebugging(`[Mods:${plugin}] ${text}`)
       if (to === 'transcript') setMessages(previous => [...previous, createSystemMessage(`${plugin}: ${text}`, 'notice')])
     },
+    appendMessage: row => setMessages(previous => [...previous, sessionAppendEngineMessage(row)]),
     uiToast: (plugin, text, timeoutMs) => addNotification({
       key: `mods-toast:${plugin}`, text, timeoutMs, priority: 'medium',
     }),
+    uiNotify: notification => sendNotification(notification, terminal),
     uiStatus: (plugin, text) => {
       const key = `plugin-status-${plugin}`
       removeNotification(key)
@@ -2203,7 +2209,7 @@ export function REPL({
         key, text: `${plugin}: ${text}`, priority: 'low', pinned: true,
       })
     },
-  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections])
+  }), [modsSession, setAppState, setMessages, addNotification, removeNotification, modSelectionTracker, modMcpConnections, terminal])
 
   useEffect(() => {
     if (!modsSession) return
@@ -4648,6 +4654,7 @@ export function REPL({
         systemContext,
         canUseTool,
         toolUseContext,
+        fallbackModel: getSessionFallbackModels()[0],
         querySource: getQuerySourceForREPL(),
         publicTurn: publicTurn ?? {
           text: newMessages
@@ -4660,6 +4667,13 @@ export function REPL({
             .join('\n'),
         },
       })) {
+        // MessageDisplay hooks transform assistant text before it is shown.
+        if (
+          event.type === 'assistant' &&
+          hasMessageDisplayHook(toolUseContext.getAppState())
+        ) {
+          await applyMessageDisplayHooks(event, toolUseContext)
+        }
         onQueryEvent(event)
       }
 
@@ -5175,6 +5189,8 @@ export function REPL({
       options?: {
         fromKeybinding?: boolean
         wait?: boolean
+        // Interrupt the running turn so this prompt (or the queue) goes now.
+        sendNow?: boolean
         // The idle-return dialog has already consumed this submission.
         submission?: {
           mode: PromptInputMode
@@ -5227,7 +5243,16 @@ export function REPL({
         proactiveModule?.resumeProactive()
       }
 
-      if (!input.trim()) return
+      if (!input.trim()) {
+        if (
+          options?.sendNow &&
+          queryGuard.isActive &&
+          getCommandQueue().some(command => command.mode === 'prompt')
+        ) {
+          abortControllerRef.current?.abort('interrupt')
+        }
+        return
+      }
 
       // Consume this draft once, before either initialization barrier. Dispatch
       // may switch between queue/direct while waiting; it never owns the editor.
@@ -5685,7 +5710,9 @@ export function REPL({
         ideSelection: submittedIDESelection,
         setUserInputOnProcessing,
         setAbortController,
-        abortController,
+        // Read via ref: onSubmit is memoized without abortController, and an
+        // interrupt (send-now, interruptible tools) must hit the running turn.
+        abortController: abortControllerRef.current,
         onQuery,
         setAppState,
         querySource: getQuerySourceForREPL(),
@@ -5697,6 +5724,7 @@ export function REPL({
         // handlePromptSubmit only uses it for debug log + telemetry event.
         streamMode: streamModeRef.current,
         hasInterruptibleToolInProgress:
+          options?.sendNow === true ||
           hasInterruptibleToolInProgressRef.current,
         skipLocalContext: isRemoteExecutionSession,
       }).catch(restoreOnError)

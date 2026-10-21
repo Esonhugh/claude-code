@@ -18,6 +18,10 @@ import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
+import {
+  autocompact,
+  autocompactNonInteractive,
+} from './commands/autocompact/index.js'
 import cost from './commands/cost/index.js'
 import daybreak from './commands/daybreak/index.js'
 import diff from './commands/diff/index.js'
@@ -39,6 +43,7 @@ import mcp, { mcpNonInteractive } from './commands/mcp/index.js'
 import mobile from './commands/mobile/index.js'
 import onboarding from './commands/onboarding/index.js'
 import pr_comments from './commands/pr_comments/index.js'
+import recap from './commands/recap/index.js'
 import releaseNotes from './commands/release-notes/index.js'
 import rename from './commands/rename/index.js'
 import resume from './commands/resume/index.js'
@@ -287,6 +292,8 @@ const COMMANDS = memoize((): Command[] => [
   desktop,
   context,
   contextNonInteractive,
+  autocompact,
+  autocompactNonInteractive,
   cost,
   daybreak,
   diff,
@@ -314,6 +321,7 @@ const COMMANDS = memoize((): Command[] => [
   remoteEnv,
   plugin,
   pr_comments,
+  recap,
   releaseNotes,
   reloadPlugins,
   reloadSkills,

@@ -40,6 +40,7 @@ import {
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import {
   captureModSkillPromptSnapshot,
+  modSkillPromptOrigin,
   renderModSkillPrompt,
 } from '../../services/mods/skillPrompt.js'
 import { buildPostCompactMessages } from '../../services/compact/compact.js'
@@ -1209,6 +1210,7 @@ async function getMessagesForPromptSlashCommand(
           snapshot,
           skill: command.name,
           text: coreSkillContent,
+          origin: modSkillPromptOrigin(command),
           signal: context.abortController.signal,
         })
       : coreSkillContent

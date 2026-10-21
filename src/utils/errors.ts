@@ -10,7 +10,11 @@ export class ClaudeError extends Error {
 export class MalformedCommandError extends Error {}
 
 export class HttpResponseError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly headers?: Headers,
+  ) {
     super(message)
   }
 }

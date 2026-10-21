@@ -18,7 +18,7 @@ export type NotificationOptions = {
 export async function sendNotification(
   notif: NotificationOptions,
   terminal: TerminalNotification,
-): Promise<void> {
+): Promise<string> {
   const config = getGlobalConfig()
   const channel = config.preferredNotifChannel
 
@@ -33,6 +33,7 @@ export async function sendNotification(
       methodUsed as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     term: env.terminal as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
+  return methodUsed
 }
 
 const DEFAULT_TITLE = 'Claude Code'

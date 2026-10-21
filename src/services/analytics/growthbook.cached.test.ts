@@ -34,7 +34,7 @@ mock.module(modulePath('../../utils/slowOperations.js'), () => ({ jsonStringify:
 mock.module(modulePath('../../utils/user.js'), () => ({ getUserForGrowthBook: () => ({ deviceId: 'fixture', sessionId: 'fixture', platform: 'darwin' }) }))
 mock.module(modulePath('../../utils/userType.js'), () => ({ isAnt: () => internal }))
 mock.module(modulePath('./firstPartyEventLogger.js'), () => ({ is1PEventLoggingEnabled: () => enabled, logGrowthBookExperimentTo1P() {} }))
-const { getFeatureValue_CACHED_MAY_BE_STALE: read, initializeGrowthBook, resetGrowthBook } = await import('./growthbook.js')
+const { getFeatureValue_CACHED_MAY_BE_STALE: read, getFeatureValue_DEPRECATED: readBlocking, initializeGrowthBook, resetGrowthBook } = await import('./growthbook.js')
 beforeEach(() => {
   resetGrowthBook(); enabled = true; internal = false; unreadable = false; initializations = 0
   config = { cachedGrowthBookFeatures: {} }; payload = { features: {} }
@@ -95,4 +95,22 @@ test('explicit internal overrides retain null rather than treating it as a paylo
   config.growthBookOverrides = { configuration: null }
   expect(read<unknown>('environment', 'fallback')).toBeNull()
   expect(read<unknown>('configuration', 'fallback')).toBeNull()
+})
+// 官方 2.1.303 ships these unconditionally; the fork keeps GrowthBook disabled without Anthropic telemetry.
+test('disabled GrowthBook returns official GA values for listed flags and caller defaults otherwise', async () => {
+  enabled = false
+  config.cachedGrowthBookFeatures.tengu_keybinding_customization_release = false
+  expect(read('tengu_keybinding_customization_release', false)).toBe(true)
+  expect(read('tengu_willow_mode', 'off')).toBe('hint_v2')
+  expect(await readBlocking('tengu_immediate_model_command', false)).toBe(true)
+  expect(read('tengu_chomp_inflection', false)).toBe(false)
+  expect(read('toString', 'fallback')).toBe('fallback')
+  expect(initializations).toBe(0)
+})
+test('enabled GrowthBook and explicit overrides still win over the GA table', async () => {
+  config.cachedGrowthBookFeatures.tengu_keybinding_customization_release = false
+  expect(read('tengu_keybinding_customization_release', true)).toBe(false)
+  enabled = false; internal = true
+  config.growthBookOverrides = { tengu_glacier_2xr: false }
+  expect(read('tengu_glacier_2xr', true)).toBe(false)
 })

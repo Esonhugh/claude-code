@@ -93,6 +93,7 @@ let nonStreamingThinkingTokens: number | undefined
 let streamInterrupted = false
 let overflowRequest = 0
 let overloadedModel: string | undefined
+let overloadedModels: string[] = []
 let modsReplyUsage: {input_tokens:number;output_tokens:number;cache_read_input_tokens:number;cache_creation_input_tokens:number} | undefined
 let modsRefuseStatus: number | undefined
 const client = new Anthropic({
@@ -109,7 +110,7 @@ const client = new Anthropic({
     }
     requests.push(request)
     if (modsRefuseStatus) return Response.json({type:'error',error:{type:'invalid_request_error',message:'FAKE_PRIVATE_BODY'}},{status:modsRefuseStatus})
-    if (request.model === overloadedModel) {
+    if (request.model === overloadedModel || overloadedModels.includes(request.model)) {
       return Response.json({
         type: 'error',
         error: { type: 'overloaded_error', message: 'controlled model overload' },
@@ -360,6 +361,7 @@ afterEach(() => {
   streamInterrupted = false
   overflowRequest = 0
   overloadedModel = undefined
+  overloadedModels = []
   modsReplyUsage = undefined
   modsRefuseStatus = undefined
 })
@@ -1619,6 +1621,55 @@ test('prompt.compose follows real query 529 threshold through FallbackTriggeredE
   expect(tokenRequests).toEqual([])
   expect(diagnostics).toEqual([])
   expect(unexpectedIO).toEqual([])
+}, 30_000)
+
+test('real query walks the session fallback chain for any primary model', async () => {
+  const { randomUUID } = await import('node:crypto')
+  const { query: runQuery } = await import('../../query.js')
+  const { setSessionFallbackModels } = await import('../../bootstrap/state.js')
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { createFileStateCacheWithSizeLimit } = await import('../../utils/fileStateCache.js')
+  const { asSystemPrompt } = await import('../../utils/systemPromptType.js')
+  const primary = 'claude-sonnet-4-6'
+  const chain = ['claude-haiku-4-5', 'claude-opus-4-6']
+  overloadedModels = [primary, chain[0]!]
+  setSessionFallbackModels(chain)
+  let state = getDefaultAppState()
+  const context: import('../../Tool.js').ToolUseContext = {
+    options: { commands: [], debug: false, mainLoopModel: primary, tools: [], verbose: false,
+      thinkingConfig: { type: 'disabled' }, mcpClients: [], mcpResources: {}, isNonInteractiveSession: true,
+      agentDefinitions: { activeAgents: [], allAgents: [], allowedAgentTypes: undefined } },
+    abortController: new AbortController(), readFileState: createFileStateCacheWithSizeLimit(10),
+    getAppState: () => state, setAppState: update => { state = update(state) },
+    setInProgressToolUseIDs() {}, setResponseLength() {}, updateFileHistoryState() {}, updateAttributionState() {},
+    messages: [],
+  }
+  try {
+    const iterator = runQuery({
+      messages: [createUserMessage({ content: 'chain fallback' })],
+      systemPrompt: asSystemPrompt(['CHAIN']), userContext: {}, systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), toolUseContext: context,
+      querySource: 'repl_main_thread', fallbackModel: chain[0],
+      deps: { uuid: randomUUID, microcompact: async messages => ({ messages }),
+        autocompact: async () => ({ wasCompacted: false }), callModel: queryModelWithStreaming },
+    })
+    const warnings: string[] = []
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) {
+        expect(next.value).toEqual({ reason: 'completed' })
+        break
+      }
+      if (next.value.type === 'system') warnings.push(String((next.value as { content?: unknown }).content))
+    }
+    expect(requests.map(request => request.model)).toEqual([
+      primary, primary, primary, chain[0], chain[0], chain[0], chain[1],
+    ])
+    expect(context.options.mainLoopModel).toBe(chain[1])
+    expect(warnings.filter(text => text.startsWith('Switched to'))).toHaveLength(2)
+  } finally {
+    setSessionFallbackModels([])
+  }
 }, 30_000)
 
 test('prompt.compose uses the real query and final SDK catalog on each request', async () => {

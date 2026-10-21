@@ -14,10 +14,12 @@ export type MockClock = {
   settle(): Promise<void>
   sleep(ms: number): Promise<void>
 }
+export type MockSession = { appended(): readonly ModInput[] }
 export type Mock = {
   env(on: MockOn, variables: Readonly<Record<string, string>>): void
   store(on: MockOn, entries?: Readonly<Record<string, unknown>>): void
   clock(on: MockOn, options?: MockClockOptions): MockClock
+  session(on: MockOn): MockSession
 }
 
 type Wait = { due: number; finish(error?: unknown): void }
@@ -27,6 +29,15 @@ export function createMock(): Mock {
     env(on, variables) {
       const values = new Map(Object.entries(variables))
       on('env.get', (_$, e) => ({ value: values.get(e.name as string) }))
+    },
+    session(on) {
+      const rows: ModInput[] = []
+      // The kit's session stores the row as it arrives: the bottom of the chain.
+      on('session.append', (_$, e) => {
+        rows.push(structuredClone(e))
+        return { message: e.message, uuid: e.uuid }
+      })
+      return { appended: () => structuredClone(rows) }
     },
     store(on, entries = {}) {
       const initial = Object.entries(entries)

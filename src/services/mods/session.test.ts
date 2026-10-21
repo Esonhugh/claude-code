@@ -1194,18 +1194,18 @@ describe('Mods CLI session host', () => {
     expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
   })
 
-  test('strictPluginOnlyCustomization still blocks unsupported external evaluation before Worker creation', async () => {
-    const declaration = await plugin('throw Error("must not evaluate"); export function register(on) {}')
+  // Official: the policy locks non-plugin hook sources; plugin Mods are admin-gated by marketplaces.
+  test.each<[true | ('hooks' | 'skills')[]]>([[true], [['hooks']], [['skills']]])('strictPluginOnlyCustomization %j leaves installed plugin Mods running', async policy => {
+    const declaration = await plugin()
     const events: string[] = []
     const host = session({
       loadPlugins: async () => [declaration],
-      getSettings: () => ({ ...settings(), policySettings: { strictPluginOnlyCustomization: true } }),
-      createRuntime: () => { throw Error('must not create Worker') },
+      getSettings: () => ({ ...settings(), policySettings: { strictPluginOnlyCustomization: policy } }),
       onDiagnostic: event => events.push(event.message),
     })
     await host.bind(binding)
-    expect(host.runtime).toBeUndefined()
-    expect(events.some(message => message.includes('Managed Mods protection'))).toBe(true)
+    expect(await host.runtime!.dispatch('tool.call', input, core)).toEqual({ result: 1 })
+    expect(events.some(message => message.includes('Managed Mods protection'))).toBe(false)
   })
 
   test.each(['allowManagedHooksOnly', 'disableAllHooks'] as const)('managed %s preserves host-owned modules without evaluating ordinary code', async restriction => {

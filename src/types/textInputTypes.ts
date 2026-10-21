@@ -252,7 +252,7 @@ export type VimTextInputProps = BaseTextInputProps & {
 /**
  * Vim editor modes
  */
-export type VimMode = 'INSERT' | 'NORMAL'
+export type VimMode = 'INSERT' | 'NORMAL' | 'VISUAL' | 'VISUAL LINE'
 
 /**
  * Common properties for input hook results
@@ -290,6 +290,8 @@ export type TextInputState = BaseInputState
 export type VimInputState = BaseInputState & {
   mode: VimMode
   setMode: (mode: VimMode) => void
+  /** Selection anchor offset while in VISUAL / VISUAL LINE, otherwise null. */
+  visualAnchor: number | null
 }
 
 /**

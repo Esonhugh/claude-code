@@ -71,6 +71,7 @@ type State = {
   modelUsage: { [modelName: string]: ModelUsage }
   mainLoopModelOverride: ModelSetting | undefined
   initialMainLoopModel: ModelSetting
+  sessionFallbackModels: string[]
   modelStrings: ModelStrings | null
   isInteractive: boolean
   kairosActive: boolean
@@ -305,6 +306,7 @@ function getInitialState(): State {
     modelUsage: {},
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
+    sessionFallbackModels: [],
     modelStrings: null,
     isInteractive: false,
     kairosActive: false,
@@ -890,6 +892,15 @@ export function setInitialMainLoopModel(model: ModelSetting): void {
   STATE.initialMainLoopModel = model
 }
 
+/** Ordered fallback chain from --fallback-model or the fallbackModel setting. */
+export function getSessionFallbackModels(): readonly string[] {
+  return STATE.sessionFallbackModels
+}
+
+export function setSessionFallbackModels(models: string[]): void {
+  STATE.sessionFallbackModels = models
+}
+
 export function getSdkBetas(): string[] | undefined {
   return STATE.sdkBetas
 }
@@ -1348,6 +1359,10 @@ export type SessionCronTask = {
    * instead of the main REPL command queue. Session-only — never written to disk.
    */
   agentId?: string
+  /** 'loop' marks a ScheduleWakeup (dynamic /loop) wakeup. */
+  kind?: 'loop'
+  /** Exact epoch ms to fire at; overrides the cron-derived (jittered) time. */
+  scheduledFor?: number
 }
 
 export function getSessionCronTasks(): SessionCronTask[] {
