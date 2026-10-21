@@ -166,7 +166,14 @@ import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
-import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
+import {
+  hasPermissionsToUseTool,
+  runPermissionRequestHooksForHeadlessAgent,
+} from 'src/utils/permissions/permissions.js'
+import {
+  type PermissionDecision,
+  requiresExplicitUserApproval,
+} from 'src/utils/permissions/PermissionResult.js'
 import { normalizePermissionModeAlias } from 'src/utils/permissions/PermissionMode.js'
 import { safeParseJSON } from 'src/utils/json.js'
 import {
@@ -4872,6 +4879,15 @@ export function createCanUseToolWithPermissionPrompt(
       return mainPermissionResult
     }
 
+    const hookDecision = await runPrintPermissionRequestHooks(
+      tool,
+      input,
+      toolUseContext,
+      toolUseId,
+      mainPermissionResult,
+    )
+    if (hookDecision) return hookDecision
+
     // Race the permission prompt tool against the abort signal.
     //
     // Why we need this: The permission prompt tool may block indefinitely waiting
@@ -4959,6 +4975,32 @@ export function createCanUseToolWithPermissionPrompt(
   return canUseTool
 }
 
+// PermissionRequest hooks answer a --print prompt before it is rejected or
+// handed to --permission-prompt-tool (official 2.1.268). A prompt that needs
+// a real user skips them, as in the SDK host path.
+function runPrintPermissionRequestHooks(
+  tool: Tool,
+  input: Record<string, unknown>,
+  toolUseContext: ToolUseContext,
+  toolUseId: string,
+  decision: PermissionDecision,
+): Promise<PermissionDecision | null> {
+  if (
+    decision.behavior !== 'ask' ||
+    requiresExplicitUserApproval(decision.decisionReason)
+  ) {
+    return Promise.resolve(null)
+  }
+  return runPermissionRequestHooksForHeadlessAgent(
+    tool,
+    input,
+    toolUseId,
+    toolUseContext,
+    toolUseContext.getAppState().toolPermissionContext.mode,
+    decision.suggestions,
+  )
+}
+
 // Exported for testing — regression: this used to crash at construction when
 // getMcpTools() was empty (before per-server connects populated appState).
 export function getCanUseToolFn(
@@ -4978,15 +5020,27 @@ export function getCanUseToolFn(
       assistantMessage,
       toolUseId,
       forceDecision,
-    ) =>
-      forceDecision ??
-      (await hasPermissionsToUseTool(
-        tool,
-        input,
-        toolUseContext,
-        assistantMessage,
-        toolUseId,
-      ))
+    ) => {
+      const decision =
+        forceDecision ??
+        (await hasPermissionsToUseTool(
+          tool,
+          input,
+          toolUseContext,
+          assistantMessage,
+          toolUseId,
+        ))
+      if (decision.behavior !== 'ask') return decision
+      return (
+        (await runPrintPermissionRequestHooks(
+          tool,
+          input,
+          toolUseContext,
+          toolUseId,
+          decision,
+        )) ?? decision
+      )
+    }
   }
   // Lazy lookup: MCP connects are per-server incremental in print mode, so
   // the tool may not be in appState yet at init time. Resolve on first call

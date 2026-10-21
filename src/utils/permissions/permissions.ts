@@ -497,7 +497,7 @@ export async function recheckPermissionRequestHookInput(
  * Returns a PermissionDecision if a hook made a decision, or null if no
  * hook provided a decision (caller should proceed to auto-deny).
  */
-async function runPermissionRequestHooksForHeadlessAgent(
+export async function runPermissionRequestHooksForHeadlessAgent(
   tool: Tool,
   input: { [key: string]: unknown },
   toolUseID: string,
