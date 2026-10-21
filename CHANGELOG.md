@@ -113,6 +113,25 @@
 - `src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`：`worktree.baseRef` 的 `head`/`fresh` 基点（含 linked worktree）、按 `path` 进入已有 worktree、受管目录限制与不删除行为、`name`/`path` 互斥。
 - `src/utils/settings/compactSettings.test.ts`：`modelSettings` 与 `worktree.baseRef` 的 schema 校验。
 
+## 2026-10-20 - 官方已 GA 的 GrowthBook 默认值、快捷键自定义、立即发送与 Vim VISUAL 模式
+
+### 变更内容
+
+- fork 用户的 GrowthBook 始终关闭；现在关闭时按官方 2.1.303 取已 GA 的默认值：`~/.claude/keybindings.json` 自定义快捷键、ToolSearch 延迟工具以 `<system-reminder>` 增量宣告、`/model` `/effort` `/fast` 在回复中途立即生效、ECONNRESET/EPIPE 重试前关闭 keep-alive、精简系统提示词开场句、闲置后 "new task? /clear" 提示、远程 Edit/Write 附 git diff、`/web-setup`、VS Code 浏览器与内嵌登录能力宣告；其余旗标仍取原默认值，Anthropic telemetry 开启时仍以 GrowthBook 远程值为准。
+- `/keybindings`、`/doctor` 快捷键诊断与 keybindings 热重载对所有用户启用。
+- 新增 `chat:sendNow`：`Ctrl+Enter`（Kitty 键盘协议终端）或 `Ctrl+X` 后按 `Ctrl+S` 中断当前回合并立即送出输入；输入为空时立即送出已排队的消息。
+- `Ctrl+J` 默认绑定 `chat:newline`，在 Kitty 键盘协议终端中也插入换行。
+- Vim 模式新增 `%` 跳到配对括号，可与 `d`/`c`/`y` 组合。
+- Vim 模式新增 VISUAL（`v`）与 VISUAL LINE（`V`）：反色显示选区，支持移动、文本对象及 `d`/`x`/`y`/`c`/`s`/`r`/`~`/`u`/`U`/`p`/`P`/`J`/`>`/`<`/`o`；footer 与 statusLine `vim.mode` 显示 `VISUAL` / `VISUAL LINE`，VISUAL 中 `Esc` 先退出选区而不是取消回合。
+
+### 测试覆盖
+
+- `bun test src/services/analytics/growthbook.cached.test.ts`：GrowthBook 关闭时表内旗标取官方值、表外旗标取调用方默认值、原型属性不误命中；GrowthBook 开启与内部覆写仍优先。
+- `bun test src/keybindings`：无 GrowthBook 时载入 `keybindings.json`（同步与异步路径）；`Ctrl+Enter`、`Ctrl+X Ctrl+S` 解析为 `chat:sendNow`，Kitty `Ctrl+J` 解析为 `chat:newline`。
+- `bun test src/components/PromptInput/PromptInput.sendNow.test.tsx`：挂载 PromptInput 验证 `Ctrl+Enter`、chord 与空输入均以 `sendNow` 提交，普通 Enter 不变，Kitty 与传统 `Ctrl+J` 均插入换行。
+- `bun test src/screens/REPL.submit.test.ts`：回合进行中 send-now 以 `interrupt` 中断当前回合并把输入排队，普通提交只排队不中断，空输入仅在已有排队 prompt 时中断。
+- `bun test src/hooks/useVimInput.test.tsx`：`%` 跳转与 `d%`；VISUAL 的移动、删除、`o` 交换、`U`、`Esc`；VISUAL LINE 的 `y`/`p`、删除末行后的光标；`vi"` 后 `c` 进入 INSERT。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态

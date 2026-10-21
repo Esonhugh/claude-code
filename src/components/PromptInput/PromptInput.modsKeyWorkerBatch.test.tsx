@@ -15,7 +15,7 @@ import { createModsRuntime } from '../../services/mods/runtime.js'
 import { fillPromptBox } from '../../services/mods/promptAdapter.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import type { PastedContent } from '../../utils/config.js'
-import type { TextInputEdit, PromptInputMode, PromptInputHandle } from '../../types/textInputTypes.js'
+import type { TextInputEdit, PromptInputMode, PromptInputHandle, VimMode } from '../../types/textInputTypes.js'
 import PromptInput from './PromptInput.js'
 
 const testEnvKeys = [
@@ -85,10 +85,10 @@ async function mount(vim: boolean, relay: (edit: TextInputEdit) => void) {
   const stdin = new Input(), stdout = new Output(), edits: TextInputEdit[] = []
   const state = getDefaultAppState()
   let editor: React.RefObject<PromptInputHandle | null>
-  let currentMode: PromptInputMode = 'prompt', currentVim: 'INSERT' | 'NORMAL' = 'INSERT'
+  let currentMode: PromptInputMode = 'prompt', currentVim: VimMode = 'INSERT'
   function Probe() {
     const [input, setInput] = useState('old'), [mode, setMode] = useState<PromptInputMode>('prompt')
-    const [vimMode, setVimMode] = useState<'INSERT' | 'NORMAL'>('INSERT')
+    const [vimMode, setVimMode] = useState<VimMode>('INSERT')
     const [pastedContents, setPastedContents] = useState<Record<number, PastedContent>>({})
     const [helpOpen, setHelpOpen] = useState(false)
     editor = useRef(null)

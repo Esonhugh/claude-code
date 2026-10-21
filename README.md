@@ -697,6 +697,13 @@ Review $ARGUMENTS.
 
 PromptInput 按 UTF-8 stream 处理普通文本、中文等宽字符、Kitty CSI-u 和 bracketed paste。同一个 stdin chunk 中的文本与 Enter/Backspace/方向键按顺序生效；未闭合 paste 会在有界空闲恢复后释放 literal payload 并回到普通输入，避免后续按键被永久吞掉。
 
+### 快捷键与 Vim 模式
+
+- 自定义快捷键对所有用户默认启用（对齐官方 2.1.303）：`/keybindings` 创建或打开 `~/.claude/keybindings.json`，保存后热重载，`/doctor` 显示配置错误。格式见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)。
+- `Enter` 提交；回合进行中提交的消息排队，在工具边界送入。`Ctrl+Enter`（需终端支持 Kitty 键盘协议）或 `Ctrl+X` 后按 `Ctrl+S` 为 `chat:sendNow`：中断当前回合并立即送出；输入为空时立即送出已排队的消息。`Ctrl+X` 后按 `Enter` 为 `chat:queueSubmit`，等当前回合结束后再送出。
+- `Ctrl+J`（`chat:newline`）插入换行，与 `Shift+Enter`、`Option+Enter` 相同。
+- Vim 模式（`/config` 中 Editor mode 设为 vim）：NORMAL 下 `%` 跳到配对的 `()`/`[]`/`{}`，可与 `d`/`c`/`y` 组合；`v` / `V` 进入 VISUAL / VISUAL LINE，选区反色显示，支持移动、`iw`/`i"` 等文本对象、`d`/`x`/`y`/`c`/`s`/`r`/`~`/`u`/`U`/`p`/`P`/`J`/`>`/`<`/`o`，`Esc` 或再按同一键退出。footer 与 statusLine 的 `vim.mode` 会显示 `VISUAL` / `VISUAL LINE`。
+
 ### Mods / Function Hooks
 
 Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针对当前源码构建，不代表已发布的 `@esonhugh/claude-code` launcher 已包含这些能力。
@@ -966,7 +973,7 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - Pane 入场与宽度：自动打开的未入场面板通常等待144列；保留人工打开资格的面板等待110列。已入场的面板缩窄后仍保留，低于110列切换 inline，实际关闭后重新打开才重新计算入场条件。默认 dock outer 宽度为 `min(floor(columns * 0.45), 90, columns - 70)`，正文减去一列 grip；插件的 `columns` 请求正文宽度，dock outer 在24列至终端宽度减24列之间限制。inline 按实际自然内容高度与官方预算取较小值，正文边框和 padding 占4列、2行；多 tab 另占1行，空正文可为0行。fullscreen 输入区保持全宽；按官方2.1.289，dock 顶部始终预留1行，正文预算为输入区上方实际空间减1行。右上角 ✕ 与正文独立绘制，为人工关闭，不受 `closeOnEscape` 限制。用户手动尺寸持久化、grip拖拽和完整 resize 交互仍待对齐。
 - Button：`onPress(press)` 收到中间件处理后的 `UiPressArgument`，包含 `plugin/element/component/requestId/surface`；可用 `press.surface` 判断点击来自哪里。`variant: 'primary'` 在终端使用 `suggestion` 主题色，`secondary` 或省略时保留普通样式；`plain: true` 优先，hover 样式最后覆盖。`role: 'dismiss'` 只是绘制提示，关闭仍由回调调用 `$.ui.close({ id })` 完成。生成声明导出 `ButtonProps`、`UiPressArgument`、`RenderSurface`、`PressedLink` 和 `TextHoverProps`。
 - Diff action：插件声明相应 Button `action` 时，默认 Ctrl/Opt+Up/Down 切换文件，Ctrl+x 后按 b 切换 diff base；沿用现有 keybindings 配置，可重绑或解绑。显示用 `hotkey` 文本本身不会注册动作。
-- Pane 关闭：面板实际持有键盘焦点时，按 `Ctrl+X` 后按 `x` 请求人工关闭；Input/Select 字段持焦时也可使用。关闭先释放字段与宿主焦点，再执行 `ui.close`；插件保持面板打开或抛错时，旧的挂起焦点请求不能恢复焦点，后续新的聚焦请求仍可进入。AbovePrompt Band 不注册这组关闭上下文。自定义 keybindings 已启用的构建可在 `~/.claude/keybindings.json` 的 `Pane` / `PaneField` bindings 中把 `pane:close` 重绑或设为 `null`；两种上下文须分别配置。格式与上下文说明见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)，Mods API 见 [官方参考](https://code.claude.com/docs/en/plugins/mods/reference)。本批的测试与尚未完成的真实终端验收见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
+- Pane 关闭：面板实际持有键盘焦点时，按 `Ctrl+X` 后按 `x` 请求人工关闭；Input/Select 字段持焦时也可使用。关闭先释放字段与宿主焦点，再执行 `ui.close`；插件保持面板打开或抛错时，旧的挂起焦点请求不能恢复焦点，后续新的聚焦请求仍可进入。AbovePrompt Band 不注册这组关闭上下文。可在 `~/.claude/keybindings.json` 的 `Pane` / `PaneField` bindings 中把 `pane:close` 重绑或设为 `null`；两种上下文须分别配置。格式与上下文说明见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)，Mods API 见 [官方参考](https://code.claude.com/docs/en/plugins/mods/reference)。本批的测试与尚未完成的真实终端验收见[关闭与验收记录](docs/research/mods-pane-close-and-acceptance-20261008.md)。
 - 官方 diff 使用：运行 `/diff` 打开面板。全屏中可用 `Ctrl+X` 后按 `b` 切换 base，`Ctrl/Opt+Up/Down` 翻动文件列表，点击文件定位正文；点击 `ask` 后选中 diff 随下一条被接受的 prompt 传入。再次点击 `asked ✓` 取消附加。按键仍遵循当前 keybindings 和插件实际声明的 action。已验证的接受路径与待验证的取消、内联及 resize 路径分别记录在 `mods-test.md`。
 - 权限边界：模型工具仍经过原有 schema、managed hooks 与权限审批。**Worker/VM 不是 OS 安全沙箱**，Mod 的 fs/process 宿主能力不自动等同于模型 Read/Bash 权限；只运行经过审查的可信插件。
 - 兼容性边界：已提供自动作者声明、`claude plugin validate`、`claude plugin test` 和 `/plugin-authoring`，但不宣称实现全部官方 API、模型流、桌面/远端 surface 或官方 binary 动态 parity。Node `dist/cli.js` 不是当前作者工具验收目标；跨平台、完整 release gate、逐帧 logical/physical 与未执行的官方 rollout 分支仍记为未覆盖。

@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getTheme, THEME_NAMES, type ThemeName } from '../../utils/theme.js'
 import officialThemes from '../../services/mods/fixtures/promptThemes289.json'
-import type { TextInputEdit, PromptInputMode, PromptInputHandle } from '../../types/textInputTypes.js'
+import type { TextInputEdit, PromptInputMode, PromptInputHandle, VimMode } from '../../types/textInputTypes.js'
 import PromptInput from './PromptInput.js'
 
 const testEnvKeys = [
@@ -83,7 +83,7 @@ async function mount(initial = '', carry = false, searching = false, footer = fa
     const [input,setInput] = useState(initial)
     const [mode,setMode] = useState<PromptInputMode>('prompt')
     const [pastedContents,setPastedContents] = useState<Record<number,PastedContent>>({})
-    const [vimMode,setVimMode] = useState<'INSERT'|'NORMAL'>('INSERT')
+    const [vimMode,setVimMode] = useState<VimMode>('INSERT')
     const [helpOpen,setHelpOpen] = useState(false)
     editor = useRef(null)
     value = input

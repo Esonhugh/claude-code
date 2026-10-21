@@ -5186,6 +5186,8 @@ export function REPL({
       options?: {
         fromKeybinding?: boolean
         wait?: boolean
+        // Interrupt the running turn so this prompt (or the queue) goes now.
+        sendNow?: boolean
         // The idle-return dialog has already consumed this submission.
         submission?: {
           mode: PromptInputMode
@@ -5238,7 +5240,16 @@ export function REPL({
         proactiveModule?.resumeProactive()
       }
 
-      if (!input.trim()) return
+      if (!input.trim()) {
+        if (
+          options?.sendNow &&
+          queryGuard.isActive &&
+          getCommandQueue().some(command => command.mode === 'prompt')
+        ) {
+          abortControllerRef.current?.abort('interrupt')
+        }
+        return
+      }
 
       // Consume this draft once, before either initialization barrier. Dispatch
       // may switch between queue/direct while waiting; it never owns the editor.
@@ -5696,7 +5707,9 @@ export function REPL({
         ideSelection: submittedIDESelection,
         setUserInputOnProcessing,
         setAbortController,
-        abortController,
+        // Read via ref: onSubmit is memoized without abortController, and an
+        // interrupt (send-now, interruptible tools) must hit the running turn.
+        abortController: abortControllerRef.current,
         onQuery,
         setAppState,
         querySource: getQuerySourceForREPL(),
@@ -5708,6 +5721,7 @@ export function REPL({
         // handlePromptSubmit only uses it for debug log + telemetry event.
         streamMode: streamModeRef.current,
         hasInterruptibleToolInProgress:
+          options?.sendNow === true ||
           hasInterruptibleToolInProgressRef.current,
         skipLocalContext: isRemoteExecutionSession,
       }).catch(restoreOnError)
