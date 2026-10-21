@@ -64,8 +64,8 @@ if (process.env[childFlag] !== '1') {
     expect(prompt).toContain(`- ${defaults.soft_deny[0]!.split('\n')[0]}`)
   })
 
-  test('default rules match official 2.1.292 `claude auto-mode defaults` exactly', async () => {
-    const official = JSON.parse(await Bun.file(join(import.meta.dir, 'fixtures/autoModeDefaults292.json')).text())
+  test('default rules match official 2.1.303 `claude auto-mode defaults` exactly', async () => {
+    const official = JSON.parse(await Bun.file(join(import.meta.dir, 'fixtures/autoModeDefaults303.json')).text())
     expect(getDefaultExternalAutoModeRules()).toEqual(official)
   })
 

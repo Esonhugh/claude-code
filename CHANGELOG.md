@@ -19,12 +19,14 @@
 - 读取 UNC 网络路径（`//host/share`、`\\host\share`）时改为强制人工确认（对齐官方 2.1.292）：自动模式分类器、PreToolUse hook 与 allow 规则都不能放行，无法提示时直接拒绝；含可疑 Windows 路径写法（8.3 短名、设备名、长路径前缀等）的读取也同样处理（比官方更严，官方只对写入这样做）。
 - 自动模式分类器规则（`autoMode.allow`/`soft_deny`/`hard_deny`/`environment`）不再读取 `.claude/settings.local.json`，只认用户、`--settings` 与托管设置（对齐官方 2.1.207）；项目或本地设置含 `autoMode` 时在调试日志记录一次警告 `settings autoMode in localSettings ignored — only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`。
 - 子代理定义声明 `permissionMode: auto` 时，若自动模式不可用（`disableAutoMode`、circuit breaker、模型不支持或 OpenAI 未登录 ChatGPT），改为沿用父会话模式（对齐官方 2.1.292），并在调试日志说明原因。
+- 内置 soft_deny 规则同步官方 2.1.303（`claude auto-mode defaults` 输出与官方一致）：Self-Modification 新增 `.claude/dev-mods/`（会话 Mods）为配置面；Unrequested Commit 与 External System Writes 允许把本会话自己开的 PR 在 draft 与 ready 之间切换。
 
 ### 测试覆盖
 
 - 新增 `src/utils/permissions/permissions.autoModeSafety.test.ts`，覆盖自动模式下 UNC 与 8.3 短名读取不经分类器、无法提示时拒绝。
 - `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 新增 `settings.local.json` 的 `autoMode` 规则不进入分类器提示且只警告一次。
 - 新增 `src/tools/AgentTool/permissionMode.autoMode.test.ts`，覆盖自动模式可用时进入 auto，`disableAutoMode`、circuit breaker 与不支持的模型时沿用父模式。
+- `src/utils/permissions/fixtures/autoModeDefaults303.json` 为官方 2.1.303 `claude auto-mode defaults` 输出，`yoloClassifier.officialPrompt.test.ts` 逐项比对。
 
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 
