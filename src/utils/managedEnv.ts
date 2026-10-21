@@ -1,19 +1,23 @@
 import { isRemoteManagedSettingsEligible } from '../services/remoteManagedSettings/syncCache.js'
 import { clearCACertsCache } from './caCerts.js'
 import { getGlobalConfig } from './config.js'
+import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
 import {
   isHostManagedSessionEnvVar,
+  isProjectScopeAllowedEnvValue,
+  isProjectScopeBlockedEnvVar,
   isProviderManagedEnvVar,
   SAFE_ENV_VARS,
 } from './managedEnvConstants.js'
 import { clearMTLSCache } from './mtls.js'
 import { clearProxyCache, configureGlobalAgents } from './proxy.js'
-import { isSettingSourceEnabled } from './settings/constants.js'
 import {
-  getSettings_DEPRECATED,
-  getSettingsForSource,
-} from './settings/settings.js'
+  getEnabledSettingSources,
+  isSettingSourceEnabled,
+  type SettingSource,
+} from './settings/constants.js'
+import { getSettingsForSource } from './settings/settings.js'
 
 /**
  * `claude ssh` remote: ANTHROPIC_UNIX_SOCKET routes auth through a -R forwarded
@@ -106,6 +110,75 @@ function filterSettingsEnv(
 }
 
 /**
+ * process.env before any settings env is applied: the environment Claude Code
+ * was launched with. Lazy-captured on the first apply call.
+ */
+let launchEnv: Record<string, string | undefined> | undefined
+const projectScopeDropWarned = new Set<string>()
+
+/**
+ * Drop keys a repository's settings may not set (official 2.1.251 / 2.1.282 /
+ * 2.1.290), keeping values that only turn telemetry off.
+ */
+function withoutProjectScopeBlockedVars(
+  source: SettingSource,
+  env: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!env || (source !== 'projectSettings' && source !== 'localSettings')) {
+    return env || {}
+  }
+  let above: Set<string> | undefined
+  const isSetAboveProjectSettings = (key: string): boolean => {
+    above ??= new Set(
+      Object.keys({
+        ...launchEnv,
+        ...getSettingsForSource('flagSettings')?.env,
+        ...getSettingsForSource('policySettings')?.env,
+      }).map(name => name.toUpperCase()),
+    )
+    return above.has(key.toUpperCase())
+  }
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (
+      !isProjectScopeBlockedEnvVar(key) ||
+      isProjectScopeAllowedEnvValue(key, value, isSetAboveProjectSettings)
+    ) {
+      out[key] = value
+      continue
+    }
+    const warnKey = `${source}:${key}`
+    if (!projectScopeDropWarned.has(warnKey)) {
+      projectScopeDropWarned.add(warnKey)
+      const file =
+        source === 'localSettings'
+          ? '.claude/settings.local.json'
+          : '.claude/settings.json'
+      logForDebugging(
+        `${key} in ${file} is ignored — project-scoped settings can't set this key. Set it in ~/.claude/settings.json or managed settings instead.`,
+        { level: 'warn' },
+      )
+    }
+  }
+  return out
+}
+
+/**
+ * Settings env merged in priority order, like getInitialSettings().env, but
+ * with project-scoped sources filtered.
+ */
+function getMergedSettingsEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const source of getEnabledSettingSources()) {
+    Object.assign(
+      env,
+      withoutProjectScopeBlockedVars(source, getSettingsForSource(source)?.env),
+    )
+  }
+  return env
+}
+
+/**
  * Trusted setting sources whose env vars can be applied before the trust dialog.
  *
  * - userSettings (~/.claude/settings.json): controlled by the user, not project-specific
@@ -137,6 +210,7 @@ const TRUSTED_SETTING_SOURCES = [
  * fully established via applyConfigEnvironmentVariables().
  */
 export function applySafeConfigEnvironmentVariables(): void {
+  launchEnv ??= { ...process.env }
   // Capture CCD spawn-env keys before any settings.env is applied (once).
   if (ccdSpawnEnvKeys === undefined) {
     ccdSpawnEnvKeys =
@@ -184,7 +258,7 @@ export function applySafeConfigEnvironmentVariables(): void {
   // unchanged (it has the highest merge priority in both loops) — except
   // provider-routing vars, which filterSettingsEnv strips from every source
   // when CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST is set.
-  const settingsEnv = filterSettingsEnv(getSettings_DEPRECATED()?.env)
+  const settingsEnv = filterSettingsEnv(getMergedSettingsEnv())
   for (const [key, value] of Object.entries(settingsEnv)) {
     if (SAFE_ENV_VARS.has(key.toUpperCase())) {
       process.env[key] = value
@@ -200,9 +274,10 @@ export function applySafeConfigEnvironmentVariables(): void {
  * dangerous environment variables such as LD_PRELOAD, PATH, etc.
  */
 export function applyConfigEnvironmentVariables(): void {
+  launchEnv ??= { ...process.env }
   Object.assign(process.env, filterSettingsEnv(getGlobalConfig().env))
 
-  Object.assign(process.env, filterSettingsEnv(getSettings_DEPRECATED()?.env))
+  Object.assign(process.env, filterSettingsEnv(getMergedSettingsEnv()))
 
   // Clear caches so agents are rebuilt with the new env vars
   clearCACertsCache()
