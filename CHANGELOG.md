@@ -22,6 +22,7 @@
 - 内置 soft_deny 规则同步官方 2.1.303（`claude auto-mode defaults` 输出与官方一致）：Self-Modification 新增 `.claude/dev-mods/`（会话 Mods）为配置面；Unrequested Commit 与 External System Writes 允许把本会话自己开的 PR 在 draft 与 ready 之间切换。
 - 进入自动模式时搁置全部 `Monitor` allow 规则（对齐官方 2.1.236），同时搁置 `Terminal`（InteractiveTerminal）allow 规则，避免 PTY 输入绕过分类器；离开自动模式后恢复。
 - 自动模式分类器拒绝消息对齐官方：前缀改为 `Permission for this action was denied by the Claude Code auto mode classifier. Reason: `，新增“先尝试更安全的做法、尽量完成其余工作再停下说明”的指引；权限规则提示按工具给出（Write/NotebookEdit 指向 Edit），自动模式会搁置的规则（`classifyAllShell` 下的 Bash/PowerShell、Agent、Monitor、Terminal）与 MCP 工具不再提示，`CLAUDE_CODE_HIDE_SETTINGS_HINT` 或 `allowManagedPermissionRulesOnly` 时省略。
+- OTel `tool_decision` 事件新增 `permission_mode` 与 `classifier_verdict`（`allow`/`block`/`unavailable`/`no_verdict`，对齐官方 2.1.301）；`OTEL_LOG_TOOL_DETAILS=1` 时 block 判定另带 `classifier_category`（仅官方内置规则名）。
 
 ### 测试覆盖
 
@@ -31,6 +32,7 @@
 - `src/utils/permissions/fixtures/autoModeDefaults303.json` 为官方 2.1.303 `claude auto-mode defaults` 输出，`yoloClassifier.officialPrompt.test.ts` 逐项比对。
 - `yoloClassifier.officialPrompt.test.ts` 新增 Monitor 与 Terminal allow 规则（设置与 `--allowed-tools`）在自动模式被搁置并可恢复。
 - `permissions.autoModeSafety.test.ts` 新增拒绝消息前缀、安全做法指引、Bash/Edit 规则提示，以及 `classifyAllShell` 与 `CLAUDE_CODE_HIDE_SETTINGS_HINT` 下省略提示、旧前缀仍识别为分类器拒绝。
+- 新增 `src/hooks/toolPermission/permissionLogging.test.ts`，覆盖 `classifier_verdict`、`permission_mode`、只在 `OTEL_LOG_TOOL_DETAILS` 下输出的 `classifier_category` 与内置规则名映射。
 
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 

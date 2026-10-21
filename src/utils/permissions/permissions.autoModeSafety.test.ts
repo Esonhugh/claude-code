@@ -126,6 +126,7 @@ if (process.env[childFlag] !== '1') {
       expect(message).toContain("If you believe this capability is essential to complete the user's request, first try a safer method. Get as much of the rest of the task done as you can, then STOP")
       expect(message.endsWith('To allow this type of action in the future, the user can add a permission rule for Bash to their settings.')).toBe(true)
       expect(isClassifierDenial(message)).toBe(true)
+      expect(result.decisionReason).toMatchObject({ type: 'classifier', category: 'code_from_external' })
 
       const write = await hasPermissionsToUseTool(
         FileWriteTool, { file_path: '/opt/cc-auto-mode-test/out.txt', content: 'x' }, autoContext(),

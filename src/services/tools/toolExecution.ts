@@ -25,6 +25,7 @@ import {
 } from '../../bootstrap/state.js'
 import {
   buildCodeEditToolAttributes,
+  classifierVerdictAttributes,
   isCodeEditingTool,
 } from '../../hooks/toolPermission/permissionLogging.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -1314,6 +1315,12 @@ async function checkPermissionsAndCallTool(
       decision,
       source,
       tool_name: sanitizeToolNameForAnalytics(tool.name),
+      ...(source === 'config' &&
+        classifierVerdictAttributes(
+          decision,
+          permissionDecision.decisionReason,
+        )),
+      permission_mode: permissionMode,
     })
 
     // Increment code-edit tool decision counter for headless mode
