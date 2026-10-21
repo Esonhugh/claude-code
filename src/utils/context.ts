@@ -35,7 +35,7 @@ const MODEL_DEFAULT_COMPACTION_WINDOW = 200_000
 const MIN_COMPACTION_WINDOW = 100_000
 const MAX_COMPACTION_WINDOW = 1_000_000
 
-function parseCompactionWindow(value: unknown): number | undefined {
+export function parseCompactionWindow(value: unknown): number | undefined {
   let result: number
   if (typeof value === 'number') result = value
   else if (typeof value !== 'string') return undefined

@@ -18,6 +18,10 @@ import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
+import {
+  autocompact,
+  autocompactNonInteractive,
+} from './commands/autocompact/index.js'
 import cost from './commands/cost/index.js'
 import daybreak from './commands/daybreak/index.js'
 import diff from './commands/diff/index.js'
@@ -288,6 +292,8 @@ const COMMANDS = memoize((): Command[] => [
   desktop,
   context,
   contextNonInteractive,
+  autocompact,
+  autocompactNonInteractive,
   cost,
   daybreak,
   diff,

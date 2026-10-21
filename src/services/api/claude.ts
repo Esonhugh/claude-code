@@ -2455,6 +2455,7 @@ async function* queryModel(
               type: 'assistant',
               uuid: randomUUID(),
               timestamp: new Date().toISOString(),
+              requestedModel: options.model,
               ...(isAnt() &&
                 research !== undefined && { research }),
               ...(advisorModel && { advisorModel }),
@@ -2844,6 +2845,7 @@ async function* queryModel(
         type: 'assistant',
         uuid: randomUUID(),
         timestamp: new Date().toISOString(),
+        requestedModel: options.model,
         ...(isAnt() &&
           research !== undefined && {
             research,
@@ -2946,6 +2948,7 @@ async function* queryModel(
           type: 'assistant',
           uuid: randomUUID(),
           timestamp: new Date().toISOString(),
+          requestedModel: options.model,
           ...(isAnt() &&
             research !== undefined && { research }),
           ...(advisorModel && { advisorModel }),

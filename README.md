@@ -624,6 +624,28 @@ Agent 还支持前台执行、后台执行、命名续跑和可选隔离。模�
 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 ```
 
+自定义 Agent（`.claude/agents/<名称>.md`、插件 agents 或 `--agents` JSON）可设置 `omitClaudeMd` 与 `autoCompactWindow`：
+
+```yaml
+---
+name: reviewer
+description: Review the staged diff
+omitClaudeMd: true        # 作为子代理运行时不加载 CLAUDE.md
+autoCompactWindow: 150000 # 子代理的自动压缩窗口上限（100000 到 1000000）
+---
+Review the diff.
+```
+
+`autoCompactWindow` 只能把继承到的窗口调小；`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍优先。超出范围的值会被忽略并写入 debug 日志。
+
+Worktree 设置 `worktree.baseRef` 决定 `--worktree`、`EnterWorktree` 和 agent `isolation: "worktree"` 新建分支的起点：`fresh`（默认）基于 `origin/<默认分支>`，`head` 基于当前工作目录（包括 linked worktree）的本地 HEAD，保留未推送提交：
+
+```json
+{ "worktree": { "baseRef": "head" } }
+```
+
+`EnterWorktree` 也可传 `path` 进入已在 `git worktree list` 中的 worktree；`.claude/worktrees/` 之外的路径会先请求确认。以 `path` 进入的 worktree 不归当前会话所有，`ExitWorktree` 只能 `keep`，不会删除它。
+
 ### fork 技能的代理名称
 
 在 `.claude/skills/review/SKILL.md` 中指定 `context: fork` 和 `agent`，再输入 `/review <任务>`；模型的 SkillTool 调用也使用同一配置。用户技能目录和旧 `.claude/commands/review.md` 使用同一解析器。代理定义放在 `.claude/agents/<名称>.md`，配置方法见 [Anthropic subagents 文档](https://code.claude.com/docs/en/sub-agents)。
@@ -664,6 +686,8 @@ Review $ARGUMENTS.
 - `/recap`：立即生成一到两句会话回顾（上限 400 字符），复用主对话的模型与 provider（含 OpenAI），支持 `-p`。终端失焦 5 分钟后也会自动生成回顾；`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或设置 `awaySummaryEnabled: false` 关闭自动回顾，`=1` 强制开启。
 - `/fast`：切换 Fast mode；OpenAI provider 下发送 `service_tier: "priority"`，API key 与 ChatGPT OAuth 均可使用。
 - `/compact`：压缩当前会话；OpenAI provider 下支持手动 remote compaction，并在重复压缩时保留 opaque compaction history。
+- `/autocompact [auto|<tokens>]`：查看或设置当前模型的自动压缩窗口（100k 到 1M，例如 `500k`、`200000` 或简写 `200`）；无参数时打开对话框，←/→ 调整、Enter 应用。设置按模型写入用户设置 `modelSettings.<model>.autoCompactWindow`，切换模型后各自保留；`auto`/`reset` 恢复自动窗口。非交互模式（`-p`）输出文本结果。OpenAI 等第三方模型同样适用。
+- 切换到上下文窗口更小的模型后，若会话已超出新模型的上限，自动压缩会先由上一个（窗口更大的）模型生成摘要；该模型已不在 `availableModels` 中或摘要失败时，改用当前模型。
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
 - `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
 - `/reload-plugins`：应用 `/plugin manage` 中的安装、更新和启停变更，重新加载 plugin commands、skills、hooks、MCP 和 LSP；已安装插件使用本地安装缓存，不会因 reload 自动下载。

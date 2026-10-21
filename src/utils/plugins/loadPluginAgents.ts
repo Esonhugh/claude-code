@@ -14,7 +14,10 @@ import { getPluginErrorMessage } from '../../types/plugin.js'
 import { logForDebugging } from '../debug.js'
 import { EFFORT_LEVELS, parseEffortValue } from '../effort.js'
 import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
   coerceDescriptionToString,
+  parseAutoCompactWindowFromFrontmatter,
   parseFrontmatter,
   parsePositiveIntFromFrontmatter,
 } from '../frontmatterParser.js'
@@ -107,6 +110,9 @@ async function loadAgentFromFile(
     const backgroundRaw = frontmatter.background
     const background =
       backgroundRaw === 'true' || backgroundRaw === true ? true : undefined
+    const omitClaudeMdRaw = frontmatter.omitClaudeMd
+    const omitClaudeMd =
+      omitClaudeMdRaw === 'true' || omitClaudeMdRaw === true ? true : undefined
     // Substitute ${CLAUDE_PLUGIN_ROOT} so agents can reference bundled files,
     // and ${user_config.X} (non-sensitive only) so they can embed configured
     // usernames, endpoints, etc. Sensitive refs resolve to a placeholder.
@@ -176,6 +182,16 @@ async function loadAgentFromFile(
       )
     }
 
+    const autoCompactWindowRaw = frontmatter.autoCompactWindow
+    const autoCompactWindow =
+      parseAutoCompactWindowFromFrontmatter(autoCompactWindowRaw)
+    if (autoCompactWindowRaw !== undefined && autoCompactWindow === undefined) {
+      logForDebugging(
+        `Plugin agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX}.`,
+        { level: 'warn' },
+      )
+    }
+
     // Parse disallowedTools
     const disallowedTools =
       frontmatter.disallowedTools !== undefined
@@ -215,10 +231,12 @@ async function loadAgentFromFile(
       filename: baseAgentName,
       plugin: sourceName,
       ...(background ? { background } : {}),
+      ...(omitClaudeMd ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),
       ...(isolation ? { isolation } : {}),
       ...(effort !== undefined ? { effort } : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
     } as AgentDefinition
   } catch (error) {
     logForDebugging(`Failed to load agent from ${filePath}: ${error}`, {

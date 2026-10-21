@@ -176,6 +176,8 @@ export interface AssistantMessage {
   error?: unknown
   errorDetails?: string
   advisorModel?: string
+  /** Model the request named; responses may report a different id. */
+  requestedModel?: string
 }
 
 // ---------------------------------------------------------------------------
