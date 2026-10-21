@@ -5,6 +5,7 @@ import {
   getToolNameForPermissionCheck,
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
+import { normalizeNameForMCP } from '../../services/mcp/normalization.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
@@ -262,27 +263,54 @@ function toolMatchesRule(
     return true
   }
 
+  const ruleName = rule.ruleValue.toolName
+
   // Like official, deny and ask rules may glob the tool name ("*" covers
-  // every tool); allow rules only take the MCP wildcard below.
+  // every tool); allow rules only take MCP globs such as "mcp__*".
   if (
-    rule.ruleBehavior !== 'allow' &&
-    rule.ruleValue.toolName.includes('*') &&
-    matchesWildcard(rule.ruleValue.toolName, nameForRuleMatch)
+    (rule.ruleBehavior !== 'allow' || ruleName.startsWith('mcp__')) &&
+    ruleName.includes('*') &&
+    matchesWildcard(ruleName, nameForRuleMatch)
   ) {
     return true
   }
 
   // MCP server-level permission: rule "mcp__server1" matches tool "mcp__server1__tool1"
   // Also supports wildcard: rule "mcp__server1__*" matches all tools from server1
-  const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
+  const ruleInfo = mcpInfoFromString(ruleName)
   const toolInfo = mcpInfoFromString(nameForRuleMatch)
-
-  return (
-    ruleInfo !== null &&
-    toolInfo !== null &&
+  if (ruleInfo === null || toolInfo === null) return false
+  const coversTool =
     (ruleInfo.toolName === undefined || ruleInfo.toolName === '*') &&
     ruleInfo.serverName === toolInfo.serverName
-  )
+
+  // A server name may itself hold "__". The tool's own server, or every
+  // server its name could be read as, decides: allow rules must name the
+  // whole server, deny/ask rules reach any reading (official 2.1.299).
+  const serverRuleNames = tool.mcpInfo
+    ? [`mcp__${normalizeNameForMCP(tool.mcpInfo.serverName)}`]
+    : mcpServerPrefixes(nameForRuleMatch)
+  if (rule.ruleBehavior === 'allow') {
+    return (
+      coversTool &&
+      serverRuleNames.every(
+        name => ruleName === name || ruleName.startsWith(`${name}__`),
+      )
+    )
+  }
+  return coversTool || serverRuleNames.includes(ruleName)
+}
+
+function mcpServerPrefixes(toolName: string): string[] {
+  const prefixes: string[] = []
+  for (
+    let i = toolName.indexOf('__', 'mcp__'.length);
+    i !== -1;
+    i = toolName.indexOf('__', i + 1)
+  ) {
+    prefixes.push(toolName.slice(0, i))
+  }
+  return prefixes
 }
 
 /**

@@ -20,12 +20,15 @@
 - PermissionRequest hook 返回的 `updatedInput` 重新经过 deny/ask 规则与安全检查（对齐官方 2.1.110）：命中 deny 规则直接拒绝，命中 ask 规则或安全检查也按拒绝处理；交互式、`-p`/后台与 SDK host 三条路径一致。
 - `setMode: bypassPermissions` 权限更新在 bypass 不可用时被忽略（对齐官方 2.1.110）：`disableBypassPermissionsMode` 生效或会话未以 bypass 启动时，PermissionRequest hook 等来源无法把会话切到 bypass。
 - PermissionRequest hook 在纯 `-p`/`--print` 下也会触发（对齐官方 2.1.268）：需要提示的调用先交给 hook 决定，hook 未作决定时才按原样拒绝或交给 `--permission-prompt-tool`；需要用户亲自确认的安全检查仍跳过 hook。
+- MCP 服务器级 allow 规则只放行它点名的服务器（对齐官方 2.1.299）：`mcp__a` 不再放行名为 `a__b` 或 `a_` 的服务器；服务器名含 `__` 时写 `mcp__<完整名称>__*`。deny/ask 规则 `mcp__a__b` 现在能拦到名为 `a__b` 的服务器（对齐官方 2.1.299）。allow `mcp__*` 放行全部 MCP 工具。
+- 子代理 `disallowedTools` 支持 MCP 服务器级写法 `mcp__srv`、`mcp__srv__*` 与 `mcp__*`（对齐官方 2.1.178），不再被静默忽略。
 
 ### 测试覆盖
 
 - 新增 `src/utils/permissions/permissions.planMode.test.ts`，覆盖 plan 模式下内容/整工具 allow 规则、只读调用、bypass 可用、计划文件、PreToolUse hook allow 与 Mods `tool.check` allow。
 - 新增 `src/hooks/toolPermission/permissionRequestHookPolicy.test.ts`，覆盖 hook `updatedInput` 在交互式与 headless 路径命中 deny、未改写输入照常放行、`setMode` 切到 bypass 被策略拦下。
 - 新增 `src/cli/print.permissionRequestHooks.test.ts`（子进程隔离），覆盖纯 `--print` 提示交给 hook、hook 不决定时保持原结果、`--permission-prompt-tool` 前先询问 hook。
+- 新增 `src/utils/permissions/permissions.mcpRules.test.ts`（allow 只到点名服务器、名称歧义需完整工具名、`mcp__*`、deny/ask 覆盖含 `__` 的服务器）与 `src/tools/AgentTool/agentTools.disallowedMcp.test.ts`（服务器级、通配与精确工具名）。
 
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 

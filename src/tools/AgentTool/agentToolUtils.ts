@@ -20,7 +20,7 @@ import type {
   Tools,
   ToolUseContext,
 } from '../../Tool.js'
-import { toolMatchesName } from '../../Tool.js'
+import { getEmptyToolPermissionContext, toolMatchesName } from '../../Tool.js'
 import {
   addAgentTaskWarning,
   completeAgentTask as completeAsyncAgent,
@@ -49,6 +49,7 @@ import {
   getLastAssistantMessage,
 } from '../../utils/messages.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
+import { getDenyRuleForTool } from '../../utils/permissions/permissions.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
 import {
   buildTranscriptForClassifier,
@@ -190,9 +191,20 @@ export function resolveAgentTools(
     }) ?? [],
   )
 
+  // MCP specs may name a whole server (mcp__srv, mcp__srv__*, mcp__*), so
+  // they are matched the way deny rules match MCP tools.
+  const disallowedMcpRules: ToolPermissionContext = {
+    ...getEmptyToolPermissionContext(),
+    alwaysDenyRules: {
+      session: [...disallowedToolSet].filter(name => name.startsWith('mcp__')),
+    },
+  }
+
   // Filter available tools based on disallowed list
   const allowedAvailableTools = filteredAvailableTools.filter(
-    tool => !disallowedToolSet.has(tool.name),
+    tool =>
+      !disallowedToolSet.has(tool.name) &&
+      !getDenyRuleForTool(disallowedMcpRules, tool),
   )
 
   // If tools is undefined or ['*'], allow all tools (after filtering disallowed)
