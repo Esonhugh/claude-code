@@ -85,7 +85,7 @@ function fixture() {
   > = {}
   const commands = new Map<
     string,
-    SyncHookJSONOutput | (() => Promise<SyncHookJSONOutput>)
+    string | SyncHookJSONOutput | (() => Promise<SyncHookJSONOutput>)
   >()
   const calls: { command: string; input: Record<string, unknown> }[] = []
   // Commands listed here exit with the given code instead of printing JSON.
@@ -252,7 +252,10 @@ function fixture() {
             typeof response === 'function' ? response() : (response ?? {}),
           ).then((json) => {
             if (child.stdout.writableEnded) return
-            child.stdout.end(JSON.stringify(json) + '\n')
+            // A string response is written verbatim (raw stdout).
+            child.stdout.end(
+              typeof json === 'string' ? json : JSON.stringify(json) + '\n',
+            )
             child.stderr.end()
             child.emit('close', 0)
           })
@@ -1889,5 +1892,27 @@ describe('effort and debug logging', () => {
         expect.stringMatching(/^Hooks: PreToolUse:Read \[slow\] timed out after 50ms \(\d+ms\)$/),
       ]),
     )
+  })
+})
+
+describe('hook stdout that looks like JSON (official 2.1.248)', () => {
+  test.each([
+    ['an unescaped object', '{"systemMessage": "C:\\path"}', true],
+    ['JSON lines', '{"a": 1}\n{"b": 2}', false],
+    ['plain text in braces', '{not json at all', false],
+  ])('%s', async (_name, stdout, reported) => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'emit')
+    f.commands.set('emit', stdout)
+    const results = await collect(pre(f))
+    const errors = results.flatMap((result) => {
+      const attachment = (result.message as { attachment?: { type: string; stderr?: string } } | undefined)?.attachment
+      return attachment?.type === 'hook_non_blocking_error' ? [attachment.stderr] : []
+    })
+    if (reported)
+      expect(errors).toEqual([
+        expect.stringContaining('Hook output looks like a JSON object but is not valid JSON'),
+      ])
+    else expect(errors).toEqual([])
   })
 })

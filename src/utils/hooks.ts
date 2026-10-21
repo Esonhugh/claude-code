@@ -487,8 +487,26 @@ function parseHookOutput(stdout: string): {
     logForDebugging(errorMessage)
     return { plainText: stdout, validationError: errorMessage }
   } catch (e) {
-    logForDebugging(`Failed to parse hook output as JSON: ${e}`)
-    return { plainText: stdout }
+    // Text that merely starts with "{", or several JSON documents (JSON lines),
+    // stays plain text; a lone object that fails to parse is a hook error.
+    const lines = trimmed.split('\n').filter(line => line.trim() !== '')
+    const isJsonLines =
+      lines.length > 1 &&
+      lines.every(line => {
+        try {
+          const parsed = hookJSONOutputSchema().safeParse(jsonParse(line))
+          return !parsed.success || Object.keys(parsed.data).length === 0
+        } catch {
+          return false
+        }
+      })
+    if (!trimmed.endsWith('}') || isJsonLines) {
+      logForDebugging(`Failed to parse hook output as JSON: ${e}`)
+      return { plainText: stdout }
+    }
+    const validationError = `Hook output looks like a JSON object but is not valid JSON — ${errorMessage(e)}. Emit the payload with a JSON encoder (jq, ConvertTo-Json, json.dumps) rather than string concatenation so backslashes and quotes inside strings are escaped.`
+    logForDebugging(validationError)
+    return { plainText: stdout, validationError }
   }
 }
 
