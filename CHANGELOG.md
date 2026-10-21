@@ -12,6 +12,16 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-21 - Terminal 权限检查、/yolo 收紧与自动模式分类器输出格式
+
+### 变更内容
+
+- `Terminal` 工具接入权限检查：`new-session`（含初始命令）与带 `text` 的 `send-keys` 按 Bash 规则判定（`Bash(prefix:*)` 与整个 `Bash` 的 deny/ask 规则同样生效），default 模式会询问、dontAsk 模式拒绝、自动模式经分类器判定；读取输出、列出会话、resize、信号、关闭等动作直接放行；`new-session` 不再在执行阶段重复询问。
+
+### 测试覆盖
+
+- `src/tools/TerminalTool/TerminalTool.test.ts` 新增 default 模式下 `new-session` 与 `send-keys "touch x"` 询问、`Bash(touch:*)`/`Bash` deny 规则拒绝（bypass 下仍拒绝）、dontAsk 拒绝、bypass 放行、只读动作放行，以及执行阶段不再重复询问。
+
 ## 2026-10-21 - 自动模式安全行为与官方对齐
 
 ### 变更内容

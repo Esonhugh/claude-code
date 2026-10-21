@@ -50,6 +50,14 @@ import {
 import { syncTerminalTaskAfterStatus } from './taskState.js'
 import { DEFAULT_MAX_BUFFERED_CHUNKS } from '../../utils/pty/types.js'
 import { errorMessage } from '../../utils/errors.js'
+import { quote } from '../../utils/bash/shellQuote.js'
+import {
+  createPermissionRequestMessage,
+  getAskRuleForTool,
+  getDenyRuleForTool,
+} from '../../utils/permissions/permissions.js'
+import { bashToolHasPermission } from '../BashTool/bashPermissions.js'
+import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 
 const inputSchema = lazySchema(() => actionSchema)
 type InputSchema = ReturnType<typeof inputSchema>
@@ -64,6 +72,26 @@ type ErrorOutput = {
 }
 
 type Output = SuccessOutput | ErrorOutput
+
+// The shell command a Terminal action would run, or undefined when the action
+// only reads, resizes or stops an existing session.
+function getTerminalCommand(input: {
+  action: string
+  command?: string
+  args?: string[]
+  text?: string
+}): string | undefined {
+  if (input.action === 'new-session') {
+    return quote([
+      input.command?.trim() || process.env.SHELL || 'sh',
+      ...(input.args ?? []),
+    ])
+  }
+  if (input.action === 'send-keys' && input.text) {
+    return input.text
+  }
+  return undefined
+}
 
 let terminalManagerInstance: PtySessionManager | undefined
 let unregisterTerminalManagerCleanup: (() => void) | undefined
@@ -314,7 +342,50 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
         parts.push(`args=${JSON.stringify(input.args)}`)
       }
     }
+    if (input.action === 'send-keys' && input.text) {
+      parts.push(`text=${JSON.stringify(input.text)}`)
+    }
     return parts.join(' ')
+  },
+  async checkPermissions(input, context) {
+    const command = getTerminalCommand(input)
+    if (command === undefined) {
+      return { behavior: 'allow', updatedInput: input }
+    }
+    // Terminal runs shell input, so Bash rules apply to it like they do to
+    // Monitor. Whole-tool Bash rules are not part of bashToolHasPermission.
+    const permissionContext = context.getAppState().toolPermissionContext
+    const bashDenyRule = getDenyRuleForTool(permissionContext, {
+      name: BASH_TOOL_NAME,
+    })
+    if (bashDenyRule) {
+      return {
+        behavior: 'deny',
+        message: `Permission to use ${BASH_TOOL_NAME} has been denied.`,
+        decisionReason: { type: 'rule', rule: bashDenyRule },
+      }
+    }
+    // The PTY never runs inside the sandbox, so sandbox auto-allow must not apply.
+    const result = await bashToolHasPermission(
+      { command, dangerouslyDisableSandbox: true },
+      context,
+    )
+    if (result.behavior === 'deny') {
+      return result
+    }
+    const bashAskRule = getAskRuleForTool(permissionContext, {
+      name: BASH_TOOL_NAME,
+    })
+    if (bashAskRule) {
+      return {
+        behavior: 'ask',
+        message: createPermissionRequestMessage(TERMINAL_TOOL_NAME),
+        decisionReason: { type: 'rule', rule: bashAskRule },
+      }
+    }
+    return 'updatedInput' in result && result.updatedInput
+      ? { ...result, updatedInput: input }
+      : result
   },
   renderToolUseMessage,
   renderToolUseProgressMessage() {
@@ -328,7 +399,7 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
     return null
   },
   renderToolResultMessage,
-  async call(input, context, canUseTool, assistantMessage, _onProgress) {
+  async call(input, context, _canUseTool, _assistantMessage, _onProgress) {
     const setTaskAppState = context.setAppStateForTasks ?? context.setAppState
     try {
       switch (input.action) {
@@ -339,24 +410,6 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
               data: invalidInput('action=new-session requires a valid session payload', {
                 action: 'new-session',
               }),
-            }
-          }
-          const permission = await canUseTool(
-            TerminalTool,
-            parsed.data,
-            context,
-            assistantMessage,
-            context.toolUseId ?? 'terminal-new-session',
-          )
-          if (permission.behavior !== 'allow') {
-            return {
-              data: {
-                error: {
-                  code: 'PERMISSION_DENIED',
-                  message: 'Terminal session creation was denied',
-                  details: { action: 'new-session' },
-                },
-              },
             }
           }
           const opened = await handleOpen(getTerminalManager(), parsed.data)
