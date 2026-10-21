@@ -84,7 +84,7 @@ export function applySettingsChange(
         if (DISK_RULE_SOURCES.includes(source)) continue
         // Managed-only clears cliArg and session rules; command rules stay.
         if (managedOnly && source !== 'command') continue
-        if (rules) stash[source as keyof ToolPermissionRulesBySource] = rules
+        if (rules) stash[source as keyof ToolPermissionRulesBySource] = [...rules]
       }
       newContext = { ...newContext, strippedDangerousRules: stash }
     }
