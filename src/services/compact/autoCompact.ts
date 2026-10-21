@@ -11,6 +11,7 @@ import {
   getContextWindowForModel,
   resolveContextWindow,
 } from '../../utils/context.js'
+import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage, hasExactErrorMessage } from '../../utils/errors.js'
@@ -37,6 +38,10 @@ import {
   getCompactMode,
 } from './compactMode.js'
 import { compactConversationCodexStyle } from './codexCompact.js'
+import {
+  classifierOverflowReminder,
+  takeClassifierOverflowCompaction,
+} from './classifierOverflow.js'
 import { runPostCompactCleanup } from './postCompactCleanup.js'
 import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 import { runModSessionCompact } from '../mods/compactAdapter.js'
@@ -424,15 +429,22 @@ export async function autoCompactIfNeeded(
     return { wasCompacted: false }
   }
 
+  // Auto mode's classifier overflowed on this transcript: compact even below
+  // the usual threshold so the denied tool calls can be reviewed again.
+  const classifierOverflow = takeClassifierOverflowCompaction(
+    toolUseContext.agentId,
+  )
   const model = toolUseContext.options.mainLoopModel
   const autoCompactWindowCeiling = toolUseContext.options.autoCompactWindow
-  const shouldCompact = await shouldAutoCompact(
-    messages,
-    model,
-    querySource,
-    snipTokensFreed,
-    autoCompactWindowCeiling,
-  )
+  const shouldCompact =
+    classifierOverflow !== undefined ||
+    (await shouldAutoCompact(
+      messages,
+      model,
+      querySource,
+      snipTokensFreed,
+      autoCompactWindowCeiling,
+    ))
 
   if (!shouldCompact) {
     return { wasCompacted: false }
@@ -535,6 +547,20 @@ export async function autoCompactIfNeeded(
       return { wasCompacted: false, skip: outcome.skip }
     }
     const compactionResult = outcome.compactionResult
+    if (classifierOverflow && compactionResult) {
+      logForDebugging(
+        'autocompact: compacted after auto mode classifier transcript overflow',
+      )
+      compactionResult.attachments = [
+        ...compactionResult.attachments,
+        createAttachmentMessage({
+          type: 'critical_system_reminder',
+          content: classifierOverflowReminder(
+            classifierOverflow.deniedToolNames,
+          ),
+        }),
+      ]
+    }
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages
     // and the old message UUID will no longer exist in the new messages array

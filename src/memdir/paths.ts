@@ -10,6 +10,7 @@ import {
   getClaudeConfigHomeDir,
   isEnvDefinedFalsy,
   isEnvTruthy,
+  isSafeMode,
 } from '../utils/envUtils.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { sanitizePath } from '../utils/path.js'
@@ -28,6 +29,10 @@ import {
  *   5. Default: enabled
  */
 export function isAutoMemoryEnabled(): boolean {
+  // Safe mode wins over every opt-in, like official.
+  if (isSafeMode()) {
+    return false
+  }
   const envVal = process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
   if (isEnvTruthy(envVal)) {
     return false

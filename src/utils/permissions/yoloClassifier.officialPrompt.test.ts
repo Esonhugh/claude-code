@@ -73,4 +73,52 @@ if (process.env[childFlag] !== '1') {
     expect(prompt).toContain('`Edit(/etc/**)`')
     for (const leftover of leftovers) expect(prompt).not.toContain(leftover)
   })
+
+  test('autoMode.hard_deny fills the HARD BLOCK slot and $defaults keeps the shipped rules', async () => {
+    const defaults = getDefaultExternalAutoModeRules()
+    useUserSettings({ autoMode: { hard_deny: ['Never read ~/.ssh'] } })
+    let prompt = await buildYoloSystemPrompt(context())
+    expect(prompt).toContain('- Never read ~/.ssh')
+    expect(prompt).not.toContain(`- ${defaults.hard_deny[0]!.split('\n')[0]}`)
+    useUserSettings({ autoMode: { hard_deny: ['$defaults', 'Never read ~/.ssh'] } })
+    prompt = await buildYoloSystemPrompt(context())
+    expect(prompt).toContain('- Never read ~/.ssh')
+    expect(prompt).toContain(`- ${defaults.hard_deny[0]!.split('\n')[0]}`)
+  })
+
+  test('claude auto-mode config reports settings hard_deny rules', async () => {
+    const { autoModeConfigHandler } = await import('../../cli/handlers/autoMode.js')
+    useUserSettings({ autoMode: { hard_deny: ['Never read ~/.ssh'] } })
+    let out = ''
+    const write = process.stdout.write
+    process.stdout.write = ((chunk: string) => { out += chunk; return true }) as typeof process.stdout.write
+    try { autoModeConfigHandler() } finally { process.stdout.write = write }
+    expect(JSON.parse(out).hard_deny).toEqual(['Never read ~/.ssh'])
+  })
+
+  test('autoMode.classifyAllShell makes every shell allow rule bypass-prone for auto mode', async () => {
+    const { findDangerousClassifierPermissions } = await import('./permissionSetup.js')
+    const rule = (toolName: string, ruleContent: string) =>
+      ({ source: 'userSettings', ruleBehavior: 'allow', ruleValue: { toolName, ruleContent } }) as const
+    const rules = [rule('Bash', 'ls:*'), rule('PowerShell', 'Get-ChildItem'), rule('Read', '/tmp/**')]
+    useUserSettings({})
+    expect(findDangerousClassifierPermissions([...rules], [])).toEqual([])
+    useUserSettings({ autoMode: { classifyAllShell: true } })
+    expect(findDangerousClassifierPermissions([...rules], ['Bash(git status)']).map(found => found.ruleDisplay))
+      .toEqual(['Bash(ls:*)', 'PowerShell(Get-ChildItem)', 'Bash(git status)'])
+  })
+
+  test('claude auto-mode reset removes only the autoMode section from user settings', async () => {
+    const { autoModeResetHandler } = await import('../../cli/handlers/autoMode.js')
+    const settingsPath = join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json')
+    useUserSettings({ model: 'sonnet', autoMode: { soft_deny: ['Never touch billing'], classifyAllShell: true } })
+    let out = ''
+    const write = process.stdout.write
+    process.stdout.write = ((chunk: string) => { out += chunk; return true }) as typeof process.stdout.write
+    try { await autoModeResetHandler({ yes: true }) } finally { process.stdout.write = write }
+    const saved = JSON.parse(await Bun.file(settingsPath).text())
+    expect(saved.autoMode).toBeUndefined()
+    expect(saved.model).toBe('sonnet')
+    expect(out).toContain('Auto mode configuration reset to defaults')
+  })
 }

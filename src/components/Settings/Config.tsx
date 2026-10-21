@@ -681,7 +681,9 @@ export function Config({
     {
       id: 'defaultPermissionMode',
       label: 'Default permission mode',
-      value: settingsData?.permissions?.defaultMode || 'default',
+      value: permissionModeFromString(
+        settingsData?.permissions?.defaultMode || 'default',
+      ),
       options: (() => {
         const priorityOrder: PermissionMode[] = ['default', 'plan']
         const allModes: readonly PermissionMode[] = feature(

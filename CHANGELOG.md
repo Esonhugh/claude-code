@@ -162,6 +162,30 @@
 - `bun test src/components/ModsPane.test.tsx src/components/ModsPane.inputPresentation.test.tsx`、`src/services/mods/tools.test.ts`、`src/query.mods.test.ts`、`src/utils/processUserInput`、`src/services/compact/autoCompact.contextWindow.test.ts`、`src/tools/AgentTool/loadAgentsDir.autoCompactWindow.test.ts`。
 - `bun ./node_modules/typescript/bin/tsc --noEmit -p .`、`make check-mods-control-types`、`bun run build`、`bun run check:changelog`。
 
+## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
+
+### 版本状态
+
+- 未发布；版本与依赖保持不变。对齐官方 2.1.303 的 `--safe-mode`、权限规则与自动模式本地分类器行为；服务器端分类器不在范围内。
+
+### 变更内容
+
+- 新增 `--safe-mode` 与 `CLAUDE_CODE_SAFE_MODE`（对齐官方 2.1.169）：停用 CLAUDE.md、自定义 skills/commands、已安装与 `--plugin-dir` 插件（含其 hooks、MCP 与 Mods）、非托管 hooks、全部 MCP 服务器（含 `--mcp-config` 与 claude.ai 连接器）、`--agents` 与自定义 agents、output styles、自定义 workflows、keybindings、LSP 与自动记忆；托管（policy）设置、认证、模型选择、内置工具与内置插件、权限照常，启动时显示安全模式提示。
+- 权限模式 `default` 对外更名为 Manual（对齐官方 2.1.200）：`--permission-mode manual`、`"defaultMode": "manual"` 与 SDK `set_permission_mode` 均接受 `manual` 并等同 `default`，`default` 继续可用；`--help` 选项列表、`/config` 与权限说明显示 Manual。
+- 权限规则支持 `Tool(param:value)` 语法（对齐官方 2.1.178）：deny/ask 规则按工具输入参数匹配，值支持 `*` 通配，例如 `Agent(model:opus)` 阻止 Opus 子代理；只比较字符串、数字、布尔参数，不重复匹配工具自身的规则字段（如 Bash 的 `command`）；ask 规则在 bypass 模式下仍会提示。
+- deny/ask 规则的工具名位置支持 `*` 通配（对齐官方 2.1.166）：`"*"` 拒绝全部工具，`"Web*"` 等按模式匹配；allow 规则仍只接受 MCP 通配。
+- 新增 `--permission-prompts host|none`（对齐官方 2.1.259，默认 `host`）：`--print` 下传 `none` 时，任何需要提示的操作在本地直接拒绝（仍先运行 PermissionRequest hooks），不再交给 SDK host 或 `--permission-prompt-tool`，权限模式照常决定其余行为。
+- 自动模式设置新增 `autoMode.hard_deny`（对齐官方 2.1.288）：规则替换分类器提示中的 hard_deny 段（可用 `"$defaults"` 保留默认项），用户意图不能放行；`claude auto-mode config`/`critique` 同步输出与审阅该段。
+- 新增 `autoMode.classifyAllShell`（对齐官方 2.1.288，只读取用户、`--settings` 与托管设置）：开启后进入自动模式时剥离全部 Bash/PowerShell allow 规则，所有 shell 命令都交给分类器审查。
+- 对话超出自动模式分类器上下文时（对齐官方 2.1.288）：本次工具调用被拒绝并提示稍后重发，下一次请求前强制压缩，压缩后提醒模型重新发起被拒调用；同一对话头部已压缩仍溢出、或 `DISABLE_COMPACT` 时回退原有人工审批。
+- 新增 `claude auto-mode reset [-y]`（对齐官方 2.1.288）：确认后从用户设置删除 `autoMode` 段。`CLAUDE_CODE_AUTO_MODE_MODEL` 对所有用户生效（位于 GrowthBook 配置之后、默认模型之前），OpenAI/ChatGPT 登录的 Approve for me 路径同样适用。
+
+### 测试覆盖
+
+- 新增 `src/utils/safeMode.test.ts`，覆盖环境变量与 `--` 之前的旗标、托管 hooks、自动记忆、keybindings、agents、skills、output styles、workflows 与 MCP 的停用及非安全模式对照；构建后 `node ./dist/cli.js --help` 显示官方帮助文案。
+- 新增 `src/utils/permissions/permissions.test.ts`（参数规则 deny/ask、通配、非原始值、工具自身字段、`*` 与 `Web*` 工具名通配、allow 忽略非 MCP 通配）、`src/utils/permissions/permissionSetup.test.ts`（`manual` 别名、标题、CLI 与 settings `defaultMode`）与 `src/cli/print.permissionPrompts.test.ts`（真实 headless 会话中 `none` 本地拒绝、默认 `host` 仍走 `--permission-prompt-tool`）。
+- `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 覆盖 hard_deny 提示槽位与 `$defaults`、`auto-mode config` 输出、`classifyAllShell` 剥离 shell allow 规则与 `auto-mode reset`；`src/services/compact/autoCompact.classifierOverflow.test.ts` 覆盖溢出请求强制压缩与提醒、同头部回退及 `DISABLE_COMPACT`；`src/utils/permissions/permissions.approveForMe.test.ts` 覆盖溢出拒绝后回退询问及 `CLAUDE_CODE_AUTO_MODE_MODEL` 在 Claude 与 OpenAI 模式下生效。构建后 `node ./dist/cli.js auto-mode reset --help` 与隔离配置下的 reset 输出与官方文案一致。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态

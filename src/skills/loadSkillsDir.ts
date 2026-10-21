@@ -33,6 +33,7 @@ import {
   getClaudeConfigHomeDir,
   isBareMode,
   isEnvTruthy,
+  isSafeMode,
 } from '../utils/envUtils.js'
 import { isENOENT, isFsInaccessible } from '../utils/errors.js'
 import {
@@ -686,6 +687,13 @@ export const getSkillDirCommands = memoize(
     const skillsLocked = isRestrictedToPluginOnly('skills')
     const projectSettingsEnabled =
       isSettingSourceEnabled('projectSettings') && !skillsLocked
+
+    // Safe mode: no custom skills or commands at all; bundled skills
+    // register separately.
+    if (isSafeMode()) {
+      logForDebugging('[safe-mode] Skipping skill and command dir discovery')
+      return []
+    }
 
     // --bare: skip auto-discovery (managed/user/project dir walks + legacy
     // commands-dir). Load ONLY explicit --add-dir paths. Bundled skills
