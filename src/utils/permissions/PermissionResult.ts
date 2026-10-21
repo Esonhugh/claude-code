@@ -36,6 +36,19 @@ export function requiresExplicitUserApproval(
   return false
 }
 
+/** A safety check that still asks in bypassPermissions mode. */
+export function isBypassImmune(
+  reason: PermissionDecisionReason | undefined,
+): boolean {
+  if (reason?.type === 'safetyCheck') return reason.bypassImmune === true
+  if (reason?.type === 'subcommandResults') {
+    return Array.from(reason.reasons.values()).some(result =>
+      isBypassImmune(result.decisionReason),
+    )
+  }
+  return false
+}
+
 // Helper function to get the appropriate prose description for rule behavior
 export function getRuleBehaviorDescription(
   permissionResult: PermissionResult['behavior'],

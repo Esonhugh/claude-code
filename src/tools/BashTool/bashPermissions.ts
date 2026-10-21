@@ -1701,7 +1701,7 @@ function checkRemovalPermission(
         const reason = 'Removal target could not be analyzed within the syntax budget'
         removal = {
           behavior: 'ask', message: `${reason}. Use explicit targets or approve this invocation.`,
-          decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false },
+          decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false, bypassImmune: true },
           suggestions: [],
         }
       }
