@@ -33,6 +33,7 @@ let streamCallCount = 0
 let compactClientOptions: Record<string, unknown> | undefined
 let compactRequest: Record<string, unknown> | undefined
 let hookInstructions: string | undefined
+let hookBlockedBy: string | undefined
 
 mock.module('../api/client.js', () => ({
   getAnthropicClient: async (options: Record<string, unknown>) => {
@@ -90,6 +91,7 @@ mock.module('../../utils/hooks.js', () => ({
   executePreCompactHooks: async () => ({
     newCustomInstructions: hookInstructions,
     userDisplayMessage: undefined,
+    blockedBy: hookBlockedBy,
   }),
   executePostCompactHooks: async () => ({ userDisplayMessage: undefined }),
 }))
@@ -125,8 +127,11 @@ mock.module('../../utils/plans.js', () => ({
   getPlanFilePath: () => '/tmp/compact-test-plan.md',
 }))
 
-const { compactConversation, createPostCompactFileAttachments } =
-  await import('./compact.js')
+const {
+  CompactionBlockedError,
+  compactConversation,
+  createPostCompactFileAttachments,
+} = await import('./compact.js')
 const { compactConversationCodexStyle } = await import('./codexCompact.js')
 
 beforeEach(() => {
@@ -135,6 +140,7 @@ beforeEach(() => {
   compactClientOptions = undefined
   compactRequest = undefined
   hookInstructions = undefined
+  hookBlockedBy = undefined
 })
 
 function userTextMessage(uuid: string, text: string): Message {
@@ -389,6 +395,46 @@ describe('compactConversation remote compaction lifecycle', () => {
       'local fallback summary',
     )
   })
+})
+
+describe('PreCompact hook block', () => {
+  test.each([false, true])(
+    'skips compaction with the hook reason (auto=%p)',
+    async (isAutoCompact) => {
+      hookBlockedBy = '[guard]: not now'
+      const messages = [
+        userTextMessage('00000000-0000-4000-8000-000000000031', 'compact me'),
+      ]
+      const context = createCompactTestContext()
+      const notifications: Array<{ key: string; color?: string }> = []
+      context.addNotification = (notification) => {
+        notifications.push(notification as { key: string; color?: string })
+      }
+      const run = compactConversation(
+        messages,
+        context,
+        createCacheSafeParams(context, messages),
+        false,
+        undefined,
+        isAutoCompact,
+      )
+      await expect(run).rejects.toBeInstanceOf(CompactionBlockedError)
+      await expect(run).rejects.toThrow(
+        'Compaction blocked by PreCompact hook: [guard]: not now',
+      )
+      expect(streamCallCount).toBe(0)
+      expect(notifications).toEqual(
+        isAutoCompact
+          ? []
+          : [
+              expect.objectContaining({
+                key: 'compaction-blocked-by-hook',
+                color: 'warning',
+              }),
+            ],
+      )
+    },
+  )
 })
 
 describe('compactConversationCodexStyle OpenAI integration', () => {

@@ -20,6 +20,7 @@ import { getMaxOutputTokensForModel } from '../api/claude.js'
 import { notifyCompaction } from '../api/promptCacheBreakDetection.js'
 import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.js'
 import {
+  CompactionBlockedError,
   type CompactionResult,
   compactConversation,
   ERROR_MESSAGE_USER_ABORT,
@@ -392,7 +393,7 @@ export async function autoCompactIfNeeded(
     const isUserAbort =
       toolUseContext.abortController.signal.aborted ||
       hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
-    if (!isUserAbort) {
+    if (!isUserAbort && !(error instanceof CompactionBlockedError)) {
       logError(error)
     }
     // Increment consecutive failure count for circuit breaker.

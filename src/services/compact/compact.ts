@@ -301,6 +301,37 @@ export const ERROR_MESSAGE_PROMPT_TOO_LONG =
 export const ERROR_MESSAGE_USER_ABORT = 'API Error: Request was aborted.'
 export const ERROR_MESSAGE_INCOMPLETE_RESPONSE =
   'Compaction interrupted · This may be due to network issues — please try again.'
+export const ERROR_MESSAGE_COMPACTION_BLOCKED =
+  'Compaction blocked by PreCompact hook'
+
+export class CompactionBlockedError extends Error {}
+
+/**
+ * Stop compaction when a PreCompact hook blocked it (exit 2 or
+ * decision: "block"), warning the user unless it was an auto-compact.
+ */
+export function throwIfCompactionBlocked(
+  hookResult: { blockedBy?: string },
+  context: Pick<ToolUseContext, 'addNotification'>,
+  isAutoCompact = false,
+): void {
+  if (!hookResult.blockedBy) return
+  logForDebugging(
+    `${ERROR_MESSAGE_COMPACTION_BLOCKED}: ${hookResult.blockedBy}`,
+    { level: 'warn' },
+  )
+  if (!isAutoCompact) {
+    context.addNotification?.({
+      key: 'compaction-blocked-by-hook',
+      text: 'compaction blocked by PreCompact hook',
+      priority: 'immediate',
+      color: 'warning',
+    })
+  }
+  throw new CompactionBlockedError(
+    `${ERROR_MESSAGE_COMPACTION_BLOCKED}: ${hookResult.blockedBy}`,
+  )
+}
 
 export interface CompactionResult {
   boundaryMarker: SystemMessage
@@ -432,6 +463,7 @@ export async function compactConversation(
       },
       context.abortController.signal,
     )
+    throwIfCompactionBlocked(hookResult, context, isAutoCompact)
     customInstructions = mergeHookInstructions(
       customInstructions,
       hookResult.newCustomInstructions,
@@ -879,6 +911,7 @@ export async function partialCompactConversation(
       },
       context.abortController.signal,
     )
+    throwIfCompactionBlocked(hookResult, context)
 
     // Merge hook instructions with user feedback
     let customInstructions: string | undefined
@@ -1185,6 +1218,7 @@ function addErrorNotificationIfNeeded(
   context: Pick<ToolUseContext, 'addNotification'>,
 ) {
   if (
+    !(error instanceof CompactionBlockedError) &&
     !hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT) &&
     !hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
   ) {

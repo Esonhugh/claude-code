@@ -87,6 +87,10 @@ function fixture() {
     SyncHookJSONOutput | (() => Promise<SyncHookJSONOutput>)
   >()
   const calls: { command: string; input: Record<string, unknown> }[] = []
+  // Commands listed here exit with the given code instead of printing JSON.
+  const exits = new Map<string, { code: number; stderr?: string }>()
+  const envs = new Map<string, NodeJS.ProcessEnv>()
+  const logs: string[] = []
   const state = { sessionHooks: new Map() } as unknown as AppState
   const context = {
     getAppState: () => state,
@@ -213,7 +217,12 @@ function fixture() {
     path: require('node:path'),
     crypto: require('node:crypto'),
     child_process: {
-      spawn: (command: string) => {
+      spawn: (
+        command: string,
+        _args: string[],
+        options: { env: NodeJS.ProcessEnv },
+      ) => {
+        envs.set(command, options.env)
         const child = Object.assign(new EventEmitter(), {
           pid: ++pid,
           stdin: new PassThrough(),
@@ -226,10 +235,18 @@ function fixture() {
         })
         child.stdin.on('finish', () => {
           calls.push({ command, input: JSON.parse(input) })
+          const exit = exits.get(command)
+          if (exit) {
+            child.stdout.end()
+            child.stderr.end(exit.stderr ?? '')
+            child.emit('close', exit.code)
+            return
+          }
           const response = commands.get(command)
           void Promise.resolve(
             typeof response === 'function' ? response() : (response ?? {}),
           ).then((json) => {
+            if (child.stdout.writableEnded) return
             child.stdout.end(JSON.stringify(json) + '\n')
             child.stderr.end()
             child.emit('close', 0)
@@ -240,7 +257,18 @@ function fixture() {
     },
     './gracefulShutdown.js': { endModsSessions },
     './file.js': { pathExists: async () => true },
-    './ShellCommand.js': { wrapSpawn: () => ({ cleanup: noop }) },
+    // Like the real wrapper, an abort (timeout) kills the child.
+    './ShellCommand.js': {
+      wrapSpawn: (child: EventEmitter & { stdout: PassThrough; stderr: PassThrough }, signal: AbortSignal) => {
+        signal.addEventListener('abort', () => {
+          if (child.stdout.writableEnded) return
+          child.stdout.end()
+          child.stderr.end()
+          child.emit('close', 143)
+        })
+        return { cleanup: noop }
+      },
+    },
     './task/TaskOutput.js': { TaskOutput: class {} },
     './cwd.js': { getCwd: () => home },
     './sessionEnvironment.js': {
@@ -266,7 +294,19 @@ function fixture() {
     },
     '../types/hooks.js': schemas,
     './hooks/hooksSettings.js': hookSettings,
-    './debug.js': { logForDebugging: noop },
+    './debug.js': {
+      logForDebugging: (message: string) => {
+        logs.push(message)
+      },
+    },
+    // Effort resolution is unit-tested elsewhere; here every model takes
+    // effort and the applied value is the app state's.
+    './effort.js': {
+      modelSupportsEffort: () => true,
+      resolveAppliedEffort: (_model: string, value: unknown) => value,
+      convertEffortValueToLevel: (value: unknown) => String(value),
+    },
+    './model/model.js': { getMainLoopModel: () => 'main-model' },
     './diagLogs.js': { logForDiagnosticsNoPII: noop },
     './stringUtils.js': { firstLineOf: (text: string) => text.split('\n')[0] },
     './permissions/permissionRuleParser.js': {
@@ -303,6 +343,11 @@ function fixture() {
     './errors.js': { errorMessage: String, getErrnoCode: () => undefined },
     './messages.js': { getLastAssistantMessage: () => undefined },
   }
+  // Tracks concurrent evaluator calls; set `gate` to hold them.
+  const model: { active: number; max: number; gate?: Promise<void> } = {
+    active: 0,
+    max: 0,
+  }
   const evaluatorResponse = {
     ok: false,
     reason: 'goal pending',
@@ -327,9 +372,13 @@ function fixture() {
       if (name === 'crypto') return dependencies.crypto
       if (name.endsWith('api/claude.js'))
         return {
-          queryModelWithoutStreaming: async () => ({
-            message: { content: JSON.stringify(evaluatorResponse) },
-          }),
+          queryModelWithoutStreaming: async () => {
+            model.active++
+            model.max = Math.max(model.max, model.active)
+            await model.gate
+            model.active--
+            return { message: { content: JSON.stringify(evaluatorResponse) } }
+          },
         }
       if (name.endsWith('attachments.js'))
         return dependencies['./attachments.js']
@@ -383,12 +432,27 @@ function fixture() {
       hooks: [{ type: 'command', command }],
     })
   }
+  const addHook = (
+    source: SettingSource,
+    event: HookEvent,
+    hook: HookCommand,
+    matcher = '',
+  ) => {
+    settings[source] ??= {}
+    settings[source]!.hooks ??= {}
+    settings[source]!.hooks![event] ??= []
+    settings[source]!.hooks![event]!.push({ matcher, hooks: [hook] })
+  }
   return {
     hooks,
     snapshot,
     settings,
     registered,
     commands,
+    exits,
+    envs,
+    logs,
+    addHook,
     calls,
     controls,
     context,
@@ -396,6 +460,7 @@ function fixture() {
     session,
     add,
     evaluatorResponse,
+    model,
   }
 }
 
@@ -1379,5 +1444,415 @@ describe('source-scoped hook executor', () => {
     )
     expect(f.calls.map((call) => call.command)).toEqual(['policy'])
     expect(sdkCalls).toBe(0)
+  })
+})
+
+describe('onFailure', () => {
+  test('block turns a command hook that exits 1 into a blocking error', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'guard',
+      onFailure: 'block',
+    })
+    f.exits.set('guard', { code: 1, stderr: 'guard crashed' })
+    const results = await collect(pre(f))
+    const blocked = results.find((result) => result.blockingError)
+    expect(blocked?.blockingError).toEqual({
+      blockingError:
+        '[guard]: failed; blocking because onFailure is "block"\nguard crashed',
+      command: 'guard',
+    })
+  })
+
+  test('default and continue keep letting a failed hook through', async () => {
+    for (const onFailure of [undefined, 'continue'] as const) {
+      const f = fixture()
+      f.addHook('userSettings', 'PreToolUse', {
+        type: 'command',
+        command: 'guard',
+        ...(onFailure && { onFailure }),
+      })
+      f.exits.set('guard', { code: 1, stderr: 'guard crashed' })
+      const results = await collect(pre(f))
+      expect(results.some((result) => result.blockingError)).toBe(false)
+    }
+  })
+
+  test('block turns a timed-out command hook into a blocking error', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'slow',
+      timeout: 0.05,
+      onFailure: 'block',
+    })
+    f.commands.set('slow', () => new Promise(() => {}))
+    const results = await collect(pre(f))
+    expect(results.find((result) => result.blockingError)?.blockingError)
+      .toEqual({
+        blockingError: '[slow]: timed out; blocking because onFailure is "block"',
+        command: 'slow',
+      })
+  })
+
+  test('block is ignored on Stop, where blocking means continuing the turn', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'Stop', {
+      type: 'command',
+      command: 'stop-guard',
+      onFailure: 'block',
+    })
+    f.exits.set('stop-guard', { code: 1 })
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+  })
+
+  test('block marks a failed hook outside the REPL as blocked', async () => {
+    const f = fixture()
+    f.addHook('userSettings', 'ConfigChange', {
+      type: 'command',
+      command: 'audit',
+      onFailure: 'block',
+    })
+    f.exits.set('audit', { code: 3, stderr: 'audit down' })
+    const [result] = await f.hooks.executeConfigChangeHooks('user_settings')
+    expect(result).toMatchObject({
+      succeeded: false,
+      blocked: true,
+      output: 'failed; blocking because onFailure is "block"\naudit down',
+    })
+  })
+})
+
+test('runs at most 12 prompt hooks of one event at a time without holding command hooks', async () => {
+  const f = fixture()
+  for (let i = 0; i < 15; i++)
+    f.addHook('userSettings', 'Stop', { type: 'prompt', prompt: `check ${i}` })
+  f.addHook('userSettings', 'Stop', { type: 'command', command: 'plain' })
+  const gate = deferred<void>()
+  f.model.gate = gate.promise
+  const run = collect(
+    f.hooks.executeStopHooks(
+      undefined,
+      undefined,
+      undefined,
+      false,
+      undefined,
+      f.context,
+      [],
+    ),
+  )
+  for (let i = 0; i < 50 && f.model.active < 12; i++)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  expect(f.model.active).toBe(f.hooks.PROMPT_AGENT_HOOK_CONCURRENCY)
+  expect(f.calls.map((call) => call.command)).toEqual(['plain'])
+  gate.resolve()
+  await run
+  expect(f.model.max).toBe(12)
+  expect(f.model.active).toBe(0)
+})
+
+describe('PreCompact blocking', () => {
+  test('exit code 2 blocks compaction with the hook stderr', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreCompact', 'no-compact')
+    f.add('userSettings', 'PreCompact', 'instructions')
+    f.exits.set('no-compact', { code: 2, stderr: 'not now' })
+    f.commands.set('instructions', {})
+    const result = await f.hooks.executePreCompactHooks({
+      trigger: 'manual',
+      customInstructions: null,
+    })
+    expect(result.blockedBy).toBe('[no-compact]: not now')
+  })
+
+  test('decision block blocks compaction and is not used as instructions', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreCompact', 'json-block')
+    f.commands.set('json-block', { decision: 'block', reason: 'busy' })
+    const result = await f.hooks.executePreCompactHooks({
+      trigger: 'auto',
+      customInstructions: null,
+    })
+    expect(result.blockedBy).toStartWith('[json-block]')
+    expect(result.newCustomInstructions).toBeUndefined()
+  })
+
+  test('a successful hook does not block', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreCompact', 'fine')
+    f.commands.set('fine', {})
+    const result = await f.hooks.executePreCompactHooks({
+      trigger: 'manual',
+      customInstructions: null,
+    })
+    expect(result.blockedBy).toBeUndefined()
+  })
+})
+
+test.each(['Stop', 'SubagentStop'] as const)(
+  '%s hooks can return additionalContext without a blocking error',
+  async (event) => {
+    const f = fixture()
+    f.add('userSettings', event, 'feedback')
+    f.commands.set('feedback', {
+      hookSpecificOutput: {
+        hookEventName: event,
+        additionalContext: 'also run the tests',
+      },
+    })
+    const results = await collect(
+      f.hooks.executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        event === 'SubagentStop' ? ('agent-1' as never) : undefined,
+        f.context,
+        [],
+      ),
+    )
+    expect(results.some((result) => result.blockingError)).toBe(false)
+    expect(
+      results.flatMap((result) => result.additionalContexts ?? []),
+    ).toEqual(['also run the tests'])
+  },
+)
+
+describe('model switch hooks', () => {
+  const info = {
+    fromModel: 'model-a',
+    toModel: 'model-b',
+    requestedModel: 'b',
+    contextTokens: 1234,
+  }
+
+  test('PreModelSwitch receives the switch and proceeds by default', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'watch')
+    f.commands.set('watch', {})
+    const verdict = await f.hooks.executePreModelSwitchHooks(
+      { ...info, source: 'command' },
+      f.context,
+    )
+    expect(verdict).toEqual({ decision: 'proceed' })
+    expect(f.calls[0]?.input).toMatchObject({
+      hook_event_name: 'PreModelSwitch',
+      from_model: 'model-a',
+      to_model: 'model-b',
+      requested_model: 'b',
+      context_tokens: 1234,
+      source: 'command',
+    })
+  })
+
+  test.each([
+    ['deny', { decision: 'block', reason: 'too expensive' }],
+    ['ask', { decision: 'ask', reason: 'too expensive' }],
+    ['allow', { decision: 'proceed' }],
+  ] as const)('permissionDecision %s', async (permissionDecision, expected) => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'decide')
+    f.commands.set('decide', {
+      hookSpecificOutput: {
+        hookEventName: 'PreModelSwitch',
+        permissionDecision,
+        permissionDecisionReason: 'too expensive',
+      },
+    })
+    expect(
+      await f.hooks.executePreModelSwitchHooks(
+        { ...info, source: 'picker' },
+        f.context,
+      ),
+    ).toEqual(expected)
+  })
+
+  test('exit code 2 blocks the switch with stderr', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreModelSwitch', 'no-switch')
+    f.exits.set('no-switch', { code: 2, stderr: 'stay on model-a' })
+    expect(
+      await f.hooks.executePreModelSwitchHooks({ ...info, source: 'sdk' }),
+    ).toEqual({ decision: 'block', reason: '[no-switch]: stay on model-a' })
+  })
+
+  test('PostModelSwitch returns additionalContext', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PostModelSwitch', 'note')
+    f.commands.set('note', {
+      hookSpecificOutput: {
+        hookEventName: 'PostModelSwitch',
+        additionalContext: 'now on model-b',
+      },
+    })
+    expect(
+      await f.hooks.executePostModelSwitchHooks(
+        { ...info, source: 'command' },
+        f.context,
+      ),
+    ).toEqual(['now on model-b'])
+    expect(f.calls[0]?.input.hook_event_name).toBe('PostModelSwitch')
+  })
+})
+
+test('DirectoryAdded hooks receive the directory and match on source', async () => {
+  const f = fixture()
+  f.addHook(
+    'userSettings',
+    'DirectoryAdded',
+    { type: 'command', command: 'added' },
+    'slash_command',
+  )
+  f.addHook(
+    'userSettings',
+    'DirectoryAdded',
+    { type: 'command', command: 'sdk-only' },
+    'register_repo_root',
+  )
+  f.commands.set('added', { systemMessage: 'indexed' })
+  const results = await f.hooks.executeDirectoryAddedHooks(
+    '/work/extra',
+    'slash_command',
+  )
+  expect(f.calls.map((call) => call.command)).toEqual(['added'])
+  expect(f.calls[0]?.input).toMatchObject({
+    hook_event_name: 'DirectoryAdded',
+    directory: '/work/extra',
+    source: 'slash_command',
+  })
+  expect(results).toEqual([
+    expect.objectContaining({ succeeded: true, systemMessage: 'indexed' }),
+  ])
+})
+
+test('MessageDisplay hooks can replace the displayed text', async () => {
+  const f = fixture()
+  f.add('userSettings', 'MessageDisplay', 'redact')
+  f.commands.set('redact', {
+    hookSpecificOutput: {
+      hookEventName: 'MessageDisplay',
+      displayContent: 'hello [redacted]',
+    },
+  })
+  const results = await collect(
+    f.hooks.executeMessageDisplayHooks(
+      {
+        turnId: 'turn-1',
+        messageId: 'message-1',
+        index: 0,
+        final: true,
+        delta: 'hello secret',
+      },
+      f.context,
+    ),
+  )
+  expect(f.calls[0]?.input).toMatchObject({
+    hook_event_name: 'MessageDisplay',
+    turn_id: 'turn-1',
+    message_id: 'message-1',
+    index: 0,
+    final: true,
+    delta: 'hello secret',
+  })
+  expect(results.find((result) => result.displayContent)?.displayContent).toBe(
+    'hello [redacted]',
+  )
+})
+
+test('model switch hooks match on to_model', async () => {
+  const f = fixture()
+  f.addHook(
+    'userSettings',
+    'PostModelSwitch',
+    { type: 'command', command: 'other' },
+    'model-z',
+  )
+  f.addHook(
+    'userSettings',
+    'PostModelSwitch',
+    { type: 'command', command: 'mine' },
+    'model-b',
+  )
+  await f.hooks.executePostModelSwitchHooks({
+    fromModel: 'model-a',
+    toModel: 'model-b',
+    requestedModel: null,
+    contextTokens: 0,
+    source: 'sdk',
+  })
+  expect(f.calls.map((call) => call.command)).toEqual(['mine'])
+})
+
+test('SessionStart hooks can set the session title and ask to reload skills', async () => {
+  const f = fixture()
+  f.add('userSettings', 'SessionStart', 'setup')
+  f.commands.set('setup', {
+    hookSpecificOutput: {
+      hookEventName: 'SessionStart',
+      sessionTitle: 'Release prep',
+      reloadSkills: true,
+    },
+  })
+  const results = await collect(f.hooks.executeSessionStartHooks('startup'))
+  expect(results.find((result) => result.sessionTitle)?.sessionTitle).toBe(
+    'Release prep',
+  )
+  expect(results.some((result) => result.reloadSkills)).toBe(true)
+})
+
+describe('effort and debug logging', () => {
+  test('command hooks get the effort level as $CLAUDE_EFFORT and effort.level', async () => {
+    const f = fixture()
+    ;(f.state as { effortValue?: string }).effortValue = 'xhigh'
+    f.add('userSettings', 'PreToolUse', 'effort')
+    f.commands.set('effort', {})
+    await collect(pre(f))
+    expect(f.envs.get('effort')?.CLAUDE_EFFORT).toBe('xhigh')
+    expect(f.calls[0]?.input.effort).toEqual({ level: 'xhigh' })
+  })
+
+  test('without an effort value the variable and field are absent', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'effort')
+    f.commands.set('effort', {})
+    await collect(pre(f))
+    expect(f.envs.get('effort')?.CLAUDE_EFFORT).toBeUndefined()
+    expect(f.calls[0]?.input.effort).toBeUndefined()
+  })
+
+  test('--debug logs each command hook outcome and duration', async () => {
+    const f = fixture()
+    f.add('userSettings', 'PreToolUse', 'ok')
+    f.add('userSettings', 'PreToolUse', 'broken')
+    f.addHook('userSettings', 'PreToolUse', {
+      type: 'command',
+      command: 'slow',
+      timeout: 0.05,
+    })
+    f.commands.set('ok', {})
+    f.exits.set('broken', { code: 3 })
+    f.commands.set('slow', () => new Promise(() => {}))
+    await collect(pre(f))
+    const finished = f.logs.filter((line) => /^Hooks: PreToolUse:Read \[/.test(line))
+    expect(finished).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[ok\] finished with status 0 \(\d+ms\)$/),
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[broken\] finished with status 3 \(\d+ms\)$/),
+        expect.stringMatching(/^Hooks: PreToolUse:Read \[slow\] timed out after 50ms \(\d+ms\)$/),
+      ]),
+    )
   })
 })
