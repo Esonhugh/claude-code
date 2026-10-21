@@ -6,6 +6,8 @@ import { toInkColor } from '../../utils/ink.js'
 export type WorkerBadgeProps = {
   name: string
   color: string
+  /** Replaces `@name` in the dialog title, e.g. "from the Explore agent". */
+  label?: string
 }
 
 /**

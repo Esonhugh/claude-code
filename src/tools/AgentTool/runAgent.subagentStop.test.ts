@@ -302,6 +302,28 @@ async function runIsolatedTests(): Promise<void> {
     })
   })
 
+  describe('background agents prompt through the main session dialog', () => {
+    async function spawnBackground(interactive: boolean) {
+      const { setIsInteractive } = await import('../../bootstrap/state.js')
+      setIsInteractive(interactive)
+      queryMode = 'complete'
+      await drainAgent({ isAsync: true })
+      return queryToolUseContexts.at(-1)!.getAppState().toolPermissionContext
+    }
+
+    test('an interactive session lets background agents ask after automated checks', async () => {
+      const context = await spawnBackground(true)
+      expect(context.shouldAvoidPermissionPrompts).toBeUndefined()
+      expect(context.awaitAutomatedChecksBeforeDialog).toBe(true)
+    })
+
+    test('a non-interactive session keeps denying background agent asks', async () => {
+      const context = await spawnBackground(false)
+      expect(context.shouldAvoidPermissionPrompts).toBe(true)
+      expect(context.awaitAutomatedChecksBeforeDialog).toBeUndefined()
+    })
+  })
+
   test('C6 narrows the child agentDefinitions to the resolved allowedAgentTypes', async () => {
     queryMode = 'complete'
     await drainAgent({ allowedAgentTypes: ['worker'] })

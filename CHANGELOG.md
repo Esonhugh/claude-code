@@ -23,6 +23,7 @@
 - 负责人切换自己的模式而 teammate 仍是其他模式时，提示一次 teammate 不会跟着切换。
 - 每次权限模式切换写入 debug 日志 `[permission-mode] from -> to (source: ...)`，来源包括 Shift+Tab、`/plan`、SDK、PermissionRequest hook、teammate 与跟随主会话的子代理。
 - acceptEdits、auto、bypass 模式下仍弹出的权限对话框多一行说明原因：安全检查、hook、Mod 的 `tool.check`、ask 规则或 auto 分类器不可用。
+- 交互式会话中后台子代理需要确认的操作改为在主会话弹出权限对话框（对齐官方），标题标示来源，例如 `Bash command · from the general-purpose agent`，先等 hook 与分类器等自动检查再打扰用户；以前这类请求会被直接拒绝。`-p` 与 SDK 会话仍拒绝，但拒绝消息说明是哪个子代理、以及因为会话没有权限对话框而无法询问。
 
 ### 测试覆盖
 
@@ -30,6 +31,7 @@
 - `src/tools/AgentTool/runAgent.subagentStop.test.ts`、`resumeAgent.permissionMode.test.ts`、`AgentTool.nesting.test.ts`：子代理与 resume 后的子代理随主会话模式变化，显式模式保持固定，模式变化写入 debug 日志。
 - `src/utils/permissions/permissionSetup.test.ts`、`src/utils/swarm/inProcessRunner.permissionMode.test.ts`、`src/utils/swarm/teamHelpers.test.ts`：teammate 模式切换闸门、进程内 teammate 即时读取模式与 auto 规则剥除、负责人提示条件。
 - `src/components/permissions/PermissionRuleExplanation.test.ts`、`src/utils/permissions/permissions.approveForMe.test.ts`：对话框说明文字与分类器不可用时的原因。
+- `src/tools/AgentTool/runAgent.subagentStop.test.ts`、`src/hooks/toolPermission/handlers/explicitUserApproval.test.ts`、`src/components/permissions/PermissionRequestTitle.test.tsx`、`src/utils/permissions/permissions.test.ts`：后台子代理在交互式会话中可提示、对话框标示来源子代理、无法提示时的拒绝消息。
 
 ## 2026-10-21 - 权限规则比对、模式与 hooks 对齐官方
 

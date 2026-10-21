@@ -3,7 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { addInvokedSkill, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import { addInvokedSkill, getIsNonInteractiveSession, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import {
   getCommand,
   getMcpSkillCommands,
@@ -693,7 +693,9 @@ export async function* runAgent({
     // Use explicit canShowPermissionPrompts if provided, otherwise:
     //   - requested bubble: always show prompts (bubbles to parent terminal),
     //     even when the parent's mode was kept
-    //   - default: !isAsync (sync agents show prompts, async agents don't)
+    //   - default: sync agents show prompts; async agents show them in the
+    //     main session dialog when one exists (interactive REPL) and are
+    //     denied otherwise (-p / SDK)
     const shouldAvoidPrompts =
       canShowPermissionPrompts !== undefined
         ? !canShowPermissionPrompts
@@ -701,7 +703,7 @@ export async function* runAgent({
               requestedPermissionMode ?? agentDefinition.permissionMode,
             )
           ? false
-          : isAsync
+          : isAsync && getIsNonInteractiveSession()
     if (shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,
@@ -713,7 +715,8 @@ export async function* runAgent({
     // (classifier, permission hooks) before showing the permission dialog.
     // Since these are background agents, waiting is fine — the user should
     // only be interrupted when automated checks can't resolve the permission.
-    // This applies to bubble mode (always) and explicit canShowPermissionPrompts.
+    // This applies to bubble mode, explicit canShowPermissionPrompts and
+    // background agents of an interactive session.
     if (isAsync && !shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,

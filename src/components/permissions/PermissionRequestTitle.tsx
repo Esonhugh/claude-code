@@ -24,7 +24,8 @@ export function PermissionRequestTitle({
         </Text>
         {workerBadge && (
           <Text dimColor>
-            {'· '}@{workerBadge.name}
+            {'· '}
+            {workerBadge.label ?? `@${workerBadge.name}`}
           </Text>
         )}
       </Box>

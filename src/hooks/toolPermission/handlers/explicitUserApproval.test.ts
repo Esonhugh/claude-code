@@ -246,6 +246,55 @@ if (process.env[childFlag] !== '1') {
     expect(resolved?.behavior).toBe('allow')
   })
 
+  test('interactive flow labels a subagent ask with its source agent', async () => {
+    const testContext = createTestContext()
+    let pushed: { workerBadge?: unknown } | undefined
+    const ctx = {
+      ...testContext.ctx,
+      toolUseContext: {
+        ...testContext.ctx.toolUseContext,
+        agentId: 'agent-1',
+        agentType: 'general-purpose',
+      },
+      pushToQueue: (item: { workerBadge?: unknown }) => {
+        pushed = item
+      },
+    } as unknown as PermissionContext
+    handleInteractivePermission(
+      {
+        ctx,
+        description: 'placeholder',
+        result: { behavior: 'ask', message: 'approval required' },
+        awaitAutomatedChecksBeforeDialog: true,
+        requiresExplicitUserApproval: false,
+      },
+      () => {},
+    )
+    expect(pushed?.workerBadge).toMatchObject({
+      name: 'general-purpose',
+      label: 'from the general-purpose agent',
+    })
+
+    let mainPushed: { workerBadge?: unknown } | undefined
+    handleInteractivePermission(
+      {
+        ctx: {
+          ...testContext.ctx,
+          pushToQueue: (item: { workerBadge?: unknown }) => {
+            mainPushed = item
+          },
+        } as unknown as PermissionContext,
+        description: 'placeholder',
+        result: { behavior: 'ask', message: 'approval required' },
+        awaitAutomatedChecksBeforeDialog: true,
+        requiresExplicitUserApproval: false,
+      },
+      () => {},
+    )
+    expect(mainPushed).toBeDefined()
+    expect(mainPushed?.workerBadge).toBeUndefined()
+  })
+
   test('swarm worker forwards explicit approval to the leader', async () => {
     const testContext = createTestContext()
     const decisionPromise = handleSwarmWorkerPermission({

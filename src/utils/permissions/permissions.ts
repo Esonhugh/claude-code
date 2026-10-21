@@ -95,6 +95,7 @@ import {
   buildClassifierUnavailableMessage,
   buildYoloRejectionMessage,
   DONT_ASK_REJECT_MESSAGE,
+  SUBAGENT_NO_PROMPT_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -1135,13 +1136,18 @@ export async function applyPermissionModeToResult(
       if (hookDecision) {
         return hookDecision
       }
+      const agentType = context.agentId ? context.agentType : undefined
       return {
         behavior: 'deny',
         decisionReason: {
           type: 'asyncAgent',
-          reason: 'Permission prompts are not available in this context',
+          reason: agentType
+            ? `The ${agentType} agent cannot show permission prompts in this session`
+            : 'Permission prompts are not available in this context',
         },
-        message: AUTO_REJECT_MESSAGE(tool.name),
+        message: agentType
+          ? SUBAGENT_NO_PROMPT_REJECT_MESSAGE(tool.name, agentType)
+          : AUTO_REJECT_MESSAGE(tool.name),
       }
     }
   }
