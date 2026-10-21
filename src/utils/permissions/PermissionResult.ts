@@ -20,6 +20,10 @@ export type {
   PermissionResult,
 }
 
+/** decisionReason.reason of an auto mode ask that fell back to a person because the classifier failed open. */
+export const AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON =
+  'Auto mode classifier unavailable — falling back to manual approval'
+
 export function requiresExplicitUserApproval(
   reason: PermissionDecisionReason | undefined,
 ): boolean {

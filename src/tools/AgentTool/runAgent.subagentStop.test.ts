@@ -268,10 +268,22 @@ async function runIsolatedTests(): Promise<void> {
     }
 
     test('an agent without a declared mode reads the parent mode on every read', async () => {
-      const switchParent = await spawn()
-      expect(switchParent('bypassPermissions')).toBe('bypassPermissions')
-      expect(switchParent('default')).toBe('default')
-      expect(switchParent('auto')).toBe('auto')
+      const debug = await import('../../utils/debug.js')
+      const logs: string[] = []
+      const log = spyOn(debug, 'logForDebugging').mockImplementation(message => { logs.push(message) })
+      try {
+        const switchParent = await spawn()
+        expect(switchParent('bypassPermissions')).toBe('bypassPermissions')
+        expect(switchParent('default')).toBe('default')
+        expect(switchParent('auto')).toBe('auto')
+      } finally {
+        log.mockRestore()
+      }
+      expect(logs.filter(line => line.startsWith('[permission-mode]'))).toEqual([
+        '[permission-mode] default -> bypassPermissions (source: parent, subagent general-purpose, parent mode bypassPermissions)',
+        '[permission-mode] bypassPermissions -> default (source: parent, subagent general-purpose, parent mode default)',
+        '[permission-mode] default -> auto (source: parent, subagent general-purpose, parent mode auto)',
+      ])
     })
 
     test('a declared mode is resolved against the parent current mode', async () => {

@@ -216,6 +216,7 @@ import {
   isBypassPermissionsModeDisabled,
   transitionPermissionMode,
 } from 'src/utils/permissions/permissionSetup.js'
+import { logPermissionModeChange } from 'src/utils/permissions/PermissionUpdate.js'
 import {
   tryGenerateSuggestion,
   logSuggestionOutcome,
@@ -5439,6 +5440,7 @@ function handleSetPermissionMode(
     },
   })
 
+  logPermissionModeChange('sdk', toolPermissionContext.mode, request.mode, 'set_permission_mode')
   return { ...next, mode: request.mode }
 }
 

@@ -45,6 +45,7 @@ import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTask
 import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
 import type { PermissionMode } from '../../types/permissions.js'
+import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdate.js'
 import type {
   AssistantMessage,
   Message,
@@ -568,10 +569,8 @@ export async function* runAgent({
     const mode =
       requestedPermissionMode ??
       resolveDeclaredAgentPermissionMode(parentMode, agentDefinition.permissionMode)
-    if (resolvedFor && resolvedFor.mode !== mode) {
-      logForDebugging(
-        `[runAgent] permission mode ${resolvedFor.mode} -> ${mode} (source: parent, parent mode ${parentMode}, agentType=${agentDefinition.agentType})`,
-      )
+    if (resolvedFor) {
+      logPermissionModeChange('parent', resolvedFor.mode, mode, `subagent ${agentDefinition.agentType}, parent mode ${parentMode}`)
     }
     resolvedFor = { parentMode, mode }
     return mode

@@ -90,7 +90,13 @@ if (process.env[childFlag] !== '1') {
   test('Approve for me asks the person when the reviewer is unavailable', async () => {
     useOpenAIOAuth(true)
     reply = new Error('reviewer request failed')
-    expect((await check('unavailable')).behavior).toBe('ask')
+    const decision = await check('unavailable')
+    expect(decision.behavior).toBe('ask')
+    // The dialog can then say why auto mode is asking.
+    expect(decision.decisionReason).toEqual({
+      type: 'other',
+      reason: 'Auto mode classifier unavailable — falling back to manual approval',
+    })
   })
 
   test('Approve for me asks the person when the reviewer answer cannot be parsed', async () => {

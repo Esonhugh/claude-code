@@ -34,6 +34,7 @@ import type { PermissionDecision } from '../../utils/permissions/PermissionResul
 import { recheckPermissionRequestHookInput } from '../../utils/permissions/permissions.js'
 import {
   applyPermissionUpdates,
+  logPermissionModeChange,
   persistPermissionUpdates,
   supportsPersistence,
 } from '../../utils/permissions/PermissionUpdate.js'
@@ -336,8 +337,15 @@ function createPermissionContext(
       permissionUpdates: PermissionUpdate[],
       permissionPromptStartTimeMs?: number,
     ): Promise<PermissionAllowDecision> {
+      const modeBefore = toolUseContext.getAppState().toolPermissionContext.mode
       const acceptedPermanentUpdates =
         await this.persistPermissions(permissionUpdates)
+      logPermissionModeChange(
+        'hook',
+        modeBefore,
+        toolUseContext.getAppState().toolPermissionContext.mode,
+        'PermissionRequest hook',
+      )
       this.logDecision(
         {
           decision: 'accept',

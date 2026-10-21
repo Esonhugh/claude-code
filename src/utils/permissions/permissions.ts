@@ -25,7 +25,10 @@ import {
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
-import { requiresExplicitUserApproval } from './PermissionResult.js'
+import {
+  AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON,
+  requiresExplicitUserApproval,
+} from './PermissionResult.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -42,6 +45,7 @@ import type {
 import {
   applyPermissionUpdate,
   applyPermissionUpdates,
+  logPermissionModeChange,
   persistPermissionUpdate,
   persistPermissionUpdates,
 } from './PermissionUpdate.js'
@@ -560,13 +564,14 @@ export async function runPermissionRequestHooksForHeadlessAgent(
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions)
-          context.setAppState(prev => ({
-            ...prev,
-            toolPermissionContext: applyPermissionUpdates(
+          context.setAppState(prev => {
+            const next = applyPermissionUpdates(
               prev.toolPermissionContext,
               decision.updatedPermissions!,
-            ),
-          }))
+            )
+            logPermissionModeChange('hook', prev.toolPermissionContext.mode, next.mode, 'PermissionRequest hook (headless)')
+            return { ...prev, toolPermissionContext: next }
+          })
         }
         return {
           behavior: 'allow',
@@ -1042,7 +1047,17 @@ export async function applyPermissionModeToResult(
             'Auto mode classifier unavailable, falling back to normal permission handling (fail open)',
             { level: 'warn' },
           )
-          return result
+          // Say why auto mode is asking, unless a rule or hook already does.
+          const why = result.decisionReason?.type
+          return why === 'rule' || why === 'hook' || why === 'workingDir'
+            ? result
+            : {
+                ...result,
+                decisionReason: {
+                  type: 'other',
+                  reason: AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON,
+                },
+              }
         }
 
         // Approve for me never turns a reviewer it cannot read into a decision; the person decides.
