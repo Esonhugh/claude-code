@@ -175,6 +175,7 @@ function fixture() {
   )
   const snapshot = evaluate('./hooks/hooksConfigSnapshot.ts', (name) => {
     if (name.endsWith('state.js')) return bootstrap
+    if (name.endsWith('envUtils.js')) return { isSafeMode: () => false }
     if (name.endsWith('pluginOnlyPolicy.js')) return pluginPolicy
     if (name.endsWith('settings.js')) return settingsModule
     if (name.endsWith('constants.js')) return constants

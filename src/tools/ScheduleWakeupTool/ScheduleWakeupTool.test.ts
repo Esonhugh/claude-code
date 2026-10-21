@@ -35,42 +35,27 @@ test('delays are clamped to [60, 3600] seconds', () => {
 })
 
 test('scheduling requires delaySeconds, reason, prompt and noop unless stopping', async () => {
-  const missingDelay = await ScheduleWakeupTool.validateInput!(
-    { reason: 'r', prompt: '/loop x', noop: true },
-    context,
-  )
+  const missingDelay = await ScheduleWakeupTool.validateInput!({ reason: 'r', prompt: '/loop x', noop: true })
   assert.equal(missingDelay.result, false)
-  const missingPrompt = await ScheduleWakeupTool.validateInput!(
-    { delaySeconds: 60, reason: 'r', noop: true },
-    context,
-  )
+  const missingPrompt = await ScheduleWakeupTool.validateInput!({ delaySeconds: 60, reason: 'r', noop: true })
   assert.equal(missingPrompt.result, false)
-  const missingNoop = await ScheduleWakeupTool.validateInput!(
-    { delaySeconds: 60, reason: 'r', prompt: '/loop x' },
-    context,
-  )
+  const missingNoop = await ScheduleWakeupTool.validateInput!({ delaySeconds: 60, reason: 'r', prompt: '/loop x' })
   assert.equal(missingNoop.result, false)
   assert.deepEqual(
-    await ScheduleWakeupTool.validateInput!({ stop: true }, context),
+    await ScheduleWakeupTool.validateInput!({ stop: true }),
     { result: true },
   )
 })
 
 test('a wakeup is a session-only loop task that fires at the exact time and supersedes the pending one', async () => {
   const before = Date.now()
-  const first = await ScheduleWakeupTool.call(
-    { delaySeconds: 270, reason: 'watching CI', prompt: '/loop check CI', noop: false },
-    context,
-  )
+  const first = await ScheduleWakeupTool.call({ delaySeconds: 270, reason: 'watching CI', prompt: '/loop check CI', noop: false })
   assert.equal(first.data.clampedDelaySeconds, 270)
   assert.equal(first.data.wasClamped, false)
   assert.ok(first.data.scheduledFor >= before + 270_000)
   assert.equal(getScheduledTasksEnabled(), true)
 
-  const second = await ScheduleWakeupTool.call(
-    { delaySeconds: 5, reason: 'quick recheck', prompt: '/loop check CI', noop: true },
-    context,
-  )
+  const second = await ScheduleWakeupTool.call({ delaySeconds: 5, reason: 'quick recheck', prompt: '/loop check CI', noop: true })
   assert.equal(second.data.clampedDelaySeconds, 60)
   assert.equal(second.data.wasClamped, true)
 
@@ -90,11 +75,8 @@ test('a wakeup is a session-only loop task that fires at the exact time and supe
 
 test('stop cancels pending loop wakeups but leaves other cron tasks alone', async () => {
   addSessionCronTask({ id: 'cron0001', cron: '*/5 * * * *', prompt: 'other', createdAt: Date.now(), recurring: true })
-  await ScheduleWakeupTool.call(
-    { delaySeconds: 600, reason: 'idle', prompt: '/loop tidy', noop: true },
-    context,
-  )
-  const stopped = await ScheduleWakeupTool.call({ stop: true }, context)
+  await ScheduleWakeupTool.call({ delaySeconds: 600, reason: 'idle', prompt: '/loop tidy', noop: true })
+  const stopped = await ScheduleWakeupTool.call({ stop: true })
   assert.equal(stopped.data.stopped, true)
   assert.equal(stopped.data.cancelledWakeups, 1)
   assert.deepEqual(getSessionCronTasks().map(t => t.id), ['cron0001'])
@@ -103,7 +85,7 @@ test('stop cancels pending loop wakeups but leaves other cron tasks alone', asyn
     /^Loop stopped — cancelled 1 pending wakeup\(s\)/,
   )
 
-  const again = await ScheduleWakeupTool.call({ stop: true }, context)
+  const again = await ScheduleWakeupTool.call({ stop: true })
   assert.equal(again.data.cancelledWakeups, 0)
   assert.match(
     String(ScheduleWakeupTool.mapToolResultToToolResultBlockParam(again.data, 't').content),
