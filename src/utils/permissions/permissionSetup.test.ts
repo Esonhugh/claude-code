@@ -1,6 +1,8 @@
-import { afterEach, expect, test } from 'bun:test'
+import { afterEach, beforeEach, expect, test } from 'bun:test'
 import {
   getSessionSettingsCache,
+  resetSettingsCache,
+  setCachedSettingsForSource,
   setSessionSettingsCache,
 } from '../settings/settingsCache.js'
 import type { SettingsJson } from '../settings/types.js'
@@ -17,12 +19,20 @@ const {
 const { SettingsSchema } = await import('../settings/types.js')
 
 const originalSettings = getSessionSettingsCache()
+const originalRemote = process.env.CLAUDE_CODE_REMOTE
 
 function configure(settings: SettingsJson): void {
   setSessionSettingsCache({ settings, errors: [] })
 }
 
+beforeEach(() => {
+  delete process.env.CLAUDE_CODE_REMOTE
+})
+
 afterEach(() => {
+  if (originalRemote === undefined) delete process.env.CLAUDE_CODE_REMOTE
+  else process.env.CLAUDE_CODE_REMOTE = originalRemote
+  resetSettingsCache()
   if (originalSettings) setSessionSettingsCache(originalSettings)
 })
 
@@ -46,4 +56,34 @@ test('"defaultMode": "manual" is valid settings and resolves to the default mode
   expect(initialPermissionModeFromCLI({ permissionModeCli: undefined, dangerouslySkipPermissions: false }).mode).toBe('default')
   configure({ permissions: { defaultMode: 'manual' } } as SettingsJson)
   expect(initialPermissionModeFromCLI({ permissionModeCli: 'acceptEdits', dangerouslySkipPermissions: false }).mode).toBe('acceptEdits')
+})
+
+function configureSources(sources: Partial<Record<'userSettings' | 'projectSettings' | 'localSettings' | 'flagSettings' | 'policySettings', SettingsJson>>): void {
+  resetSettingsCache()
+  let merged: SettingsJson = {}
+  for (const source of ['userSettings', 'projectSettings', 'localSettings', 'flagSettings', 'policySettings'] as const) {
+    const settings = sources[source] ?? null
+    setCachedSettingsForSource(source, settings)
+    if (settings?.permissions?.defaultMode) merged = { ...merged, permissions: { defaultMode: settings.permissions.defaultMode } }
+  }
+  setSessionSettingsCache({ settings: merged, errors: [] })
+}
+
+test('defaultMode bypassPermissions from project or local settings is ignored', () => {
+  for (const source of ['projectSettings', 'localSettings'] as const) {
+    configureSources({ [source]: { permissions: { defaultMode: 'bypassPermissions' } } })
+    expect(initialPermissionModeFromCLI({ permissionModeCli: undefined, dangerouslySkipPermissions: false }).mode).toBe('default')
+  }
+})
+
+test('defaultMode bypassPermissions from user, flag or policy settings still applies', () => {
+  for (const source of ['userSettings', 'flagSettings', 'policySettings'] as const) {
+    configureSources({ [source]: { permissions: { defaultMode: 'bypassPermissions' } } })
+    expect(initialPermissionModeFromCLI({ permissionModeCli: undefined, dangerouslySkipPermissions: false }).mode).toBe('bypassPermissions')
+  }
+})
+
+test('project defaultMode acceptEdits still applies', () => {
+  configureSources({ projectSettings: { permissions: { defaultMode: 'acceptEdits' } } })
+  expect(initialPermissionModeFromCLI({ permissionModeCli: undefined, dangerouslySkipPermissions: false }).mode).toBe('acceptEdits')
 })
