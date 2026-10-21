@@ -273,6 +273,25 @@ export const SettingsSchema = lazySchema(() =>
         .max(1_000_000)
         .optional()
         .describe('Context token window at which automatic compaction begins'),
+      modelSettings: z
+        .record(
+          z.string(),
+          z
+            .object({
+              autoCompactWindow: z
+                .union([
+                  z.literal('auto'),
+                  z.number().int().min(100_000).max(1_000_000),
+                ])
+                .optional()
+                .describe(
+                  'Auto-compact window for this model, in tokens (100000 to 1000000), or "auto" for the window tuned for the model. Within one settings file it replaces the top-level autoCompactWindow for the model. /autocompact saves here. The canonical model name as key also matches its dated, [1m], Bedrock and Vertex spellings.',
+                ),
+            })
+            .passthrough(),
+        )
+        .optional()
+        .describe('Per-model settings keyed by canonical model name.'),
       managedSourcesBehavior: z
         .enum(['first-wins', 'merge'])
         .optional()
@@ -394,6 +413,12 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Override the default model used by Claude Code'),
+      fallbackModel: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Fallback model(s) tried in order when the primary model is overloaded or unavailable. Each element accepts a model name or alias; "default" expands to the default model. CLI --fallback-model takes precedence.',
+        ),
       compact: z
         .object({
           mode: z
@@ -503,6 +528,12 @@ export const SettingsSchema = lazySchema(() =>
             .describe(
               'Directories to include when creating worktrees, via git sparse-checkout (cone mode). ' +
                 'Dramatically faster in large monorepos — only the listed paths are written to disk.',
+            ),
+          baseRef: z
+            .enum(['fresh', 'head'])
+            .optional()
+            .describe(
+              "Which ref new worktrees branch from. 'fresh' (default) branches from origin/<default-branch> for a clean tree. 'head' branches from your current local HEAD so unpushed commits and feature-branch state are present. Applies to --worktree, EnterWorktree, and agent isolation.",
             ),
         })
         .optional()
@@ -855,6 +886,13 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
+        ),
+      awaySummaryEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, the automatic session recap shown after returning to an ' +
+            'unfocused terminal is disabled. /recap still works on demand.',
         ),
       showClearContextOnPlanAccept: z
         .boolean()

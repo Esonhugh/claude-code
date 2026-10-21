@@ -10,7 +10,7 @@ import { z } from 'zod/v4'
 import type { Tool } from '../../Tool.js'
 import { ensureModDeclarations, generateModDeclarationFiles } from './declarations.js'
 import { createModsRuntime } from './runtime.js'
-import officialDeclaration from '../../../assets/mods-2.1.292.d.ts.txt' with {type: 'text'}
+import officialDeclaration from '../../../assets/mods-2.1.303.d.ts.txt' with {type: 'text'}
 
 const repository = new URL('../../../', import.meta.url).pathname
 
@@ -626,17 +626,15 @@ describe('generated Mods declarations', () => {
     }
   })
 
-  test('are deterministic and version-bound with exactly the verified295 Button extension', () => {
+  test('are deterministic and version-bound with exactly the official 303 source', () => {
     expect(generateModDeclarationFiles('1.2.3')).toEqual(generateModDeclarationFiles('1.2.3'))
     const text = source('1.2.3'), header = '// Written by Claude Code 1.2.3.\n'
     expect(text.startsWith(header)).toBe(true)
     const end = text.lastIndexOf('\n// Claude Code owned declaration sha256=')
     expect(end).toBeGreaterThan(header.length)
     // The original 45 KB subset omitted public names and browser APIs. Full
-    // Whole-body equality includes the two pinned official295 Button blocks;
-    // the independent projection test proves every other292 byte is unchanged.
-    expect(createHash('sha256').update(text.slice(text.indexOf('// Claude Code function hooks:'), end)).digest('hex')).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
-    expect(createHash('sha256').update(source('1.2.4').slice(source('1.2.4').indexOf('// Claude Code function hooks:'), end)).digest('hex')).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
+    expect(createHash('sha256').update(text.slice(text.indexOf('// Claude Code function hooks:'), end)).digest('hex')).toBe('8afa71883ecfa52901eb7a04cf31fef700d8ba565eaad244f4884cc620f8d56e')
+    expect(createHash('sha256').update(source('1.2.4').slice(source('1.2.4').indexOf('// Claude Code function hooks:'), end)).digest('hex')).toBe('8afa71883ecfa52901eb7a04cf31fef700d8ba565eaad244f4884cc620f8d56e')
   })
 
   test('types register, state families, CAS, UI, usage, and the implemented testing expect', () => {

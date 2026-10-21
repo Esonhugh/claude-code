@@ -30,7 +30,7 @@ afterEach(async () => {
   });
   await rm(root, { recursive: true, force: true });
 });
-async function run(body: string) {
+async function run(body: string, turnId?: string) {
   const entry = join(root, "register.mjs");
   await writeFile(
     entry,
@@ -53,11 +53,16 @@ async function run(body: string) {
       entrypoints: [entry],
     },
   ]);
-  return (
-    (await runtime.dispatch("tool.call", {}, async () => ({
-      result: "missed",
-    }))) as { result: unknown }
-  ).result;
+  const release = turnId === undefined ? undefined : runtime.beginPublicTurn(turnId);
+  try {
+    return (
+      (await runtime.dispatch("tool.call", {}, async () => ({
+        result: "missed",
+      }))) as { result: unknown }
+    ).result;
+  } finally {
+    release?.();
+  }
 }
 // Official 2.1.292's headless entry rejects before dispatching compaction hooks.
 test("headless session.compact rejects catchably with the official error and leaves hooks active", async () => {
@@ -85,6 +90,45 @@ test("session.compact validates optional instructions before checking the headle
       error:
         "HooksError: sender: $.session.compact takes { instructions } (a string) or nothing",
     }),
+    compactHooks: 0,
+  });
+});
+
+test("session.compact refuses while DISABLE_COMPACT is set, before the headless host", async () => {
+  const saved = process.env.DISABLE_COMPACT;
+  process.env.DISABLE_COMPACT = "1";
+  try {
+    expect(
+      await run(`try{await $.session.compact()}catch(error){values.push({name:error.name,error:String(error)})}`),
+    ).toEqual({
+      values: [
+        {
+          name: "HooksError",
+          error:
+            "HooksError: sender: $.session.compact: compaction is switched off in this session (DISABLE_COMPACT), for /compact and plugins alike",
+        },
+      ],
+      compactHooks: 0,
+    });
+  } finally {
+    if (saved === undefined) delete process.env.DISABLE_COMPACT;
+    else process.env.DISABLE_COMPACT = saved;
+  }
+});
+test("session.compact refuses while a turn runs, naming it", async () => {
+  expect(
+    await run(
+      `try{await $.session.compact()}catch(error){values.push({name:error.name,error:String(error)})}`,
+      "turn-7",
+    ),
+  ).toEqual({
+    values: [
+      {
+        name: "HooksError",
+        error:
+          "HooksError: sender: $.session.compact: a turn is running (turn-7); the conversation compacts between turns, so call it from turn.complete or later",
+      },
+    ],
     compactHooks: 0,
   });
 });

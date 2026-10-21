@@ -76,7 +76,7 @@ import {
   modelSupportsEffort,
   resolveAppliedEffort,
 } from '../../utils/effort.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
@@ -497,6 +497,24 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
  * Configure effort parameters for API request.
  *
  */
+const MIN_STREAM_IDLE_TIMEOUT_MS = 300_000
+
+// On for every provider unless CLAUDE_ENABLE_STREAM_WATCHDOG is explicitly
+// falsy. CLAUDE_STREAM_IDLE_TIMEOUT_MS can only lengthen the 5-minute window.
+export function getStreamIdleWatchdogConfig(): {
+  enabled: boolean
+  idleTimeoutMs: number
+} {
+  const configured = parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10)
+  return {
+    enabled: !isEnvDefinedFalsy(process.env.CLAUDE_ENABLE_STREAM_WATCHDOG),
+    idleTimeoutMs: Math.max(
+      configured > 0 ? configured : 0,
+      MIN_STREAM_IDLE_TIMEOUT_MS,
+    ),
+  }
+}
+
 export function configureEffortParams(
   effortValue: EffortValue | undefined,
   outputConfig: BetaOutputConfig,
@@ -2106,11 +2124,10 @@ async function* queryModel(
     // kill hung streams. Without this, a silently dropped connection can hang
     // the session indefinitely since the SDK's request timeout only covers the
     // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.CLAUDE_ENABLE_STREAM_WATCHDOG,
-    )
-    const STREAM_IDLE_TIMEOUT_MS =
-      parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
+    const {
+      enabled: streamWatchdogEnabled,
+      idleTimeoutMs: STREAM_IDLE_TIMEOUT_MS,
+    } = getStreamIdleWatchdogConfig()
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
@@ -2438,6 +2455,7 @@ async function* queryModel(
               type: 'assistant',
               uuid: randomUUID(),
               timestamp: new Date().toISOString(),
+              requestedModel: options.model,
               ...(isAnt() &&
                 research !== undefined && { research }),
               ...(advisorModel && { advisorModel }),
@@ -2827,6 +2845,7 @@ async function* queryModel(
         type: 'assistant',
         uuid: randomUUID(),
         timestamp: new Date().toISOString(),
+        requestedModel: options.model,
         ...(isAnt() &&
           research !== undefined && {
             research,
@@ -2929,6 +2948,7 @@ async function* queryModel(
           type: 'assistant',
           uuid: randomUUID(),
           timestamp: new Date().toISOString(),
+          requestedModel: options.model,
           ...(isAnt() &&
             research !== undefined && { research }),
           ...(advisorModel && { advisorModel }),

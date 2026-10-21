@@ -96,6 +96,7 @@ export const KEYBINDING_ACTIONS = [
   'chat:thinkingToggle',
   'chat:submit',
   'chat:queueSubmit',
+  'chat:sendNow',
   'chat:newline',
   'chat:undo',
   'chat:externalEditor',

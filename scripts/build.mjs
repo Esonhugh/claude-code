@@ -82,6 +82,9 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'UDS_INBOX',
     'KAIROS_CHANNELS',
     'TRANSCRIPT_CLASSIFIER',
+    'MONITOR_TOOL',
+    'EXTRACT_MEMORIES',
+    'AWAY_SUMMARY',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

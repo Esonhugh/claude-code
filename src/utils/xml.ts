@@ -36,3 +36,18 @@ export function escapeClosingTag(text: string, tag: string): string {
   }
   return text.replace(pattern, '<\\')
 }
+
+const tagOpeners = new Map<string, RegExp>()
+
+/** Neutralize every opening `<tag` and closing `</tag` (and lookalikes) of `tags` in `text` as `<\\`. */
+export function escapeTagOpeners(text: string, tags: readonly string[]): string {
+  const key = tags.join('\0')
+  let pattern = tagOpeners.get(key)
+  if (!pattern) {
+    const names = tags.map(tag => [...tag].join(separators)).join('|')
+    // eslint-disable-next-line no-misleading-character-class
+    pattern = new RegExp(`[${opening}](?!\\\\)(?=${filler}(?:[/\uff0f\u2215\u2044]${filler})?(?:${names})(?:[^A-Za-z0-9_\\-]|$))`, 'giu')
+    tagOpeners.set(key, pattern)
+  }
+  return text.replace(pattern, '<\\')
+}

@@ -67,6 +67,13 @@ export type CronTask = {
    * REPL's. Never written to disk (teammate crons are always session-only).
    */
   agentId?: string
+  /** Runtime-only. 'loop' marks a ScheduleWakeup (dynamic /loop) wakeup. */
+  kind?: 'loop'
+  /**
+   * Runtime-only. Exact epoch ms to fire at, bypassing cron matching and
+   * jitter. Set by ScheduleWakeup, whose delays are second-granular.
+   */
+  scheduledFor?: number
 }
 
 type CronFile = { tasks: CronTask[] }

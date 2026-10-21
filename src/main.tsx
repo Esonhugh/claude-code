@@ -260,6 +260,7 @@ import {
   getUserSpecifiedModelSetting,
   normalizeModelStringForAPI,
   parseUserSpecifiedModel,
+  resolveFallbackModels,
 } from './utils/model/model.js'
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js'
 import {
@@ -397,6 +398,7 @@ import {
   setDirectConnectServerUrl,
   setFlagSettingsPath,
   setInitialMainLoopModel,
+  setSessionFallbackModels,
   setInlinePlugins,
   setInlinePluginsNoMcp,
   setInlinePluginUrls,
@@ -1649,7 +1651,7 @@ async function run(): Promise<CommanderCommand> {
     )
     .option(
       '--fallback-model <model>',
-      'Enable automatic fallback to specified model when default model is overloaded (only works with --print)',
+      'Enable automatic fallback to specified model(s) when the default model is overloaded or not available. Accepts a comma-separated list to try each in order. Re-tries the primary at the start of each user turn.',
     )
     .addOption(
       new Option(
@@ -3016,8 +3018,12 @@ async function run(): Promise<CommanderCommand> {
       // NOTE: Model resolution happens after setup() to ensure trust is established before AWS auth
       const userSpecifiedModel =
         options.model === 'default' ? null : options.model
-      const userSpecifiedFallbackModel =
-        fallbackModel === 'default' ? getDefaultMainLoopModel() : fallbackModel
+      const fallbackModels = resolveFallbackModels(
+        fallbackModel,
+        getInitialSettings().fallbackModel,
+      )
+      setSessionFallbackModels(fallbackModels)
+      const userSpecifiedFallbackModel = fallbackModels[0]
 
       // Reuse preSetupCwd unless setup() chdir'd (worktreeEnabled). Saves a
       // getCwd() syscall in the common path.

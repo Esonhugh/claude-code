@@ -177,9 +177,23 @@ export function getRuntimeMainLoopModel(params: {
   return mainLoopModel
 }
 
-/** Provider fallback only; explicit session, environment and settings win. */
+/**
+ * Provider fallback only; explicit session, environment and settings win.
+ * An org-configured served default outranks ANTHROPIC_DEFAULT_MODEL, which in
+ * turn outranks the account's served default and the built-in default.
+ */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
-  return getUsableServedDefaultModel()?.model ?? getDefaultOpusModel()
+  const served = getUsableServedDefaultModel()
+  if (served?.orgConfigured) return served.model
+  return getEnvDefaultModelSetting() ?? served?.model ?? getDefaultOpusModel()
+}
+
+function getEnvDefaultModelSetting(): ModelName | undefined {
+  const value = process.env.ANTHROPIC_DEFAULT_MODEL?.trim()
+  if (!value) return undefined
+  const normalized = value.toLowerCase()
+  if (normalized === 'default' || normalized === 'inherit') return undefined
+  return isModelAllowed(value) ? value : undefined
 }
 
 // Official builds take the served default unless an env override pins the
@@ -570,6 +584,39 @@ export function parseUserSpecifiedModel(
     return modelInputTrimmed.replace(/\[1m\]$/i, '').trim() + '[1m]'
   }
   return modelInputTrimmed
+}
+
+const MAX_FALLBACK_MODELS = 3
+
+/**
+ * Ordered fallback chain: --fallback-model (comma-separated) wins over the
+ * fallbackModel setting. Entries are resolved like --model ("default" expands
+ * to the default model), de-duplicated, filtered by the availableModels
+ * allowlist and capped at three.
+ */
+export function resolveFallbackModels(
+  cliValue: string | undefined,
+  settingsValue: unknown,
+): string[] {
+  const raw =
+    cliValue !== undefined
+      ? cliValue.split(',')
+      : Array.isArray(settingsValue)
+        ? settingsValue
+        : []
+  const models: string[] = []
+  for (const entry of raw) {
+    const trimmed = typeof entry === 'string' ? entry.trim() : ''
+    if (!trimmed) continue
+    const model =
+      trimmed === 'default'
+        ? getDefaultMainLoopModel()
+        : parseUserSpecifiedModel(trimmed)
+    if (models.includes(model) || !isModelAllowed(model)) continue
+    models.push(model)
+    if (models.length === MAX_FALLBACK_MODELS) break
+  }
+  return models
 }
 
 /**

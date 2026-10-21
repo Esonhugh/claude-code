@@ -153,6 +153,25 @@ export const getHookEventMetadata = memoize(
           values: ['manual', 'auto'],
         },
       },
+      PreModelSwitch: {
+        summary:
+          'Before a requested model switch (/model, model picker, set_model)',
+        description:
+          'Input to command is JSON with from_model, to_model, requested_model, source and context_tokens.\nExit code 0 - switch proceeds; JSON permissionDecision allow/deny/ask as for PreToolUse\nExit code 2 - block the switch and show stderr to user\nOther exit codes - show stderr to user only and continue',
+        matcherMetadata: {
+          fieldToMatch: 'to_model',
+          values: [],
+        },
+      },
+      PostModelSwitch: {
+        summary: 'After the session model changes',
+        description:
+          'Input to command is JSON with from_model, to_model, requested_model, source and context_tokens.\nExit code 0 - stdout shown to Claude on the next request\nOther exit codes - show stderr to user only',
+        matcherMetadata: {
+          fieldToMatch: 'to_model',
+          values: [],
+        },
+      },
       SessionEnd: {
         summary: 'When a session is ending',
         description:
@@ -264,6 +283,20 @@ export const getHookEventMetadata = memoize(
         description:
           'Input to command is JSON with file_path and event (change, add, unlink).\nCLAUDE_ENV_FILE is set — write bash exports there to apply env to subsequent BashTool commands.\nThe matcher field specifies filenames to watch in the current directory (e.g. ".envrc|.env").\nHook output can include hookSpecificOutput.watchPaths (array of absolute paths) to dynamically update the watch list.\nExit code 0 - command completes successfully\nOther exit codes - show stderr to user only',
       },
+      DirectoryAdded: {
+        summary: 'After a working directory is added mid-session',
+        description:
+          'Fires after /add-dir registers a new working directory, after the sandbox configuration has been refreshed.\nInput to command is JSON with directory (absolute path) and source ("slash_command" or "register_repo_root").\nExit code 0 - command completes successfully\nOther exit codes - stderr is debug-logged; a failure count is summarized to Claude and hook systemMessage output reaches Claude as context',
+        matcherMetadata: {
+          fieldToMatch: 'source',
+          values: ['slash_command', 'register_repo_root'],
+        },
+      },
+      MessageDisplay: {
+        summary: 'While assistant message text is displayed',
+        description:
+          'Input to command is JSON with turn_id, message_id, index, final, and delta (the message text).\nOutput JSON with hookSpecificOutput containing displayContent to replace the delta on screen.\nDisplay-only: the stored message and what the model sees are untouched.\nExit code 0 - use hook response if provided\nOther exit codes - display the original delta',
+      },
     }
   },
   toolNames => toolNames.slice().sort().join(','),
@@ -289,6 +322,8 @@ export function groupHooksByEventAndMatcher(
     SubagentStop: {},
     PreCompact: {},
     PostCompact: {},
+    PreModelSwitch: {},
+    PostModelSwitch: {},
     PermissionRequest: {},
     Setup: {},
     TeammateIdle: {},
@@ -302,6 +337,8 @@ export function groupHooksByEventAndMatcher(
     InstructionsLoaded: {},
     CwdChanged: {},
     FileChanged: {},
+    DirectoryAdded: {},
+    MessageDisplay: {},
   }
 
   const metadata = getHookEventMetadata(toolNames)

@@ -25,7 +25,7 @@ import {
   isEnterpriseSubscriber,
 } from '../../utils/auth.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { errorMessage } from '../../utils/errors.js'
+import { errorMessage, HttpResponseError } from '../../utils/errors.js'
 import {
   type CooldownReason,
   handleFastModeOverageRejection,
@@ -55,6 +55,8 @@ import { isAnt, userType } from 'src/utils/userType.js'
 const abortError = () => new APIUserAbortError()
 
 const DEFAULT_MAX_RETRIES = 10
+const RETRY_WATCHDOG_DEFAULT_MAX_RETRIES = 300
+const MAX_RETRIES_CAP = 15
 const FLOOR_OUTPUT_TOKENS = 3000
 const MAX_529_RETRIES = 3
 export const BASE_DELAY_MS = 500
@@ -93,19 +95,64 @@ function shouldRetry529(querySource: QuerySource | undefined): boolean {
   )
 }
 
-// CLAUDE_CODE_UNATTENDED_RETRY: for unattended sessions (ant-only). Retries 429/529
-// indefinitely with higher backoff and periodic keep-alive yields so the host
-// environment does not mark the session idle mid-wait.
-// TODO(ANT-344): the keep-alive via SystemAPIErrorMessage yields is a stopgap
-// until there's a dedicated keep-alive channel.
+// CLAUDE_CODE_RETRY_WATCHDOG: unattended retry mode. Retries 429/529
+// indefinitely (bounded by CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS) with higher
+// backoff and periodic keep-alive yields so the host environment does not mark
+// the session idle mid-wait.
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
 const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 30_000
 
 function isPersistentRetryEnabled(): boolean {
-  return feature('UNATTENDED_RETRY')
-    ? isEnvTruthy(process.env.CLAUDE_CODE_UNATTENDED_RETRY)
-    : false
+  return isEnvTruthy(process.env.CLAUDE_CODE_RETRY_WATCHDOG)
+}
+
+function getPositiveIntEnv(name: string): number | undefined {
+  const value = process.env[name]
+  if (!value || !/^\d+$/.test(value)) return undefined
+  const parsed = parseInt(value, 10)
+  return parsed >= 1 ? parsed : undefined
+}
+
+// Organization spend caps and disabled overage do not reset on a timer, so
+// waiting them out (even in unattended mode) never succeeds.
+const SPEND_LIMIT_OVERAGE_REASONS = new Set([
+  'org_spend_cap_reached',
+  'org_level_disabled_until',
+])
+
+function isSpendLimitError(error: APIError): boolean {
+  if (error.status !== 429) return false
+  if (error.message?.includes('service_spend_limit_reached')) return true
+  const reason = error.headers?.get?.(
+    'anthropic-ratelimit-unified-overage-disabled-reason',
+  )
+  return !!reason && SPEND_LIMIT_OVERAGE_REASONS.has(reason)
+}
+
+// OpenAI-compatible transport errors are not SDK APIErrors. Map the transient
+// statuses onto APIError so they share the same retry policy; everything else
+// (auth, bad request, exhausted quota, ...) still fails immediately as before.
+function toRetryableError(error: unknown): unknown {
+  if (
+    error instanceof HttpResponseError &&
+    (error.status === 408 ||
+      error.status === 409 ||
+      (error.status === 429 &&
+        !error.message.includes('usage_limit_reached') &&
+        !error.message.includes('insufficient_quota')) ||
+      error.status >= 500)
+  ) {
+    const apiError = APIError.generate(
+      error.status,
+      undefined,
+      undefined,
+      error.headers ?? new Headers(),
+    )
+    apiError.message = error.message
+    return apiError
+  }
+  return error
 }
 
 function isTransientCapacityError(error: unknown): boolean {
@@ -191,6 +238,7 @@ export async function* withRetry<T>(
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
+  const capacityWait = { spentMs: 0, usageLimitSpentMs: 0 }
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (options.signal?.aborted) {
       throw new APIUserAbortError()
@@ -256,7 +304,8 @@ export async function* withRetry<T>(
       }
 
       return await operation(client, attempt, retryContext)
-    } catch (error) {
+    } catch (caught) {
+      const error = toRetryableError(caught)
       lastError = error
       logForDebugging(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
@@ -330,34 +379,36 @@ export async function* withRetry<T>(
           query_source:
             options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
-        throw new CannotRetryError(error, retryContext)
+        throw new CannotRetryError(caught, retryContext)
       }
 
-      // Track consecutive 529 errors
+      // Track consecutive 529 errors. A configured fallback model applies to
+      // any primary model; otherwise only non-custom Opus (or every model
+      // with FALLBACK_FOR_ALL_PRIMARY_MODELS) counts toward the 529 limit.
+      const fallbackModel =
+        options.fallbackModel && options.fallbackModel !== options.model
+          ? options.fallbackModel
+          : undefined
       if (
         is529Error(error) &&
-        // If FALLBACK_FOR_ALL_PRIMARY_MODELS is not set, fall through only if the primary model is a non-custom Opus model.
-        // TODO: Revisit if the isNonCustomOpusModel check should still exist, or if isNonCustomOpusModel is a stale artifact of when Claude Code was hardcoded on Opus.
         (process.env.FALLBACK_FOR_ALL_PRIMARY_MODELS ||
+          fallbackModel !== undefined ||
           (!isClaudeAISubscriber() && isNonCustomOpusModel(options.model)))
       ) {
         consecutive529Errors++
         if (consecutive529Errors >= MAX_529_RETRIES) {
           // Check if fallback model is specified
-          if (options.fallbackModel) {
+          if (fallbackModel) {
             logEvent('tengu_api_opus_fallback_triggered', {
               original_model:
                 options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               fallback_model:
-                options.fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               provider: getAPIProviderForStatsig(),
             })
 
             // Throw special error to indicate fallback was triggered
-            throw new FallbackTriggeredError(
-              options.model,
-              options.fallbackModel,
-            )
+            throw new FallbackTriggeredError(options.model, fallbackModel)
           }
 
           if (
@@ -378,7 +429,7 @@ export async function* withRetry<T>(
       const persistent =
         isPersistentRetryEnabled() && isTransientCapacityError(error)
       if (attempt > maxRetries && !persistent) {
-        throw new CannotRetryError(error, retryContext)
+        throw new CannotRetryError(caught, retryContext)
       }
 
       // AWS/GCP errors aren't always APIError, but can be retried
@@ -388,7 +439,7 @@ export async function* withRetry<T>(
         !handledCloudAuthError &&
         (!(error instanceof APIError) || !shouldRetry(error))
       ) {
-        throw new CannotRetryError(error, retryContext)
+        throw new CannotRetryError(caught, retryContext)
       }
 
       // Handle max tokens context overflow errors by adjusting max_tokens for the next attempt
@@ -440,36 +491,89 @@ export async function* withRetry<T>(
       // Get retry-after header if available
       const retryAfter = getRetryAfter(error)
       let delayMs: number
-      if (persistent && error instanceof APIError && error.status === 429) {
+      let isUsageLimitWait = false
+      if (persistent) {
+        const remainingWaitMs =
+          (getPositiveIntEnv('CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS') ??
+            Infinity) - capacityWait.spentMs
+        if (remainingWaitMs <= 0) {
+          throw new CannotRetryError(caught, retryContext)
+        }
         persistentAttempt++
         // Window-based limits (e.g. 5hr Max/Pro) include a reset timestamp.
         // Wait until reset rather than polling every 5 min uselessly.
-        const resetDelay = getRateLimitResetDelayMs(error)
-        delayMs =
+        let resetDelay =
+          error instanceof APIError && error.status === 429
+            ? getRateLimitResetDelayMs(error)
+            : null
+        if (
+          resetDelay !== null &&
+          error instanceof APIError &&
+          error.headers?.get?.('anthropic-ratelimit-unified-status') ===
+            'rejected'
+        ) {
+          isUsageLimitWait = true
+          const remainingUsageLimitWaitMs =
+            (getPositiveIntEnv(
+              'CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS',
+            ) ?? Infinity) - capacityWait.usageLimitSpentMs
+          if (resetDelay > remainingUsageLimitWaitMs) {
+            const overageStatus = error.headers?.get?.(
+              'anthropic-ratelimit-unified-overage-status',
+            )
+            const overageAllowed =
+              overageStatus === 'allowed' ||
+              overageStatus === 'allowed_warning'
+            if (
+              remainingUsageLimitWaitMs <= 0 ||
+              (!overageAllowed &&
+                error.headers?.get?.(
+                  'anthropic-ratelimit-unified-overage-disabled-reason',
+                ) !== 'fetch_error')
+            ) {
+              throw new CannotRetryError(caught, retryContext)
+            }
+            // Extra usage may admit the request before the window resets, so
+            // poll within the remaining budget instead of giving up.
+            resetDelay = overageAllowed
+              ? Math.min(
+                  remainingUsageLimitWaitMs,
+                  getRetryDelay(
+                    persistentAttempt,
+                    null,
+                    PERSISTENT_MAX_BACKOFF_MS,
+                  ),
+                )
+              : remainingUsageLimitWaitMs
+          }
+        }
+        // Retry-After is a server directive and bypasses maxDelayMs inside
+        // getRetryDelay (intentional — honoring it is correct). Cap at the
+        // 6hr reset-cap here so a pathological header can't wait unbounded.
+        delayMs = Math.min(
           resetDelay ??
-          Math.min(
             getRetryDelay(
               persistentAttempt,
               retryAfter,
               PERSISTENT_MAX_BACKOFF_MS,
             ),
-            PERSISTENT_RESET_CAP_MS,
-          )
-      } else if (persistent) {
-        persistentAttempt++
-        // Retry-After is a server directive and bypasses maxDelayMs inside
-        // getRetryDelay (intentional — honoring it is correct). Cap at the
-        // 6hr reset-cap here so a pathological header can't wait unbounded.
-        delayMs = Math.min(
-          getRetryDelay(
-            persistentAttempt,
-            retryAfter,
-            PERSISTENT_MAX_BACKOFF_MS,
-          ),
           PERSISTENT_RESET_CAP_MS,
+          remainingWaitMs,
+        )
+      } else if (is529Error(error)) {
+        delayMs = getRetryDelay(
+          attempt,
+          retryAfter,
+          getPositiveIntEnv('CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS'),
+          getPositiveIntEnv('CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS'),
         )
       } else {
         delayMs = getRetryDelay(attempt, retryAfter)
+      }
+      if (!persistent && isPersistentRetryEnabled()) {
+        // Unattended sessions retry other transient errors too (up to the
+        // raised retry count), but never sleep unbounded on a Retry-After.
+        delayMs = Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
       }
 
       // In persistent mode the for-loop `attempt` is clamped at maxRetries+1;
@@ -509,6 +613,8 @@ export async function* withRetry<T>(
           }
           const chunk = Math.min(remaining, HEARTBEAT_INTERVAL_MS)
           await sleep(chunk, options.signal, { abortError })
+          capacityWait.spentMs += chunk
+          if (isUsageLimitWait) capacityWait.usageLimitSpentMs += chunk
           remaining -= chunk
         }
         // Clamp so the for-loop never terminates. Backoff uses the separate
@@ -541,6 +647,7 @@ export function getRetryDelay(
   attempt: number,
   retryAfterHeader?: string | null,
   maxDelayMs = 32000,
+  baseDelayMs = BASE_DELAY_MS,
 ): number {
   if (retryAfterHeader) {
     const seconds = parseInt(retryAfterHeader, 10)
@@ -550,7 +657,7 @@ export function getRetryDelay(
   }
 
   const baseDelay = Math.min(
-    BASE_DELAY_MS * Math.pow(2, attempt - 1),
+    baseDelayMs * Math.pow(2, attempt - 1),
     maxDelayMs,
   )
   const jitter = Math.random() * 0.25 * baseDelay
@@ -709,6 +816,10 @@ function shouldRetry(error: APIError): boolean {
     return false
   }
 
+  if (isSpendLimitError(error)) {
+    return false
+  }
+
   // Persistent mode: 429/529 always retryable, bypass subscriber gates and
   // x-should-retry header.
   if (isPersistentRetryEnabled() && isTransientCapacityError(error)) {
@@ -796,11 +907,28 @@ function shouldRetry(error: APIError): boolean {
   return false
 }
 
+let warnedMaxRetriesClamp = false
+
 export function getDefaultMaxRetries(): number {
-  if (process.env.CLAUDE_CODE_MAX_RETRIES) {
-    return parseInt(process.env.CLAUDE_CODE_MAX_RETRIES, 10)
+  const watchdog = isPersistentRetryEnabled()
+  const raw = process.env.CLAUDE_CODE_MAX_RETRIES
+  if (raw && /^\d+$/.test(raw)) {
+    const configured = parseInt(raw, 10)
+    // Unattended sessions should use CLAUDE_CODE_RETRY_WATCHDOG rather than a
+    // huge retry count, so the cap only lifts in that mode.
+    if (configured > MAX_RETRIES_CAP && !watchdog) {
+      if (!warnedMaxRetriesClamp) {
+        warnedMaxRetriesClamp = true
+        logForDebugging(
+          `CLAUDE_CODE_MAX_RETRIES=${configured} clamped to ${MAX_RETRIES_CAP}`,
+          { level: 'warn' },
+        )
+      }
+      return MAX_RETRIES_CAP
+    }
+    return configured
   }
-  return DEFAULT_MAX_RETRIES
+  return watchdog ? RETRY_WATCHDOG_DEFAULT_MAX_RETRIES : DEFAULT_MAX_RETRIES
 }
 function getMaxRetries(options: RetryOptions): number {
   return options.maxRetries ?? getDefaultMaxRetries()

@@ -4,7 +4,8 @@
  * Loads keybindings from ~/.claude/keybindings.json and watches
  * for changes to reload them automatically.
  *
- * NOTE: User keybinding customization is currently only available for ant users.
+ * Customization is on by default (official 2.1.303) and can be turned off
+ * remotely through the tengu_keybinding_customization_release gate.
  */
 
 import chokidar, { type FSWatcher } from 'chokidar'
@@ -31,7 +32,7 @@ import {
 /**
  * Check if keybinding customization is enabled.
  *
- * Returns true if the tengu_keybinding_customization_release GrowthBook gate is enabled.
+ * Returns the tengu_keybinding_customization_release gate, which defaults to on.
  *
  * This function is exported so other parts of the codebase (e.g., /doctor)
  * can check the same condition consistently.
@@ -40,7 +41,7 @@ export function isKeybindingCustomizationEnabled(): boolean {
   if (isSafeMode()) return false
   return getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_keybinding_customization_release',
-    false,
+    true,
   )
 }
 
@@ -126,13 +127,12 @@ function getDefaultParsedBindings(): ParsedBinding[] {
  * Load and parse keybindings from user config file.
  * Returns merged default + user bindings along with validation warnings.
  *
- * For external users, always returns default bindings only.
- * User customization is currently gated to Anthropic employees.
+ * When customization is disabled, returns default bindings only.
  */
 export async function loadKeybindings(): Promise<KeybindingsLoadResult> {
   const defaultBindings = getDefaultParsedBindings()
 
-  // Skip user config loading for external users
+  // Skip user config loading when customization is disabled
   if (!isKeybindingCustomizationEnabled()) {
     return { bindings: defaultBindings, warnings: [] }
   }
@@ -252,8 +252,7 @@ export function loadKeybindingsSync(): ParsedBinding[] {
  * Load keybindings synchronously with validation warnings.
  * Uses cached values if available.
  *
- * For external users, always returns default bindings only.
- * User customization is currently gated to Anthropic employees.
+ * When customization is disabled, returns default bindings only.
  */
 export function loadKeybindingsSyncWithWarnings(): KeybindingsLoadResult {
   if (cachedBindings) {
@@ -262,7 +261,7 @@ export function loadKeybindingsSyncWithWarnings(): KeybindingsLoadResult {
 
   const defaultBindings = getDefaultParsedBindings()
 
-  // Skip user config loading for external users
+  // Skip user config loading when customization is disabled
   if (!isKeybindingCustomizationEnabled()) {
     cachedBindings = defaultBindings
     cachedWarnings = []
@@ -347,12 +346,12 @@ export function loadKeybindingsSyncWithWarnings(): KeybindingsLoadResult {
  * Initialize file watching for keybindings.json.
  * Call this once when the app starts.
  *
- * For external users, this is a no-op since user customization is disabled.
+ * This is a no-op when user customization is disabled.
  */
 export async function initializeKeybindingWatcher(): Promise<void> {
   if (initialized || disposed) return
 
-  // Skip file watching for external users
+  // Skip file watching when customization is disabled
   if (!isKeybindingCustomizationEnabled()) {
     logForDebugging(
       '[keybindings] Skipping file watcher - user customization disabled',

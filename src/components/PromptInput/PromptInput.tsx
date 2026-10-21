@@ -311,7 +311,7 @@ type Props = {
       speculationSessionTimeSavedMs: number
       setAppState: (f: (prev: AppState) => AppState) => void
     },
-    options?: { fromKeybinding?: boolean; wait?: boolean },
+    options?: { fromKeybinding?: boolean; wait?: boolean; sendNow?: boolean },
   ) => Promise<void>
   onAgentSubmit?: (
     input: string,
@@ -1537,7 +1537,11 @@ function PromptInput({
   )
 
   const onSubmit = useCallback(
-    async (inputParam: string, isSubmittingSlashCommand = false) => {
+    async (
+      inputParam: string,
+      isSubmittingSlashCommand = false,
+      submitOptions?: { sendNow?: boolean },
+    ) => {
       inputParam = inputParam.trimEnd()
 
       // Don't submit if a footer indicator is being opened. Read fresh from
@@ -1697,12 +1701,17 @@ function PromptInput({
       }
 
       // Normal leader submission
-      await onSubmitProp(inputParam, {
-        setCursorOffset,
-        getCursorOffset,
-        clearBuffer,
-        resetHistory,
-      })
+      await onSubmitProp(
+        inputParam,
+        {
+          setCursorOffset,
+          getCursorOffset,
+          clearBuffer,
+          resetHistory,
+        },
+        undefined,
+        submitOptions,
+      )
     },
     [
       promptSuggestionState,
@@ -2258,6 +2267,28 @@ function PromptInput({
       unregisterQueueSubmit()
     }
   }, [keybindingContext, isModalOverlayActive, onSubmit, onSubmitProp, input, setCursorOffset, getCursorOffset, clearBuffer, resetHistory])
+
+  // Send now: submit without waiting behind the running turn. An empty prompt
+  // still reaches the REPL so it can deliver what is already queued. Capture
+  // so ctrl+enter is handled before the text input treats it as plain Enter.
+  const handleSendNow = useCallback(() => {
+    const hasImages = Object.values(pastedContents).some(c => c.type === 'image')
+    if (input.trim() === '' && !hasImages) {
+      void onSubmitProp(
+        '',
+        { setCursorOffset, getCursorOffset, clearBuffer, resetHistory },
+        undefined,
+        { sendNow: true },
+      )
+      return
+    }
+    void onSubmit(input, false, { sendNow: true })
+  }, [pastedContents, input, onSubmit, onSubmitProp, setCursorOffset, getCursorOffset, clearBuffer, resetHistory])
+  useKeybinding('chat:sendNow', handleSendNow, {
+    context: 'Chat',
+    isActive: !isModalOverlayActive,
+    capture: true,
+  })
 
   // Chat context keybindings for editing shortcuts
   // Note: history:previous/history:next are NOT handled here. They are passed as

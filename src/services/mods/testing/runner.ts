@@ -590,7 +590,7 @@ export async function runPluginTestFile(
       operations.add(pending)
       return pending
     }
-    const runtime = createModsRuntime({ testing: true, onDiagnostic: event => diagnostics.push(event) })
+    const runtime = createModsRuntime({ testing: true, onDiagnostic: event => diagnostics.push(event), services: { appendMessage: () => {} } })
     const session = { cwd: root, surface: 'terminal' as const, isInteractive: true, sessionId: `plugin-test-${Date.now()}` }
     // The test's tool mocks are core hooks too; register the classic bridge before them.
     runtime.registerHostCallback({

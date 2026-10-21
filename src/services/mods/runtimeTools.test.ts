@@ -762,7 +762,7 @@ test('author tool.check refuses identity rewrites and invalid decisions at the h
   expect(questions).toEqual([{tool:'Offline',input:{path:'original'}}])
   expect(diagnostics.map(event => event.message)).toEqual([
     'policy: next() passed an argument with a changed input (the tool, its input and the call are the question and are pinned; a hook answers { decision }, it does not ask about another call)',
-    'tool.check must return { decision, reason?, rule?, hook? }',
+    'tool.check must return { decision, reason?, rule?, hook?, setting?, decider? }',
   ])
 })
 

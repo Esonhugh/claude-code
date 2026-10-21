@@ -144,7 +144,8 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
     !isLocalJSXCommand &&
     !isHelpOpen &&
     !isOverlayActive &&
-    !(isVimModeEnabled() && vimMode === 'INSERT')
+    // Esc leaves vim INSERT/VISUAL before it can cancel anything.
+    !(isVimModeEnabled() && vimMode !== undefined && vimMode !== 'NORMAL')
 
   // Escape (chat:cancel) defers to mode-exit when in special mode with empty
   // input, and to useBackgroundTaskNavigation when viewing a teammate

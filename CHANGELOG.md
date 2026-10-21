@@ -60,6 +60,156 @@
 - 新增 `src/utils/permissions/permissions.test.ts`（参数规则 deny/ask、通配、非原始值、工具自身字段、`*` 与 `Web*` 工具名通配、allow 忽略非 MCP 通配）、`src/utils/permissions/permissionSetup.test.ts`（`manual` 别名、标题、CLI 与 settings `defaultMode`）与 `src/cli/print.permissionPrompts.test.ts`（真实 headless 会话中 `none` 本地拒绝、默认 `host` 仍走 `--permission-prompt-tool`）。
 - `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 覆盖 hard_deny 提示槽位与 `$defaults`、`auto-mode config` 输出、`classifyAllShell` 剥离 shell allow 规则与 `auto-mode reset`；`src/services/compact/autoCompact.classifierOverflow.test.ts` 覆盖溢出请求强制压缩与提醒、同头部回退及 `DISABLE_COMPACT`；`src/utils/permissions/permissions.approveForMe.test.ts` 覆盖溢出拒绝后回退询问及 `CLAUDE_CODE_AUTO_MODE_MODEL` 在 Claude 与 OpenAI 模式下生效。构建后 `node ./dist/cli.js auto-mode reset --help` 与隔离配置下的 reset 输出与官方文案一致。
 
+## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
+
+### 变更内容
+
+- Stream idle watchdog 改为默认开启（Anthropic 与 OpenAI provider 均适用），响应流 5 分钟无事件即中止重试；`CLAUDE_ENABLE_STREAM_WATCHDOG=0` 关闭，`CLAUDE_STREAM_IDLE_TIMEOUT_MS` 只能延长窗口（对齐官方 2.1.303）。
+- 新增无人值守重试模式 `CLAUDE_CODE_RETRY_WATCHDOG`：429/529 不受重试次数限制持续退避，其他瞬时错误默认重试 300 次；组织 spend cap 等不会自动恢复的 429 立即失败。
+- 新增 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` 与 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS`，分别限制无人值守模式在 429/529 上的累计等待与等待用量窗口重置的时长。
+- 新增 `CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS` 与 `CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS`，调整 529 重试退避的基础与最大延迟。
+- `CLAUDE_CODE_MAX_RETRIES` 上限改为 15，仅在 `CLAUDE_CODE_RETRY_WATCHDOG` 下解除。
+- OpenAI provider 的 408/409/429/5xx 请求错误改走统一重试策略（此前主对话请求不重试）；`usage_limit_reached`、`insufficient_quota` 与认证错误仍立即失败。
+- 新增 settings `fallbackModel`（数组，最多 3 个），`--fallback-model` 接受逗号分隔列表并在交互式会话中生效；配置回退模型后任何主模型连续 529 都按链依次切换，下一轮用户输入重新使用主模型。
+- 新增 `ANTHROPIC_DEFAULT_MODEL`：设置新会话默认模型，优先级低于 `--model`、`ANTHROPIC_MODEL`、settings `model`（含 `/model` 选择）与组织默认模型。
+
+### 测试覆盖
+
+- `bun test src/services/api/withRetry.test.ts`：重试上限与 watchdog 默认值、529 退避覆盖、watchdog 下 429 持续重试、累计等待与用量窗口上限、spend cap 立即失败、OpenAI 瞬时错误重试与原始错误保留、任意主模型的 529 回退触发。
+- `bun test src/services/api/claude-stream-watchdog.test.ts`：watchdog 默认开启、`=0` 关闭与 5 分钟下限。
+- `bun test src/services/api/claude-model-contract.test.ts`：真实 query 循环按会话回退链依次切换模型。
+- `bun test src/utils/model/model.test.ts`：`ANTHROPIC_DEFAULT_MODEL` 优先级与 allowlist，`resolveFallbackModels` 的 CLI/settings 优先级、别名解析、去重与 3 个上限。
+
+## 2026-10-20 - Hooks 失败阻止、并发上限与新事件对齐官方
+
+### 变更内容
+
+- command 与 HTTP hook 新增 `onFailure`（`continue` 默认 / `block`）：设为 `block` 时，hook 无法启动、超时、以 0/2 以外的退出码结束或输出无效 JSON 会按 exit 2 阻止对应动作（tool 调用、权限请求、prompt 等）；async hook 以及 Stop、SubagentStop、TaskCompleted、TeammateIdle 上忽略该设置。
+- 同一事件的 prompt/agent hook 最多 12 个同时执行，其余排队，排队期间不计超时；command、HTTP 与 callback hook 不受限制。
+- PreCompact hook 以 exit 2 或 `decision: "block"` 阻止压缩：手动 `/compact` 显示 `Compaction blocked by PreCompact hook: [命令]: 原因` 与警告通知，自动压缩静默跳过；被阻止的 hook 输出不再作为压缩指令。
+- Stop 与 SubagentStop hook 可返回 `hookSpecificOutput.additionalContext`，作为非错误反馈交给模型并继续回合。
+- 新增 `PreModelSwitch` hook：在 `/model`（命令或选择器）与 SDK `set_model` 切换前执行，输入 `from_model`、`to_model`、`requested_model`、`source`、`context_tokens`；exit 2、`permissionDecision: "deny"` 或超时会阻止切换，`"ask"` 在 `/model` 中弹出确认（headless `set_model` 直接拒绝）。
+- 新增 `PostModelSwitch` hook：上述切换完成后执行，`additionalContext` 在下一次请求时交给模型。
+- 新增 `DirectoryAdded` hook：`/add-dir` 加入目录并刷新 sandbox 后执行，输入 `directory` 与 `source`；hook 的 `systemMessage` 与失败计数以有长度上限的上下文交给模型。
+- 新增 `MessageDisplay` hook：每个完成的 assistant 文本块显示前执行，`hookSpecificOutput.displayContent` 只替换屏幕上的文字，不改变存储的消息与模型看到的内容；与官方逐行刷新不同，本实现每个文本块只触发一次（`index: 0`、`final: true`）。
+- SessionStart hook 可返回 `hookSpecificOutput.sessionTitle`（startup 与 resume 时设置会话标题）与 `reloadSkills: true`（hook 结束后重新扫描 skill 与命令目录）。
+- command hook 获得 `$CLAUDE_EFFORT` 环境变量，hook JSON 输入新增 `effort.level`（当前模型支持 effort 时）。
+- `--debug` 为每个 command hook 记录 `Hooks: <事件> [<命令>] <结果> (<毫秒>ms)`，结果包括退出码、超时、取消、转入后台与启动失败。
+- `/hooks` 列出四个新事件及其 matcher（`to_model`、`source`）；设置 schema、插件 hook 加载与 SDK 类型同步新增上述事件与字段。
+
+### 测试覆盖
+
+- `bun test src/utils/hooks.sourceScope.test.ts`：onFailure 阻止/放行/超时/Stop 忽略/REPL 外执行，prompt hook 12 并发上限，PreCompact 阻止，Stop/SubagentStop additionalContext，PreModelSwitch/PostModelSwitch 决策与 matcher，DirectoryAdded 与 MessageDisplay 输入输出，SessionStart sessionTitle/reloadSkills，`$CLAUDE_EFFORT` 与 `--debug` 记录。
+- `bun test src/utils/hooks.schemas.test.ts src/utils/hooks/hooksConfigManager.test.ts`：设置 schema 接受 `onFailure` 与新事件，`/hooks` 元数据。
+- `bun test src/services/compact/compactApiError.test.ts`：PreCompact 阻止时不调用模型，手动压缩显示警告通知，自动压缩不通知。
+- `bun test src/utils/sessionStart.test.ts`：会话标题只在 startup/resume 设置，`reloadSkills` 只重载一次。
+
+## 2026-10-20 - Monitor 工具与 /loop 动态自排程
+
+### 变更内容
+
+- 新增 `Monitor` 工具（对齐官方 2.1.303，默认建置启用 `MONITOR_TOOL`）：在后台运行监看命令，stdout 每行作为 `Monitor event` 任务通知唤醒模型，200ms 内的多行合并为一则；单行超过 500 字元、单批超过 3000 字元会截断。
+- `Monitor` 的 `timeout_ms` 默认 300000，上限 3600000，实际截止时间互动模式最长 30 分钟、`-p` 最长 10 分钟；到期时先送出一则包含已送达事件数的 `[Monitor expired after …]` 通知再停止，模型可重新 arm。
+- `Monitor` 事件超过速率（10 则突发、每 2 秒补 1 则）时会抑制并回报被抑制数量，持续抑制超过 30 秒会自动停止该 monitor 并通知改用更精确的过滤。
+- `Monitor` 的权限判定沿用 Bash 规则（例如已允许的 `Bash(tail:*)` 同样适用），权限对话框会显示实际要执行的命令；设定 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` 时不提供该工具。
+- 启用 `Monitor` 后与官方一致：Bash/PowerShell 会拒绝以 `sleep N`（N ≥ 2）开头的前景命令并建议改用 `run_in_background` 或 `Monitor`，背景 shell 完成通知改以 `next` 优先级送达。
+- 新增 `ScheduleWakeup` 工具：`/loop` 动态模式下由模型选择下次唤醒的秒数（夹在 60–3600 秒）、原因与要重新送入的 `/loop` 输入；新的唤醒会取代尚未触发的旧唤醒，`stop: true` 取消所有待触发的动态唤醒且不影响固定间隔的 cron；同一循环超过排程任务的最长存活时间后不再排程。
+- `/loop` 只给提示、不给间隔时不再默认每 10 分钟的 cron，改为动态自排程：先执行一次任务，再用 `ScheduleWakeup` 安排下一次，事件型等待可搭配 `Monitor` 作为主要唤醒来源；`/loop 5m …` 与 `… every 20m` 仍走 `CronCreate`。
+- `Monitor` 与 `ScheduleWakeup` 不依赖 Anthropic 后端，OpenAI provider 下同样出现在工具清单并可使用。
+
+### 测试覆盖
+
+- `bun test src/tools/MonitorTool/monitorEvents.test.ts`：通知格式与 XML 转义、200ms 合并、未结尾行在最终 flush 送出、行/批截断、令牌桶抑制与补发通知、持续洪泛 30 秒后停止。
+- `bun test src/tools/MonitorTool/MonitorTool.test.ts`：真实 shell 下每行 stdout 成为通知且先于结束通知、立即退出的脚本输出不丢失、1 秒截止时间触发到期通知并 kill、schema 默认值与上限、工具结果文字、背景任务停用时不启用。
+- `bun test src/tools/ScheduleWakeupTool/ScheduleWakeupTool.test.ts`：60–3600 夹值、必要栏位校验、唤醒为 session-only `loop` 任务并取代旧唤醒、`stop` 只取消动态唤醒、cron 排程器依 `scheduledFor` 精确触发。
+- `bun test src/skills/bundled/loop.test.ts`：无间隔进入动态模式并使用 `ScheduleWakeup`、有间隔仍用 `CronCreate`、空输入显示用法。
+- `bun scripts/build.test.mjs`：默认建置包含 `MONITOR_TOOL`；`bun run build` 后以 Anthropic 与 OpenAI provider 的 `-p --output-format stream-json` init 事件确认工具清单包含 `Monitor` 与 `ScheduleWakeup`。
+
+## 2026-10-20 - 记忆功能本地默认启用与 `/recap`
+
+### 变更内容
+
+- 默认构建包含 `EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`：后台记忆提取、Session Memory 与离开回顾不再依赖 GrowthBook，交互会话默认开启；`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` 或设置 `autoMemoryEnabled: false` 关闭记忆提取与 Session Memory，`-p` 非交互模式默认仍不提取。
+- 新增 `/recap`（"Generate a one-line session recap now"），立即生成一到两句会话回顾，支持 `-p`；尚无对话时提示 "Nothing to recap yet — send a message first."，失败时提示 "Couldn't generate a recap. Run with --debug for details."。
+- 终端失焦 5 分钟后的自动会话回顾默认开启，可用 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或设置 `awaySummaryEnabled: false` 关闭，`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=1` 强制开启（含非交互会话）；回顾上限 400 字符并在词边界截断。
+- 回顾改为复用主对话 fork（主循环模型与 provider），OpenAI provider 不再依赖小模型映射，可复用 prompt cache。
+- 载入 `MEMORY.md`（自动/团队/agent 记忆）、召回的记忆文件和记忆清单描述时，删除不可见字符并将伪造的 harness 标签（`<system-reminder>`、`<cc-memory>`、`<teammate-message>`、`<channel>` 等，含大小写和全角括号变体）转义为 `<\tag>`，防止记忆文件冒充系统标记注入提示。
+
+### 测试覆盖
+
+- `bun test src/memdir/neutralizeMemoryContent.test.ts src/memdir/extractMode.test.ts src/services/awaySummary.test.ts` 覆盖标签/不可见字符中和、`MEMORY.md`/召回/清单载入路径、提取门控、回顾开关、截断、fork 参数与 `/recap` 输出。
+- `bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`；`bun run build` 通过。
+
+## 2026-10-20 - /autocompact、按模型与按 Agent 的自动压缩窗口及 worktree 小项对齐
+
+### 变更内容
+
+- 新增 `/autocompact [auto|<tokens>]`：查看或设置当前模型的自动压缩窗口；无参数时打开对话框（←/→ 调整、Enter 应用、Esc 取消），`-p` 非交互模式输出文本；文案与官方 2.1.303 一致。
+- 新增设置 `modelSettings.<model>.autoCompactWindow`（100000 到 1000000 或 `"auto"`）：`/autocompact` 按模型保存到用户设置，切换模型后各自保留；同一设置文件内按模型的值优先于顶层 `autoCompactWindow`，更高优先级来源的顶层值会覆盖较低来源的按模型值；dated、`[1m]`、Bedrock/Vertex 拼写匹配同一规范模型名，OpenAI 等第三方模型同样适用。
+- 自定义 Agent 的 markdown frontmatter、插件 agents、`--agents` JSON 与 Mods `agent.register` 支持 `autoCompactWindow`，作为子代理自动压缩窗口的上限（只能调小，`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍优先）；嵌套子代理继承父级上限。
+- 自定义 Agent 的 markdown frontmatter 与插件 agents 支持 `omitClaudeMd: true`，作为子代理运行时不加载 CLAUDE.md（此前只有 `--agents` JSON 和内置 Explore/Plan 生效）。
+- 切换到上下文窗口更小的模型后，若会话已超出新模型的上限，自动压缩先由上一个窗口更大的模型生成摘要；该模型不在 `availableModels` 中、之前压缩已失败或摘要失败时改用当前模型。
+- 新增设置 `worktree.baseRef`（`fresh` | `head`）：`head` 让 `--worktree`、`EnterWorktree` 和 agent worktree isolation 基于当前工作目录（含 linked worktree）的本地 HEAD 建分支，默认 `fresh` 维持基于 `origin/<默认分支>`。
+- `EnterWorktree` 新增 `path` 参数，可进入 `git worktree list` 中已有的 linked worktree，也可在 worktree 会话中切换到 `.claude/worktrees/` 下的另一个 worktree；`.claude/worktrees/` 之外的路径需确认；以 `path` 进入的 worktree 不会被 `ExitWorktree` 或退出清理删除。
+
+### 测试覆盖
+
+- `src/commands/autocompact/autocompact.test.ts`：按模型写入用户设置、`auto`/`reset`、超出模型上限的 capped 提示、第三方模型、无法解析的值、环境变量优先、非交互命令和对话框步进。
+- `src/services/compact/autoCompact.contextWindow.test.ts`：按模型窗口与顶层值的来源优先级、Agent 窗口上限与环境变量优先、切换到小窗口模型时选择上一个模型摘要的条件。
+- `src/services/compact/sessionCompact.mods.test.ts`：自动压缩先用上一个模型摘要，失败时回退当前模型。
+- `src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`：markdown frontmatter 与 `--agents` JSON 的 `omitClaudeMd`、`autoCompactWindow` 解析与范围校验。
+- `src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`：`worktree.baseRef` 的 `head`/`fresh` 基点（含 linked worktree）、按 `path` 进入已有 worktree、受管目录限制与不删除行为、`name`/`path` 互斥。
+- `src/utils/settings/compactSettings.test.ts`：`modelSettings` 与 `worktree.baseRef` 的 schema 校验。
+
+## 2026-10-20 - 官方已 GA 的 GrowthBook 默认值、快捷键自定义、立即发送与 Vim VISUAL 模式
+
+### 变更内容
+
+- fork 用户的 GrowthBook 始终关闭；现在关闭时按官方 2.1.303 取已 GA 的默认值：`~/.claude/keybindings.json` 自定义快捷键、ToolSearch 延迟工具以 `<system-reminder>` 增量宣告、`/model` `/effort` `/fast` 在回复中途立即生效、ECONNRESET/EPIPE 重试前关闭 keep-alive、精简系统提示词开场句、闲置后 "new task? /clear" 提示、远程 Edit/Write 附 git diff、`/web-setup`、VS Code 浏览器与内嵌登录能力宣告；其余旗标仍取原默认值，Anthropic telemetry 开启时仍以 GrowthBook 远程值为准。
+- `/keybindings`、`/doctor` 快捷键诊断与 keybindings 热重载对所有用户启用。
+- 新增 `chat:sendNow`：`Ctrl+Enter`（Kitty 键盘协议终端）或 `Ctrl+X` 后按 `Ctrl+S` 中断当前回合并立即送出输入；输入为空时立即送出已排队的消息。
+- `Ctrl+J` 默认绑定 `chat:newline`，在 Kitty 键盘协议终端中也插入换行。
+- Vim 模式新增 `%` 跳到配对括号，可与 `d`/`c`/`y` 组合。
+- Vim 模式新增 VISUAL（`v`）与 VISUAL LINE（`V`）：反色显示选区，支持移动、文本对象及 `d`/`x`/`y`/`c`/`s`/`r`/`~`/`u`/`U`/`p`/`P`/`J`/`>`/`<`/`o`；footer 与 statusLine `vim.mode` 显示 `VISUAL` / `VISUAL LINE`，VISUAL 中 `Esc` 先退出选区而不是取消回合。
+
+### 测试覆盖
+
+- `bun test src/services/analytics/growthbook.cached.test.ts`：GrowthBook 关闭时表内旗标取官方值、表外旗标取调用方默认值、原型属性不误命中；GrowthBook 开启与内部覆写仍优先。
+- `bun test src/keybindings`：无 GrowthBook 时载入 `keybindings.json`（同步与异步路径）；`Ctrl+Enter`、`Ctrl+X Ctrl+S` 解析为 `chat:sendNow`，Kitty `Ctrl+J` 解析为 `chat:newline`。
+- `bun test src/components/PromptInput/PromptInput.sendNow.test.tsx`：挂载 PromptInput 验证 `Ctrl+Enter`、chord 与空输入均以 `sendNow` 提交，普通 Enter 不变，Kitty 与传统 `Ctrl+J` 均插入换行。
+- `bun test src/screens/REPL.submit.test.ts`：回合进行中 send-now 以 `interrupt` 中断当前回合并把输入排队，普通提交只排队不中断，空输入仅在已有排队 prompt 时中断。
+- `bun test src/hooks/useVimInput.test.tsx`：`%` 跳转与 `d%`；VISUAL 的移动、删除、`o` 交换、`U`、`Esc`；VISUAL LINE 的 `y`/`p`、删除末行后的光标；`vi"` 后 `c` 进入 INSERT。
+
+## 2026-10-20 - Mods API 对齐官方最新声明基线
+
+### 变更内容
+
+- Mods 作者声明改用官方 2.1.303 完整声明体（585 个主模块导出、52 个 testing 导出），移除 2.1.295 Button children 叠加层；声明中本构建未实现的调用会以点名该调用的错误拒绝。
+- `$.http.fetch` 响应正文上限为 4 MiB 并按官方处理重定向。
+- 新增 `$.session.append` 与 `session.append` hook：插件可追加 user 角色 isMeta 文本或单块 notice（door `note`），工具结果（door `tool-result`）与消息队列记录（door `queue`）也经过该 hook，可改写或拒绝。
+- 新增 `prompt.mention` hook：`@` 提及的文件在读取前经过 hook，可改读其他文件、追加上下文或拒绝。
+- `agent.spawn` 现在也覆盖 workflow 脚本的 agent（可改写 `prompt` 与 `model`）和 Agent resume（`resume` 固定），并固定 `workflow` 字段。
+- Agent 定义支持 `autoCompactWindow`（100000 至 1000000 token），该 Agent 的自动压缩按此窗口触发。
+- `tool.check` 回执新增 `setting` 与 `decider: 'host'`（SDK 权限提示工具裁决时）；hook 自带的 `ceiling` 被丢弃。
+- subagent 与 teammate 的回合也触发 `turn.start`，并带固定的 `agentId`。
+- `prompt.submit` 对 meta 提示固定 `isMeta: true`，其文本改写不生效。
+- headless 会话没有可绘制 surface 时，`$.ui.open` 回执为 `isPlaced: false` 与 `no-surface` 原因。
+- `$.env.set` 改为返回 `{}` 或 `{ deny }`：宿主保护的变量名不再抛错，hook 自身的 deny 仍拒绝调用。
+- `$.session.compact` 先报告 `DISABLE_COMPACT` 与正在运行的 turn，再报告 headless 不可用；交互式 REPL 中仍不可用。
+- 新增 `$.ui.notify`：按用户的通知渠道发送原生通知并返回渠道或原因（`disabled`、`no-channel`、`no-surface`、`refused`）；headless 只运行 Notification hooks。
+- `$.tool.register` 支持 `isDeferred`：`false` 时工具 schema 从首轮起就在提示词中，不再藏在 ToolSearch 之后。
+- Mods `Text` 支持 `size`、`weight`、`mono`、`tabular`、`dir`（终端把 `semibold`/`bold` 画成粗体，其余按终端能力忽略）；`Box` 间距接受 `xs`..`xl` 步长。
+- Mods `Input` 支持 `rows`：多行输入框，Shift+Enter 或回车前的反斜杠换行，上下键在行间移动。
+- `skill.prompt` 事件新增 `frontmatter`、`source`、`pluginName`、`path`；`text` 与 `frontmatter` 可改写，其余字段固定。
+- 新增 `$.session.identity()`：只回答 managed settings 启用并原地加载的 Mod，其余 Mod 得到 `{ deny }`；user 层的 `session.identity` hook 不运行。
+- `strictPluginOnlyCustomization` 不再停用全部外部 Mods：与官方一致，它只锁定非插件来源的 hooks，插件 Mods 照常加载。
+
+### 测试覆盖
+
+- `bun test src/services/mods`：新增 `sessionAppend`、`promptMention`、`agents`、`toolCheckReceipt303`、`uiRemotePanes`、`sessionCompactEntry`、`uiNotify`、`skillPrompt`、`sessionIdentity`、`catchSemantics301`、`unsupported303`、`declarationsOfficial303` 等用例；已知与本批无关的失败为 root 环境下的 `store` 跨进程权限用例与 `processRunPsFailure`。
+- `bun test src/components/ModsPane.test.tsx src/components/ModsPane.inputPresentation.test.tsx`、`src/services/mods/tools.test.ts`、`src/query.mods.test.ts`、`src/utils/processUserInput`、`src/services/compact/autoCompact.contextWindow.test.ts`、`src/tools/AgentTool/loadAgentsDir.autoCompactWindow.test.ts`。
+- `bun ./node_modules/typescript/bin/tsc --noEmit -p .`、`make check-mods-control-types`、`bun run build`、`bun run check:changelog`。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态

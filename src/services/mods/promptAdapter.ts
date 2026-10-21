@@ -137,6 +137,8 @@ export type PromptSubmitMetadata = {
 
 export type PromptSubmitInput = PromptSubmitMetadata & {
   text: string
+  /** Set by the engine on a prompt the person does not see as typed; pinned. */
+  isMeta?: true
   attachments?: readonly PromptAttachment[]
   context?: readonly string[]
 }
@@ -213,7 +215,7 @@ export async function runModPromptSubmit({
     ...(callerChain === undefined ? {} : { callerChain: copyModCallerChain(callerChain) }),
     restoreInput(rewritten, received) {
       const restored = { ...rewritten }
-      for (const key of ['origin', 'attachments', 'turnId', 'wait']) {
+      for (const key of ['origin', 'attachments', 'turnId', 'wait', 'isMeta']) {
         if (!Object.hasOwn(restored, key) && Object.hasOwn(received, key))
           restored[key] = received[key]
       }
@@ -227,7 +229,7 @@ export async function runModPromptSubmit({
         typeof rewritten.text !== 'string'
       )
         throw new Error('prompt.submit requires text')
-      for (const key of ['origin', 'attachments', 'turnId', 'wait'] as const) {
+      for (const key of ['origin', 'attachments', 'turnId', 'wait', 'isMeta'] as const) {
         if (!isDeepStrictEqual(rewritten[key], initial[key]))
           throw new Error(`prompt.submit cannot rewrite ${key}`)
       }

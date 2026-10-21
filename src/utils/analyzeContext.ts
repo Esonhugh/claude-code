@@ -6,7 +6,6 @@ import {
 } from 'src/constants/prompts.js'
 import { microcompactMessages } from 'src/services/compact/microCompact.js'
 import { getCommandName } from '../commands.js'
-import { getInitialSettings } from './settings/settings.js'
 import { getSystemContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -14,6 +13,7 @@ import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
   MANUAL_COMPACT_BUFFER_TOKENS,
+  resolveAutoCompactWindow,
 } from '../services/compact/autoCompact.js'
 import {
   countMessagesTokensWithAPI,
@@ -48,10 +48,7 @@ import type {
 } from '../types/message.js'
 import { toolToAPISchema } from './api.js'
 import { filterInjectedMemoryFiles, getMemoryFiles } from './claudemd.js'
-import {
-  type ContextWindowSource,
-  resolveContextWindow,
-} from './context.js'
+import type { ContextWindowSource } from './context.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -1406,7 +1403,7 @@ export async function analyzeContextUsage(
     mainLoopModel: model,
   })
   const { window: contextWindow, source: autocompactSource } =
-    resolveContextWindow(runtimeModel, getInitialSettings().autoCompactWindow)
+    resolveAutoCompactWindow(runtimeModel)
   const detail = analysisOptions.detail ?? 'full'
 
   const defaultSystemPrompt = await getSystemPrompt(tools, runtimeModel)

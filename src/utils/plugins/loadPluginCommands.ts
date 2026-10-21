@@ -330,6 +330,7 @@ function createPluginCommand(
         pluginManifest,
         repository: sourceName,
       },
+      skillFile: { path: file.filePath, frontmatter },
       isHidden: !userInvocable,
       progressMessage: isSkill || config.isSkillMode ? 'loading' : 'running',
       userFacingName(): string {
