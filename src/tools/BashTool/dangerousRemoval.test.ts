@@ -297,6 +297,8 @@ describe('dangerous removal analysis', () => {
       'for x in a; do rm /; done',
       'echo "$(rm /)"',
       'cat <(rm /)',
+      'bash -c "rm /"',
+      "sh -ec 'cd /tmp && rm -rf /'",
     ]) {
       expectMandatory(command)
     }
@@ -305,7 +307,8 @@ describe('dangerous removal analysis', () => {
       'cat <<EOF\nrm /\nEOF',
       "echo '$(rm /)'",
       'echo rm /',
-      'bash -c "rm /"',
+      'bash -c "echo rm /"',
+      'bash script.sh rm /',
       'eval "rm /"',
       'python -c "rm /"',
       'mv /tmp/a /tmp/b',
