@@ -48,6 +48,12 @@ export function initBundledSkills(): void {
     /* eslint-enable @typescript-eslint/no-require-imports */
     registerHunterSkill()
   }
+  if (feature('TRANSCRIPT_CLASSIFIER')) {
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const { registerAutoModeSetupSkill } = require('./autoModeSetup.js')
+    /* eslint-enable @typescript-eslint/no-require-imports */
+    registerAutoModeSetupSkill()
+  }
   if (feature('AGENT_TRIGGERS')) {
     /* eslint-disable @typescript-eslint/no-require-imports */
     const { registerLoopSkill } = require('./loop.js')
