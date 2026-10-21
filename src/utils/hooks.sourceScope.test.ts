@@ -217,6 +217,9 @@ function fixture() {
   const dependencies: Record<string, unknown> = {
     path: require('node:path'),
     crypto: require('node:crypto'),
+    'node:util': require('node:util'),
+    // No tool in this harness: PermissionRequest rewrites skip schema checks.
+    '../Tool.js': { findToolByName: () => undefined },
     child_process: {
       spawn: (
         command: string,

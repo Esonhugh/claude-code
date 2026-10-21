@@ -3,6 +3,7 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
+import { isDeepStrictEqual } from 'node:util'
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
@@ -124,6 +125,7 @@ import type {
   SkillHookMatcher,
 } from './settings/types.js'
 import { getHookDisplayText } from './hooks/hooksSettings.js'
+import { checkHookUpdatedInput } from './hooks/hookUpdatedInput.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
@@ -4701,7 +4703,7 @@ export async function* executePermissionRequestHooks<ToolInput>(
     permission_suggestions: permissionSuggestions,
   }
 
-  yield* executeHooks({
+  for await (const result of executeHooks({
     sourceScope,
     hookInput,
     toolUseID,
@@ -4711,7 +4713,33 @@ export async function* executePermissionRequestHooks<ToolInput>(
     toolUseContext,
     requestPrompt,
     toolInputSummary,
-  })
+  })) {
+    const decision = result.permissionRequestResult
+    const updatedInput =
+      decision?.behavior === 'allow' ? decision.updatedInput : undefined
+    const tool =
+      updatedInput === undefined ||
+      Object.keys(updatedInput).length === 0 ||
+      isDeepStrictEqual(updatedInput, toolInput)
+        ? undefined
+        : findToolByName(toolUseContext.options.tools ?? [], toolName)
+    if (!tool || decision?.behavior !== 'allow') {
+      yield result
+      continue
+    }
+    const checked = await checkHookUpdatedInput(tool, updatedInput, {
+      event: 'PermissionRequest',
+      context: toolUseContext,
+      hookSource: result.hookSource,
+      shown: toolInput as Record<string, unknown>,
+    })
+    yield {
+      ...result,
+      permissionRequestResult: checked.deny
+        ? { behavior: 'deny', message: checked.deny.message }
+        : { ...decision, updatedInput: checked.input },
+    }
+  }
 }
 
 export type ConfigChangeSource =
