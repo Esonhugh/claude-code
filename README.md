@@ -87,7 +87,8 @@ bun ./dist/cli.js --help
 | Hook 事件与输出 | 对齐官方 2.1.303：command/HTTP hook 可设 `onFailure: "block"`，启动失败、超时或非预期退出码时阻止动作（Stop、SubagentStop、TaskCompleted、TeammateIdle 与 async hook 除外）；同一事件的 prompt/agent hook 最多 12 个并行；PreCompact 以 exit 2 或 `decision: "block"` 阻止压缩；Stop/SubagentStop 可返回 `additionalContext` 继续回合；新增 `PreModelSwitch`（可 deny/ask/allow）、`PostModelSwitch`、`DirectoryAdded`、`MessageDisplay`（每个完成的文本块整体替换显示）事件；SessionStart 可返回 `sessionTitle` 与 `reloadSkills`；command hook 获得 `$CLAUDE_EFFORT`，hook 输入含 `effort.level`；`--debug` 记录每个 command hook 的结果与耗时。`terminalSequence` 未实现。 |
 | 会话命令 | 提供 `/goal`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
-| 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task。 |
+| 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task；`/loop` 不带间隔时由模型通过 `ScheduleWakeup` 自行决定下次唤醒（60–3600 秒）。 |
+| Monitor | `Monitor` 工具在后台运行监看脚本，stdout 每行（200ms 内合并）作为一则任务通知唤醒模型；默认 5 分钟、最长 30 分钟（`-p` 下 10 分钟）到期并通知，可重新 arm；输出过多时自动抑制并停止。权限规则与 Bash 相同。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
 | Channels | 默认开放 `--channels`、交互式开发频道和 IDE/SDK `channel_enable`；支持 Anthropic API Key、OpenAI 兼容接口等已配置 provider，保留组织策略、插件来源验证和逐项授权；支持独立能力声明的远程工具审批。 |
 | Mods / Function Hooks | 可信插件可通过 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令和 terminal Pane；提供 scoped host capabilities、热重载、在途 generation 保留、取消与卸载。支持范围与官方运行时兼容性边界见下方 Mods 章节。 |

@@ -56,6 +56,27 @@
 - `bun test src/services/compact/compactApiError.test.ts`：PreCompact 阻止时不调用模型，手动压缩显示警告通知，自动压缩不通知。
 - `bun test src/utils/sessionStart.test.ts`：会话标题只在 startup/resume 设置，`reloadSkills` 只重载一次。
 
+## 2026-10-20 - Monitor 工具与 /loop 动态自排程
+
+### 变更内容
+
+- 新增 `Monitor` 工具（对齐官方 2.1.303，默认建置启用 `MONITOR_TOOL`）：在后台运行监看命令，stdout 每行作为 `Monitor event` 任务通知唤醒模型，200ms 内的多行合并为一则；单行超过 500 字元、单批超过 3000 字元会截断。
+- `Monitor` 的 `timeout_ms` 默认 300000，上限 3600000，实际截止时间互动模式最长 30 分钟、`-p` 最长 10 分钟；到期时先送出一则包含已送达事件数的 `[Monitor expired after …]` 通知再停止，模型可重新 arm。
+- `Monitor` 事件超过速率（10 则突发、每 2 秒补 1 则）时会抑制并回报被抑制数量，持续抑制超过 30 秒会自动停止该 monitor 并通知改用更精确的过滤。
+- `Monitor` 的权限判定沿用 Bash 规则（例如已允许的 `Bash(tail:*)` 同样适用），权限对话框会显示实际要执行的命令；设定 `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` 时不提供该工具。
+- 启用 `Monitor` 后与官方一致：Bash/PowerShell 会拒绝以 `sleep N`（N ≥ 2）开头的前景命令并建议改用 `run_in_background` 或 `Monitor`，背景 shell 完成通知改以 `next` 优先级送达。
+- 新增 `ScheduleWakeup` 工具：`/loop` 动态模式下由模型选择下次唤醒的秒数（夹在 60–3600 秒）、原因与要重新送入的 `/loop` 输入；新的唤醒会取代尚未触发的旧唤醒，`stop: true` 取消所有待触发的动态唤醒且不影响固定间隔的 cron；同一循环超过排程任务的最长存活时间后不再排程。
+- `/loop` 只给提示、不给间隔时不再默认每 10 分钟的 cron，改为动态自排程：先执行一次任务，再用 `ScheduleWakeup` 安排下一次，事件型等待可搭配 `Monitor` 作为主要唤醒来源；`/loop 5m …` 与 `… every 20m` 仍走 `CronCreate`。
+- `Monitor` 与 `ScheduleWakeup` 不依赖 Anthropic 后端，OpenAI provider 下同样出现在工具清单并可使用。
+
+### 测试覆盖
+
+- `bun test src/tools/MonitorTool/monitorEvents.test.ts`：通知格式与 XML 转义、200ms 合并、未结尾行在最终 flush 送出、行/批截断、令牌桶抑制与补发通知、持续洪泛 30 秒后停止。
+- `bun test src/tools/MonitorTool/MonitorTool.test.ts`：真实 shell 下每行 stdout 成为通知且先于结束通知、立即退出的脚本输出不丢失、1 秒截止时间触发到期通知并 kill、schema 默认值与上限、工具结果文字、背景任务停用时不启用。
+- `bun test src/tools/ScheduleWakeupTool/ScheduleWakeupTool.test.ts`：60–3600 夹值、必要栏位校验、唤醒为 session-only `loop` 任务并取代旧唤醒、`stop` 只取消动态唤醒、cron 排程器依 `scheduledFor` 精确触发。
+- `bun test src/skills/bundled/loop.test.ts`：无间隔进入动态模式并使用 `ScheduleWakeup`、有间隔仍用 `CronCreate`、空输入显示用法。
+- `bun scripts/build.test.mjs`：默认建置包含 `MONITOR_TOOL`；`bun run build` 后以 Anthropic 与 OpenAI provider 的 `-p --output-format stream-json` init 事件确认工具清单包含 `Monitor` 与 `ScheduleWakeup`。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态
