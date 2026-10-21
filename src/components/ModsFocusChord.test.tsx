@@ -18,7 +18,7 @@ import { createStore } from '../state/store.js'
 import { createModsRuntime, type ModDiagnostic } from '../services/mods/runtime.js'
 import type { ModUiPresentation, ModUiPane } from '../services/mods/ui.js'
 import type { PastedContent } from '../utils/config.js'
-import type { PromptInputHandle, PromptInputMode } from '../types/textInputTypes.js'
+import type { PromptInputHandle, PromptInputMode, VimMode } from '../types/textInputTypes.js'
 import PromptInput from './PromptInput/PromptInput.js'
 import { ModsAbovePrompt } from './ModsAbovePrompt.js'
 import { ModsPane } from './ModsPane.js'
@@ -187,7 +187,7 @@ async function mount(policy: Policy = 'accept', secondOwner = false, paneIds: re
     const [focused, setFocused] = useState(false)
     const [mode, setMode] = useState<PromptInputMode>('prompt')
     const [pastedContents, setPastedContents] = useState<Record<number, PastedContent>>({})
-    const [vimMode, setVimMode] = useState<'INSERT' | 'NORMAL'>('INSERT')
+    const [vimMode, setVimMode] = useState<VimMode>('INSERT')
     const [helpOpen, setHelpOpen] = useState(false)
     editor = useRef(null)
     bindingContext = useOptionalKeybindingContext()

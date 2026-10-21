@@ -132,6 +132,7 @@ import { filterDeniedAgents } from './permissions/permissions.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { dispatchModPromptMention } from '../services/mods/promptMention.js'
 import {
   matchingRuleForInput,
   pathInAllowedWorkingPath,
@@ -240,6 +241,7 @@ import {
   type ResolvedCodexAppMention,
 } from '../services/apps/pluginProjection.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
+import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
@@ -393,7 +395,7 @@ export type HookAttachment =
       hookName: string
       toolUseID: string
       hookEvent: HookEvent
-      modEvent?: 'prompt.submit' | 'tool.call'
+      modEvent?: 'prompt.submit' | 'tool.call' | 'prompt.mention'
     }
   | HookSystemMessageAttachment
   | HookPermissionDecisionAttachment
@@ -2091,6 +2093,9 @@ async function processAtMentionedFiles(
   if (files.length === 0) return []
 
   const appState = toolUseContext.getAppState()
+  const borrowed = toolUseContext.modsSnapshot
+  const mods = borrowed ?? toolUseContext.mods?.capture({})
+  try {
   const results = await Promise.all(
     files.map(async file => {
       try {
@@ -2136,23 +2141,38 @@ async function processAtMentionedFiles(
           // If stat fails, continue with file logic
         }
 
-        return await generateFileAttachment(
-          absoluteFilename,
-          toolUseContext,
-          'tengu_at_mention_extracting_filename_success',
-          'tengu_at_mention_extracting_filename_error',
-          'at-mention',
-          {
-            offset: lineStart,
-            limit: lineEnd && lineStart ? lineEnd - lineStart + 1 : undefined,
-          },
-        )
+        const read = (path: string, offset?: number, limit?: number) =>
+          generateFileAttachment(
+            path,
+            toolUseContext,
+            'tengu_at_mention_extracting_filename_success',
+            'tengu_at_mention_extracting_filename_error',
+            'at-mention',
+            { offset, limit },
+          )
+        const limit = lineEnd && lineStart ? lineEnd - lineStart + 1 : undefined
+        if (mods?.hasHooks('prompt.mention'))
+          return await dispatchModPromptMention(mods, {
+            mention: file,
+            path: absoluteFilename,
+            ...(lineStart === undefined ? {} : { offset: lineStart }),
+            ...(limit === undefined ? {} : { limit }),
+            ...(toolUseContext.agentId === undefined ? {} : { agentId: toolUseContext.agentId }),
+          }, (path, offset, limit) =>
+            isFileReadDenied(path, appState.toolPermissionContext)
+              ? Promise.resolve(null)
+              : read(path, offset, limit),
+          toolUseContext.abortController.signal)
+        return await read(absoluteFilename, lineStart, limit)
       } catch {
         logEvent('tengu_at_mention_extracting_filename_error', {})
       }
     }),
   )
-  return results.filter(Boolean) as Attachment[]
+  return results.flat().filter(Boolean) as Attachment[]
+  } finally {
+    if (!borrowed) mods?.release()
+  }
 }
 
 function processCodexAppMentions(
@@ -2518,10 +2538,11 @@ export async function readMemoriesForSurfacing(
         )
         const truncated =
           result.totalLines > MAX_MEMORY_LINES || result.truncatedByBytes
+        const neutralized = neutralizeMemoryContent(result.content)
         const content = truncated
-          ? result.content +
+          ? neutralized +
             `\n\n> This memory file was truncated (${result.truncatedByBytes ? `${MAX_MEMORY_BYTES} byte limit` : `first ${MAX_MEMORY_LINES} lines`}). Use the ${FILE_READ_TOOL_NAME} tool to view the complete file at: ${filePath}`
-          : result.content
+          : neutralized
         return {
           path: filePath,
           content,

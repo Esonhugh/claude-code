@@ -4,7 +4,8 @@
  * Pure functions for resolving vim motions to cursor positions.
  */
 
-import type { Cursor } from '../utils/Cursor.js'
+import { Cursor } from '../utils/Cursor.js'
+import { findTextObject } from './textObjects.js'
 
 /**
  * Resolve a motion to a target cursor position.
@@ -15,6 +16,8 @@ export function resolveMotion(
   cursor: Cursor,
   count: number,
 ): Cursor {
+  // N% jumps to a percentage of the file in Vim; only plain % is supported.
+  if (key === '%' && count !== 1) return cursor
   let result = cursor
   for (let i = 0; i < count; i++) {
     const next = applySingleMotion(key, result)
@@ -61,16 +64,35 @@ function applySingleMotion(key: string, cursor: Cursor): Cursor {
       return cursor.endOfLogicalLine()
     case 'G':
       return cursor.startOfLastLine()
+    case '%': {
+      const match = findMatchingBracket(cursor.text, cursor.offset)
+      return match === null ? cursor : new Cursor(cursor.measuredText, match)
+    }
     default:
       return cursor
   }
 }
 
 /**
+ * Vim `%`: from the first bracket at or after the cursor on this line, return
+ * the offset of its matching bracket, or null when there is none.
+ */
+function findMatchingBracket(text: string, offset: number): number | null {
+  const lineEnd = text.indexOf('\n', offset)
+  const searchEnd = lineEnd === -1 ? text.length : lineEnd
+  const index = text.slice(offset, searchEnd).search(/[()[\]{}]/)
+  if (index === -1) return null
+  const bracket = offset + index
+  const range = findTextObject(text, bracket, text[bracket]!, false)
+  if (!range) return null
+  return range.start === bracket ? range.end - 1 : range.start
+}
+
+/**
  * Check if a motion is inclusive (includes character at destination).
  */
 export function isInclusiveMotion(key: string): boolean {
-  return 'eE$'.includes(key)
+  return 'eE$%'.includes(key)
 }
 
 /**

@@ -3052,6 +3052,7 @@ export function saveWorktreeState(
         sessionId: worktreeSession.sessionId,
         tmuxSessionName: worktreeSession.tmuxSessionName,
         hookBased: worktreeSession.hookBased,
+        ...(worktreeSession.enteredExisting && { enteredExisting: true }),
       }
     : null
   const project = getProject()

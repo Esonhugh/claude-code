@@ -43,6 +43,7 @@ import {
 export type TransitionContext = OperatorContext & {
   onUndo?: () => void
   onDotRepeat?: () => void
+  enterVisual?: (linewise: boolean) => void
 }
 
 /**
@@ -191,6 +192,9 @@ function handleNormalInput(
   }
   if (input === 'o') {
     return { execute: () => executeOpenLine('below', ctx) }
+  }
+  if (input === 'v' || input === 'V') {
+    return { execute: () => ctx.enterVisual?.(input === 'V') }
   }
   if (input === 'O') {
     return { execute: () => executeOpenLine('above', ctx) }
@@ -462,7 +466,7 @@ function fromIndent(
 // Helper functions for special commands
 // ============================================================================
 
-function executeRepeatFind(
+export function executeRepeatFind(
   reverse: boolean,
   count: number,
   ctx: TransitionContext,

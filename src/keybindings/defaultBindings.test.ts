@@ -253,3 +253,21 @@ test('SGR wheel keys retain zero-based pointer coordinates with modifiers', () =
     }
   }
 })
+
+test('send-now and ctrl+j newline match official 2.1.303 Chat defaults', () => {
+  expect(KEYBINDING_ACTIONS).toContain('chat:sendNow')
+  const bindings = parseBindings(DEFAULT_BINDINGS)
+  for (const [sequence, action] of [
+    ['\x1b[13;5u', 'chat:sendNow'],
+    ['\x1b[106;5u', 'chat:newline'],
+    ['\r', 'chat:submit'],
+  ] as const) {
+    const event = inputEvent(sequence)
+    expect(resolveKey(event.input, event.key, ['Chat', 'Global'], bindings)).toEqual({ type: 'match', action })
+  }
+  const prefix = inputEvent('\x18')
+  const first = resolveKeyWithChordState(prefix.input, prefix.key, ['Chat', 'Global'], bindings, null)
+  if (first.type !== 'chord_started') throw new Error('Expected chord prefix')
+  const next = inputEvent('\x13')
+  expect(resolveKeyWithChordState(next.input, next.key, ['Chat', 'Global'], bindings, first.pending)).toEqual({ type: 'match', action: 'chat:sendNow' })
+})

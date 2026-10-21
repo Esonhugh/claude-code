@@ -5325,3 +5325,42 @@ describe('ModsPane person pointer and Escape like official', () => {
     }
   })
 })
+
+describe('ModsPane 2.1.303 Text and Box props', () => {
+  test('validates Text size, weight, mono, tabular and dir, and Box spacing steps', () => {
+    expect(() => validateModRenderTree({
+      type: 'Box', props: { gap: 'md', paddingX: 'xl', marginTop: 'sm', padding: 2 }, children: [
+        { type: 'Text', props: { size: 'heading', weight: 'semibold', mono: true, tabular: true, dir: 'rtl' }, children: ['ok'] },
+      ],
+    })).not.toThrow()
+    expect(() => validateModRenderTree({ type: 'Text', props: { size: 'huge' }, children: ['x'] })).toThrow(/Text size/)
+    expect(() => validateModRenderTree({ type: 'Text', props: { weight: 'light' }, children: ['x'] })).toThrow(/Text weight/)
+    expect(() => validateModRenderTree({ type: 'Text', props: { dir: 'auto' }, children: ['x'] })).toThrow(/Text dir/)
+    expect(() => validateModRenderTree({ type: 'Text', props: { mono: 'yes' }, children: ['x'] })).toThrow(/mono/)
+    expect(() => validateModRenderTree({ type: 'Box', props: { gap: 'xxl' } })).toThrow(/spacing step/)
+    const input = (props: Record<string, unknown>) => ({ type: 'Input', props: { key: 'k', ...props }, press: { plugin: 'fixture', handle: 1 } })
+    expect(() => validateModRenderTree(input({ rows: 3, value: 'a\nb' }))).not.toThrow()
+    expect(() => validateModRenderTree(input({ value: 'a\nb' }))).toThrow()
+    for (const rows of [0, 1.5, '2']) expect(() => validateModRenderTree(input({ rows }))).toThrow(/rows/)
+  })
+
+  test('draws weight as bold, ignores the terminal-only props and lays spacing steps out as cells', async () => {
+    const stdout = new Output()
+    const app = await modsPane({
+      type: 'Box', props: { flexDirection: 'column', gap: 'xl', paddingX: 'md' }, children: [
+        { type: 'Text', props: { weight: 'bold', size: 'title', mono: true, tabular: true, dir: 'ltr' }, children: ['heavy'] },
+        { type: 'Text', props: { bold: true, weight: 'regular' }, children: ['light'] },
+      ],
+    }, stdout)
+    try {
+      await settle()
+      expect(renderedElement(stdout, 'heavy', 'ink-text').textStyles).toMatchObject({ bold: true })
+      expect(renderedElement(stdout, 'light', 'ink-text').textStyles?.bold).toBeFalsy()
+      const box = elements(stdout, false).find(({ node, text }) => node.nodeName === 'ink-box' && text === 'heavylight' &&
+        node.style.rowGap !== undefined)
+      expect(box?.node.style).toMatchObject({ paddingX: 2, rowGap: 2, columnGap: 4 })
+    } finally {
+      app.unmount()
+    }
+  })
+})

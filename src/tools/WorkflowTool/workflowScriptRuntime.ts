@@ -82,6 +82,7 @@ import { workflowPhaseExecutionOrder } from './workflowPhaseScheduler.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import { callWorkflowAgent, snapshotWorkflowAgentContext } from './runWorkflow.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
+import { raiseModWorkflowAgentSpawn } from '../../services/mods/agents.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -769,6 +770,19 @@ export async function runWorkflowScript({
       await emit(createWorkflowAgentEvent({ workflowRunId, phaseId: phase, agentId: agentId, status: 'completed', cacheHit: true }))
       return cached.result
     }
+
+    // Journal hits above are replayed, not raised; a deny is this agent() call's error.
+    const spawned = await raiseModWorkflowAgentSpawn(context, {
+      prompt,
+      model: opts?.model,
+      agentId,
+      runId: workflowRunId ?? '',
+      agentIndex: agentCount,
+      description: agentId,
+      subagentType: opts?.agentType ?? 'general-purpose',
+    })
+    prompt = spawned.prompt
+    if (spawned.model !== opts?.model) opts = { ...opts, model: spawned.model }
 
     const stallMs = opts?.stallMs
 

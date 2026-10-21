@@ -1,4 +1,5 @@
 import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
 import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
@@ -291,7 +292,15 @@ import {
   toInternalMessages,
   toSDKRateLimitInfo,
 } from 'src/utils/messages/mappers.js'
-import { createModelSwitchBreadcrumbs } from 'src/utils/messages.js'
+import {
+  createModelSwitchBreadcrumbs,
+  createUserMessage,
+} from 'src/utils/messages.js'
+import {
+  checkModelSwitch,
+  getModelSwitchHookInfo,
+  getPostModelSwitchContext,
+} from 'src/utils/model/modelSwitchHooks.js'
 import { collectContextData } from 'src/commands/context/context-noninteractive.js'
 import { LOCAL_COMMAND_STDOUT_TAG } from 'src/constants/xml.js'
 import {
@@ -933,6 +942,8 @@ export async function runHeadless(
     () => getAppState().mcp.tools,
     onPermissionPrompt,
   )
+  // tool.check names the host as the decider of core's ask when its program answers asks.
+  setModToolCheckPermissionHost(effectivePermissionPromptToolName !== undefined)
   if (options.permissionPromptToolName) {
     // Remove the permission prompt tool from the list of available tools.
     filteredTools = filteredTools.filter(
@@ -2983,6 +2994,11 @@ function runHeadlessStreaming(
         uuid: randomUUID(), session_id: getSessionId(),
       })
     },
+    // No terminal draws here: the person's Notification hooks alone run.
+    uiNotify: async notification => {
+      await executeNotificationHooks(notification)
+      return 'no_surface'
+    },
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),
     toolHost: () => createModToolHost(getModToolContext(), canUseTool),
@@ -3521,6 +3537,21 @@ function runHeadlessStreaming(
                 return
               }
             }
+            const switchInfo = getModelSwitchHookInfo(
+              requestedModel === 'default' ? null : requestedModel,
+              mutableMessages,
+            )
+            const verdict = await checkModelSwitch(switchInfo, 'sdk')
+            if (verdict.decision !== 'proceed') {
+              // Headless set_model has no prompt to confirm an "ask" on.
+              sendControlResponseError(
+                message,
+                verdict.decision === 'ask'
+                  ? `PreModelSwitch hook asked for confirmation, which set_model cannot show${verdict.reason ? `: ${verdict.reason}` : ''}`
+                  : `Model switch blocked by PreModelSwitch hook: ${verdict.reason ?? 'no reason given'}`,
+              )
+              return
+            }
             const model = requestedModel === 'default' ? getDefaultMainLoopModel() : requestedModel
             activeUserSpecifiedModel = model
             setMainLoopModelOverride(model)
@@ -3531,6 +3562,9 @@ function runHeadlessStreaming(
               // Like official 2.1.299, a model without auto mode support leaves auto.
               const { toolPermissionContext, fastMode } = getAppState()
               await recheckAutoModeGate(toolPermissionContext, fastMode, setAppState)
+            }
+            for (const content of (await getPostModelSwitchContext(switchInfo, 'sdk')) ?? []) {
+              mutableMessages.push(createUserMessage({ content, isMeta: true }))
             }
             sendControlResponseSuccess(message)
           }).catch(error => {

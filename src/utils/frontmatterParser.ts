@@ -289,6 +289,21 @@ export function parsePositiveIntFromFrontmatter(
   return undefined
 }
 
+export const AUTO_COMPACT_WINDOW_MIN = 100_000
+export const AUTO_COMPACT_WINDOW_MAX = 1_000_000
+
+/** Agent autoCompactWindow: an integer token count from 100K to 1M. */
+export function parseAutoCompactWindowFromFrontmatter(
+  value: unknown,
+): number | undefined {
+  const parsed = parsePositiveIntFromFrontmatter(value)
+  return parsed !== undefined &&
+    parsed >= AUTO_COMPACT_WINDOW_MIN &&
+    parsed <= AUTO_COMPACT_WINDOW_MAX
+    ? parsed
+    : undefined
+}
+
 /**
  * Validate and coerce a description value from frontmatter.
  *

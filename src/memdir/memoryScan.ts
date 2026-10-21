@@ -9,6 +9,7 @@ import { basename, join } from 'path'
 import { parseFrontmatter } from '../utils/frontmatterParser.js'
 import { readFileInRange } from '../utils/readFileInRange.js'
 import { type MemoryType, parseMemoryType } from './memoryTypes.js'
+import { neutralizeMemoryContent } from './neutralizeMemoryContent.js'
 
 export type MemoryHeader = {
   filename: string
@@ -94,7 +95,7 @@ export function formatMemoryManifest(memories: MemoryHeader[]): string {
       const tag = m.type ? `[${m.type}] ` : ''
       const ts = new Date(m.mtimeMs).toISOString()
       return m.description
-        ? `- ${tag}${m.filename} (${ts}): ${m.description}`
+        ? `- ${tag}${m.filename} (${ts}): ${neutralizeMemoryContent(m.description)}`
         : `- ${tag}${m.filename} (${ts})`
     })
     .join('\n')

@@ -1,4 +1,5 @@
-import { getMainThreadAgentType } from '../bootstrap/state.js'
+import type { UUID } from 'crypto'
+import { getMainThreadAgentType, getSessionId } from '../bootstrap/state.js'
 import type { HookResultMessage } from '../types/message.js'
 import { createAttachmentMessage } from './attachments.js'
 import { logForDebugging } from './debug.js'
@@ -9,6 +10,7 @@ import { shouldAllowManagedHooksOnly } from './hooks/hooksConfigSnapshot.js'
 import { executeSessionStartHooks, executeSetupHooks } from './hooks.js'
 import { logError } from './log.js'
 import { loadPluginHooks } from './plugins/loadPluginHooks.js'
+import { saveCustomTitle } from './sessionStorage.js'
 
 type SessionStartHooksOptions = {
   sessionId?: string
@@ -49,6 +51,8 @@ export async function processSessionStartHooks(
   const hookMessages: HookResultMessage[] = []
   const additionalContexts: string[] = []
   const allWatchPaths: string[] = []
+  let sessionTitle: string | undefined
+  let shouldReloadSkills = false
 
   // Skip loading plugin hooks if restricted to managed hooks only
   // Plugin hooks are untrusted external code that should be blocked by policy
@@ -152,10 +156,33 @@ export async function processSessionStartHooks(
     if (hookResult.watchPaths && hookResult.watchPaths.length > 0) {
       allWatchPaths.push(...hookResult.watchPaths)
     }
+    if (hookResult.sessionTitle) {
+      sessionTitle = hookResult.sessionTitle
+    }
+    if (hookResult.reloadSkills) {
+      shouldReloadSkills = true
+    }
   }
 
   if (allWatchPaths.length > 0) {
     updateWatchPaths(allWatchPaths)
+  }
+
+  if (shouldReloadSkills) {
+    const { reloadSkills } = await import(
+      '../commands/reload-skills/reload-skills.js'
+    )
+    logForDebugging(`SessionStart hook: ${(await reloadSkills()).message}`)
+  }
+
+  // A hook-provided session title applies on startup and resume only.
+  if (sessionTitle && (source === 'startup' || source === 'resume')) {
+    await saveCustomTitle(
+      (sessionId ?? getSessionId()) as UUID,
+      sessionTitle,
+      undefined,
+      'auto',
+    )
   }
 
   // If hooks provided additional context, add it as a message

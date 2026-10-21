@@ -16,7 +16,7 @@ import useStdin from '../ink/hooks/use-stdin.js'
 import { AppStoreContext, getDefaultAppState } from '../state/AppState.js'
 import { createStore } from '../state/store.js'
 import type { PastedContent } from '../utils/config.js'
-import type { PromptInputMode, TextInputEdit } from '../types/textInputTypes.js'
+import type { PromptInputMode, TextInputEdit, VimMode } from '../types/textInputTypes.js'
 import { createModsRuntime, type ModDiagnostic } from '../services/mods/runtime.js'
 import type { ModUiPane, ModUiPresentation } from '../services/mods/ui.js'
 import { withModUiHostFocusOutcome } from '../services/mods/ui.js'
@@ -233,7 +233,7 @@ async function mount(kind: Kind, policy: Policy) {
     const [input, setInput] = useState('')
     const [mode, setMode] = useState<PromptInputMode>('prompt')
     const [pastedContents, setPastedContents] = useState<Record<number, PastedContent>>({})
-    const [vimMode, setVimMode] = useState<'INSERT' | 'NORMAL'>('INSERT')
+    const [vimMode, setVimMode] = useState<VimMode>('INSERT')
     const [helpOpen, setHelpOpen] = useState(false)
     editor = useRef(null)
     const presentation = React.useMemo<ModUiPresentation>(() => ({

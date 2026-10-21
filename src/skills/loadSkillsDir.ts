@@ -315,6 +315,7 @@ export function createSkillCommand({
   paths,
   effort,
   shell,
+  skillFile,
 }: {
   skillName: string
   displayName: string | undefined
@@ -341,6 +342,7 @@ export function createSkillCommand({
   paths: string[] | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  skillFile?: PromptCommand['skillFile']
 }): Command {
   return {
     type: 'prompt',
@@ -371,6 +373,7 @@ export function createSkillCommand({
     loadedFrom,
     hooks,
     skillRoot: baseDir,
+    ...(skillFile ? { skillFile } : {}),
     async getPromptForCommand(args, toolUseContext) {
       let finalContent = baseDir
         ? `Base directory for this skill: ${baseDir}\n\n${markdownContent}`
@@ -498,6 +501,7 @@ async function loadSkillsFromSkillsDir(
             baseDir: skillDirPath,
             loadedFrom: 'skills',
             paths,
+            skillFile: { path: skillFilePath, frontmatter },
           }),
           filePath: skillFilePath,
         }
@@ -639,6 +643,7 @@ async function loadSkillsFromCommandsDir(
             baseDir: skillDirectory,
             loadedFrom: 'commands_DEPRECATED',
             paths: undefined,
+            skillFile: { path: filePath, frontmatter },
           }),
           filePath,
         })

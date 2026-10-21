@@ -183,7 +183,7 @@ export function createModToolHost(context: ToolUseContext, canUseTool: CanUseToo
       try {
         const result = await checkModToolPermission(tool, args, { ...context, options: { ...context.options, tools }, agentId: undefined, abortController })
         abortController.signal.throwIfAborted()
-        return modToolCheckResult(result)
+        return modToolCheckResult(result, undefined, context.getAppState().toolPermissionContext)
       } finally {
         for (const parent of parents) parent.removeEventListener('abort', abort)
       }

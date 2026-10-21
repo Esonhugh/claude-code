@@ -5,6 +5,9 @@ const defaultRecoverFeatures = [
   'UDS_INBOX',
   'KAIROS_CHANNELS',
   'TRANSCRIPT_CLASSIFIER',
+  'MONITOR_TOOL',
+  'EXTRACT_MEMORIES',
+  'AWAY_SUMMARY',
 ];
 
 const enabled = new Set([

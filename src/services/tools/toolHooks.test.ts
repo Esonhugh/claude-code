@@ -30,6 +30,7 @@ import type { ModDispatchHook } from '../mods/types.js'
 import {
   checkModToolPermission,
   modToolCheckResult,
+  setModToolCheckPermissionHost,
   resolveHookPermissionDecision,
   runPreToolUseHooks,
   runPostToolUseHooks,
@@ -1300,6 +1301,17 @@ describe('C17 native permission provenance', () => {
     const decision={behavior:'ask',message:'Ask'} as const
     expect(modToolCheckResult(decision)).toEqual({decision:'ask',reason:'Ask'})
     expect(modToolCheckResult(decision, 'PreToolUse')).toEqual({decision:'ask',reason:'Ask',hook:'PreToolUse'})
+  })
+  test('core ask names the host as decider only where a host answers asks', () => {
+    const ask = {behavior:'ask',message:'Ask'} as const
+    expect(modToolCheckResult(ask, undefined, {mode:'default'})).toEqual({decision:'ask',reason:'Ask'})
+    setModToolCheckPermissionHost(true)
+    try {
+      expect(modToolCheckResult(ask, undefined, {mode:'default'})).toEqual({decision:'ask',reason:'Ask',decider:'host'})
+      expect(modToolCheckResult(ask, undefined, {mode:'dontAsk'})).toEqual({decision:'ask',reason:'Ask'})
+      expect(modToolCheckResult(ask, undefined, {mode:'default',shouldAvoidPermissionPrompts:true})).toEqual({decision:'ask',reason:'Ask'})
+      expect(modToolCheckResult({behavior:'allow',updatedInput:{}}, undefined, {mode:'default'})).toEqual({decision:'allow'})
+    } finally { setModToolCheckPermissionHost(false) }
   })
 })
 

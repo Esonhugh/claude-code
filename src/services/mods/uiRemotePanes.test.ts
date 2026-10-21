@@ -35,7 +35,7 @@ async function fixture(){
 test('headless panes use canonical records without terminal draws, and expose finite SDK state',async()=>{
  const f=await fixture();expect(await f.state()).toEqual({panes:[],shown_id:null,focused_id:null,focus_requested_id:null})
  const result=await f.open({id:'alpha',title:'Alpha',focus:true,closeOnEscape:true,holdToasts:true,rows:7,columns:33})
- expect(result).toEqual({result:{isPlaced:true},panes:[{id:'alpha',title:'Alpha',isShown:true,isFocused:false,isPlaced:true}]})
+ expect(result).toEqual({result:{isPlaced:false,reason:'no-surface: no surface is attached ($.session.surfaces() is empty)'},panes:[{id:'alpha',title:'Alpha',isShown:true,isFocused:false,isPlaced:true}]})
  expect(await f.state()).toEqual({panes:[{id:'alpha',title:'Alpha',plugin:'owner',close_on_escape:true,hold_toasts:true,rows:7,columns:33}],shown_id:'alpha',focused_id:null,focus_requested_id:'alpha'})
  expect(f.draws).toEqual([]);expect(f.diagnostics).toEqual([])
  expect(f.notifications).toEqual([{type:'system',subtype:'ui_panes',...(await f.state())}])
@@ -103,7 +103,7 @@ test('duplicate closing does not call hooks again and cancellation does not aban
 })
 
 test('titles permit newlines, tabs and valid surrogate pairs but reject escape, lone surrogate and placeholder',async()=>{
- const f=await fixture();await f.state();for(const title of ['bad\nline','tab\tline','return\rline','emoji 😀'])expect((await f.open({id:'title',title})).result).toEqual({isPlaced:true})
+ const f=await fixture();await f.state();for(const title of ['bad\nline','tab\tline','return\rline','emoji 😀'])expect((await f.open({id:'title',title})).result).toEqual({isPlaced:false,reason:'no-surface: no surface is attached ($.session.surfaces() is empty)'})
  for(const title of ['escape\x1bline','bad\ud800','bad\u{10eeee}']){const before=await f.state();await f.open({id:'title',title});expect(await f.state()).toEqual(before)}
  expect(f.diagnostics.length).toBeGreaterThanOrEqual(3);await f.control.dispose()
 })
@@ -136,5 +136,13 @@ test('closing a pane retires its external callback leases',async()=>{
  expect(rendered.tree.type).toBe('Button');const press={subtype:'ui_press',surface:'desktop',plugin:'owner',handle:rendered.tree.press.handle,key:'run'} as const
  expect((await f.send(press)).response).toMatchObject({handled:true})
  await f.send({subtype:'ui_close',id:'boot'});expect((await f.send(press)).response).toEqual({handled:false})
+ await f.control.dispose()
+})
+
+test('ui.open reports no-surface until a surface attaches, then places',async()=>{
+ const f=await fixture()
+ expect((await f.open({id:'early'})).result).toEqual({isPlaced:false,reason:'no-surface: no surface is attached ($.session.surfaces() is empty)'})
+ await f.send({subtype:'ui_attach',surface:'vscode',client_id:'placer',viewport:{columns:80,rows:24,isFullscreen:false}})
+ expect((await f.open({id:'late'})).result).toEqual({isPlaced:true})
  await f.control.dispose()
 })

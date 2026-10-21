@@ -16,6 +16,7 @@ import {
 } from '../../utils/permissions/PermissionUpdate.js'
 import type { PermissionUpdateDestination } from '../../utils/permissions/PermissionUpdateSchema.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
+import { executeDirectoryAddedHooks } from '../../utils/hooks.js'
 import {
   addDirHelpMessage,
   validateDirectoryForWorkspace,
@@ -48,6 +49,32 @@ function AddDirError({
       </MessageResponse>
     </Box>
   )
+}
+
+// Hook output that reaches Claude is bounded so a chatty hook cannot flood
+// the context.
+const MAX_DIRECTORY_ADDED_CONTEXT_CHARS = 2000
+
+async function runDirectoryAddedHooks(
+  path: string,
+  context: LocalJSXCommandContext,
+): Promise<string[] | undefined> {
+  const results = await executeDirectoryAddedHooks(
+    path,
+    'slash_command',
+    context.getAppState,
+  )
+  const notes = results
+    .map(result => result.systemMessage?.trim())
+    .filter((note): note is string => !!note)
+    .map(note => note.slice(0, MAX_DIRECTORY_ADDED_CONTEXT_CHARS))
+  const failed = results.filter(result => !result.succeeded).length
+  if (failed > 0) {
+    notes.push(
+      `${failed} of ${results.length} DirectoryAdded hook${results.length === 1 ? '' : 's'} failed for ${path}`,
+    )
+  }
+  return notes.length > 0 ? notes : undefined
 }
 
 export async function call(
@@ -105,7 +132,9 @@ export async function call(
     }
 
     const messageWithHint = `${message} ${chalk.dim('· /permissions to manage')}`
-    onDone(messageWithHint)
+    onDone(messageWithHint, {
+      metaMessages: await runDirectoryAddedHooks(path, context),
+    })
   }
 
   // When no path is provided, show AddWorkspaceDirectory input form directly

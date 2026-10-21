@@ -13,7 +13,9 @@ import { setCwd } from '../../utils/Shell.js'
 import { saveWorktreeState } from '../../utils/sessionStorage.js'
 import {
   createWorktreeForSession,
+  enterExistingWorktree,
   getCurrentWorktreeSession,
+  resolveExistingWorktree,
   validateWorktreeSlug,
 } from '../../utils/worktree.js'
 import { ENTER_WORKTREE_TOOL_NAME } from './constants.js'
@@ -33,8 +35,16 @@ const inputSchema = lazySchema(() =>
       })
       .optional()
       .describe(
-        'Optional name for the worktree. Each "/"-separated segment may contain only letters, digits, dots, underscores, and dashes; max 64 chars total. A random name is generated if not provided.',
+        'Optional name for a new worktree. Each "/"-separated segment may contain only letters, digits, dots, underscores, and dashes; max 64 chars total. A random name is generated if not provided. Mutually exclusive with `path`.',
       ),
+    path: z
+      .string()
+      .optional()
+      .describe(
+        'Path to an existing worktree to switch into instead of creating a new one. Must appear in `git worktree list` for the current repo. Mutually exclusive with `name`.',
+      ),
+  }).refine(input => !(input.name && input.path), {
+    message: 'Provide at most one of `name` or `path`, not both.',
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -65,31 +75,79 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  userFacingName() {
-    return 'Creating worktree'
+  userFacingName(input) {
+    return input?.path ? 'Entering worktree' : 'Creating worktree'
   },
   shouldDefer: true,
   toAutoClassifierInput(input) {
-    return input.name ?? ''
+    return input.path ?? input.name ?? ''
+  },
+  async validateInput(input) {
+    if (getCurrentWorktreeSession() && !input.path) {
+      return {
+        result: false,
+        message:
+          'Already in a worktree session. Pass `path` to switch into another existing worktree, or use ExitWorktree to leave this one before creating a new worktree.',
+        errorCode: 2,
+      }
+    }
+    return { result: true }
+  },
+  async checkPermissions(input) {
+    if (!input.path) return { behavior: 'allow', updatedInput: input }
+    // Worktrees under .claude/worktrees/ are Claude-managed; anything else
+    // moves the session's write access elsewhere, so ask first.
+    const existing = await resolveExistingWorktree(input.path).catch(
+      () => null,
+    )
+    if (existing?.managed) {
+      return {
+        behavior: 'allow',
+        updatedInput: { ...input, path: existing.worktreePath },
+      }
+    }
+    const target = existing?.worktreePath ?? input.path
+    return {
+      behavior: 'ask',
+      message: `Enter the worktree at "${target}"? This moves the session's working directory and write access there, and loads project configuration (CLAUDE.md, settings) from that location.`,
+      updatedInput: { ...input, path: target },
+      decisionReason: {
+        type: 'safetyCheck',
+        reason: `permission-root relocation to "${target}" — a model-supplied worktree outside .claude/worktrees/`,
+        classifierApprovable: false,
+      },
+    }
   },
   renderToolUseMessage,
   renderToolResultMessage,
   async call(input) {
     // Validate not already in a worktree created by this session
-    if (getCurrentWorktreeSession()) {
+    if (getCurrentWorktreeSession() && !input.path) {
       throw new Error('Already in a worktree session')
     }
 
-    // Resolve to main repo root so worktree creation works from within a worktree
-    const mainRepoRoot = findCanonicalGitRoot(getCwd())
-    if (mainRepoRoot && mainRepoRoot !== getCwd()) {
-      process.chdir(mainRepoRoot)
-      setCwd(mainRepoRoot)
+    let worktreeSession
+    if (input.path) {
+      worktreeSession = await enterExistingWorktree(getSessionId(), input.path)
+    } else {
+      // Resolve to main repo root so worktree creation works from within a
+      // worktree; worktree.baseRef "head" still reads HEAD where we started.
+      const fromCwd = getCwd()
+      const mainRepoRoot = findCanonicalGitRoot(fromCwd)
+      if (mainRepoRoot && mainRepoRoot !== fromCwd) {
+        process.chdir(mainRepoRoot)
+        setCwd(mainRepoRoot)
+      }
+
+      const slug = input.name ?? getPlanSlug()
+
+      worktreeSession = await createWorktreeForSession(
+        getSessionId(),
+        slug,
+        undefined,
+        { fromCwd },
+      )
     }
-
-    const slug = input.name ?? getPlanSlug()
-
-    const worktreeSession = await createWorktreeForSession(getSessionId(), slug)
 
     process.chdir(worktreeSession.worktreePath)
     setCwd(worktreeSession.worktreePath)
@@ -101,9 +159,12 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
     clearMemoryFileCaches()
     getPlansDirectory.cache.clear?.()
 
-    logEvent('tengu_worktree_created', {
-      mid_session: true,
-    })
+    logEvent(
+      input.path ? 'tengu_worktree_entered_existing' : 'tengu_worktree_created',
+      {
+        mid_session: true,
+      },
+    )
 
     const branchInfo = worktreeSession.worktreeBranch
       ? ` on branch ${worktreeSession.worktreeBranch}`
@@ -113,7 +174,7 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
       data: {
         worktreePath: worktreeSession.worktreePath,
         worktreeBranch: worktreeSession.worktreeBranch,
-        message: `Created worktree at ${worktreeSession.worktreePath}${branchInfo}. The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
+        message: `${input.path ? 'Entered' : 'Created'} worktree at ${worktreeSession.worktreePath}${branchInfo}. The session is now working in the worktree. Use ExitWorktree to leave mid-session, or exit the session to be prompted.`,
       },
     }
   },

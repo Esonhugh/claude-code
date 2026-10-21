@@ -15,7 +15,7 @@ const autocomplete: PromptAutocompleteInput = {text: 'ask #12', cursor: 7, start
 const event: EventOf['prompt.autocomplete'] = autocomplete
 const suggestion: PromptAutocompleteSuggestion = {text: '#123', label: 'Issue 123', description: 'owned fixture'}
 const result: ResultOf['prompt.autocomplete'] = {suggestions: [suggestion]} satisfies PromptAutocompleteResult
-const failure: HookFailure = {kind: 're-entry', cause: 'lent', budget: 100}
+const failure: HookFailure = {kind: 'timeout', budget: 100}
 
 export const register: Register = on => {
   on('model.complete', async ($, e, next) => {
@@ -46,9 +46,8 @@ export const register: Register = on => {
     void workflow
     return next(e)
   }).catch(($, e, next) => {
-    const reason: 'throw' | 'timeout' | 're-entry' = next.error.kind
-    const cause: 'lent' | undefined = next.error.cause
-    void [reason, cause]
+    const reason: 'throw' | 'timeout' = next.error.kind
+    void reason
     return next.called ? next(e) : {deny: 'owned guard'}
   })
 }

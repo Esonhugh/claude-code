@@ -14,6 +14,9 @@ import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { subscribeRateLimitUsage } from '../claudeAiLimits.js'
 import { getSubscriptionType } from '../../utils/auth.js'
 import { seatNativeModPlugins } from './native.js'
+import { appendModQueueRecord } from './sessionAppend.js'
+import { modSessionIdentity } from './sessionIdentity.js'
+import { setQueueRecordRewriter } from '../../utils/messageQueueManager.js'
 import { esmModuleExtensions } from './loader.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isShuttingDown, registerModsHostDisposer } from '../../utils/gracefulShutdown.js'
@@ -393,7 +396,6 @@ export function createModsSession(options: ModsSessionOptions) {
       })),
       settings.hasManagedSettings === true || (settings.policySettings !== null && Object.keys(settings.policySettings).length > 0),
       settings.policySettings?.hooks,
-      settings.policySettings?.strictPluginOnlyCustomization,
       settings.hookPolicy,
       settings.subscriptionType,
       settings.enabledOptionSources,
@@ -559,10 +561,7 @@ export function createModsSession(options: ModsSessionOptions) {
   async function reconcile(plugins?: readonly LoadedPlugin[], deferAuthoring = false) {
     const settings = readSettings()
     settingsKey = relevantSettings(settings)
-    const policy = settings.policySettings
     const disabled = options.getDisabledReason?.()
-      ?? (policy?.strictPluginOnlyCustomization
-        ? 'Managed Mods protection is not supported by this slice; external Mods are not activated' : undefined)
     const configured = options.bare ? [] : plugins ?? (await loadPlugins())
     const authoringErrors = deferAuthoring || options.bare
       ? []
@@ -589,6 +588,9 @@ export function createModsSession(options: ModsSessionOptions) {
     const origins = new Map(loaded.filter(plugin => plugin.enabled !== false)
       .map(plugin => [getPluginStorageId(plugin), getModPluginOrigin(plugin, settings)]))
     services.pluginOrigin = storageId => origins.get(storageId)
+    const managed = new Set(loaded.filter(plugin => plugin.enabled !== false && plugin.managedSource === true &&
+      settings.policySettings?.enabledPlugins?.[getPluginStorageId(plugin)] === true).map(getPluginStorageId))
+    services.sessionIdentity = storageId => managed.has(storageId) ? modSessionIdentity() : undefined
     diagnostics = [...authoringErrors, ...mergeErrors]
     reported.clear()
     for (const error of prepared.errors) diagnostic(error)
@@ -618,6 +620,15 @@ export function createModsSession(options: ModsSessionOptions) {
         return
       }
       runtime = created
+      setQueueRecordRewriter((text, origin) => {
+        const snapshot = runtime?.capture()
+        if (!snapshot?.hasHooks('session.append')) {
+          snapshot?.release()
+          return undefined
+        }
+        const promptOrigin = origin === undefined ? { kind: 'unclassified' } : origin.kind === 'human' ? { kind: 'composer' } : structuredClone(origin)
+        return appendModQueueRecord(snapshot, text, promptOrigin).finally(() => snapshot.release())
+      })
       unsubscribeRender = runtime.renderHooks.subscribe(publishRender)
       publishRender()
       runtimeBound = binding !== undefined
@@ -860,6 +871,7 @@ export function createModsSession(options: ModsSessionOptions) {
     unsubscribeSettings?.()
     unsubscribePlugins?.()
     unsubscribeOptions?.()
+    setQueueRecordRewriter(undefined)
     const close = Promise.all([watcherClosing, watcher?.close()])
     watcher = undefined
     // Close watchers before the first awaited runtime teardown. Async loads and

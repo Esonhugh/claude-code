@@ -28,14 +28,14 @@ test('pinned declaration source is the verified official 290 native asset', asyn
   expect(Buffer.byteLength(text)).toBe(600277)
 })
 
-test('generated public definitions preserve the baseline with the verified295 Button extension', async () => {
-  const body = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
-  const currentHash = 'ec9fb8b86b52427c134e267749aa04ca84e419735e75810f5d2e5fa23f657ab3'
+test('generated public definitions preserve the current 303 baseline byte for byte', async () => {
+  const body = await readFile(new URL('../../../assets/mods-2.1.303.d.ts.txt', import.meta.url), 'utf8')
+  const currentHash = '8afa71883ecfa52901eb7a04cf31fef700d8ba565eaad244f4884cc620f8d56e'
   const output = generateModDeclarationFiles('2.1.280', []).find(file => file.path === 'claude-code/index.d.ts')!.text
   const start = output.indexOf('// Claude Code function hooks:')
   expect(start).toBeGreaterThanOrEqual(0)
   expect(sha(body)).toBe(currentHash)
-  expect(sha(output.slice(start, output.lastIndexOf('\n// Claude Code owned declaration sha256=')))).toBe('78e405db69f99001ca9fc4e0dc1dd89776742fa5f8163f2d0779aa5a37677b25')
+  expect(sha(output.slice(start, output.lastIndexOf('\n// Claude Code owned declaration sha256=')))).toBe(currentHash)
   expect(output.startsWith('// Written by Claude Code 2.1.280.\n')).toBe(true)
 })
 
@@ -44,8 +44,8 @@ test('all official public names and operation maps are available without widenin
   expect(ts.getPreEmitDiagnostics(program).map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n'))).toEqual([])
   const module = checker.getAmbientModules().find(symbol => symbol.name === '"claude-code"')!
   const exports = checker.getExportsOfModule(module)
-  expect(exports).toHaveLength(565)
-  const counts = {EventOf: 140, ResultOf: 140, OpEventOf: 61, OpValueOf: 61, EventCalls: 11}
+  expect(exports).toHaveLength(585)
+  const counts = {EventOf: 144, ResultOf: 144, OpEventOf: 64, OpValueOf: 64, EventCalls: 11}
   for (const [name, count] of Object.entries(counts)) {
     const symbol = exports.find(symbol => symbol.name === name)!
     expect(checker.getPropertiesOfType(checker.getDeclaredTypeOfSymbol(symbol)), name).toHaveLength(count)
@@ -79,7 +79,7 @@ test('strict authors can use the new color, mention, ceiling and server-tool def
       on('prompt.mention',async($,e,next)=>next({...e,path:'/owned/other'}));
     };
     void[theme,color,server,copy,copied,mention,refusal];`
-  const canonical = await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt', import.meta.url), 'utf8')
+  const canonical = await readFile(new URL('../../../assets/mods-2.1.303.d.ts.txt', import.meta.url), 'utf8')
   expect(ts.getPreEmitDiagnostics(project(author, canonical)).map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n'))).toEqual([])
   const program = project(author)
   expect(ts.getPreEmitDiagnostics(program).map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n'))).toEqual([])
