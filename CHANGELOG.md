@@ -12,6 +12,28 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-20 - Hooks 官方一致性：输入改写校验、提交前拦截与输出转义
+
+### 变更内容
+
+- PreToolUse 与 PermissionRequest hook 返回的 `updatedInput` 现按工具输入 schema 校验：未知字段被丢弃，类型错误或被工具 `validateInput` 拒绝时直接拒绝该次调用并说明是 hook 的改写无效（对齐官方 2.1.300）。
+- `UserPromptSubmit` hook 现在在 skill 或自定义斜杠命令展开之前运行，拦截提示时命令正文里的 `!` shell 命令不再执行；skill 自身 front-matter 的 `UserPromptSubmit` hook 不再作用于调用它的那条提示（对齐官方 2.1.299）。
+- hook matcher 中含连字号的名称（如 `code-reviewer`、`mcp__brave-search`）改为精确匹配，逗号分隔的 matcher（如 `"Bash,PowerShell"`）现在会生效；匹配整个 MCP server 请写 `mcp__brave-search__.*`（对齐官方 2.1.191/2.1.195）。
+- 匹配值为空字符串的事件（如无 agent 类型的子代理结束）只触发未设置 matcher 的 hook，不再触发所有带 matcher 的 hook（对齐官方 2.1.275）。
+- hook 输出（additionalContext、成功输出、阻塞错误、停止原因、异步 hook 响应、Stop/TeammateIdle/TaskCreated/TaskCompleted 反馈）中的 `<system-reminder>` 标签会被转义，无法再提前闭合外层提醒（对齐官方 2.1.292）。
+- settings 文件中未知的 hook 事件、非数组的事件值、格式错误的 matcher 或 hook 条目改为单独丢弃并给出警告，文件中其他设置照常生效；PreToolUse/PermissionRequest 的坏条目仍使整个文件不生效，以免绕过其守护的权限（对齐官方 2.1.101/2.1.122）。
+- 插件 hook 的 shell 形式命令中引用 `${user_config.*}` 现在会报错拒绝执行，请改读环境变量 `$CLAUDE_PLUGIN_OPTION_<KEY>`（对齐官方 2.1.207 的注入修复）。
+- hook 标准输出形如 `{...}` 但不是合法 JSON 时，改为报告 hook 错误并说明解析失败原因，不再静默当作纯文本（对齐官方 2.1.248）。
+
+### 测试覆盖
+
+- `bun test src/services/tools/hookUpdatedInput.test.ts`：PreToolUse 允许/询问/透传改写的类型错误、未知字段丢弃、`validateInput` 拒绝，后续 allow 不能解除改写拒绝；PermissionRequest allow 的类型错误转为拒绝与未知字段丢弃。
+- `bun test src/utils/processUserInput/processUserInput.mods.test.ts`：block/stop 的 `UserPromptSubmit` 在 prompt 型命令展开前生效、放行时 hook 只运行一次且上下文保留、local 命令维持原顺序。
+- `bun test src/utils/hooks.matcher.test.ts`：连字号精确匹配、`mcp__server__.*` 正则、逗号列表、SubagentStart 连字号 agent 类型、SubagentStop 空 agent 类型。
+- `bun test src/utils/messages.hookReminderEscape.test.ts`：各类 hook 附件与 Stop 反馈中的开闭标签与结尾 `<`/`</` 转义。
+- `bun test src/utils/settings/hooksResilience.test.ts`：未知事件与坏条目被丢弃且其他设置生效，PreToolUse/PermissionRequest 坏条目与误嵌套仍拒绝整个文件。
+- `bun test src/utils/hooks.sourceScope.test.ts`：插件 shell 命令中的 `${user_config.*}` 被拒绝且环境变量可用、畸形 JSON 输出报错而 JSON lines 与普通文本不报错。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容
