@@ -322,7 +322,11 @@ export function PermissionRuleList({
   managedSSHRemotePermissions,
 }: Props): React.ReactNode {
   const hasDenials = getAutoModeDenials().length > 0
-  const defaultTab: TabType = initialTab ?? (hasDenials ? 'recent' : 'allow')
+  // The tabs unmount while an auto mode rule view is open; come back to them.
+  const [returnToAutoModeTab, setReturnToAutoModeTab] = useState(false)
+  const defaultTab: TabType = returnToAutoModeTab
+    ? 'automode'
+    : (initialTab ?? (hasDenials ? 'recent' : 'allow'))
   const [changes, setChanges] = useState<string[]>([])
   const localToolPermissionContext = useAppState(s => s.toolPermissionContext)
   const setAppState = useSetAppState()
@@ -1021,6 +1025,7 @@ export function PermissionRuleList({
                           searchQuery,
                         )}
                         onSelect={value => {
+                          setReturnToAutoModeTab(true)
                           if (value === ADD_AUTO_MODE_RULE_VALUE) {
                             setIsAddingAutoModeRule(true)
                           } else {
