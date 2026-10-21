@@ -1428,21 +1428,48 @@ async function execCommandHook(
  *   - Regex pattern (e.g., '^Write.*', '.*', '^(Write|Edit)$')
  * @returns true if the query matches the pattern
  */
-function matchesPattern(matchQuery: string, matcher: string): boolean {
+// Events whose matcher values are identifiers, so hyphens and commas belong to
+// the exact-match list syntax rather than to a regex (official 2.1.191/2.1.195).
+const EXACT_LIST_MATCHER_EVENTS = new Set<string>([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+  'PermissionDenied',
+  'UserPromptExpansion',
+  'SessionStart',
+  'SessionEnd',
+  'Setup',
+  'PreCompact',
+  'PostCompact',
+  'PreModelSwitch',
+  'PostModelSwitch',
+  'Notification',
+  'SubagentStart',
+  'SubagentStop',
+  'Elicitation',
+  'ElicitationResult',
+  'ConfigChange',
+  'InstructionsLoaded',
+  'DirectoryAdded',
+])
+
+function matchesPattern(
+  matchQuery: string,
+  matcher: string,
+  hookEvent: string,
+): boolean {
   if (!matcher || matcher === '*') {
     return true
   }
-  // Check if it's a simple string or pipe-separated list (no regex special chars except |)
-  if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
-    // Handle pipe-separated exact matches
-    if (matcher.includes('|')) {
-      const patterns = matcher
-        .split('|')
-        .map(p => normalizeLegacyToolName(p.trim()))
-      return patterns.includes(matchQuery)
-    }
-    // Simple exact match
-    return matchQuery === normalizeLegacyToolName(matcher)
+  // A plain identifier or a list of them is an exact match, not a regex.
+  const listSyntax = EXACT_LIST_MATCHER_EVENTS.has(hookEvent)
+  if ((listSyntax ? /^[a-zA-Z0-9_|, -]+$/ : /^[a-zA-Z0-9_|]+$/).test(matcher)) {
+    return matcher
+      .split(listSyntax ? /[|,]/ : '|')
+      .map(p => p.trim())
+      .filter(Boolean)
+      .some(p => matchQuery === normalizeLegacyToolName(p))
   }
 
   // Otherwise treat as regex
@@ -1782,7 +1809,8 @@ export async function getMatchingHooks(
     const filteredMatchers = matchQuery
       ? hookMatchers.filter(
           matcher =>
-            !matcher.matcher || matchesPattern(matchQuery, matcher.matcher),
+            !matcher.matcher ||
+            matchesPattern(matchQuery, matcher.matcher, hookEvent),
         )
       : hookMatchers
 
