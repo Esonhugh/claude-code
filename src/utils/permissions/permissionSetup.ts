@@ -1580,16 +1580,18 @@ export function prepareContextForPlanMode(
 }
 
 /**
- * Reconciles auto-mode state during plan mode after a settings change.
- * Compares desired state (shouldPlanUseAutoMode) against actual state
- * (isAutoModeActive) and activates/deactivates auto accordingly. No-op when
- * not in plan mode. Called from applySettingsChange so that toggling
- * useAutoModeDuringPlan mid-plan takes effect immediately.
+ * Reconciles auto-mode state after a settings change. In auto mode it
+ * re-strips the dangerous rules syncPermissionRulesFromDisk just reloaded.
+ * In plan mode it compares desired state (shouldPlanUseAutoMode) against
+ * actual state (isAutoModeActive) and activates/deactivates auto accordingly.
+ * Called from applySettingsChange so that toggling useAutoModeDuringPlan
+ * mid-plan takes effect immediately.
  */
 export function transitionPlanAutoMode(
   context: ToolPermissionContext,
 ): ToolPermissionContext {
   if (!feature('TRANSCRIPT_CLASSIFIER')) return context
+  if (context.mode === 'auto') return stripDangerousPermissionsForAutoMode(context)
   if (context.mode !== 'plan') return context
   // Mirror prepareContextForPlanMode's entry-time exclusion — never activate
   // auto mid-plan when the user entered from a dangerous mode.
