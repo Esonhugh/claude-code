@@ -6,10 +6,8 @@ import type {
   PermissionDecision,
   PermissionDecisionReason,
 } from './PermissionResult.js'
-import {
-  applyPermissionUpdates,
-  persistPermissionUpdates,
-} from './PermissionUpdate.js'
+import { persistPermissionUpdates } from './PermissionUpdate.js'
+import { applyPermissionUpdatesWithModeTransition } from './permissionSetup.js'
 import { permissionUpdateSchema } from './PermissionUpdateSchema.js'
 
 export const inputSchema = lazySchema(() =>
@@ -97,7 +95,7 @@ export function permissionPromptToolResultToPermissionDecision(
     if (updatedPermissions) {
       toolUseContext.setAppState(prev => ({
         ...prev,
-        toolPermissionContext: applyPermissionUpdates(
+        toolPermissionContext: applyPermissionUpdatesWithModeTransition(
           prev.toolPermissionContext,
           updatedPermissions,
         ),

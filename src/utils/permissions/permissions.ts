@@ -49,6 +49,7 @@ import {
   persistPermissionUpdate,
   persistPermissionUpdates,
 } from './PermissionUpdate.js'
+import { applyPermissionUpdatesWithModeTransition } from './permissionSetup.js'
 import type {
   PermissionUpdate,
   PermissionUpdateDestination,
@@ -566,7 +567,7 @@ export async function runPermissionRequestHooksForHeadlessAgent(
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions)
           context.setAppState(prev => {
-            const next = applyPermissionUpdates(
+            const next = applyPermissionUpdatesWithModeTransition(
               prev.toolPermissionContext,
               decision.updatedPermissions!,
             )

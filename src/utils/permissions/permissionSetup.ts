@@ -83,8 +83,12 @@ import type {
 import {
   type AdditionalWorkingDirectory,
   applyPermissionUpdate,
+  applyPermissionUpdates,
 } from './PermissionUpdate.js'
-import type { PermissionUpdateDestination } from './PermissionUpdateSchema.js'
+import type {
+  PermissionUpdate,
+  PermissionUpdateDestination,
+} from './PermissionUpdateSchema.js'
 import {
   normalizeLegacyToolName,
   permissionRuleValueFromString,
@@ -700,6 +704,36 @@ export function transitionPermissionModeWithGates(
     throw new Error(reason ? `auto mode is unavailable: ${getAutoModeUnavailableNotification(reason)}` : 'auto mode is unavailable')
   }
   return { ...transitionPermissionMode(context.mode, toMode, context), mode: toMode }
+}
+
+/**
+ * applyPermissionUpdates for updates handed back by a PermissionRequest hook,
+ * an SDK host or a permission dialog. Rule and directory updates apply as
+ * usual; a setMode goes through transitionPermissionModeWithGates like any
+ * other mode switch, and a mode that is not available falls back to default
+ * (as the official CLI does for setMode from a bridge).
+ */
+export function applyPermissionUpdatesWithModeTransition(
+  context: ToolPermissionContext,
+  updates: PermissionUpdate[],
+): ToolPermissionContext {
+  let next = applyPermissionUpdates(
+    context,
+    updates.filter(update => update.type !== 'setMode'),
+  )
+  for (const update of updates) {
+    if (update.type !== 'setMode') continue
+    try {
+      next = transitionPermissionModeWithGates(next, update.mode)
+    } catch (error) {
+      logForDebugging(
+        `setMode '${update.mode}' rejected (${error instanceof Error ? error.message : String(error)}); falling back to 'default'`,
+        { level: 'warn' },
+      )
+      next = transitionPermissionModeWithGates(next, 'default')
+    }
+  }
+  return next
 }
 
 /**
