@@ -51,6 +51,7 @@ import {
 } from './settingsCache.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
+  filterInvalidHooks,
   filterInvalidPermissionRules,
   formatZodError,
   type SettingsWithErrors,
@@ -246,7 +247,10 @@ export function readSettingsFile(
 
     // Filter invalid permission rules before schema validation so one bad
     // rule doesn't cause the entire settings file to be rejected.
-    const ruleWarnings = filterInvalidPermissionRules(data, path)
+    const ruleWarnings = [
+      ...filterInvalidPermissionRules(data, path),
+      ...filterInvalidHooks(data, path),
+    ]
 
     const result = SettingsSchema().safeParse(data)
 

@@ -2,6 +2,8 @@ import type { ConfigScope } from 'src/services/mcp/types.js'
 import type { ZodError, ZodIssue } from 'zod/v4'
 import { jsonParse } from '../slowOperations.js'
 import { plural } from '../stringUtils.js'
+import { HOOK_EVENTS } from '../../entrypoints/agentSdkTypes.js'
+import { HookCommandSchema, HookMatcherSchema } from '../../schemas/hooks.js'
 import { validatePermissionRule } from './permissionValidation.js'
 import { generateSettingsJSONSchema } from './schemaOutput.js'
 import type { SettingsJson } from './types.js'
@@ -262,6 +264,93 @@ export function filterInvalidPermissionRules(
       }
       return true
     })
+  }
+  return warnings
+}
+
+// A PreToolUse/PermissionRequest hook may be what guards the permissions in
+// the same file, so a malformed one still rejects the whole file.
+const GUARD_HOOK_EVENTS = new Set(['PreToolUse', 'PermissionRequest'])
+
+function holdsGuardHooks(value: unknown, depth = 3): boolean {
+  if (depth === 0 || !value || typeof value !== 'object') return false
+  if (Array.isArray(value))
+    return value.some(item => holdsGuardHooks(item, depth - 1))
+  return Object.entries(value).some(
+    ([key, child]) =>
+      GUARD_HOOK_EVENTS.has(key) || holdsGuardHooks(child, depth - 1),
+  )
+}
+
+/**
+ * Drops unknown hook events and malformed hook matchers/entries before schema
+ * validation so one bad entry doesn't reject the whole settings file
+ * (official 2.1.101 / 2.1.122). Guard events are left for the schema to
+ * reject. Returns a warning for each dropped entry.
+ */
+export function filterInvalidHooks(
+  data: unknown,
+  filePath: string,
+): ValidationError[] {
+  if (!data || typeof data !== 'object') return []
+  const hooks = (data as Record<string, unknown>).hooks
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return []
+  const events = hooks as Record<string, unknown>
+  const known = new Set<string>(HOOK_EVENTS)
+  const warnings: ValidationError[] = []
+  const warn = (path: string, message: string, invalidValue?: unknown) =>
+    warnings.push({
+      file: filePath,
+      path,
+      message,
+      invalidValue,
+      docLink: 'https://code.claude.com/docs/en/hooks',
+    })
+
+  for (const [event, matchers] of Object.entries(events)) {
+    if (!known.has(event)) {
+      if (holdsGuardHooks(matchers)) continue
+      delete events[event]
+      warn(
+        `hooks.${event}`,
+        `Unknown hook event "${event}" was ignored. Valid events: ${HOOK_EVENTS.join(', ')}`,
+        event,
+      )
+      continue
+    }
+    if (GUARD_HOOK_EVENTS.has(event)) continue
+    if (!Array.isArray(matchers)) {
+      if (holdsGuardHooks(matchers)) continue
+      delete events[event]
+      warn(
+        `hooks.${event}`,
+        `Hook event "${event}" must be an array of matchers. This entry was ignored.`,
+        matchers,
+      )
+      continue
+    }
+    for (let i = matchers.length - 1; i >= 0; i--) {
+      const matcher = matchers[i]
+      if (holdsGuardHooks(matcher)) continue
+      const entries =
+        matcher && typeof matcher === 'object'
+          ? (matcher as { hooks?: unknown }).hooks
+          : undefined
+      if (Array.isArray(entries)) {
+        for (let j = entries.length - 1; j >= 0; j--) {
+          if (HookCommandSchema().safeParse(entries[j]).success) continue
+          warn(
+            `hooks.${event}.${i}.hooks.${j}`,
+            'Invalid hook entry was ignored',
+            entries[j],
+          )
+          entries.splice(j, 1)
+        }
+      }
+      if (HookMatcherSchema().safeParse(matcher).success) continue
+      matchers.splice(i, 1)
+      warn(`hooks.${event}.${i}`, 'Invalid hook matcher was ignored', matcher)
+    }
   }
   return warnings
 }
