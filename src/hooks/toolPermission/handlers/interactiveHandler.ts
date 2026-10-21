@@ -28,7 +28,10 @@ import {
 import { errorMessage } from '../../../utils/errors.js'
 import type { PermissionDecision } from '../../../utils/permissions/PermissionResult.js'
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js'
-import { hasPermissionsToUseTool } from '../../../utils/permissions/permissions.js'
+import {
+  hasPermissionsToUseTool,
+  isRecheckAllowReason,
+} from '../../../utils/permissions/permissions.js'
 import type { PermissionContext } from '../PermissionContext.js'
 import { createResolveOnce } from '../PermissionContext.js'
 
@@ -228,7 +231,10 @@ function handleInteractivePermission(
         ctx.assistantMessage,
         ctx.toolUseID,
       )
-      if (freshResult.behavior === 'allow') {
+      if (
+        freshResult.behavior === 'allow' &&
+        isRecheckAllowReason(freshResult.decisionReason)
+      ) {
         // claim() (atomic check-and-mark), not isResolved() — the async
         // hasPermissionsToUseTool call above opens a window where CCR
         // could have responded in flight. Matches onAllow/onReject/hook
