@@ -266,8 +266,6 @@ async function* runClassicToolHooks(
           Array.isArray(result.updatedInput))
       )
         throw new Error('classic.PreToolUse updatedInput must be an object')
-      if (result.updatedInput !== undefined)
-        tool.inputSchema.parse(result.updatedInput)
     } else if (
       result.preventContinuation !== undefined &&
       result.preventContinuation !== true
@@ -346,14 +344,23 @@ async function* runClassicToolHooks(
         answer.deny === undefined &&
         answer.updatedInput !== undefined
       ) {
-        const parsed = tool.inputSchema.parse(answer.updatedInput)
-        const validation = await tool.validateInput?.(parsed, context)
-        if (validation?.result === false)
-          throw new Error(
-            validation.message ?? 'Invalid classic.PreToolUse updatedInput',
-          )
-        answer.updatedInput = parsed
-        checkedClassicRewrites.add(parsed)
+        // An invalid rewrite denies the call (official 2.1.300); throwing
+        // here would fail the whole hook run and drop its decision.
+        const checked = await checkHookUpdatedInput(tool, answer.updatedInput, {
+          event: 'PreToolUse',
+          context,
+          hookSource: observations.findLast(o => o.updatedInput !== undefined)
+            ?.hookSource,
+        })
+        if (checked.deny) {
+          delete answer.allow
+          delete answer.ask
+          delete answer.updatedInput
+          answer.deny = checked.deny.message
+        } else {
+          answer.updatedInput = checked.input
+          checkedClassicRewrites.add(checked.input)
+        }
       }
       const folded: AggregatedHookResult = {
         additionalContexts: answer.additionalContext,
