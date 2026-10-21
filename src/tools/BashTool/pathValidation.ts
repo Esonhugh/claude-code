@@ -62,6 +62,10 @@ export type PathCommand =
   | 'sha256sum'
   | 'sha1sum'
   | 'md5sum'
+  | 'tac'
+  | 'egrep'
+  | 'fgrep'
+  | 'tee'
 
 /**
  * SECURITY: Extract positional (non-flag) arguments, correctly handling the
@@ -253,6 +257,27 @@ export const PATH_EXTRACTORS: Record<
   sha1sum: filterOutFlags,
   md5sum: filterOutFlags,
 
+  // tac: -s/--separator takes a value
+  tac: args => {
+    const paths: string[] = []
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i]!
+      if (arg === '--') {
+        paths.push(...args.slice(i + 1))
+        break
+      }
+      if (arg === '-s' || arg === '--separator') i++
+      else if (!arg.startsWith('-')) paths.push(arg)
+    }
+    return paths
+  },
+
+  // tee: every operand is a write target; the terminal pseudo-files are not
+  tee: args =>
+    filterOutFlags(args).filter(
+      arg => !['/dev/null', '/dev/stdout', '/dev/stderr', '/dev/tty'].includes(arg),
+    ),
+
   // tr: special case - skip character sets
   tr: args => {
     const hasDelete = args.some(
@@ -295,6 +320,9 @@ export const PATH_EXTRACTORS: Record<
     }
     return paths
   },
+
+  egrep: args => PATH_EXTRACTORS.grep(args),
+  fgrep: args => PATH_EXTRACTORS.grep(args),
 
   // rg: pattern then paths, defaults to current dir
   rg: args => {
@@ -503,6 +531,10 @@ const ACTION_VERBS: Record<PathCommand, string> = {
   sha256sum: 'compute SHA-256 checksums for files in',
   sha1sum: 'compute SHA-1 checksums for files in',
   md5sum: 'compute MD5 checksums for files in',
+  tac: 'read files (reversed) from',
+  egrep: 'search for patterns in files from',
+  fgrep: 'search for patterns in files from',
+  tee: 'write to files in',
 }
 
 export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
@@ -542,6 +574,10 @@ export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
   sha256sum: 'read',
   sha1sum: 'read',
   md5sum: 'read',
+  tac: 'read',
+  egrep: 'read',
+  fgrep: 'read',
+  tee: 'write',
 }
 
 /**
@@ -766,6 +802,36 @@ function parseCommandArguments(cmd: string): string[] {
 }
 
 /**
+ * Read deny rules also cover files named as option values
+ * (`git blame --ignore-revs-file=.env`). Only an explicit deny rule refuses
+ * the command; other values are not treated as paths.
+ */
+function checkOptionValueReadDeny(
+  args: string[],
+  cwd: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | undefined {
+  for (const arg of args) {
+    const value = /^--?[A-Za-z][\w-]*=(.+)$/.exec(arg)?.[1]
+    if (!value) continue
+    const { resolvedPath, decisionReason } = validatePath(
+      value,
+      cwd,
+      toolPermissionContext,
+      'read',
+    )
+    if (decisionReason?.type === 'rule') {
+      return {
+        behavior: 'deny',
+        message: `Option value '${resolvedPath}' was blocked by a deny rule.`,
+        decisionReason,
+      }
+    }
+  }
+  return undefined
+}
+
+/**
  * Validates a single command for path constraints and shell safety.
  *
  * This function:
@@ -804,6 +870,12 @@ function validateSinglePathCommand(
 
   // Check if this is a path command we need to validate
   const [baseCmd, ...args] = extractedArgs
+  const optionValueDeny = checkOptionValueReadDeny(
+    args,
+    cwd,
+    toolPermissionContext,
+  )
+  if (optionValueDeny) return optionValueDeny
   if (!baseCmd || !SUPPORTED_PATH_COMMANDS.includes(baseCmd as PathCommand)) {
     return {
       behavior: 'passthrough',
@@ -848,6 +920,12 @@ function validateSinglePathCommandArgv(
     }
   }
   const [baseCmd, ...args] = argv
+  const optionValueDeny = checkOptionValueReadDeny(
+    args,
+    cwd,
+    toolPermissionContext,
+  )
+  if (optionValueDeny) return optionValueDeny
   if (!baseCmd || !SUPPORTED_PATH_COMMANDS.includes(baseCmd as PathCommand)) {
     return {
       behavior: 'passthrough',
@@ -951,6 +1029,48 @@ function validateOutputRedirections(
   }
 }
 
+function extractInputRedirectionTargets(command: string): string[] {
+  const parsed = tryParseShellCommand(command, env => `$${env}`)
+  if (!parsed.success) return []
+  const targets: string[] = []
+  parsed.tokens.forEach((token, i) => {
+    const next = parsed.tokens[i + 1]
+    if (
+      typeof token === 'object' &&
+      'op' in token &&
+      token.op === '<' &&
+      typeof next === 'string'
+    )
+      targets.push(next)
+  })
+  return targets
+}
+
+// Read deny rules apply to `< file` input redirections. Other input targets
+// are left to the existing redirection safety checks.
+function validateInputRedirections(
+  targets: string[],
+  cwd: string,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | undefined {
+  for (const target of targets) {
+    const { resolvedPath, decisionReason } = validatePath(
+      target,
+      cwd,
+      toolPermissionContext,
+      'read',
+    )
+    if (decisionReason?.type === 'rule') {
+      return {
+        behavior: 'deny',
+        message: `Input redirection from '${resolvedPath}' was blocked by a deny rule.`,
+        decisionReason,
+      }
+    }
+  }
+  return undefined
+}
+
 /**
  * Checks path constraints for commands that access the filesystem (cd, ls, find).
  * Also validates output redirections to ensure they're within allowed directories.
@@ -1015,6 +1135,14 @@ export function checkPathConstraints(
     compoundCommandHasCd,
   )
   if (redirectionResult.behavior === 'deny') return redirectionResult
+  const inputRedirectionResult = validateInputRedirections(
+    astRedirects
+      ? astRedirects.filter(r => r.op === '<').map(r => r.target)
+      : extractInputRedirectionTargets(input.command),
+    cwd,
+    toolPermissionContext,
+  )
+  if (inputRedirectionResult) return inputRedirectionResult
   let approvalResult = redirectionResult.behavior === 'ask' ? redirectionResult : undefined
 
   // SECURITY: When AST-derived commands are available, iterate them with

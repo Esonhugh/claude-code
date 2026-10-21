@@ -784,6 +784,16 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
+const FIND_UNSAFE_ACTION_RE =
+  /(?:^|\s)-(?:delete|rm|exec|execdir|ok|okdir|fprint0?|fls|fprintf|files0-from)(?=\s|$)/
+
+function findHasUnsafeAction(command: string): boolean {
+  return (
+    /^find(?:\s|$)/.test(command) &&
+    FIND_UNSAFE_ACTION_RE.test(command.replace(/['"\\]/g, ''))
+  )
+}
+
 function filterRulesByContentsMatchingInput(
   input: z.infer<typeof BashTool.inputSchema>,
   rules: Map<string, PermissionRule>,
@@ -888,6 +898,18 @@ function filterRulesByContentsMatchingInput(
       const bashRule = bashPermissionRule(ruleContent)
 
       return commandsToTry.some(cmdToMatch => {
+        // SECURITY: a prefix or wildcard allow rule for `find` must not cover
+        // actions that run commands or delete/write files, unless the rule
+        // spells the action out itself.
+        if (
+          rule.ruleBehavior === 'allow' &&
+          matchMode === 'prefix' &&
+          bashRule.type !== 'exact' &&
+          findHasUnsafeAction(cmdToMatch) &&
+          !findHasUnsafeAction(ruleContent)
+        ) {
+          return false
+        }
         switch (bashRule.type) {
           case 'exact':
             return bashRule.command === cmdToMatch
@@ -1415,6 +1437,19 @@ function filterCdCwdSubcommands(
 }
 
 /**
+ * Path deny rules (Read/Edit) win over every later ask, including the
+ * operator and redirection safety prompts, so check them on the whole
+ * command first. Only a deny result is returned here.
+ */
+function checkEarlyPathDeny(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | null {
+  const pathResult = checkPathConstraints(input, getCwd(), toolPermissionContext)
+  return pathResult.behavior === 'deny' ? pathResult : null
+}
+
+/**
  * Early-exit deny enforcement for the AST too-complex and checkSemantics
  * paths. Returns the exact-match result if non-passthrough (deny/ask/allow),
  * then checks prefix/wildcard deny rules. Returns null if neither matched,
@@ -1802,7 +1837,9 @@ export async function bashToolHasPermission(
   // Removal protection runs before ordinary approval shortcuts in every build.
   // Inspect the original tree before the security walker rewrites command text.
   const rawRoot = await parseCommandRawForRemoval(input.command)
-  const removalPermission = checkRemovalPermission(input, appState.toolPermissionContext, rawRoot)
+  const removalPermission =
+    checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
+    checkEarlyPathDeny(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
   let astRoot = !injectionCheckDisabled &&
     (feature('TREE_SITTER_BASH') || (feature('TREE_SITTER_BASH_SHADOW') && shadowEnabled))

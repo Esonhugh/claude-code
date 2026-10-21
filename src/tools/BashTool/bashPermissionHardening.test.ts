@@ -190,6 +190,61 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('find prefix allow rules do not cover actions that execute or delete', async () => {
+    const rules = { allow: ['Bash(find:*)'] }
+    for (const command of [
+      'find . -exec touch z \\;',
+      'find . -execdir touch z \\;',
+      'find . -ok rm {} \\;',
+      'find . -delete',
+      'find . -name "*.tmp" -delete',
+    ]) {
+      await expectBehavior(command, 'default', rules, 'ask')
+    }
+    await expectBehavior('find . -name "*.ts"', 'default', rules, 'allow')
+    await expectBehavior(
+      'find . -delete',
+      'default',
+      { allow: ['Bash(find . -delete)'] },
+      'allow',
+    )
+  })
+
+  test('tee targets are checked as file writes', async () => {
+    const allow = ['Bash(tee:*)', 'Bash(echo:*)']
+    await expectBehavior('echo x | tee /etc/evil', 'default', { allow }, 'ask')
+    await expectBehavior('echo x | tee -a /etc/evil', 'default', { allow }, 'ask')
+    await expectBehavior(
+      'echo x | tee src/x.ts',
+      'acceptEdits',
+      { allow, deny: ['Edit(./src/x.ts)'] },
+      'deny',
+    )
+    await expectBehavior(
+      'echo x | tee -a src/x.ts',
+      'acceptEdits',
+      { allow, deny: ['Edit(./src/x.ts)'] },
+      'deny',
+    )
+    await expectBehavior('echo x | tee out.txt', 'acceptEdits', { allow }, 'allow')
+    await expectBehavior('echo x | tee /dev/null', 'default', { allow }, 'allow')
+  })
+
+  test('Read deny rules cover tac, egrep, fgrep, input redirects and option values', async () => {
+    const rules = { deny: ['Read(./.env)'] }
+    for (const command of [
+      'tac .env',
+      'egrep X .env',
+      'fgrep X .env',
+      'cat < .env',
+      'git blame --ignore-revs-file=.env src/x.ts',
+    ]) {
+      await expectBehavior(command, 'default', rules, 'deny')
+    }
+    await expectBehavior('tac src/x.ts', 'default', rules, 'allow')
+    await expectBehavior('git log --format=%H -1', 'default', rules, 'allow')
+  })
+
   test('cleanup', () => {
     process.chdir(tmpdir())
     rmSync(project, { recursive: true, force: true })
