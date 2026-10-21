@@ -103,7 +103,19 @@ import {
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import {
+  beginSubagentHandback,
+  isSubagentHandbackDelivered,
+  isSubagentHandbackEnabled,
+  lastSubagentHandbackInstruction,
+  subagentHandbackCountermand,
+  subagentHandbackReminder,
+} from '../../utils/subagentHandback.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
+import { SUBAGENT_HANDBACK_TOOL_NAME } from '../SubagentHandbackTool/constants.js'
+import { SubagentHandbackTool } from '../SubagentHandbackTool/SubagentHandbackTool.js'
+import {
   filterToolsForExactAgent,
+  findUnresolvedToolUses,
   resolveAgentTools,
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
@@ -462,6 +474,7 @@ export async function* runAgent({
   onQueryProgress,
   recordedUuids,
   extraMetadata,
+  handback,
 }: {
   agentDefinition: AgentDefinition
   /** Host-built named sections, before per-agent environment enhancement. */
@@ -554,6 +567,8 @@ export async function* runAgent({
   recordedUuids?: Set<UUID>
   /** Host-owned teammate metadata; merged after the normal agent fields. */
   extraMetadata?: Partial<AgentMetadata>
+  /** An Agent tool subagent: in auto mode it reports through SubagentHandback. */
+  handback?: boolean
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
@@ -979,10 +994,33 @@ export async function* runAgent({
   // Merge agent MCP tools with resolved agent tools, deduplicating by name.
   // resolvedTools is already deduplicated (see resolveAgentTools), so skip
   // the spread + uniqBy overhead when there are no agent-specific MCP tools.
-  const allTools =
+  const mergedTools =
     agentMcpTools.length > 0
       ? uniqBy([...resolvedTools, ...agentMcpTools], 'name')
       : resolvedTools
+
+  // In auto mode an Agent tool subagent reports through SubagentHandback,
+  // which the classifier reviews, instead of through its last message.
+  const handbackContract = feature('TRANSCRIPT_CLASSIFIER')
+    ? handback === true &&
+      !useExactTools &&
+      permissionMode === 'auto' &&
+      isSubagentHandbackEnabled() &&
+      !mergedTools.some(tool => tool.name === SUBAGENT_HANDBACK_TOOL_NAME)
+    : false
+  if (handback === true) {
+    beginSubagentHandback(agentId, handbackContract)
+    const instruction = lastSubagentHandbackInstruction(initialMessages)
+    if (handbackContract && instruction !== 'reminder') {
+      initialMessages.push(createUserMessage({
+        content: subagentHandbackReminder(mergedTools.some(tool => tool.name === SEND_MESSAGE_TOOL_NAME)),
+        isMeta: true,
+      }))
+    } else if (!handbackContract && instruction === 'reminder') {
+      initialMessages.push(createUserMessage({ content: subagentHandbackCountermand(), isMeta: true }))
+    }
+  }
+  const allTools = handbackContract ? [...mergedTools, SubagentHandbackTool] : mergedTools
 
   const canonicalModel = getCanonicalName(resolvedAgentModel)
   const inheritThinking =
@@ -1200,6 +1238,15 @@ export async function* runAgent({
           subagentMessages.push(message)
         }
         yield message
+        // A delivered hand-back ends the run once its turn's tool results are in.
+        if (
+          handbackContract &&
+          message.type === 'user' &&
+          isSubagentHandbackDelivered(agentId) &&
+          findUnresolvedToolUses(subagentMessages).length === 0
+        ) {
+          break
+        }
       }
     }
 

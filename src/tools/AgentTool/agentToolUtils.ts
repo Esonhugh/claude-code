@@ -59,7 +59,15 @@ import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
-import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME } from './constants.js'
+import {
+  subagentResultText,
+  takeSubagentHandbackResult,
+} from '../../utils/subagentHandback.js'
+import {
+  AGENT_TOOL_NAME,
+  LEGACY_AGENT_TOOL_NAME,
+  ONE_SHOT_BUILTIN_AGENT_TYPES,
+} from './constants.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { parkAgentForChildren } from './backgroundOwner.js'
 import { MAX_SUBAGENT_DEPTH } from './subagentDepth.js'
@@ -297,6 +305,13 @@ export const agentToolResultSchema = lazySchema(() =>
         .nullable(),
     }),
     structured_output: z.unknown().optional(),
+    // How a SubagentHandback run's report reached this result: 'send' and
+    // 'flagged' hold the delivered report (a flagged one under its review
+    // warning, the first harness note); 'withheld' delivered nothing.
+    handback: z.enum(['send', 'flagged', 'withheld']).optional(),
+    harnessNoteCount: z.number().optional(),
+    harnessTailCount: z.number().optional(),
+    harnessSectionHash: z.string().optional(),
   }),
 )
 
@@ -339,7 +354,7 @@ type PendingToolUse = {
   name?: string
 }
 
-function findUnresolvedToolUses(messages: MessageType[]): PendingToolUse[] {
+export function findUnresolvedToolUses(messages: MessageType[]): PendingToolUse[] {
   const pendingToolUses = new Map<string, PendingToolUse>()
   const unmatchableToolUses: PendingToolUse[] = []
 
@@ -460,11 +475,17 @@ export function finalizeAgentTool(
   }
 
   const structuredOutput = structuredOutputFromMessages(agentMessages)
+  // A hand-back run's result is the report it delivered, never its last text.
+  const handback = takeSubagentHandbackResult(
+    agentId,
+    !ONE_SHOT_BUILTIN_AGENT_TYPES.has(agentType),
+  )
   return {
     agentId,
     agentType,
     // @ts-ignore - recovered code
     content,
+    ...handback,
     totalDurationMs: Date.now() - startTime,
     totalTokens,
     totalToolUseCount,
@@ -749,9 +770,9 @@ export async function runAsyncAgentLifecycle({
     completeAsyncAgent(agentResult, rootSetAppState)
     if (parkAgentForChildren({ taskId, toolUseContext, resume, getWorktreeResult })) return
 
-    let finalMessage = extractTextContent(agentResult.content, '\n')
+    let finalMessage = subagentResultText(agentResult)
 
-    if (feature('TRANSCRIPT_CLASSIFIER')) {
+    if (feature('TRANSCRIPT_CLASSIFIER') && agentResult.handback === undefined) {
       try {
         const handoffWarning = await classifyHandoffIfNeeded({
           agentMessages,

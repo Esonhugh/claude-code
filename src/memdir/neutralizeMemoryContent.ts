@@ -15,7 +15,7 @@ import {
 import { escapeTagOpeners } from '../utils/xml.js'
 
 // Markup the harness itself emits; a memory file must not be able to forge it.
-const HARNESS_TAGS = [
+export const HARNESS_TAGS = [
   ...TERMINAL_OUTPUT_TAGS,
   'bash-exit-code',
   COMMAND_NAME_TAG,
