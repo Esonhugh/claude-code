@@ -12,6 +12,16 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-21 - bypass 模式写入受保护路径不再询问
+
+### 变更内容
+
+- `--dangerously-skip-permissions`（bypassPermissions）下写入 `.git/`、`.claude/`、shell 配置（如 `.zshrc`）等受保护路径时不再弹出确认，直接写入（对齐官方 2.1.126、2.1.303）；`rm -rf /` 这类灾难性删除与跨机器 bridge 消息仍要求确认，acceptEdits 等其他模式下这些路径仍会询问。可疑 Windows 路径写入与 EnterWorktree 切换工作区在 bypass 下同样直接执行（对齐官方）。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/permissions.bypassSafety.test.ts`（子进程）：bypass 下写 `.git/config`、`.zshrc`、`.claude/settings.json`、`.claude/agents.md` 直接放行，bypass 下 `rm -rf /` 仍询问，acceptEdits 下写 `.zshrc` 仍询问。
+
 ## 2026-10-21 - 权限模式切换加固：auto 规则剥除、切换入口与重判
 
 ### 变更内容
