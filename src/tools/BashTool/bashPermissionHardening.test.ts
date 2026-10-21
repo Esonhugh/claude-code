@@ -1,0 +1,176 @@
+import { expect, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { ToolPermissionContext, ToolUseContext } from '../../Tool.js'
+
+const childFlag = 'CLAUDE_CODE_BASH_HARDENING_CHILD'
+
+if (process.env[childFlag] !== '1') {
+  test('bash permission hardening across parser modes (isolated)', async () => {
+    const env = Object.fromEntries(
+      Object.entries(process.env).filter(
+        ([key]) =>
+          !/^(?:ANTHROPIC_|OPENAI_|CLAUDE_CODE_OAUTH_|CLAUDE_CODE_API_KEY_|CLAUDE_CODE_USE_|CLAUDE_CODE_REMOTE|CLAUDE_CODE_ENTRYPOINT|CLAUDE_CODE_EMBEDDED_)/.test(
+            key,
+          ),
+      ),
+    )
+    for (const parserFeature of [undefined, 'TREE_SITTER_BASH']) {
+      const home = mkdtempSync(join(tmpdir(), 'cc-bash-hardening-'))
+      try {
+        const child = Bun.spawn(
+          [
+            process.execPath,
+            'test',
+            '--feature=BASH_CLASSIFIER',
+            '--feature=TRANSCRIPT_CLASSIFIER',
+            ...(parserFeature ? [`--feature=${parserFeature}`] : []),
+            '--timeout',
+            '30000',
+            import.meta.path,
+          ],
+          {
+            cwd: join(import.meta.dir, '../../..'),
+            env: {
+              ...env,
+              [childFlag]: '1',
+              HOME: home,
+              CLAUDE_CONFIG_DIR: home,
+              ANTHROPIC_API_KEY: 'test-only-not-a-real-key',
+              DISABLE_TELEMETRY: '1',
+              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+            },
+            stdout: 'pipe',
+            stderr: 'pipe',
+          },
+        )
+        const [code, stdout, stderr] = await Promise.all([
+          child.exited,
+          new Response(child.stdout).text(),
+          new Response(child.stderr).text(),
+        ])
+        if (code !== 0)
+          throw new Error(`${parserFeature ?? 'legacy'}\n${stdout}\n${stderr}`)
+      } finally {
+        rmSync(home, { recursive: true, force: true })
+      }
+    }
+  }, 180_000)
+} else {
+  ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
+    VERSION: 'test',
+  }
+  const { setSessionSettingsCache } =
+    await import('../../utils/settings/settingsCache.js')
+  setSessionSettingsCache({ settings: {}, errors: [] })
+  const { getDefaultAppState } = await import('../../state/AppStateStore.js')
+  const { BashTool } = await import('./BashTool.js')
+  const { hasPermissionsToUseTool } =
+    await import('../../utils/permissions/permissions.js')
+  const { requiresExplicitUserApproval } =
+    await import('../../utils/permissions/PermissionResult.js')
+  const { setOriginalCwd, setCwdState } = await import('../../bootstrap/state.js')
+
+  const project = mkdtempSync(join(tmpdir(), 'cc-bash-hardening-project-'))
+  mkdirSync(join(project, 'src'), { recursive: true })
+  writeFileSync(join(project, '.env'), 'X=1')
+  writeFileSync(join(project, 'src/x.ts'), 'a')
+  setOriginalCwd(project)
+  setCwdState(project)
+  process.chdir(project)
+
+  type Rules = { allow?: string[]; deny?: string[]; ask?: string[] }
+  function context(
+    mode: ToolPermissionContext['mode'],
+    rules: Rules = {},
+  ): ToolUseContext {
+    const initial = getDefaultAppState()
+    const state = {
+      ...initial,
+      toolPermissionContext: {
+        ...initial.toolPermissionContext,
+        mode,
+        alwaysAllowRules: { session: rules.allow ?? [] },
+        alwaysDenyRules: { session: rules.deny ?? [] },
+        alwaysAskRules: { session: rules.ask ?? [] },
+      },
+    }
+    return {
+      getAppState: () => state,
+      setAppState: () => {},
+      abortController: new AbortController(),
+      options: { isNonInteractiveSession: false, tools: [] },
+      readFileState: new Map(),
+    } as unknown as ToolUseContext
+  }
+
+  async function decide(
+    command: string,
+    mode: ToolPermissionContext['mode'],
+    rules: Rules = {},
+  ) {
+    return hasPermissionsToUseTool(
+      BashTool,
+      { command },
+      context(mode, rules),
+      undefined as never,
+      'bash-hardening',
+    )
+  }
+
+  async function expectBehavior(
+    command: string,
+    mode: ToolPermissionContext['mode'],
+    rules: Rules,
+    behavior: 'allow' | 'ask' | 'deny',
+  ) {
+    const result = await decide(command, mode, rules)
+    expect({ command, mode, behavior: result.behavior }).toEqual({
+      command,
+      mode,
+      behavior,
+    })
+    return result
+  }
+
+  test('Bash deny rules see through exec wrappers in default and bypass modes', async () => {
+    const rules = { deny: ['Bash(rm:*)'] }
+    for (const mode of ['default', 'bypassPermissions'] as const) {
+      for (const command of [
+        'sudo rm -rf build',
+        'sudo -u root rm -rf build',
+        'doas rm -rf build',
+        'env rm -rf build',
+        'env -i FOO=1 rm -rf build',
+        'setsid rm -rf build',
+        'watch rm -rf build',
+        'watch -n 1 rm -rf build',
+        'ionice rm -rf build',
+        'ionice -c 3 rm -rf build',
+        'chrt 10 rm -rf build',
+        'taskset -c 0 rm -rf build',
+        'flock /tmp/lock rm -rf build',
+        'command rm -rf build',
+        'exec rm -rf build',
+        'nohup rm -rf build',
+        'sudo env FOO=1 nice rm -rf build',
+        'TZ="$HOME" rm -rf build',
+      ]) {
+        await expectBehavior(command, mode, rules, 'deny')
+      }
+    }
+    for (const command of ['sudo ls', 'echo rm -rf build', 'command -v rm']) {
+      const result = await decide(command, 'default', rules)
+      expect({ command, behavior: result.behavior }).not.toEqual({
+        command,
+        behavior: 'deny',
+      })
+    }
+  })
+
+  test('cleanup', () => {
+    process.chdir(tmpdir())
+    rmSync(project, { recursive: true, force: true })
+  })
+}

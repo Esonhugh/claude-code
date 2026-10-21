@@ -833,6 +833,13 @@ function filterRulesByContentsMatchingInput(
   //
   // Without iteration, single-pass compositions miss multi-layer interleaving.
   if (stripAllEnvVars) {
+    // Also match the command behind exec wrappers (sudo, env, setsid, watch,
+    // ...) and assignments with expanded values such as `TZ="$HOME" rm`.
+    commandsToTry.push(
+      ...bashPathValidation.unwrapExecWrappersForRuleMatching(
+        commandWithoutRedirections,
+      ),
+    )
     const seen = new Set(commandsToTry)
     let startIdx = 0
 
