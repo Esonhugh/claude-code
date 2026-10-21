@@ -60,6 +60,7 @@ import { parseUserSpecifiedModel } from '../utils/model/model.js'
 import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
 import type { SettingSource } from '../utils/settings/constants.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
+import { getCommandAllowedTools } from '../utils/permissions/permissionsLoader.js'
 import { getManagedFilePath } from '../utils/settings/managedPath.js'
 import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
@@ -419,7 +420,11 @@ export function createSkillCommand({
                   ...appState.toolPermissionContext,
                   alwaysAllowRules: {
                     ...appState.toolPermissionContext.alwaysAllowRules,
-                    command: allowedTools,
+                    command: getCommandAllowedTools({
+                      name: skillName,
+                      source,
+                      allowedTools,
+                    }),
                   },
                 },
               }

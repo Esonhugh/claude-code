@@ -82,6 +82,7 @@ import {
 } from '../messages.js'
 import type { ModelAlias } from '../model/aliases.js'
 import { parseToolListFromCLI } from '../permissions/permissionSetup.js'
+import { getCommandAllowedTools } from '../permissions/permissionsLoader.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import {
   isOfficialMarketplaceName,
@@ -1174,7 +1175,7 @@ async function getMessagesForPromptSlashCommand(
     if (command.whenToUse) {
       parts.push(`When to use: ${command.whenToUse}`)
     }
-    const skillAllowedTools = command.allowedTools ?? []
+    const skillAllowedTools = getCommandAllowedTools(command)
     if (skillAllowedTools.length > 0) {
       parts.push(
         `This skill grants workers additional tool permissions: ${skillAllowedTools.join(', ')}`,
@@ -1274,7 +1275,7 @@ async function getMessagesForPromptSlashCommand(
   const metadata = formatCommandLoadingMetadata(command, args)
 
   const additionalAllowedTools = parseToolListFromCLI(
-    command.allowedTools ?? [],
+    getCommandAllowedTools(command),
   )
 
   // Create content for the main message, including any pasted images

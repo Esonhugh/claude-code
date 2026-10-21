@@ -30,6 +30,7 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../model/model.js'
+import { getCommandAllowedTools } from '../permissions/permissionsLoader.js'
 import { executeShellCommandsInPrompt } from '../promptShellExecution.js'
 import { loadAllPluginsCacheOnly } from './pluginLoader.js'
 import {
@@ -400,7 +401,12 @@ function createPluginCommand(
                   ...appState.toolPermissionContext,
                   alwaysAllowRules: {
                     ...appState.toolPermissionContext.alwaysAllowRules,
-                    command: allowedTools,
+                    command: getCommandAllowedTools({
+                      name: commandName,
+                      source: 'plugin',
+                      allowedTools,
+                      pluginInfo: { repository: sourceName },
+                    }),
                   },
                 },
               }

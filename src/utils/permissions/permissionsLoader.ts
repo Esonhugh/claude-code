@@ -1,3 +1,4 @@
+import { logForDebugging } from '../debug.js'
 import { readFileSync } from '../fileRead.js'
 import { getFsImplementation, safeResolvePath } from '../fsOperations.js'
 import { safeParseJSON } from '../json.js'
@@ -17,7 +18,12 @@ import {
   loadSSHPermissionOverlay,
   overlayToPermissionRules,
 } from '../../ssh/managedSSHPermissions.js'
+import { isSourceAdminTrusted } from '../settings/pluginOnlyPolicy.js'
 import type { SettingsJson } from '../settings/types.js'
+import {
+  isOfficialMarketplaceName,
+  parsePluginIdentifier,
+} from '../plugins/pluginIdentifier.js'
 import type {
   PermissionBehavior,
   PermissionRule,
@@ -38,6 +44,43 @@ export function shouldAllowManagedPermissionRulesOnly(): boolean {
     getSettingsForSource('policySettings')?.allowManagedPermissionRulesOnly ===
     true
   )
+}
+
+const withheldAllowedToolsWarned = new Set<string>()
+
+/**
+ * The allowed-tools a skill or command may pre-approve. Under
+ * allowManagedPermissionRulesOnly only managed, built-in and bundled ones and
+ * plugins from an official marketplace keep them (official 2.1.282); the rest
+ * run their tool calls and inline shell through the session's rules.
+ */
+export function getCommandAllowedTools(command: {
+  name?: string
+  source: string
+  allowedTools?: string[]
+  pluginInfo?: { repository: string }
+}): string[] {
+  const allowedTools = command.allowedTools ?? []
+  if (allowedTools.length === 0 || !shouldAllowManagedPermissionRulesOnly()) {
+    return allowedTools
+  }
+  const trusted =
+    command.source === 'plugin'
+      ? command.pluginInfo !== undefined &&
+        isOfficialMarketplaceName(
+          parsePluginIdentifier(command.pluginInfo.repository).marketplace,
+        )
+      : isSourceAdminTrusted(command.source)
+  if (trusted) return allowedTools
+  const origin = `/${command.name ?? 'unknown'} (${command.pluginInfo?.repository ?? command.source})`
+  if (!withheldAllowedToolsWarned.has(origin)) {
+    withheldAllowedToolsWarned.add(origin)
+    logForDebugging(
+      `Ignoring allowed-tools ${allowedTools.join(', ')} from ${origin}: permission rules are restricted to managed settings (allowManagedPermissionRulesOnly).`,
+      { level: 'warn' },
+    )
+  }
+  return []
 }
 
 /**
