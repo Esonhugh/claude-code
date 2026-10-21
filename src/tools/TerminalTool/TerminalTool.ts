@@ -90,6 +90,8 @@ export function applyTerminalKeystrokes(
 ): { line: string; submitted: string[] } {
   let line = pending
   const submitted: string[] = []
+  // Escape sequences (arrows, function keys) do not change the typed line.
+  // eslint-disable-next-line no-control-regex
   const input = sequence.replace(/\x1b(?:\[[0-9;?]*[@-~]|O.)?/g, '')
   for (const char of input) {
     if (char === '\r' || char === '\n') {
