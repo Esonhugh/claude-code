@@ -12,7 +12,7 @@ import type { UUID } from 'crypto'
 import { getSessionId } from '../bootstrap/state.js'
 import { randomUUID } from 'crypto'
 import type { CommandBase, PromptCommand } from '../commands.js'
-import { captureModSkillPromptSnapshot, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
+import { captureModSkillPromptSnapshot, modSkillPromptOrigin, renderModSkillPrompt } from '../services/mods/skillPrompt.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -249,6 +249,7 @@ export async function prepareForkedCommandContext(
           snapshot,
           skill: command.name,
           text: coreSkillContent,
+          origin: modSkillPromptOrigin(command),
           signal: context.abortController.signal,
         })
       : coreSkillContent

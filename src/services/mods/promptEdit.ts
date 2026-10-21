@@ -107,6 +107,8 @@ export function validatePromptDecorations(value: unknown): asserts value is Prom
   const styles = ['dimColor', 'bold', 'italic', 'underline', 'strikethrough']
   const keys = ['start', 'end', 'color', 'backgroundColor', ...styles]
   for (const decoration of value) {
+    if (decoration && typeof decoration === 'object' && 'virtualText' in decoration)
+      throw new TypeError('Prompt decoration virtualText is not available in this build')
     if (!decoration || typeof decoration !== 'object' || Array.isArray(decoration) ||
         Object.keys(decoration).some(key => !keys.includes(key)) ||
         !Number.isInteger(decoration.start) || !Number.isInteger(decoration.end))

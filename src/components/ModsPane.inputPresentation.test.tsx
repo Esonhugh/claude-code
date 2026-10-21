@@ -68,3 +68,15 @@ test('Input preserves edited text across equal drawn values and honors a changed
  const h=await mount({value:'seed'})
  try{await h.raw('X');await until(()=>h.events.length===1 && contents(h.dom()).includes('seedX'));await h.redraw({value:'seed'});expect(contents(h.dom())).toContain('seedX');await h.redraw({value:'replacement'});await until(()=>contents(h.dom()).includes('replacement'));expect(h.events).toEqual([{kind:'input.change',value:'seedX'}])}finally{h.dispose()}
 })
+test('Input rows holds several lines: a backslash before Enter starts one, Up walks rows, Enter submits',async()=>{
+ const h=await mount({value:'one\ntwo',rows:3})
+ try{
+  await until(()=>contents(h.dom()).includes('two'))
+  await h.raw('\u001b[A');await h.raw('X');await until(()=>h.events.length===1)
+  expect(h.events).toEqual([{kind:'input.change',value:'oneX\ntwo'}])
+  await h.raw('\\');await h.raw('\r');await until(()=>h.events.length===3)
+  expect(h.events.at(-1)).toEqual({kind:'input.change',value:'oneX\n\ntwo'})
+  await h.raw('\r');await until(()=>h.events.length===4)
+  expect(h.events.at(-1)).toEqual({kind:'input.submit',value:'oneX\n\ntwo'})
+ }finally{h.dispose()}
+})

@@ -1,4 +1,5 @@
 import { getInlinePlugins, getInlinePluginsNoMcp } from '../bootstrap/state.js'
+import { setModToolCheckPermissionHost } from '../services/tools/toolHooks.js'
 import { getInitializePluginsApplied } from '../entrypoints/sdk/launchInitialize.js'
 import { createSdkStreamState } from './streamState.js'
 import { createModCommandQueue } from '../services/mods/commandRunQueue.js'
@@ -915,6 +916,8 @@ export async function runHeadless(
     () => getAppState().mcp.tools,
     onPermissionPrompt,
   )
+  // tool.check names the host as the decider of core's ask when its program answers asks.
+  setModToolCheckPermissionHost(effectivePermissionPromptToolName !== undefined)
   if (options.permissionPromptToolName) {
     // Remove the permission prompt tool from the list of available tools.
     filteredTools = filteredTools.filter(
@@ -2963,6 +2966,11 @@ function runHeadlessStreaming(
         type: 'system', subtype: 'ui_log', plugin, text,
         uuid: randomUUID(), session_id: getSessionId(),
       })
+    },
+    // No terminal draws here: the person's Notification hooks alone run.
+    uiNotify: async notification => {
+      await executeNotificationHooks(notification)
+      return 'no_surface'
     },
     tools: () => getModToolContext().options.tools,
     toolCatalog: () => createToolCatalogForContext(getModToolContext()),

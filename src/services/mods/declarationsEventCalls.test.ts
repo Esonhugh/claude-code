@@ -230,9 +230,9 @@ test('real source runner existing event consumers receive complete data and orig
   expect(result.tests.map(item=>item.failure)).toEqual(Array(25).fill(undefined))
  } finally {await rm(root,{recursive:true,force:true})}
 })
-test('explicit event tables match the pinned 292 main declaration',async()=>{
+test('explicit event tables match the pinned 303 main declaration',async()=>{
  const files=generateModDeclarationFiles('2.1.289',schemaTools()),main=files.find(f=>f.path==='claude-code/index.d.ts')!
- const official=await readFile(new URL('../../../assets/mods-2.1.292.d.ts.txt',import.meta.url),'utf8')
+ const official=await readFile(new URL('../../../assets/mods-2.1.303.d.ts.txt',import.meta.url),'utf8')
  const start=official.indexOf('  export type EngineEventOf = {')
  const end='  export type EventName = keyof EventOf;'
  expect(start).toBeGreaterThanOrEqual(0)

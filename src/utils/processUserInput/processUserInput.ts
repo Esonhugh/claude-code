@@ -18,6 +18,7 @@ import { getContentText } from 'src/utils/messages.js'
 import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
 import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
 import { createModToolHost } from '../../services/mods/toolHost.js'
+import { logForDebugging } from '../debug.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import {
   findCommand,
@@ -288,6 +289,7 @@ export async function processUserInput({
         ...(attachments.length || !promptSubmitMetadata?.attachments
           ? {}
           : { attachments: promptSubmitMetadata.attachments }),
+        ...(promptMessage!.isMeta ? { isMeta: true as const } : {}),
       },
       core: async entered => {
         const submitted = {
@@ -302,7 +304,10 @@ export async function processUserInput({
         }
         const promptIndex = result.messages.indexOf(promptMessage!)
         let rewrittenContent = content
-        if (entered.text !== text) {
+        // A meta prompt that starts a turn takes no text rewrite (2.1.303).
+        if (entered.text !== text && promptMessage!.isMeta)
+          logForDebugging('prompt.submit: a meta prompt starting a turn takes no rewrite; its text is kept')
+        else if (entered.text !== text) {
           if (typeof content === 'string') rewrittenContent = entered.text
           else {
             // Rewrite text once, retaining every non-text block and its order.

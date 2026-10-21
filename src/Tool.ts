@@ -231,6 +231,8 @@ export type ToolUseContext = {
     workflowAgentStallMs?: number
     /** Test/runtime override to wait for workflow completion before returning. */
     workflowRunInForeground?: boolean
+    /** The running subagent definition's autoCompactWindow; it only lowers the window. */
+    autoCompactWindow?: number
   }
   abortController: AbortController
   readFileState: FileStateCache

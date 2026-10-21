@@ -178,6 +178,7 @@ async function runCase({
       toolUseId: `toolu_${agentId}`,
       contentReplacementState: undefined,
       mods: {
+        capture: () => undefined,
         invalidatePromptContext(id?: string) {
           invalidatedAgentId = id
         },

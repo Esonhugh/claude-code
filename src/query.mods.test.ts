@@ -1776,6 +1776,19 @@ describe('public query turn lifecycle', () => {
     expect(h.calls[0]!.input.turnId).toBe(h.calls[1]!.input.turnId)
   })
 
+  test('dispatches turn.start for a subagent run with its agentId and opening prompt', async () => {
+    const h = harness(async function* () { yield response('one', 'answer') })
+    h.snapshot.hasHooks = event => event === 'turn.start' || event === 'turn.complete'
+    h.context.agentId = asAgentId('start-child')
+    h.params.messages = [createUserMessage({ content: 'scan the repo' })]
+
+    await drain(registeredQuery(h))
+
+    const start = h.calls.find(call => call.event === 'turn.start')!
+    expect(start.input).toEqual({ turnId: expect.any(String), text: 'scan the repo', agentId: 'start-child' })
+    expect(start.result).toEqual({ turnId: start.input.turnId })
+  })
+
   test('publishes the public turn id only while the query is in flight', async () => {
     const entered = Promise.withResolvers<void>()
     const release = Promise.withResolvers<void>()
@@ -1910,16 +1923,6 @@ describe('public query turn lifecycle', () => {
     expect(h.order).toEqual(['capture', 'dispatch', 'release'])
   })
 
-  test('does not dispatch turn.start without an explicit public turn', async () => {
-    const h = harness(async function* () { yield response('one', 'answer') })
-    h.snapshot.hasHooks = event => event === 'turn.start' || event === 'turn.complete'
-    h.context.agentId = asAgentId('fixture-no-start-agent')
-
-    await drain(registeredQuery(h))
-
-    expect(h.calls.map(call => call.event)).toEqual(['turn.complete'])
-  })
-
   for (const event of ['tool.list', 'tool.describe', 'agent.offer'] as const) {
     test(`keeps a ${event}-only snapshot through the model request and releases it once`, async () => {
       let received: ModSnapshot | undefined
@@ -2024,8 +2027,11 @@ describe('public query turn lifecycle', () => {
       expect(h.context.mods?.activePublicTurnId).toBe('parent-turn')
       await drain(iterator)
       expect(h.context.mods?.activePublicTurnId).toBe('parent-turn')
-      expect(h.calls.map(call => call.event)).toEqual(['turn.complete'])
+      // 2.1.299: the subagent's run is its own turn, raised with its agentId.
+      expect(h.calls.map(call => call.event)).toEqual(['turn.start', 'turn.complete'])
+      expect(h.calls[0]!.input.agentId).toBe('child-agent')
       expect(h.calls[0]!.input.turnId).not.toBe('parent-turn')
+      expect(h.calls[1]!.input.turnId).toBe(h.calls[0]!.input.turnId)
     } finally {
       await iterator.return({ reason: 'consumer-return' })
       end()

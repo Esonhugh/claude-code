@@ -28,6 +28,15 @@ describe('Mods testing mock', () => {
     expect([...h.hooks.keys()]).toEqual(['env.get'])
   })
 
+  test('session records each appended row as the event carried it and answers as the session stores it', async () => {
+    const h = harness()
+    const session = createMock().session(h.on)
+    const row = { message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text: 'n' }] }, door: 'note', origin: { kind: 'plugin', name: 'one' }, uuid: 'u-1' }
+    expect(await h.call('session.append', row)).toEqual({ message: row.message, uuid: 'u-1' })
+    expect(session.appended()).toEqual([row])
+    expect([...h.hooks.keys()]).toEqual(['session.append'])
+  })
+
   test('store seeds independent plugin stores and supports every operation', async () => {
     const h = harness()
     createMock().store(h.on, { seed: 1 })

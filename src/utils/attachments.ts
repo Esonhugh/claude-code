@@ -132,6 +132,7 @@ import { filterDeniedAgents } from './permissions/permissions.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
 import { createToolCatalogForContext } from '../services/mods/toolCatalog.js'
+import { dispatchModPromptMention } from '../services/mods/promptMention.js'
 import {
   matchingRuleForInput,
   pathInAllowedWorkingPath,
@@ -394,7 +395,7 @@ export type HookAttachment =
       hookName: string
       toolUseID: string
       hookEvent: HookEvent
-      modEvent?: 'prompt.submit' | 'tool.call'
+      modEvent?: 'prompt.submit' | 'tool.call' | 'prompt.mention'
     }
   | HookSystemMessageAttachment
   | HookPermissionDecisionAttachment
@@ -2092,6 +2093,9 @@ async function processAtMentionedFiles(
   if (files.length === 0) return []
 
   const appState = toolUseContext.getAppState()
+  const borrowed = toolUseContext.modsSnapshot
+  const mods = borrowed ?? toolUseContext.mods?.capture({})
+  try {
   const results = await Promise.all(
     files.map(async file => {
       try {
@@ -2137,23 +2141,38 @@ async function processAtMentionedFiles(
           // If stat fails, continue with file logic
         }
 
-        return await generateFileAttachment(
-          absoluteFilename,
-          toolUseContext,
-          'tengu_at_mention_extracting_filename_success',
-          'tengu_at_mention_extracting_filename_error',
-          'at-mention',
-          {
-            offset: lineStart,
-            limit: lineEnd && lineStart ? lineEnd - lineStart + 1 : undefined,
-          },
-        )
+        const read = (path: string, offset?: number, limit?: number) =>
+          generateFileAttachment(
+            path,
+            toolUseContext,
+            'tengu_at_mention_extracting_filename_success',
+            'tengu_at_mention_extracting_filename_error',
+            'at-mention',
+            { offset, limit },
+          )
+        const limit = lineEnd && lineStart ? lineEnd - lineStart + 1 : undefined
+        if (mods?.hasHooks('prompt.mention'))
+          return await dispatchModPromptMention(mods, {
+            mention: file,
+            path: absoluteFilename,
+            ...(lineStart === undefined ? {} : { offset: lineStart }),
+            ...(limit === undefined ? {} : { limit }),
+            ...(toolUseContext.agentId === undefined ? {} : { agentId: toolUseContext.agentId }),
+          }, (path, offset, limit) =>
+            isFileReadDenied(path, appState.toolPermissionContext)
+              ? Promise.resolve(null)
+              : read(path, offset, limit),
+          toolUseContext.abortController.signal)
+        return await read(absoluteFilename, lineStart, limit)
       } catch {
         logEvent('tengu_at_mention_extracting_filename_error', {})
       }
     }),
   )
-  return results.filter(Boolean) as Attachment[]
+  return results.flat().filter(Boolean) as Attachment[]
+  } finally {
+    if (!borrowed) mods?.release()
+  }
 }
 
 function processCodexAppMentions(

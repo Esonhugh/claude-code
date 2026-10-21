@@ -23,6 +23,7 @@ import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
 import { cleanupAgentTracking } from '../../services/api/promptCacheBreakDetection.js'
 import {
   captureModSkillPromptSnapshot,
+  modSkillPromptOrigin,
   renderModSkillPrompt,
 } from '../../services/mods/skillPrompt.js'
 import {
@@ -923,6 +924,7 @@ export async function* runAgent({
                 snapshot,
                 skill: skill.name,
                 text,
+                origin: modSkillPromptOrigin(skill),
                 signal: agentAbortController.signal,
               }),
             }],

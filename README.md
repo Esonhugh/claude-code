@@ -710,7 +710,15 @@ Mods 是通过 Function Hooks 扩展运行时的可信 Plugin。以下说明针�
 
 对齐目标包括官方 Mods 的函数、参数和回执、上下文传递、加载生命周期、作者测试及 UI 行为。除用户明确指定的 Privacy Mode 等差异外，现有本地行为不能自动视为例外。下文的未实现项是待完成工作；当前结果与分批修复顺序见 [兼容性清单](docs/research/mods-parity.md)，实际验收记录见 [mods-test.md](mods-test.md)。
 
-当前 Mods/API 批次固定以官方 **2.1.292** 为基准；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不改变其余 API 的基线，也不表示全部 UI 已完成迁移。作者声明以 2.1.292 完整声明体为基础，只投影已核对的 2.1.295 Button children 定义。兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
+当前 Mods/API 支持基线为官方 **2.1.303**：作者声明直接采用 2.1.303 原生制品内的完整声明体，不再叠加 2.1.295 Button children 投影；已提交的 Button、Pane 和内置 diff 专项保留其固定 **2.1.295** 来源，终端 OSC 7501 专项使用 **2.1.296**。这些专项不表示全部 UI 已完成迁移。声明列出但本构建未实现的调用会以点名该调用的运行时错误拒绝，不会静默成功：
+
+- `$.ui.view`、`$.prompt.media`、`$.audio.play`、`$.audio.speak`：拒绝为 `$.<call> is not available in this build`（本构建没有音频输出路径）。
+- `prompt.change` 事件：注册时加载失败并报告 `unsupported core event prompt.change`；prompt 装饰的 `virtualText` 拒绝为 `Prompt decoration virtualText is not available in this build`。
+- 交互式 REPL 中的 `$.session.compact`：拒绝为 `$.session.compact is not available in this build`；headless（`-p`/SDK）按官方依次报告 `DISABLE_COMPACT`、正在运行的 turn 和 headless 不可用。
+- `prompt.submit` 的 `command` 字段：斜杠命令不经过 `prompt.submit`，该字段不会出现。
+- `$.session.identity()` 只回答 managed settings 启用并原地加载的 Mod；本构建不保存服务器校验过的账号资料，`isVerified` 恒为 `false`。
+
+兼容目标包含官方 diff Mod 原样实现的 diff viewer：注册和打开、文件/base/turn选择、ask上下文、刷新、滚动与显示效果都需一致；当前原生 `/diff` 不能代替这项验收。关键调试信息应准确记录状态和来源，日志文字无需与官方逐字相同。官方接口说明见 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)。
 
 本轮完成了终端选区读取与跟随、持有中的 VM 回调、作者声明覆盖和测试 runner 的临时文件清理。Client 故障次数与焦点恢复、session transcript 的公开接线、caller chain 的完整传播、Worker reload，以及 teammate 身份和恢复流程仍有未提交部分。官方 diff Mod 的完整终端效果和浏览器 Client 生命周期尚未验收通过。
 
@@ -756,9 +764,9 @@ export const register: Register = on => {
 
 `plugin validate` 静态扫描 hook 模块，不执行模块的顶层代码。`hooks:` 按注册顺序列出每个事件及 matcher，重复事件的不同 matcher 分别保留；`calls:` 列出能力调用，仅在该能力没有直接调用时补充已排序的 helper 来源，例如 `$.fs.read (via alpha, zebra)`。matcher 中的正则、列表和嵌套字段保留结构；无法静态确定的值显示 `?`，诊断字符串进行转义并限制长度。这些输出已与固定官方 2.1.292 的七个真实 CLI 场景对照；gating-hook 警告及其他诊断尚未纳入本项兼容结论。回归入口为 `bun test ./src/services/mods/validateDescriptions.test.ts ./src/cli/handlers/plugins.validate.test.ts`。插件目录与 manifest 字段参考 [Anthropic plugin manifest reference](https://code.claude.com/docs/en/plugins-reference)。
 
-作者主声明采用官方 2.1.292 原生制品内的完整声明体作为基线：565 个主模块导出、51 个 testing 导出，以及完整事件、操作和全局定义。仅 ButtonProps 与 RenderElement 的 Button 分支追加固定 2.1.295 制品核对过的 children 定义；基线、增量和片段摘要均在生成前校验，文件头明确两者来源。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
+作者主声明采用官方 2.1.303 原生制品内的完整声明体作为基线：585 个主模块导出、52 个 testing 导出，以及完整事件、操作和全局定义，Button children 已由该声明体原生提供；资产摘要在生成前校验。生成文件头仍记录本地引擎版本，不把声明来源版本当作引擎版本。加载会生成三个基础类型根，并加入启用的直接和间接依赖插件在 manifest `types` 中声明的契约；依赖可不含 hooks。没有 `jsconfig.json` 或自定义根 `tsconfig.json` 时，还会创建插件根目录的 `tsconfig.json`，指向 `.claude-plugin/types/tsconfig.json`。已有根配置保持原样。
 
-新增的 `PromptAutocompleteInput/Result/Suggestion`、`ModelTextBlock/ModelCompleteInput`、`AgentSpawnInput.workflow` 和 `HookFailure` 重入定义均来自官方原文。它们的运行时生产、分发和上下文仍须按功能验收；声明增量的历史差异见[声明专项](docs/research/mods-declarations-292-20261007.md)，本批 prompt.autocomplete 的实际实现与有限验收见[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)，不能仅凭类型检查通过推断其他功能支持。
+新增的 `PromptAutocompleteInput/Result/Suggestion`、`ModelTextBlock/ModelCompleteInput` 和 `AgentSpawnInput.workflow` 定义均来自官方原文；2.1.301 起 `HookFailure` 只有 `throw`/`timeout`，`.catch` 只在 hook 自身抛错或超时时运行，hook 自身调用之下触发的事件跳过该 hook 且不询问其 `.catch`。它们的运行时生产、分发和上下文仍须按功能验收；声明增量的历史差异见[声明专项](docs/research/mods-declarations-292-20261007.md)，本批 prompt.autocomplete 的实际实现与有限验收见[编辑和焦点专项](docs/research/mods-remote-composer-292-20261008.md)，不能仅凭类型检查通过推断其他功能支持。
 
 依赖插件在自己的 `.claude-plugin/plugin.json` 中设置 `"types": "./types/index.d.ts"`，使用方在 `"dependencies": ["shared-state"]` 中声明它；普通来源的裸名称继承 marketplace，inline 等会话来源按名称查找。同名 inline 插件也可满足带 marketplace 的依赖。生成目录内优先链接依赖的真实契约文件；链接失败时只复制不超过 256 KiB 的普通文件，并去掉 BOM。契约必须留在依赖插件的真实目录内。
 
@@ -942,6 +950,7 @@ if (receipt.deny === undefined && receipt.isError !== true && receipt.result.typ
 - Worker 故障恢复：识别到造成 CPU 阻塞的插件后，自动恢复其余插件，已挂载的 AbovePrompt 会使用恢复后的插件重新绘制，无需额外输入或调用 invalidate。正在执行的失败调用不会自动重放；显式 reload 会重新尝试崩溃插件，刷新等待恢复完成，有 transcript 日志的宿主会提示崩溃插件已卸载。恢复本身失败仍返回错误；完整终端呈现仍待对照。
 - 环境目录：`CLAUDE_CODE_PLUGIN_DIRS` 加载绝对目录，macOS/Linux 用 `:` 分隔，Windows 用 `;`；与重复的 `--plugin-dir` 合并去重，相对路径会输出配置错误并以非零状态退出。交互会话自动观察模块变化；长期非交互会话需设置 `CLAUDE_CODE_PLUGIN_DIR_WATCH=1` 才自动重载，未设置时仍可显式刷新。
 - 缓存清理：按官方 289 的暂存目录命名和时间边界保留有效安装暂存区，孤立版本使用 14 天期限。清理先读取有效安装记录；缺失、损坏或没有安装记录时不继续删除。安装路径按真实文件系统位置比较，marker 和递归删除不跟随链接。运行中的 `.in_use` 生命周期、发布链及平台专属边界仍待补齐。 当前加载契约可运行 `bun test ./src/utils/plugins/pluginLoader.contract.test.ts`。历史工作区 GC 的20案子进程夹具尚未交付，不能计入当前提交的可复现覆盖。
+- `strictPluginOnlyCustomization`：与官方一致，只锁定 settings/skills/agents 等非插件来源的 hooks；Mods 是插件 hook 模块，设置后照常加载。
 - Managed 加载：组织 Mods 必须由 managed `enabledPlugins` 启用，并通过 managed `extraKnownMarketplaces` 中的绝对目录市场、相对插件路径原地加载。远程或复制到缓存的插件保留用户身份；设置 `allowManagedHooksOnly` 时不运行这些模块。`disableAllHooks` 在个人设置中保留组织 Mods，在 managed settings 中阻止全部安装插件的 Mods；宿主内置 Mods 和 guard 仍按自身开关与 seating 规则加载。
 - 当前接线：tool 注册、列举、描述、调用与检查；prompt compose/edit/read/fill/suggest/submit/context/section/attachment；turn middleware 与流式 model step；agent offer/register/list/spawn；MCP 调用；动态 slash commands；session receive/measure/usage/compact/end/authorize；config/options、accepted settings、fs、受限 HTTP、argv process、env、版本化 state/JSON store，以及 terminal/remote UI 与 terminal media。state 写入支持 owner-only、JSON/大小限制和 `ifVersion` CAS；订阅失效只重绘读取对应 key 的 UI instance。命令、Pane 和 callback 跟随 activation/drawing 生命周期，禁用后释放所有权。
 - 会话版本：`await $.session.version()` 返回 `{ version, base?, builtAt? }`，不接受参数，terminal、非交互和未绑定 session 时均可读取。`version` 与当前 binary 的 `--version` 一致；`base` 沿用引擎 analytics 的基础版本提取规则，`builtAt` 使用 binary 内嵌的构建时间戳，源码运行没有时间戳时省略。调用经过 `session.version` 中间件；作者测试需用 `on('session.version', () => ({ value: { version: 'test-engine' } }))` 提供桩。
