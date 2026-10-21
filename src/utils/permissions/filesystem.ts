@@ -21,6 +21,7 @@ import { getClaudeConfigHomeDir } from '../envUtils.js'
 import {
   getFsImplementation,
   getPathsForPermissionCheck,
+  resolveDeepestExistingAncestorSync,
 } from '../fsOperations.js'
 import {
   containsPathTraversal,
@@ -883,45 +884,54 @@ export function getFileReadIgnorePatterns(
   return result
 }
 
-function patternWithRoot(
+/** @internal Exported for testing */
+export function patternWithRoot(
   pattern: string,
   source: PermissionRuleSource,
 ): {
   relativePattern: string
   root: string | null
 } {
+  const isWindows = getPlatform() === 'windows'
+  // Like official, Windows rules may be spelled with backslashes (`~\.ssh\**`,
+  // `\secrets\**`); `\!` and `\#` stay escapes.
+  if (
+    isWindows &&
+    (pattern.startsWith('~\\') ||
+      (pattern.startsWith('\\') && pattern[1] !== '!' && pattern[1] !== '#'))
+  ) {
+    pattern = pattern.replaceAll('\\', DIR_SEP)
+  }
   if (pattern.startsWith(`${DIR_SEP}${DIR_SEP}`)) {
     // Patterns starting with // resolve relative to /
     const patternWithoutDoubleSlash = pattern.slice(1)
 
-    // On Windows, check if this is a POSIX-style drive path like //c/Users/...
-    // Note: UNC paths (//server/share) will not match this regex and will be treated
-    // as root-relative patterns, which may need separate handling in the future
-    if (
-      getPlatform() === 'windows' &&
-      patternWithoutDoubleSlash.match(/^\/[a-z]\//i)
-    ) {
-      // Convert POSIX path to Windows format
-      // The pattern is like /c/Users/... so we convert it to C:\Users\...
+    // On Windows, //c/Users/... is a drive path. UNC paths (//server/share)
+    // do not match and stay rooted at /, which is how relativePath spells them.
+    if (isWindows && patternWithoutDoubleSlash.match(/^\/[a-z]\//i)) {
       const driveLetter = patternWithoutDoubleSlash[1]?.toUpperCase() ?? 'C'
-      // Keep the pattern in POSIX format since relativePath returns POSIX paths
+      // Keep the leading / so the pattern stays anchored at the drive root.
       const pathAfterDrive = patternWithoutDoubleSlash.slice(2)
-
-      // Extract the drive root (C:\) and the rest of the pattern
-      const driveRoot = `${driveLetter}:\\`
-      const relativeFromDrive = pathAfterDrive.startsWith('/')
-        ? pathAfterDrive.slice(1)
-        : pathAfterDrive
-
       return {
-        relativePattern: relativeFromDrive,
-        root: driveRoot,
+        relativePattern: pathAfterDrive.startsWith(DIR_SEP)
+          ? pathAfterDrive
+          : `${DIR_SEP}${pathAfterDrive}`,
+        root: `${driveLetter}:\\`,
       }
     }
 
     return {
       relativePattern: patternWithoutDoubleSlash,
       root: DIR_SEP,
+    }
+  } else if (isWindows && /^[A-Za-z]:[/\\]/.test(pattern)) {
+    // A native drive path such as C:\Users\me\** or c:/Users/me/**.
+    const pathAfterDrive = pattern.slice(2).replaceAll('\\', DIR_SEP)
+    return {
+      relativePattern: pathAfterDrive.startsWith(DIR_SEP)
+        ? pathAfterDrive
+        : `${DIR_SEP}${pathAfterDrive}`,
+      root: `${pattern[0]!.toUpperCase()}:\\`,
     }
   } else if (pattern.startsWith(`~${DIR_SEP}`)) {
     // Patterns starting with ~/ resolve relative to homedir
@@ -972,17 +982,130 @@ function getPatternsByRoot(
   )
   // Resolve rules relative to path based on source
   const patternsByRoot = new Map<string | null, Map<string, PermissionRule>>()
-  for (const [pattern, rule] of rules.entries()) {
-    const { relativePattern, root } = patternWithRoot(pattern, rule.source)
-    let patternsForRoot = patternsByRoot.get(root)
-    if (patternsForRoot === undefined) {
-      patternsForRoot = new Map<string, PermissionRule>()
-      patternsByRoot.set(root, patternsForRoot)
+  const patternsForRoot = (root: string | null) => {
+    let patterns = patternsByRoot.get(root)
+    if (patterns === undefined) {
+      patterns = new Map<string, PermissionRule>()
+      patternsByRoot.set(root, patterns)
     }
+    return patterns
+  }
+  for (const [pattern, rule] of rules.entries()) {
+    const { relativePattern: rawPattern, root } = patternWithRoot(
+      pattern,
+      rule.source,
+    )
+    // Like official, `//tmp//x` means `/tmp/x`.
+    const relativePattern = rawPattern.replace(/\/{2,}/g, DIR_SEP)
     // Store the rule keyed by the root
-    patternsForRoot.set(relativePattern, rule)
+    patternsForRoot(root).set(relativePattern, rule)
+    // A deny or ask rule written on a symlinked directory also guards the
+    // directory's real location (official 2.1.268). Allow rules do not get a
+    // twin: a swapped symlink must not widen what they grant.
+    if (behavior !== 'allow' && root !== null) {
+      const twin = physicalTwinPattern(root, relativePattern)
+      if (twin !== null && !patternsForRoot(DIR_SEP).has(twin)) {
+        patternsForRoot(DIR_SEP).set(twin, rule)
+      }
+    }
   }
   return patternsByRoot
+}
+
+/**
+ * The pattern with its leading literal directories resolved through symlinks,
+ * or null when they contain no symlink. POSIX only, like official.
+ */
+function physicalTwinPattern(
+  root: string,
+  relativePattern: string,
+): string | null {
+  if (getPlatform() === 'windows' || !relativePattern.startsWith(DIR_SEP)) {
+    return null
+  }
+  const segments = relativePattern.slice(1).split(DIR_SEP)
+  let literal = 0
+  while (
+    literal < segments.length &&
+    segments[literal] !== '' &&
+    !/[*?[{\\!]/.test(segments[literal]!)
+  ) {
+    literal++
+  }
+  if (literal === 0) return null
+  const prefix = posix.join(root, ...segments.slice(0, literal))
+  let resolved: string | undefined
+  try {
+    resolved = resolveDeepestExistingAncestorSync(getFsImplementation(), prefix)
+  } catch {
+    return null
+  }
+  if (resolved === undefined || resolved === prefix || resolved === DIR_SEP) {
+    return null
+  }
+  return [resolved, ...segments.slice(literal)]
+    .join(DIR_SEP)
+    .replace(/\/{2,}/g, DIR_SEP)
+}
+
+// System directories whose symlinked spelling an allow rule may use, like
+// official: a rule on /tmp also covers a file resolved to /private/tmp.
+const getTrustedSymlinkEquivalences = memoize((): Map<string, string> => {
+  const equivalences = new Map<string, string>()
+  for (const [real, spelled] of [
+    ['/private/tmp', '/tmp'],
+    ['/private/var', '/var'],
+    ['/private/etc', '/etc'],
+    ['/usr/bin', '/bin'],
+    ['/usr/lib', '/lib'],
+    ['/usr/sbin', '/sbin'],
+  ] as const) {
+    try {
+      if (getFsImplementation().realpathSync(spelled) === real) {
+        equivalences.set(real, spelled)
+      }
+    } catch {
+      // Not present on this system.
+    }
+  }
+  return equivalences
+})
+
+/**
+ * The allow rule that covers every spelling of the path (the requested path
+ * and each symlink target), so an allow rule does not reach through a symlink
+ * to a file it does not cover (official 2.1.89).
+ */
+function matchingAllowRuleForPaths(
+  pathsToCheck: readonly string[],
+  toolPermissionContext: ToolPermissionContext,
+  toolType: 'edit' | 'read',
+): PermissionRule | null {
+  let firstRule: PermissionRule | null = null
+  for (const pathToCheck of pathsToCheck) {
+    let rule = matchingRuleForInput(
+      pathToCheck,
+      toolPermissionContext,
+      toolType,
+      'allow',
+    )
+    if (!rule) {
+      for (const [real, spelled] of getTrustedSymlinkEquivalences()) {
+        if (pathToCheck === real || pathToCheck.startsWith(`${real}${DIR_SEP}`)) {
+          rule = matchingRuleForInput(
+            spelled + pathToCheck.slice(real.length),
+            toolPermissionContext,
+            toolType,
+            'allow',
+          )
+          break
+        }
+      }
+    }
+    if (!rule) return null
+    firstRule ??= rule
+  }
+  return firstRule
 }
 
 export function matchingRuleForInput(
@@ -1197,11 +1320,10 @@ export function checkReadPermissionForTool(
   }
 
   // 8. Check for allow rules
-  const allowRule = matchingRuleForInput(
-    path,
+  const allowRule = matchingAllowRuleForPaths(
+    pathsToCheck,
     toolPermissionContext,
     'read',
-    'allow',
   )
   if (allowRule) {
     return {
@@ -1417,11 +1539,10 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   }
 
   // 4. Check for allow rules
-  const allowRule = matchingRuleForInput(
-    path,
+  const allowRule = matchingAllowRuleForPaths(
+    pathsToCheck,
     toolPermissionContext,
     'edit',
-    'allow',
   )
   if (allowRule) {
     return {
