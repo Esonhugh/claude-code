@@ -35,12 +35,18 @@ export function isAnalyticsDisabled(): boolean {
 }
 
 /**
- * Check if the feedback survey should be suppressed.
+ * Check if the feedback surveys (and the transcript share they offer) should
+ * be suppressed. Like analytics, they follow this fork's opt-in, and a gateway
+ * base URL keeps its credential away from api.anthropic.com.
  *
  * Unlike isAnalyticsDisabled(), this does NOT block on 3P providers
- * (Bedrock/Vertex/Foundry). The survey is a local UI prompt with no
- * transcript data — enterprise customers capture responses via OTEL.
+ * (Bedrock/Vertex/Foundry) — enterprise customers capture responses via OTEL.
  */
 export function isFeedbackSurveyDisabled(): boolean {
-  return process.env.NODE_ENV === 'test' || isTelemetryDisabled()
+  return (
+    process.env.NODE_ENV === 'test' ||
+    !isAnthropicTelemetryEnabled() ||
+    !isFirstPartyAnthropicBaseUrl() ||
+    isTelemetryDisabled()
+  )
 }
