@@ -12,6 +12,25 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-21 - 权限模式切换传递到 Mods tool.check、子代理与 teammate
+
+### 变更内容
+
+- 安装了注册 `tool.check` 的 Mod 后，auto、dontAsk 与无法弹出提示的后台场景不再失效：Mod 只对其 filter 命中的工具生效（对齐官方），Mod 或核心检查留下的 ask 仍走当前模式的处理（auto 的 acceptEdits 快速路径与分类器、dontAsk 转拒绝）；PreToolUse hook 的 ask 与 bypass 下 Mod 的 ask 仍照常提示。
+- 已在运行的子代理跟随主会话当前的权限模式（对齐官方）：主会话切到 bypass 后子代理不再被拒，切回 default 后子代理也不再停留在 bypass；子代理定义中的 `permissionMode` 按主会话当前模式重新解析，Agent 调用显式指定的模式仍固定不变；resume 的子代理同样持续跟随，排队中的子代理权限对话框按新模式重新判定。
+- 团队负责人通过 teams 面板发给 teammate 的模式切换请求改为与 SDK `set_permission_mode` 相同的检查（bypass 策略与可用性、auto 闸门、plan 可用性），进入 auto 时剥除会绕过分类器的 allow 规则；被拒绝的模式写入 debug 日志，团队文件记录实际生效的模式。
+- 进程内 teammate 在回合进行中也读取最新的模式，负责人查看 teammate 时按 Shift+Tab 立即生效；teammate 处于 auto 时不再沿用负责人会绕过分类器的 allow 规则。
+- 负责人切换自己的模式而 teammate 仍是其他模式时，提示一次 teammate 不会跟着切换。
+- 每次权限模式切换写入 debug 日志 `[permission-mode] from -> to (source: ...)`，来源包括 Shift+Tab、`/plan`、SDK、PermissionRequest hook、teammate 与跟随主会话的子代理。
+- acceptEdits、auto、bypass 模式下仍弹出的权限对话框多一行说明原因：安全检查、hook、Mod 的 `tool.check`、ask 规则或 auto 分类器不可用。
+
+### 测试覆盖
+
+- `src/services/tools/toolHooks.test.ts`：`tool.check` 路径下 dontAsk 与无提示场景的 ask 转拒绝、bypass 下 Mod ask 仍提示、PreToolUse ask 保留对话框，以及 `hasHooks` 依 filter 判断。
+- `src/tools/AgentTool/runAgent.subagentStop.test.ts`、`resumeAgent.permissionMode.test.ts`、`AgentTool.nesting.test.ts`：子代理与 resume 后的子代理随主会话模式变化，显式模式保持固定，模式变化写入 debug 日志。
+- `src/utils/permissions/permissionSetup.test.ts`、`src/utils/swarm/inProcessRunner.permissionMode.test.ts`、`src/utils/swarm/teamHelpers.test.ts`：teammate 模式切换闸门、进程内 teammate 即时读取模式与 auto 规则剥除、负责人提示条件。
+- `src/components/permissions/PermissionRuleExplanation.test.ts`、`src/utils/permissions/permissions.approveForMe.test.ts`：对话框说明文字与分类器不可用时的原因。
+
 ## 2026-10-21 - 权限规则比对、模式与 hooks 对齐官方
 
 ### 变更内容
