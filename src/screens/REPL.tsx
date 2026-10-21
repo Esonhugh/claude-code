@@ -3832,14 +3832,7 @@ export function REPL({
       })
       confirmedRemotePermissionModeRef.current = mode
       setSessionBypassPermissionsMode(mode === 'bypassPermissions')
-      setToolPermissionContext(
-        mode === 'bypassPermissions'
-          ? {
-              ...nextContext,
-              isBypassPermissionsModeAvailable: true,
-            }
-          : nextContext,
-      )
+      setToolPermissionContext(nextContext)
     },
     [setToolPermissionContext, store],
   )

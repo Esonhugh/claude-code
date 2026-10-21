@@ -17,10 +17,12 @@
 ### 变更内容
 
 - `Terminal` 工具接入权限检查：`new-session`（含初始命令）与带 `text` 的 `send-keys` 按 Bash 规则判定（`Bash(prefix:*)` 与整个 `Bash` 的 deny/ask 规则同样生效），default 模式会询问、dontAsk 模式拒绝、自动模式经分类器判定；读取输出、列出会话、resize、信号、关闭等动作直接放行；`new-session` 不再在执行阶段重复询问。
+- `/yolo` 改为与 SDK `set_permission_mode` 一致：`disableBypassPermissionsMode` 或组织开关停用 bypass 时直接回报原因、不切换；从未同意过 bypass 时先显示 bypass 警告对话框，同意后才切换，拒绝或按 Esc 只取消命令、不退出程序；只有切换后模式确实变成 bypass 才显示 `Bypass permissions mode enabled`。REPL 的模式切换不再自行把 bypass 标为可用，未经 `/yolo` 同意或启动旗标时 Shift+Tab 轮替不会出现 bypass。
 
 ### 测试覆盖
 
 - `src/tools/TerminalTool/TerminalTool.test.ts` 新增 default 模式下 `new-session` 与 `send-keys "touch x"` 询问、`Bash(touch:*)`/`Bash` deny 规则拒绝（bypass 下仍拒绝）、dontAsk 拒绝、bypass 放行、只读动作放行，以及执行阶段不再重复询问。
+- `src/commands/yolo/yolo.test.ts` 覆盖 bypass 被停用时不切换、已同意时直接切换、未同意时先显示对话框且同意后才切换、拒绝不切换、切换被拒或模式未变时不显示 enabled 且不留下 bypass 可用状态。
 
 ## 2026-10-21 - 自动模式安全行为与官方对齐
 
