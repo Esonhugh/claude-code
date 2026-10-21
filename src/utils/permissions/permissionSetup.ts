@@ -31,7 +31,10 @@ import {
   permissionModeFromString,
 } from './PermissionMode.js'
 import { applyPermissionRulesToPermissionContext } from './permissions.js'
-import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
+import {
+  loadAllPermissionRulesFromDisk,
+  shouldAllowManagedPermissionRulesOnly,
+} from './permissionsLoader.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -58,6 +61,9 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
+import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
+import { NOTEBOOK_EDIT_TOOL_NAME } from '../../tools/NotebookEditTool/constants.js'
 import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
 import {
   isManagedSSHRemoteRuntime,
@@ -308,6 +314,37 @@ function isDangerousClassifierPermission(
     isDangerousPowerShellPermission(toolName, ruleContent) ||
     isDangerousTaskPermission(toolName, ruleContent)
   )
+}
+
+/**
+ * Like official, the tool an auto mode denial suggests an allow rule for:
+ * none when that rule would be set aside in auto mode, for MCP tools, or when
+ * the settings hint is hidden. Write and NotebookEdit are covered by Edit rules.
+ */
+export function getAutoModeDenialRuleToolName(tool: {
+  name: string
+  isMcp?: boolean
+}): string | undefined {
+  if (
+    isEnvTruthy(process.env.CLAUDE_CODE_HIDE_SETTINGS_HINT) ||
+    shouldAllowManagedPermissionRulesOnly()
+  ) {
+    return undefined
+  }
+  if (tool.name === BASH_TOOL_NAME || tool.name === POWERSHELL_TOOL_NAME) {
+    return isAutoModeClassifyAllShellEnabled() ? undefined : tool.name
+  }
+  if (
+    tool.name.startsWith('mcp__') ||
+    tool.isMcp === true ||
+    isDangerousClassifierPermission(tool.name, undefined)
+  ) {
+    return undefined
+  }
+  return tool.name === FILE_WRITE_TOOL_NAME ||
+    tool.name === NOTEBOOK_EDIT_TOOL_NAME
+    ? FILE_EDIT_TOOL_NAME
+    : tool.name
 }
 
 /**

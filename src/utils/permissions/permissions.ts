@@ -25,6 +25,7 @@ import {
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
 import { requiresExplicitUserApproval } from './PermissionResult.js'
+import { getAutoModeDenialRuleToolName } from './permissionSetup.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -1002,7 +1003,10 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             classifier: 'auto-mode',
             reason: classifierResult.reason,
           },
-          message: buildYoloRejectionMessage(classifierResult.reason),
+          message: buildYoloRejectionMessage(
+            classifierResult.reason,
+            getAutoModeDenialRuleToolName(tool),
+          ),
         }
       }
 
