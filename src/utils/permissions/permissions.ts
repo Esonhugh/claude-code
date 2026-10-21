@@ -1289,8 +1289,54 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
+  if (planModeHoldsWrite(tool, input, appState.toolPermissionContext)) {
+    if (toolPermissionResult.behavior === 'ask') return toolPermissionResult
+    if (
+      toolPermissionResult.behavior === 'passthrough' ||
+      isAllowedByRule(toolPermissionResult)
+    ) {
+      return planModeAsk(tool)
+    }
+  }
+
   // No rule-based objection
   return null
+}
+
+/**
+ * Plan mode only takes an allow for read-only calls; a write stays held even
+ * when an allow rule or a PreToolUse hook would approve it. Plan mode entered
+ * from bypassPermissions keeps writing, as before.
+ */
+export function planModeHoldsWrite(
+  tool: Tool,
+  input: { [key: string]: unknown },
+  permissionContext: ToolPermissionContext,
+): boolean {
+  if (
+    permissionContext.mode !== 'plan' ||
+    permissionContext.isBypassPermissionsModeAvailable
+  ) {
+    return false
+  }
+  const parsed = tool.inputSchema.safeParse(input)
+  return !parsed.success || !tool.isReadOnly(parsed.data)
+}
+
+function isAllowedByRule(result: PermissionResult): boolean {
+  return (
+    result.behavior === 'allow' &&
+    (result.decisionReason?.type === 'rule' ||
+      result.decisionReason?.type === 'subcommandResults')
+  )
+}
+
+function planModeAsk(tool: Tool): PermissionAskDecision {
+  return {
+    behavior: 'ask',
+    message: `Cannot call ${tool.name} while in plan mode.`,
+    decisionReason: { type: 'mode', mode: 'plan' },
+  }
 }
 
 async function hasPermissionsToUseToolInner(
@@ -1461,12 +1507,21 @@ async function hasPermissionsToUseToolInner(
     }
   }
 
+  const holdsWrite = planModeHoldsWrite(
+    tool,
+    input,
+    appState.toolPermissionContext,
+  )
+  if (holdsWrite && isAllowedByRule(toolPermissionResult)) {
+    return planModeAsk(tool)
+  }
+
   // 2b. Entire tool is allowed
   const alwaysAllowedRule = toolAlwaysAllowedRule(
     appState.toolPermissionContext,
     tool,
   )
-  if (alwaysAllowedRule) {
+  if (alwaysAllowedRule && !holdsWrite) {
     return {
       behavior: 'allow',
       updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),

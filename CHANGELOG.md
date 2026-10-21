@@ -12,6 +12,16 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-21 - 权限规则比对、模式与 hooks 对齐官方
+
+### 变更内容
+
+- plan 模式只接受只读调用的 allow（对齐官方 2.1.136、2.1.299）：`Edit(src/**)` 等 allow 规则、PreToolUse hook 的 allow 与 Mods `tool.check` 的 allow 都不再让写入类工具（文件写入、非只读 shell 命令、MCP 写工具）在 plan 模式下直接执行，改为提示 `Cannot call <tool> while in plan mode.`；从 bypass 进入的 plan 模式与本会话计划文件的写入不受影响。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/permissions.planMode.test.ts`，覆盖 plan 模式下内容/整工具 allow 规则、只读调用、bypass 可用、计划文件、PreToolUse hook allow 与 Mods `tool.check` allow。
+
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 
 ### 版本状态

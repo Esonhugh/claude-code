@@ -46,6 +46,7 @@ import {
   checkRuleBasedPermissions,
   createPermissionRequestMessage,
   hasPermissionsToUseTool,
+  planModeHoldsWrite,
   toolAlwaysAllowedRule,
 } from '../../utils/permissions/permissions.js'
 import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js'
@@ -877,6 +878,9 @@ export async function resolveHookPermissionDecision(
     if (protectedDecision && core.behavior === 'ask' &&
       (decision.behavior === 'allow' ||
         (decision.behavior === 'ask' && requiresExplicitUserApproval(why)))) decision = core
+    // A tool.check allow does not lift plan mode's write floor either.
+    if (decision.behavior === 'allow' && core.behavior !== 'allow' &&
+      planModeHoldsWrite(tool, declarative.input, toolUseContext.getAppState().toolPermissionContext)) decision = core
     if (hookPermissionResult && decision.behavior !== 'deny') {
       // Pre's deny/ask short-circuits the ordinary rules. An override must not
       // erase a managed rule or safety prompt that that short-circuit hid.
