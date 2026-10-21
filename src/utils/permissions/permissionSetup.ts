@@ -57,6 +57,7 @@ import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
+import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
 import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
 import {
   isManagedSSHRemoteRuntime,
@@ -289,6 +290,12 @@ function isDangerousClassifierPermission(
     // Tmux send-keys executes arbitrary shell, bypassing the classifier same as Bash(*)
     if (toolName === 'Tmux') return true
   }
+  // Like official 2.1.236, Monitor allow rules are set aside so Monitor
+  // commands are reviewed the same way Bash commands are.
+  if (toolName === 'Monitor') return true
+  // Terminal types arbitrary input into a PTY shell, so like Tmux an allow
+  // rule would skip the classifier for any command.
+  if (toolName === TERMINAL_TOOL_NAME) return true
   // autoMode.classifyAllShell suspends every shell allow rule in auto mode.
   if (
     (toolName === BASH_TOOL_NAME || toolName === POWERSHELL_TOOL_NAME) &&
@@ -308,8 +315,9 @@ function isDangerousClassifierPermission(
  * Returns structured info about each dangerous permission found.
  *
  * Checks Bash permissions (wildcard/interpreter patterns), PowerShell permissions
- * (wildcard/iex/Start-Process patterns), and Agent permissions (any allow rule
- * bypasses the classifier's sub-agent evaluation).
+ * (wildcard/iex/Start-Process patterns), Agent permissions (any allow rule
+ * bypasses the classifier's sub-agent evaluation), and any Monitor or Terminal
+ * allow rule.
  */
 export function findDangerousClassifierPermissions(
   rules: PermissionRule[],

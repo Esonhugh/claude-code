@@ -20,6 +20,7 @@
 - 自动模式分类器规则（`autoMode.allow`/`soft_deny`/`hard_deny`/`environment`）不再读取 `.claude/settings.local.json`，只认用户、`--settings` 与托管设置（对齐官方 2.1.207）；项目或本地设置含 `autoMode` 时在调试日志记录一次警告 `settings autoMode in localSettings ignored — only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`。
 - 子代理定义声明 `permissionMode: auto` 时，若自动模式不可用（`disableAutoMode`、circuit breaker、模型不支持或 OpenAI 未登录 ChatGPT），改为沿用父会话模式（对齐官方 2.1.292），并在调试日志说明原因。
 - 内置 soft_deny 规则同步官方 2.1.303（`claude auto-mode defaults` 输出与官方一致）：Self-Modification 新增 `.claude/dev-mods/`（会话 Mods）为配置面；Unrequested Commit 与 External System Writes 允许把本会话自己开的 PR 在 draft 与 ready 之间切换。
+- 进入自动模式时搁置全部 `Monitor` allow 规则（对齐官方 2.1.236），同时搁置 `Terminal`（InteractiveTerminal）allow 规则，避免 PTY 输入绕过分类器；离开自动模式后恢复。
 
 ### 测试覆盖
 
@@ -27,6 +28,7 @@
 - `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 新增 `settings.local.json` 的 `autoMode` 规则不进入分类器提示且只警告一次。
 - 新增 `src/tools/AgentTool/permissionMode.autoMode.test.ts`，覆盖自动模式可用时进入 auto，`disableAutoMode`、circuit breaker 与不支持的模型时沿用父模式。
 - `src/utils/permissions/fixtures/autoModeDefaults303.json` 为官方 2.1.303 `claude auto-mode defaults` 输出，`yoloClassifier.officialPrompt.test.ts` 逐项比对。
+- `yoloClassifier.officialPrompt.test.ts` 新增 Monitor 与 Terminal allow 规则（设置与 `--allowed-tools`）在自动模式被搁置并可恢复。
 
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 

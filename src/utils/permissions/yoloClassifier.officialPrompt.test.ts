@@ -137,6 +137,24 @@ if (process.env[childFlag] !== '1') {
       .toEqual(['Bash(ls:*)', 'PowerShell(Get-ChildItem)', 'Bash(git status)'])
   })
 
+  test('like official 2.1.236, Monitor allow rules are set aside in auto mode, and so are Terminal ones', async () => {
+    const { findDangerousClassifierPermissions, stripDangerousPermissionsForAutoMode } = await import('./permissionSetup.js')
+    const rule = (toolName: string, ruleContent?: string) =>
+      ({ source: 'userSettings', ruleBehavior: 'allow', ruleValue: { toolName, ruleContent } }) as const
+    useUserSettings({})
+    expect(findDangerousClassifierPermissions(
+      [rule('Monitor', 'tail -f app.log'), rule('Monitor'), rule('Terminal'), rule('Read', '/tmp/**')],
+      ['Monitor(npm run dev)', 'Terminal'],
+    ).map(found => found.ruleDisplay)).toEqual([
+      'Monitor(tail -f app.log)', 'Monitor(*)', 'Terminal(*)', 'Monitor(npm run dev)', 'Terminal(*)',
+    ])
+    const stripped = stripDangerousPermissionsForAutoMode(context({
+      alwaysAllowRules: { userSettings: ['Monitor(tail -f app.log)', 'Terminal', 'Read(/tmp/**)'] },
+    }))
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(['Read(/tmp/**)'])
+    expect(stripped.strippedDangerousRules?.userSettings).toEqual(['Monitor(tail -f app.log)', 'Terminal'])
+  })
+
   test('claude auto-mode reset removes only the autoMode section from user settings', async () => {
     const { autoModeResetHandler } = await import('../../cli/handlers/autoMode.js')
     const settingsPath = join(process.env.CLAUDE_CONFIG_DIR!, 'settings.json')
