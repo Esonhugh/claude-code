@@ -79,6 +79,7 @@ function fixture() {
         hooks: Array<HookCallback | HookCommand>
         pluginRoot?: string
         pluginName?: string
+        pluginId?: string
       }>
     >
   > = {}
@@ -261,6 +262,11 @@ function fixture() {
     },
     './gracefulShutdown.js': { endModsSessions },
     './file.js': { pathExists: async () => true },
+    './plugins/pluginOptionsStorage.js': {
+      loadPluginOptions: () => ({ token: 'x; touch pwned' }),
+    },
+    './plugins/pluginDirectories.js': { getPluginDataDir: () => home },
+    './plugins/pluginIdentifier.js': { isOfficialMarketplaceName: () => false },
     // Like the real wrapper, an abort (timeout) kills the child.
     './ShellCommand.js': {
       wrapSpawn: (child: EventEmitter & { stdout: PassThrough; stderr: PassThrough }, signal: AbortSignal) => {
@@ -721,6 +727,31 @@ function populateSources(f: ReturnType<typeof fixture>) {
 }
 
 describe('source-scoped hook executor', () => {
+  test('a plugin shell-form hook may not splice ${user_config.*} into its command (official 2.1.207)', async () => {
+    const f = fixture()
+    f.registered.PreToolUse = [
+      {
+        matcher: '',
+        pluginRoot: home,
+        pluginName: 'fixture',
+        pluginId: 'fixture@market',
+        hooks: [{ type: 'command', command: 'run ${user_config.token}' }],
+      },
+      {
+        matcher: '',
+        pluginRoot: join(home, 'env'),
+        pluginName: 'env',
+        pluginId: 'env@market',
+        hooks: [{ type: 'command', command: 'run "$CLAUDE_PLUGIN_OPTION_TOKEN"' }],
+      },
+    ]
+    await collect(pre(f))
+    expect(f.calls.map((call) => call.command)).toEqual([
+      'run "$CLAUDE_PLUGIN_OPTION_TOKEN"',
+    ])
+    expect(f.envs.get('run "$CLAUDE_PLUGIN_OPTION_TOKEN"')?.CLAUDE_PLUGIN_OPTION_TOKEN).toBe('x; touch pwned')
+  })
+
   test('same plugin root retains last-definition dedup even when display names differ', async () => {
     const f = fixture()
     f.registered.PreToolUse = ['first-name', 'last-name'].map((name) => ({

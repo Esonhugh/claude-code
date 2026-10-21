@@ -22,10 +22,7 @@ import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { DEFAULT_HOOK_SHELL } from './shell/shellProvider.js'
 import { buildPowerShellArgs } from './shell/powershellProvider.js'
-import {
-  loadPluginOptions,
-  substituteUserConfigVariables,
-} from './plugins/pluginOptionsStorage.js'
+import { loadPluginOptions } from './plugins/pluginOptionsStorage.js'
 import { getPluginDataDir } from './plugins/pluginDirectories.js'
 import {
   getSessionId,
@@ -932,10 +929,11 @@ async function execCommandHook(
     }
     if (pluginId) {
       pluginOpts = loadPluginOptions(pluginId)
-      // Throws if a referenced key is missing — that means the hook uses a key
-      // that's either not declared in manifest.userConfig or not yet configured.
-      // Caught upstream like any other hook exec failure.
-      command = substituteUserConfigVariables(command, pluginOpts)
+      // A substituted value would be re-parsed by the shell (official 2.1.207).
+      if (/\$\{user_config\.[^}]*\}/.test(command))
+        throw new Error(
+          `Hook from plugin ${pluginId} references \${user_config.*} in a shell-form command. The substituted value would be re-parsed by the shell. Read $CLAUDE_PLUGIN_OPTION_<KEY> from the hook's environment instead. Command: ${hook.command}`,
+        )
     }
   }
 
