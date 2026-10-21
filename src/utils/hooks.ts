@@ -140,6 +140,7 @@ import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
 import {
+  escapeSystemReminderTags,
   extractTextContent,
   getLastAssistantMessage,
   wrapInSystemReminder,
@@ -2027,7 +2028,7 @@ export function getPreToolHookBlockingMessage(
  * @returns Formatted message to give feedback to the model
  */
 export function getStopHookMessage(blockingError: HookBlockingError): string {
-  return `Stop hook feedback:\n${blockingError.blockingError}`
+  return `Stop hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -2038,7 +2039,7 @@ export function getStopHookMessage(blockingError: HookBlockingError): string {
 export function getTeammateIdleHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TeammateIdle hook feedback:\n${blockingError.blockingError}`
+  return `TeammateIdle hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -2049,7 +2050,7 @@ export function getTeammateIdleHookMessage(
 export function getTaskCreatedHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TaskCreated hook feedback:\n${blockingError.blockingError}`
+  return `TaskCreated hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -2060,7 +2061,7 @@ export function getTaskCreatedHookMessage(
 export function getTaskCompletedHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TaskCompleted hook feedback:\n${blockingError.blockingError}`
+  return `TaskCompleted hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**

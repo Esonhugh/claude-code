@@ -3258,6 +3258,14 @@ export function handleMessageFromStream(
   }
 }
 
+// Hook output must not open or close the reminder that wraps it, including
+// through a trailing "<" or "</" (official 2.1.292).
+export function escapeSystemReminderTags(text: string): string {
+  return text
+    .replaceAll(/<(?=\s*(?:\/\s*)?system-reminder\b)/gi, '&lt;')
+    .replace(/<(?=\s*(?:\/\s*)?$)/, '&lt;')
+}
+
 export function wrapInSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`
 }
@@ -4265,7 +4273,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       if (response.systemMessage) {
         messages.push(
           createUserMessage({
-            content: response.systemMessage,
+            content: escapeSystemReminderTags(response.systemMessage),
             isMeta: true,
           }),
         )
@@ -4279,7 +4287,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ) {
         messages.push(
           createUserMessage({
-            content: response.hookSpecificOutput.additionalContext,
+            content: escapeSystemReminderTags(
+              response.hookSpecificOutput.additionalContext,
+            ),
             isMeta: true,
           }),
         )
@@ -4325,7 +4335,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook blocking error from command: "${attachment.blockingError.command}": ${attachment.blockingError.blockingError}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook blocking error from command: "${attachment.blockingError.command}": ${attachment.blockingError.blockingError}`,
+            ),
           ),
           isMeta: true,
         }),
@@ -4343,7 +4355,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook success: ${attachment.content}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook success: ${attachment.content}`,
+            ),
           ),
           isMeta: true,
         }),
@@ -4355,7 +4369,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook additional context: ${attachment.content.join('\n')}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook additional context: ${attachment.content.join('\n')}`,
+            ),
           ),
           isMeta: true,
         }),
@@ -4365,7 +4381,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook stopped continuation: ${attachment.message}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook stopped continuation: ${attachment.message}`,
+            ),
           ),
           isMeta: true,
         }),
