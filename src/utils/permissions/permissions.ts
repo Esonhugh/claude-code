@@ -853,6 +853,25 @@ export async function applyPermissionModeToResult(
         clearClassifierChecking(toolUseID)
       }
 
+      // The mode can change while the classifier runs (Shift+Tab, SDK). Its
+      // verdict only holds for auto, so decide again under the current mode.
+      const modeNow = context.getAppState().toolPermissionContext.mode
+      if (
+        modeNow !== 'auto' &&
+        !(modeNow === 'plan' && (autoModeStateModule?.isAutoModeActive() ?? false))
+      ) {
+        logForDebugging(
+          `Discarding auto mode classifier result for ${tool.name}: mode changed to '${modeNow}' while it ran`,
+        )
+        return hasPermissionsToUseTool(
+          tool,
+          input,
+          context,
+          assistantMessage,
+          toolUseID,
+        )
+      }
+
       // Notify ants when classifier error dumped prompts (will be in /share)
       if (
         isAnt() &&
