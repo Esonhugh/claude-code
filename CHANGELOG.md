@@ -95,6 +95,20 @@
 - 新增 `src/utils/permissions/permissions.test.ts`（参数规则 deny/ask、通配、非原始值、工具自身字段、`*` 与 `Web*` 工具名通配、allow 忽略非 MCP 通配）、`src/utils/permissions/permissionSetup.test.ts`（`manual` 别名、标题、CLI 与 settings `defaultMode`）与 `src/cli/print.permissionPrompts.test.ts`（真实 headless 会话中 `none` 本地拒绝、默认 `host` 仍走 `--permission-prompt-tool`）。
 - `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 覆盖 hard_deny 提示槽位与 `$defaults`、`auto-mode config` 输出、`classifyAllShell` 剥离 shell allow 规则与 `auto-mode reset`；`src/services/compact/autoCompact.classifierOverflow.test.ts` 覆盖溢出请求强制压缩与提醒、同头部回退及 `DISABLE_COMPACT`；`src/utils/permissions/permissions.approveForMe.test.ts` 覆盖溢出拒绝后回退询问及 `CLAUDE_CODE_AUTO_MODE_MODEL` 在 Claude 与 OpenAI 模式下生效。构建后 `node ./dist/cli.js auto-mode reset --help` 与隔离配置下的 reset 输出与官方文案一致。
 
+## 2026-10-20 - 受保护文件清单与 WebFetch 域名规则对齐官方
+
+### 变更内容
+
+- 受保护文件清单补齐官方 2.1.303 的 37 项：新增 `.zshenv`、`.zlogin`、`.zlogout`、`.bash_login`、`.bash_aliases`、`.bash_logout`、`.envrc`、`.npmrc`、`.yarnrc(.yml)`、`.pnp.cjs`、`.pnp.loader.mjs`、`.pnpmfile.cjs`、`bunfig.toml`、`.bunfig.toml`、`.bazelrc`、`.bazelversion`、`.bazeliskrc`、`.pre-commit-config.yaml`、lefthook 配置、`gradle-wrapper.properties`、`maven-wrapper.properties`、`.devcontainer.json`、`pyrightconfig.json`，acceptEdits 等自动编辑模式下写入这些文件前会询问。
+- 受保护目录新增 `.husky`、`.cargo`、`.devcontainer`、`.yarn`、`.mvn`，以及任意位置的 `.config/git/`（如 `~/.config/git/config`）。
+- WebFetch 显式 `WebFetch(domain:...)` deny/ask/allow 规则现在优先于内置预批准域名：预批准域名仍默认放行，但可被 deny 或 ask 规则拦下。
+- WebFetch 域名规则支持通配：`domain:*.example.com` 匹配任意深度子域名（不含 `example.com` 本身），`domain:api-*.example.com` 只在单个标签内匹配，`domain:*` 匹配所有主机；比较时忽略大小写与结尾的点，精确规则优先于通配规则。
+
+### 测试覆盖
+
+- `bun test src/utils/permissions/filesystem.protectedFiles.test.ts`：新增文件名（大小写不敏感）、受保护目录、`.config/git/` 路径均需审批，相似但无关的路径仍可自动编辑。
+- `bun test src/tools/WebFetchTool/WebFetchTool.permissions.test.ts`：deny/ask 规则压过预批准域名、通配规则在 allow/deny/ask 三个位置匹配子域名、不匹配裸域名与相似域名、单标签通配、`domain:*`、大小写与结尾点。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容

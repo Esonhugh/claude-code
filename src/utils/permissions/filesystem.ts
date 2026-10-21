@@ -62,9 +62,36 @@ export const DANGEROUS_FILES = [
   '.zshrc',
   '.zprofile',
   '.profile',
+  '.zshenv',
+  '.zlogin',
+  '.zlogout',
+  '.bash_login',
+  '.bash_aliases',
+  '.bash_logout',
+  '.envrc',
   '.ripgreprc',
   '.mcp.json',
   '.claude.json',
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  '.pnp.cjs',
+  '.pnp.loader.mjs',
+  '.pnpmfile.cjs',
+  'bunfig.toml',
+  '.bunfig.toml',
+  '.bazelrc',
+  '.bazelversion',
+  '.bazeliskrc',
+  '.pre-commit-config.yaml',
+  'lefthook.yml',
+  '.lefthook.yml',
+  'lefthook.yaml',
+  '.lefthook.yaml',
+  'gradle-wrapper.properties',
+  'maven-wrapper.properties',
+  '.devcontainer.json',
+  'pyrightconfig.json',
 ] as const
 
 /**
@@ -76,7 +103,18 @@ export const DANGEROUS_DIRECTORIES = [
   '.vscode',
   '.idea',
   '.claude',
+  '.husky',
+  '.cargo',
+  '.devcontainer',
+  '.yarn',
+  '.mvn',
 ] as const
+
+/**
+ * Multi-segment directories protected wherever they appear in a path
+ * (e.g. ~/.config/git/).
+ */
+export const DANGEROUS_DIRECTORY_PATHS = ['.config/git'] as const
 
 /**
  * Normalizes a path for case-insensitive comparison.
@@ -468,6 +506,20 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
       }
 
       return true
+    }
+  }
+
+  for (const dirPath of DANGEROUS_DIRECTORY_PATHS) {
+    const dirSegments = dirPath.split('/')
+    for (let i = 0; i + dirSegments.length <= pathSegments.length; i++) {
+      if (
+        dirSegments.every(
+          (dirSegment, j) =>
+            normalizeCaseForComparison(pathSegments[i + j]!) === dirSegment,
+        )
+      ) {
+        return true
+      }
     }
   }
 
