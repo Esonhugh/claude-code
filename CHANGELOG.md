@@ -24,6 +24,8 @@
 - 子代理 `disallowedTools` 支持 MCP 服务器级写法 `mcp__srv`、`mcp__srv__*` 与 `mcp__*`（对齐官方 2.1.178），不再被静默忽略。
 - 单段 `dir/**` allow 规则只匹配 `<cwd>/dir`（对齐官方 2.1.214）：`Edit(src/**)` 不再自动批准树中任意位置的 `a/src/x.ts`；deny/ask 规则仍匹配任意深度。
 - acceptEdits 模式写入前提示的保护文件与目录对齐官方：新增 `.npmrc`、`.yarnrc*`、`bunfig.toml`、`.bazelrc`、`.pre-commit-config.yaml`、lefthook 配置、gradle/maven wrapper、`.devcontainer.json`、`pyrightconfig.json`、`.envrc`、`.zshenv` 等 shell 启动文件，以及 `.husky/`、`.devcontainer/`、`.cargo/`、`.yarn/`、`.mvn/` 目录（对齐官方 2.1.90、2.1.160）。
+- 启用 `allowManagedPermissionRulesOnly` 时，设置重新加载不再清掉 `--disallowedTools` 与会话内的 deny 规则（对齐官方 2.1.257）；这两个来源的 allow/ask 规则仍被清除。
+- 未信任的工作区不能自行批准 `.mcp.json` 服务器（对齐官方 2.1.196）：信任前忽略 `.claude/settings.json` 中的 `enableAllProjectMcpServers`/`enabledMcpjsonServers`，被 git 跟踪的 `.claude/settings.local.json` 视为仓库内容同样忽略；`claude mcp list`/`get` 对这些服务器显示待批准而不启动。`-p` 与 bypass 模式的既有自动批准不变。
 
 ### 测试覆盖
 
@@ -32,6 +34,7 @@
 - 新增 `src/cli/print.permissionRequestHooks.test.ts`（子进程隔离），覆盖纯 `--print` 提示交给 hook、hook 不决定时保持原结果、`--permission-prompt-tool` 前先询问 hook。
 - 新增 `src/utils/permissions/permissions.mcpRules.test.ts`（allow 只到点名服务器、名称歧义需完整工具名、`mcp__*`、deny/ask 覆盖含 `__` 的服务器）与 `src/tools/AgentTool/agentTools.disallowedMcp.test.ts`（服务器级、通配与精确工具名）。
 - 新增 `src/utils/permissions/filesystem.parity.test.ts`，覆盖 `dir/**` allow 锚定 cwd、deny/ask 任意深度、其他模式不变，以及 acceptEdits 下 29 个保护文件/目录提示、普通文件照常放行。
+- 新增 `src/utils/permissions/permissions.managedOnly.test.ts`（重载保留 cliArg/session deny，清除其余来源）与 `src/services/mcp/projectApproval.trust.test.ts`（子进程隔离，真实 git 仓库中未信任时项目设置与被跟踪的 local 设置不能批准、未跟踪 local 设置与已信任工作区照常批准、`disabledMcpjsonServers` 仍拒绝）。
 
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 

@@ -1734,7 +1734,9 @@ export function syncPermissionRulesFromDisk(
 ): ToolPermissionContext {
   let context = toolPermissionContext
 
-  // When allowManagedPermissionRulesOnly is enabled, clear all non-policy sources
+  // When allowManagedPermissionRulesOnly is enabled, clear all non-policy
+  // sources, except that --disallowedTools and session deny rules only
+  // tighten and stay (official 2.1.257).
   if (shouldAllowManagedPermissionRulesOnly()) {
     const sourcesToClear: Array<PermissionUpdateDestination | 'sshOverlay'> = [
       'userSettings',
@@ -1744,9 +1746,12 @@ export function syncPermissionRulesFromDisk(
       'cliArg',
       'session',
     ]
-    const behaviors: PermissionBehavior[] = ['allow', 'deny', 'ask']
 
     for (const source of sourcesToClear) {
+      const behaviors: PermissionBehavior[] =
+        source === 'cliArg' || source === 'session'
+          ? ['allow', 'ask']
+          : ['allow', 'deny', 'ask']
       for (const behavior of behaviors) {
         context = applyPermissionUpdate(context, {
           type: 'replaceRules',
