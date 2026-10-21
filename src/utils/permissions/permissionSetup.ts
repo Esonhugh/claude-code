@@ -668,6 +668,30 @@ export function transitionPermissionMode(
 }
 
 /**
+ * transitionPermissionMode behind the same gates as SDK set_permission_mode,
+ * for a mode asked from outside this session's own UI (a team lead's
+ * mode_set_request). Throws with the reason when the mode is not available.
+ */
+export function transitionPermissionModeWithGates(
+  context: ToolPermissionContext,
+  toMode: PermissionMode,
+): ToolPermissionContext {
+  if (toMode === 'bypassPermissions') {
+    if (isBypassPermissionsModeDisabled()) {
+      throw new Error('bypassPermissions is disabled by settings or configuration')
+    }
+    if (!context.isBypassPermissionsModeAvailable) {
+      throw new Error('bypassPermissions is not available: the session was not launched with --dangerously-skip-permissions')
+    }
+  }
+  if (toMode === 'auto' && !isAutoModeGateEnabled()) {
+    const reason = getAutoModeUnavailableReason()
+    throw new Error(reason ? `auto mode is unavailable: ${getAutoModeUnavailableNotification(reason)}` : 'auto mode is unavailable')
+  }
+  return { ...transitionPermissionMode(context.mode, toMode, context), mode: toMode }
+}
+
+/**
  * Parse base tools specification from CLI
  * Handles both preset names (default, none) and custom tool lists
  */

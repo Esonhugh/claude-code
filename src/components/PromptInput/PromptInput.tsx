@@ -164,6 +164,7 @@ import {
   modelDisplayString,
 } from '../../utils/model/model.js'
 import { getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js'
+import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdate.js'
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js'
 import { getPlatform } from '../../utils/platform.js'
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js'
@@ -177,9 +178,12 @@ import {
   subscribeKnownChannels,
 } from '../../utils/suggestions/slackChannelSuggestions.js'
 import { isInProcessEnabled } from '../../utils/swarm/backends/registry.js'
-import { syncTeammateMode } from '../../utils/swarm/teamHelpers.js'
+import {
+  syncTeammateMode,
+  teammatesKeepOtherMode,
+} from '../../utils/swarm/teamHelpers.js'
 import type { TeamSummary } from '../../utils/teamDiscovery.js'
-import { getTeammateColor } from '../../utils/teammate.js'
+import { getTeammateColor, isTeammate } from '../../utils/teammate.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import { mergePromptDecorations, type TextHighlight } from '../../utils/textHighlighting.js'
@@ -719,6 +723,7 @@ function PromptInput({
   const [showFastModePicker, setShowFastModePicker] = useState(false)
   const [showThinkingToggle, setShowThinkingToggle] = useState(false)
   const permissionModeIntentRef = useRef(toolPermissionContext.mode)
+  const teammateModeHintShownRef = useRef(false)
   const permissionModeIntentGenerationRef = useRef(0)
 
   useEffect(() => {
@@ -2107,6 +2112,12 @@ function PromptInput({
       })
 
       const teammateTaskId = viewingAgentTaskId
+      logPermissionModeChange(
+        'teammate',
+        viewedTeammate.permissionMode,
+        nextMode,
+        `shift-tab on ${viewedTeammate.identity.agentName}`,
+      )
       setAppState(prev => {
         const task = prev.tasks[teammateTaskId]
         if (!task || task.type !== 'in_process_teammate') {
@@ -2185,6 +2196,26 @@ function PromptInput({
       logEvent('tengu_mode_cycle', {
         to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+      logPermissionModeChange('shift-tab', toolPermissionContext.mode, nextMode)
+      // Teammates keep their own mode; say so once rather than let the footer
+      // suggest the whole team switched.
+      if (
+        !teammateModeHintShownRef.current &&
+        isAgentSwarmsEnabled() &&
+        !isTeammate() &&
+        teammatesKeepOtherMode(
+          nextMode,
+          inProcessTeammates.map(teammate => teammate.permissionMode),
+          teamContext?.teammates,
+        )
+      ) {
+        teammateModeHintShownRef.current = true
+        addNotification({
+          key: 'teammate-mode-not-synced',
+          text: 'Teammates keep their own permission mode. View a teammate and press Shift+Tab, or use the teams dialog, to change theirs.',
+          priority: 'medium',
+        })
+      }
       if (nextMode === 'plan') {
         saveGlobalConfig(current => ({
           ...current,
@@ -2202,6 +2233,7 @@ function PromptInput({
     addNotification,
     toolPermissionContext,
     teamContext,
+    inProcessTeammates,
     viewingAgentTaskId,
     viewedTeammate,
     setAppState,
