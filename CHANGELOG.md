@@ -18,11 +18,13 @@
 
 - `Terminal` 工具接入权限检查：`new-session`（含初始命令）与带 `text` 的 `send-keys` 按 Bash 规则判定（`Bash(prefix:*)` 与整个 `Bash` 的 deny/ask 规则同样生效），default 模式会询问、dontAsk 模式拒绝、自动模式经分类器判定；读取输出、列出会话、resize、信号、关闭等动作直接放行；`new-session` 不再在执行阶段重复询问。
 - `/yolo` 改为与 SDK `set_permission_mode` 一致：`disableBypassPermissionsMode` 或组织开关停用 bypass 时直接回报原因、不切换；从未同意过 bypass 时先显示 bypass 警告对话框，同意后才切换，拒绝或按 Esc 只取消命令、不退出程序；只有切换后模式确实变成 bypass 才显示 `Bypass permissions mode enabled`。REPL 的模式切换不再自行把 bypass 标为可用，未经 `/yolo` 同意或启动旗标时 Shift+Tab 轮替不会出现 bypass。
+- 自动模式分类器以 Sonnet 5 或 Opus 4.8 运行时改用官方 2.1.303 的 severity 输出格式：系统提示的 Output Format 段改为 `<severity>N</severity>`（0–100，50 为界）加 `<category>`，阶段一以 `</severity>` 截断，阶段一分数高于 t1（Sonnet 5 为 25、Opus 4.8 为 45）才进入阶段二，阶段二高于 t2（35）即拒绝，拒绝理由为 `[规则名]`；其他模型（含 OpenAI 与第三方）仍用 `<block>yes/no</block>`，第三方模型在 severity 模式下回 `<block>` 也照常解析。两阶段的后缀同步官方文案，`<block>` 回复出现互相矛盾的判定时视为无法解析（拒绝）。
 
 ### 测试覆盖
 
 - `src/tools/TerminalTool/TerminalTool.test.ts` 新增 default 模式下 `new-session` 与 `send-keys "touch x"` 询问、`Bash(touch:*)`/`Bash` deny 规则拒绝（bypass 下仍拒绝）、dontAsk 拒绝、bypass 放行、只读动作放行，以及执行阶段不再重复询问。
 - `src/commands/yolo/yolo.test.ts` 覆盖 bypass 被停用时不切换、已同意时直接切换、未同意时先显示对话框且同意后才切换、拒绝不切换、切换被拒或模式未变时不显示 enabled 且不留下 bypass 可用状态。
+- 新增 `src/utils/permissions/yoloClassifier.severity.test.ts`，覆盖 severity 阈值表、阶段一提示与 `</severity>` 截断、t1/t2 判定、`<category>` 理由、未知规则名与多个分数时的拒绝，以及旧 `<block>` 回复的兼容解析。
 
 ## 2026-10-21 - 自动模式安全行为与官方对齐
 
