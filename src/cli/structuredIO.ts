@@ -706,7 +706,10 @@ export class StructuredIO {
         return permissionPromptToolResultToPermissionDecision(
           {
             behavior: 'deny',
-            message: `Tool permission request failed: ${error}`,
+            message:
+              error instanceof z.ZodError
+                ? "The canUseTool callback returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}."
+                : `Tool permission request failed: ${error}`,
             toolUseID,
           },
           tool,
