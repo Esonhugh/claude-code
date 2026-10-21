@@ -86,6 +86,15 @@ export function applyPermissionUpdate(
       ) {
         throw new Error(PLAN_MODE_DISABLED_MESSAGE)
       }
+      if (
+        update.mode === 'bypassPermissions' &&
+        !context.isBypassPermissionsModeAvailable
+      ) {
+        logForDebugging(
+          "Ignoring permission update: setMode 'bypassPermissions' rejected — mode is not available (disableBypassPermissionsMode set, or session not launched in bypassPermissions mode)",
+        )
+        return context
+      }
       logForDebugging(
         `Applying permission update: Setting mode to '${update.mode}'`,
       )

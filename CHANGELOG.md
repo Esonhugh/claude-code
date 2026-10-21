@@ -17,10 +17,13 @@
 ### 变更内容
 
 - plan 模式只接受只读调用的 allow（对齐官方 2.1.136、2.1.299）：`Edit(src/**)` 等 allow 规则、PreToolUse hook 的 allow 与 Mods `tool.check` 的 allow 都不再让写入类工具（文件写入、非只读 shell 命令、MCP 写工具）在 plan 模式下直接执行，改为提示 `Cannot call <tool> while in plan mode.`；从 bypass 进入的 plan 模式与本会话计划文件的写入不受影响。
+- PermissionRequest hook 返回的 `updatedInput` 重新经过 deny/ask 规则与安全检查（对齐官方 2.1.110）：命中 deny 规则直接拒绝，命中 ask 规则或安全检查也按拒绝处理；交互式、`-p`/后台与 SDK host 三条路径一致。
+- `setMode: bypassPermissions` 权限更新在 bypass 不可用时被忽略（对齐官方 2.1.110）：`disableBypassPermissionsMode` 生效或会话未以 bypass 启动时，PermissionRequest hook 等来源无法把会话切到 bypass。
 
 ### 测试覆盖
 
 - 新增 `src/utils/permissions/permissions.planMode.test.ts`，覆盖 plan 模式下内容/整工具 allow 规则、只读调用、bypass 可用、计划文件、PreToolUse hook allow 与 Mods `tool.check` allow。
+- 新增 `src/hooks/toolPermission/permissionRequestHookPolicy.test.ts`，覆盖 hook `updatedInput` 在交互式与 headless 路径命中 deny、未改写输入照常放行、`setMode` 切到 bypass 被策略拦下。
 
 ## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
 

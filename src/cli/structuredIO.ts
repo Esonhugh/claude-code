@@ -35,7 +35,10 @@ import {
   type PermissionDecisionReason,
   requiresExplicitUserApproval,
 } from 'src/utils/permissions/PermissionResult.js'
-import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
+import {
+  hasPermissionsToUseTool,
+  recheckPermissionRequestHookInput,
+} from 'src/utils/permissions/permissions.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { z } from 'zod/v4'
@@ -590,7 +593,7 @@ export class StructuredIO {
         )
           ? undefined
           : executePermissionRequestHooksForSDK(
-              tool.name,
+              tool,
               toolUseID,
               input,
               toolUseContext,
@@ -802,7 +805,7 @@ function exitWithMessage(message: string): never {
  * Returns undefined if no hook made a decision.
  */
 async function executePermissionRequestHooksForSDK(
-  toolName: string,
+  tool: Tool,
   toolUseID: string,
   input: Record<string, unknown>,
   toolUseContext: ToolUseContext,
@@ -813,7 +816,7 @@ async function executePermissionRequestHooksForSDK(
 
   // Iterate directly over the generator instead of using `all`
   const hookGenerator = executePermissionRequestHooks(
-    toolName,
+    tool.name,
     toolUseID,
     input,
     toolUseContext,
@@ -831,6 +834,14 @@ async function executePermissionRequestHooksForSDK(
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
         const finalInput = decision.updatedInput || input
+        if (decision.updatedInput) {
+          const denied = await recheckPermissionRequestHookInput(
+            tool,
+            finalInput,
+            toolUseContext,
+          )
+          if (denied) return denied
+        }
 
         // Apply permission updates if provided by hook ("always allow")
         const permissionUpdates = decision.updatedPermissions ?? []

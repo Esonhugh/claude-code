@@ -77,7 +77,7 @@ export async function checkModToolPermission(
       checked = await tool.checkPermissions(args, toolContext)
       return checked
     },
-  }, input, context)
+  }, input, context, { planModeWriteFloor: true })
   context.abortController.signal.throwIfAborted()
   if (rule) return rule
   if (checked?.behavior === 'ask' && tool.requiresUserInteraction?.()) return checked
@@ -935,6 +935,7 @@ export async function resolveHookPermissionDecision(
       tool,
       hookInput,
       toolUseContext,
+      { planModeWriteFloor: true },
     )
     if (ruleCheck === null) {
       logForDebugging(

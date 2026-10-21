@@ -463,6 +463,33 @@ export function getRuleByContentsForToolName(
 }
 
 /**
+ * A PermissionRequest hook that rewrites the input approves a call nobody
+ * checked: run deny/ask rules and safety checks on it again. An objection
+ * becomes a denial, since the hook already stood in for the prompt.
+ */
+export async function recheckPermissionRequestHookInput(
+  tool: Tool,
+  updatedInput: { [key: string]: unknown },
+  context: ToolUseContext,
+): Promise<PermissionDenyDecision | null> {
+  const objection = await checkRuleBasedPermissions(tool, updatedInput, context)
+  if (!objection) return null
+  logForDebugging(
+    `PermissionRequest hook allowed ${tool.name} with updatedInput, but ${objection.behavior} rule overrides: ${objection.message}`,
+  )
+  return objection.behavior === 'deny'
+    ? objection
+    : {
+        behavior: 'deny',
+        message: objection.message,
+        decisionReason: objection.decisionReason ?? {
+          type: 'hook',
+          hookName: 'PermissionRequest',
+        },
+      }
+}
+
+/**
  * Runs PermissionRequest hooks for headless/async agents that cannot show
  * permission prompts. This gives hooks an opportunity to allow or deny
  * tool use before the fallback auto-deny kicks in.
@@ -494,6 +521,14 @@ async function runPermissionRequestHooksForHeadlessAgent(
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
         const finalInput = decision.updatedInput ?? input
+        if (decision.updatedInput) {
+          const denied = await recheckPermissionRequestHookInput(
+            tool,
+            finalInput,
+            context,
+          )
+          if (denied) return denied
+        }
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions)
@@ -1167,6 +1202,7 @@ export async function checkRuleBasedPermissions(
   tool: Tool,
   input: { [key: string]: unknown },
   context: ToolUseContext,
+  { planModeWriteFloor = false }: { planModeWriteFloor?: boolean } = {},
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
   const appState = context.getAppState()
 
@@ -1289,7 +1325,10 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
-  if (planModeHoldsWrite(tool, input, appState.toolPermissionContext)) {
+  if (
+    planModeWriteFloor &&
+    planModeHoldsWrite(tool, input, appState.toolPermissionContext)
+  ) {
     if (toolPermissionResult.behavior === 'ask') return toolPermissionResult
     if (
       toolPermissionResult.behavior === 'passthrough' ||

@@ -31,6 +31,7 @@ import {
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { recheckPermissionRequestHookInput } from '../../utils/permissions/permissions.js'
 import {
   applyPermissionUpdates,
   persistPermissionUpdates,
@@ -232,6 +233,20 @@ function createPermissionContext(
           const decision = hookResult.permissionRequestResult
           if (decision.behavior === 'allow') {
             const finalInput = decision.updatedInput ?? updatedInput ?? input
+            if (decision.updatedInput) {
+              const denied = await recheckPermissionRequestHookInput(
+                tool,
+                finalInput,
+                toolUseContext,
+              )
+              if (denied) {
+                this.logDecision(
+                  { decision: 'reject', source: { type: 'hook' } },
+                  { input: finalInput, permissionPromptStartTimeMs },
+                )
+                return denied
+              }
+            }
             return await this.handleHookAllow(
               finalInput,
               decision.updatedPermissions ?? [],
