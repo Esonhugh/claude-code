@@ -2,6 +2,8 @@ import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
+  getMcpPrefix,
+  getMcpServerRuleNames,
   getToolNameForPermissionCheck,
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
@@ -274,16 +276,36 @@ function toolMatchesRule(
     return true
   }
 
-  // MCP server-level permission: rule "mcp__server1" matches tool "mcp__server1__tool1"
-  // Also supports wildcard: rule "mcp__server1__*" matches all tools from server1
-  const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
+  // MCP server-level permission: rule "mcp__server1" or "mcp__server1__*"
+  // matches every tool of server1; "mcp__server1__get_*" globs its tool names.
+  const ruleName = rule.ruleValue.toolName
+  const ruleInfo = mcpInfoFromString(ruleName)
   const toolInfo = mcpInfoFromString(nameForRuleMatch)
-
-  return (
+  const coversTool =
     ruleInfo !== null &&
     toolInfo !== null &&
-    (ruleInfo.toolName === undefined || ruleInfo.toolName === '*') &&
-    ruleInfo.serverName === toolInfo.serverName
+    ruleInfo.serverName === toolInfo.serverName &&
+    (ruleInfo.toolName === undefined ||
+      ruleInfo.toolName === '*' ||
+      (ruleInfo.toolName.includes('*') &&
+        toolInfo.toolName !== undefined &&
+        matchesWildcard(ruleInfo.toolName, toolInfo.toolName)))
+
+  // Server names may contain "__", so the split above is ambiguous. Like
+  // official, allow rules must reach the tool's whole server name ("mcp__a"
+  // does not allow server "a__b" or "a_"), while deny and ask rules also match
+  // when they name the whole server ("mcp__a__b" blocks server "a__b").
+  if (rule.ruleBehavior === 'allow') {
+    if (!coversTool) return false
+    const serverPrefixes = tool.mcpInfo
+      ? [getMcpPrefix(tool.mcpInfo.serverName)]
+      : getMcpServerRuleNames(tool).map(name => `${name}__`)
+    return serverPrefixes.every(prefix => `${ruleName}__`.startsWith(prefix))
+  }
+  return (
+    coversTool ||
+    (ruleName.startsWith('mcp__') &&
+      getMcpServerRuleNames(tool).includes(ruleName))
   )
 }
 

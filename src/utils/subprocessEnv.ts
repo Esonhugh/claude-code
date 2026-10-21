@@ -52,6 +52,37 @@ const GHA_SUBPROCESS_SCRUB = [
   'SSH_SIGNING_KEY',
 ] as const
 
+// Name patterns for credential-looking env vars, after official's scrub for
+// repo-supplied commands: a "_"-delimited segment such as TOKEN or API_KEY's
+// KEY, a TOKEN/SECRET/PASSWORD suffix glued to a word (GHTOKEN), and
+// PWD/PASS/JWT only as a suffix segment so plain PWD survives.
+const CREDENTIAL_SEGMENT =
+  '(?:TOKEN|SECRETS?|PASSWORDS?|PASSWD|PASSPHRASE|KEYS?|AUTH|COOKIE|PAT|DSN|WEBHOOK|CREDENTIALS?|CREDS|APIKEY|ACCESSKEY|SECRETKEY|ACCOUNTKEY|PRIVATEKEY|AUTHKEY|SSHKEY|SIGNINGKEY|MASTERKEY|DEPLOYKEY|ENCRYPTIONKEY|PGPASSWORD|SSHPASS)'
+const CREDENTIAL_ENV_PATTERNS = [
+  new RegExp(`^(?:.*_)?${CREDENTIAL_SEGMENT}(?:[_0-9].*)?$`, 'i'),
+  /^.*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE)(?:[_0-9].*)?$/i,
+  /^.+_(?:PWD|PASS|JWT)(?:[_0-9].*)?$/i,
+  /^(?:CONN|CONNECT|CONNECTION)$/i,
+]
+
+/**
+ * Returns a copy of env without credential-looking variables, for commands a
+ * repository or plugin supplies (e.g. a project .mcp.json headersHelper).
+ */
+export function withoutCredentialEnv(
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  const scrubbed = new Set<string>(GHA_SUBPROCESS_SCRUB)
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([name]) =>
+        !scrubbed.has(name) &&
+        !scrubbed.has(name.replace(/^INPUT_/, '')) &&
+        !CREDENTIAL_ENV_PATTERNS.some(pattern => pattern.test(name)),
+    ),
+  )
+}
+
 /**
  * Returns a copy of process.env with sensitive secrets stripped, for use when
  * spawning subprocesses (Bash tool, shell snapshot, MCP stdio servers, LSP

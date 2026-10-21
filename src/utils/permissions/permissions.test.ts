@@ -5,7 +5,7 @@ import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO ??= { VERSION: 'test' } as MacroGlobals
 
 const { getDefaultAppState } = await import('../../state/AppStateStore.js')
-const { getDenyRuleForTool, hasPermissionsToUseTool, toolAlwaysAllowedRule } = await import('./permissions.js')
+const { getAskRuleForTool, getDenyRuleForTool, hasPermissionsToUseTool, toolAlwaysAllowedRule } = await import('./permissions.js')
 const { filterToolsByDenyRules } = await import('../../tools.js')
 
 function fakeTool(name: string): Tool {
@@ -98,4 +98,57 @@ test('deny tool-name globs match by pattern; allow rules ignore non-MCP globs', 
   expect(getDenyRuleForTool(toolPermissionContext, fakeTool('WebFetch'))).not.toBeNull()
   expect(getDenyRuleForTool(toolPermissionContext, fakeTool('Read'))).toBeNull()
   expect(toolAlwaysAllowedRule(toolPermissionContext, fakeTool('NotebookEdit'))).toBeNull()
+})
+
+function mcpTool(serverName: string, toolName: string): Tool {
+  return {
+    ...fakeTool(`mcp__${serverName.replace(/[^a-zA-Z0-9_-]/g, '_')}__${toolName}`),
+    mcpInfo: { serverName, toolName },
+  } as Tool
+}
+
+test('an MCP server-level allow rule reaches only the server it names', () => {
+  const allowed = (rule: string, tool: Tool) =>
+    toolAlwaysAllowedRule(context({ allow: [rule] }).getAppState().toolPermissionContext, tool) !== null
+  expect(allowed('mcp__a', mcpTool('a', 'run'))).toBe(true)
+  expect(allowed('mcp__a__*', mcpTool('a', 'run'))).toBe(true)
+  expect(allowed('mcp__a', mcpTool('a__b', 'run'))).toBe(false)
+  expect(allowed('mcp__a__*', mcpTool('a__b', 'run'))).toBe(false)
+  expect(allowed('mcp__a', mcpTool('a_', 'run'))).toBe(false)
+  expect(allowed('mcp__a__b__*', mcpTool('a__b', 'run'))).toBe(true)
+  expect(allowed('mcp__a__b__run', mcpTool('a__b', 'run'))).toBe(true)
+  expect(allowed('mcp__a___*', mcpTool('a_', 'run'))).toBe(true)
+  expect(allowed('mcp__a__r*', mcpTool('a', 'run'))).toBe(true)
+  expect(allowed('mcp__a__r*', mcpTool('a', 'list'))).toBe(false)
+  // Like official, a server whose name holds "__" is allowed only as "mcp__<server>__*";
+  // "mcp__a__b" reads as tool b of server a. Allow takes no "mcp__*" either.
+  expect(allowed('mcp__a__b', mcpTool('a__b', 'run'))).toBe(false)
+  expect(allowed('mcp__*', mcpTool('a', 'run'))).toBe(false)
+  // A bare name that reads as more than one server is not allowed by the shorter one.
+  expect(allowed('mcp__a', fakeTool('mcp__a__b__run'))).toBe(false)
+  expect(allowed('mcp__a', fakeTool('mcp__a__run'))).toBe(true)
+})
+
+test('MCP server-level deny and ask rules reach servers whose name contains __', () => {
+  const ctx = context({ deny: ['mcp__a__b'], ask: ['mcp__c__d__*'] }).getAppState().toolPermissionContext
+  expect(getDenyRuleForTool(ctx, mcpTool('a__b', 'run'))).not.toBeNull()
+  expect(getAskRuleForTool(ctx, mcpTool('c__d', 'run'))).not.toBeNull()
+  expect(getDenyRuleForTool(ctx, mcpTool('a', 'run'))).toBeNull()
+  // Deny stays broad: the first segment of the server name still matches.
+  const broad = context({ deny: ['mcp__a'] }).getAppState().toolPermissionContext
+  expect(getDenyRuleForTool(broad, mcpTool('a', 'run'))).not.toBeNull()
+  expect(getDenyRuleForTool(broad, mcpTool('a__b', 'run'))).not.toBeNull()
+  expect(getDenyRuleForTool(broad, mcpTool('ab', 'run'))).toBeNull()
+})
+
+test('MCP servers named constructor or toString follow rules and modes like any other', async () => {
+  for (const server of ['constructor', 'toString']) {
+    const tool = mcpTool(server, 'run')
+    expect((await check(tool, {}, context({ mode: 'bypassPermissions' }))).behavior).toBe('allow')
+    expect((await check(tool, {}, context({}))).behavior).toBe('ask')
+    expect((await check(tool, {}, context({ allow: [`mcp__${server}`] }))).behavior).toBe('allow')
+    expect((await check(tool, {}, context({ allow: [`mcp__${server}`], deny: [`mcp__${server}__*`] }))).behavior).toBe(
+      'deny',
+    )
+  }
 })

@@ -13,6 +13,11 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { clearDumpState } from '../../services/api/dumpPrompts.js'
+import {
+  getMcpServerRuleNames,
+  getToolNameForPermissionCheck,
+  mcpInfoFromString,
+} from '../../services/mcp/mcpStringUtils.js'
 import type { AppState } from '../../state/AppState.js'
 import type {
   Tool,
@@ -190,9 +195,41 @@ export function resolveAgentTools(
     }) ?? [],
   )
 
+  // MCP server-level specs (mcp__server, mcp__server__*, mcp__*) remove every
+  // tool of that server, or every MCP tool. Like deny rules, they match both the
+  // first "__" segment of the tool name and the tool's whole server name.
+  let disallowsAllMcp = false
+  const disallowedMcpServers = new Set<string>()
+  for (const toolName of disallowedToolSet) {
+    const info = mcpInfoFromString(toolName)
+    if (info && (info.toolName === undefined || info.toolName === '*')) {
+      if (info.serverName === '*') disallowsAllMcp = true
+      else disallowedMcpServers.add(info.serverName)
+    }
+  }
+  const isDisallowed = (tool: Tool): boolean => {
+    const permissionName = getToolNameForPermissionCheck(tool)
+    if (
+      disallowedToolSet.has(tool.name) ||
+      disallowedToolSet.has(permissionName)
+    ) {
+      return true
+    }
+    const serverName = mcpInfoFromString(permissionName)?.serverName
+    if (
+      serverName !== undefined &&
+      (disallowsAllMcp || disallowedMcpServers.has(serverName))
+    ) {
+      return true
+    }
+    return getMcpServerRuleNames(tool).some(
+      name => disallowedToolSet.has(name) || disallowedToolSet.has(`${name}__*`),
+    )
+  }
+
   // Filter available tools based on disallowed list
   const allowedAvailableTools = filteredAvailableTools.filter(
-    tool => !disallowedToolSet.has(tool.name),
+    tool => !isDisallowed(tool),
   )
 
   // If tools is undefined or ['*'], allow all tools (after filtering disallowed)

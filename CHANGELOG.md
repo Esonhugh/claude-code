@@ -109,6 +109,23 @@
 - `bun test src/utils/permissions/filesystem.protectedFiles.test.ts`：新增文件名（大小写不敏感）、受保护目录、`.config/git/` 路径均需审批，相似但无关的路径仍可自动编辑。
 - `bun test src/tools/WebFetchTool/WebFetchTool.permissions.test.ts`：deny/ask 规则压过预批准域名、通配规则在 allow/deny/ask 三个位置匹配子域名、不匹配裸域名与相似域名、单标签通配、`domain:*`、大小写与结尾点。
 
+## 2026-10-20 - MCP 权限规则边界与 headersHelper 信任对齐官方
+
+### 变更内容
+
+- MCP allow 规则只放行它点名的 server：`mcp__a` 不再放行名为 `a__b` 或 `a_` 的 server；server 名含 `__` 时请写 `mcp__<server>__*`（对齐官方 2.1.299）。
+- MCP allow 规则支持工具名通配，例如 `mcp__srv__get_*`；`mcp__a__b__*` 现在能放行 server `a__b` 的工具。
+- MCP deny / ask 规则 `mcp__<server>` 对名称含 `__` 的 server 生效（例如 `mcp__a__b` 会挡下 server `a__b`）；`mcp__a` 仍会挡下 `a__b`、`a_` 的工具。
+- 子代理 `disallowedTools` 支持 server 级写法 `mcp__srv`、`mcp__srv__*` 与 `mcp__*`，此前会被静默忽略（对齐官方 2.1.178）。
+- 项目 `.mcp.json`（及 local scope）的 MCP `headersHelper` 在 `claude -p` 下也必须先接受该目录的信任对话框才会执行，未信任时在 MCP 日志中说明原因（对齐官方 2.1.237）。
+- 项目 `.mcp.json` 与插件提供的 MCP `headersHelper` 不再继承凭证类环境变量（如 `ANTHROPIC_API_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`、云厂商密钥）；user / managed scope 的 helper 不受影响。
+
+### 测试覆盖
+
+- `bun test src/utils/permissions/permissions.test.ts`：MCP allow 规则的 server 边界（`a__b`、`a_`、仅凭名称无法确定 server 的工具）、工具名通配、deny / ask 命中含 `__` 的 server、server 名为 `constructor` / `toString` 时在 bypass、默认模式、allow 与 deny 下行为正常。
+- `bun test src/tools/AgentTool/agentToolUtils.mcpDisallowed.test.ts`：子代理 `disallowedTools` 的 `mcp__srv`、`mcp__srv__*`、`mcp__*` 与含 `__` 的 server。
+- `bun test src/services/mcp/headersHelper.test.ts`：未信任目录下 `-p` 不执行项目 helper，项目与插件 helper 拿不到凭证环境变量，user helper 保持原环境。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容
