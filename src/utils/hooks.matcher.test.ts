@@ -93,3 +93,26 @@ describe('hook matchers with hyphens and commas (official 2.1.191 / 2.1.195)', (
     ).toHaveLength(1)
   })
 })
+
+describe('an empty match value only reaches matcher-less hooks (official 2.1.275)', () => {
+  test('SubagentStop with an empty agent type skips agent-specific matchers', async () => {
+    register('SubagentStart', 'code-reviewer')
+    registerHookCallbacks({
+      SubagentStop: [
+        { matcher: 'code-reviewer', hooks: [{ type: 'callback', callback: async () => ({}) }] },
+        { hooks: [{ type: 'callback', callback: async () => ({}) }] },
+      ],
+    })
+    const hooks = await getMatchingHooks(undefined, 'session', 'SubagentStop', {
+      session_id: 'session',
+      transcript_path: '',
+      cwd: '/',
+      hook_event_name: 'SubagentStop',
+      stop_hook_active: false,
+      agent_id: 'a',
+      agent_type: '',
+      agent_transcript_path: '',
+    } as never)
+    expect(hooks).toHaveLength(1)
+  })
+})

@@ -1804,14 +1804,16 @@ export async function getMatchingHooks(
       level: 'verbose',
     })
 
-    // Extract hooks with their plugin context (if any)
-    const filteredMatchers = matchQuery
-      ? hookMatchers.filter(
-          matcher =>
-            !matcher.matcher ||
-            matchesPattern(matchQuery, matcher.matcher, hookEvent),
-        )
-      : hookMatchers
+    // Extract hooks with their plugin context (if any). An empty match value
+    // (e.g. a subagent with no agent type) only reaches matcher-less hooks.
+    const filteredMatchers =
+      matchQuery !== undefined
+        ? hookMatchers.filter(
+            matcher =>
+              !matcher.matcher ||
+              matchesPattern(matchQuery, matcher.matcher, hookEvent),
+          )
+        : hookMatchers
 
     const matchedHooks: MatchedHook[] = filteredMatchers.flatMap(matcher => {
       // Check if this is a PluginHookMatcher (has pluginRoot) or SkillHookMatcher (has skillRoot)
