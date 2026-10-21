@@ -31,15 +31,18 @@ test('a teammate in auto does not inherit the leader\'s classifier-bypassing all
   expect(getTeammateAppState(state, 'mate', 'default').toolPermissionContext).toBe(view.toolPermissionContext)
 })
 
-test('a teammate leaving auto gets the leader\'s stripped rules back', () => {
-  const state = withTeammate('default', {
-    mode: 'auto',
-    alwaysAllowRules: { session: [] },
-    strippedDangerousRules: { session: ['Bash'] },
-  })
-  const view = getTeammateAppState(state, 'mate', 'default').toolPermissionContext
-  expect(view.mode).toBe('default')
-  expect(view.alwaysAllowRules.session).toContain('Bash')
+test('a teammate follows a leader in bypass, acceptEdits or auto, as official subagents do', () => {
+  for (const leaderMode of ['bypassPermissions', 'acceptEdits', 'auto'] as const) {
+    const state = withTeammate('default', { mode: leaderMode })
+    expect(getTeammateAppState(state, 'mate', 'default'), leaderMode).toBe(state)
+  }
+})
+
+test('a teammate keeps its own mode while the leader is in default or plan', () => {
+  for (const leaderMode of ['default', 'plan'] as const) {
+    const state = withTeammate('acceptEdits', { mode: leaderMode })
+    expect(getTeammateAppState(state, 'mate', 'default').toolPermissionContext.mode, leaderMode).toBe('acceptEdits')
+  }
 })
 
 test('a teammate whose task is gone keeps the mode its turn started in', () => {

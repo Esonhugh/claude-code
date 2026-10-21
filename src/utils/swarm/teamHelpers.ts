@@ -609,19 +609,30 @@ export async function syncTeammateMode(
 }
 
 /**
+ * Lead modes an in-process teammate runs in instead of its own task mode,
+ * matching how official subagents inherit a parent in these modes.
+ */
+export function leaderModeReachesTeammates(mode: PermissionMode): boolean {
+  return mode === 'bypassPermissions' || mode === 'acceptEdits' || mode === 'auto'
+}
+
+/**
  * Whether a team lead switching its own mode to `mode` leaves teammates on
- * another one. Teammates never follow the lead: in-process teammates keep
- * their task mode, pane teammates (whose mode the lead does not track here)
- * keep their own session's mode.
+ * another one. In-process teammates follow a lead in bypass, acceptEdits or
+ * auto and keep their task mode otherwise; pane teammates (whose mode the lead
+ * does not track here) always keep their own session's mode.
  */
 export function teammatesKeepOtherMode(
   mode: PermissionMode,
   inProcessModes: readonly PermissionMode[],
-  teammates: Readonly<Record<string, { tmuxPaneId: string }>> | undefined,
+  teammates: Readonly<Record<string, { name: string; tmuxPaneId: string }>> | undefined,
 ): boolean {
   return (
-    inProcessModes.some(teammateMode => teammateMode !== mode) ||
-    Object.values(teammates ?? {}).some(teammate => teammate.tmuxPaneId !== 'in-process')
+    (!leaderModeReachesTeammates(mode) &&
+      inProcessModes.some(teammateMode => teammateMode !== mode)) ||
+    Object.values(teammates ?? {}).some(
+      teammate => teammate.name !== TEAM_LEAD_NAME && teammate.tmuxPaneId !== 'in-process',
+    )
   )
 }
 
