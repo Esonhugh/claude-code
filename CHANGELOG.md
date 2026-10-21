@@ -18,10 +18,13 @@
 
 - 受保护文件清单补齐官方 2.1.303 的 37 项：新增 `.zshenv`、`.zlogin`、`.zlogout`、`.bash_login`、`.bash_aliases`、`.bash_logout`、`.envrc`、`.npmrc`、`.yarnrc(.yml)`、`.pnp.cjs`、`.pnp.loader.mjs`、`.pnpmfile.cjs`、`bunfig.toml`、`.bunfig.toml`、`.bazelrc`、`.bazelversion`、`.bazeliskrc`、`.pre-commit-config.yaml`、lefthook 配置、`gradle-wrapper.properties`、`maven-wrapper.properties`、`.devcontainer.json`、`pyrightconfig.json`，acceptEdits 等自动编辑模式下写入这些文件前会询问。
 - 受保护目录新增 `.husky`、`.cargo`、`.devcontainer`、`.yarn`、`.mvn`，以及任意位置的 `.config/git/`（如 `~/.config/git/config`）。
+- WebFetch 显式 `WebFetch(domain:...)` deny/ask/allow 规则现在优先于内置预批准域名：预批准域名仍默认放行，但可被 deny 或 ask 规则拦下。
+- WebFetch 域名规则支持通配：`domain:*.example.com` 匹配任意深度子域名（不含 `example.com` 本身），`domain:api-*.example.com` 只在单个标签内匹配，`domain:*` 匹配所有主机；比较时忽略大小写与结尾的点，精确规则优先于通配规则。
 
 ### 测试覆盖
 
 - `bun test src/utils/permissions/filesystem.protectedFiles.test.ts`：新增文件名（大小写不敏感）、受保护目录、`.config/git/` 路径均需审批，相似但无关的路径仍可自动编辑。
+- `bun test src/tools/WebFetchTool/WebFetchTool.permissions.test.ts`：deny/ask 规则压过预批准域名、通配规则在 allow/deny/ask 三个位置匹配子域名、不匹配裸域名与相似域名、单标签通配、`domain:*`、大小写与结尾点。
 
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
