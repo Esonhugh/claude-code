@@ -235,20 +235,32 @@ export async function resumeAgentBackground({
   const recordedPermissionMode = meta?.permissionMode
   // Like spawn, a recorded mode never outranks the parent's current mode. Plan
   // is the lowest rank, so it bypasses the clamp and keeps the gate below. A
-  // recorded bubble or a missing record resolves like a declared spawn mode.
-  const permissionMode = appState.toolPermissionContext.mode === 'bypassPermissions'
-    ? 'bypassPermissions'
-    : recordedPermissionMode === undefined || recordedPermissionMode === 'bubble'
-      ? resolveDeclaredAgentPermissionMode(
-          appState.toolPermissionContext.mode,
-          recordedPermissionMode ?? selectedAgent.permissionMode,
-        )
-      : recordedPermissionMode === 'plan'
-        ? 'plan'
-        : applyRequestedAgentPermissionMode(
-            appState.toolPermissionContext,
-            recordedPermissionMode,
-          ).mode
+  // bypass parent, a recorded bubble, the definition's own mode or a missing
+  // record resolve like a declared spawn mode, and runAgent keeps following
+  // the parent's current mode; any other recorded mode stays fixed.
+  const followsParentMode =
+    appState.toolPermissionContext.mode === 'bypassPermissions' ||
+    recordedPermissionMode === undefined ||
+    recordedPermissionMode === 'bubble' ||
+    recordedPermissionMode === selectedAgent.permissionMode
+  const declaredPermissionMode =
+    appState.toolPermissionContext.mode === 'bypassPermissions'
+      ? undefined
+      : recordedPermissionMode ?? selectedAgent.permissionMode
+  const fixedPermissionMode = followsParentMode || recordedPermissionMode === undefined
+    ? undefined
+    : recordedPermissionMode === 'plan'
+      ? 'plan'
+      : applyRequestedAgentPermissionMode(
+          appState.toolPermissionContext,
+          recordedPermissionMode,
+        ).mode
+  const permissionMode =
+    fixedPermissionMode ??
+    resolveDeclaredAgentPermissionMode(
+      appState.toolPermissionContext.mode,
+      declaredPermissionMode,
+    )
   // Preserve recorded/inherited Plan restrictions, but gate a new definition entry.
   if (
     permissionMode === 'plan' &&
@@ -302,7 +314,9 @@ export async function resumeAgentBackground({
     : resolvedAgentTools?.validTools
 
   const runAgentParams: Parameters<typeof runAgent>[0] = {
-    agentDefinition: selectedAgent,
+    agentDefinition: followsParentMode
+      ? { ...selectedAgent, permissionMode: declaredPermissionMode }
+      : selectedAgent,
     promptMessages: [
       ...resumedMessages,
       createUserMessage({ content: prompt, isMeta: promptIsMeta || undefined }),
@@ -330,7 +344,7 @@ export async function resumeAgentBackground({
       ? { systemPrompt: forkParentSystemPrompt }
       : undefined,
     availableTools: workerTools,
-    permissionMode,
+    permissionMode: fixedPermissionMode,
     allowedTools,
     allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
     // Transcript already contains the parent context slice from the

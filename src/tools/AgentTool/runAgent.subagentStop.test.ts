@@ -48,6 +48,7 @@ async function runIsolatedTests(): Promise<void> {
   const recordedMessages: unknown[] = []
   const queryContexts: Record<string, string>[] = []
   const queryAgentIds: Array<string | undefined> = []
+  const queryToolUseContexts: import('../../Tool.js').ToolUseContext[] = []
   const queryAgentDefinitions: Array<Record<string, unknown> | undefined> = []
   const transcriptAgentIds: string[] = []
   const refreshCallbacks: Array<
@@ -66,6 +67,7 @@ async function runIsolatedTests(): Promise<void> {
       })
       queryContexts.push(params.userContext)
       queryAgentIds.push(params.toolUseContext.agentId)
+      queryToolUseContexts.push(params.toolUseContext)
       queryAgentDefinitions.push(params.toolUseContext.options.agentDefinitions as Record<string, unknown> | undefined)
       refreshCallbacks.push(params.refreshUserContext)
       if (queryMode === 'assistant_then_throw' || queryMode === 'model_error') {
@@ -242,10 +244,50 @@ async function runIsolatedTests(): Promise<void> {
     recordedMessages.length = 0
     queryContexts.length = 0
     queryAgentIds.length = 0
+    queryToolUseContexts.length = 0
     queryAgentDefinitions.length = 0
     transcriptAgentIds.length = 0
     refreshCallbacks.length = 0
     delete process.env.CLAUDE_CODE_RUN_AGENT_FAULT_INJECTION_FOR_TESTING
+  })
+
+  describe('permission mode follows the parent session like official Xn(R)', () => {
+    type Mode = import('../../types/permissions.js').PermissionMode
+    async function spawn(extra: Partial<Parameters<typeof runAgent>[0]> = {}) {
+      queryMode = 'complete'
+      const parent = createContext()
+      await drainAgent({ toolUseContext: parent as never, ...extra })
+      const child = queryToolUseContexts.at(-1)!
+      return (parentMode: Mode) => {
+        parent.setAppState(state => ({
+          ...state,
+          toolPermissionContext: { ...state.toolPermissionContext, mode: parentMode as 'default' },
+        }))
+        return child.getAppState().toolPermissionContext.mode
+      }
+    }
+
+    test('an agent without a declared mode reads the parent mode on every read', async () => {
+      const switchParent = await spawn()
+      expect(switchParent('bypassPermissions')).toBe('bypassPermissions')
+      expect(switchParent('default')).toBe('default')
+      expect(switchParent('auto')).toBe('auto')
+    })
+
+    test('a declared mode is resolved against the parent current mode', async () => {
+      const switchParent = await spawn({
+        agentDefinition: { ...GENERAL_PURPOSE_AGENT, permissionMode: 'acceptEdits' },
+      })
+      expect(switchParent('default')).toBe('acceptEdits')
+      expect(switchParent('bypassPermissions')).toBe('bypassPermissions')
+      expect(switchParent('default')).toBe('acceptEdits')
+    })
+
+    test('an explicit spawn mode stays fixed', async () => {
+      const switchParent = await spawn({ permissionMode: 'plan' })
+      expect(switchParent('bypassPermissions')).toBe('plan')
+      expect(switchParent('default')).toBe('plan')
+    })
   })
 
   test('C6 narrows the child agentDefinitions to the resolved allowedAgentTypes', async () => {
