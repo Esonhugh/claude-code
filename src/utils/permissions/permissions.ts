@@ -11,6 +11,7 @@ import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
+import { SUBAGENT_HANDBACK_TOOL_NAME } from '../../tools/SubagentHandbackTool/constants.js'
 import type { AssistantMessage } from '../../types/message.js'
 import { extractOutputRedirections } from '../bash/commands.js'
 import { requestClassifierOverflowCompaction } from '../../services/compact/classifierOverflow.js'
@@ -92,6 +93,7 @@ import {
   DONT_ASK_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
+import { recordSubagentHandbackReview } from '../subagentHandback.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonStringify } from '../slowOperations.js'
 import {
@@ -543,6 +545,76 @@ async function runPermissionRequestHooksForHeadlessAgent(
   return null
 }
 
+const USER_EDITABLE_RULE_SOURCES: ReadonlySet<PermissionRuleSource> = new Set([
+  'userSettings',
+  'projectSettings',
+  'localSettings',
+  'session',
+])
+
+/**
+ * Only auto mode's classifier can allow a SubagentHandback call: allow rules
+ * do not apply, and deny rules a user can edit do not withhold the report.
+ * A block, or a review that could not run, still delivers the report, under
+ * a warning the caller reads above it.
+ */
+async function reviewSubagentHandback(
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+  toolUseID: string,
+): Promise<PermissionDecision> {
+  const permissionContext = context.getAppState().toolPermissionContext
+  const denyRule = getDenyRules(permissionContext).find(
+    rule => !USER_EDITABLE_RULE_SOURCES.has(rule.source) && toolMatchesRule(tool, rule),
+  )
+  if (denyRule) {
+    return {
+      behavior: 'deny',
+      decisionReason: { type: 'rule', rule: denyRule },
+      message: `Permission to use ${tool.name} has been denied.`,
+    }
+  }
+  if (!feature('TRANSCRIPT_CLASSIFIER') || permissionContext.mode !== 'auto') {
+    return {
+      behavior: 'deny',
+      decisionReason: { type: 'other', reason: 'classifierOnly: the session is not in auto mode' },
+      message: `Only the auto-mode classifier can allow ${tool.name}: the session is not in auto mode`,
+    }
+  }
+  setClassifierChecking(toolUseID)
+  let classifierResult
+  try {
+    classifierResult = await classifyYoloAction(
+      context.messages,
+      formatActionForClassifier(tool.name, input),
+      context.options.tools,
+      permissionContext,
+      context.abortController.signal,
+    )
+  } finally {
+    clearClassifierChecking(toolUseID)
+  }
+  let reason = classifierResult.reason
+  if (
+    classifierResult.unavailable ||
+    classifierResult.transcriptTooLong ||
+    classifierResult.unparseable
+  ) {
+    recordSubagentHandbackReview(toolUseID, { kind: 'unavailable', model: classifierResult.model })
+    reason = 'Delivered with a note: the classifier could not review it'
+  } else if (classifierResult.shouldBlock) {
+    recordSubagentHandbackReview(toolUseID, { kind: 'blocked', reason: classifierResult.reason })
+    reason = `Flagged by the classifier, delivered with its warning: ${classifierResult.reason}`
+  }
+  logForDebugging(`Auto mode classifier reviewed ${tool.name}: ${reason}`)
+  return {
+    behavior: 'allow',
+    updatedInput: input,
+    decisionReason: { type: 'classifier', classifier: 'auto-mode', reason },
+  }
+}
+
 export const hasPermissionsToUseTool: CanUseToolFn = async (
   tool,
   input,
@@ -550,6 +622,9 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   assistantMessage,
   toolUseID,
 ): Promise<PermissionDecision> => {
+  if (tool.name === SUBAGENT_HANDBACK_TOOL_NAME) {
+    return reviewSubagentHandback(tool, input, context, toolUseID)
+  }
   const result = await hasPermissionsToUseToolInner(tool, input, context)
 
 
