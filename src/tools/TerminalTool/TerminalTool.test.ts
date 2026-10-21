@@ -20,6 +20,7 @@ import {
 import { isDeferredTool, formatDeferredToolLines } from '../ToolSearchTool/prompt.js'
 import { capturePaneActionSchema } from './actionSchemas.js'
 import {
+  applyTerminalKeystrokes,
   getTerminalManager,
   refreshTerminalTaskPreview,
   TerminalTool,
@@ -741,11 +742,78 @@ test('read-only and session-control Terminal actions do not ask', async () => {
   }
 })
 
-test('send-keys auto classifier input includes the typed text', () => {
+test('send-keys auto classifier input is the submitted command line', () => {
   assert.equal(
     TerminalTool.toAutoClassifierInput(TOUCH_KEYS),
-    'send-keys sess-1 text="touch x"',
+    'send-keys sess-1 command="touch x"',
   )
+})
+
+test('applyTerminalKeystrokes replays line editing keys', () => {
+  assert.deepEqual(applyTerminalKeystrokes('tou', 'ch x\r'), { line: '', submitted: ['touch x'] })
+  assert.deepEqual(applyTerminalKeystrokes('rm -rf /', '\x15ls'), { line: 'ls', submitted: [] })
+  assert.deepEqual(applyTerminalKeystrokes('rm', '\x03'), { line: '', submitted: [] })
+  assert.deepEqual(applyTerminalKeystrokes('lsx', '\x7f\x1b[A\r'), { line: '', submitted: ['ls'] })
+  assert.deepEqual(applyTerminalKeystrokes('', 'a\nb'), { line: 'b', submitted: ['a'] })
+})
+
+async function openPermissionSession(permission: Partial<AppState['toolPermissionContext']>) {
+  const context = createPermissionContext(permission)
+  const opened = await TerminalTool.call(
+    { action: 'new-session', cols: 80, rows: 24 },
+    context,
+    allowPermission,
+    TEST_ASSISTANT_MESSAGE,
+  )
+  const target = String((opened.data as { target: string }).target)
+  // Runs send-keys only when the permission pipeline allows it, like tool execution.
+  const send = async (keys: Record<string, unknown>) => {
+    const input = { action: 'send-keys' as const, target, ...keys }
+    const decision = await hasPermissionsToUseTool(
+      TerminalTool, input, context, TEST_ASSISTANT_MESSAGE, 'terminal-send-keys-test',
+    )
+    if (decision.behavior === 'allow') {
+      await TerminalTool.call(input, context, allowPermission, TEST_ASSISTANT_MESSAGE)
+    }
+    return decision.behavior
+  }
+  return { target, send }
+}
+
+test('send-keys checks the accumulated line, so a split command still hits deny rules', async () => {
+  const deny = { alwaysDenyRules: { session: ['Bash(touch:*)'] } }
+  const typedLater = await openPermissionSession(deny)
+  assert.equal(await typedLater.send({ text: 'tou' }), 'allow')
+  assert.equal(await typedLater.send({ text: 'ch x' }), 'deny')
+  assert.equal(await typedLater.send({ text: 'ch x', enter: true }), 'deny')
+
+  const bypass = await openPermissionSession({ mode: 'bypassPermissions', ...deny })
+  assert.equal(await bypass.send({ text: 'tou' }), 'allow')
+  assert.equal(await bypass.send({ text: 'ch x', enter: true }), 'deny')
+})
+
+test('typing a line is not a command until Enter submits it', async () => {
+  const session = await openPermissionSession({ mode: 'default' })
+  assert.equal(await session.send({ text: 'tou' }), 'allow')
+  assert.equal(await session.send({ text: 'ch x' }), 'allow')
+  assert.equal(
+    TerminalTool.toAutoClassifierInput({ action: 'send-keys', target: session.target, enter: true }),
+    `send-keys ${session.target} command="touch x"`,
+  )
+  assert.equal(await session.send({ key: 'ENTER' }), 'ask')
+  assert.equal(await session.send({ text: 'touch x', enter: true }), 'ask')
+})
+
+test('control keys do not trigger a check and Ctrl-C clears the pending line', async () => {
+  const session = await openPermissionSession({ mode: 'default' })
+  assert.equal(await session.send({ text: 'touch x' }), 'allow')
+  assert.equal(await session.send({ key: 'CTRL_C' }), 'allow')
+  assert.equal(await session.send({ text: 'ls', enter: true }), 'allow')
+
+  const denied = await openPermissionSession({ alwaysDenyRules: { session: ['Bash'] } })
+  for (const key of ['UP', 'ESC', 'TAB', 'CTRL_C', 'CTRL_L', 'ENTER']) {
+    assert.equal(await denied.send({ key }), 'allow', key)
+  }
 })
 
 test('refreshes task preview on display-message for large terminal redraw output', async () => {

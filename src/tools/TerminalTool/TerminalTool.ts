@@ -36,7 +36,7 @@ import { handleRead } from './handlers/read.js'
 import { handleResize } from './handlers/resize.js'
 import { handleSignal } from './handlers/signal.js'
 import { handleStatus } from './handlers/status.js'
-import { handleWrite } from './handlers/write.js'
+import { handleWrite, sendKeysSequence } from './handlers/write.js'
 import {
   DESCRIPTION,
   PROMPT,
@@ -56,6 +56,7 @@ import {
   getAskRuleForTool,
   getDenyRuleForTool,
 } from '../../utils/permissions/permissions.js'
+import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { bashToolHasPermission } from '../BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 
@@ -73,24 +74,111 @@ type ErrorOutput = {
 
 type Output = SuccessOutput | ErrorOutput
 
-// The shell command a Terminal action would run, or undefined when the action
-// only reads, resizes or stops an existing session.
-function getTerminalCommand(input: {
+// Input typed into each session's current line but not yet submitted with
+// Enter. Denied send-keys never reach the PTY, so this stays in sync with
+// what the shell has buffered.
+const terminalInputLines = new Map<string, string>()
+
+/**
+ * Replays keystrokes over a session's pending line like a line editor: Enter
+ * (CR/LF) submits the line, Ctrl-C/Ctrl-U clear it, Backspace deletes a
+ * character, and escape sequences and other control keys are ignored.
+ */
+export function applyTerminalKeystrokes(
+  pending: string,
+  sequence: string,
+): { line: string; submitted: string[] } {
+  let line = pending
+  const submitted: string[] = []
+  const input = sequence.replace(/\x1b(?:\[[0-9;?]*[@-~]|O.)?/g, '')
+  for (const char of input) {
+    if (char === '\r' || char === '\n') {
+      if (line.trim()) submitted.push(line)
+      line = ''
+    } else if (char === '\x03' || char === '\x15') {
+      line = ''
+    } else if (char === '\x7f' || char === '\b') {
+      line = line.slice(0, -1)
+    } else if (char >= ' ') {
+      line += char
+    }
+  }
+  return { line, submitted }
+}
+
+type TerminalPermissionInput = {
   action: string
   command?: string
   args?: string[]
+  target?: string
   text?: string
-}): string | undefined {
+  key?: Parameters<typeof sendKeysSequence>[0]['key']
+  enter?: boolean
+}
+
+function getSendKeysLines(input: TerminalPermissionInput) {
+  const pending = (input.target && terminalInputLines.get(input.target)) || ''
+  return { pending, ...applyTerminalKeystrokes(pending, sendKeysSequence(input)) }
+}
+
+// The shell input a Terminal action would run: `submitted` is executed now,
+// `typed` only sits on the command line. Undefined for actions that only
+// read, resize or stop an existing session.
+function getTerminalCommand(
+  input: TerminalPermissionInput,
+): { submitted?: string; typed?: string } | undefined {
   if (input.action === 'new-session') {
-    return quote([
-      input.command?.trim() || process.env.SHELL || 'sh',
-      ...(input.args ?? []),
-    ])
+    return {
+      submitted: quote([
+        input.command?.trim() || process.env.SHELL || 'sh',
+        ...(input.args ?? []),
+      ]),
+    }
   }
-  if (input.action === 'send-keys' && input.text) {
-    return input.text
+  if (input.action !== 'send-keys') return undefined
+  const { pending, line, submitted } = getSendKeysLines(input)
+  if (submitted.length > 0) {
+    return { submitted: submitted.join('\n'), typed: line.trim() ? line : undefined }
   }
-  return undefined
+  return line.trim() && line !== pending ? { typed: line } : undefined
+}
+
+async function checkShellCommand(
+  command: string,
+  context: Parameters<typeof bashToolHasPermission>[1],
+): Promise<PermissionResult> {
+  // Terminal runs shell input, so Bash rules apply to it like they do to
+  // Monitor. Whole-tool Bash rules are not part of bashToolHasPermission.
+  const permissionContext = context.getAppState().toolPermissionContext
+  const bashDenyRule = getDenyRuleForTool(permissionContext, {
+    name: BASH_TOOL_NAME,
+  })
+  if (bashDenyRule) {
+    return {
+      behavior: 'deny',
+      message: `Permission to use ${BASH_TOOL_NAME} has been denied.`,
+      decisionReason: { type: 'rule', rule: bashDenyRule },
+    }
+  }
+  // The PTY never runs inside the sandbox, so sandbox auto-allow must not apply.
+  const result = await bashToolHasPermission(
+    { command, dangerouslyDisableSandbox: true },
+    context,
+  )
+  if (result.behavior === 'deny') {
+    return result
+  }
+  const bashAskRule = getAskRuleForTool(permissionContext, {
+    name: BASH_TOOL_NAME,
+  })
+  if (bashAskRule) {
+    return {
+      behavior: 'ask',
+      message: createPermissionRequestMessage(TERMINAL_TOOL_NAME),
+      decisionReason: { type: 'rule', rule: bashAskRule },
+    }
+  }
+  return result
 }
 
 let terminalManagerInstance: PtySessionManager | undefined
@@ -119,6 +207,7 @@ export function resetTerminalManagerForTesting(manager?: PtySessionManager): voi
   }
   terminalTaskPollers.clear()
   terminalTaskRegistry.clear()
+  terminalInputLines.clear()
   terminalTerminationReasons.clear()
 }
 
@@ -147,6 +236,7 @@ async function finalizeTerminalTask(
   }
 
   terminalTaskRegistry.delete(sessionId)
+  terminalInputLines.delete(sessionId)
   terminalTerminationReasons.delete(sessionId)
   stopTerminalTaskPolling(sessionId)
 
@@ -325,8 +415,9 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
   userFacingName() {
     return TERMINAL_TOOL_NAME
   },
-  isConcurrencySafe() {
-    return true
+  isConcurrencySafe(input) {
+    // send-keys reads and updates the session's pending command line.
+    return input.action !== 'send-keys'
   },
   isReadOnly(input) {
     return input.action === 'capture-pane' || input.action === 'display-message' || input.action === 'list-panes'
@@ -342,47 +433,29 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
         parts.push(`args=${JSON.stringify(input.args)}`)
       }
     }
-    if (input.action === 'send-keys' && input.text) {
-      parts.push(`text=${JSON.stringify(input.text)}`)
+    if (input.action === 'send-keys') {
+      const command = getTerminalCommand(input)
+      if (command?.submitted) {
+        parts.push(`command=${JSON.stringify(command.submitted)}`)
+      }
+      if (command?.typed) {
+        parts.push(`typed=${JSON.stringify(command.typed)}`)
+      }
     }
     return parts.join(' ')
   },
   async checkPermissions(input, context) {
     const command = getTerminalCommand(input)
-    if (command === undefined) {
+    // A line still being typed runs nothing yet: only deny rules apply to it,
+    // and it is checked in full once Enter submits it.
+    if (command?.typed !== undefined) {
+      const typed = await checkShellCommand(command.typed, context)
+      if (typed.behavior === 'deny') return typed
+    }
+    if (command?.submitted === undefined) {
       return { behavior: 'allow', updatedInput: input }
     }
-    // Terminal runs shell input, so Bash rules apply to it like they do to
-    // Monitor. Whole-tool Bash rules are not part of bashToolHasPermission.
-    const permissionContext = context.getAppState().toolPermissionContext
-    const bashDenyRule = getDenyRuleForTool(permissionContext, {
-      name: BASH_TOOL_NAME,
-    })
-    if (bashDenyRule) {
-      return {
-        behavior: 'deny',
-        message: `Permission to use ${BASH_TOOL_NAME} has been denied.`,
-        decisionReason: { type: 'rule', rule: bashDenyRule },
-      }
-    }
-    // The PTY never runs inside the sandbox, so sandbox auto-allow must not apply.
-    const result = await bashToolHasPermission(
-      { command, dangerouslyDisableSandbox: true },
-      context,
-    )
-    if (result.behavior === 'deny') {
-      return result
-    }
-    const bashAskRule = getAskRuleForTool(permissionContext, {
-      name: BASH_TOOL_NAME,
-    })
-    if (bashAskRule) {
-      return {
-        behavior: 'ask',
-        message: createPermissionRequestMessage(TERMINAL_TOOL_NAME),
-        decisionReason: { type: 'rule', rule: bashAskRule },
-      }
-    }
+    const result = await checkShellCommand(command.submitted, context)
     return 'updatedInput' in result && result.updatedInput
       ? { ...result, updatedInput: input }
       : result
@@ -452,7 +525,9 @@ export const TerminalTool: Tool<InputSchema, Output> = buildTool({
             }
           }
           const manager = getTerminalManager()
+          const { line } = getSendKeysLines(parsed.data)
           const written = handleWrite(manager, parsed.data)
+          terminalInputLines.set(parsed.data.target, line)
           await refreshTerminalTaskPreview(parsed.data.target, setTaskAppState, manager)
           return { data: written }
         }

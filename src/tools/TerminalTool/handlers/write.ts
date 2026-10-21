@@ -5,11 +5,17 @@ import type { sendKeysActionSchema } from '../actionSchemas.js'
 
 type SendKeysActionInput = z.infer<typeof sendKeysActionSchema>
 
-export function handleWrite(manager: PtySessionManager, input: SendKeysActionInput) {
+export function sendKeysSequence(
+  input: Pick<SendKeysActionInput, 'text' | 'key' | 'enter'>,
+): string {
   const text = input.text ?? ''
   const key = input.key ? keyToSequence(input.key) : ''
   const enter = input.enter ? '\r' : ''
-  manager.write(input.target, `${text}${key}${enter}`)
+  return `${text}${key}${enter}`
+}
+
+export function handleWrite(manager: PtySessionManager, input: SendKeysActionInput) {
+  manager.write(input.target, sendKeysSequence(input))
   const status = manager.status(input.target)
 
   return {
