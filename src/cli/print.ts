@@ -175,7 +175,10 @@ import {
   type PermissionDecision,
   requiresExplicitUserApproval,
 } from 'src/utils/permissions/PermissionResult.js'
-import { normalizePermissionModeAlias } from 'src/utils/permissions/PermissionMode.js'
+import {
+  normalizePermissionModeAlias,
+  PERMISSION_MODES,
+} from 'src/utils/permissions/PermissionMode.js'
 import { safeParseJSON } from 'src/utils/json.js'
 import {
   outputSchema as permissionToolOutputSchema,
@@ -5363,6 +5366,18 @@ function handleSetPermissionMode(
     ...request,
     mode: normalizePermissionModeAlias(request.mode) as InternalPermissionMode,
   }
+  if (!(PERMISSION_MODES as readonly string[]).includes(request.mode)) {
+    output.enqueue({
+      type: 'control_response',
+      response: {
+        subtype: 'error',
+        request_id: requestId,
+        error: `Cannot set permission mode: must be one of ${[...PERMISSION_MODES].sort().join(', ')}`,
+        error_code: 'invalid_mode',
+      },
+    })
+    return toolPermissionContext
+  }
   // Check if trying to switch to bypassPermissions mode
   if (request.mode === 'bypassPermissions') {
     if (isBypassPermissionsModeDisabled()) {
@@ -5373,6 +5388,7 @@ function handleSetPermissionMode(
           request_id: requestId,
           error:
             'Cannot set permission mode to bypassPermissions because it is disabled by settings or configuration',
+          error_code: 'bypass_disabled',
         },
       })
       return toolPermissionContext
@@ -5385,6 +5401,7 @@ function handleSetPermissionMode(
           request_id: requestId,
           error:
             'Cannot set permission mode to bypassPermissions because the session was not launched with --dangerously-skip-permissions',
+          error_code: 'bypass_not_launched',
         },
       })
       return toolPermissionContext
@@ -5406,6 +5423,14 @@ function handleSetPermissionMode(
         error: reason
           ? `Cannot set permission mode to auto: ${getAutoModeUnavailableNotification(reason)}`
           : 'Cannot set permission mode to auto',
+        error_code:
+          reason === 'settings'
+            ? 'auto_mode_settings'
+            : reason === 'circuit-breaker'
+              ? 'auto_mode_circuit_breaker'
+              : reason === 'model'
+                ? 'auto_mode_model'
+                : 'auto_mode_unavailable',
       },
     })
     return toolPermissionContext
