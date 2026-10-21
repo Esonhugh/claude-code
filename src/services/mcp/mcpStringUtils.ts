@@ -11,10 +11,9 @@ import { normalizeNameForMCP } from './normalization.js'
  * @param toolString The string to parse. Expected format: "mcp__serverName__toolName"
  * @returns An object containing server name and optional tool name, or null if not a valid MCP rule
  *
- * Known limitation: If a server name contains "__", parsing will be incorrect.
- * For example, "mcp__my__server__tool" would parse as server="my" and tool="server__tool"
- * instead of server="my__server" and tool="tool". This is rare in practice since server
- * names typically don't contain double underscores.
+ * Splits at the first "__" after the prefix, so "mcp__my__server__tool" parses as
+ * server="my" and tool="server__tool" even when the server is named "my__server".
+ * Permission matching that must know the real server uses getMcpServerRuleNames().
  */
 export function mcpInfoFromString(toolString: string): {
   serverName: string
@@ -29,6 +28,35 @@ export function mcpInfoFromString(toolString: string): {
   const toolName =
     toolNameParts.length > 0 ? toolNameParts.join('__') : undefined
   return { serverName, toolName }
+}
+
+/**
+ * The server-level rule names ("mcp__<server>") that can address a tool's server.
+ * With mcpInfo the server is known: its whole normalized name, plus the first
+ * "__" segment that mcpInfoFromString() reads from the tool name. Without it,
+ * any "__" may end the server name, so every such prefix of the tool name.
+ */
+export function getMcpServerRuleNames(tool: {
+  name: string
+  mcpInfo?: { serverName: string }
+}): string[] {
+  if (tool.mcpInfo) {
+    const prefix = getMcpPrefix(tool.mcpInfo.serverName)
+    const firstSegment = mcpInfoFromString(`${prefix}x`)?.serverName
+    const names = [prefix.slice(0, -2)]
+    if (firstSegment !== undefined) names.push(`mcp__${firstSegment}`)
+    return names
+  }
+  const names: string[] = []
+  if (!tool.name.startsWith('mcp__')) return names
+  for (
+    let end = tool.name.indexOf('__', 'mcp__'.length);
+    end !== -1;
+    end = tool.name.indexOf('__', end + 1)
+  ) {
+    names.push(tool.name.slice(0, end))
+  }
+  return names
 }
 
 /**
