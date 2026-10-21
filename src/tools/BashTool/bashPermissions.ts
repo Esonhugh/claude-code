@@ -1449,6 +1449,52 @@ function checkEarlyPathDeny(
   return pathResult.behavior === 'deny' ? pathResult : null
 }
 
+// Commands longer than this always prompt: the checks below are not reliable
+// on input of this size (the tree-sitter parser also gives up here).
+const MAX_ANALYZABLE_COMMAND_LENGTH = 10000
+
+/**
+ * Over-long commands and commands with a dangling `&&`, `||` or `|` always
+ * ask (deny rules still apply), whatever the allow rules say.
+ */
+function checkUnanalyzableCommand(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | null {
+  const command = input.command.trim()
+  const reason =
+    command.length > MAX_ANALYZABLE_COMMAND_LENGTH
+      ? `Command is longer than ${MAX_ANALYZABLE_COMMAND_LENGTH} characters and cannot be fully analyzed`
+      : /^(?:&&|\|\|?)|(?:^|[^\\|&])(?:&&|\|\|?)$/.test(command)
+        ? 'Command has a dangling &&, || or | operator'
+        : null
+  if (reason === null) return null
+  const exactMatchResult = bashToolCheckExactMatchPermission(
+    input,
+    toolPermissionContext,
+  )
+  if (exactMatchResult.behavior === 'deny') return exactMatchResult
+  const denyMatch = matchingRulesForInput(
+    input,
+    toolPermissionContext,
+    'prefix',
+  ).matchingDenyRules[0]
+  if (denyMatch !== undefined) {
+    return {
+      behavior: 'deny',
+      message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
+      decisionReason: { type: 'rule', rule: denyMatch },
+    }
+  }
+  const decisionReason = { type: 'other' as const, reason }
+  return {
+    behavior: 'ask',
+    decisionReason,
+    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    suggestions: [],
+  }
+}
+
 /**
  * Early-exit deny enforcement for the AST too-complex and checkSemantics
  * paths. Returns the exact-match result if non-passthrough (deny/ask/allow),
@@ -1839,7 +1885,8 @@ export async function bashToolHasPermission(
   const rawRoot = await parseCommandRawForRemoval(input.command)
   const removalPermission =
     checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
-    checkEarlyPathDeny(input, appState.toolPermissionContext)
+    checkEarlyPathDeny(input, appState.toolPermissionContext) ??
+    checkUnanalyzableCommand(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
   let astRoot = !injectionCheckDisabled &&
     (feature('TREE_SITTER_BASH') || (feature('TREE_SITTER_BASH_SHADOW') && shadowEnabled))

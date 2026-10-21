@@ -245,6 +245,21 @@ if (process.env[childFlag] !== '1') {
     await expectBehavior('git log --format=%H -1', 'default', rules, 'allow')
   })
 
+  test('over-long commands and dangling operators always ask', async () => {
+    const allow = { allow: ['Bash(echo:*)', 'Bash(ls:*)'] }
+    await expectBehavior('echo ' + 'a'.repeat(10001), 'default', allow, 'ask')
+    await expectBehavior('echo ' + 'a'.repeat(9000), 'default', allow, 'allow')
+    for (const command of ['ls &&', 'ls ||', 'ls |', 'ls && ']) {
+      await expectBehavior(command, 'default', allow, 'ask')
+    }
+    await expectBehavior(
+      'rm -rf build &&',
+      'default',
+      { deny: ['Bash(rm:*)'] },
+      'deny',
+    )
+  })
+
   test('cleanup', () => {
     process.chdir(tmpdir())
     rmSync(project, { recursive: true, force: true })
