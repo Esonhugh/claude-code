@@ -85,8 +85,9 @@ bun ./dist/cli.js --help
 | 自主 Goal | `/goal` 或 `SetGoal` 注册 StopHook 并驱动自主执行；Goal 状态通过 transcript attachment 持久化，resume/continue 可恢复 active Goal 与 hook；交互式 `/goal` 展示进行中、完成或失败状态及耗时、turn、token 和最后检查原因，支持 clear、impossible 终态、后台任务延后检查与自动清理。 |
 | Hook 可靠性 | Stop hook 连续阻止结束时默认在第 9 次终止续跑，可用 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 调整或禁用上限；正常 tool round 会重置计数，`maxTurns` 保持更高优先级。 |
 | Hook 事件与输出 | 对齐官方 2.1.303：command/HTTP hook 可设 `onFailure: "block"`，启动失败、超时或非预期退出码时阻止动作（Stop、SubagentStop、TaskCompleted、TeammateIdle 与 async hook 除外）；同一事件的 prompt/agent hook 最多 12 个并行；PreCompact 以 exit 2 或 `decision: "block"` 阻止压缩；Stop/SubagentStop 可返回 `additionalContext` 继续回合；新增 `PreModelSwitch`（可 deny/ask/allow）、`PostModelSwitch`、`DirectoryAdded`、`MessageDisplay`（每个完成的文本块整体替换显示）事件；SessionStart 可返回 `sessionTitle` 与 `reloadSkills`；command hook 获得 `$CLAUDE_EFFORT`，hook 输入含 `effort.level`；`--debug` 记录每个 command hook 的结果与耗时。`terminalSequence` 未实现。 |
-| 会话命令 | 提供 `/goal`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
+| 会话命令 | 提供 `/goal`、`/recap`、`/fast`、`/compact`、`/cd`、`/reload-skills`、`/reload-plugins`、`/workflows`、`/list-agents`（别名 `/peers`）；`/cd` 支持目录路径补全。 |
 | Skills | 支持 bundled/model-internal skills、运行时 `/reload-skills`、user/project/plugin 分层加载，以及按功能类型路由 source tests、构建、tmux TUI 和 official parity 的 `claude-code-feature-validation` skill。 |
+| 记忆 | 交互会话默认启用 auto memory、后台记忆提取、Session Memory 与离开回顾，不依赖 GrowthBook；`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` 或 `autoMemoryEnabled: false` 关闭记忆，`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或 `awaySummaryEnabled: false` 关闭自动回顾；载入记忆文件时会删除不可见字符并转义伪造的 harness 标签。 |
 | 定时任务 | 提供 `CronCreate`、`CronDelete`、`CronList` 和 `/loop` 相关能力，可使用 session-only 或 durable task；`/loop` 不带间隔时由模型通过 `ScheduleWakeup` 自行决定下次唤醒（60–3600 秒）。 |
 | Monitor | `Monitor` 工具在后台运行监看脚本，stdout 每行（200ms 内合并）作为一则任务通知唤醒模型；默认 5 分钟、最长 30 分钟（`-p` 下 10 分钟）到期并通知，可重新 arm；输出过多时自动抑制并停止。权限规则与 Bash 相同。 |
 | Plugin/Marketplace | 扩展 marketplace、favorite scope、auto-update、插件热加载、失败状态回滚及官方插件名称兼容。 |
@@ -648,6 +649,7 @@ Review $ARGUMENTS.
 /goal
 /goal clear
 
+/recap
 /cd ../another-project
 /reload-skills
 /reload-plugins
@@ -659,6 +661,7 @@ Review $ARGUMENTS.
 - `/goal <condition>`：保存当前自主目标，并在停止前检查目标是否完成；主线程也可通过 `SetGoal` 设置同一目标。Goal 状态和 hook 会写入 transcript 并可在 resume/continue 后恢复。
 - `/goal`：打开交互式状态视图，展示当前 Goal 的状态、耗时、turn、token 和最后检查原因。
 - `/goal clear`：清除当前 Goal 及其 Stop hook，并持久化 cleared 状态。
+- `/recap`：立即生成一到两句会话回顾（上限 400 字符），复用主对话的模型与 provider（含 OpenAI），支持 `-p`。终端失焦 5 分钟后也会自动生成回顾；`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或设置 `awaySummaryEnabled: false` 关闭自动回顾，`=1` 强制开启。
 - `/fast`：切换 Fast mode；OpenAI provider 下发送 `service_tier: "priority"`，API key 与 ChatGPT OAuth 均可使用。
 - `/compact`：压缩当前会话；OpenAI provider 下支持手动 remote compaction，并在重复压缩时保留 opaque compaction history。
 - `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。

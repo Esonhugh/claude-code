@@ -240,6 +240,7 @@ import {
   type ResolvedCodexAppMention,
 } from '../services/apps/pluginProjection.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
+import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
 import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
@@ -2518,10 +2519,11 @@ export async function readMemoriesForSurfacing(
         )
         const truncated =
           result.totalLines > MAX_MEMORY_LINES || result.truncatedByBytes
+        const neutralized = neutralizeMemoryContent(result.content)
         const content = truncated
-          ? result.content +
+          ? neutralized +
             `\n\n> This memory file was truncated (${result.truncatedByBytes ? `${MAX_MEMORY_BYTES} byte limit` : `first ${MAX_MEMORY_LINES} lines`}). Use the ${FILE_READ_TOOL_NAME} tool to view the complete file at: ${filePath}`
-          : result.content
+          : neutralized
         return {
           path: filePath,
           content,

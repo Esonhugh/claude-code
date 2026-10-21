@@ -860,6 +860,13 @@ export const SettingsSchema = lazySchema(() =>
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
         ),
+      awaySummaryEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, the automatic session recap shown after returning to an ' +
+            'unfocused terminal is disabled. /recap still works on demand.',
+        ),
       showClearContextOnPlanAccept: z
         .boolean()
         .optional()

@@ -77,6 +77,21 @@
 - `bun test src/skills/bundled/loop.test.ts`：无间隔进入动态模式并使用 `ScheduleWakeup`、有间隔仍用 `CronCreate`、空输入显示用法。
 - `bun scripts/build.test.mjs`：默认建置包含 `MONITOR_TOOL`；`bun run build` 后以 Anthropic 与 OpenAI provider 的 `-p --output-format stream-json` init 事件确认工具清单包含 `Monitor` 与 `ScheduleWakeup`。
 
+## 2026-10-20 - 记忆功能本地默认启用与 `/recap`
+
+### 变更内容
+
+- 默认构建包含 `EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`：后台记忆提取、Session Memory 与离开回顾不再依赖 GrowthBook，交互会话默认开启；`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` 或设置 `autoMemoryEnabled: false` 关闭记忆提取与 Session Memory，`-p` 非交互模式默认仍不提取。
+- 新增 `/recap`（"Generate a one-line session recap now"），立即生成一到两句会话回顾，支持 `-p`；尚无对话时提示 "Nothing to recap yet — send a message first."，失败时提示 "Couldn't generate a recap. Run with --debug for details."。
+- 终端失焦 5 分钟后的自动会话回顾默认开启，可用 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或设置 `awaySummaryEnabled: false` 关闭，`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=1` 强制开启（含非交互会话）；回顾上限 400 字符并在词边界截断。
+- 回顾改为复用主对话 fork（主循环模型与 provider），OpenAI provider 不再依赖小模型映射，可复用 prompt cache。
+- 载入 `MEMORY.md`（自动/团队/agent 记忆）、召回的记忆文件和记忆清单描述时，删除不可见字符并将伪造的 harness 标签（`<system-reminder>`、`<cc-memory>`、`<teammate-message>`、`<channel>` 等，含大小写和全角括号变体）转义为 `<\tag>`，防止记忆文件冒充系统标记注入提示。
+
+### 测试覆盖
+
+- `bun test src/memdir/neutralizeMemoryContent.test.ts src/memdir/extractMode.test.ts src/services/awaySummary.test.ts` 覆盖标签/不可见字符中和、`MEMORY.md`/召回/清单载入路径、提取门控、回顾开关、截断、fork 参数与 `/recap` 输出。
+- `bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`；`bun run build` 通过。
+
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 
 ### 版本状态
