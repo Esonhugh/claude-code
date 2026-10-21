@@ -1327,3 +1327,35 @@ describe('processUserInput prompt.submit', () => {
     expect(f.events[0]?.text).toBe('')
   })
 })
+
+describe('UserPromptSubmit runs before a skill or custom command expands (official 2.1.299)', () => {
+  const promptCommand = { findCommand: () => ({ type: 'prompt', name: 'skill' }) }
+
+  test.each(['block', 'stop'] as const)('a %s hook stops the command before it expands', async kind => {
+    const f = fixture([], true, promptCommand)
+    f.classicResults.push(kind === 'block' ? { blockingError: 'denied' } : { preventContinuation: true })
+    const result = await f.run({ input: '/skill run' })
+    expect(f.calls.slash).toBe(0)
+    expect(f.classicInputs).toEqual(['/skill run'])
+    expect(result.shouldQuery).toBe(false)
+  })
+
+  test('an accepting hook runs once and its context follows the expansion', async () => {
+    const f = fixture([], true, promptCommand)
+    f.classicResults.push({ additionalContexts: ['screened'] })
+    const result = await f.run({ input: '/skill run' })
+    expect(f.calls.slash).toBe(1)
+    expect(f.classicInputs).toEqual(['/skill run'])
+    expect(result.shouldQuery).toBe(true)
+    expect(userTexts(result)).toEqual(['/skill run'])
+    expect(additionalContexts(result)).toEqual(['screened'])
+  })
+
+  test('non-prompt commands keep running hooks after the command', async () => {
+    const f = fixture([], true, { findCommand: () => ({ type: 'local', name: 'status' }) })
+    f.classicResults.push({ blockingError: 'denied' })
+    await f.run({ input: '/status' })
+    expect(f.calls.slash).toBe(1)
+    expect(f.classicInputs).toEqual(['/status'])
+  })
+})
