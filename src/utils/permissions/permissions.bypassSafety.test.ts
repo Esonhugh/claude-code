@@ -45,7 +45,7 @@ if (process.env[childFlag] !== '1') {
   const { getDefaultAppState } = await import('../../state/AppStateStore.js')
   const { BashTool } = await import('../../tools/BashTool/BashTool.js')
   const { FileWriteTool } = await import('../../tools/FileWriteTool/FileWriteTool.js')
-  const { hasPermissionsToUseTool } = await import('./permissions.js')
+  const { checkRuleBasedPermissions, hasPermissionsToUseTool } = await import('./permissions.js')
 
   function contextFor(mode: ToolPermissionContext['mode']) {
     const initial = getDefaultAppState()
@@ -77,6 +77,14 @@ if (process.env[childFlag] !== '1') {
       const result = await write(path, 'bypassPermissions')
       expect({ path, behavior: result.behavior }).toEqual({ path, behavior: 'allow' })
     }
+  })
+
+  test('the rule-based check used by mods tool.check follows the same bypass semantics', async () => {
+    const check = (mode: ToolPermissionContext['mode']) => checkRuleBasedPermissions(
+      FileWriteTool, { file_path: join(project, '.zshrc'), content: 'x' }, contextFor(mode),
+    )
+    expect(await check('bypassPermissions')).toBeNull()
+    expect(await check('acceptEdits')).toMatchObject({ behavior: 'ask', decisionReason: { type: 'safetyCheck' } })
   })
 
   test('acceptEdits still asks before writing a sensitive file', async () => {

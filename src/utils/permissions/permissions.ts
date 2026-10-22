@@ -1409,6 +1409,22 @@ function handleDenialLimitExceeded(
  *
  * Caller must pre-check tool.requiresUserInteraction() — step 1e is not replicated.
  */
+/**
+ * Whether a safety-check ask still prompts: always outside bypassPermissions,
+ * and only for bypass-immune checks (catastrophic removal) inside it.
+ */
+function safetyCheckAsks(
+  context: ToolUseContext,
+  result: PermissionResult,
+): boolean {
+  const { mode, isBypassPermissionsModeAvailable } =
+    context.getAppState().toolPermissionContext
+  const bypassMode =
+    mode === 'bypassPermissions' ||
+    (mode === 'plan' && isBypassPermissionsModeAvailable)
+  return !bypassMode || isBypassImmune(result.decisionReason)
+}
+
 export async function checkRuleBasedPermissions(
   tool: Tool,
   input: { [key: string]: unknown },
@@ -1492,7 +1508,8 @@ export async function checkRuleBasedPermissions(
 
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    requiresExplicitUserApproval(toolPermissionResult.decisionReason)
+    requiresExplicitUserApproval(toolPermissionResult.decisionReason) &&
+    safetyCheckAsks(context, toolPermissionResult)
   ) {
     return toolPermissionResult
   }
@@ -1526,12 +1543,13 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
-  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
-  // bypass-immune — they must prompt even when a PreToolUse hook returned
-  // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
+  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) prompt
+  // in every mode except bypassPermissions, where only bypass-immune ones do,
+  // the same as in hasPermissionsToUseToolInner.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'safetyCheck'
+    toolPermissionResult.decisionReason?.type === 'safetyCheck' &&
+    safetyCheckAsks(context, toolPermissionResult)
   ) {
     return toolPermissionResult
   }
@@ -1680,21 +1698,10 @@ async function hasPermissionsToUseToolInner(
 
   // bypassPermissions skips safety checks except the bypass-immune ones
   // (catastrophic removals), as official 2.1.303 does.
-  const bypassMode = (): boolean => {
-    const { mode, isBypassPermissionsModeAvailable } =
-      context.getAppState().toolPermissionContext
-    return (
-      mode === 'bypassPermissions' ||
-      (mode === 'plan' && isBypassPermissionsModeAvailable)
-    )
-  }
-  const safetyCheckAsks = (result: PermissionResult): boolean =>
-    !bypassMode() || isBypassImmune(result.decisionReason)
-
   if (
     toolPermissionResult?.behavior === 'ask' &&
     requiresExplicitUserApproval(toolPermissionResult.decisionReason) &&
-    safetyCheckAsks(toolPermissionResult)
+    safetyCheckAsks(context, toolPermissionResult)
   ) {
     return toolPermissionResult
   }
@@ -1746,7 +1753,7 @@ async function hasPermissionsToUseToolInner(
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck' &&
-    safetyCheckAsks(toolPermissionResult)
+    safetyCheckAsks(context, toolPermissionResult)
   ) {
     return toolPermissionResult
   }
