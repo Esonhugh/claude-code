@@ -2,6 +2,8 @@ import { feature } from 'bun:bundle'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
+  getMcpPrefix,
+  getMcpServerRuleNames,
   getToolNameForPermissionCheck,
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
@@ -25,6 +27,7 @@ import {
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
 import { requiresExplicitUserApproval } from './PermissionResult.js'
+import { getAutoModeDenialRuleToolName } from './permissionSetup.js'
 import type {
   PermissionAskDecision,
   PermissionDecision,
@@ -105,6 +108,7 @@ import {
 import {
   classifyYoloAction,
   formatActionForClassifier,
+  getClassifierCategory,
 } from './yoloClassifier.js'
 import { isAnt } from 'src/utils/userType.js'
 import { isApproveForMeAvailable } from './approveForMe.js'
@@ -272,16 +276,36 @@ function toolMatchesRule(
     return true
   }
 
-  // MCP server-level permission: rule "mcp__server1" matches tool "mcp__server1__tool1"
-  // Also supports wildcard: rule "mcp__server1__*" matches all tools from server1
-  const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
+  // MCP server-level permission: rule "mcp__server1" or "mcp__server1__*"
+  // matches every tool of server1; "mcp__server1__get_*" globs its tool names.
+  const ruleName = rule.ruleValue.toolName
+  const ruleInfo = mcpInfoFromString(ruleName)
   const toolInfo = mcpInfoFromString(nameForRuleMatch)
-
-  return (
+  const coversTool =
     ruleInfo !== null &&
     toolInfo !== null &&
-    (ruleInfo.toolName === undefined || ruleInfo.toolName === '*') &&
-    ruleInfo.serverName === toolInfo.serverName
+    ruleInfo.serverName === toolInfo.serverName &&
+    (ruleInfo.toolName === undefined ||
+      ruleInfo.toolName === '*' ||
+      (ruleInfo.toolName.includes('*') &&
+        toolInfo.toolName !== undefined &&
+        matchesWildcard(ruleInfo.toolName, toolInfo.toolName)))
+
+  // Server names may contain "__", so the split above is ambiguous. Like
+  // official, allow rules must reach the tool's whole server name ("mcp__a"
+  // does not allow server "a__b" or "a_"), while deny and ask rules also match
+  // when they name the whole server ("mcp__a__b" blocks server "a__b").
+  if (rule.ruleBehavior === 'allow') {
+    if (!coversTool) return false
+    const serverPrefixes = tool.mcpInfo
+      ? [getMcpPrefix(tool.mcpInfo.serverName)]
+      : getMcpServerRuleNames(tool).map(name => `${name}__`)
+    return serverPrefixes.every(prefix => `${ruleName}__`.startsWith(prefix))
+  }
+  return (
+    coversTool ||
+    (ruleName.startsWith('mcp__') &&
+      getMcpServerRuleNames(tool).includes(ruleName))
   )
 }
 
@@ -901,6 +925,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
                 classifier: 'auto-mode',
                 reason:
                   'Auto mode classifier transcript exceeded context window — compacting before the next request',
+                noVerdict: true,
               },
               message: `${tool.name} was not reviewed and did not run: the conversation is too long for auto mode's classifier. Claude Code will try to compact the conversation before the next request; if this action is still needed after that, issue it again and it will be reviewed normally.`,
             }
@@ -995,14 +1020,19 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           return denialLimitResult
         }
 
+        const category = getClassifierCategory(classifierResult.reason)
         return {
           behavior: 'deny',
           decisionReason: {
             type: 'classifier',
             classifier: 'auto-mode',
             reason: classifierResult.reason,
+            ...(category !== undefined && { category }),
           },
-          message: buildYoloRejectionMessage(classifierResult.reason),
+          message: buildYoloRejectionMessage(
+            classifierResult.reason,
+            getAutoModeDenialRuleToolName(tool),
+          ),
         }
       }
 

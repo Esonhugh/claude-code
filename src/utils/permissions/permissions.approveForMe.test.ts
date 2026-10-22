@@ -185,6 +185,30 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('like official, CLAUDE_CODE_AUTO_MODE_MODEL is ignored for models the classifier cannot use or the policy does not allow', async () => {
+    useOpenAIOAuth(false)
+    reply = '<block>no</block>'
+    process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+    try {
+      for (const vetoed of ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5[1m]', 'opus']) {
+        process.env.CLAUDE_CODE_AUTO_MODE_MODEL = vetoed
+        requests.length = 0
+        expect((await check(`vetoed-${vetoed}`)).behavior).toBe('allow')
+        expect(requests.length).toBeGreaterThan(0)
+        expect(requests.every(request => request.model === 'claude-sonnet-5')).toBe(true)
+      }
+      setSessionSettingsCache({ settings: { availableModels: ['sonnet'] }, errors: [] })
+      process.env.CLAUDE_CODE_AUTO_MODE_MODEL = 'claude-haiku-4-5'
+      requests.length = 0
+      await check('policy-vetoed')
+      expect(requests.every(request => request.model === 'claude-sonnet-5')).toBe(true)
+    } finally {
+      setSessionSettingsCache({ settings: {}, errors: [] })
+      delete process.env.CLAUDE_CODE_AUTO_MODE_MODEL
+      delete process.env.ANTHROPIC_MODEL
+    }
+  })
+
   test('a transcript too long for the classifier denies and requests compaction once per transcript head', async () => {
     useOpenAIOAuth(false)
     const { takeClassifierOverflowCompaction } = await import('../../services/compact/classifierOverflow.js')

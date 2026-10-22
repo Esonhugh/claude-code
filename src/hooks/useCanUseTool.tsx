@@ -129,7 +129,11 @@ function useCanUseTool(
                 )
               }
 
-              ctx.logDecision({ decision: 'accept', source: 'config' })
+              ctx.logDecision({
+                decision: 'accept',
+                source: 'config',
+                decisionReason: result.decisionReason,
+              })
 
               resolve(
                 ctx.buildAllow(result.updatedInput ?? input, {
@@ -160,7 +164,11 @@ function useCanUseTool(
                     messageId: ctx.messageId,
                     toolUseID,
                   },
-                  { decision: 'reject', source: 'config' },
+                  {
+                    decision: 'reject',
+                    source: 'config',
+                    decisionReason: result.decisionReason,
+                  },
                 )
                 if (
                   feature('TRANSCRIPT_CLASSIFIER') &&

@@ -1,4 +1,6 @@
+import { feature } from 'bun:bundle'
 import type { AppState } from '../../state/AppState.js'
+import type { ToolPermissionContext } from '../../Tool.js'
 import { logForDebugging } from '../debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
 import {
@@ -7,6 +9,7 @@ import {
   isBypassPermissionsModeDisabled,
   removeDangerousPermissions,
   transitionPlanAutoMode,
+  verifyAutoModeGateAccess,
 } from '../permissions/permissionSetup.js'
 import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
 import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
@@ -43,6 +46,7 @@ export function applySettingsChange(
   const updatedRules = loadAllPermissionRulesFromDisk()
   updateHooksConfigSnapshot()
 
+  let syncedState: Pick<AppState, 'toolPermissionContext' | 'fastMode'> | undefined
   setAppState(prev => {
     let newContext = syncPermissionRulesFromDisk(
       prev.toolPermissionContext,
@@ -77,6 +81,7 @@ export function applySettingsChange(
     const newEffort = newSettings.effortLevel
     const effortChanged = prevEffort !== newEffort
 
+    syncedState = { toolPermissionContext: newContext, fastMode: prev.fastMode }
     return {
       ...prev,
       settings: newSettings,
@@ -89,6 +94,52 @@ export function applySettingsChange(
       ...(effortChanged && newEffort !== undefined
         ? { effortValue: newEffort }
         : {}),
+    }
+  })
+
+  // Like official 2.1.251 and 2.1.295, re-check auto mode against the new
+  // settings: disableAutoMode added mid-session leaves auto, and removing it
+  // offers auto again without a restart.
+  if (feature('TRANSCRIPT_CLASSIFIER') && syncedState) {
+    void recheckAutoModeGate(
+      syncedState.toolPermissionContext,
+      syncedState.fastMode,
+      setAppState,
+    )
+  }
+}
+
+/** Applies a fresh auto mode gate check to the current state. */
+export async function recheckAutoModeGate(
+  context: ToolPermissionContext,
+  fastMode: boolean | undefined,
+  setAppState: (f: (prev: AppState) => AppState) => void,
+): Promise<void> {
+  const { updateContext, notification } = await verifyAutoModeGateAccess(
+    context,
+    fastMode,
+  )
+  setAppState(prev => {
+    const nextContext = updateContext(prev.toolPermissionContext)
+    const next =
+      nextContext === prev.toolPermissionContext
+        ? prev
+        : { ...prev, toolPermissionContext: nextContext }
+    if (!notification) return next
+    return {
+      ...next,
+      notifications: {
+        ...next.notifications,
+        queue: [
+          ...next.notifications.queue,
+          {
+            key: 'auto-mode-gate-notification',
+            text: notification,
+            color: 'warning' as const,
+            priority: 'high' as const,
+          },
+        ],
+      },
     }
   })
 }

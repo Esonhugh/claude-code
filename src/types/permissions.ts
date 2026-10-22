@@ -306,6 +306,10 @@ export type PermissionDecisionReason =
       type: 'classifier'
       classifier: string
       reason: string
+      // Denied without a safety verdict (e.g. the transcript overflowed).
+      noVerdict?: boolean
+      // Snake-case name of the matched built-in block rule, for telemetry.
+      category?: string
     }
   | {
       type: 'workingDir'

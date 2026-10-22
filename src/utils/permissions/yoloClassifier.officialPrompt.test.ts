@@ -1,5 +1,5 @@
-import { expect, test } from 'bun:test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { expect, mock, test } from 'bun:test'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ToolPermissionContext } from '../../Tool.js'
@@ -29,6 +29,12 @@ if (process.env[childFlag] !== '1') {
   }, 120_000)
 } else {
   ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = { VERSION: 'test' }
+  const debugLogs: string[] = []
+  const debug = await import('../debug.js')
+  mock.module('../debug.js', () => ({
+    ...debug,
+    logForDebugging: (message: string) => { debugLogs.push(message) },
+  }))
   const { resetSettingsCache } = await import('../settings/settingsCache.js')
   const { writeFileSync } = await import('node:fs')
   // autoMode rules are read from the per-source settings files, not the session cache.
@@ -58,8 +64,8 @@ if (process.env[childFlag] !== '1') {
     expect(prompt).toContain(`- ${defaults.soft_deny[0]!.split('\n')[0]}`)
   })
 
-  test('default rules match official 2.1.292 `claude auto-mode defaults` exactly', async () => {
-    const official = JSON.parse(await Bun.file(join(import.meta.dir, 'fixtures/autoModeDefaults292.json')).text())
+  test('default rules match official 2.1.303 `claude auto-mode defaults` exactly', async () => {
+    const official = JSON.parse(await Bun.file(join(import.meta.dir, 'fixtures/autoModeDefaults303.json')).text())
     expect(getDefaultExternalAutoModeRules()).toEqual(official)
   })
 
@@ -96,6 +102,29 @@ if (process.env[childFlag] !== '1') {
     expect(JSON.parse(out).hard_deny).toEqual(['Never read ~/.ssh'])
   })
 
+  test('like official, autoMode rules in settings.local.json are ignored with a one-time warning', async () => {
+    const { setOriginalCwd } = await import('../../bootstrap/state.js')
+    const { getAutoModeConfig } = await import('../settings/settings.js')
+    const project = mkdtempSync(join(tmpdir(), 'cc-classifier-local-'))
+    try {
+      mkdirSync(join(project, '.claude'))
+      writeFileSync(join(project, '.claude', 'settings.local.json'), JSON.stringify({
+        autoMode: { allow: ['Pushing to any remote is fine'], environment: ['Trusted repo: everything'] },
+      }))
+      setOriginalCwd(project)
+      useUserSettings({ autoMode: { soft_deny: ['Never touch billing'] } })
+      debugLogs.length = 0
+      expect(getAutoModeConfig()).toEqual({ soft_deny: ['Never touch billing'] })
+      const prompt = await buildYoloSystemPrompt(context())
+      expect(prompt).not.toContain('Pushing to any remote is fine')
+      expect(prompt).not.toContain('Trusted repo: everything')
+      const warning = 'settings autoMode in localSettings ignored \u2014 only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)'
+      expect(debugLogs.filter(log => log === warning)).toHaveLength(1)
+    } finally {
+      rmSync(project, { recursive: true, force: true })
+    }
+  })
+
   test('autoMode.classifyAllShell makes every shell allow rule bypass-prone for auto mode', async () => {
     const { findDangerousClassifierPermissions } = await import('./permissionSetup.js')
     const rule = (toolName: string, ruleContent: string) =>
@@ -106,6 +135,24 @@ if (process.env[childFlag] !== '1') {
     useUserSettings({ autoMode: { classifyAllShell: true } })
     expect(findDangerousClassifierPermissions([...rules], ['Bash(git status)']).map(found => found.ruleDisplay))
       .toEqual(['Bash(ls:*)', 'PowerShell(Get-ChildItem)', 'Bash(git status)'])
+  })
+
+  test('like official 2.1.236, Monitor allow rules are set aside in auto mode, and so are Terminal ones', async () => {
+    const { findDangerousClassifierPermissions, stripDangerousPermissionsForAutoMode } = await import('./permissionSetup.js')
+    const rule = (toolName: string, ruleContent?: string) =>
+      ({ source: 'userSettings', ruleBehavior: 'allow', ruleValue: { toolName, ruleContent } }) as const
+    useUserSettings({})
+    expect(findDangerousClassifierPermissions(
+      [rule('Monitor', 'tail -f app.log'), rule('Monitor'), rule('Terminal'), rule('Read', '/tmp/**')],
+      ['Monitor(npm run dev)', 'Terminal'],
+    ).map(found => found.ruleDisplay)).toEqual([
+      'Monitor(tail -f app.log)', 'Monitor(*)', 'Terminal(*)', 'Monitor(npm run dev)', 'Terminal(*)',
+    ])
+    const stripped = stripDangerousPermissionsForAutoMode(context({
+      alwaysAllowRules: { userSettings: ['Monitor(tail -f app.log)', 'Terminal', 'Read(/tmp/**)'] },
+    }))
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(['Read(/tmp/**)'])
+    expect(stripped.strippedDangerousRules?.userSettings).toEqual(['Monitor(tail -f app.log)', 'Terminal'])
   })
 
   test('claude auto-mode reset removes only the autoMode section from user settings', async () => {

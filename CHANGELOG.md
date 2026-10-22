@@ -12,6 +12,120 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-21 - Terminal 权限检查、/yolo 收紧与自动模式分类器输出格式
+
+### 变更内容
+
+- `Terminal` 工具接入权限检查：`new-session`（含初始命令）与 `send-keys` 按 Bash 规则判定（`Bash(prefix:*)` 与整个 `Bash` 的 deny/ask 规则同样生效），default 模式会询问、dontAsk 模式拒绝、自动模式经分类器判定；读取输出、列出会话、resize、信号、关闭等动作直接放行；`new-session` 不再在执行阶段重复询问。
+- `Terminal` 的 `send-keys` 按会话累积当前命令行：只输入文字时，以累积后的整行检查 deny 规则；按 Enter（含文字中的换行）时，把累积的整行当作命令完整判定（询问、分类器的输入也是整行），所以把命令拆成多段送出也会命中规则；Ctrl-C、Ctrl-U、退格会相应清除或修改累积内容，方向键等其他控制键不触发判定。被拒绝的输入不会送进终端，累积内容与终端里的命令行保持一致。
+- `/yolo` 改为与 SDK `set_permission_mode` 一致：`disableBypassPermissionsMode` 或组织开关停用 bypass 时直接回报原因、不切换；从未同意过 bypass 时先显示 bypass 警告对话框，同意后才切换，拒绝或按 Esc 只取消命令、不退出程序；只有切换后模式确实变成 bypass 才显示 `Bypass permissions mode enabled`。REPL 的模式切换不再自行把 bypass 标为可用，未经 `/yolo` 同意或启动旗标时 Shift+Tab 轮替不会出现 bypass。
+- 自动模式分类器请求失败时每个模型只重试 4 次（对齐官方 2.1.303），分类器不可用时约 15 秒内拒绝，不再等待约 100 秒。
+- 自动模式分类器以 Sonnet 5 或 Opus 4.8 运行时改用官方 2.1.303 的 severity 输出格式：系统提示的 Output Format 段改为 `<severity>N</severity>`（0–100，50 为界）加 `<category>`，阶段一以 `</severity>` 截断，阶段一分数高于 t1（Sonnet 5 为 25、Opus 4.8 为 45）才进入阶段二，阶段二高于 t2（35）即拒绝，拒绝理由为 `[规则名]`；其他模型（含 OpenAI 与第三方）仍用 `<block>yes/no</block>`，第三方模型在 severity 模式下回 `<block>` 也照常解析。两阶段的后缀同步官方文案，`<block>` 回复出现互相矛盾的判定时视为无法解析（拒绝）。
+
+### 测试覆盖
+
+- `src/tools/TerminalTool/TerminalTool.test.ts` 新增 default 模式下 `new-session` 与 `send-keys "touch x"` 询问、`Bash(touch:*)`/`Bash` deny 规则拒绝（bypass 下仍拒绝）、dontAsk 拒绝、bypass 放行、只读动作放行，以及执行阶段不再重复询问；另覆盖分段输入 `tou` + `ch x`（含 Enter）在 `Bash(touch:*)` 下被拒（bypass 下亦然）、输入未提交时不询问而 Enter 时以整行询问、控制键不触发判定、Ctrl-C 清除累积内容，以及 `applyTerminalKeystrokes` 的行编辑规则。
+- `src/commands/yolo/yolo.test.ts` 覆盖 bypass 被停用时不切换、已同意时直接切换、未同意时先显示对话框且同意后才切换、拒绝不切换、切换被拒或模式未变时不显示 enabled 且不留下 bypass 可用状态。
+- 新增 `src/utils/permissions/yoloClassifier.severity.test.ts`，覆盖 severity 阈值表、阶段一提示与 `</severity>` 截断、t1/t2 判定、`<category>` 理由、未知规则名与多个分数时的拒绝，以及旧 `<block>` 回复的兼容解析；并断言分类器请求的重试次数为 4。
+
+## 2026-10-21 - 自动模式安全行为与官方对齐
+
+### 变更内容
+
+- 读取 UNC 网络路径（`//host/share`、`\\host\share`）时改为强制人工确认（对齐官方 2.1.292）：自动模式分类器、PreToolUse hook 与 allow 规则都不能放行，无法提示时直接拒绝；含可疑 Windows 路径写法（8.3 短名、设备名、长路径前缀等）的读取也同样处理（比官方更严，官方只对写入这样做）。
+- 自动模式分类器规则（`autoMode.allow`/`soft_deny`/`hard_deny`/`environment`）不再读取 `.claude/settings.local.json`，只认用户、`--settings` 与托管设置（对齐官方 2.1.207）；项目或本地设置含 `autoMode` 时在调试日志记录一次警告 `settings autoMode in localSettings ignored — only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`。
+- 子代理定义声明 `permissionMode: auto` 时，若自动模式不可用（`disableAutoMode`、circuit breaker、模型不支持或 OpenAI 未登录 ChatGPT），改为沿用父会话模式（对齐官方 2.1.292），并在调试日志说明原因。
+- 内置 soft_deny 规则同步官方 2.1.303（`claude auto-mode defaults` 输出与官方一致）：Self-Modification 新增 `.claude/dev-mods/`（会话 Mods）为配置面；Unrequested Commit 与 External System Writes 允许把本会话自己开的 PR 在 draft 与 ready 之间切换。
+- 进入自动模式时搁置全部 `Monitor` allow 规则（对齐官方 2.1.236），同时搁置 `Terminal`（InteractiveTerminal）allow 规则，避免 PTY 输入绕过分类器；离开自动模式后恢复。
+- 自动模式分类器拒绝消息对齐官方：前缀改为 `Permission for this action was denied by the Claude Code auto mode classifier. Reason: `，新增“先尝试更安全的做法、尽量完成其余工作再停下说明”的指引；权限规则提示按工具给出（Write/NotebookEdit 指向 Edit），自动模式会搁置的规则（`classifyAllShell` 下的 Bash/PowerShell、Agent、Monitor、Terminal）与 MCP 工具不再提示，`CLAUDE_CODE_HIDE_SETTINGS_HINT` 或 `allowManagedPermissionRulesOnly` 时省略。
+- OTel `tool_decision` 事件新增 `permission_mode` 与 `classifier_verdict`（`allow`/`block`/`unavailable`/`no_verdict`，对齐官方 2.1.301）；`OTEL_LOG_TOOL_DETAILS=1` 时 block 判定另带 `classifier_category`（仅官方内置规则名）。
+- `CLAUDE_CODE_AUTO_MODE_MODEL` 设为 `claude-sonnet-5-5`、`claude-opus-5-5`、`claude-opus-5`（含别名与 `[1m]`）或不在 `availableModels` 内的模型时改用默认分类器模型，并在调试日志说明一次（对齐官方 2.1.303）。
+- `disableAutoMode` 不再写入 circuit breaker（对齐官方 2.1.295）：移除设置后无需重启即可回到自动模式；会话中途新增该设置会立即退出自动模式并通知（对齐官方 2.1.251）。SDK `set_model` 切到不支持自动模式的模型时退出自动模式（对齐官方 2.1.299）。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/permissions.autoModeSafety.test.ts`，覆盖自动模式下 UNC 与 8.3 短名读取不经分类器、无法提示时拒绝。
+- `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 新增 `settings.local.json` 的 `autoMode` 规则不进入分类器提示且只警告一次。
+- 新增 `src/tools/AgentTool/permissionMode.autoMode.test.ts`，覆盖自动模式可用时进入 auto，`disableAutoMode`、circuit breaker 与不支持的模型时沿用父模式。
+- `src/utils/permissions/fixtures/autoModeDefaults303.json` 为官方 2.1.303 `claude auto-mode defaults` 输出，`yoloClassifier.officialPrompt.test.ts` 逐项比对。
+- `yoloClassifier.officialPrompt.test.ts` 新增 Monitor 与 Terminal allow 规则（设置与 `--allowed-tools`）在自动模式被搁置并可恢复。
+- `permissions.autoModeSafety.test.ts` 新增拒绝消息前缀、安全做法指引、Bash/Edit 规则提示，以及 `classifyAllShell` 与 `CLAUDE_CODE_HIDE_SETTINGS_HINT` 下省略提示、旧前缀仍识别为分类器拒绝。
+- 新增 `src/hooks/toolPermission/permissionLogging.test.ts`，覆盖 `classifier_verdict`、`permission_mode`、只在 `OTEL_LOG_TOOL_DETAILS` 下输出的 `classifier_category` 与内置规则名映射。
+- `src/utils/permissions/permissions.approveForMe.test.ts` 新增被否决的 `CLAUDE_CODE_AUTO_MODE_MODEL` 改用默认 Sonnet 5 分类器、`availableModels` 不允许时同样否决。
+- `src/utils/permissions/approveForMe.test.ts` 新增移除 `disableAutoMode` 后可重新进入自动模式，以及设置变更时退出与恢复自动模式可用。
+
+## 2026-10-20 - Bash 权限规则包装命令与放行范围加固
+
+### 变更内容
+
+- Bash deny/ask 规则现在能匹配 `sudo`、`doas`、`env`、`setsid`、`watch`、`ionice`、`chrt`、`taskset`、`flock`、`command`、`exec`、`nohup` 等执行包装命令后面的命令，以及带展开值的环境变量前缀（如 `TZ="$HOME" rm -rf build`）；在 bypassPermissions 模式下同样拒绝（对齐官方 2.1.113、2.1.214）。
+- bypassPermissions 模式下，`sh -c`、`bash -c`、`zsh -c` 脚本里删除 `/` 或主目录等受保护路径的 `rm` 会要求明确确认（对齐官方 2.1.246）。
+- `Bash(find:*)` 这类前缀或通配 allow 规则不再自动放行 `find -exec`、`-execdir`、`-ok`、`-delete` 等会执行命令或删除文件的动作（对齐官方 2.1.113）。
+- `tee`（含 `-a`）的目标文件按写入路径检查：工作目录之外需要确认，`Edit()` deny 规则直接拒绝；`Bash(tee:*)` 不再覆盖工作目录外的目标（对齐官方 2.1.269）。
+- `Read()` deny 规则现在覆盖 `tac`、`egrep`、`fgrep`、`< file` 输入重定向，以及 `--ignore-revs-file=.env` 这类选项值里的路径（对齐官方 2.1.257、2.1.259）。
+- `sandbox.excludedCommands` 只有在复合命令的每一段都命中时才让整条命令脱离沙箱（对齐官方 2.1.277）。
+- 超过 10,000 个字符的命令，以及带悬空 `&&`、`||`、`|` 的命令一律要求确认，deny 规则仍然优先（对齐官方 2.1.214、2.1.246）。
+
+### 测试覆盖
+
+- 新增 `src/tools/BashTool/bashPermissionHardening.test.ts`，分别在 legacy 与 `TREE_SITTER_BASH` 解析模式下通过 `hasPermissionsToUseTool` 覆盖包装命令 deny（default 与 bypass）、bypass 下 `sh -c` 危险删除、`find` 动作、`tee` 写入目标、`Read()` deny 新覆盖范围、超长命令与悬空运算符。
+- 新增 `src/tools/BashTool/shouldUseSandbox.test.ts` 覆盖 `excludedCommands` 的逐段匹配；`src/tools/BashTool/dangerousRemoval.test.ts` 改为期望 `bash -c "rm /"` 需要明确确认。
+
+## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
+
+### 版本状态
+
+- 未发布；版本与依赖保持不变。对齐官方 2.1.303 的 `--safe-mode`、权限规则与自动模式本地分类器行为；服务器端分类器不在范围内。
+
+### 变更内容
+
+- 新增 `--safe-mode` 与 `CLAUDE_CODE_SAFE_MODE`（对齐官方 2.1.169）：停用 CLAUDE.md、自定义 skills/commands、已安装与 `--plugin-dir` 插件（含其 hooks、MCP 与 Mods）、非托管 hooks、全部 MCP 服务器（含 `--mcp-config` 与 claude.ai 连接器）、`--agents` 与自定义 agents、output styles、自定义 workflows、keybindings、LSP 与自动记忆；托管（policy）设置、认证、模型选择、内置工具与内置插件、权限照常，启动时显示安全模式提示。
+- 权限模式 `default` 对外更名为 Manual（对齐官方 2.1.200）：`--permission-mode manual`、`"defaultMode": "manual"` 与 SDK `set_permission_mode` 均接受 `manual` 并等同 `default`，`default` 继续可用；`--help` 选项列表、`/config` 与权限说明显示 Manual。
+- 权限规则支持 `Tool(param:value)` 语法（对齐官方 2.1.178）：deny/ask 规则按工具输入参数匹配，值支持 `*` 通配，例如 `Agent(model:opus)` 阻止 Opus 子代理；只比较字符串、数字、布尔参数，不重复匹配工具自身的规则字段（如 Bash 的 `command`）；ask 规则在 bypass 模式下仍会提示。
+- deny/ask 规则的工具名位置支持 `*` 通配（对齐官方 2.1.166）：`"*"` 拒绝全部工具，`"Web*"` 等按模式匹配；allow 规则仍只接受 MCP 通配。
+- 新增 `--permission-prompts host|none`（对齐官方 2.1.259，默认 `host`）：`--print` 下传 `none` 时，任何需要提示的操作在本地直接拒绝（仍先运行 PermissionRequest hooks），不再交给 SDK host 或 `--permission-prompt-tool`，权限模式照常决定其余行为。
+- 自动模式设置新增 `autoMode.hard_deny`（对齐官方 2.1.288）：规则替换分类器提示中的 hard_deny 段（可用 `"$defaults"` 保留默认项），用户意图不能放行；`claude auto-mode config`/`critique` 同步输出与审阅该段。
+- 新增 `autoMode.classifyAllShell`（对齐官方 2.1.288，只读取用户、`--settings` 与托管设置）：开启后进入自动模式时剥离全部 Bash/PowerShell allow 规则，所有 shell 命令都交给分类器审查。
+- 对话超出自动模式分类器上下文时（对齐官方 2.1.288）：本次工具调用被拒绝并提示稍后重发，下一次请求前强制压缩，压缩后提醒模型重新发起被拒调用；同一对话头部已压缩仍溢出、或 `DISABLE_COMPACT` 时回退原有人工审批。
+- 新增 `claude auto-mode reset [-y]`（对齐官方 2.1.288）：确认后从用户设置删除 `autoMode` 段。`CLAUDE_CODE_AUTO_MODE_MODEL` 对所有用户生效（位于 GrowthBook 配置之后、默认模型之前），OpenAI/ChatGPT 登录的 Approve for me 路径同样适用。
+
+### 测试覆盖
+
+- 新增 `src/utils/safeMode.test.ts`，覆盖环境变量与 `--` 之前的旗标、托管 hooks、自动记忆、keybindings、agents、skills、output styles、workflows 与 MCP 的停用及非安全模式对照；构建后 `node ./dist/cli.js --help` 显示官方帮助文案。
+- 新增 `src/utils/permissions/permissions.test.ts`（参数规则 deny/ask、通配、非原始值、工具自身字段、`*` 与 `Web*` 工具名通配、allow 忽略非 MCP 通配）、`src/utils/permissions/permissionSetup.test.ts`（`manual` 别名、标题、CLI 与 settings `defaultMode`）与 `src/cli/print.permissionPrompts.test.ts`（真实 headless 会话中 `none` 本地拒绝、默认 `host` 仍走 `--permission-prompt-tool`）。
+- `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 覆盖 hard_deny 提示槽位与 `$defaults`、`auto-mode config` 输出、`classifyAllShell` 剥离 shell allow 规则与 `auto-mode reset`；`src/services/compact/autoCompact.classifierOverflow.test.ts` 覆盖溢出请求强制压缩与提醒、同头部回退及 `DISABLE_COMPACT`；`src/utils/permissions/permissions.approveForMe.test.ts` 覆盖溢出拒绝后回退询问及 `CLAUDE_CODE_AUTO_MODE_MODEL` 在 Claude 与 OpenAI 模式下生效。构建后 `node ./dist/cli.js auto-mode reset --help` 与隔离配置下的 reset 输出与官方文案一致。
+
+## 2026-10-20 - 受保护文件清单与 WebFetch 域名规则对齐官方
+
+### 变更内容
+
+- 受保护文件清单补齐官方 2.1.303 的 37 项：新增 `.zshenv`、`.zlogin`、`.zlogout`、`.bash_login`、`.bash_aliases`、`.bash_logout`、`.envrc`、`.npmrc`、`.yarnrc(.yml)`、`.pnp.cjs`、`.pnp.loader.mjs`、`.pnpmfile.cjs`、`bunfig.toml`、`.bunfig.toml`、`.bazelrc`、`.bazelversion`、`.bazeliskrc`、`.pre-commit-config.yaml`、lefthook 配置、`gradle-wrapper.properties`、`maven-wrapper.properties`、`.devcontainer.json`、`pyrightconfig.json`，acceptEdits 等自动编辑模式下写入这些文件前会询问。
+- 受保护目录新增 `.husky`、`.cargo`、`.devcontainer`、`.yarn`、`.mvn`，以及任意位置的 `.config/git/`（如 `~/.config/git/config`）。
+- WebFetch 显式 `WebFetch(domain:...)` deny/ask/allow 规则现在优先于内置预批准域名：预批准域名仍默认放行，但可被 deny 或 ask 规则拦下。
+- WebFetch 域名规则支持通配：`domain:*.example.com` 匹配任意深度子域名（不含 `example.com` 本身），`domain:api-*.example.com` 只在单个标签内匹配，`domain:*` 匹配所有主机；比较时忽略大小写与结尾的点，精确规则优先于通配规则。
+
+### 测试覆盖
+
+- `bun test src/utils/permissions/filesystem.protectedFiles.test.ts`：新增文件名（大小写不敏感）、受保护目录、`.config/git/` 路径均需审批，相似但无关的路径仍可自动编辑。
+- `bun test src/tools/WebFetchTool/WebFetchTool.permissions.test.ts`：deny/ask 规则压过预批准域名、通配规则在 allow/deny/ask 三个位置匹配子域名、不匹配裸域名与相似域名、单标签通配、`domain:*`、大小写与结尾点。
+
+## 2026-10-20 - MCP 权限规则边界与 headersHelper 信任对齐官方
+
+### 变更内容
+
+- MCP allow 规则只放行它点名的 server：`mcp__a` 不再放行名为 `a__b` 或 `a_` 的 server；server 名含 `__` 时请写 `mcp__<server>__*`（对齐官方 2.1.299）。
+- MCP allow 规则支持工具名通配，例如 `mcp__srv__get_*`；`mcp__a__b__*` 现在能放行 server `a__b` 的工具。
+- MCP deny / ask 规则 `mcp__<server>` 对名称含 `__` 的 server 生效（例如 `mcp__a__b` 会挡下 server `a__b`）；`mcp__a` 仍会挡下 `a__b`、`a_` 的工具。
+- 子代理 `disallowedTools` 支持 server 级写法 `mcp__srv`、`mcp__srv__*` 与 `mcp__*`，此前会被静默忽略（对齐官方 2.1.178）。
+- 项目 `.mcp.json`（及 local scope）的 MCP `headersHelper` 在 `claude -p` 下也必须先接受该目录的信任对话框才会执行，未信任时在 MCP 日志中说明原因（对齐官方 2.1.237）。
+- 项目 `.mcp.json` 与插件提供的 MCP `headersHelper` 不再继承凭证类环境变量（如 `ANTHROPIC_API_KEY`、`*_TOKEN`、`*_SECRET`、`*_PASSWORD`、云厂商密钥）；user / managed scope 的 helper 不受影响。
+
+### 测试覆盖
+
+- `bun test src/utils/permissions/permissions.test.ts`：MCP allow 规则的 server 边界（`a__b`、`a_`、仅凭名称无法确定 server 的工具）、工具名通配、deny / ask 命中含 `__` 的 server、server 名为 `constructor` / `toString` 时在 bypass、默认模式、allow 与 deny 下行为正常。
+- `bun test src/tools/AgentTool/agentToolUtils.mcpDisallowed.test.ts`：子代理 `disallowedTools` 的 `mcp__srv`、`mcp__srv__*`、`mcp__*` 与含 `__` 的 server。
+- `bun test src/services/mcp/headersHelper.test.ts`：未信任目录下 `-p` 不执行项目 helper，项目与插件 helper 拿不到凭证环境变量，user helper 保持原环境。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容
@@ -161,30 +275,6 @@
 - `bun test src/services/mods`：新增 `sessionAppend`、`promptMention`、`agents`、`toolCheckReceipt303`、`uiRemotePanes`、`sessionCompactEntry`、`uiNotify`、`skillPrompt`、`sessionIdentity`、`catchSemantics301`、`unsupported303`、`declarationsOfficial303` 等用例；已知与本批无关的失败为 root 环境下的 `store` 跨进程权限用例与 `processRunPsFailure`。
 - `bun test src/components/ModsPane.test.tsx src/components/ModsPane.inputPresentation.test.tsx`、`src/services/mods/tools.test.ts`、`src/query.mods.test.ts`、`src/utils/processUserInput`、`src/services/compact/autoCompact.contextWindow.test.ts`、`src/tools/AgentTool/loadAgentsDir.autoCompactWindow.test.ts`。
 - `bun ./node_modules/typescript/bin/tsc --noEmit -p .`、`make check-mods-control-types`、`bun run build`、`bun run check:changelog`。
-
-## 2026-10-20 - 安全模式、权限规则语法与自动模式本地分类器对齐
-
-### 版本状态
-
-- 未发布；版本与依赖保持不变。对齐官方 2.1.303 的 `--safe-mode`、权限规则与自动模式本地分类器行为；服务器端分类器不在范围内。
-
-### 变更内容
-
-- 新增 `--safe-mode` 与 `CLAUDE_CODE_SAFE_MODE`（对齐官方 2.1.169）：停用 CLAUDE.md、自定义 skills/commands、已安装与 `--plugin-dir` 插件（含其 hooks、MCP 与 Mods）、非托管 hooks、全部 MCP 服务器（含 `--mcp-config` 与 claude.ai 连接器）、`--agents` 与自定义 agents、output styles、自定义 workflows、keybindings、LSP 与自动记忆；托管（policy）设置、认证、模型选择、内置工具与内置插件、权限照常，启动时显示安全模式提示。
-- 权限模式 `default` 对外更名为 Manual（对齐官方 2.1.200）：`--permission-mode manual`、`"defaultMode": "manual"` 与 SDK `set_permission_mode` 均接受 `manual` 并等同 `default`，`default` 继续可用；`--help` 选项列表、`/config` 与权限说明显示 Manual。
-- 权限规则支持 `Tool(param:value)` 语法（对齐官方 2.1.178）：deny/ask 规则按工具输入参数匹配，值支持 `*` 通配，例如 `Agent(model:opus)` 阻止 Opus 子代理；只比较字符串、数字、布尔参数，不重复匹配工具自身的规则字段（如 Bash 的 `command`）；ask 规则在 bypass 模式下仍会提示。
-- deny/ask 规则的工具名位置支持 `*` 通配（对齐官方 2.1.166）：`"*"` 拒绝全部工具，`"Web*"` 等按模式匹配；allow 规则仍只接受 MCP 通配。
-- 新增 `--permission-prompts host|none`（对齐官方 2.1.259，默认 `host`）：`--print` 下传 `none` 时，任何需要提示的操作在本地直接拒绝（仍先运行 PermissionRequest hooks），不再交给 SDK host 或 `--permission-prompt-tool`，权限模式照常决定其余行为。
-- 自动模式设置新增 `autoMode.hard_deny`（对齐官方 2.1.288）：规则替换分类器提示中的 hard_deny 段（可用 `"$defaults"` 保留默认项），用户意图不能放行；`claude auto-mode config`/`critique` 同步输出与审阅该段。
-- 新增 `autoMode.classifyAllShell`（对齐官方 2.1.288，只读取用户、`--settings` 与托管设置）：开启后进入自动模式时剥离全部 Bash/PowerShell allow 规则，所有 shell 命令都交给分类器审查。
-- 对话超出自动模式分类器上下文时（对齐官方 2.1.288）：本次工具调用被拒绝并提示稍后重发，下一次请求前强制压缩，压缩后提醒模型重新发起被拒调用；同一对话头部已压缩仍溢出、或 `DISABLE_COMPACT` 时回退原有人工审批。
-- 新增 `claude auto-mode reset [-y]`（对齐官方 2.1.288）：确认后从用户设置删除 `autoMode` 段。`CLAUDE_CODE_AUTO_MODE_MODEL` 对所有用户生效（位于 GrowthBook 配置之后、默认模型之前），OpenAI/ChatGPT 登录的 Approve for me 路径同样适用。
-
-### 测试覆盖
-
-- 新增 `src/utils/safeMode.test.ts`，覆盖环境变量与 `--` 之前的旗标、托管 hooks、自动记忆、keybindings、agents、skills、output styles、workflows 与 MCP 的停用及非安全模式对照；构建后 `node ./dist/cli.js --help` 显示官方帮助文案。
-- 新增 `src/utils/permissions/permissions.test.ts`（参数规则 deny/ask、通配、非原始值、工具自身字段、`*` 与 `Web*` 工具名通配、allow 忽略非 MCP 通配）、`src/utils/permissions/permissionSetup.test.ts`（`manual` 别名、标题、CLI 与 settings `defaultMode`）与 `src/cli/print.permissionPrompts.test.ts`（真实 headless 会话中 `none` 本地拒绝、默认 `host` 仍走 `--permission-prompt-tool`）。
-- `src/utils/permissions/yoloClassifier.officialPrompt.test.ts` 覆盖 hard_deny 提示槽位与 `$defaults`、`auto-mode config` 输出、`classifyAllShell` 剥离 shell allow 规则与 `auto-mode reset`；`src/services/compact/autoCompact.classifierOverflow.test.ts` 覆盖溢出请求强制压缩与提醒、同头部回退及 `DISABLE_COMPACT`；`src/utils/permissions/permissions.approveForMe.test.ts` 覆盖溢出拒绝后回退询问及 `CLAUDE_CODE_AUTO_MODE_MODEL` 在 Claude 与 OpenAI 模式下生效。构建后 `node ./dist/cli.js auto-mode reset --help` 与隔离配置下的 reset 输出与官方文案一致。
 
 ## 2026-10-20 - v2.1.292 - 自动模式、Workflow、MCP 与插件生命周期对齐及 Linux 发布门禁
 

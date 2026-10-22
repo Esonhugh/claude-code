@@ -60,9 +60,9 @@ function containsExcludedCommand(command: string): boolean {
   }
 
   // Split compound commands (e.g. "docker ps && curl evil.com") into individual
-  // subcommands and check each one against excluded patterns. This prevents a
-  // compound command from escaping the sandbox just because its first subcommand
-  // matches an excluded pattern.
+  // subcommands. The command is excluded only when every subcommand matches an
+  // excluded pattern, so one matching part cannot take the rest out of the
+  // sandbox.
   let subcommands: string[]
   try {
     subcommands = splitCommand_DEPRECATED(command)
@@ -70,58 +70,67 @@ function containsExcludedCommand(command: string): boolean {
     subcommands = [command]
   }
 
-  for (const subcommand of subcommands) {
-    const trimmed = subcommand.trim()
-    // Also try matching with env var prefixes and wrapper commands stripped, so
-    // that `FOO=bar bazel ...` and `timeout 30 bazel ...` match `bazel:*`. Not a
-    // security boundary (see NOTE at top); the &&-split above already lets
-    // `export FOO=bar && bazel ...` match. BINARY_HIJACK_VARS kept as a heuristic.
-    //
-    // We iteratively apply both stripping operations until no new candidates are
-    // produced (fixed-point), matching the approach in filterRulesByContentsMatchingInput.
-    // This handles interleaved patterns like `timeout 300 FOO=bar bazel run`
-    // where single-pass composition would fail.
-    const candidates = [trimmed]
-    const seen = new Set(candidates)
-    let startIdx = 0
-    while (startIdx < candidates.length) {
-      const endIdx = candidates.length
-      for (let i = startIdx; i < endIdx; i++) {
-        const cmd = candidates[i]!
-        const envStripped = stripAllLeadingEnvVars(cmd, BINARY_HIJACK_VARS)
-        if (!seen.has(envStripped)) {
-          candidates.push(envStripped)
-          seen.add(envStripped)
-        }
-        const wrapperStripped = stripSafeWrappers(cmd)
-        if (!seen.has(wrapperStripped)) {
-          candidates.push(wrapperStripped)
-          seen.add(wrapperStripped)
-        }
-      }
-      startIdx = endIdx
-    }
+  return (
+    subcommands.length > 0 &&
+    subcommands.every(subcommand =>
+      matchesExcludedCommand(subcommand, userExcludedCommands),
+    )
+  )
+}
 
-    for (const pattern of userExcludedCommands) {
-      const rule = bashPermissionRule(pattern)
-      for (const cand of candidates) {
-        switch (rule.type) {
-          case 'prefix':
-            if (cand === rule.prefix || cand.startsWith(rule.prefix + ' ')) {
-              return true
-            }
-            break
-          case 'exact':
-            if (cand === rule.command) {
-              return true
-            }
-            break
-          case 'wildcard':
-            if (matchWildcardPattern(rule.pattern, cand)) {
-              return true
-            }
-            break
-        }
+function matchesExcludedCommand(
+  subcommand: string,
+  userExcludedCommands: string[],
+): boolean {
+  const trimmed = subcommand.trim()
+  // Also try matching with env var prefixes and wrapper commands stripped, so
+  // that `FOO=bar bazel ...` and `timeout 30 bazel ...` match `bazel:*`. Not a
+  // security boundary (see NOTE at top). BINARY_HIJACK_VARS kept as a heuristic.
+  //
+  // We iteratively apply both stripping operations until no new candidates are
+  // produced (fixed-point), matching the approach in filterRulesByContentsMatchingInput.
+  // This handles interleaved patterns like `timeout 300 FOO=bar bazel run`
+  // where single-pass composition would fail.
+  const candidates = [trimmed]
+  const seen = new Set(candidates)
+  let startIdx = 0
+  while (startIdx < candidates.length) {
+    const endIdx = candidates.length
+    for (let i = startIdx; i < endIdx; i++) {
+      const cmd = candidates[i]!
+      const envStripped = stripAllLeadingEnvVars(cmd, BINARY_HIJACK_VARS)
+      if (!seen.has(envStripped)) {
+        candidates.push(envStripped)
+        seen.add(envStripped)
+      }
+      const wrapperStripped = stripSafeWrappers(cmd)
+      if (!seen.has(wrapperStripped)) {
+        candidates.push(wrapperStripped)
+        seen.add(wrapperStripped)
+      }
+    }
+    startIdx = endIdx
+  }
+
+  for (const pattern of userExcludedCommands) {
+    const rule = bashPermissionRule(pattern)
+    for (const cand of candidates) {
+      switch (rule.type) {
+        case 'prefix':
+          if (cand === rule.prefix || cand.startsWith(rule.prefix + ' ')) {
+            return true
+          }
+          break
+        case 'exact':
+          if (cand === rule.command) {
+            return true
+          }
+          break
+        case 'wildcard':
+          if (matchWildcardPattern(rule.pattern, cand)) {
+            return true
+          }
+          break
       }
     }
   }
