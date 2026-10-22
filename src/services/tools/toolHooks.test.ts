@@ -208,6 +208,61 @@ function contexts(results: Awaited<ReturnType<typeof Array.fromAsync>>) {
   })
 }
 
+describe('settings hook updatedInput through the Mods classic boundary (official 2.1.300)', () => {
+  function settingsRewrite(updatedInput: Record<string, unknown>) {
+    registerHookCallbacks({
+      PreToolUse: [
+        {
+          hooks: [
+            {
+              type: 'callback',
+              callback: async () => ({
+                hookSpecificOutput: {
+                  hookEventName: 'PreToolUse',
+                  permissionDecision: 'allow',
+                  updatedInput,
+                },
+              }),
+            },
+          ],
+        },
+      ],
+    })
+    const f = fixture(async (e, next) => next(e))
+    Object.assign(f.tool, { inputSchema: z.strictObject({ value: z.string() }) })
+    return f
+  }
+  function decisions(results: Awaited<ReturnType<typeof Array.fromAsync>>) {
+    return results.flatMap(r =>
+      (r as { type: string }).type === 'hookPermissionResult'
+        ? [(r as { hookPermissionResult: Record<string, unknown> }).hookPermissionResult]
+        : [],
+    )
+  }
+
+  test('a wrong-typed rewrite denies with the schema message instead of failing the hook run', async () => {
+    const results = await Array.fromAsync(pre(settingsRewrite({ value: 42 })))
+    const last = decisions(results).at(-1)
+    expect(last).toMatchObject({ behavior: 'deny' })
+    expect(String(last?.message)).toContain(
+      'returned updatedInput that failed schema validation',
+    )
+    expect(String(last?.message)).toContain(
+      "The tool input from the model was valid; the hook's rewrite of it was not.",
+    )
+  })
+
+  test('unknown keys are dropped and the allow stands', async () => {
+    const results = await Array.fromAsync(
+      pre(settingsRewrite({ value: 'rewritten', bogus: 1 })),
+    )
+    expect(decisions(results).at(-1)).toMatchObject({
+      behavior: 'allow',
+      updatedInput: { value: 'rewritten' },
+    })
+  })
+})
+
 describe('classic events at existing tool hook boundaries', () => {
   test('module short circuit skips the non-managed callback, with one capture/release', async () => {
     let executed = 0

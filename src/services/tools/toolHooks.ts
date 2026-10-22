@@ -49,6 +49,7 @@ import {
   toolAlwaysAllowedRule,
 } from '../../utils/permissions/permissions.js'
 import { permissionRuleValueToString } from '../../utils/permissions/permissionRuleParser.js'
+import { checkHookUpdatedInput } from '../../utils/hooks/hookUpdatedInput.js'
 import { formatError } from '../../utils/toolErrors.js'
 import { isMcpTool } from '../mcp/utils.js'
 import type { McpServerType, MessageUpdateLazy } from './toolExecution.js'
@@ -139,6 +140,9 @@ export type ManagedPreToolUsePass = {
   result?: ClassicToolResult
   observations?: AggregatedHookResult[]
 }
+
+// Folded Mods classic rewrites already went through schema + validateInput.
+const checkedClassicRewrites = new WeakSet<object>()
 
 /** Bridge one existing executor boundary; raw observations never inject contexts. */
 async function* runClassicToolHooks(
@@ -262,8 +266,6 @@ async function* runClassicToolHooks(
           Array.isArray(result.updatedInput))
       )
         throw new Error('classic.PreToolUse updatedInput must be an object')
-      if (result.updatedInput !== undefined)
-        tool.inputSchema.parse(result.updatedInput)
     } else if (
       result.preventContinuation !== undefined &&
       result.preventContinuation !== true
@@ -342,13 +344,23 @@ async function* runClassicToolHooks(
         answer.deny === undefined &&
         answer.updatedInput !== undefined
       ) {
-        const parsed = tool.inputSchema.parse(answer.updatedInput)
-        const validation = await tool.validateInput?.(parsed, context)
-        if (validation?.result === false)
-          throw new Error(
-            validation.message ?? 'Invalid classic.PreToolUse updatedInput',
-          )
-        answer.updatedInput = parsed
+        // An invalid rewrite denies the call (official 2.1.300); throwing
+        // here would fail the whole hook run and drop its decision.
+        const checked = await checkHookUpdatedInput(tool, answer.updatedInput, {
+          event: 'PreToolUse',
+          context,
+          hookSource: observations.findLast(o => o.updatedInput !== undefined)
+            ?.hookSource,
+        })
+        if (checked.deny) {
+          delete answer.allow
+          delete answer.ask
+          delete answer.updatedInput
+          answer.deny = checked.deny.message
+        } else {
+          answer.updatedInput = checked.input
+          checkedClassicRewrites.add(checked.input)
+        }
       }
       const folded: AggregatedHookResult = {
         additionalContexts: answer.additionalContext,
@@ -1054,6 +1066,9 @@ export async function* runPreToolUseHooks(
   | { type: 'stop' }
 > {
   const hookStartTime = Date.now()
+  // A rewrite that fails validation denies the call; later hook results in
+  // the same run must not replace that deny with their allow/ask.
+  let rewriteDeny: PermissionResult | undefined
   try {
     const appState = toolUseContext.getAppState()
 
@@ -1101,6 +1116,24 @@ export async function* runPreToolUseHooks(
             },
           }
         }
+        let updatedInput = result.updatedInput
+        if (
+          updatedInput !== undefined &&
+          result.permissionBehavior !== 'deny' &&
+          !checkedClassicRewrites.has(updatedInput)
+        ) {
+          const checked = await checkHookUpdatedInput(tool, updatedInput, {
+            event: 'PreToolUse',
+            context: toolUseContext,
+            hookSource: result.hookSource,
+          })
+          if (checked.deny) {
+            rewriteDeny = checked.deny
+            yield { type: 'hookPermissionResult', hookPermissionResult: rewriteDeny }
+            continue
+          }
+          updatedInput = checked.input
+        }
         // Check if hook wants to prevent continuation
         if (result.preventContinuation) {
           yield {
@@ -1125,18 +1158,18 @@ export async function* runPreToolUseHooks(
           if (result.permissionBehavior === 'allow') {
             yield {
               type: 'hookPermissionResult',
-              hookPermissionResult: {
+              hookPermissionResult: rewriteDeny ?? {
                 behavior: 'allow',
-                updatedInput: result.updatedInput,
+                updatedInput,
                 decisionReason,
               },
             }
           } else if (result.permissionBehavior === 'ask') {
             yield {
               type: 'hookPermissionResult',
-              hookPermissionResult: {
+              hookPermissionResult: rewriteDeny ?? {
                 behavior: 'ask',
-                updatedInput: result.updatedInput,
+                updatedInput,
                 message:
                   result.hookPermissionDecisionReason ||
                   `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
@@ -1160,10 +1193,10 @@ export async function* runPreToolUseHooks(
 
         // Yield updatedInput for passthrough case (no permission decision)
         // This allows hooks to modify input while letting normal permission flow continue
-        if (result.updatedInput && result.permissionBehavior === undefined) {
+        if (updatedInput && result.permissionBehavior === undefined) {
           yield {
             type: 'hookUpdatedInput',
-            updatedInput: result.updatedInput,
+            updatedInput,
           }
         }
 

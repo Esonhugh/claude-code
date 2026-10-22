@@ -191,6 +191,20 @@ export async function processUserInput({
   const appState = context.getAppState()
   const isRemoteShellInput = Boolean(context.runRemoteShellCommand)
 
+  // UserPromptSubmit screens a skill or custom command before it expands, so a
+  // blocking hook also stops the shell commands embedded in it (2.1.299).
+  let screened: ProcessUserInputBaseResult | undefined
+  if (!skipHooks && !isRemoteShellInput && !deferCommands && expandsPromptCommand()) {
+    screened = await runClassicHooks(
+      { messages: [], shouldQuery: true },
+      getContentText(input) || '',
+    )
+    if (!screened.shouldQuery) {
+      onPromptAdmission?.(screened)
+      return screened
+    }
+  }
+
   const { isRegularPrompt, ...result } = await processUserInputBase(
     input,
     mode,
@@ -213,7 +227,8 @@ export async function processUserInput({
   )
   queryCheckpoint('query_process_user_input_base_end')
 
-  if (!result.shouldQuery || isRemoteShellInput || skipHooks) {
+  if (!result.shouldQuery || isRemoteShellInput || skipHooks || screened) {
+    if (screened && result.shouldQuery) result.messages.push(...screened.messages)
     applyPluginPromptOrigin(result)
     if (!result.deferred) onPromptAdmission?.(result)
     return result
@@ -370,6 +385,24 @@ export async function processUserInput({
   } finally {
     for (const ask of pendingAsks.values()) ask.finish(false)
     snapshot?.release()
+  }
+
+  function expandsPromptCommand(): boolean {
+    const text =
+      typeof input === 'string'
+        ? input
+        : input.at(-1)?.type === 'text'
+          ? (input.at(-1) as { text: string }).text
+          : null
+    if (mode !== 'prompt' || !text?.startsWith('/')) return false
+    const parsed = parseSlashCommand(text)
+    const command = parsed
+      ? findCommand(parsed.commandName, context.options.commands)
+      : undefined
+    return (
+      command?.type === 'prompt' &&
+      (!skipSlashCommands || (!!bridgeOrigin && isBridgeSafeCommand(command)))
+    )
   }
 
   function admitPrompt(settled: ProcessUserInputBaseResult): void {

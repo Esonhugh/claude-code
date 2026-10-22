@@ -24,6 +24,7 @@ import { safeParseJSON } from '../../json.js'
 import { profileCheckpoint } from '../../startupProfiler.js'
 import { type SettingsJson, SettingsSchema } from '../types.js'
 import {
+  filterInvalidHooks,
   filterInvalidPermissionRules,
   formatZodError,
   type ValidationError,
@@ -182,7 +183,10 @@ export function parseCommandOutputAsSettings(
     return { settings: {}, errors: [] }
   }
 
-  const ruleWarnings = filterInvalidPermissionRules(data, sourcePath)
+  const ruleWarnings = [
+    ...filterInvalidPermissionRules(data, sourcePath),
+    ...filterInvalidHooks(data, sourcePath),
+  ]
   const parseResult = SettingsSchema().safeParse(data)
   if (!parseResult.success) {
     const errors = formatZodError(parseResult.error, sourcePath)
