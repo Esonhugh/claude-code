@@ -103,6 +103,7 @@ import {
   startToolExecutionSpan,
   startToolSpan,
 } from '../../utils/telemetry/sessionTracing.js'
+import { ZodError } from 'zod/v4'
 import {
   formatError,
   formatZodValidationError,
@@ -1486,7 +1487,48 @@ async function checkPermissionsAndCallTool(
 
   // Use the updated input from permissions if provided
   // (Don't overwrite if undefined - processedInput may have been modified by passthrough hooks)
-  if (permissionDecision.updatedInput !== undefined) {
+  // An empty object keeps the current input; anything else must satisfy the
+  // tool schema, since it comes from an SDK host, hook or permission tool.
+  if (
+    permissionDecision.updatedInput !== undefined &&
+    Object.keys(permissionDecision.updatedInput).length > 0
+  ) {
+    const parsedUpdate = tool.inputSchema.safeParse(
+      permissionDecision.updatedInput,
+    )
+    const issues = parsedUpdate.success
+      ? []
+      : parsedUpdate.error.issues.filter(
+          issue => issue.code !== 'unrecognized_keys',
+        )
+    if (issues.length > 0) {
+      const errorContent = `The permission handler returned updatedInput for ${tool.name} that failed schema validation: ${formatZodValidationError(tool.name, new ZodError(issues))}\nThis is a configuration issue in your canUseTool callback, PermissionRequest hook, or permission-prompt tool — updatedInput must satisfy the tool's input schema. The tool input from the model was valid.`
+      logForDebugging(
+        `Permission handler updatedInput for ${tool.name} failed schema validation (${issues.map(issue => issue.code).join(',')})`,
+        { level: 'warn' },
+      )
+      const decisionInfo = toolUseContext.toolDecisions?.get(toolUseID)
+      endToolBlockedOnUserSpan(
+        decisionInfo?.decision || 'unknown',
+        decisionInfo?.source || 'unknown',
+      )
+      endToolSpan()
+      resultingMessages.push({
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: `<tool_use_error>${errorContent}</tool_use_error>`,
+              is_error: true,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: `InputValidationError: permission handler updatedInput failed schema for ${tool.name}`,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      })
+      return resultingMessages
+    }
     processedInput = permissionDecision.updatedInput
   }
 

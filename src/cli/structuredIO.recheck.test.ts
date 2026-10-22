@@ -92,4 +92,28 @@ if (process.env[childFlag] !== '1') {
     await h.settle()
     expect(h.decision()).toBeUndefined()
   })
+
+  function answer(h: Awaited<ReturnType<typeof pendingAsk>>, response: Record<string, unknown>) {
+    h.structuredIO.injectControlResponse({
+      type: 'control_response',
+      response: { subtype: 'success', request_id: h.requestId()!, response },
+    })
+  }
+
+  test('an allow without updatedInput runs the tool with its original input', async () => {
+    const h = await pendingAsk()
+    answer(h, { behavior: 'allow' })
+    await h.settle()
+    expect(h.decision()).toMatchObject({ behavior: 'allow', updatedInput: { file_path: 'a.ts' } })
+  })
+
+  test('an invalid canUseTool result is denied with the expected shape', async () => {
+    const h = await pendingAsk()
+    answer(h, { behavior: 'maybe' })
+    await h.settle()
+    expect(h.decision()).toMatchObject({
+      behavior: 'deny',
+      message: "The canUseTool callback returned an invalid permission result. Expected {behavior: 'allow', updatedInput?: object} or {behavior: 'deny', message: string}.",
+    })
+  })
 }

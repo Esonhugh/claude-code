@@ -64,6 +64,22 @@
 
 - 新增 `src/utils/permissions/permissions.bypassSafety.test.ts`（子进程）：bypass 下写 `.git/config`、`.zshrc`、`.claude/settings.json`、`.claude/agents.md` 直接放行，bypass 下 `rm -rf /` 仍询问，acceptEdits 下写 `.zshrc` 仍询问。
 
+## 2026-10-21 - SDK 与 headless 权限路径对齐官方
+
+### 变更内容
+
+- SDK `set_permission_mode` 收到未知模式时返回错误 `Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan`（对齐官方）；以前会回 success 并把会话模式设成该字符串。
+- SDK `set_permission_mode` 被闸门拒绝时，错误响应带 `error_code`（`invalid_mode`、`bypass_disabled`、`bypass_not_launched`、`auto_mode_settings` 等，对齐官方），host 可以按代码区分原因。
+- SDK host 的 canUseTool 回调返回 allow 时可以省略 `updatedInput`，此时按原始输入执行（对齐官方）；以前整个回复被判为无效并拒绝工具。
+- canUseTool 回调返回格式错误的结果时，拒绝信息改为说明预期格式（对齐官方），不再输出 zod 原始错误 JSON。
+- canUseTool 回调、PermissionRequest hook 或 permission-prompt 工具返回的 `updatedInput` 不符合工具输入 schema 时，工具不执行，并返回说明是权限处理方配置问题的错误（对齐官方）；以前工具会带着错误类型的参数运行，报出 `command.includes is not a function` 之类的内部错误。返回空对象时沿用原始输入。
+
+### 测试覆盖
+
+- `src/utils/permissions/permissionControl.test.ts`：headless `set_permission_mode` 拒绝未知模式（`invalid_mode`），bypass 不可用/被禁用的错误带 `error_code`，`manual` 映射到 default。
+- `src/cli/structuredIO.recheck.test.ts`：host allow 省略 `updatedInput` 时按原始输入放行；格式错误的结果以官方说明拒绝。
+- `src/services/tools/toolExecution.test.ts`：权限处理方返回不符合 schema 的 `updatedInput` 时工具不执行并返回官方错误文本；返回空对象时使用原始输入。
+
 ## 2026-10-21 - 权限模式切换加固：auto 规则剥除、切换入口与重判
 
 ### 变更内容
