@@ -832,6 +832,21 @@ export function initialPermissionModeFromCLI({
         mode: settingsMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
     }
+    // Like official 2.1.257, bypass from repo-controllable settings is ignored.
+    else if (
+      settingsMode === 'bypassPermissions' &&
+      !(['policySettings', 'userSettings', 'flagSettings'] as const).some(
+        source =>
+          getSettingsForSource(source)?.permissions?.defaultMode ===
+          'bypassPermissions',
+      )
+    ) {
+      logForDebugging(
+        'settings defaultMode "bypassPermissions" ignored — only policy/user/flag settings may grant bypass mode (projectSettings and localSettings are repo-controllable)',
+        { level: 'warn' },
+      )
+      logEvent('tengu_settings_bypass_mode_untrusted_source_ignored', {})
+    }
     // auto from settings requires the same gate check as from CLI
     else if (feature('TRANSCRIPT_CLASSIFIER') && settingsMode === 'auto') {
       // Like official 2.1.292, project and local settings are repo-controllable,

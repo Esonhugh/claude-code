@@ -11,6 +11,7 @@ import { readForkedSkillScope, readForkedSkillWitness } from '../../utils/forked
 import { createGetAppStateWithAllowedTools } from '../../utils/forkedAgent.js'
 import { getSkillAttributionName } from '../../utils/forkedSkill.js'
 import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
+import { getCommandAllowedTools } from '../../utils/permissions/permissionsLoader.js'
 import { getSystemPrompt } from '../../constants/prompts.js'
 import { isCoordinatorMode } from '../../coordinator/coordinatorMode.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -138,7 +139,7 @@ export async function resumeAgentBackground({
     // Resolve today's skill grants; retain launch-time denies and all current denies.
     if (command?.type === 'prompt') {
       workerContext = { ...toolUseContext, getAppState: createGetAppStateWithAllowedTools(
-        toolUseContext.getAppState, parseToolListFromCLI(command.allowedTools ?? []),
+        toolUseContext.getAppState, parseToolListFromCLI(getCommandAllowedTools(command)),
         parseToolListFromCLI(command.disallowedTools ?? []),
         { replaceCommandRules: true, frozenCommandDenies: scope.frozenCommandDenies ?? appState.toolPermissionContext.alwaysDenyRules.command ?? [] },
       ) }

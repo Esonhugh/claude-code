@@ -166,6 +166,22 @@
 - `bun test src/utils/permissions/permissions.subagentHandback.test.ts`：classifier 审查输入、block 仍送达并记录原因、不可用（含 Approve for me）附说明、allow 规则不跳过审查、非 auto mode 拒绝。
 - `bun test src/utils/subagentHandback.test.ts`：提醒、撤回提醒与重试提醒文字，三次重试上限，扣留说明，警告位于框架上方，框架/标记伪造与升级关键字检测。
 
+## 2026-10-20 - 企业策略与项目设置来源边界对齐官方
+
+### 变更内容
+
+- 项目 `.claude/settings.json` 与 `.claude/settings.local.json` 中的 `permissions.defaultMode: "bypassPermissions"` 改为忽略（与 `auto` 一致）；仍可在用户、`--settings` 或托管设置中设置，或使用 `--permission-mode`。
+- 项目与本地设置的 `env` 不再能设置 `CLAUDE_CONFIG_DIR`、`TMPDIR`/`TMP`/`TEMP`/`CLAUDE_CODE_TMPDIR`、`HOME` 等系统目录变量、`CLAUDE_CODE_DISABLE_ATTACHMENTS`，以及开启或改写遥测导出的变量（`CLAUDE_CODE_ENABLE_TELEMETRY`、`OTEL_EXPORTER_OTLP_*`、`OTEL_*_EXPORTER`、`OTEL_LOG_*`、`CLAUDE_CODE_ENABLE_ANTHROPIC_TELEMETRY` 等）；被忽略的键记录一次警告。项目设置仍可把 OTel exporter 设为 `none` 或关闭 `OTEL_LOG_USER_PROMPTS`/`OTEL_LOG_TOOL_CONTENT`/`OTEL_LOG_TOOL_DETAILS`（启动环境、`--settings` 与托管设置未设置该键时）。
+- 托管设置启用 `allowManagedPermissionRulesOnly` 时，仓库、用户、`--add-dir`、MCP 与第三方插件的 skill/命令不再通过 `allowed-tools` 预先批准工具（含 Skill 工具、斜杠命令、fork skill、Agent 预载 skill 与 skill 内联 shell）；托管、内置、bundled skill 与官方插件市场的插件保留。
+- 被 git 追踪的 `.claude/settings.local.json` 视为仓库内容：工作区未显式信任时，其 `permissions.allow` 规则不生效（deny/ask 规则仍生效）。
+
+### 测试覆盖
+
+- `bun test src/utils/permissions/permissionSetup.test.ts`：项目/本地设置的 `bypassPermissions` 被忽略，用户/flag/托管设置仍生效，项目 `acceptEdits` 不受影响。
+- `bun test src/utils/managedEnv.test.ts src/utils/managedEnv.launchEnv.test.ts`：项目与本地 env 的封锁键、用户层设置仍可设置、遥测只能关闭不能开启、上层或启动环境已设置时项目关闭值不覆盖。
+- `bun test src/tools/SkillTool/managedRulesOnly.test.ts`：各来源 `allowed-tools` 的保留与丢弃，以及内联项目 skill 在 `allowManagedPermissionRulesOnly` 下不产生命令规则。
+- `bun test src/utils/permissions/permissionsLoader.localTracked.test.ts`：被追踪/未追踪的 `settings.local.json` 与显式信任工作区下的 allow 规则加载。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容

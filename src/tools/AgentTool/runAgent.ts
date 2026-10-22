@@ -124,6 +124,7 @@ import {
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
 import { getCurrentSubagentDepth } from './subagentDepth.js'
+import { getCommandAllowedTools } from '../../utils/permissions/permissionsLoader.js'
 import { isAnt } from 'src/utils/userType.js'
 
 // connectToServer memoizes by name+config, so concurrent agents with the same
@@ -976,7 +977,7 @@ export async function* runAgent({
       )
     }
     preloadedSkillAllowedTools = [
-      ...new Set(validSkills.flatMap(({ skill }) => skill.allowedTools ?? [])),
+      ...new Set(validSkills.flatMap(({ skill }) => getCommandAllowedTools(skill))),
     ]
   }
 

@@ -37,6 +37,7 @@ import {
 } from './messages.js'
 import { createDenialTrackingState } from './permissions/denialTracking.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
+import { getCommandAllowedTools } from './permissions/permissionsLoader.js'
 import { recordSidechainTranscript } from './sessionStorage.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import {
@@ -222,7 +223,7 @@ export async function prepareForkedCommandContext(
     : undefined
   const readFileState = context.readFileState ? cloneFileStateCache(context.readFileState) : undefined
   // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
+  const allowedTools = parseToolListFromCLI(getCommandAllowedTools(command))
 
   // Create modified context with allowed tools
   const modifiedGetAppState = createGetAppStateWithAllowedTools(
