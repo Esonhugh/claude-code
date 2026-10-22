@@ -54,6 +54,16 @@
 - `src/utils/permissions/permissions.approveForMe.test.ts` 新增被否决的 `CLAUDE_CODE_AUTO_MODE_MODEL` 改用默认 Sonnet 5 分类器、`availableModels` 不允许时同样否决。
 - `src/utils/permissions/approveForMe.test.ts` 新增移除 `disableAutoMode` 后可重新进入自动模式，以及设置变更时退出与恢复自动模式可用。
 
+## 2026-10-21 - bypass 模式写入受保护路径不再询问
+
+### 变更内容
+
+- `--dangerously-skip-permissions`（bypassPermissions）下写入 `.git/`、`.claude/`、shell 配置（如 `.zshrc`）等受保护路径时不再弹出确认，直接写入（对齐官方 2.1.126、2.1.303）；`rm -rf /` 这类灾难性删除与跨机器 bridge 消息仍要求确认，acceptEdits 等其他模式下这些路径仍会询问。可疑 Windows 路径写入与 EnterWorktree 切换工作区在 bypass 下同样直接执行（对齐官方）。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/permissions.bypassSafety.test.ts`（子进程）：bypass 下写 `.git/config`、`.zshrc`、`.claude/settings.json`、`.claude/agents.md` 直接放行，bypass 下 `rm -rf /` 仍询问，acceptEdits 下写 `.zshrc` 仍询问。
+
 ## 2026-10-21 - 权限模式切换加固：auto 规则剥除、切换入口与重判
 
 ### 变更内容

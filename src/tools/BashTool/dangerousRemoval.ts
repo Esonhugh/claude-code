@@ -106,6 +106,7 @@ function mandatory(reason: string): PermissionResult {
       type: 'safetyCheck',
       reason,
       classifierApprovable: false,
+      bypassImmune: true,
     },
     suggestions: [],
   }

@@ -29,6 +29,7 @@ import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
 import {
   AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON,
+  isBypassImmune,
   requiresExplicitUserApproval,
 } from './PermissionResult.js'
 import { getAutoModeDenialRuleToolName } from './permissionSetup.js'
@@ -1677,9 +1678,23 @@ async function hasPermissionsToUseToolInner(
     return toolPermissionResult
   }
 
+  // bypassPermissions skips safety checks except the bypass-immune ones
+  // (catastrophic removals), as official 2.1.303 does.
+  const bypassMode = (): boolean => {
+    const { mode, isBypassPermissionsModeAvailable } =
+      context.getAppState().toolPermissionContext
+    return (
+      mode === 'bypassPermissions' ||
+      (mode === 'plan' && isBypassPermissionsModeAvailable)
+    )
+  }
+  const safetyCheckAsks = (result: PermissionResult): boolean =>
+    !bypassMode() || isBypassImmune(result.decisionReason)
+
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    requiresExplicitUserApproval(toolPermissionResult.decisionReason)
+    requiresExplicitUserApproval(toolPermissionResult.decisionReason) &&
+    safetyCheckAsks(toolPermissionResult)
   ) {
     return toolPermissionResult
   }
@@ -1725,12 +1740,13 @@ async function hasPermissionsToUseToolInner(
     return toolPermissionResult
   }
 
-  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
-  // bypass-immune — they must prompt even in bypassPermissions mode.
+  // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) prompt
+  // in every mode except bypassPermissions, where only bypass-immune ones do.
   // checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these paths.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'safetyCheck'
+    toolPermissionResult.decisionReason?.type === 'safetyCheck' &&
+    safetyCheckAsks(toolPermissionResult)
   ) {
     return toolPermissionResult
   }
