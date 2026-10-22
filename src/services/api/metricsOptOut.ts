@@ -5,7 +5,7 @@ import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { getAuthHeaders, withOAuth401Retry } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
-import { isAnthropicTelemetryEnabled } from '../analytics/config.js'
+import { isAnalyticsDisabled } from '../analytics/config.js'
 import { memoizeWithTTLAsync } from '../../utils/memoize.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
@@ -127,7 +127,7 @@ async function refreshMetricsStatus(): Promise<MetricsStatus> {
  * an extra one during the 24h window is acceptable.
  */
 export async function checkMetricsEnabled(): Promise<MetricsStatus> {
-  if (!isAnthropicTelemetryEnabled()) {
+  if (isAnalyticsDisabled()) {
     return { enabled: false, hasError: false }
   }
 
