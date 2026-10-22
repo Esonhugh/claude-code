@@ -813,7 +813,7 @@ test('routes SSH bash input to the remote shell executor instead of the model', 
   )
   assert.match(
     processUserInputSource,
-    /if \(!result\.shouldQuery \|\| isRemoteShellInput \|\| skipHooks\)/,
+    /if \(!result\.shouldQuery \|\| isRemoteShellInput \|\| skipHooks \|\| screened\)/,
   )
 })
 
