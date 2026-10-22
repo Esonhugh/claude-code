@@ -314,6 +314,7 @@ import {
 } from '../utils/permissions/PermissionUpdate.js'
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js'
 import {
+  restorePermissionModeForResume,
   shouldShowAutoModeEntryWarning,
   stripDangerousPermissionsForAutoMode,
   transitionPermissionMode,
@@ -452,6 +453,7 @@ import {
   adoptResumedSessionFile,
   removeTranscriptMessage,
   restoreSessionMetadata,
+  savePermissionMode,
   getCurrentSessionTitle,
   isEphemeralToolProgress,
   isLoggableMessage,
@@ -3028,6 +3030,15 @@ export function REPL({
         clearSessionMetadata()
         restoreSessionMetadata(log)
         restoreSessionCosts(log)
+        const resumedPermissionContext = restorePermissionModeForResume(
+          store.getState().toolPermissionContext,
+          log.permissionMode,
+        )
+        setAppState(prev => ({
+          ...prev,
+          toolPermissionContext: resumedPermissionContext,
+        }))
+        savePermissionMode(resumedPermissionContext.mode)
         modsSession?.restoreAuthoringConsent?.(log.devModsFolder)
         // Resumed sessions shouldn't re-title from mid-conversation context
         // (same reasoning as the useRef seed), and the previous session's

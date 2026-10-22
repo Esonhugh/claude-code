@@ -80,6 +80,25 @@
 - `src/cli/structuredIO.recheck.test.ts`：host allow 省略 `updatedInput` 时按原始输入放行；格式错误的结果以官方说明拒绝。
 - `src/services/tools/toolExecution.test.ts`：权限处理方返回不符合 schema 的 `updatedInput` 时工具不执行并返回官方错误文本；返回空对象时使用原始输入。
 
+## 2026-10-21 - resume 恢复权限模式、/permissions Auto mode 分页、/auto-mode-setup 与路径规则
+
+### 变更内容
+
+- 权限模式变化时在会话 transcript 写入 `permission-mode` 记录（对齐官方），`--resume`、`--continue`、`/resume` 与 `-p --resume/--continue` 恢复会话时还原该模式；以前恢复后总是回到启动模式。
+- 恢复的模式仍经过切换闸门：bypass 需当前可用，auto 需通过 auto 闸门，plan 需 `planModeAvailable`；不可用时保留启动模式并写 debug 日志，命令行显式传入 `--permission-mode` 或 `--dangerously-skip-permissions` 时以命令行为准。
+- `/permissions` 新增 Auto mode 分页（位于 Deny 与 Workspace 之间，auto 模式不可用时隐藏，对齐官方）：列出分类器的 Soft allow、Soft deny、Hard deny、Environment 规则与仍生效的内置规则，可新增规则（先选类别再输入一句话）与删除用户规则；新规则写入用户设置，首条规则自动以 `"$defaults"` 保留内置规则；不读取项目与 `.claude/settings.local.json` 中的 `autoMode`。
+- 新增 `/auto-mode-setup`（对齐官方 2.1.303 的命令名与说明）：以内置 skill 形式提问场景、只读收集仓库与常用 CLI 信息、按官方提案规则生成 `autoMode` 提案（`$defaults` 开头、不提议裸 Bash/解释器/Agent allow 规则、列出可移除的 `permissions.allow` 项），经用户明确同意后只写入用户设置；模型不能自行调用，auto 模式不可用时隐藏。
+- 文件路径规则对齐官方：写在符号链接目录上的 deny/ask 规则同时作用于其真实路径；allow 规则须覆盖路径的每种写法（含符号链接目标）才放行，`/tmp`→`/private/tmp`、`/bin`→`/usr/bin` 等系统链接照常可用；规则中重复的 `/` 会被合并。
+- Windows 上 `//c/...` 规则固定在盘符根目录，`C:\...` 与 `c:/...` 规则以盘符为根，`~\` 与 `\` 开头的规则接受反斜杠；UNC 读取沿用自动模式安全对齐中的 safety check。
+
+### 测试覆盖
+
+- 新增 `src/utils/conversationRecovery.permissionMode.test.ts`（子进程）：transcript 记录的模式随 resume 返回，非法模式值被忽略。
+- 新增 `src/utils/permissions/permissionSetup.resume.test.ts`：acceptEdits 还原、bypass 不可用时保留启动模式、plan 需 `planModeAvailable`、auto 被设置停用时不还原、命令行模式优先。
+- 新增 `src/components/permissions/rules/AutoModeTab.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：忽略 `.claude/settings.local.json`、新增规则写入 `["$defaults", 规则]` 后追加、内置规则保留、搜索与来源说明、删除后移除该段。
+- 新增 `src/skills/bundled/autoModeSetup.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：命令名与说明、禁止模型调用、只预授权只读工具、提示含六个提案键、`$defaults`、用户设置路径与默认环境，auto 模式停用时隐藏。
+- 新增 `src/utils/permissions/filesystem.pathRules.test.ts`：重复斜杠、符号链接目录上的 deny/ask、allow 不越过符号链接、系统链接 allow；Windows 用例在 Linux 上检查规则拆分出的根与相对模式（无法实跑 UNC 与 Windows 路径解析）。
+
 ## 2026-10-21 - 权限模式切换加固：auto 规则剥除、切换入口与重判
 
 ### 变更内容

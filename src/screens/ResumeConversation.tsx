@@ -18,7 +18,11 @@ import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
 } from '../services/mcp/types.js'
-import { useAppState, useSetAppState } from '../state/AppState.js'
+import {
+  useAppState,
+  useAppStateStore,
+  useSetAppState,
+} from '../state/AppState.js'
 import type { Tool } from '../Tool.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
@@ -48,8 +52,10 @@ import {
   recordContentReplacement,
   resetSessionFilePointer,
   restoreSessionMetadata,
+  savePermissionMode,
   type SessionLogResult,
 } from '../utils/sessionStorage.js'
+import { restorePermissionModeForResume } from '../utils/permissions/permissionSetup.js'
 import type { ThinkingConfig } from '../utils/thinking.js'
 import type { ContentReplacementRecord } from '../utils/toolResultStorage.js'
 import { REPL } from './REPL.js'
@@ -110,6 +116,7 @@ export function ResumeConversation({
   const { rows } = useTerminalSize()
   const agentDefinitions = useAppState(s => s.agentDefinitions)
   const setAppState = useSetAppState()
+  const store = useAppStateStore()
   const [logs, setLogs] = React.useState<LogOption[]>([])
   const [loading, setLoading] = React.useState(true)
   const [resuming, setResuming] = React.useState(false)
@@ -308,6 +315,15 @@ export function ResumeConversation({
       restoreSessionMetadata(
         forkSession ? { ...result, worktreeSession: undefined } : result,
       )
+      const resumedPermissionContext = restorePermissionModeForResume(
+        store.getState().toolPermissionContext,
+        result.permissionMode,
+      )
+      setAppState(prev => ({
+        ...prev,
+        toolPermissionContext: resumedPermissionContext,
+      }))
+      savePermissionMode(resumedPermissionContext.mode)
 
       if (!forkSession) {
         restoreWorktreeForResume(result.worktreeSession)
