@@ -1027,19 +1027,31 @@ export function matchingRuleForInput(
   // Check each root for a matching pattern
   for (const [root, patternMap] of patternsByRoot.entries()) {
     // Transform patterns for the ignore library
-    const patterns = Array.from(patternMap.keys()).map(pattern => {
+    const originalByAdjusted = new Map<string, string>()
+    for (const pattern of patternMap.keys()) {
       let adjustedPattern = pattern
 
       // Remove /** suffix - ignore library treats 'path' as matching both
       // the path itself and everything inside it
       if (adjustedPattern.endsWith('/**')) {
         adjustedPattern = adjustedPattern.slice(0, -3)
+        // A single-segment allow like "src/**" covers only <cwd>/src, not
+        // every nested src/; deny and ask keep matching at any depth
+        // (official 2.1.214).
+        if (
+          behavior === 'allow' &&
+          root === null &&
+          adjustedPattern !== '' &&
+          !adjustedPattern.includes('/')
+        ) {
+          adjustedPattern = `/${adjustedPattern}`
+        }
       }
 
-      return adjustedPattern
-    })
+      originalByAdjusted.set(adjustedPattern, pattern)
+    }
 
-    const ig = ignore().add(patterns)
+    const ig = ignore().add([...originalByAdjusted.keys()])
 
     // Use cross-platform relative path helper for POSIX-style patterns
     const relativePathStr = relativePath(
@@ -1061,14 +1073,8 @@ export function matchingRuleForInput(
 
     if (igResult.ignored && igResult.rule) {
       // Map the matched pattern back to the original rule
-      const originalPattern = igResult.rule.pattern
-
-      // Check if this was a /** pattern we simplified
-      const withWildcard = originalPattern + '/**'
-      if (patternMap.has(withWildcard)) {
-        return patternMap.get(withWildcard) ?? null
-      }
-
+      const originalPattern =
+        originalByAdjusted.get(igResult.rule.pattern) ?? igResult.rule.pattern
       return patternMap.get(originalPattern) ?? null
     }
   }

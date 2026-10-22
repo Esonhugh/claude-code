@@ -54,6 +54,30 @@
 - `src/utils/permissions/permissions.approveForMe.test.ts` 新增被否决的 `CLAUDE_CODE_AUTO_MODE_MODEL` 改用默认 Sonnet 5 分类器、`availableModels` 不允许时同样否决。
 - `src/utils/permissions/approveForMe.test.ts` 新增移除 `disableAutoMode` 后可重新进入自动模式，以及设置变更时退出与恢复自动模式可用。
 
+## 2026-10-21 - 权限规则比对、模式与 hooks 对齐官方
+
+### 变更内容
+
+- plan 模式只接受只读调用的 allow（对齐官方 2.1.136、2.1.299）：`Edit(src/**)` 等 allow 规则、PreToolUse hook 的 allow 与 Mods `tool.check` 的 allow 都不再让写入类工具（文件写入、非只读 shell 命令、MCP 写工具）在 plan 模式下直接执行，改为提示 `Cannot call <tool> while in plan mode.`；从 bypass 进入的 plan 模式与本会话计划文件的写入不受影响。
+- PermissionRequest hook 返回的 `updatedInput` 重新经过 deny/ask 规则与安全检查（对齐官方 2.1.110）：命中 deny 规则直接拒绝，命中 ask 规则或安全检查也按拒绝处理；交互式、`-p`/后台与 SDK host 三条路径一致。
+- `setMode: bypassPermissions` 权限更新在 bypass 不可用时被忽略（对齐官方 2.1.110）：`disableBypassPermissionsMode` 生效或会话未以 bypass 启动时，PermissionRequest hook 等来源无法把会话切到 bypass。
+- PermissionRequest hook 在纯 `-p`/`--print` 下也会触发（对齐官方 2.1.268）：需要提示的调用先交给 hook 决定，hook 未作决定时才按原样拒绝或交给 `--permission-prompt-tool`；需要用户亲自确认的安全检查仍跳过 hook。
+- MCP 服务器级 allow 规则只放行它点名的服务器（对齐官方 2.1.299）：`mcp__a` 不再放行名为 `a__b` 或 `a_` 的服务器；服务器名含 `__` 时写 `mcp__<完整名称>__*`。deny/ask 规则 `mcp__a__b` 现在能拦到名为 `a__b` 的服务器（对齐官方 2.1.299）。allow `mcp__*` 放行全部 MCP 工具。
+- 子代理 `disallowedTools` 支持 MCP 服务器级写法 `mcp__srv`、`mcp__srv__*` 与 `mcp__*`（对齐官方 2.1.178），不再被静默忽略。
+- 单段 `dir/**` allow 规则只匹配 `<cwd>/dir`（对齐官方 2.1.214）：`Edit(src/**)` 不再自动批准树中任意位置的 `a/src/x.ts`；deny/ask 规则仍匹配任意深度。
+- acceptEdits 模式写入前提示的保护文件与目录对齐官方：新增 `.npmrc`、`.yarnrc*`、`bunfig.toml`、`.bazelrc`、`.pre-commit-config.yaml`、lefthook 配置、gradle/maven wrapper、`.devcontainer.json`、`pyrightconfig.json`、`.envrc`、`.zshenv` 等 shell 启动文件，以及 `.husky/`、`.devcontainer/`、`.cargo/`、`.yarn/`、`.mvn/` 目录（对齐官方 2.1.90、2.1.160）。
+- 启用 `allowManagedPermissionRulesOnly` 时，设置重新加载不再清掉 `--disallowedTools` 与会话内的 deny 规则（对齐官方 2.1.257）；这两个来源的 allow/ask 规则仍被清除。
+- 未信任的工作区不能自行批准 `.mcp.json` 服务器（对齐官方 2.1.196）：信任前忽略 `.claude/settings.json` 中的 `enableAllProjectMcpServers`/`enabledMcpjsonServers`，被 git 跟踪的 `.claude/settings.local.json` 视为仓库内容同样忽略；`claude mcp list`/`get` 对这些服务器显示待批准而不启动。`-p` 与 bypass 模式的既有自动批准不变。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/permissions.planMode.test.ts`，覆盖 plan 模式下内容/整工具 allow 规则、只读调用、bypass 可用、计划文件、PreToolUse hook allow 与 Mods `tool.check` allow。
+- 新增 `src/hooks/toolPermission/permissionRequestHookPolicy.test.ts`，覆盖 hook `updatedInput` 在交互式与 headless 路径命中 deny、未改写输入照常放行、`setMode` 切到 bypass 被策略拦下。
+- 新增 `src/cli/print.permissionRequestHooks.test.ts`（子进程隔离），覆盖纯 `--print` 提示交给 hook、hook 不决定时保持原结果、`--permission-prompt-tool` 前先询问 hook。
+- 新增 `src/utils/permissions/permissions.mcpRules.test.ts`（allow 只到点名服务器、名称歧义需完整工具名、`mcp__*`、deny/ask 覆盖含 `__` 的服务器）与 `src/tools/AgentTool/agentTools.disallowedMcp.test.ts`（服务器级、通配与精确工具名）。
+- 新增 `src/utils/permissions/filesystem.parity.test.ts`，覆盖 `dir/**` allow 锚定 cwd、deny/ask 任意深度、其他模式不变，以及 acceptEdits 下 29 个保护文件/目录提示、普通文件照常放行。
+- 新增 `src/utils/permissions/permissions.managedOnly.test.ts`（重载保留 cliArg/session deny，清除其余来源）与 `src/services/mcp/projectApproval.trust.test.ts`（子进程隔离，真实 git 仓库中未信任时项目设置与被跟踪的 local 设置不能批准、未跟踪 local 设置与已信任工作区照常批准、`disabledMcpjsonServers` 仍拒绝）。
+
 ## 2026-10-20 - Bash 权限规则包装命令与放行范围加固
 
 ### 变更内容
@@ -181,7 +205,6 @@
 - `bun test src/utils/managedEnv.test.ts src/utils/managedEnv.launchEnv.test.ts`：项目与本地 env 的封锁键、用户层设置仍可设置、遥测只能关闭不能开启、上层或启动环境已设置时项目关闭值不覆盖。
 - `bun test src/tools/SkillTool/managedRulesOnly.test.ts`：各来源 `allowed-tools` 的保留与丢弃，以及内联项目 skill 在 `allowManagedPermissionRulesOnly` 下不产生命令规则。
 - `bun test src/utils/permissions/permissionsLoader.localTracked.test.ts`：被追踪/未追踪的 `settings.local.json` 与显式信任工作区下的 allow 规则加载。
-
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容

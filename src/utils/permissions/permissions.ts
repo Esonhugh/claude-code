@@ -268,19 +268,21 @@ function toolMatchesRule(
     return true
   }
 
+  const ruleName = rule.ruleValue.toolName
+
   // Like official, deny and ask rules may glob the tool name ("*" covers
-  // every tool); allow rules only take the MCP wildcard below.
+  // every tool). Allow rules do not glob here: official 2.1.303 leaves
+  // "mcp__*" at ask, and per-server tool globs are matched below.
   if (
     rule.ruleBehavior !== 'allow' &&
-    rule.ruleValue.toolName.includes('*') &&
-    matchesWildcard(rule.ruleValue.toolName, nameForRuleMatch)
+    ruleName.includes('*') &&
+    matchesWildcard(ruleName, nameForRuleMatch)
   ) {
     return true
   }
 
   // MCP server-level permission: rule "mcp__server1" or "mcp__server1__*"
   // matches every tool of server1; "mcp__server1__get_*" globs its tool names.
-  const ruleName = rule.ruleValue.toolName
   const ruleInfo = mcpInfoFromString(ruleName)
   const toolInfo = mcpInfoFromString(nameForRuleMatch)
   const coversTool =
@@ -489,6 +491,33 @@ export function getRuleByContentsForToolName(
 }
 
 /**
+ * A PermissionRequest hook that rewrites the input approves a call nobody
+ * checked: run deny/ask rules and safety checks on it again. An objection
+ * becomes a denial, since the hook already stood in for the prompt.
+ */
+export async function recheckPermissionRequestHookInput(
+  tool: Tool,
+  updatedInput: { [key: string]: unknown },
+  context: ToolUseContext,
+): Promise<PermissionDenyDecision | null> {
+  const objection = await checkRuleBasedPermissions(tool, updatedInput, context)
+  if (!objection) return null
+  logForDebugging(
+    `PermissionRequest hook allowed ${tool.name} with updatedInput, but ${objection.behavior} rule overrides: ${objection.message}`,
+  )
+  return objection.behavior === 'deny'
+    ? objection
+    : {
+        behavior: 'deny',
+        message: objection.message,
+        decisionReason: objection.decisionReason ?? {
+          type: 'hook',
+          hookName: 'PermissionRequest',
+        },
+      }
+}
+
+/**
  * Runs PermissionRequest hooks for headless/async agents that cannot show
  * permission prompts. This gives hooks an opportunity to allow or deny
  * tool use before the fallback auto-deny kicks in.
@@ -496,7 +525,7 @@ export function getRuleByContentsForToolName(
  * Returns a PermissionDecision if a hook made a decision, or null if no
  * hook provided a decision (caller should proceed to auto-deny).
  */
-async function runPermissionRequestHooksForHeadlessAgent(
+export async function runPermissionRequestHooksForHeadlessAgent(
   tool: Tool,
   input: { [key: string]: unknown },
   toolUseID: string,
@@ -520,6 +549,14 @@ async function runPermissionRequestHooksForHeadlessAgent(
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
         const finalInput = decision.updatedInput ?? input
+        if (decision.updatedInput) {
+          const denied = await recheckPermissionRequestHookInput(
+            tool,
+            finalInput,
+            context,
+          )
+          if (denied) return denied
+        }
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions)
@@ -1272,6 +1309,7 @@ export async function checkRuleBasedPermissions(
   tool: Tool,
   input: { [key: string]: unknown },
   context: ToolUseContext,
+  { planModeWriteFloor = false }: { planModeWriteFloor?: boolean } = {},
 ): Promise<PermissionAskDecision | PermissionDenyDecision | null> {
   const appState = context.getAppState()
 
@@ -1394,8 +1432,57 @@ export async function checkRuleBasedPermissions(
     return toolPermissionResult
   }
 
+  if (
+    planModeWriteFloor &&
+    planModeHoldsWrite(tool, input, appState.toolPermissionContext)
+  ) {
+    if (toolPermissionResult.behavior === 'ask') return toolPermissionResult
+    if (
+      toolPermissionResult.behavior === 'passthrough' ||
+      isAllowedByRule(toolPermissionResult)
+    ) {
+      return planModeAsk(tool)
+    }
+  }
+
   // No rule-based objection
   return null
+}
+
+/**
+ * Plan mode only takes an allow for read-only calls; a write stays held even
+ * when an allow rule or a PreToolUse hook would approve it. Plan mode entered
+ * from bypassPermissions keeps writing, as before.
+ */
+export function planModeHoldsWrite(
+  tool: Tool,
+  input: { [key: string]: unknown },
+  permissionContext: ToolPermissionContext,
+): boolean {
+  if (
+    permissionContext.mode !== 'plan' ||
+    permissionContext.isBypassPermissionsModeAvailable
+  ) {
+    return false
+  }
+  const parsed = tool.inputSchema.safeParse(input)
+  return !parsed.success || !tool.isReadOnly(parsed.data)
+}
+
+function isAllowedByRule(result: PermissionResult): boolean {
+  return (
+    result.behavior === 'allow' &&
+    (result.decisionReason?.type === 'rule' ||
+      result.decisionReason?.type === 'subcommandResults')
+  )
+}
+
+function planModeAsk(tool: Tool): PermissionAskDecision {
+  return {
+    behavior: 'ask',
+    message: `Cannot call ${tool.name} while in plan mode.`,
+    decisionReason: { type: 'mode', mode: 'plan' },
+  }
 }
 
 async function hasPermissionsToUseToolInner(
@@ -1566,12 +1653,21 @@ async function hasPermissionsToUseToolInner(
     }
   }
 
+  const holdsWrite = planModeHoldsWrite(
+    tool,
+    input,
+    appState.toolPermissionContext,
+  )
+  if (holdsWrite && isAllowedByRule(toolPermissionResult)) {
+    return planModeAsk(tool)
+  }
+
   // 2b. Entire tool is allowed
   const alwaysAllowedRule = toolAlwaysAllowedRule(
     appState.toolPermissionContext,
     tool,
   )
-  if (alwaysAllowedRule) {
+  if (alwaysAllowedRule && !holdsWrite) {
     return {
       behavior: 'allow',
       updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),
@@ -1717,7 +1813,9 @@ export function syncPermissionRulesFromDisk(
 ): ToolPermissionContext {
   let context = toolPermissionContext
 
-  // When allowManagedPermissionRulesOnly is enabled, clear all non-policy sources
+  // When allowManagedPermissionRulesOnly is enabled, clear all non-policy
+  // sources, except that --disallowedTools and session deny rules only
+  // tighten and stay (official 2.1.257).
   if (shouldAllowManagedPermissionRulesOnly()) {
     const sourcesToClear: Array<PermissionUpdateDestination | 'sshOverlay'> = [
       'userSettings',
@@ -1727,9 +1825,12 @@ export function syncPermissionRulesFromDisk(
       'cliArg',
       'session',
     ]
-    const behaviors: PermissionBehavior[] = ['allow', 'deny', 'ask']
 
     for (const source of sourcesToClear) {
+      const behaviors: PermissionBehavior[] =
+        source === 'cliArg' || source === 'session'
+          ? ['allow', 'ask']
+          : ['allow', 'deny', 'ask']
       for (const behavior of behaviors) {
         context = applyPermissionUpdate(context, {
           type: 'replaceRules',
