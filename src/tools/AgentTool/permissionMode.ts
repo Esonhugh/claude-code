@@ -52,17 +52,26 @@ export function resolveDeclaredAgentPermissionMode(
   return declaredMode
 }
 
+// An explicit Agent/workflow mode is a ceiling: the agent runs in the
+// requested mode while the parent's mode ranks at least as high, otherwise in
+// the parent's mode. Re-evaluated against the parent's current mode, so the
+// agent follows the parent widening (up to the ceiling) and narrowing.
+export function capAgentPermissionMode(
+  parentMode: PermissionMode,
+  requestedMode: PermissionMode,
+): PermissionMode {
+  if (parentMode === 'auto' && requestedMode === 'acceptEdits') return parentMode
+  return AGENT_PERMISSION_MODE_RANK[requestedMode] <=
+    AGENT_PERMISSION_MODE_RANK[parentMode]
+    ? requestedMode
+    : parentMode
+}
+
 export function applyRequestedAgentPermissionMode(
   context: ToolPermissionContext,
   requestedMode: PermissionMode,
 ): ToolPermissionContext {
-  const mode =
-    context.mode === 'auto' && requestedMode === 'acceptEdits'
-      ? context.mode
-      : AGENT_PERMISSION_MODE_RANK[requestedMode] <=
-          AGENT_PERMISSION_MODE_RANK[context.mode]
-        ? requestedMode
-        : context.mode
+  const mode = capAgentPermissionMode(context.mode, requestedMode)
 
   if (mode === 'plan' && context.mode !== 'plan' && !isPlanModeAvailable()) {
     throw new Error(PLAN_MODE_DISABLED_MESSAGE)

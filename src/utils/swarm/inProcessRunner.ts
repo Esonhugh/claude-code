@@ -31,7 +31,7 @@ import {
 } from '../../services/compact/compact.js'
 import { resetMicrocompactState } from '../../services/compact/microCompact.js'
 import type { AppState } from '../../state/AppState.js'
-import type { Tool, ToolUseContext } from '../../Tool.js'
+import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { appendTeammateMessage } from '../../tasks/InProcessTeammateTask/InProcessTeammateTask.js'
 import type {
   InProcessTeammateTaskState,
@@ -61,7 +61,7 @@ import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
 import { asAgentId } from '../../types/ids.js'
 import type { Message } from '../../types/message.js'
-import type { PermissionDecision } from '../../types/permissions.js'
+import type { PermissionDecision, PermissionMode } from '../../types/permissions.js'
 import {
   createAssistantAPIErrorMessage,
   createUserMessage,
@@ -84,6 +84,10 @@ import {
 } from '../permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
+import {
+  restoreDangerousPermissions,
+  stripDangerousPermissionsForAutoMode,
+} from '../permissions/permissionSetup.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -474,6 +478,43 @@ function formatAsTeammateMessage(
   const colorAttr = color ? ` color="${color}"` : ''
   const summaryAttr = summary ? ` summary="${summary}"` : ''
   return `<${TEAMMATE_MESSAGE_TAG} teammate_id="${from}"${colorAttr}${summaryAttr}>\n${content}\n</${TEAMMATE_MESSAGE_TAG}>`
+}
+
+const teammatePermissionViews = new WeakMap<
+  ToolPermissionContext,
+  Map<PermissionMode, ToolPermissionContext>
+>()
+
+/**
+ * The leader's AppState as an in-process teammate sees it: the teammate's own
+ * task mode, read on every call so a leader's Shift+Tab reaches a turn in
+ * flight. Crossing into or out of auto strips or restores the leader's
+ * dangerous allow rules for the teammate only, as transitionPermissionMode
+ * would, without touching the process-wide auto mode state the leader owns.
+ */
+export function getTeammateAppState(
+  state: AppState,
+  taskId: string,
+  modeWithoutTask: PermissionMode,
+): AppState {
+  const task = state.tasks[taskId]
+  const mode = task?.type === 'in_process_teammate' ? task.permissionMode : modeWithoutTask
+  const leader = state.toolPermissionContext
+  if (leader.mode === mode) return state
+  let views = teammatePermissionViews.get(leader)
+  let view = views?.get(mode)
+  if (!view) {
+    const rules =
+      mode === 'auto' && leader.mode !== 'auto'
+        ? stripDangerousPermissionsForAutoMode(leader)
+        : mode !== 'auto' && leader.mode === 'auto'
+          ? restoreDangerousPermissions(leader)
+          : leader
+    view = { ...rules, mode }
+    if (!views) teammatePermissionViews.set(leader, (views = new Map()))
+    views.set(mode, view)
+  }
+  return { ...state, toolPermissionContext: view }
 }
 
 /**
@@ -1168,7 +1209,8 @@ export async function runInProcessTeammate(
       )
       const iterationMessages: Message[] = []
 
-      // Read current permission mode from task state (may have been cycled by leader via Shift+Tab)
+      // Recorded for resume; the turn itself reads the task's mode live
+      // through getTeammateAppState, so a leader's Shift+Tab applies mid-turn.
       const currentAppState = toolUseContext.getAppState()
       const currentTask = currentAppState.tasks[taskId]
       const currentPermissionMode =
@@ -1177,7 +1219,12 @@ export async function runInProcessTeammate(
           : 'default'
       const iterationAgentDefinition = {
         ...resolvedAgentDefinition,
-        permissionMode: currentPermissionMode,
+        permissionMode: undefined,
+      }
+      const teammateToolUseContext: ToolUseContext = {
+        ...toolUseContext,
+        getAppState: () =>
+          getTeammateAppState(toolUseContext.getAppState(), taskId, currentPermissionMode),
       }
 
       // Track if this iteration was interrupted by work abort (not lifecycle abort)
@@ -1203,7 +1250,7 @@ export async function runInProcessTeammate(
             agentDefinition: iterationAgentDefinition,
             baseSystemPrompt: teammateSystemPrompt,
             promptMessages,
-            toolUseContext,
+            toolUseContext: teammateToolUseContext,
             canUseTool: createInProcessCanUseTool(
               identity,
               currentWorkAbortController,
@@ -1244,7 +1291,6 @@ export async function runInProcessTeammate(
             resolvedModel: model,
             preserveToolUseResults: true,
             availableTools: toolUseContext.options.tools,
-            permissionMode: currentPermissionMode,
             allowedTools,
             contentReplacementState: teammateReplacementState,
           })) {

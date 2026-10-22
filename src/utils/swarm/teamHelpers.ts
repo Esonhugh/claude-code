@@ -609,6 +609,23 @@ export async function syncTeammateMode(
 }
 
 /**
+ * Whether a team lead switching its own mode to `mode` leaves teammates on
+ * another one. Teammates never follow the lead: in-process teammates keep
+ * their task mode, pane teammates (whose mode the lead does not track here)
+ * keep their own session's mode.
+ */
+export function teammatesKeepOtherMode(
+  mode: PermissionMode,
+  inProcessModes: readonly PermissionMode[],
+  teammates: Readonly<Record<string, { tmuxPaneId: string }>> | undefined,
+): boolean {
+  return (
+    inProcessModes.some(teammateMode => teammateMode !== mode) ||
+    Object.values(teammates ?? {}).some(teammate => teammate.tmuxPaneId !== 'in-process')
+  )
+}
+
+/**
  * Sets multiple team members' permission modes in a single atomic operation.
  * Avoids race conditions when updating multiple teammates at once.
  * @param teamName - The name of the team

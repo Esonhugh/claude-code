@@ -27,7 +27,10 @@ import {
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
 import { permissionModeTitle } from './PermissionMode.js'
-import { requiresExplicitUserApproval } from './PermissionResult.js'
+import {
+  AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON,
+  requiresExplicitUserApproval,
+} from './PermissionResult.js'
 import { getAutoModeDenialRuleToolName } from './permissionSetup.js'
 import type {
   PermissionAskDecision,
@@ -45,6 +48,7 @@ import type {
 import {
   applyPermissionUpdate,
   applyPermissionUpdates,
+  logPermissionModeChange,
   persistPermissionUpdate,
   persistPermissionUpdates,
 } from './PermissionUpdate.js'
@@ -94,6 +98,7 @@ import {
   buildClassifierUnavailableMessage,
   buildYoloRejectionMessage,
   DONT_ASK_REJECT_MESSAGE,
+  SUBAGENT_NO_PROMPT_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
 import { recordSubagentHandbackReview } from '../subagentHandback.js'
@@ -560,13 +565,14 @@ export async function runPermissionRequestHooksForHeadlessAgent(
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions)
-          context.setAppState(prev => ({
-            ...prev,
-            toolPermissionContext: applyPermissionUpdates(
+          context.setAppState(prev => {
+            const next = applyPermissionUpdates(
               prev.toolPermissionContext,
               decision.updatedPermissions!,
-            ),
-          }))
+            )
+            logPermissionModeChange('hook', prev.toolPermissionContext.mode, next.mode, 'PermissionRequest hook (headless)')
+            return { ...prev, toolPermissionContext: next }
+          })
         }
         return {
           behavior: 'allow',
@@ -686,8 +692,30 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
   if (tool.name === SUBAGENT_HANDBACK_TOOL_NAME) {
     return reviewSubagentHandback(tool, input, context, toolUseID)
   }
-  const result = await hasPermissionsToUseToolInner(tool, input, context)
+  return applyPermissionModeToResult(
+    await hasPermissionsToUseToolInner(tool, input, context),
+    tool,
+    input,
+    context,
+    assistantMessage,
+    toolUseID,
+  )
+}
 
+/**
+ * The mode stage of hasPermissionsToUseTool: dontAsk, auto (classifier and
+ * acceptEdits fast path) and no-prompt contexts turn an ask into a decision.
+ * Exported so a permission owner that computed its own ask (mods tool.check)
+ * keeps the same mode semantics.
+ */
+export async function applyPermissionModeToResult(
+  result: PermissionDecision,
+  tool: Tool,
+  input: { [key: string]: unknown },
+  context: ToolUseContext,
+  assistantMessage: AssistantMessage,
+  toolUseID: string,
+): Promise<PermissionDecision> {
 
   // Reset consecutive denials on any allowed tool use in auto mode.
   // This ensures that a successful tool use (even one auto-allowed by rules)
@@ -1095,7 +1123,17 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             'Auto mode classifier unavailable, falling back to normal permission handling (fail open)',
             { level: 'warn' },
           )
-          return result
+          // Say why auto mode is asking, unless a rule or hook already does.
+          const why = result.decisionReason?.type
+          return why === 'rule' || why === 'hook' || why === 'workingDir'
+            ? result
+            : {
+                ...result,
+                decisionReason: {
+                  type: 'other',
+                  reason: AUTO_MODE_CLASSIFIER_UNAVAILABLE_REASON,
+                },
+              }
         }
 
         // Approve for me never turns a reviewer it cannot read into a decision; the person decides.
@@ -1178,13 +1216,18 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       if (hookDecision) {
         return hookDecision
       }
+      const agentType = context.agentId ? context.agentType : undefined
       return {
         behavior: 'deny',
         decisionReason: {
           type: 'asyncAgent',
-          reason: 'Permission prompts are not available in this context',
+          reason: agentType
+            ? `The ${agentType} agent cannot show permission prompts in this session`
+            : 'Permission prompts are not available in this context',
         },
-        message: AUTO_REJECT_MESSAGE(tool.name),
+        message: agentType
+          ? SUBAGENT_NO_PROMPT_REJECT_MESSAGE(tool.name, agentType)
+          : AUTO_REJECT_MESSAGE(tool.name),
       }
     }
   }

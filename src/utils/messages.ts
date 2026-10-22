@@ -239,6 +239,12 @@ export const DENIAL_WORKAROUND_GUIDANCE =
 export function AUTO_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied. ${DENIAL_WORKAROUND_GUIDANCE}`
 }
+export function SUBAGENT_NO_PROMPT_REJECT_MESSAGE(
+  toolName: string,
+  agentType: string,
+): string {
+  return `Permission to use ${toolName} has been denied: the ${agentType} agent cannot ask for approval because this session has no permission dialog (non-interactive -p or SDK run). ${DENIAL_WORKAROUND_GUIDANCE}`
+}
 export function DONT_ASK_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied because Claude Code is running in don't ask mode. ${DENIAL_WORKAROUND_GUIDANCE}`
 }

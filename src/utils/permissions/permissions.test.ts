@@ -152,3 +152,34 @@ test('MCP servers named constructor or toString follow rules and modes like any 
     )
   }
 })
+
+test('a subagent that cannot prompt is told which agent was denied and why', async () => {
+  const tool = fakeTool('Bash')
+  const base = context({})
+  const state = base.getAppState()
+  const headless = {
+    ...base,
+    getAppState: () => ({
+      ...state,
+      toolPermissionContext: { ...state.toolPermissionContext, shouldAvoidPermissionPrompts: true },
+    }),
+  } as ToolUseContext
+  const main = await check(tool, {}, headless)
+  expect(main).toMatchObject({
+    behavior: 'deny',
+    decisionReason: { type: 'asyncAgent', reason: 'Permission prompts are not available in this context' },
+  })
+  expect(main.behavior === 'deny' && main.message).toStartWith('Permission to use Bash has been denied. ')
+
+  const agent = await check(tool, {}, { ...headless, agentId: 'agent-1', agentType: 'general-purpose' } as ToolUseContext)
+  expect(agent).toMatchObject({
+    behavior: 'deny',
+    decisionReason: {
+      type: 'asyncAgent',
+      reason: 'The general-purpose agent cannot show permission prompts in this session',
+    },
+  })
+  expect(agent.behavior === 'deny' && agent.message).toStartWith(
+    'Permission to use Bash has been denied: the general-purpose agent cannot ask for approval because this session has no permission dialog (non-interactive -p or SDK run). ',
+  )
+})

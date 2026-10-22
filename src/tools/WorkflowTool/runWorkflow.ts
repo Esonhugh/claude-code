@@ -76,7 +76,10 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
-import { applyRequestedAgentPermissionMode } from '../AgentTool/permissionMode.js'
+import {
+  applyRequestedAgentPermissionMode,
+  capAgentPermissionMode,
+} from '../AgentTool/permissionMode.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 import { sleep } from '../../utils/sleep.js'
@@ -273,29 +276,29 @@ export function snapshotWorkflowAgentContext(
   const effectiveMode = permissionContext.mode
   const inputMode =
     requestedMode && effectiveMode === requestedMode ? requestedMode : undefined
+  // Agents keep reading the parent's current mode after launch; a phase mode
+  // caps it, like an explicit Agent mode in runAgent.
   return {
     identityMode: effectiveMode,
     inputMode,
-    context: {
-      ...context,
-      getAppState: () => {
-        const state = context.getAppState()
-        const currentPermissionContext = state.toolPermissionContext
-        const launchPermissionContext = requestedMode
-          ? applyRequestedAgentPermissionMode(
-              currentPermissionContext,
+    context: requestedMode
+      ? {
+          ...context,
+          getAppState: () => {
+            const state = context.getAppState()
+            const mode = capAgentPermissionMode(
+              state.toolPermissionContext.mode,
               requestedMode,
             )
-          : currentPermissionContext
-        const toolPermissionContext =
-          launchPermissionContext.mode === effectiveMode
-            ? launchPermissionContext
-            : { ...launchPermissionContext, mode: effectiveMode }
-        return toolPermissionContext === currentPermissionContext
-          ? state
-          : { ...state, toolPermissionContext }
-      },
-    },
+            return mode === state.toolPermissionContext.mode
+              ? state
+              : {
+                  ...state,
+                  toolPermissionContext: { ...state.toolPermissionContext, mode },
+                }
+          },
+        }
+      : context,
   }
 }
 

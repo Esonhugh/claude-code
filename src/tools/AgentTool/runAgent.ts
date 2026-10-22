@@ -3,7 +3,7 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { addInvokedSkill, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import { addInvokedSkill, getIsNonInteractiveSession, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import {
   getCommand,
   getMcpSkillCommands,
@@ -45,6 +45,7 @@ import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTask
 import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
 import type { PermissionMode } from '../../types/permissions.js'
+import { logPermissionModeChange } from '../../utils/permissions/PermissionUpdate.js'
 import type {
   AssistantMessage,
   Message,
@@ -120,6 +121,7 @@ import {
 } from './agentToolUtils.js'
 import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
 import {
+  capAgentPermissionMode,
   resolveDeclaredAgentPermissionMode,
   shouldBubbleAgentPermissionPrompts,
 } from './permissionMode.js'
@@ -508,7 +510,9 @@ export async function* runAgent({
    * Always contains the full tool pool assembled with the worker's own permission
    * mode, independent of the parent's tool restrictions. */
   availableTools: Tools
-  /** Effective permission mode selected by the Agent tool caller. */
+  /** A mode fixed at spawn (Agent `mode`, a clamped resume). Omitted, the
+   * definition's mode is resolved against the parent's current mode on every
+   * read, so parent mode switches reach the running agent. */
   permissionMode?: PermissionMode
   /** Tool permission rules to add to the agent's session allow rules.
    * When provided, replaces ALL allow rules so the agent only has what's
@@ -574,12 +578,21 @@ export async function* runAgent({
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
-  const permissionMode =
-    requestedPermissionMode ??
-    resolveDeclaredAgentPermissionMode(
-      appState.toolPermissionContext.mode,
-      agentDefinition.permissionMode,
-    )
+  // Like official Xn(R), the mode follows the parent session's current mode.
+  // An explicit spawn mode caps it (official ignores the Agent `mode` input).
+  let resolvedFor: { parentMode: PermissionMode; mode: PermissionMode } | undefined
+  const resolvePermissionMode = (parentMode: PermissionMode): PermissionMode => {
+    if (resolvedFor?.parentMode === parentMode) return resolvedFor.mode
+    const mode = requestedPermissionMode
+      ? capAgentPermissionMode(parentMode, requestedPermissionMode)
+      : resolveDeclaredAgentPermissionMode(parentMode, agentDefinition.permissionMode)
+    if (resolvedFor) {
+      logPermissionModeChange('parent', resolvedFor.mode, mode, `subagent ${agentDefinition.agentType}, parent mode ${parentMode}`)
+    }
+    resolvedFor = { parentMode, mode }
+    return mode
+  }
+  const permissionMode = resolvePermissionMode(appState.toolPermissionContext.mode)
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
@@ -683,20 +696,23 @@ export async function* runAgent({
       ? systemContextNoGit
       : baseSystemContext
 
-  // Preserve the resolved launch mode while reading fresh parent rule updates.
+  // Read fresh parent rules and mode; a fixed spawn mode stays fixed.
   let preloadedSkillAllowedTools: string[] = []
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
+    const mode = resolvePermissionMode(state.toolPermissionContext.mode)
     let toolPermissionContext =
-      state.toolPermissionContext.mode === permissionMode
+      state.toolPermissionContext.mode === mode
         ? state.toolPermissionContext
-        : { ...state.toolPermissionContext, mode: permissionMode }
+        : { ...state.toolPermissionContext, mode }
 
     // Set flag to auto-deny prompts for agents that can't show UI
     // Use explicit canShowPermissionPrompts if provided, otherwise:
     //   - requested bubble: always show prompts (bubbles to parent terminal),
     //     even when the parent's mode was kept
-    //   - default: !isAsync (sync agents show prompts, async agents don't)
+    //   - default: sync agents show prompts; async agents show them in the
+    //     main session dialog when one exists (interactive REPL) and are
+    //     denied otherwise (-p / SDK)
     const shouldAvoidPrompts =
       canShowPermissionPrompts !== undefined
         ? !canShowPermissionPrompts
@@ -704,7 +720,7 @@ export async function* runAgent({
               requestedPermissionMode ?? agentDefinition.permissionMode,
             )
           ? false
-          : isAsync
+          : isAsync && getIsNonInteractiveSession()
     if (shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,
@@ -716,7 +732,8 @@ export async function* runAgent({
     // (classifier, permission hooks) before showing the permission dialog.
     // Since these are background agents, waiting is fine — the user should
     // only be interrupted when automated checks can't resolve the permission.
-    // This applies to bubble mode (always) and explicit canShowPermissionPrompts.
+    // This applies to bubble mode, explicit canShowPermissionPrompts and
+    // background agents of an interactive session.
     if (isAsync && !shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,
@@ -1121,7 +1138,9 @@ export async function* runAgent({
         cwd,
         name,
         toolUseId,
-        permissionMode,
+        // The asked mode, not its resolution, so a resume can keep following
+        // the parent's current mode.
+        permissionMode: requestedPermissionMode ?? agentDefinition.permissionMode,
         parentAgentId,
         effort: agentGetAppState().effortValue,
         spawnDepth:
@@ -1288,7 +1307,7 @@ export async function* runAgent({
     ) {
       try {
         for await (const result of executeStopHooks(
-          permissionMode,
+          agentGetAppState().toolPermissionContext.mode,
           undefined,
           undefined,
           false,

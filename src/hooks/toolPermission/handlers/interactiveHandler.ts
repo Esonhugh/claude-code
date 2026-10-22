@@ -16,6 +16,7 @@ import {
   shortRequestId,
   truncateForPreview,
 } from '../../../services/mcp/channelPermissions.js'
+import { getAgentColor } from '../../../tools/AgentTool/agentColorManager.js'
 import { executeAsyncClassifierCheck } from '../../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../../tools/BashTool/toolName.js'
 import {
@@ -84,6 +85,11 @@ function handleInteractivePermission(
 
   const permissionPromptStartTimeMs = Date.now()
   const displayInput = result.updatedInput ?? ctx.input
+  // Subagent asks (including background agents) surface in the main dialog;
+  // name the agent that asked, like the official "from the X agent" source.
+  const sourceAgentType = ctx.toolUseContext.agentId
+    ? ctx.toolUseContext.agentType
+    : undefined
 
   function clearClassifierIndicator(): void {
     if (feature('BASH_CLASSIFIER')) {
@@ -100,6 +106,15 @@ function handleInteractivePermission(
     toolUseID: ctx.toolUseID,
     permissionResult: result,
     permissionPromptStartTimeMs,
+    ...(sourceAgentType
+      ? {
+          workerBadge: {
+            name: sourceAgentType,
+            color: getAgentColor(sourceAgentType) ?? 'cyan',
+            label: `from the ${sourceAgentType} agent`,
+          },
+        }
+      : {}),
     ...(feature('BASH_CLASSIFIER')
       ? {
           classifierCheckInProgress:

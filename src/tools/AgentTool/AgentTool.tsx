@@ -1244,7 +1244,9 @@ export const AgentTool = buildTool({
           ? { systemPrompt: asSystemPrompt(enhancedSystemPrompt) }
           : undefined,
       availableTools: isForkPath ? toolUseContext.options.tools : workerTools,
-      permissionMode,
+      // Only an explicit spawn mode is fixed; runAgent resolves the
+      // definition's mode against the parent's current mode on every read.
+      permissionMode: explicitPermissionMode,
       allowedTools,
       allowedAgentTypes: resolvedAgentTools?.allowedAgentTypes,
       // Pass parent conversation when the fork-subagent path needs full

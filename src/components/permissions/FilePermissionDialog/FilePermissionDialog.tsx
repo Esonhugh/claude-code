@@ -16,6 +16,7 @@ import { ShowInIDEPrompt } from '../../ShowInIDEPrompt.js'
 import { usePermissionRequestLogging } from '../hooks.js'
 import { PermissionDialog } from '../PermissionDialog.js'
 import type { ToolUseConfirm } from '../PermissionRequest.js'
+import { PermissionModeAskNote } from '../PermissionRuleExplanation.js'
 import type { WorkerBadgeProps } from '../WorkerBadge.js'
 import type { IDEDiffSupport } from './ideDiffConfig.js'
 import type {
@@ -231,6 +232,7 @@ export function FilePermissionDialog<T extends ToolInput = ToolInput>({
         {symlinkWarning}
         {content}
         <Box flexDirection="column" paddingX={1}>
+          <PermissionModeAskNote permissionResult={toolUseConfirm.permissionResult} />
           {typeof question === 'string' ? <Text>{question}</Text> : question}
           <Select
             options={options}

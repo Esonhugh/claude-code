@@ -76,3 +76,12 @@ test('mutations on a missing team return false', async () => {
   expect(await removeMemberByAgentId('no-such-team', 'x@no-such-team')).toBe(false)
   expect(await setMemberMode('no-such-team', 'x', 'plan')).toBe(false)
 })
+
+test('a lead mode switch is reported as not reaching teammates on another mode', async () => {
+  const { teammatesKeepOtherMode } = await import('./teamHelpers.js')
+  const inProcess = { tmuxPaneId: 'in-process' }
+  expect(teammatesKeepOtherMode('auto', [], undefined)).toBe(false)
+  expect(teammatesKeepOtherMode('auto', ['auto'], { a: inProcess })).toBe(false)
+  expect(teammatesKeepOtherMode('auto', ['default'], { a: inProcess })).toBe(true)
+  expect(teammatesKeepOtherMode('auto', [], { b: { tmuxPaneId: '%3' } })).toBe(true)
+})
