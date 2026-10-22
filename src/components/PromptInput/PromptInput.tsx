@@ -2157,22 +2157,30 @@ function PromptInput({
     const intentGeneration = ++permissionModeIntentGenerationRef.current
     permissionModeIntentRef.current = nextMode
 
+    const rejectModeChange = (error: string) => {
+      addNotification({
+        key: 'permission-mode-rejected',
+        text: error,
+        color: 'error',
+        priority: 'high',
+      })
+      if (intentGeneration === permissionModeIntentGenerationRef.current) {
+        permissionModeIntentGenerationRef.current = 0
+        permissionModeIntentRef.current = toolPermissionContext.mode
+      }
+    }
+
     const applyModeChange = async () => {
       if (requestPermissionModeChange) {
-        const result = await requestPermissionModeChange(nextMode)
+        // transitionPermissionMode throws when a gate closed after the press.
+        const result = await requestPermissionModeChange(nextMode).catch(
+          (error: unknown) => ({
+            success: false as const,
+            error: errorMessage(error),
+          }),
+        )
         if (result.success === false) {
-          addNotification({
-            key: 'permission-mode-rejected',
-            text: result.error,
-            color: 'error',
-            priority: 'high',
-          })
-          if (
-            intentGeneration === permissionModeIntentGenerationRef.current
-          ) {
-            permissionModeIntentGenerationRef.current = 0
-            permissionModeIntentRef.current = toolPermissionContext.mode
-          }
+          rejectModeChange(result.error)
           return
         }
         if (intentGeneration === permissionModeIntentGenerationRef.current) {
@@ -2180,11 +2188,17 @@ function PromptInput({
           permissionModeIntentRef.current = nextMode
         }
       } else {
-        const preparedContext = transitionPermissionMode(
-          toolPermissionContext.mode,
-          nextMode,
-          toolPermissionContext,
-        )
+        let preparedContext: ToolPermissionContext
+        try {
+          preparedContext = transitionPermissionMode(
+            toolPermissionContext.mode,
+            nextMode,
+            toolPermissionContext,
+          )
+        } catch (error) {
+          rejectModeChange(errorMessage(error))
+          return
+        }
         setToolPermissionContext({
           ...preparedContext,
           mode: nextMode,

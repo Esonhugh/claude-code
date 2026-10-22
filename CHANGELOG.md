@@ -54,6 +54,27 @@
 - `src/utils/permissions/permissions.approveForMe.test.ts` 新增被否决的 `CLAUDE_CODE_AUTO_MODE_MODEL` 改用默认 Sonnet 5 分类器、`availableModels` 不允许时同样否决。
 - `src/utils/permissions/approveForMe.test.ts` 新增移除 `disableAutoMode` 后可重新进入自动模式，以及设置变更时退出与恢复自动模式可用。
 
+## 2026-10-21 - 权限模式切换加固：auto 规则剥除、切换入口与重判
+
+### 变更内容
+
+- 进入 auto 时，来自 `--settings`、托管策略与 skill/命令 allowed-tools 的危险 allow 规则（如 `Bash(python3:*)`）也会被剥除并在离开 auto 时还原（对齐官方）；以前 debug 日志写着 `Ignoring dangerous permission` 但规则仍生效、绕过分类器。
+- auto 模式（以及 auto 生效中的 plan）期间修改任何 settings 文件后重新剥除危险 allow 规则（对齐官方）；以前重新加载会把规则加回来，相关命令不经分类器直接执行。
+- 离开 auto 时不再还原在 auto 期间已从 settings 删除的规则，也不再产生重复规则；再次剥除（plan 中改设置、ExitPlanMode 回到 auto 等）不再丢失先前剥除的规则，例如 `--allowedTools "Bash(python3:*)"` 离开 auto 后仍然有效（对齐官方）。
+- PermissionRequest hook、SDK host 的 `updatedPermissions` 与权限对话框建议中的 `setMode` 改走与 Shift+Tab、SDK `set_permission_mode` 相同的切换流程（bypass 策略与可用性、auto 闸门、plan 可用性），切到 auto 时剥除危险规则、离开时还原；不可用的模式改为回到 default（对齐官方）。
+- auto 分类器检查进行中切换了模式（例如 Shift+Tab 切回 default）时，丢弃分类器结果并按新模式重新判定，default 下会弹出确认（对齐官方），不再以旧结果直接执行。
+- SDK `set_permission_mode` 之后重新判定等待中的 `can_use_tool` 请求：新模式或规则已允许的调用直接放行并取消 host 端的提示；REPL 与 SDK 的重判都不再接受 auto 分类器的 allow 来关闭已向用户显示的提示（对齐官方 SDK 重判）。
+- Shift+Tab 切换模式时若切换在检查后失败（例如 auto 闸门刚关闭），显示错误并重置模式意图，下一次 Shift+Tab 不再跳过一个模式。
+
+### 测试覆盖
+
+- 新增 `src/utils/permissions/autoModeStash.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：flagSettings/policySettings/command 来源剥除与还原、stash 合并去重、还原跳过已存在规则。
+- 新增 `src/utils/settings/applySettingsChange.autoMode.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：auto 与 auto 生效中的 plan 修改设置后重新剥除、已删除规则不还原、非 auto 不变。
+- 新增 `src/hooks/toolPermission/permissionModeUpdates.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：headless/交互式 hook、SDK `updatedPermissions` 切到 auto 时剥除规则，不可用模式回到 default 并还原规则。
+- 新增 `src/utils/permissions/permissions.staleClassifier.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：分类器进行中切到 default 时 allow 与 block 都改为询问，模式不变时照常放行。
+- 新增 `src/hooks/toolPermission/handlers/recheck.test.ts` 与 `src/cli/structuredIO.recheck.test.ts`：队列重判只接受规则与非 auto 模式的 allow，SDK 等待中的请求在 `set_permission_mode` 后放行并发送 `control_cancel_request`，分类器 allow 不放行。
+- 新增 `src/components/PromptInput/PromptInput.cycleModeError.test.tsx`：模式切换抛错后下一次 Shift+Tab 重新请求同一模式。
+
 ## 2026-10-21 - 权限模式切换传递到 Mods tool.check、子代理与 teammate
 
 ### 变更内容

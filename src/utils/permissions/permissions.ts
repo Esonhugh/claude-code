@@ -52,6 +52,7 @@ import {
   persistPermissionUpdate,
   persistPermissionUpdates,
 } from './PermissionUpdate.js'
+import { applyPermissionUpdatesWithModeTransition } from './permissionSetup.js'
 import type {
   PermissionUpdate,
   PermissionUpdateDestination,
@@ -566,7 +567,7 @@ export async function runPermissionRequestHooksForHeadlessAgent(
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions)
           context.setAppState(prev => {
-            const next = applyPermissionUpdates(
+            const next = applyPermissionUpdatesWithModeTransition(
               prev.toolPermissionContext,
               decision.updatedPermissions!,
             )
@@ -679,6 +680,46 @@ async function reviewSubagentHandback(
     behavior: 'allow',
     updatedInput: input,
     decisionReason: { type: 'classifier', classifier: 'auto-mode', reason },
+  }
+}
+
+/**
+ * Whether a fresh allow may close a permission prompt that is already open
+ * (recheck after a rule or mode change). Only rules and the default,
+ * acceptEdits and bypass modes count; an auto mode verdict does not answer a
+ * question already put to the person (official SDK recheck).
+ */
+export function isRecheckAllowReason(
+  reason: PermissionDecisionReason | undefined,
+): boolean {
+  switch (reason?.type) {
+    case 'rule':
+      return true
+    case 'mode':
+      return (
+        reason.mode === 'default' ||
+        reason.mode === 'acceptEdits' ||
+        reason.mode === 'bypassPermissions'
+      )
+    case 'subcommandResults': {
+      // Read-only subcommands are allowed in every mode; they don't decide it.
+      const deciding = [...reason.reasons.values()].filter(
+        result =>
+          result.behavior !== 'allow' ||
+          result.decisionReason?.type !== 'other' ||
+          result.decisionReason.reason !== 'Read-only command is allowed',
+      )
+      return (
+        deciding.length > 0 &&
+        deciding.every(
+          result =>
+            result.behavior === 'allow' &&
+            isRecheckAllowReason(result.decisionReason),
+        )
+      )
+    }
+    default:
+      return false
   }
 }
 
@@ -924,6 +965,25 @@ export async function applyPermissionModeToResult(
         )
       } finally {
         clearClassifierChecking(toolUseID)
+      }
+
+      // The mode can change while the classifier runs (Shift+Tab, SDK). Its
+      // verdict only holds for auto, so decide again under the current mode.
+      const modeNow = context.getAppState().toolPermissionContext.mode
+      if (
+        modeNow !== 'auto' &&
+        !(modeNow === 'plan' && (autoModeStateModule?.isAutoModeActive() ?? false))
+      ) {
+        logForDebugging(
+          `Discarding auto mode classifier result for ${tool.name}: mode changed to '${modeNow}' while it ran`,
+        )
+        return hasPermissionsToUseTool(
+          tool,
+          input,
+          context,
+          assistantMessage,
+          toolUseID,
+        )
       }
 
       // Notify ants when classifier error dumped prompts (will be in /share)

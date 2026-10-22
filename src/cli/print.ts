@@ -3524,6 +3524,7 @@ function runHeadlessStreaming(
           // handleSetPermissionMode sends the control_response; the
           // notifySessionMetadataChanged that used to follow here is
           // now fired by onChangeAppState (with externalized mode name).
+          structuredIO.recheckPendingPermissions()
         } else if (message.request.subtype === 'set_model') {
           const requestedModel = message.request.model ?? 'default'
           if (typeof requestedModel !== 'string') {

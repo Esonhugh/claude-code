@@ -12,11 +12,16 @@ import {
   verifyAutoModeGateAccess,
 } from '../permissions/permissionSetup.js'
 import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
-import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
-import type { SettingSource } from './constants.js'
+import {
+  loadAllPermissionRulesFromDisk,
+  shouldAllowManagedPermissionRulesOnly,
+} from '../permissions/permissionsLoader.js'
+import type { ToolPermissionRulesBySource } from '../../Tool.js'
+import { SETTING_SOURCES, type SettingSource } from './constants.js'
 import { getInitialSettings } from './settings.js'
 import { isAnt } from 'src/utils/userType.js'
 
+const DISK_RULE_SOURCES: readonly string[] = [...SETTING_SOURCES, 'sshOverlay']
 
 /**
  * Apply a settings change to app state. Re-reads settings from disk,
@@ -69,6 +74,23 @@ export function applySettingsChange(
       isBypassPermissionsModeDisabled()
     ) {
       newContext = createDisabledBypassPermissionsContext(newContext)
+    }
+
+    // Disk-sourced stash entries were just reloaded from disk; drop them so
+    // the re-strip below rebuilds them from what is on disk now and a rule
+    // deleted from settings is not restored when auto mode ends.
+    if (newContext.strippedDangerousRules) {
+      const managedOnly = shouldAllowManagedPermissionRulesOnly()
+      const stash: ToolPermissionRulesBySource = {}
+      for (const [source, rules] of Object.entries(
+        newContext.strippedDangerousRules,
+      )) {
+        if (DISK_RULE_SOURCES.includes(source)) continue
+        // Managed-only clears cliArg and session rules; command rules stay.
+        if (managedOnly && source !== 'command') continue
+        if (rules) stash[source as keyof ToolPermissionRulesBySource] = [...rules]
+      }
+      newContext = { ...newContext, strippedDangerousRules: stash }
     }
 
     newContext = transitionPlanAutoMode(newContext)

@@ -90,8 +90,12 @@ import type {
 import {
   type AdditionalWorkingDirectory,
   applyPermissionUpdate,
+  applyPermissionUpdates,
 } from './PermissionUpdate.js'
-import type { PermissionUpdateDestination } from './PermissionUpdateSchema.js'
+import type {
+  PermissionUpdate,
+  PermissionUpdateDestination,
+} from './PermissionUpdateSchema.js'
 import {
   normalizeLegacyToolName,
   permissionRuleValueFromString,
@@ -532,34 +536,34 @@ function isPermissionUpdateDestination(
 /**
  * Removes dangerous permissions from the in-memory context, and optionally
  * persists the removal to settings files on disk.
+ *
+ * Sources that can't be written back (flagSettings, policySettings, command)
+ * are skipped unless includeAllSources is set; auto mode sets it because those
+ * rules would bypass the classifier just the same.
  */
 export function removeDangerousPermissions(
   context: ToolPermissionContext,
   dangerousPermissions: DangerousPermissionInfo[],
+  includeAllSources = false,
 ): ToolPermissionContext {
-  // Group dangerous rules by their source (destination for updates)
-  const rulesBySource = new Map<
-    PermissionUpdateDestination,
-    PermissionRuleValue[]
-  >()
+  const rulesBySource = new Map<PermissionRuleSource, PermissionRuleValue[]>()
   for (const perm of dangerousPermissions) {
-    // Skip sources that can't be persisted (flagSettings, policySettings, command)
-    if (!isPermissionUpdateDestination(perm.source)) {
+    if (!includeAllSources && !isPermissionUpdateDestination(perm.source)) {
       continue
     }
-    const destination = perm.source
-    const existing = rulesBySource.get(destination) || []
+    const existing = rulesBySource.get(perm.source) || []
     existing.push(perm.ruleValue)
-    rulesBySource.set(destination, existing)
+    rulesBySource.set(perm.source, existing)
   }
 
   let updatedContext = context
-  for (const [destination, rules] of rulesBySource) {
+  for (const [source, rules] of rulesBySource) {
     updatedContext = applyPermissionUpdate(updatedContext, {
       type: 'removeRules' as const,
       rules,
       behavior: 'allow' as const,
-      destination,
+      // In-memory only: removeRules filters context.alwaysAllowRules[source].
+      destination: source as PermissionUpdateDestination,
     })
   }
 
@@ -602,16 +606,21 @@ export function stripDangerousPermissionsForAutoMode(
       `Ignoring dangerous permission ${permission.ruleDisplay} from ${permission.sourceDisplay} (bypasses classifier)`,
     )
   }
-  // Mirror removeDangerousPermissions' source filter so stash == what was actually removed.
+  // Merge into an earlier stash (re-strip after a settings change, plan entry
+  // from auto) so rules stripped before are still restored on exit.
   const stripped: ToolPermissionRulesBySource = {}
+  for (const [source, ruleStrings] of Object.entries(
+    context.strippedDangerousRules ?? {},
+  )) {
+    if (ruleStrings) stripped[source as PermissionRuleSource] = [...ruleStrings]
+  }
   for (const perm of dangerousPermissions) {
-    if (!isPermissionUpdateDestination(perm.source)) continue
-    ;(stripped[perm.source] ??= []).push(
-      permissionRuleValueToString(perm.ruleValue),
-    )
+    const ruleString = permissionRuleValueToString(perm.ruleValue)
+    const stash = (stripped[perm.source] ??= [])
+    if (!stash.includes(ruleString)) stash.push(ruleString)
   }
   return {
-    ...removeDangerousPermissions(context, dangerousPermissions),
+    ...removeDangerousPermissions(context, dangerousPermissions, true),
     strippedDangerousRules: stripped,
   }
 }
@@ -631,11 +640,17 @@ export function restoreDangerousPermissions(
   }
   let result = context
   for (const [source, ruleStrings] of Object.entries(stash)) {
-    if (!ruleStrings || ruleStrings.length === 0) continue
+    const present =
+      result.alwaysAllowRules[source as PermissionRuleSource] ?? []
+    const missing = (ruleStrings ?? []).filter(
+      rule => !present.includes(rule),
+    )
+    if (missing.length === 0) continue
     result = applyPermissionUpdate(result, {
       type: 'addRules',
-      rules: ruleStrings.map(permissionRuleValueFromString),
+      rules: missing.map(permissionRuleValueFromString),
       behavior: 'allow',
+      // In-memory only: addRules appends to context.alwaysAllowRules[source].
       destination: source as PermissionUpdateDestination,
     })
   }
@@ -734,6 +749,36 @@ export function transitionPermissionModeWithGates(
     throw new Error(reason ? `auto mode is unavailable: ${getAutoModeUnavailableNotification(reason)}` : 'auto mode is unavailable')
   }
   return { ...transitionPermissionMode(context.mode, toMode, context), mode: toMode }
+}
+
+/**
+ * applyPermissionUpdates for updates handed back by a PermissionRequest hook,
+ * an SDK host or a permission dialog. Rule and directory updates apply as
+ * usual; a setMode goes through transitionPermissionModeWithGates like any
+ * other mode switch, and a mode that is not available falls back to default
+ * (as the official CLI does for setMode from a bridge).
+ */
+export function applyPermissionUpdatesWithModeTransition(
+  context: ToolPermissionContext,
+  updates: PermissionUpdate[],
+): ToolPermissionContext {
+  let next = applyPermissionUpdates(
+    context,
+    updates.filter(update => update.type !== 'setMode'),
+  )
+  for (const update of updates) {
+    if (update.type !== 'setMode') continue
+    try {
+      next = transitionPermissionModeWithGates(next, update.mode)
+    } catch (error) {
+      logForDebugging(
+        `setMode '${update.mode}' rejected (${error instanceof Error ? error.message : String(error)}); falling back to 'default'`,
+        { level: 'warn' },
+      )
+      next = transitionPermissionModeWithGates(next, 'default')
+    }
+  }
+  return next
 }
 
 /**
@@ -1628,16 +1673,18 @@ export function prepareContextForPlanMode(
 }
 
 /**
- * Reconciles auto-mode state during plan mode after a settings change.
- * Compares desired state (shouldPlanUseAutoMode) against actual state
- * (isAutoModeActive) and activates/deactivates auto accordingly. No-op when
- * not in plan mode. Called from applySettingsChange so that toggling
- * useAutoModeDuringPlan mid-plan takes effect immediately.
+ * Reconciles auto-mode state after a settings change. In auto mode it
+ * re-strips the dangerous rules syncPermissionRulesFromDisk just reloaded.
+ * In plan mode it compares desired state (shouldPlanUseAutoMode) against
+ * actual state (isAutoModeActive) and activates/deactivates auto accordingly.
+ * Called from applySettingsChange so that toggling useAutoModeDuringPlan
+ * mid-plan takes effect immediately.
  */
 export function transitionPlanAutoMode(
   context: ToolPermissionContext,
 ): ToolPermissionContext {
   if (!feature('TRANSCRIPT_CLASSIFIER')) return context
+  if (context.mode === 'auto') return stripDangerousPermissionsForAutoMode(context)
   if (context.mode !== 'plan') return context
   // Mirror prepareContextForPlanMode's entry-time exclusion — never activate
   // auto mid-plan when the user entered from a dangerous mode.

@@ -32,8 +32,8 @@ import {
 } from '../../utils/messages.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { recheckPermissionRequestHookInput } from '../../utils/permissions/permissions.js'
+import { applyPermissionUpdatesWithModeTransition } from '../../utils/permissions/permissionSetup.js'
 import {
-  applyPermissionUpdates,
   logPermissionModeChange,
   persistPermissionUpdates,
   supportsPersistence,
@@ -143,7 +143,10 @@ function createPermissionContext(
       persistPermissionUpdates(updates)
       const appState = toolUseContext.getAppState()
       setToolPermissionContext(
-        applyPermissionUpdates(appState.toolPermissionContext, updates),
+        applyPermissionUpdatesWithModeTransition(
+          appState.toolPermissionContext,
+          updates,
+        ),
       )
       return updates.some(update => supportsPersistence(update.destination))
     },
