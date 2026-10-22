@@ -54,7 +54,7 @@ if (process.env[childFlag] !== '1') {
     await rm(configDir, { recursive: true, force: true })
   })
   process.env.CLAUDE_CONFIG_DIR = configDir
-  delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
   ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
     VERSION: 'test',
   }
@@ -339,7 +339,7 @@ if (process.env[childFlag] !== '1') {
       expect(broadcast.data.success).toBe(false)
       expect(broadcast.data.message).toContain('nothing was queued for them: blocked-member')
     } finally {
-      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
     }
   })
 
@@ -467,7 +467,7 @@ if (process.env[childFlag] !== '1') {
       }).success).toBe(true)
       expect(await SendMessageTool.prompt({} as never)).toContain('plan_approval_response')
     } finally {
-      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
     }
   })
 
@@ -487,7 +487,7 @@ if (process.env[childFlag] !== '1') {
     try {
       expect(SendMessageTool.isEnabled()).toBe(true)
     } finally {
-      delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS
+      process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '0'
     }
   })
 

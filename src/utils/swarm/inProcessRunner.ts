@@ -84,10 +84,7 @@ import {
 } from '../permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
-import {
-  restoreDangerousPermissions,
-  stripDangerousPermissionsForAutoMode,
-} from '../permissions/permissionSetup.js'
+import { stripDangerousPermissionsForAutoMode } from '../permissions/permissionSetup.js'
 import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -120,6 +117,7 @@ import {
   createPermissionRequest,
   sendPermissionRequestViaMailbox,
 } from './permissionSync.js'
+import { leaderModeReachesTeammates } from './teamHelpers.js'
 import { TEAMMATE_SYSTEM_PROMPT_ADDENDUM } from './teammatePromptAddendum.js'
 import { isAnt } from 'src/utils/userType.js'
 
@@ -486,30 +484,27 @@ const teammatePermissionViews = new WeakMap<
 >()
 
 /**
- * The leader's AppState as an in-process teammate sees it: the teammate's own
- * task mode, read on every call so a leader's Shift+Tab reaches a turn in
- * flight. Crossing into or out of auto strips or restores the leader's
- * dangerous allow rules for the teammate only, as transitionPermissionMode
- * would, without touching the process-wide auto mode state the leader owns.
+ * The leader's AppState as an in-process teammate sees it, read on every call
+ * so a mode change reaches a turn in flight. Like official subagents, the
+ * teammate runs in the leader's mode while the leader is in bypass,
+ * acceptEdits or auto, and in its own task mode otherwise. A teammate in auto
+ * under a leader that is not gets the leader's dangerous allow rules stripped
+ * for itself only, without touching the process-wide auto mode state.
  */
 export function getTeammateAppState(
   state: AppState,
   taskId: string,
   modeWithoutTask: PermissionMode,
 ): AppState {
+  const leader = state.toolPermissionContext
+  if (leaderModeReachesTeammates(leader.mode)) return state
   const task = state.tasks[taskId]
   const mode = task?.type === 'in_process_teammate' ? task.permissionMode : modeWithoutTask
-  const leader = state.toolPermissionContext
   if (leader.mode === mode) return state
   let views = teammatePermissionViews.get(leader)
   let view = views?.get(mode)
   if (!view) {
-    const rules =
-      mode === 'auto' && leader.mode !== 'auto'
-        ? stripDangerousPermissionsForAutoMode(leader)
-        : mode !== 'auto' && leader.mode === 'auto'
-          ? restoreDangerousPermissions(leader)
-          : leader
+    const rules = mode === 'auto' ? stripDangerousPermissionsForAutoMode(leader) : leader
     view = { ...rules, mode }
     if (!views) teammatePermissionViews.set(leader, (views = new Map()))
     views.set(mode, view)

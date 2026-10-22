@@ -99,6 +99,21 @@
 - 新增 `src/skills/bundled/autoModeSetup.test.ts`（子进程，TRANSCRIPT_CLASSIFIER）：命令名与说明、禁止模型调用、只预授权只读工具、提示含六个提案键、`$defaults`、用户设置路径与默认环境，auto 模式停用时隐藏。
 - 新增 `src/utils/permissions/filesystem.pathRules.test.ts`：重复斜杠、符号链接目录上的 deny/ask、allow 不越过符号链接、系统链接 allow；Windows 用例在 Linux 上检查规则拆分出的根与相对模式（无法实跑 UNC 与 Windows 路径解析）。
 
+## 2026-10-21 - Agent Teams 默认启用，进程内 teammate 跟随 leader 的 bypass/acceptEdits/auto
+
+### 变更内容
+
+- Agent Teams（TeamCreate、teammate、SendMessage 等）默认启用，不再需要 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`（官方仍需要）；设为 `0`/`false` 可关闭，`--agent-teams` 仍可强制开启，GrowthBook 停用开关照旧生效。
+- 进程内 teammate 在 leader 处于 bypass、acceptEdits 或 auto 时改用 leader 的模式（含回合进行中），与官方子代理继承父模式的规则一致；以前 teammate 始终停在自己的模式，leader 切到 bypass 后 teammate 仍逐条询问，leader 在 auto 时 default 模式的 teammate 会拿回被剥除的危险 allow 规则、不经分类器直接执行。
+- leader 在 default 或 plan 时，teammate 仍使用自己的模式（查看 teammate 时按 Shift+Tab 设定）；leader 切换模式的一次性提示「Teammates keep their own permission mode」只在确实有 teammate 停在其他模式时显示，不再因为 leader 自己在团队成员列表中而每个团队都出现。
+
+### 测试覆盖
+
+- 新增 `src/utils/agentSwarmsEnabled.test.ts`：未设置环境变量时启用，`0`/`false`/`off` 关闭，`1` 启用。
+- 更新 `src/utils/swarm/inProcessRunner.permissionMode.test.ts`：leader 在 bypass/acceptEdits/auto 时 teammate 使用 leader 的上下文，leader 在 default/plan 时保留 teammate 自己的模式。
+- 更新 `src/utils/swarm/teamHelpers.test.ts`：提示判定排除 leader 自身条目，leader 切到 bypass/acceptEdits/auto 时进程内 teammate 不算停在其他模式。
+- `src/tools/SendMessageTool/SendMessageTool.test.ts` 的“未启用 Teams”基线改为显式设置 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0`。
+
 ## 2026-10-21 - 权限模式切换加固：auto 规则剥除、切换入口与重判
 
 ### 变更内容
