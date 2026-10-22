@@ -148,6 +148,24 @@
 - `bun test src/utils/settings/hooksResilience.test.ts`：未知事件与坏条目被丢弃且其他设置生效，PreToolUse/PermissionRequest 坏条目与误嵌套仍拒绝整个文件。
 - `bun test src/utils/hooks.sourceScope.test.ts`：插件 shell 命令中的 `${user_config.*}` 被拒绝且环境变量可用、畸形 JSON 输出报错而 JSON lines 与普通文本不报错。
 
+## 2026-10-20 - Auto mode 子代理经 SubagentHandback 回报
+
+### 变更内容
+
+- Auto mode 下，Agent 工具启动的子代理改为通过新的 `SubagentHandback` 工具把最终报告交回调用方；子代理会收到对应提醒，只有这次调用的内容会作为结果送达，结尾的纯文本不再送达（对齐官方 2.1.303）。
+- `SubagentHandback` 只能由 auto mode classifier 放行：allow 规则与 hook 的 allow 不会跳过审查；classifier 判定 block 时报告仍会送达，但上方附带 `SECURITY WARNING` 与原因；classifier 不可用时附带未审查说明（OpenAI provider 的 Approve for me 同样适用，不会弹出确认）。
+- 子代理调用 `SubagentHandback` 后立即结束运行，不再多跑无人接收的回合；未交回报告就结束时最多提醒三次，之后父会话只会看到"未送达报告"的说明。
+- 交回的报告以 `[Subagent hand-back]` 框架与逐行缩排呈现，`<system-reminder>` 等 harness 标签、伪造的框架或 `[harness` 标记会被中和，并在报告上方注明命中的指令型模式。
+- 背景子代理的报告只随完成通知送达一次；auto mode 下的交回不再额外做"子代理结束后"的整段 transcript 审查。
+- 新增环境变量 `CLAUDE_CODE_SENDMESSAGE_HANDBACK`，设为 `0` 时停用 hand-back，恢复以最后一则消息作为结果。
+
+### 测试覆盖
+
+- `bun test src/tools/SubagentHandbackTool`：工具 schema、description/prompt 与官方一致，空报告拒绝，未启用、重复调用、classifier block 与不可用时的送达内容，指令型内容中和。
+- `bun test src/tools/AgentTool/runAgent.handback.test.ts`：auto mode 子代理取得工具与提醒、交回后立即结束、未交回时结果被扣留，非 auto、fork 与其他调用方不受影响，resume 时提醒与撤回提醒只出现一次，Agent 工具结果与背景通知只含一次框架化报告。
+- `bun test src/utils/permissions/permissions.subagentHandback.test.ts`：classifier 审查输入、block 仍送达并记录原因、不可用（含 Approve for me）附说明、allow 规则不跳过审查、非 auto mode 拒绝。
+- `bun test src/utils/subagentHandback.test.ts`：提醒、撤回提醒与重试提醒文字，三次重试上限，扣留说明，警告位于框架上方，框架/标记伪造与升级关键字检测。
+
 ## 2026-10-20 - 请求韧性：stream watchdog、无人值守重试、回退模型链与默认模型
 
 ### 变更内容

@@ -17,6 +17,7 @@ import { createToolCatalogForContext } from '../mods/toolCatalog.js'
 import { createModToolHost } from '../mods/toolHost.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js'
+import { SUBAGENT_HANDBACK_TOOL_NAME } from '../../tools/SubagentHandbackTool/constants.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
   AssistantMessage,
@@ -832,7 +833,9 @@ export async function resolveHookPermissionDecision(
   input: Record<string, unknown>
 }> {
   const requiresInteraction = tool.requiresUserInteraction?.()
-  const requireCanUseTool = toolUseContext.requireCanUseTool
+  // A hook allow cannot stand in for auto mode's review of a hand-back.
+  const requireCanUseTool =
+    toolUseContext.requireCanUseTool || tool.name === SUBAGENT_HANDBACK_TOOL_NAME
   const snapshot = toolUseContext.modsSnapshot
   if (snapshot?.hasHooks('tool.check')) {
     const declarative = await resolveHookPermissionDecision(

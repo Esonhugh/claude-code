@@ -67,10 +67,10 @@ import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import {
   createUserMessage,
-  extractTextContent,
   isSyntheticMessage,
   normalizeMessages,
 } from '../../utils/messages.js'
+import { subagentResultText } from '../../utils/subagentHandback.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getRuntimeMainLoopModel } from '../../utils/model/model.js'
 import { doesMostRecentAssistantMessageExceed200k } from '../../utils/tokens.js'
@@ -1251,6 +1251,7 @@ export const AgentTool = buildTool({
       // context. useExactTools inherits thinkingConfig (runAgent.ts:624).
       forkContextMessages: isForkPath ? toolUseContext.messages : undefined,
       ...(isForkPath && { useExactTools: true }),
+      handback: true,
       worktreePath: worktreeInfo?.worktreePath,
       worktreeBranch: worktreeInfo?.worktreeBranch,
       cwd: cwdOverridePath,
@@ -1789,12 +1790,12 @@ export const AgentTool = buildTool({
                       )
 
                       // Extract text from agent result content for the notification
-                      let finalMessage = extractTextContent(
-                        agentResult.content,
-                        '\n',
-                      )
+                      let finalMessage = subagentResultText(agentResult)
 
-                      if (feature('TRANSCRIPT_CLASSIFIER')) {
+                      if (
+                        feature('TRANSCRIPT_CLASSIFIER') &&
+                        agentResult.handback === undefined
+                      ) {
                         try {
                           const backgroundedAppState =
                             toolUseContext.getAppState()
@@ -2273,7 +2274,10 @@ export const AgentTool = buildTool({
             metadata,
           )
 
-          if (feature('TRANSCRIPT_CLASSIFIER')) {
+          if (
+            feature('TRANSCRIPT_CLASSIFIER') &&
+            agentResult.handback === undefined
+          ) {
             const currentAppState = toolUseContext.getAppState()
             const handoffWarning = await classifyHandoffIfNeeded({
               agentMessages,
@@ -2467,7 +2471,9 @@ The agent is now running and will receive instructions via mailbox.`,
       // Some models read that as "nothing to act on" and end their turn
       // immediately. Say so explicitly so the parent has something to react to.
       const contentOrMarker =
-        data.content.length > 0
+        data.handback === 'send' || data.handback === 'flagged'
+          ? [{ type: 'text' as const, text: subagentResultText(data) }]
+          : data.content.length > 0
           ? data.content
           : [
               {

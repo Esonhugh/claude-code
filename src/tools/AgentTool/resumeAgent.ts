@@ -337,6 +337,7 @@ export async function resumeAgentBackground({
     // original fork. Re-supplying it would cause duplicate tool_use IDs.
     forkContextMessages: undefined,
     ...(isResumedFork && { useExactTools: true }),
+    handback: true,
     // Re-persist so metadata survives runAgent's writeAgentMetadata overwrite
     worktreePath: resumedWorktreePath,
     description: meta?.description,
@@ -457,7 +458,11 @@ export async function resumeAgentBackground({
       }
       logForDebugging(`[AgentResume] handed back agent=${agentId} delivery=inline status=${task.status}`)
       return { agentId, description: uiDescription, outputFile: getTaskOutputPath(agentId), inlineHandback: {
-        content: task.result.content, harnessNoteCount: 0, harnessTailCount: 0,
+        // A hand-back's review warning stays a note above the frame; a withheld
+        // notice is all note, with no report under a frame.
+        content: task.result.content,
+        harnessNoteCount: task.result.handback === 'withheld' ? task.result.content.length : task.result.harnessNoteCount ?? 0,
+        harnessTailCount: 0,
         harnessSectionHash: hashSubagentHandbackSections(task.result.content),
       } }
     } finally {
