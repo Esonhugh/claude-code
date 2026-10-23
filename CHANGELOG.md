@@ -12,6 +12,16 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-23 - Agent Teams 改回需要环境变量启用
+
+### 变更内容
+
+- Agent Teams（TeamCreate、teammate、SendMessage 等）改回与官方 2.1.303 一致：外部用户只有设置 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`（或 `true` 等真值）或传 `--agent-teams` 才启用，未设置时关闭；GrowthBook 停用开关 `tengu_amber_flint` 照旧生效。取代 2026-10-21 的「默认启用」改动。
+
+### 测试覆盖
+
+- 更新 `src/utils/agentSwarmsEnabled.test.ts`：未设置环境变量时关闭，`1`/`true` 启用，`0` 关闭，`--agent-teams` 在未设置或为 `0` 时强制启用。
+
 ## 2026-10-21 - Terminal 权限检查、/yolo 收紧与自动模式分类器输出格式
 
 ### 变更内容
@@ -103,7 +113,7 @@
 
 ### 变更内容
 
-- Agent Teams（TeamCreate、teammate、SendMessage 等）默认启用，不再需要 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`（官方仍需要）；设为 `0`/`false` 可关闭，`--agent-teams` 仍可强制开启，GrowthBook 停用开关照旧生效。
+- （已被「2026-10-23 - Agent Teams 改回需要环境变量启用」取代）Agent Teams 曾改为默认启用；现已改回与官方一致，需要 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或 `--agent-teams`。
 - 进程内 teammate 在 leader 处于 bypass、acceptEdits 或 auto 时改用 leader 的模式（含回合进行中），与官方子代理继承父模式的规则一致；以前 teammate 始终停在自己的模式，leader 切到 bypass 后 teammate 仍逐条询问，leader 在 auto 时 default 模式的 teammate 会拿回被剥除的危险 allow 规则、不经分类器直接执行。
 - leader 在 default 或 plan 时，teammate 仍使用自己的模式（查看 teammate 时按 Shift+Tab 设定）；leader 切换模式的一次性提示「Teammates keep their own permission mode」只在确实有 teammate 停在其他模式时显示，不再因为 leader 自己在团队成员列表中而每个团队都出现。
 
