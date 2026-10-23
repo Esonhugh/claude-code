@@ -116,6 +116,24 @@ async function workflowSearchDirs(
   return dirs
 }
 
+export type WorkflowSaveScope = 'project' | 'user'
+
+// Where a saved dynamic workflow goes, both already searched above: the user dir, or the
+// nearest project root's .claude/workflows, preferring one that exists.
+export async function workflowSaveDir(
+  scope: WorkflowSaveScope,
+  cwd: string,
+  options: WorkflowDiscoveryOptions = {},
+): Promise<string> {
+  if (scope === 'user') return resolve(options.home ?? homedir(), '.claude', 'workflows')
+  const roots = await findWorkflowRoots(cwd)
+  for (const root of roots) {
+    const dir = resolve(root, '.claude', 'workflows')
+    if (await pathExists(dir)) return dir
+  }
+  return resolve(roots[0]!, '.claude', 'workflows')
+}
+
 export async function discoverWorkflowSpecs(
   cwd: string,
   args?: WorkflowArgs,

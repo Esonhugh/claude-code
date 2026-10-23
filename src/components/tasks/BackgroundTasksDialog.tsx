@@ -620,6 +620,7 @@ export function BackgroundTasksDialog({
                 : undefined
             }
             onBack={goBackToList}
+            onSaved={message => onDone(message, { display: 'system' })}
             key={`workflow-${task.id}`}
           />
         )

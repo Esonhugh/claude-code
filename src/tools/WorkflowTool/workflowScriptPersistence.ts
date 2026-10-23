@@ -4,7 +4,7 @@ import { isAbsolute, join, normalize } from 'node:path'
 import { workflowSessionDir } from './workflowRunSessions.js'
 
 // Official 2.1.303's script file name: <sanitized name>-<runId>.js
-function sanitizeWorkflowFileName(name: string): string {
+export function sanitizeWorkflowFileName(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workflow'
 }
 
