@@ -192,7 +192,6 @@ export function onChangeAppState({
     }
   }
   if (newState.goalStatus !== oldState.goalStatus ||
-      newState.autoCompactWindow !== oldState.autoCompactWindow ||
       newState.mainLoopModel !== oldState.mainLoopModel ||
       newState.mainLoopModelForSession !== oldState.mainLoopModelForSession ||
       newState.settings !== oldState.settings) {

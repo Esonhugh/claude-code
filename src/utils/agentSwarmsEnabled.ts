@@ -1,5 +1,5 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
-import { isEnvDefinedFalsy } from './envUtils.js'
+import { isEnvTruthy } from './envUtils.js'
 import { isAnt } from 'src/utils/userType.js'
 
 
@@ -19,9 +19,9 @@ function isAgentTeamsFlagSet(): boolean {
  * are referenced (prompts, code, tools isEnabled, UI, etc.).
  *
  * Ant builds: always enabled.
- * External builds: on by default (official needs CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1;
- * this build does not). CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 turns them off unless
- * --agent-teams is passed. The GrowthBook killswitch 'tengu_amber_flint' still applies.
+ * External builds require both:
+ * 1. Opt-in via CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env var OR --agent-teams flag
+ * 2. GrowthBook gate 'tengu_amber_flint' enabled (killswitch)
  */
 export function isAgentSwarmsEnabled(): boolean {
   // Ant: always on
@@ -29,9 +29,9 @@ export function isAgentSwarmsEnabled(): boolean {
     return true
   }
 
-  // External: on unless explicitly turned off
+  // External: require opt-in via env var or --agent-teams flag
   if (
-    isEnvDefinedFalsy(process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS) &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS) &&
     !isAgentTeamsFlagSet()
   ) {
     return false

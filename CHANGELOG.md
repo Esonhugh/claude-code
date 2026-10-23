@@ -18,19 +18,20 @@
 
 - 未发布。本条目汇总 `v2.1.292` tag 之后至 `dev` 合并提交 `ec9a0c1`（PR #83）的全部变更；`Makefile VERSION` 与 README 发布版本仍为 `2.1.292`，打 tag 时再同步。版本号 `2.1.293` 为暂定，与官方版本号无对应关系（本轮对照基线为官方 2.1.303）。
 - 范围：PR #83 并入的 PR #37、#39、#41、#43、#45、#48、#50、#52、#54、#56、#58、#61、#63、#64、#66、#68（经集成分支 #70）、`dev` 直接合并的 7 个功能分支，以及 2026-10-20 的 4 个直接提交。归版前的 23 条原始条目与逐项测试见[v2.1.293 详细记录](docs/archive/implementation-records/changelogs/2026-10-23-v2.1.293-details.md)。
-- 同一版本的后续增量（如 PR #84）合并后补入本条目。
+- 同一版本的后续增量（如 PR #84）合并后补入本条目；PR #86、#89、#90 已补入。
 
 ### 关联提交
 
 - `ec9a0c1` PR #83 合并提交，内含 `a728a27` #70（`9dce6a8` #37、`7441714` #39、`93ad15c` #43、`5e0e2e7` #54、`76b6f26` #58）、`720a578` #61、`0001a8b` #63、`9bbbdaa` #64、`4d7f128` #48、`227facf` #41、`d1a9da4` #45、`cc0e3b0` #50、`bc37b93` #52、`2d346f1` #56、`d5fe4d1` #66、`4854cef` #68，以及集成修复 `a9de890`、`d172dc1`。
 - 功能分支合并：`224a402` hooks-parity、`1321688` monitor-tool、`5e18f3b` memory-local-enable、`1187910` autocompact-agent-fields、`da2e3ba` keybindings-growthbook-defaults、`510d1bc` mods-2.1.303-parity、`46766d7` permissions-automode-parity，集成修复 `30dce66`。
 - 直接提交：`9e7173c`、`529c3e7`、`97c6d72`、`4fbf315`（stream watchdog、无人值守重试、默认模型与回退模型链）。
+- 2026-10-23 后续：`df7cc70` PR #90（Agent Teams 改回需要环境变量）、`d6819a6` PR #89（`autocompact_state` 按模型解析窗口）、`ed2347e` PR #86（README 与 dev 同步）。
 
 ### 变更内容
 
 #### 需要用户处理的行为变化
 
-- Agent Teams 默认启用，不再需要 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`（官方仍需要）；设为 `0`/`false` 可关闭，`--agent-teams` 仍可强制开启。
+- Agent Teams（TeamCreate、teammate、SendMessage 等）与官方 2.1.303 一致：外部用户只有设置 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或传 `--agent-teams` 才启用，GrowthBook 停用开关照旧生效（2026-10-21 曾改为默认启用，2026-10-23 按用户决定改回）。
 - 自动模式分类器规则（`autoMode.*`）不再读取项目 `.claude/settings.json` 与 `.claude/settings.local.json`，只认用户、`--settings` 与托管设置（对齐官方 2.1.207）；项目与本地设置中的 `permissions.defaultMode: "bypassPermissions"` 与 `"auto"` 一样被忽略。
 - 项目与本地设置的 `env` 不再能设置 `CLAUDE_CONFIG_DIR`、`TMPDIR`/`TMP`/`TEMP`/`CLAUDE_CODE_TMPDIR`、`HOME`、`CLAUDE_CODE_DISABLE_ATTACHMENTS`，以及开启或改写遥测导出的变量（`CLAUDE_CODE_ENABLE_TELEMETRY`、`OTEL_EXPORTER_OTLP_*`、`OTEL_*_EXPORTER`、`OTEL_LOG_*` 等）；仍可把 exporter 设为 `none` 或关闭 `OTEL_LOG_*` 开关，被忽略的键记录一次警告。
 - 被 git 跟踪的 `.claude/settings.local.json` 视为仓库内容：工作区未显式信任时其 `permissions.allow` 规则不生效（deny/ask 仍生效），项目设置也不能自行批准 `.mcp.json` 服务器（对齐官方 2.1.196）。
@@ -106,6 +107,7 @@
 - 新增 `ScheduleWakeup` 工具：`/loop` 动态模式下由模型选择下次唤醒秒数（60–3600）、原因与重新送入的输入，`stop: true` 取消待触发的动态唤醒；`/loop 5m …` 仍走 `CronCreate`；两个工具在 OpenAI provider 下同样可用。
 - 新增 `/recap`：立即生成一到两句会话回顾（支持 `-p`）；回顾复用主对话 fork；载入记忆文件时删除不可见字符并转义伪造的 harness 标签。
 - 新增 `/autocompact [auto|<tokens>]` 与设置 `modelSettings.<model>.autoCompactWindow`（按模型保存自动压缩窗口）；自定义 Agent、插件 agents、`--agents` JSON 与 Mods `agent.register` 支持 `autoCompactWindow`（子代理窗口上限）与 `omitClaudeMd`；切换到更小上下文窗口的模型后由上一个模型先生成摘要。
+- 远程 stream-json / SDK 会话的 `autocompact_state` 改为按当前模型即时解析窗口：`/autocompact` 写入的 `modelSettings.<model>.autoCompactWindow` 与会话中途的设置变更都会反映到 `effective_window`、`threshold` 和 `source`，与实际触发自动压缩的窗口一致；此前只读取启动时的顶层 `autoCompactWindow`（PR #89）。
 - 新增设置 `worktree.baseRef`（`fresh`|`head`）；`EnterWorktree` 新增 `path` 参数进入已有 linked worktree，以 `path` 进入的 worktree 不会被清理删除。
 
 #### 快捷键、Vim 与 GrowthBook 默认值
@@ -137,6 +139,7 @@
 - 设置与遥测：`src/utils/managedEnv.test.ts`、`managedEnv.launchEnv.test.ts`、`src/tools/SkillTool/managedRulesOnly.test.ts`、`src/commands/feedback/index.test.ts`、`src/services/api/metricsOptOut.test.ts`、`src/utils/fastMode.gateway.test.ts`。
 - 请求韧性与模型：`src/services/api/withRetry.test.ts`、`claude-stream-watchdog.test.ts`、`claude-model-contract.test.ts`、`src/utils/model/model.test.ts`。
 - Monitor、记忆、压缩与界面：`src/tools/MonitorTool`、`src/tools/ScheduleWakeupTool`、`src/skills/bundled/loop.test.ts`、`src/memdir/neutralizeMemoryContent.test.ts`、`extractMode.test.ts`、`src/services/awaySummary.test.ts`、`src/commands/autocompact/autocompact.test.ts`、`src/services/compact/autoCompact.contextWindow.test.ts`、`sessionCompact.mods.test.ts`、`src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`、`src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`、`src/services/analytics/growthbook.cached.test.ts`、`src/keybindings`、`src/components/PromptInput/PromptInput.sendNow.test.tsx`、`PromptInput.cycleModeError.test.tsx`、`src/screens/REPL.submit.test.ts`、`src/hooks/useVimInput.test.tsx`。
+- 2026-10-23 后续：`src/utils/agentSwarmsEnabled.test.ts`（未设置时关闭、`1`/`true` 启用、`0` 关闭、`--agent-teams` 强制启用）；`src/services/compact/autoCompact.contextWindow.test.ts` 与 `src/cli/print.streamState.test.ts`（按模型窗口后 `autocompact_state` 的窗口、阈值与 `source: "settings"` 与引擎一致，修复前失败）。
 - Mods：`bun test src/services/mods`（`sessionAppend`、`promptMention`、`toolCheckReceipt303`、`uiNotify`、`sessionIdentity`、`declarationsOfficial303` 等）、`src/components/ModsPane.test.tsx`、`make check-mods-control-types`。
 - 各分支均通过 `tsc`、`make build` 与 `bun run check:changelog`；`bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `MONITOR_TOOL`、`EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`。逐条目的测试清单见详细记录。
 

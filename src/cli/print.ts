@@ -1397,7 +1397,6 @@ function runHeadlessStreaming(
     readInputs: () => ({
       goal: getAppState().goalStatus,
       model: activeUserSpecifiedModel ? parseUserSpecifiedModel(activeUserSpecifiedModel) : getMainLoopModel(),
-      autoCompactWindow: getAppState().autoCompactWindow,
     }),
     enqueue: message => output.enqueue(message),
     configurationReady: isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? initializeGrowthBook() : Promise.resolve(),
