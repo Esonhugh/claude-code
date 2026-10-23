@@ -8,6 +8,10 @@ import {
   workflowTerminalAgentCount,
   type LocalWorkflowTaskState,
 } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import {
+  WORKFLOW_SIZE_WARNING_TEXT,
+  workflowTaskSizeWarning,
+} from '../tasks/LocalWorkflowTask/workflowSizeWarning.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
 import { getAgentColor } from '../tools/AgentTool/agentColorManager.js'
 import type { Theme } from '../utils/theme.js'
@@ -29,6 +33,8 @@ export type CoordinatorSessionRow = {
   elapsed: string
   statusText: string
   activity: string
+  /** Official "Large workflow" size warning, shown while the run is over the agent/token cap. */
+  warning?: string
   color?: keyof Theme
   depth: number
   branch: CoordinatorPanelBranch
@@ -39,6 +45,7 @@ type CoordinatorSessionRowsInput = {
   selectedIndex?: number
   viewingAgentTaskId?: string
   now?: number
+  ultracodeActive?: boolean
 }
 
 type CoordinatorPanelEntry = {
@@ -358,6 +365,7 @@ export function getCoordinatorSessionRows({
   selectedIndex,
   viewingAgentTaskId,
   now = Date.now(),
+  ultracodeActive = false,
 }: CoordinatorSessionRowsInput): CoordinatorSessionRow[] {
   const layout = deriveCoordinatorPanelLayout(tasks, viewingAgentTaskId)
   const taskRows = layout.entries.map((entry, index): CoordinatorSessionRow => {
@@ -403,6 +411,7 @@ export function getCoordinatorSessionRows({
       elapsed: taskElapsed(task, now),
       statusText: task.status === 'completed' ? 'done' : task.status === 'killed' ? 'stopped' : task.status === 'pending' ? 'paused' : task.status,
       activity: '',
+      warning: workflowTaskSizeWarning(task, ultracodeActive) ? WORKFLOW_SIZE_WARNING_TEXT : undefined,
       depth: 0,
       branch: 'none',
     }

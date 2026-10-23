@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { Text } from 'src/ink.js'
+import { useAppState } from 'src/state/AppState.js'
 import type { BackgroundTaskState } from 'src/tasks/types.js'
 import type { DeepImmutable } from 'src/types/utils.js'
 import { truncate } from 'src/utils/format.js'
@@ -8,6 +9,10 @@ import { plural } from 'src/utils/stringUtils.js'
 import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../constants/figures.js'
 import { RemoteSessionProgress } from './RemoteSessionProgress.js'
 import { ShellProgress, TaskStatusText } from './ShellProgress.js'
+import {
+  WORKFLOW_SIZE_WARNING_TEXT,
+  workflowTaskSizeWarning,
+} from 'src/tasks/LocalWorkflowTask/workflowSizeWarning.js'
 import { describeTeammateActivity } from './taskStatusUtils.js'
 import { terminalPreviewSummary } from './terminalPreview.js'
 
@@ -21,6 +26,7 @@ export function BackgroundTask({
   maxActivityWidth,
 }: Props): React.ReactNode {
   const activityLimit = maxActivityWidth ?? 40
+  const ultracodeActive = useAppState(s => s.effortValue === 'ultracode')
   switch (task.type) {
     case 'local_bash':
       return (
@@ -122,6 +128,9 @@ export function BackgroundTask({
                 : undefined
             }
           />
+          {workflowTaskSizeWarning(workflowTask, ultracodeActive) !== undefined && (
+            <Text color="warning"> {WORKFLOW_SIZE_WARNING_TEXT}</Text>
+          )}
         </Text>
       )
     }
