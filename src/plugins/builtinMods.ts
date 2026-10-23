@@ -224,14 +224,18 @@ export async function loadModDeclarationCached(
   try {
     const cached = JSON.parse(await readFile(file, 'utf8'))
     if (cached.key === key) return cached.declaration as ModDeclaration
-  } catch {}
+  } catch {
+    // Missing or unreadable entry: scan and rewrite it below.
+  }
   const declaration = await loadModDeclaration(input)
   try {
     await mkdir(dirname(file), { recursive: true })
     const temporary = `${file}.tmp.${process.pid}.${randomUUID()}`
     await writeFile(temporary, JSON.stringify({ key, declaration }))
     await rename(temporary, file)
-  } catch {}
+  } catch {
+    // The cache is an optimization; a failed write only costs the next launch a scan.
+  }
   return declaration
 }
 
