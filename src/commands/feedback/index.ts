@@ -12,6 +12,7 @@ const feedback = {
   name: 'feedback',
   description: `Submit feedback about Claude Code`,
   argumentHint: '[report]',
+  immediate: true,
   // Uploads the transcript to Anthropic, so it follows the analytics opt-in.
   isEnabled: () =>
     !(
