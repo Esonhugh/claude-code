@@ -8,10 +8,13 @@ import { Dialog } from './design-system/Dialog.js'
 
 type Props = {
   onAccept(): void
+  // Called on decline or Escape instead of exiting, for an in-session opt-in.
+  onDecline?(): void
 }
 
 export function BypassPermissionsModeDialog({
   onAccept,
+  onDecline,
 }: Props): React.ReactNode {
   React.useEffect(() => {
     logEvent('tengu_bypass_permissions_mode_dialog_shown', {})
@@ -29,15 +32,23 @@ export function BypassPermissionsModeDialog({
         break
       }
       case 'decline': {
-        gracefulShutdownSync(1)
+        if (onDecline) {
+          onDecline()
+        } else {
+          gracefulShutdownSync(1)
+        }
         break
       }
     }
   }
 
   const handleEscape = useCallback(() => {
-    gracefulShutdownSync(0)
-  }, [])
+    if (onDecline) {
+      onDecline()
+    } else {
+      gracefulShutdownSync(0)
+    }
+  }, [onDecline])
 
   return (
     <Dialog
@@ -63,7 +74,7 @@ export function BypassPermissionsModeDialog({
 
       <Select
         options={[
-          { label: 'No, exit', value: 'decline' },
+          { label: onDecline ? 'No' : 'No, exit', value: 'decline' },
           { label: 'Yes, I accept', value: 'accept' },
         ]}
         onChange={value => onChange(value as 'accept' | 'decline')}

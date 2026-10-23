@@ -18,6 +18,7 @@ import {
   notifySessionMetadataChanged,
   type SessionExternalMetadata,
 } from '../utils/sessionState.js'
+import { savePermissionMode } from '../utils/sessionStorage.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import type { AppState } from './AppStateStore.js'
 import { isAnt } from 'src/utils/userType.js'
@@ -92,6 +93,8 @@ export function onChangeAppState({
       })
     }
     notifyPermissionModeChanged(newMode)
+    // Transcript record so --resume/--continue can restore the mode.
+    savePermissionMode(newMode)
   }
 
   // Additional working directories are MCP roots; tell connected servers.

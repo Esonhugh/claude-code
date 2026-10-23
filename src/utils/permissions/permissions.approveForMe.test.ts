@@ -90,7 +90,13 @@ if (process.env[childFlag] !== '1') {
   test('Approve for me asks the person when the reviewer is unavailable', async () => {
     useOpenAIOAuth(true)
     reply = new Error('reviewer request failed')
-    expect((await check('unavailable')).behavior).toBe('ask')
+    const decision = await check('unavailable')
+    expect(decision.behavior).toBe('ask')
+    // The dialog can then say why auto mode is asking.
+    expect(decision.decisionReason).toEqual({
+      type: 'other',
+      reason: 'Auto mode classifier unavailable — falling back to manual approval',
+    })
   })
 
   test('Approve for me asks the person when the reviewer answer cannot be parsed', async () => {
@@ -182,6 +188,30 @@ if (process.env[childFlag] !== '1') {
       }
     } finally {
       delete process.env.CLAUDE_CODE_AUTO_MODE_MODEL
+    }
+  })
+
+  test('like official, CLAUDE_CODE_AUTO_MODE_MODEL is ignored for models the classifier cannot use or the policy does not allow', async () => {
+    useOpenAIOAuth(false)
+    reply = '<block>no</block>'
+    process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+    try {
+      for (const vetoed of ['claude-opus-5-5', 'claude-opus-5', 'claude-sonnet-5-5[1m]', 'opus']) {
+        process.env.CLAUDE_CODE_AUTO_MODE_MODEL = vetoed
+        requests.length = 0
+        expect((await check(`vetoed-${vetoed}`)).behavior).toBe('allow')
+        expect(requests.length).toBeGreaterThan(0)
+        expect(requests.every(request => request.model === 'claude-sonnet-5')).toBe(true)
+      }
+      setSessionSettingsCache({ settings: { availableModels: ['sonnet'] }, errors: [] })
+      process.env.CLAUDE_CODE_AUTO_MODE_MODEL = 'claude-haiku-4-5'
+      requests.length = 0
+      await check('policy-vetoed')
+      expect(requests.every(request => request.model === 'claude-sonnet-5')).toBe(true)
+    } finally {
+      setSessionSettingsCache({ settings: {}, errors: [] })
+      delete process.env.CLAUDE_CODE_AUTO_MODE_MODEL
+      delete process.env.ANTHROPIC_MODEL
     }
   })
 

@@ -784,6 +784,16 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
+const FIND_UNSAFE_ACTION_RE =
+  /(?:^|\s)-(?:delete|rm|exec|execdir|ok|okdir|fprint0?|fls|fprintf|files0-from)(?=\s|$)/
+
+function findHasUnsafeAction(command: string): boolean {
+  return (
+    /^find(?:\s|$)/.test(command) &&
+    FIND_UNSAFE_ACTION_RE.test(command.replace(/['"\\]/g, ''))
+  )
+}
+
 function filterRulesByContentsMatchingInput(
   input: z.infer<typeof BashTool.inputSchema>,
   rules: Map<string, PermissionRule>,
@@ -833,6 +843,13 @@ function filterRulesByContentsMatchingInput(
   //
   // Without iteration, single-pass compositions miss multi-layer interleaving.
   if (stripAllEnvVars) {
+    // Also match the command behind exec wrappers (sudo, env, setsid, watch,
+    // ...) and assignments with expanded values such as `TZ="$HOME" rm`.
+    commandsToTry.push(
+      ...bashPathValidation.unwrapExecWrappersForRuleMatching(
+        commandWithoutRedirections,
+      ),
+    )
     const seen = new Set(commandsToTry)
     let startIdx = 0
 
@@ -881,6 +898,18 @@ function filterRulesByContentsMatchingInput(
       const bashRule = bashPermissionRule(ruleContent)
 
       return commandsToTry.some(cmdToMatch => {
+        // SECURITY: a prefix or wildcard allow rule for `find` must not cover
+        // actions that run commands or delete/write files, unless the rule
+        // spells the action out itself.
+        if (
+          rule.ruleBehavior === 'allow' &&
+          matchMode === 'prefix' &&
+          bashRule.type !== 'exact' &&
+          findHasUnsafeAction(cmdToMatch) &&
+          !findHasUnsafeAction(ruleContent)
+        ) {
+          return false
+        }
         switch (bashRule.type) {
           case 'exact':
             return bashRule.command === cmdToMatch
@@ -1408,6 +1437,65 @@ function filterCdCwdSubcommands(
 }
 
 /**
+ * Path deny rules (Read/Edit) win over every later ask, including the
+ * operator and redirection safety prompts, so check them on the whole
+ * command first. Only a deny result is returned here.
+ */
+function checkEarlyPathDeny(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | null {
+  const pathResult = checkPathConstraints(input, getCwd(), toolPermissionContext)
+  return pathResult.behavior === 'deny' ? pathResult : null
+}
+
+// Commands longer than this always prompt: the checks below are not reliable
+// on input of this size (the tree-sitter parser also gives up here).
+const MAX_ANALYZABLE_COMMAND_LENGTH = 10000
+
+/**
+ * Over-long commands and commands with a dangling `&&`, `||` or `|` always
+ * ask (deny rules still apply), whatever the allow rules say.
+ */
+function checkUnanalyzableCommand(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | null {
+  const command = input.command.trim()
+  const reason =
+    command.length > MAX_ANALYZABLE_COMMAND_LENGTH
+      ? `Command is longer than ${MAX_ANALYZABLE_COMMAND_LENGTH} characters and cannot be fully analyzed`
+      : /^(?:&&|\|\|?)|(?:^|[^\\|&])(?:&&|\|\|?)$/.test(command)
+        ? 'Command has a dangling &&, || or | operator'
+        : null
+  if (reason === null) return null
+  const exactMatchResult = bashToolCheckExactMatchPermission(
+    input,
+    toolPermissionContext,
+  )
+  if (exactMatchResult.behavior === 'deny') return exactMatchResult
+  const denyMatch = matchingRulesForInput(
+    input,
+    toolPermissionContext,
+    'prefix',
+  ).matchingDenyRules[0]
+  if (denyMatch !== undefined) {
+    return {
+      behavior: 'deny',
+      message: `Permission to use ${BashTool.name} with command ${input.command} has been denied.`,
+      decisionReason: { type: 'rule', rule: denyMatch },
+    }
+  }
+  const decisionReason = { type: 'other' as const, reason }
+  return {
+    behavior: 'ask',
+    decisionReason,
+    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    suggestions: [],
+  }
+}
+
+/**
  * Early-exit deny enforcement for the AST too-complex and checkSemantics
  * paths. Returns the exact-match result if non-passthrough (deny/ask/allow),
  * then checks prefix/wildcard deny rules. Returns null if neither matched,
@@ -1701,7 +1789,7 @@ function checkRemovalPermission(
         const reason = 'Removal target could not be analyzed within the syntax budget'
         removal = {
           behavior: 'ask', message: `${reason}. Use explicit targets or approve this invocation.`,
-          decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false },
+          decisionReason: { type: 'safetyCheck', reason, classifierApprovable: false, bypassImmune: true },
           suggestions: [],
         }
       }
@@ -1795,7 +1883,10 @@ export async function bashToolHasPermission(
   // Removal protection runs before ordinary approval shortcuts in every build.
   // Inspect the original tree before the security walker rewrites command text.
   const rawRoot = await parseCommandRawForRemoval(input.command)
-  const removalPermission = checkRemovalPermission(input, appState.toolPermissionContext, rawRoot)
+  const removalPermission =
+    checkRemovalPermission(input, appState.toolPermissionContext, rawRoot) ??
+    checkEarlyPathDeny(input, appState.toolPermissionContext) ??
+    checkUnanalyzableCommand(input, appState.toolPermissionContext)
   if (removalPermission) return removalPermission
   let astRoot = !injectionCheckDisabled &&
     (feature('TREE_SITTER_BASH') || (feature('TREE_SITTER_BASH_SHADOW') && shadowEnabled))

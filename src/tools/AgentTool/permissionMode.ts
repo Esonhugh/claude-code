@@ -1,5 +1,7 @@
 import type { ToolPermissionContext } from '../../Tool.js'
 import type { PermissionMode } from '../../types/permissions.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { getAutoModeUnavailableReason } from '../../utils/permissions/permissionSetup.js'
 import { isPlanModeAvailable, PLAN_MODE_DISABLED_MESSAGE } from '../../utils/planModeV2.js'
 
 const AGENT_PERMISSION_MODE_RANK: Record<PermissionMode, number> = {
@@ -19,8 +21,9 @@ export function shouldBubbleAgentPermissionPrompts(
 }
 
 // Official 2.1.292: a definition's permissionMode never replaces a parent in
-// bypassPermissions, acceptEdits or auto, never grants bypassPermissions, and
-// bubble keeps a plan/dontAsk parent's mode.
+// bypassPermissions, acceptEdits or auto, never grants bypassPermissions,
+// bubble keeps a plan/dontAsk parent's mode, and auto keeps the parent's mode
+// while auto mode is unavailable.
 export function resolveDeclaredAgentPermissionMode(
   parentMode: PermissionMode,
   declaredMode: PermissionMode | undefined,
@@ -36,20 +39,39 @@ export function resolveDeclaredAgentPermissionMode(
   ) {
     return parentMode
   }
+  if (declaredMode === 'auto') {
+    const reason = getAutoModeUnavailableReason()
+    if (reason !== null) {
+      logForDebugging(
+        `Subagent definition's permissionMode would put it in auto mode, but auto mode is unavailable to this subagent (reason=${reason}); keeping parent mode '${parentMode}'.`,
+        { level: 'warn' },
+      )
+      return parentMode
+    }
+  }
   return declaredMode
+}
+
+// An explicit Agent/workflow mode is a ceiling: the agent runs in the
+// requested mode while the parent's mode ranks at least as high, otherwise in
+// the parent's mode. Re-evaluated against the parent's current mode, so the
+// agent follows the parent widening (up to the ceiling) and narrowing.
+export function capAgentPermissionMode(
+  parentMode: PermissionMode,
+  requestedMode: PermissionMode,
+): PermissionMode {
+  if (parentMode === 'auto' && requestedMode === 'acceptEdits') return parentMode
+  return AGENT_PERMISSION_MODE_RANK[requestedMode] <=
+    AGENT_PERMISSION_MODE_RANK[parentMode]
+    ? requestedMode
+    : parentMode
 }
 
 export function applyRequestedAgentPermissionMode(
   context: ToolPermissionContext,
   requestedMode: PermissionMode,
 ): ToolPermissionContext {
-  const mode =
-    context.mode === 'auto' && requestedMode === 'acceptEdits'
-      ? context.mode
-      : AGENT_PERMISSION_MODE_RANK[requestedMode] <=
-          AGENT_PERMISSION_MODE_RANK[context.mode]
-        ? requestedMode
-        : context.mode
+  const mode = capAgentPermissionMode(context.mode, requestedMode)
 
   if (mode === 'plan' && context.mode !== 'plan' && !isPlanModeAvailable()) {
     throw new Error(PLAN_MODE_DISABLED_MESSAGE)

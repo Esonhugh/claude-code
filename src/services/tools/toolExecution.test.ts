@@ -65,6 +65,32 @@ test('author result callback runs without tool.call hooks and is not inherited b
   }
 })
 
+test('a permission handler updatedInput that fails the tool schema is rejected before the tool runs', async () => {
+  const f = fixture(async (event, next) => next(event))
+  const updates = await Array.fromAsync(runToolUse(
+    f.block, f.assistant,
+    async () => ({ behavior: 'allow', updatedInput: { value: 123 } }),
+    f.context,
+  ))
+  expect(f.calls).toEqual([])
+  const results = updates.flatMap(update => {
+    const content = update.message?.type === 'user' ? update.message.message.content : []
+    return Array.isArray(content) ? content.filter(block => block.type === 'tool_result') : []
+  })
+  expect(results).toEqual([expect.objectContaining({
+    is_error: true,
+    content: '<tool_use_error>The permission handler returned updatedInput for ModFixture that failed schema validation: ModFixture failed due to the following issue:\nThe parameter `value` type is expected as `string` but provided as `number`\nThis is a configuration issue in your canUseTool callback, PermissionRequest hook, or permission-prompt tool — updatedInput must satisfy the tool\'s input schema. The tool input from the model was valid.</tool_use_error>',
+  })])
+})
+
+test('an empty permission handler updatedInput keeps the model input', async () => {
+  const f = fixture(async (event, next) => next(event))
+  await Array.fromAsync(runToolUse(
+    f.block, f.assistant, async () => ({ behavior: 'allow', updatedInput: {} }), f.context,
+  ))
+  expect(f.calls).toEqual([{ value: 'original' }])
+})
+
 function fixture(
   invoke: ModDispatchHook['invoke'],
   toolName = 'ModFixture',

@@ -72,6 +72,17 @@ export function matchesModMatcher(matcher: ModMatcher, value: unknown): boolean 
   return value === matcher
 }
 
+/** Prefilters on the keys a caller already knows; keys it leaves out stay with dispatch. */
+export function matchesModMatcherKeys(
+  matcher: { readonly [key: string]: ModMatcher } | undefined,
+  known: Record<string, unknown> | undefined,
+): boolean {
+  if (!matcher || !known) return true
+  return Object.entries(matcher).every(([key, item]) =>
+    !Object.hasOwn(known, key) || matchesModMatcher(item, known[key]),
+  )
+}
+
 export function isModBroadEventPattern(pattern: string): boolean {
   return pattern === '*' || pattern.endsWith('.*') || pattern.startsWith('!')
 }

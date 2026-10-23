@@ -306,6 +306,10 @@ export type PermissionDecisionReason =
       type: 'classifier'
       classifier: string
       reason: string
+      // Denied without a safety verdict (e.g. the transcript overflowed).
+      noVerdict?: boolean
+      // Snake-case name of the matched built-in block rule, for telemetry.
+      category?: string
     }
   | {
       type: 'workingDir'
@@ -319,6 +323,10 @@ export type PermissionDecisionReason =
       // shell configs) — the classifier can see context and decide. False
       // for Windows path bypass attempts and cross-machine bridge messages.
       classifierApprovable: boolean
+      // When true, bypassPermissions mode still asks (official 2.1.303
+      // bypassImmune: catastrophic removals). Other safety checks, such as
+      // writes to .git/, .claude/ or shell configs, are allowed in bypass.
+      bypassImmune?: boolean
     }
   | {
       type: 'other'

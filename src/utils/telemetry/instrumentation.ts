@@ -48,7 +48,10 @@ import {
 import { getPlatform, getWslVersion } from 'src/utils/platform.js'
 
 import { getCACertificates } from '../caCerts.js'
-import { isAnthropicTelemetryEnabled } from '../../services/analytics/config.js'
+import {
+  isAnalyticsDisabled,
+  isAnthropicTelemetryEnabled,
+} from '../../services/analytics/config.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getHasFormattedOutput, logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
@@ -337,7 +340,7 @@ function getBigQueryExportingReader() {
 }
 
 function isBigQueryMetricsEnabled() {
-  if (!isAnthropicTelemetryEnabled()) {
+  if (isAnalyticsDisabled()) {
     return false
   }
 

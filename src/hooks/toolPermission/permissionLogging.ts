@@ -6,12 +6,16 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
-import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
+import {
+  isToolDetailsLoggingEnabled,
+  sanitizeToolNameForAnalytics,
+} from 'src/services/analytics/metadata.js'
 import { getCodeEditToolDecisionCounter } from '../../bootstrap/state.js'
 import type { Tool as ToolType, ToolUseContext } from '../../Tool.js'
 import { getLanguageName } from '../../utils/cliHighlight.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
+import type { PermissionDecisionReason } from '../../types/permissions.js'
 import type {
   PermissionApprovalSource,
   PermissionRejectionSource,
@@ -26,9 +30,34 @@ type PermissionLogContext = {
 }
 
 // Discriminated union: 'accept' pairs with approval sources, 'reject' with rejection sources
-type PermissionDecisionArgs =
+type PermissionDecisionArgs = (
   | { decision: 'accept'; source: PermissionApprovalSource | 'config' }
   | { decision: 'reject'; source: PermissionRejectionSource | 'config' }
+) & { decisionReason?: PermissionDecisionReason }
+
+/**
+ * Like official 2.1.301, tool_decision reports the auto mode classifier's
+ * verdict for config decisions; the matched block rule is only included when
+ * OTEL_LOG_TOOL_DETAILS is on.
+ */
+function classifierVerdictAttributes(
+  decision: 'accept' | 'reject',
+  reason: PermissionDecisionReason | undefined,
+): { classifier_verdict?: string; classifier_category?: string } {
+  if (reason?.type !== 'classifier' || reason.classifier !== 'auto-mode') {
+    return {}
+  }
+  if (decision === 'accept') return { classifier_verdict: 'allow' }
+  if (reason.reason === 'Classifier unavailable') {
+    return { classifier_verdict: 'unavailable' }
+  }
+  if (reason.noVerdict) return { classifier_verdict: 'no_verdict' }
+  return {
+    classifier_verdict: 'block',
+    ...(reason.category !== undefined &&
+      isToolDetailsLoggingEnabled() && { classifier_category: reason.category }),
+  }
+}
 
 const CODE_EDITING_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 
@@ -231,8 +260,16 @@ function logPermissionDecision(
     decision,
     source: sourceString,
     tool_name: sanitizeToolNameForAnalytics(tool.name),
+    ...(source === 'config' &&
+      classifierVerdictAttributes(decision, args.decisionReason)),
+    permission_mode: toolUseContext.getAppState().toolPermissionContext.mode,
   })
 }
 
-export { isCodeEditingTool, buildCodeEditToolAttributes, logPermissionDecision }
+export {
+  isCodeEditingTool,
+  buildCodeEditToolAttributes,
+  classifierVerdictAttributes,
+  logPermissionDecision,
+}
 export type { PermissionLogContext, PermissionDecisionArgs }

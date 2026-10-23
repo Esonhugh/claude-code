@@ -1,3 +1,7 @@
+import { spawnSync } from 'child_process'
+import { getOriginalCwd } from '../../bootstrap/state.js'
+import { getGlobalConfig, getProjectPathForConfig } from '../config.js'
+import { logForDebugging } from '../debug.js'
 import { readFileSync } from '../fileRead.js'
 import { getFsImplementation, safeResolvePath } from '../fsOperations.js'
 import { safeParseJSON } from '../json.js'
@@ -17,7 +21,12 @@ import {
   loadSSHPermissionOverlay,
   overlayToPermissionRules,
 } from '../../ssh/managedSSHPermissions.js'
+import { isSourceAdminTrusted } from '../settings/pluginOnlyPolicy.js'
 import type { SettingsJson } from '../settings/types.js'
+import {
+  isOfficialMarketplaceName,
+  parsePluginIdentifier,
+} from '../plugins/pluginIdentifier.js'
 import type {
   PermissionBehavior,
   PermissionRule,
@@ -38,6 +47,43 @@ export function shouldAllowManagedPermissionRulesOnly(): boolean {
     getSettingsForSource('policySettings')?.allowManagedPermissionRulesOnly ===
     true
   )
+}
+
+const withheldAllowedToolsWarned = new Set<string>()
+
+/**
+ * The allowed-tools a skill or command may pre-approve. Under
+ * allowManagedPermissionRulesOnly only managed, built-in and bundled ones and
+ * plugins from an official marketplace keep them (official 2.1.282); the rest
+ * run their tool calls and inline shell through the session's rules.
+ */
+export function getCommandAllowedTools(command: {
+  name?: string
+  source: string
+  allowedTools?: string[]
+  pluginInfo?: { repository: string }
+}): string[] {
+  const allowedTools = command.allowedTools ?? []
+  if (allowedTools.length === 0 || !shouldAllowManagedPermissionRulesOnly()) {
+    return allowedTools
+  }
+  const trusted =
+    command.source === 'plugin'
+      ? command.pluginInfo !== undefined &&
+        isOfficialMarketplaceName(
+          parsePluginIdentifier(command.pluginInfo.repository).marketplace,
+        )
+      : isSourceAdminTrusted(command.source)
+  if (trusted) return allowedTools
+  const origin = `/${command.name ?? 'unknown'} (${command.pluginInfo?.repository ?? command.source})`
+  if (!withheldAllowedToolsWarned.has(origin)) {
+    withheldAllowedToolsWarned.add(origin)
+    logForDebugging(
+      `Ignoring allowed-tools ${allowedTools.join(', ')} from ${origin}: permission rules are restricted to managed settings (allowManagedPermissionRulesOnly).`,
+      { level: 'warn' },
+    )
+  }
+  return []
 }
 
 /**
@@ -145,7 +191,67 @@ export function loadAllPermissionRulesFromDisk(): PermissionRule[] {
   for (const source of getEnabledSettingSources()) {
     rules.push(...getPermissionRulesForSource(source))
   }
+
+  // Like official 2.1.303, a git-tracked .claude/settings.local.json is repo
+  // content: its allow rules apply only once this workspace is explicitly
+  // trusted. Its deny and ask rules still apply.
+  const localAllow = rules.filter(
+    rule => rule.source === 'localSettings' && rule.ruleBehavior === 'allow',
+  )
+  if (
+    localAllow.length > 0 &&
+    getGlobalConfig().projects?.[getProjectPathForConfig()]
+      ?.hasTrustDialogAccepted !== true &&
+    isLocalSettingsGitTracked(getOriginalCwd())
+  ) {
+    logForDebugging(
+      `Ignoring ${localAllow.length} permissions.allow rule(s) from .claude/settings.local.json: the file is tracked by git and this workspace is not explicitly trusted.`,
+      { level: 'warn' },
+    )
+    return rules.filter(rule => !localAllow.includes(rule))
+  }
   return rules
+}
+
+const localSettingsGitTracked = new Map<string, boolean>()
+
+function isLocalSettingsGitTracked(cwd: string): boolean {
+  const cached = localSettingsGitTracked.get(cwd)
+  if (cached !== undefined) return cached
+  const result = spawnSync(
+    'git',
+    [
+      '-C',
+      cwd,
+      'ls-files',
+      '--error-unmatch',
+      '--',
+      ':(icase).claude/settings.local.json',
+    ],
+    {
+      cwd,
+      encoding: 'utf8',
+      timeout: 2000,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        LC_ALL: 'C',
+        GIT_TRACE2: '0',
+        GIT_TRACE2_PERF: '0',
+        GIT_TRACE2_EVENT: '0',
+      },
+    },
+  )
+  // Exit 0: tracked. Exit 1, outside a repository, or no git: untracked.
+  // Any other failure counts as tracked.
+  const notARepo =
+    result.status === 128 &&
+    /^fatal: not a git repository/.test(result.stderr ?? '')
+  const tracked = result.error
+    ? (result.error as NodeJS.ErrnoException).code !== 'ENOENT'
+    : result.status !== 1 && !notARepo
+  localSettingsGitTracked.set(cwd, tracked)
+  return tracked
 }
 
 /**

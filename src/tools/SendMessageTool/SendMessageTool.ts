@@ -658,6 +658,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
             reason:
               'Cross-machine bridge message requires explicit user consent',
             classifierApprovable: false,
+            bypassImmune: true,
           },
         }
       }

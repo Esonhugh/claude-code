@@ -226,6 +226,46 @@ test('the Shift+Tab carousel offers auto whenever it can be entered, even in the
   }
 })
 
+test('like official 2.1.295, removing disableAutoMode lets auto mode back in without a restart', async () => {
+  const { isAutoModeGateEnabled } = await import('./permissionSetup.js')
+  process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+  useSettings({ userSettings: { permissions: { disableAutoMode: 'disable' } } })
+  const context = { ...getDefaultAppState().toolPermissionContext, mode: 'auto' as const, isAutoModeAvailable: true }
+  const kicked = (await verifyAutoModeGateAccess(context)).updateContext(context)
+  expect(kicked.mode).toBe('default')
+  expect(kicked.isAutoModeAvailable).toBe(false)
+  expect(isAutoModeGateEnabled()).toBe(false)
+
+  useSettings({})
+  expect(isAutoModeGateEnabled()).toBe(true)
+  expect((await verifyAutoModeGateAccess(kicked)).updateContext(kicked).isAutoModeAvailable).toBe(true)
+})
+
+test('like official 2.1.251, disableAutoMode added mid-session leaves auto mode, and removing it offers auto again', async () => {
+  const { applySettingsChange } = await import('../settings/applySettingsChange.js')
+  process.env.ANTHROPIC_MODEL = 'claude-opus-5-5'
+  useSettings({})
+  const initial = getDefaultAppState()
+  const store = createStore<typeof initial>({
+    ...initial,
+    toolPermissionContext: { ...initial.toolPermissionContext, mode: 'auto', isAutoModeAvailable: true },
+  })
+  const settle = () => new Promise(resolve => setTimeout(resolve, 20))
+
+  useSettings({ policySettings: { permissions: { disableAutoMode: 'disable' } } })
+  applySettingsChange('policySettings', store.setState)
+  await settle()
+  expect(store.getState().toolPermissionContext.mode).toBe('default')
+  expect(store.getState().toolPermissionContext.isAutoModeAvailable).toBe(false)
+  expect(store.getState().notifications.queue.map(notification => notification.key)).toContain('auto-mode-gate-notification')
+
+  useSettings({})
+  applySettingsChange('policySettings', store.setState)
+  await settle()
+  expect(store.getState().toolPermissionContext.isAutoModeAvailable).toBe(true)
+  expect(store.getState().toolPermissionContext.mode).toBe('default')
+})
+
 test('cycling past an unavailable auto mode says why, with no opt-in', async () => {
   useSettings({ userSettings: { permissions: { disableAutoMode: 'disable' } } })
   const initial = getDefaultAppState()

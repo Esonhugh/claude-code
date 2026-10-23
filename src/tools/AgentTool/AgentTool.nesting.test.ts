@@ -24,6 +24,7 @@ import {
   getRootSetAppStateForTesting,
 } from './runAgent.js'
 import { resolveAgentTools } from './agentToolUtils.js'
+import { resolveDeclaredAgentPermissionMode } from './permissionMode.js'
 import { SUBAGENT_DEPTH_LIMIT_MESSAGE } from './subagentDepth.js'
 import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutputTool.js'
 import type { SpawnTeammateConfig } from '../shared/spawnMultiAgent.js'
@@ -101,19 +102,28 @@ mock.module('./runAgent.js', () => ({
     canShowPermissionPrompts?: boolean
     permissionMode?: Parameters<typeof resolveAgentTools>[0]['permissionMode']
     allowedTools?: string[]
-    toolUseContext: { options: { mainLoopModel: string } }
+    toolUseContext: {
+      options: { mainLoopModel: string }
+      getAppState(): { toolPermissionContext: { mode: NonNullable<Parameters<typeof resolveAgentTools>[0]['permissionMode']> } }
+    }
   }) => {
     controlledSpawnParams = params
     controlledAvailableToolNames = params.availableTools.map(tool => tool.name)
+    // runAgent's spawn-time mode: a fixed explicit mode, else the definition's
+    // mode resolved against the parent's current mode.
+    const permissionMode = params.permissionMode ?? resolveDeclaredAgentPermissionMode(
+      params.toolUseContext.getAppState().toolPermissionContext.mode,
+      params.agentDefinition.permissionMode,
+    )
     controlledResolvedToolNames = resolveAgentTools(
       {
         ...params.agentDefinition,
-        permissionMode: params.permissionMode,
+        permissionMode,
       },
       params.availableTools,
       params.isAsync,
     ).resolvedTools.map(tool => tool.name)
-    controlledPermissionMode = params.permissionMode
+    controlledPermissionMode = permissionMode
     controlledAllowedTools = params.allowedTools
     controlledCanShowPermissionPrompts = params.canShowPermissionPrompts
     controlledMainLoopModel = params.toolUseContext.options.mainLoopModel
@@ -635,6 +645,8 @@ await AgentTool.call(
   { message: { id: 'msg_inherited_plan_mode_worker' } } as never,
 )
 assert.equal(controlledPermissionMode, 'plan')
+// An inherited mode is not fixed at spawn, so it keeps following the parent.
+assert.equal(controlledSpawnParams?.permissionMode, undefined)
 assert.ok(controlledResolvedToolNames.includes('ExitPlanMode'))
 
 for (const inheritedMode of ['acceptEdits', 'bypassPermissions'] as const) {

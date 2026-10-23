@@ -26,7 +26,10 @@ import {
   type ModelSetting,
   parseUserSpecifiedModel,
 } from './model/model.js'
-import { getAPIProvider } from './model/providers.js'
+import {
+  getAPIProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './model/providers.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import {
   getInitialSettings,
@@ -441,6 +444,12 @@ export async function prefetchFastModeStatus(): Promise<void> {
   const apiKey = getAnthropicApiKey()
   const hasUsableOAuth =
     getClaudeAIOAuthTokens()?.accessToken && hasProfileScope()
+  // An API key for a custom ANTHROPIC_BASE_URL belongs to that gateway and
+  // must not be sent to api.anthropic.com.
+  if (!hasUsableOAuth && !isFirstPartyAnthropicBaseUrl()) {
+    resolveFastModeStatusFromCache()
+    return
+  }
   if (!hasUsableOAuth && !apiKey) {
     const isAnt = getIsAnt()
     const cachedEnabled = getGlobalConfig().penguinModeOrgEnabled === true

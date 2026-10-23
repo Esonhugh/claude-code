@@ -155,7 +155,8 @@ async function isolatedTests() {
     const id = createAgentId('ordinary')
     const context = makeContext()
     for await (const _ of runAgent({ agentDefinition: GENERAL_PURPOSE_AGENT, promptMessages: [createUserMessage({ content: 'ordinary task' })], toolUseContext: context, canUseTool: async () => ({ behavior: 'allow', updatedInput: {} }), isAsync: false, querySource: 'agent:test', availableTools: [], override: { agentId: id, userContext: {}, systemContext: {}, systemPrompt: asSystemPrompt([]) } })) { /* drain */ }
-    expect(await waitMetadata(id)).toEqual({ agentType: 'general-purpose', permissionMode: 'default', model: 'claude-sonnet-4-6' })
+    // No mode was asked for, so none is recorded and a resume keeps following the parent.
+    expect(await waitMetadata(id)).toEqual({ agentType: 'general-purpose', model: 'claude-sonnet-4-6' })
   })
   test('recordedUuids stitches only new messages to the existing disk chain and carries the ledger into the next turn', async () => {
     queryDone = undefined

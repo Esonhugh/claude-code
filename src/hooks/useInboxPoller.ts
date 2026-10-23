@@ -24,7 +24,11 @@ import {
   permissionModeFromString,
   toExternalPermissionMode,
 } from '../utils/permissions/PermissionMode.js'
-import { applyPermissionUpdate } from '../utils/permissions/PermissionUpdate.js'
+import {
+  applyPermissionUpdate,
+  logPermissionModeChange,
+} from '../utils/permissions/PermissionUpdate.js'
+import { transitionPermissionModeWithGates } from '../utils/permissions/permissionSetup.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isInsideTmux } from '../utils/swarm/backends/detection.js'
 import {
@@ -566,28 +570,26 @@ export function useInboxPoller({
         }
 
         const targetMode = permissionModeFromString(parsed.mode)
-        logForDebugging(
-          `[InboxPoller] Applying mode change from team-lead: ${targetMode}`,
-        )
+        // Same gates and transition as any other mode switch (bypass/auto/plan
+        // availability, auto's dangerous-rule stripping).
+        const current = store.getState().toolPermissionContext
+        let next: typeof current
+        try {
+          next = transitionPermissionModeWithGates(current, targetMode)
+        } catch (error) {
+          logForDebugging(
+            `[InboxPoller] Refusing mode change from team-lead to ${targetMode}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+          next = current
+        }
+        logPermissionModeChange('teammate', current.mode, next.mode, 'mode_set_request from team-lead')
+        setAppState(prev => ({ ...prev, toolPermissionContext: next }))
 
-        // Update local permission context
-        setAppState(prev => ({
-          ...prev,
-          toolPermissionContext: applyPermissionUpdate(
-            prev.toolPermissionContext,
-            {
-              type: 'setMode',
-              mode: toExternalPermissionMode(targetMode),
-              destination: 'session',
-            },
-          ),
-        }))
-
-        // Update config.json so team lead can see the new mode
+        // Update config.json so team lead sees the mode actually in effect
         const teamName = currentAppState.teamContext?.teamName
         const agentName = getAgentName()
         if (teamName && agentName) {
-          await setMemberMode(teamName, agentName, targetMode)
+          await setMemberMode(teamName, agentName, next.mode)
         }
       }
     }

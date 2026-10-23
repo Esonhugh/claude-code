@@ -56,7 +56,7 @@ import { getNativeModDeclaration } from './native.js'
 import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
 import {getOfficialShippedPaneRequests,updateOfficialShippedPaneRequest} from '../../plugins/builtinShippedMods.js'
 import builtinDiff from '../../commands/diff/index.js'
-import { matchesModEventPattern, matchesModMatcher } from './matcher.js'
+import { matchesModEventPattern, matchesModMatcher, matchesModMatcherKeys } from './matcher.js'
 import { createModHostOperations, ModProcessTimeoutError, ModProcessTerminationError, validateModProcessSpawnRequest, type ModHttpServices } from './hostOperations.js'
 import { createModCommands, type ModCommandSpec } from './commands.js'
 import { createModTools, type ModToolSpec } from './tools.js'
@@ -211,7 +211,8 @@ export type ModSnapshot = {
   commandRunHooks?(command: string, origin?: ModOrigin): readonly ModOrigin[]
   dispatch(event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions): Promise<unknown>
   stream?(event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions): ModHookStream
-  hasHooks(event: string): boolean
+  /** `known` prefilters on matcher keys the caller already knows (tool.check passes tool and agentId). */
+  hasHooks(event: string, known?: Record<string, unknown>): boolean
   release(): void
 }
 type Nouns = Record<string, Record<string, (...args: unknown[]) => unknown>>
@@ -1865,9 +1866,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ...(caller ? { caller } : {}),
                 })
               },
-              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+              hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
-                  matchesModEventPattern(registration.event, event) &&
+                  matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known) &&
                   (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               release() {},
@@ -2077,9 +2078,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ...(caller ? { caller } : {}),
                 })
               },
-              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+              hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
-                  matchesModEventPattern(registration.event, event) &&
+                  matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known) &&
                   (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               pluginOrigin: storageId => {
@@ -2154,9 +2155,9 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
                   ...(caller ? {caller} : {}),
                 })
               },
-              hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(item =>
+              hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(item =>
                 item.environment.registrations.some(registration =>
-                  matchesModEventPattern(registration.event, event) &&
+                  matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known) &&
                   (item !== owner || callbackOwner !== owner.declaration.name && registration.id !== caller?.registrationId),
                 )),
               pluginOrigin: storageId => {
@@ -3759,7 +3760,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
         if (released) throw new Error('Mods snapshot released')
         return requestServices.run(hostServices, () => stream(event, input, core, snapshot, table, options))
       },
-      hasHooks: event => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || snapshot.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
+      hasHooks: (event, known) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || snapshot.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known))),
       release() {
         if (released) return
         released = true
@@ -4091,7 +4092,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
     }),
     stream: (event: 'turn.step' | 'process.spawn', input: ModInput, core: (input: ModInput, signal?: AbortSignal) => AsyncGenerator<unknown, unknown>, options?: ModDispatchOptions) => stream(event, input, core, active, nouns, options),
     dispatch: (event: string, input: ModInput, core: (input: ModInput, signal?: AbortSignal) => Promise<unknown>, options?: ModDispatchOptions) => dispatch(event, input, core, active, nouns, options),
-    hasHooks: (event: string) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event))),
+    hasHooks: (event: string, known?: Record<string, unknown>) => [...hostHooks].some(hook => matchesModEventPattern(hook.registration.event, event) && matchesModMatcherKeys(hook.registration.matcher, known)) || active.some(owner => owner.environment.registrations.some(registration => matchesModEventPattern(registration.event, event) && matchesModMatcherKeys(registration.matcher, known))),
     dispose(): Promise<void> {
       if (disposal) return disposal
       stopped = true

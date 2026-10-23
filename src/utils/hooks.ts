@@ -3,6 +3,7 @@
  * Hooks are user-defined shell commands that can be executed at various points
  * in Claude Code's lifecycle.
  */
+import { isDeepStrictEqual } from 'node:util'
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
@@ -21,10 +22,7 @@ import { findGitBashPath, windowsPathToPosixPath } from './windowsPaths.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { DEFAULT_HOOK_SHELL } from './shell/shellProvider.js'
 import { buildPowerShellArgs } from './shell/powershellProvider.js'
-import {
-  loadPluginOptions,
-  substituteUserConfigVariables,
-} from './plugins/pluginOptionsStorage.js'
+import { loadPluginOptions } from './plugins/pluginOptionsStorage.js'
 import { getPluginDataDir } from './plugins/pluginDirectories.js'
 import {
   getSessionId,
@@ -124,6 +122,7 @@ import type {
   SkillHookMatcher,
 } from './settings/types.js'
 import { getHookDisplayText } from './hooks/hooksSettings.js'
+import { checkHookUpdatedInput } from './hooks/hookUpdatedInput.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
@@ -138,6 +137,7 @@ import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
 import {
+  escapeSystemReminderTags,
   extractTextContent,
   getLastAssistantMessage,
   wrapInSystemReminder,
@@ -487,8 +487,26 @@ function parseHookOutput(stdout: string): {
     logForDebugging(errorMessage)
     return { plainText: stdout, validationError: errorMessage }
   } catch (e) {
-    logForDebugging(`Failed to parse hook output as JSON: ${e}`)
-    return { plainText: stdout }
+    // Text that merely starts with "{", or several JSON documents (JSON lines),
+    // stays plain text; a lone object that fails to parse is a hook error.
+    const lines = trimmed.split('\n').filter(line => line.trim() !== '')
+    const isJsonLines =
+      lines.length > 1 &&
+      lines.every(line => {
+        try {
+          const parsed = hookJSONOutputSchema().safeParse(jsonParse(line))
+          return !parsed.success || Object.keys(parsed.data).length === 0
+        } catch {
+          return false
+        }
+      })
+    if (!trimmed.endsWith('}') || isJsonLines) {
+      logForDebugging(`Failed to parse hook output as JSON: ${e}`)
+      return { plainText: stdout }
+    }
+    const validationError = `Hook output looks like a JSON object but is not valid JSON — ${errorMessage(e)}. Emit the payload with a JSON encoder (jq, ConvertTo-Json, json.dumps) rather than string concatenation so backslashes and quotes inside strings are escaped.`
+    logForDebugging(validationError)
+    return { plainText: stdout, validationError }
   }
 }
 
@@ -929,10 +947,11 @@ async function execCommandHook(
     }
     if (pluginId) {
       pluginOpts = loadPluginOptions(pluginId)
-      // Throws if a referenced key is missing — that means the hook uses a key
-      // that's either not declared in manifest.userConfig or not yet configured.
-      // Caught upstream like any other hook exec failure.
-      command = substituteUserConfigVariables(command, pluginOpts)
+      // A substituted value would be re-parsed by the shell (official 2.1.207).
+      if (/\$\{user_config\.[^}]*\}/.test(command))
+        throw new Error(
+          `Hook from plugin ${pluginId} references \${user_config.*} in a shell-form command. The substituted value would be re-parsed by the shell. Read $CLAUDE_PLUGIN_OPTION_<KEY> from the hook's environment instead. Command: ${hook.command}`,
+        )
     }
   }
 
@@ -1426,21 +1445,48 @@ async function execCommandHook(
  *   - Regex pattern (e.g., '^Write.*', '.*', '^(Write|Edit)$')
  * @returns true if the query matches the pattern
  */
-function matchesPattern(matchQuery: string, matcher: string): boolean {
+// Events whose matcher values are identifiers, so hyphens and commas belong to
+// the exact-match list syntax rather than to a regex (official 2.1.191/2.1.195).
+const EXACT_LIST_MATCHER_EVENTS = new Set<string>([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+  'PermissionDenied',
+  'UserPromptExpansion',
+  'SessionStart',
+  'SessionEnd',
+  'Setup',
+  'PreCompact',
+  'PostCompact',
+  'PreModelSwitch',
+  'PostModelSwitch',
+  'Notification',
+  'SubagentStart',
+  'SubagentStop',
+  'Elicitation',
+  'ElicitationResult',
+  'ConfigChange',
+  'InstructionsLoaded',
+  'DirectoryAdded',
+])
+
+function matchesPattern(
+  matchQuery: string,
+  matcher: string,
+  hookEvent: string,
+): boolean {
   if (!matcher || matcher === '*') {
     return true
   }
-  // Check if it's a simple string or pipe-separated list (no regex special chars except |)
-  if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
-    // Handle pipe-separated exact matches
-    if (matcher.includes('|')) {
-      const patterns = matcher
-        .split('|')
-        .map(p => normalizeLegacyToolName(p.trim()))
-      return patterns.includes(matchQuery)
-    }
-    // Simple exact match
-    return matchQuery === normalizeLegacyToolName(matcher)
+  // A plain identifier or a list of them is an exact match, not a regex.
+  const listSyntax = EXACT_LIST_MATCHER_EVENTS.has(hookEvent)
+  if ((listSyntax ? /^[a-zA-Z0-9_|, -]+$/ : /^[a-zA-Z0-9_|]+$/).test(matcher)) {
+    return matcher
+      .split(listSyntax ? /[|,]/ : '|')
+      .map(p => p.trim())
+      .filter(Boolean)
+      .some(p => matchQuery === normalizeLegacyToolName(p))
   }
 
   // Otherwise treat as regex
@@ -1776,13 +1822,16 @@ export async function getMatchingHooks(
       level: 'verbose',
     })
 
-    // Extract hooks with their plugin context (if any)
-    const filteredMatchers = matchQuery
-      ? hookMatchers.filter(
-          matcher =>
-            !matcher.matcher || matchesPattern(matchQuery, matcher.matcher),
-        )
-      : hookMatchers
+    // Extract hooks with their plugin context (if any). An empty match value
+    // (e.g. a subagent with no agent type) only reaches matcher-less hooks.
+    const filteredMatchers =
+      matchQuery !== undefined
+        ? hookMatchers.filter(
+            matcher =>
+              !matcher.matcher ||
+              matchesPattern(matchQuery, matcher.matcher, hookEvent),
+          )
+        : hookMatchers
 
     const matchedHooks: MatchedHook[] = filteredMatchers.flatMap(matcher => {
       // Check if this is a PluginHookMatcher (has pluginRoot) or SkillHookMatcher (has skillRoot)
@@ -1997,7 +2046,7 @@ export function getPreToolHookBlockingMessage(
  * @returns Formatted message to give feedback to the model
  */
 export function getStopHookMessage(blockingError: HookBlockingError): string {
-  return `Stop hook feedback:\n${blockingError.blockingError}`
+  return `Stop hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -2008,7 +2057,7 @@ export function getStopHookMessage(blockingError: HookBlockingError): string {
 export function getTeammateIdleHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TeammateIdle hook feedback:\n${blockingError.blockingError}`
+  return `TeammateIdle hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -2019,7 +2068,7 @@ export function getTeammateIdleHookMessage(
 export function getTaskCreatedHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TaskCreated hook feedback:\n${blockingError.blockingError}`
+  return `TaskCreated hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -2030,7 +2079,7 @@ export function getTaskCreatedHookMessage(
 export function getTaskCompletedHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TaskCompleted hook feedback:\n${blockingError.blockingError}`
+  return `TaskCompleted hook feedback:\n${escapeSystemReminderTags(blockingError.blockingError)}`
 }
 
 /**
@@ -4701,7 +4750,7 @@ export async function* executePermissionRequestHooks<ToolInput>(
     permission_suggestions: permissionSuggestions,
   }
 
-  yield* executeHooks({
+  for await (const result of executeHooks({
     sourceScope,
     hookInput,
     toolUseID,
@@ -4711,7 +4760,33 @@ export async function* executePermissionRequestHooks<ToolInput>(
     toolUseContext,
     requestPrompt,
     toolInputSummary,
-  })
+  })) {
+    const decision = result.permissionRequestResult
+    const updatedInput =
+      decision?.behavior === 'allow' ? decision.updatedInput : undefined
+    const tool =
+      updatedInput === undefined ||
+      Object.keys(updatedInput).length === 0 ||
+      isDeepStrictEqual(updatedInput, toolInput)
+        ? undefined
+        : findToolByName(toolUseContext.options.tools ?? [], toolName)
+    if (!tool || decision?.behavior !== 'allow') {
+      yield result
+      continue
+    }
+    const checked = await checkHookUpdatedInput(tool, updatedInput, {
+      event: 'PermissionRequest',
+      context: toolUseContext,
+      hookSource: result.hookSource,
+      shown: toolInput as Record<string, unknown>,
+    })
+    yield {
+      ...result,
+      permissionRequestResult: checked.deny
+        ? { behavior: 'deny', message: checked.deny.message }
+        : { ...decision, updatedInput: checked.input },
+    }
+  }
 }
 
 export type ConfigChangeSource =

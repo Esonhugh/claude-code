@@ -296,6 +296,7 @@ import {
   loadTranscriptFromFile,
   saveAgentSetting,
   saveMode,
+  savePermissionMode,
   searchSessionsByCustomTitle,
   sessionIdExists,
 } from './utils/sessionStorage.js'
@@ -407,6 +408,7 @@ import {
   setOriginalCwd,
   setQuestionPreviewFormat,
   setSdkBetas,
+  setPermissionModeSetByCli,
   setSessionBypassPermissionsMode,
   setSessionPersistenceDisabled,
   setSessionSource,
@@ -2224,6 +2226,9 @@ async function run(): Promise<CommanderCommand> {
 
       // Store session bypass permissions mode for trust dialog check
       setSessionBypassPermissionsMode(permissionMode === 'bypassPermissions')
+      // A resumed session's recorded mode does not override an explicit flag.
+      setPermissionModeSetByCli(!!permissionModeCli || !!dangerouslySkipPermissions)
+      savePermissionMode(permissionMode)
       if (feature('TRANSCRIPT_CLASSIFIER')) {
         // autoModeFlagCli is the "did the user intend auto this session" signal.
         // Set when: --enable-auto-mode, --permission-mode auto, resolved mode

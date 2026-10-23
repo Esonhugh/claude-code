@@ -239,6 +239,12 @@ export const DENIAL_WORKAROUND_GUIDANCE =
 export function AUTO_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied. ${DENIAL_WORKAROUND_GUIDANCE}`
 }
+export function SUBAGENT_NO_PROMPT_REJECT_MESSAGE(
+  toolName: string,
+  agentType: string,
+): string {
+  return `Permission to use ${toolName} has been denied: the ${agentType} agent cannot ask for approval because this session has no permission dialog (non-interactive -p or SDK run). ${DENIAL_WORKAROUND_GUIDANCE}`
+}
 export function DONT_ASK_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied because Claude Code is running in don't ask mode. ${DENIAL_WORKAROUND_GUIDANCE}`
 }
@@ -251,39 +257,51 @@ export const NO_RESPONSE_REQUESTED = 'No response requested.'
 export const SYNTHETIC_TOOL_RESULT_PLACEHOLDER =
   '[Tool result missing due to internal error]'
 
-// Prefix used by UI to detect classifier denials and render them concisely
+// Prefix used by UI to detect classifier denials and render them concisely.
+// The legacy prefix keeps denials in resumed transcripts recognisable.
 const AUTO_MODE_REJECTION_PREFIX =
+  'Permission for this action was denied by the Claude Code auto mode classifier. Reason: '
+const LEGACY_AUTO_MODE_REJECTION_PREFIX =
   'Permission for this action has been denied. Reason: '
+
+const AUTO_MODE_DENIAL_GUIDANCE =
+  `IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, ` +
+  `e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, ` +
+  `e.g. do not use your ability to run tests to execute non-test actions. ` +
+  `You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. ` +
+  `If you believe this capability is essential to complete the user's request, first try a safer method. ` +
+  `Get as much of the rest of the task done as you can, then STOP and explain to the user ` +
+  `what you were trying to do and why you need this permission. Let the user decide how to proceed.`
 
 /**
  * Check if a tool result message is a classifier denial.
  * Used by the UI to render a short summary instead of the full message.
  */
 export function isClassifierDenial(content: string): boolean {
-  return content.startsWith(AUTO_MODE_REJECTION_PREFIX)
+  return (
+    content.startsWith(AUTO_MODE_REJECTION_PREFIX) ||
+    content.startsWith(LEGACY_AUTO_MODE_REJECTION_PREFIX)
+  )
 }
 
 /**
- * Build a rejection message for auto mode classifier denials.
- * Encourages continuing with other tasks and suggests permission rules.
+ * Build a rejection message for auto mode classifier denials, like official.
+ * Encourages continuing with other tasks; the permission rule hint is only
+ * added for a tool whose allow rule auto mode would honour.
  *
  * @param reason - The classifier's reason for denying the action
+ * @param allowRuleToolName - The tool to suggest an allow rule for, if any
  */
-export function buildYoloRejectionMessage(reason: string): string {
-  const prefix = AUTO_MODE_REJECTION_PREFIX
-
-  const ruleHint = feature('BASH_CLASSIFIER')
-    ? `To allow this type of action in the future, the user can add a permission rule like ` +
-      `Bash(prompt: <description of allowed action>) to their settings. ` +
-      `At the end of your session, recommend what permission rules to add so you don't get blocked again.`
-    : `To allow this type of action in the future, the user can add a Bash permission rule to their settings.`
-
-  return (
-    `${prefix}${reason}. ` +
+export function buildYoloRejectionMessage(
+  reason: string,
+  allowRuleToolName?: string,
+): string {
+  const message =
+    `${AUTO_MODE_REJECTION_PREFIX}${reason}. ` +
     `If you have other tasks that don't depend on this action, continue working on those. ` +
-    `${DENIAL_WORKAROUND_GUIDANCE} ` +
-    ruleHint
-  )
+    AUTO_MODE_DENIAL_GUIDANCE
+  if (allowRuleToolName === undefined) return message
+  return `${message} To allow this type of action in the future, the user can add a permission rule for ${allowRuleToolName} to their settings.`
 }
 
 /**
@@ -3258,6 +3276,14 @@ export function handleMessageFromStream(
   }
 }
 
+// Hook output must not open or close the reminder that wraps it, including
+// through a trailing "<" or "</" (official 2.1.292).
+export function escapeSystemReminderTags(text: string): string {
+  return text
+    .replaceAll(/<(?=\s*(?:\/\s*)?system-reminder\b)/gi, '&lt;')
+    .replace(/<(?=\s*(?:\/\s*)?$)/, '&lt;')
+}
+
 export function wrapInSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`
 }
@@ -4265,7 +4291,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       if (response.systemMessage) {
         messages.push(
           createUserMessage({
-            content: response.systemMessage,
+            content: escapeSystemReminderTags(response.systemMessage),
             isMeta: true,
           }),
         )
@@ -4279,7 +4305,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ) {
         messages.push(
           createUserMessage({
-            content: response.hookSpecificOutput.additionalContext,
+            content: escapeSystemReminderTags(
+              response.hookSpecificOutput.additionalContext,
+            ),
             isMeta: true,
           }),
         )
@@ -4325,7 +4353,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook blocking error from command: "${attachment.blockingError.command}": ${attachment.blockingError.blockingError}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook blocking error from command: "${attachment.blockingError.command}": ${attachment.blockingError.blockingError}`,
+            ),
           ),
           isMeta: true,
         }),
@@ -4343,7 +4373,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook success: ${attachment.content}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook success: ${attachment.content}`,
+            ),
           ),
           isMeta: true,
         }),
@@ -4355,7 +4387,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook additional context: ${attachment.content.join('\n')}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook additional context: ${attachment.content.join('\n')}`,
+            ),
           ),
           isMeta: true,
         }),
@@ -4365,7 +4399,9 @@ You have exited auto mode. The user may now want to interact more directly. You 
       return [
         createUserMessage({
           content: wrapInSystemReminder(
-            `${attachment.hookName} hook stopped continuation: ${attachment.message}`,
+            escapeSystemReminderTags(
+              `${attachment.hookName} hook stopped continuation: ${attachment.message}`,
+            ),
           ),
           isMeta: true,
         }),
