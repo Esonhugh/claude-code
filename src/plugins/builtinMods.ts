@@ -116,14 +116,21 @@ export function unzipArchive(bytes: Uint8Array): Record<string, Uint8Array> {
 }
 
 async function treeDigest(root: string, relative = ''): Promise<string> {
-  const hash = createHash('sha256')
-  for (const name of (await readdir(join(root, relative), { withFileTypes: true }))
+  const entries = (await readdir(join(root, relative), { withFileTypes: true }))
     .filter(entry => relative !== '' || entry.name !== '.complete')
-    .sort((left, right) => left.name.localeCompare(right.name))) {
+    .sort((left, right) => left.name.localeCompare(right.name))
+  // Read in parallel (the tree is ~850 files and is checked on every launch),
+  // hash in sorted order so the digest matches existing .complete files.
+  const contents = await Promise.all(entries.map(name => {
+    const path = relative ? `${relative}/${name.name}` : name.name
+    return name.isDirectory() ? treeDigest(root, path) : readFile(join(root, path))
+  }))
+  const hash = createHash('sha256')
+  entries.forEach((name, index) => {
     const path = relative ? `${relative}/${name.name}` : name.name
     hash.update(name.isDirectory() ? `d\0${path}\0` : `f\0${path}\0`)
-    hash.update(name.isDirectory() ? await treeDigest(root, path) : await readFile(join(root, path)))
-  }
+    hash.update(contents[index]!)
+  })
   return hash.digest('hex')
 }
 

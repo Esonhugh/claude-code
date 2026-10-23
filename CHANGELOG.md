@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-23 - 无头启动：跳过默认关闭的沙箱依赖探测并并行校验内建 Mods 缓存
+
+### 变更内容
+
+- `isSandboxingEnabled()` 先读取 `sandbox.enabled`，默认关闭时不再执行会 spawn 子进程的依赖探测（`-p` / SDK 每轮启动约 95 ms）。开启沙箱时的判定顺序与结果不变。
+- 内建 Mods 缓存树的完整性校验 `treeDigest` 改为并行读取、按序哈希，digest 值不变，现有 `.complete` 继续有效；约 850 个文件的校验从约 70 ms 降到约 11 ms。
+- 合计 SDK 单轮 `-p` 启动从约 0.77 s 降到约 0.6 s（官方 2.1.303 约 0.5 s，剩余差距见 issue #92）。
+
+### 测试覆盖
+
+- `src/plugins/builtinMods.test.ts` 既有用例覆盖缓存复用、损坏树恢复与被修改树的重建，digest 兼容性由 `.complete` 比对用例保证。
+- `src/cli/print.sdkSystemPrompt.test.ts`、`src/cli/print.sdkControlRequests.test.ts` 覆盖无头启动路径。
+
 ## 2026-10-23 - Agent SDK 0.3 兼容与二进制启动加速
 
 ### 变更内容
