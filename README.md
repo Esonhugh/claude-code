@@ -72,7 +72,7 @@ bun ./dist/cli.js --help
 | --- | --- |
 | OpenAI/Codex provider | 支持 OpenAI Responses API、ChatGPT OAuth、device code 登录、token refresh、API key 和 Codex auth 文件；启用 server-side `WebSearch`，将 Anthropic web-search schema、OpenAI Responses `web_search_call`、URL citations 和 usage 转换为 Anthropic-compatible stream 事件；OpenAI 模式自动从 ChatGPT Codex 或 OpenAI-compatible `/v1/models` 发现模型，Anthropic API billing gateway 可通过 `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1` 启用同类发现，并统一进入 Model Picker 缓存；`/fast` 映射到 OpenAI priority service tier，手动和重复 remote compaction 会保持稳定 turn scope 与 opaque compaction history。 |
 | Effort | CLI 可配置 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，Model Picker/SDK capability 列表仍按 provider 与模型声明可选档位；configured effort 不按 capability 重写并原样传入所选 API，仅本地编排模式 `ultracode` 展开为 API `xhigh`。 |
-| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；支持按次指定 `model` 和 `effort`，未配置 effort 时继承调用方；默认提供只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。Agent Teams 默认启用（官方仍需 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`），设为 `0` 关闭。运行中的子代理跟随主会话当前权限模式，显式 `mode` 为上限；auto 模式下子代理通过 `SubagentHandback` 交回最终报告（`CLAUDE_CODE_SENDMESSAGE_HANDBACK=0` 停用）。 |
+| Agent | 支持前台/后台 Agent、续跑、nested Agent、Team/SendMessage、usage 聚合、终态通知和可选 worktree isolation；支持按次指定 `model` 和 `effort`，未配置 effort 时继承调用方；默认提供只读代码搜索 `Explore` 和方案设计 `Plan`，可通过 `CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS=1` 关闭。Agent Teams 与官方一致，需设置 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或传 `--agent-teams` 才启用。运行中的子代理跟随主会话当前权限模式，显式 `mode` 为上限；auto 模式下子代理通过 `SubagentHandback` 交回最终报告（`CLAUDE_CODE_SENDMESSAGE_HANDBACK=0` 停用）。 |
 | 独立会话通信 | 同机独立 CLI session 可通过 official-compatible `msgV: 1` JSON-lines 协议发现和发送纯文本；提供 deferred `ListAgents` / `SendMessage` tools 以及 `/list-agents`（别名 `/peers`），支持 name、`name [ref]`、session UUID 和来信中的精确 `uds:` 地址。该能力使用 macOS/Linux UDS 或 Windows named pipe，不是 Remote Control 或跨机器 transport。 |
 | Prompt context | System prompt 按稳定核心、能力和任务动态层组织 cache boundary；Plan + Auto mode 保持只读权限边界；Agent listing 使用增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留权限与动态工具发现。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
@@ -703,10 +703,10 @@ Agent 还支持前台执行、后台执行、命名续跑和可选隔离。模�
 CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 claude
 ```
 
-Agent Teams 默认启用，不需要官方要求的 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`；设为 `0` 关闭，`--agent-teams` 仍可强制开启：
+Agent Teams 与官方 2.1.303 一致，默认关闭；设置 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或传 `--agent-teams` 启用：
 
 ```bash
-CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=0 claude
+CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 claude
 claude --agent-teams
 ```
 
