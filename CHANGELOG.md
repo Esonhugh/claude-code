@@ -12,6 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-23 - 内建 Mods 扫描结果缓存：第一轮不再重新扫描 agents-md
+
+### 变更内容
+
+- 官方内建 Mods 位于每次启动都经过 digest 校验的只读缓存树，其 `loadModDeclaration` 扫描结果（agents-md 50 个模块，约 170–190 ms，且阻塞第一个 API 请求）现缓存到 `<cache>/<digest>.declarations/<key>.json`，key 含 CLI 版本、插件路径、入口、options 与 tier；缓存树之外的 Mod 仍每次扫描。
+- SDK 单轮 `-p` 启动从约 0.6 s 降到约 0.37–0.42 s（首次启动写缓存约 0.55 s；官方 2.1.303 约 0.5 s）。AGENTS.md 仍在第一轮请求中生效（缓存命中与未命中均已验证）。
+
+### 测试覆盖
+
+- `src/plugins/builtinMods.test.ts` 新增：官方内建树的扫描写入缓存并在源文件移除后仍返回相同声明、不同 options 走独立 key；缓存树之外的 Mod 每次重新扫描且不写缓存。
+
 ## 2026-10-23 - 无头启动：跳过默认关闭的沙箱依赖探测并并行校验内建 Mods 缓存
 
 ### 变更内容
