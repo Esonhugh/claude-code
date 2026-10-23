@@ -24,6 +24,7 @@ import {
   type Command,
   formatDescriptionWithSource,
   getCommandName,
+  getSkillToolCommands,
 } from 'src/commands.js'
 import { createStreamlinedTransformer } from 'src/utils/streamlinedTransform.js'
 import { installStreamJsonStdoutGuard } from 'src/utils/streamJsonStdoutGuard.js'
@@ -196,13 +197,19 @@ import {
 } from 'src/utils/sessionStart.js'
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
+  clearAllOutputStylesCache,
   getAllOutputStyles,
 } from 'src/constants/outputStyles.js'
+import { clearOutputStyleCaches } from 'src/outputStyles/loadOutputStylesDir.js'
+import { FileReadTool } from 'src/tools/FileReadTool/FileReadTool.js'
+import { checkReadPermissionForTool } from 'src/utils/permissions/filesystem.js'
+import { isSettingSourceEnabled } from 'src/utils/settings/constants.js'
 import { TEAMMATE_MESSAGE_TAG, TICK_TAG } from 'src/constants/xml.js'
 import {
   getSettings_DEPRECATED,
   getSettingsForSource,
   getSettingsWithSources,
+  updateSettingsForSource,
 } from 'src/utils/settings/settings.js'
 import { settingsChangeDetector } from 'src/utils/settings/changeDetector.js'
 import {
@@ -331,7 +338,9 @@ import { getModHttpServices } from '../services/mods/hostOperations.js'
 import {
   getSupportedEffortLevelsForModel,
   modelSupportsEffort,
+  parseEffortValue,
   resolveAppliedEffort,
+  toPersistableEffort,
 } from 'src/utils/effort.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
@@ -420,6 +429,7 @@ import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 import { isAnt } from 'src/utils/userType.js'
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../constants/prompts.js'
 
 
 // Dead code elimination: conditional imports
@@ -490,6 +500,17 @@ type PromptValue = string | ContentBlockParam[]
 
 function toBlocks(v: PromptValue): ContentBlockParam[] {
   return typeof v === 'string' ? [{ type: 'text', text: v }] : v
+}
+
+// Agent SDK >= 0.3 sends initialize.systemPrompt as string[] ([""] when the
+// host sets none, meaning the minimal SDK prompt). customSystemPrompt is a
+// single string downstream, so join the parts and drop the cache boundary.
+function normalizeSdkSystemPrompt(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return undefined
+  return value
+    .filter((part): part is string => typeof part === 'string' && part !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    .join('\n\n')
 }
 
 /**
@@ -3788,6 +3809,126 @@ function runHeadlessStreaming(
           } catch (error) {
             sendControlResponseError(message, errorMessage(error))
           }
+        } else if (message.request.subtype === 'reload_skills') {
+          try {
+            clearCommandsCache()
+            currentCommands = await getCommands(cwd())
+            const skills = await getSkillToolCommands(cwd())
+            sendControlResponseSuccess(message, {
+              skills: skills.map(cmd => ({
+                name: getCommandName(cmd),
+                description: formatDescriptionWithSource(cmd),
+                argumentHint: cmd.argumentHint || '',
+              })),
+            })
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'reload_output_styles') {
+          try {
+            clearOutputStyleCaches()
+            clearAllOutputStylesCache()
+            const styles = await getAllOutputStyles(cwd())
+            sendControlResponseSuccess(message, {
+              available_output_styles: Object.keys(styles),
+            })
+          } catch (error) {
+            sendControlResponseError(message, errorMessage(error))
+          }
+        } else if (message.request.subtype === 'read_file') {
+          const request = message.request as {
+            path?: unknown
+            max_bytes?: unknown
+            encoding?: unknown
+          }
+          if (typeof request.path !== 'string' || request.path === '') {
+            sendControlResponseError(message, 'read_file: path is required')
+            continue
+          }
+          const absPath = expandPath(request.path)
+          // Same gate as the Read tool: anything short of allow is refused.
+          const decision = checkReadPermissionForTool(
+            FileReadTool,
+            { file_path: absPath },
+            getAppState().toolPermissionContext,
+          )
+          if (decision.behavior !== 'allow') {
+            sendControlResponseError(message, `read_file: permission denied for ${absPath}`)
+            continue
+          }
+          const maxBytes =
+            typeof request.max_bytes === 'number' && request.max_bytes > 0
+              ? Math.floor(request.max_bytes)
+              : 1024 * 1024
+          try {
+            const bytes = await readFile(absPath)
+            const truncated = bytes.length > maxBytes
+            const slice = truncated ? bytes.subarray(0, maxBytes) : bytes
+            sendControlResponseSuccess(message, {
+              contents: request.encoding === 'base64' ? slice.toString('base64') : slice.toString('utf-8'),
+              absPath,
+              ...(truncated ? { truncated: true } : {}),
+              ...(request.encoding === 'base64' ? { encoding: 'base64' } : {}),
+            })
+          } catch (error) {
+            sendControlResponseError(message, `read_file: ${errorMessage(error)}`)
+          }
+        } else if (message.request.subtype === 'update_settings') {
+          const request = message.request as { source?: unknown; settings?: unknown }
+          // Same allowlist as the official writer: /config's outputStyle for the
+          // project local file, /effort's effortLevel for the user file.
+          const allowedKey =
+            request.source === 'localSettings' ? 'outputStyle'
+              : request.source === 'userSettings' ? 'effortLevel'
+                : undefined
+          const settings =
+            request.settings && typeof request.settings === 'object' && !Array.isArray(request.settings)
+              ? (request.settings as Record<string, unknown>)
+              : {}
+          const keys = Object.keys(settings)
+          const value = allowedKey ? settings[allowedKey] : undefined
+          if (!allowedKey) {
+            sendControlResponseError(message, 'update_settings: source must be localSettings or userSettings')
+          } else if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) || getIsRemoteMode()) {
+            sendControlResponseError(message, 'update_settings: not available over a remote transport')
+          } else if (!isSettingSourceEnabled(request.source as 'localSettings' | 'userSettings')) {
+            sendControlResponseError(message, `update_settings: the ${request.source} source is not enabled for this session (--setting-sources)`)
+          } else if (keys.length !== 1 || keys[0] !== allowedKey || typeof value !== 'string') {
+            sendControlResponseError(message, `update_settings: ${request.source} accepts only a string ${allowedKey}`)
+          } else {
+            const effort = allowedKey === 'effortLevel' ? toPersistableEffort(parseEffortValue(value)) : undefined
+            if (allowedKey === 'effortLevel' && (effort === undefined || effort === 'max')) {
+              sendControlResponseError(message, `update_settings: effortLevel ${value} cannot be saved`)
+              continue
+            }
+            const source = request.source as 'localSettings' | 'userSettings'
+            const result = updateSettingsForSource(source, { [allowedKey]: effort ?? value })
+            if (result.error) {
+              sendControlResponseError(message, `update_settings: ${result.error.message}`)
+            } else {
+              settingsChangeDetector.notifyChange(source)
+              sendControlResponseSuccess(message)
+            }
+          }
+        } else if (message.request.subtype === 'mcp_read_resource') {
+          const { serverName, uri } = message.request as { serverName?: unknown; uri?: unknown }
+          // Only MCP Apps UI resources from servers this process dialed itself.
+          if (typeof uri !== 'string' || !uri.startsWith('ui://')) {
+            sendControlResponseError(message, 'mcp_read_resource: uri must use the ui:// scheme')
+            continue
+          }
+          const connection = [...getAppState().mcp.clients, ...dynamicMcpState.clients]
+            .find(c => c.name === serverName)
+          if (!connection || connection.type !== 'connected' || connection.config.type === 'sdk') {
+            sendControlResponseError(message, `mcp_read_resource: no connected server named ${String(serverName)}`)
+            continue
+          }
+          try {
+            const result = await connection.client.readResource({ uri })
+            sendControlResponseSuccess(message, { contents: result.contents })
+          } catch (error) {
+            sendControlResponseError(message, `mcp_read_resource: ${errorMessage(error)}`)
+          }
         } else if (message.request.subtype === 'mcp_reconnect') {
           const serverName = message.request.serverName as string
           // @ts-ignore - recovered code
@@ -5155,8 +5296,7 @@ async function handleInitializeRequest(
   if (!initialized) {
     // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
     if (request.systemPrompt !== undefined) {
-      // @ts-ignore - recovered code
-      options.systemPrompt = request.systemPrompt
+      options.systemPrompt = normalizeSdkSystemPrompt(request.systemPrompt)
     }
     if (request.appendSystemPrompt !== undefined) {
       // @ts-ignore - recovered code

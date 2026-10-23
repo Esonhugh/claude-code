@@ -12,6 +12,19 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-23 - Agent SDK 0.3 兼容与二进制启动加速
+
+### 变更内容
+
+- 兼容 TypeScript Agent SDK 0.3.x 在 `initialize` 中以 `string[]` 发送的 `systemPrompt`：未设置时（SDK 发送 `[""]`）恢复为 SDK 的最小系统提示，不再发送完整的 Claude Code 提示；自定义 `systemPrompt`（字符串或数组，数组各段以空行拼接并去掉 `SYSTEM_PROMPT_DYNAMIC_BOUNDARY`）与 `agent` 主线程提示重新生效；`getContextUsage()` 不再报 `e.match is not a function`。
+- 新增 SDK 控制请求 `reload_skills`、`reload_output_styles`、`read_file`（与 Read 工具相同的读取权限判定，默认上限 1 MB，支持 base64）、`update_settings`（与官方相同的白名单：`localSettings` 只接受 `outputStyle`，`userSettings` 只接受 `effortLevel` 且不写入 `max`，未启用的 setting source 与远程传输会拒绝）、`mcp_read_resource`（只读取本进程连接的 MCP 服务器的 `ui://` 资源）。
+- 二进制打包改用 `bun build --compile --bytecode`，启动时不再解析约 35 MB 的 JS：`--version` 约 550 ms 降到约 65 ms，SDK 单轮 `-p` 约 1.6 s 降到约 0.75 s。
+
+### 测试覆盖
+
+- 新增 `src/cli/print.sdkSystemPrompt.test.ts`，覆盖 `[""]` 保持最小提示且 `get_context_usage` 正常回应、数组拼接并去掉缓存边界、字符串照旧生效。
+- 新增 `src/cli/print.sdkControlRequests.test.ts`，覆盖 `reload_skills`、`reload_output_styles` 的回应，`read_file` 的权限拒绝、截断与 base64，`update_settings` 的白名单与写入内容，`mcp_read_resource` 的 scheme 与服务器检查。
+
 ## 2026-10-23 - Direct Connect：server 实现、cc:// 解析修复与默认构建启用
 
 ### 变更内容
