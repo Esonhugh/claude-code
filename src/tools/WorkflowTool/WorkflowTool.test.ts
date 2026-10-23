@@ -303,7 +303,7 @@ const runContext = {
           const hasStructuredOutputTool = toolUseContext.options.tools.some(tool => tool.name === 'StructuredOutput')
           launchedPrompts.push(input.prompt)
           launchedInputs.push({ prompt: input.prompt, mode: input.mode, hasStructuredOutputTool })
-          if (input.prompt === 'empty error') throw new Error()
+          if (input.prompt.startsWith('empty error')) throw new Error()
           if (input.prompt.includes('schema valid')) {
             return {
               data: {

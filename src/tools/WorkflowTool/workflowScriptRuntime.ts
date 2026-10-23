@@ -88,13 +88,30 @@ import { raiseModWorkflowAgentSpawn } from '../../services/mods/agents.js'
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const MAX_LOGS = 1000
 const SYNC_TIMEOUT_MS = 5000
-const MAX_CONCURRENCY = Math.min(16, Math.max(2, availableParallelism() - 2))
+const DEFAULT_MAX_CONCURRENCY = Math.min(16, Math.max(2, availableParallelism() - 2))
+const DEFAULT_AGENT_STALL_MS = 10 * 60 * 1000
 const MAX_AGENT_CALLS = 1000
 const AGENT_CAP_MESSAGE = `Workflow agent() call cap reached (${MAX_AGENT_CALLS}). This usually means a loop using budget.remaining() never terminates because no token budget was set — remaining() returns Infinity when budget.total is null. Add a hard iteration cap to the loop, or pass a token budget.`
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
+// Official appends this to text-mode workflow subagents so they return data, not "Done.".
+export const WORKFLOW_AGENT_TEXT_RESULT_NOTE =
+  '\n\n---\n\nNOTE: You are running inside a workflow script. Your final text response is returned verbatim as a string to the calling script — it is your return value, not a message to a human. Output the literal result; do not output confirmations like "Done." Be concise — the script will parse your output.'
 
 function workflowRetryBudget(maxRetries: number | undefined): number {
   return maxRetries ?? 2
+}
+
+function workflowMaxConcurrency(): number {
+  const raw = process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+  const parsed = raw === undefined ? NaN : Number(raw)
+  if (!Number.isInteger(parsed) || parsed < 1) return DEFAULT_MAX_CONCURRENCY
+  logForDebugging(`workflow: concurrent agent gate = ${parsed} (CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS)`)
+  return parsed
+}
+
+function defaultWorkflowAgentStallMs(): number {
+  const parsed = Number(process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_AGENT_STALL_MS
 }
 
 // --- Types ---
@@ -543,7 +560,8 @@ export async function runWorkflowScript({
   let currentPhaseId = plan.phases[0]?.id ?? plan.name
   let childWorkflowProgressName: string | undefined
   const abortController = workflowTask.abortController!
-  const semaphore = new Semaphore(MAX_CONCURRENCY)
+  const maxConcurrency = workflowMaxConcurrency()
+  const semaphore = new Semaphore(maxConcurrency)
   const journal = new WorkflowJournal()
   if (resumeJournalEntries) {
     journal.loadFrom(resumeJournalEntries, resumeInterruptedIdentities)
@@ -784,7 +802,7 @@ export async function runWorkflowScript({
     prompt = spawned.prompt
     if (spawned.model !== opts?.model) opts = { ...opts, model: spawned.model }
 
-    const stallMs = opts?.stallMs
+    const stallMs = opts?.stallMs ?? defaultWorkflowAgentStallMs()
 
     // Stall/user retry loop
     let attempt = 0
@@ -1145,7 +1163,7 @@ export async function runWorkflowScript({
     let lastProgress = Date.now()
 
     const description = `${plan.name}: ${agentId}`
-    const schemaPrompt = opts?.schema ? buildSchemaPrompt(opts.schema) : ''
+    const promptSuffix = opts?.schema ? buildSchemaPrompt(opts.schema) : WORKFLOW_AGENT_TEXT_RESULT_NOTE
     const structuredOutputResult = opts?.schema
       ? createSyntheticOutputTool(opts.schema as Record<string, unknown>)
       : undefined
@@ -1159,7 +1177,7 @@ export async function runWorkflowScript({
     const input: AgentToolInput = {
       run_in_background: false,
       description,
-      prompt: prompt + schemaPrompt,
+      prompt: prompt + promptSuffix,
       subagent_type: opts?.agentType,
       model: opts?.model as AgentToolInput['model'],
       mode: permissionMode,
@@ -1413,7 +1431,7 @@ export async function runWorkflowScript({
     const results = new Array<R>(items.length)
     let nextIndex = 0
     const workers = Array.from(
-      { length: Math.min(MAX_CONCURRENCY, items.length) },
+      { length: Math.min(maxConcurrency, items.length) },
       async () => {
         while (!abortController.signal.aborted) {
           const index = nextIndex++

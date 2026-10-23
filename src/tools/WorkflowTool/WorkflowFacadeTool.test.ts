@@ -15,6 +15,7 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
+import { WORKFLOW_AGENT_TEXT_RESULT_NOTE } from './workflowScriptRuntime.js'
 
 const originalSettings = getSessionSettingsCache()
 afterAll(() => {
@@ -281,7 +282,7 @@ const context = {
         name: 'Agent',
         aliases: ['Task'],
         async call(input: { description: string; prompt: string; mode?: string }, agentContext: ToolUseContext) {
-          launchedPrompts.push(input.prompt)
+          launchedPrompts.push(input.prompt.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, ''))
           launchedAgents.push({
             description: input.description,
             prompt: input.prompt,
@@ -432,6 +433,8 @@ const officialInlineTask = Object.values(state.tasks).find(
 )!
 assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
 assert.deepEqual(launchedPrompts, ['scan meta'])
+// Script-runtime agents carry the official text-result framing; the legacy DSL path above does not.
+assert.ok(launchedAgents.at(-1)?.prompt.endsWith(WORKFLOW_AGENT_TEXT_RESULT_NOTE))
 
 launchedPrompts.length = 0
 launchedAgents.length = 0
