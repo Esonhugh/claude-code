@@ -1,29 +1,29 @@
 import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { getSessionId } from '../../bootstrap/state.js'
 import type { WorkflowAgentResult } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 import { isENOENT } from '../../utils/errors.js'
 import * as lockfile from '../../utils/lockfile.js'
-import { canonicalizePath } from '../../utils/sessionStoragePortable.js'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
 import type {
   WorkflowArgs,
   WorkflowDryRunPlan,
   WorkflowProgressEvent,
 } from './workflowSpec.js'
-import { createWorkflowScriptAgentChainIdentity, type WorkflowResumeCacheEntry } from './workflowResumeCache.js'
+import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 import type { WorkflowScriptMeta } from './workflowScriptParser.js'
 
 export type WorkflowRunSession = {
   taskId: string
   workflowRunId: string
   workflowName: string
-  /** The Claude session that started the run; /workflows lists only the current session's runs. */
+  /** The Claude session that started the run; /workflows lists only the current session's. */
   sessionId?: string
   status: 'running' | 'paused' | 'completed' | 'failed' | 'killed'
   runArgs?: WorkflowArgs
   scriptPath?: string
-  transcriptDir?: string
+  /** Directory of the run's journal.jsonl and agent transcripts. */
+  transcriptDir: string
   resumeFromRunId?: string
   meta?: WorkflowScriptMeta
   resumeCacheEntries: WorkflowResumeCacheEntry[]
@@ -41,20 +41,57 @@ export type WorkflowRunSession = {
   toolUseCount?: number
 }
 
-function taskSessionPath(cwd: string, taskId: string): string {
-  return join(cwd, '.claude', 'workflow-runs', `${taskId}.json`)
+// Runs live where official 2.1.303 keeps them, so either binary can resume the other's:
+//   <projects>/<project>/<session>/workflows/<runId>.json              run record
+//   <projects>/<project>/<session>/workflows/scripts/<name>-<runId>.js persisted inline script
+//   <projects>/<project>/<session>/subagents/workflows/<runId>/        journal.jsonl, agent transcripts
+function workflowProjectDir(cwd: string): string {
+  return getProjectDir(resolve(cwd))
 }
 
-function runSessionPath(cwd: string, workflowRunId: string): string {
-  return join(cwd, '.claude', 'workflow-runs', workflowRunId, 'session.json')
+export function workflowSessionDir(cwd: string): string {
+  return join(workflowProjectDir(cwd), getSessionId())
 }
 
-export function officialProjectDirName(cwd: string): string {
-  return `-${cwd.replace(/^\/+/, '').replace(/\/+$/g, '').replace(/\//g, '-')}`
+function workflowRunRecordPath(sessionDir: string, workflowRunId: string): string {
+  return join(sessionDir, 'workflows', `${workflowRunId}.json`)
 }
 
-function officialWorkflowProjectRoot(cwd: string, projectsRoot?: string): string {
-  return join(projectsRoot ?? join(homedir(), '.claude', 'projects'), officialProjectDirName(cwd))
+function workflowJournalDir(sessionDir: string, workflowRunId: string): string {
+  return join(sessionDir, 'subagents', 'workflows', workflowRunId)
+}
+
+async function readJsonFile(path: string): Promise<unknown> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8'))
+  } catch (error) {
+    if (isENOENT(error)) return undefined
+    throw error
+  }
+}
+
+async function listSessionDirs(cwd: string): Promise<string[]> {
+  const projectDir = workflowProjectDir(cwd)
+  let entries: import('node:fs').Dirent[]
+  try {
+    entries = await readdir(projectDir, { withFileTypes: true })
+  } catch (error) {
+    if (isENOENT(error)) return []
+    throw error
+  }
+  return entries.filter(entry => entry.isDirectory()).map(entry => join(projectDir, entry.name))
+}
+
+// The session directory holding a run: the current session's unless another session of this
+// project already recorded the run id (a resume keeps the id).
+async function locateWorkflowRunSessionDir(cwd: string, workflowRunId: string): Promise<string> {
+  const current = workflowSessionDir(cwd)
+  if (await readJsonFile(workflowRunRecordPath(current, workflowRunId)) !== undefined) return current
+  for (const sessionDir of await listSessionDirs(cwd)) {
+    if (sessionDir === current) continue
+    if (await readJsonFile(workflowRunRecordPath(sessionDir, workflowRunId)) !== undefined) return sessionDir
+  }
+  return current
 }
 
 type OfficialWorkflowRun = {
@@ -62,68 +99,16 @@ type OfficialWorkflowRun = {
   taskId?: string
   script?: string
   scriptPath?: string
-  result?: unknown
   agentCount?: number
-  logs?: string[]
   durationMs?: number
   summary?: string
   workflowName?: string
   status?: string
   startTime?: number
   phases?: WorkflowScriptMeta['phases']
-  workflowProgress?: Array<{
-    type?: string
-    index?: number
-    label?: string
-    phaseTitle?: string
-    resultPreview?: string
-    promptPreview?: string
-  }>
   totalTokens?: number
   totalToolCalls?: number
-}
-
-function workflowArgsFromOfficialResult(result: unknown): WorkflowArgs | undefined {
-  if (
-    typeof result === 'string' ||
-    typeof result === 'number' ||
-    typeof result === 'boolean' ||
-    result === null ||
-    Array.isArray(result) ||
-    typeof result === 'object'
-  ) {
-    return result as WorkflowArgs
-  }
-  return undefined
-}
-
-function officialWorkflowResumeEntries(run: OfficialWorkflowRun): WorkflowResumeCacheEntry[] {
-  const progress = run.workflowProgress ?? []
-  const agents = progress.filter(item => item.type === 'workflow_agent')
-  let previousKey = ''
-  return agents.flatMap((agent, agentIndex): WorkflowResumeCacheEntry[] => {
-    if (!agent.promptPreview) return []
-    const label = agent.label ?? agent.promptPreview
-    const result = agent.resultPreview ?? (
-      agents.length === 1 && run.result && typeof run.result === 'object' && label in run.result
-        ? (run.result as Record<string, unknown>)[label]
-        : undefined
-    )
-    const identity = createWorkflowScriptAgentChainIdentity({
-      previousKey,
-      prompt: agent.promptPreview,
-    })
-    previousKey = identity
-    if (result === undefined) return []
-    return [{
-      index: typeof agent.index === 'number' ? Math.max(0, agent.index - 1) : agentIndex,
-      identity,
-      phase: agent.phaseTitle,
-      label,
-      result,
-      completedAt: run.startTime ?? Date.now(),
-    }]
-  })
+  error?: string
 }
 
 function officialStatus(status: string | undefined): WorkflowRunSession['status'] {
@@ -134,17 +119,17 @@ function officialStatus(status: string | undefined): WorkflowRunSession['status'
   return 'running'
 }
 
-function officialWorkflowRunToSession(run: OfficialWorkflowRun): WorkflowRunSession {
-  const now = Date.now()
-  const startedAt = run.startTime ?? now
+function officialWorkflowRunToSession(run: OfficialWorkflowRun, sessionDir: string): WorkflowRunSession {
+  const startedAt = run.startTime ?? Date.now()
   return {
     taskId: run.taskId ?? run.runId,
     workflowRunId: run.runId,
     workflowName: run.workflowName ?? run.summary ?? run.runId,
+    sessionId: basename(sessionDir),
     status: officialStatus(run.status),
-    runArgs: workflowArgsFromOfficialResult(run.result),
     scriptPath: run.scriptPath,
-    resumeCacheEntries: officialWorkflowResumeEntries(run),
+    transcriptDir: workflowJournalDir(sessionDir, run.runId),
+    resumeCacheEntries: [],
     meta: run.workflowName && run.summary ? {
       name: run.workflowName,
       description: run.summary,
@@ -155,51 +140,36 @@ function officialWorkflowRunToSession(run: OfficialWorkflowRun): WorkflowRunSess
     updatedAt: startedAt + (run.durationMs ?? 0),
     results: [],
     events: [],
+    error: run.error,
     agentCount: run.agentCount,
     tokenCount: run.totalTokens,
     toolUseCount: run.totalToolCalls,
   }
 }
 
-async function loadOfficialWorkflowRunSession({
-  cwd,
-  workflowRunId,
-  projectsRoot,
-}: {
-  cwd: string
-  workflowRunId: string
-  projectsRoot?: string
-}): Promise<WorkflowRunSession | undefined> {
-  const projectRoot = officialWorkflowProjectRoot(cwd, projectsRoot)
-  async function scan(dir: string): Promise<WorkflowRunSession | undefined> {
-    let entries: import('node:fs').Dirent[]
-    try {
-      entries = await readdir(dir, { withFileTypes: true })
-    } catch {
-      return undefined
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry.name)
-      if (entry.isDirectory()) {
-        const found = await scan(path)
-        if (found) return found
-        continue
-      }
-      if (entry.name !== `${workflowRunId}.json`) continue
-      try {
-        return officialWorkflowRunToSession(JSON.parse(await readFile(path, 'utf8')) as OfficialWorkflowRun)
-      } catch {
-        return undefined
-      }
-    }
-    return undefined
-  }
-  return scan(projectRoot)
+// A record this build wrote carries workflowRunId; anything else is an official run record.
+function parseWorkflowRunRecord(record: unknown, sessionDir: string): WorkflowRunSession | undefined {
+  if (!record || typeof record !== 'object') return undefined
+  if (typeof (record as WorkflowRunSession).workflowRunId === 'string') return record as WorkflowRunSession
+  if (typeof (record as OfficialWorkflowRun).runId !== 'string') return undefined
+  return officialWorkflowRunToSession(record as OfficialWorkflowRun, sessionDir)
 }
 
-async function writeJson(path: string, value: unknown): Promise<void> {
-  await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`)
+// The record is written with official's keys on top, so an official reader sees a run record.
+function workflowRunRecord(session: WorkflowRunSession): Record<string, unknown> {
+  return {
+    ...session,
+    runId: session.workflowRunId,
+    timestamp: new Date(session.updatedAt).toISOString(),
+    script: session.runScriptSnapshot,
+    agentCount: session.agentCount,
+    durationMs: session.updatedAt - session.startedAt,
+    summary: session.meta?.description,
+    startTime: session.startedAt,
+    phases: session.meta?.phases,
+    totalTokens: session.tokenCount,
+    totalToolCalls: session.toolUseCount,
+  }
 }
 
 const workflowRunSessionMutationQueues = new Map<string, Promise<void>>()
@@ -210,26 +180,6 @@ const WORKFLOW_RUN_SESSION_LOCK_OPTIONS = {
     minTimeout: 5,
     maxTimeout: 100,
   },
-}
-
-type WorkflowRunSessionMutation = (
-  latest: WorkflowRunSession | undefined,
-) => WorkflowRunSession | undefined
-
-async function workflowRunSessionLockIdentity(
-  cwd: string,
-  workflowRunId: string,
-): Promise<{
-  cwd: string
-  path: string
-}> {
-  const canonicalCwd = await canonicalizePath(resolve(cwd))
-  const sessionDir = dirname(runSessionPath(canonicalCwd, workflowRunId))
-  await mkdir(sessionDir, { recursive: true })
-  return {
-    cwd: canonicalCwd,
-    path: sessionDir,
-  }
 }
 
 function maxWorkflowRunSessionCount(
@@ -248,24 +198,24 @@ function isTerminalWorkflowRunStatus(status: WorkflowRunSession['status']): bool
 async function mutateWorkflowRunSession(
   cwd: string,
   workflowRunId: string,
-  mutation: WorkflowRunSessionMutation,
+  mutation: (latest: WorkflowRunSession | undefined, sessionDir: string) => WorkflowRunSession | undefined,
 ): Promise<WorkflowRunSession | undefined> {
-  const queueKey = runSessionPath(resolve(cwd), workflowRunId)
+  const queueKey = `${workflowProjectDir(cwd)}\0${workflowRunId}`
   const previous = workflowRunSessionMutationQueues.get(queueKey) ?? Promise.resolve()
   let updated: WorkflowRunSession | undefined
   const current = previous.catch(() => undefined).then(async () => {
-    const identity = await workflowRunSessionLockIdentity(cwd, workflowRunId)
+    const sessionDir = await locateWorkflowRunSessionDir(cwd, workflowRunId)
+    const lockDir = workflowJournalDir(sessionDir, workflowRunId)
+    await mkdir(lockDir, { recursive: true })
     let release: (() => Promise<void>) | undefined
     try {
-      release = await lockfile.lock(identity.path, WORKFLOW_RUN_SESSION_LOCK_OPTIONS)
-      const latest = await loadWorkflowRunSession({
-        cwd: identity.cwd,
-        workflowRunId,
-        includeOfficialFallback: false,
-      })
-      updated = mutation(latest)
+      release = await lockfile.lock(lockDir, WORKFLOW_RUN_SESSION_LOCK_OPTIONS)
+      const recordPath = workflowRunRecordPath(sessionDir, workflowRunId)
+      const latest = parseWorkflowRunRecord(await readJsonFile(recordPath), sessionDir)
+      updated = mutation(latest, sessionDir)
       if (!updated || updated === latest) return
-      await writeWorkflowRunSession(identity.cwd, updated)
+      await mkdir(dirname(recordPath), { recursive: true })
+      await writeFile(recordPath, `${JSON.stringify(workflowRunRecord(updated), null, 2)}\n`)
     } finally {
       await release?.()
     }
@@ -281,11 +231,6 @@ async function mutateWorkflowRunSession(
   }
 }
 
-async function writeWorkflowRunSession(cwd: string, session: WorkflowRunSession): Promise<void> {
-  await writeJson(taskSessionPath(cwd, session.taskId), session)
-  await writeJson(runSessionPath(cwd, session.workflowRunId), session)
-}
-
 type StartWorkflowRunSessionInput = {
   cwd: string
   taskId: string
@@ -293,7 +238,6 @@ type StartWorkflowRunSessionInput = {
   plan: WorkflowDryRunPlan
   runArgs?: WorkflowArgs
   scriptPath?: string
-  transcriptDir?: string
   resumeFromRunId?: string
 }
 
@@ -304,14 +248,13 @@ export async function tryStartWorkflowRunSession({
   plan,
   runArgs,
   scriptPath,
-  transcriptDir,
   resumeFromRunId,
 }: StartWorkflowRunSessionInput): Promise<{
   session: WorkflowRunSession
   started: boolean
 }> {
   let didStart = false
-  const session = await mutateWorkflowRunSession(cwd, workflowRunId, latest => {
+  const session = await mutateWorkflowRunSession(cwd, workflowRunId, (latest, sessionDir) => {
     // Like official, a resume keeps the run id; the caller has already refused a live run.
     if (latest && resumeFromRunId !== workflowRunId) return latest
     didStart = true
@@ -324,7 +267,7 @@ export async function tryStartWorkflowRunSession({
       status: 'running' as const,
       runArgs,
       scriptPath,
-      transcriptDir,
+      transcriptDir: workflowJournalDir(sessionDir, workflowRunId),
       resumeFromRunId,
       meta: plan.meta,
       resumeCacheEntries: [],
@@ -350,34 +293,28 @@ export async function startWorkflowRunSession(
 export async function listWorkflowRunSessions(
   cwd: string,
 ): Promise<WorkflowRunSession[]> {
-  const root = join(cwd, '.claude', 'workflow-runs')
-  let entries: import('node:fs').Dirent[]
-  try {
-    entries = await readdir(root, { withFileTypes: true })
-  } catch {
-    return []
-  }
-
-  const sessions = await Promise.all(entries.map(async entry => {
-    const path = entry.isDirectory()
-      ? join(root, entry.name, 'session.json')
-      : entry.isFile() && entry.name.endsWith('.json')
-        ? join(root, entry.name)
-        : undefined
-    if (!path) return undefined
-    try {
-      return JSON.parse(await readFile(path, 'utf8')) as WorkflowRunSession
-    } catch {
-      return undefined
-    }
-  }))
-
   const byRunId = new Map<string, WorkflowRunSession>()
-  for (const session of sessions) {
-    if (!session?.workflowRunId) continue
-    const existing = byRunId.get(session.workflowRunId)
-    if (!existing || session.updatedAt > existing.updatedAt) {
-      byRunId.set(session.workflowRunId, session)
+  for (const sessionDir of await listSessionDirs(cwd)) {
+    let names: string[]
+    try {
+      names = await readdir(join(sessionDir, 'workflows'))
+    } catch (error) {
+      if (isENOENT(error)) continue
+      throw error
+    }
+    const sessions = await Promise.all(names.filter(name => name.endsWith('.json')).map(async name => {
+      try {
+        return parseWorkflowRunRecord(await readJsonFile(join(sessionDir, 'workflows', name)), sessionDir)
+      } catch {
+        return undefined
+      }
+    }))
+    for (const session of sessions) {
+      if (!session) continue
+      const existing = byRunId.get(session.workflowRunId)
+      if (!existing || session.updatedAt > existing.updatedAt) {
+        byRunId.set(session.workflowRunId, session)
+      }
     }
   }
   return [...byRunId.values()].sort((a, b) => b.startedAt - a.startedAt)
@@ -386,21 +323,12 @@ export async function listWorkflowRunSessions(
 export async function loadWorkflowRunSession({
   cwd,
   workflowRunId,
-  projectsRoot,
-  includeOfficialFallback = true,
 }: {
   cwd: string
   workflowRunId: string
-  projectsRoot?: string
-  includeOfficialFallback?: boolean
 }): Promise<WorkflowRunSession | undefined> {
-  try {
-    return JSON.parse(await readFile(runSessionPath(cwd, workflowRunId), 'utf8')) as WorkflowRunSession
-  } catch (error) {
-    if (!isENOENT(error)) throw error
-    if (!includeOfficialFallback) return undefined
-    return loadOfficialWorkflowRunSession({ cwd, workflowRunId, projectsRoot })
-  }
+  const sessionDir = await locateWorkflowRunSessionDir(cwd, workflowRunId)
+  return parseWorkflowRunRecord(await readJsonFile(workflowRunRecordPath(sessionDir, workflowRunId)), sessionDir)
 }
 
 export async function appendWorkflowRunEvent({

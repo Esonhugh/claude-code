@@ -14,6 +14,7 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowTool } from './WorkflowTool.js'
+import { workflowSessionDir } from './workflowRunSessions.js'
 import { WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT } from './workflowScriptRuntime.js'
 
 const originalSettings = getSessionSettingsCache()
@@ -23,6 +24,8 @@ afterAll(() => {
 })
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-tool-test-'))
+process.env.CLAUDE_CONFIG_DIR = join(tempRoot, 'config')
+const persistedRunsDir = join(workflowSessionDir(tempRoot), 'workflows')
 await mkdir(join(tempRoot, 'docs', 'workflows'), { recursive: true })
 
 await writeFile(
@@ -466,7 +469,7 @@ assert.match(String(jsStatus.data), /Runtime: javascript-worker/)
 assert.match(String(jsStatus.data), /Isolated runtime: yes/)
 assert.match(String(jsStatus.data), /Runtime source: .*js-run\.js/)
 const runSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', `${jsTaskId}.json`), 'utf8'),
+  await readFile(join(persistedRunsDir, `${jsTask.workflowRunId}.json`), 'utf8'),
 )
 assert.equal(runSession.taskId, jsTaskId)
 assert.match(runSession.workflowRunId, /^wf_/)
@@ -528,7 +531,7 @@ const emptyErrorTask = Object.values(runState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'empty-error',
 )!
 const emptyErrorSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', `${emptyErrorTask.id}.json`), 'utf8'),
+  await readFile(join(persistedRunsDir, `${emptyErrorTask.workflowRunId}.json`), 'utf8'),
 )
 assert.equal(emptyErrorSession.status, 'failed')
 assert.equal(emptyErrorSession.error, 'Workflow script failed without error details')
@@ -577,9 +580,9 @@ runState = {
     [pausableTaskId]: pausableTask,
   },
 }
-await mkdir(join(tempRoot, '.claude', 'workflow-runs', pausableRunId), { recursive: true })
+await mkdir(persistedRunsDir, { recursive: true })
 await writeFile(
-  join(tempRoot, '.claude', 'workflow-runs', `${pausableTaskId}.json`),
+  join(persistedRunsDir, `${pausableRunId}.json`),
   JSON.stringify({
     taskId: pausableTaskId,
     workflowRunId: pausableRunId,
@@ -587,22 +590,7 @@ await writeFile(
     status: 'running',
     runArgs: 'pause input',
     scriptPath: pausableScriptPath,
-    resumeCacheEntries: [],
-    startedAt: 1,
-    updatedAt: 1,
-    results: [],
-    events: [],
-  }),
-)
-await writeFile(
-  join(tempRoot, '.claude', 'workflow-runs', pausableRunId, 'session.json'),
-  JSON.stringify({
-    taskId: pausableTaskId,
-    workflowRunId: pausableRunId,
-    workflowName: 'Pausable Workflow',
-    status: 'running',
-    runArgs: 'pause input',
-    scriptPath: pausableScriptPath,
+    transcriptDir: join(workflowSessionDir(tempRoot), 'subagents', 'workflows', pausableRunId),
     resumeCacheEntries: [],
     startedAt: 1,
     updatedAt: 1,
@@ -624,7 +612,7 @@ assert.match(
   /Some notifications may still arrive after pause; they are part of this workflow run\./,
 )
 const pausedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', pausableRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${pausableRunId}.json`), 'utf8'),
 )
 assert.equal(pausedSession.status, 'paused')
 assert.match(pausedSession.resumePrompt, /Workflow\(\{scriptPath: ".*js-run\.js", resumeFromRunId: "wf_pausable"\}\)/)

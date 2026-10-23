@@ -24,7 +24,7 @@ import {
   runWorkflowPlan,
   snapshotWorkflowAgentContext,
 } from './runWorkflow.js'
-import { loadWorkflowRunSession } from './workflowRunSessions.js'
+import { loadWorkflowRunSession, workflowSessionDir } from './workflowRunSessions.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
 // Terminal status/usage reach SDK consumers through the XML task notification
@@ -52,6 +52,7 @@ const setAppState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const workflowCwd = await mkdtemp(join(tmpdir(), 'workflow-run-results-'))
+process.env.CLAUDE_CONFIG_DIR = join(workflowCwd, 'config')
 
 setIsInteractive(false)
 drainSdkEvents()
@@ -851,6 +852,7 @@ assert.equal(
 )
 
 const nonCompletedCacheCwd = await mkdtemp(join(tmpdir(), 'workflow-non-completed-cache-'))
+const nonCompletedCacheSessionPath = join(workflowSessionDir(nonCompletedCacheCwd), 'workflows', 'wf_non_completed_cache_source.json')
 let nonCompletedCacheState = {
   tasks: {},
   toolPermissionContext: { mode: 'default' },
@@ -896,13 +898,7 @@ const completedCacheEntry = nonCompletedCacheSession.resumeCacheEntries[0]
 for (const status of ['running', 'failed'] as const) {
   const sourceEntry = completedCacheEntry
   await writeFile(
-    join(
-      nonCompletedCacheCwd,
-      '.claude',
-      'workflow-runs',
-      'wf_non_completed_cache_source',
-      'session.json',
-    ),
+    nonCompletedCacheSessionPath,
     `${JSON.stringify({
       ...nonCompletedCacheSession,
       resumeCacheEntries: [{
@@ -958,13 +954,7 @@ for (const status of ['running', 'failed'] as const) {
 }
 
 await writeFile(
-  join(
-    nonCompletedCacheCwd,
-    '.claude',
-    'workflow-runs',
-    'wf_non_completed_cache_source',
-    'session.json',
-  ),
+  nonCompletedCacheSessionPath,
   `${JSON.stringify({
     ...nonCompletedCacheSession,
     resumeCacheEntries: [

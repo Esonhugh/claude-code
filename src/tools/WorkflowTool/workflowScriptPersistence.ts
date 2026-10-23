@@ -1,13 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, normalize } from 'node:path'
+import { workflowSessionDir } from './workflowRunSessions.js'
 
+// Official 2.1.303's script file name: <sanitized name>-<runId>.js
 function sanitizeWorkflowFileName(name: string): string {
-  const sanitized = name
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-  return `${sanitized || 'workflow'}.js`
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'workflow'
 }
 
 export function createWorkflowRunId(): string {
@@ -25,9 +23,9 @@ export async function persistWorkflowScript({
   name: string
   script: string
 }): Promise<string> {
-  const runDir = join(cwd, '.claude', 'workflow-runs', workflowRunId)
-  await mkdir(runDir, { recursive: true })
-  const scriptPath = join(runDir, sanitizeWorkflowFileName(name))
+  const scriptsDir = join(workflowSessionDir(cwd), 'workflows', 'scripts')
+  await mkdir(scriptsDir, { recursive: true })
+  const scriptPath = join(scriptsDir, `${sanitizeWorkflowFileName(name)}-${workflowRunId}.js`)
   await writeFile(scriptPath, script)
   return realpath(scriptPath)
 }
