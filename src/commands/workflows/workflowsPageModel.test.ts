@@ -101,6 +101,7 @@ function persistedSession(overrides: Partial<WorkflowRunSession>): WorkflowRunSe
     workflowRunId: 'wf_persisted',
     workflowName: 'Persisted',
     status: 'completed',
+    transcriptDir: '/tmp/persisted-journal',
     resumeCacheEntries: [],
     startedAt: 500,
     updatedAt: 900,

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterAll } from 'bun:test'
 import { readFileSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -15,6 +15,7 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
+import { workflowSessionDir } from './workflowRunSessions.js'
 import { WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT } from './workflowScriptRuntime.js'
 
 const originalSettings = getSessionSettingsCache()
@@ -164,6 +165,9 @@ assert.deepEqual(
 )
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflow-facade-test-'))
+process.env.CLAUDE_CONFIG_DIR = join(tempRoot, 'config')
+// Like official 2.1.303, run records live under the session directory, not the working directory.
+const persistedRunsDir = join(workflowSessionDir(tempRoot), 'workflows')
 await mkdir(join(tempRoot, '.claude', 'workflows'), { recursive: true })
 const permissionScriptPath = join(tempRoot, 'permission-preview.js')
 await writeFile(
@@ -385,19 +389,21 @@ const inlineRun = await WorkflowFacadeTool.call(
 
 assert.match(String(inlineRun.data), /Workflow launched in background\. Task ID: w/)
 assert.match(String(inlineRun.data), /Run ID: wf_/)
-assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*workflow\.js", resumeFromRunId: "wf_[^"]+"}\)/)
+assert.match(String(inlineRun.data), /Workflow\({scriptPath: ".*\/workflows\/scripts\/workflow-wf_[^"]+\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=facade'])
 const taskId = String(inlineRun.data).match(/Task ID: (\S+)/)?.[1]
 const workflowRunId = String(inlineRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(taskId)
 assert.ok(workflowRunId)
 const session = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', workflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${workflowRunId}.json`), 'utf8'),
 )
 assert.equal(session.taskId, taskId)
 assert.equal(session.workflowRunId, workflowRunId)
-assert.match(session.scriptPath, /workflow\.js$/)
+assert.match(session.scriptPath, /\/workflow-wf_[^/]+\.js$/)
+assert.equal(session.runId, workflowRunId)
 assert.deepEqual(session.runArgs, { topic: 'facade' })
+await assert.rejects(access(join(tempRoot, '.claude', 'workflow-runs')), { code: 'ENOENT' })
 
 launchedPrompts.length = 0
 const officialRun = await WorkflowFacadeTool.call(
@@ -421,7 +427,7 @@ assert.equal(launchedAgents.at(-1)?.disableNestedAgentTools, true)
 const officialWorkflowRunId = String(officialRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(officialWorkflowRunId)
 const officialSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', officialWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${officialWorkflowRunId}.json`), 'utf8'),
 )
 assert.deepEqual(officialSession.meta, {
   name: 'official-inline',
@@ -491,7 +497,7 @@ assert.deepEqual(launchedPrompts, ['child runtime child', 'parent runtime child'
 const childWorkflowRunId = String(childWorkflowRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(childWorkflowRunId)
 const childWorkflowSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', childWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${childWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(childWorkflowSession.resumeCacheEntries.length, 2)
 const childParentTask = Object.values(state.tasks).find(
@@ -587,7 +593,7 @@ assert.deepEqual(launchedPrompts, [])
 const cachedWorkflowRunId = String(cachedRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(cachedWorkflowRunId)
 const cachedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', cachedWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${cachedWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(cachedSession.resumeFromRunId, officialWorkflowRunId)
 assert.equal(cachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
@@ -616,7 +622,7 @@ assert.match(String(savedCacheRun.data), /Workflow launched in background\. Task
 assert.deepEqual(launchedPrompts, ['saved cache meta'])
 const savedCacheWorkflowRunId = String(savedCacheRun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(savedCacheWorkflowRunId)
-const savedCacheSessionPath = join(tempRoot, '.claude', 'workflow-runs', savedCacheWorkflowRunId, 'session.json')
+const savedCacheSessionPath = join(persistedRunsDir, `${savedCacheWorkflowRunId}.json`)
 const savedCacheSession = JSON.parse(await readFile(savedCacheSessionPath, 'utf8'))
 assert.ok(savedCacheSession.transcriptDir)
 await writeFile(
@@ -639,7 +645,7 @@ assert.deepEqual(launchedPrompts, [])
 const savedCachedWorkflowRunId = String(savedCachedRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(savedCachedWorkflowRunId)
 const savedCachedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', savedCachedWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${savedCachedWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(savedCachedSession.resumeFromRunId, savedCacheWorkflowRunId)
 assert.equal(savedCachedSession.events.some((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit), true)
@@ -675,7 +681,7 @@ assert.deepEqual(launchedPrompts, ['prep meta', 'scan meta'])
 const insertedWorkflowRunId = String(insertedStepRerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(insertedWorkflowRunId)
 const insertedSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', insertedWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${insertedWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(insertedSession.events.filter((event: { type: string; cacheHit?: boolean }) => event.type === 'workflow_agent' && event.cacheHit).length, 0)
 
@@ -692,12 +698,12 @@ const rerun = await WorkflowFacadeTool.call(
 )
 
 assert.match(String(rerun.data), /Workflow launched in background\. Task ID: w/)
-assert.match(String(rerun.data), /Workflow\({scriptPath: ".*workflow\.js", resumeFromRunId: "wf_[^"]+"}\)/)
+assert.match(String(rerun.data), /Workflow\({scriptPath: ".*\/workflow-wf_[^"]+\.js", resumeFromRunId: "wf_[^"]+"}\)/)
 assert.deepEqual(launchedPrompts, ['inline topic=rerun'])
 const rerunWorkflowRunId = String(rerun.data).match(/Run ID: (\S+)/)?.[1]
 assert.ok(rerunWorkflowRunId)
 const rerunSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', rerunWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${rerunWorkflowRunId}.json`), 'utf8'),
 )
 assert.equal(rerunSession.resumeFromRunId, workflowRunId)
 assert.equal(rerunSession.scriptPath, session.scriptPath)
@@ -770,7 +776,7 @@ assert.deepEqual(launchedAgents.map(agent => agent.description), [
 assert.match(launchedAgents[2]!.prompt, /Upstream phase outputs/)
 assert.match(launchedAgents[5]!.prompt, /Vote on claims after review\/refute/)
 const complexSession = JSON.parse(
-  await readFile(join(tempRoot, '.claude', 'workflow-runs', complexWorkflowRunId, 'session.json'), 'utf8'),
+  await readFile(join(persistedRunsDir, `${complexWorkflowRunId}.json`), 'utf8'),
 )
 assert.deepEqual(
   [...new Set(complexSession.events.map((event: { type: string }) => event.type))],
@@ -778,6 +784,6 @@ assert.deepEqual(
 )
 assert.deepEqual(complexSession.runArgs.reviewers, ['cross-check', 'refute'])
 assert.equal(complexSession.results.length, 6)
-assert.match(complexSession.scriptPath, /workflow\.js$/)
+assert.match(complexSession.scriptPath, /\/workflow-wf_[^/]+\.js$/)
 
 console.log('WorkflowFacadeTool.test.ts passed')

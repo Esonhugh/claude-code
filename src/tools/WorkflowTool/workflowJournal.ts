@@ -4,8 +4,11 @@ import type { WorkflowAgentErrorKind } from '../../tasks/LocalWorkflowTask/Local
 import { isENOENT } from '../../utils/errors.js'
 import type { WorkflowResumeCacheEntry } from './workflowResumeCache.js'
 
-export type WorkflowJournalStartedEntry = {
-  type: 'started'
+// The journal is official 2.1.303's: one JSON line per event under
+// <session>/subagents/workflows/<runId>/journal.jsonl with `launched`, `started`, `result`
+// and `failed` lines keyed by the v2 chain key. This build adds attempt bookkeeping fields;
+// official ignores them, and lines of other types (official's restore markers) are skipped.
+type WorkflowJournalAttemptFields = {
   key: string
   agentId: string
   logicalAgentId?: string
@@ -15,33 +18,41 @@ export type WorkflowJournalStartedEntry = {
   phase?: string
   label?: string
   index?: number
-  timestamp: number
+  timestamp?: number
 }
 
-export type WorkflowJournalResultEntry = {
+export type WorkflowJournalLaunchedEntry = {
+  type: 'launched'
+}
+
+export type WorkflowJournalStartedEntry = WorkflowJournalAttemptFields & {
+  type: 'started'
+}
+
+export type WorkflowJournalResultEntry = WorkflowJournalAttemptFields & {
   type: 'result'
-  key: string
-  agentId: string
-  logicalAgentId?: string
-  attemptId?: string
-  phase?: string
-  label?: string
-  index?: number
-  status?: 'completed' | 'failed' | 'skipped' | 'interrupted'
-  attempt?: number
-  retryOfAttemptId?: string
+  tokenCount?: number
+  toolUseCount?: number
+  durationMs?: number
+  result: unknown
+}
+
+export type WorkflowJournalFailedEntry = WorkflowJournalAttemptFields & {
+  type: 'failed'
+  /** Missing on official lines, which only record failures. */
+  status?: 'failed' | 'skipped' | 'interrupted'
   error?: string
   errorKind?: WorkflowAgentErrorKind
   tokenCount?: number
   toolUseCount?: number
   durationMs?: number
-  result: unknown
-  timestamp: number
 }
 
 export type WorkflowJournalEntry =
+  | WorkflowJournalLaunchedEntry
   | WorkflowJournalStartedEntry
   | WorkflowJournalResultEntry
+  | WorkflowJournalFailedEntry
 
 export function workflowJournalPath(transcriptDir: string): string {
   return join(transcriptDir, 'journal.jsonl')
@@ -53,6 +64,10 @@ async function appendWorkflowJournalEntry(
 ): Promise<void> {
   await mkdir(transcriptDir, { recursive: true })
   await appendFile(workflowJournalPath(transcriptDir), `${JSON.stringify(entry)}\n`)
+}
+
+export async function appendWorkflowJournalLaunched(transcriptDir: string): Promise<void> {
+  await appendWorkflowJournalEntry(transcriptDir, { type: 'launched' })
 }
 
 export async function appendWorkflowJournalStarted(
@@ -67,6 +82,13 @@ export async function appendWorkflowJournalResult(
   entry: Omit<WorkflowJournalResultEntry, 'type'>,
 ): Promise<void> {
   await appendWorkflowJournalEntry(transcriptDir, { type: 'result', ...entry })
+}
+
+export async function appendWorkflowJournalFailed(
+  transcriptDir: string,
+  entry: Omit<WorkflowJournalFailedEntry, 'type'>,
+): Promise<void> {
+  await appendWorkflowJournalEntry(transcriptDir, { type: 'failed', ...entry })
 }
 
 export async function readWorkflowJournalEntries(
@@ -97,7 +119,7 @@ export async function readWorkflowJournalCacheEntries(
 ): Promise<WorkflowResumeCacheEntry[]> {
   const entries = await readWorkflowJournalEntries(transcriptDir)
   return entries.flatMap((entry, index): WorkflowResumeCacheEntry[] => {
-    if (entry.type !== 'result' || entry.status !== 'completed') return []
+    if (entry.type !== 'result') return []
     return [
       {
         index: entry.index ?? index,
@@ -105,7 +127,7 @@ export async function readWorkflowJournalCacheEntries(
         phase: entry.phase,
         label: entry.label,
         result: entry.result,
-        completedAt: entry.timestamp,
+        completedAt: entry.timestamp ?? 0,
       },
     ]
   })

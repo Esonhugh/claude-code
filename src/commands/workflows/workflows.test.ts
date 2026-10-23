@@ -4,9 +4,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { getSessionId } from '../../bootstrap/state.js'
+import { getProjectDir } from '../../utils/sessionStoragePortable.js'
+import { workflowSessionDir } from '../../tools/WorkflowTool/workflowRunSessions.js'
 import { call } from './workflows.js'
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'workflows-command-test-'))
+process.env.CLAUDE_CONFIG_DIR = join(tempRoot, 'config')
 await mkdir(join(tempRoot, 'docs', 'workflows'), { recursive: true })
 
 await writeFile(
@@ -133,10 +136,10 @@ assert.equal(emptyRunsResult.value, 'Dynamic workflows\n\nNo dynamic workflows i
 
 const persistedRunId = 'wf_persisted'
 const persistedTaskId = 'w-persisted'
-const persistedRunDir = join(tempRoot, '.claude', 'workflow-runs', persistedRunId)
-await mkdir(persistedRunDir, { recursive: true })
+const persistedRunsDir = join(workflowSessionDir(tempRoot), 'workflows')
+await mkdir(persistedRunsDir, { recursive: true })
 await writeFile(
-  join(persistedRunDir, 'session.json'),
+  join(persistedRunsDir, `${persistedRunId}.json`),
   `${JSON.stringify({
     taskId: persistedTaskId,
     workflowRunId: persistedRunId,
@@ -158,10 +161,8 @@ await writeFile(
     error: 'Workflow phase "research" failed',
   }, null, 2)}\n`,
 )
-const duplicateLiveRunDir = join(tempRoot, '.claude', 'workflow-runs', workflowTask.workflowRunId)
-await mkdir(duplicateLiveRunDir, { recursive: true })
 await writeFile(
-  join(duplicateLiveRunDir, 'session.json'),
+  join(persistedRunsDir, `${workflowTask.workflowRunId}.json`),
   `${JSON.stringify({
     taskId: 'stale-task-id',
     workflowRunId: workflowTask.workflowRunId,
@@ -175,10 +176,10 @@ await writeFile(
   }, null, 2)}\n`,
 )
 // Like official, a run persisted by another session is not listed.
-const otherSessionRunDir = join(tempRoot, '.claude', 'workflow-runs', 'wf_other_session')
-await mkdir(otherSessionRunDir, { recursive: true })
+const otherSessionRunsDir = join(getProjectDir(tempRoot), 'another-session', 'workflows')
+await mkdir(otherSessionRunsDir, { recursive: true })
 await writeFile(
-  join(otherSessionRunDir, 'session.json'),
+  join(otherSessionRunsDir, 'wf_other_session.json'),
   `${JSON.stringify({
     taskId: 'w-other-session',
     workflowRunId: 'wf_other_session',

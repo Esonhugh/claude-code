@@ -252,6 +252,7 @@ const fakeAgentTool = {
 }
 
 const scriptCwd = await mkdtemp(join(tmpdir(), 'workflow-script-results-'))
+process.env.CLAUDE_CONFIG_DIR = join(scriptCwd, 'config')
 const context = {
   getAppState: () => state,
   setAppState,
@@ -836,6 +837,8 @@ const parallelIdentityContext = {
   abortController: new AbortController(),
   toolUseId: 'toolu_parallel_identity',
 } as unknown as ToolUseContext
+// Like official 2.1.303, keys chain in agent() call order: the same call order replays the
+// journal, a different order misses on the first reordered call and runs live from there.
 const parallelIdentityScript = `export const meta = {
   name: "runtime-parallel-identity",
   description: "Stable parallel resume identities.",
@@ -889,7 +892,7 @@ assert.ok(parallelIdentityTranscriptDir)
 await runWorkflowScript({
   script: parallelIdentityScript,
   plan: parallelIdentityPlan,
-  args: { delayFirst: false },
+  args: { delayFirst: true },
   context: parallelIdentityContext,
   canUseTool: async () => ({ behavior: 'allow' }),
   assistantMessage: { message: { id: 'msg_parallel_identity_resume' } } as never,
@@ -901,6 +904,21 @@ await runWorkflowScript({
   ),
 })
 assert.equal(parallelIdentityCalls, 2)
+await runWorkflowScript({
+  script: parallelIdentityScript,
+  plan: parallelIdentityPlan,
+  args: { delayFirst: false },
+  context: parallelIdentityContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_parallel_identity_reordered' } } as never,
+  workflowRunId: 'wf_parallel_identity_reordered',
+  scriptPath: '/tmp/runtime-parallel-identity.js',
+  resumeFromRunId: 'wf_parallel_identity',
+  resumeJournalEntries: await readWorkflowJournalCacheEntries(
+    parallelIdentityTranscriptDir,
+  ),
+})
+assert.equal(parallelIdentityCalls, 4)
 dequeueAllMatching(command => command.mode === 'task-notification')
 
 const vmGlobalScript = `export const meta = {
@@ -1564,7 +1582,7 @@ const userRetryUsageAttempt0Id = 'Retry:user-retry-usage-agent:attempt:0'
 const userRetryUsageRetryAttemptId = 'Retry:user-retry-usage-agent:attempt:1'
 const userRetryUsageInterruptedEntry = userRetryUsageJournalEntries.find(
   entry =>
-    entry.type === 'result' &&
+    entry.type === 'failed' &&
     entry.attemptId === userRetryUsageAttempt0Id &&
     entry.status === 'interrupted',
 )
@@ -1572,8 +1590,7 @@ const userRetryUsageRetrySuccessEntry = userRetryUsageJournalEntries.find(
   entry =>
     entry.type === 'result' &&
     entry.attemptId === userRetryUsageRetryAttemptId &&
-    entry.retryOfAttemptId === userRetryUsageAttempt0Id &&
-    entry.status === 'completed',
+    entry.retryOfAttemptId === userRetryUsageAttempt0Id,
 )
 const userRetryUsageJournalCacheEntries = await readWorkflowJournalCacheEntries(userRetryUsageTranscriptDir)
 assert.deepEqual({
@@ -1582,7 +1599,7 @@ assert.deepEqual({
   interruptedToolUses: userRetryUsageInterruptedEntry?.toolUseCount,
   attempt0HasFailedResult: userRetryUsageJournalEntries.some(
     entry =>
-      entry.type === 'result' &&
+      entry.type === 'failed' &&
       entry.attemptId === userRetryUsageAttempt0Id &&
       entry.status === 'failed',
   ),
@@ -1795,21 +1812,20 @@ const parallelUserRetryAttempt1Id = 'Retry:parallel-user-retry-agent:attempt:1'
 const parallelOtherRetryAttempt0Id = 'Retry:parallel-other-agent:attempt:0'
 const parallelUserRetryInterruptedEntry = parallelUserRetryJournalEntries.find(
   entry =>
-    entry.type === 'result' &&
+    entry.type === 'failed' &&
     entry.attemptId === parallelUserRetryAttempt0Id &&
     entry.status === 'interrupted',
 )
 const parallelOtherRetryInterruptedEntry = parallelUserRetryJournalEntries.find(
   entry =>
-    entry.type === 'result' &&
+    entry.type === 'failed' &&
     entry.attemptId === parallelOtherRetryAttempt0Id &&
     entry.status === 'interrupted',
 )
 const parallelUserRetryCompletedEntry = parallelUserRetryJournalEntries.find(
   entry =>
     entry.type === 'result' &&
-    entry.attemptId === parallelUserRetryAttempt1Id &&
-    entry.status === 'completed',
+    entry.attemptId === parallelUserRetryAttempt1Id,
 )
 assert.deepEqual({
   interruptedStatus: parallelUserRetryInterruptedEntry?.status,
@@ -1818,7 +1834,7 @@ assert.deepEqual({
   otherInterruptedStatus: parallelOtherRetryInterruptedEntry?.status,
   otherInterruptedTokens: parallelOtherRetryInterruptedEntry?.tokenCount,
   otherInterruptedToolUses: parallelOtherRetryInterruptedEntry?.toolUseCount,
-  completedStatus: parallelUserRetryCompletedEntry?.status,
+  completedType: parallelUserRetryCompletedEntry?.type,
   completedTokens: parallelUserRetryCompletedEntry?.tokenCount,
   completedToolUses: parallelUserRetryCompletedEntry?.toolUseCount,
   completedDurationMs: parallelUserRetryCompletedEntry?.durationMs,
@@ -1829,7 +1845,7 @@ assert.deepEqual({
   otherInterruptedStatus: 'interrupted',
   otherInterruptedTokens: 104,
   otherInterruptedToolUses: 2,
-  completedStatus: 'completed',
+  completedType: 'result',
   completedTokens: parallelUserRetryCompletedStateResult?.tokenCount,
   completedToolUses: parallelUserRetryCompletedStateResult?.toolUseCount,
   completedDurationMs: parallelUserRetryCompletedStateResult?.durationMs,
@@ -2059,7 +2075,7 @@ const automaticRetryUsageJournalEntries = (
   .split('\n')
   .map(line => JSON.parse(line) as Record<string, unknown>)
 const automaticRetryUsageFailedJournalEntry = automaticRetryUsageJournalEntries.find(
-  entry => entry.type === 'result' && entry.status === 'failed',
+  entry => entry.type === 'failed' && entry.status === 'failed',
 )
 assert.deepEqual({
   sdkTokens: automaticRetryUsageSdkTermination?.usage?.total_tokens,
@@ -2673,7 +2689,7 @@ const skipJournalEntries = skipJournalRaw
   .trim()
   .split('\n')
   .map(line => JSON.parse(line) as Record<string, unknown>)
-const skipJournalResult = skipJournalEntries.find(entry => entry.type === 'result')
+const skipJournalResult = skipJournalEntries.find(entry => entry.type === 'failed')
 assert.deepEqual({
   abortReason: skipAbortReason,
   taskStatus: skipTask.status,
@@ -2697,7 +2713,7 @@ assert.deepEqual({
   journalToolUses: skipJournalResult?.toolUseCount,
   journalDurationType: typeof skipJournalResult?.durationMs,
   journalHasFailedResult: skipJournalEntries.some(
-    entry => entry.type === 'result' && entry.status === 'failed',
+    entry => entry.type === 'result' || entry.status === 'failed',
   ),
 }, {
   abortReason: 'user-skip',
@@ -2780,7 +2796,8 @@ const failedJournalRaw = await readFile(join(failedTranscriptDirMatch[1], 'journ
 assert.match(failedJournalRaw, /"type":"started"/)
 assert.match(failedJournalRaw, /"agentId":"failed-agent-a"/)
 assert.match(failedJournalRaw, /"agentId":"failed-agent-b"/)
-assert.match(failedJournalRaw, /"type":"result"/)
+assert.match(failedJournalRaw, /"type":"failed"/)
+assert.doesNotMatch(failedJournalRaw, /"type":"result"/)
 assert.match(failedJournalRaw, /"status":"failed"/)
 assert.match(failedJournalRaw, /"errorKind":"agent_failed"/)
 assert.equal(agentToolCallCount, failedCallCountBefore + 2)

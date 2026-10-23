@@ -1,7 +1,6 @@
 import vm from 'node:vm'
-import { AsyncLocalStorage } from 'node:async_hooks'
 import { availableParallelism } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage } from '../../types/message.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -67,8 +66,9 @@ import {
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js'
-import { getProjectTempDir } from '../../utils/permissions/filesystem.js'
 import {
+  appendWorkflowJournalFailed,
+  appendWorkflowJournalLaunched,
   appendWorkflowJournalResult,
   appendWorkflowJournalStarted,
   readWorkflowJournalCacheEntries,
@@ -378,10 +378,6 @@ function workflowAgentProgressDescription(phase: string, label: string, plan: Wo
   return isChildWorkflowAgent ? `▸ ${phase}: ${label}` : `${phase}: ${label}`
 }
 
-function workflowTranscriptDir(workflowRunId: string): string {
-  return join(getProjectTempDir(), 'workflow-runs', workflowRunId)
-}
-
 function workflowLaunchEnvelope({
   taskId,
   summary,
@@ -502,13 +498,16 @@ export async function loadWorkflowScriptResume({
     }
   }
   const session = await loadWorkflowRunSession({ cwd, workflowRunId })
-  const journal = session?.transcriptDir ? await readWorkflowJournalEntries(session.transcriptDir) : []
+  const journal = session ? await readWorkflowJournalEntries(session.transcriptDir) : []
+  // A legacy DSL run has no journal; its record carries the cache entries instead.
   if (!session || (journal.length === 0 && session.resumeCacheEntries.length === 0)) {
     throw new Error(`No journal found for workflow run ${workflowRunId}, so there is nothing to resume. To run the workflow from the start, call Workflow again without resumeFromRunId.`)
   }
-  const finished = new Set(journal.flatMap(entry => entry.type === 'result' && (entry.status === 'completed' || entry.status === 'failed') ? [entry.key] : []))
+  // A skipped or user-interrupted attempt (this build's statuses) respawns like an unfinished one.
+  const finished = new Set(journal.flatMap(entry =>
+    entry.type === 'result' || (entry.type === 'failed' && (entry.status ?? 'failed') === 'failed') ? [entry.key] : []))
   return {
-    entries: session.transcriptDir
+    entries: journal.length > 0
       ? await readWorkflowJournalCacheEntries(session.transcriptDir)
       : session.resumeCacheEntries,
     interruptedIdentities: new Set(journal.flatMap(entry => entry.type === 'started' && !finished.has(entry.key) ? [entry.key] : [])),
@@ -549,7 +548,6 @@ export async function runWorkflowScript({
   const setAppState = context.setAppStateForTasks ?? context.setAppState
   const cwd = 'getCwd' in context && typeof context.getCwd === 'function'
     ? context.getCwd() : getCwd()
-  const transcriptDir = workflowTranscriptDir(workflowRunId)
   const taskId = generateTaskId('local_workflow')
   const startedRun = await tryStartWorkflowRunSession({
     cwd,
@@ -558,13 +556,14 @@ export async function runWorkflowScript({
     runArgs: args,
     workflowRunId,
     scriptPath,
-    transcriptDir,
     resumeFromRunId,
   })
   let runSession = startedRun.session
   if (!startedRun.started) {
     return `Workflow run ${workflowRunId} is already ${runSession.status}. Task ID: ${runSession.taskId}`
   }
+  const transcriptDir = runSession.transcriptDir
+  await appendWorkflowJournalLaunched(transcriptDir)
 
   let workflowTask: ReturnType<typeof registerWorkflowTask>
   try {
@@ -627,8 +626,8 @@ export async function runWorkflowScript({
   const agentLabelOccurrences = new Map<string, number>()
   const assignedAgentIds = new Set<string>()
   const phaseAgentCounts = new Map<string, number>()
+  // Like official, every agent() call chains its key on the previous call's, in call order.
   let workflowAgentIdentitySeed = ''
-  const workflowAgentIdentityScope = new AsyncLocalStorage<{ seed: string }>()
   const currentWorkflowProgress = () => {
     const task = context.getAppState().tasks[workflowTask.id]
     return workflowProgressSnapshot(
@@ -744,20 +743,12 @@ export async function runWorkflowScript({
       opts?.mode ?? plan.defaults.permissionMode,
       context,
     )
-    const identityScope = workflowAgentIdentityScope.getStore()
     const identityKey = createWorkflowScriptAgentChainIdentity({
-      previousKey: identityScope?.seed ?? workflowAgentIdentitySeed,
+      previousKey: workflowAgentIdentitySeed,
       prompt,
-      opts: {
-        schema: opts?.schema,
-        model: opts?.model,
-        isolation: opts?.isolation,
-        agentType: opts?.agentType,
-        mode: opts?.mode,
-      },
+      opts,
     })
-    if (identityScope) identityScope.seed = identityKey
-    else workflowAgentIdentitySeed = identityKey
+    workflowAgentIdentitySeed = identityKey
     agentCount++
     // Look up before any await so the journal sees calls in launch order.
     const cached = journal.lookup(identityKey)
@@ -814,7 +805,6 @@ export async function runWorkflowScript({
         phase,
         label: agentId,
         index: phaseAgentIndex,
-        status: 'completed',
         logicalAgentId,
         attemptId: `${phase}:${logicalAgentId}:attempt:0`,
         attempt: 0,
@@ -930,7 +920,6 @@ export async function runWorkflowScript({
           phase,
           label: agentId,
           index: phaseAgentIndex,
-          status: 'completed',
           ...(completedResult?.tokenCount !== undefined
             ? { tokenCount: completedResult.tokenCount }
             : {}),
@@ -980,7 +969,7 @@ export async function runWorkflowScript({
           }
           scriptAgentResults.push(scriptSkippedResult)
           syncRuntimeUsageFromWorkflowTask()
-          await appendWorkflowJournalResult(transcriptDir, {
+          await appendWorkflowJournalFailed(transcriptDir, {
             key: identityKey,
             agentId: attemptAgentId,
             logicalAgentId,
@@ -998,7 +987,6 @@ export async function runWorkflowScript({
               : error instanceof WorkflowAgentAttemptError
                 ? { durationMs: error.usage.durationMs }
                 : {}),
-            result: null,
             timestamp: Date.now(),
           })
           return null
@@ -1069,7 +1057,7 @@ export async function runWorkflowScript({
               }
             : userRetryAttemptUsage
           if (automaticRetryRequested) countFailedAttemptUsage(attemptId, retryFailedResult)
-          await appendWorkflowJournalResult(transcriptDir, {
+          await appendWorkflowJournalFailed(transcriptDir, {
             key: identityKey,
             agentId: attemptAgentId,
             logicalAgentId,
@@ -1085,7 +1073,6 @@ export async function runWorkflowScript({
             ...(journalAttemptUsage?.tokenCount !== undefined ? { tokenCount: journalAttemptUsage.tokenCount } : {}),
             ...(journalAttemptUsage?.toolUseCount !== undefined ? { toolUseCount: journalAttemptUsage.toolUseCount } : {}),
             ...(journalAttemptUsage?.durationMs !== undefined ? { durationMs: journalAttemptUsage.durationMs } : {}),
-            result: null,
             timestamp: Date.now(),
           })
           logForDebugging(
@@ -1153,7 +1140,7 @@ export async function runWorkflowScript({
         countFailedAttemptUsage(attemptId, scriptFailedResult)
         scriptAgentResults.push(scriptFailedResult)
         failures.push(`[${agentId}] failed: ${msg}`)
-        await appendWorkflowJournalResult(transcriptDir, {
+        await appendWorkflowJournalFailed(transcriptDir, {
           key: identityKey,
           agentId: attemptAgentId,
           logicalAgentId,
@@ -1173,7 +1160,6 @@ export async function runWorkflowScript({
             : error instanceof WorkflowAgentAttemptError
               ? { durationMs: error.usage.durationMs }
               : {}),
-          result: null,
           timestamp: Date.now(),
         })
         return null
@@ -1488,24 +1474,21 @@ export async function runWorkflowScript({
   async function realParallel<T>(thunks: Array<() => Promise<T> | T>): Promise<Array<T | null>> {
     if (abortController.signal.aborted) return thunks.map(() => null)
     checkBudget()
-    const parentSeed = workflowAgentIdentityScope.getStore()?.seed ?? workflowAgentIdentitySeed
     let budgetDropped = 0
-    const results = await mapWithConcurrency(thunks, (thunk, index) =>
-      workflowAgentIdentityScope.run({ seed: parentSeed }, async () => {
-        try {
-          return await thunk()
-        } catch (error) {
-          if (isBudgetError(error)) {
-            budgetDropped++
-            return null
-          }
-          const msg = error instanceof Error ? error.message : String(error)
-          logs.push(`parallel[${index}] failed: ${msg}`)
-          failures.push(`parallel[${index}] failed: ${msg}`)
+    const results = await mapWithConcurrency(thunks, async (thunk, index) => {
+      try {
+        return await thunk()
+      } catch (error) {
+        if (isBudgetError(error)) {
+          budgetDropped++
           return null
         }
-      }),
-    )
+        const msg = error instanceof Error ? error.message : String(error)
+        logs.push(`parallel[${index}] failed: ${msg}`)
+        failures.push(`parallel[${index}] failed: ${msg}`)
+        return null
+      }
+    })
     recordBudgetDrops('parallel', budgetDropped)
     return results
   }
@@ -1514,23 +1497,20 @@ export async function runWorkflowScript({
   async function realPipeline<T>(items: T[], ...stages: Array<(val: any, orig: any, idx: number) => any>): Promise<any[]> {
     if (abortController.signal.aborted) return items.map(() => null)
     checkBudget()
-    const parentSeed = workflowAgentIdentityScope.getStore()?.seed ?? workflowAgentIdentitySeed
     let budgetDropped = 0
-    const results = await mapWithConcurrency(items, (item, index) =>
-      workflowAgentIdentityScope.run({ seed: parentSeed }, async () => {
-        let value: unknown = item
-        for (const stage of stages) {
-          if (value === null) break
-          try { value = await stage(value, item, index) }
-          catch (error) {
-            if (isBudgetError(error)) budgetDropped++
-            else failures.push(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`)
-            value = null
-          }
+    const results = await mapWithConcurrency(items, async (item, index) => {
+      let value: unknown = item
+      for (const stage of stages) {
+        if (value === null) break
+        try { value = await stage(value, item, index) }
+        catch (error) {
+          if (isBudgetError(error)) budgetDropped++
+          else failures.push(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`)
+          value = null
         }
-        return value
-      }),
-    )
+      }
+      return value
+    })
     recordBudgetDrops('pipeline', budgetDropped)
     return results
   }
