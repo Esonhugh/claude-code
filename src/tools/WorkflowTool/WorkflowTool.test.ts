@@ -14,6 +14,7 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowTool } from './WorkflowTool.js'
+import { WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT } from './workflowScriptRuntime.js'
 
 const originalSettings = getSessionSettingsCache()
 afterAll(() => {
@@ -288,7 +289,7 @@ const setRunState = (updater: (prev: AppState) => AppState): void => {
   runState = updater(runState)
 }
 const launchedPrompts: string[] = []
-const launchedInputs: Array<{ prompt: string; mode?: string; hasStructuredOutputTool?: boolean }> = []
+const launchedInputs: Array<{ prompt: string; mode?: string; hasStructuredOutputTool?: boolean; workflowAgentSystemPrompt?: ToolUseContext['workflowAgentSystemPrompt'] }> = []
 const runContext = {
   getCwd: () => tempRoot,
   getAppState: () => runState,
@@ -302,8 +303,8 @@ const runContext = {
         async call(input: { prompt: string; mode?: string }, toolUseContext: ToolUseContext) {
           const hasStructuredOutputTool = toolUseContext.options.tools.some(tool => tool.name === 'StructuredOutput')
           launchedPrompts.push(input.prompt)
-          launchedInputs.push({ prompt: input.prompt, mode: input.mode, hasStructuredOutputTool })
-          if (input.prompt.startsWith('empty error')) throw new Error()
+          launchedInputs.push({ prompt: input.prompt, mode: input.mode, hasStructuredOutputTool, workflowAgentSystemPrompt: toolUseContext.workflowAgentSystemPrompt })
+          if (input.prompt === 'empty error') throw new Error()
           if (input.prompt.includes('schema valid')) {
             return {
               data: {
@@ -440,6 +441,8 @@ assert.equal(launchedPrompts.length, 1)
 assert.match(launchedPrompts[0]!, /Use JS args: topic: DSL/)
 assert.equal(launchedInputs[0]?.mode, 'plan')
 assert.equal(launchedInputs[0]?.hasStructuredOutputTool, false)
+// The legacy DSL runner does not frame its agents; only script-runtime agents do (asserted below).
+assert.equal(launchedInputs[0]?.workflowAgentSystemPrompt, undefined)
 
 const jsTask = Object.values(runState.tasks).find(
   (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'JS Run Workflow',
@@ -529,6 +532,7 @@ const emptyErrorSession = JSON.parse(
 )
 assert.equal(emptyErrorSession.status, 'failed')
 assert.equal(emptyErrorSession.error, 'Workflow script failed without error details')
+assert.deepEqual(launchedInputs.at(-1)?.workflowAgentSystemPrompt, { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
 
 const pausableTaskId = 'w-pausable'
 const pausableRunId = 'wf_pausable'

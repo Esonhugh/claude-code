@@ -15,7 +15,7 @@ import {
   setSessionSettingsCache,
 } from '../../utils/settings/settingsCache.js'
 import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFacadeTool.js'
-import { WORKFLOW_AGENT_TEXT_RESULT_NOTE } from './workflowScriptRuntime.js'
+import { WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT } from './workflowScriptRuntime.js'
 
 const originalSettings = getSessionSettingsCache()
 afterAll(() => {
@@ -269,7 +269,7 @@ const setState = (updater: (prev: AppState) => AppState): void => {
   state = updater(state)
 }
 const launchedPrompts: string[] = []
-const launchedAgents: Array<{ description: string; prompt: string; mode?: string; disableNestedAgentTools?: boolean }> = []
+const launchedAgents: Array<{ description: string; prompt: string; mode?: string; disableNestedAgentTools?: boolean; workflowAgentSystemPrompt?: ToolUseContext['workflowAgentSystemPrompt'] }> = []
 let hangNextAgent = false
 const context = {
   getCwd: () => tempRoot,
@@ -282,12 +282,13 @@ const context = {
         name: 'Agent',
         aliases: ['Task'],
         async call(input: { description: string; prompt: string; mode?: string }, agentContext: ToolUseContext) {
-          launchedPrompts.push(input.prompt.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, ''))
+          launchedPrompts.push(input.prompt)
           launchedAgents.push({
             description: input.description,
             prompt: input.prompt,
             mode: input.mode,
             disableNestedAgentTools: agentContext.options.disableNestedAgentTools,
+            workflowAgentSystemPrompt: agentContext.workflowAgentSystemPrompt,
           })
           if (hangNextAgent) {
             hangNextAgent = false
@@ -433,8 +434,9 @@ const officialInlineTask = Object.values(state.tasks).find(
 )!
 assert.deepEqual(officialInlineTask.phases[0]?.agentIds, ['scan'])
 assert.deepEqual(launchedPrompts, ['scan meta'])
-// Script-runtime agents carry the official text-result framing; the legacy DSL path above does not.
-assert.ok(launchedAgents.at(-1)?.prompt.endsWith(WORKFLOW_AGENT_TEXT_RESULT_NOTE))
+// Script-runtime agents get the official workflow-subagent system prompt; the legacy DSL path above does not.
+assert.deepEqual(launchedAgents.at(-1)?.workflowAgentSystemPrompt, { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
+assert.equal(launchedAgents[0]?.workflowAgentSystemPrompt, undefined)
 
 launchedPrompts.length = 0
 launchedAgents.length = 0

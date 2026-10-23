@@ -771,6 +771,17 @@ export const AgentTool = buildTool({
     const resolvedEffort = effort ?? selectedAgent.effort ?? appState.effortValue ??
       getDefaultEffortForModel(toolUseContext.options.mainLoopModel)
     if (resolvedEffort !== undefined) selectedAgent = { ...selectedAgent, effort: resolvedEffort }
+    const workflowFraming = toolUseContext.workflowAgentSystemPrompt
+    if (workflowFraming) {
+      const baseGetSystemPrompt = selectedAgent.getSystemPrompt
+      selectedAgent = {
+        ...selectedAgent,
+        getSystemPrompt: (params?: Parameters<typeof baseGetSystemPrompt>[0]) =>
+          'replace' in workflowFraming
+            ? workflowFraming.replace
+            : baseGetSystemPrompt(params ?? { toolUseContext }) + workflowFraming.append,
+      }
+    }
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode
@@ -1205,6 +1216,7 @@ export const AgentTool = buildTool({
       promptMessages,
       toolUseContext: {
         ...toolUseContext,
+        workflowAgentSystemPrompt: undefined,
         options: {
           ...toolUseContext.options,
           mainLoopModel: resolvedAgentModel,
