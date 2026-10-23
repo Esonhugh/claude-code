@@ -50,10 +50,10 @@ import { createModMutableResultBridge, createModClockBridge, createModStreamBrid
 import type { ModWorkerFault } from './protocol.js'
 import { createModClients, copyModClientData, findModClient } from './client.js'
 import { createModUi, type ModRenderComponent, type ModRenderSurface, type ModUiOwner, type ModUiOpenArgs, type ModUiOrigin, type ModUiPresentation } from './ui.js'
-import { loadModDeclaration } from './loader.js'
 import { buildModClientBundle } from './clientBundle.js'
 import { getNativeModDeclaration } from './native.js'
 import { getShippedBuiltinModDeclaration, isCanonicalDiffMod } from '../../plugins/builtinPlugins.js'
+import { loadModDeclarationCached } from '../../plugins/builtinMods.js'
 import {getOfficialShippedPaneRequests,updateOfficialShippedPaneRequest} from '../../plugins/builtinShippedMods.js'
 import builtinDiff from '../../commands/diff/index.js'
 import { matchesModEventPattern, matchesModMatcher, matchesModMatcherKeys } from './matcher.js'
@@ -3491,7 +3491,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       try {
         const declaration = recoveringOwners
           ? knownArgs.get(input.storageId)
-          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+          : getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         if (!declaration) continue
         scanned.set(input, declaration)
         if (!recoveringOwners) {
@@ -3547,7 +3547,7 @@ export function createModsRuntime({ onDiagnostic, services = {}, testing = false
       }
       let suggestionSuspended = false
       try {
-        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclaration(input)
+        const declaration = scanned.get(input) ?? getNativeModDeclaration(input) ?? getShippedBuiltinModDeclaration(input) ?? await loadModDeclarationCached(input)
         const refreshDeclarations = async () => {
           if (declaration.isNative || declaration.tier === 'builtin') return
           try {
