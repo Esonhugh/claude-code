@@ -7,6 +7,7 @@ import { Writable } from 'node:stream'
 import type { Message, MessageOrigin } from '../types/message.js'
 import type { QueuedCommand } from '../types/textInputTypes.js'
 import type { AppState } from '../state/AppStateStore.js'
+import { formatPeerPrompt } from '../utils/peerProtocol.js'
 
 const childFlag = 'CLAUDE_CODE_PRINT_PEER_TEST_CHILD'
 
@@ -779,7 +780,7 @@ if (process.env[childFlag] !== '1') {
           uuid,
           origin,
           isMeta: true,
-          message: { role: 'user', content: prompt },
+          message: { role: 'user', content: formatPeerPrompt(prompt) },
         })
         expect(queryInputs[0]?.publicTurn).toEqual({ text: '' })
         expect(transcripts[0]).toEqual(queryInputs[0]?.messages)
