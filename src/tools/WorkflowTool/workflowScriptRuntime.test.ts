@@ -12,7 +12,7 @@ import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
-import { runWorkflowScript } from './workflowScriptRuntime.js'
+import { WORKFLOW_AGENT_TEXT_RESULT_NOTE, runWorkflowScript } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
 // Terminal status/usage/output reach SDK consumers through the XML task
@@ -161,7 +161,8 @@ const fakeAgentTool = {
       typeof _input === 'object' &&
       _input &&
       'prompt' in _input &&
-      _input.prompt === 'prompt-too-long-agent'
+      typeof _input.prompt === 'string' &&
+      _input.prompt.startsWith('prompt-too-long-agent')
     ) {
       onProgress?.({
         data: {
@@ -194,7 +195,7 @@ const fakeAgentTool = {
       })
       throw new Error('Prompt is too long')
     }
-    if (typeof _input === 'object' && _input && 'prompt' in _input && _input.prompt === 'fail-agent') {
+    if (typeof _input === 'object' && _input && 'prompt' in _input && typeof _input.prompt === 'string' && _input.prompt.startsWith('fail-agent')) {
       throw new Error('agent failed intentionally')
     }
     onProgress?.({
@@ -576,7 +577,7 @@ await queuedDefaultModeRun
 assert.deepEqual(
   queuedDefaultModeInputs
     .map(input => ({
-      prompt: input.prompt,
+      prompt: input.prompt.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, ''),
       mode: input.mode,
       inheritedMode: input.inheritedMode,
     }))
@@ -808,7 +809,7 @@ const parallelIdentityAgentTool = {
     return {
       data: {
         status: 'completed',
-        content: [{ type: 'text', text: `${input.prompt}-result` }],
+        content: [{ type: 'text', text: `${input.prompt?.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')}-result` }],
         totalTokens: 1,
         totalToolUseCount: 0,
         totalDurationMs: 1,
@@ -1679,7 +1680,7 @@ const parallelUserRetryAgentTool = {
     _assistantMessage: unknown,
     onProgress?: (progress: unknown) => void,
   ) {
-    const prompt = input.prompt ?? ''
+    const prompt = (input.prompt ?? '').replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')
     const callCount = (parallelUserRetryCallCounts.get(prompt) ?? 0) + 1
     parallelUserRetryCallCounts.set(prompt, callCount)
     if (callCount === 1) {
@@ -2086,7 +2087,7 @@ const partialRetryCalls = new Map<string, number>()
 const partialRetryAgentTool = {
   name: 'Agent',
   async call(input: { prompt?: string }) {
-    const prompt = input.prompt ?? ''
+    const prompt = (input.prompt ?? '').replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')
     const calls = (partialRetryCalls.get(prompt) ?? 0) + 1
     partialRetryCalls.set(prompt, calls)
     return {
@@ -2917,7 +2918,7 @@ dequeueAllMatching(command => command.mode === 'task-notification')
 const defaultStallScript = `export const meta = {
   name: "runtime-default-stall-workflow",
   description: "Workflow without an explicit Agent stall policy.",
-  phases: [{ title: "Default", detail: "No implicit stall timer" }],
+  phases: [{ title: "Default", detail: "Official default stall timer" }],
 }
 phase("Default")
 return await agent("default-stall-agent", { label: "default-stall-agent" })
@@ -2927,6 +2928,7 @@ let defaultStallState = {
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
 const observedIntervalDelays: Array<number | undefined> = []
+let defaultStallPrompt: string | undefined
 const originalSetInterval = globalThis.setInterval
 globalThis.setInterval = ((
   handler: TimerHandler,
@@ -2937,62 +2939,83 @@ globalThis.setInterval = ((
   return originalSetInterval(handler, timeout, ...args)
 }) as typeof globalThis.setInterval
 const defaultStallWorkflowRunId = `wf_script_default_stall_${process.pid}`
+// Like official: no opts.stallMs → CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS, else 10 minutes.
+// The stall timer polls every min(stallMs / 2, 30s).
+const defaultStallCases = [
+  { stallTimeoutEnv: undefined, expectedIntervalDelay: 30_000 },
+  { stallTimeoutEnv: '40000', expectedIntervalDelay: 20_000 },
+]
 try {
-  await runWorkflowScript({
-    script: defaultStallScript,
-    plan: {
-      ...failedPlan,
-      name: 'runtime-default-stall-workflow',
-      description: 'Workflow without an explicit Agent stall policy.',
-      phases: [{
-        ...failedPlan.phases[0]!,
-        id: 'Default',
-        description: 'No implicit stall timer',
-        fanout: 1,
-        concurrency: 1,
-      }],
-      totalAgents: 1,
-      runScriptSnapshot: defaultStallScript,
-    },
-    context: {
-      ...context,
-      getAppState: () => defaultStallState,
-      setAppState: (updater: (prev: AppState) => AppState): void => {
-        defaultStallState = updater(defaultStallState)
-      },
-      options: {
-        ...context.options,
-        tools: [{
-          name: 'Agent',
-          async call() {
-            await Promise.resolve()
-            return {
-              data: {
-                status: 'completed',
-                content: [{ type: 'text', text: 'default-stall-ok' }],
-                totalDurationMs: 1,
-              },
-            }
-          },
+  for (const [caseIndex, stallCase] of defaultStallCases.entries()) {
+    observedIntervalDelays.length = 0
+    defaultStallState = { tasks: {}, toolPermissionContext: { mode: 'default' } } as unknown as AppState
+    if (stallCase.stallTimeoutEnv === undefined) {
+      delete process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS
+    } else {
+      process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS = stallCase.stallTimeoutEnv
+    }
+    await runWorkflowScript({
+      script: defaultStallScript,
+      plan: {
+        ...failedPlan,
+        name: 'runtime-default-stall-workflow',
+        description: 'Workflow without an explicit Agent stall policy.',
+        phases: [{
+          ...failedPlan.phases[0]!,
+          id: 'Default',
+          description: 'Official default stall timer',
+          fanout: 1,
+          concurrency: 1,
         }],
+        totalAgents: 1,
+        runScriptSnapshot: defaultStallScript,
       },
-      abortController: new AbortController(),
-      toolUseId: 'toolu_script_default_stall',
-    } as unknown as ToolUseContext,
-    canUseTool: async () => ({ behavior: 'allow' }),
-    assistantMessage: { message: { id: 'msg_script_default_stall' } } as never,
-    workflowRunId: defaultStallWorkflowRunId,
-    scriptPath: '/tmp/runtime-default-stall-workflow.js',
-  })
+      context: {
+        ...context,
+        getAppState: () => defaultStallState,
+        setAppState: (updater: (prev: AppState) => AppState): void => {
+          defaultStallState = updater(defaultStallState)
+        },
+        options: {
+          ...context.options,
+          tools: [{
+            name: 'Agent',
+            async call(input: { prompt: string }) {
+              defaultStallPrompt = input.prompt
+              await Promise.resolve()
+              return {
+                data: {
+                  status: 'completed',
+                  content: [{ type: 'text', text: 'default-stall-ok' }],
+                  totalDurationMs: 1,
+                },
+              }
+            },
+          }],
+        },
+        abortController: new AbortController(),
+        toolUseId: 'toolu_script_default_stall',
+      } as unknown as ToolUseContext,
+      canUseTool: async () => ({ behavior: 'allow' }),
+      assistantMessage: { message: { id: 'msg_script_default_stall' } } as never,
+      workflowRunId: caseIndex === 0 ? defaultStallWorkflowRunId : `${defaultStallWorkflowRunId}_${caseIndex}`,
+      scriptPath: '/tmp/runtime-default-stall-workflow.js',
+    })
+    assert.deepEqual(observedIntervalDelays, [stallCase.expectedIntervalDelay])
+    dequeueAllMatching(command => command.mode === 'task-notification')
+  }
 } finally {
   globalThis.setInterval = originalSetInterval
+  delete process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS
 }
-assert.deepEqual(observedIntervalDelays, [])
+// Text-mode agents get the official "returned verbatim" framing; the stored result keeps the raw prompt.
+assert.equal(defaultStallPrompt, `default-stall-agent${WORKFLOW_AGENT_TEXT_RESULT_NOTE}`)
 const defaultStallTask = Object.values(defaultStallState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
 assert.equal(defaultStallTask?.status, 'completed')
 assert.equal(defaultStallTask?.results[0]?.status, 'completed')
+assert.equal(defaultStallTask?.results[0]?.prompt, 'default-stall-agent')
 assert.equal(
   (await loadWorkflowRunSession({
     cwd: scriptCwd,
@@ -3028,7 +3051,7 @@ const stalledParallelAgentTool = {
     _assistantMessage: unknown,
     onProgress?: (progress: { data: { summary: string } }) => void,
   ) {
-    if (input.prompt === 'stalled-agent') {
+    if (input.prompt.startsWith('stalled-agent')) {
       return await new Promise(resolve => {
         releaseStalledAgent = () => {
           onProgress?.({ data: { summary: 'late progress after stalled terminal' } })
@@ -3262,7 +3285,7 @@ await runWorkflowScript({
         name: 'Agent',
         async call(input: { prompt: string }) {
           await Promise.resolve()
-          return input.prompt === 'chained-agent-a'
+          return input.prompt.startsWith('chained-agent-a')
             ? {
                 data: {
                   status: 'completed',
@@ -3541,7 +3564,7 @@ await runWorkflowScript({
         name: 'Agent',
         async call(input: { prompt: string }) {
           await Promise.resolve()
-          return input.prompt === 'async-chained-agent-a'
+          return input.prompt.startsWith('async-chained-agent-a')
             ? {
                 data: {
                   status: 'completed',
@@ -3768,7 +3791,7 @@ const largeFanoutAgentTool = {
       maxActiveLargeFanoutCalls,
       activeLargeFanoutCalls,
     )
-    await Promise.resolve()
+    await new Promise(resolve => setTimeout(resolve, 1))
     activeLargeFanoutCalls--
     return {
       data: {
@@ -3779,6 +3802,8 @@ const largeFanoutAgentTool = {
     }
   },
 }
+process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS = '3'
+try {
 await runWorkflowScript({
   script: largeFanoutScript,
   plan: {
@@ -3809,9 +3834,14 @@ await runWorkflowScript({
   workflowRunId: `wf_script_large_fanout_${process.pid}`,
   scriptPath: '/tmp/runtime-large-fanout-workflow.js',
 })
+} finally {
+  delete process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+}
 // Like official, the 1001st agent() call hits the 1000-call cap and parallel turns it into null.
 assert.equal(largeFanoutCalls, largeFanoutCount - 1)
-assert.equal(maxActiveLargeFanoutCalls <= 16, true)
+// CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS overrides the CPU-derived agent gate.
+assert.equal(maxActiveLargeFanoutCalls <= 3, true)
+assert.equal(maxActiveLargeFanoutCalls >= 2, true)
 const largeFanoutTask = Object.values(largeFanoutState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )

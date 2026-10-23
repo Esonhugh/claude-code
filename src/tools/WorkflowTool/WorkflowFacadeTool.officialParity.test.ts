@@ -18,6 +18,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 const { WorkflowFacadeTool } = await import('./WorkflowFacadeTool.js')
+const { WORKFLOW_AGENT_TEXT_RESULT_NOTE } = await import('./workflowScriptRuntime.js')
 
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
 setIsInteractive(false)
@@ -39,15 +40,16 @@ const agentTool = {
   name: 'Agent',
   aliases: ['Task'],
   async call(input: { prompt: string }, agentContext: ToolUseContext) {
-    prompts.push(input.prompt)
-    if (input.prompt.startsWith('hold')) {
+    const prompt = input.prompt.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')
+    prompts.push(prompt)
+    if (prompt.startsWith('hold')) {
       await new Promise<void>((resolve, reject) => {
         held.push(resolve)
         agentContext.abortController.signal.addEventListener('abort', () => reject(new Error('aborted')))
       })
     }
-    if (input.prompt.startsWith('fail')) throw new Error(`controlled failure for ${input.prompt}`)
-    const text = input.prompt.startsWith('words') ? 'four words right here' : `done: ${input.prompt}`
+    if (prompt.startsWith('fail')) throw new Error(`controlled failure for ${prompt}`)
+    const text = prompt.startsWith('words') ? 'four words right here' : `done: ${prompt}`
     return { data: { status: 'completed', content: [{ type: 'text', text }], totalDurationMs: 1 } }
   },
 }
