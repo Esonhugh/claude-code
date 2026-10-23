@@ -59,8 +59,20 @@ export const OutputFormatSchema = lazySchema(() =>
 // Config Types
 // ============================================================================
 
+// The CLI's `system` init message carries the `ApiKeySource` values from
+// utils/auth.ts, so the schema must accept those too.
 export const ApiKeySourceSchema = lazySchema(() =>
-  z.enum(['user', 'project', 'org', 'temporary', 'oauth']),
+  z.enum([
+    'user',
+    'project',
+    'org',
+    'temporary',
+    'oauth',
+    'ANTHROPIC_API_KEY',
+    'apiKeyHelper',
+    '/login managed key',
+    'none',
+  ]),
 )
 
 export const ConfigScopeSchema = lazySchema(() =>

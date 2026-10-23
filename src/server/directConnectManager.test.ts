@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
+import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SDKControlPermissionRequest } from '../entrypoints/sdk/controlTypes.js'
 import { DirectConnectSessionManager } from './directConnectManager.js'
 
@@ -42,6 +43,7 @@ afterEach(() => {
 })
 
 function createManager(callbacks?: {
+  onMessage?: (message: SDKMessage) => void
   onPermissionRequest?: (
     request: SDKControlPermissionRequest,
     requestId: string,
@@ -60,7 +62,7 @@ function createManager(callbacks?: {
       wsUrl: 'wss://example.test/session-1',
     },
     {
-      onMessage() {},
+      onMessage: callbacks?.onMessage ?? (() => {}),
       onPermissionRequest: callbacks?.onPermissionRequest ?? (() => {}),
       onPermissionCancelled: callbacks?.onPermissionCancelled,
       onError: error => errors.push(error),
@@ -71,6 +73,38 @@ function createManager(callbacks?: {
 }
 
 describe('DirectConnectSessionManager control protocol', () => {
+  it('forwards the system init message the CLI actually emits', () => {
+    const messages: SDKMessage[] = []
+    const { socket, errors } = createManager({
+      onMessage: message => messages.push(message),
+    })
+
+    socket.emit(
+      'message',
+      JSON.stringify({
+        type: 'system',
+        subtype: 'init',
+        cwd: '/work',
+        session_id: 'session-1',
+        tools: ['Bash'],
+        mcp_servers: [],
+        model: 'claude-opus-5-5',
+        permissionMode: 'default',
+        slash_commands: [],
+        apiKeySource: 'ANTHROPIC_API_KEY',
+        claude_code_version: '2.1.292',
+        output_style: 'default',
+        agents: [],
+        skills: [],
+        plugins: [],
+        uuid: '00000000-0000-0000-0000-000000000001',
+      }),
+    )
+
+    expect(errors).toEqual([])
+    expect(messages.map(m => m.type)).toEqual(['system'])
+  })
+
   it('reports malformed JSON without throwing', () => {
     const { socket, errors } = createManager()
 

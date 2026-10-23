@@ -198,6 +198,41 @@ describe.skipIf(!binary)('claude server + cc:// client (built binary)', () => {
     expect(stderr).toContain('401 Unauthorized')
   }, 30_000)
 
+  it('stops on Ctrl+C from a terminal and removes the lock', async () => {
+    // `script` gives the server a pty, so ^C on stdin goes through the line
+    // discipline: it only becomes SIGINT if the server restored cooked mode.
+    const ptyHome = realpathSync(mkdtempSync(join(tmpdir(), 'dc-bin-pty-')))
+    const proc = Bun.spawn(
+      [
+        'script',
+        '-qefc',
+        // exec: otherwise the intermediate sh reports the SIGINT as 130.
+        `exec ${binary} server --port 0 --auth-token ${TOKEN}`,
+        '/dev/null',
+      ],
+      {
+        cwd: project,
+        env: { ...env, HOME: ptyHome },
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    const reader = (proc.stdout as ReadableStream<Uint8Array>).getReader()
+    let output = ''
+    while (!output.includes('Press Ctrl+C to stop')) {
+      const { value, done } = await reader.read()
+      if (done) throw new Error(`server exited early: ${output}`)
+      output += new TextDecoder().decode(value)
+    }
+    expect(existsSync(join(ptyHome, '.claude', 'server.lock'))).toBe(true)
+
+    proc.stdin.write('\x03')
+    proc.stdin.flush()
+    expect(await proc.exited).toBe(0)
+    expect(existsSync(join(ptyHome, '.claude', 'server.lock'))).toBe(false)
+  }, 30_000)
+
   it('shuts down on SIGTERM (exit 143 like the rest of the CLI) and removes the lock', async () => {
     server.kill('SIGTERM')
     expect(await server.exited).toBe(143)

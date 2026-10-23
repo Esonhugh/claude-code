@@ -5716,6 +5716,13 @@ async function run(): Promise<CommanderCommand> {
             )
             process.exit(1)
           }
+          // Early-input capture left a TTY stdin in raw mode (ISIG off), so
+          // Ctrl+C would arrive as a byte nobody reads instead of SIGINT.
+          stopCapturingEarlyInput()
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(false)
+          }
+          process.stdin.pause()
           const { randomBytes } = await import('crypto')
           const { startServer } = await import('./server/server.js')
           const { SessionManager } = await import('./server/sessionManager.js')

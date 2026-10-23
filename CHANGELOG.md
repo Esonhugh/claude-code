@@ -21,6 +21,8 @@
 - `claude server` 默认绑定地址由 `0.0.0.0` 改为 `127.0.0.1`；需要远程访问时显式传 `--host`，banner 会提示明文 HTTP 风险。
 - `cc://host:port/<token>` 按官方格式解析为 `http://host:port` 与路径 token（此前未带 `?serverUrl=` 时请求原样发往 `cc://` 地址，必然失败）；`?serverUrl=` 可改写 HTTP 基址，`cc+unix://` 与格式错误的 URL 直接报错且不回显 token。
 - 创建 session 的请求体改为官方字段 `cwd`、`permission_mode`、`session_key`（`--dangerously-skip-permissions` 映射为 `bypassPermissions`），失败时错误信息附带 server 返回的 response body。
+- `claude server` 在终端里按 Ctrl+C 原先停不下来：启动期的 early-input 捕获把 stdin 置为 raw mode（ISIG 关闭），Ctrl+C 变成无人读取的字节而非 SIGINT；server 命令现在先停止捕获并恢复 cooked mode，Ctrl+C 走 `gracefulShutdown`（结束 child、删 lock，退出码 0）。
+- client 校验 server 消息的 `StdoutMessageSchema` 原先不接受 CLI 实际发出的 `apiKeySource` 值（如 `ANTHROPIC_API_KEY`、`none`），导致 `system` init 消息被整条丢弃；`ApiKeySourceSchema` 现接受 `utils/auth.ts` 的 `ApiKeySource` 值。
 - `claude cc://… -p` 原先什么都不做，现在发送 prompt、按 `--output-format` 输出 text/json/stream-json、收到 `result` 后按 `is_error` 设定退出码；未加 `--dangerously-skip-permissions` 时拒绝所有工具权限请求。
 
 ### 测试覆盖
@@ -28,8 +30,8 @@
 - `bun test src/server/parseConnectUrl.test.ts`：官方格式、IPv6、percent-encoding、`?serverUrl=` 覆写、`?token=` 兜底、`cc+unix://` 与错误输入（不回显 token）。
 - `bun test src/server/directConnect.e2e.test.ts`：用 Bun.serve 假 server 验证 `POST /sessions` 载荷与 Bearer token、错误附 response body、WebSocket 上 assistant/`can_use_tool`/result 收发与 client 回送 user、`control_response`、interrupt，以及 headless 的 text/stream-json 输出、权限允许/拒绝与断线退出码。
 - `bun test src/server/server.test.ts`：真实 `startServer` + `SessionManager`（脚本化 child）验证 token 校验、请求体校验、`can_use_tool` 往返、`permission_mode` 透传、`session_key` 复用、`--workspace` 回退、`--max-sessions`、单 client attach、DELETE 与 idle timeout，并确认日志不含 token。
-- `make build && CLAUDE_DIRECT_CONNECT_BINARY=$PWD/built-claude bun test src/server/directConnect.binary.test.ts`：编译后的 binary 运行 `claude server` 对接脚本化 Messages API，`claude cc://… -p` 验证权限拒绝/允许、stream-json、错误 token、lockfile 与 SIGTERM 退出；未设置该变量时跳过。
-- `bun scripts/build.test.mjs` 断言默认 feature 集包含 `DIRECT_CONNECT`；`bun test src/server/directConnectManager.test.ts` 保持通过。
+- `make build && CLAUDE_DIRECT_CONNECT_BINARY=$PWD/built-claude bun test src/server/directConnect.binary.test.ts`：编译后的 binary 运行 `claude server` 对接脚本化 Messages API，`claude cc://… -p` 验证权限拒绝/允许、stream-json、错误 token、lockfile、SIGTERM 退出，以及通过 `script` 分配 pty 后 Ctrl+C 能停掉 server 并删 lock；未设置该变量时跳过。
+- `bun scripts/build.test.mjs` 断言默认 feature 集包含 `DIRECT_CONNECT`；`bun test src/server/directConnectManager.test.ts` 新增 CLI 实际发出的 `system` init 消息必须转发到 `onMessage`，其余用例保持通过。
 
 ## 2026-10-23 - v2.1.293 - 权限模型、自动模式与 Hooks 对齐官方 2.1.303，Monitor、记忆、Mods 与请求韧性补齐
 
