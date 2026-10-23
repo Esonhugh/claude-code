@@ -90,6 +90,13 @@ import {
   workflowPolicyDeniesTool,
 } from './workflowAgentToolPolicy.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import {
+  frameAutomatedTask,
+  frameComputedTask,
+  frameRelayedUserRequest,
+  isWorkflowPromptProvenanceEnabled,
+  workflowPromptRelay,
+} from './workflowPromptProvenance.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -1239,10 +1246,18 @@ export async function runWorkflowScript({
       ? structuredOutputResult.tool
       : undefined
 
+    // Like official, the script-computed prompt is framed as such and the triggering user
+    // request is relayed in its own turn; the journal and previews keep the raw prompt.
+    const provenanceOn = isWorkflowPromptProvenanceEnabled()
+    const relay = provenanceOn ? workflowPromptRelay(agentContext.messages, agentContext.agentId) : undefined
+    const relayPrompt = relay?.kind === 'relay' ? frameRelayedUserRequest(relay) : undefined
+    const framedPrompt = !provenanceOn
+      ? prompt
+      : relay?.kind === 'automated' ? frameAutomatedTask(prompt) : frameComputedTask(prompt)
     const input: AgentToolInput = {
       run_in_background: false,
       description,
-      prompt: prompt + schemaPrompt,
+      prompt: framedPrompt + schemaPrompt,
       subagent_type: opts?.agentType,
       model: opts?.model as AgentToolInput['model'],
       mode: permissionMode,
@@ -1309,6 +1324,7 @@ export async function runWorkflowScript({
           abortController: agentAbortController,
           workflowAgentSystemPrompt: workflowAgentSystemPrompt(opts),
           workflowAgentToolPolicy,
+          workflowAgentRelayPrompt: relayPrompt,
           options: {
             ...agentContext.options,
             tools: structuredOutputTool

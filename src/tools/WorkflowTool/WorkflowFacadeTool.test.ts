@@ -18,6 +18,10 @@ import { WorkflowFacadeTool, normalizeWorkflowFacadeInput } from './WorkflowFaca
 import { workflowSessionDir } from './workflowRunSessions.js'
 import { WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT } from './workflowScriptRuntime.js'
 
+// The provenance frame is covered by workflowPromptProvenance.test.ts and its own runtime scenario;
+// the fake agents here match on raw prompts.
+process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
+
 const originalSettings = getSessionSettingsCache()
 afterAll(() => {
   if (originalSettings) setSessionSettingsCache(originalSettings)

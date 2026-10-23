@@ -198,6 +198,8 @@ export type ToolUseContext = {
   workflowAgentSystemPrompt?: { replace: string } | { append: string }
   /** Workflow script runtime: per-spawn tool policy (agent() opts.disallowedTools / bashCommandClamp). */
   workflowAgentToolPolicy?: { disallowedTools?: string[]; bashCommandClamp?: string[] }
+  /** Workflow script runtime: relayed user request sent as the turn before the computed task. */
+  workflowAgentRelayPrompt?: string
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {
