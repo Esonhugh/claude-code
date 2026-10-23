@@ -97,6 +97,11 @@ import {
   isWorkflowPromptProvenanceEnabled,
   workflowPromptRelay,
 } from './workflowPromptProvenance.js'
+import {
+  getWorkflowPrefixStagger,
+  workflowPrefixStaggerCapMs,
+  workflowPrefixStaggerKey,
+} from './workflowPrefixStagger.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -1299,6 +1304,33 @@ export async function runWorkflowScript({
     agentAbortController.signal.addEventListener('abort', onAbort, { once: true })
     if (agentAbortController.signal.aborted) onAbort()
 
+    const agentTools = structuredOutputTool
+      ? [
+          ...agentContext.options.tools.filter(
+            tool => tool.name !== STRUCTURED_OUTPUT_TOOL_NAME,
+          ),
+          structuredOutputTool,
+        ]
+      : agentContext.options.tools
+    // Like official, same-prefix siblings wait (at most capMs) for the leader's first
+    // response so the shared prompt-cache prefix is warm before they land.
+    const stagger = await getWorkflowPrefixStagger().enter(
+      workflowPrefixStaggerKey({
+        model: opts?.model ?? agentContext.options.mainLoopModel,
+        effort: opts?.effort ?? context.getAppState().effortValue,
+        agentType: opts?.agentType,
+        toolNames: agentTools.map(tool => tool.name),
+        schema: opts?.schema,
+        cwd,
+      }),
+      { capMs: workflowPrefixStaggerCapMs(), signal: agentAbortController.signal },
+    )
+    if (stagger.waitedMs > 0) {
+      logForDebugging(
+        `workflow agent [${agentId}] held ${stagger.waitedMs}ms for a same-prefix sibling's first response (prompt-cache warm-up)`,
+      )
+    }
+
     const attemptStartedAt = Date.now()
     let progressTokens = 0
     let progressToolUses = 0
@@ -1325,16 +1357,15 @@ export async function runWorkflowScript({
           workflowAgentSystemPrompt: workflowAgentSystemPrompt(opts),
           workflowAgentToolPolicy,
           workflowAgentRelayPrompt: relayPrompt,
+          // The subagent's first API response reaches the parent as its TTFT metrics entry,
+          // which is the official "responded" point that releases staggered siblings.
+          pushApiMetricsEntry: ttftMs => {
+            stagger.responded()
+            agentContext.pushApiMetricsEntry?.(ttftMs)
+          },
           options: {
             ...agentContext.options,
-            tools: structuredOutputTool
-              ? [
-                  ...agentContext.options.tools.filter(
-                    tool => tool.name !== STRUCTURED_OUTPUT_TOOL_NAME,
-                  ),
-                  structuredOutputTool,
-                ]
-              : agentContext.options.tools,
+            tools: agentTools,
             disableNestedAgentTools: true,
           },
         },
@@ -1361,6 +1392,9 @@ export async function runWorkflowScript({
             typeof data.message === 'object' &&
             (data.message as { type?: unknown }).type === 'assistant'
           ) {
+            if (!(data.message as { isApiErrorMessage?: boolean }).isApiErrorMessage) {
+              stagger.responded()
+            }
             const previousTokens = progressTokens
             const previousToolUses = progressToolUses
             updateProgressFromMessage(
@@ -1504,6 +1538,7 @@ export async function runWorkflowScript({
         attemptUsage,
       )
     } finally {
+      stagger.done()
       if (stallTimer !== undefined) clearInterval(stallTimer)
       agentAbortController.signal.removeEventListener('abort', onAbort)
       rejectOnAbort = undefined

@@ -4095,4 +4095,112 @@ assert.equal(provenanceTask?.status, 'completed')
 const provenanceSession = await loadWorkflowRunSession({ cwd: scriptCwd, workflowRunId: provenanceWorkflowRunId })
 assert.equal(provenanceSession?.results[0]?.prompt, rawProvenancePrompt)
 
+
+// Like official, same-prefix agents are staggered: siblings wait for the leader's first
+// response (not its completion), a different prefix runs at once, and a warm prefix skips the wait.
+// The model keeps this prefix apart from the ones earlier scenarios already warmed.
+const staggerScript = `export const meta = {
+  name: "runtime-stagger-workflow",
+  description: "Workflow staggering same-prefix agents.",
+  phases: [{ title: "Stagger", detail: "Staggered agents" }],
+}
+phase("Stagger")
+const first = await parallel([
+  () => agent("stagger leader", { label: "s-leader", model: "claude-stagger-model" }),
+  () => agent("stagger sibling 1", { label: "s-sib-1", model: "claude-stagger-model" }),
+  () => agent("stagger sibling 2", { label: "s-sib-2", model: "claude-stagger-model" }),
+  () => agent("stagger other", { label: "s-other", model: "claude-other-model" }),
+])
+const second = await parallel([
+  () => agent("warm 1", { label: "w-1", model: "claude-stagger-model" }),
+  () => agent("warm 2", { label: "w-2", model: "claude-stagger-model" }),
+])
+return { first, second }
+`
+let staggerState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setStaggerState = (updater: (prev: AppState) => AppState): void => {
+  staggerState = updater(staggerState)
+}
+const staggerStarts = new Map<string, number>()
+const pause = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+// Whichever same-prefix agent enters first is the leader: its first API response (the TTFT
+// metrics entry) lands after 120ms and it ends after 270ms; the first warm-batch agent runs
+// 150ms without answering.
+let staggerLeader: string | undefined
+let warmFirst: string | undefined
+const staggerAgentTool = {
+  name: 'Agent',
+  async call(input: { prompt: string }, agentContext: ToolUseContext) {
+    staggerStarts.set(input.prompt, Date.now())
+    if (input.prompt.startsWith('stagger ') && input.prompt !== 'stagger other' && staggerLeader === undefined) {
+      staggerLeader = input.prompt
+      await pause(120)
+      agentContext.pushApiMetricsEntry?.(120)
+      await pause(150)
+    } else if (input.prompt.startsWith('warm ') && warmFirst === undefined) {
+      warmFirst = input.prompt
+      await pause(150)
+    }
+    return {
+      data: { status: 'completed', content: [{ type: 'text', text: `${input.prompt}-ok` }], totalDurationMs: 1 },
+    }
+  },
+}
+const savedStaggerCap = process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS
+const savedStaggerGate = process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS = '400'
+// All four agents must hold a concurrency slot at once for the timing to mean anything.
+process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS = '8'
+try {
+  await runWorkflowScript({
+    script: staggerScript,
+    plan: {
+      ...retryPlan,
+      name: 'runtime-stagger-workflow',
+      description: 'Workflow staggering same-prefix agents.',
+      phases: [{ ...retryPlan.phases[0]!, id: 'Stagger', description: 'Staggered agents', prompt: 'Staggered agents' }],
+      runScriptSnapshot: staggerScript,
+    },
+    context: {
+      ...retryContext,
+      getAppState: () => staggerState,
+      setAppState: setStaggerState,
+      options: { ...retryContext.options, tools: [staggerAgentTool] },
+      abortController: new AbortController(),
+      toolUseId: 'toolu_script_stagger',
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: 'msg_script_stagger' } } as never,
+    workflowRunId: `wf_script_stagger_${process.pid}`,
+    scriptPath: '/tmp/runtime-stagger-workflow.js',
+  })
+} finally {
+  if (savedStaggerCap === undefined) delete process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS
+  else process.env.CLAUDE_CODE_WORKFLOW_PREFIX_STAGGER_MS = savedStaggerCap
+  if (savedStaggerGate === undefined) delete process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS
+  else process.env.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS = savedStaggerGate
+}
+const staggerTask = Object.values(staggerState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(staggerTask?.status, 'completed')
+const startedAt = (prompt: string): number => {
+  const at = staggerStarts.get(prompt)
+  assert.ok(at !== undefined, `${prompt} never started`)
+  return at
+}
+assert.ok(staggerLeader !== undefined && warmFirst !== undefined)
+const leaderAt = startedAt(staggerLeader)
+for (const sibling of ['stagger leader', 'stagger sibling 1', 'stagger sibling 2']) {
+  if (sibling === staggerLeader) continue
+  const held = startedAt(sibling) - leaderAt
+  assert.ok(held >= 100 && held < 250, `${sibling} held ${held}ms (expected the leader's first response at ~120ms)`)
+}
+assert.ok(startedAt('stagger other') - leaderAt < 80, 'a different prefix does not wait')
+const warmOther = warmFirst === 'warm 1' ? 'warm 2' : 'warm 1'
+assert.ok(Math.abs(startedAt(warmOther) - startedAt(warmFirst)) < 80, 'a warm prefix does not wait')
+
 console.log('workflowScriptRuntime.test.ts passed')
