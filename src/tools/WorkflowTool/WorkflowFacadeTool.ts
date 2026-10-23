@@ -18,6 +18,7 @@ import {
   resolveWorkflowScriptPath,
 } from './workflowScriptPersistence.js'
 import { shouldEnableWorkflows, workflowSizeGuidelinePrompt } from './workflowFeatureFlags.js'
+import { WORKFLOW_TOOL_NAME } from './constants.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
 import { WORKFLOW_AUTHORING_SKILL_NAME } from '../../skills/bundled/workflowAuthoring.js'
 
@@ -175,7 +176,7 @@ export function normalizeWorkflowFacadeInput(
 }
 
 export const WorkflowFacadeTool = buildTool({
-  name: 'Workflow',
+  name: WORKFLOW_TOOL_NAME,
   searchHint: 'run workflow scripts',
   maxResultSizeChars: 100_000,
   shouldDefer: true,

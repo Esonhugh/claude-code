@@ -63,7 +63,7 @@ import {
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 await import('../../tasks/LocalWorkflowTask/LocalWorkflowTask.js')
-await import('./WorkflowTool.js')
+await import('./WorkflowFacadeTool.js')
 
 // Agents below request mode "plan"; plan mode is opt-in through settings.
 setSessionSettingsCache({ settings: { planModeAvailable: true }, errors: [] })

@@ -485,7 +485,7 @@ docs/workflows/
 .claude/workflows/
 ```
 
-`/workflows` 仅用于查看和管理运行状态；实际执行由 `Workflow` / `WorkflowTool` 或注册后的 workflow slash command 发起。
+`/workflows` 仅用于查看和管理运行状态；实际执行由 `Workflow` 工具或注册后的 workflow slash command（`Workflow({ name, args })`）发起。
 
 脚本中的 `await agent(...)` 和 declarative plan 会等待实际 worker 的终态。普通 Agent 被 fork 模式或定义路由到后台时，Workflow 继续等待同一个任务；用户把前台 worker 切到后台也不重放执行。进度来自实际消息，取消保留原原因并只停止本次调用的 worker。无需为 Workflow 关闭 fork 模式。
 

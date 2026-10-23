@@ -17,7 +17,7 @@ import { TaskUpdateTool } from '../tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TeamCreateTool } from '../tools/TeamCreateTool/TeamCreateTool.js'
 import { TeamDeleteTool } from '../tools/TeamDeleteTool/TeamDeleteTool.js'
 import { TerminalTool } from '../tools/TerminalTool/TerminalTool.js'
-import { WorkflowTool } from '../tools/WorkflowTool/WorkflowTool.js'
+import { WorkflowFacadeTool } from '../tools/WorkflowTool/WorkflowFacadeTool.js'
 
 const remoteDisplayToolCache = new Map<string, Tool>()
 
@@ -40,7 +40,7 @@ function getKnownRemoteDisplayTools(): Tools {
     TeamCreateTool,
     TeamDeleteTool,
     TerminalTool,
-    WorkflowTool,
+    WorkflowFacadeTool,
   ]
 }
 
