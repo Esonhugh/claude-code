@@ -194,6 +194,8 @@ export type ToolUseContext = {
   hookAskFloor?: true
   /** Resolves a Mods host spawn at AgentTool's internal launch boundary. */
   modAgentStarted?: (result: { model: string; agentId: string; teammateId?: string }) => void
+  /** Workflow script runtime: official framing for the spawned subagent's system prompt. */
+  workflowAgentSystemPrompt?: { replace: string } | { append: string }
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {

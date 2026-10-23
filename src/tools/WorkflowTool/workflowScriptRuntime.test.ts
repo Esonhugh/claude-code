@@ -12,7 +12,14 @@ import { drainSdkEvents } from '../../utils/sdkEventQueue.js'
 import { setSessionSettingsCache } from '../../utils/settings/settingsCache.js'
 import { readWorkflowJournalCacheEntries } from './workflowJournal.js'
 import { loadWorkflowRunSession } from './workflowRunSessions.js'
-import { WORKFLOW_AGENT_TEXT_RESULT_NOTE, runWorkflowScript } from './workflowScriptRuntime.js'
+import {
+  WORKFLOW_AGENT_SCHEMA_SYSTEM_PROMPT_SUFFIX,
+  WORKFLOW_AGENT_TEXT_SYSTEM_PROMPT_SUFFIX,
+  WORKFLOW_SUBAGENT_SCHEMA_SYSTEM_PROMPT,
+  WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT,
+  runWorkflowScript,
+  workflowAgentSystemPrompt,
+} from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
 
 // Terminal status/usage/output reach SDK consumers through the XML task
@@ -161,8 +168,7 @@ const fakeAgentTool = {
       typeof _input === 'object' &&
       _input &&
       'prompt' in _input &&
-      typeof _input.prompt === 'string' &&
-      _input.prompt.startsWith('prompt-too-long-agent')
+      _input.prompt === 'prompt-too-long-agent'
     ) {
       onProgress?.({
         data: {
@@ -195,7 +201,7 @@ const fakeAgentTool = {
       })
       throw new Error('Prompt is too long')
     }
-    if (typeof _input === 'object' && _input && 'prompt' in _input && typeof _input.prompt === 'string' && _input.prompt.startsWith('fail-agent')) {
+    if (typeof _input === 'object' && _input && 'prompt' in _input && _input.prompt === 'fail-agent') {
       throw new Error('agent failed intentionally')
     }
     onProgress?.({
@@ -577,7 +583,7 @@ await queuedDefaultModeRun
 assert.deepEqual(
   queuedDefaultModeInputs
     .map(input => ({
-      prompt: input.prompt.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, ''),
+      prompt: input.prompt,
       mode: input.mode,
       inheritedMode: input.inheritedMode,
     }))
@@ -809,7 +815,7 @@ const parallelIdentityAgentTool = {
     return {
       data: {
         status: 'completed',
-        content: [{ type: 'text', text: `${input.prompt?.replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')}-result` }],
+        content: [{ type: 'text', text: `${input.prompt}-result` }],
         totalTokens: 1,
         totalToolUseCount: 0,
         totalDurationMs: 1,
@@ -1680,7 +1686,7 @@ const parallelUserRetryAgentTool = {
     _assistantMessage: unknown,
     onProgress?: (progress: unknown) => void,
   ) {
-    const prompt = (input.prompt ?? '').replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')
+    const prompt = input.prompt ?? ''
     const callCount = (parallelUserRetryCallCounts.get(prompt) ?? 0) + 1
     parallelUserRetryCallCounts.set(prompt, callCount)
     if (callCount === 1) {
@@ -2087,7 +2093,7 @@ const partialRetryCalls = new Map<string, number>()
 const partialRetryAgentTool = {
   name: 'Agent',
   async call(input: { prompt?: string }) {
-    const prompt = (input.prompt ?? '').replace(WORKFLOW_AGENT_TEXT_RESULT_NOTE, '')
+    const prompt = input.prompt ?? ''
     const calls = (partialRetryCalls.get(prompt) ?? 0) + 1
     partialRetryCalls.set(prompt, calls)
     return {
@@ -2171,10 +2177,12 @@ let schemaState = {
   toolPermissionContext: { mode: 'default' },
 } as unknown as AppState
 const schemaToolsSeen: string[][] = []
+let schemaFraming: ToolUseContext['workflowAgentSystemPrompt']
 const schemaAgentTool = {
   name: 'Agent',
   async call(_input: unknown, agentContext: ToolUseContext) {
     schemaToolsSeen.push(agentContext.options.tools.map(tool => tool.name))
+    schemaFraming = agentContext.workflowAgentSystemPrompt
     const structuredOutputTool = agentContext.options.tools.find(
       tool => tool.name === 'StructuredOutput',
     )
@@ -2235,6 +2243,7 @@ await runWorkflowScript({
   scriptPath: '/tmp/runtime-schema-agent-workflow.js',
 })
 assert.equal(schemaToolsSeen.length, 1)
+assert.deepEqual(schemaFraming, { replace: WORKFLOW_SUBAGENT_SCHEMA_SYSTEM_PROMPT })
 assert.ok(schemaToolsSeen[0]?.includes('StructuredOutput'))
 const schemaTask = Object.values(schemaState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
@@ -2929,6 +2938,7 @@ let defaultStallState = {
 } as unknown as AppState
 const observedIntervalDelays: Array<number | undefined> = []
 let defaultStallPrompt: string | undefined
+let defaultStallFraming: ToolUseContext['workflowAgentSystemPrompt']
 const originalSetInterval = globalThis.setInterval
 globalThis.setInterval = ((
   handler: TimerHandler,
@@ -2980,8 +2990,9 @@ try {
           ...context.options,
           tools: [{
             name: 'Agent',
-            async call(input: { prompt: string }) {
+            async call(input: { prompt: string }, agentContext: ToolUseContext) {
               defaultStallPrompt = input.prompt
+              defaultStallFraming = agentContext.workflowAgentSystemPrompt
               await Promise.resolve()
               return {
                 data: {
@@ -3008,8 +3019,13 @@ try {
   globalThis.setInterval = originalSetInterval
   delete process.env.CLAUDE_ASYNC_AGENT_STALL_TIMEOUT_MS
 }
-// Text-mode agents get the official "returned verbatim" framing; the stored result keeps the raw prompt.
-assert.equal(defaultStallPrompt, `default-stall-agent${WORKFLOW_AGENT_TEXT_RESULT_NOTE}`)
+// Like official, the default workflow subagent gets the "returned verbatim" system prompt; the user prompt stays raw.
+assert.equal(defaultStallPrompt, 'default-stall-agent')
+assert.deepEqual(defaultStallFraming, { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
+// A named agentType keeps its own prompt and gets the official NOTE appended instead.
+assert.deepEqual(workflowAgentSystemPrompt({ agentType: 'Explore' }), { append: WORKFLOW_AGENT_TEXT_SYSTEM_PROMPT_SUFFIX })
+assert.deepEqual(workflowAgentSystemPrompt({ agentType: 'Explore', schema: {} }), { append: WORKFLOW_AGENT_SCHEMA_SYSTEM_PROMPT_SUFFIX })
+assert.deepEqual(workflowAgentSystemPrompt(undefined), { replace: WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT })
 const defaultStallTask = Object.values(defaultStallState.tasks).find(
   (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
 )
@@ -3051,7 +3067,7 @@ const stalledParallelAgentTool = {
     _assistantMessage: unknown,
     onProgress?: (progress: { data: { summary: string } }) => void,
   ) {
-    if (input.prompt.startsWith('stalled-agent')) {
+    if (input.prompt === 'stalled-agent') {
       return await new Promise(resolve => {
         releaseStalledAgent = () => {
           onProgress?.({ data: { summary: 'late progress after stalled terminal' } })
@@ -3285,7 +3301,7 @@ await runWorkflowScript({
         name: 'Agent',
         async call(input: { prompt: string }) {
           await Promise.resolve()
-          return input.prompt.startsWith('chained-agent-a')
+          return input.prompt === 'chained-agent-a'
             ? {
                 data: {
                   status: 'completed',
@@ -3564,7 +3580,7 @@ await runWorkflowScript({
         name: 'Agent',
         async call(input: { prompt: string }) {
           await Promise.resolve()
-          return input.prompt.startsWith('async-chained-agent-a')
+          return input.prompt === 'async-chained-agent-a'
             ? {
                 data: {
                   status: 'completed',

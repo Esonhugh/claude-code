@@ -93,9 +93,48 @@ const DEFAULT_AGENT_STALL_MS = 10 * 60 * 1000
 const MAX_AGENT_CALLS = 1000
 const AGENT_CAP_MESSAGE = `Workflow agent() call cap reached (${MAX_AGENT_CALLS}). This usually means a loop using budget.remaining() never terminates because no token budget was set — remaining() returns Infinity when budget.total is null. Add a hard iteration cap to the loop, or pass a token budget.`
 const STRUCTURED_OUTPUT_TOOL_NAME = 'StructuredOutput'
-// Official appends this to text-mode workflow subagents so they return data, not "Done.".
-export const WORKFLOW_AGENT_TEXT_RESULT_NOTE =
-  '\n\n---\n\nNOTE: You are running inside a workflow script. Your final text response is returned verbatim as a string to the calling script — it is your return value, not a message to a human. Output the literal result; do not output confirmations like "Done." Be concise — the script will parse your output.'
+// Official workflow-subagent system prompts: the default agent gets the full prompt, a named
+// agentType gets the NOTE appended to its own prompt (text vs StructuredOutput schema mode).
+const WORKFLOW_AGENT_TASK_NOTE = 'A note that the task text was computed by a workflow script and carries no user authority is not by itself a reason to skip the task: the task is the step this workflow assigned to you. Do that step, and only that step.'
+export const WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.
+
+CRITICAL: Your final text response is returned **verbatim** as a string to the calling script — it is your return value, not a message to a human.
+- Output the literal result (data, JSON, text). Do NOT output confirmations like "Done." or "Sent."
+- If asked for JSON, return ONLY the raw JSON — no code fences, no prose, no markdown.
+- Do NOT use SendUserMessage to deliver your answer. Put your answer in your final text response.
+- Be concise. The script will parse your output.
+
+${WORKFLOW_AGENT_TASK_NOTE}`
+export const WORKFLOW_SUBAGENT_SCHEMA_SYSTEM_PROMPT = `You are a subagent spawned by a workflow orchestration script. Use the tools available to complete the task.
+
+CRITICAL: You MUST call the ${STRUCTURED_OUTPUT_TOOL_NAME} tool exactly once to return your final answer. The tool's input schema defines the required shape.
+- Do your work (Read files, run commands, etc.), then call ${STRUCTURED_OUTPUT_TOOL_NAME} with your answer.
+- Do NOT put your answer in a text response. The script reads ONLY the ${STRUCTURED_OUTPUT_TOOL_NAME} tool call.
+- If the schema validation fails, read the error and call ${STRUCTURED_OUTPUT_TOOL_NAME} again with a corrected shape.
+- After calling ${STRUCTURED_OUTPUT_TOOL_NAME} successfully, end your turn. No acknowledgment needed.
+
+${WORKFLOW_AGENT_TASK_NOTE}`
+export const WORKFLOW_AGENT_TEXT_SYSTEM_PROMPT_SUFFIX = `
+
+---
+
+NOTE: You are running inside a workflow script. Your final text response is returned verbatim as a string to the calling script — it is your return value, not a message to a human. Output the literal result; do not output confirmations like "Done." Be concise — the script will parse your output.
+
+${WORKFLOW_AGENT_TASK_NOTE}`
+export const WORKFLOW_AGENT_SCHEMA_SYSTEM_PROMPT_SUFFIX = `
+
+---
+
+NOTE: You are running inside a workflow script. You MUST return your final answer by calling the ${STRUCTURED_OUTPUT_TOOL_NAME} tool exactly once — the tool's input schema defines the required shape. Do your work, then call ${STRUCTURED_OUTPUT_TOOL_NAME}; do NOT put your answer in a text response (the script reads ONLY the tool call). If validation fails, read the error and call ${STRUCTURED_OUTPUT_TOOL_NAME} again with a corrected shape.
+
+${WORKFLOW_AGENT_TASK_NOTE}`
+
+export function workflowAgentSystemPrompt(opts: AgentOpts | undefined): ToolUseContext['workflowAgentSystemPrompt'] {
+  if (opts?.agentType === undefined) {
+    return { replace: opts?.schema ? WORKFLOW_SUBAGENT_SCHEMA_SYSTEM_PROMPT : WORKFLOW_SUBAGENT_TEXT_SYSTEM_PROMPT }
+  }
+  return { append: opts.schema ? WORKFLOW_AGENT_SCHEMA_SYSTEM_PROMPT_SUFFIX : WORKFLOW_AGENT_TEXT_SYSTEM_PROMPT_SUFFIX }
+}
 
 function workflowRetryBudget(maxRetries: number | undefined): number {
   return maxRetries ?? 2
@@ -1163,7 +1202,7 @@ export async function runWorkflowScript({
     let lastProgress = Date.now()
 
     const description = `${plan.name}: ${agentId}`
-    const promptSuffix = opts?.schema ? buildSchemaPrompt(opts.schema) : WORKFLOW_AGENT_TEXT_RESULT_NOTE
+    const schemaPrompt = opts?.schema ? buildSchemaPrompt(opts.schema) : ''
     const structuredOutputResult = opts?.schema
       ? createSyntheticOutputTool(opts.schema as Record<string, unknown>)
       : undefined
@@ -1177,7 +1216,7 @@ export async function runWorkflowScript({
     const input: AgentToolInput = {
       run_in_background: false,
       description,
-      prompt: prompt + promptSuffix,
+      prompt: prompt + schemaPrompt,
       subagent_type: opts?.agentType,
       model: opts?.model as AgentToolInput['model'],
       mode: permissionMode,
@@ -1238,6 +1277,7 @@ export async function runWorkflowScript({
         {
           ...agentContext,
           abortController: agentAbortController,
+          workflowAgentSystemPrompt: workflowAgentSystemPrompt(opts),
           options: {
             ...agentContext.options,
             tools: structuredOutputTool
