@@ -16,6 +16,7 @@ import {
 } from '../../services/mods/promptAdapter.js'
 import { getContentText } from 'src/utils/messages.js'
 import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
+import { formatPeerPrompt } from '../peerProtocol.js'
 import { createToolCatalogForContext } from '../../services/mods/toolCatalog.js'
 import { createModToolHost } from '../../services/mods/toolHost.js'
 import { logForDebugging } from '../debug.js'
@@ -417,16 +418,18 @@ export async function processUserInput({
 
   function applyPluginPromptOrigin(settled: ProcessUserInputBaseResult): void {
     const origin = settled.admission?.origin ?? promptSubmitMetadata?.origin
-    if (!isRegularPrompt || !settled.shouldQuery || origin?.kind !== 'plugin') return
+    if (!isRegularPrompt || !settled.shouldQuery || (origin?.kind !== 'plugin' && origin?.kind !== 'peer')) return
     const index = settled.messages.findIndex(message => message.type === 'user')
     const message = settled.messages[index]
     if (message?.type !== 'user') return
     let content = message.message.content
-    if (!origin.asUser) {
+    if (origin.kind === 'peer' || !origin.asUser) {
       const text = typeof content === 'string' ? content : content.flatMap(block =>
         block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
       ).join('\n')
-      const framed = formatPluginPrompt(text, origin)
+      // An idle peer delivery becomes its own turn; frame it like the mid-turn
+      // attachment so the model never reads it as the user's words.
+      const framed = origin.kind === 'peer' ? formatPeerPrompt(text) : formatPluginPrompt(text, origin)
       if (typeof content === 'string') content = framed
       else {
         let written = false
@@ -440,7 +443,7 @@ export async function processUserInput({
       }
     }
     settled.messages = [...settled.messages]
-    settled.messages[index] = { ...message, origin, message: { ...message.message, content } }
+    settled.messages[index] = { ...message, ...(origin.kind === 'plugin' && { origin }), message: { ...message.message, content } }
   }
 
   async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {

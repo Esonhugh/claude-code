@@ -5,6 +5,7 @@ import ts from 'typescript'
 import { dispatchModEvent } from '../../services/mods/dispatch.js'
 import { runModPromptSubmit } from '../../services/mods/promptAdapter.js'
 import { formatPluginPrompt } from '../../services/mods/pluginPrompt.js'
+import { formatPeerPrompt } from '../peerProtocol.js'
 import type { ModDispatchHook } from '../../services/mods/types.js'
 
 // Execute the production functions, including processUserInputBase and
@@ -127,6 +128,7 @@ function fixture(
             .map((block: any) => block.text)
             .join('\n'),
     formatPluginPrompt,
+    formatPeerPrompt,
     queryCheckpoint: () => {},
     logForDebugging: () => {},
     logEvent: () => {},
@@ -598,6 +600,25 @@ describe('processUserInput Diff Ask admission', () => {
     expect(ask.budgets).toEqual([[]])
     expect(additionalContexts(await f.run())).toEqual(['classic context'])
     expect(ask.finishes).toEqual([true])
+  })
+})
+
+describe('processUserInput peer prompt framing', () => {
+  test('an idle peer prompt reaches the model framed as peer input, not as the user', async () => {
+    const raw = '<cross-session-message from="uds:/tmp/cc-socks/1.sock" from-name="alpha">\nhello\n</cross-session-message>'
+    const f = fixture()
+    const result = await f.run({
+      input: raw,
+      isMeta: true,
+      skipSlashCommands: true,
+      skipAttachments: true,
+      skipHooks: true,
+      promptSubmitMetadata: { origin: { kind: 'peer' }, wait: false },
+    })
+    expect(result.shouldQuery).toBe(true)
+    expect(userTexts(result)).toEqual([formatPeerPrompt(raw)])
+    expect(userTexts(result)[0]).toStartWith('Another Claude session sent a message:\n<cross-session-message')
+    expect(userTexts(result)[0]).toContain('permission laundering')
   })
 })
 
