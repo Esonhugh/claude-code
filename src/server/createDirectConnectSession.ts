@@ -27,11 +27,15 @@ export async function createDirectConnectSession({
   serverUrl,
   authToken,
   cwd,
+  sessionKey,
+  permissionMode,
   dangerouslySkipPermissions,
 }: {
   serverUrl: string
   authToken?: string
   cwd: string
+  sessionKey?: string
+  permissionMode?: string
   dangerouslySkipPermissions?: boolean
 }): Promise<{
   config: DirectConnectConfig
@@ -51,8 +55,11 @@ export async function createDirectConnectSession({
       headers,
       body: jsonStringify({
         cwd,
-        ...(dangerouslySkipPermissions && {
-          dangerously_skip_permissions: true,
+        ...(sessionKey && { session_key: sessionKey }),
+        ...((dangerouslySkipPermissions || permissionMode) && {
+          permission_mode: dangerouslySkipPermissions
+            ? 'bypassPermissions'
+            : permissionMode,
         }),
       }),
     })
@@ -63,8 +70,9 @@ export async function createDirectConnectSession({
   }
 
   if (!resp.ok) {
+    const body = await resp.text().catch(() => '')
     throw new DirectConnectError(
-      `Failed to create session: ${resp.status} ${resp.statusText}`,
+      `Failed to create session: ${resp.status} ${resp.statusText}${body ? ` \u2014 ${body}` : ''}`,
     )
   }
 

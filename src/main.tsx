@@ -917,7 +917,13 @@ export async function main() {
     if (ccIdx !== -1 && _pendingConnect) {
       const ccUrl = rawCliArgs[ccIdx]!
       const { parseConnectUrl } = await import('./server/parseConnectUrl.js')
-      const parsed = parseConnectUrl(ccUrl)
+      let parsed
+      try {
+        parsed = parseConnectUrl(ccUrl)
+      } catch (err) {
+        process.stderr.write(`${errorMessage(err)}\n`)
+        process.exit(1)
+      }
       _pendingConnect.dangerouslySkipPermissions = rawCliArgs.includes(
         '--dangerously-skip-permissions',
       )
@@ -5838,7 +5844,14 @@ async function run(): Promise<CommanderCommand> {
           const { parseConnectUrl } = await import(
             './server/parseConnectUrl.js'
           )
-          const { serverUrl, authToken } = parseConnectUrl(ccUrl)
+          let serverUrl: string
+          let authToken: string | undefined
+          try {
+            ;({ serverUrl, authToken } = parseConnectUrl(ccUrl))
+          } catch (err) {
+            process.stderr.write(`${errorMessage(err)}\n`)
+            process.exit(1)
+          }
 
           let connectConfig
           try {
@@ -5867,14 +5880,20 @@ async function run(): Promise<CommanderCommand> {
             './server/connectHeadless.js'
           )
 
-          const prompt = typeof opts.print === 'string' ? opts.print : ''
-          const interactive = opts.print === true
-          await runConnectHeadless(
+          const prompt = (await getInputPrompt(
+            typeof opts.print === 'string' ? opts.print : '',
+            'text',
+          )) as string
+          const exitCode = await runConnectHeadless(
             connectConfig,
             prompt,
             opts.outputFormat,
-            interactive,
+            {
+              dangerouslySkipPermissions:
+                _pendingConnect?.dangerouslySkipPermissions,
+            },
           )
+          process.exit(exitCode)
         },
       )
   }
