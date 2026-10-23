@@ -83,6 +83,13 @@ import { createSyntheticOutputTool } from '../SyntheticOutputTool/SyntheticOutpu
 import { callWorkflowAgent, snapshotWorkflowAgentContext } from './runWorkflow.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 import { raiseModWorkflowAgentSpawn } from '../../services/mods/agents.js'
+import { parseEffortValue } from '../../utils/effort.js'
+import {
+  normalizeWorkflowBashCommandClamp,
+  normalizeWorkflowDisallowedTools,
+  workflowPolicyDeniesTool,
+} from './workflowAgentToolPolicy.js'
+import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 
 // --- Constants ---
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
@@ -162,6 +169,7 @@ type AgentToolInput = {
   model?: 'sonnet' | 'opus' | 'haiku'
   mode?: WorkflowPermissionMode
   isolation?: 'worktree'
+  effort?: string | number
 }
 
 type AgentToolOutput = {
@@ -183,6 +191,37 @@ type AgentOpts = {
   mode?: WorkflowPermissionMode
   isolation?: 'worktree'
   stallMs?: number
+  effort?: string | number
+  disallowedTools?: string[]
+  bashCommandClamp?: string[]
+}
+
+// Official 2.1.303 validates and normalizes these opts before the agent is keyed,
+// so malformed input refuses the spawn instead of running an un-narrowed agent.
+function normalizeAgentOpts(opts: AgentOpts | undefined): AgentOpts | undefined {
+  if (!opts) return opts
+  const normalized: AgentOpts = { ...opts }
+  if (opts.effort !== undefined) {
+    const effort = parseEffortValue(opts.effort)
+    if (effort === undefined) {
+      throw new Error(`agent() opts.effort must be one of low, medium, high, xhigh, max or a number 1-100; got ${JSON.stringify(opts.effort)}.`)
+    }
+    normalized.effort = effort
+  }
+  const disallowedTools = normalizeWorkflowDisallowedTools(opts.disallowedTools)
+  const bashCommandClamp = normalizeWorkflowBashCommandClamp(opts.bashCommandClamp)
+  if (disallowedTools === undefined) delete normalized.disallowedTools
+  else normalized.disallowedTools = disallowedTools
+  if (bashCommandClamp === undefined) delete normalized.bashCommandClamp
+  else normalized.bashCommandClamp = bashCommandClamp
+  const policy = { disallowedTools, bashCommandClamp }
+  if (bashCommandClamp && workflowPolicyDeniesTool(policy, BASH_TOOL_NAME)) {
+    throw new Error(`agent() opts.bashCommandClamp cannot be combined with disallowedTools that remove ${BASH_TOOL_NAME}: the clamp would bind nothing. Drop the clamp or the Bash deny.`)
+  }
+  if (opts.schema && workflowPolicyDeniesTool(policy, STRUCTURED_OUTPUT_TOOL_NAME)) {
+    throw new Error(`agent() opts.schema requires the ${STRUCTURED_OUTPUT_TOOL_NAME} tool, but opts.disallowedTools removes it. Drop the schema or the deny.`)
+  }
+  return normalized
 }
 
 type WorkflowAgentAttemptUsage = Pick<
@@ -718,11 +757,12 @@ export async function runWorkflowScript({
 
   async function runAgent(
     prompt: string,
-    opts?: AgentOpts,
+    rawOpts?: AgentOpts,
   ): Promise<unknown> {
     if (abortController.signal.aborted) return null
     checkBudget()
     if (agentCount >= MAX_AGENT_CALLS) throw new Error(AGENT_CAP_MESSAGE)
+    let opts = normalizeAgentOpts(rawOpts)
 
     const requestedAgentId = opts?.label || `agent-${agentCount + 1}`
     let labelOccurrence = agentLabelOccurrences.get(requestedAgentId) ?? 0
@@ -1207,7 +1247,11 @@ export async function runWorkflowScript({
       model: opts?.model as AgentToolInput['model'],
       mode: permissionMode,
       ...(opts?.isolation === 'worktree' ? { isolation: 'worktree' } : {}),
+      ...(opts?.effort !== undefined ? { effort: opts.effort } : {}),
     }
+    const workflowAgentToolPolicy = opts?.disallowedTools || opts?.bashCommandClamp
+      ? { disallowedTools: opts.disallowedTools, bashCommandClamp: opts.bashCommandClamp }
+      : undefined
 
     if (
       process.env.CLAUDE_CODE_WORKFLOW_FAULT_INJECTION_FOR_TESTING ===
@@ -1264,6 +1308,7 @@ export async function runWorkflowScript({
           ...agentContext,
           abortController: agentAbortController,
           workflowAgentSystemPrompt: workflowAgentSystemPrompt(opts),
+          workflowAgentToolPolicy,
           options: {
             ...agentContext.options,
             tools: structuredOutputTool
@@ -1470,8 +1515,27 @@ export async function runWorkflowScript({
     return results
   }
 
+  // Official 2.1.303 caps arrays crossing the workflow VM boundary.
+  const MAX_VM_ARRAY_LENGTH = 4096
+  function assertVmArray(value: unknown, message: string): void {
+    if (!Array.isArray(value)) throw new TypeError(message)
+    if (value.length > MAX_VM_ARRAY_LENGTH) {
+      throw new Error(`array length ${value.length} exceeds the maximum of ${MAX_VM_ARRAY_LENGTH} supported across the workflow VM boundary`)
+    }
+  }
+
   // --- parallel(): bounded fan-out, errors → null ---
   async function realParallel<T>(thunks: Array<() => Promise<T> | T>): Promise<Array<T | null>> {
+    assertVmArray(thunks, 'parallel() expects an array of functions')
+    for (const thunk of thunks) {
+      if (typeof thunk === 'function') continue
+      // The script runs in its own vm realm, so detect promises by shape, not instanceof.
+      throw new TypeError(
+        typeof (thunk as { then?: unknown } | null)?.then === 'function'
+          ? 'parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)'
+          : 'parallel() expects an array of functions',
+      )
+    }
     if (abortController.signal.aborted) return thunks.map(() => null)
     checkBudget()
     let budgetDropped = 0
@@ -1495,6 +1559,10 @@ export async function runWorkflowScript({
 
   // --- pipeline(): no barrier between stages, per-item ---
   async function realPipeline<T>(items: T[], ...stages: Array<(val: any, orig: any, idx: number) => any>): Promise<any[]> {
+    assertVmArray(items, 'pipeline() expects an array as the first argument')
+    if (stages.some(stage => typeof stage !== 'function')) {
+      throw new TypeError('pipeline() stages must be functions: pipeline(items, item => ..., result => ...)')
+    }
     if (abortController.signal.aborted) return items.map(() => null)
     checkBudget()
     let budgetDropped = 0

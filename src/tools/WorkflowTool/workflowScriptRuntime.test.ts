@@ -3881,4 +3881,125 @@ const largeFanoutTask = Object.values(largeFanoutState.tasks).find(
 assert.equal(largeFanoutTask?.status, 'completed')
 assert.equal(largeFanoutTask?.agentCount, largeFanoutCount - 1)
 
+// Like official, agent() opts effort / disallowedTools / bashCommandClamp reach the Agent
+// tool normalized, malformed opts refuse the spawn, and parallel()/pipeline() validate
+// their arrays at the VM boundary.
+const agentOptsScript = `export const meta = {
+  name: "runtime-agent-opts-workflow",
+  description: "Workflow passing official agent() opts.",
+  phases: [{ title: "Opts", detail: "Agent opts" }],
+}
+phase("Opts")
+const ok = await agent("opts agent", {
+  label: "opts-agent",
+  effort: "LOW",
+  disallowedTools: ["Write", "Read", "Write"],
+  bashCommandClamp: ["Bash(git status:*)", "Bash(git status:*)"],
+})
+const plain = await agent("plain agent", { label: "plain-agent" })
+await parallel([() => agent("bad effort", { label: "bad-effort", effort: "turbo" })])
+await parallel([() => agent("bad deny", { label: "bad-deny", disallowedTools: "Write" })])
+await parallel([() => agent("bad clamp", { label: "bad-clamp", bashCommandClamp: ["Read"] })])
+await parallel([() => agent("clamp no bash", { label: "clamp-no-bash", disallowedTools: ["Bash"], bashCommandClamp: ["Bash(git status:*)"] })])
+await parallel([() => agent("schema denied", { label: "schema-denied", schema: { type: "object" }, disallowedTools: ["StructuredOutput"] })])
+const errors = {}
+const capture = async (name, run) => { try { await run() } catch (error) { errors[name] = error.message } }
+await capture("tooMany", () => parallel(new Array(4097).fill(() => 1)))
+await capture("promiseEntry", () => parallel([Promise.resolve(1)]))
+await capture("notFunction", () => parallel([1]))
+await capture("notArray", () => parallel("x"))
+await capture("pipelineNotArray", () => pipeline("x", item => item))
+await capture("pipelineTooMany", () => pipeline(new Array(4097).fill(1), item => item))
+await capture("pipelineBadStage", () => pipeline([1], 42))
+const within = await parallel(new Array(4096).fill(() => 1))
+return { ok, plain, within: within.length, errors }
+`
+let agentOptsState = {
+  tasks: {},
+  toolPermissionContext: { mode: 'default' },
+} as unknown as AppState
+const setAgentOptsState = (updater: (prev: AppState) => AppState): void => {
+  agentOptsState = updater(agentOptsState)
+}
+const agentOptsCalls: Array<{ input: Record<string, unknown>; policy: unknown }> = []
+const agentOptsAgentTool = {
+  name: 'Agent',
+  async call(input: Record<string, unknown>, agentContext: ToolUseContext) {
+    agentOptsCalls.push({ input, policy: agentContext.workflowAgentToolPolicy })
+    return {
+      data: {
+        status: 'completed',
+        content: [{ type: 'text', text: `${input.description}-ok` }],
+        totalDurationMs: 1,
+      },
+    }
+  },
+}
+const agentOptsWorkflowRunId = `wf_script_agent_opts_${process.pid}`
+await runWorkflowScript({
+  script: agentOptsScript,
+  plan: {
+    ...retryPlan,
+    name: 'runtime-agent-opts-workflow',
+    description: 'Workflow passing official agent() opts.',
+    phases: [{ ...retryPlan.phases[0]!, id: 'Opts', description: 'Agent opts', prompt: 'Agent opts' }],
+    runScriptSnapshot: agentOptsScript,
+  },
+  context: {
+    ...retryContext,
+    getAppState: () => agentOptsState,
+    setAppState: setAgentOptsState,
+    options: { ...retryContext.options, tools: [agentOptsAgentTool, { name: 'Bash' }] },
+    abortController: new AbortController(),
+    toolUseId: 'toolu_script_agent_opts',
+  } as unknown as ToolUseContext,
+  canUseTool: async () => ({ behavior: 'allow' }),
+  assistantMessage: { message: { id: 'msg_script_agent_opts' } } as never,
+  workflowRunId: agentOptsWorkflowRunId,
+  scriptPath: '/tmp/runtime-agent-opts-workflow.js',
+})
+assert.deepEqual(agentOptsCalls.map(call => ({
+  effort: call.input.effort,
+  policy: call.policy,
+})), [
+  {
+    effort: 'low',
+    policy: { disallowedTools: ['Read', 'Write'], bashCommandClamp: ['Bash(git status:*)'] },
+  },
+  { effort: undefined, policy: undefined },
+])
+const agentOptsTask = Object.values(agentOptsState.tasks).find(
+  (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+)
+assert.equal(agentOptsTask?.status, 'completed')
+// Refused spawns never reach the Agent tool and never count as launched agents.
+assert.equal(agentOptsTask?.agentCount, 2)
+const agentOptsNotification = dequeueAllMatching(command => command.mode === 'task-notification')
+  .find(command => String(command.value).includes('toolu_script_agent_opts'))
+assert.ok(agentOptsNotification)
+const agentOptsText = String(agentOptsNotification.value)
+const agentOptsResult = JSON.parse(
+  agentOptsText.match(/<result>([\s\S]*?)<\/result>/)![1]!
+    .replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&'),
+)
+assert.deepEqual(agentOptsResult, {
+  ok: 'runtime-agent-opts-workflow: opts-agent-ok',
+  plain: 'runtime-agent-opts-workflow: plain-agent-ok',
+  within: 4096,
+  errors: {
+    tooMany: 'array length 4097 exceeds the maximum of 4096 supported across the workflow VM boundary',
+    promiseEntry: 'parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)',
+    notFunction: 'parallel() expects an array of functions',
+    notArray: 'parallel() expects an array of functions',
+    pipelineNotArray: 'pipeline() expects an array as the first argument',
+    pipelineTooMany: 'array length 4097 exceeds the maximum of 4096 supported across the workflow VM boundary',
+    pipelineBadStage: 'pipeline() stages must be functions: pipeline(items, item => ..., result => ...)',
+  },
+})
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.effort must be one of low, medium, high, xhigh, max or a number 1-100; got "turbo"\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.disallowedTools must be an array of non-empty tool-name strings \(e\.g\. \['Write'\]\); got string\. Refusing the spawn rather than running it un-narrowed\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.bashCommandClamp entry 'Read' is not a Bash\(&lt;command rule&gt;\) rule: it names 'Read' instead of Bash\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.bashCommandClamp cannot be combined with disallowedTools that remove Bash: the clamp would bind nothing\./)
+assert.match(agentOptsText, /parallel\[0\] failed: agent\(\) opts\.schema requires the StructuredOutput tool, but opts\.disallowedTools removes it\./)
+
 console.log('workflowScriptRuntime.test.ts passed')

@@ -77,9 +77,9 @@ The meta object must be a pure literal, matching the AST-parser expectations:
 
 The script body orchestrates agents with workflow runtime globals:
 
-- agent(prompt, opts): spawn a subagent. Use agent({ schema }) when structured output is needed, and expect the subagent to return via the structured output tool rather than prose.
-- pipeline(items, stage1, stage2, ...): run each item through all stages independently.
-- parallel(thunks): run independent tasks concurrently and wait for all results. Pass thunks/functions, not promises.
+- agent(prompt, opts): spawn a subagent. Use agent({ schema }) when structured output is needed, and expect the subagent to return via the structured output tool rather than prose. opts also take label, phase, model, agentType, effort (low|medium|high|xhigh|max), disallowedTools (tool names to withhold), bashCommandClamp (Bash(<rule>) entries; only matching commands run, MCP tools and ToolSearch are withheld), isolation: 'worktree'.
+- pipeline(items, stage1, stage2, ...): run each item through all stages independently. items must be an array of at most 4096 entries and every stage a function.
+- parallel(thunks): run independent tasks concurrently and wait for all results. Pass an array of at most 4096 thunks/functions, not promises.
 - phase(title): group later agent calls under a progress phase.
 - log(message): emit progress.
 - args: user input passed to the workflow. Pass arrays/objects as real JSON values, not JSON-encoded strings.

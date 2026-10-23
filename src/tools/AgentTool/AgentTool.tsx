@@ -103,6 +103,11 @@ import { BackgroundHint } from '../BashTool/UI.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { spawnTeammate } from '../shared/spawnMultiAgent.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from '../SyntheticOutputTool/SyntheticOutputTool.js'
+import {
+  applyWorkflowBashCommandClamp,
+  WORKFLOW_BASH_CLAMP_NO_BASH_MESSAGE,
+  workflowPolicyDisallowedTools,
+} from '../WorkflowTool/workflowAgentToolPolicy.js'
 import { setAgentColor } from './agentColorManager.js'
 import {
   agentToolResultSchema,
@@ -782,6 +787,16 @@ export const AgentTool = buildTool({
             : baseGetSystemPrompt(params ?? { toolUseContext }) + workflowFraming.append,
       }
     }
+    const workflowToolPolicy = toolUseContext.workflowAgentToolPolicy
+    if (workflowToolPolicy) {
+      selectedAgent = {
+        ...selectedAgent,
+        disallowedTools: [
+          ...(selectedAgent.disallowedTools ?? []),
+          ...workflowPolicyDisallowedTools(workflowToolPolicy),
+        ],
+      }
+    }
     const workerPermissionContext = explicitPermissionMode
       ? requestedPermissionContext
       : permissionMode === appState.toolPermissionContext.mode
@@ -1119,9 +1134,9 @@ export const AgentTool = buildTool({
     // restrictions. This is computed here so that runAgent doesn't need to
     // import from tools.ts (which would create a circular dependency).
     const workerTools = [
-      ...assembleToolPool(
-        workerPermissionContext,
-        appState.mcp.tools,
+      ...applyWorkflowBashCommandClamp(
+        assembleToolPool(workerPermissionContext, appState.mcp.tools),
+        workflowToolPolicy,
       ).filter(tool => !toolMatchesName(tool, SYNTHETIC_OUTPUT_TOOL_NAME)),
       ...toolUseContext.options.tools.filter(
         tool => toolMatchesName(tool, SYNTHETIC_OUTPUT_TOOL_NAME),
@@ -1141,6 +1156,13 @@ export const AgentTool = buildTool({
           workerTools,
           shouldRunAsync,
         )
+    if (
+      workflowToolPolicy?.bashCommandClamp?.length &&
+      resolvedAgentTools !== undefined &&
+      !resolvedAgentTools.resolvedTools.some(tool => toolMatchesName(tool, BASH_TOOL_NAME))
+    ) {
+      throw new Error(WORKFLOW_BASH_CLAMP_NO_BASH_MESSAGE)
+    }
     const allowedTools = resolvedAgentTools?.hasWildcard
       ? undefined
       : resolvedAgentTools?.validTools
@@ -1217,6 +1239,7 @@ export const AgentTool = buildTool({
       toolUseContext: {
         ...toolUseContext,
         workflowAgentSystemPrompt: undefined,
+        workflowAgentToolPolicy: undefined,
         options: {
           ...toolUseContext.options,
           mainLoopModel: resolvedAgentModel,

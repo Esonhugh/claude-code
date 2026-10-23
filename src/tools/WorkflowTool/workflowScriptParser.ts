@@ -219,3 +219,43 @@ export function parseWorkflowScript(source: string): ParsedWorkflowScript {
     scriptBody: source.slice(metaExport.end).replace(BODY_PREFIX, '').trimStart(),
   }
 }
+
+function isMemberCall(node: AcornNode, object: string, property: string): boolean {
+  if (node.type !== 'CallExpression') return false
+  const callee = node.callee as AcornNode | undefined
+  if (callee?.type !== 'MemberExpression' || callee.computed) return false
+  const obj = callee.object as AcornNode | undefined
+  const prop = callee.property as AcornNode | undefined
+  return obj?.type === 'Identifier' && obj.name === object &&
+    prop?.type === 'Identifier' && prop.name === property
+}
+
+function isArglessNewDate(node: AcornNode): boolean {
+  if (node.type !== 'NewExpression') return false
+  const callee = node.callee as AcornNode | undefined
+  return callee?.type === 'Identifier' && callee.name === 'Date' &&
+    (node.arguments as AcornNode[]).length === 0
+}
+
+// Official 2.1.303 refuses to launch a script that reads the clock or RNG, since the
+// resume cache keys agents by prompt and such scripts never replay the same way.
+export function findNonDeterministicCalls(source: string): string[] {
+  const found = new Set<string>()
+  const visit = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child)
+      return
+    }
+    if (!node || typeof node !== 'object' || typeof (node as AcornNode).type !== 'string') return
+    const current = node as AcornNode
+    if (isMemberCall(current, 'Date', 'now')) found.add('Date.now()')
+    else if (isMemberCall(current, 'Math', 'random')) found.add('Math.random()')
+    else if (isArglessNewDate(current)) found.add('new Date()')
+    for (const key of Object.keys(current)) {
+      if (key === 'type' || key === 'start' || key === 'end') continue
+      visit(current[key])
+    }
+  }
+  visit(parseProgram(source).body)
+  return [...found]
+}
