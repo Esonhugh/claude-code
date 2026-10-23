@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 
 import {
+  findNonDeterministicCalls,
   parseWorkflowScript,
   WorkflowScriptParseError,
 } from './workflowScriptParser.js'
@@ -125,5 +126,24 @@ assert.deepEqual(nonArrayPhases.meta, {
   name: 'no-phases',
   description: 'Non-array phases are ignored',
 })
+
+// Like official, the clock and RNG are found at compile time, before any agent launches.
+assert.deepEqual(findNonDeterministicCalls(validScript), [])
+assert.deepEqual(findNonDeterministicCalls(`export const meta = { name: 'a', description: 'b' }
+const started = Date.now()
+const stamp = new Date()
+const pick = items[Math.floor(Math.random() * items.length)]
+return { started, stamp, pick }
+`), ['Date.now()', 'new Date()', 'Math.random()'])
+assert.deepEqual(findNonDeterministicCalls(`export const meta = { name: 'a', description: 'b' }
+const when = new Date(args.since)
+const parsed = Date.parse(args.since)
+const sorted = [...items].sort((a, b) => Math.max(a, b))
+const nested = async () => { for (const x of items) { if (x) { log(String(Date.now())) } } }
+return { when, parsed, sorted }
+`), ['Date.now()'])
+assert.deepEqual(findNonDeterministicCalls(`export const meta = { name: 'a', description: 'b' }
+return Date['now']()
+`), [])
 
 console.log('workflowScriptParser.test.ts passed')

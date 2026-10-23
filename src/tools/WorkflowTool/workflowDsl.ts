@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import vm from 'node:vm'
 import { createWorkflowOrchestrator } from './workflowOrchestrator.js'
-import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
+import { findNonDeterministicCalls, hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import type { WorkflowArgs, WorkflowPhaseSpec, WorkflowSpec } from './workflowSpec.js'
 
 type WorkflowScriptContext = {
@@ -89,6 +89,12 @@ async function runOrchestrationExport(
 // body; only the workflow runtime runs the body, so no agent() call happens here.
 export function preflightWorkflowScript(source: string, filePath: string): ReturnType<typeof parseWorkflowScript> {
   const parsed = parseWorkflowScript(source)
+  const nonDeterministic = findNonDeterministicCalls(source)
+  if (nonDeterministic.length > 0) {
+    throw new Error(
+      `Workflow script uses ${nonDeterministic.join(', ')} and was not launched: Date.now(), Math.random() and argless new Date() are unavailable in workflow scripts (they would break resume). Pass timestamps in via args, stamp results after the workflow returns, and for randomness vary the agent prompt/label by index.`,
+    )
+  }
   try {
     // vm.Script compiles lazily on Bun 1.3, so it would not surface syntax errors here.
     vm.compileFunction(`(async () => {\n${parsed.scriptBody}\n})`, [], { filename: filePath })

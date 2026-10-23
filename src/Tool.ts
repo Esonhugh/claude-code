@@ -196,6 +196,8 @@ export type ToolUseContext = {
   modAgentStarted?: (result: { model: string; agentId: string; teammateId?: string }) => void
   /** Workflow script runtime: official framing for the spawned subagent's system prompt. */
   workflowAgentSystemPrompt?: { replace: string } | { append: string }
+  /** Workflow script runtime: per-spawn tool policy (agent() opts.disallowedTools / bashCommandClamp). */
+  workflowAgentToolPolicy?: { disallowedTools?: string[]; bashCommandClamp?: string[] }
   /** OpenAI Responses state shared only within one outer query turn. */
   openAITurnScope?: import('./services/api/openai-turn-scope.js').OpenAITurnScope
   options: {
