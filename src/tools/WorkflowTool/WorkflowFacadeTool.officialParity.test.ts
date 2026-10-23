@@ -21,6 +21,9 @@ const { WorkflowFacadeTool } = await import('./WorkflowFacadeTool.js')
 const { workflowSessionDir } = await import('./workflowRunSessions.js')
 
 setSessionSettingsCache({ settings: { enableWorkflows: true }, errors: [] })
+// The provenance frame is covered by workflowPromptProvenance.test.ts and its own runtime scenario;
+// the fake agent here matches on raw prompts.
+process.env.CLAUDE_CODE_WORKFLOW_PROMPT_PROVENANCE = '0'
 setIsInteractive(false)
 drainSdkEvents()
 dequeueAllMatching(command => command.mode === 'task-notification')
@@ -42,6 +45,8 @@ const agentTool = {
   aliases: ['Task'],
   async call(input: { prompt: string }, agentContext: ToolUseContext) {
     prompts.push(input.prompt)
+    // First API response: releases same-prefix siblings held by the prefix stagger, as a real agent would.
+    agentContext.pushApiMetricsEntry?.(1)
     if (input.prompt.startsWith('hold')) {
       await new Promise<void>((resolve, reject) => {
         held.push(resolve)
