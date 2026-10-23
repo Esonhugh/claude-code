@@ -396,6 +396,7 @@
 - 自定义 Agent 的 markdown frontmatter、插件 agents、`--agents` JSON 与 Mods `agent.register` 支持 `autoCompactWindow`，作为子代理自动压缩窗口的上限（只能调小，`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 仍优先）；嵌套子代理继承父级上限。
 - 自定义 Agent 的 markdown frontmatter 与插件 agents 支持 `omitClaudeMd: true`，作为子代理运行时不加载 CLAUDE.md（此前只有 `--agents` JSON 和内置 Explore/Plan 生效）。
 - 切换到上下文窗口更小的模型后，若会话已超出新模型的上限，自动压缩先由上一个窗口更大的模型生成摘要；该模型不在 `availableModels` 中、之前压缩已失败或摘要失败时改用当前模型。
+- 远程 stream-json / SDK 会话的 `autocompact_state` 改为按当前模型即时解析窗口：`/autocompact` 写入的 `modelSettings.<model>.autoCompactWindow` 与会话中途的设置变更都会反映到 `effective_window`、`threshold` 和 `source`，与实际触发自动压缩的窗口一致；此前只读取启动时的顶层 `autoCompactWindow`。
 - 新增设置 `worktree.baseRef`（`fresh` | `head`）：`head` 让 `--worktree`、`EnterWorktree` 和 agent worktree isolation 基于当前工作目录（含 linked worktree）的本地 HEAD 建分支，默认 `fresh` 维持基于 `origin/<默认分支>`。
 - `EnterWorktree` 新增 `path` 参数，可进入 `git worktree list` 中已有的 linked worktree，也可在 worktree 会话中切换到 `.claude/worktrees/` 下的另一个 worktree；`.claude/worktrees/` 之外的路径需确认；以 `path` 进入的 worktree 不会被 `ExitWorktree` 或退出清理删除。
 
@@ -403,6 +404,7 @@
 
 - `src/commands/autocompact/autocompact.test.ts`：按模型写入用户设置、`auto`/`reset`、超出模型上限的 capped 提示、第三方模型、无法解析的值、环境变量优先、非交互命令和对话框步进。
 - `src/services/compact/autoCompact.contextWindow.test.ts`：按模型窗口与顶层值的来源优先级、Agent 窗口上限与环境变量优先、切换到小窗口模型时选择上一个模型摘要的条件。
+- `src/services/compact/autoCompact.contextWindow.test.ts`、`src/cli/print.streamState.test.ts`：设置按模型窗口后，`autocompact_state` 的窗口、阈值与 `source: "settings"` 与压缩引擎一致，含远程 headless 会话中途写入用户设置后的更新帧。
 - `src/services/compact/sessionCompact.mods.test.ts`：自动压缩先用上一个模型摘要，失败时回退当前模型。
 - `src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`：markdown frontmatter 与 `--agents` JSON 的 `omitClaudeMd`、`autoCompactWindow` 解析与范围校验。
 - `src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`：`worktree.baseRef` 的 `head`/`fresh` 基点（含 linked worktree）、按 `path` 进入已有 worktree、受管目录限制与不删除行为、`name`/`path` 互斥。
