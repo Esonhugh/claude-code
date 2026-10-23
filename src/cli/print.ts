@@ -420,6 +420,7 @@ import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 import { isAnt } from 'src/utils/userType.js'
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../constants/prompts.js'
 
 
 // Dead code elimination: conditional imports
@@ -490,6 +491,17 @@ type PromptValue = string | ContentBlockParam[]
 
 function toBlocks(v: PromptValue): ContentBlockParam[] {
   return typeof v === 'string' ? [{ type: 'text', text: v }] : v
+}
+
+// Agent SDK >= 0.3 sends initialize.systemPrompt as string[] ([""] when the
+// host sets none, meaning the minimal SDK prompt). customSystemPrompt is a
+// single string downstream, so join the parts and drop the cache boundary.
+function normalizeSdkSystemPrompt(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (!Array.isArray(value)) return undefined
+  return value
+    .filter((part): part is string => typeof part === 'string' && part !== SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    .join('\n\n')
 }
 
 /**
@@ -5156,8 +5168,7 @@ async function handleInitializeRequest(
   if (!initialized) {
     // Apply systemPrompt/appendSystemPrompt from stdin to avoid ARG_MAX limits
     if (request.systemPrompt !== undefined) {
-      // @ts-ignore - recovered code
-      options.systemPrompt = request.systemPrompt
+      options.systemPrompt = normalizeSdkSystemPrompt(request.systemPrompt)
     }
     if (request.appendSystemPrompt !== undefined) {
       // @ts-ignore - recovered code
