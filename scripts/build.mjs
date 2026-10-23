@@ -85,6 +85,7 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'MONITOR_TOOL',
     'EXTRACT_MEMORIES',
     'AWAY_SUMMARY',
+    'DIRECT_CONNECT',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())

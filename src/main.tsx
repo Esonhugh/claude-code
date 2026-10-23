@@ -435,6 +435,7 @@ import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js'
 // teleportWithProgress dynamically imported at call site
 import {
   createDirectConnectSession,
+  deleteDirectConnectSession,
   DirectConnectError,
 } from './server/createDirectConnectSession.js'
 import { initializeLspServerManager } from './services/lsp/manager.js'
@@ -917,7 +918,13 @@ export async function main() {
     if (ccIdx !== -1 && _pendingConnect) {
       const ccUrl = rawCliArgs[ccIdx]!
       const { parseConnectUrl } = await import('./server/parseConnectUrl.js')
-      const parsed = parseConnectUrl(ccUrl)
+      let parsed
+      try {
+        parsed = parseConnectUrl(ccUrl)
+      } catch (err) {
+        process.stderr.write(`${errorMessage(err)}\n`)
+        process.exit(1)
+      }
       _pendingConnect.dangerouslySkipPermissions = rawCliArgs.includes(
         '--dangerously-skip-permissions',
       )
@@ -5676,7 +5683,7 @@ async function run(): Promise<CommanderCommand> {
       .command('server')
       .description('Start a Claude Code session server')
       .option('--port <number>', 'HTTP port', '0')
-      .option('--host <string>', 'Bind address', '0.0.0.0')
+      .option('--host <string>', 'Bind address', '127.0.0.1')
       .option('--auth-token <token>', 'Bearer token for auth')
       .option('--unix <path>', 'Listen on a unix domain socket')
       .option(
@@ -5703,6 +5710,19 @@ async function run(): Promise<CommanderCommand> {
           idleTimeout: string
           maxSessions: string
         }) => {
+          if (typeof Bun === 'undefined') {
+            process.stderr.write(
+              'claude server requires the Bun runtime; run it from the packaged claude binary.\n',
+            )
+            process.exit(1)
+          }
+          // Early-input capture left a TTY stdin in raw mode (ISIG off), so
+          // Ctrl+C would arrive as a byte nobody reads instead of SIGINT.
+          stopCapturingEarlyInput()
+          if (process.stdin.isTTY) {
+            process.stdin.setRawMode(false)
+          }
+          process.stdin.pause()
           const { randomBytes } = await import('crypto')
           const { startServer } = await import('./server/server.js')
           const { SessionManager } = await import('./server/sessionManager.js')
@@ -5736,16 +5756,16 @@ async function run(): Promise<CommanderCommand> {
             maxSessions: parseInt(opts.maxSessions, 10),
           }
 
+          const logger = createServerLogger()
           const backend = new DangerousBackend()
           const sessionManager = new SessionManager(backend, {
             idleTimeoutMs: config.idleTimeoutMs,
             maxSessions: config.maxSessions,
+            logger,
           })
-          const logger = createServerLogger()
 
           const server = startServer(config, sessionManager, logger)
           const actualPort = server.port ?? config.port
-          printBanner(config, authToken, actualPort)
 
           await writeServerLock({
             pid: process.pid,
@@ -5756,19 +5776,15 @@ async function run(): Promise<CommanderCommand> {
               : `http://${config.host}:${actualPort}`,
             startedAt: Date.now(),
           })
+          printBanner(config, authToken, actualPort)
 
-          let shuttingDown = false
-          const shutdown = async () => {
-            if (shuttingDown) return
-            shuttingDown = true
+          // SIGINT/SIGTERM go through gracefulShutdown, which runs this.
+          registerCleanup(async () => {
+            await removeServerLock()
             // Stop accepting new connections before tearing down sessions.
             server.stop(true)
             await sessionManager.destroyAll()
-            await removeServerLock()
-            process.exit(0)
-          }
-          process.once('SIGINT', () => void shutdown())
-          process.once('SIGTERM', () => void shutdown())
+          })
         },
       )
   }
@@ -5838,7 +5854,14 @@ async function run(): Promise<CommanderCommand> {
           const { parseConnectUrl } = await import(
             './server/parseConnectUrl.js'
           )
-          const { serverUrl, authToken } = parseConnectUrl(ccUrl)
+          let serverUrl: string
+          let authToken: string | undefined
+          try {
+            ;({ serverUrl, authToken } = parseConnectUrl(ccUrl))
+          } catch (err) {
+            process.stderr.write(`${errorMessage(err)}\n`)
+            process.exit(1)
+          }
 
           let connectConfig
           try {
@@ -5867,14 +5890,21 @@ async function run(): Promise<CommanderCommand> {
             './server/connectHeadless.js'
           )
 
-          const prompt = typeof opts.print === 'string' ? opts.print : ''
-          const interactive = opts.print === true
-          await runConnectHeadless(
+          const prompt = (await getInputPrompt(
+            typeof opts.print === 'string' ? opts.print : '',
+            'text',
+          )) as string
+          const exitCode = await runConnectHeadless(
             connectConfig,
             prompt,
             opts.outputFormat,
-            interactive,
+            {
+              dangerouslySkipPermissions:
+                _pendingConnect?.dangerouslySkipPermissions,
+            },
           )
+          await deleteDirectConnectSession(connectConfig)
+          process.exit(exitCode)
         },
       )
   }

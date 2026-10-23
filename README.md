@@ -77,7 +77,7 @@ bun ./dist/cli.js --help
 | Prompt context | System prompt 按稳定核心、能力和任务动态层组织 cache boundary；Plan + Auto mode 保持只读权限边界；Agent listing 使用增量 attachment，大型 deferred MCP tool 列表按 namespace 汇总，同时保留权限与动态工具发现。 |
 | Dynamic Workflow | 提供与官方模式兼容（official-compatible）的 Workflow facade、official-style script parser/runtime、declarative plan、phase、parallel/pipeline、journal cache、暂停、恢复、skip/retry 和生命周期通知。 |
 | Codex Apps | OpenAI + ChatGPT OAuth 模式下将 Codex Apps 作为 host-owned MCP tools 与 hosted MCP skills 接入；支持逐项隐藏、`@codex-app:{app-name}` mention、裸 `@`/专用前缀补全和 deferred tool 按需加载，并限制 hosted skill 的可信来源、URI、分页、内容大小与缓存。 |
-| Direct Connect | 需在构建时通过 `CLAUDE_CODE_RECOVER_FEATURES=DIRECT_CONNECT` 启用（默认构建不包含）；`claude cc://<host>?...` 通过 HTTP 创建 session，再以 WebSocket 传输 stream-json；server 负责 Claude child、tools 和项目上下文，本地负责 TUI 与 permission UI。 |
+| Direct Connect | 默认构建已包含。`claude server --port <port> --auth-token <token>` 在本机启动 session server（默认只绑 `127.0.0.1`），`claude cc://<host>:<port>/<token>` 通过 HTTP 创建 session、再以 WebSocket 传输 stream-json；server 为每个 session 启动 `claude -p` child 并持有 tools 与项目上下文，本地负责 TUI 与 permission UI。`-p` 为 headless 单轮；`cc+unix://` 不支持。 |
 | SSH Remote | 与 Direct Connect 并列的 SSH transport：`claude ssh <host-or-config> [dir]` 在远端 Linux 主机运行 child 与 tools、本地渲染 TUI；支持 remote-owned history/resume、远端 `@` 路径补全、远端 `!command` 和权限状态同步；remote binary 按版本/架构部署，GitHub Release 下载会校验 checksum，OpenAI/Anthropic 凭据只在本地 Unix socket proxy 注入。 |
 | Terminal Tool | 提供持久 PTY session 的 `new-session`、`list-panes`、`send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message`、`kill-pane` 生命周期，以及 compact/full/save_file 输出；后台 polling 按 session 同步终态并保留最终输出、command、args 和 cwd。`new-session` 与 `send-keys` 按 Bash 权限规则判定（`send-keys` 按会话累积的整行命令判定），只读动作直接放行。 |
 | 自定义 UI / Branding | 支持通过 `uiName` 自定义 Logo、condensed header 和 border title，默认显示 `EsonClaw`；支持加载自定义 `clawd.txt` ASCII 图。 |
@@ -557,7 +557,20 @@ hosted skill 加载具有以下边界：
 
 ### 远程执行：Direct Connect 与 SSH
 
-Direct Connect 需在构建时通过 `CLAUDE_CODE_RECOVER_FEATURES=DIRECT_CONNECT` 启用（默认构建不包含）。启用后运行 `claude cc://<host>?...`（或 `cc+unix://...`）：先通过 HTTP 创建远端 session，再使用 WebSocket 双向传输 stream-json；远端 server 持有 Claude child、tools 和项目上下文，本地仅渲染 TUI 并处理 permission UI。加 `-p` 时改由内部 `open <cc-url>` 子命令以 headless 方式运行。malformed control frame、permission cancellation 和 late response 由 transport 生命周期处理。
+Direct Connect 已包含在默认构建中。在执行端启动 server，在本地用 `cc://` URL 连接：
+
+```bash
+# 执行端：默认只监听 127.0.0.1；--port 0（默认）随机端口，未给 --auth-token 时自动生成
+claude server --port 8765 --auth-token "$TOKEN" [--workspace <dir>] [--idle-timeout 600000] [--max-sessions 32]
+
+# 本地：交互式 TUI；server 启动 banner 会打印完整的 cc:// URL
+claude cc://127.0.0.1:8765/$TOKEN
+
+# 本地：headless 单轮，可选 --output-format text|json|stream-json
+claude cc://127.0.0.1:8765/$TOKEN -p "summarize README.md"
+```
+
+`cc://host:port/<token>` 映射为 `http://host:port` 并以路径作为 Bearer token；`?serverUrl=https://...` 可改写 HTTP 基址（如经 TLS 反向代理），`cc+unix://` 明确报错不支持。client 以 `POST /sessions`（`cwd`、`permission_mode`、可选 `session_key`）创建 session，再连 `GET /sessions/:id/ws` 双向传输 stream-json；server 为每个 session 启动同一 binary 的 `claude -p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio`，`can_use_tool` 转给 client 的 permission UI，答复以 `control_response` 回送 child。client 的 `cwd` 在 server 上不存在时退回 `--workspace`，否则返回 400。detached session 超过 `--idle-timeout` 后结束，`--max-sessions` 满时返回 503；headless `-p` 收到 `result` 后删除 session，未加 `--dangerously-skip-permissions` 时工具权限请求一律拒绝。每个请求都校验 token；server 以启动它的用户身份和本机凭据运行 child，绑到非 loopback 地址时 banner 会警告明文 HTTP 风险。server 需在 Bun runtime（打包后的 `claude` binary）中运行，运行期间写 `~/.claude/server.lock` 阻止同一配置目录重复启动。malformed control frame、permission cancellation 和 late response 由 transport 生命周期处理。
 
 SSH Remote 使用相同的本地 UI / 远端执行边界，但通过 SSH 部署 managed child，并在 child stdio 上传输 stream-json。两者是并列 transport，不会相互转发。
 
