@@ -530,6 +530,12 @@ function isPlatformInEnabledList(): boolean {
  * This checks the user's enabled setting, platform support, and enabledPlatforms restriction
  */
 function isSandboxingEnabled(): boolean {
+  // Settings first: the dependency probe spawns processes, so skip it for
+  // the default (sandbox off) case.
+  if (!getSandboxEnabledSetting()) {
+    return false
+  }
+
   if (!isSupportedPlatform()) {
     return false
   }
@@ -543,7 +549,7 @@ function isSandboxingEnabled(): boolean {
     return false
   }
 
-  return getSandboxEnabledSetting()
+  return true
 }
 
 /**
