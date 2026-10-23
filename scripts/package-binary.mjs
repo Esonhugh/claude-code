@@ -270,6 +270,10 @@ run('bun', [
   'build',
   '--compile',
   '--production',
+  // Precompiled bytecode skips parsing the ~35 MB bundle on every launch
+  // (`--version` 550 ms -> 65 ms, SDK `-p` turn ~1.6 s -> ~0.75 s).
+  '--bytecode',
+  '--format=esm',
   ...(binaryTarget ? ['--target', binaryTarget] : []),
   '--entry-naming',
   '[name].js',
