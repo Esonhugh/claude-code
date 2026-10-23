@@ -435,6 +435,7 @@ import { createRemoteSessionConfig } from './remote/RemoteSessionManager.js'
 // teleportWithProgress dynamically imported at call site
 import {
   createDirectConnectSession,
+  deleteDirectConnectSession,
   DirectConnectError,
 } from './server/createDirectConnectSession.js'
 import { initializeLspServerManager } from './services/lsp/manager.js'
@@ -5682,7 +5683,7 @@ async function run(): Promise<CommanderCommand> {
       .command('server')
       .description('Start a Claude Code session server')
       .option('--port <number>', 'HTTP port', '0')
-      .option('--host <string>', 'Bind address', '0.0.0.0')
+      .option('--host <string>', 'Bind address', '127.0.0.1')
       .option('--auth-token <token>', 'Bearer token for auth')
       .option('--unix <path>', 'Listen on a unix domain socket')
       .option(
@@ -5709,6 +5710,12 @@ async function run(): Promise<CommanderCommand> {
           idleTimeout: string
           maxSessions: string
         }) => {
+          if (typeof Bun === 'undefined') {
+            process.stderr.write(
+              'claude server requires the Bun runtime; run it from the packaged claude binary.\n',
+            )
+            process.exit(1)
+          }
           const { randomBytes } = await import('crypto')
           const { startServer } = await import('./server/server.js')
           const { SessionManager } = await import('./server/sessionManager.js')
@@ -5742,16 +5749,16 @@ async function run(): Promise<CommanderCommand> {
             maxSessions: parseInt(opts.maxSessions, 10),
           }
 
+          const logger = createServerLogger()
           const backend = new DangerousBackend()
           const sessionManager = new SessionManager(backend, {
             idleTimeoutMs: config.idleTimeoutMs,
             maxSessions: config.maxSessions,
+            logger,
           })
-          const logger = createServerLogger()
 
           const server = startServer(config, sessionManager, logger)
           const actualPort = server.port ?? config.port
-          printBanner(config, authToken, actualPort)
 
           await writeServerLock({
             pid: process.pid,
@@ -5762,19 +5769,15 @@ async function run(): Promise<CommanderCommand> {
               : `http://${config.host}:${actualPort}`,
             startedAt: Date.now(),
           })
+          printBanner(config, authToken, actualPort)
 
-          let shuttingDown = false
-          const shutdown = async () => {
-            if (shuttingDown) return
-            shuttingDown = true
+          // SIGINT/SIGTERM go through gracefulShutdown, which runs this.
+          registerCleanup(async () => {
+            await removeServerLock()
             // Stop accepting new connections before tearing down sessions.
             server.stop(true)
             await sessionManager.destroyAll()
-            await removeServerLock()
-            process.exit(0)
-          }
-          process.once('SIGINT', () => void shutdown())
-          process.once('SIGTERM', () => void shutdown())
+          })
         },
       )
   }
@@ -5893,6 +5896,7 @@ async function run(): Promise<CommanderCommand> {
                 _pendingConnect?.dangerouslySkipPermissions,
             },
           )
+          await deleteDirectConnectSession(connectConfig)
           process.exit(exitCode)
         },
       )

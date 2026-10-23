@@ -94,3 +94,19 @@ export async function createDirectConnectSession({
     workDir: data.work_dir,
   }
 }
+
+/** Best-effort `DELETE /sessions/:id` so a finished session does not linger. */
+export async function deleteDirectConnectSession({
+  serverUrl,
+  sessionId,
+  authToken,
+}: DirectConnectConfig): Promise<void> {
+  try {
+    await fetch(`${serverUrl}/sessions/${encodeURIComponent(sessionId)}`, {
+      method: 'DELETE',
+      headers: authToken ? { authorization: `Bearer ${authToken}` } : {},
+    })
+  } catch {
+    // The server may already be gone; nothing to clean up then.
+  }
+}
