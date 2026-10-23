@@ -16,7 +16,7 @@ const bundledSkills = getBundledSkills()
 assert.equal(
   bundledSkills.some(skill => skill.name === 'workflow'),
   false,
-  'workflow guidance should live on WorkflowTool prompt, not a bundled skill',
+  'workflow guidance lives on the Workflow tool prompt and the workflow-authoring skill, not a bundled workflow skill',
 )
 
 const terminalSkill = bundledSkills.find(skill => skill.name === 'terminal')

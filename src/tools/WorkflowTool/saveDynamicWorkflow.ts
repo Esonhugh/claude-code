@@ -1,8 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import { clearCommandsCache } from '../../commands.js'
 import type { LocalWorkflowTaskState } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import { resetSentSkillNames } from '../../utils/attachments.js'
+import { notifySkillsChanged } from '../../utils/skills/skillChangeDetector.js'
 import { workflowSaveDir, type WorkflowSaveScope } from './workflowDiscovery.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript } from './workflowScriptParser.js'
 import { sanitizeWorkflowFileName } from './workflowScriptPersistence.js'
@@ -58,8 +57,7 @@ export async function saveDynamicWorkflow({
     }
     throw error
   }
-  // The file is a /<name> command and a Workflow({name}) target from now on.
-  clearCommandsCache()
-  resetSentSkillNames()
+  // The file is a /<name> command and a Workflow({name}) target from now on, in this session too.
+  notifySkillsChanged()
   return { name: fileName, path, scope }
 }

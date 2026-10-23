@@ -56,6 +56,17 @@ export default workflow({
 )
 
 await writeFile(
+  join(tempRoot, 'docs', 'workflows', 'meta-command.js'),
+  `export const meta = {
+    name: 'meta-command',
+    description: 'detail probe',
+    phases: [{ title: 'Scope', detail: 'Scope the question' }, { title: 'Verify' }],
+  }
+  phase('Scope')
+  await agent('scope ' + args, { label: 'scope' })`,
+)
+
+await writeFile(
   join(tempRoot, 'docs', 'workflows', 'invalid.json'),
   JSON.stringify({
     name: 'invalid workflow',
@@ -82,38 +93,50 @@ assert.equal(command.type, 'prompt')
 assert.equal(command.name, 'research-workflow')
 assert.equal(command.kind, 'workflow')
 assert.equal(command.description, 'Research a topic with cross-checking.')
+assert.equal(command.hasUserSpecifiedDescription, true)
 assert.equal(command.allowedTools, undefined)
 
 const prompt = await command.getPromptForCommand('topic: workflow testing', {} as never)
 const text = prompt.map(block => (block.type === 'text' ? block.text : '')).join('\n')
-assert.match(text, /Workflow: research-workflow/)
-assert.match(text, /Planned agents: 3/)
-assert.match(text, /User input:\s*topic: workflow testing/)
-assert.match(text, /through the Agent tool/)
-assert.match(text, /Do not bypass workflow phases/)
-assert.doesNotMatch(text, /no hidden workflow runtime/)
-assert.match(text, /WorkflowTool\.run/)
-assert.match(text, /selector: "research-workflow"/)
-assert.match(text, /Must use WorkflowTool\.run when it is available/)
-assert.match(text, /Do not call WorkflowTool with only a plan copied from this prompt/)
-assert.doesNotMatch(text, /Prefer WorkflowTool\.run/)
-assert.match(text, /permissionMode: plan/)
-assert.match(text, /Honor each phase permissionMode/)
-assert.match(text, /mode "plan"/)
-assert.match(text, /must not edit files/)
-assert.match(text, /synthesis/)
+assert.equal(
+  text,
+  'Run the "research-workflow" workflow.\n\n' +
+    'Research a topic with cross-checking.\n\n' +
+    'Phases:\n- research: Research the requested topic.\n- synthesis: Synthesize verified findings.\n\n' +
+    'Invoke: Workflow({ name: "research-workflow", args: "topic: workflow testing" })\n\n' +
+    'If the user asks you to modify this workflow or write a new script, load the `workflow-authoring` skill first.',
+)
+assert.equal(command.contentLength, text.length - ', args: "topic: workflow testing"'.length)
+
+// Byte-identical to the prompt official 2.1.303 sends for a saved meta script (probe: remove-workflowtool/itx-variants.sh).
+const metaCommand = commands.find(command => command.name === 'meta-command')!
+assert.equal(metaCommand.type, 'prompt')
+const metaText = (await metaCommand.getPromptForCommand('', {} as never)).map(block => (block.type === 'text' ? block.text : '')).join('\n')
+assert.equal(
+  metaText,
+  'Run the "meta-command" workflow.\n\n' +
+    'detail probe\n\n' +
+    'Phases:\n- Scope: Scope the question\n- Verify\n\n' +
+    'Invoke: Workflow({ name: "meta-command" })\n\n' +
+    'If the user asks you to modify this workflow or write a new script, load the `workflow-authoring` skill first.',
+)
+const quotedMetaText = (await metaCommand.getPromptForCommand('"a b" c', {} as never)).map(block => (block.type === 'text' ? block.text : '')).join('\n')
+assert.match(quotedMetaText, /Invoke: Workflow\(\{ name: "meta-command", args: "\\"a b\\" c" \}\)/)
 
 const deepResearchCommand = commands.find(command => command.name === 'deep-research')!
 assert.equal(deepResearchCommand.type, 'prompt')
+assert.equal(deepResearchCommand.hasUserSpecifiedDescription, false)
 const emptyDeepResearchPrompt = await deepResearchCommand.getPromptForCommand('', {} as never)
 const emptyDeepResearchText = emptyDeepResearchPrompt.map(block => (block.type === 'text' ? block.text : '')).join('\n')
 assert.equal(emptyDeepResearchText, 'Usage: /deep-research <workflow input>')
-assert.doesNotMatch(emptyDeepResearchText, /WorkflowTool\.run/)
+assert.doesNotMatch(emptyDeepResearchText, /Workflow\(/)
 
 const jsCommand = commands.find(command => command.name === 'js-command-workflow')!
 assert.equal(jsCommand.type, 'prompt')
 const jsPrompt = await jsCommand.getPromptForCommand('topic: command args', {} as never)
 const jsText = jsPrompt.map(block => (block.type === 'text' ? block.text : '')).join('\n')
-assert.match(jsText, /Command args: topic: command args/)
+assert.match(jsText, /Invoke: Workflow\(\{ name: "js-command-workflow", args: "topic: command args" \}\)/)
+assert.match(jsText, /Phases:\n- inspect: Inspect command args\.\n\n/)
+assert.doesNotMatch(jsText, /Command args:/)
 
 console.log('workflowCommand.test.ts passed')

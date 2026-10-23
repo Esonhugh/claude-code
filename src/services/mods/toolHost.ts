@@ -16,7 +16,6 @@ import type { ModInput } from './types.js'
 const authorCallRefusals = new Map([
   [AGENT_TOOL_NAME, 'runs the Agent tool: that is $.agent.spawn'],
   [ASK_USER_QUESTION_TOOL_NAME, 'runs the AskUserQuestion tool: that is $.ui.ask'],
-  ['Workflow', 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
   [WORKFLOW_TOOL_NAME, 'runs the Workflow tool, whose agents run outside the at-once bound on spawns: $.agent.spawn is the door'],
 ])
 

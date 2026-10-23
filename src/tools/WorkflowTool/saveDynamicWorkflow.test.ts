@@ -11,6 +11,7 @@ import {
   workflowSavePathPreview,
 } from './saveDynamicWorkflow.js'
 import { workflowSaveDir } from './workflowDiscovery.js'
+import { skillChangeDetector } from '../../utils/skills/skillChangeDetector.js'
 
 const root = await mkdtemp(join(tmpdir(), 'save-dynamic-workflow-'))
 const repo = join(root, 'repo')
@@ -26,7 +27,12 @@ afterAll(async () => {
 })
 
 test('project scope saves under the nearest project root with the official modes', async () => {
+  let reloads = 0
+  const unsubscribe = skillChangeDetector.subscribe(() => { reloads++ })
   const saved = await saveDynamicWorkflow({ name: 'Probe Flow', scope: 'project', script, overwrite: false, cwd: nested })
+  unsubscribe()
+  // The saved file is a slash command in this session, like official.
+  assert.equal(reloads, 1)
   assert.deepEqual(saved, { name: 'probe-flow', path: join(repo, '.claude', 'workflows', 'probe-flow.js'), scope: 'project' })
   assert.equal(await readFile(saved.path, 'utf8'), script)
   assert.equal((await stat(saved.path)).mode & 0o777, 0o600)

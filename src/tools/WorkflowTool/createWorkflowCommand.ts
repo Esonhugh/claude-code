@@ -1,7 +1,6 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { Command } from '../../commands.js'
-import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
-import { formatWorkflowDryRun } from './formatWorkflowDryRun.js'
+import { WORKFLOW_AUTHORING_SKILL_NAME } from '../../skills/bundled/workflowAuthoring.js'
 import type { WorkflowArgs } from './workflowSpec.js'
 import type { DiscoveredWorkflowSpec } from './workflowDiscovery.js'
 import { discoverWorkflowSpecs, loadWorkflowSpecByNameOrPath } from './workflowDiscovery.js'
@@ -12,6 +11,8 @@ function formatWorkflowArgs(args: WorkflowArgs | undefined): string {
   return JSON.stringify(args, null, 2)
 }
 
+// The official 2.1.303 saved-workflow slash command prompt: name, description, the meta phases,
+// the Workflow({ name, args }) call to make, and the pointer to the authoring skill.
 function buildWorkflowPrompt(
   workflow: DiscoveredWorkflowSpec,
   args: WorkflowArgs | undefined,
@@ -20,44 +21,20 @@ function buildWorkflowPrompt(
   if (workflow.plan.requiresInput && !formattedArgs) {
     return [{ type: 'text', text: `Usage: /${workflow.commandName} <workflow input>` }]
   }
-  const dryRun = formatWorkflowDryRun(workflow.plan)
-  const phaseDetails = workflow.plan.phases
-    .map(
-      phase =>
-        `## Phase: ${phase.id}\n` +
-        `Description: ${phase.description}\n` +
-        `Depends on: ${phase.dependsOn.length ? phase.dependsOn.join(', ') : 'none'}\n` +
-        `Fanout: ${phase.fanout}\n` +
-        `Concurrency: ${phase.concurrency}\n` +
-        `Review: ${phase.review}\n` +
-        `permissionMode: ${phase.permissionMode ?? 'inherit'}\n` +
-        `agentType: ${phase.agentType ?? 'default'}\n` +
-        `model: ${phase.model ?? 'default'}\n` +
-        `Prompt: ${phase.prompt}`,
-    )
-    .join('\n\n')
-
+  const phases =
+    workflow.spec.meta?.phases ??
+    workflow.plan.phases.map(phase => ({ title: phase.id, detail: phase.description }))
+  const phaseLines = phases.map(phase => `- ${phase.title}${phase.detail ? `: ${phase.detail}` : ''}`)
+  const invokeArgs = formattedArgs ? `, args: ${JSON.stringify(formattedArgs)}` : ''
   return [
     {
       type: 'text',
       text:
-        `Workflow: ${workflow.commandName}\n` +
-        `Source: ${workflow.path}\n\n` +
-        `${dryRun}\n` +
-        `User input:\n${formattedArgs || '(none)'}\n\n` +
-        `Execute this validated workflow through WorkflowTool.run with selector-based input. Use selector: "${workflow.commandName}" and pass the user input as runArgs. Do not call WorkflowTool with only a plan copied from this prompt; this prompt's phase summary is for inspection and orchestration guidance only.\n` +
-        `WorkflowTool.run must execute phase work through the ${AGENT_TOOL_NAME} tool, record LocalWorkflowTask phase state, and preserve normal permission and hook boundaries. Do not bypass workflow phases by directly completing phase work with shell or filesystem tools in the main thread.\n\n` +
-        `Rules:\n` +
-        `- Respect phase dependencies: do not start a phase until all dependencies are complete.\n` +
-        `- Respect each phase fanout and concurrency limit.\n` +
-        `- For fanout greater than 1, launch separate ${AGENT_TOOL_NAME} workers with independent prompts.\n` +
-        `- Honor each phase permissionMode when spawning workers: omit mode for \"inherit\"; use mode \"default\", mode \"plan\", mode \"acceptEdits\", mode \"bypassPermissions\", or mode \"dontAsk\" exactly when requested.\n` +
-        `- A phase with permissionMode \"plan\" must not edit files or run implementation commands; it may only research, inspect, and propose a plan.\n` +
-        `- For cross-check or adversarial review phases, have workers verify prior phase outputs and identify unsupported claims.\n` +
-        `- For synthesis phases, include only findings that survived review.\n` +
-        `- Agents inherit their normal Claude Code tool permissions and hooks; do not narrow child agents to the parent orchestration tool scope.\n` +
-        `- Must use WorkflowTool.run when it is available so phase state, retries, status, pause/resume, and task progress are recorded by the workflow runtime. The fanout and worker rules describe behavior the workflow runtime must perform, not manual orchestration for the main thread.\n\n` +
-        phaseDetails,
+        `Run the "${workflow.commandName}" workflow.\n\n` +
+        `${workflow.plan.description}\n\n` +
+        (phaseLines.length > 0 ? `Phases:\n${phaseLines.join('\n')}\n\n` : '') +
+        `Invoke: Workflow({ name: "${workflow.commandName}"${invokeArgs} })\n\n` +
+        `If the user asks you to modify this workflow or write a new script, load the \`${WORKFLOW_AUTHORING_SKILL_NAME}\` skill first.`,
     },
   ]
 }
@@ -73,14 +50,16 @@ export async function getWorkflowCommands(cwd: string): Promise<Command[]> {
   const discovery = await discoverWorkflowSpecs(cwd)
   return discovery.valid.filter(shouldRegisterWorkflowSlashCommand).map(workflow => {
     const commandName = workflow.commandName
-    const dryRun = formatWorkflowDryRun(workflow.plan)
+    const prompt = buildWorkflowPrompt(workflow, undefined)
     return {
       type: 'prompt',
       name: workflow.commandName,
       description: workflow.plan.description,
+      // A saved workflow's required meta.description lists it for the Skill tool like official.
+      hasUserSpecifiedDescription: !workflow.path.startsWith('bundled:'),
       argumentHint: '[workflow input/context]',
       progressMessage: 'orchestrating workflow',
-      contentLength: dryRun.length,
+      contentLength: prompt.reduce((length, block) => length + (block.type === 'text' ? block.text.length : 0), 0),
       source: 'projectSettings',
       kind: 'workflow',
       async getPromptForCommand(args): Promise<ContentBlockParam[]> {

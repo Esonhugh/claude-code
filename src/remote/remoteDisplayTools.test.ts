@@ -22,7 +22,7 @@ describe('remote display tools', () => {
     ['TeamCreate', { team_name: 'reviewers' }],
     ['TeamDelete', {}],
     ['Terminal', { action: 'list-panes' }],
-    ['WorkflowTool', { action: 'list' }],
+    ['Workflow', { name: 'research' }],
     ['Write', { file_path: '/tmp/a', content: 'value' }],
   ])('uses the %s renderer without enabling local execution', (name, input) => {
     const tool = findRemoteDisplayTool([], name)

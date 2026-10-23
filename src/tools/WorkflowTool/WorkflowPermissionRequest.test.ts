@@ -45,7 +45,7 @@ assert.deepEqual(mapWorkflowPermissionSelectionToResult('yes-always', input, '/r
       type: 'addRules',
       rules: [
         {
-          toolName: 'WorkflowTool',
+          toolName: 'Workflow',
           ruleContent: 'deep-research:/repo',
         },
       ],

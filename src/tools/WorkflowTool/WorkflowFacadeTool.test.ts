@@ -794,4 +794,129 @@ assert.deepEqual(complexSession.runArgs.reviewers, ['cross-check', 'refute'])
 assert.equal(complexSession.results.length, 6)
 assert.match(complexSession.scriptPath, /\/workflow-wf_[^/]+\.js$/)
 
+// Scenarios that used to run through the fork-only WorkflowTool action tool: saved workflows
+// by name now go through Workflow({ name, args }) like official 2.1.303.
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const deepResearchRun = await WorkflowFacadeTool.call(
+  { name: 'deep-research', args: '分析 claude 的 dynamic workflow 设计原理' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_deep_research' } } as never,
+)
+assert.match(String(deepResearchRun.data), /Workflow launched in background\. Task ID: w/)
+const deepResearchTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'deep-research',
+)!
+assert.equal(deepResearchTask.status, 'completed')
+assert.equal(deepResearchTask.defaultModel, 'claude-sonnet-4-5')
+assert.equal(deepResearchTask.execution, 'agent')
+assert.ok(launchedPrompts.length > 1)
+assert.match(launchedPrompts[0]!, /Decompose this research question/)
+assert.match(launchedPrompts[0]!, /User input:\n分析 claude 的 dynamic workflow 设计原理/)
+
+await assert.rejects(
+  () => WorkflowFacadeTool.call(
+    { name: 'deep-research', args: '' },
+    context,
+    async () => ({ behavior: 'allow' }),
+    { message: { id: 'msg_facade_empty_deep_research' } } as never,
+  ),
+  /Workflow deep-research requires workflow input/,
+)
+
+const legacyScriptPath = join(tempRoot, '.claude', 'workflows', 'js-run.js')
+await writeFile(
+  legacyScriptPath,
+  `export default workflow({
+    name: 'JS Run Workflow',
+    description: 'Run a JavaScript workflow with args.',
+    defaults: { maxConcurrency: 1, maxAgents: 1, permissionMode: 'plan' },
+    phases: [agent({
+      id: 'run',
+      description: 'Run with user input.',
+      prompt: ({ args }) => 'Use JS args: ' + args,
+    })],
+  })`,
+)
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const legacyRun = await WorkflowFacadeTool.call(
+  { name: 'JS Run Workflow', args: 'topic: DSL', resumeFromRunId: 'wf_prior_js' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_legacy_run' } } as never,
+)
+assert.match(String(legacyRun.data), /Workflow launched in background\. Task ID: w/)
+assert.match(String(legacyRun.data), /Run ID: wf_/)
+assert.match(String(legacyRun.data), /To resume after editing the script: Workflow\({scriptPath: ".*js-run\.js", resumeFromRunId: "wf_[^"]+"}\) — completed agents return cached results\./)
+assert.match(String(legacyRun.data), /Use \/workflows to watch live progress\./)
+assert.deepEqual(launchedPrompts, ['Use JS args: topic: DSL'])
+assert.equal(launchedAgents[0]?.mode, 'plan')
+// The legacy DSL runner does not frame its agents; only script-runtime agents do.
+assert.equal(launchedAgents[0]?.workflowAgentSystemPrompt, undefined)
+const legacyTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'JS Run Workflow',
+)!
+assert.deepEqual(legacyTask.runtime, { kind: 'javascript-worker', sourcePath: legacyScriptPath, isolated: true })
+assert.equal(legacyTask.sourcePath, legacyScriptPath)
+assert.match(legacyTask.runScriptSnapshot ?? '', /export default workflow/)
+const legacySession = JSON.parse(
+  await readFile(join(persistedRunsDir, `${legacyTask.workflowRunId}.json`), 'utf8'),
+)
+assert.equal(legacySession.taskId, String(legacyRun.data).match(/Task ID: (\S+)/)?.[1])
+assert.equal(legacySession.workflowName, 'JS Run Workflow')
+assert.equal(legacySession.status, 'completed')
+assert.equal(legacySession.runArgs, 'topic: DSL')
+assert.equal(legacySession.resumeFromRunId, 'wf_prior_js')
+assert.equal(legacySession.scriptPath, legacyScriptPath)
+assert.deepEqual(legacySession.runtime, { kind: 'javascript-worker', sourcePath: legacyScriptPath, isolated: true })
+assert.equal(legacySession.sourcePath, legacyScriptPath)
+assert.deepEqual(
+  [...new Set(legacySession.events.map((event: { type: string }) => event.type))],
+  ['workflow_progress', 'workflow_log', 'workflow_phase', 'workflow_agent'],
+)
+assert.equal(legacySession.results.length, 1)
+
+await writeFile(
+  join(tempRoot, '.claude', 'workflows', 'official-parallel.js'),
+  `export const meta = {
+    name: 'official-parallel',
+    description: 'Group official parallel agents under the active phase.',
+    phases: [
+      { title: 'Fanout', detail: 'Run three agents together' },
+      { title: 'After', detail: 'Run a follow-up agent' },
+    ],
+  }
+  phase('Fanout')
+  await parallel([
+    () => agent('parallel a', { label: 'fanout-a' }),
+    () => agent('parallel b', { label: 'fanout-b' }),
+    () => agent('parallel c', { label: 'fanout-c' }),
+  ])
+  phase('After')
+  await agent('parallel after', { label: 'after-agent' })`,
+)
+launchedPrompts.length = 0
+launchedAgents.length = 0
+const officialParallelRun = await WorkflowFacadeTool.call(
+  { name: 'official-parallel' },
+  context,
+  async () => ({ behavior: 'allow' }),
+  { message: { id: 'msg_facade_official_parallel' } } as never,
+)
+assert.match(String(officialParallelRun.data), /Workflow launched in background\. Task ID: w/)
+const officialParallelTask = Object.values(state.tasks).find(
+  (task): task is LocalWorkflowTaskState => task.type === 'local_workflow' && task.workflowName === 'official-parallel',
+)!
+assert.equal(officialParallelTask.agentCount, 4)
+assert.deepEqual(
+  officialParallelTask.phases.map(phase => [phase.id, phase.agentIds]),
+  [
+    ['Fanout', ['fanout-a', 'fanout-b', 'fanout-c']],
+    ['After', ['after-agent']],
+  ],
+)
+assert.equal(launchedPrompts.length, 4)
+
 console.log('WorkflowFacadeTool.test.ts passed')

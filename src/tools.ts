@@ -136,10 +136,7 @@ const ListAgentsTool = feature('UDS_INBOX')
   : null
 function getWorkflowTools(): Tool[] {
   require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
-  return [
-    require('./tools/WorkflowTool/WorkflowTool.js').WorkflowTool,
-    require('./tools/WorkflowTool/WorkflowFacadeTool.js').WorkflowFacadeTool,
-  ]
+  return [require('./tools/WorkflowTool/WorkflowFacadeTool.js').WorkflowFacadeTool]
 }
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
