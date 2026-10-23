@@ -180,10 +180,10 @@ function thresholdForWindow(effectiveContextWindow: number): number {
 /** Official remote-stream projection; the threshold shares the engine calculation. */
 export function getAutoCompactState(
   model: string,
-  settingsWindow: number | undefined,
   reactiveCompact: boolean,
 ): SDKAutocompactStateMessage['value'] {
   const enabled = isAutoCompactEnabled()
+  const settingsWindow = getConfiguredAutoCompactWindow(model)
   const { source } = resolveContextWindow(model, settingsWindow)
   const { window } = resolveContextWindow(model, enabled ? settingsWindow : undefined)
   const effectiveWindow = window - Math.min(getMaxOutputTokensForModel(model), MAX_OUTPUT_TOKENS_FOR_SUMMARY)
