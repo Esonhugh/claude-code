@@ -70,9 +70,25 @@ test.each([
   ['claude-sonnet-4-6[1m]', 'auto', false, 1_000_000],
   ['custom-model[1m]', 'auto', false, 1_000_000],
 ] as const)('reactive compaction preserves provenance and enforcement for %s', (model, source, enforced, window) => {
-  const state = getAutoCompactState(model, undefined, true)
+  userSettings = {}
+  const state = getAutoCompactState(model, true)
   expect(state).toEqual({ enabled: true, source, enforced, effective_window: window - 4096, threshold: window - 4096 - 13_000 })
-  expect(getAutoCompactState(model, undefined, false)).toEqual({ ...state, enforced: true })
+  expect(getAutoCompactState(model, false)).toEqual({ ...state, enforced: true })
+})
+
+test('autocompact_state follows the per-model window the engine uses', () => {
+  userSettings = {
+    autoCompactWindow: 150_000,
+    modelSettings: { 'custom-model': { autoCompactWindow: 120_000 } },
+  }
+  expect(resolveAutoCompactWindow('custom-model')).toEqual({ window: 120_000, source: 'settings' })
+  expect(getAutoCompactState('custom-model', false)).toEqual({
+    enabled: true,
+    source: 'settings',
+    enforced: true,
+    effective_window: getEffectiveContextWindowSize('custom-model'),
+    threshold: getAutoCompactThreshold('custom-model'),
+  })
 })
 
 test('per-model autoCompactWindow overrides the top-level value within a source', () => {

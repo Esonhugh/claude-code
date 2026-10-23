@@ -1158,7 +1158,10 @@ export const bashToolCheckPermission = (
     astCommand?.redirects,
     astCommand ? [astCommand] : undefined,
   )
-  if (pathResult.behavior !== 'passthrough') {
+  if (
+    pathResult.behavior === 'deny' ||
+    (pathResult.behavior === 'ask' && !pathResult.bashAllowRuleOverridable)
+  ) {
     return pathResult
   }
 
@@ -1177,6 +1180,11 @@ export const bashToolCheckPermission = (
         rule: matchingAllowRules[0],
       },
     }
+  }
+
+  // 5a. No allow rule overrode the in-project write ask
+  if (pathResult.behavior === 'ask') {
+    return pathResult
   }
 
   // 5b. Check sed constraints (blocks dangerous sed operations before mode auto-allow)
@@ -2255,7 +2263,10 @@ export async function bashToolHasPermission(
         astRedirects,
         astCommands,
       )
-      if (pathResult.behavior !== 'passthrough') {
+      if (
+        pathResult.behavior === 'deny' ||
+        (pathResult.behavior === 'ask' && !pathResult.bashAllowRuleOverridable)
+      ) {
         return pathResult
       }
     }
@@ -2515,7 +2526,13 @@ export async function bashToolHasPermission(
   //
   // When no subcommand asked (all allow, or all passthrough like `printf > file`),
   // pathResult IS the only ask — return it so redirection checks surface.
-  if (pathResult.behavior === 'ask' && askSubresult === undefined) {
+  // An in-project write ask is left to the subcommands: their Bash allow
+  // rules may override it.
+  if (
+    pathResult.behavior === 'ask' &&
+    askSubresult === undefined &&
+    !pathResult.bashAllowRuleOverridable
+  ) {
     return pathResult
   }
 

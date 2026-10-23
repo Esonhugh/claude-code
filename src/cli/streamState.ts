@@ -11,7 +11,7 @@ import { toError } from '../utils/errors.js'
 /** Official 2.1.292: initial remote snapshots, live updates, and reset-aware deduplication. */
 export function createSdkStreamState(options: {
   remote: boolean
-  readInputs(): { goal: GoalStatus; model: string; autoCompactWindow?: number }
+  readInputs(): { goal: GoalStatus; model: string }
   enqueue(message: SDKMessage): void
   configurationReady: Promise<unknown>
 }): { ready: Promise<void>; refresh(): void; dispose(): void } {
@@ -45,7 +45,7 @@ export function createSdkStreamState(options: {
         options.enqueue({ type: 'active_goal', value, uuid: randomUUID(), session_id: sessionId })
       }
       if (!automaticReady) return
-      const automatic = getAutoCompactState(inputs.model, inputs.autoCompactWindow, reactiveCompact)
+      const automatic = getAutoCompactState(inputs.model, reactiveCompact)
       const automaticKey = JSON.stringify(automatic)
       if (automaticKey !== previousAutomatic) {
         previousAutomatic = automaticKey

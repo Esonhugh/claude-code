@@ -29,6 +29,7 @@ export type FileOperationType = 'read' | 'write' | 'create'
 export type PathCheckResult = {
   allowed: boolean
   decisionReason?: PermissionDecisionReason
+  isInWorkingDir?: boolean
 }
 
 export type ResolvedPathCheckResult = PathCheckResult & {
@@ -248,7 +249,7 @@ export function isPathAllowed(
   }
 
   // 5. Path is not allowed
-  return { allowed: false }
+  return { allowed: false, isInWorkingDir }
 }
 
 /**
@@ -301,6 +302,7 @@ export function validateGlobPattern(
     allowed: result.allowed,
     resolvedPath,
     decisionReason: result.decisionReason,
+    isInWorkingDir: result.isInWorkingDir,
   }
 }
 
@@ -485,5 +487,6 @@ export function validatePath(
     allowed: result.allowed,
     resolvedPath,
     decisionReason: result.decisionReason,
+    isInWorkingDir: result.isInWorkingDir,
   }
 }

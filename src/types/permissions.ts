@@ -216,6 +216,11 @@ export type PermissionAskDecision<
    */
   isBashSecurityCheckForMisparsing?: boolean
   /**
+   * Set on a Bash path ask for a write inside the working directories that no
+   * rule or mode allowed. A Bash allow rule for the command may override it.
+   */
+  bashAllowRuleOverridable?: boolean
+  /**
    * If set, an allow classifier check should be run asynchronously.
    * The classifier may auto-approve the permission before the user responds.
    */

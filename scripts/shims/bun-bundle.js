@@ -8,6 +8,7 @@ const defaultRecoverFeatures = [
   'MONITOR_TOOL',
   'EXTRACT_MEMORIES',
   'AWAY_SUMMARY',
+  'DIRECT_CONNECT',
 ];
 
 const enabled = new Set([
