@@ -5,6 +5,7 @@ const tasks = {
   name: 'tasks',
   aliases: ['bashes'],
   description: 'List and manage background tasks',
+  immediate: true,
   load: () => import('./tasks.js'),
 } satisfies Command
 

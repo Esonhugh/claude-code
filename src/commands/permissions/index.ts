@@ -5,6 +5,7 @@ const permissions = {
   name: 'permissions',
   aliases: ['allowed-tools'],
   description: 'Manage allow & deny tool permission rules',
+  immediate: true,
   load: () => import('./permissions.js'),
 } satisfies Command
 
