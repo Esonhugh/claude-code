@@ -1114,7 +1114,12 @@ export const AgentTool = buildTool({
           `Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`,
         )
       }
-      promptMessages = [createUserMessage({ content: prompt })]
+      promptMessages = [
+        ...(toolUseContext.workflowAgentRelayPrompt !== undefined
+          ? [createUserMessage({ content: toolUseContext.workflowAgentRelayPrompt })]
+          : []),
+        createUserMessage({ content: prompt }),
+      ]
     }
 
     const shouldRunAsync = shouldRunInBackground()
@@ -1240,6 +1245,7 @@ export const AgentTool = buildTool({
         ...toolUseContext,
         workflowAgentSystemPrompt: undefined,
         workflowAgentToolPolicy: undefined,
+        workflowAgentRelayPrompt: undefined,
         options: {
           ...toolUseContext.options,
           mainLoopModel: resolvedAgentModel,

@@ -344,6 +344,7 @@ export async function handlePromptSubmit(
       pastedContents: hasImages ? pastedContents : undefined,
       skipSlashCommands,
       uuid,
+      origin: { kind: 'human' },
       promptSubmitMetadata: params.promptSubmitMetadata,
       promptSubmitCallerChain: params.promptSubmitCallerChain,
     }
@@ -406,6 +407,8 @@ export async function handlePromptSubmit(
   // Construct a QueuedCommand from the direct user input so both paths
   // go through the same executeUserInput loop. This ensures images get
   // resized via processUserInput regardless of how the command arrives.
+  // Like official, typed input carries a human origin so consumers (e.g. the workflow
+  // provenance relay) can tell it from relayed or synthetic user messages.
   const cmd: QueuedCommand = {
     value: finalInput,
     preExpansionValue: input,
@@ -413,6 +416,7 @@ export async function handlePromptSubmit(
     pastedContents: hasImages ? pastedContents : undefined,
     skipSlashCommands,
     uuid,
+    origin: { kind: 'human' },
     promptSubmitMetadata: params.promptSubmitMetadata,
     promptSubmitCallerChain: params.promptSubmitCallerChain,
   }

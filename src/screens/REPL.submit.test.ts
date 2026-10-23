@@ -1173,6 +1173,9 @@ for (const active of [true, false]) {
         wait,
         ...(active ? { turnId: 'turn-active' } : {}),
       })
+      // Like official, typed input is queued with a human message origin (direct dispatch
+      // stamps the same origin onto the produced messages inside executeUserInput).
+      if (active) expect(received.origin).toEqual({ kind: 'human' })
     })
   }
 }
