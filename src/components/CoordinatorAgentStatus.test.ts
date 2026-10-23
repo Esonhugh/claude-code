@@ -12,6 +12,7 @@ import { setAgentColor } from '../tools/AgentTool/agentColorManager.js'
 import type { AppState } from '../state/AppState.js'
 import type { LocalAgentTaskState } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { LocalWorkflowTaskState } from '../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { WORKFLOW_SIZE_WARNING_TEXT } from '../tasks/LocalWorkflowTask/workflowSizeWarning.js'
 import {
   getCoordinatorSessionRows,
   getCoordinatorTaskAtIndex,
@@ -288,6 +289,28 @@ const stagedWorkflowRows = getCoordinatorSessionRows({
 })
 assert.equal(stagedWorkflowRows[0]?.tools, '0/4 agents')
 assert.equal(stagedWorkflowRows[0]?.tokens, '19.6k tokens')
+assert.equal(stagedWorkflowRows[0]?.warning, undefined)
+
+// Like official, a running workflow over the size cap carries the "Large workflow" warning;
+// ultracode and finished runs do not.
+const largeWorkflowTasks = {
+  large: { ...workflowTask, id: 'large', status: 'running', agentCount: 30, startedAgentAttempts: 2, tokenCount: 50_000 },
+} as unknown as AppState['tasks']
+assert.equal(
+  getCoordinatorSessionRows({ tasks: largeWorkflowTasks, selectedIndex: 0, viewingAgentTaskId: undefined, now: 5_000 })[0]?.warning,
+  WORKFLOW_SIZE_WARNING_TEXT,
+)
+assert.equal(
+  getCoordinatorSessionRows({ tasks: largeWorkflowTasks, selectedIndex: 0, viewingAgentTaskId: undefined, now: 5_000, ultracodeActive: true })[0]?.warning,
+  undefined,
+)
+assert.equal(
+  getCoordinatorSessionRows({
+    tasks: { large: { ...largeWorkflowTasks.large, status: 'completed' } } as unknown as AppState['tasks'],
+    selectedIndex: 0, viewingAgentTaskId: undefined, now: 5_000,
+  })[0]?.warning,
+  undefined,
+)
 
 const workflowOnlyRows = getCoordinatorSessionRows({
   tasks: { [workflowTask.id]: workflowTask } as unknown as AppState['tasks'],

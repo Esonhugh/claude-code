@@ -1545,27 +1545,6 @@ export async function runWorkflowScript({
     }
   }
 
-  // --- parallel(): Promise.allSettled, errors → null ---
-  async function mapWithConcurrency<T, R>(
-    items: T[],
-    mapper: (item: T, index: number) => Promise<R>,
-  ): Promise<R[]> {
-    const results = new Array<R>(items.length)
-    let nextIndex = 0
-    const workers = Array.from(
-      { length: Math.min(maxConcurrency, items.length) },
-      async () => {
-        while (!abortController.signal.aborted) {
-          const index = nextIndex++
-          if (index >= items.length) return
-          results[index] = await mapper(items[index]!, index)
-        }
-      },
-    )
-    await Promise.all(workers)
-    return results
-  }
-
   // Official 2.1.303 caps arrays crossing the workflow VM boundary.
   const MAX_VM_ARRAY_LENGTH = 4096
   function assertVmArray(value: unknown, message: string): void {
@@ -1575,7 +1554,7 @@ export async function runWorkflowScript({
     }
   }
 
-  // --- parallel(): bounded fan-out, errors → null ---
+  // --- parallel(): every item starts at once (the agent gate bounds the API fan-out), errors → null ---
   async function realParallel<T>(thunks: Array<() => Promise<T> | T>): Promise<Array<T | null>> {
     assertVmArray(thunks, 'parallel() expects an array of functions')
     for (const thunk of thunks) {
@@ -1590,7 +1569,7 @@ export async function runWorkflowScript({
     if (abortController.signal.aborted) return thunks.map(() => null)
     checkBudget()
     let budgetDropped = 0
-    const results = await mapWithConcurrency(thunks, async (thunk, index) => {
+    const results = await Promise.all(Array.from(thunks, async (thunk, index) => {
       try {
         return await thunk()
       } catch (error) {
@@ -1603,7 +1582,7 @@ export async function runWorkflowScript({
         failures.push(`parallel[${index}] failed: ${msg}`)
         return null
       }
-    })
+    }))
     recordBudgetDrops('parallel', budgetDropped)
     return results
   }
@@ -1617,7 +1596,7 @@ export async function runWorkflowScript({
     if (abortController.signal.aborted) return items.map(() => null)
     checkBudget()
     let budgetDropped = 0
-    const results = await mapWithConcurrency(items, async (item, index) => {
+    const results = await Promise.all(Array.from(items, async (item, index) => {
       let value: unknown = item
       for (const stage of stages) {
         if (value === null) break
@@ -1629,7 +1608,7 @@ export async function runWorkflowScript({
         }
       }
       return value
-    })
+    }))
     recordBudgetDrops('pipeline', budgetDropped)
     return results
   }
