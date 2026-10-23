@@ -12,6 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-23 - Bash 允许规则覆盖工作目录内写入询问与路径询问文案
+
+### 变更内容
+
+- 默认权限模式下，`Bash(touch:*)` 这类 Bash 允许规则（精确或前缀规则）现在可以放行工作目录内的写入命令（如 `touch tl-x`），不再被路径检查改成询问（`-p` 下不再拒绝），对齐官方 2.1.303。只有“路径在工作目录内、没有其他原因”的询问可被覆盖；安全检查（如 `.claude/settings.json`）、Edit deny 规则、工作目录外路径、含 `cd` 的复合写入、`cp`/`mv` 带 flag 等询问仍然生效。
+- Bash 路径询问改用官方文案：工作目录内写入为 `<cmd> in '<path>' needs approval. The path is inside the working directories for this session (...)…`，工作目录外的写入为 `… The path is outside the working directories for this session (...). Allowing runs the command as written.`；输出重导向同步此文案（#77）。
+
+### 测试覆盖
+
+- `src/tools/BashTool/bashPermissionHardening.test.ts` 在两种解析模式下覆盖：`Bash(touch:*)`、`Bash(touch tl-x)` 与管道形式放行 `touch tl-x`；无规则时询问且为工作目录内文案；工作目录外路径（含与工作目录内路径混合）仍询问且为工作目录外文案；安全检查、`cd` 复合命令、`cp -f`、Edit deny 规则不被 Bash 允许规则覆盖；输出重导向的工作目录内文案。
+
 ## 2026-10-21 - Terminal 权限检查、/yolo 收紧与自动模式分类器输出格式
 
 ### 变更内容
