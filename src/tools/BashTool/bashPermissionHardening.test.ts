@@ -260,6 +260,62 @@ if (process.env[childFlag] !== '1') {
     )
   })
 
+  async function expectAskMessage(command: string, rules: Rules) {
+    const result = await expectBehavior(command, 'default', rules, 'ask')
+    return result.behavior === 'ask' ? result.message : ''
+  }
+
+  test('Bash allow rules cover in-project writes but not other path asks', async () => {
+    const allow = ['Bash(touch:*)']
+    await expectBehavior('touch tl-x', 'default', { allow }, 'allow')
+    await expectBehavior('touch tl-x', 'default', { allow: ['Bash(touch tl-x)'] }, 'allow')
+    await expectBehavior(
+      'echo x | touch tl-x',
+      'default',
+      { allow: [...allow, 'Bash(echo:*)'] },
+      'allow',
+    )
+
+    const inside = await expectAskMessage('touch tl-x', {})
+    expect(inside).toContain(
+      "touch in '" + join(project, 'tl-x') + "' needs approval. The path is inside the working directories for this session (",
+    )
+    expect(inside).toContain(
+      'and Claude Code asks before a shell command creates, changes or removes files there.',
+    )
+
+    const outside = await expectAskMessage('touch /opt/cc-path-ask-x', { allow })
+    expect(outside).toContain(
+      "touch in '/opt/cc-path-ask-x' needs approval. The path is outside the working directories for this session (",
+    )
+    expect(outside).toContain('Allowing runs the command as written.')
+    expect(
+      await expectAskMessage('touch tl-x /opt/cc-path-ask-x', { allow }),
+    ).toContain("'/opt/cc-path-ask-x' needs approval")
+
+    const safety = await expectBehavior(
+      'touch .claude/settings.json',
+      'default',
+      { allow },
+      'ask',
+    )
+    expect(safety.decisionReason?.type).toBe('safetyCheck')
+    await expectBehavior('cd src && touch y', 'default', { allow }, 'ask')
+    await expectBehavior('cp -f src/x.ts y', 'default', { allow: ['Bash(cp:*)'] }, 'ask')
+    await expectBehavior(
+      'touch tl-x',
+      'default',
+      { allow, deny: ['Edit(./tl-x)'] },
+      'deny',
+    )
+
+    expect(
+      await expectAskMessage('echo x > out.txt', { allow: ['Bash(echo:*)'] }),
+    ).toContain(
+      "Output redirection to '" + join(project, 'out.txt') + "' needs approval. The path is inside the working directories",
+    )
+  })
+
   test('cleanup', () => {
     process.chdir(tmpdir())
     rmSync(project, { recursive: true, force: true })

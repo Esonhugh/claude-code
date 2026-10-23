@@ -12,6 +12,7 @@ import { expandTilde, getDirectoryForPath } from '../../utils/path.js'
 import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
 import {
   requiresExplicitUserApproval,
+  type PermissionAskDecision,
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
 import { createReadRuleSuggestion } from '../../utils/permissions/PermissionUpdate.js'
@@ -592,6 +593,14 @@ const COMMAND_VALIDATOR: Partial<
   cp: (args: string[]) => !args.some(arg => arg?.startsWith('-')),
 }
 
+function insideWorkingDirsMessage(subject: string, dirListStr: string): string {
+  return `${subject} needs approval. The path is inside the working directories for this session (${dirListStr}), and Claude Code asks before a shell command creates, changes or removes files there.`
+}
+
+function outsideWorkingDirsMessage(subject: string, dirListStr: string): string {
+  return `${subject} needs approval. The path is outside the working directories for this session (${dirListStr}). Allowing runs the command as written.`
+}
+
 function validateCommandPaths(
   command: PathCommand,
   args: string[],
@@ -647,27 +656,31 @@ function validateCommandPaths(
   }
 
   let removalAsk: PermissionResult | undefined
+  let overridableAsk: PermissionResult | undefined
   for (const path of paths) {
-    const { allowed, resolvedPath, decisionReason } = validatePath(
-      path,
-      cwd,
-      toolPermissionContext,
-      operationType,
-    )
+    const { allowed, resolvedPath, decisionReason, isInWorkingDir } =
+      validatePath(path, cwd, toolPermissionContext, operationType)
 
     if (!allowed) {
       const workingDirs = Array.from(
         allWorkingDirectories(toolPermissionContext),
       )
       const dirListStr = formatDirectoryList(workingDirs)
+      // A write inside the working directories that nothing else flagged:
+      // a Bash allow rule for the command may override this ask.
+      const bashAllowRuleOverridable =
+        isInWorkingDir === true && decisionReason === undefined
 
       // Use security check's custom reason if available (type: 'other' or 'safetyCheck')
-      // Otherwise use the standard "was blocked" message
       const message =
         decisionReason?.type === 'other' ||
         decisionReason?.type === 'safetyCheck'
           ? decisionReason.reason
-          : `${command} in '${resolvedPath}' was blocked. For security, Claude Code may only ${ACTION_VERBS[command]} the allowed working directories for this session: ${dirListStr}.`
+          : bashAllowRuleOverridable
+            ? insideWorkingDirsMessage(`${command} in '${resolvedPath}'`, dirListStr)
+            : operationType !== 'read' && decisionReason?.type !== 'rule'
+              ? outsideWorkingDirsMessage(`${command} in '${resolvedPath}'`, dirListStr)
+              : `${command} in '${resolvedPath}' was blocked. For security, Claude Code may only ${ACTION_VERBS[command]} the allowed working directories for this session: ${dirListStr}.`
 
       if (decisionReason?.type === 'rule') {
         return {
@@ -682,12 +695,18 @@ function validateCommandPaths(
         message,
         blockedPath: resolvedPath,
         decisionReason,
+        bashAllowRuleOverridable,
+      }
+      if (bashAllowRuleOverridable) {
+        overridableAsk ??= ask
+        continue
       }
       if (command !== 'rm' && command !== 'rmdir') return ask
       removalAsk ??= ask
     }
   }
   if (removalAsk) return removalAsk
+  if (overridableAsk) return overridableAsk
 
   // All paths are valid - return passthrough
   return {
@@ -975,12 +994,13 @@ function validateOutputRedirections(
     if (target === '/dev/null') {
       continue
     }
-    const { allowed, resolvedPath, decisionReason } = validatePath(
-      target,
-      cwd,
-      toolPermissionContext,
-      'create', // Treat > and >> as create operations
-    )
+    const { allowed, resolvedPath, decisionReason, isInWorkingDir } =
+      validatePath(
+        target,
+        cwd,
+        toolPermissionContext,
+        'create', // Treat > and >> as create operations
+      )
 
     if (!allowed) {
       const workingDirs = Array.from(
@@ -996,7 +1016,9 @@ function validateOutputRedirections(
           ? decisionReason.reason
           : decisionReason?.type === 'rule'
             ? `Output redirection to '${resolvedPath}' was blocked by a deny rule.`
-            : `Output redirection to '${resolvedPath}' was blocked. For security, Claude Code may only write to files in the allowed working directories for this session: ${dirListStr}.`
+            : isInWorkingDir === true && decisionReason === undefined
+              ? insideWorkingDirsMessage(`Output redirection to '${resolvedPath}'`, dirListStr)
+              : outsideWorkingDirsMessage(`Output redirection to '${resolvedPath}'`, dirListStr)
 
       // If denied by a deny rule, return 'deny' behavior
       if (decisionReason?.type === 'rule') {
@@ -1069,6 +1091,27 @@ function validateInputRedirections(
     }
   }
   return undefined
+}
+
+/**
+ * Keeps the first path ask, except that an ask a Bash allow rule may override
+ * gives way to one it may not, and any ask gives way to one that requires
+ * explicit user approval.
+ */
+function shouldReplaceApproval(
+  current: PermissionResult | undefined,
+  next: PermissionResult,
+): next is PermissionAskDecision {
+  if (next.behavior !== 'ask') return false
+  if (!current) return true
+  if (
+    current.behavior === 'ask' &&
+    current.bashAllowRuleOverridable &&
+    !next.bashAllowRuleOverridable
+  ) {
+    return true
+  }
+  return requiresExplicitUserApproval(next.decisionReason)
 }
 
 /**
@@ -1159,12 +1202,7 @@ export function checkPathConstraints(
         compoundCommandHasCd,
       )
       if (result.behavior === 'deny') return result
-      if (
-        result.behavior === 'ask' &&
-        (!approvalResult || requiresExplicitUserApproval(result.decisionReason))
-      ) {
-        approvalResult = result
-      }
+      if (shouldReplaceApproval(approvalResult, result)) approvalResult = result
     }
   } else {
     const commands = splitCommand_DEPRECATED(input.command)
@@ -1176,12 +1214,7 @@ export function checkPathConstraints(
         compoundCommandHasCd,
       )
       if (result.behavior === 'deny') return result
-      if (
-        result.behavior === 'ask' &&
-        (!approvalResult || requiresExplicitUserApproval(result.decisionReason))
-      ) {
-        approvalResult = result
-      }
+      if (shouldReplaceApproval(approvalResult, result)) approvalResult = result
     }
   }
 

@@ -18,14 +18,14 @@
 
 - 未发布。本条目汇总 `v2.1.292` tag 之后至 `dev` 合并提交 `ec9a0c1`（PR #83）的全部变更；`Makefile VERSION` 与 README 发布版本仍为 `2.1.292`，打 tag 时再同步。版本号 `2.1.293` 为暂定，与官方版本号无对应关系（本轮对照基线为官方 2.1.303）。
 - 范围：PR #83 并入的 PR #37、#39、#41、#43、#45、#48、#50、#52、#54、#56、#58、#61、#63、#64、#66、#68（经集成分支 #70）、`dev` 直接合并的 7 个功能分支，以及 2026-10-20 的 4 个直接提交。归版前的 23 条原始条目与逐项测试见[v2.1.293 详细记录](docs/archive/implementation-records/changelogs/2026-10-23-v2.1.293-details.md)。
-- 同一版本的后续增量（如 PR #84）合并后补入本条目；PR #86、#89、#90 已补入。
+- 同一版本的后续增量合并后补入本条目；PR #84、#86、#89、#90 已补入。
 
 ### 关联提交
 
 - `ec9a0c1` PR #83 合并提交，内含 `a728a27` #70（`9dce6a8` #37、`7441714` #39、`93ad15c` #43、`5e0e2e7` #54、`76b6f26` #58）、`720a578` #61、`0001a8b` #63、`9bbbdaa` #64、`4d7f128` #48、`227facf` #41、`d1a9da4` #45、`cc0e3b0` #50、`bc37b93` #52、`2d346f1` #56、`d5fe4d1` #66、`4854cef` #68，以及集成修复 `a9de890`、`d172dc1`。
 - 功能分支合并：`224a402` hooks-parity、`1321688` monitor-tool、`5e18f3b` memory-local-enable、`1187910` autocompact-agent-fields、`da2e3ba` keybindings-growthbook-defaults、`510d1bc` mods-2.1.303-parity、`46766d7` permissions-automode-parity，集成修复 `30dce66`。
 - 直接提交：`9e7173c`、`529c3e7`、`97c6d72`、`4fbf315`（stream watchdog、无人值守重试、默认模型与回退模型链）。
-- 2026-10-23 后续：`df7cc70` PR #90（Agent Teams 改回需要环境变量）、`d6819a6` PR #89（`autocompact_state` 按模型解析窗口）、`ed2347e` PR #86（README 与 dev 同步）。
+- 2026-10-23 后续：PR #84（Bash 允许规则覆盖工作目录内写入询问、官方路径询问文案，Closes #77）、`df7cc70` PR #90（Agent Teams 改回需要环境变量）、`d6819a6` PR #89（`autocompact_state` 按模型解析窗口）、`ed2347e` PR #86（README 与 dev 同步）。
 
 ### 变更内容
 
@@ -55,6 +55,7 @@
 - 文件路径规则：符号链接目录上的 deny/ask 同时作用于真实路径，allow 须覆盖路径的每种写法才放行，重复 `/` 合并；Windows 盘符、`//c/...`、`~\` 与 `\` 开头的规则按官方解析。
 - 受保护文件清单补齐官方 2.1.303 的 37 项（`.npmrc`、`.yarnrc*`、`bunfig.toml`、`.bazelrc`、`.pre-commit-config.yaml`、lefthook、gradle/maven wrapper、`.devcontainer.json`、`pyrightconfig.json`、`.envrc`、`.zshenv` 等）与 `.husky`、`.cargo`、`.devcontainer`、`.yarn`、`.mvn`、`.config/git/` 目录，acceptEdits 等模式写入前询问。
 - `WebFetch(domain:...)` 的 deny/ask/allow 规则优先于内置预批准域名，并支持 `*.example.com`、`api-*.example.com`、`domain:*` 通配。
+- 默认权限模式下，`Bash(touch:*)` 这类 Bash 允许规则（精确或前缀）可以放行工作目录内的写入命令（如 `touch tl-x`），不再被路径检查改成询问（`-p` 下不再拒绝，对齐官方 2.1.303）；只有「路径在工作目录内、没有其他原因」的询问可被覆盖，安全检查、Edit deny 规则、工作目录外路径、含 `cd` 的复合写入、`cp`/`mv` 带 flag 等仍询问或拒绝。Bash 路径询问改用官方文案：工作目录内为 `<cmd> in '<path>' needs approval. The path is inside the working directories for this session (...)…`，工作目录外为 `… The path is outside the working directories for this session (...). Allowing runs the command as written.`，输出重导向同步（#77）；PowerShell 未改。
 - 启用 `allowManagedPermissionRulesOnly` 时，设置重新加载保留 `--disallowedTools` 与会话内 deny 规则（对齐官方 2.1.257）；仓库、用户、`--add-dir`、MCP 与第三方插件 skill/命令的 `allowed-tools` 不再预先批准工具。
 - 读取 UNC 路径（`//host/share`、`\\host\share`）与含可疑 Windows 路径写法的读取强制人工确认，分类器、hook 与 allow 规则都不能放行。
 
@@ -124,7 +125,7 @@
 
 #### 已知缺口
 
-- 默认模式下 `Bash(touch:*)` 这类 allow 规则仍会被工作目录内写入的路径检查改成询问（官方可覆盖），且 Bash 路径询问沿用旧文案；修复在 PR #84，合并后补入本条目。PowerShell 未改。
+- Bash deny 规则命中时的拒绝消息仍沿用旧的「was blocked … allowed working directories」文案（官方为 `Permission to use Bash with command … has been denied.`）；PowerShell 的路径询问文案未改。
 - teammate inbox 中的 `mode_set_request`/`team_permission_update` 仍会套用（官方直接丢弃）；官方 tmux pane teammate 对照未做。
 - `/auto-mode-setup` 为 prompt skill，没有官方的非互动参数与 recon 流程；Auto mode 分页没有内置规则停用开关与 environment 文件编辑；Windows/UNC 路径规则只有单元测试。
 - `MessageDisplay` hook 不做官方的逐行刷新；启动与插件安全的若干官方对齐项由用户决定暂缓。
@@ -139,7 +140,7 @@
 - 设置与遥测：`src/utils/managedEnv.test.ts`、`managedEnv.launchEnv.test.ts`、`src/tools/SkillTool/managedRulesOnly.test.ts`、`src/commands/feedback/index.test.ts`、`src/services/api/metricsOptOut.test.ts`、`src/utils/fastMode.gateway.test.ts`。
 - 请求韧性与模型：`src/services/api/withRetry.test.ts`、`claude-stream-watchdog.test.ts`、`claude-model-contract.test.ts`、`src/utils/model/model.test.ts`。
 - Monitor、记忆、压缩与界面：`src/tools/MonitorTool`、`src/tools/ScheduleWakeupTool`、`src/skills/bundled/loop.test.ts`、`src/memdir/neutralizeMemoryContent.test.ts`、`extractMode.test.ts`、`src/services/awaySummary.test.ts`、`src/commands/autocompact/autocompact.test.ts`、`src/services/compact/autoCompact.contextWindow.test.ts`、`sessionCompact.mods.test.ts`、`src/tools/AgentTool/loadAgentsDir.agentFields.test.ts`、`src/utils/worktree.baseRef.test.ts`、`src/tools/EnterWorktreeTool/EnterWorktreeTool.test.ts`、`src/services/analytics/growthbook.cached.test.ts`、`src/keybindings`、`src/components/PromptInput/PromptInput.sendNow.test.tsx`、`PromptInput.cycleModeError.test.tsx`、`src/screens/REPL.submit.test.ts`、`src/hooks/useVimInput.test.tsx`。
-- 2026-10-23 后续：`src/utils/agentSwarmsEnabled.test.ts`（未设置时关闭、`1`/`true` 启用、`0` 关闭、`--agent-teams` 强制启用）；`src/services/compact/autoCompact.contextWindow.test.ts` 与 `src/cli/print.streamState.test.ts`（按模型窗口后 `autocompact_state` 的窗口、阈值与 `source: "settings"` 与引擎一致，修复前失败）。
+- 2026-10-23 后续：`src/tools/BashTool/bashPermissionHardening.test.ts`（两种解析模式：`Bash(touch:*)`、`Bash(touch tl-x)` 与管道形式放行 `touch tl-x`；无规则时询问且为工作目录内文案；工作目录外与混合路径仍询问；安全检查、`cd` 复合、`cp -f`、Edit deny 不被覆盖；输出重导向文案，修复前失败）；`src/utils/agentSwarmsEnabled.test.ts`（未设置时关闭、`1`/`true` 启用、`0` 关闭、`--agent-teams` 强制启用）；`src/services/compact/autoCompact.contextWindow.test.ts` 与 `src/cli/print.streamState.test.ts`（按模型窗口后 `autocompact_state` 的窗口、阈值与 `source: "settings"` 与引擎一致，修复前失败）。
 - Mods：`bun test src/services/mods`（`sessionAppend`、`promptMention`、`toolCheckReceipt303`、`uiNotify`、`sessionIdentity`、`declarationsOfficial303` 等）、`src/components/ModsPane.test.tsx`、`make check-mods-control-types`。
 - 各分支均通过 `tsc`、`make build` 与 `bun run check:changelog`；`bun scripts/build.test.mjs` 覆盖默认 feature 集合包含 `MONITOR_TOOL`、`EXTRACT_MEMORIES` 与 `AWAY_SUMMARY`。逐条目的测试清单见详细记录。
 
