@@ -423,13 +423,14 @@ export async function processUserInput({
     const message = settled.messages[index]
     if (message?.type !== 'user') return
     let content = message.message.content
-    if (origin.kind === 'peer' || !origin.asUser) {
+    const plugin = origin.kind === 'plugin' ? origin : undefined
+    if (!plugin?.asUser) {
       const text = typeof content === 'string' ? content : content.flatMap(block =>
         block.type === 'text' && typeof block.text === 'string' ? [block.text] : [],
       ).join('\n')
       // An idle peer delivery becomes its own turn; frame it like the mid-turn
       // attachment so the model never reads it as the user's words.
-      const framed = origin.kind === 'peer' ? formatPeerPrompt(text) : formatPluginPrompt(text, origin)
+      const framed = plugin ? formatPluginPrompt(text, plugin) : formatPeerPrompt(text)
       if (typeof content === 'string') content = framed
       else {
         let written = false
@@ -443,7 +444,7 @@ export async function processUserInput({
       }
     }
     settled.messages = [...settled.messages]
-    settled.messages[index] = { ...message, ...(origin.kind === 'plugin' && { origin }), message: { ...message.message, content } }
+    settled.messages[index] = { ...message, ...(plugin && { origin: plugin }), message: { ...message.message, content } }
   }
 
   async function admitClassicPrompt(): Promise<ProcessUserInputBaseResult> {
