@@ -113,6 +113,7 @@ function fixture() {
   const bootstrap = {
     getSessionId: () => 'executor-session',
     getProjectRoot: () => home,
+    getProjectConfigRoot: () => null,
     getOriginalCwd: () => home,
     getMainThreadAgentType: () => undefined,
     getIsNonInteractiveSession: () => !controls.interactive,

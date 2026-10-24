@@ -1952,6 +1952,8 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
     task_id: z.string(),
     tool_use_id: z.string().optional(),
     description: z.string(),
+    subagent_type: z.string().optional(),
+    is_backgrounded: z.boolean().optional(),
     task_type: z.string().optional(),
     workflow_name: z
       .string()
@@ -1960,6 +1962,41 @@ export const SDKTaskStartedMessageSchema = lazySchema(() =>
         "meta.name from the workflow script (e.g. 'spec'). Only set when task_type is 'local_workflow'.",
       ),
     prompt: z.string().optional(),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKTaskUpdatedMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('task_updated'),
+    task_id: z.string(),
+    patch: z.object({
+      status: z.string().optional(),
+      description: z.string().optional(),
+      end_time: z.number().optional(),
+      total_paused_ms: z.number().optional(),
+      error: z.string().optional(),
+      is_backgrounded: z.boolean().optional(),
+    }),
+    uuid: UUIDPlaceholder(),
+    session_id: z.string(),
+  }),
+)
+
+export const SDKBackgroundTasksChangedMessageSchema = lazySchema(() =>
+  z.object({
+    type: z.literal('system'),
+    subtype: z.literal('background_tasks_changed'),
+    tasks: z.array(
+      z.object({
+        task_id: z.string(),
+        task_type: z.string(),
+        subagent_type: z.string().optional(),
+        description: z.string(),
+      }),
+    ),
     uuid: UUIDPlaceholder(),
     session_id: z.string(),
   }),
@@ -2174,6 +2211,8 @@ export const SDKMessageSchema = lazySchema(() =>
     SDKAuthStatusMessageSchema(),
     SDKTaskNotificationMessageSchema(),
     SDKTaskStartedMessageSchema(),
+    SDKTaskUpdatedMessageSchema(),
+    SDKBackgroundTasksChangedMessageSchema(),
     SDKTaskProgressMessageSchema(),
     SDKSessionStateChangedMessageSchema(),
     SDKGoalStateChangedMessageSchema(),

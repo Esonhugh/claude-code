@@ -87,6 +87,8 @@ type State = {
   questionPreviewFormat: 'markdown' | 'html' | undefined
   flagSettingsPath: string | undefined
   flagSettingsInline: Record<string, unknown> | null
+  parentManagedSettings: Record<string, unknown> | null
+  projectConfigRoot: string | null
   allowedSettingSources: SettingSource[]
   sessionIngressToken: string | null | undefined
   oauthTokenFromFd: string | null | undefined
@@ -322,6 +324,8 @@ function getInitialState(): State {
     apiKeyFromFd: undefined,
     flagSettingsPath: undefined,
     flagSettingsInline: null,
+    parentManagedSettings: null,
+    projectConfigRoot: null,
     allowedSettingSources: [
       'userSettings',
       'projectSettings',
@@ -1201,6 +1205,26 @@ export function setFlagSettingsInline(
   settings: Record<string, unknown> | null,
 ): void {
   STATE.flagSettingsInline = settings
+}
+
+/** Policy-tier settings from --managed-settings (the SDK's managedSettings option). */
+export function getParentManagedSettings(): Record<string, unknown> | null {
+  return STATE.parentManagedSettings
+}
+
+export function setParentManagedSettings(
+  settings: Record<string, unknown> | null,
+): void {
+  STATE.parentManagedSettings = settings
+}
+
+/** --project-config-root: where project config is read from instead of the cwd. */
+export function getProjectConfigRoot(): string | null {
+  return STATE.projectConfigRoot
+}
+
+export function setProjectConfigRoot(root: string | null): void {
+  STATE.projectConfigRoot = root
 }
 
 export function getSessionIngressToken(): string | null | undefined {

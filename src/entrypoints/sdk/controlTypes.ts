@@ -126,6 +126,13 @@ export type SSHHistoryChunk = {
 
 export type SSHHistoryMessage = SDKMessage & { timestamp?: string }
 
+/** @internal Sent after each local transcript write when --session-mirror is set. */
+export type SDKTranscriptMirrorMessage = {
+  type: 'transcript_mirror'
+  filePath: string
+  entries: unknown[]
+}
+
 export type SDKControlReplayHistoryResponse = {
   session_id: string
   count: number
@@ -370,7 +377,7 @@ export type SDKControlCancelRequest = {
 }
 
 // Composite message types for stdio transport
-export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage | SSHHistoryChunk
+export type StdoutMessage = SDKMessage | SDKControlResponse | SDKControlRequest | SDKControlCancelRequest | SDKKeepAliveMessage | SSHHistoryChunk | SDKTranscriptMirrorMessage
 export type StdinMessage = SDKUserMessage | SDKControlRequest | SDKControlResponse | SDKKeepAliveMessage | SDKUpdateEnvironmentVariablesMessage | SDKControlCancelRequest
 
 // Partial assistant message (streaming chunks)

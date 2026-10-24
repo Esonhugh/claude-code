@@ -31,7 +31,7 @@ import {
   Option,
 } from '@commander-js/extra-typings'
 import chalk from 'chalk'
-import { readFileSync } from 'fs'
+import { readFileSync, realpathSync, statSync } from 'fs'
 import mapValues from 'lodash-es/mapValues.js'
 import pickBy from 'lodash-es/pickBy.js'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -161,7 +161,7 @@ const kairosGate = feature('KAIROS')
   ? (require('./assistant/gate.js') as typeof import('./assistant/gate.js'))
   : null
 
-import { relative, resolve } from 'path'
+import { isAbsolute, relative, resolve } from 'path'
 import { isAnalyticsDisabled } from 'src/services/analytics/config.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import {
@@ -400,6 +400,8 @@ import {
   setDirectConnectServerUrl,
   setFlagSettingsPath,
   setInitialMainLoopModel,
+  setParentManagedSettings,
+  setProjectConfigRoot,
   setSessionFallbackModels,
   setInlinePlugins,
   setInlinePluginsNoMcp,
@@ -805,6 +807,41 @@ function loadSettingsFromFlag(settingsFile: string): void {
   }
 }
 
+function loadManagedSettingsFromFlag(managedSettings: string): void {
+  const parsed = safeParseJSON(managedSettings.trim())
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    process.stderr.write(
+      chalk.red('Error: Invalid JSON provided to --managed-settings\n'),
+    )
+    process.exit(1)
+  }
+  setParentManagedSettings(parsed as Record<string, unknown>)
+  resetSettingsCache()
+}
+
+function loadProjectConfigRootFromFlag(dir: string): void {
+  if (!isAbsolute(dir)) {
+    process.stderr.write(
+      chalk.red('Error: --project-config-root must be an absolute local path\n'),
+    )
+    process.exit(1)
+  }
+  let root: string
+  try {
+    root = realpathSync(dir)
+    if (!statSync(root).isDirectory()) throw new Error('not a directory')
+  } catch {
+    process.stderr.write(
+      chalk.red(
+        'Error: --project-config-root is not an existing directory that this user can list\n',
+      ),
+    )
+    process.exit(1)
+  }
+  setProjectConfigRoot(root.normalize('NFC'))
+  resetSettingsCache()
+}
+
 function loadSettingSourcesFromFlag(settingSourcesArg: string): void {
   try {
     const sources = parseSettingSourcesFlag(settingSourcesArg)
@@ -837,6 +874,16 @@ function eagerLoadSettings(): void {
   const settingSourcesArg = eagerParseCliFlag('--setting-sources')
   if (settingSourcesArg !== undefined) {
     loadSettingSourcesFromFlag(settingSourcesArg)
+  }
+
+  const managedSettings = eagerParseCliFlag('--managed-settings')
+  if (managedSettings !== undefined) {
+    loadManagedSettingsFromFlag(managedSettings)
+  }
+
+  const projectConfigRoot = eagerParseCliFlag('--project-config-root')
+  if (projectConfigRoot !== undefined) {
+    loadProjectConfigRootFromFlag(projectConfigRoot)
   }
   profileCheckpoint('eagerLoadSettings_end')
 }
@@ -1634,6 +1681,32 @@ async function run(): Promise<CommanderCommand> {
       )
         .argParser(String)
         .hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--resume-drops-turn <message id>',
+        'With --resume-session-at: the prompt UUID of the turn the truncating resume discards; the resume is refused when the discarded range holds anything else',
+      )
+        .argParser(String)
+        .hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--session-mirror',
+        'Emit a transcript_mirror frame after each transcript write (only works with --output-format=stream-json)',
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--managed-settings <json>',
+        'Policy-tier settings JSON from a spawning parent process (SDK use only)',
+      ).hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--project-config-root <dir>',
+        'Read project settings, .mcp.json and the .claude config trees (commands, agents, skills, workflows, output-styles) from this directory rather than the working directory (for a session a host starts in a worktree of it)',
+      ).hideHelp(),
     )
     .addOption(
       new Option(
@@ -4068,6 +4141,8 @@ async function run(): Promise<CommanderCommand> {
             includePartialMessages: effectiveIncludePartialMessages,
             forkSession: options.forkSession || false,
             resumeSessionAt: options.resumeSessionAt || undefined,
+            resumeDropsTurn: options.resumeDropsTurn || undefined,
+            sessionMirror: options.sessionMirror === true,
             rewindFiles: options.rewindFiles,
             enableAuthStatus: options.enableAuthStatus,
             agent: agentCli,

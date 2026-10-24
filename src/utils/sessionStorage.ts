@@ -578,6 +578,16 @@ type InternalEventWriter = (
   options?: { isCompaction?: boolean; agentId?: string },
 ) => Promise<void>
 
+type SessionMirror = (filePath: string, entries: Entry[]) => void
+
+/**
+ * Register a callback that receives every batch of entries after it is appended
+ * to a local transcript file (--session-mirror's transcript_mirror frames).
+ */
+export function addSessionMirror(mirror: SessionMirror): void {
+  getProject().addMirror(mirror)
+}
+
 /**
  * Register a CCR v2 internal event writer for transcript persistence.
  * When set, transcript messages are written as internal worker events
@@ -650,6 +660,7 @@ class Project {
   >()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private activeDrain: Promise<void> | null = null
+  private mirrors: SessionMirror[] = []
   private FLUSH_INTERVAL_MS = 100
   private readonly MAX_CHUNK_BYTES = 100 * 1024 * 1024
 
@@ -717,6 +728,21 @@ class Project {
     }, this.FLUSH_INTERVAL_MS)
   }
 
+  addMirror(mirror: SessionMirror): void {
+    this.mirrors.push(mirror)
+  }
+
+  private fireMirrors(filePath: string, entries: Entry[]): void {
+    if (entries.length === 0) return
+    for (const mirror of this.mirrors) {
+      try {
+        mirror(filePath, entries)
+      } catch (error) {
+        logForDebugging(`[SessionMirror] mirror failed for ${filePath}: ${error}`)
+      }
+    }
+  }
+
   private async appendToFile(filePath: string, data: string): Promise<void> {
     try {
       await fsAppendFile(filePath, data, { mode: 0o600 })
@@ -737,6 +763,7 @@ class Project {
 
       let content = ''
       const resolvers: Array<() => void> = []
+      const mirrored: Entry[] = []
 
       for (const { entry, resolve } of batch) {
         const line = jsonStringify(entry) + '\n'
@@ -744,6 +771,7 @@ class Project {
         if (content.length + line.length >= this.MAX_CHUNK_BYTES) {
           // Flush chunk and resolve its entries before starting a new one
           await this.appendToFile(filePath, content)
+          this.fireMirrors(filePath, mirrored.splice(0))
           for (const r of resolvers) {
             r()
           }
@@ -753,10 +781,12 @@ class Project {
 
         content += line
         resolvers.push(resolve)
+        if (this.mirrors.length > 0) mirrored.push(entry)
       }
 
       if (content.length > 0) {
         await this.appendToFile(filePath, content)
+        this.fireMirrors(filePath, mirrored)
         for (const r of resolvers) {
           r()
         }

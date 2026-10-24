@@ -65,7 +65,11 @@ import { TERMINAL_TOOL_NAME } from '../../tools/TerminalTool/prompt.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../../tools/NotebookEditTool/constants.js'
-import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
+import {
+  getAllBaseTools,
+  getToolsForDefaultPreset,
+  parseToolPreset,
+} from '../../tools.js'
 import {
   isManagedSSHRemoteRuntime,
   loadSSHPermissionOverlay,
@@ -1115,7 +1119,9 @@ export async function initializeToolPermissionContext({
     // Normalize legacy tool names (e.g., 'Task' → 'Agent') so user-provided
     // base tool lists using old names still match canonical names.
     const baseToolsSet = new Set(baseToolsResult.map(normalizeLegacyToolName))
-    const allToolNames = getToolsForDefaultPreset()
+    // All base tools, not just the enabled ones: ListAgents/SendMessage turn on
+    // once the UDS socket starts, which happens after this runs.
+    const allToolNames = getAllBaseTools().map(tool => tool.name)
     const toolsToDisallow = allToolNames.filter(tool => !baseToolsSet.has(tool))
     parsedDisallowedToolsCli = [...parsedDisallowedToolsCli, ...toolsToDisallow]
   }

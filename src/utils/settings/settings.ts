@@ -8,6 +8,8 @@ import {
   getFlagSettingsInline,
   getFlagSettingsPath,
   getOriginalCwd,
+  getParentManagedSettings,
+  getProjectConfigRoot,
   getUseCoworkPlugins,
 } from '../../bootstrap/state.js'
 import { getRemoteManagedSettingsSyncFromCache, isRemoteManagedSettingsVerified } from '../../services/remoteManagedSettings/syncCacheState.js'
@@ -282,9 +284,10 @@ export function getSettingsRootPathForSource(source: SettingSource): string {
     case 'userSettings':
       return resolve(getClaudeConfigHomeDir())
     case 'policySettings':
+      return resolve(getOriginalCwd())
     case 'projectSettings':
     case 'localSettings': {
-      return resolve(getOriginalCwd())
+      return resolve(getProjectConfigRoot() ?? getOriginalCwd())
     }
     case 'flagSettings': {
       const path = getFlagSettingsPath()
@@ -379,6 +382,41 @@ function getValidatedRemotePolicySettings(): {
   return { settings: result.data, errors: [] }
 }
 
+// Allowlists from --managed-settings apply only where the admin tier sets none.
+const PARENT_ONLY_LISTED_KEYS = ['allowedMcpServers', 'availableModels', 'strictKnownMarketplaces'] as const
+
+/**
+ * --managed-settings (the SDK's managedSettings option) filtered to what may only
+ * restrict: deny/ask rules, denylists, only-listed allowlists and the restrictive
+ * value of each RESTRICTIVE_SETTING_PATHS key. Everything else is dropped.
+ */
+function loadParentPolicySettings(): SettingsJson | null {
+  const raw = getParentManagedSettings()
+  if (!raw) return null
+  const parsed = SettingsSchema().safeParse(raw)
+  if (!parsed.success) return null
+  const parent = parsed.data
+  const filtered: SettingsJson = {}
+  for (const { path, restrictive } of RESTRICTIVE_SETTING_PATHS) {
+    const value = get(parent, path)
+    if ((Array.isArray(restrictive) ? restrictive : [restrictive]).includes(value as never)) set(filtered, path, value)
+  }
+  for (const path of [
+    ['permissions', 'deny'],
+    ['permissions', 'ask'],
+    ['deniedMcpServers'],
+    ['blockedMarketplaces'],
+    ['sandbox', 'network', 'deniedDomains'],
+    ['sandbox', 'filesystem', 'denyRead'],
+    ['sandbox', 'filesystem', 'denyWrite'],
+    ...PARENT_ONLY_LISTED_KEYS.map(key => [key]),
+  ]) {
+    const value = get(parent, path)
+    if (value !== undefined) set(filtered, path, value)
+  }
+  return hasSettings(filtered) ? filtered : null
+}
+
 function loadPolicySettings(
   remoteSettings = getValidatedRemotePolicySettings().settings,
   includeUserWritable = true,
@@ -386,7 +424,24 @@ function loadPolicySettings(
   const mdmSettings = getMdmSettings().settings
   const fileSettings = loadManagedFileSettings().settings
   const hkcuSettings = includeUserWritable ? getHkcuSettings().settings : null
-  const sources = [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
+  const parentSettings = loadParentPolicySettings()
+  const admin = [remoteSettings, mdmSettings, fileSettings].find(hasSettings)
+  if (admin && parentSettings && admin.parentSettingsBehavior === 'merge') {
+    const policy = loadPolicySettingsFromTiers([remoteSettings, mdmSettings, fileSettings, hkcuSettings])!
+    const parent = structuredClone(parentSettings)
+    for (const key of PARENT_ONLY_LISTED_KEYS) if (policy[key] !== undefined) delete parent[key]
+    const merged = mergeWith(parent, policy, settingsMergeCustomizer) as SettingsJson
+    applyRestrictiveSettings(merged, [policy, parent])
+    return merged
+  }
+  return loadPolicySettingsFromTiers(
+    admin
+      ? [remoteSettings, mdmSettings, fileSettings, hkcuSettings]
+      : [parentSettings, hkcuSettings],
+  )
+}
+
+function loadPolicySettingsFromTiers(sources: (SettingsJson | null)[]): SettingsJson | null {
   const behavior = sources.find(
     settings => settings !== null &&
       (settings.managedSourcesBehavior !== undefined || hasSettings(settings)),

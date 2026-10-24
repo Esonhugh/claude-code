@@ -1,6 +1,9 @@
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
-import { clearInvokedSkillsForAgent } from '../../bootstrap/state.js'
+import {
+  clearInvokedSkillsForAgent,
+  getIsNonInteractiveSession,
+} from '../../bootstrap/state.js'
 import {
   ALL_AGENT_DISALLOWED_TOOLS,
   ASYNC_AGENT_ALLOWED_TOOLS,
@@ -56,6 +59,8 @@ import {
 } from '../../utils/messages.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
+import { normalizeSubagentMessage } from '../../utils/queryHelpers.js'
+import { enqueueSdkEvent } from '../../utils/sdkEventQueue.js'
 import {
   buildTranscriptForClassifier,
   classifyYoloAction,
@@ -787,6 +792,12 @@ export async function runAsyncAgentLifecycle({
         rootSetAppState,
       )
       reportObservedAgentProgress(toolUseContext, message)
+      // SDK consumers see a background agent's messages live, like official.
+      if (getIsNonInteractiveSession() && toolUseContext.toolUseId) {
+        for (const sdkMessage of normalizeSubagentMessage(message, toolUseContext.toolUseId)) {
+          enqueueSdkEvent(sdkMessage)
+        }
+      }
       const lastToolName = getLastToolUseName(message)
       if (lastToolName) {
         emitTaskProgress(
