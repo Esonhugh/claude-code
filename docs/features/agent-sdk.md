@@ -2,20 +2,55 @@
 
 > 英文名：`agent-sdk` · 领域：插件与扩展 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-`-p --input-format stream-json --output-format stream-json` 会话接受 SDK control request。补齐 Agent SDK 0.3 会调用的 `reload_skills`、`reload_output_styles`、`read_file`（走 Read 工具权限）、`update_settings`（官方白名单）、`mcp_read_resource`（只读 `ui://`），接受 `string[]` systemPrompt；`set_model`、`set_permission_mode` 校验非法值并返回错误码。
+[Claude Agent SDK](https://code.claude.com/docs/en/agent-sdk/overview) 让你在自己的 TypeScript / Python 程序里使用 Claude Code：发一个任务，逐条收到 Claude 的思考、工具调用、工具结果和最终结果。SDK 在底层启动 `claude` 进程，用 **stream-json**（一行一个 JSON）和它通信。
 
-## 配置
+本 fork 的 CLI 可以直接作为 SDK 的执行程序，只要把 `pathToClaudeCodeExecutable` 指过来。已用官方 TS SDK 0.3.303 和 Python SDK 验证，并补齐了 SDK 会发的几个控制请求（见下方「和官方的区别」）。
 
-| 配置项 | 位置 | 说明 |
-| --- | --- | --- |
-| `--input-format stream-json --output-format stream-json --verbose` | CLI | SDK 传输 |
-| `--permission-prompt-tool stdio` | CLI | 权限请求转给 SDK 的 `canUseTool` |
+## 快速上手（TypeScript）
 
-## 效果
+```js
+import { query } from '@anthropic-ai/claude-agent-sdk'
 
-依次发送 `initialize`、`reload_skills`、`set_permission_mode`（非法值）和一条用户消息，收到的 `control_response`：
+const run = query({
+  prompt: 'List the files here.',
+  options: {
+    pathToClaudeCodeExecutable: '/path/to/built-claude',
+    allowedTools: ['Bash(ls)'],
+  },
+})
+for await (const message of run) {
+  if (message.type === 'system') console.log('system', message.subtype, 'model=' + message.model)
+  if (message.type === 'assistant')
+    for (const block of message.message.content)
+      console.log('assistant', block.type, block.type === 'text' ? block.text : `${block.name} ${JSON.stringify(block.input)}`)
+  if (message.type === 'user') console.log('tool_result', JSON.stringify(message.message.content[0]?.content).slice(0, 60))
+  if (message.type === 'result') console.log('result', message.subtype, `$${message.total_cost_usd.toFixed(4)}`, message.result)
+}
+```
+
+实际运行输出（本 fork 的 binary，测试用假 API）：
+
+```text
+system init model=claude-opus-5-5
+assistant tool_use Bash {"command":"ls","description":"list files"}
+tool_result "api\nbuild\nnotes.md\nt.txt\ntodo.md\nu.txt\nv.txt\nweb"
+assistant text FAKE_DONE
+result success $0.0003 FAKE_DONE
+```
+
+消息依次是：会话初始化（`system/init`）→ Claude 决定调用工具（`assistant` 里的 `tool_use`）→ 工具结果（`user` 里的 `tool_result`）→ Claude 的回复 → 最终 `result`（含费用）。
+
+## 不用 SDK，直接用 stream-json
+
+任何语言都可以自己启动 CLI 并读写 JSON 行：
+
+```sh
+claude -p --input-format stream-json --output-format stream-json --verbose
+```
+
+stdin 里除了用户消息，还可以发**控制请求**（`control_request`），例如初始化、切换模型、切换权限模式。依次发送 `initialize`、`reload_skills`、一个非法的 `set_permission_mode` 和一条用户消息，收到的回执：
 
 ```text
 {"request_id": "r1", "subtype": "success", "keys": ["capabilities", "commands", "agents", "output_style", "available_output_styles", "models", "account", "pid"]}
@@ -23,6 +58,21 @@
 {"request_id": "r3", "subtype": "error", "error": "Cannot set permission mode: must be one of acceptEdits, auto, bypassPermissions, default, dontAsk, plan"}
 result success FAKE_DONE
 ```
+
+想让工具权限请求交给你的程序决定（SDK 的 `canUseTool`），加 `--permission-prompt-tool stdio`。
+
+## 和官方的区别
+
+- 补齐 SDK 0.3 会调用的控制请求：`reload_skills`、`reload_output_styles`、`read_file`（按 Read 工具的权限判断）、`update_settings`（只接受官方白名单内的设置）、`mcp_read_resource`（只读 `ui://`）。
+- 接受 `string[]` 形式的 `systemPrompt`（TS SDK 默认发送 `[""]`）。
+- `set_model`、`set_permission_mode` 对非法值返回错误码，而不是静默接受。
+- 尚未实现：`background_tasks`、`set_mcp_permission_mode_override`、后台子代理消息的 `parent_tool_use_id` 流式转发。
+
+想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
+
+## 说明
+
+输出来自实际运行（官方 `@anthropic-ai/claude-agent-sdk` 驱动本 fork 的 binary，模型回复由测试用假 API 生成）。下方「详细说明」保留各控制请求的字段规则、边界与验收记录。
 
 ## 详细说明
 

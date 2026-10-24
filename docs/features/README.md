@@ -42,5 +42,5 @@
 |  | [Channels](channels.md) | `--channels` 让批准的频道插件 / MCP server 把消息推入会话，支持远程工具审批 |
 |  | [Mods / Function Hooks](mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
 |  | [Mods 远程客户端（stream-json）](mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
-|  | [Agent SDK 与 stream-json 控制协议](agent-sdk.md) | 兼容 Agent SDK 0.3：`reload_skills`、`read_file`、`update_settings`、模型 / 权限模式切换校验、动态 MCP |
+|  | [Agent SDK 与 stream-json 控制协议](agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI；补齐了 SDK 0.3 会用到的控制请求 |
 | 开发与发布 | [构建、发布与终端验收工具](build-and-release.md) | Bun 构建、bytecode binary、binary-only npm 发布、内嵌 ripgrep、Linux 发布门禁与终端采集 |
