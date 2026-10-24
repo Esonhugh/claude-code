@@ -147,6 +147,7 @@ import passes from './commands/passes/index.js'
 import privacySettings from './commands/privacy-settings/index.js'
 import hooks from './commands/hooks/index.js'
 import files from './commands/files/index.js'
+import setupMemoryDb from './commands/setup-memory-db/index.js'
 import branch from './commands/branch/index.js'
 import agents from './commands/agents/index.js'
 import plugin from './commands/plugin/index.js'
@@ -328,6 +329,7 @@ const COMMANDS = memoize((): Command[] => [
   mcp,
   mcpNonInteractive,
   memory,
+  setupMemoryDb,
   mobile,
   model,
   outputStyle,
