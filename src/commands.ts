@@ -19,6 +19,9 @@ import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 import focus from './commands/focus/index.js'
+import background from './commands/background/index.js'
+import stop from './commands/stop/index.js'
+import daemon from './commands/daemon/index.js'
 import {
   skillDoctor,
   skillDoctorNonInteractive,
@@ -302,6 +305,8 @@ const COMMANDS = memoize((): Command[] => [
   skillDoctor,
   skillDoctorNonInteractive,
   focus,
+  ...(feature('BG_SESSIONS') ? [background, stop] : []),
+  ...(feature('DAEMON') ? [daemon] : []),
   cost,
   daybreak,
   diff,
