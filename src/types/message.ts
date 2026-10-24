@@ -282,6 +282,10 @@ export interface SystemTurnDurationMessage extends SystemBase {
   [key: string]: any
 }
 
+export interface SystemFocusSummaryMessage extends SystemBase {
+  subtype: 'focus_summary'
+}
+
 export interface SystemAgentsKilledMessage extends SystemBase {
   subtype: 'agents_killed'
   [key: string]: any
@@ -302,6 +306,7 @@ export type SystemMessage =
   | SystemStopHookSummaryMessage
   | SystemThinkingMessage
   | SystemTurnDurationMessage
+  | SystemFocusSummaryMessage
   | SystemAgentsKilledMessage
 
 // ---------------------------------------------------------------------------

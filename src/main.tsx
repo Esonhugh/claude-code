@@ -127,6 +127,7 @@ import { createSystemMessage, createUserMessage } from './utils/messages.js'
 import { getPlatform } from './utils/platform.js'
 import { getBaseRenderOptions } from './utils/renderOptions.js'
 import { initializeFullscreenMode } from './utils/fullscreen.js'
+import { isFocusViewConfigured } from './utils/focusView.js'
 import { configureTuiRestart } from './utils/tuiRestart.js'
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js'
 import { settingsChangeDetector } from './utils/settings/changeDetector.js'
@@ -4151,11 +4152,15 @@ async function run(): Promise<CommanderCommand> {
         runningSubagents: 0,
         agentNameRegistry: new Map(),
         sendMessagePins: {},
-        verbose: verbose ?? getGlobalConfig().verbose ?? false,
+        verbose:
+          verbose ??
+          getGlobalConfig().verbose ??
+          getInitialSettings().viewMode === 'verbose',
         diffSidebarVisible: false,
         mainLoopModel: initialMainLoopModel,
         mainLoopModelForSession: null,
         isBriefOnly: initialIsBriefOnly,
+        briefTranscript: isFocusViewConfigured(),
         expandedView: getGlobalConfig().showSpinnerTree
           ? 'teammates'
           : getGlobalConfig().showExpandedTodos
