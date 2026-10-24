@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-24 - VS Code 插件：支持 /status、/usage 等宿主控制请求
+
+### 变更内容
+
+- 新增 VS Code 插件（2.1.303）自绘界面所需的控制请求：`get_status`、`get_usage`、`get_session_cost`、`list_models`、`get_binary_version`、`file_suggestions`、`get_plan`、`export_conversation`、`rename_session`、`set_prompt_suggestions_paused`。此前插件的 /status 等界面报 `Unsupported control request subtype`（#158）。
+- `get_usage` 在 ChatGPT 登录的 OpenAI 模式下按窗口长度回报 5 小时与 7 天额度，并把各额度行列在 `model_scoped`；API key 与第三方 provider 回报 `rate_limits_available: false`。
+- `initialize` 与 `list_models` 的模型项新增 `resolvedModel`。
+
+### 测试覆盖
+
+- `src/cli/print.sdkControlRequests.test.ts` 新增：上述请求均返回成功且格式与官方一致（status 行均为纯文本、cost 去除 ANSI、`rename_session` 拒绝已切换的 session_id）；ChatGPT 额度窗口映射。
+
 ## 2026-10-24 - VS Code 插件 / Agent SDK：支持 --thinking-display，mcp_status 列出 SDK MCP 服务器
 
 ### 变更内容
