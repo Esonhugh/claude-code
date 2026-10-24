@@ -42,6 +42,7 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { asAgentId } from '../../types/ids.js'
+import type { ClaudeAILimits } from '../../services/claudeAiLimits.js'
 import type { Message as MessageType } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -363,13 +364,26 @@ function structuredOutputFromMessages(messages: MessageType[]): unknown {
     : undefined
 }
 
+// Like official 2.1.303, a usage-limit 429 keeps its quota state so a workflow can wait for the reset.
+export class AgentApiError extends Error {
+  constructor(
+    message: string,
+    readonly quotaLimits: ClaudeAILimits | undefined,
+  ) {
+    super(message)
+  }
+}
+
 export function getAgentTerminalError(messages: MessageType[]): Error | undefined {
   const lastAssistantMessage = getLastAssistantMessage(messages)
   if (!lastAssistantMessage?.isApiErrorMessage && !lastAssistantMessage?.error) {
     return undefined
   }
   const message = extractTextContent(lastAssistantMessage.message.content, '\n').trim()
-  return new Error(message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed')
+  return new AgentApiError(
+    message || errorMessage(lastAssistantMessage.error) || 'Agent API request failed',
+    lastAssistantMessage.error === 'rate_limit' ? lastAssistantMessage.quotaLimits : undefined,
+  )
 }
 
 export function countToolUses(messages: MessageType[]): number {

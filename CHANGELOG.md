@@ -12,6 +12,20 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-24 - Dynamic Workflow：撞到 claude.ai 用量上限时暂停等待重置
+
+### 变更内容
+
+- 与官方 2.1.303 一致：claude.ai 订阅用户的 workflow Agent 因用量上限（带配额头的 429）停止时，工作流暂停到重置时间后 30–90 秒，再以 `<label> (after usage limit)` 重跑等待中的 Agent；同一时间只有一个等待，期间新 Agent 不会启动；重置超过 24 小时或本次运行已等过 2 次时直接失败并写明原因（#127）。
+- 新增设置 `autoContinueAtUsageLimit`（默认开启）；关闭后撞到用量上限的 Agent 直接失败，等待中关闭则这些 Agent 不再重跑。带配额信息的用量上限错误不再做无意义的立即自动重试。
+- 等待期间后台任务列表显示 `Paused · usage limit resets at <time>`，输入框下方的工作流行显示为 paused 并带重置时间。
+
+### 测试覆盖
+
+- `src/tools/WorkflowTool/workflowUsageLimitWait.test.ts`：官方常数、日志文字、多个 Agent 加入同一等待、过期重置上限、过远重置、设置关闭撤销与中止。
+- `src/tools/WorkflowTool/workflowScriptRuntime.test.ts`：等待后以 `(after usage limit)` 重跑并完成；不能等待时只调用一次并在 `<failures>` 报告。
+- `src/services/api/errors-quota-limits.test.ts`、`src/components/CoordinatorAgentStatus.test.ts`、`src/utils/settings/compactSettings.test.ts`。
+
 ## 2026-10-24 - VS Code 插件 / Agent SDK：支持 --thinking-display，mcp_status 列出 SDK MCP 服务器
 
 ### 变更内容

@@ -1,4 +1,5 @@
 import type { UUID } from 'crypto'
+import type { ClaudeAILimits } from '../services/claudeAiLimits.js'
 import type { Attachment } from '../utils/attachments.js'
 
 // ---------------------------------------------------------------------------
@@ -177,6 +178,8 @@ export interface AssistantMessage {
   }
   error?: unknown
   errorDetails?: string
+  /** Quota state from a usage-limit 429's headers. */
+  quotaLimits?: ClaudeAILimits
   advisorModel?: string
   /** Model the request named; responses may report a different id. */
   requestedModel?: string

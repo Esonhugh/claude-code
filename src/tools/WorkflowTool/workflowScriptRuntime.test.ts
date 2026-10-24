@@ -26,6 +26,7 @@ import {
   workflowAgentSystemPrompt,
 } from './workflowScriptRuntime.js'
 import type { WorkflowDryRunPlan } from './workflowSpec.js'
+import { AgentApiError } from '../AgentTool/agentToolUtils.js'
 
 // The provenance frame is covered by workflowPromptProvenance.test.ts and its own runtime scenario;
 // the fake agents here match on raw prompts.
@@ -4202,5 +4203,101 @@ for (const sibling of ['stagger leader', 'stagger sibling 1', 'stagger sibling 2
 assert.ok(startedAt('stagger other') - leaderAt < 80, 'a different prefix does not wait')
 const warmOther = warmFirst === 'warm 1' ? 'warm 2' : 'warm 1'
 assert.ok(Math.abs(startedAt(warmOther) - startedAt(warmFirst)) < 80, 'a warm prefix does not wait')
+
+// Like official 2.1.303, an agent stopped by a claude.ai usage limit waits for the reset and
+// re-runs as "<label> (after usage limit)"; when waiting is off it fails without blind retries.
+dequeueAllMatching(command => command.mode === 'task-notification')
+drainSdkEvents()
+const usageLimitScript = `export const meta = {
+  name: "runtime-usage-limit-workflow",
+  description: "Workflow waiting for a usage limit reset.",
+  phases: [{ title: "Limit", detail: "Usage limit agent" }],
+}
+phase("Limit")
+return await agent("usage limit agent", { label: "limited" })
+`
+async function runUsageLimitWorkflow(name: string, isEnabled: () => boolean) {
+  let state = { tasks: {}, toolPermissionContext: { mode: 'default' } } as unknown as AppState
+  const descriptions: string[] = []
+  const waits: Array<LocalWorkflowTaskState['rateLimitWait']> = []
+  const tool = {
+    name: 'Agent',
+    async call(input: { description: string }) {
+      descriptions.push(input.description)
+      if (descriptions.length === 1) {
+        throw new AgentApiError("You've hit your limit · resets 3pm", {
+          status: 'rejected',
+          unifiedRateLimitFallbackAvailable: false,
+          isUsingOverage: false,
+          resetsAt: Math.floor(Date.now() / 1000),
+        })
+      }
+      return { data: { status: 'completed', content: [{ type: 'text', text: 'after-limit-ok' }], totalDurationMs: 1 } }
+    },
+  }
+  const result = await runWorkflowScript({
+    script: usageLimitScript,
+    plan: {
+      ...retryPlan,
+      name: 'runtime-usage-limit-workflow',
+      description: 'Workflow waiting for a usage limit reset.',
+      phases: [{ ...retryPlan.phases[0]!, id: 'Limit', description: 'Usage limit agent', prompt: 'Usage limit agent' }],
+      runScriptSnapshot: usageLimitScript,
+    },
+    context: {
+      ...retryContext,
+      getAppState: () => state,
+      setAppState: (updater: (prev: AppState) => AppState): void => {
+        state = updater(state)
+        const task = Object.values(state.tasks).find(
+          (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+        )
+        if (task && task.rateLimitWait !== waits.at(-1)) waits.push(task.rateLimitWait)
+      },
+      options: { ...retryContext.options, tools: [tool] },
+      abortController: new AbortController(),
+      toolUseId: `toolu_script_${name}`,
+    } as unknown as ToolUseContext,
+    canUseTool: async () => ({ behavior: 'allow' }),
+    assistantMessage: { message: { id: `msg_script_${name}` } } as never,
+    workflowRunId: `wf_script_${name}_${process.pid}`,
+    scriptPath: `/tmp/runtime-${name}.js`,
+    usageLimitWaitOptions: { isEnabled, resumeJitterMs: () => 0 },
+  })
+  const task = Object.values(state.tasks).find(
+    (item): item is LocalWorkflowTaskState => item.type === 'local_workflow',
+  )
+  const outputFile = peekTerminalNotification(task?.id)?.output_file
+  assert.ok(outputFile)
+  const output = await readFile(outputFile, 'utf8')
+  const notification = String(peek(
+    command => command.mode === 'task-notification' && String(command.value).includes(`<task-id>${task?.id}</task-id>`),
+  )?.value)
+  dequeueAllMatching(command => command.mode === 'task-notification')
+  drainSdkEvents()
+  return { result, output, notification, task, descriptions, waits }
+}
+
+const usageLimitWaited = await runUsageLimitWorkflow('usage_limit_wait', () => true)
+assert.deepEqual(usageLimitWaited.descriptions, [
+  'runtime-usage-limit-workflow: limited',
+  'runtime-usage-limit-workflow: limited (after usage limit)',
+])
+assert.match(usageLimitWaited.output, /after-limit-ok/)
+assert.equal(usageLimitWaited.task?.status, 'completed')
+assert.equal(usageLimitWaited.waits[0]?.waitingAgents, 1)
+assert.equal(usageLimitWaited.waits.at(-1), undefined)
+assert.equal(usageLimitWaited.task?.rateLimitWait, undefined)
+const usageLimitLogs = (usageLimitWaited.task?.events ?? []).flatMap(event =>
+  event.type === 'workflow_log' ? [event.message] : [],
+)
+assert.ok(usageLimitLogs.some(message => /^Usage limit reached · resets at .+\. Workflow paused; waiting agents re-run shortly after the reset\.$/.test(message)))
+assert.ok(usageLimitLogs.includes('Usage limit reset. Re-running 1 waiting agent.'))
+
+const usageLimitDeclined = await runUsageLimitWorkflow('usage_limit_declined', () => false)
+assert.deepEqual(usageLimitDeclined.descriptions, ['runtime-usage-limit-workflow: limited'])
+assert.equal(usageLimitDeclined.waits.some(wait => wait !== undefined), false)
+assert.match(usageLimitDeclined.notification, /<failures>\[limited\] failed: You've hit your limit · resets 3pm/)
+assert.equal(usageLimitDeclined.task?.results.find(result => result.status === 'failed')?.errorKind, 'rate_limited')
 
 console.log('workflowScriptRuntime.test.ts passed')
