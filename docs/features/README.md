@@ -14,7 +14,7 @@
 | Agent 与编排 | [Agent 与后台任务](agents.md) | 前台/后台 Agent、续跑、`Explore`/`Plan`、按次 `model`/`effort`、worktree 隔离、子代理权限跟随、`SubagentHandback` |
 |  | [Agent Teams](agent-teams.md) | Team / teammate / 共享任务，需 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或 `--agent-teams` |
 |  | [Dynamic Workflow](workflows.md) | official-compatible Workflow 工具：script/plan/saved workflow、parallel/pipeline、journal、暂停恢复 |
-|  | [背景会话、daemon 与 agents 视图](background-sessions.md) | `claude --bg`、`attach`/`logs`/`stop`/`rm`/`respawn`、`claude agents`、`/background`、按需 daemon |
+|  | [背景会话、daemon 与 agents 视图](background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
 |  | [独立会话通信](peer-messaging.md) | 同机独立 CLI 会话经 UDS / named pipe 互发纯文本，`ListAgents` / `SendMessage` / `/peers` |
 | 权限与安全 | [权限规则、权限模式与 Safe mode](permissions.md) | `Tool(param:value)` 规则、通配、受保护路径、Manual/Plan/bypass 闸门、`--safe-mode`、`--permission-prompts none` |
 |  | [自动模式（Auto mode）](auto-mode.md) | 分类器代替人工审批；`autoMode` 规则只读可信来源，`/permissions` Auto mode 分页、`claude auto-mode` |
