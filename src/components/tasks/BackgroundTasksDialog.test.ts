@@ -225,6 +225,44 @@ assert.match(
 assert.match(stripAnsi(cappedStdout.output), /row-30 /)
 assert.doesNotMatch(stripAnsi(cappedStdout.output), /row-1 /)
 
+// Monitor/shell details get the same capped bottom area.
+const cappedMonitor: LocalShellTaskState = {
+  ...shellTask('monitor', Date.now()),
+  command: 'tail -f app.log | grep ERROR',
+  kind: 'monitor',
+  status: 'running',
+}
+const monitorStdout = new TestStdout()
+const monitorInstance = await render(
+  React.createElement(
+    AppStateProvider,
+    { initialState: { ...initialState, tasks: { monitor: cappedMonitor } } } as unknown as React.ComponentProps<typeof AppStateProvider>,
+    React.createElement(
+      (await import('../../ink.js')).Box,
+      { flexDirection: 'column', maxHeight: 9 },
+      React.createElement(BackgroundTasksDialog, {
+        onDone: () => {},
+        toolUseContext: {} as ToolUseContext,
+        initialDetailTaskId: 'monitor',
+      }),
+    ),
+  ),
+  {
+    stdout: monitorStdout as unknown as NodeJS.WriteStream,
+    stdin: new TestStdin() as unknown as NodeJS.ReadStream,
+    patchConsole: false,
+    exitOnCtrlC: false,
+  },
+)
+await new Promise(resolve => setTimeout(resolve, 50))
+monitorInstance.unmount()
+monitorInstance.cleanup()
+
+assert.match(
+  stripAnsi(monitorStdout.output),
+  /Status: running\s*\n\s*Runtime: \S+\s*\n\s*Script: tail -f app\.log \| grep ERROR/,
+)
+
 const { createUserMessage } = await import('../../utils/messages.js')
 const retainedMessages = [createUserMessage({ content: 'retained transcript marker' })]
 const retainedTeammate = {

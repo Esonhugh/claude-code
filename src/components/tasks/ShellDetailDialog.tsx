@@ -18,6 +18,7 @@ import {
   truncateToWidth,
 } from '../../utils/format.js'
 import { tailFile } from '../../utils/fsOperations.js'
+import { isFullscreenActive } from '../../utils/fullscreen.js'
 import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { Byline } from '../design-system/Byline.js'
 import { Dialog } from '../design-system/Dialog.js'
@@ -34,6 +35,9 @@ type Props = {
 }
 
 const SHELL_DETAIL_TAIL_BYTES = 8192
+const SHELL_DETAIL_MAX_LINES = 10
+// Divider, title, header, gaps, output label and border, line count and input guide.
+const SHELL_DETAIL_CHROME_ROWS = 14
 
 type TaskOutputResult = {
   content: string
@@ -62,7 +66,13 @@ export function ShellDetailDialog({
   onKillShell,
   onBack,
 }: Props): React.ReactNode {
-  const { columns } = useTerminalSize()
+  const { columns, rows } = useTerminalSize()
+  // Fullscreen caps the bottom area (where the dialog renders) at half the terminal.
+  const availableRows = isFullscreenActive() ? Math.floor(rows / 2) : rows
+  const maxLines = Math.max(
+    3,
+    Math.min(SHELL_DETAIL_MAX_LINES, availableRows - SHELL_DETAIL_CHROME_ROWS),
+  )
 
   // Promise created in initializer (not during render). For running shells,
   // the effect timer replaces it periodically to pick up new output.
@@ -141,7 +151,7 @@ export function ShellDetailDialog({
           )
         }
       >
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexShrink={0}>
           <Text>
             <Text bold>Status:</Text>{' '}
             {shell.status === 'running' ? (
@@ -180,6 +190,7 @@ export function ShellDetailDialog({
             <ShellOutputContent
               outputPromise={deferredOutputPromise}
               columns={columns}
+              maxLines={maxLines}
             />
           </Suspense>
         </Box>
@@ -191,11 +202,13 @@ export function ShellDetailDialog({
 type ShellOutputContentProps = {
   outputPromise: Promise<TaskOutputResult>
   columns: number
+  maxLines: number
 }
 
 function ShellOutputContent({
   outputPromise,
   columns,
+  maxLines,
 }: ShellOutputContentProps): React.ReactNode {
   const { content, bytesTotal } = use(outputPromise)
 
@@ -203,10 +216,10 @@ function ShellOutputContent({
     return <Text dimColor>No output available</Text>
   }
 
-  // Find last 10 line boundaries via lastIndexOf
+  // Find last maxLines line boundaries via lastIndexOf
   const starts: number[] = []
   let pos = content.length
-  for (let i = 0; i < 10 && pos > 0; i++) {
+  for (let i = 0; i < maxLines && pos > 0; i++) {
     const prev = content.lastIndexOf('\n', pos - 1)
     starts.push(prev + 1)
     pos = prev
@@ -229,7 +242,7 @@ function ShellOutputContent({
         borderStyle="round"
         paddingX={1}
         flexDirection="column"
-        height={12}
+        height={maxLines + 2}
         maxWidth={columns - 6}
       >
         {rendered.map((line, i) => (
