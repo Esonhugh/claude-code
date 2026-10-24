@@ -311,7 +311,7 @@ export async function attachToJob(job: JobRecord): Promise<string> {
     stdin.setRawMode?.(false)
     stdin.pause()
     stdin.removeListener('data', onInput)
-    process.removeListener('SIGWINCH', onResize)
+    stdout.removeListener('resize', onResize)
     // Undo the terminal modes the session had switched on.
     if (modes) stdout.write('\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[?1049l\x1b[?25h')
   }
@@ -339,7 +339,8 @@ export async function attachToJob(job: JobRecord): Promise<string> {
           stdin.setRawMode?.(true)
           stdin.resume()
           stdin.on('data', onInput)
-          process.on('SIGWINCH', onResize)
+          // SIGWINCH does not exist on Windows; 'resize' fires everywhere.
+          stdout.on('resize', onResize)
           break
         case 'output':
           stdout.write(Buffer.from(frame.data, 'base64'))

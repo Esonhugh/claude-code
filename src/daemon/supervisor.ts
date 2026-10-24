@@ -11,6 +11,7 @@ import {
   getJobDir,
   getPtySockPath,
   getSelfCommand,
+  getSockDir,
   type JobRecord,
   readFrames,
   readJobRecords,
@@ -54,9 +55,14 @@ function preparePrivateSocketDir(dir: string): void {
 
 export async function runSupervisor(): Promise<void> {
   const socketPath = getControlSocketPath()
-  preparePrivateSocketDir(dirname(dirname(socketPath)))
-  preparePrivateSocketDir(dirname(socketPath))
-  preparePrivateSocketDir(join(dirname(socketPath), 'pty'))
+  // Windows named pipes have no directory.
+  const posix = process.platform !== 'win32'
+  if (posix) {
+    const sockDir = getSockDir()
+    preparePrivateSocketDir(dirname(sockDir))
+    preparePrivateSocketDir(sockDir)
+    preparePrivateSocketDir(join(sockDir, 'pty'))
+  }
   try {
     unlinkSync(socketPath)
   } catch {
@@ -126,6 +132,7 @@ export async function runSupervisor(): Promise<void> {
         },
         stdio: ['ignore', 'ignore', hostLog],
         detached: true,
+        windowsHide: true,
       },
     )
     host.unref()
@@ -269,7 +276,7 @@ export async function runSupervisor(): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(socketPath, () => {
-      chmodSync(socketPath, 0o600)
+      if (posix) chmodSync(socketPath, 0o600)
       resolve()
     })
   })
