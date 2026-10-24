@@ -60,6 +60,27 @@ export function isAutoMemoryEnabled(): boolean {
 }
 
 /**
+ * Whether memory recall goes through the SearchMemory tool's SQLite index
+ * (memory.sqlite.enabled) instead of the MEMORY.md index in context.
+ * Needs the Bun runtime for bun:sqlite; elsewhere MEMORY.md stays loaded.
+ * Fixed for the session so the tool list and memory prompt never disagree.
+ */
+export const isSqliteMemoryEnabled = memoize(
+  (): boolean =>
+    typeof Bun !== 'undefined' &&
+    isAutoMemoryEnabled() &&
+    getInitialSettings().memory?.sqlite?.enabled === true,
+)
+
+/** Scopes SearchMemory may search (memory.sqlite.scopes, default all). */
+export const getSqliteMemoryScopes = memoize(
+  (): readonly SqliteMemoryScope[] =>
+    getInitialSettings().memory?.sqlite?.scopes ?? ['user', 'project', 'session'],
+)
+
+export type SqliteMemoryScope = 'user' | 'project' | 'session'
+
+/**
  * Whether the extract-memories background agent will run this session.
  *
  * The main agent's prompt always has full save instructions regardless of
