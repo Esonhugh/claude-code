@@ -1112,6 +1112,33 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Enable auto-memory for this project. When false, Claude will not read from or write to the auto-memory directory.',
         ),
+      memory: z
+        .object({
+          sqlite: z
+            .object({
+              enabled: z
+                .boolean()
+                .optional()
+                .describe(
+                  'Search memory with the SearchMemory tool (local SQLite FTS5 index) instead of loading MEMORY.md into every request. Memory files and MEMORY.md are still kept, so turning this off loses nothing. Requires auto-memory.',
+                ),
+              scopes: z
+                .array(z.enum(['user', 'project', 'session']))
+                .optional()
+                .describe(
+                  'What SearchMemory can search: user (memories saved in other projects, read-only), project (this project\'s memory directory), session (this project\'s past session transcripts). Defaults to all three.',
+                ),
+            })
+            .optional(),
+          extraction: z
+            .enum(['everyTurns', 'sessionEnd', 'off'])
+            .optional()
+            .describe(
+              'When background memory extraction runs: sessionEnd (default, once when the conversation ends: exit, /clear, /resume), everyTurns (after each turn), or off. Each run is a model call, so less often costs fewer tokens.',
+            ),
+        })
+        .optional()
+        .describe('Memory system options'),
       autoMemoryDirectory: z
         .string()
         .optional()

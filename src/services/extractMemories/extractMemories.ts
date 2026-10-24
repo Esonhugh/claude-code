@@ -53,6 +53,7 @@ import {
   createMemorySavedMessage,
   createUserMessage,
 } from '../../utils/messages.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { logEvent } from '../analytics/index.js'
 import { sanitizeToolNameForAnalytics } from '../analytics/metadata.js'
@@ -282,11 +283,26 @@ let extractor:
   | ((
       context: REPLHookContext,
       appendSystemMessage?: AppendSystemMessageFn,
+      final?: boolean,
     ) => Promise<void>)
   | null = null
 
 /** The active drain function, set by initExtractMemories(). No-op until init. */
 let drainer: (timeoutMs?: number) => Promise<void> = async () => {}
+
+/** Context held back in sessionEnd mode, set by initExtractMemories(). */
+let hasDeferred: () => boolean = () => false
+
+/**
+ * memory.extraction: 'sessionEnd' (default) runs once when the conversation
+ * ends, 'everyTurns' every N eligible turns (N from tengu_bramble_lintel,
+ * default 1), 'off' never.
+ */
+function getExtractionInterval(): number | 'sessionEnd' | 'off' {
+  const mode = getInitialSettings().memory?.extraction ?? 'sessionEnd'
+  if (mode !== 'everyTurns') return mode
+  return getFeatureValue_CACHED_MAY_BE_STALE<number | null>('tengu_bramble_lintel', null) ?? 1
+}
 
 /**
  * Initialize the memory extraction system.
@@ -312,6 +328,16 @@ export function initExtractMemories(): void {
 
   /** Counts eligible turns since the last extraction run. Resets to 0 after each run. */
   let turnsSinceLastExtraction = 0
+
+  /** Latest context not yet extracted (sessionEnd mode, or turns skipped by
+   *  everyTurns), flushed when the conversation ends (exit, /clear, /resume,
+   *  or the end of a -p run). */
+  let deferredContext:
+    | {
+        context: REPLHookContext
+        appendSystemMessage?: AppendSystemMessageFn
+      }
+    | undefined
 
   /** When a call arrives during an in-progress run, we stash the context here
    *  and run one trailing extraction after the current one finishes. */
@@ -369,18 +395,20 @@ export function initExtractMemories(): void {
     const canUseTool = createAutoMemCanUseTool(memoryDir)
     const cacheSafeParams = createCacheSafeParams(context)
 
-    // Only run extraction every N eligible turns (tengu_bramble_lintel, default 1).
+    // Only run extraction every N eligible turns (memory.extraction everyTurns).
     // Trailing extractions (from stashed contexts) skip this check since they
-    // process already-committed work that should not be throttled.
-    if (!isTrailingRun) {
+    // process already-committed work that should not be throttled; so does
+    // the final sessionEnd run.
+    const interval = getExtractionInterval()
+    if (!isTrailingRun && typeof interval === 'number') {
       turnsSinceLastExtraction++
-      if (
-        turnsSinceLastExtraction <
-        (getFeatureValue_CACHED_MAY_BE_STALE('tengu_bramble_lintel', null) ?? 1)
-      ) {
+      if (turnsSinceLastExtraction < interval) {
+        // Held for the session-end flush so skipped turns are not lost.
+        deferredContext = { context, appendSystemMessage }
         return
       }
     }
+    deferredContext = undefined
     turnsSinceLastExtraction = 0
 
     inProgress = true
@@ -525,6 +553,7 @@ export function initExtractMemories(): void {
   async function executeExtractMemoriesImpl(
     context: REPLHookContext,
     appendSystemMessage?: AppendSystemMessageFn,
+    final = false,
   ): Promise<void> {
     // Only run for the main agent, not subagents
     if (context.toolUseContext.agentId) {
@@ -541,6 +570,15 @@ export function initExtractMemories(): void {
       return
     }
 
+    const interval = getExtractionInterval()
+    if (interval === 'off') {
+      return
+    }
+    if (!final && interval === 'sessionEnd') {
+      deferredContext = { context, appendSystemMessage }
+      return
+    }
+
     // If an extraction is already in progress, stash this context for a
     // trailing run (overwrites any previously stashed context — only the
     // latest matters since it has the most messages).
@@ -553,11 +591,12 @@ export function initExtractMemories(): void {
       return
     }
 
-    await runExtraction({ context, appendSystemMessage })
+    // The session-end flush must not be throttled again.
+    await runExtraction({ context, appendSystemMessage, isTrailingRun: final })
   }
 
-  extractor = async (context, appendSystemMessage) => {
-    const p = executeExtractMemoriesImpl(context, appendSystemMessage)
+  extractor = async (context, appendSystemMessage, final) => {
+    const p = executeExtractMemoriesImpl(context, appendSystemMessage, final)
     inFlightExtractions.add(p)
     try {
       await p
@@ -566,7 +605,14 @@ export function initExtractMemories(): void {
     }
   }
 
+  hasDeferred = () => deferredContext !== undefined
+
   drainer = async (timeoutMs = 60_000) => {
+    const deferred = deferredContext
+    deferredContext = undefined
+    if (deferred) {
+      void extractor?.(deferred.context, deferred.appendSystemMessage, true)
+    }
     if (inFlightExtractions.size === 0) return
     await Promise.race([
       Promise.all(inFlightExtractions).catch(() => {}),
@@ -602,4 +648,18 @@ export async function drainPendingExtraction(
   timeoutMs?: number,
 ): Promise<void> {
   await drainer(timeoutMs)
+}
+
+/** Whether a conversation is held back that still needs extraction. */
+export function hasDeferredExtraction(): boolean {
+  return hasDeferred()
+}
+
+export const SESSION_END_EXTRACTION_TIMEOUT_MS = 30_000
+
+/** Extract the held-back conversation before it goes away. */
+export async function flushDeferredExtraction(
+  timeoutMs = SESSION_END_EXTRACTION_TIMEOUT_MS,
+): Promise<void> {
+  if (hasDeferred()) await drainer(timeoutMs)
 }

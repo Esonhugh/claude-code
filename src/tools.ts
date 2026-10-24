@@ -91,6 +91,7 @@ import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
 import { SetGoalTool } from './tools/SetGoalTool/SetGoalTool.js'
 import { ClearGoalTool } from './tools/ClearGoalTool/ClearGoalTool.js'
+import { SearchMemoryTool } from './tools/SearchMemoryTool/SearchMemoryTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
@@ -223,6 +224,7 @@ export function getAllBaseTools(
     WebSearchTool,
     SetGoalTool,
     ClearGoalTool,
+    SearchMemoryTool,
     TaskStopTool,
     AskUserQuestionTool,
     SkillTool,

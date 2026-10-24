@@ -2,7 +2,10 @@ import { mkdir, writeFile } from 'fs/promises'
 import * as React from 'react'
 import type { CommandResultDisplay } from '../../commands.js'
 import { Dialog } from '../../components/design-system/Dialog.js'
-import { MemoryFileSelector } from '../../components/memory/MemoryFileSelector.js'
+import {
+  BUILD_MEMORY_INDEX_VALUE,
+  MemoryFileSelector,
+} from '../../components/memory/MemoryFileSelector.js'
 import { getRelativeMemoryPath } from '../../components/memory/MemoryUpdateNotification.js'
 import { Box, Link, Text } from '../../ink.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
@@ -11,6 +14,7 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
 import { getErrnoCode } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { editFileInEditor } from '../../utils/promptEditor.js'
+import { buildMemoryIndexSummary } from '../setup-memory-db/setupMemoryDb.js'
 
 function MemoryCommand({
   onDone,
@@ -21,6 +25,15 @@ function MemoryCommand({
   ) => void
 }): React.ReactNode {
   const handleSelectMemoryFile = async (memoryPath: string) => {
+    if (memoryPath === BUILD_MEMORY_INDEX_VALUE) {
+      try {
+        onDone(await buildMemoryIndexSummary(), { display: 'system' })
+      } catch (error) {
+        logError(error)
+        onDone(`Failed to build memory index: ${error}`)
+      }
+      return
+    }
     try {
       // Create claude directory if it doesn't exist (idempotent with recursive)
       if (memoryPath.includes(getClaudeConfigHomeDir())) {

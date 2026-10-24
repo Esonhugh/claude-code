@@ -1,3 +1,4 @@
+import { feature } from 'bun:bundle'
 import chalk from 'chalk'
 import { writeSync } from 'fs'
 import memoize from 'lodash-es/memoize.js'
@@ -514,6 +515,14 @@ export async function gracefulShutdown(
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
   if (options?.skipResumeHint) resumeHintPrinted = true
   const modsShutdownBudgetMs = modsHostDisposers.size > 0 ? sessionEndTimeoutMs + 2000 : 0
+  // memory.extraction (sessionEnd, or everyTurns with N > 1): the held-back conversation is
+  // extracted now, so the failsafe has to allow for that model call.
+  const extractMemories = feature('EXTRACT_MEMORIES')
+    ? await import('../services/extractMemories/extractMemories.js')
+    : null
+  const extractionBudgetMs = extractMemories?.hasDeferredExtraction()
+    ? extractMemories.SESSION_END_EXTRACTION_TIMEOUT_MS
+    : 0
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
@@ -524,7 +533,9 @@ export async function gracefulShutdown(
       printResumeHint()
       forceExit(code)
     },
-    Math.max(5000, sessionEndTimeoutMs + 3500) + modsShutdownBudgetMs,
+    Math.max(5000, sessionEndTimeoutMs + 3500) +
+      modsShutdownBudgetMs +
+      extractionBudgetMs,
     exitCode,
   )
   failsafeTimer.unref()
@@ -539,6 +550,11 @@ export async function gracefulShutdown(
   // flush — which can take several seconds.
   cleanupTerminalModes()
   printResumeHint()
+
+  if (extractionBudgetMs > 0) {
+    writeSync(1, 'Saving memories…\n')
+    await extractMemories!.flushDeferredExtraction()
+  }
 
   // Classic SessionEnd runs first; its adapter then runs Mods with a fresh
   // budget while their host services are still available.

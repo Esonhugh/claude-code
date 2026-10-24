@@ -2,7 +2,11 @@ import { feature } from 'bun:bundle'
 import { join } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { neutralizeMemoryContent } from './neutralizeMemoryContent.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
+import {
+  getAutoMemPath,
+  isAutoMemoryEnabled,
+  isSqliteMemoryEnabled,
+} from './paths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -30,6 +34,8 @@ import {
   MEMORY_RECALL_RULE,
   MEMORY_SAVE_RULES,
   MEMORY_TYPES_SUMMARY,
+  SEARCH_MEMORY_GUIDELINE,
+  USER_CLAUDE_MD_RULE,
   WHAT_NOT_TO_SAVE_SECTION,
 } from './memoryTypes.js'
 
@@ -394,6 +400,9 @@ export function loadStaticMemoryPrompt(): string | null {
 export async function loadMemoryPrompt(): Promise<string | null> {
   const autoEnabled = isAutoMemoryEnabled()
 
+  // SQLite memory mode still maintains MEMORY.md (only its injection is skipped), so
+  // turning the setting off later loses nothing written meanwhile.
+  const sqliteMemory = isSqliteMemoryEnabled()
   const skipIndex = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_moth_copse',
     false,
@@ -415,10 +424,12 @@ export async function loadMemoryPrompt(): Promise<string | null> {
   // Cowork injects memory-policy text via env var; thread into all builders.
   const coworkExtraGuidelines =
     process.env.CLAUDE_COWORK_MEMORY_EXTRA_GUIDELINES
-  const extraGuidelines =
-    coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
+  const extraGuidelines = [
+    ...(coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [coworkExtraGuidelines]
-      : undefined
+      : []),
+    ...(sqliteMemory ? [SEARCH_MEMORY_GUIDELINE, USER_CLAUDE_MD_RULE] : []),
+  ]
 
   if (feature('TEAMMEM')) {
     if (teamMemPaths!.isTeamMemoryEnabled()) {

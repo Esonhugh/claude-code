@@ -200,6 +200,13 @@ const recoveryResolver = embedSharpNative => ({
       path: path.join(projectDir, 'scripts/shims/bun-bundle.js'),
     }));
 
+    // Left for `bun build --compile` to resolve natively; the Node build
+    // never loads it (SearchMemory is disabled outside Bun).
+    pluginBuild.onResolve({ filter: /^bun:sqlite$/ }, args => ({
+      path: args.path,
+      external: true,
+    }));
+
     pluginBuild.onResolve({ filter: /^bun:ffi$/ }, () => ({
       path: path.join(projectDir, 'scripts/shims/bun-ffi.js'),
     }));

@@ -47,7 +47,11 @@ import {
 } from '../bootstrap/state.js'
 import { truncateEntrypointContent } from '../memdir/memdir.js'
 import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
-import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
+import {
+  getAutoMemEntrypoint,
+  isAutoMemoryEnabled,
+  isSqliteMemoryEnabled,
+} from '../memdir/paths.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   getCurrentProjectConfig,
@@ -1155,10 +1159,9 @@ export function getLargeMemoryFiles(files: MemoryFileInfo[]): MemoryFileInfo[] {
 export function filterInjectedMemoryFiles(
   files: MemoryFileInfo[],
 ): MemoryFileInfo[] {
-  const skipMemoryIndex = getFeatureValue_CACHED_MAY_BE_STALE(
-    'tengu_moth_copse',
-    false,
-  )
+  const skipMemoryIndex =
+    isSqliteMemoryEnabled() ||
+    getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false)
   if (!skipMemoryIndex) return files
   return files.filter(f => f.type !== 'AutoMem' && f.type !== 'TeamMem')
 }

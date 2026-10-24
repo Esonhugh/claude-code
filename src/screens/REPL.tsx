@@ -636,6 +636,7 @@ import { AwsAuthStatusBox } from '../components/AwsAuthStatusBox.js'
 import { useRateLimitWarningNotification } from 'src/hooks/notifs/useRateLimitWarningNotification.js'
 import { useDeprecationWarningNotification } from 'src/hooks/notifs/useDeprecationWarningNotification.js'
 import { useNpmDeprecationNotification } from 'src/hooks/notifs/useNpmDeprecationNotification.js'
+import { useMemoryIndexNotification } from 'src/hooks/notifs/useMemoryIndexNotification.js'
 import { useIDEStatusIndicator } from 'src/hooks/notifs/useIDEStatusIndicator.js'
 import { useModelMigrationNotifications } from 'src/hooks/notifs/useModelMigrationNotifications.js'
 import { useCanSwitchToExistingSubscription } from 'src/hooks/notifs/useCanSwitchToExistingSubscription.js'
@@ -1285,6 +1286,7 @@ export function REPL({
   useFastModeNotification()
   useDeprecationWarningNotification(mainLoopModel)
   useNpmDeprecationNotification()
+  useMemoryIndexNotification()
   useAntOrgWarningNotification()
   useInstallMessages()
   useChromeExtensionNotification()
@@ -2969,6 +2971,14 @@ export function REPL({
             }))
             messages.push(createSystemMessage(warning, 'warning'))
           }
+        }
+
+        // memory.extraction (sessionEnd, or everyTurns with N > 1): extract before switching away.
+        if (feature('EXTRACT_MEMORIES')) {
+          const { flushDeferredExtraction } = await import(
+            '../services/extractMemories/extractMemories.js'
+          )
+          await flushDeferredExtraction()
         }
 
         // Fire SessionEnd hooks for the current session before starting the
