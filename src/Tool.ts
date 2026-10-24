@@ -354,6 +354,9 @@ export type ToolUseContext = {
   /** When true, preserve toolUseResult on messages even for subagents.
    * Used by in-process teammates whose transcripts are viewable by the user. */
   preserveToolUseResults?: boolean
+  /** Set for commands typed at the `!` prompt: like the user's own terminal,
+   *  they run outside the sandbox even in strict sandbox mode. */
+  userShellCommand?: boolean
   /** Local denial tracking state for async subagents whose setAppState is a
    *  no-op. Without this, the denial counter never accumulates and the
    *  fallback-to-prompting threshold is never reached. Mutable — the
