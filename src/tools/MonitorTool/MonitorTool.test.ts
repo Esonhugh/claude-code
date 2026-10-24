@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { afterEach, test } from 'bun:test'
+import { afterEach, spyOn, test } from 'bun:test'
 
 import { getDefaultAppState, type AppState } from '../../state/AppState.js'
 import { getEmptyToolPermissionContext } from '../../Tool.js'
@@ -152,4 +152,27 @@ test('tool result tells the model to keep working instead of polling', () => {
     block.content,
     'Monitor started (task b42, expires in 5m unless the source ends first; you get one notice at expiry — re-arm if you still need the watch). You will be notified on each event. Keep working — do not poll or sleep. Events may arrive while you are waiting for the user — an event is not their reply.',
   )
+})
+
+test('sandbox auto-allow does not apply to monitor commands', async () => {
+  const { SandboxManager } = await import('../../utils/sandbox/sandbox-adapter.js')
+  const { bashToolHasPermission } = await import('../BashTool/bashPermissions.js')
+  const spies = [
+    spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(true),
+    spyOn(SandboxManager, 'isAutoAllowBashIfSandboxedEnabled').mockReturnValue(true),
+    spyOn(SandboxManager, 'areUnsandboxedCommandsAllowed').mockReturnValue(true),
+  ]
+  try {
+    const { context } = makeContext()
+    const command = 'touch monitor-auto-allow-probe'
+    const bash = await bashToolHasPermission({ command }, context as never)
+    assert.equal(bash.behavior, 'allow')
+    const monitor = await MonitorTool.checkPermissions(
+      { command, description: 'probe', timeout_ms: 300_000 },
+      context as never,
+    )
+    assert.notEqual(monitor.behavior, 'allow')
+  } finally {
+    for (const spy of spies) spy.mockRestore()
+  }
 })

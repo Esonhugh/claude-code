@@ -84,8 +84,14 @@ export const MonitorTool = buildTool({
   },
   async checkPermissions(input, context) {
     // Same rules as Bash: an allowed Bash(prefix:*) also allows the monitor.
+    // Sandbox auto-allow does not apply to monitors, so evaluate the rules
+    // as if the command ran unsandboxed.
     const result = await bashToolHasPermission(
-      { command: input.command, description: input.description },
+      {
+        command: input.command,
+        description: input.description,
+        dangerouslyDisableSandbox: true,
+      },
       context,
     )
     return 'updatedInput' in result && result.updatedInput
