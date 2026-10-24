@@ -79,7 +79,7 @@ bun ./dist/cli.js --help
 |  | [Agent Teams](docs/features/agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
 |  | [Dynamic Workflow](docs/features/workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
 |  | [背景会话、daemon 与 agents 视图](docs/features/background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
-|  | [独立会话通信](docs/features/peer-messaging.md) | 同机独立 CLI 会话经 UDS / named pipe 互发纯文本，`ListAgents` / `SendMessage` / `/peers` |
+|  | [独立会话通信](docs/features/peer-messaging.md) | 同一台机器上开着的几个 Claude 会话可以互相发现、互发消息：一个写代码，一个做 review，完成了喊一声 |
 | 权限与安全 | [权限规则、权限模式与 Safe mode](docs/features/permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
 |  | [自动模式（Auto mode）](docs/features/auto-mode.md) | 不用一条条点确认：由分类器判断每个操作是否安全，安全的直接做，危险的拦下；可以用一句话加自己的规则 |
 |  | [Hooks 事件、匹配与输出校验](docs/features/hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
