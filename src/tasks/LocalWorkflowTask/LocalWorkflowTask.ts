@@ -9,6 +9,7 @@ import type {
   WorkflowRuntimeSpec,
 } from '../../tools/WorkflowTool/workflowSpec.js'
 import type { WorkflowScriptMeta } from '../../tools/WorkflowTool/workflowScriptParser.js'
+import type { WorkflowUsageLimitWaitStatus } from '../../tools/WorkflowTool/workflowUsageLimitWait.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import { generateTaskId, type SetAppState, type Task, type TaskStateBase } from '../../Task.js'
 import { isTerminalTaskStatus } from '../../taskStatus.js'
@@ -206,6 +207,8 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   pausedAt?: number
   evictAfter?: number
   abortController?: AbortController
+  /** Set while the run waits for a claude.ai usage limit to reset. */
+  rateLimitWait?: WorkflowUsageLimitWaitStatus
   phases: LocalWorkflowPhaseState[]
   results: WorkflowAgentResult[]
   events: WorkflowProgressEvent[]
@@ -1067,6 +1070,7 @@ export function completeWorkflowTask(
       summary: 'Workflow completed',
       endTime,
       evictAfter: endTime + PANEL_GRACE_MS,
+      rateLimitWait: undefined,
       abortController: undefined,
       currentAgentId: undefined,
       agentControllers: undefined,
@@ -1092,6 +1096,7 @@ export function failWorkflowTask(
       error,
       endTime,
       evictAfter: endTime + PANEL_GRACE_MS,
+      rateLimitWait: undefined,
       abortController: undefined,
       currentAgentId: undefined,
       agentControllers: undefined,
@@ -1127,6 +1132,7 @@ function endWorkflowTask(
           summary: `Workflow ${status}`,
           endTime,
           evictAfter: endTime + PANEL_GRACE_MS,
+          rateLimitWait: undefined,
           abortController: undefined,
           currentAgentId: undefined,
           agentControllers: undefined,
@@ -1145,6 +1151,25 @@ export const LocalWorkflowTask: Task = {
   },
 }
 
+// Like official 2.1.303, the wait shows only while the run is running.
+export function setWorkflowRateLimitWait(
+  taskId: string,
+  status: WorkflowUsageLimitWaitStatus | undefined,
+  setAppState: SetAppState,
+): void {
+  withWorkflowTask(taskId, setAppState, task => {
+    const next = task.status === 'running' ? status : undefined
+    if (
+      task.rateLimitWait?.resetsAt === next?.resetsAt &&
+      task.rateLimitWait?.resumeAtMs === next?.resumeAtMs &&
+      task.rateLimitWait?.waitingAgents === next?.waitingAgents
+    ) {
+      return task
+    }
+    return { ...task, rateLimitWait: next }
+  })
+}
+
 export function pauseWorkflowTask(
   taskId: string,
   setAppState: SetAppState,
@@ -1158,6 +1183,7 @@ export function pauseWorkflowTask(
       status: 'pending' as const,
       pausedAt: Date.now(),
       summary: `Workflow paused. ${buildResumePrompt(task)}`,
+      rateLimitWait: undefined,
       abortController: undefined,
       currentAgentId: undefined,
       agentControllers: {},

@@ -83,7 +83,7 @@ import {
 import { logForDebugging } from '../../utils/debug.js'
 import { workflowRetryDebugMessage } from './workflowDiagnostics.js'
 import { sleep } from '../../utils/sleep.js'
-import { observeAgentProgress } from '../AgentTool/agentToolUtils.js'
+import { AgentApiError, observeAgentProgress } from '../AgentTool/agentToolUtils.js'
 
 const AGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
 const TAG_CONTENT_ESCAPE = String.raw`([\s\S]*?)`
@@ -218,10 +218,18 @@ export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Too
       context.modAgentStarted?.(launch)
     },
   }
-  const removeProgressObserver = observeAgentProgress(callContext, message => onProgress?.({
-    toolUseID: context.toolUseId ?? assistantMessage?.message.id ?? '',
-    data: { type: 'agent_progress', message },
-  }))
+  // A background worker's failure reaches us only as task.error; its last API error message
+  // carries the usage-limit quota the workflow needs to wait for the reset.
+  let rateLimitQuota: AssistantMessage['quotaLimits']
+  const removeProgressObserver = observeAgentProgress(callContext, message => {
+    if (message.type === 'assistant' && message.isApiErrorMessage) {
+      rateLimitQuota = message.error === 'rate_limit' ? message.quotaLimits : undefined
+    }
+    onProgress?.({
+      toolUseID: context.toolUseId ?? assistantMessage?.message.id ?? '',
+      data: { type: 'agent_progress', message },
+    })
+  })
   signal.addEventListener('abort', stop, { once: true })
   try {
     signal.throwIfAborted()
@@ -249,7 +257,10 @@ export async function callWorkflowAgent(agentTool: Tool, ...args: Parameters<Too
         return { ...result, data: { ...task.result, status: task.status } }
       }
       if (task.status === 'failed' || task.status === 'killed') {
-        throw new Error(task.error ?? `Workflow Agent task ${task.status}`)
+        throw new AgentApiError(
+          task.error ?? `Workflow Agent task ${task.status}`,
+          task.status === 'failed' ? rateLimitQuota : undefined,
+        )
       }
       await sleep(20, signal)
     }
