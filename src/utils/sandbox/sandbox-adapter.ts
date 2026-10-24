@@ -20,13 +20,15 @@ import {
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
-import { rmSync, statSync } from 'fs'
+import { existsSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
 import { join, resolve, sep } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
+  getInlinePlugins,
+  getInlinePluginsNoMcp,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
@@ -254,6 +256,11 @@ export function convertToSandboxRuntimeConfig(
     denyWrite.push(resolve(cwd, '.claude', 'skills'))
   }
 
+  // --plugin-dir code is reloaded and run outside the sandbox.
+  for (const dir of [...getInlinePlugins(), ...getInlinePluginsNoMcp()]) {
+    denyWrite.push(resolve(originalCwd, dir))
+  }
+
   // SECURITY: Git's is_git_directory() treats cwd as a bare repo if it has
   // HEAD + objects/ + refs/. An attacker planting these (plus a config with
   // core.fsmonitor) escapes the sandbox when Claude's unsandboxed git runs.
@@ -264,19 +271,36 @@ export function convertToSandboxRuntimeConfig(
   // So: if a file exists, denyWrite (ro-bind in place, no stub). If not, scrub
   // it post-command in scrubBareGitRepoFiles() — planted files are gone before
   // unsandboxed git runs; inside the command, git is itself sandboxed.
-  bareGitRepoScrubPaths.length = 0
+  // Outside an existing bare-repo layout, project folders named `hooks/` or
+  // `config/` stay writable and a planted bare repo is broken by scrubbing
+  // only the HEAD/objects/refs it added.
+  bareGitRepoScrubDirs.length = 0
   const bareGitRepoFiles = ['HEAD', 'objects', 'refs', 'hooks', 'config']
   for (const dir of cwd === originalCwd ? [originalCwd] : [originalCwd, cwd]) {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    const isBareRepo = BARE_GIT_REPO_MARKERS.every(f => existsSync(resolve(dir, f)))
+    const planted: string[] = []
     for (const gitFile of bareGitRepoFiles) {
       const p = resolve(dir, gitFile)
+      let stat
       try {
         // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
-        statSync(p)
-        denyWrite.push(p)
+        stat = statSync(p)
       } catch {
-        bareGitRepoScrubPaths.push(p)
+        if (isBareRepo || BARE_GIT_REPO_MARKERS.includes(gitFile)) {
+          planted.push(p)
+        }
+        continue
+      }
+      if (
+        isBareRepo ||
+        BARE_GIT_REPO_MARKERS.includes(gitFile) ||
+        (gitFile === 'config' && !stat.isDirectory())
+      ) {
+        denyWrite.push(p)
       }
     }
+    bareGitRepoScrubDirs.push({ dir, planted })
   }
 
   // If we detected a git worktree during initialize(), the main repo path is
@@ -392,9 +416,14 @@ let settingsSubscriptionCleanup: (() => void) | undefined
 // undefined = not yet resolved; null = not a worktree or detection failed.
 let worktreeMainRepoPath: string | null | undefined
 
+// Git treats a folder holding all of these as a bare repo.
+const BARE_GIT_REPO_MARKERS = ['HEAD', 'objects', 'refs']
+
 // Bare-repo files at cwd that didn't exist at config time and should be
-// scrubbed if they appear after a sandboxed command. See anthropics/claude-code#29316.
-const bareGitRepoScrubPaths: string[] = []
+// scrubbed if they complete a bare-repo layout after a sandboxed command:
+// the missing markers, or hooks/config when the layout already existed.
+// See anthropics/claude-code#29316.
+const bareGitRepoScrubDirs: Array<{ dir: string; planted: string[] }> = []
 
 /**
  * Delete bare-repo files planted at cwd during a sandboxed command, before
@@ -402,13 +431,19 @@ const bareGitRepoScrubPaths: string[] = []
  * bareGitRepoFiles. anthropics/claude-code#29316.
  */
 function scrubBareGitRepoFiles(): void {
-  for (const p of bareGitRepoScrubPaths) {
-    try {
-      // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
-      rmSync(p, { recursive: true })
-      logForDebugging(`[Sandbox] scrubbed planted bare-repo file: ${p}`)
-    } catch {
-      // ENOENT is the expected common case — nothing was planted
+  for (const { dir, planted } of bareGitRepoScrubDirs) {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
+    if (!BARE_GIT_REPO_MARKERS.every(f => existsSync(resolve(dir, f)))) {
+      continue
+    }
+    for (const p of planted) {
+      try {
+        // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
+        rmSync(p, { recursive: true })
+        logForDebugging(`[Sandbox] scrubbed planted bare-repo file: ${p}`)
+      } catch {
+        // ENOENT: this one was not planted
+      }
     }
   }
 }
@@ -701,7 +736,24 @@ async function setSandboxSettings(options: {
  */
 function getExcludedCommands(): string[] {
   const settings = getSettings_DEPRECATED()
-  return settings?.sandbox?.excludedCommands ?? []
+  const excluded = settings?.sandbox?.excludedCommands ?? []
+  // Under an admin-locked sandbox the repo's own settings cannot exempt commands.
+  const locked =
+    shouldAllowManagedSandboxDomainsOnly() ||
+    (['policySettings', 'flagSettings'] as const).some(
+      source =>
+        getSettingsForSource(source)?.sandbox?.allowUnsandboxedCommands ===
+        false,
+    )
+  if (!locked) {
+    return excluded
+  }
+  const trusted = new Set(
+    (['userSettings', 'flagSettings', 'policySettings'] as const).flatMap(
+      source => getSettingsForSource(source)?.sandbox?.excludedCommands ?? [],
+    ),
+  )
+  return excluded.filter(command => trusted.has(command))
 }
 
 /**
@@ -816,7 +868,7 @@ async function reset(): Promise<void> {
   settingsSubscriptionCleanup?.()
   settingsSubscriptionCleanup = undefined
   worktreeMainRepoPath = undefined
-  bareGitRepoScrubPaths.length = 0
+  bareGitRepoScrubDirs.length = 0
 
   // Clear memoized caches
   checkDependencies.cache.clear?.()

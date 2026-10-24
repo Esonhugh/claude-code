@@ -81,6 +81,7 @@ import {
   commandHasAnyCd,
   matchWildcardPattern,
   permissionRuleExtractPrefix,
+  requireApprovalOutsideSandbox,
 } from './bashPermissions.js'
 import { interpretCommandResult } from './commandSemantics.js'
 import {
@@ -745,7 +746,10 @@ export const BashTool = buildTool({
     return { result: true }
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
-    return bashToolHasPermission(input, context)
+    return requireApprovalOutsideSandbox(
+      input,
+      await bashToolHasPermission(input, context),
+    )
   },
   renderToolUseMessage,
   renderToolUseProgressMessage,

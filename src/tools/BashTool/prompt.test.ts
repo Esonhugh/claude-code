@@ -12,6 +12,7 @@ mock.module('../../utils/sandbox/sandbox-adapter.js', () => ({
     getAllowUnixSockets: () => [],
     getIgnoreViolations: () => null,
     areUnsandboxedCommandsAllowed: () => false,
+    getExcludedCommands: () => [],
   },
 }))
 
