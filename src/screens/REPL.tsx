@@ -9,7 +9,7 @@ import { copyModCallerChain } from '../services/mods/callerChain.js'
 import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
-import { spawnSync } from 'child_process'
+import { detachAttachedClients } from '../daemon/protocol.js'
 import {
   snapshotOutputTokensForTurn,
   getCurrentTurnTokenBudget,
@@ -5914,7 +5914,7 @@ export function REPL({
     // active. Without this guard, the worktree branch below short-circuits into
     // ExitFlow (which calls gracefulShutdown) before exit.tsx is ever loaded.
     if (feature('BG_SESSIONS') && isBgSession()) {
-      spawnSync('tmux', ['detach-client'], { stdio: 'ignore' })
+      detachAttachedClients()
       setIsExiting(false)
       return
     }
