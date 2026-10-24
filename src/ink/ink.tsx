@@ -1936,6 +1936,15 @@ export default class Ink {
     // Non-TTY environments don't handle erasing ansi escapes well, so it's better to
     // only render last frame of non-static output
     const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame)
+    // The input caret parks the cursor inside the frame; move it back below the
+    // last frame so whatever prints after exit (the resume hint) starts there.
+    const parked = this.displayCursor
+    if (parked !== null && !this.altScreenActive) {
+      const dx = this.frontFrame.cursor.x - parked.x
+      const dy = this.frontFrame.cursor.y - parked.y
+      if (dx !== 0 || dy !== 0) diff.unshift({ type: 'stdout', content: cursorMove(dx, dy) })
+      this.displayCursor = null
+    }
     writeDiffToTerminal(this.terminal, optimize(diff))
 
     // Clean up terminal modes synchronously before process exit.

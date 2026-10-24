@@ -1,7 +1,7 @@
 import { feature } from 'bun:bundle'
 import * as React from 'react'
 import { useMemo } from 'react'
-import { Box } from 'src/ink.js'
+import { Box, Text } from 'src/ink.js'
 import { useAppState } from 'src/state/AppState.js'
 import {
   STATUS_TAG,
@@ -10,14 +10,21 @@ import {
 } from '../../constants/xml.js'
 import { QueuedMessageProvider } from '../../context/QueuedMessageContext.js'
 import { useCommandQueue } from '../../hooks/useCommandQueue.js'
+import { supportsExtendedKeys } from '../../ink/terminal.js'
+import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js'
+import { chordToString } from '../../keybindings/parser.js'
 import type { QueuedCommand } from '../../types/textInputTypes.js'
-import { isQueuedCommandVisible } from '../../utils/messageQueueManager.js'
+import {
+  isQueuedCommandEditable,
+  isQueuedCommandVisible,
+} from '../../utils/messageQueueManager.js'
 import {
   createUserMessage,
   EMPTY_LOOKUPS,
   normalizeMessages,
 } from '../../utils/messages.js'
 import { jsonParse } from '../../utils/slowOperations.js'
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js'
 import { Message } from '../Message.js'
 
 const EMPTY_SET = new Set<string>()
@@ -128,6 +135,21 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
     )
   }, [queuedCommands])
 
+  const keybindings = useOptionalKeybindingContext()
+  const sendNowShortcut = useMemo(() => {
+    const bindings = (keybindings?.bindings ?? []).filter(
+      binding => binding.action === 'chat:sendNow' && binding.context === 'Chat',
+    )
+    // As official: without extended key reporting the terminal cannot send super or
+    // ctrl/shift+enter, so name the last binding that can actually be typed.
+    const typeable = supportsExtendedKeys()
+      ? undefined
+      : bindings.findLast(binding => !binding.chord.some(key => key.super || (key.key === 'enter' && (key.ctrl || key.shift))))
+    const binding = typeable ?? bindings.at(-1)
+    return binding ? chordToString(binding.chord) : 'ctrl+x ctrl+s'
+  }, [keybindings?.bindings])
+  const showSendNowHint = queuedCommands.some(isQueuedCommandEditable)
+
   // Don't show leader's queued commands when viewing any agent's transcript
   if (viewingAgent || messages === null) {
     return null
@@ -157,6 +179,13 @@ function PromptInputQueuedCommandsImpl(): React.ReactNode {
           />
         </QueuedMessageProvider>
       ))}
+      {showSendNowHint && (
+        <Box paddingLeft={2}>
+          <Text dimColor>
+            <KeyboardShortcutHint shortcut={sendNowShortcut} action="send now" />
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }

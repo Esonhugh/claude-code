@@ -103,6 +103,7 @@ import type {
   ProcessUserInputBaseResult,
   ProcessUserInputContext,
 } from './processUserInput.js'
+import { getSkillOverride } from '../skillOverrides.js'
 import { isAnt } from 'src/utils/userType.js'
 import {
   runModCommand,
@@ -712,6 +713,25 @@ async function getMessagesForSlashCommand(
         createUserMessage({
           content: `This skill can only be invoked by Claude, not directly by users. Ask Claude to use the "${commandName}" skill for you.`,
         }),
+      ],
+      shouldQuery: false,
+      command,
+    }
+  }
+
+  if (getSkillOverride(command) === 'off') {
+    return {
+      messages: [
+        createUserMessage({
+          content: prepareUserContent({
+            inputString: `/${commandName}`,
+            precedingInputBlocks,
+          }),
+        }),
+        createSystemMessage(
+          `Skill "${commandName}" is disabled via skillOverrides. Re-enable it in /skills or remove the override from your settings to run it.`,
+          'suggestion',
+        ),
       ],
       shouldQuery: false,
       command,

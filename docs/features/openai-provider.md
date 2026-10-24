@@ -38,6 +38,8 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_API_KEY=<your-api-key> claude
 
 ![OpenAI 模型列表](images/openai-provider-model.png)
 
+面板标题是 `Switch between OpenAI models…`。默认模型不在网关返回的列表里时，列表顶部会多一行 `Default (<模型名>)`，标为当前模型。
+
 ## 用兼容网关
 
 ```bash

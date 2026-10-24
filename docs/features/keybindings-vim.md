@@ -31,11 +31,11 @@ Claude 正在回答时你也可以继续打字：
 | `Ctrl+X` 然后 `Ctrl+S`，或 `Ctrl+Enter` | **立即发送**（`chat:sendNow`）：正在跑可中断的工具（如长命令）时打断它并马上送出，模型还在输出文字时同样排到下一个间隙；输入框为空时，中断当前回合并立即送出已排队的消息 |
 | `↑` | 把排队中的消息拿回输入框修改 |
 
-下图是 Claude 还在思考时按 `Enter` 的效果：消息显示在输入框上方等待，输入框提示可以按 `↑` 改：
+下图是 Claude 还在思考时按 `Enter` 的效果：消息显示在输入框上方等待，下面提示 `ctrl+x ctrl+s to send now`，输入框提示可以按 `↑` 改：
 
 ![排队中的消息](images/keybindings-vim-queued.png)
 
-`Ctrl+Enter` 需要终端支持 Kitty 键盘协议；不支持时用 `Ctrl+X Ctrl+S`。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
+`Ctrl+Enter` 需要终端支持 Kitty 键盘协议；不支持时用 `Ctrl+X Ctrl+S`，排队提示也会按终端能力显示能按出来的那一个（和官方一样）。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
 
 ## Vim 模式
 

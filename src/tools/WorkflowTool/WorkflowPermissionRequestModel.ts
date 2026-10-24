@@ -8,6 +8,8 @@ type WorkflowPermissionPhaseInput = {
   description?: string
   detail?: string
   prompt?: string
+  prompts?: string[]
+  agents?: number
   fanout?: number
 }
 
@@ -53,6 +55,7 @@ export type WorkflowPermissionPreviewModel = {
     title: string
     detail?: string
     prompts: string[]
+    agents: number
   }>
 }
 
@@ -111,7 +114,8 @@ export function workflowPermissionPreviewModelFromToolInput(
     phases: (input.plan?.phases ?? []).map(phase => ({
       title: phase.title ?? titleCase(phase.id ?? 'phase'),
       detail: phase.detail ?? phase.description,
-      prompts: phase.prompt ? [phase.prompt] : [],
+      prompts: phase.prompts ?? (phase.prompt ? [phase.prompt] : []),
+      agents: phase.agents ?? phase.prompts?.length ?? (phase.prompt ? 1 : 0),
     })),
   }
 }

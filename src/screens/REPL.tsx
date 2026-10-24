@@ -385,6 +385,7 @@ import type {
   ProgressMessage,
   HookResultMessage,
   PartialCompactDirection,
+  SystemAPIErrorMessage,
 } from '../types/message.js'
 import { query } from '../query.js'
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js'
@@ -7346,6 +7347,12 @@ export function REPL({
                   overrideShimmerColor={spinnerShimmerColor}
                   hasActiveTools={inProgressToolUseIDs.size > 0}
                   leaderIsIdle={!isLoading}
+                  apiRetry={(() => {
+                    const last = messages.at(-1)
+                    return isLoading && last?.type === 'system' && last.subtype === 'api_error'
+                      ? (last as SystemAPIErrorMessage)
+                      : null
+                  })()}
                 />
               )}
               {!showSpinner &&

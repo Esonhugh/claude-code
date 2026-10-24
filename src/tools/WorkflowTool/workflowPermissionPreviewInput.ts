@@ -51,50 +51,77 @@ function planFromDryRunPlan(plan: WorkflowDryRunPlan): NonNullable<WorkflowPermi
   }
 }
 
-type AgentPreview = {
-  prompt?: string
-  displayName?: string
+type PhaseAgents = { prompts: string[]; agents: number }
+
+// Leading string or template literal of an agent() prompt argument, with ${...} shown as ${…};
+// a prompt built from a variable has no static text and only counts toward "+N more".
+function leadingLiteral(source: string): string | undefined {
+  const quote = source[0]
+  if (quote !== "'" && quote !== '"' && quote !== '`') return undefined
+  let text = ''
+  for (let i = 1; i < source.length; i++) {
+    const char = source[i]!
+    if (char === '\\') {
+      text += source[++i] ?? ''
+    } else if (char === quote) {
+      return text.trim()
+    } else if (quote === '`' && char === '$' && source[i + 1] === '{') {
+      const close = source.indexOf('}', i)
+      if (close === -1) return undefined
+      text += '${…}'
+      i = close
+    } else {
+      text += char
+    }
+  }
+  return undefined
 }
 
-function extractAgentPreviews(scriptBody: string): AgentPreview[] {
-  const previews: AgentPreview[] = []
-  for (const match of scriptBody.matchAll(/agent\s*\(\s*{/g)) {
-    if (match.index === undefined) continue
-    const objectStart = match.index + match[0].length - 1
-    const lines = scriptBody.slice(objectStart).split('\n')
-    const previewLines: string[] = []
-    for (const line of lines) {
-      if (previewLines.length > 0 && /^\s*prompt\s*:/.test(line)) break
-      previewLines.push(line.trimEnd())
-      if (previewLines.length >= 3) break
+// Walks phase('Title') and agent(...) calls in source order so each agent prompt is listed
+// under the phase that was active when it was spawned.
+function agentsByPhase(scriptBody: string, titles: string[]): PhaseAgents[] {
+  const byPhase = titles.map((): PhaseAgents => ({ prompts: [], agents: 0 }))
+  let current = 0
+  for (const match of scriptBody.matchAll(/\bphase\s*\(\s*(['"`])(.*?)\1|\bagent\s*\(\s*/g)) {
+    if (match[2] !== undefined) {
+      const index = titles.indexOf(match[2])
+      if (index !== -1) current = index
+      continue
     }
-    const prompt = previewLines.join('\n').trim()
-    previews.push({ ...(prompt ? { prompt } : {}) })
+    const phase = byPhase[current]
+    if (!phase || match.index === undefined) continue
+    const argStart = match.index + match[0].length
+    let prompt: string | undefined
+    if (scriptBody[argStart] === '{') {
+      // Object-form agent({ ... }): show the first lines of the options object.
+      const previewLines: string[] = []
+      for (const line of scriptBody.slice(argStart).split('\n')) {
+        if (previewLines.length > 0 && /^\s*prompt\s*:/.test(line)) break
+        previewLines.push(line.trimEnd())
+        if (previewLines.length >= 3) break
+      }
+      prompt = previewLines.join('\n').trim()
+    } else {
+      prompt = leadingLiteral(scriptBody.slice(argStart))
+    }
+    phase.agents++
+    if (prompt) phase.prompts.push(prompt)
   }
-  for (const match of scriptBody.matchAll(/agent\s*\(\s*([^,\n]+?)\s*,\s*\{([^}]*)\}/g)) {
-    const prompt = match[1]?.trim()
-    const options = match[2] ?? ''
-    const label = /label\s*:\s*(['"`])([^'"`]+)\1/.exec(options)?.[2]
-    previews.push({ ...(prompt ? { prompt } : {}), ...(label ? { displayName: label } : {}) })
-  }
-  for (const match of scriptBody.matchAll(/agent\s*\(\s*(['"`][^'"`]*['"`])\s*\)/g)) {
-    const prompt = match[1]?.trim()
-    if (prompt) previews.push({ prompt })
-  }
-  return previews
+  return byPhase
 }
 
 function planFromScript(script: string): NonNullable<WorkflowPermissionPreviewInputValue['plan']> {
   const parsed = parseWorkflowScript(script)
-  const previews = extractAgentPreviews(parsed.scriptBody)
+  const phases = parsed.meta.phases ?? []
+  const agents = agentsByPhase(parsed.scriptBody, phases.map(phase => phase.title))
   return {
     name: parsed.meta.name,
     description: parsed.meta.description,
-    phases: (parsed.meta.phases ?? []).map((phase, index) => ({
+    phases: phases.map((phase, index) => ({
       title: phase.title,
-      detail: phase.detail,
-      ...(previews[index]?.prompt ? { prompt: previews[index].prompt } : {}),
-      ...(previews[index]?.displayName ? { displayName: previews[index].displayName } : {}),
+      ...(phase.detail ? { detail: phase.detail } : {}),
+      ...(agents[index]?.prompts.length ? { prompts: agents[index].prompts } : {}),
+      ...(agents[index]?.agents ? { agents: agents[index].agents } : {}),
     })),
     runScriptSnapshot: script,
   }

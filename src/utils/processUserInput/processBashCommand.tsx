@@ -46,7 +46,7 @@ export async function processBashCommand(
 
   const userMessage = createUserMessage({
     content: prepareUserContent({
-      inputString: `<bash-input>${escapeXml(inputString)}</bash-input>`,
+      inputString: `<bash-input>${inputString}</bash-input>`,
       precedingInputBlocks,
     }),
   })

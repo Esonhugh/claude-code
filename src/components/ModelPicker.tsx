@@ -110,22 +110,11 @@ export function ModelPicker({
   // Ensure the initial value is in the options list
   // This handles edge cases where the user's current model (e.g., 'haiku' for 3P users)
   // is not in the base options but should still be selectable and shown as selected
-  const optionsWithInitial = useMemo(() => {
-    if (
-      initial !== null &&
-      !modelOptions.some(opt => opt.value === initialValue)
-    ) {
-      return [
-        ...modelOptions,
-        {
-          value: initial,
-          label: modelDisplayString(initial),
-          description: 'Current model',
-        },
-      ]
-    }
-    return modelOptions
-  }, [modelOptions, initial, initialValue])
+  const optionsWithInitial = useMemo(
+    () =>
+      withCurrentModelOption(modelOptions, initial, getDefaultMainLoopModel()),
+    [modelOptions, initial],
+  )
 
   const selectOptions = useMemo(
     () =>
@@ -266,7 +255,9 @@ export function ModelPicker({
           </Text>
           <Text dimColor>
             {headerText ??
-              'Switch between Claude models. Applies to this session and future Claude Code sessions. For other/previous model names, specify with --model.'}
+              (getAPIProvider() === 'openai'
+                ? 'Switch between OpenAI models. Applies to this session and future Claude Code sessions. For other model names, specify with --model.'
+                : 'Switch between Claude models. Applies to this session and future Claude Code sessions. For other/previous model names, specify with --model.')}
           </Text>
           {sessionModel && (
             <Text dimColor>
@@ -382,6 +373,36 @@ function resolveOptionModel(value?: string): string | undefined {
   return value === NO_PREFERENCE
     ? getDefaultMainLoopModel()
     : parseUserSpecifiedModel(value)
+}
+
+/**
+ * Keeps the current model selectable and marked: a custom model missing from
+ * the list is appended, and when nothing is set but the provider list (e.g.
+ * OpenAI or a gateway) has no default row, the default model is added first.
+ */
+export function withCurrentModelOption(
+  options: ModelOption[],
+  initial: string | null,
+  defaultModel: string,
+): ModelOption[] {
+  if (initial === null) {
+    if (options.some(option => option.value === null)) return options
+    return [
+      {
+        value: null,
+        label: `Default (${modelDisplayString(defaultModel)})`,
+        description: 'Current model',
+      },
+      ...options,
+    ]
+  }
+  if (options.some(option => option.value === resolveInitialPickerValue(initial, options))) {
+    return options
+  }
+  return [
+    ...options,
+    { value: initial, label: modelDisplayString(initial), description: 'Current model' },
+  ]
 }
 
 export function resolveInitialPickerValue(

@@ -817,10 +817,10 @@ test('routes SSH bash input to the remote shell executor instead of the model', 
   )
 })
 
-test('escapes shell input and preserves partial output on interruption', () => {
+test('keeps shell input verbatim and preserves partial output on interruption', () => {
   assert.match(
     processBashSource,
-    /inputString: `<bash-input>\$\{escapeXml\(inputString\)\}<\/bash-input>`/,
+    /inputString: `<bash-input>\$\{inputString\}<\/bash-input>`/,
   )
   assert.match(
     processBashSource,

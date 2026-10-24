@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 import * as React from 'react'
 
-import { Box } from '../../ink.js'
+import { MessageResponse } from '../../components/MessageResponse.js'
 import { renderToolResultMessage } from './UI.js'
 import { formatToolResultMessage } from './formatToolResultMessage.js'
 import { formatToolUseMessage } from './formatToolUseMessage.js'
@@ -111,14 +111,21 @@ describe('formatToolResultMessage', () => {
 })
 
 describe('renderToolResultMessage', () => {
-  it('renders capture-pane output as a boxed preview view', () => {
+  it('renders capture-pane output under the result indent', () => {
     const rendered = renderToolResultMessage({
       target: 'term-1',
       text: 'line1\nline2',
     })
 
     assert.ok(React.isValidElement(rendered))
-    assert.equal(rendered.type, Box)
+    assert.equal(rendered.type, MessageResponse)
+  })
+
+  it('renders text results under the result indent', () => {
+    const rendered = renderToolResultMessage({ error: { code: 'NOT_FOUND', message: 'no such session' } })
+
+    assert.ok(React.isValidElement(rendered))
+    assert.equal(rendered.type, MessageResponse)
   })
 
   it('sizes the capture-pane box to the captured lines, not the PTY height', () => {
@@ -128,7 +135,7 @@ describe('renderToolResultMessage', () => {
       rows: 24,
     })
 
-    assert.ok(React.isValidElement<{ children: React.ReactElement<{ height: number }>[] }>(rendered))
-    assert.equal(rendered.props.children[1].props.height, 5)
+    assert.ok(React.isValidElement<{ children: React.ReactElement<{ children: React.ReactElement<{ height: number }>[] }> }>(rendered))
+    assert.equal(rendered.props.children.props.children[1].props.height, 5)
   })
 })

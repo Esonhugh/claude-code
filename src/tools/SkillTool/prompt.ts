@@ -17,6 +17,7 @@ import { toError } from '../../utils/errors.js'
 import { truncate } from '../../utils/format.js'
 import { logError } from '../../utils/log.js'
 import { isAnt } from 'src/utils/userType.js'
+import { getSkillOverride } from '../../utils/skillOverrides.js'
 
 
 // Skill listing gets 1% of the context window (in characters)
@@ -64,6 +65,7 @@ function formatCommandDescription(cmd: Command): string {
     )
   }
 
+  if (getSkillOverride(cmd) === 'name-only') return `- ${cmd.name}`
   return `- ${cmd.name}: ${getCommandDescription(cmd)}`
 }
 

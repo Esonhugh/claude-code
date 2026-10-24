@@ -107,7 +107,7 @@ claude --plugin-url https://example.com/my-plugin.zip   # 下载 zip，只对本
 
 ## 已知问题
 
-全屏模式下 `/plugin` 的搜索框右边框会被截掉一格（官方完整），不影响使用。
+- `--plugin-url` 只接受 `http` / `https`；写成 `ftp://…` 等其他协议时这个插件不会加载，启动时也没有提示；官方 2.1.303 同样不提示。
 
 ## 说明
 

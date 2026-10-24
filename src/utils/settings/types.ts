@@ -898,6 +898,16 @@ export const SettingsSchema = lazySchema(() =>
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
         ),
+      skillOverrides: z
+        .record(
+          z.string(),
+          z.enum(['on', 'name-only', 'user-invocable-only', 'off']),
+        )
+        .optional()
+        .describe(
+          'Per-skill listing overrides keyed by skill name. "name-only" lists the skill without its description; ' +
+            '"user-invocable-only" hides it from the model but keeps /name; "off" disables it. Plugin skills are not affected.',
+        ),
       awaySummaryEnabled: z
         .boolean()
         .optional()

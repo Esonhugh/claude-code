@@ -88,14 +88,16 @@ function cleanupTerminalModes(): void {
     //      here first makes onRender() scribble a REPL frame onto main.
     // Calling unmount() now does the final render on the alt buffer,
     // unsubscribes from signal-exit, and writes 1049l exactly once.
+    // On the main screen, unmount() also moves the cursor below the last
+    // frame, so the resume hint does not overwrite the prompt box.
     const inst = instances.get(process.stdout)
-    if (inst?.isAltScreenActive) {
+    if (inst) {
       try {
         inst.unmount()
       } catch {
         // Reconciler/render threw — fall back to manual alt-screen exit
         // so printResumeHint still hits the main buffer.
-        writeSync(1, EXIT_ALT_SCREEN)
+        if (inst.isAltScreenActive) writeSync(1, EXIT_ALT_SCREEN)
       }
     }
     // Catches events that arrived during the unmount tree-walk.

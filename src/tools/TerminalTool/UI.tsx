@@ -1,4 +1,5 @@
 import * as React from 'react'
+import { MessageResponse } from '../../components/MessageResponse.js'
 import { Box, Text } from '../../ink.js'
 import { renderAnsiPreviewLine, renderAnsiPreviewLines } from '../../components/tasks/ansiPreviewRenderer.js'
 import {
@@ -20,22 +21,24 @@ export function renderToolResultMessage(output: Record<string, unknown>): React.
         : 6
     const lines = terminalPreviewLines(String(output.text ?? ''), rows, rows)
     return (
-      <Box flexDirection="column">
-        <Text dimColor>{`capture-pane ${String(output.target)}`}</Text>
-        <Box
-          borderStyle="round"
-          paddingX={1}
-          flexDirection="column"
-          height={terminalPreviewHeight(lines.length)}
-        >
-          {renderAnsiPreviewLines(
-            lines.join('\n'),
-            typeof output.cols === 'number' && Number.isFinite(output.cols)
-              ? output.cols
-              : 80,
-          ).map(renderAnsiPreviewLine)}
+      <MessageResponse>
+        <Box flexDirection="column">
+          <Text dimColor>{`capture-pane ${String(output.target)}`}</Text>
+          <Box
+            borderStyle="round"
+            paddingX={1}
+            flexDirection="column"
+            height={terminalPreviewHeight(lines.length)}
+          >
+            {renderAnsiPreviewLines(
+              lines.join('\n'),
+              typeof output.cols === 'number' && Number.isFinite(output.cols)
+                ? output.cols
+                : 80,
+            ).map(renderAnsiPreviewLine)}
+          </Box>
         </Box>
-      </Box>
+      </MessageResponse>
     )
   }
 
@@ -43,7 +46,11 @@ export function renderToolResultMessage(output: Record<string, unknown>): React.
   if (!message) {
     return null
   }
-  return <Text color={'error' in output ? 'error' : undefined}>{message}</Text>
+  return (
+    <MessageResponse>
+      <Text color={'error' in output ? 'error' : undefined}>{message}</Text>
+    </MessageResponse>
+  )
 }
 
 export function renderToolUseRejectedMessage(): null {

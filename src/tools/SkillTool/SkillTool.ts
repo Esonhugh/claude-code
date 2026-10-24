@@ -151,6 +151,7 @@ export type { SkillToolProgress as Progress } from '../../types/tools.js'
 
 import type { SkillToolProgress as Progress } from '../../types/tools.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isSkillHiddenFromModel } from 'src/utils/skillOverrides.js'
 
 
 // Conditional require for remote skill modules — static imports here would
@@ -475,6 +476,14 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
             message: `Unknown skill: ${normalizedCommandName}`,
             errorCode: 2,
           }
+    }
+
+    if (isSkillHiddenFromModel(resolved.command)) {
+      return {
+        result: false,
+        message: `Skill ${normalizedCommandName} is disabled for model invocation in skillOverrides settings`,
+        errorCode: 7,
+      }
     }
 
     if (resolved.command.disableModelInvocation) {
