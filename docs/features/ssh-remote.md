@@ -2,42 +2,99 @@
 
 > 英文名：`ssh-remote` · 领域：远程执行 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-与 Direct Connect 并列的 SSH transport：按远端架构部署对应 binary（GitHub Release 下载校验 checksum），远端 child 只连 reverse-forwarded Unix socket，由本地 proxy 注入认证。支持远端 history/resume、远端 `@` 路径补全、远端 `!command` 与权限状态同步。只支持交互式 TUI。
+代码在服务器上，但你想在本机终端里用 Claude？`claude ssh` 会：
 
-## 配置
+1. 通过 SSH 连上远端，自动把匹配架构的 Claude Code 程序放上去（远端不用安装任何东西）；
+2. 在远端运行 Claude 的「执行端」：读写文件、跑命令、加载远端的 skill / MCP / 设置；
+3. 本机只负责显示界面、权限确认和中断；
+4. 模型请求经 SSH 隧道回到本机，由本机加上认证再发出——**API key、登录凭据不会复制到远端**。
 
-| 配置项 | 位置 | 写法 | 说明 |
-| --- | --- | --- | --- |
-| host | CLI | `user@host`、`~/.ssh/config` alias、`sshConfigs` 的 `id` | — |
-| `sshConfigs` | settings | `[{"id","name","sshHost","sshPort","sshIdentityFile","startDirectory"}]` | 托管连接 |
-| `--model` / `--settings` | CLI | — | 由本地 launcher 解析，model 显式转发远端 |
+只支持交互式界面（不支持 `-p`）。
 
-```json
-{ "sshConfigs": [{ "id": "managed-config-id", "name": "Managed Linux", "sshHost": "user@example.com", "sshPort": 2222, "startDirectory": "~/project" }] }
+## 快速上手
+
+```bash
+claude ssh user@example.com              # 默认目录
+claude ssh my-ssh-alias ~/project        # ~/.ssh/config 里的别名 + 远端目录
+claude --model gateway-model ssh managed-config-id /srv/project
 ```
 
-## 效果
+连上后欢迎画面的目录后面写着 `in <主机>`。之后就像本地一样使用，工具都在远端执行：
 
-`claude ssh --help`：
+![远端执行](images/ssh-remote-run.png)
+
+`@` 补全的是**远端**的文件：
+
+```text
+❯ @ap
+  + api/
+  + api/server.ts
+```
+
+退出时打印完整的续接命令，下次直接粘贴即可回到同一个远端会话：
+
+```text
+Resume this session with:
+claude ssh localhost /tmp/claude-0/sc --resume ed884af4-0aaa-447c-bd54-88afacca8e09
+```
+
+## 常用的连接写进设置
+
+```json
+{
+  "sshConfigs": [
+    {
+      "id": "managed-config-id",
+      "name": "Managed Linux",
+      "sshHost": "user@example.com",
+      "sshPort": 2222,
+      "sshIdentityFile": "/path/to/private-key",
+      "startDirectory": "~/project"
+    }
+  ]
+}
+```
+
+之后 `claude ssh managed-config-id` 即可。
+
+## 哪些在本机、哪些在远端
+
+| 本机 | 远端 |
+| --- | --- |
+| 界面、权限确认、Esc 中断 | 文件读写、Bash、`!命令` |
+| 模型认证（API key、OAuth、自定义 header、代理） | tools、skills、plugins、hooks、MCP |
+| `--settings`、`sshConfigs`、provider 选择 | 项目上下文、文件索引、会话记录 |
+
+权限选择、`/yolo`、Shift+Tab 切模式、永久规则、额外工作目录都会同步到远端。
+
+## 远端程序从哪来
+
+启动时探测远端架构，部署 `linux-x64-baseline` 或 `linux-arm64`：
+
+- 本机程序旁的 `dist/release/` 里有对应文件时直接用；
+- 否则从 GitHub Release 下载，**必须**通过 `SHA256SUMS.txt` 校验，校验不过拒绝启动；
+- 远端缓存在 `~/.cache/claude-ssh/<版本>/<架构>/claude`。
+
+## 限制
+
+- 只支持交互式界面；
+- 断线不会自动重连，用退出时打印的 `--resume` 命令重新进入；
+- 本机不保存第二份会话记录，记录以远端为准。
+
+## 命令选项
 
 ```text
 Usage: claude ssh [options] <host> [dir]
-Run Claude Code on a remote host over SSH. Deploys the binary and tunnels API
-auth back through your local machine — no remote setup needed.
-Options:
-  --dangerously-skip-permissions  Skip all permission prompts on the remote
-                                  (dangerous)
-  -h, --help                      Display help for command
-  --local                         e2e test mode — spawn the child CLI locally
-                                  (skip ssh/deploy). Exercises the auth proxy
-                                  and unix-socket plumbing without a remote
-                                  host.
+  --dangerously-skip-permissions  Skip all permission prompts on the remote (dangerous)
   --permission-mode <mode>        Permission mode for the remote session
+  --local                         e2e test mode — spawn the child CLI locally (skip ssh/deploy)
 ```
 
-真实 sshd 的端到端记录见 project 研究资料（`research/probe/ssh/`），本文档采集环境没有远端主机。
+## 说明
+
+画面来自 `claude ssh --local`（跳过 SSH 和部署、在本机启动执行端，但走同一套认证代理和 socket 通道），所以主机名显示为 `local`；采集环境没有远端主机。模型回复由测试用假 API 生成。下方「详细说明」保留实现细节。
 
 ## 详细说明
 

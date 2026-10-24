@@ -18,7 +18,7 @@ export function renderToolResultMessage(output: Record<string, unknown>): React.
       typeof output.rows === 'number' && Number.isFinite(output.rows)
         ? output.rows
         : 6
-    const text = String(output.text ?? '')
+    const lines = terminalPreviewLines(String(output.text ?? ''), rows, rows)
     return (
       <Box flexDirection="column">
         <Text dimColor>{`capture-pane ${String(output.target)}`}</Text>
@@ -26,10 +26,10 @@ export function renderToolResultMessage(output: Record<string, unknown>): React.
           borderStyle="round"
           paddingX={1}
           flexDirection="column"
-          height={terminalPreviewHeight(rows)}
+          height={terminalPreviewHeight(lines.length)}
         >
           {renderAnsiPreviewLines(
-            terminalPreviewLines(text, rows, rows).join('\n'),
+            lines.join('\n'),
             typeof output.cols === 'number' && Number.isFinite(output.cols)
               ? output.cols
               : 80,

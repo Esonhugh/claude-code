@@ -69,6 +69,7 @@ const VALID_CONTEXTS: KeybindingContextName[] = [
   'ThemePicker',
   'Settings',
   'Tabs',
+  'Scroll',
   'Attachments',
   'Footer',
   'MessageSelector',

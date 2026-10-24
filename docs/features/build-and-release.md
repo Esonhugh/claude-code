@@ -2,25 +2,79 @@
 
 > 英文名：`build-and-release` · 领域：开发与发布 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-`make build` 产出平台 binary `./built-claude`（编译为 bytecode，`--version` 约 65 ms）；平台 binary 内嵌并在运行时提取 ripgrep。发布流程只分发 launcher 与平台 binary（npm trusted publishing）。另有 Linux/macOS 发布门禁与原生终端采集脚本。
+这一页写给想改代码或自己出包的人。普通使用者装好发布版即可，不需要看。
 
-## 配置
+## 快速上手：从源码构建并运行
 
-| 命令 | 说明 |
-| --- | --- |
-| `make build` | `CLAUDE_CODE_VERSION=$(VERSION) bun package:binary`，产出 `./built-claude` |
-| `bun run build` | 只构建 `dist/cli.js` |
-| `make test` | `./built-claude --dangerously-skip-permissions` 本地交互验证 |
-| `make download-claude` | 下载官方 CLI 做对照 |
+**1. 安装依赖**（项目统一用 bun，不要用 npm）：
 
-## 效果
+```bash
+bun install
+```
+
+**2. 构建当前平台的 binary：**
+
+```bash
+make build
+```
+
+它执行 `CLAUDE_CODE_VERSION=$(VERSION) bun package:binary`，最后把产物移到仓库根目录的 `./built-claude`。版本号取自 `Makefile` 里的 `VERSION`：
 
 ```text
 $ ./built-claude --version
 2.1.292 (Claude Code)
 ```
+
+产物是编译成 bytecode 的单文件，启动很快（`--version` 约 65 ms）；ripgrep 打包在里面，运行时自动解出。
+
+**3. 本地试用：**
+
+```bash
+make test        # 等于 ./built-claude --dangerously-skip-permissions
+```
+
+`--dangerously-skip-permissions` 会跳过所有权限确认，只在你信任的目录里用。
+
+## 和官方版本对照
+
+很多功能要求和官方行为一致。下载同版本的官方 CLI 放在仓库根目录：
+
+```bash
+make download-claude CLAUDE_VERSION=2.1.303    # 产出 ./official-claude（已加入 .gitignore）
+./official-claude --dangerously-skip-permissions
+```
+
+对照交互行为时，两边都放进 tmux，用脚本 `tmux send-keys` 输入、`tmux capture-pane` 截取画面再比较，不要凭手感。
+
+## 常用命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `make build` | 构建 `./built-claude` |
+| `bun run build` | 只构建 `dist/cli.js`（不打包 binary） |
+| `make linux-baseline` | 构建兼容老 CPU 的 Linux x64 baseline 版本 |
+| `make test` | 运行本地构建 |
+| `make download-claude` | 下载官方 CLI 做对照（`CLAUDE_VERSION=` 指定版本） |
+| `make release-check` | 发布前检查：版本号、CHANGELOG、类型检查、lint、构建产物能跑 `--version` / `--help` |
+| `bun test <文件>` | 跑单个测试文件 |
+
+`CHANGELOG.md` 会被打进 binary，改了它要重新构建。
+
+## 发布流程
+
+推送 `v*` 标签（或在 Actions 里手动运行「Release binaries」并填标签）会触发 `.github/workflows/release.yml`：
+
+1. 校验标签和版本号；
+2. 跑 `make release-check` 等源码检查；
+3. 在各平台构建 binary（含 Linux baseline 和 musl 版本），逐个验证 `--version`、`--help` 和内置 ripgrep；
+4. 上传到 GitHub Release，生成 `SHA256SUMS.txt`；
+5. 通过 npm trusted publishing 发布：npm 上只分发 launcher 和各平台 binary 包。
+
+## 说明
+
+下面的「详细说明」保留了 Mods 终端验收和原生输出采集工具的原始记录，面向做兼容性验收的开发者。
 
 ## 详细说明
 

@@ -12,6 +12,7 @@ export type KeybindingContextName =
   | 'ThemePicker'
   | 'Settings'
   | 'Tabs'
+  | 'Scroll'
   | 'Attachments'
   | 'Footer'
   | 'MessageSelector'

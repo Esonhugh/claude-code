@@ -2,45 +2,70 @@
 
 > 英文名：`peer-messaging` · 领域：Agent 与编排 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-每个 CLI 会话（含 `-p`）注册同机 inbox，可用 `/list-agents`（`/peers`）或模型侧 `ListAgents`、`SendMessage` 发现并发送纯文本。发现只在同一 `${CLAUDE_CONFIG_DIR:-~/.claude}/sessions` registry 内进行。来信保留独立 provenance，不算用户指令或权限批准。不是 Remote Control 或跨机器 transport。
+你可能同时开着好几个 Claude 窗口：一个在改代码，一个在跑测试，一个在写文档。独立会话通信让它们**互相知道彼此存在，并能发纯文本消息**：
 
-## 配置
+- `/peers` 列出同机其他会话；
+- Claude 用 `SendMessage` 给另一个会话发消息；
+- 对方收到后显示 `Peer · <发送者>`，像收到一条新输入一样处理。
 
-| 配置项 | 位置 | 可选值 | 说明 |
-| --- | --- | --- | --- |
-| `--name` | CLI | 字符串 | 易识别的会话名 |
-| `--messaging-socket-path` | CLI | 绝对 `.sock` 路径 / named pipe | 覆盖 endpoint；`--bare` 默认不注册 |
-| `crossSessionInbound` | settings | `accept` / `hold` / `refuse` | 未配置时按权限 class 决定；项目设置只能更严格 |
+只在同一台机器、同一个配置目录内有效（Unix socket / Windows named pipe），不跨机器。
+
+## 快速上手
+
+**1. 起两个有名字的会话**（名字方便辨认）：
+
+```bash
+claude --name reviewer     # 窗口 A
+claude --name builder      # 窗口 B
+```
+
+**2. 在 builder 里 `/peers`**，能看到 reviewer：
+
+![/peers](images/peer-messaging-peers.png)
+
+**3. 让 builder 发消息。** 比如对 builder 说「测试通过后通知 reviewer 来看 api/server.ts」，它会调用 `SendMessage`。发送成功只代表**已放进对方收件箱**，不代表对方已处理：
+
+![发送](images/peer-messaging-send.png)
+
+**4. reviewer 收到**，显示发送者和内容，然后开始处理：
+
+![接收](images/peer-messaging-receive.png)
+
+## 来信不等于你的指令
+
+- 来信单独标记来源，**不算用户指令，也不算权限批准**——对方会话需要权限时照常问你。
+- 只传纯文本：不会执行里面的斜杠命令，不带附件。
+- Claude 的普通回复不会自动发给别人，只有显式 `SendMessage` 才会。
+
+## 谁的消息会被接收：`crossSessionInbound`
+
+| 值 | 效果 |
+| --- | --- |
+| `accept` | 直接进入对方的处理队列 |
+| `hold` | 先暂存，等权限模式或设置变化后再判断 |
+| `refuse` | 拒绝 |
+
+不设置时按「权限级别」自动判断：双方权限模式相同就接收，不同就暂存（例如一个普通会话发给一个 bypass 会话）；对方被暂存或拒绝时，发送方会收到 `[Cross-session delivery notice]`。项目设置只能比用户设置更严格，仓库不能自己放宽。
 
 ```json
 { "crossSessionInbound": "accept" }
 ```
 
-## 效果
+## 设置
 
-同一配置目录下启动 `--name reviewer` 与 `--name builder`，在 builder 里 `/peers`：
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `--name` | 字符串 | 会话名，`/peers` 和 `SendMessage.to` 用 |
+| `crossSessionInbound` | `accept` / `hold` / `refuse` | 入站策略 |
+| `--messaging-socket-path` | 绝对 `.sock` 路径或 named pipe | 指定收件地址（高级集成用） |
 
-```text
-❯ /list-agents
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Local Claude sessions
-  Other Claude sessions (1):
-  [unknown] · reviewer [f22cdb] ·
-  ~/work · started 14s
-   ago
-  Enter to confirm · Esc to cancel
-```
+`--bare` 和 SSH 本地界面默认不注册收件箱；不同 `CLAUDE_CONFIG_DIR` 的会话互相看不到。
 
-两个会话使用不同配置目录时互相看不到：
+## 说明
 
-```text
-  Local Claude sessions
-  Other Claude sessions (0):
-  No other live local Claude sessions found.
-  Enter to confirm · Esc to cancel
-```
+画面来自实际运行：两个会话共用一个配置目录，模型回复由测试用假 API 生成。下方「详细说明」保留地址格式和判断规则细节。
 
 ## 详细说明
 

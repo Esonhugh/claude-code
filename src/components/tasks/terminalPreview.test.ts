@@ -6,6 +6,7 @@ import {
   terminalPreviewHeight,
   terminalPreviewLines,
   terminalPreviewSummary,
+  terminalPreviewVisibleRows,
 } from './terminalPreview.js'
 
 describe('terminalPreview', () => {
@@ -41,5 +42,23 @@ describe('terminalPreview', () => {
     assert.equal(terminalPreviewHeight(6), 8)
     assert.equal(terminalPreviewHeight(1), 3)
     assert.equal(terminalPreviewHeight(40), 42)
+  })
+
+  it('fits detail preview rows into the space the dialog actually gets', () => {
+    // fullscreen bottom area is half the terminal; dialog chrome takes 14 rows
+    assert.equal(terminalPreviewVisibleRows(24, 36, true), 4)
+    assert.equal(terminalPreviewVisibleRows(24, 80, true), 24)
+    assert.equal(terminalPreviewVisibleRows(30, 36, false), 22)
+    assert.equal(terminalPreviewVisibleRows(24, 10, true), 3)
+  })
+
+  it('drops blank rows below the cursor before picking visible rows', () => {
+    const lines = terminalPreviewLines(
+      'line1\nline2\n>>> \n\n   \n\u001b[0m\n',
+      24,
+      2,
+    )
+
+    assert.deepEqual(lines, ['line2', '>>> '])
   })
 })

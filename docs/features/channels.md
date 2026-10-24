@@ -2,31 +2,109 @@
 
 > 英文名：`channels` · 领域：插件与扩展 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-默认构建开放 `--channels`、交互式开发频道与 SDK `channel_enable`，不依赖 Anthropic OAuth 或灰度资格；保留组织策略、插件来源验证与逐项授权。声明 `experimental['claude/channel/permission']` 的频道可接收远程工具审批。
+平时只有你在终端里打字，Claude 才会动。Channels（频道）让**外部消息源**也能往会话里「塞」消息：
 
-## 配置
+- 你在手机 Telegram 里发一句「帮我看下 CI 为什么挂了」，桌面上开着的 Claude 收到后直接开工；
+- Claude 需要你批准某个命令时，审批请求也可以发到手机上，你回一句 `yes abcde` 就放行。
 
-| 配置项 | 位置 | 写法 | 说明 |
-| --- | --- | --- | --- |
-| `--channels` | CLI | `plugin:<name>@<marketplace>`（空格分隔） | 只允许白名单内、来源核对通过的插件 |
-| `--dangerously-load-development-channels` | CLI | `server:<name>` / `plugin:<name>@<mp>` | 仅交互模式，启动时确认 |
-| `channelsEnabled` / `allowedChannelPlugins` | 托管设置 | `true` / 数组 | Team/Enterprise 必须由管理员开启 |
-| `CLAUDE_CODE_DISABLE_CHANNELS` | 环境变量 | `1` | 关闭全部频道 |
-| `CLAUDE_CODE_DISABLE_CHANNEL_PERMISSION_RELAY` | 环境变量 | `1` | 只关闭远程审批 |
+频道本质上是一个特殊的 MCP server：它声明自己是「频道」，并主动推送消息。官方提供 telegram、discord、imessage 等插件，你也可以自己写一个。
 
-## 效果
+**注意**：推进来的消息会被 Claude 当作输入处理，相当于给了外部一个「对 Claude 说话」的入口。只接你信任的频道。
 
-指定一个未安装且不在白名单的插件：
+## 快速上手：用一个本地小频道体验全过程
 
-```text
-  Listening for channel messages from: plugin:notreal@somewhere
-  Experimental · inbound messages will be pushed into this session, this carries prompt injection risks.
-  Restart Claude Code without --channels to disable.
-  plugin:notreal@somewhere · plugin not installed
-  plugin:notreal@somewhere · not on the approved channels allowlist
+下面用一个几十行的本地 MCP server 演示。它监听 `inbox.txt`，往里追加一行就等于「从外部发来一条消息」。
+
+**1. 准备频道 server。** 关键是在 `initialize` 时声明两项实验能力，并在有新消息时发 `notifications/claude/channel`：
+
+```js
+// chat-channel.mjs（节选）
+capabilities: { tools: {}, experimental: { 'claude/channel': {}, 'claude/channel/permission': {} } }
+
+// 收到外部消息时：
+send({ method: 'notifications/claude/channel', params: { content: '帮我看下 CI 为什么挂了', meta: { user: 'alice' } } })
 ```
+
+在项目 `.mcp.json` 里登记它：
+
+```json
+{ "mcpServers": { "chat": { "command": "bun", "args": ["./chat-channel.mjs"] } } }
+```
+
+**2. 以开发频道方式启动。** 自己写的、没上架的频道要用开发参数，启动时会先警告并要你确认：
+
+```bash
+claude --dangerously-load-development-channels server:chat
+```
+
+![开发频道确认](images/channels-dev-confirm.png)
+
+**3. 确认后进入会话**，欢迎区下方显示正在监听哪些频道：
+
+![正在监听](images/channels-listening.png)
+
+**4. 外部发来消息。** 往 `inbox.txt` 追加一行，会话里立刻出现 `← chat · alice: …`，Claude 不需要你打字就开始处理：
+
+![收到频道消息](images/channels-message.png)
+
+**5. 远程审批。** 频道消息让 Claude 去跑 `bun test`，终端里弹出常规的审批框；与此同时，声明了审批能力的频道收到一条 `permission_request`，里面带一个 5 个字母的审批 ID（例子里频道把它写进 `outbox.txt`：`[审批请求 hoztn] Bash: Run tests`）：
+
+![审批请求](images/channels-permission.png)
+
+**6. 在「手机」上回复 `yes hoztn`**（这里是往 `inbox.txt` 追加这一行），频道把它转成 `notifications/claude/channel/permission`，终端里的审批框自动关闭，命令执行：
+
+![远程批准](images/channels-approved.png)
+
+本地按键和远程回复谁先到算谁的。普通聊天文字永远不会被当成审批，只有频道明确发出 `permission` 通知才算。
+
+## 使用官方频道插件
+
+先在 `/plugin` 里安装插件（例如 `telegram@claude-plugins-official`），按插件说明配好机器人，然后：
+
+```bash
+claude --channels plugin:telegram@claude-plugins-official
+```
+
+多个频道用空格分隔。插件没装或不在批准名单里时，欢迎区会直接告诉你原因，不会悄悄失效：
+
+![插件未安装](images/channels-not-installed.png)
+
+## 命令速查
+
+| 写法 | 什么时候用 |
+| --- | --- |
+| `claude --channels plugin:<名字>@<市场>` | 用已安装的、批准名单内的频道插件；`-p` 和 SDK（`channel_enable`）也支持 |
+| `claude --dangerously-load-development-channels server:<名字>` | 用 `.mcp.json` 里自己写的频道；只能交互模式，启动时确认 |
+| `claude --dangerously-load-development-channels plugin:<名字>@<市场>` | 调试不在批准名单里的插件 |
+
+## 谁能放行哪些频道
+
+- **批准名单**：`--channels` 只接受名单里的插件，并核对插件确实来自声明的 marketplace。拿不到远程名单时，默认批准 `claude-plugins-official` 的 `telegram`、`discord`、`imessage`、`fakechat`。
+- **只在 `.mcp.json` 里配一个 server 不会开启推送**，必须用上面的参数点名。
+- **公司管理的安装**（有 managed settings，或 Team / Enterprise 订阅）：管理员必须设置 `channelsEnabled: true`；`allowedChannelPlugins` 会替换默认名单，空数组表示禁止所有普通插件。项目和个人设置不能覆盖。
+
+## 设置
+
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `channelsEnabled` | `true`（托管设置） | 托管环境里开启频道 |
+| `allowedChannelPlugins` | 插件数组（托管设置） | 替换默认批准名单 |
+| `CLAUDE_CODE_DISABLE_CHANNELS` | `1` | 关闭全部频道 |
+| `CLAUDE_CODE_DISABLE_CHANNEL_PERMISSION_RELAY` | `1` | 保留消息推送，只关闭远程审批 |
+
+## 写频道 server 时要知道的
+
+- 消息格式：`notifications/claude/channel`，`params.content` 是字符串，`params.meta` 是可选的字符串字典（如 `user`、`chat_id`），会作为属性出现在 Claude 看到的 `<channel source="…">` 标签上；`source` 由连接名决定，伪造无效，非法 key 会被丢弃。
+- 想回消息：在 server 里提供一个普通的 MCP 工具（如 `reply`），Claude 会调用它。发送方是谁、谁能配对，由 server 自己校验。
+- 远程审批：声明 `experimental['claude/channel/permission']: {}` 才会收到 `notifications/claude/channel/permission_request`（含 `request_id`、`tool_name`、`description`、`input_preview`）；用户回复格式建议按 `/^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i` 解析，然后发 `notifications/claude/channel/permission`，参数 `{ request_id, behavior: "allow" | "deny" }`。发给频道的预览已清理 Unicode、遮罩可识别的凭据，每个参数最多保留 3,500 字符（长的保留首尾）。
+- 协议细节见官方 [Channels reference](https://code.claude.com/docs/en/channels-reference)。
+
+## 说明
+
+- 本 fork 不要求 Anthropic 账号登录或灰度资格，API Key 和第三方 provider 下也能用；这属于本项目扩展。
+- 画面来自实际运行（全屏渲染，110×36），模型回复由测试用假 API 生成（`FAKE_DONE`；消息里的 `DO<<…>>` 是让假 API 调用工具的指令）。
 
 ## 详细说明
 
