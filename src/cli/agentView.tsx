@@ -3,6 +3,7 @@ import { join } from 'path'
 import * as React from 'react'
 import { useEffect, useState } from 'react'
 import { Clawd } from '../components/LogoV2/Clawd.js'
+import { getConfiguredUiName } from '../components/LogoV2/uiName.js'
 import {
   hostRequest,
   type JobRecord,
@@ -341,7 +342,7 @@ function AgentView({
         <Clawd />
         <Box flexDirection="column">
           <Text>
-            <Text bold>Claude Code</Text> <Text dimColor>v{MACRO.VERSION}</Text>
+            <Text bold>{getConfiguredUiName(settings)}</Text> <Text dimColor>v{MACRO.VERSION}</Text>
           </Text>
           <Text dimColor>
             New sessions: {renderModelSetting(model)} · {getDisplayedEffortLevel(model, settings.effortLevel)} effort
