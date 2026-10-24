@@ -2,58 +2,41 @@
 
 > 英文名：`effort` · 领域：模型与 Provider · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-控制模型推理强度。CLI、settings、环境变量给出的 effort 原样传给 API（不按模型 capability 改写），只有本地编排档 `ultracode` 以 `xhigh` 发送。`Agent` 工具可按次指定子代理的 `effort`，未指定时继承调用方。
+Effort 是推理强度：同一个模型，effort 越高，回答前思考得越多，结果通常更仔细，但更慢、用的 token 更多。日常小改动用 `medium` 就够；复杂排查、大重构可以调高；简单问答可以调低省钱。
 
-## 配置
+| 档位 | 适合 |
+| --- | --- |
+| `minimal` / `low` | 简单问题、机械改动，追求快 |
+| `medium` | 大多数日常任务（多数模型的默认值） |
+| `high` / `xhigh` | 复杂逻辑、跨文件改动、难查的 bug |
+| `max` / `ultra` | 最难的问题，不在乎时间 |
+| `ultracode` | 本 fork 的本地编排档：以 `xhigh` 发送；启用 Workflow 且模型支持 xhigh 时，子代理不受全局并发上限限制 |
+| `none` | 不发送 effort 参数 |
 
-| 配置项 | 位置 | 可选值 | 说明 |
-| --- | --- | --- | --- |
-| `effortLevel` | settings | `minimal` `low` `medium` `high` `xhigh` `max` `ultra` `ultracode` | 持久值 |
-| `--effort` | CLI | 同上，外加 `none` | 当前会话 |
-| `/effort <level>` | 斜杠命令 | 同上，外加 `none`、`auto`/`unset` | `auto` 清除已保存值，回到模型默认 |
-| `CLAUDE_CODE_EFFORT_LEVEL` | 环境变量 | 同上；`auto`/`unset` 表示不发送 effort | API 请求层最高优先级 |
-| `effort`（Agent 输入 / agent 定义） | 工具参数 / frontmatter | 同上，兼容整数 | 优先级：本次参数 → agent 定义 → 调用方当前 effort → 调用方模型默认 |
+不同模型支持的档位不同，以 `/model` 里能选到的为准。
 
-```json
-{ "effortLevel": "ultracode" }
-```
+## 快速上手
 
-## 效果
+**1. 在 `/model` 里调。** 选模型的同时，用 `←` `→` 调整下方的 effort，`Enter` 确认，保存为以后的默认值：
 
-`--effort ultracode` 启动，header 显示实际发送的 `xhigh`：
+![/model 调整 effort](images/effort-picker.png)
 
-```text
- ▐▛███▜▌     EsonClaw v2.1.292
-▝▜█████▛▘    Opus 5.5 with xhigh effort · API Usage Billing
-  ▘▘ ▝▝      ~/work
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ? for shortcuts                        ✓ Esonhugh-Marketplace installed · /plugin to see available plugins
-```
+**2. 用命令切。** `/effort <档位>` 立即生效并保存；底部会短暂显示当前档位：
 
-`/effort high` 与 `/effort auto` 之后：
+![/effort 命令](images/effort-command.png)
 
-```text
-❯ /effort high
-  ⎿  Set effort level to high: Comprehensive implementation with extensive testing and documentation
-❯ /effort auto
-  ⎿  Effort level set to auto
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ? for shortcuts                                                                          ◉ xhigh · /effort
-```
+- `/effort` 不带参数：显示当前档位；
+- `/effort auto`（或 `unset`）：清除保存的值，回到模型默认。
 
-## 详细说明
+**3. 启动时指定。** `claude --effort ultracode`。欢迎画面会写出实际发给 API 的档位（`ultracode` 显示为 `xhigh`）：
 
-以下内容自原 README 迁入，保持原文。
+![启动时指定](images/effort-ultracode.png)
 
-### SubAgent effort
+## 给子代理单独指定
 
-`Agent` 工具支持可选的 `effort`，与 `model` 一起按次指定：
+Claude 调用 Agent 工具时可以按次指定 `effort`，例如让搜索类子代理用 `low` 省钱：
 
 ```json
 {
@@ -65,41 +48,33 @@
 }
 ```
 
-选择优先级为：本次 `effort` 参数 → agent 定义中的 `effort` → 调用方当前 effort → 已知的调用方模型默认 effort。未设置参数和 agent 定义时，子 agent 默认继承主 agent；嵌套调用继承直接父 agent。单独设置子 agent 不会修改主 agent 或共享 agent 定义。已有的 `CLAUDE_CODE_EFFORT_LEVEL` 环境覆盖在 API 请求层继续具有最高优先级。
+子代理用哪个档位，按以下顺序取第一个有值的：
 
-支持 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`、`ultra`、`ultracode`，并保留 agent 定义已有的整数 effort 兼容性；省略字段即使用上述默认规则。具体 API 支持由 provider 决定，沿用现有 effort 转换规则。前台、后台、进程内 teammate 和 tmux teammate 均传递所选值；后台 agent 续跑时保留启动时的 effort。验证范围见 [SubAgent effort 检查记录](../../docs/research/agent-effort-20261007.md)。
+1. 这次调用写的 `effort`；
+2. 子代理定义（`.claude/agents/*.md`）里的 `effort`（也接受旧的整数写法）；
+3. 调用方当前的 effort（嵌套时继承直接上级）；
+4. 调用方模型的默认值。
 
-### Effort 配置
+给子代理设置不会改变主对话。前台、后台、teammate 都会传递；后台子代理续跑时保留启动时的档位。
 
-持久设置示例：
+## 设置
+
+| 方式 | 写法 | 作用范围 |
+| --- | --- | --- |
+| settings `effortLevel` | `minimal` … `ultracode` | 持久默认值；`/model`、`/effort` 会写这里 |
+| `--effort <档位>` | 也可用 `none` | 当前会话 |
+| `/effort <档位>` | 另有 `none`、`auto` / `unset` | 当前会话并保存 |
+| 环境变量 `CLAUDE_CODE_EFFORT_LEVEL` | 档位；`auto` / `unset` 表示请求里不带 effort | 最高优先级，覆盖以上所有 |
 
 ```json
-{
-  "effortLevel": "ultracode"
-}
+{ "effortLevel": "high" }
 ```
 
-可持久化值：
+## 和官方的区别
 
-```text
-minimal | low | medium | high | xhigh | max | ultra | ultracode
-```
+- 你通过命令行、settings、环境变量指定的档位**原样发给 API**，不会按模型能力自动改写；`/model` 里可选的档位仍按模型能力显示。
+- 新增 `ultracode` 本地档（发送 `xhigh`）；Agent 工具支持按次 `effort`。
 
-当前会话中切换：
+## 说明
 
-```text
-/effort minimal
-/effort high
-/effort xhigh
-/effort ultracode
-/effort none
-/effort auto
-```
-
-也可以用环境变量覆盖：
-
-```bash
-CLAUDE_CODE_EFFORT_LEVEL=xhigh claude
-```
-
-`/effort auto`（或 `/effort unset`）清除已保存的 effort，回到当前模型的默认 effort；环境变量 `CLAUDE_CODE_EFFORT_LEVEL=auto` 或 `unset` 则表示请求中不显式发送 effort。Model Picker 和 SDK capability 列表仍按当前 provider/模型声明可选档位；通过 CLI、settings 或环境变量给出的 configured effort 不再按该 capability 重写并原样进入 API。只有 `ultracode` 是本地编排模式，会以 `xhigh` 作为 API effort。
+画面来自实际运行，使用测试用假 API。
