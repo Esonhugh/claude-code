@@ -2,89 +2,93 @@
 
 > 英文名：`openai-provider` · 领域：模型与 Provider · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-把模型请求切到 OpenAI Responses API。支持 ChatGPT OAuth（device code 登录、token refresh，凭据写入 `~/.codex/auth.json`）、API key 与 Codex auth 文件；启用 server-side `WebSearch`，把 `web_search_call`、URL citations 和 usage 转换成 Anthropic 兼容的 stream 事件。`/fast` 映射为 `service_tier: "priority"`，`/compact` 走 OpenAI remote compaction 并保留 opaque compaction history。ChatGPT OAuth 下 `/stats` 另有 OpenAI activity 标签页。
+Claude Code 默认调用 Anthropic 的 Claude 模型。打开 OpenAI provider 后，同一套界面、工具、权限、命令不变，只是**背后的模型换成 OpenAI 的**（通过 Responses API）。可以用：
 
-## 配置
+- **ChatGPT 账号登录**（OAuth 或设备码），用订阅里的 Codex 额度；
+- **OpenAI API key**，按量计费；
+- **OpenAI 兼容网关**（公司网关、OpenRouter 等）。
 
-| 配置项 | 位置 | 可选值 / 写法 | 说明 |
-| --- | --- | --- | --- |
-| `CLAUDE_CODE_USE_OPENAI` | 环境变量 | `1` | 开启 OpenAI provider |
-| `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` | 环境变量 | 字符串 | 凭据优先级：`OPENAI_AUTH_TOKEN` → `OPENAI_API_KEY` → `~/.codex/auth.json` API key → `~/.codex/auth.json` ChatGPT OAuth |
-| `OPENAI_BASE_URL` | 环境变量 | URL | OpenAI 兼容网关；末尾有无 `/v1` 都只请求一次 `/v1/models` |
-| `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_` / `_HAIKU_` | 环境变量 | 模型名 | 覆盖别名映射（默认 `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna`） |
-| `/login` | 斜杠命令 | — | ChatGPT OAuth 登录 |
-| `/fast` | 斜杠命令 | 切换 | OpenAI 下发送 `service_tier: "priority"` |
+## 快速上手
 
-```bash
-CLAUDE_CODE_USE_OPENAI=1 claude                                  # 之后 /login
-CLAUDE_CODE_USE_OPENAI=1 OPENAI_API_KEY=<key> claude             # API key
-CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_KEY=<key> claude
-```
-
-## 效果
-
-API key 启动时，启动 pane 显示默认模型 `gpt-5.6-sol` 与 `API Usage Billing`（ChatGPT OAuth 时改为显示 plan 与 Codex limits）：
-
-```text
- ▐▛███▜▌     EsonClaw v2.1.292
-▝▜█████▛▘    gpt-5.6-sol · API Usage Billing
-  ▘▘ ▝▝      ~/work
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ? for shortcuts                        ✓ Esonhugh-Marketplace installed · /plugin to see available plugins
-```
-
-## 详细说明
-
-以下内容自原 README 迁入，保持原文。
-
-### OpenAI provider 与登录
-
-启用 OpenAI provider：
+**1. 开启：**
 
 ```bash
 CLAUDE_CODE_USE_OPENAI=1 claude
 ```
 
-进入 CLI 后可执行：
+**2. 登录：** 输入 `/login`，选一种方式：
 
-```text
-/login
-```
+![OpenAI 登录](images/openai-provider-login.png)
 
-OpenAI 模型 API 凭证读取优先级为：
+| 选项 | 适合 |
+| --- | --- |
+| Use API key | 已有 OpenAI API key，粘贴后保存到 `~/.codex/auth.json` |
+| Sign in with OAuth | 本机有浏览器，用 ChatGPT 账号登录 |
+| Sign in with device code | SSH / 无界面机器：在任何设备打开链接、输入一次性码 |
 
-1. `OPENAI_AUTH_TOKEN`
-2. `OPENAI_API_KEY`
-3. `~/.codex/auth.json` 中的 API key
-4. `~/.codex/auth.json` 中的 ChatGPT OAuth access token
-
-当前模型凭据决定计费与用量状态：使用 API key 或 `OPENAI_AUTH_TOKEN` 时，启动 pane 显示 `API Usage Billing`，`/status` Usage 显示 `Usage data is unavailable for the current OpenAI authentication.`，不展示 ChatGPT subscription；仅当当前模型凭据为 `~/.codex/auth.json` 中的 ChatGPT OAuth 时，才显示 ChatGPT plan 和 Codex limits。Codex Apps 同样要求当前模型使用 ChatGPT OAuth。
-
-未显式指定模型时，OpenAI provider 默认使用 `gpt-5.6-sol`；别名 `opus`、`sonnet`、`haiku` 分别解析为 `gpt-5.6-sol`、`gpt-5.6-terra`、`gpt-5.6-luna`（可由 `ANTHROPIC_DEFAULT_OPUS_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL` 覆盖）。其他显式模型名称（包括完整 Claude 模型 ID）不做改写，原样发送到 endpoint，实际可用性取决于服务端。
-
-ChatGPT OAuth 模式下，`/stats` 提供独立 OpenAI activity 标签页，显示 lifetime/peak/streak 指标及 Daily、Weekly、Cumulative 图表。图表内按 `v` 切换视图；Daily 使用 `↑/↓` 移动一天、`←/→` 移动七天，Weekly 使用 `←/→` 选择周并以 `↑/↓` 选择周内日期，Cumulative 使用 `←/→` 选择周。Token 摘要使用 K/M/B 两位有效数字，选中项保留精确数值。
-
-API key 示例：
+也可以不登录，直接用环境变量：
 
 ```bash
 CLAUDE_CODE_USE_OPENAI=1 OPENAI_API_KEY=<your-api-key> claude
 ```
 
-OAuth 登录结果保存在 `~/.codex/auth.json`，文件权限为 `0600`。不要提交或分享该文件。
+**3. 选模型：** 默认 `gpt-5.6-sol`，欢迎画面会显示。`/model` 列出当前账号或网关可用的模型（下图是一个返回两个模型的兼容网关）：
 
-### OpenAI Fast mode 与 compaction
+![OpenAI 模型列表](images/openai-provider-model.png)
 
-OpenAI provider 使用 API key 或 ChatGPT OAuth 时均可执行：
+## 用兼容网关
 
-```text
-/fast
-/compact
+```bash
+CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_KEY=<key> claude
 ```
 
-OpenAI 下 `/fast` 对当前模型启用 priority processing，请求映射为 Responses API 的 `service_tier: "priority"`，不会发送内部 `speed` 字段。该路径不使用 Anthropic Fast mode 的 beta header、状态预取或自动降级；endpoint 不支持 priority tier 时会直接显示服务端错误，再次执行 `/fast` 可关闭。
+地址末尾有没有 `/v1` 都可以。模型列表的获取规则见 [model-discovery.md](model-discovery.md)。
 
-手动 `/compact` 会在 query turn 外创建稳定的 OpenAI session/thread/turn scope。连续 remote compaction 和压缩后继续对话都会携带上一轮 opaque compaction item，避免重复压缩后丢失此前会话上下文。
+## 模型名怎么对应
+
+| 你写的 | 实际发送 | 可用环境变量覆盖 |
+| --- | --- | --- |
+| 不指定 / `opus` | `gpt-5.6-sol` | `ANTHROPIC_DEFAULT_OPUS_MODEL` |
+| `sonnet` | `gpt-5.6-terra` | `ANTHROPIC_DEFAULT_SONNET_MODEL` |
+| `haiku` | `gpt-5.6-luna` | `ANTHROPIC_DEFAULT_HAIKU_MODEL` |
+| 其他名字（包括完整的 Claude 模型 ID） | 原样发送 | — |
+
+## 凭据从哪里来
+
+按顺序取第一个有的：
+
+1. `OPENAI_AUTH_TOKEN`
+2. `OPENAI_API_KEY`
+3. `~/.codex/auth.json` 里的 API key
+4. `~/.codex/auth.json` 里的 ChatGPT 登录凭据
+
+`~/.codex/auth.json` 权限为 `0600`，**不要提交或分享**。和 Codex CLI 共用这个文件。
+
+## 用 ChatGPT 账号时多出来的
+
+- 启动画面和 `/status` 显示套餐、Codex 用量上限和速率限制重置额度（重置需二次确认）；API key 时只显示 `API Usage Billing`。
+- `/stats` 多一个 OpenAI activity 分页：累计、峰值、连续天数，以及日 / 周 / 累计图表（`v` 切换视图，方向键选日期）。
+- 可以使用 [Codex Apps](codex-apps.md)。
+
+## 命令在 OpenAI 下的行为
+
+| 命令 / 工具 | 行为 |
+| --- | --- |
+| `/fast` | 开启优先处理，发送 `service_tier: "priority"`；网关不支持时直接显示服务端错误，再执行一次关闭 |
+| `/compact` | 走 OpenAI 远端压缩，并保留之前的压缩历史，多次压缩不丢上下文 |
+| `WebSearch` | 使用 OpenAI 服务端搜索，结果和引用转换成和 Claude 一致的格式 |
+
+## 设置
+
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `CLAUDE_CODE_USE_OPENAI` | `1` | 开启 OpenAI provider |
+| `OPENAI_AUTH_TOKEN` / `OPENAI_API_KEY` | 字符串 | 凭据 |
+| `OPENAI_BASE_URL` | URL | 兼容网关地址 |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` / `_SONNET_MODEL` / `_HAIKU_MODEL` | 模型名 | 别名映射 |
+
+## 说明
+
+画面来自实际运行：`OPENAI_BASE_URL` 指向测试用假服务，它返回两个模型（Gateway Alpha / Gateway Beta）。
