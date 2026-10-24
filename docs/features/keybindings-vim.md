@@ -2,55 +2,64 @@
 
 > 英文名：`keybindings-vim` · 领域：界面与交互 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-自定义快捷键对所有用户启用；`/keybindings` 创建或打开 `~/.claude/keybindings.json`，保存后热重载。新增 `chat:sendNow`（中断当前回合立即发送）、`chat:queueSubmit`、`Ctrl+J` 换行。Vim 模式新增 `%` 括号跳转和 VISUAL / VISUAL LINE。
+这一页讲三件事：
 
-## 配置
+1. **自定义快捷键**：所有按键都可以在一个 JSON 文件里改，保存后立即生效；
+2. **Claude 忙的时候怎么插话**：排队等它做完，或者立即打断；
+3. **Vim 模式**：输入框支持 Vim 按键，本 fork 补上了 VISUAL 选择和 `%` 括号跳转。
 
-| 配置项 | 位置 | 可选值 | 说明 |
-| --- | --- | --- | --- |
-| `~/.claude/keybindings.json` | 文件 | 见 [官方格式](https://code.claude.com/docs/en/keybindings) | `/doctor` 显示错误 |
-| Editor mode | `/config` | `normal` / `vim` | Vim 模式 |
-| `Ctrl+Enter` 或 `Ctrl+X Ctrl+S` | 默认键位 | — | `chat:sendNow` |
-| `Ctrl+X Enter` | 默认键位 | — | `chat:queueSubmit` |
+## 自定义快捷键
 
-## 效果
+**1. 输入 `/keybindings`。** 第一次会生成 `~/.claude/keybindings.json`（里面是全部默认键位，按场景分组），并用你的 `$EDITOR` 打开：
 
-`/keybindings` 用 `$EDITOR` 打开生成的默认绑定：
+![keybindings.json](images/keybindings-vim-file.png)
 
-```text
-        "ctrl+x b": "app:cycleDiffBase"
-      }
-    },
-    {
-      "context": "Chat",
-      "bindings": {
-        "escape": "chat:cancel",
-"~/.claude/keybindings.json" 239L, 6376B                                                    1,1           Top
-```
+**2. 改你想改的那一行**，例如把 `ctrl+t` 从「切换待办列表」改成别的动作，或写 `null` 取消某个键。每组的 `context` 表示这组键在哪生效（`Chat` 是输入框，`Global` 是任何地方，`Scroll` 是全屏模式下滚动对话）。
 
-Vim 模式下 `Esc` → `v`，footer 显示 `-- VISUAL --`；`V` 显示 `-- VISUAL LINE --`：
+**3. 保存即生效**，不用重启。写错了（未知的动作、冲突的键）底部会提示 `Found N keybinding error`，运行 `/doctor` 能看到具体是哪一行、该怎么改。完整的动作列表和格式见 [官方文档](https://code.claude.com/docs/en/keybindings)。
 
-```text
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ hello world
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  -- VISUAL --                           ✓ Esonhugh-Marketplace installed · /plugin to see available plugins
-```
+## Claude 忙的时候插话
 
-```text
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  -- VISUAL LINE --                                                                       ◐ medium · /effort
-```
+Claude 正在回答时你也可以继续打字：
 
-## 详细说明
+| 操作 | 效果 |
+| --- | --- |
+| `Enter` | **排队**：消息先放着，在下一个工具调用间隙送进去，Claude 不会停下 |
+| `Ctrl+X` 然后 `Enter` | **等这轮结束再发**（`chat:queueSubmit`） |
+| `Ctrl+X` 然后 `Ctrl+S`，或 `Ctrl+Enter` | **立即发送**（`chat:sendNow`）：正在跑可中断的工具（如长命令）时打断它并马上送出，模型还在输出文字时同样排到下一个间隙；输入框为空时，中断当前回合并立即送出已排队的消息 |
+| `↑` | 把排队中的消息拿回输入框修改 |
 
-以下内容自原 README 迁入，保持原文。
+下图是 Claude 还在思考时按 `Enter` 的效果：消息显示在输入框上方等待，输入框提示可以按 `↑` 改：
 
-### 快捷键与 Vim 模式
+![排队中的消息](images/keybindings-vim-queued.png)
 
-- 自定义快捷键对所有用户默认启用（对齐官方 2.1.303）：`/keybindings` 创建或打开 `~/.claude/keybindings.json`，保存后热重载，`/doctor` 显示配置错误。格式见 [Anthropic keybindings 文档](https://code.claude.com/docs/en/keybindings)。
-- `Enter` 提交；回合进行中提交的消息排队，在工具边界送入。`Ctrl+Enter`（需终端支持 Kitty 键盘协议）或 `Ctrl+X` 后按 `Ctrl+S` 为 `chat:sendNow`：中断当前回合并立即送出；输入为空时立即送出已排队的消息。`Ctrl+X` 后按 `Enter` 为 `chat:queueSubmit`，等当前回合结束后再送出。
-- `Ctrl+J`（`chat:newline`）插入换行，与 `Shift+Enter`、`Option+Enter` 相同。
-- Vim 模式（`/config` 中 Editor mode 设为 vim）：NORMAL 下 `%` 跳到配对的 `()`/`[]`/`{}`，可与 `d`/`c`/`y` 组合；`v` / `V` 进入 VISUAL / VISUAL LINE，选区反色显示，支持移动、`iw`/`i"` 等文本对象、`d`/`x`/`y`/`c`/`s`/`r`/`~`/`u`/`U`/`p`/`P`/`J`/`>`/`<`/`o`，`Esc` 或再按同一键退出。footer 与 statusLine 的 `vim.mode` 会显示 `VISUAL` / `VISUAL LINE`。
+`Ctrl+Enter` 需要终端支持 Kitty 键盘协议；不支持时用 `Ctrl+X Ctrl+S`。另外 `Ctrl+J` 和 `Shift+Enter`、`Option+Enter` 一样是换行。
+
+## Vim 模式
+
+**1. 打开。** `/config` 里把 Editor mode 设为 `vim`。输入框默认在 INSERT 模式，按 `Esc` 进入 NORMAL。
+
+**2. 选择一段文字。** NORMAL 下光标放在 `(` 上，按 `v` 进入 VISUAL，再按 `%` 跳到配对的 `)`，整段括号内容被选中（反色），底部显示 `-- VISUAL --`：
+
+![VISUAL 选择](images/keybindings-vim-visual.png)
+
+**3. 对选区操作。** 按 `d` 删除，只剩 `fix`：
+
+![删除选区](images/keybindings-vim-deleted.png)
+
+VISUAL 下还支持：移动光标扩展选区、`iw` / `i"` 等文本对象、`y` 复制、`c` / `s` 修改、`r` 替换、`~` / `u` / `U` 大小写、`p` / `P` 粘贴、`J` 合并行、`>` / `<` 缩进、`o` 跳到选区另一端。`V` 进入按行选择（`-- VISUAL LINE --`），`Esc` 或再按同一个键退出。
+
+`%` 在 NORMAL 下也能单独用，在 `()` `[]` `{}` 之间跳，也能和 `d` / `c` / `y` 组合（如 `d%`）。[自定义状态栏](branding.md) 的 `vim.mode` 字段同样会显示 `VISUAL` / `VISUAL LINE`。
+
+## 设置
+
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `~/.claude/keybindings.json` | 见上 | 自定义快捷键，保存后热重载 |
+| `/config` → Editor mode | `normal` / `vim` | 输入框的按键模式 |
+
+## 说明
+
+画面来自实际运行（全屏渲染，110 列），模型回复由测试用假 API 生成（`DO<<…>>` 是让假 API 调用工具的指令，`__delay` 让回合跑久一点以便演示排队）。
