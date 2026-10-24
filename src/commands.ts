@@ -19,6 +19,10 @@ import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
 import {
+  skillDoctor,
+  skillDoctorNonInteractive,
+} from './commands/skill-doctor/index.js'
+import {
   autocompact,
   autocompactNonInteractive,
 } from './commands/autocompact/index.js'
@@ -294,6 +298,8 @@ const COMMANDS = memoize((): Command[] => [
   contextNonInteractive,
   autocompact,
   autocompactNonInteractive,
+  skillDoctor,
+  skillDoctorNonInteractive,
   cost,
   daybreak,
   diff,
