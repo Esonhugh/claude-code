@@ -24,7 +24,7 @@
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | `CronCreate/Delete/List`、session-only 或 durable 任务、`/loop` 自定节奏 |
 |  | [终端程序状态（OSC 7501）](terminal-status.md) | 支持 OSC 7501 的终端里上报 idle/working/blocked/done/error 状态 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
-|  | [自动压缩窗口](compaction.md) | `/autocompact`、按模型 / 按 agent 的压缩窗口、`CLAUDE_CODE_AUTO_COMPACT_WINDOW` |
+|  | [自动压缩窗口](compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact` 决定多长时压缩（按模型分别保存），`/compact` 手动压缩 |
 |  | [Prompt context 与 Tool search](prompt-context.md) | 分层 cache boundary、增量 agent listing、MCP 工具汇总；自定义网关下 tool search 保持开启 |
 |  | [用量、成本与状态](usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
 | 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
