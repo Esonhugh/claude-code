@@ -1200,6 +1200,10 @@ async function* queryLoop(
             : deps.callModel(request)
           for await (const message of modelStream) {
             observeResponse?.(message)
+            if (message.type === 'assistant') {
+              const skill = toolUseContext.options.activeSkill ?? toolUseContext.options.spawnedBySkill
+              if (skill) message.attributionSkill = skill
+            }
             // We won't use the tool_calls from the first attempt
             // We could.. but then we'd have to merge assistant messages
             // with different ids and double up on full the tool_results

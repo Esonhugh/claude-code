@@ -733,6 +733,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     if (!processedCommand.shouldQuery) {
       throw new Error('Command processing failed')
     }
+    if (command.type === 'prompt') context.options.activeSkill = getSkillAttributionName(command)
 
     // Extract metadata from the command
     const allowedTools = processedCommand.allowedTools || []

@@ -1,44 +1,28 @@
-import { appendFileSync, chmodSync, lstatSync, mkdirSync, rmSync, unlinkSync, writeFileSync } from 'fs'
+import { appendFileSync, chmodSync, lstatSync, mkdirSync, openSync, unlinkSync, writeFileSync } from 'fs'
 import { createServer, type Socket } from 'net'
 import { dirname, join } from 'path'
 import {
-  applyTerminalOutput,
-  createTerminalScreenRenderer,
-  renderedPreview,
-  resizeTerminalScreenRenderer,
-  type TerminalScreenRenderer,
-} from '../utils/pty/terminalScreenRenderer.js'
-import {
-  type AttachClientFrame,
+  connectDaemon,
   type DaemonRequest,
   type DaemonResponse,
   ensurePrivateDir,
   getControlSocketPath,
   getDaemonLogPath,
   getJobDir,
+  getPtySockPath,
   getSelfCommand,
   type JobRecord,
   readFrames,
   readJobRecords,
   type SpawnRequest,
+  stopJob,
   writeFrame,
 } from './protocol.js'
 
 const DEFAULT_COLS = 120
 const DEFAULT_ROWS = 40
-const STOP_GRACE_MS = 5000
+const HOST_START_MS = 5000
 const IDLE_EXIT_MS = 5000
-
-type Worker = {
-  job: JobRecord
-  proc: Bun.Subprocess
-  terminal: Bun.Terminal
-  screen: TerminalScreenRenderer
-  cols: number
-  rows: number
-  clients: Set<Socket>
-  stopping: boolean
-}
 
 export function logDaemon(message: string): void {
   try {
@@ -52,37 +36,9 @@ function saveJob(job: JobRecord): void {
   job.updatedAt = new Date().toISOString()
   const dir = getJobDir(job.id)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
-  writeFileSync(join(dir, 'state.json'), JSON.stringify(job, null, 2), { mode: 0o600 })
-}
-
-function saveScreen(worker: Worker): void {
-  try {
-    writeFileSync(join(getJobDir(worker.job.id), 'screen.txt'), `${renderedPreview(worker.screen)}\n`, { mode: 0o600 })
-  } catch {
-    // Best effort: logs falls back to "no output recorded".
-  }
-}
-
-/** Terminal modes the worker switched on at startup, replayed to a new attach. */
-function terminalModes(screen: TerminalScreenRenderer): string {
-  const { terminal } = screen
-  const modes = terminal.modes
-  let out = terminal.buffer.active.type === 'alternate' ? '\x1b[?1049h' : ''
-  if (modes.bracketedPasteMode) out += '\x1b[?2004h'
-  if (modes.sendFocusMode) out += '\x1b[?1004h'
-  switch (modes.mouseTrackingMode) {
-    case 'x10':
-    case 'vt200':
-      out += '\x1b[?1000h\x1b[?1006h'
-      break
-    case 'drag':
-      out += '\x1b[?1002h\x1b[?1006h'
-      break
-    case 'any':
-      out += '\x1b[?1003h\x1b[?1006h'
-      break
-  }
-  return out
+  // worktree.json belongs to the worker.
+  const { worktree: _worktree, ...record } = job
+  writeFileSync(join(dir, 'state.json'), JSON.stringify(record, null, 2), { mode: 0o600 })
 }
 
 /** Refuses a socket directory another user could have planted or can write to. */
@@ -100,6 +56,7 @@ export async function runSupervisor(): Promise<void> {
   const socketPath = getControlSocketPath()
   preparePrivateSocketDir(dirname(dirname(socketPath)))
   preparePrivateSocketDir(dirname(socketPath))
+  preparePrivateSocketDir(join(dirname(socketPath), 'pty'))
   try {
     unlinkSync(socketPath)
   } catch {
@@ -108,79 +65,84 @@ export async function runSupervisor(): Promise<void> {
 
   const startedAt = Date.now()
   const origin = process.env.CLAUDE_DAEMON_ORIGIN ?? 'started with `claude daemon run`'
-  const workers = new Map<string, Worker>()
+  // Jobs whose PTY host this supervisor is watching.
+  const workers = new Map<string, JobRecord>()
   const connections = new Set<Socket>()
   let idleSince = Date.now()
 
-  // A previous supervisor that died took its PTYs (and so its workers) with it.
+  /** Follows a host until its worker exits; false when the host is gone. */
+  async function watch(job: JobRecord): Promise<boolean> {
+    let socket: Socket
+    try {
+      socket = await connectDaemon(1000, job.ptySock)
+    } catch {
+      return false
+    }
+    workers.set(job.id, job)
+    socket.on('error', () => {})
+    socket.on('close', () => {
+      if (workers.get(job.id) !== job) return
+      workers.delete(job.id)
+      idleSince = Date.now()
+      logDaemon(`[bg] ${job.id} ended`)
+    })
+    writeFrame(socket, { type: 'watch' })
+    return true
+  }
+
+  // Workers outlive a supervisor stopped with --keep-workers: adopt them.
   for (const job of await readJobRecords()) {
-    if (job.state === 'running') {
+    if (job.state !== 'running') continue
+    if (await watch(job)) {
+      logDaemon(`[bg] adopted ${job.id} host=${job.hostPid}`)
+    } else {
       job.state = 'exited'
       job.pid = undefined
+      job.hostPid = undefined
       saveJob(job)
     }
   }
 
-  function spawnWorker(job: JobRecord, args: string[], env: Record<string, string>): Worker {
-    const cols = DEFAULT_COLS
-    const rows = DEFAULT_ROWS
-    const screen = createTerminalScreenRenderer(cols, rows)
-    const clients = new Set<Socket>()
-    const proc = Bun.spawn([...getSelfCommand(), ...args], {
-      cwd: job.cwd,
-      env: {
-        ...env,
-        CLAUDE_CODE_SESSION_KIND: 'bg',
-        CLAUDE_BG_BACKEND: 'daemon',
-        CLAUDE_JOB_ID: job.id,
-        CLAUDE_JOB_DIR: getJobDir(job.id),
-        // Fullscreen repaints the whole screen on resize, which is how an
-        // attach redraws the session.
-        CLAUDE_CODE_NO_FLICKER: env.CLAUDE_CODE_NO_FLICKER ?? '1',
-        TERM: env.TERM ?? 'xterm-256color',
-      },
-      terminal: {
-        cols,
-        rows,
-        data(_terminal, data) {
-          const text = Buffer.from(data).toString('utf8')
-          applyTerminalOutput(screen, text)
-          const encoded = Buffer.from(data).toString('base64')
-          for (const client of clients) writeFrame(client, { type: 'output', data: encoded })
+  async function spawnWorker(job: JobRecord, args: string[], env: Record<string, string>): Promise<void> {
+    const self = getSelfCommand()
+    const ptySock = getPtySockPath(job.id)
+    const dir = getJobDir(job.id)
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    const hostLog = openSync(join(dir, 'host.log'), 'a', 0o600)
+    const host = Bun.spawn(
+      [...self, '--bg-pty-host', ptySock, String(DEFAULT_COLS), String(DEFAULT_ROWS), '--', ...self, ...args],
+      {
+        cwd: job.cwd,
+        env: {
+          ...env,
+          CLAUDE_CODE_SESSION_KIND: 'bg',
+          CLAUDE_BG_BACKEND: 'daemon',
+          CLAUDE_JOB_ID: job.id,
+          CLAUDE_JOB_DIR: dir,
+          // Fullscreen repaints the whole screen on resize, which is how an
+          // attach redraws the session.
+          CLAUDE_CODE_NO_FLICKER: env.CLAUDE_CODE_NO_FLICKER ?? '1',
+          TERM: env.TERM ?? 'xterm-256color',
         },
+        stdio: ['ignore', 'ignore', hostLog],
+        detached: true,
       },
-    })
-    const worker: Worker = { job, proc, terminal: proc.terminal!, screen, cols, rows, clients, stopping: false }
+    )
+    host.unref()
     job.state = 'running'
-    job.pid = proc.pid
+    job.hostPid = host.pid
+    job.ptySock = ptySock
+    job.pid = undefined
     job.exitCode = undefined
     saveJob(job)
-    workers.set(job.id, worker)
-    logDaemon(`[bg] spawned ${job.id} pid=${proc.pid}`)
-
-    void proc.exited.then(code => {
-      job.state = worker.stopping ? 'stopped' : 'exited'
-      job.exitCode = code
-      job.pid = undefined
-      saveScreen(worker)
-      saveJob(job)
-      workers.delete(job.id)
-      logDaemon(`[bg] ${job.state} ${job.id} code=${code}`)
-      for (const client of clients) {
-        writeFrame(client, { type: 'exit', job })
-        client.end()
+    const deadline = Date.now() + HOST_START_MS
+    while (!(await watch(job))) {
+      if (Date.now() > deadline || host.exitCode !== null) {
+        throw new Error(`The background session did not start. See ${join(dir, 'host.log')}`)
       }
-      idleSince = Date.now()
-    })
-    return worker
-  }
-
-  function stopWorker(worker: Worker): Promise<void> {
-    worker.stopping = true
-    worker.proc.kill('SIGTERM')
-    worker.proc.kill('SIGCONT')
-    const timer = setTimeout(() => worker.proc.kill('SIGKILL'), STOP_GRACE_MS)
-    return worker.proc.exited.then(() => clearTimeout(timer))
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    logDaemon(`[bg] spawned ${job.id} host=${host.pid}`)
   }
 
   async function handleSpawn(request: SpawnRequest): Promise<DaemonResponse> {
@@ -205,11 +167,27 @@ export async function runSupervisor(): Promise<void> {
     const sessionArgs = request.resume
       ? ['--resume', request.sessionId]
       : ['--session-id', request.sessionId]
-    spawnWorker(job, [...sessionArgs, ...request.flags, ...(request.prompt ? [request.prompt] : [])], request.env)
+    await spawnWorker(job, [...sessionArgs, ...request.flags, ...(request.prompt ? [request.prompt] : [])], request.env)
     return { ok: true, job }
   }
 
-  async function handle(request: DaemonRequest, socket: Socket): Promise<DaemonResponse | null> {
+  /** A worker that made its worktree resumes inside it instead of making another. */
+  function respawnArgs(job: JobRecord): { cwd: string; args: string[] } {
+    if (!job.worktree) return { cwd: job.cwd, args: job.args }
+    const args: string[] = []
+    for (let i = 0; i < job.args.length; i++) {
+      const arg = job.args[i]!
+      if (arg === '--worktree' || arg === '-w') {
+        if (job.args[i + 1] !== undefined && !job.args[i + 1]!.startsWith('-')) i++
+        continue
+      }
+      if (arg.startsWith('--worktree=')) continue
+      args.push(arg)
+    }
+    return { cwd: job.worktree.worktreePath, args }
+  }
+
+  async function handle(request: DaemonRequest): Promise<DaemonResponse> {
     switch (request.type) {
       case 'status':
         return {
@@ -221,84 +199,23 @@ export async function runSupervisor(): Promise<void> {
             origin,
             socketPath,
             running: workers.size,
-            attached: [...workers.values()].reduce((n, w) => n + w.clients.size, 0),
           },
         }
-      case 'list':
-        return { ok: true, jobs: await readJobRecords() }
       case 'spawn':
         return handleSpawn(request)
-      case 'logs': {
-        const worker = workers.get(request.id)
-        return worker ? { ok: true, text: renderedPreview(worker.screen) } : { ok: false, error: 'not running' }
-      }
-      case 'stop': {
-        const worker = workers.get(request.id)
-        if (!worker) return { ok: false, error: `Session ${request.id} is not running.` }
-        await stopWorker(worker)
-        return { ok: true, job: worker.job }
-      }
       case 'respawn': {
         const job = (await readJobRecords()).find(j => j.id === request.id)
         if (!job) return { ok: false, error: `No background session ${request.id}.` }
         const running = workers.get(job.id)
-        if (running) await stopWorker(running)
-        spawnWorker(job, ['--resume', job.sessionId, ...job.args], request.env)
-        return { ok: true, job }
-      }
-      case 'rm': {
-        const running = workers.get(request.id)
-        if (running) await stopWorker(running)
-        rmSync(getJobDir(request.id), { recursive: true, force: true })
-        logDaemon(`[bg] removed ${request.id}`)
-        return { ok: true }
-      }
-      case 'detach': {
-        const worker = workers.get(request.id)
-        for (const client of worker?.clients ?? []) {
-          writeFrame(client, { type: 'detached' })
-          client.end()
-        }
-        return { ok: true }
+        if (running) await stopJob(running)
+        const { cwd, args } = respawnArgs(job)
+        await spawnWorker({ ...job, cwd }, ['--resume', job.sessionId, ...args], request.env)
+        return { ok: true, job: workers.get(job.id) ?? job }
       }
       case 'shutdown':
-        setTimeout(() => void shutdown(), 0)
-        return { ok: true }
-      case 'attach': {
-        const worker = workers.get(request.id)
-        if (!worker) {
-          writeFrame(socket, { type: 'error', error: `Session ${request.id} is not running.` })
-          socket.end()
-          return null
-        }
-        attachClient(worker, socket, request.cols, request.rows)
-        return null
-      }
+        setTimeout(() => void shutdown(request.reapWorkers), 0)
+        return { ok: true, status: { pid: process.pid, version: MACRO.VERSION, startedAt, origin, socketPath, running: workers.size } }
     }
-  }
-
-  function attachClient(worker: Worker, socket: Socket, cols: number, rows: number): void {
-    worker.clients.add(socket)
-    socket.on('close', () => worker.clients.delete(socket))
-    writeFrame(socket, { type: 'attached', job: worker.job, modes: terminalModes(worker.screen) })
-    const resize = (c: number, r: number) => {
-      worker.cols = c
-      worker.rows = r
-      worker.terminal.resize(c, r)
-      resizeTerminalScreenRenderer(worker.screen, c, r)
-    }
-    // A resize makes the fullscreen renderer repaint everything.
-    if (cols === worker.cols && rows === worker.rows) {
-      resize(cols, Math.max(2, rows - 1))
-      setTimeout(() => resize(cols, rows), 50)
-    } else {
-      resize(cols, rows)
-    }
-    readFrames(socket, raw => {
-      const frame = raw as AttachClientFrame
-      if (frame.type === 'input') worker.terminal.write(Buffer.from(frame.data, 'base64'))
-      else if (frame.type === 'resize' && frame.cols > 0 && frame.rows > 0) resize(frame.cols, frame.rows)
-    })
   }
 
   const server = createServer(socket => {
@@ -312,30 +229,28 @@ export async function runSupervisor(): Promise<void> {
     readFrames(socket, raw => {
       if (!first) return
       first = false
-      void handle(raw as DaemonRequest, socket)
+      void handle(raw as DaemonRequest)
         .then(response => {
-          if (response) {
-            writeFrame(socket, response)
-            socket.end()
-          }
+          writeFrame(socket, response)
+          socket.end()
         })
         .catch(error => {
-          writeFrame(socket, { ok: false, error: String(error) })
+          writeFrame(socket, { ok: false, error: error instanceof Error ? error.message : String(error) })
           socket.end()
         })
     })
   })
 
-  async function shutdown(): Promise<void> {
+  async function shutdown(reapWorkers = true): Promise<void> {
     clearInterval(idleTimer)
-    await Promise.all([...workers.values()].map(stopWorker))
+    if (reapWorkers) await Promise.all([...workers.values()].map(stopJob))
     server.close()
     try {
       unlinkSync(socketPath)
     } catch {
       // Already gone.
     }
-    logDaemon(`[supervisor] exit pid=${process.pid}`)
+    logDaemon(`[supervisor] exit pid=${process.pid}${reapWorkers ? '' : ` (kept ${workers.size} workers)`}`)
     process.exit(0)
   }
 

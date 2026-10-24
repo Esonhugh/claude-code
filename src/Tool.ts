@@ -228,6 +228,8 @@ export type ToolUseContext = {
     spawnDepth?: number
     /** Attribution retained for fork skill recursion checks across turns. */
     spawnedBySkill?: string
+    /** Inline skill running in this turn; its responses are attributed to it. */
+    activeSkill?: string
     spawnedByForkedSkill?: boolean
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools

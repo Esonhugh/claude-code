@@ -10,6 +10,7 @@ import { feature } from 'bun:bundle'
 import { restoreSendMessagePins } from '../utils/sendMessagePins.js'
 import { callMCPToolForMod, findMCPConnectionForMod } from '../services/mcp/client.js'
 import { detachAttachedClients } from '../daemon/protocol.js'
+import { getTypedSkillAttribution } from '../utils/forkedSkill.js'
 import {
   snapshotOutputTokensForTurn,
   getCurrentTurnTokenBudget,
@@ -4606,6 +4607,8 @@ export function REPL({
       // and now. Turn 1 via processInitialMessage is the main beneficiary.
       const { tools: freshTools, mcpClients: freshMcpClients } =
         toolUseContext.options
+      const typedSkill = getTypedSkillAttribution(newMessages, toolUseContext.options.commands)
+      if (typedSkill) toolUseContext.options.activeSkill = typedSkill
 
       // Scope the skill's effort override to this turn's context only —
       // wrapping getAppState keeps the override out of the global store so
