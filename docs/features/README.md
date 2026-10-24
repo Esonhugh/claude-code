@@ -10,7 +10,7 @@
 |  | [模型自动发现与 Gateway](model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
 |  | [请求韧性：重试、回退模型与默认模型](request-resilience.md) | stream idle watchdog、重试上限、无人值守重试、`fallbackModel` 链、`ANTHROPIC_DEFAULT_MODEL` |
 |  | [Effort 档位](effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；可全局设、按会话切，也可给子代理单独指定 |
-|  | [Codex Apps](codex-apps.md) | ChatGPT OAuth 下把 Codex Apps 接成 host-owned MCP 工具与 hosted skills，支持 `@codex-app:` mention |
+|  | [Codex Apps](codex-apps.md) | 用 ChatGPT 账号登录 OpenAI provider 时，直接使用 ChatGPT 里连好的 App（GitHub、Gmail 等）：输入 `@codex-app:` 点名即可 |
 | Agent 与编排 | [Agent 与后台任务](agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
 |  | [Agent Teams](agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
 |  | [Dynamic Workflow](workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
