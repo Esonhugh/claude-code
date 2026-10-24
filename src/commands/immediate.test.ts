@@ -2,6 +2,7 @@ import { afterEach, expect, test } from 'bun:test'
 import '../commands.js'
 import addDir from './add-dir/index.js'
 import config from './config/index.js'
+import diff from './diff/index.js'
 import feedback from './feedback/index.js'
 import help from './help/index.js'
 import permissions from './permissions/index.js'
@@ -39,6 +40,7 @@ test.each([
   ['theme', theme],
   ['config', config],
   ['add-dir', addDir],
+  ['diff', diff],
 ] as const)('/%s is immediate only in fullscreen without args', (_name, command) => {
   process.env.CLAUDE_CODE_NO_FLICKER = '0'
   expect(isCommandImmediate(command, '', context)).toBe(false)
@@ -49,4 +51,12 @@ test.each([
 test('/add-dir with a path is immediate outside fullscreen', () => {
   process.env.CLAUDE_CODE_NO_FLICKER = '0'
   expect(isCommandImmediate(addDir, '/tmp', context)).toBe(true)
+})
+
+test('/diff follows fullscreen, not terminal width', () => {
+  process.env.CLAUDE_CODE_NO_FLICKER = '0'
+  const wide = {
+    modCommand: { presentation: { columns: 200 } },
+  } as LocalJSXCommandContext
+  expect(isCommandImmediate(diff, '', wide)).toBe(false)
 })
