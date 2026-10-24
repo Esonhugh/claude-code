@@ -19,7 +19,7 @@
 | 权限与安全 | [权限规则、权限模式与 Safe mode](permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
 |  | [自动模式（Auto mode）](auto-mode.md) | 不用一条条点确认：由分类器判断每个操作是否安全，安全的直接做，危险的拦下；可以用一句话加自己的规则 |
 |  | [Hooks 事件、匹配与输出校验](hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
-| 工具 | [Terminal 工具](terminal-tool.md) | 持久 PTY session：`new-session`、`send-keys`、`capture-pane`、resize、signal，按 Bash 规则判权限 |
+| 工具 | [Terminal 工具](terminal-tool.md) | 给 Claude 一个能持续交互的终端：开 REPL、操作 TUI、按 Ctrl+C，跑完自动通知 |
 |  | [Monitor 工具](monitor-tool.md) | 后台运行监看脚本，每行输出唤醒模型；Bash 前景 `sleep` 改用 Monitor |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](terminal-status.md) | 支持 OSC 7501 的终端里上报 idle/working/blocked/done/error 状态 |

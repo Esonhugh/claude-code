@@ -2,76 +2,76 @@
 
 > 英文名：`terminal-tool` · 领域：工具 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-给模型一个可多轮交互的 PTY，适合 REPL、TUI、需要特殊按键或 signal 的程序。后台轮询跟踪真实进程状态，结束时只通知一次并保留最终输出。`new-session` 与 `send-keys`（以会话累积的整行命令）按 Bash 权限规则判定，只读动作直接放行；auto 模式下 `Terminal` allow 规则被搁置。
+Bash 工具一次只跑一条命令、等它结束就拿结果，遇到需要**来回交互**的程序就没办法了，比如 Python / Node REPL、数据库命令行、`vim`、要你按 `y` 确认的安装脚本。
 
-## 配置
+Terminal 工具给 Claude 一个**一直开着的终端**（PTY）：它可以先启动程序，再一句一句地输入、看屏幕、按特殊键、调整窗口大小，最后关掉。终端在后台运行，你在底部任务栏里随时能看到它的实时画面。
 
-| 配置项 | 位置 | 写法 | 说明 |
-| --- | --- | --- | --- |
-| Bash 规则 | settings `permissions` | `"Bash(bash:*)"` 等 | `new-session` 以 `command + args` 作为命令判定 |
-| 工具输入 | 模型调用 | `{"action":"new-session","command":"bun","args":["repl"],"cwd":"...","cols":120,"rows":30}` | 其他 action：`list-panes` `send-keys` `capture-pane` `resize-pane` `send-signal` `display-message` `kill-pane` |
+## 快速上手：让 Claude 用 Python 算个数
 
-## 效果
+**1. Claude 打开一个终端。** 启动程序（这里是 `python3 -q`）和跑 Bash 命令一样要你批准：
 
-没有规则时需要确认：
+![启动前确认](images/terminal-tool-approve.png)
 
-```text
-❯ DO<<Terminal|{"action":"new-session","command":"bash","args":["-c","echo hello-from-pty; sleep 2"]}>>
-● Terminal(action=new-session command=bash args=["-c","echo hello-from-pty; sleep 2"])
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Tool use
-   Terminal(action=new-session command=bash args=["-c","echo hello-from-pty; sleep 2"])
-   Open and control a persistent terminal session
- This command requires approval
- Do you want to proceed?
- ❯ 1. Yes
-   2. Yes, and don't ask again for Terminal commands in
-      ~/work
-   3. No
- Esc to cancel · Tab to amend
-```
+**2. 终端在后台运行。** 回合结束时显示 `1 Terminal still running`，底部多出 `1 Terminal · ↓ to manage`：
 
-有 `Bash(bash:*)` allow 规则时直接运行，进程结束后通知一次：
+![后台运行中](images/terminal-tool-running.png)
 
-```text
-❯ DO<<Terminal|{"action":"new-session","command":"bash","args":["-c","echo hello-from-pty; sleep 2"]}>>
-● Terminal(action=new-session command=bash args=["-c","echo hello-from-pty; sleep 2"])
-● FAKE_DONE
-✻ Churned for 0s · 1 Terminal still running
-● Terminal term-1 completed
-● FAKE_DONE
-```
+**3. Claude 往终端里输入。** 每次按回车提交一行时，这一整行也会按 Bash 规则检查；不想每行都问，可选第 2 项，本项目内不再询问 Terminal：
 
-## 详细说明
+![输入一行](images/terminal-tool-sendkeys.png)
 
-以下内容自原 README 迁入，保持原文。
+**4. Claude 查看屏幕。** `capture-pane` 读取当前画面，结果以方框显示在对话里，只显示有内容的行：
 
-### Terminal Tool
+![读取屏幕](images/terminal-tool-capture.png)
 
-`Terminal` 提供持久 PTY session，可用于需要多轮输入、特殊按键、窗口 resize 或 signal 的交互式程序：
+**5. 你也可以看。** 按 `↓` 选中任务栏，`Enter` 打开 Terminal details：上面是命令、参数、工作目录，下面是最近的屏幕内容（窗口矮时只保留最新的几行）。`Esc` 返回：
 
-```json
-{
-  "action": "new-session",
-  "command": "bun",
-  "args": ["repl"],
-  "cwd": "/path/to/project",
-  "cols": 120,
-  "rows": 30
-}
-```
+![Terminal details](images/terminal-tool-details.png)
 
-创建 session 后，使用返回的 pane target 调用 `send-keys`、`capture-pane`、`resize-pane`、`send-signal`、`display-message` 或 `kill-pane`；`list-panes` 可列出尚未回收的 pane。`capture-pane` 支持 `compact`、`full` 和 `save_file` 三种输出模式。
+**6. 用完退出。** Claude 发 `Ctrl+D`（或 `kill-pane`）后，进程结束，对话里出现一次 `Terminal term-1 completed`，最终输出会被保留：
 
-Terminal task 详情会以 JSON 数组保留启动时的 `args`，并与 `command`、`cwd` 一起展示。任务由统一的后台 polling 逻辑跟踪真实 PTY 状态；每个 session 使用独立 timer：
+![结束通知](images/terminal-tool-completed.png)
 
-- 进程自然退出后停止轮询、清理 runtime registry、持久化最终输出，并只发送一次完成通知；
-- 根据真实退出状态区分 `completed`、`failed` 和 `killed`，保留 `exitCode`、`signal`、termination reason 与 driver error；
-- signal、close 和状态刷新会继续 drain 尾部输出，避免丢失进程退出前的最后内容；
-- exited、closed 和 failed session 会在 TTL 到期后主动 dispose。
+## Claude 能做的操作
 
-`send-signal` 表达操作系统 signal；需要向前台程序发送键盘 `Ctrl+C` 时，应使用 `send-keys` 的 `CTRL_C`。
+| 操作 | 作用 |
+| --- | --- |
+| `new-session` | 启动程序，可指定 `command`、`args`、`cwd`、`env`、`cols`、`rows`；不写 `command` 时用你的默认 shell |
+| `send-keys` | 输入文字（`text`），可加回车（`enter`），或发特殊键 `ENTER` `TAB` `ESC` `BACKSPACE` `UP` `DOWN` `LEFT` `RIGHT` `CTRL_C` `CTRL_D` `CTRL_L` |
+| `capture-pane` | 读取屏幕；`compact`（默认，精简）、`full`（完整）、`save_file`（写到文件，只回预览） |
+| `resize-pane` | 改窗口大小，测试 TUI 布局时用 |
+| `send-signal` | 发 `SIGINT` / `SIGTERM` 给进程（想模拟键盘 Ctrl+C 请用 `send-keys` 的 `CTRL_C`） |
+| `display-message` / `list-panes` | 查看某个终端 / 列出还开着的终端 |
+| `kill-pane` | 关闭终端，`force: true` 强制 |
 
-Terminal 按 Bash 权限规则判定：`new-session` 以 `command` + `args`（缺省为 `$SHELL`）作为命令，`send-keys` 在按 Enter 提交一行时以该会话累积的整行作为命令，因此分段送出也会命中 `Bash(...)` allow/ask/deny 规则；尚未提交的输入只检查 deny 规则。PTY 不在 sandbox 内运行，sandbox 自动放行不适用。`capture-pane`、`display-message`、`list-panes` 视为只读，`resize-pane`、`send-signal`、`kill-pane` 不经 Bash 规则判定。auto 模式下 `Terminal` 的 allow 规则会被搁置。
+## 权限怎么算
+
+- `new-session` 把 `command + args` 当成一条 Bash 命令检查，`send-keys` 在回车提交时把这一整行当成命令检查，所以分几次输入也会命中你的 `Bash(...)` allow / ask / deny 规则；还没按回车的部分只检查 deny 规则。
+- `capture-pane`、`display-message`、`list-panes` 是只读的，直接放行；`resize-pane`、`send-signal`、`kill-pane` 不走 Bash 规则。
+- 选「don't ask again for Terminal commands」会在项目 `.claude/settings.local.json` 里写入 `"Terminal"` allow 规则。
+- 终端**不在 sandbox 里运行**，sandbox 的自动放行对它无效；[自动模式](auto-mode.md) 下 `Terminal` 的 allow 规则会被暂时搁置，交给分类器判断。
+
+## 操作按键
+
+| 按键 | 位置 | 作用 |
+| --- | --- | --- |
+| `↓` | 输入框为空时 | 进入底部任务栏 |
+| `Enter` | 任务栏 | 打开 Terminal details |
+| `←` / `Esc` / `Enter` | Terminal details | 返回 |
+
+## 设置
+
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `permissions.allow` | `"Bash(python3:*)"`、`"Terminal"` | 按 Bash 规则放行特定程序，或整体放行 Terminal |
+| `permissions.deny` | `"Bash(rm:*)"` 等 | 同样作用于终端里提交的每一行 |
+
+## 进程结束后
+
+后台轮询跟踪真实进程状态：自然退出时只通知一次，并按退出情况区分 `completed`、`failed`、`killed`，记录退出码和信号；退出前最后的输出也会被读完再保存。已结束的终端过一段时间自动回收。
+
+## 说明
+
+画面来自实际运行（全屏渲染，110×44），模型回复由测试用假 API 生成（`FAKE_DONE`；提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。
