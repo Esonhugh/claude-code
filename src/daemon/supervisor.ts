@@ -92,6 +92,8 @@ export async function runSupervisor(): Promise<void> {
       idleSince = Date.now()
       logDaemon(`[bg] ${job.id} ended`)
     })
+    // An unread socket never emits 'close', so read the host's exit frame.
+    readFrames(socket, () => {})
     writeFrame(socket, { type: 'watch' })
     return true
   }
