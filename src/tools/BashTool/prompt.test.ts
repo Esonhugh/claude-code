@@ -13,6 +13,7 @@ mock.module('../../utils/sandbox/sandbox-adapter.js', () => ({
     getIgnoreViolations: () => null,
     areUnsandboxedCommandsAllowed: () => false,
     getExcludedCommands: () => [],
+    isAutoAllowBashIfSandboxedEnabled: () => false,
   },
 }))
 
