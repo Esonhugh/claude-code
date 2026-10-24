@@ -20,6 +20,7 @@ import type {
 import { isDebugMode, logForDebugging } from '../../utils/debug.js'
 import { isAnt } from '../../utils/userType.js'
 import { getOpenAIAuthInfo, type OpenAIAuthInfo } from '../../utils/auth.js'
+import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
 import {
   getProxyFetchOptions,
   getWebSocketProxyAgent,
@@ -66,6 +67,7 @@ function buildHeaders(auth: OpenAIAuthInfo): Record<string, string> {
       'Sec-Fetch-Mode': 'cors',
       'Sec-Fetch-Site': 'same-origin',
       'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'version': OPENAI_CODEX_CLIENT_VERSION,
       ...(auth.accountId && { 'chatgpt-account-id': auth.accountId }),
     })
   }

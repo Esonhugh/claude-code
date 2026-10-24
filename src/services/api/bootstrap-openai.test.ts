@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
 import axios from 'axios'
+import { OPENAI_CODEX_CLIENT_VERSION } from '../openai-oauth/client.js'
 
 const originalNonessentialTraffic = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 const originalAxiosGet = axios.get
@@ -89,7 +90,7 @@ try {
     requests[0]!.headers?.['chatgpt-account-id'],
     'account-123',
   )
-  assert.deepEqual(requests[0]!.params, { client_version: 'test' })
+  assert.deepEqual(requests[0]!.params, { client_version: OPENAI_CODEX_CLIENT_VERSION })
   assert.deepEqual(getGlobalConfig().additionalModelOptionsCache, [
     { value: 'gpt-bootstrap', label: 'GPT Bootstrap', description: 'OpenAI model' },
   ])

@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import axios from 'axios'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { getCustomHeaders } from '../../services/api/client.js'
+import { OPENAI_CODEX_CLIENT_VERSION } from '../../services/openai-oauth/client.js'
 import {
   getAnthropicApiKeyWithSource,
   getApiKeyFromApiKeyHelper,
@@ -406,11 +407,12 @@ function getModelDiscoveryRequest(): ModelDiscoveryRequest | null {
         ? {
             Referer: 'https://chatgpt.com/',
             Origin: 'https://chatgpt.com',
+            version: OPENAI_CODEX_CLIENT_VERSION,
             ...(auth.accountId ? { 'chatgpt-account-id': auth.accountId } : {}),
           }
         : {}),
     },
-    ...(auth.isChatGPT ? { params: { client_version: MACRO.VERSION } } : {}),
+    ...(auth.isChatGPT ? { params: { client_version: OPENAI_CODEX_CLIENT_VERSION } } : {}),
     parseOptions: {
       includeUnknownModels: !auth.isChatGPT && Boolean(customBaseURL),
     },

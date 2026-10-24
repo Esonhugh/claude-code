@@ -13,6 +13,8 @@ export const OPENAI_OAUTH_SCOPE =
   'openid profile email offline_access api.connectors.read api.connectors.invoke'
 export const OPENAI_OAUTH_CALLBACK_PATH = '/auth/callback'
 export const OPENAI_OAUTH_ORIGINATOR = 'codex_cli_rs'
+// Codex CLI release this client identifies as (originator above); keep in step with openai/codex.
+export const OPENAI_CODEX_CLIENT_VERSION = '0.164.0'
 
 export { createOpenAIPKCE }
 
