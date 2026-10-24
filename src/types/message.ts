@@ -164,6 +164,8 @@ export interface AssistantMessage {
     [key: string]: any
   }
   requestId?: string
+  /** Skill this response's tokens count toward in /skill-doctor's 7d column. */
+  attributionSkill?: string
   isMeta?: boolean
   isVirtual?: boolean
   isApiErrorMessage?: boolean

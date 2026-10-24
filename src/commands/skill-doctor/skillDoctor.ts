@@ -1,4 +1,8 @@
+import { createReadStream } from 'fs'
+import { readdir, stat } from 'fs/promises'
 import uniqBy from 'lodash-es/uniqBy.js'
+import { join } from 'path'
+import { createInterface } from 'readline'
 import { getProjectRoot, getSdkBetas } from '../../bootstrap/state.js'
 import {
   type Command,
@@ -12,9 +16,11 @@ import type { LocalJSXCommandContext } from '../../types/command.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { formatTokens } from '../../utils/format.js'
+import { getProjectsDir } from '../../utils/sessionStorage.js'
 import { plural } from '../../utils/stringUtils.js'
 
 const DAY_MS = 86_400_000
+const WEEK_MS = 7 * DAY_MS
 
 export type SkillDoctorRow = {
   name: string
@@ -24,6 +30,7 @@ export type SkillDoctorRow = {
   usageCount: number
   daysSinceUse: number | null
   listingTokens: number | null
+  weekTokens: number | null
 }
 
 type SkillUsage = Record<string, { usageCount: number; lastUsedAt: number }>
@@ -52,6 +59,7 @@ export function collectSkillRows(
   listingTokens: Map<string, number>,
   usage: SkillUsage,
   now: number,
+  weekTokens: Map<string, number> = new Map(),
 ): SkillDoctorRow[] {
   const rows: SkillDoctorRow[] = []
   for (const cmd of uniqBy(commands, 'name')) {
@@ -75,6 +83,8 @@ export function collectSkillRows(
       usageCount: used?.usageCount ?? 0,
       daysSinceUse: used ? Math.floor((now - used.lastUsedAt) / DAY_MS) : null,
       listingTokens: listingTokens.get(cmd.name) ?? null,
+      // Responses are stamped with getSkillAttributionName(): the unqualified name.
+      weekTokens: weekTokens.get(cmd.unqualifiedName ?? cmd.name) ?? weekTokens.get(cmd.name) ?? null,
     })
   }
   // Never-used first, then least recently used.
@@ -102,6 +112,7 @@ function formatTable(rows: SkillDoctorRow[]): string {
   if (rows.length === 0) return '  (no skills loaded)'
   const cells = rows.map(row => ({
     context: row.listingTokens === null ? '-' : formatListingTokens(row.listingTokens),
+    week: row.weekTokens === null ? '-' : formatTokens(row.weekTokens),
     uses: String(row.usageCount),
     lastUsed:
       row.daysSinceUse === null
@@ -114,12 +125,13 @@ function formatTable(rows: SkillDoctorRow[]): string {
     name: Math.max(5, ...rows.map(r => stringWidth(r.name))),
     source: Math.max(6, ...rows.map(r => stringWidth(r.source))),
     context: Math.max(7, ...cells.map(c => stringWidth(c.context))),
+    week: Math.max(9, ...cells.map(c => stringWidth(c.week))),
     uses: Math.max(4, ...cells.map(c => stringWidth(c.uses))),
   }
-  const header = `  ${padEnd('skill', width.name)}  ${padEnd('source', width.source)}  ${padStart('context', width.context)}  ${padStart('uses', width.uses + 1)}  last used`
+  const header = `  ${padEnd('skill', width.name)}  ${padEnd('source', width.source)}  ${padStart('context', width.context)}  ${padStart('7d tokens', width.week)}  ${padStart('uses', width.uses + 1)}  last used`
   const lines = rows.map((row, i) => {
     const cell = cells[i]!
-    return `  ${padEnd(row.name, width.name)}  ${padEnd(row.source, width.source)}  ${padStart(cell.context, width.context)}  ${padStart(cell.uses, width.uses)}×  ${cell.lastUsed}`
+    return `  ${padEnd(row.name, width.name)}  ${padEnd(row.source, width.source)}  ${padStart(cell.context, width.context)}  ${padStart(cell.week, width.week)}  ${padStart(cell.uses, width.uses)}×  ${cell.lastUsed}`
   })
   return [header, ...lines].join('\n')
 }
@@ -136,6 +148,7 @@ export function formatSkillDoctorReport(rows: SkillDoctorRow[]): string {
       '',
       "  context = this skill's one-line listing in the system prompt, included every turn",
       '  (dash = not in the current listing, costs nothing; full SKILL.md loads only when it runs)',
+      '  7d tokens = tokens attributed to the skill over the last 7 days of sessions on this machine',
     )
   }
   out.push('')
@@ -185,6 +198,65 @@ export function formatSkillDoctorReport(rows: SkillDoctorRow[]): string {
   return out.join('\n').trimEnd()
 }
 
+/** Lists the transcripts (subagents' included) written since `since`. */
+async function recentTranscripts(projectsDir: string, since: number): Promise<string[]> {
+  const files: string[] = []
+  const addIfRecent = async (path: string) => {
+    const info = await stat(path).catch(() => null)
+    if (info?.isFile() && info.mtimeMs >= since) files.push(path)
+  }
+  for (const project of await readdir(projectsDir).catch(() => [])) {
+    const dir = join(projectsDir, project)
+    for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+        await addIfRecent(join(dir, entry.name))
+      } else if (entry.isDirectory()) {
+        const subagents = join(dir, entry.name, 'subagents')
+        for (const rel of await readdir(subagents, { recursive: true }).catch(() => [])) {
+          if (rel.endsWith('.jsonl')) await addIfRecent(join(subagents, rel))
+        }
+      }
+    }
+  }
+  return files
+}
+
+/**
+ * Tokens attributed to each skill (input, cache and output of the responses
+ * stamped with `attributionSkill`) over the last 7 days of transcripts.
+ */
+export async function getWeekSkillTokens(projectsDir: string, now: number): Promise<Map<string, number>> {
+  const since = now - WEEK_MS
+  // A response is recorded once per content block; count each message once.
+  const byMessage = new Map<string, { skill: string; tokens: number }>()
+  for (const file of await recentTranscripts(projectsDir, since)) {
+    const lines = createInterface({ input: createReadStream(file), crlfDelay: Infinity })
+    for await (const line of lines) {
+      if (!line.includes('"attributionSkill":"')) continue
+      let record: { type?: string; uuid?: string; timestamp?: string; attributionSkill?: string; message?: { id?: string; usage?: Record<string, number> } }
+      try {
+        record = JSON.parse(line)
+      } catch {
+        continue
+      }
+      const usage = record.message?.usage
+      if (record.type !== 'assistant' || !record.attributionSkill || !usage) continue
+      if (Date.parse(record.timestamp ?? '') < since) continue
+      const tokens =
+        (usage.input_tokens ?? 0) +
+        (usage.cache_creation_input_tokens ?? 0) +
+        (usage.cache_read_input_tokens ?? 0) +
+        (usage.output_tokens ?? 0)
+      const key = record.message?.id ?? record.uuid ?? line
+      const seen = byMessage.get(key)
+      if (!seen || tokens > seen.tokens) byMessage.set(key, { skill: record.attributionSkill, tokens })
+    }
+  }
+  const totals = new Map<string, number>()
+  for (const { skill, tokens } of byMessage.values()) totals.set(skill, (totals.get(skill) ?? 0) + tokens)
+  return totals
+}
+
 export async function buildSkillDoctorReport(
   context: Pick<LocalJSXCommandContext, 'options' | 'getAppState'>,
 ): Promise<string> {
@@ -198,11 +270,13 @@ export async function buildSkillDoctorReport(
     listed,
     getContextWindowForModel(context.options.mainLoopModel, getSdkBetas()),
   )
+  const now = Date.now()
   const rows = collectSkillRows(
     [...context.options.commands, ...mcpCommands],
     listingTokens,
     getGlobalConfig().skillUsage ?? {},
-    Date.now(),
+    now,
+    await getWeekSkillTokens(getProjectsDir(), now),
   )
   return formatSkillDoctorReport(rows)
 }

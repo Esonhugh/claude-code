@@ -13,11 +13,15 @@ import {
   getNextSubagentDepth,
   MAX_SUBAGENT_DEPTH,
 } from '../tools/AgentTool/subagentDepth.js'
+import type { Command } from '../commands.js'
+import { COMMAND_NAME_TAG } from '../constants/xml.js'
 import type { PromptCommand, CommandBase } from '../types/command.js'
+import type { Message } from '../types/message.js'
 import type { AgentId } from '../types/ids.js'
 import { runWithAgentContext } from './agentContext.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
+import { extractTag } from './messages.js'
 import { AbortError } from './errors.js'
 import type { PreparedForkedContext } from './forkedAgent.js'
 import { persistForkedSkillScope } from './forkedSkillScope.js'
@@ -39,6 +43,23 @@ export function getSkillAttributionName(
   command: CommandBase & PromptCommand,
 ): string {
   return command.unqualifiedName ?? command.name
+}
+
+/** The skill the user ran as `/name` in this turn's new messages, if any. */
+export function getTypedSkillAttribution(
+  messages: readonly Message[],
+  commands: readonly Command[],
+): string | undefined {
+  for (const message of messages) {
+    if (message.type !== 'user') continue
+    const content = message.message.content
+    const text = typeof content === 'string' ? content : content.find(block => block.type === 'text')?.text
+    const name = text && extractTag(text, COMMAND_NAME_TAG)?.replace(/^\//, '')
+    if (!name) continue
+    const command = commands.find(cmd => cmd.name === name)
+    if (command?.type === 'prompt') return getSkillAttributionName(command)
+  }
+  return undefined
 }
 
 /** Return null to use the existing synchronous path when a safe launch is unavailable. */
