@@ -28,7 +28,7 @@
 |  | [Prompt context 与 Tool search](prompt-context.md) | 分层 cache boundary、增量 agent listing、MCP 工具汇总；自定义网关下 tool search 保持开启 |
 |  | [用量、成本与状态](usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
 | 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
-|  | [自主 Goal](goal.md) | `/goal` / `SetGoal` 设定目标，Stop hook 检查完成度，可跨 resume 恢复 |
+|  | [自主 Goal](goal.md) | 给 Claude 一个「做到才算完」的条件（如「所有测试通过」），每轮结束时自动检查，没达成就继续干 |
 |  | [快捷键与 Vim 模式](keybindings-vim.md) | `keybindings.json` 热重载、send-now / queue-submit、`Ctrl+J`、Vim `%` 与 VISUAL 模式 |
 |  | [自定义 UI / Branding 与 Status line](branding.md) | `uiName` 改名、`clawd.txt` 自定义 Logo、statusLine 输入含 `goal.active` |
 |  | [/diff 视图](diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
@@ -40,7 +40,7 @@
 |  | [MCP 配置与认证](mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录 |
 |  | [Skills](skills.md) | 把一套做事步骤写进 SKILL.md，用 `/名字` 调用，或让 Claude 在合适时自动使用；`/skill-doctor` 找出从没用过却占提示的 skill |
 |  | [Channels](channels.md) | `--channels` 让批准的频道插件 / MCP server 把消息推入会话，支持远程工具审批 |
-|  | [Mods / Function Hooks](mods.md) | 可信插件经 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令与终端 Pane（基线官方 2.1.303） |
-|  | [Mods 远程客户端（stream-json）](mods-sdk-client.md) | SDK 父进程启动时传入插件、远程绘制 / 焦点 / 滚动 / 草稿编辑协议 |
-|  | [Agent SDK 与 stream-json 控制协议](agent-sdk.md) | 兼容 Agent SDK 0.3：`reload_skills`、`read_file`、`update_settings`、模型 / 权限模式切换校验、动态 MCP |
+|  | [Mods / Function Hooks](mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
+|  | [Mods 远程客户端（stream-json）](mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
+|  | [Agent SDK 与 stream-json 控制协议](agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI；补齐了 SDK 0.3 会用到的控制请求 |
 | 开发与发布 | [构建、发布与终端验收工具](build-and-release.md) | Bun 构建、bytecode binary、binary-only npm 发布、内嵌 ripgrep、Linux 发布门禁与终端采集 |

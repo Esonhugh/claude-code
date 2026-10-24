@@ -2,34 +2,187 @@
 
 > 英文名：`mods` · 领域：插件与扩展 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-Mods 是通过 Function Hooks 扩展运行时的可信插件：生命周期事件、tool/prompt/turn middleware、动态命令、终端 Pane、scoped host capabilities、热重载与卸载。作者声明基线为官方 2.1.303，未实现的调用以点名错误拒绝而不是静默成功。`claude plugin validate` / `claude plugin test` 用于作者检查。外部 Client（stream-json）见 [mods-sdk-client.md](mods-sdk-client.md)。
+Mod 是一种插件：你写一个 JavaScript / TypeScript 文件，**在 Claude 运行的各个环节插一手**。和 [Hooks](hooks.md)（跑外部脚本、看退出码）相比，Mod 直接运行在 Claude 里面，能做的多得多：
 
-## 配置
+- **加命令**：注册 `/我的命令`；
+- **拦截 / 改写工具调用**：Claude 要跑 `rm -rf` 时先停下来给你看会删什么；
+- **改界面**：在输入框上方加一条状态栏，或在右侧开一个可点击的面板；
+- **读写状态**：会话用量、工作目录、持久化的小数据；
+- **调用模型、启动子代理、执行命令**。
 
-| 配置项 | 位置 | 写法 | 说明 |
-| --- | --- | --- | --- |
-| `hooks/modules` | 插件目录 | 见下方详细说明 | Mod 入口 |
-| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | 环境变量 | 正整数 | `$.agent.spawn` 每插件并发上限，默认 20 |
-| `strictPluginOnlyCustomization` | 托管设置 | `true` | 插件 Mods 照常运行 |
+写法是「中间件」：每个事件交给你的函数，你可以看一眼直接放行（`next(event)`），也可以改掉参数、拒绝，或者返回自己的结果。
 
-## 效果
+> Mod 运行在本机、拥有较高权限，只加载你信任的插件。
 
-`claude plugin validate examples/mods/token-weather`：
+## 快速上手：写第一个 Mod
+
+**1. 建三个文件。**
 
 ```text
-Validating plugin manifest: /home/user/claude-code/examples/mods/token-weather/.claude-plugin/plugin.json
-  ❯ types ./types/index.d.ts declares on $: nothing (no EngineInterface member)
-  ❯ types ./types/index.d.ts declares state: token-weather.readings
-Validating hooks: /home/user/claude-code/examples/mods/token-weather/hooks/hooks.json
-  ❯ ./token-weather.mjs hooks: session.start, turn.complete, ui.render{component=AbovePrompt}
-  ❯ ./token-weather.mjs calls: $.session.usage (via takeReading), $.state.get, $.state.set (via takeReading),
-$.ui.resolve
-  ❯ ./token-weather.mjs state writes: token-weather.readings
-  ❯ ./token-weather.mjs state reads: token-weather.readings
-✔ Validation passed
+hello-mod/
+├── .claude-plugin/plugin.json
+└── hooks/
+    ├── hooks.json
+    └── register.ts
 ```
+
+`.claude-plugin/plugin.json`：
+
+```json
+{ "name": "hello-mod", "version": "0.1.0", "description": "A first mod: one command and one tool note" }
+```
+
+`hooks/hooks.json`（路径相对这个文件）：
+
+```json
+{ "modules": ["./register.ts"] }
+```
+
+`hooks/register.ts`：
+
+```ts
+import type { Register } from 'claude-code'
+
+export const register: Register = on => {
+  // Add a /hello-mod command when the session starts.
+  on('session.start', async ($, event, next) => {
+    await $.command.register({ name: 'hello-mod', description: 'Show a greeting', immediate: true })
+    return next(event)
+  })
+  on('command.run', { command: 'hello-mod' }, () => ({ text: 'Hello from my first mod' }))
+
+  // Refuse to let Claude read .env files.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    if (String(e.file_path).endsWith('.env')) return { deny: 'hello-mod: .env files are off limits' }
+    return next(e)
+  })
+}
+```
+
+- `on(事件, [匹配条件], 处理函数)` 注册一个 hook；
+- `$` 是能力对象（`$.command`、`$.state`、`$.ui`…）；
+- 调用 `next(e)` 表示「交给下一个处理者 / 照常执行」，不调用就是你接管了。
+
+**2. 检查。** `claude plugin validate` 静态扫描（不执行代码），列出你挂了哪些 hook、用了哪些能力：
+
+```text
+$ claude plugin validate ./hello-mod
+Validating hooks: /tmp/claude-0/hello-mod/hooks/hooks.json
+
+  ❯ ./register.ts hooks: session.start, command.run{command=hello-mod}, tool.call{tool=Read}
+  ❯ ./register.ts calls: $.command.register
+
+✔ Validation passed with warnings
+```
+
+**3. 加载运行。** `claude --plugin-dir ./hello-mod`。输入 `/hello` 就能补全出新命令：
+
+![自定义命令](images/mods-hello.png)
+
+Claude 再想读 `.env` 时，会收到 `hello-mod: .env files are off limits` 的错误，转而换别的做法。
+
+首次加载时会在插件里生成 `.claude-plugin/types/`（类型声明）和根目录 `tsconfig.json`，编辑器里就有补全和类型检查。改了代码用 `/reload-plugins` 热重载。
+
+## 看看能做到什么：仓库自带的示例
+
+`examples/mods/` 下有几个完整示例，可以直接 `--plugin-dir` 加载试用。
+
+### Token Weather：输入框上方的状态条
+
+把上下文用量画成「天气预报」，每轮更新：
+
+![状态条](images/mods-band.png)
+
+核心只有两步：在 `turn.complete` 时用 `$.session.usage()` 记一笔、存进 `$.state`；在 `ui.render`（`component: "AbovePrompt"`）时用 `$.ui.resolve(e)` 拿到 `Box`、`Text` 组件画出来。
+
+### Blast Radius：危险命令先给你看后果
+
+Claude 要跑 `rm -r`、`git reset --hard`、`git clean`、`git push --force` 时，Mod 先把调用**挂起**，算出会影响哪些文件，让你选 Proceed 或 Cancel。
+
+终端够宽（≥ 144 列，全屏渲染）时开在右侧面板，`1` / `2` 或鼠标点击选择：
+
+![右侧面板](images/mods-hold-pane.png)
+
+终端较窄时退回到输入框上方显示：
+
+![窄终端时的状态条](images/mods-hold-band.png)
+
+选 Proceed 后命令照常进入权限确认；选 Cancel 则 Claude 收到「Blast Radius held this command: the user pressed Cancel. It would have: delete 3 files under build.」。
+
+### 其他
+
+- `replay-theater`：回放会话；
+- `mods-test-lab`：覆盖各种能力的测试用 Mod。
+
+## 常用事件与能力
+
+| 事件 | 什么时候触发 | 常见用途 |
+| --- | --- | --- |
+| `session.start` | 会话开始 | 注册命令、初始化状态 |
+| `prompt.submit` | 你按下回车 | 改写或拦截提示词 |
+| `tool.call` | Claude 调用工具前（可按 `tool` 匹配） | 放行、拒绝（`{ deny }`）、改参数、挂起等确认 |
+| `turn.complete` | 一轮回答结束 | 记录、统计、通知 |
+| `command.run` | 你执行 Mod 注册的命令 | 返回 `{ text }` 显示结果 |
+| `ui.render` | 界面绘制（按 `component` 匹配，如 `AbovePrompt`） | 画状态条、面板内容 |
+
+| 能力 | 作用 |
+| --- | --- |
+| `$.command.register` | 注册斜杠命令 |
+| `$.state.get` / `set` | 存取持久小数据（热重载后保留） |
+| `$.ui.resolve` / `open` / `invalidate` | 拿界面组件、打开面板、请求重绘 |
+| `$.session.usage` / `cwd` | 会话用量、工作目录 |
+| `$.process.run` | 执行本地命令 |
+| `$.agent.spawn` | 启动子代理（受并发上限约束，额度不足返回 `{ deny }`） |
+| `$.tool.call` | 主动调用工具 |
+
+完整接口见官方 [Mods reference](https://code.claude.com/docs/en/plugins/mods/reference)；生成的 `.claude-plugin/types/` 是本构建实际支持的声明。
+
+## 给 Mod 写测试
+
+`tests/*.test.ts` 用 `claude-code/testing`，可以模拟会话事件并挂载界面组件检查输出，`claude plugin test <目录>` 运行：
+
+```ts
+import { describe, expect, test } from "claude-code/testing";
+
+describe("token-weather", () => {
+  test("the band follows the context window", async ($, on) => {
+    on("session.usage", () => ({ value: { startedAt: 0, rateLimits: [], context: { tokens: 36_100, window: 200_000, percent: 18 } } }));
+    await $.session.start({ surface: "terminal", isInteractive: true, cwd: "/work" } as any);
+    const ui = await $.ui.mount({ plugin: "token-weather", surface: "terminal", component: "AbovePrompt",
+      props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 120 } } as any);
+    expect(await ui.find({ type: "Text", text: /Clear/ })).toBeDefined();
+  });
+});
+```
+
+```text
+$ claude plugin test examples/mods/token-weather
+(pass) token-weather > the band follows the context window [119.85ms]
+
+ 1 pass
+ 0 fail
+```
+
+## 设置
+
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `--plugin-dir <目录>` | 可重复 | 加载本地插件（含 Mod） |
+| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | 正整数，默认 20 | `$.agent.spawn` 的每插件并发上限 |
+| `strictPluginOnlyCustomization`（托管设置） | `true` | 插件 Mod 照常运行 |
+| `CLAUDE_CODE_NO_FLICKER` | `1` | 全屏渲染；右侧面板只在全屏下出现 |
+
+外部程序通过 stream-json 连接 Mod 的方式见 [mods-sdk-client.md](mods-sdk-client.md)。
+
+## 本构建尚不支持的调用
+
+声明里有、但本构建没实现的调用会抛出点名错误（如 `$.audio.play is not available in this build`），不会静默成功：`$.ui.view`、`$.prompt.media`、`$.audio.play`、`$.audio.speak`、`$.session.compact`、`prompt.change` 事件、prompt 装饰的 `virtualText`。完整兼容清单见 [mods-parity.md](../research/mods-parity.md)。
+
+## 说明
+
+画面来自实际运行（全屏渲染，110 / 140 / 160 列），模型回复由测试用假 API 生成（`FAKE_DONE`；提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。下方「详细说明」保留了逐项实现与验收记录，供 Mod 作者和维护者查阅。
 
 ## 详细说明
 

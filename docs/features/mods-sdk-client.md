@@ -2,20 +2,79 @@
 
 > 英文名：`mods-sdk-client` · 领域：插件与扩展 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-外部 Client 通过 stream-json 连接 CLI：首条 `initialize` 配合 `--await-initialize` 在发现前登记插件路径；Client 可请求绘制、查询自己的 pane、控制焦点、滚动、草稿编辑与补全。协议类型来自 `src/entrypoints/sdk/controlTypes.ts`。
+[Mods](mods.md) 默认把界面画在终端里。如果你在做**自己的前端**（桌面应用、IDE 插件、网页），想让同样的 Mod 界面显示在你的前端上，就用这套协议：
 
-## 配置
+1. 你的程序以 stream-json 模式启动 `claude`，通过 stdin / stdout 交换一行一个 JSON；
+2. 你声明「我是一个 desktop 界面，窗口 90×30」（`ui_attach`）；
+3. 需要画某个位置时发 `ui_render`，CLI 运行 Mod 的 `ui.render` hook，把**组件树**（Box、Text、Button…的 JSON）返回给你；
+4. 用户在你的界面上点按钮、输入文字时，你把事件发回去（`ui_press`、`ui_input`、`ui_select`），Mod 的回调就会执行。
 
-| 配置项 | 位置 | 说明 |
-| --- | --- | --- |
-| `--await-initialize` | CLI（需 `--input-format=stream-json`） | 从首条 initialize 读取本次插件 |
-| `--input-format stream-json --output-format stream-json` | CLI | stream-json 会话 |
+普通用户用不到这一页；它是给 SDK / 前端开发者的。基础的 stream-json 会话见 [agent-sdk.md](agent-sdk.md)。
 
-## 效果
+## 快速上手：拿到一个 Mod 的界面
 
-协议交互的验收记录见下方详细说明与 [`mods-test.md`](../../mods-test.md)；基础 stream-json 会话见 [agent-sdk.md](agent-sdk.md)。
+下面用仓库自带的 `token-weather` Mod（在输入框上方画上下文用量）演示。把请求存成 `requests.jsonl`：
+
+```json
+{"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}
+{"type":"control_request","request_id":"attach-1","request":{"subtype":"ui_attach","surface":"desktop","client_id":"desktop-main","viewport":{"columns":90,"rows":30,"isFullscreen":true}}}
+{"type":"control_request","request_id":"draw-1","request":{"subtype":"ui_render","surface":"desktop","component":"AbovePrompt","instance_id":"above-1","props":{"hasSurvey":false,"isWorking":false,"maxRows":10,"bodyColumns":90},"on_screen":null}}
+{"type":"control_request","request_id":"detach-1","request":{"subtype":"ui_detach","client_id":"desktop-main"}}
+```
+
+运行：
+
+```sh
+cat requests.jsonl | claude -p --input-format stream-json --output-format stream-json --verbose \
+  --plugin-dir examples/mods/token-weather
+```
+
+输出里每个请求都有对应 `request_id` 的 `control_response`（实际运行结果，节选）：
+
+```text
+init-1    success  {"capabilities": ["ui_surface_v1"], "commands": [...]}
+attach-1  success  {"surfaces": ["desktop"]}
+draw-1    success  {"tree": {"type": "Box", "props": {"flexDirection": "row", "paddingX": 1}, "children": [
+                     {"type": "Text", "props": {"color": "yellow", "bold": true}, "children": ["☀  Clear"]},
+                     {"type": "Text", "children": ["  0% of context"]},
+                     {"type": "Text", "props": {"dimColor": true}, "children": ["  0 / 1M"]}, ...]},
+                   "hooked": true, "rewritten": false}
+detach-1  success  {"detached": true, "surfaces": ["desktop"]}
+```
+
+`tree` 就是 Mod 画出来的界面，你的前端按 `type` 和 `props` 渲染即可。`hooked: true` 表示这个位置有 Mod 在画。
+
+## 启动时就带上插件：`--await-initialize`
+
+前端通常希望在 CLI 发现命令、Mod、MCP **之前**就告诉它要加载哪些插件。加 `--await-initialize`，并把插件放在第一条 `initialize` 里：
+
+```bash
+printf '%s\n' '{"type":"control_request","request_id":"init","request":{"subtype":"initialize","plugins":[{"type":"local","path":"/absolute/path/to/plugin","skipMcpDiscovery":true}]}}' |
+  claude -p --verbose --input-format=stream-json --output-format=stream-json --await-initialize
+```
+
+- `path` 可以是插件目录、包含多个插件的父目录或 ZIP；
+- `skipMcpDiscovery: true` 不加载该插件里的 MCP server（前端自己管理 MCP 时用）；
+- 回执里的 `plugins_applied` 表示路径是否都登记上了（不代表插件一定有效）。
+
+## 协议速查
+
+| 请求 `subtype` | 作用 |
+| --- | --- |
+| `initialize` | 握手；可带 `plugins` |
+| `ui_attach` / `ui_detach` | 声明 / 撤销一个外部界面（`desktop`、`mobile`、`vscode`）和窗口大小 |
+| `ui_render` | 请求某个位置的组件树 |
+| `ui_press` / `ui_input` / `ui_select` | 把按钮点击、输入、选择传回 Mod（用 render 回执里的 handle） |
+| `ui_client_module` | 取 Mod 自带的前端模块包 |
+| Pane、焦点、滚动、草稿编辑、补全 | 见下方详细说明 |
+
+协议类型定义在 `src/entrypoints/sdk/controlTypes.ts`；调试日志搜 `[ModsUIClient]`。
+
+## 说明
+
+上面的输出来自实际运行（测试用假 API，不涉及模型回复）。下方「详细说明」保留每个请求的字段规则、边界与验收记录。
 
 ## 详细说明
 
