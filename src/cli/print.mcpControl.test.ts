@@ -146,6 +146,29 @@ if (process.env[childFlag] !== '1') {
     }
   })
 
+  test('mcp_status lists SDK servers from initialize, including while their handshake is in flight', async () => {
+    let setups = 0
+    const mocks = [
+      spyOn(mcpClient, 'setupSdkMcpClients').mockImplementation(async configs => {
+        setups++
+        await Bun.sleep(50)
+        return { clients: Object.keys(configs).map(n => connected(n, { type: 'sdk', name: n, scope: 'dynamic' })), tools: [] }
+      }),
+    ]
+    try {
+      const { responses } = await runControls(getDefaultAppState(), [
+        { subtype: 'initialize', sdkMcpServers: ['ide'] },
+        { subtype: 'mcp_status' },
+        { subtype: 'mcp_status' },
+      ])
+      const statuses = responses.slice(1).map(r => r.subtype === 'success' ? (r.response as { mcpServers: { name: string; status: string }[] }).mcpServers : r)
+      expect(statuses).toEqual([[expect.objectContaining({ name: 'ide', status: 'connected' })], [expect.objectContaining({ name: 'ide', status: 'connected' })]])
+      expect(setups).toBe(1)
+    } finally {
+      for (const mock of mocks) mock.mockRestore()
+    }
+  })
+
   test('mcp_reconnect of a configured server does not leak it into the dynamic set', async () => {
     const name = 'disk'
     const diskConfig: ScopedMcpServerConfig = { type: 'http', url: 'http://127.0.0.1:9/disk', scope: 'project' }
