@@ -87,7 +87,7 @@ bun ./dist/cli.js --help
 |  | [Monitor 工具](docs/features/monitor-tool.md) | 后台运行监看脚本，每行输出唤醒模型；Bash 前景 `sleep` 改用 Monitor |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](docs/features/scheduled-tasks.md) | `CronCreate/Delete/List`、session-only 或 durable 任务、`/loop` 自定节奏 |
 |  | [终端程序状态（OSC 7501）](docs/features/terminal-status.md) | 支持 OSC 7501 的终端里上报 idle/working/blocked/done/error 状态 |
-| 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](docs/features/memory.md) | auto memory、后台提取、Session Memory、`memory.sqlite` 的 `SearchMemory` 与自动召回、`/setup-memory-db` |
+| 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](docs/features/memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
 |  | [自动压缩窗口](docs/features/compaction.md) | `/autocompact`、按模型 / 按 agent 的压缩窗口、`CLAUDE_CODE_AUTO_COMPACT_WINDOW` |
 |  | [Prompt context 与 Tool search](docs/features/prompt-context.md) | 分层 cache boundary、增量 agent listing、MCP 工具汇总；自定义网关下 tool search 保持开启 |
 |  | [用量、成本与状态](docs/features/usage-and-cost.md) | `/usage`（含 `/cost`、`/stats`）、ChatGPT plan 与 Codex limits、Fable 周额度、成本快照跨 resume 保留 |
