@@ -71,7 +71,7 @@ bun ./dist/cli.js --help
 | 领域 | 功能 | 说明 |
 | --- | --- | --- |
 | 模型与 Provider | [OpenAI / Codex provider](docs/features/openai-provider.md) | OpenAI Responses API、ChatGPT OAuth / API key、OpenAI 下的 `/fast` 与 remote compaction |
-|  | [模型自动发现与 Gateway](docs/features/model-discovery.md) | OpenAI `/v1/models` 与 Anthropic 网关模型发现，结果进入 Model Picker |
+|  | [模型自动发现与 Gateway](docs/features/model-discovery.md) | 走自己的 API 网关或 OpenAI 兼容服务时，自动把网关提供的模型列进 `/model`，不用手打模型名 |
 |  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | stream idle watchdog、重试上限、无人值守重试、`fallbackModel` 链、`ANTHROPIC_DEFAULT_MODEL` |
 |  | [Effort 档位](docs/features/effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；可全局设、按会话切，也可给子代理单独指定 |
 |  | [Codex Apps](docs/features/codex-apps.md) | ChatGPT OAuth 下把 Codex Apps 接成 host-owned MCP 工具与 hosted skills，支持 `@codex-app:` mention |
