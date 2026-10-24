@@ -12,6 +12,17 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-24 - ChatGPT 登录：Codex 客户端版本跟进最新 Codex CLI
+
+### 变更内容
+
+- ChatGPT 登录下请求 `chatgpt.com/backend-api/codex` 时，`client_version` 改为 Codex CLI 版本 `0.164.0`，不再误送 Claude Code 自身版本号；`/responses`、`/models` 与 `claude ssh` 代理同时带上 `version: 0.164.0` header，与 Codex CLI 0.164.0 一致（#168）。
+- Codex 版本集中为 `src/services/openai-oauth/client.ts` 的 `OPENAI_CODEX_CLIENT_VERSION`，之后跟进 Codex 版本只需改这一处。
+
+### 测试覆盖
+
+- `src/services/api/openai-compat.test.ts`、`src/utils/model/openaiModelOptions.test.ts`、`src/services/api/bootstrap-openai.test.ts`：断言 ChatGPT 请求的 `version` header 与 `client_version` 参数。
+
 ## 2026-10-24 - Dynamic Workflow：撞到 claude.ai 用量上限时暂停等待重置
 
 ### 变更内容
