@@ -1688,6 +1688,10 @@ async function run(): Promise<CommanderCommand> {
       () => true,
     )
     .option(
+      '--bg, --background',
+      'Start the session in the background and return immediately. Prints the id that `claude attach`, `logs`, `stop` and `rm` take; `claude agents --json` lists them. With --resume <session-id>, continues that session in the background under the same ID',
+    )
+    .option(
       '--session-id <uuid>',
       'Use a specific session ID for the conversation (must be a valid UUID)',
     )
@@ -1732,6 +1736,11 @@ async function run(): Promise<CommanderCommand> {
       // dir-walk). Must be set before setup() / any of the gated work runs.
       if ((options as { bare?: boolean }).bare) {
         process.env.CLAUDE_CODE_SIMPLE = '1'
+      }
+      if ((options as { background?: boolean }).background) {
+        const { handleBgFlag } = await import('./cli/bg.js')
+        await handleBgFlag(prompt, process.argv.slice(2), (options as { name?: string }).name)
+        process.exit(0)
       }
       // --safe-mode / CLAUDE_CODE_SAFE_MODE: CLAUDE.md loading is gated on
       // CLAUDE_CODE_DISABLE_CLAUDE_MDS; the other loaders check isSafeMode().
@@ -6217,17 +6226,84 @@ async function run(): Promise<CommanderCommand> {
       await setupTokenHandler(root)
     })
 
-  // Agents command - list configured agents
+  // Agents command - list configured agents and background sessions
   program
     .command('agents')
-    .description('List configured agents')
+    .description('List configured agents and background sessions')
     .option(
       '--setting-sources <sources>',
       'Comma-separated list of setting sources to load (user, project, local).',
     )
-    .action(async () => {
+    .option(
+      '--json',
+      'Print active sessions (interactive and background) as a JSON array and exit',
+    )
+    .option('--all', 'With --json: also include completed background sessions')
+    .option('--cwd <path>', 'Show only background sessions started under <path>')
+    .action(async (opts: { json?: boolean; all?: boolean; cwd?: string }) => {
+      const bg = await import('./cli/bg.js')
+      if (opts.json) {
+        const rows = await bg.listAgentRows({ all: opts.all, cwd: opts.cwd })
+        process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`)
+        process.exit(0)
+      }
+      const { listJobs } = await import('./daemon/protocol.js')
+      const jobs = (await listJobs()).filter(
+        job => !opts.cwd || job.cwd.startsWith(opts.cwd),
+      )
+      process.stdout.write(`${bg.formatBackgroundSessions(jobs)}\n\n`)
       const { agentsHandler } = await import('./cli/handlers/agents.js')
       await agentsHandler()
+      process.exit(0)
+    })
+
+  program
+    .command('attach <id|name>')
+    .description(
+      'Open a background session in this terminal (Ctrl+Z detaches). Part of the session name works too',
+    )
+    .action(async (id: string) => {
+      const { attachHandler } = await import('./cli/bg.js')
+      await attachHandler(id)
+      process.exit(0)
+    })
+
+  program
+    .command('logs <id|name>')
+    .description("Print a background session's recent terminal output")
+    .action(async (id: string) => {
+      const { logsHandler } = await import('./cli/bg.js')
+      await logsHandler(id)
+      process.exit(0)
+    })
+
+  program
+    .command('stop <id>')
+    .alias('kill')
+    .description(
+      'Stop a background session. Its conversation is kept: `claude attach <id>` opens it again',
+    )
+    .action(async (id: string) => {
+      const { stopHandler } = await import('./cli/bg.js')
+      await stopHandler(id)
+      process.exit(0)
+    })
+
+  program
+    .command('rm <id>')
+    .description('Delete a background session. Works on sessions that have already exited')
+    .action(async (id: string) => {
+      const { rmHandler } = await import('./cli/bg.js')
+      await rmHandler(id)
+      process.exit(0)
+    })
+
+  program
+    .command('respawn <id>')
+    .description('Restart a background session so it runs the current Claude Code version')
+    .action(async (id: string) => {
+      const { respawnHandler } = await import('./cli/bg.js')
+      await respawnHandler(id)
       process.exit(0)
     })
 

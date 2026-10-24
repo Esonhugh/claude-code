@@ -202,6 +202,10 @@ function printResumeHint(): void {
   if (resumeHintPrinted) {
     return
   }
+  // A background session is reopened with `claude attach`, not --resume.
+  if (process.env.CLAUDE_CODE_SESSION_KIND === 'bg') {
+    return
+  }
   // The SSH transcript is persisted remotely, independently of local session
   // persistence. Prefer its fully-qualified resume command when registered.
   if (process.stdout.isTTY && getIsInteractive()) {
@@ -490,6 +494,8 @@ export async function gracefulShutdown(
     setAppState?: (f: (prev: AppState) => AppState) => void
     /** Printed to stderr after alt-screen exit, before forceExit. */
     finalMessage?: string
+    /** The session keeps running elsewhere (/background): no resume hint. */
+    skipResumeHint?: boolean
     /** Replaces the current process after cleanup instead of exiting. */
     restartArgs?: string[]
   },
@@ -506,6 +512,7 @@ export async function gracefulShutdown(
     './hooks.js'
   )
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
+  if (options?.skipResumeHint) resumeHintPrinted = true
   const modsShutdownBudgetMs = modsHostDisposers.size > 0 ? sessionEndTimeoutMs + 2000 : 0
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).

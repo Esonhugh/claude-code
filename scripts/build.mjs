@@ -86,6 +86,8 @@ export function getEnabledFeatures(value = process.env.CLAUDE_CODE_RECOVER_FEATU
     'EXTRACT_MEMORIES',
     'AWAY_SUMMARY',
     'DIRECT_CONNECT',
+    'BG_SESSIONS',
+    'DAEMON',
     ...(value ?? '')
       .split(',')
       .map(feature => feature.trim())
