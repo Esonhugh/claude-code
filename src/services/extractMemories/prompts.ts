@@ -2,18 +2,20 @@
  * Prompt templates for the background memory extraction agent.
  *
  * The extraction agent runs as a perfect fork of the main conversation — same
- * system prompt, same message prefix. The main agent's system prompt always
- * has full save instructions; when the main agent writes memories itself,
- * extractMemories.ts skips that turn (hasMemoryWritesSince). This prompt
- * fires only when the main agent didn't write, so the save-criteria here
- * overlap the system prompt's harmlessly.
+ * system prompt, same message prefix. When the main agent writes memories
+ * itself, extractMemories.ts skips that turn (hasMemoryWritesSince). The
+ * auto-only prompt restates only the compact save rules: they are a small
+ * repeat of the system prompt's memory section, and keep extraction working
+ * when a custom --system-prompt drops that section.
  */
 
 import { feature } from 'bun:bundle'
 import {
   MEMORY_FRONTMATTER_EXAMPLE,
+  MEMORY_INDEX_RULE,
+  MEMORY_SAVE_RULES,
+  MEMORY_TYPES_SUMMARY,
   TYPES_SECTION_COMBINED,
-  TYPES_SECTION_INDIVIDUAL,
   WHAT_NOT_TO_SAVE_SECTION,
 } from '../../memdir/memoryTypes.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
@@ -52,44 +54,22 @@ export function buildExtractAutoOnlyPrompt(
   existingMemories: string,
   skipIndex = false,
 ): string {
-  const howToSave = skipIndex
-    ? [
-        '## How to save memories',
-        '',
-        'Write each memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-    : [
-        '## How to save memories',
-        '',
-        'Saving a memory is a two-step process:',
-        '',
-        '**Step 1** — write the memory to its own file (e.g., `user_role.md`, `feedback_testing.md`) using this frontmatter format:',
-        '',
-        ...MEMORY_FRONTMATTER_EXAMPLE,
-        '',
-        '**Step 2** — add a pointer to that file in `MEMORY.md`. `MEMORY.md` is an index, not a memory — each entry should be one line, under ~150 characters: `- [Title](file.md) — one-line hook`. It has no frontmatter. Never write memory content directly into `MEMORY.md`.',
-        '',
-        '- `MEMORY.md` is always loaded into your system prompt — lines after 200 will be truncated, so keep the index concise',
-        '- Organize memory semantically by topic, not chronologically',
-        '- Update or remove memories that turn out to be wrong or outdated',
-        '- Do not write duplicate memories. First check if there is an existing memory you can update before writing a new one.',
-      ]
-
   return [
     opener(newMessageCount, existingMemories),
     '',
-    'If the user explicitly asks you to remember something, save it immediately as whichever type fits best. If they ask you to forget something, find and remove the relevant entry.',
+    'Each memory is one file holding one fact, with this frontmatter:',
     '',
-    ...TYPES_SECTION_INDIVIDUAL,
-    ...WHAT_NOT_TO_SAVE_SECTION,
+    ...MEMORY_FRONTMATTER_EXAMPLE,
     '',
-    ...howToSave,
+    MEMORY_TYPES_SUMMARY,
+    '',
+    ...(skipIndex
+      ? []
+      : [
+          `After writing the file, add a one-line pointer in \`MEMORY.md\`. ${MEMORY_INDEX_RULE}`,
+          '',
+        ]),
+    MEMORY_SAVE_RULES,
   ].join('\n')
 }
 
