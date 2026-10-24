@@ -14,6 +14,7 @@ import {
 } from '../bash/shellQuoting.js'
 import { logForDebugging } from '../debug.js'
 import { getPlatform } from '../platform.js'
+import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import { getSessionEnvironmentScript } from '../sessionEnvironment.js'
 import { getSessionEnvVars } from '../sessionEnvVars.js'
 import {
@@ -246,6 +247,9 @@ export async function createBashShellProvider(
         // heredocs work in sandboxed zsh commands.
         // Safe to set unconditionally — non-zsh shells ignore TMPPREFIX.
         env.TMPPREFIX = posixJoin(posixTmpDir, 'zsh')
+      } else if (!process.env.TMPDIR && SandboxManager.isSandboxingEnabled()) {
+        // Commands run outside an enabled sandbox still get a usable TMPDIR.
+        env.TMPDIR = osTmpdir()
       }
       // Apply session env vars set via /env (child processes only, not the REPL)
       for (const [key, value] of getSessionEnvVars()) {

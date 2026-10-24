@@ -540,6 +540,7 @@ function formatAssistantMessageFromError(
         return createAssistantAPIErrorMessage({
           content: specificErrorMessage,
           error: 'rate_limit',
+          quotaLimits: limits,
         })
       }
 

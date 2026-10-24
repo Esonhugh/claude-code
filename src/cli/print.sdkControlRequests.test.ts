@@ -199,4 +199,40 @@ if (process.env[childFlag] !== '1') {
       utilization.mockRestore()
     }
   })
+
+  test('host dialog requests (memory, skills, hooks, permissions, diff, tasks, feedback) answer', async () => {
+    const [memory, skills, hooks, rules, diff, taskOut, endedTask, bgAll, bgOne, rated, badRating, feedback] = await run([
+      { subtype: 'get_memory_dialog' },
+      { subtype: 'get_skills_dialog' },
+      { subtype: 'get_hooks_listing' },
+      { subtype: 'list_permission_rules' },
+      { subtype: 'get_workspace_diff' },
+      { subtype: 'get_task_output', task_id: 'nosuch' },
+      { subtype: 'get_task_output', task_id: 'b00000000' },
+      { subtype: 'background_tasks' },
+      { subtype: 'background_tasks', tool_use_id: 'toolu_nosuch' },
+      { subtype: 'message_rated', messageUuid: 'm1', sentiment: 'positive' },
+      { subtype: 'message_rated', messageUuid: 'm1', sentiment: 'meh' },
+      { subtype: 'submit_feedback', description: 'x' },
+    ])
+    expect(memory.subtype).toBe('success')
+    expect(memory.response.files.slice(0, 2).map((f: { kind: string }) => f.kind)).toEqual(['user', 'project'])
+    expect(memory.response.files[0]).toMatchObject({ label: 'User instructions', description: 'Saved in ~/.claude/CLAUDE.md' })
+    expect(memory.response.auto_memory).toMatchObject({ enabled: expect.any(Boolean), status: expect.stringMatching(/^(on|off)$/) })
+    expect(skills.subtype).toBe('success')
+    expect(Array.isArray(skills.response.skills)).toBe(true)
+    expect(hooks.response).toMatchObject({ events: [], hooks: [], policy: { disabledByPolicy: false }, safeMode: null })
+    expect(hooks.response.eventCatalog[0]).toEqual({ name: 'PreToolUse', summary: 'Before tool execution', supportsMatcher: true })
+    expect(rules.response.state).toMatchObject({ workspaceDirectories: [], originalCwd: expect.any(String), managedOnly: false })
+    expect(Array.isArray(rules.response.state.rules)).toBe(true)
+    expect(diff.subtype).toBe('success')
+    expect(diff.response).toHaveProperty('diff')
+    expect(taskOut).toMatchObject({ subtype: 'error', error: 'get_task_output: no shell or Monitor task with that task_id in this session' })
+    expect(endedTask.response).toEqual({ output: '', total_bytes: 0, truncated: false })
+    expect(bgAll.response).toEqual({})
+    expect(bgOne.response).toEqual({ backgrounded: false })
+    expect(rated.response).toEqual({})
+    expect(badRating.subtype).toBe('error')
+    expect(feedback.response).toMatchObject({ feedback_id: null, unavailable_reason: expect.any(String) })
+  })
 }

@@ -885,6 +885,7 @@ export const BashTool = buildTool({
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
         agentId: toolUseContext.agentId,
+        userShellCommand: toolUseContext.userShellCommand,
       })
 
       // Consume the generator and capture the return value
@@ -1106,6 +1107,7 @@ async function* runShellCommand({
   isMainThread,
   toolUseId,
   agentId,
+  userShellCommand,
 }: {
   input: BashToolInput
   abortController: AbortController
@@ -1115,6 +1117,7 @@ async function* runShellCommand({
   isMainThread?: boolean
   toolUseId?: string
   agentId?: AgentId
+  userShellCommand?: boolean
 }): AsyncGenerator<
   {
     type: 'progress'
@@ -1169,7 +1172,7 @@ async function* runShellCommand({
       }
     },
     preventCwdChanges,
-    shouldUseSandbox: shouldUseSandbox(input),
+    shouldUseSandbox: !userShellCommand && shouldUseSandbox(input),
     shouldAutoBackground,
   })
 

@@ -34,6 +34,12 @@ describe('settings schema', () => {
     ).toMatchObject({ workflowKeywordTriggerEnabled: false, skipWorkflowUsageWarning: true })
   })
 
+  test('accepts only a boolean autoContinueAtUsageLimit', () => {
+    expect(SettingsSchema().safeParse({ autoContinueAtUsageLimit: 'yes' }).success).toBe(false)
+    expect(SettingsSchema().parse({ autoContinueAtUsageLimit: false }).autoContinueAtUsageLimit).toBe(false)
+    expect(SettingsSchema().parse({}).autoContinueAtUsageLimit).toBeUndefined()
+  })
+
   test('describes exclusions for instruction files rather than two basenames', () => {
     const description = SettingsSchema().shape.claudeMdExcludes.description
 

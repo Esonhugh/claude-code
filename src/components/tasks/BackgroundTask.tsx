@@ -7,6 +7,7 @@ import { truncate } from 'src/utils/format.js'
 import { toInkColor } from 'src/utils/ink.js'
 import { plural } from 'src/utils/stringUtils.js'
 import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../constants/figures.js'
+import { usageLimitPausedText } from '../../tools/WorkflowTool/workflowUsageLimitWait.js'
 import { RemoteSessionProgress } from './RemoteSessionProgress.js'
 import { ShellProgress, TaskStatusText } from './ShellProgress.js'
 import {
@@ -117,7 +118,9 @@ export function BackgroundTask({
             status={task.status}
             label={
               task.status === 'running'
-                ? `${workflowTask.agentCount} ${plural(workflowTask.agentCount, 'agent')}`
+                ? workflowTask.rateLimitWait
+                  ? usageLimitPausedText(workflowTask.rateLimitWait.resetsAt)
+                  : `${workflowTask.agentCount} ${plural(workflowTask.agentCount, 'agent')}`
                 : task.status === 'completed'
                   ? 'done'
                   : undefined

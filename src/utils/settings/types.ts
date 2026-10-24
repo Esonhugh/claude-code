@@ -849,6 +849,12 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Skip the usage warning shown before a dynamic workflow runs. Default: false.'),
+      autoContinueAtUsageLimit: z
+        .boolean()
+        .optional()
+        .describe(
+          'When a claude.ai usage limit stops a dynamic workflow agent, pause the workflow until the limit resets and re-run the waiting agents. Default: true.',
+        ),
       enableWorkflows: z
         .boolean()
         .optional()

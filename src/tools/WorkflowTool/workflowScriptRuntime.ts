@@ -3,6 +3,7 @@ import { availableParallelism } from 'node:os'
 import { dirname } from 'node:path'
 import { mkdir, writeFile } from 'node:fs/promises'
 import type { AssistantMessage } from '../../types/message.js'
+import type { ClaudeAILimits } from '../../services/claudeAiLimits.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { generateTaskId } from '../../Task.js'
@@ -27,6 +28,7 @@ import {
   recordWorkflowAgentStarted,
   recordWorkflowEvent,
   registerWorkflowTask,
+  setWorkflowRateLimitWait,
   shouldAutomaticallyRetryWorkflowAgent,
   startWorkflowPhase,
   workflowResumeCall,
@@ -58,6 +60,11 @@ import { logForDebugging } from '../../utils/debug.js'
 import { createWorkflowRunId, resolveWorkflowScriptPath } from './workflowScriptPersistence.js'
 import { hasWorkflowScriptMeta, parseWorkflowScript, workflowErrorMessage } from './workflowScriptParser.js'
 import { getCwd } from '../../utils/cwd.js'
+import { AgentApiError } from '../AgentTool/agentToolUtils.js'
+import {
+  USAGE_LIMIT_AGENT_LABEL_SUFFIX,
+  WorkflowUsageLimitWait,
+} from './workflowUsageLimitWait.js'
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js'
 import {
   createProgressTracker,
@@ -245,6 +252,7 @@ class WorkflowAgentAttemptError extends Error {
   constructor(
     message: string,
     readonly usage: WorkflowAgentAttemptUsage,
+    readonly quotaLimits?: ClaudeAILimits,
   ) {
     super(message)
     this.name = 'WorkflowAgentAttemptError'
@@ -579,6 +587,7 @@ export async function runWorkflowScript({
   resumeFromRunId,
   resumeJournalEntries,
   resumeInterruptedIdentities,
+  usageLimitWaitOptions,
 }: {
   script: string
   plan: WorkflowDryRunPlan
@@ -592,6 +601,10 @@ export async function runWorkflowScript({
   resumeFromRunId?: string
   resumeJournalEntries?: WorkflowResumeCacheEntry[]
   resumeInterruptedIdentities?: Iterable<string>
+  usageLimitWaitOptions?: Pick<
+    ConstructorParameters<typeof WorkflowUsageLimitWait>[0],
+    'isEnabled' | 'resumeJitterMs'
+  >
 }): Promise<string> {
   const agentTool = findAgentTool(context.options.tools)
   if (!agentTool) throw new Error('Workflow script execution requires the Agent tool')
@@ -709,6 +722,15 @@ export async function runWorkflowScript({
     recordWorkflowEvent({ taskId: workflowTask.id, event, setAppState })
     runSession = await appendWorkflowRunEvent({ cwd, session: runSession, event })
   }
+  const usageLimitWait = new WorkflowUsageLimitWait({
+    signal: abortController.signal,
+    log: message => {
+      if (logs.length < MAX_LOGS) logs.push(message)
+      void emit(createWorkflowLogEvent({ workflowRunId, message }))
+    },
+    onChange: status => setWorkflowRateLimitWait(workflowTask.id, status, setAppState),
+    ...usageLimitWaitOptions,
+  })
 
   // --- Budget ---
   const budget = {
@@ -888,8 +910,14 @@ export async function runWorkflowScript({
     // Stall/user retry loop
     let attempt = 0
     let automaticRetries = 0
+    let afterUsageLimit = false
     while (true) {
-      const attemptAgentId = attempt === 0 ? agentId : `${agentId} (retry ${attempt})`
+      await usageLimitWait.whenClear()
+      if (abortController.signal.aborted) return null
+      const attemptAgentId = attempt === 0
+        ? agentId
+        : afterUsageLimit ? `${agentId}${USAGE_LIMIT_AGENT_LABEL_SUFFIX}` : `${agentId} (retry ${attempt})`
+      afterUsageLimit = false
       const attemptId = `${phase}:${logicalAgentId}:attempt:${attempt}`
       const retryOfAttemptId = attempt > 0
         ? `${phase}:${logicalAgentId}:attempt:${attempt - 1}`
@@ -987,7 +1015,7 @@ export async function runWorkflowScript({
         return result
       } catch (error) {
         if (abortController.signal.aborted) return null
-        const msg = workflowErrorMessage(error, `Workflow agent failed without error details: ${attemptAgentId}`)
+        let msg = workflowErrorMessage(error, `Workflow agent failed without error details: ${attemptAgentId}`)
         if (msg === WORKFLOW_AGENT_SKIPPED_ABORT_REASON) {
           const skippedTask = context.getAppState().tasks[workflowTask.id]
           const skippedPhase = skippedTask?.type === 'local_workflow'
@@ -1044,8 +1072,24 @@ export async function runWorkflowScript({
           return null
         }
         const userRetryRequested = msg === WORKFLOW_AGENT_USER_RETRY_ABORT_REASON
-        const errorKind = classifyWorkflowAgentError(error)
+        const quotaLimits = error instanceof WorkflowAgentAttemptError ? error.quotaLimits : undefined
+        const errorKind = quotaLimits !== undefined ? 'rate_limited' : classifyWorkflowAgentError(error)
         const retryable = shouldAutomaticallyRetryWorkflowAgent(errorKind)
+        // Like official, a usage-limit stop is not retried blindly: the agent waits for the
+        // reset and re-runs, or fails with the reason it could not wait.
+        let usageLimitRetry = false
+        if (quotaLimits !== undefined && !userRetryRequested) {
+          const joined = usageLimitWait.join(quotaLimits)
+          if (joined.outcome === 'aborted') return null
+          if (joined.outcome === 'declined') {
+            if (joined.failureNote !== undefined) msg = `${joined.failureNote}: ${msg}`
+          } else {
+            const end = await joined.ended
+            if (end === 'aborted' || abortController.signal.aborted) return null
+            if (end === 'resumed') usageLimitRetry = true
+            else msg = `usage-limit wait turned off: ${msg}`
+          }
+        }
         if (!userRetryRequested) {
           logForDebugging(
             workflowRetryDebugMessage({
@@ -1063,7 +1107,8 @@ export async function runWorkflowScript({
           )
         }
         const retryBudget = workflowRetryBudget(plan.defaults.maxRetries)
-        const automaticRetryRequested = retryable && automaticRetries < retryBudget
+        const automaticRetryRequested = usageLimitRetry ||
+          (quotaLimits === undefined && retryable && automaticRetries < retryBudget)
         if (userRetryRequested || automaticRetryRequested) {
           let userRetryAttemptUsage: WorkflowAgentAttemptUsage | undefined
           if (automaticRetryRequested) {
@@ -1140,13 +1185,19 @@ export async function runWorkflowScript({
               ...(automaticRetryRequested
                 ? { errorKind, retryable: true }
                 : {}),
-              detail: automaticRetryRequested
-                ? `retry=${automaticRetries + 1}/${retryBudget}`
-                : undefined,
+              detail: usageLimitRetry
+                ? 'after_usage_limit'
+                : automaticRetryRequested
+                  ? `retry=${automaticRetries + 1}/${retryBudget}`
+                  : undefined,
             }),
           )
-          if (automaticRetryRequested) automaticRetries++
           attempt++
+          if (usageLimitRetry) {
+            afterUsageLimit = true
+            continue
+          }
+          if (automaticRetryRequested) automaticRetries++
           logs.push(`[retry] agent "${agentId}" retry ${attempt}${automaticRetryRequested ? `/${retryBudget}` : ''}`)
           continue
         }
@@ -1536,6 +1587,7 @@ export async function runWorkflowScript({
       throw new WorkflowAgentAttemptError(
         workflowErrorMessage(error, `Workflow agent failed without error details: ${agentId}`),
         attemptUsage,
+        error instanceof AgentApiError ? error.quotaLimits : undefined,
       )
     } finally {
       stagger.done()

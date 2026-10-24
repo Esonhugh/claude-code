@@ -22,7 +22,7 @@ if (process.env[childFlag] !== '1') {
     try {
       const [exitCode, stdout, stderr] = await Promise.all([child.exited, stdoutText, stderrText])
       expect(exitCode, stdout + stderr).toBe(0)
-      expect(stderr).toContain('3 pass')
+      expect(stderr).toContain('4 pass')
       expect(stderr).toContain('0 fail')
     } finally {
       if (child.exitCode === null) { child.kill(); await child.exited }
@@ -31,11 +31,11 @@ if (process.env[childFlag] !== '1') {
     }
   }, 30_000)
 } else {
-  const controls: Array<{ started: ReturnType<typeof Promise.withResolvers<void>>; progress: ReturnType<typeof Promise.withResolvers<void>>; finish: ReturnType<typeof Promise.withResolvers<void>>; error?: Error; signal?: AbortSignal }> = []
+  const controls: Array<{ started: ReturnType<typeof Promise.withResolvers<void>>; progress: ReturnType<typeof Promise.withResolvers<void>>; finish: ReturnType<typeof Promise.withResolvers<void>>; error?: Error; final?: Record<string, unknown>; signal?: AbortSignal }> = []
   const queue: typeof controls = []
   const inFlight: Promise<unknown>[] = []
-  function control(error?: Error) {
-    const item = { started: Promise.withResolvers<void>(), progress: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>(), error, signal: undefined as AbortSignal | undefined }
+  function control(error?: Error, final?: Record<string, unknown>) {
+    const item = { started: Promise.withResolvers<void>(), progress: Promise.withResolvers<void>(), finish: Promise.withResolvers<void>(), error, final, signal: undefined as AbortSignal | undefined }
     controls.push(item); queue.push(item)
     return item
   }
@@ -61,6 +61,10 @@ if (process.env[childFlag] !== '1') {
         signal.throwIfAborted()
         if (item.error) throw item.error
       } finally { signal.removeEventListener('abort', onAbort) }
+      if (item.final) {
+        yield item.final
+        return
+      }
       yield { type: 'assistant', uuid: crypto.randomUUID(), timestamp: new Date().toISOString(), message: {
         id: 'msg_workflow_complete', type: 'message', role: 'assistant', model: 'claude-sonnet-4-6',
         content: [{ type: 'text', text: 'worker-finished' }], stop_reason: 'end_turn', stop_sequence: null,
@@ -110,6 +114,26 @@ if (process.env[childFlag] !== '1') {
     expect(failure.value).toBeUndefined()
     expect(failure.error).toBeInstanceOf(Error)
     expect(failure.error.message).toContain('controlled worker failure')
+  })
+
+  test('a background worker stopped by a usage limit rejects with its quota limits', async () => {
+    const { AgentApiError } = await import('../AgentTool/agentToolUtils.js')
+    const quotaLimits = { status: 'rejected', unifiedRateLimitFallbackAvailable: false, isUsingOverage: false, resetsAt: 1900000000 }
+    const { context } = setup()
+    const item = control(undefined, {
+      type: 'assistant', uuid: crypto.randomUUID(), timestamp: new Date().toISOString(), isApiErrorMessage: true, error: 'rate_limit', quotaLimits,
+      message: {
+        id: 'msg_workflow_usage_limit', type: 'message', role: 'assistant', model: '<synthetic>',
+        content: [{ type: 'text', text: "You've hit your limit · resets 3pm" }], stop_reason: 'stop_sequence', stop_sequence: '',
+        usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, server_tool_use: null, service_tier: null, cache_creation: null },
+      },
+    })
+    const result = callWorkflowAgent(AgentTool, input as never, context, allowed, assistant)
+    inFlight.push(result); const outcome = result.then(value => ({ value, error: undefined }), error => ({ value: undefined, error }))
+    await item.started.promise; item.finish.resolve(); const failure = await outcome
+    expect(failure.error).toBeInstanceOf(AgentApiError)
+    expect(failure.error.message).toContain("You've hit your limit")
+    expect(failure.error.quotaLimits).toEqual(quotaLimits)
   })
 
   test('cancel preserves the reason and leaves an unrelated real background agent running', async () => {
