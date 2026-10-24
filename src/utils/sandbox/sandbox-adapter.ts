@@ -23,7 +23,7 @@ import {
 import { existsSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
-import { join, resolve, sep } from 'path'
+import { join, posix, resolve, sep } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
@@ -56,7 +56,10 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
 import { errorMessage } from '../errors.js'
-import { getClaudeTempDir } from '../permissions/filesystem.js'
+import {
+  getClaudeTempDir,
+  getClaudeTempDirName,
+} from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
 
@@ -774,6 +777,12 @@ async function wrapWithSandbox(
     }
   }
 
+  // sandbox-runtime sets TMPDIR inside the sandbox from CLAUDE_TMPDIR (default
+  // /tmp/claude); point it at the per-user dir Shell.ts creates and allows.
+  process.env.CLAUDE_TMPDIR = posix.join(
+    process.env.CLAUDE_CODE_TMPDIR || '/tmp',
+    getClaudeTempDirName(),
+  )
   return BaseSandboxManager.wrapWithSandbox(
     command,
     binShell,

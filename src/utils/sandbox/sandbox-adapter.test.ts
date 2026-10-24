@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from 'bun:test'
+import { afterAll, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -147,5 +147,20 @@ if (process.env[childFlag] !== '1') {
       }
       setSessionSettingsCache({ settings: {}, errors: [] })
     }
+  })
+
+  test('sandboxed commands get the per-user TMPDIR', async () => {
+    const { SandboxManager: Base } = await import('@anthropic-ai/sandbox-runtime')
+    let seen: string | undefined
+    const wrap = spyOn(Base, 'wrapWithSandbox').mockImplementation(async c => {
+      seen = process.env.CLAUDE_TMPDIR
+      return c
+    })
+    try {
+      await SandboxManager.wrapWithSandbox('true')
+    } finally {
+      wrap.mockRestore()
+    }
+    expect(seen).toBe(`/tmp/claude-${process.getuid!()}`)
   })
 }
