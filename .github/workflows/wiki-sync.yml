@@ -1,0 +1,54 @@
+name: Sync feature docs to Wiki
+
+on:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'docs/features/**'
+      - 'scripts/build-wiki.mjs'
+      - '.github/workflows/wiki-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Publish docs/features to the Wiki
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build wiki pages
+        run: bun scripts/build-wiki.mjs "$RUNNER_TEMP/pages" "https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}"
+
+      - name: Push to the Wiki repository
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          wiki="$RUNNER_TEMP/wiki"
+          git clone --depth 1 "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" "$wiki"
+          # docs/features is the only source: pages removed there are removed from the Wiki too.
+          find "$wiki" -maxdepth 1 -name '*.md' -delete
+          cp "$RUNNER_TEMP"/pages/*.md "$wiki"/
+          cd "$wiki"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Wiki already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "Sync docs/features from ${GITHUB_SHA::7}"
+          git push origin HEAD
