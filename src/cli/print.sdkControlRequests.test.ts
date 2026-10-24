@@ -126,4 +126,77 @@ if (process.env[childFlag] !== '1') {
     expect(scheme).toMatchObject({ subtype: 'error', error: 'mcp_read_resource: uri must use the ui:// scheme' })
     expect(unknown).toMatchObject({ subtype: 'error', error: 'mcp_read_resource: no connected server named nosuch' })
   })
+
+  test('host UI requests from the VS Code extension answer instead of Unsupported', async () => {
+    const usage = await import('../services/api/usage.js')
+    const utilization = spyOn(usage, 'fetchUtilization').mockResolvedValue(null)
+    try {
+      const [status, usageRes, cost, version, models, files, plan, exported, rename, renameOther, paused] = await run([
+        { subtype: 'get_status' },
+        { subtype: 'get_usage', skip_behaviors: true },
+        { subtype: 'get_session_cost' },
+        { subtype: 'get_binary_version' },
+        { subtype: 'list_models' },
+        { subtype: 'file_suggestions', query: '' },
+        { subtype: 'get_plan' },
+        { subtype: 'export_conversation' },
+        { subtype: 'rename_session', title: 'host title', source: 'host' },
+        { subtype: 'rename_session', title: 'x', session_id: 'another-session' },
+        { subtype: 'set_prompt_suggestions_paused', paused: true },
+      ])
+      expect(status.subtype).toBe('success')
+      expect(status.response.sections.map((s: { title: string }) => s.title).slice(0, 2)).toEqual(['Session', 'Environment'])
+      expect(status.response.sections[0].rows[0]).toEqual({ label: 'Version', value: 'test' })
+      for (const section of status.response.sections) {
+        for (const row of section.rows) expect(typeof row.value).toBe('string')
+      }
+      expect(usageRes.response).toMatchObject({
+        session: { total_cost_usd: 0, total_lines_added: 0, model_usage: {} },
+        rate_limits_available: false,
+        rate_limits: null,
+        behaviors: null,
+      })
+      expect(cost.response.text).toContain('Total cost:')
+      expect(cost.response.text).not.toContain('\u001b[')
+      expect(version.response).toEqual({ version: 'test' })
+      expect(models.response.models.length).toBeGreaterThan(0)
+      expect(models.response.models[0]).toMatchObject({ value: expect.any(String), resolvedModel: expect.any(String) })
+      expect(files.subtype).toBe('success')
+      expect(files.response.cwd).toBe(process.cwd())
+      expect(Array.isArray(files.response.suggestions)).toBe(true)
+      expect(plan.response).toEqual({ exists: false })
+      expect(exported.response).toMatchObject({ text: expect.any(String), default_filename: expect.stringMatching(/^conversation-.*\.txt$/) })
+      expect(rename.subtype).toBe('success')
+      expect(renameOther).toMatchObject({ subtype: 'error', error: 'rename_session: this process has moved to another session' })
+      expect(paused.subtype).toBe('success')
+    } finally {
+      utilization.mockRestore()
+    }
+  })
+
+  test('get_usage reports ChatGPT plan windows by their length', async () => {
+    const usage = await import('../services/api/usage.js')
+    const utilization = spyOn(usage, 'fetchUtilization').mockResolvedValue({
+      source: 'chatgpt',
+      plan_type: 'plus',
+      five_hour: null,
+      seven_day: { utilization: 12, resets_at: '2026-10-24T20:00:00.000Z', window_minutes: 300 },
+      seven_day_sonnet: { utilization: 40, resets_at: '2026-10-30T00:00:00.000Z', window_minutes: 10080 },
+      chatgpt_limits: [{ title: '5h limit', limit: { utilization: 12, resets_at: '2026-10-24T20:00:00.000Z' } }],
+    })
+    try {
+      const [res] = await run([{ subtype: 'get_usage' }])
+      expect(res.response).toMatchObject({
+        subscription_type: 'plus',
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: { utilization: 12, resets_at: '2026-10-24T20:00:00.000Z' },
+          seven_day: { utilization: 40, resets_at: '2026-10-30T00:00:00.000Z' },
+          model_scoped: [{ display_name: '5h limit', utilization: 12, resets_at: '2026-10-24T20:00:00.000Z' }],
+        },
+      })
+    } finally {
+      utilization.mockRestore()
+    }
+  })
 }

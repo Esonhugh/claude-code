@@ -60,6 +60,18 @@ export function sanitizeFilename(text: string): string {
     .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
 }
 
+/**
+ * The file name /export offers: the time and the first prompt, ending in .txt.
+ */
+export function getDefaultExportFilename(messages: Message[]): string {
+  const firstPrompt = extractFirstPrompt(messages)
+  const timestamp = formatTimestamp(new Date())
+  const sanitized = firstPrompt ? sanitizeFilename(firstPrompt) : ''
+  return sanitized
+    ? `${timestamp}-${sanitized}.txt`
+    : `conversation-${timestamp}.txt`
+}
+
 async function exportWithReactRenderer(
   context: ToolUseContext,
 ): Promise<string> {
@@ -98,25 +110,11 @@ export async function call(
     }
   }
 
-  // Generate default filename from first prompt or timestamp
-  const firstPrompt = extractFirstPrompt(context.messages)
-  const timestamp = formatTimestamp(new Date())
-
-  let defaultFilename: string
-  if (firstPrompt) {
-    const sanitized = sanitizeFilename(firstPrompt)
-    defaultFilename = sanitized
-      ? `${timestamp}-${sanitized}.txt`
-      : `conversation-${timestamp}.txt`
-  } else {
-    defaultFilename = `conversation-${timestamp}.txt`
-  }
-
   // Return the dialog component when no args provided
   return (
     <ExportDialog
       content={content}
-      defaultFilename={defaultFilename}
+      defaultFilename={getDefaultExportFilename(context.messages)}
       onDone={result => {
         onDone(result.message)
       }}

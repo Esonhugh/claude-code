@@ -1241,6 +1241,10 @@ export const ModelInfoSchema = lazySchema(() =>
   z
     .object({
       value: z.string().describe('Model identifier to use in API calls'),
+      resolvedModel: z
+        .string()
+        .optional()
+        .describe('The model ID this option currently resolves to'),
       displayName: z.string().describe('Human-readable display name'),
       description: z
         .string()
