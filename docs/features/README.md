@@ -43,4 +43,4 @@
 |  | [Mods / Function Hooks](mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
 |  | [Mods 远程客户端（stream-json）](mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
 |  | [Agent SDK 与 stream-json 控制协议](agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI；补齐了 SDK 0.3 会用到的控制请求 |
-| 开发与发布 | [构建、发布与终端验收工具](build-and-release.md) | Bun 构建、bytecode binary、binary-only npm 发布、内嵌 ripgrep、Linux 发布门禁与终端采集 |
+| 开发与发布 | [构建、发布与终端验收工具](build-and-release.md) | 给贡献者：怎么从源码构建出可运行的 binary、怎么和官方版本对照、发布流程做了什么 |
