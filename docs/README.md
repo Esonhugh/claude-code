@@ -58,7 +58,6 @@
 
 - `archive/plans/`：已完成、已替代或暂停的实施计划。
 - `archive/test-plans/`：阶段性验收方案。
-- `archive/notes/`：研究过程、交接和临时记录。
 - `archive/implementation-records/`：历史设计稿与逐任务实施记录。
 
 新工作不应默认复制历史计划；应先以当前源码、测试和项目指令为准。
