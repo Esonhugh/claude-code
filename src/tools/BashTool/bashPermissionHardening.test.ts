@@ -348,7 +348,7 @@ if (process.env[childFlag] !== '1') {
         ['echo a && ls src', 'default', { allow: ['Bash(echo:*)', 'Bash(ls:*)'] }, 'allow'],
         ['echo outside', 'bypassPermissions', {}, 'allow'],
       ] as const) {
-        const result = await run(command, mode, rules)
+        const result = await run(command, mode, rules as Rules)
         expect({ command, mode, behavior: result.behavior }).toEqual({
           command,
           mode,
