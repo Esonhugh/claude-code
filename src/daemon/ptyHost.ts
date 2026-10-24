@@ -106,7 +106,7 @@ export async function runPtyHost(argv: string[]): Promise<void> {
     stopping = true
     proc.kill('SIGTERM')
     // A worker suspended by a stray ^Z would never see the SIGTERM.
-    proc.kill('SIGCONT')
+    if (process.platform !== 'win32') proc.kill('SIGCONT')
     setTimeout(() => proc.kill('SIGKILL'), STOP_GRACE_MS).unref()
   }
 
@@ -208,7 +208,8 @@ export async function runPtyHost(argv: string[]): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject)
     server.listen(sockPath, () => {
-      chmodSync(sockPath, 0o600)
+      // Named pipes on Windows have no mode bits.
+      if (process.platform !== 'win32') chmodSync(sockPath, 0o600)
       resolve()
     })
   })

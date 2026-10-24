@@ -1,12 +1,13 @@
 import { spawn } from 'child_process'
 import { existsSync, statSync } from 'fs'
-import { dirname } from 'path'
 import {
   type DaemonStatus,
   daemonRequest,
   getControlSocketPath,
   getDaemonLogPath,
+  getSockDir,
   listJobs,
+  redactPipeNonce,
   stopJob,
 } from './protocol.js'
 
@@ -37,6 +38,7 @@ function daemonLogLine(): string {
 
 export async function getDaemonStatusText(): Promise<string> {
   const socketPath = getControlSocketPath()
+  const sockDir = process.platform === 'win32' ? '\\\\.\\pipe\\cc-daemon-*' : getSockDir()
   let response
   try {
     response = await daemonRequest({ type: 'status' }, 2000)
@@ -47,8 +49,8 @@ export async function getDaemonStatusText(): Promise<string> {
       'not running',
       '',
       'bg sessions:',
-      `  sock dir:     ${dirname(socketPath)}`,
-      `  control.sock: unreachable (connect ${code} ${socketPath})`,
+      `  sock dir:     ${sockDir}`,
+      `  control.sock: unreachable (connect ${code} ${redactPipeNonce(socketPath)})`,
       `  bg workers:   ${recorded} recorded running (control unreachable)`,
       daemonLogLine(),
     ].join('\n')
@@ -63,7 +65,7 @@ export async function getDaemonStatusText(): Promise<string> {
     `log:     ${getDaemonLogPath()}`,
     '',
     'bg sessions:',
-    `  sock dir:     ${dirname(socketPath)}`,
+    `  sock dir:     ${sockDir}`,
     '  control.sock: reachable',
     `  bg workers:   ${status.running} running (control.sock)`,
     daemonLogLine(),
@@ -161,7 +163,18 @@ export async function daemonMain(args: string[] = []): Promise<void> {
         return
       }
       const tail = spawn('tail', ['-n', '50', '-f', log], { stdio: 'inherit' })
-      await new Promise(resolve => tail.on('exit', resolve))
+      await new Promise<void>(resolve => {
+        tail.on('exit', code => {
+          if (code) process.exitCode = code
+          resolve()
+        })
+        // No tail on stock Windows.
+        tail.on('error', error => {
+          process.stderr.write(`tail failed: ${error.message}\n`)
+          process.exitCode = 1
+          resolve()
+        })
+      })
       return
     }
     case '--help':

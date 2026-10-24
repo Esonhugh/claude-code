@@ -1,9 +1,8 @@
 import { spawn } from 'child_process'
-import { createHash } from 'crypto'
-import { mkdirSync, writeFileSync } from 'fs'
+import { createHash, randomBytes } from 'crypto'
+import { mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { readdir, readFile } from 'fs/promises'
 import { createConnection, type Socket } from 'net'
-import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { isInBundledMode } from '../utils/bundledMode.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
@@ -106,7 +105,8 @@ export function getJobDir(id: string): string {
 }
 
 export function getPtySockPath(id: string): string {
-  return join(dirname(getControlSocketPath()), 'pty', `${id}.sock`)
+  if (process.platform === 'win32') return getPipePath(`pty-${id}`)
+  return join(getSockDir(), 'pty', `${id}.sock`)
 }
 
 export function getDaemonLogPath(): string {
@@ -114,14 +114,59 @@ export function getDaemonLogPath(): string {
 }
 
 /**
- * Unix socket paths are limited to ~104 bytes, so the socket lives under
- * the temp dir keyed by a hash of the config dir (like official's
- * /tmp/cc-daemon-<uid>/<hash>/control.sock).
+ * Unix socket paths are limited to ~104 bytes and macOS's os.tmpdir() is
+ * long, so like official the sockets live under /tmp ($PREFIX/tmp on
+ * Termux) keyed by a hash of the config dir.
  */
-export function getControlSocketPath(): string {
+export function getSockDir(): string {
   const uid = process.getuid?.() ?? 0
+  const base = process.env.TERMUX_VERSION && process.env.PREFIX ? join(process.env.PREFIX, 'tmp') : '/tmp'
   const hash = createHash('sha256').update(getClaudeConfigHomeDir()).digest('hex').slice(0, 8)
-  return join(tmpdir(), `cc-daemon-${uid}`, hash, 'control.sock')
+  return join(base, `cc-daemon-${uid}`, hash)
+}
+
+export function getControlSocketPath(): string {
+  if (process.platform === 'win32') return getPipePath('control')
+  return join(getSockDir(), 'control.sock')
+}
+
+const PIPE_NONCE = /^[0-9a-f]{16}$/
+
+/**
+ * Windows named pipes share one machine-wide namespace, so their names carry
+ * a private nonce from <config>/daemon/pipe.key that other users can't read.
+ */
+function getPipePath(name: string): string {
+  return `\\\\.\\pipe\\cc-daemon-${getPipeNonce()}-${name}`
+}
+
+function getPipeNonce(): string {
+  const path = join(getClaudeConfigHomeDir(), 'daemon', 'pipe.key')
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let existing: string | undefined
+    try {
+      existing = readFileSync(path, 'utf8').trim()
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+    if (existing !== undefined && PIPE_NONCE.test(existing)) return existing
+    // Another process may have created the file and not yet written it.
+    if (existing === '' && attempt < 3) continue
+    const nonce = randomBytes(8).toString('hex')
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
+    try {
+      writeFileSync(path, nonce, existing === undefined ? { flag: 'wx', mode: 0o600 } : { mode: 0o600 })
+      return nonce
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+    }
+  }
+  throw new Error('daemon pipe.key is not a valid nonce')
+}
+
+/** Keeps the pipe nonce out of messages, like official. */
+export function redactPipeNonce(text: string): string {
+  return text.replace(/cc-daemon-[0-9a-f]{16}/g, 'cc-daemon-*')
 }
 
 export function ensurePrivateDir(dir: string): void {
@@ -227,6 +272,7 @@ export async function ensureDaemon(origin: string, announce = false): Promise<bo
   const child = spawn(command!, [...entry, 'daemon', 'run'], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     env: { ...process.env, CLAUDE_DAEMON_ORIGIN: origin },
   })
   child.unref()
