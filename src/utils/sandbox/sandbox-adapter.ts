@@ -36,7 +36,11 @@ import { logForDebugging } from '../debug.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
-import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
+import {
+  isSettingSourceEnabled,
+  SETTING_SOURCES,
+  type SettingSource,
+} from '../settings/constants.js'
 import { getManagedSettingsDropInDir } from '../settings/managedPath.js'
 import {
   getInitialSettings,
@@ -170,10 +174,14 @@ const TRUSTED_SANDBOX_SOURCES = [
   'userSettings',
 ] as const
 
+function isTrustedSandboxSource(source: SettingSource): boolean {
+  return (TRUSTED_SANDBOX_SOURCES as readonly string[]).includes(source)
+}
+
 function trustedSandboxValue<T>(
   pick: (sandbox: NonNullable<SettingsJson['sandbox']>) => T | undefined,
 ): T | undefined {
-  for (const source of TRUSTED_SANDBOX_SOURCES) {
+  for (const source of TRUSTED_SANDBOX_SOURCES.filter(isSettingSourceEnabled)) {
     const sandbox = getSettingsForSource(source)?.sandbox
     const value = sandbox ? pick(sandbox) : undefined
     if (value !== undefined) return value
@@ -229,7 +237,7 @@ export function convertToSandboxRuntimeConfig(
   } else {
     // Under a strict allowlist the repo's own settings cannot extend it.
     const strict = trustedSandboxValue(sb => sb.network?.strictAllowlist)
-    for (const source of SETTING_SOURCES) {
+    for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
       if (strict && (source === 'projectSettings' || source === 'localSettings')) {
         continue
       }
@@ -345,8 +353,12 @@ export function convertToSandboxRuntimeConfig(
   // cached in worktreeMainRepoPath. Git operations in a worktree need write
   // access to the main repo's .git directory for index.lock etc.
   // This is resolved once at init time (worktree status doesn't change mid-session).
+  // Only the shared .git is opened, and its hooks and config stay read-only
+  // because unsandboxed git runs them.
   if (worktreeMainRepoPath && worktreeMainRepoPath !== cwd) {
-    allowWrite.push(worktreeMainRepoPath)
+    const gitDir = join(worktreeMainRepoPath, '.git')
+    allowWrite.push(gitDir)
+    denyWrite.push(join(gitDir, 'hooks'), join(gitDir, 'config'))
   }
 
   // Include directories added via --add-dir CLI flag or /add-dir command.
@@ -360,10 +372,13 @@ export function convertToSandboxRuntimeConfig(
   ])
   allowWrite.push(...additionalDirs)
 
+  const trustedDenyRead: string[] = []
+  const repoAllowRead: string[] = []
+
   // Iterate through each settings source to resolve paths correctly
   // Path patterns like `/foo` are relative to the settings file directory,
   // so we need to know which source each rule came from
-  for (const source of SETTING_SOURCES) {
+  for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
     const sourceSettings = getSettingsForSource(source)
 
     // Extract filesystem paths from permission rules
@@ -401,14 +416,34 @@ export function convertToSandboxRuntimeConfig(
       }
       for (const p of fs.denyRead || []) {
         denyRead.push(resolveSandboxFilesystemPath(p, source))
+        if (isTrustedSandboxSource(source)) {
+          trustedDenyRead.push(resolveSandboxFilesystemPath(p, source))
+        }
       }
       if (!shouldAllowManagedReadPathsOnly() || source === 'policySettings') {
         for (const p of fs.allowRead || []) {
-          allowRead.push(resolveSandboxFilesystemPath(p, source))
+          const path = resolveSandboxFilesystemPath(p, source)
+          if (isTrustedSandboxSource(source)) allowRead.push(path)
+          else repoAllowRead.push(path)
         }
       }
     }
   }
+  // Under a locked sandbox, the repo's allowRead cannot re-open a path that
+  // trusted settings deny, nor use globs or network paths to do so; carving
+  // out of the repo's own denyRead still works.
+  const overlaps = (a: string, b: string) =>
+    a === b || a.startsWith(b + sep) || b.startsWith(a + sep)
+  allowRead.push(
+    ...(isUnsandboxedFallbackLocked()
+      ? repoAllowRead.filter(
+          p =>
+            !/[*?[\]{}]/.test(p) &&
+            !p.startsWith('//') &&
+            !trustedDenyRead.some(d => overlaps(p, d)),
+        )
+      : repoAllowRead),
+  )
   // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
   // Project settings cannot swap the binary the sandbox runs.
@@ -436,10 +471,8 @@ export function convertToSandboxRuntimeConfig(
   > = []
   // The repo may add deny entries; mask entries (real values injected at the
   // proxy) only come from trusted sources.
-  for (const source of SETTING_SOURCES) {
-    const trusted = (TRUSTED_SANDBOX_SOURCES as readonly string[]).includes(
-      source,
-    )
+  for (const source of SETTING_SOURCES.filter(isSettingSourceEnabled)) {
+    const trusted = isTrustedSandboxSource(source)
     const credentials = getSettingsForSource(source)?.sandbox?.credentials
     for (const file of credentials?.files ?? []) {
       if (trusted || file.mode === 'deny') {
@@ -865,9 +898,11 @@ function getExcludedCommands(): string[] {
     return excluded
   }
   const trusted = new Set(
-    (['userSettings', 'flagSettings', 'policySettings'] as const).flatMap(
-      source => getSettingsForSource(source)?.sandbox?.excludedCommands ?? [],
-    ),
+    (['userSettings', 'flagSettings', 'policySettings'] as const)
+      .filter(isSettingSourceEnabled)
+      .flatMap(
+        source => getSettingsForSource(source)?.sandbox?.excludedCommands ?? [],
+      ),
   )
   return excluded.filter(command => trusted.has(command))
 }

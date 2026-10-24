@@ -2,6 +2,7 @@ import { afterAll, expect, spyOn, test } from 'bun:test'
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { SettingsJson } from '../settings/types.js'
 
 const childFlag = 'CLAUDE_CODE_SANDBOX_ADAPTER_CHILD'
 
@@ -31,7 +32,13 @@ if (process.env[childFlag] !== '1') {
   const { setCachedSettingsForSource, setSessionSettingsCache } = await import(
     '../settings/settingsCache.js'
   )
-  const { setCwdState, setInlinePlugins, setOriginalCwd } = await import(
+  const {
+    getAllowedSettingSources,
+    setAllowedSettingSources,
+    setCwdState,
+    setInlinePlugins,
+    setOriginalCwd,
+  } = await import(
     '../../bootstrap/state.js'
   )
   const { SandboxManager, convertToSandboxRuntimeConfig } = await import(
@@ -172,7 +179,9 @@ if (process.env[childFlag] !== '1') {
       'flagSettings',
       'policySettings',
     ] as const
-    const set = (m: Partial<Record<(typeof all)[number], object>>) => {
+    const set = (
+      m: Partial<Record<(typeof all)[number], NonNullable<SettingsJson['sandbox']>>>,
+    ) => {
       for (const source of all) {
         setCachedSettingsForSource(
           source,
@@ -252,6 +261,88 @@ if (process.env[childFlag] !== '1') {
       ).toBeUndefined()
     } finally {
       set({})
+    }
+  })
+
+  test('a linked worktree may write only the main repo .git, minus hooks and config', async () => {
+    const main = mkdtempSync(join(tmpdir(), 'cc-sandbox-main-'))
+    const wt = mkdtempSync(join(tmpdir(), 'cc-sandbox-wt-'))
+    writeFileSync(join(wt, '.git'), `gitdir: ${main}/.git/worktrees/wt\n`)
+    setOriginalCwd(wt)
+    setCwdState(wt)
+    try {
+      await SandboxManager.reset()
+      setSessionSettingsCache({ settings: { sandbox: { enabled: true } }, errors: [] })
+      const base = await import('@anthropic-ai/sandbox-runtime')
+      const init = spyOn(base.SandboxManager, 'initialize').mockResolvedValue()
+      const enabled = spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(true)
+      try {
+        await SandboxManager.initialize()
+        const { allowWrite, denyWrite } = init.mock.calls[0]![0].filesystem
+        expect(allowWrite).toContain(join(main, '.git'))
+        expect(allowWrite).not.toContain(main)
+        expect(denyWrite).toContain(join(main, '.git', 'hooks'))
+        expect(denyWrite).toContain(join(main, '.git', 'config'))
+      } finally {
+        init.mockRestore()
+        enabled.mockRestore()
+        await SandboxManager.reset()
+      }
+    } finally {
+      setSessionSettingsCache({ settings: {}, errors: [] })
+      setOriginalCwd(project)
+      setCwdState(project)
+      rmSync(main, { recursive: true, force: true })
+      rmSync(wt, { recursive: true, force: true })
+    }
+  })
+
+  test('the sandbox filesystem config respects --setting-sources', () => {
+    const allowed = getAllowedSettingSources()
+    setCachedSettingsForSource('userSettings', {
+      sandbox: { filesystem: { denyRead: ['/user-secret'] } },
+    })
+    try {
+      expect(convertToSandboxRuntimeConfig({}).filesystem.denyRead).toContain(
+        '/user-secret',
+      )
+      setAllowedSettingSources(['projectSettings'])
+      expect(
+        convertToSandboxRuntimeConfig({}).filesystem.denyRead,
+      ).not.toContain('/user-secret')
+    } finally {
+      setAllowedSettingSources(allowed)
+      setCachedSettingsForSource('userSettings', null)
+    }
+  })
+
+  test('a locked sandbox drops repo allowRead that re-opens a trusted denyRead', () => {
+    setCachedSettingsForSource('userSettings', {
+      sandbox: { filesystem: { denyRead: ['/sec'] } },
+    })
+    setCachedSettingsForSource('projectSettings', {
+      sandbox: {
+        filesystem: {
+          denyRead: ['/repo-deny'],
+          allowRead: ['/sec/f', '/repo-deny/ok', '/data/*'],
+        },
+      },
+    })
+    try {
+      expect(convertToSandboxRuntimeConfig({}).filesystem.allowRead).toEqual(
+        expect.arrayContaining(['/sec/f', '/repo-deny/ok', '/data/*']),
+      )
+      setCachedSettingsForSource('flagSettings', {
+        sandbox: { allowUnsandboxedCommands: false },
+      })
+      const { allowRead } = convertToSandboxRuntimeConfig({}).filesystem
+      expect(allowRead).toContain('/repo-deny/ok')
+      expect(allowRead).not.toContain('/sec/f')
+      expect(allowRead).not.toContain('/data/*')
+    } finally {
+      for (const source of ['userSettings', 'projectSettings', 'flagSettings'] as const) {
+        setCachedSettingsForSource(source, null)
+      }
     }
   })
 }
