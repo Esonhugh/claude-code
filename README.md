@@ -81,7 +81,7 @@ bun ./dist/cli.js --help
 |  | [背景会话、daemon 与 agents 视图](docs/features/background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
 |  | [独立会话通信](docs/features/peer-messaging.md) | 同机独立 CLI 会话经 UDS / named pipe 互发纯文本，`ListAgents` / `SendMessage` / `/peers` |
 | 权限与安全 | [权限规则、权限模式与 Safe mode](docs/features/permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
-|  | [自动模式（Auto mode）](docs/features/auto-mode.md) | 分类器代替人工审批；`autoMode` 规则只读可信来源，`/permissions` Auto mode 分页、`claude auto-mode` |
+|  | [自动模式（Auto mode）](docs/features/auto-mode.md) | 不用一条条点确认：由分类器判断每个操作是否安全，安全的直接做，危险的拦下；可以用一句话加自己的规则 |
 |  | [Hooks 事件、匹配与输出校验](docs/features/hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
 | 工具 | [Terminal 工具](docs/features/terminal-tool.md) | 持久 PTY session：`new-session`、`send-keys`、`capture-pane`、resize、signal，按 Bash 规则判权限 |
 |  | [Monitor 工具](docs/features/monitor-tool.md) | 后台运行监看脚本，每行输出唤醒模型；Bash 前景 `sleep` 改用 Monitor |
