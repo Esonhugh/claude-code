@@ -2,80 +2,147 @@
 
 > 英文名：`hooks` · 领域：权限与安全 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-对齐官方 2.1.303 的 hooks 行为：command/HTTP hook 可设 `onFailure: "block"`；同一事件的 prompt/agent hook 最多 12 个并行；PreCompact 可阻止压缩；Stop/SubagentStop 可返回 `additionalContext`；新增 `PreModelSwitch`、`PostModelSwitch`、`DirectoryAdded`、`MessageDisplay` 事件；SessionStart 可返回 `sessionTitle` 与 `reloadSkills`；hook 收到 `$CLAUDE_EFFORT` 与 `effort.level`；`--debug` 记录每个 command hook 的结果与耗时。Stop hook 连续阻止结束默认在第 9 次终止。
+Hook 是「到了某个时刻就自动执行的命令」。你在 settings.json 里登记：在什么事件、对什么工具、跑哪个脚本。典型用途：
 
-## 配置
+- **拦截**：Claude 要跑 `rm -rf` 之前，你的脚本检查并拒绝，同时告诉它该怎么做；
+- **善后**：每次改完文件自动跑格式化、lint；
+- **补充信息**：会话开始时把当前分支、待办事项塞给 Claude；
+- **通知**：Claude 需要你确认时发桌面通知。
 
-| 配置项 | 位置 | 可选值 | 说明 |
-| --- | --- | --- | --- |
-| `hooks.<Event>[].matcher` | settings | `"Bash"`、`"Edit\|Write"`、`"a,b"`、正则 `"mcp__srv__.*"` | 只含字母数字 `_-` 空格 `\|` `,` 时按精确列表匹配 |
-| `hooks.<Event>[].hooks[].onFailure` | settings | `"block"` | 启动失败、超时或非预期退出码时阻止动作（Stop、SubagentStop、TaskCompleted、TeammateIdle 与 async hook 除外） |
-| `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` | 环境变量 | 整数 / `0` | Stop hook 连续阻止上限，默认 9 |
+行为对齐官方 2.1.303。
+
+## 一个完整的例子
+
+目标：不许 Claude 用 `rm -rf`，并告诉它改成把文件挪到 `./trash`；每次改完文件告诉它「已经格式化过了」。
+
+**1. 写拦截脚本** `guard.sh`。Hook 从 stdin 收到一段 JSON（工具名和参数），用退出码表达结果：
+
+```sh
+#!/bin/sh
+# Block any Bash command that contains "rm -rf".
+cmd=$(cat | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+case "$cmd" in *"rm -rf"*) echo "rm -rf is not allowed here; move files to ./trash instead" >&2; exit 2;; esac
+exit 0
+```
+
+**2. 在 settings.json 里登记：**
 
 ```json
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "./check.sh", "onFailure": "block" }] }
+      { "matcher": "Bash", "hooks": [{ "type": "command", "command": "/path/to/guard.sh" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "Edit|Write", "hooks": [{ "type": "command",
+        "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"formatted with prettier\"}}'" }] }
     ]
   }
 }
 ```
 
-## 效果
+**3. 效果：** `rm -rf` 被拦下，脚本写到 stderr 的那句话原样交给 Claude；编辑照常进行：
 
-PreToolUse hook `exit 2` 阻止 Bash：
+![hook 拦截命令](images/hooks-run.png)
+
+按 `Ctrl+O` 打开详细记录，能看到编辑后跑过的 PostToolUse hook：
 
 ```text
-❯ DO<<Bash|{"command":"echo hi","description":"say hi"}>>
-● Bash(echo hi)
-  ⎿  Error: PreToolUse:Bash hook error: [echo blocked-by-policy-hook >&2; exit 2]: blocked-by-policy-hook
-● FAKE_DONE
+● Update(/tmp/claude-0/hk/a.txt)
+  ⎿  Added 1 line, removed 1 line
+      1 -x
+      1 +y
+  ⎿  2 PostToolUse hooks ran
 ```
 
-hook 命令不存在：没有 `onFailure` 时只报错、命令照常执行；设 `onFailure: "block"` 时阻止：
+## 用 `/hooks` 查看已登记的 hook
+
+`/hooks` 列出每个事件和数量（只读；要修改请编辑 settings.json 或直接让 Claude 改）：
+
+![/hooks 列表](images/hooks-menu.png)
+
+选中事件、再选 matcher，能看到这个事件的退出码约定和具体命令来自哪个配置文件：
+
+![/hooks 详情](images/hooks-detail.png)
+
+## 退出码和输出
+
+| 结果 | 效果 |
+| --- | --- |
+| 退出码 `0` | 放行；stdout / stderr 不显示（少数事件如 SessionStart、UserPromptSubmit 的 stdout 会作为上下文交给 Claude） |
+| 退出码 `2` | 阻止这次操作，stderr 交给 Claude |
+| 其他退出码 | 只给你看 stderr，操作继续 |
+| stdout 输出 JSON | 更精细的控制，例如 `hookSpecificOutput.additionalContext` 补充上下文、`permissionDecision` 直接允许 / 拒绝、`updatedInput` 改写工具参数 |
+
+几条规则：
+
+- `updatedInput` 会按工具参数格式校验：未知字段丢掉；其他格式错误、或工具自己的校验不通过，这次调用就被拒绝。
+- hook 输出里的 `<system-reminder>` 标签会被转义，不能伪造系统提示。
+- 插件 hook 的命令里不能直接引用 `${user_config.*}`，请改读环境变量 `$CLAUDE_PLUGIN_OPTION_<KEY>`。
+
+## hook 自己出错时：`onFailure`
+
+脚本不存在、超时或异常退出时，默认只报错、操作照常执行：
 
 ```text
-❯ DO<<Bash|{"command":"echo hi","description":"say hi"}>>
 ● Bash(echo hi)
-  ⎿  PreToolUse:Bash hook error
-  ⎿  hi
-● FAKE_DONE
+  ⎿  PreToolUse:Bash hook error
+  ⎿  hi
+```
+
+对安全检查类 hook，建议加 `"onFailure": "block"`，这样 hook 坏了也不会放行：
+
+```json
+{ "type": "command", "command": "./check.sh", "onFailure": "block" }
 ```
 
 ```text
-❯ DO<<Bash|{"command":"echo hi","description":"say hi"}>>
 ● Bash(echo hi)
-  ⎿  Error: PreToolUse:Bash hook error: [/nonexistent/check.sh]: failed; blocking because onFailure is "block"
+  ⎿  Error: PreToolUse:Bash hook error: [/nonexistent/check.sh]: failed; blocking because onFailure is "block"
      /bin/sh: 1: /nonexistent/check.sh: not found
-● FAKE_DONE
 ```
 
-## 详细说明
+`onFailure` 对 Stop、SubagentStop、TaskCompleted、TeammateIdle 和异步 hook 不生效。
 
-以下内容自原 README 迁入，保持原文。
+## matcher 怎么写
 
-### Hooks 匹配与输出校验
+| 写法 | 匹配 |
+| --- | --- |
+| `"Bash"` | 只匹配 Bash |
+| `"Edit\|Write"` 或 `"Edit,Write"` | 列表里的任意一个 |
+| `"mcp__brave-search__.*"` | 正则：某个 MCP server 的全部工具 |
+| 省略或 `""` | 全部 |
 
-以下行为对齐官方 2.1.303，可能需要调整已有 hook 配置：
+只包含字母、数字、`_`、`-`、空格、`|`、`,` 的 matcher 按**精确名字列表**匹配，所以 `brave-search` 这类带连字号的名字不会被当成正则。想用通配必须写成正则（例如 `.*`）。
 
-- 工具、会话、压缩、模型切换等以标识符为匹配值的事件中，只含字母、数字、`_`、`-`、空格、`|` 和 `,` 的 matcher 按精确列表匹配（`|` 或 `,` 分隔），含连字号的名称不再被当作正则。匹配整个 MCP server 的工具请写正则：
+## 有哪些事件
 
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "mcp__brave-search__.*", "hooks": [{ "type": "command", "command": "./check.sh" }] }
-    ]
-  }
-}
-```
+| 事件 | 什么时候 | 常见用途 |
+| --- | --- | --- |
+| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | 工具执行前 / 成功后 / 失败后 | 拦截、审计、格式化 |
+| `PermissionRequest` / `PermissionDenied` | 弹权限确认时 / 自动模式拒绝后 | 自动审批、记录；`-p` 下也会触发 |
+| `UserPromptSubmit` | 你发出消息后、处理前（在 skill 和自定义命令展开之前） | 过滤、补充上下文 |
+| `SessionStart` / `SessionEnd` / `Setup` | 会话开始 / 结束 / 初始化 | 注入上下文；SessionStart 可返回 `sessionTitle`、`reloadSkills` |
+| `Stop` / `StopFailure` / `SubagentStart` / `SubagentStop` | Claude 准备结束回答 / 子 Agent 开始与结束 | 检查是否真的做完；可返回 `additionalContext` 让它继续 |
+| `PreCompact` / `PostCompact` | 压缩上下文前 / 后 | PreCompact 可阻止压缩 |
+| `PreModelSwitch` / `PostModelSwitch` | 切换模型前 / 后 | 限制可用模型 |
+| `Notification` | 需要你注意时 | 桌面通知 |
+| `TaskCreated` / `TaskCompleted` / `TeammateIdle` | 任务清单与团队事件 | 团队协作 |
+| `Elicitation` / `ElicitationResult` | MCP 向你索取输入 | |
+| `ConfigChange` / `InstructionsLoaded` / `CwdChanged` / `FileChanged` / `DirectoryAdded` | 配置、指令文件、目录变化 | |
+| `WorktreeCreate` / `WorktreeRemove` | 建 / 删 worktree | 自定义 worktree 流程 |
+| `MessageDisplay` | 每段回复文本显示完成时（只触发一次，`final: true`） | 朗读、转发 |
 
-- PreToolUse 与 PermissionRequest 返回的 `updatedInput` 按工具输入 schema 校验：未知字段被丢弃，其他 schema 错误或工具 `validateInput` 拒绝时拒绝该次调用。
-- PermissionRequest hook 在 `-p`/`--print` 下也会在拒绝或转交 `--permission-prompt-tool` 之前触发。
-- `UserPromptSubmit` 在 skill 或自定义斜杠命令展开之前运行；hook 拦截时，命令中嵌入的 shell 命令不会执行。
-- 插件 hook 的 shell 形式命令引用 `${user_config.*}` 会报错并拒绝执行，请改读环境变量 `$CLAUDE_PLUGIN_OPTION_<KEY>`。
-- hook 输出中的 `<system-reminder>` 标签会被转义，不能打开或关闭外层提醒。
-- `MessageDisplay` 每个完成的文本块只触发一次（`index: 0`、`final: true`），不做官方的逐行刷新。
+## 其他细节
+
+- **并行**：同一事件里的 prompt / agent 类型 hook 最多 12 个同时运行。
+- **Stop 防死循环**：Stop hook 连续阻止结束时，默认第 9 次后强制结束；用环境变量 `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP` 调整（整数，`0` 表示不限制）。
+- **环境变量**：hook 能读到 `$CLAUDE_EFFORT`，JSON 输入里也有 `effort.level`。
+- **调试**：`claude --debug` 会记录每个 command hook 的结果和耗时。
+- **UserPromptSubmit 拦截时**，自定义命令里嵌入的 shell 命令不会执行。
+
+## 说明
+
+画面来自实际运行，模型回复由测试用假 API 生成（`FAKE_DONE`，提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。

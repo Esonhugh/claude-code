@@ -18,7 +18,7 @@
 |  | [独立会话通信](peer-messaging.md) | 同机独立 CLI 会话经 UDS / named pipe 互发纯文本，`ListAgents` / `SendMessage` / `/peers` |
 | 权限与安全 | [权限规则、权限模式与 Safe mode](permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
 |  | [自动模式（Auto mode）](auto-mode.md) | 分类器代替人工审批；`autoMode` 规则只读可信来源，`/permissions` Auto mode 分页、`claude auto-mode` |
-|  | [Hooks 事件、匹配与输出校验](hooks.md) | `onFailure: "block"`、新事件、精确 matcher、`updatedInput` 校验、Stop hook 次数上限 |
+|  | [Hooks 事件、匹配与输出校验](hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
 | 工具 | [Terminal 工具](terminal-tool.md) | 持久 PTY session：`new-session`、`send-keys`、`capture-pane`、resize、signal，按 Bash 规则判权限 |
 |  | [Monitor 工具](monitor-tool.md) | 后台运行监看脚本，每行输出唤醒模型；Bash 前景 `sleep` 改用 Monitor |
 |  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | `CronCreate/Delete/List`、session-only 或 durable 任务、`/loop` 自定节奏 |
