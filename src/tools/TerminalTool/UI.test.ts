@@ -120,4 +120,15 @@ describe('renderToolResultMessage', () => {
     assert.ok(React.isValidElement(rendered))
     assert.equal(rendered.type, Box)
   })
+
+  it('sizes the capture-pane box to the captured lines, not the PTY height', () => {
+    const rendered = renderToolResultMessage({
+      target: 'term-1',
+      text: '>>> 6*7\n42\n>>> \n\n\n\n',
+      rows: 24,
+    })
+
+    assert.ok(React.isValidElement<{ children: React.ReactElement<{ height: number }>[] }>(rendered))
+    assert.equal(rendered.props.children[1].props.height, 5)
+  })
 })
