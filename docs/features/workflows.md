@@ -147,6 +147,7 @@ return await agent('Summarize the findings', { label: 'summary' })
 - 支持暂停 / 恢复，以及对失败的步骤跳过或重试；暂停时不会发终态通知。
 - 完成、失败或被 `TaskStop` 停止时，主对话收到一条通知，带 token / 工具用量、耗时和输出文件；已经完成的分支结果会保留。对已经结束的运行再次执行不会重复启动。
 - `agent()` 会一直等到那个 Agent 真正结束，即使它被路由到后台或被你切到后台。
+- **撞到 claude.ai 用量上限时自动等。** 订阅用户的 Agent 因用量上限停下时，工作流暂停到额度重置后 30–90 秒，再以 `<label> (after usage limit)` 重跑这些 Agent；等待期间后台任务列表显示 `Paused · usage limit resets at <时间>`，也不会启动新 Agent。重置时间超过 24 小时、或本次运行已经等过 2 次时直接失败并写明原因。不想等就设 `autoContinueAtUsageLimit: false`。
 
 ## 已知问题
 

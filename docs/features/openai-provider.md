@@ -71,6 +71,7 @@ CLAUDE_CODE_USE_OPENAI=1 OPENAI_BASE_URL=https://gateway.example/api OPENAI_API_
 - 启动画面和 `/status` 显示套餐、Codex 用量上限和速率限制重置额度（重置需二次确认）；API key 时只显示 `API Usage Billing`。
 - `/stats` 多一个 OpenAI activity 分页：累计、峰值、连续天数，以及日 / 周 / 累计图表（`v` 切换视图，方向键选日期）。
 - 可以使用 [Codex Apps](codex-apps.md)。
+- 请求 `chatgpt.com/backend-api/codex` 时以 Codex CLI 的身份发送版本号（`client_version` 参数和 `version` header，目前为 `0.164.0`，与 Codex CLI 0.164.0 一致），不发送 Claude Code 自己的版本号。跟进新版 Codex 只需改 `src/services/openai-oauth/client.ts` 的 `OPENAI_CODEX_CLIENT_VERSION`。
 
 ## 命令在 OpenAI 下的行为
 
