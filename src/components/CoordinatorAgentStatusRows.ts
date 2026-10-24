@@ -14,6 +14,8 @@ import {
 } from '../tasks/LocalWorkflowTask/workflowSizeWarning.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
 import { getAgentColor } from '../tools/AgentTool/agentColorManager.js'
+import { usageLimitStatusText } from '../tools/WorkflowTool/workflowUsageLimitWait.js'
+import { PAUSE_ICON } from '../constants/figures.js'
 import type { Theme } from '../utils/theme.js'
 
 export type CoordinatorPanelTask = LocalAgentTaskState | LocalWorkflowTaskState
@@ -397,20 +399,24 @@ export function getCoordinatorSessionRows({
         branch: entry.branch,
       }
     }
+    const rateLimitWait = task.status === 'running' ? task.rateLimitWait : undefined
     return {
       id: task.id,
       taskId: task.id,
       kind: 'workflow',
       selected,
       viewed: false,
-      icon: '◯',
+      icon: rateLimitWait ? PAUSE_ICON : '◯',
       primaryText: workflowPrimaryText(task),
       secondaryText: workflowSecondaryText(task),
       tokens: `${formatNumber(task.tokenCount ?? task.results.reduce((sum, result) => sum + (result.tokenCount ?? 0), 0))} tokens`,
       tools: `${workflowTerminalAgentCount(task)}/${task.agentCount ?? task.phases.reduce((sum, phase) => sum + phase.agentIds.length, 0)} agents`,
       elapsed: taskElapsed(task, now),
-      statusText: task.status === 'completed' ? 'done' : task.status === 'killed' ? 'stopped' : task.status === 'pending' ? 'paused' : task.status,
+      statusText: rateLimitWait
+        ? `paused · ${usageLimitStatusText(rateLimitWait.resetsAt)}`
+        : task.status === 'completed' ? 'done' : task.status === 'killed' ? 'stopped' : task.status === 'pending' ? 'paused' : task.status,
       activity: '',
+      ...(rateLimitWait ? { color: 'warning' as const } : {}),
       warning: workflowTaskSizeWarning(task, ultracodeActive) ? WORKFLOW_SIZE_WARNING_TEXT : undefined,
       depth: 0,
       branch: 'none',

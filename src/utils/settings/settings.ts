@@ -432,6 +432,7 @@ const RESTRICTIVE_SETTING_PATHS: {
   { path: ['channelsEnabled'], restrictive: false },
   { path: ['skipWebFetchPreflight'], restrictive: false },
   { path: ['skipWorkflowUsageWarning'], restrictive: false },
+  { path: ['autoContinueAtUsageLimit'], restrictive: false },
   { path: ['crossSessionInbound'], restrictive: ['refuse', 'hold'] },
   { path: ['sandbox', 'enabled'], restrictive: true },
   { path: ['sandbox', 'failIfUnavailable'], restrictive: true },

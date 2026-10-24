@@ -115,6 +115,7 @@
 | `ultracodeKeywordTrigger` | settings.json | `true`（默认）/ `false` | 提示里出现 `ultracode` 时是否触发 |
 | `workflowKeywordTriggerEnabled` | settings.json | `true` / `false` | 同上，优先级更高 |
 | `skipWorkflowUsageWarning` | settings.json | `true` | 不再显示用量提醒 |
+| `autoContinueAtUsageLimit` | settings.json | `true`（默认）/ `false` | claude.ai 订阅用户的 Agent 撞到用量上限时，工作流暂停到额度重置后自动重跑这些 Agent；`false` 时这些 Agent 直接失败 |
 
 ## 脚本长什么样（给想自己写的人）
 

@@ -466,13 +466,15 @@ export function createAssistantAPIErrorMessage({
   apiError,
   error,
   errorDetails,
+  quotaLimits,
 }: {
   content: string
   apiError?: AssistantMessage['apiError']
   error?: SDKAssistantMessageError
   errorDetails?: string
+  quotaLimits?: AssistantMessage['quotaLimits']
 }): AssistantMessage {
-  return baseCreateAssistantMessage({
+  const message = baseCreateAssistantMessage({
     content: [
       {
         type: 'text' as const,
@@ -484,6 +486,7 @@ export function createAssistantAPIErrorMessage({
     error,
     errorDetails,
   })
+  return quotaLimits ? { ...message, quotaLimits } : message
 }
 
 export function createUserMessage({
