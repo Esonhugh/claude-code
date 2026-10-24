@@ -2,122 +2,93 @@
 
 > 英文名：`session-commands` · 领域：界面与交互 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-本 fork 新增或补齐的斜杠命令。部分命令在回合进行中也会立即打开（对齐官方 2.1.303），`/usage` 支持 `-p` 并合并了 `/cost`、`/stats` 别名。
+在输入框打 `/` 会弹出命令列表。这一页汇总本 fork **新增或补齐**的会话命令，各自做什么、什么时候用。部分命令在 Claude 正在回答时也能立即打开（对齐官方 2.1.303）。
 
-| 命令 | 作用 |
-| --- | --- |
-| `/goal` | 自主目标，见 [goal.md](goal.md) |
-| `/recap` | 立即生成一到两句会话回顾；终端失焦 5 分钟也会自动生成 |
-| `/cd <dir>` | 切换会话工作目录并加入工作范围，支持路径补全 |
-| `/focus [on\|off]` | 全屏渲染下每回合只显示提问、一行摘要和回复；非全屏打印提示 |
-| `/skill-doctor` | 列出已加载 skill 的上下文开销、7 天 token、使用次数，标出从未使用的 |
-| `/autocompact [auto\|<tokens>]` | 查看或设置当前模型的自动压缩窗口，见 [compaction.md](compaction.md) |
-| `/usage` | 用量与成本（`/cost`、`/stats` 为别名），`-p` 下输出文本 |
-| `/reload-skills`、`/reload-plugins` | 重新载入 skills / 插件 |
-| `/diff` | 查看未提交变更，见 [diff-view.md](diff-view.md) |
-| `/workflows` | 查看本会话的 Dynamic Workflow runs |
-| `/list-agents`（`/peers`） | 列出同机其他 Claude 会话，见 [peer-messaging.md](peer-messaging.md) |
-| `/background`、`/stop`、`/daemon` | 背景会话，见 [background-sessions.md](background-sessions.md) |
+## 一览
 
-## 配置
+| 命令 | 一句话 | 详见 |
+| --- | --- | --- |
+| `/recap` | 用一两句话总结「到目前为止做了什么」 | 本页 |
+| `/cd <目录>` | 切换会话的工作目录 | 本页 |
+| `/focus [on\|off]` | 精简显示：每轮只留你的问题、一行摘要和最终回复 | 本页 |
+| `/autocompact [auto\|<tokens>]` | 调整对话多长时自动压缩 | 本页、[compaction.md](compaction.md) |
+| `/usage` | 本次会话的花费、token、耗时（`/cost`、`/stats` 是别名） | [usage-and-cost.md](usage-and-cost.md) |
+| `/skill-doctor` | 找出加载了却从没用过的 skill | [skills.md](skills.md) |
+| `/reload-skills` / `/reload-plugins` | 不重启，重新读取 skill / 插件 | [skills.md](skills.md)、[plugins-marketplace.md](plugins-marketplace.md) |
+| `/goal` | 给 Claude 设一个「做完才停」的目标 | [goal.md](goal.md) |
+| `/diff` | 查看未提交的改动 | [diff-view.md](diff-view.md) |
+| `/workflows` | 查看本会话跑过的 workflow | [workflows.md](workflows.md) |
+| `/list-agents`（`/peers`） | 列出同一台机器上其他 Claude 会话 | [peer-messaging.md](peer-messaging.md) |
+| `/background`、`/stop`、`/daemon` | 把会话放到后台继续跑 | [background-sessions.md](background-sessions.md) |
+| `/fast` | 切换快速模式（OpenAI provider 下发送 `service_tier: "priority"`） | [openai-provider.md](openai-provider.md) |
 
-| 配置项 | 位置 | 可选值 | 说明 |
-| --- | --- | --- | --- |
-| `viewMode` | settings | `default` `verbose` `focus` | 启动时的 transcript 视图；`/focus` 的选择保存为全局配置 `briefTranscript` |
-| `awaySummaryEnabled` | settings | `true` / `false` | 自动回顾（也可用 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0/1`） |
+## `/focus`：只看结果
 
-## 效果
+Claude 每轮可能调用很多工具，画面很长。`/focus` 打开后，每轮只显示你的问题、一行工具摘要（例如 `Edited 1 file, listed 1 directory`）和最终回复，被省略的条数写在回合末尾。
 
-`/skill-doctor`（交互与 `-p` 输出相同）：
+需要**全屏渲染**（`CLAUDE_CODE_NO_FLICKER=1`）；非全屏下只打印提示。
 
-```text
-Skills loaded this session
-  skill         source           context  7d tokens   uses  last used
-  deploy-notes  projectSettings     < 20          -     0×  never
-  lint-fixer    projectSettings     < 20          -     0×  never
-  context = this skill's one-line listing in the system prompt, included every turn
-  (dash = not in the current listing, costs nothing; full SKILL.md loads only when it runs)
-  7d tokens = tokens attributed to the skill over the last 7 days of sessions on this machine
-2 skills loaded but never invoked. Each one adds to the system prompt every turn. Disable in /skills, or remov
-e from .claude/skills.
-```
+关闭时（默认）：
 
-`/autocompact 200k`、`/cd ..`：
+![focus 关闭](images/session-commands-focus-off.png)
 
-```text
-❯ /autocompact 200k
-  ⎿  Auto-compact window for Opus 5.5 set to 200k tokens
-❯ /cd ..
-  ⎿  Changed directory to
-     ~
-```
+`/focus` 打开后，同一轮变成一行摘要，末尾显示 `2 messages hidden (/focus to show)`：
 
-`/usage -p`：
+![focus 打开](images/session-commands-focus-on.png)
 
-```text
-Total cost:            $0.0000
-Total duration (API):  0s
-Total duration (wall): 0s
-Total code changes:    0 lines added, 0 lines removed
-Usage:                 0 input, 0 output, 0 cache read, 0 cache write
-```
+`/focus off` 恢复。选择会保存，下次启动沿用；也可以在 settings 里用 `viewMode` 指定启动时的视图。
 
-`/workflows`（本会话没有 run 时）：
+## `/cd`：换工作目录
 
-```text
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  Dynamic workflows
-  No dynamic workflows in this session.
-  escape to close
-```
+在一个仓库里开着会话，想去隔壁目录干活，不用退出重开。输入 `/cd ` 后会列出子目录，打几个字母按 `Tab` 补全：
 
-`/focus` 开启后（全屏渲染），回合行附上 `N messages hidden`；该画面取自 #130 验收时对同一实现的采集：
+![/cd 补全](images/session-commands-cd-complete.png)
 
-```text
-❯ /focus
-  ⎿  Focus view enabled
-❯ two DO<<Write|{"file_path":"~/work/b.tx
-t","content":"line1\nline2\n"}>> DO<<Bash|{"command":"ls","description":"list","__delay":6000}>>
-  Edited 1 file, listed 1 directory
-● FAKE_DONE
-✻ Worked for 6s · 2 messages hidden (/focus to show)
-```
+按 `Enter` 切换。新目录同时加入本会话允许访问的范围：
 
-## 详细说明
+![/cd 完成](images/session-commands-cd.png)
 
-以下内容自原 README 迁入，保持原文。
+## `/autocompact`：什么时候自动压缩
 
-### 会话命令
+对话越长越贵，到一定长度会自动压缩（把早期内容总结成摘要）。`/autocompact` 设置这个长度：
 
-```text
-/goal 完成当前功能并运行相关测试
-/goal
-/goal clear
+![/autocompact](images/session-commands-autocompact.png)
 
-/recap
-/cd ../another-project
-/reload-skills
-/reload-plugins
-/diff
-/workflows
-/list-agents
-```
+- 不带参数打开对话框：`←` `→` 调整，`Enter` 应用；
+- 直接带值：`/autocompact 500k`、`/autocompact 200000`，或简写 `/autocompact 200`（范围 100k 到 1M）；
+- `/autocompact auto`（或 `reset`）恢复为模型的推荐值。
 
-- `/goal <condition>`：保存当前自主目标，并在停止前检查目标是否完成；主线程也可通过 `SetGoal` 设置同一目标。Goal 状态和 hook 会写入 transcript 并可在 resume/continue 后恢复。
-- `/goal`：打开交互式状态视图，展示当前 Goal 的状态、耗时、turn、token 和最后检查原因。
-- `/goal clear`：清除当前 Goal 及其 Stop hook，并持久化 cleared 状态。
-- `/recap`：立即生成一到两句会话回顾（上限 400 字符），复用主对话的模型与 provider（含 OpenAI），支持 `-p`。终端失焦 5 分钟后也会自动生成回顾；`CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0` 或设置 `awaySummaryEnabled: false` 关闭自动回顾，`=1` 强制开启。
-- `/fast`：切换 Fast mode；OpenAI provider 下发送 `service_tier: "priority"`，API key 与 ChatGPT OAuth 均可使用。
-- `/compact`：压缩当前会话；OpenAI provider 下支持手动 remote compaction，并在重复压缩时保留 opaque compaction history。
-- `/autocompact [auto|<tokens>]`：查看或设置当前模型的自动压缩窗口（100k 到 1M，例如 `500k`、`200000` 或简写 `200`）；无参数时打开对话框，←/→ 调整、Enter 应用。设置按模型写入用户设置 `modelSettings.<model>.autoCompactWindow`，切换模型后各自保留；`auto`/`reset` 恢复自动窗口。非交互模式（`-p`）输出文本结果。OpenAI 等第三方模型同样适用。
-- 切换到上下文窗口更小的模型后，若会话已超出新模型的上限，自动压缩会先由上一个（窗口更大的）模型生成摘要；该模型已不在 `availableModels` 中或摘要失败时，改用当前模型。
-- `/cd`：切换当前会话工作目录，并将目录加入当前 session 的工作范围。
-- `/reload-skills`：不刷新插件，直接重新读取 user/project/plugin skills。
-- `/reload-plugins`：应用 `/plugin manage` 中的安装、更新和启停变更，重新加载 plugin commands、skills、hooks、MCP 和 LSP；已安装插件使用本地安装缓存，不会因 reload 自动下载。
-- `/diff`：由已加载且获准接管该命令的官方内置 diff Mod 处理；未接管时使用原生 Git diff。原生视图在终端至少 110 列且没有可见 Mods dock 时使用右侧 sidebar，否则打开 dialog。官方 Mod 的完整详情、刷新、滚动、关闭重开及终端/浏览器 Client 生命周期仍须完成验收。
-- `/workflows`：查看 Dynamic Workflow runs，不直接启动 workflow。
-- `/list-agents`（别名 `/peers`）：列出当前 messaging registry 中其他可发现的本地 Claude session。
+设置**按模型分别保存**在用户设置 `modelSettings.<模型>.autoCompactWindow`，换模型后各自生效；OpenAI 等第三方模型同样适用。`-p` 模式下输出文本结果。更多见 [compaction.md](compaction.md)。
 
-PromptInput 按 UTF-8 stream 处理普通文本、中文等宽字符、Kitty CSI-u 和 bracketed paste。同一个 stdin chunk 中的文本与 Enter/Backspace/方向键按顺序生效；未闭合 paste 会在有界空闲恢复后释放 literal payload 并回到普通输入，避免后续按键被永久吞掉。
+## `/recap`：我刚才做到哪了
+
+立即生成一两句（最多 400 字）的会话回顾，用和主对话相同的模型。适合离开一会儿回来、或多个会话来回切时快速找回上下文。
+
+终端失去焦点 5 分钟后也会自动生成一次。关闭自动回顾：设置 `awaySummaryEnabled: false` 或环境变量 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0`（`=1` 强制开启）。`-p` 模式也可用。
+
+## 其他命令的细节
+
+- `/reload-plugins`：应用 `/plugin` 里的安装、更新、启停，重新加载插件的命令、skill、hook、MCP 和 LSP。已安装的插件用本地缓存，不会因为 reload 去下载。
+- `/reload-skills`：只重读 user / project / plugin 的 skill，不动插件。
+- `/diff`：如果有已加载并获准接管的官方 diff Mod，由它显示；否则用内置 Git diff。终端宽度 ≥ 110 列且没有 Mods 侧栏时显示在右侧，否则弹窗。
+- `/workflows`：只查看，不启动 workflow；本会话没有时显示 `No dynamic workflows in this session.`。
+- `/compact`：手动压缩；OpenAI provider 下走远端压缩并保留压缩历史。
+- 切换到上下文更小的模型时，如果当前对话已经超过新模型上限，会先用上一个（窗口更大的）模型做摘要；那个模型不可用或失败时改用当前模型。
+
+## 设置
+
+| 配置项 | 写法 | 说明 |
+| --- | --- | --- |
+| `viewMode` | `default` / `verbose` / `focus` | 启动时的显示方式；`/focus` 的选择保存在全局配置 `briefTranscript` |
+| `awaySummaryEnabled` | `true` / `false` | 自动回顾；环境变量 `CLAUDE_CODE_ENABLE_AWAY_SUMMARY=0/1` 同效 |
+| `modelSettings.<模型>.autoCompactWindow` | token 数 | `/autocompact` 写入的值 |
+
+## 输入框的小改进
+
+输入框按 UTF-8 流处理普通文字、中文宽字符、Kitty 键盘协议和粘贴：同一次输入里的文字和 Enter、退格、方向键按顺序生效；没闭合的粘贴在短暂空闲后自动结束，后续按键不会被吞掉。
+
+## 说明
+
+画面来自实际运行（全屏渲染，110×36），模型回复由测试用假 API 生成（`FAKE_DONE`；提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。

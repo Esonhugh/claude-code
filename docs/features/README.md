@@ -9,7 +9,7 @@
 | 模型与 Provider | [OpenAI / Codex provider](openai-provider.md) | OpenAI Responses API、ChatGPT OAuth / API key、OpenAI 下的 `/fast` 与 remote compaction |
 |  | [模型自动发现与 Gateway](model-discovery.md) | OpenAI `/v1/models` 与 Anthropic 网关模型发现，结果进入 Model Picker |
 |  | [请求韧性：重试、回退模型与默认模型](request-resilience.md) | stream idle watchdog、重试上限、无人值守重试、`fallbackModel` 链、`ANTHROPIC_DEFAULT_MODEL` |
-|  | [Effort 档位](effort.md) | `none`…`ultracode` 九档 effort，会话、settings、环境变量与 SubAgent 按次指定 |
+|  | [Effort 档位](effort.md) | 控制 Claude 每次「想多深」：低档快而省，高档慢而仔细；可全局设、按会话切，也可给子代理单独指定 |
 |  | [Codex Apps](codex-apps.md) | ChatGPT OAuth 下把 Codex Apps 接成 host-owned MCP 工具与 hosted skills，支持 `@codex-app:` mention |
 | Agent 与编排 | [Agent 与后台任务](agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
 |  | [Agent Teams](agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
@@ -21,13 +21,13 @@
 |  | [Hooks 事件、匹配与输出校验](hooks.md) | 在 Claude 做某件事之前或之后自动跑你的脚本：拦住危险命令、改完自动格式化、开局注入上下文 |
 | 工具 | [Terminal 工具](terminal-tool.md) | 持久 PTY session：`new-session`、`send-keys`、`capture-pane`、resize、signal，按 Bash 规则判权限 |
 |  | [Monitor 工具](monitor-tool.md) | 后台运行监看脚本，每行输出唤醒模型；Bash 前景 `sleep` 改用 Monitor |
-|  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | `CronCreate/Delete/List`、session-only 或 durable 任务、`/loop` 自定节奏 |
+|  | [定时任务：Cron、/loop 与 ScheduleWakeup](scheduled-tasks.md) | 让 Claude 按时间自动做事：「每 5 分钟看一下构建」「工作日早上 9 点汇总 PR」；`/loop` 一句话设定 |
 |  | [终端程序状态（OSC 7501）](terminal-status.md) | 支持 OSC 7501 的终端里上报 idle/working/blocked/done/error 状态 |
 | 上下文与记忆 | [记忆：auto memory 与 SQLite FTS5 检索](memory.md) | Claude 把跨会话有用的事（项目约定、你的偏好）记到文件里，下次自动带上；可改成 SQLite 全文检索，按需查找 |
-|  | [自动压缩窗口](compaction.md) | `/autocompact`、按模型 / 按 agent 的压缩窗口、`CLAUDE_CODE_AUTO_COMPACT_WINDOW` |
+|  | [自动压缩窗口](compaction.md) | 对话太长时把早期内容压成摘要；`/autocompact` 决定多长时压缩（按模型分别保存），`/compact` 手动压缩 |
 |  | [Prompt context 与 Tool search](prompt-context.md) | 分层 cache boundary、增量 agent listing、MCP 工具汇总；自定义网关下 tool search 保持开启 |
-|  | [用量、成本与状态](usage-and-cost.md) | `/usage`（含 `/cost`、`/stats`）、ChatGPT plan 与 Codex limits、Fable 周额度、成本快照跨 resume 保留 |
-| 界面与交互 | [会话命令](session-commands.md) | `/recap`、`/cd`、`/focus`、`/skill-doctor`、`/autocompact`、`/usage`、`/reload-*`、`/diff`、`/workflows`、`/list-agents` |
+|  | [用量、成本与状态](usage-and-cost.md) | `/usage` 看本次会话花了多少钱、用了多少 token；`/stats` 看长期使用习惯；恢复会话后成本继续累计 |
+| 界面与交互 | [会话命令](session-commands.md) | 本 fork 新增或补齐的斜杠命令：`/recap` 回顾、`/cd` 换目录、`/focus` 精简显示、`/autocompact` 调压缩时机、`/usage` 用量等 |
 |  | [自主 Goal](goal.md) | `/goal` / `SetGoal` 设定目标，Stop hook 检查完成度，可跨 resume 恢复 |
 |  | [快捷键与 Vim 模式](keybindings-vim.md) | `keybindings.json` 热重载、send-now / queue-submit、`Ctrl+J`、Vim `%` 与 VISUAL 模式 |
 |  | [自定义 UI / Branding 与 Status line](branding.md) | `uiName` 改名、`clawd.txt` 自定义 Logo、statusLine 输入含 `goal.active` |
