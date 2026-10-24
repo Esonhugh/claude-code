@@ -460,9 +460,38 @@ export type SDKTaskStartedMessage = {
   task_id: string
   tool_use_id?: string
   description: string
+  subagent_type?: string
+  is_backgrounded?: boolean
   task_type?: string
   workflow_name?: string
   prompt?: string
+  uuid: string
+  session_id: string
+}
+export type SDKTaskUpdatedMessage = {
+  type: 'system'
+  subtype: 'task_updated'
+  task_id: string
+  patch: {
+    status?: string
+    description?: string
+    end_time?: number
+    total_paused_ms?: number
+    error?: string
+    is_backgrounded?: boolean
+  }
+  uuid: string
+  session_id: string
+}
+export type SDKBackgroundTasksChangedMessage = {
+  type: 'system'
+  subtype: 'background_tasks_changed'
+  tasks: {
+    task_id: string
+    task_type: string
+    subagent_type?: string
+    description: string
+  }[]
   uuid: string
   session_id: string
 }
@@ -617,6 +646,8 @@ export type SDKMessage =
   | SDKAuthStatusMessage
   | SDKTaskNotificationMessage
   | SDKTaskStartedMessage
+  | SDKTaskUpdatedMessage
+  | SDKBackgroundTasksChangedMessage
   | SDKTaskProgressMessage
   | SDKSessionStateChangedMessage
   | SDKGoalStateChangedMessage

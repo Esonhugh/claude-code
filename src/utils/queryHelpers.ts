@@ -4,7 +4,11 @@ import {
   getSessionId,
   isSessionPersistenceDisabled,
 } from 'src/bootstrap/state.js'
-import type { SDKMessage } from 'src/entrypoints/agentSdkTypes.js'
+import type {
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKUserMessage,
+} from 'src/entrypoints/agentSdkTypes.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { runTools } from '../services/tools/toolOrchestration.js'
 import { findToolByName, type Tool, type Tools } from '../Tool.js'
@@ -100,6 +104,60 @@ const MAX_TOOL_PROGRESS_TRACKING_ENTRIES = 100
 const TOOL_PROGRESS_THROTTLE_MS = 30000
 const toolProgressLastSentTime = new Map<string, number>()
 
+/**
+ * SDK messages for one message of a subagent, tagged with the Agent tool_use
+ * that spawned it (parent_tool_use_id).
+ */
+export function* normalizeSubagentMessage(
+  message: Message,
+  parentToolUseID: string,
+): Generator<SDKAssistantMessage | SDKUserMessage> {
+  // @ts-ignore - recovered code
+  for (const _ of normalizeMessages([message])) {
+    // @ts-ignore - recovered code
+    switch (_.type) {
+      case 'assistant':
+        // Skip empty messages (e.g., "(no content)") that shouldn't be output to SDK
+        if (!isNotEmptyMessage(_)) {
+          break
+        }
+        yield {
+          type: 'assistant',
+          // @ts-ignore - recovered code
+          message: _.message,
+          parent_tool_use_id: parentToolUseID,
+          session_id: getSessionId(),
+          // @ts-ignore - recovered code
+          uuid: _.uuid,
+          // @ts-ignore - recovered code
+          error: _.error,
+        }
+        break
+      case 'user':
+        yield {
+          type: 'user',
+          // @ts-ignore - recovered code
+          message: _.message,
+          parent_tool_use_id: parentToolUseID,
+          session_id: getSessionId(),
+          // @ts-ignore - recovered code
+          uuid: _.uuid,
+          // @ts-ignore - recovered code
+          timestamp: _.timestamp,
+          // @ts-ignore - recovered code
+          isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
+          // @ts-ignore - recovered code
+          tool_use_result: _.mcpMeta
+            // @ts-ignore - recovered code
+            ? { content: _.toolUseResult, ..._.mcpMeta }
+            // @ts-ignore - recovered code
+            : _.toolUseResult,
+        }
+        break
+    }
+  }
+}
+
 export function* normalizeMessage(message: Message): Generator<SDKMessage> {
   switch (message.type) {
     case 'assistant':
@@ -125,49 +183,7 @@ export function* normalizeMessage(message: Message): Generator<SDKMessage> {
         message.data.type === 'skill_progress'
       ) {
         // @ts-ignore - recovered code
-        for (const _ of normalizeMessages([message.data.message])) {
-          // @ts-ignore - recovered code
-          switch (_.type) {
-            case 'assistant':
-              // Skip empty messages (e.g., "(no content)") that shouldn't be output to SDK
-              if (!isNotEmptyMessage(_)) {
-                break
-              }
-              yield {
-                type: 'assistant',
-                // @ts-ignore - recovered code
-                message: _.message,
-                parent_tool_use_id: message.parentToolUseID,
-                session_id: getSessionId(),
-                // @ts-ignore - recovered code
-                uuid: _.uuid,
-                // @ts-ignore - recovered code
-                error: _.error,
-              }
-              break
-            case 'user':
-              yield {
-                type: 'user',
-                // @ts-ignore - recovered code
-                message: _.message,
-                parent_tool_use_id: message.parentToolUseID,
-                session_id: getSessionId(),
-                // @ts-ignore - recovered code
-                uuid: _.uuid,
-                // @ts-ignore - recovered code
-                timestamp: _.timestamp,
-                // @ts-ignore - recovered code
-                isSynthetic: _.isMeta || _.isVisibleInTranscriptOnly,
-                // @ts-ignore - recovered code
-                tool_use_result: _.mcpMeta
-                  // @ts-ignore - recovered code
-                  ? { content: _.toolUseResult, ..._.mcpMeta }
-                  // @ts-ignore - recovered code
-                  : _.toolUseResult,
-              }
-              break
-          }
-        }
+        yield* normalizeSubagentMessage(message.data.message, message.parentToolUseID)
       } else if (
         message.data.type === 'bash_progress' ||
         message.data.type === 'powershell_progress'

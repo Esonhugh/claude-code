@@ -26,6 +26,7 @@ import { loadPluginOptions } from './plugins/pluginOptionsStorage.js'
 import { getPluginDataDir } from './plugins/pluginDirectories.js'
 import {
   getSessionId,
+  getProjectConfigRoot,
   getProjectRoot,
   getIsNonInteractiveSession,
   getRegisteredHooks,
@@ -911,7 +912,7 @@ async function execCommandHook(
   // Set CLAUDE_PROJECT_DIR to the stable project root (not the worktree path).
   // getProjectRoot() is never updated when entering a worktree, so hooks that
   // reference $CLAUDE_PROJECT_DIR always resolve relative to the real repo root.
-  const projectDir = getProjectRoot()
+  const projectDir = getProjectConfigRoot() ?? getProjectRoot()
 
   // Substitute ${CLAUDE_PLUGIN_ROOT} and ${user_config.X} in the command string.
   // Order matches MCP/LSP (plugin vars FIRST, then user config) so a user-

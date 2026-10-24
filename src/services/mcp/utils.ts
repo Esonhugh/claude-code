@@ -5,6 +5,7 @@ import { join } from 'path'
 import {
   getIsNonInteractiveSession,
   getOriginalCwd,
+  getProjectConfigRoot,
 } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import type { AgentMcpServerInfo } from '../../components/mcp/types.js'
@@ -288,7 +289,7 @@ export function describeMcpConfigFilePath(scope: ConfigScope): string {
     case 'user':
       return getGlobalClaudeFile()
     case 'project':
-      return join(getCwd(), '.mcp.json')
+      return join(getProjectConfigRoot() ?? getCwd(), '.mcp.json')
     case 'local':
       return `${getGlobalClaudeFile()} [project: ${getCwd()}]`
     case 'dynamic':

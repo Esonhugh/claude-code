@@ -254,6 +254,7 @@ import {
 import { createSyntheticOutputTool } from 'src/tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { parseSessionIdentifier } from 'src/utils/sessionUrl.js'
 import {
+  addSessionMirror,
   hydrateRemoteSession,
   hydrateFromCCRv2InternalEvents,
   resetSessionFilePointer,
@@ -430,13 +431,17 @@ import { handleTeammateShutdownApproved } from '../utils/swarm/teammateShutdown.
 import { getRunningTasks } from '../utils/task/framework.js'
 import { isBackgroundTask } from '../tasks/types.js'
 import { stopTask } from '../tasks/stopTask.js'
-import { drainSdkEvents } from '../utils/sdkEventQueue.js'
+import { drainSdkOutput } from '../utils/sdkEventQueue.js'
 import { initializeGrowthBook } from '../services/analytics/growthbook.js'
 import { errorMessage, toError } from '../utils/errors.js'
 import { sleep } from '../utils/sleep.js'
 import { isExtractModeActive } from '../memdir/paths.js'
 import { isAnt } from 'src/utils/userType.js'
 import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from '../constants/prompts.js'
+import {
+  checkResumeDropsTurn,
+  RESUME_DROPS_TURN_PREFIX,
+} from '../utils/resumeDropsTurn.js'
 
 
 // Dead code elimination: conditional imports
@@ -571,6 +576,8 @@ export async function runHeadless(
     continue: boolean | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
+    resumeDropsTurn?: string
+    sessionMirror?: boolean
     verbose: boolean | undefined
     outputFormat: string | undefined
     jsonSchema: Record<string, unknown> | undefined
@@ -761,6 +768,12 @@ export async function runHeadless(
     }
   }
 
+  if (options.outputFormat === 'stream-json' && options.sessionMirror) {
+    addSessionMirror((filePath, entries) => {
+      void structuredIO.write({ type: 'transcript_mirror', filePath, entries })
+    })
+  }
+
   if (options.outputFormat === 'stream-json' && options.verbose) {
     registerHookEventHandler(event => {
       const message: StdoutMessage = (() => {
@@ -824,6 +837,7 @@ export async function runHeadless(
     teleport: options.teleport,
     resume: options.resume,
     resumeSessionAt: options.resumeSessionAt,
+    resumeDropsTurn: options.resumeDropsTurn,
     forkSession: options.forkSession,
     outputFormat: options.outputFormat,
     sessionStartHooksPromise: options.sessionStartHooksPromise,
@@ -1066,6 +1080,8 @@ export async function runHeadless(
           message.subtype === 'ui_focus' ||
           message.subtype === 'task_notification' ||
           message.subtype === 'task_started' ||
+          message.subtype === 'task_updated' ||
+          message.subtype === 'background_tasks_changed' ||
           message.subtype === 'task_progress' ||
           // @ts-ignore - recovered code
           message.subtype === 'post_turn_summary')
@@ -1074,6 +1090,7 @@ export async function runHeadless(
       message.type !== 'autocompact_state' &&
       message.type !== 'stream_event' &&
       message.type !== 'keep_alive' &&
+      message.type !== 'transcript_mirror' &&
       // @ts-ignore - recovered code
       message.type !== 'streamlined_text' &&
       // @ts-ignore - recovered code
@@ -2508,7 +2525,7 @@ function runHeadlessStreaming(
 
               if (message.type === 'result') {
                 // Flush pending SDK events so they appear before result on the stream.
-                for (const event of drainSdkEvents()) {
+                for (const event of drainSdkOutput()) {
                   output.enqueue(event)
                 }
 
@@ -2530,7 +2547,7 @@ function runHeadlessStreaming(
               } else {
                 // Flush SDK events (task_started, task_progress) so background
                 // agent progress is streamed in real-time, not batched until result.
-                for (const event of drainSdkEvents()) {
+                for (const event of drainSdkOutput()) {
                   output.enqueue(event)
                 }
                 output.enqueue(message)
@@ -2673,7 +2690,7 @@ function runHeadlessStreaming(
       do {
         // Drain SDK events (task_started, task_progress) before command queue
         // so progress events precede task_notification on the stream.
-        for (const event of drainSdkEvents()) {
+        for (const event of drainSdkOutput()) {
           output.enqueue(event)
         }
 
@@ -2766,7 +2783,7 @@ function runHeadlessStreaming(
         // command. The do-while drain above only runs while
         // waitingForAgents; once we're here the next drain would be the
         // top of the next run(), which won't come if input is idle.
-        for (const event of drainSdkEvents()) {
+        for (const event of drainSdkOutput()) {
           output.enqueue(event)
         }
       }
@@ -6060,6 +6077,7 @@ async function loadInitialMessages(
     teleport: string | true | null | undefined
     resume: string | boolean | undefined
     resumeSessionAt: string | undefined
+    resumeDropsTurn?: string
     forkSession: boolean | undefined
     outputFormat: string | undefined
     sessionStartHooksPromise?: ReturnType<typeof processSessionStartHooks>
@@ -6287,6 +6305,21 @@ async function loadInitialMessages(
           )
           gracefulShutdownSync(1)
           return { messages: [] }
+        }
+
+        if (options.resumeDropsTurn) {
+          const reason = checkResumeDropsTurn(
+            result.messages.slice(index + 1),
+            options.resumeDropsTurn,
+          )
+          if (reason) {
+            emitLoadError(
+              `${RESUME_DROPS_TURN_PREFIX} ${reason}`,
+              options.outputFormat,
+            )
+            gracefulShutdownSync(1)
+            return { messages: [] }
+          }
         }
 
         result.messages = index >= 0 ? result.messages.slice(0, index + 1) : []

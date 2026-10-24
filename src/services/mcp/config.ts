@@ -13,6 +13,7 @@ import {
   saveCurrentProjectConfig,
   saveGlobalConfig,
 } from '../../utils/config.js'
+import { getProjectConfigRoot } from '../../bootstrap/state.js'
 import { getCwd } from '../../utils/cwd.js'
 import { isSafeMode } from '../../utils/envUtils.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -89,6 +90,11 @@ function addScopeToServers(
  * Uses the original path for rename (does not follow symlinks).
  */
 async function writeMcpjsonFile(config: McpJsonConfig): Promise<void> {
+  if (getProjectConfigRoot() !== null) {
+    throw new Error(
+      'Project-scope MCP server changes are unavailable in a session started with --project-config-root. Use the local or user scope instead.',
+    )
+  }
   const mcpJsonPath = join(getCwd(), '.mcp.json')
 
   // Read existing file permissions to preserve them
@@ -857,7 +863,7 @@ export function getProjectMcpConfigsFromCwd(): {
     return { servers: {}, errors: [] }
   }
 
-  const mcpJsonPath = join(getCwd(), '.mcp.json')
+  const mcpJsonPath = join(getProjectConfigRoot() ?? getCwd(), '.mcp.json')
 
   const { config, errors } = parseMcpConfigFromFilePath({
     filePath: mcpJsonPath,
@@ -920,7 +926,7 @@ export function getMcpConfigsByScope(
 
       // Build list of directories to check
       const dirs: string[] = []
-      let currentDir = getCwd()
+      let currentDir = getProjectConfigRoot() ?? getCwd()
 
       while (currentDir !== parse(currentDir).root) {
         dirs.push(currentDir)

@@ -1,4 +1,7 @@
-import { setMainLoopModelOverride } from '../bootstrap/state.js'
+import {
+  getIsNonInteractiveSession,
+  setMainLoopModelOverride,
+} from '../bootstrap/state.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
@@ -22,6 +25,9 @@ import { savePermissionMode } from '../utils/sessionStorage.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 import type { AppState } from './AppStateStore.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isTerminalTaskStatus } from '../taskStatus.js'
+import { isBackgroundTask } from '../tasks/types.js'
+import { enqueueSdkEvent } from '../utils/sdkEventQueue.js'
 
 
 // Inverse of the push below — restore on worker restart.
@@ -42,6 +48,24 @@ export function externalMetadataToAppState(
       ? { isUltraplanMode: metadata.is_ultraplan_mode }
       : {}),
   })
+}
+
+/** The background_tasks_changed list: backgrounded tasks still running or not yet notified. */
+function listSdkBackgroundTasks(state: AppState) {
+  return Object.values(state.tasks)
+    .filter(
+      task =>
+        (isTerminalTaskStatus(task.status) &&
+          !task.notified &&
+          !('isBackgrounded' in task && task.isBackgrounded === false)) ||
+        isBackgroundTask(task),
+    )
+    .map(task => ({
+      task_id: task.id,
+      task_type: task.type,
+      ...(task.type === 'local_agent' ? { subagent_type: task.agentType } : {}),
+      description: task.description,
+    }))
 }
 
 export function onChangeAppState({
@@ -198,4 +222,14 @@ export function onChangeAppState({
     notifySessionInputsChanged()
   }
 
+  if (newState.tasks !== oldState.tasks && getIsNonInteractiveSession()) {
+    const before = listSdkBackgroundTasks(oldState)
+    const after = listSdkBackgroundTasks(newState)
+    if (
+      before.length !== after.length ||
+      after.some((task, i) => task.task_id !== before[i]?.task_id || task.description !== before[i]?.description)
+    ) {
+      enqueueSdkEvent({ type: 'system', subtype: 'background_tasks_changed', tasks: after })
+    }
+  }
 }

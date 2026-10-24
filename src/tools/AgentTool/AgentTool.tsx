@@ -2226,7 +2226,7 @@ export const AgentTool = buildTool({
             if (foregroundTaskId) {
               unregisterAgentForeground(foregroundTaskId, rootSetAppState)
               // Notify SDK consumers (e.g. VS Code subagent panel) that this
-              // foreground agent is done. Goes through drainSdkEvents() — does
+              // foreground agent is done. Goes through drainSdkOutput() — does
               // NOT trigger the print.ts XML task_notification parser or the LLM loop.
               if (!wasBackgrounded) {
                 const progress = getProgressUpdate(syncTracker)

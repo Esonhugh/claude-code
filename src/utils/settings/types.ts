@@ -296,6 +296,12 @@ export const SettingsSchema = lazySchema(() =>
         .enum(['first-wins', 'merge'])
         .optional()
         .describe('Controls whether lower-priority managed settings sources are merged.'),
+      parentSettingsBehavior: z
+        .enum(['first-wins', 'merge'])
+        .optional()
+        .describe(
+          'Controls whether the SDK parent tier (--managed-settings) layers under this admin tier. "first-wins" (default): it is dropped. "merge": its restrictive-only settings union under the admin tier.',
+        ),
       apiKeyHelper: z
         .string()
         .optional()

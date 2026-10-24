@@ -67,7 +67,14 @@ result success FAKE_DONE
 - 接受 `string[]` 形式的 `systemPrompt`（TS SDK 默认发送 `[""]`）。
 - `set_model`、`set_permission_mode` 对非法值返回错误码，而不是静默接受。
 - VS Code 插件面板用到的控制请求（`get_status`、`get_usage`、`background_tasks` 等）见 [vscode-extension.md](vscode-extension.md)。
-- 尚未实现：`set_mcp_permission_mode_override`、后台子代理消息的 `parent_tool_use_id` 流式转发。
+- 接受 SDK 0.3.303 会传的四个隐藏参数（之前会以 `error: unknown option` 退出）：
+  - `--session-mirror`（SDK 的 `sessionStore`）：每次写入本地 transcript 后输出一行 `{"type":"transcript_mirror","filePath":...,"entries":[...]}`。
+  - `--resume-drops-turn <prompt uuid>`（SDK 的 `resumeDropsTurn`）：配合 `--resume-session-at` 截断恢复时，检查被丢弃的部分只属于这一轮；混入了别的用户消息、排队消息或压缩摘要时，返回 `error_during_execution`，错误以 `Resume rejected by --resume-drops-turn:` 开头。
+  - `--managed-settings <json>`（SDK 的 `managedSettings`）：作为 policy 层，只保留限制型设置（`permissions.deny` / `ask`、各类 deny 列表、`allowedMcpServers` 等允许清单、`allowManaged*Only` 等锁）；`model`、`env`、`permissions.allow` 之类会被丢弃。本机已有管理员的 managed settings 时默认忽略它，除非管理员设置 `parentSettingsBehavior: "merge"`。
+  - `--project-config-root <绝对路径>`（SDK 的 `projectConfigRoot`）：项目设置、`.mcp.json`、`.claude` 下的 commands / agents / skills / workflows / output-styles 和 hooks 的 `CLAUDE_PROJECT_DIR` 都从这个目录读，而不是工作目录；此时不能改 project 范围的 MCP 配置。
+- `tools: ['Read', 'Glob']` 这类限定工具清单会被严格遵守，不再多出 `ListAgents`、`SendMessage`。
+- 后台子代理（Agent 工具）的消息会实时流给 SDK，带 `parent_tool_use_id`；同时输出 `task_updated`（任务状态、结束时间等变化）和 `background_tasks_changed`（后台任务清单变化），`task_started` 也带 `subagent_type`、`is_backgrounded`。
+- 尚未实现：`set_mcp_permission_mode_override`；`task_started` 里的 `run_id`、`spawn_depth`；后台子代理跑完后，官方先为原回合输出一个 `result`，再为处理通知的回合输出第二个；本 fork 只输出后一个。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
 

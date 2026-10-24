@@ -8,7 +8,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
-import { getProjectRoot } from '../bootstrap/state.js'
+import { getProjectConfigRoot, getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { isFsInaccessible } from './errors.js'
@@ -235,9 +235,11 @@ export function getProjectDirsUpToHome(
   subdir: ClaudeConfigDirectory,
   cwd: string,
 ): string[] {
+  // --project-config-root: project config comes from the trusted checkout, not the cwd.
+  const start = getProjectConfigRoot() ?? cwd
   const home = resolve(homedir()).normalize('NFC')
-  const gitRoot = resolveStopBoundary(cwd)
-  let current = resolve(cwd)
+  const gitRoot = resolveStopBoundary(start)
+  let current = resolve(start)
   const dirs: string[] = []
 
   // Traverse from current directory up to git root (or home if not in a git repo)

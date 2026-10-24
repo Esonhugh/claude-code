@@ -805,7 +805,7 @@ export class SSHSessionManager {
       }
       return
     }
-    if (parsed.type === 'keep_alive') return
+    if (parsed.type === 'keep_alive' || parsed.type === 'transcript_mirror') return
 
     if (this.pendingHistoryReplay) {
       this.pendingHistoryReplay.liveMessages.push(parsed)
