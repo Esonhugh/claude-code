@@ -267,6 +267,7 @@ import { isInProcessTeammate } from './teammateContext.js'
 import { handleTeammateShutdownApproved } from './swarm/teammateShutdown.js'
 import { getCompanionIntroAttachment } from '../buddy/prompt.js'
 import { isAnt } from 'src/utils/userType.js'
+import { isSkillHiddenFromModel } from './skillOverrides.js'
 
 
 export const TODO_REMINDER_CONFIG = {
@@ -2937,10 +2938,11 @@ async function getSkillListingAttachments(
   const mcpSkills = getMcpSkillCommands(
     toolUseContext.getAppState().mcp.commands,
   )
-  let allCommands =
+  let allCommands = (
     mcpSkills.length > 0
       ? uniqBy([...localCommands, ...mcpSkills], 'name')
       : localCommands
+  ).filter(cmd => !isSkillHiddenFromModel(cmd))
 
   // When skill search is active, filter to bundled + MCP instead of full
   // suppression. Resolves the turn-0 gap: main thread gets turn-0 discovery

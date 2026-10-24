@@ -48,13 +48,26 @@ assert.deepEqual(preview.plan, {
     {
       title: 'Scope',
       detail: 'Read args and prepare one check',
-      prompt: `{
+      prompts: [`{
     id: 'check',
-    description: 'Run smoke check.',`,
+    description: 'Run smoke check.',`],
+      agents: 1,
     },
     { title: 'Check', detail: 'Run one agent and report observable output' },
   ],
   runScriptSnapshot: source,
 })
+
+const phasedScript = `export const meta = { name: 'repo-review', description: 'review two areas, then summarize', phases: [{ title: 'Review' }, { title: 'Summarize' }] }
+phase('Review')
+const notes = await parallel([() => agent('Review the API layer', { label: 'review:api' }), () => agent("Review the CLI layer", { label: 'review:cli' })])
+phase('Summarize')
+const extra = await agent(notes.join('\\n'))
+return await agent(\`Summarize \${extra} findings\`)`
+const phasedPreview = await workflowPermissionPreviewInput<WorkflowPermissionToolInput>({ script: phasedScript }, tempRoot)
+assert.deepEqual(phasedPreview.plan?.phases, [
+  { title: 'Review', prompts: ['Review the API layer', 'Review the CLI layer'], agents: 2 },
+  { title: 'Summarize', prompts: ['Summarize ${…} findings'], agents: 2 },
+])
 
 console.log('workflowPermissionPreviewInput.test.ts passed')

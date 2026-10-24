@@ -31,9 +31,11 @@ server 有两种接法：
 
 | 选项 | 效果 |
 | --- | --- |
-| Use this and all future MCP servers in this project | 这个和以后新加的项目 server 都自动启用 |
 | Use this MCP server | 只启用这一个 |
-| Continue without using this MCP server | 不启用，之后可以在 `/mcp` 里改 |
+| Use this and all future MCP servers in this project | 这个和以后新加的项目 server 都自动启用 |
+| Continue without using this MCP server（默认选中） | 不启用，之后可以在 `/mcp` 里改 |
+
+文案、选项顺序和默认选项与官方 2.1.303 一致；一次发现多个新 server 时改成多选列表。
 
 **3. 用 `/mcp` 看状态。** 列出所有 server 和连接状态；配置里有问题的条目会在上方列出原因（这里故意放了一条类型写错的 `broken`，它被跳过，不影响 `weather`）：
 
@@ -118,10 +120,6 @@ Location: /tmp/claude-0/mcpw/.mcp.json
 | `bareElicitationCapability` | `true` | 只声明最基础的 elicitation 能力，兼容不支持新字段的 server |
 
 配置来源：项目 `.mcp.json`、用户 `~/.claude.json`（`-s user`）、本地（`-s local`，只对当前项目的你生效）、插件、`--mcp-config` 参数。
-
-## 与官方的差异
-
-- 批准对话框的文案、选项顺序和默认选项与官方 2.1.303 不同（官方默认选中「Continue without…」）。
 
 ## 说明
 

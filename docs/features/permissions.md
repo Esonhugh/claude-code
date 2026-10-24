@@ -164,7 +164,7 @@ Permission to use Bash has been denied. ...
 
 ## 已知问题
 
-- 旧文档写 Plan 模式下有 allow 规则时模型会直接收到 `Cannot call <tool> while in plan mode.`；实测交互模式是弹出确认框（写入都没有执行）。
+- 旧文档写 Plan 模式下有 allow 规则时模型会直接收到 `Cannot call <tool> while in plan mode.`；实测交互模式是弹出确认框（写入都没有执行），官方 2.1.303 同样弹框。
 
 ## 说明
 

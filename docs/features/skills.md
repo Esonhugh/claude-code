@@ -33,9 +33,18 @@ description: Write release notes from the git log since the last tag. Use when t
 
 注意别和内置命令重名（例如 `/release-notes` 是内置命令）。
 
-**3. 用 `/skills` 查看已加载的 skill**，按来源分组，并显示每个的描述占多少 token：
+**3. 用 `/skills` 查看和开关 skill**，按来源分组，并显示每个的描述占多少 token。用 `↑/↓` 选中一个，按 `Enter` 或空格在四种状态间切换：
 
 ![/skills 列表](images/skills-list.png)
+
+| 状态 | 列表里显示 | 效果 |
+| --- | --- | --- |
+| on | `✔ hello` | 默认，你和 Claude 都能用 |
+| name-only | `✔ hello · name-only` | Claude 只看到名字，看不到描述，省 token |
+| user-invocable-only | `✔ hello · user-only` | 只能你输入 `/hello` 用，Claude 调用会被拒绝 |
+| off | `◯ hello` | 完全停用；输入 `/hello` 会提示 `Skill "hello" is disabled via skillOverrides…` |
+
+切换结果写进 `.claude/settings.local.json` 的 `skillOverrides`（例如 `{"skillOverrides":{"hello":"off"}}`），切回 on 会删掉这一项。插件里的 skill 跟随插件开关，不在这里单独设置。
 
 **4. 调用。** 你输入 `/changelog` 直接运行。Claude 自己调用项目里的 skill 时，第一次会问你是否允许；选第 2 项以后就不再问，规则 `Skill(changelog)` 写进 `.claude/settings.local.json`：
 
@@ -49,7 +58,7 @@ description: Write release notes from the git log since the last tag. Use when t
 
 ![/skill-doctor](images/skills-doctor.png)
 
-从没用过的会被点名，可以考虑删掉（目前 `/skills` 只能查看，不能停用，见下方已知问题）。
+从没用过的会被点名，可以在 `/skills` 里切到 off 停用，或者直接删掉。
 
 ## skill 放在哪里
 
@@ -97,7 +106,6 @@ Review $ARGUMENTS.
 
 ## 已知问题
 
-- `/skill-doctor` 提示「Disable in /skills」，但 `/skills` 目前只是只读列表，没有停用开关；要停用只能删除或移走 skill 文件夹。
 - `-p` 非交互模式下，Claude 调用项目 skill 也会要求权限，官方此时直接放行（未修）。
 
 ## 开发者参考

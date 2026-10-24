@@ -2841,6 +2841,11 @@ function ModSelect({
   const press = node.press!
   const owner = pane.owner
   const elementRef = useElementRegistration(keyElements, node.group?.plugin ?? press.plugin, key, focusElements)
+  const boxRef = React.useRef<DOMElement | null>(null)
+  const boxCallback = React.useCallback((element: DOMElement | null) => {
+    boxRef.current = element
+    elementRef(element)
+  }, [elementRef])
   const select = () => {
     if (!openRef.current) { changeOpen(true); return }
     if (!inputAllowed || pane.drawing === undefined) return
@@ -2900,9 +2905,17 @@ function ModSelect({
   const first = Math.max(0, index - 7)
   const shown = open ? options.slice(first, first + 8) : []
   const hidden = open ? options.length - first - shown.length : 0
+  // A Select inside a fixed-height row (the diff panel's one-row header) has no rows
+  // for the open list, which would draw every option onto the header line; list
+  // them across the header line instead.
+  let room = Infinity
+  for (let parent = boxRef.current?.parentNode; parent; parent = parent.parentNode) {
+    if (typeof parent.style.height === 'number') { room = parent.style.height; break }
+  }
+  const cramped = open && room < 1 + shown.length + (hidden > 0 ? 1 : 0)
   return (
     <Box
-      ref={elementRef}
+      ref={boxCallback}
       flexDirection="column"
       flexShrink={0}
       tabIndex={pane.focused ? 0 : -1}
@@ -2919,11 +2932,14 @@ function ModSelect({
     >
       <Text wrap="truncate-end">
         <Text bold={focused}>{props.label === undefined ? '' : `${String(props.label)}: `}</Text>
-        {option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
+        {cramped
+          ? shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index}>{offset === 0 ? '' : '  '}{option.label ?? option.value}</Text>)
+          : option === undefined ? <Text dimColor>none</Text> : <Text inverse={focused && !open}>{option.label ?? option.value}</Text>}
+        {cramped && hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
         <Text dimColor>{open ? ' ▴' : ' ▾'}</Text>
       </Text>
-      {shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>)}
-      {hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
+      {!cramped && shown.map((option, offset) => <Text key={option.value} inverse={first + offset === index} wrap="truncate-end">  {option.label ?? option.value}</Text>)}
+      {!cramped && hidden > 0 && <Text dimColor>  … {hidden} more</Text>}
     </Box>
   )
 }

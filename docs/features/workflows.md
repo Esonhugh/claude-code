@@ -151,7 +151,7 @@ return await agent('Summarize the findings', { label: 'summary' })
 
 ## 已知问题
 
-- 确认框里按阶段列出的 Agent 提示会归错阶段，并且多包了一层引号（上图中 `'Summarize the findings'` 出现在第 1 阶段 Review 下）。
+- 确认框按脚本里 `phase('…')` 出现的位置把 Agent 提示归到对应阶段；官方 2.1.303 的归类规则不同（例如两个独立的 `await agent()` 中间夹着 `phase()` 时官方都放在第 1 阶段）。每个阶段最多列 2 条，其余显示为 `+N more`，提示是变量时只计数不显示，和官方一致。
 - 实现的完整验收记录见 [生命周期验收](../../docs/research/workflow-agent-lifecycle-validity-20261009.md)。
 
 ## 说明

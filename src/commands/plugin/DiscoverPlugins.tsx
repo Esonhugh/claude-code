@@ -5,6 +5,7 @@ import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutH
 import { Byline } from '../../components/design-system/Byline.js'
 import { SearchBox } from '../../components/SearchBox.js'
 import { useSearchInput } from '../../hooks/useSearchInput.js'
+import { useIsInsideModal, useModalOrTerminalSize } from '../../context/modalContext.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- useInput needed for raw search mode text input
 import { Box, Text, useInput, useTerminalFocus } from '../../ink.js'
@@ -111,7 +112,8 @@ export function DiscoverPlugins({
     },
   })
   const isTerminalFocused = useTerminalFocus()
-  const { columns: terminalWidth } = useTerminalSize()
+  const insideModal = useIsInsideModal()
+  const { columns: terminalWidth } = useModalOrTerminalSize(useTerminalSize())
 
   // Filter plugins based on search query
   const filteredPlugins = useMemo(() => {
@@ -720,7 +722,7 @@ export function DiscoverPlugins({
           query={searchQuery}
           isFocused={isSearchMode}
           isTerminalFocused={isTerminalFocused}
-          width={terminalWidth - 4}
+          width={terminalWidth - (insideModal ? 2 : 4)}
           cursorOffset={searchCursorOffset}
         />
       </Box>

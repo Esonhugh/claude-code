@@ -8,7 +8,7 @@
 
 ## 默认会做什么
 
-- **自动重试**：可恢复的错误最多重试 10 次，间隔逐渐拉长；第 4 次起对话里会显示错误和「Retrying in N seconds… (attempt n/10)」。
+- **自动重试**：可恢复的错误最多重试 10 次，间隔逐渐拉长；从第 1 次重试起，spinner 那一行就变成 `API error · Retrying in 4s · attempt 1/10` 倒计时，第 3 次起把 `API error` 换成具体错误（如 `529 Overloaded`），和官方一致。
 - **响应卡住会重来**：响应流 5 分钟没有任何数据，就中止这次请求并重试。
 - **不会无限挂着**：重试用完就报错。例如网关端口没开、`-p` 模式下设 `CLAUDE_CODE_MAX_RETRIES=1`，重试一次后直接退出：
 
@@ -70,10 +70,6 @@ CLAUDE_CODE_RETRY_WATCHDOG=1 claude -p "..."
 | `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | 毫秒 | — | 429/529 累计等待上限 |
 | `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS` | 毫秒 | — | 额度恢复时间超过它就不等 |
 | `ANTHROPIC_DEFAULT_MODEL` | 模型名 | — | 新会话默认模型（优先级最低） |
-
-## 已知差异
-
-官方 2.1.303 从第 1 次重试起就在 spinner 上显示 `API error · Retrying in Ns · attempt n/10`；本 fork 前 3 次重试只有普通 spinner，看起来像卡住，第 4 次起才在对话里显示错误。
 
 ## 说明
 

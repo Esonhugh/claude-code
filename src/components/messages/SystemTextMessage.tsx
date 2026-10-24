@@ -29,7 +29,6 @@ import type {
   SystemThinkingMessage,
   SystemMemorySavedMessage,
 } from '../../types/message.js'
-import { SystemAPIErrorMessage } from './SystemAPIErrorMessage.js'
 import {
   formatDuration,
   formatNumber,
@@ -152,8 +151,9 @@ export function SystemTextMessage({
     return null
   }
 
+  // Retries are shown on the spinner row while the request is in flight.
   if (message.subtype === 'api_error') {
-    return <SystemAPIErrorMessage message={message} verbose={verbose} />
+    return null
   }
 
   if (message.subtype === 'stop_hook_summary') {

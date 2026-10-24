@@ -257,7 +257,7 @@ assert.match(savedPermissionPreview.updatedInput?.script as string, /export cons
 assert.deepEqual(savedPermissionPreview.updatedInput?.plan, {
   name: 'saved-preview',
   description: 'Saved workflow preview.',
-  phases: [{ title: 'Scope', detail: 'Scope saved args', prompt: "'saved preview ' + args", displayName: 'scope' }],
+  phases: [{ title: 'Scope', detail: 'Scope saved args', prompts: ['saved preview'], agents: 1 }],
   runScriptSnapshot: `export const meta = {
     name: 'saved-preview',
     description: 'Saved workflow preview.',
