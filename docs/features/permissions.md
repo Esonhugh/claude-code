@@ -2,125 +2,170 @@
 
 > 英文名：`permissions` · 领域：权限与安全 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-- 规则：`permissions.allow` / `ask` / `deny` 支持 `Tool(param:value)`、deny/ask 的工具名 `*` 通配、MCP server 级规则、`WebFetch(domain:...)`；Bash 规则穿过 `sudo`/`env`/`nohup`/`exec` 等包装匹配真实命令。
-- 模式：`default` 对外称 Manual（`--permission-mode manual`）；Plan mode 需显式开启；`/yolo`、SDK 与 Shift+Tab 走同一 bypass 闸门；resume 还原上次模式。
-- 安全：受保护路径（`.git/`、`.claude/`、shell 配置、`.npmrc` 等）在 acceptEdits 下仍询问；项目设置不能把 `defaultMode` 设为 bypass/auto，也不能借 `env` 改配置目录或打开遥测。
-- `--safe-mode` 停用 CLAUDE.md、插件、MCP、非托管 hooks、自定义 agents/skills 等全部定制，用来排查坏配置。
-- `-p --permission-prompts none` 在本地直接拒绝需要审批的操作。
+Claude 每次要改文件、跑命令、访问网络之前，都会判断要不要先问你。决定这件事的有三样东西：
 
-自动模式见 [auto-mode.md](auto-mode.md)。
+1. **权限规则**：你提前写好的「这类操作直接允许 / 总是先问 / 一律禁止」。
+2. **权限模式**：整体的松紧程度，例如「改文件不用问」或「先只做计划」。按 `Shift+Tab` 切换。
+3. **安全底线**：改 `.git/`、`.claude/`、shell 配置这类敏感位置，不论规则和模式怎么设，都会先问（bypass 模式除外，见下文）。
 
-## 配置
+自动模式（让分类器替你判断）见 [auto-mode.md](auto-mode.md)。
 
-| 配置项 | 位置 | 可选值 / 写法 | 说明 |
-| --- | --- | --- | --- |
-| `permissions.allow/ask/deny` | settings | `"Edit(src/**)"`、`"Bash(git push:*)"`、`"Agent(model:opus)"`、`"Web*"`、`"mcp__srv__get_*"`、`"WebFetch(domain:*.example.com)"` | 工具名通配只用于 deny/ask |
-| `--permission-mode` | CLI | `manual` `acceptEdits` `plan` `auto` `dontAsk` `bypassPermissions` | `manual` 即 `default` |
-| `planModeAvailable` | settings | `true` / `false`（默认关） | 控制 `/plan`、`EnterPlanMode` 与 Shift+Tab 轮替 |
-| `--safe-mode` / `CLAUDE_CODE_SAFE_MODE` | CLI / 环境变量 | 开关 / `1` | 托管设置仍生效 |
-| `--permission-prompts` | CLI（`-p`） | `host`（默认） / `none` | `none` 时需审批的操作一律拒绝 |
-| `allowManagedPermissionRulesOnly` | 托管设置 | `true` | skill 的 `allowed-tools` 不再预批准 |
+## 第一次遇到：权限确认框
+
+没有规则覆盖的操作会弹出确认框，并显示要改的内容：
+
+![权限确认框](images/permissions-prompt.png)
+
+| 选项 | 效果 |
+| --- | --- |
+| 1. Yes | 只允许这一次 |
+| 2. Yes, allow all edits during this session | 本次会话里改文件都不再问（等于切到 accept edits 模式，也可以按 `Shift+Tab`） |
+| 3. No | 拒绝；Claude 会收到 `User rejected ...` 并换个做法 |
+
+`Tab` 可以在拒绝时补一句说明（例如「别改这个文件，改 docs/ 下面的」），`Esc` 取消。
+
+## 用规则提前决定
+
+在 settings.json 里写 `permissions`。下面是本页演示用的配置：
 
 ```json
 {
   "permissions": {
-    "deny": ["Agent(model:opus)", "WebFetch(domain:*.internal.example.com)", "mcp__github__delete_*"],
-    "ask": ["Web*", "Bash(git push:*)"],
-    "allow": ["Edit(src/**)", "WebFetch(domain:api-*.example.com)", "mcp__brave-search"]
-  },
-  "planModeAvailable": true
+    "allow": ["Edit(src/**)", "Read"],
+    "ask": ["Bash(git push:*)"],
+    "deny": ["Bash(rm:*)"]
+  }
 }
 ```
 
-## 效果
-
-`--permission-mode manual` 启动后连按 Shift+Tab：Manual → accept edits → auto（`planModeAvailable` 未开启，轮替里没有 plan）：
+效果：改 `src/` 下的文件直接执行；改 `README.md` 不在 allow 范围里，照常询问（上一张图）；`rm` 命令被直接拒绝，模型收到错误后自行处理：
 
 ```text
-  ⏵⏵ accept edits on (shift+tab to       ✓ Esonhugh-Marketplace installed · /plugin to see available plugins
+● Update(src/a.ts)
+  ⎿  Added 1 line, removed 1 line
+      1 -export const a = 1
+      1 +export const a = 2
+
+● Bash(rm -rf build)
+  ⎿  Error: Permission to use Bash with command rm -rf build has been denied.
+```
+
+三种规则的优先级是 **deny > ask > allow**。
+
+### 规则怎么写
+
+| 写法 | 匹配 |
+| --- | --- |
+| `Read`、`WebFetch` | 整个工具 |
+| `Bash(git push:*)` | 以 `git push` 开头的命令 |
+| `Edit(src/**)` | 当前目录下 `src/` 里的任何文件 |
+| `Agent(model:opus)` | 按工具参数匹配：用 opus 模型的子 Agent |
+| `WebFetch(domain:*.example.com)` | 指定域名，支持 `*.example.com`、`api-*.example.com`、`domain:*` |
+| `mcp__github` / `mcp__github__*` | 某个 MCP server 的全部工具（server 名里有 `__` 时用后一种） |
+| `mcp__github__get_*` | MCP 工具名通配 |
+| `Web*` | 工具名通配，**只能用在 deny / ask** |
+
+几条容易踩的细节：
+
+- Bash 的 deny / ask 规则会「看穿」包装：`sudo rm`、`env X=1 rm`、`nohup rm`、`exec rm` 都按 `rm` 匹配。
+- `Bash(find:*)` 不会放行带 `-exec`、`-execdir`、`-ok`、`-delete` 的 find。
+- 超过 10000 字符、或以悬空的 `&&` / `||` / `|` 结尾的命令一律询问。
+- 工作目录外的写入、带 `cd` 的复合写入命令、带参数的 `cp` / `mv` 仍会询问。
+- `WebFetch(domain:...)` 规则优先于内置的预批准域名。
+
+### 在界面里管理规则：`/permissions`
+
+不想手改 JSON 时用 `/permissions`。`←/→` 切换分页：最近被拒绝的、Allow、Ask、Deny、自动模式规则、工作区目录：
+
+![/permissions 界面](images/permissions-dialog.png)
+
+选 `Add a new rule…`，输入规则后选择保存位置：
+
+```text
+  Add deny permission rule
+
+    WebFetch(domain:*.internal.example.com)
+
+  Where should this rule be saved?
+  ❯ 1. Project settings (local)  Saved in .claude/settings.local.json
+    2. Project settings          Checked in at .claude/settings.json
+    3. User settings             Saved in at ~/.claude/settings.json
+```
+
+## 权限模式
+
+按 `Shift+Tab` 在模式之间切换，当前模式显示在提示框下方：
+
+```text
+  ⏵⏵ accept edits on (shift+tab to cycle)
 ```
 
 ```text
-  ⏵⏵ auto mode on (shift+tab to cycle)   ✓ Esonhugh-Marketplace installed · /plugin to see available plugins
+  ⏵⏵ auto mode on (shift+tab to cycle)
 ```
 
-开启 `planModeAvailable: true` 后轮替出现 plan：
+| 模式 | 启动参数 `--permission-mode` | 行为 |
+| --- | --- | --- |
+| Manual（默认） | `manual`（即 `default`） | 按规则来，没规则就问 |
+| Accept edits | `acceptEdits` | 改文件不再问；命令照常问 |
+| Plan | `plan` | 只读、只出计划，不动文件；需要先开启 `planModeAvailable` |
+| Auto | `auto` | 由分类器判断是否需要问，见 [auto-mode.md](auto-mode.md) |
+| Don't ask | `dontAsk` | 没有规则放行的操作直接拒绝，不弹框 |
+| Bypass | `bypassPermissions` | 都不问（灾难性删除如 `rm -rf /`、删主目录仍会问）；只建议在隔离环境用 |
+
+- 默认的 `Shift+Tab` 轮替是 Manual → Accept edits → Auto → Manual。Plan 默认不在轮替里，打开 `"planModeAvailable": true` 后才出现（`/plan`、`EnterPlanMode` 也受它控制）：
 
 ```text
-  ⏸ plan mode on (shift+tab to cycle)    ✓ Esonhugh-Marketplace installed · /plugin to see available plugins
+  ⏸ plan mode on (shift+tab to cycle)
 ```
 
-Plan mode 中即使有 `Write` allow 规则，写入也不会直接执行，而是弹出确认：
+- Bypass 只有在你同意过警告、或用启动参数开启后才会出现在轮替里；`/yolo` 是切到 bypass 的快捷命令。被组织策略禁用时会提示 `Bypass permissions mode was not enabled` 并保持原模式。
+- 模式会记在对话里，`--resume` / `--continue` 回来时恢复上次的模式（命令行显式指定的优先）。
 
-```text
-❯ DO<<Write|{"file_path":"plan-out.txt","content":"x"}>>
-● Write(plan-out.txt)
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────
- Create file
- plan-out.txt
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
-  1 x
-╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
- Do you want to create plan-out.txt?
- ❯ 1. Yes
-   2. Yes, allow all edits during this session (shift+tab)
-   3. No
- Esc to cancel · Tab to amend
-```
+## 安全底线：受保护的路径
 
-`-p --permission-prompts none` 下一个需要审批的 `rm -rf`，模型收到的工具结果：
+写入下面这些位置时，即使在 Accept edits 模式、即使有 allow 规则，也会先问：
+
+- `.git/`、`.claude/`
+- shell 配置文件
+- 构建工具配置：`.npmrc`、`bunfig.toml`、`.husky`、`.cargo` 等
+
+确认框里会注明原因：
+
+![受保护路径仍会询问](images/permissions-protected.png)
+
+读取 UNC 网络路径（`//host/share`、`\\host\share`）也总是要人工确认。Bypass 模式下受保护路径不再询问，但灾难性删除仍要确认。
+
+## 项目设置不能做的事
+
+为了防止仓库里的配置「偷偷放权」，项目级 `.claude/settings.json` 和 `.claude/settings.local.json`：
+
+- 把 `defaultMode` 设成 `bypassPermissions` 或 `auto` 会被忽略；
+- `env` 里不能设置 `CLAUDE_CONFIG_DIR`、`HOME`、`TMPDIR`，不能打开 Anthropic 遥测或改写 OTel 导出目标；
+- 被 git 跟踪的 `.claude/settings.local.json`，在你没有明确信任这个工作区之前，其中的 allow 规则不生效。
+
+组织托管设置开启 `allowManagedPermissionRulesOnly` 后，skill 和命令里声明的 `allowed-tools` 不再自动放行。
+
+## 排查坏配置：Safe mode
+
+`claude --safe-mode`（或 `CLAUDE_CODE_SAFE_MODE=1`）启动一个「干净」的会话：不加载 CLAUDE.md、插件、MCP、非托管 hooks、自定义 agents / skills 等定制，组织托管的设置仍然生效。怀疑是某个配置把 Claude 搞坏了时，先用它确认问题是否消失。
+
+## 非交互模式
+
+`claude -p` 没有界面可以弹确认框。加 `--permission-prompts none` 时，所有需要确认的操作直接拒绝，模型收到：
 
 ```text
 Permission to use Bash has been denied. ...
 ```
 
-## 详细说明
+默认 `--permission-prompts host` 则交给 SDK 的宿主程序决定。
 
-以下内容自原 README 迁入，保持原文。
+## 已知问题
 
-### Plan mode 配置
+- 旧文档写 Plan 模式下有 allow 规则时模型会直接收到 `Cannot call <tool> while in plan mode.`；实测交互模式是弹出确认框（写入都没有执行）。
 
-Plan mode 默认不可新进入，需要显式启用：
+## 说明
 
-```json
-{
-  "planModeAvailable": true
-}
-```
-
-该设置控制 `/plan`、`EnterPlanMode`、mode cycle，以及 Plan-sensitive tools、Agent schema 和提示。关闭后会阻止新进入 Plan mode；如果 session 已处于 Plan restrictions，退出路径仍保留，避免被锁在该模式中。
-
-plan 模式下（bypass 不可用时），allow 规则、PreToolUse hook 与 Mods `tool.check` 返回的 allow 都不会让写入类工具执行，模型会收到 `Cannot call <tool> while in plan mode.`。
-
-### 权限规则与权限模式
-
-权限规则写在 settings 的 `permissions.allow` / `ask` / `deny` 中，自动模式分类器规则写在 `autoMode`：
-
-```json
-{
-  "permissions": {
-    "deny": ["Agent(model:opus)", "WebFetch(domain:*.internal.example.com)", "mcp__github__delete_*"],
-    "ask": ["Web*", "Bash(git push:*)"],
-    "allow": ["Edit(src/**)", "WebFetch(domain:api-*.example.com)", "mcp__brave-search"]
-  },
-  "autoMode": { "soft_deny": ["$defaults", "Pushing to any remote other than origin"] }
-}
-```
-
-规则写法：
-
-- `Tool(param:value)` 按工具输入参数匹配，工具名位置的 `*`（如 `"Web*"`）只用于 deny/ask，allow 只接受 MCP 通配。
-- MCP allow 只放行点名的 server，server 名含 `__` 时写 `mcp__<server>__*`；`mcp__srv__get_*` 按工具名通配，`mcp__*` 匹配全部 MCP 工具。
-- 单段 `dir/**` 的 allow（如 `Edit(src/**)`）只匹配 `<cwd>/dir`；`WebFetch(domain:...)` 规则优先于内置预批准域名，支持 `*.example.com`、`api-*.example.com` 与 `domain:*`。
-- Bash deny/ask 规则会穿过 `sudo`、`doas`、`env`、`nohup`、`exec` 等包装命令与环境变量前缀匹配真正执行的命令；`Bash(find:*)` 不放行 `-exec`、`-execdir`、`-ok`、`-delete`；超过 10000 字符或带悬空 `&&`/`||`/`|` 的命令一律确认。
-- 默认模式下，`Bash(touch:*)` 这类 allow 规则可以放行工作目录内的写入命令；无规则时询问，工作目录外的写入、安全检查、Edit deny 规则、含 `cd` 的复合写入和 `cp`/`mv` 带 flag 仍会询问或拒绝（对齐官方 2.1.303）。
-
-受保护路径与权限模式：
-
-- 写入 `.git/`、`.claude/`、shell 配置及 `.npmrc`、`bunfig.toml`、`.husky`、`.cargo` 等构建工具配置前，acceptEdits 等模式仍会询问；bypass 下写入这些路径不再询问，但 `rm -rf /`、删除主目录等灾难性删除仍要求确认。读取 UNC 路径（`//host/share`、`\\host\share`）强制人工确认。
-- `/yolo` 与 SDK `set_permission_mode` 走同一闸门：bypass 被策略停用时报告 `Bypass permissions mode was not enabled` 并不切换，从未同意过 bypass 时先显示警告对话框；未经同意或启动旗标时，Shift+Tab 轮替不出现 bypass。
-- 模式变化写入 transcript，`--resume`、`--continue` 与 `-p --resume` 还原上次的模式（命令行显式指定的模式优先）；每次切换写入 debug 日志 `[permission-mode] from -> to (source: ...)`。
-
-设置来源边界：项目 `.claude/settings.json` 与本地 `.claude/settings.local.json` 中的 `defaultMode: "bypassPermissions"` / `"auto"` 被忽略；其 `env` 不能设置 `CLAUDE_CONFIG_DIR`、`HOME`、`TMPDIR`、开启 Anthropic 遥测或改写 OTel 导出等变量；被 git 跟踪的 `.claude/settings.local.json` 在工作区未显式信任时 allow 规则不生效。项目 MCP `headersHelper` 在 `-p` 下也须先在交互模式信任该目录才会执行。托管设置启用 `allowManagedPermissionRulesOnly` 时，skill/命令的 `allowed-tools` 不再预先批准工具。
+画面来自实际运行，模型回复由测试用假 API 生成（`FAKE_DONE`，提示词里的 `DO<<…>>` 是让假 API 调用工具的指令）。

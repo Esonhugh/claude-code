@@ -16,7 +16,7 @@
 |  | [Dynamic Workflow](workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
 |  | [背景会话、daemon 与 agents 视图](background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
 |  | [独立会话通信](peer-messaging.md) | 同机独立 CLI 会话经 UDS / named pipe 互发纯文本，`ListAgents` / `SendMessage` / `/peers` |
-| 权限与安全 | [权限规则、权限模式与 Safe mode](permissions.md) | `Tool(param:value)` 规则、通配、受保护路径、Manual/Plan/bypass 闸门、`--safe-mode`、`--permission-prompts none` |
+| 权限与安全 | [权限规则、权限模式与 Safe mode](permissions.md) | Claude 什么时候要先问你：用规则提前放行或禁止，用模式整体调松或调紧；受保护路径在任何模式下都会问 |
 |  | [自动模式（Auto mode）](auto-mode.md) | 分类器代替人工审批；`autoMode` 规则只读可信来源，`/permissions` Auto mode 分页、`claude auto-mode` |
 |  | [Hooks 事件、匹配与输出校验](hooks.md) | `onFailure: "block"`、新事件、精确 matcher、`updatedInput` 校验、Stop hook 次数上限 |
 | 工具 | [Terminal 工具](terminal-tool.md) | 持久 PTY session：`new-session`、`send-keys`、`capture-pane`、resize、signal，按 Bash 规则判权限 |
