@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-24 - VS Code 插件：支持 /memory、/skills、/hooks、/permissions、/diff 与背景任务控制请求
+
+### 变更内容
+
+- 新增控制请求 `get_memory_dialog`、`get_skills_dialog`、`get_hooks_listing`、`list_permission_rules`、`get_workspace_diff`、`get_task_output`、`background_tasks`（含 `tool_use_id` 单个任务）、`message_rated`、`submit_feedback`，VS Code 插件的对应对话框不再报 `Unsupported control request subtype`（#158）。
+- `get_task_output` 在任务结束、已从会话状态移除后，仍可按 shell 任务 id 读取输出末尾 8 KiB。
+- `submit_feedback` 回报 `unavailable_reason`，不从宿主上传反馈。
+
+### 测试覆盖
+
+- `src/cli/print.sdkControlRequests.test.ts` 新增：上述请求的成功与拒绝路径（未知任务、已结束任务、错误的评分参数）。
+
 ## 2026-10-24 - VS Code 插件：支持 /status、/usage 等宿主控制请求
 
 ### 变更内容

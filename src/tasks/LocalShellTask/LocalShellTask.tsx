@@ -511,6 +511,28 @@ export function backgroundAll(
 }
 
 /**
+ * Background the one foreground task a tool_use block started (the
+ * background_tasks control request with tool_use_id). Returns whether a
+ * matching foreground task was found and backgrounded.
+ */
+export function backgroundTaskForToolUse(
+  toolUseId: string,
+  getAppState: () => AppState,
+  setAppState: SetAppState,
+): boolean {
+  const task = Object.values(getAppState().tasks).find(
+    t =>
+      t.toolUseId === toolUseId &&
+      (isLocalShellTask(t) || isLocalAgentTask(t)) &&
+      !t.isBackgrounded,
+  )
+  if (!task) return false
+  return isLocalShellTask(task)
+    ? backgroundTask(task.id, getAppState, setAppState)
+    : backgroundAgentTask(task.id, getAppState, setAppState)
+}
+
+/**
  * Background an already-registered foreground task in-place.
  * Unlike spawn(), this does NOT re-register the task — it flips isBackgrounded
  * on the existing registration and sets up a completion handler.
