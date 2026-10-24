@@ -2,47 +2,77 @@
 
 > 英文名：`direct-connect` · 领域：远程执行 · [返回功能索引](README.md)
 
-## 作用与效果
+## 这是什么
 
-执行端 `claude server` 起一个 HTTP + WebSocket session server（默认只绑 `127.0.0.1`），每个 session 启动一个 `claude -p` child 持有工具与项目上下文；本地 `claude cc://...` 负责 TUI 与权限 UI，`-p` 为 headless 单轮。已包含在默认构建。
+和 [SSH Remote](ssh-remote.md) 目的相同——**在别处执行、在本地操作**，但不走 SSH，而是 HTTP + WebSocket：
 
-## 配置
+1. 在要执行代码的机器上运行 `claude server`，它监听一个端口，用 token 保护；
+2. 在你的终端运行 `claude cc://地址/token`，得到正常的交互界面；
+3. 每个会话在 server 上启动一个 Claude 执行进程，读写的是 **server 上的文件**，用的是 **server 上的凭据**；
+4. 需要权限确认时，问题会传回你这边。
 
-| 配置项 | 位置 | 可选值 | 默认 | 说明 |
-| --- | --- | --- | --- | --- |
-| `--port` | `claude server` | 端口 / `0` | `0`（随机） | — |
-| `--auth-token` | `claude server` | 字符串 | 自动生成 | 每个请求校验 Bearer |
-| `--host` | `claude server` | 地址 | `127.0.0.1` | 非 loopback 时 banner 警告明文 HTTP |
-| `--workspace` | `claude server` | 目录 | — | client cwd 不存在时退回 |
-| `--idle-timeout` / `--max-sessions` | `claude server` | 毫秒 / 整数 | `600000` / `32` | detached session 超时 / 满额返回 503 |
-| `cc://host:port/<token>[?serverUrl=https://...]` | 本地 CLI | URL | — | `cc+unix://` 不支持 |
+适合：容器 / 开发机里已经配好环境和凭据，你只想从外面连进去用。
+
+## 快速上手
+
+**1. 在执行端启动 server：**
 
 ```bash
-claude server --port 8765 --auth-token "$TOKEN"
-claude cc://127.0.0.1:8765/$TOKEN
-claude cc://127.0.0.1:8765/$TOKEN -p "summarize README.md"
+claude server --port 18765 --auth-token demo-token-123
 ```
 
-## 效果
+它打印连接命令，并提醒会话使用这台机器的凭据和完整权限：
 
-server banner：
+![server 启动](images/direct-connect-server.png)
 
-```text
-2026-10-24T15:10:54.778Z INFO listening on http://127.0.0.1:18765
-Claude Code server listening on http://127.0.0.1:18765
-Connect with: claude cc://127.0.0.1:18765/demo-token-123
-Sessions run with your local credentials and full access to this machine. Press Ctrl+C to stop.
+**2. 在本地连接：**
+
+```bash
+claude cc://127.0.0.1:18765/demo-token-123
 ```
 
-正确 token 的 headless 单轮，与错误 token：
+欢迎画面的目录后面写着 `in 127.0.0.1:18765`。Claude 要改文件时，权限确认出现在你这边：
 
-```text
-FAKE_DONE
+![权限确认](images/direct-connect-ask.png)
+
+确认后，文件写在 **server 那台机器**上：
+
+![执行完成](images/direct-connect-done.png)
+
+**3. 不要界面，只跑一轮：**
+
+```bash
+claude cc://127.0.0.1:18765/demo-token-123 -p "summarize README.md"
 ```
+
+`-p` 模式下没有人能确认权限，所以除非加 `--dangerously-skip-permissions`，需要权限的工具一律拒绝。token 不对时：
 
 ```text
 Failed to create session: 401 Unauthorized — {"error":"Unauthorized"}
 ```
+
+## server 选项
+
+| 选项 | 默认 | 说明 |
+| --- | --- | --- |
+| `--port` | `0`（随机） | 监听端口 |
+| `--auth-token` | 自动生成 | 每个请求都校验 |
+| `--host` | `127.0.0.1` | 只监听本机；改成非本机地址时会警告「明文 HTTP」 |
+| `--workspace` | — | 客户端给的目录在 server 上不存在时，退回这个目录 |
+| `--idle-timeout` | `600000`（10 分钟） | 客户端断开后会话保留多久 |
+| `--max-sessions` | `32` | 会话上限，满了返回 503 |
+
+## 安全须知
+
+- server 以**启动它的用户**身份运行，用这台机器的凭据，连上的人等于拥有这个用户的权限。token 要保密。
+- 默认只监听 `127.0.0.1`。要跨机器访问，建议放在 TLS 反向代理后面，用 `cc://host:port/<token>?serverUrl=https://...` 指定 HTTPS 地址。
+- 同一个配置目录只能起一个 server（`~/.claude/server.lock`）。
+- 远程会话里会关闭本机 IDE 集成和本机工具，避免两边的工作区混在一起。
+- 不支持 `cc+unix://`。
+
+## 说明
+
+画面来自实际运行：server 和客户端在同一台机器的两个 tmux 窗口，模型回复由测试用假 API 生成。下方「详细说明」保留协议细节。
 
 ## 详细说明
 

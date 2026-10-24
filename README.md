@@ -98,7 +98,7 @@ bun ./dist/cli.js --help
 |  | [/diff 视图](docs/features/diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
 |  | [调试日志](docs/features/debugging.md) | `--debug [filter]`、`--debug-file`，全屏 footer 的 Debug 标记 |
 |  | [遥测与反馈](docs/features/telemetry.md) | Anthropic 一方遥测默认关闭；`/feedback` 与问卷跟随开关；OTel `tool_decision` 带权限模式 |
-| 远程执行 | [Direct Connect](docs/features/direct-connect.md) | `claude server` 在执行端起 session server，本地用 `cc://host:port/token` 连接 |
+| 远程执行 | [Direct Connect](docs/features/direct-connect.md) | 在一台机器上 `claude server`，在另一处用 `claude cc://...` 连过去：工具在 server 上执行，界面和权限确认在你这边 |
 |  | [SSH Remote](docs/features/ssh-remote.md) | `claude ssh 主机` 让 Claude 在远程 Linux 机器上读写文件、跑命令，界面和权限确认留在本机；API 凭据不离开本机 |
 | 插件与扩展 | [插件与 Marketplace](docs/features/plugins-marketplace.md) | `--plugin-dir`/`--plugin-url`、manifest `defaultEnabled`、Esonhugh-Marketplace、热加载与回滚 |
 |  | [MCP 配置与认证](docs/features/mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录 |
