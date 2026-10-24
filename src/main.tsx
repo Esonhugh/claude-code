@@ -6247,6 +6247,11 @@ async function run(): Promise<CommanderCommand> {
         process.stdout.write(`${JSON.stringify(rows, null, 2)}\n`)
         process.exit(0)
       }
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        const { runAgentView } = await import('./cli/agentView.js')
+        await runAgentView({ cwd: opts.cwd })
+        process.exit(0)
+      }
       const { listJobs } = await import('./daemon/protocol.js')
       const jobs = (await listJobs()).filter(
         job => !opts.cwd || job.cwd.startsWith(opts.cwd),
