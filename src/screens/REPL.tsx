@@ -46,6 +46,9 @@ import type { TabStatusKind } from '../ink/hooks/use-tab-status.js'
 import { selectProgramStatus, programTurnEnd, programStatusAskText, programStatusBlockedText, programStatusProgress, selectChildProgramStatuses, type ProgramTurnEnd, type ProgramBlockedOn } from './programStatus.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from '../tools/AskUserQuestionTool/prompt.js'
 import { CostThresholdDialog } from '../components/CostThresholdDialog.js'
+import { PeerInboundDialog } from '../components/PeerInboundDialog.js'
+import type { HeldPeerMessageInfo } from '../utils/udsMessaging.js'
+import { peerHoldReason } from '../utils/peerProtocol.js'
 import { IdleReturnDialog } from '../components/IdleReturnDialog.js'
 import * as React from 'react'
 import {
@@ -1779,10 +1782,15 @@ export function REPL({
   // Push status to the PID file for `claude ps`. Fire-and-forget; ps falls
   // back to transcript-tail derivation when this is missing/stale.
   useEffect(() => {
-    if (feature('BG_SESSIONS')) {
-      void updateSessionActivity({ status: sessionStatus, waitingFor })
-    }
+    void updateSessionActivity({ status: sessionStatus, waitingFor })
   }, [sessionStatus, waitingFor])
+
+  useEffect(() => {
+    if (!feature('UDS_INBOX')) return
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { setPeerSessionIdle } = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+    setPeerSessionIdle(sessionStatus === 'idle')
+  }, [sessionStatus])
 
   // 3P default: off — OSC 21337 is ant-only while the spec stabilizes.
   // Gated so we can roll back if the sidebar indicator conflicts with
@@ -1889,6 +1897,30 @@ export function REPL({
     },
     [recordProgramTurnEnd],
   )
+
+  // Held cross-session messages: transcript warnings, and an approval dialog
+  // when the hold comes from a permission-mode mismatch.
+  const [heldPeerMessages, setHeldPeerMessages] = useState<HeldPeerMessageInfo[]>([])
+  useEffect(() => {
+    if (!feature('UDS_INBOX')) return
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const uds = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+    const warn = (text: string) => setMessages(previous => [...previous, createSystemMessage(text, 'warning')])
+    uds.setOnPeerNotice(warn)
+    uds.setOnPeerHeld((message, count) => {
+      const preview = message.preview.replace(/\s+/g, ' ').trim()
+      warn(`Held peer message — from ${message.from}${message.claimedName ? ` (peer claims name: ${message.claimedName})` : ''}${preview ? `; preview: «${preview.length > 200 ? `${preview.slice(0, 200)}…` : preview}»` : ''} — not delivered to Claude (${count} held). ${peerHoldReason(message.cause)}`)
+      if (message.cause === 'mode-mismatch' || message.cause === 'no-mode-asserted') setHeldPeerMessages(previous => [...previous, message])
+    })
+    uds.setOnPeerHeldGone(uuid => setHeldPeerMessages(previous => previous.filter(message => message.uuid !== uuid)))
+    uds.setOnPeerHeldReleased((count, reason) => warn(`Released ${count} held cross-session ${count === 1 ? 'message' : 'messages'} to Claude's queue (${{ 'mode-changed': 'permissions are prompting again', 'policy-accepts': 'crossSessionInbound now accepts', approved: 'you approved it' }[reason]}).`))
+    return () => {
+      uds.setOnPeerNotice(null)
+      uds.setOnPeerHeld(null)
+      uds.setOnPeerHeldGone(null)
+      uds.setOnPeerHeldReleased(null)
+    }
+  }, [setMessages])
   // Capture the baseline message count alongside the placeholder text so
   // the render can hide it once displayedMessages grows past the baseline.
   const setUserInputOnProcessing = useCallback((input: string | undefined) => {
@@ -3229,6 +3261,7 @@ export function REPL({
     | 'prompt'
     | 'worker-sandbox-permission'
     | 'elicitation'
+    | 'peer-inbound'
     | 'cost'
     | 'idle-return'
     | 'init-onboarding'
@@ -3265,6 +3298,7 @@ export function REPL({
     if (allowDialogsWithAnimation && workerSandboxPermissions.queue[0])
       return 'worker-sandbox-permission'
     if (allowDialogsWithAnimation && elicitation.queue[0]) return 'elicitation'
+    if (allowDialogsWithAnimation && heldPeerMessages[0]) return 'peer-inbound'
     if (allowDialogsWithAnimation && showingCostDialog) return 'cost'
     if (allowDialogsWithAnimation && idleReturnPending) return 'idle-return'
 
@@ -3459,6 +3493,7 @@ export function REPL({
       promptQueue[0] ||
       workerSandboxPermissions.queue[0] ||
       elicitation.queue[0] ||
+      heldPeerMessages[0] ||
       showingCostDialog)
 
   // Keep ref in sync so timer callbacks can read the current value
@@ -7577,6 +7612,21 @@ export function REPL({
                         },
                       }))
                       currentRequest?.onWaitingDismiss?.(action)
+                    }}
+                  />
+                )}
+                {focusedInputDialog === 'peer-inbound' && heldPeerMessages[0] && (
+                  <PeerInboundDialog
+                    key={heldPeerMessages[0].uuid}
+                    message={heldPeerMessages[0]}
+                    onDone={decision => {
+                      const message = heldPeerMessages[0]!
+                      setHeldPeerMessages(previous => previous.filter(item => item.uuid !== message.uuid))
+                      // eslint-disable-next-line @typescript-eslint/no-require-imports
+                      const { resolveHeldPeerMessage } = require('../utils/udsMessaging.js') as typeof import('../utils/udsMessaging.js')
+                      const result = resolveHeldPeerMessage(message.uuid, decision)
+                      if (result === 'dropped') setMessages(previous => [...previous, createSystemMessage('That held message was NOT delivered: cross-session messaging was turned off (or set to refuse) while the prompt was open, so your approval could not apply — it was dropped.', 'warning')])
+                      if (result === 'gone') setMessages(previous => [...previous, createSystemMessage(`That held message was already resolved before your ${decision === 'approve' ? 'approval' : 'denial'} (released or dropped by a mode/setting change) — no action taken.`, 'warning')])
                     }}
                   />
                 )}

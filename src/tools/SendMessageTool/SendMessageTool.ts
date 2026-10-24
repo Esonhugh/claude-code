@@ -4,7 +4,7 @@ import { isEqual } from 'lodash-es'
 import { runModSessionSend, sessionSendToolResult } from '../../services/mods/sessionSend.js'
 import { feature } from 'bun:bundle'
 import { z } from 'zod/v4'
-import { isReplBridgeActive } from '../../bootstrap/state.js'
+import { getIsNonInteractiveSession, isReplBridgeActive } from '../../bootstrap/state.js'
 import { getReplBridgeHandle } from '../../bridge/replBridgeHandle.js'
 import type { Tool, ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -90,16 +90,18 @@ const inputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Optional 5-10 word summary shown as a preview in the UI'),
-    message: z.union([
-      z.string().describe('Plain text message content'),
-      StructuredMessage(),
-    ]),
+    message: feature('UDS_INBOX')
+      ? z.union([z.string().describe('Plain text message content'), StructuredMessage()]).default('')
+      : z.union([z.string().describe('Plain text message content'), StructuredMessage()]),
+    ...(feature('UDS_INBOX') ? { notify_when_idle: semanticBoolean().optional().describe(NOTIFY_WHEN_IDLE_DESCRIPTION) } : {}),
   }),
 )
 const peerInputSchema = lazySchema(() => inputSchema().extend({
   to: z.string().describe('Agent name or local session name, "name [ref]", session UUID, or "uds:<socket-path>"'),
-  message: z.string().describe('Plain text message content'),
+  message: z.string().default('').describe('Plain text message content'),
 }))
+const NOTIFY_WHEN_IDLE_DESCRIPTION = 'Ask a session ON THIS MACHINE to send you ONE notice when it next goes idle (finishes its turn with nothing queued) or exits — opt-in, one-shot, no polling. With a message: deliver it now AND subscribe. Without a message (omit it): a pure subscription that costs the other session nothing.'
+const NOTIFY_LOCAL_ONLY = 'notify_when_idle is only supported for Claude sessions on this machine in this release (not teammates, subagents, Remote Control or cloud sessions).'
 type InputSchema = ReturnType<typeof inputSchema> | ReturnType<typeof peerInputSchema>
 
 export type Input = z.infer<InputSchema>
@@ -116,6 +118,7 @@ export type MessageRouting = {
 export type MessageOutput = {
   success: boolean
   message: string
+  msg_id?: string
   routing?: MessageRouting
   pin?: SendMessagePin
   display?: string
@@ -665,13 +668,22 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
       return { behavior: 'allow' as const, updatedInput: input }
     },
 
-    async validateInput(input, _context) {
+    async validateInput(input, context) {
       if (input.to.trim().length === 0) {
         return {
           result: false,
           message: 'to must not be empty',
           errorCode: 9,
         }
+      }
+      const notify = feature('UDS_INBOX') ? 'notify_when_idle' in input && input.notify_when_idle === true : false
+      if (typeof input.message === 'string' && input.message.trim() === '' && !notify) {
+        return { result: false, message: 'message must not be empty (omit it only for a pure notify_when_idle subscription)', errorCode: 9 }
+      }
+      if (notify) {
+        if (typeof input.message !== 'string') return { result: false, message: 'notify_when_idle cannot ride a structured message — send plain text, or omit the message for a pure subscription', errorCode: 9 }
+        if (context.agentId) return { result: false, message: 'notify_when_idle is only available from the main conversation of this session (not from a subagent or teammate).', errorCode: 9 }
+        if (input.to === '*' || parseAddress(input.to).scheme === 'bridge') return { result: false, message: NOTIFY_LOCAL_ONLY, errorCode: 9 }
       }
       const addr = parseAddress(input.to)
       if (
@@ -799,6 +811,38 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
 
     async call(input, context, canUseTool, assistantMessage) {
       const send = async (input: z.infer<InputSchema>): Promise<{data:SendMessageToolOutput}> => {
+      const notify = feature('UDS_INBOX') ? 'notify_when_idle' in input && input.notify_when_idle === true : false
+      const sendPeer = async (target: string, message: string, label: string, toName?: string): Promise<{data:SendMessageToolOutput}> => {
+        const { sendToUdsSocket, subscribePeerIdle } = await import('../../utils/udsClient.js')
+        const { idleSubscriptionMessage } = await import('../../utils/peerNotices.js')
+        const { getPeerInboundSetting, getUnassertedPeerInboundPolicy } = await import('../../utils/udsMessaging.js')
+        const permissions = context.getAppState().toolPermissionContext
+        const fromMode = permissions.mode === 'bypassPermissions' || (permissions.mode === 'plan' && permissions.isBypassPermissionsModeAvailable) ? 'bypass' : 'prompting'
+        try {
+          const sent = message.trim()
+            ? await sendToUdsSocket(target, message, {
+                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
+                ...(context.abortController ? {signal:context.abortController.signal} : {}),
+                ...(toName ? {toName} : {}),
+                fromMode,
+              })
+            : undefined
+          const subscription = notify ? await subscribePeerIdle(target, label, fromMode) : undefined
+          const preview = input.summary || truncate(message, 50)
+          return {
+            data: {
+              success: sent !== undefined || subscription?.ok === true,
+              message: [
+                ...(sent ? [`“${preview}” → ${label}; in that session's inbox, not yet read by its Claude — a [Cross-session delivery notice] follows if that session holds it (usually a different permission mode) or refuses it`] : []),
+                ...(subscription ? [idleSubscriptionMessage(subscription, label, getPeerInboundSetting(), getUnassertedPeerInboundPolicy(), getIsNonInteractiveSession())] : []),
+              ].join('\n'),
+              ...(sent && { msg_id: sent.msg_id }),
+            },
+          }
+        } catch (e) {
+          return { data: { success: false, message: `Failed to send to ${input.to}: ${errorMessage(e)}` } }
+        }
+      }
       if (feature('UDS_INBOX') && typeof input.message === 'string') {
         const addr = parseAddress(input.to)
         if (addr.scheme === 'bridge') {
@@ -842,36 +886,7 @@ export const SendMessageTool: Tool<InputSchema, SendMessageToolOutput> =
               },
             }
           }
-          /* eslint-disable @typescript-eslint/no-require-imports */
-          const { sendToUdsSocket } =
-            require('../../utils/udsClient.js') as typeof import('../../utils/udsClient.js')
-          /* eslint-enable @typescript-eslint/no-require-imports */
-          try {
-            const permissions = context.getAppState().toolPermissionContext
-            await sendToUdsSocket(addr.target, input.message, {
-                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
-                ...(context.abortController ? {signal:context.abortController.signal} : {}),
-              fromMode:
-                permissions.mode === 'bypassPermissions' ||
-                (permissions.mode === 'plan' && permissions.isBypassPermissionsModeAvailable)
-                  ? 'bypass'
-                  : 'prompting',
-            })
-            const preview = input.summary || truncate(input.message, 50)
-            return {
-              data: {
-                success: true,
-                message: `“${preview}” → ${input.to} (sent; acceptance and processing are not confirmed)`,
-              },
-            }
-          } catch (e) {
-            return {
-              data: {
-                success: false,
-                message: `Failed to send to ${input.to}: ${errorMessage(e)}`,
-              },
-            }
-          }
+          return sendPeer(addr.target, input.message, input.to)
         }
       }
 
@@ -886,6 +901,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
         }
         const agentId = resolved?.recipient.id
         const recipientName = resolved?.recipient.name ?? input.to
+        if (agentId && notify) return { data: { success: false, message: NOTIFY_LOCAL_ONLY } }
         if (agentId) {
           const teammate = findTeammateTaskByAgentId(agentId, appState.tasks)
           if (teammate?.status === 'running') {
@@ -1043,8 +1059,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
           ))
       if (!isTeamRecipient) {
         if (feature('UDS_INBOX') && getUdsMessagingSocketPath()) {
-          const { resolvePeerSession, sendToUdsSocket } =
-            await import('../../utils/udsClient.js')
+          const { resolvePeerSession } = await import('../../utils/udsClient.js')
           try {
             const peer = await resolvePeerSession(input.to)
             if (peer) {
@@ -1057,23 +1072,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
                   },
                 }
               }
-              await sendToUdsSocket(peer.messagingSocketPath, input.message, {
-                ...(context.modSpawnedBy ? {fromPlugin:context.modSpawnedBy} : {}),
-                ...(context.abortController ? {signal:context.abortController.signal} : {}),
-                fromMode:
-                  appState.toolPermissionContext.mode === 'bypassPermissions' ||
-                  (appState.toolPermissionContext.mode === 'plan' &&
-                    appState.toolPermissionContext.isBypassPermissionsModeAvailable)
-                    ? 'bypass'
-                    : 'prompting',
-              })
-              const preview = input.summary || truncate(input.message, 50)
-              return {
-                data: {
-                  success: true,
-                  message: `“${preview}” → ${peer.name} [${peer.ref}] (sent; acceptance and processing are not confirmed)`,
-                },
-              }
+              return sendPeer(peer.messagingSocketPath, input.message, `${peer.name} [${peer.ref}]`, peer.name)
             }
           } catch (e) {
             return {
@@ -1092,6 +1091,7 @@ ${resolved.candidates.map(candidate => `  ${candidate.name} [${candidate.ref}]`)
         }
       }
 
+      if (notify) return { data: { success: false, message: NOTIFY_LOCAL_ONLY } }
       if (typeof input.message === 'string') {
         return handleMessage(input.to, input.message, input.summary, context)
       }
