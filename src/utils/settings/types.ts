@@ -1130,6 +1130,12 @@ export const SettingsSchema = lazySchema(() =>
                 ),
             })
             .optional(),
+          extraction: z
+            .enum(['everyTurns', 'sessionEnd', 'off'])
+            .optional()
+            .describe(
+              'When background memory extraction runs: sessionEnd (default, once when the conversation ends: exit, /clear, /resume), everyTurns (after each turn), or off. Each run is a model call, so less often costs fewer tokens.',
+            ),
         })
         .optional()
         .describe('Memory system options'),

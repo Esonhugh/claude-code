@@ -2973,6 +2973,14 @@ export function REPL({
           }
         }
 
+        // memory.extraction (sessionEnd, or everyTurns with N > 1): extract before switching away.
+        if (feature('EXTRACT_MEMORIES')) {
+          const { flushDeferredExtraction } = await import(
+            '../services/extractMemories/extractMemories.js'
+          )
+          await flushDeferredExtraction()
+        }
+
         // Fire SessionEnd hooks for the current session before starting the
         // resumed one, mirroring the /clear flow in conversation.ts.
         const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
