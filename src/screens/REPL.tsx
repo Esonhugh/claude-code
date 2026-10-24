@@ -1193,6 +1193,7 @@ export function REPL({
   // /brief mid-session leaves the stale tool list (no SendUserMessage) and
   // the model emits plain text the brief filter hides.
   const isBriefOnly = useAppState(s => s.isBriefOnly)
+  const focusView = useAppState(s => s.briefTranscript)
 
   const localTools = useMemo(
     () => (isRemoteExecutionSession ? [] : getTools(toolPermissionContext)),
@@ -7240,6 +7241,7 @@ export function REPL({
                   isLoading && !viewedAgentTask ? visibleStreamingText : null
                 }
                 isBriefOnly={viewedAgentTask ? false : isBriefOnly}
+                focusView={!viewedAgentTask && focusView && isFullscreenEnvEnabled()}
                 unseenDivider={viewedAgentTask ? undefined : unseenDivider}
                 scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined}
                 trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined}

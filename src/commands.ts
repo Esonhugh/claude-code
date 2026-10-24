@@ -18,6 +18,11 @@ import commitPushPr from './commands/commit-push-pr.js'
 import compact from './commands/compact/index.js'
 import config from './commands/config/index.js'
 import { context, contextNonInteractive } from './commands/context/index.js'
+import focus from './commands/focus/index.js'
+import {
+  skillDoctor,
+  skillDoctorNonInteractive,
+} from './commands/skill-doctor/index.js'
 import {
   autocompact,
   autocompactNonInteractive,
@@ -294,6 +299,9 @@ const COMMANDS = memoize((): Command[] => [
   contextNonInteractive,
   autocompact,
   autocompactNonInteractive,
+  skillDoctor,
+  skillDoctorNonInteractive,
+  focus,
   cost,
   daybreak,
   diff,
