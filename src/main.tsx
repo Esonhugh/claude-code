@@ -6291,11 +6291,15 @@ async function run(): Promise<CommanderCommand> {
 
   program
     .command('rm <id>')
-    .description('Delete a background session. Works on sessions that have already exited')
-    .action(async (id: string) => {
+    .description('Delete a background session and its worktree. Unlike `stop`, works on already-exited sessions')
+    .option(
+      '--discard-unpushed <commit>@<worktree-id>',
+      "also discard the worktree's unpushed commits (and any uncommitted changes) — pass the value a previous 'claude rm <id>' reported",
+    )
+    .action(async (id: string, opts: { discardUnpushed?: string }) => {
       const { rmHandler } = await import('./cli/bg.js')
-      await rmHandler(id)
-      process.exit(0)
+      await rmHandler(id, opts)
+      process.exit(process.exitCode ?? 0)
     })
 
   program

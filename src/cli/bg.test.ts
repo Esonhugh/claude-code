@@ -52,3 +52,56 @@ test('backgrounded hint matches official wording', () => {
     ].join('\n'),
   )
 })
+
+test('removeJob keeps a worktree with uncommitted or unpushed work and removes a clean one', async () => {
+  const { execFileSync } = await import('child_process')
+  const { existsSync, mkdirSync, mkdtempSync, writeFileSync } = await import('fs')
+  const { tmpdir } = await import('os')
+  const { join } = await import('path')
+  const { removeJob } = await import('./bg.js')
+  const root = mkdtempSync(join(tmpdir(), 'bg-rm-'))
+  process.env.CLAUDE_CONFIG_DIR = join(root, 'config')
+  const repo = join(root, 'repo')
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd, encoding: 'utf8' }).trim()
+  mkdirSync(repo)
+  git(repo, 'init', '-q')
+  writeFileSync(join(repo, 'a.txt'), 'a')
+  git(repo, 'add', '-A')
+  git(repo, 'commit', '-qm', 'init')
+  const base = git(repo, 'rev-parse', 'HEAD')
+
+  const worktreeJob = (id: string): JobRecord => {
+    const path = join(repo, '.claude', 'worktrees', id)
+    git(repo, 'worktree', 'add', '-q', '-b', `worktree-${id}`, path)
+    mkdirSync(join(process.env.CLAUDE_CONFIG_DIR!, 'jobs', id), { recursive: true })
+    return {
+      ...job(id, id),
+      state: 'stopped',
+      worktree: { worktreePath: path, worktreeBranch: `worktree-${id}`, originalCwd: repo, originalHeadCommit: base },
+    }
+  }
+
+  const clean = worktreeJob('clean')
+  expect(await removeJob(clean)).toEqual({ worktreePath: clean.worktree!.worktreePath })
+  expect(existsSync(clean.worktree!.worktreePath)).toBe(false)
+  expect(git(repo, 'branch', '--list', 'worktree-clean')).toBe('')
+
+  const dirty = worktreeJob('dirty')
+  writeFileSync(join(dirty.worktree!.worktreePath, 'new.txt'), 'x')
+  const kept = await removeJob(dirty)
+  expect(kept.kept?.reason).toBe('uncommitted')
+  expect(existsSync(dirty.worktree!.worktreePath)).toBe(true)
+
+  const ahead = worktreeJob('ahead')
+  writeFileSync(join(ahead.worktree!.worktreePath, 'b.txt'), 'b')
+  git(ahead.worktree!.worktreePath, 'add', '-A')
+  git(ahead.worktree!.worktreePath, 'commit', '-qm', 'add b')
+  const refused = await removeJob(ahead)
+  expect(refused.kept?.reason).toBe('unpushed')
+  expect(refused.kept?.detail).toMatch(/^1 unpushed commit on worktree-ahead: [0-9a-f]+ add b$/)
+  // The value the refusal reported discards the commits.
+  expect((await removeJob(ahead, refused.kept!.discard)).kept).toBeUndefined()
+  expect(existsSync(ahead.worktree!.worktreePath)).toBe(false)
+  delete process.env.CLAUDE_CONFIG_DIR
+})

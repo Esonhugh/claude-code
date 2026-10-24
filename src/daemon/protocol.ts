@@ -1,10 +1,10 @@
 import { spawn } from 'child_process'
 import { createHash } from 'crypto'
-import { mkdirSync } from 'fs'
+import { mkdirSync, writeFileSync } from 'fs'
 import { readdir, readFile } from 'fs/promises'
 import { createConnection, type Socket } from 'net'
 import { tmpdir } from 'os'
-import { join } from 'path'
+import { dirname, join } from 'path'
 import { isInBundledMode } from '../utils/bundledMode.js'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 
@@ -20,10 +20,25 @@ export type JobRecord = {
   /** CLI flags without the prompt and session arguments; reused on respawn. */
   args: string[]
   state: JobState
+  /** The worker process, inside the PTY its host owns. */
   pid?: number
+  /** The `--bg-pty-host` process that owns the worker's PTY. */
+  hostPid?: number
+  /** That host's socket: attach, logs, stop and detach talk to it directly. */
+  ptySock?: string
+  /** Set by a worker started with --worktree once it has created the worktree. */
+  worktree?: JobWorktree
   exitCode?: number | null
   createdAt: string
   updatedAt: string
+}
+
+export type JobWorktree = {
+  worktreePath: string
+  worktreeBranch?: string
+  originalCwd: string
+  originalHeadCommit?: string
+  hookBased?: boolean
 }
 
 export type SpawnRequest = {
@@ -40,15 +55,19 @@ export type SpawnRequest = {
 
 export type DaemonRequest =
   | SpawnRequest
-  | { type: 'list' }
   | { type: 'status' }
-  | { type: 'logs'; id: string }
-  | { type: 'stop'; id: string }
   | { type: 'respawn'; id: string; env: Record<string, string> }
-  | { type: 'rm'; id: string }
-  | { type: 'detach'; id: string }
-  | { type: 'shutdown' }
-  | { type: 'attach'; id: string; cols: number; rows: number }
+  | { type: 'shutdown'; reapWorkers: boolean }
+
+/** Requests to one worker's `--bg-pty-host`, on its ptySock. */
+export type PtyHostRequest =
+  | { type: 'attach'; cols: number; rows: number }
+  | { type: 'watch' }
+  | { type: 'screen' }
+  | { type: 'status' }
+  | { type: 'input'; data: string }
+  | { type: 'detach' }
+  | { type: 'stop' }
 
 export type DaemonStatus = {
   pid: number
@@ -57,25 +76,22 @@ export type DaemonStatus = {
   origin: string
   socketPath: string
   running: number
-  attached: number
 }
 
 export type DaemonResponse = {
   ok: boolean
   error?: string
   job?: JobRecord
-  jobs?: JobRecord[]
   status?: DaemonStatus
   text?: string
 }
 
 /** Streamed frames on an attach connection (after the attach request). */
 export type AttachFrame =
-  | { type: 'attached'; job: JobRecord; modes: string }
+  | { type: 'attached'; modes: string }
   | { type: 'output'; data: string }
   | { type: 'detached' }
-  | { type: 'exit'; job: JobRecord }
-  | { type: 'error'; error: string }
+  | { type: 'exit'; state: JobState }
 
 export type AttachClientFrame =
   | { type: 'input'; data: string }
@@ -87,6 +103,10 @@ export function getJobsDir(): string {
 
 export function getJobDir(id: string): string {
   return join(getJobsDir(), id)
+}
+
+export function getPtySockPath(id: string): string {
+  return join(dirname(getControlSocketPath()), 'pty', `${id}.sock`)
 }
 
 export function getDaemonLogPath(): string {
@@ -137,9 +157,9 @@ export function readFrames(socket: Socket, onFrame: (frame: unknown) => void): v
   })
 }
 
-export function connectDaemon(timeoutMs = 1000): Promise<Socket> {
+export function connectDaemon(timeoutMs = 1000, path = getControlSocketPath()): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(getControlSocketPath())
+    const socket = createConnection(path)
     const timer = setTimeout(() => {
       socket.destroy()
       reject(new Error('Timed out connecting to the background service'))
@@ -155,11 +175,23 @@ export function connectDaemon(timeoutMs = 1000): Promise<Socket> {
   })
 }
 
-export async function daemonRequest(
-  request: Exclude<DaemonRequest, { type: 'attach' }>,
-  timeoutMs = 15_000,
-): Promise<DaemonResponse> {
-  const socket = await connectDaemon()
+export function daemonRequest(request: DaemonRequest, timeoutMs = 15_000): Promise<DaemonResponse> {
+  return requestOnce(getControlSocketPath(), request, timeoutMs)
+}
+
+export type PtyHostResponse = { ok: boolean; text?: string; pid?: number; attached?: number }
+
+/** One request to a worker's PTY host; rejects when the host is gone. */
+export function hostRequest(
+  sockPath: string,
+  request: Exclude<PtyHostRequest, { type: 'attach' | 'watch' }>,
+  timeoutMs = 10_000,
+): Promise<PtyHostResponse> {
+  return requestOnce(sockPath, request, timeoutMs)
+}
+
+async function requestOnce<T>(path: string, request: unknown, timeoutMs: number): Promise<T> {
+  const socket = await connectDaemon(1000, path)
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       socket.destroy()
@@ -168,7 +200,7 @@ export async function daemonRequest(
     readFrames(socket, frame => {
       clearTimeout(timer)
       socket.end()
-      resolve(frame as DaemonResponse)
+      resolve(frame as T)
     })
     socket.once('error', error => {
       clearTimeout(timer)
@@ -188,8 +220,9 @@ export async function isDaemonRunning(): Promise<boolean> {
 }
 
 /** Starts the supervisor (`claude daemon run`) detached if it is not answering. */
-export async function ensureDaemon(origin: string): Promise<boolean> {
+export async function ensureDaemon(origin: string, announce = false): Promise<boolean> {
   if (await isDaemonRunning()) return false
+  if (announce) process.stderr.write('Starting background service…\n')
   const [command, ...entry] = getSelfCommand()
   const child = spawn(command!, [...entry, 'daemon', 'run'], {
     detached: true,
@@ -213,24 +246,49 @@ export async function readJobRecords(): Promise<JobRecord[]> {
   }
   const jobs: JobRecord[] = []
   for (const id of ids) {
+    let job: JobRecord
     try {
-      jobs.push(JSON.parse(await readFile(join(getJobDir(id), 'state.json'), 'utf8')) as JobRecord)
+      job = JSON.parse(await readFile(join(getJobDir(id), 'state.json'), 'utf8')) as JobRecord
     } catch {
-      // Not a job directory.
+      continue // Not a job directory.
     }
+    try {
+      job.worktree = JSON.parse(await readFile(join(getJobDir(id), 'worktree.json'), 'utf8')) as JobWorktree
+    } catch {
+      // Not started in a worktree.
+    }
+    // A host killed outright never recorded its worker's end.
+    if (job.state === 'running' && job.hostPid && !isProcessAlive(job.hostPid)) {
+      job.state = 'exited'
+      job.pid = undefined
+      job.hostPid = undefined
+    }
+    jobs.push(job)
   }
   return jobs.sort((a, b) => a.createdAt.localeCompare(b.createdAt))
 }
 
-/** Jobs from the live supervisor, or from disk when it is not running. */
-export async function listJobs(): Promise<JobRecord[]> {
+function isProcessAlive(pid: number): boolean {
   try {
-    const response = await daemonRequest({ type: 'list' }, 3000)
-    if (response.ok && response.jobs) return response.jobs
-  } catch {
-    // Supervisor not running: state files are authoritative.
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
   }
-  return readJobRecords()
+}
+
+/** State files are authoritative: workers outlive the supervisor. */
+export const listJobs = readJobRecords
+
+/** Inside a worker started with --worktree: lets `claude rm` clean the worktree up. */
+export function recordJobWorktree(worktree: JobWorktree): void {
+  const dir = process.env.CLAUDE_JOB_DIR
+  if (!dir) return
+  try {
+    writeFileSync(join(dir, 'worktree.json'), JSON.stringify(worktree, null, 2), { mode: 0o600 })
+  } catch {
+    // Without it `claude rm` leaves the worktree in place.
+  }
 }
 
 /** Resolves an id, id prefix, or part of the session name to one job. */
@@ -249,6 +307,17 @@ export function resolveJob(jobs: JobRecord[], query: string): JobRecord | string
 
 /** Inside a background worker: return attached terminals to their shell. */
 export function detachAttachedClients(): void {
-  const id = process.env.CLAUDE_JOB_ID
-  if (id) void daemonRequest({ type: 'detach', id }).catch(() => {})
+  const sock = process.env.CLAUDE_PTY_SOCK
+  if (sock) void hostRequest(sock, { type: 'detach' }).catch(() => {})
+}
+
+/** Stops a running job through its PTY host; resolves once the worker is gone. */
+export async function stopJob(job: JobRecord): Promise<boolean> {
+  if (!job.ptySock) return false
+  try {
+    const response = await hostRequest(job.ptySock, { type: 'stop' }, 15_000)
+    return response.ok
+  } catch {
+    return false
+  }
 }

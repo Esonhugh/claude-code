@@ -1,15 +1,15 @@
-import { daemonRequest } from '../../daemon/protocol.js'
+import { hostRequest } from '../../daemon/protocol.js'
 import type { LocalJSXCommandCall } from '../../types/command.js'
 import { errorMessage } from '../../utils/errors.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 
 export const call: LocalJSXCommandCall = async onDone => {
-  const id = process.env.CLAUDE_JOB_ID
+  const sock = process.env.CLAUDE_PTY_SOCK
   onDone('Stopping this background session…', { display: 'system' })
   try {
-    // The supervisor records the session as stopped and ends this process.
-    if (id) {
-      const response = await daemonRequest({ type: 'stop', id }, 10_000)
+    // The PTY host records the session as stopped and ends this process.
+    if (sock) {
+      const response = await hostRequest(sock, { type: 'stop' }, 10_000)
       if (response.ok) return null
     }
   } catch (error) {

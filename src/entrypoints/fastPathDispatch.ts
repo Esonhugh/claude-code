@@ -92,6 +92,12 @@ export async function dispatchFastPath(
     return true
   }
 
+  if (feature('BG_SESSIONS') && args[0] === '--bg-pty-host') {
+    const { runPtyHost } = await import('../daemon/ptyHost.js')
+    await runPtyHost(args.slice(1))
+    return true
+  }
+
   if (feature('DAEMON') && args[0] === 'daemon') {
     profileCheckpoint('cli_daemon_path')
     const { enableConfigs } = await import('../utils/config.js')

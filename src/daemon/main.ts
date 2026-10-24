@@ -1,10 +1,13 @@
 import { spawn } from 'child_process'
-import { existsSync } from 'fs'
-import { formatDuration } from '../utils/format.js'
+import { existsSync, statSync } from 'fs'
+import { dirname } from 'path'
 import {
+  type DaemonStatus,
   daemonRequest,
   getControlSocketPath,
   getDaemonLogPath,
+  listJobs,
+  stopJob,
 } from './protocol.js'
 
 const HELP = `Usage: claude daemon [subcommand] [options]
@@ -14,6 +17,8 @@ Service lifecycle:
   status            Show daemon pid, version, uptime
   logs              Tail the daemon log (Ctrl-C to stop)
   stop              Shut down the supervisor and terminate background sessions
+    --any           stop an on-demand daemon (there is no installed service)
+    --keep-workers  leave detached sessions running
 
   The daemon runs on demand (\`claude --bg\`, \`/background\`) and exits when no
   background session is running and no client is connected.
@@ -21,40 +26,106 @@ Service lifecycle:
 Options:
   --help, -h        Show this help`
 
+function daemonLogLine(): string {
+  const log = getDaemonLogPath()
+  try {
+    return `  daemon.log:   ${statSync(log).size}B at ${log}`
+  } catch {
+    return '  daemon.log:   absent'
+  }
+}
+
 export async function getDaemonStatusText(): Promise<string> {
+  const socketPath = getControlSocketPath()
   let response
   try {
     response = await daemonRequest({ type: 'status' }, 2000)
-  } catch {
-    return `not running\nsocket: ${getControlSocketPath()}\nlog:    ${getDaemonLogPath()}`
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? 'failed'
+    const recorded = (await listJobs()).filter(job => job.state === 'running').length
+    return [
+      'not running',
+      '',
+      'bg sessions:',
+      `  sock dir:     ${dirname(socketPath)}`,
+      `  control.sock: unreachable (connect ${code} ${socketPath})`,
+      `  bg workers:   ${recorded} recorded running (control unreachable)`,
+      daemonLogLine(),
+    ].join('\n')
   }
   if (!response.ok || !response.status) return `not running: ${response.error ?? 'no status'}`
   const status = response.status
-  return [
+  const lines = [
     `pid:     ${status.pid}`,
     `version: ${status.version}`,
-    `uptime:  ${formatDuration(Date.now() - status.startedAt)}`,
+    `uptime:  ${Math.floor((Date.now() - status.startedAt) / 1000)}s`,
     `origin:  ${status.origin}`,
-    `socket:  ${status.socketPath}`,
     `log:     ${getDaemonLogPath()}`,
     '',
-    `bg sessions: ${status.running} running, ${status.attached} attached`,
-  ].join('\n')
+    'bg sessions:',
+    `  sock dir:     ${dirname(socketPath)}`,
+    '  control.sock: reachable',
+    `  bg workers:   ${status.running} running (control.sock)`,
+    daemonLogLine(),
+  ]
+  if (status.running > 0) {
+    lines.push(
+      '',
+      'holding this daemon open:',
+      `  ${status.running} bg ${status.running === 1 ? 'worker' : 'workers'} running (daemon waits for them to settle)`,
+      '',
+      'to let it idle-exit: wait for (or cancel) bg workers and close any `claude agents`',
+    )
+  }
+  return lines.join('\n')
 }
 
-export async function stopDaemon(): Promise<string> {
-  let running = 0
+function originKind(origin: string): string {
+  return origin.split(' ')[0] || 'unknown'
+}
+
+/** Ends the background sessions recorded as running whose PTY hosts still answer. */
+async function reapRecordedWorkers(): Promise<number> {
+  const running = (await listJobs()).filter(job => job.state === 'running')
+  const stopped = await Promise.all(running.map(stopJob))
+  return stopped.filter(Boolean).length
+}
+
+/**
+ * `claude daemon stop [--keep-workers]`. The daemon here only ever runs on
+ * demand (no launchd/systemd unit), so, like official, plain `stop` asks for
+ * `--any` before stopping it; the /daemon panel passes any: true.
+ */
+export async function stopDaemon(options: { keepWorkers?: boolean; any?: boolean } = {}): Promise<{ lines: string[]; ok: boolean }> {
+  const keep = options.keepWorkers === true
+  const summary = (n: number) =>
+    keep || n === 0 ? 'stopped' : `stopped (terminated ${n} background ${n === 1 ? 'session' : 'sessions'})`
+  let status: DaemonStatus | undefined
   try {
-    const status = await daemonRequest({ type: 'status' }, 2000)
-    if (!status.ok) return 'daemon is not running'
-    running = status.status?.running ?? 0
-    await daemonRequest({ type: 'shutdown' }, 2000)
+    const response = await daemonRequest({ type: 'status' }, 2000)
+    if (response.ok) status = response.status
   } catch {
-    return 'daemon is not running'
+    // Not running.
   }
-  return running > 0
-    ? `stopped (terminated ${running} background ${running === 1 ? 'session' : 'sessions'})`
-    : 'stopped'
+  if (status && !options.any) {
+    return {
+      ok: false,
+      lines: [
+        `no background service is installed, but a daemon is running (pid=${status.pid}, origin=${originKind(status.origin)}). Run \`claude daemon stop --any\` to stop it.`,
+      ],
+    }
+  }
+  if (status) {
+    const reaped = keep ? 0 : status.running
+    try {
+      await daemonRequest({ type: 'shutdown', reapWorkers: !keep }, 30_000)
+    } catch {
+      // It exits right after answering.
+    }
+    return { ok: true, lines: [summary(reaped), 'note: the next `claude agents` or `claude --bg` will start a new one'] }
+  }
+  const reaped = keep ? 0 : await reapRecordedWorkers()
+  return { ok: true, lines: [reaped === 0 ? 'no daemon running' : summary(reaped)] }
 }
 
 export async function daemonMain(args: string[] = []): Promise<void> {
@@ -65,12 +136,24 @@ export async function daemonMain(args: string[] = []): Promise<void> {
       await runSupervisor()
       return
     }
-    case 'status':
-      process.stdout.write(`${await getDaemonStatusText()}\n`)
+    case 'status': {
+      const text = await getDaemonStatusText()
+      process.stdout.write(`${text}\n`)
+      if (text.startsWith('not running')) process.exitCode = 1
       return
-    case 'stop':
-      process.stdout.write(`${await stopDaemon()}\n`)
+    }
+    case 'stop': {
+      const unknown = args.slice(1).find(arg => arg !== '--keep-workers' && arg !== '--any')
+      if (unknown) {
+        process.stderr.write(`Unknown option "${unknown}" for \`claude daemon stop\`.\n`)
+        process.exitCode = 1
+        return
+      }
+      const result = await stopDaemon({ keepWorkers: args.includes('--keep-workers'), any: args.includes('--any') })
+      ;(result.ok ? process.stdout : process.stderr).write(`${result.lines.join('\n')}\n`)
+      if (!result.ok) process.exitCode = 1
       return
+    }
     case 'logs': {
       const log = getDaemonLogPath()
       if (!existsSync(log)) {
