@@ -75,7 +75,7 @@ bun ./dist/cli.js --help
 |  | [请求韧性：重试、回退模型与默认模型](docs/features/request-resilience.md) | stream idle watchdog、重试上限、无人值守重试、`fallbackModel` 链、`ANTHROPIC_DEFAULT_MODEL` |
 |  | [Effort 档位](docs/features/effort.md) | `none`…`ultracode` 九档 effort，会话、settings、环境变量与 SubAgent 按次指定 |
 |  | [Codex Apps](docs/features/codex-apps.md) | ChatGPT OAuth 下把 Codex Apps 接成 host-owned MCP 工具与 hosted skills，支持 `@codex-app:` mention |
-| Agent 与编排 | [Agent 与后台任务](docs/features/agents.md) | 前台/后台 Agent、续跑、`Explore`/`Plan`、按次 `model`/`effort`、worktree 隔离、子代理权限跟随、`SubagentHandback` |
+| Agent 与编排 | [Agent 与后台任务](docs/features/agents.md) | Claude 把一部分工作交给「子代理」在后台做，你继续聊；可以查看、停止、续跑，也可以自己定义专用子代理 |
 |  | [Agent Teams](docs/features/agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
 |  | [Dynamic Workflow](docs/features/workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
 |  | [背景会话、daemon 与 agents 视图](docs/features/background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
