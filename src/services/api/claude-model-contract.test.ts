@@ -610,6 +610,85 @@ test('deferred tools loaded through ToolSearch never carry cache_control', async
   }
 })
 
+test('gateways keep ToolSearch without the tool_reference beta', async () => {
+  const { z } = await import('zod/v4')
+  const { ToolSearchTool } =
+    await import('../../tools/ToolSearchTool/ToolSearchTool.js')
+  const { clearToolSchemaCache } =
+    await import('../../utils/toolSchemaCache.js')
+  const { createAssistantMessage } = await import('../../utils/messages.js')
+  const { TOOL_SEARCH_BETA_HEADER_1P } = await import('../../constants/betas.js')
+  const previous = process.env.ENABLE_TOOL_SEARCH
+  delete process.env.ENABLE_TOOL_SEARCH
+  clearToolSchemaCache()
+  const tool = (name: string) =>
+    ({
+      name,
+      isMcp: true,
+      inputSchema: z.object({ query: z.string() }),
+      async prompt() {
+        return 'lookup'
+      },
+    }) as unknown as import('../../Tool.js').Tool
+  const discovered = tool('mcp__corp__discovered')
+  const undiscovered = tool('mcp__corp__undiscovered')
+  try {
+    await queryModelWithoutStreaming({
+      messages: [
+        createUserMessage({ content: 'test' }),
+        createAssistantMessage({
+          content: [
+            {
+              type: 'tool_use',
+              id: 'search-1',
+              name: 'ToolSearch',
+              input: { query: 'corp', max_results: 5 },
+            },
+          ],
+        }),
+        createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'search-1',
+              content: [{ type: 'tool_reference', tool_name: discovered.name }],
+            },
+          ] as unknown as Parameters<typeof createUserMessage>[0]['content'],
+        }),
+      ],
+      systemPrompt: asSystemPrompt([]),
+      thinkingConfig: { type: 'disabled' },
+      tools: [ToolSearchTool, discovered, undiscovered],
+      signal: new AbortController().signal,
+      options: {
+        model: 'claude-sonnet-5',
+        querySource: 'repl_main_thread',
+        agents: [],
+        mcpTools: [discovered, undiscovered],
+        hasAppendSystemPrompt: false,
+        isNonInteractiveSession: true,
+        enablePromptCaching: true,
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      },
+    })
+    const request = requests.at(-1)!
+    const tools = request.tools ?? []
+    expect(tools.map(t => ('name' in t ? t.name : undefined))).toEqual([
+      'ToolSearch',
+      discovered.name,
+    ])
+    expect(tools.every(t => !('defer_loading' in t))).toBe(true)
+    expect(requestBetaHeaders.at(-1)).not.toContain(TOOL_SEARCH_BETA_HEADER_1P)
+    const body = JSON.stringify(request.messages)
+    expect(body).not.toContain('tool_reference')
+    expect(body).toContain(`Tool available: ${discovered.name}`)
+  } finally {
+    clearToolSchemaCache()
+    if (previous === undefined) delete process.env.ENABLE_TOOL_SEARCH
+    else process.env.ENABLE_TOOL_SEARCH = previous
+  }
+})
+
 test.each(['low','medium','high','xhigh','max'] as const)('Mods completion sends per-call effort %s at the actual SDK boundary', async effort => {
   const {createModModelComplete}=await import('../mods/modelAdapter.js')
   const {EFFORT_BETA_HEADER}=await import('../../constants/betas.js')
