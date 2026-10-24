@@ -6,15 +6,17 @@
 
 ## 推荐阅读顺序
 
-1. [`guides/build.md`](guides/build.md)：构建、运行、验证和常见问题。
-2. [`guides/secondary-development.md`](guides/secondary-development.md)：恢复源码的二次开发流程与约束。
-3. [`architecture/runtime-internals.md`](architecture/runtime-internals.md)：CLI、REPL、查询循环、工具和 Agent 的入口索引。
-4. 根据目标继续阅读对应的架构、研究或设计文档。
+1. [`features/README.md`](features/README.md)：功能索引，每项功能一个文件。
+2. [`guides/build.md`](guides/build.md)：构建、运行、验证和常见问题。
+3. [`guides/secondary-development.md`](guides/secondary-development.md)：恢复源码的二次开发流程与约束。
+4. [`architecture/runtime-internals.md`](architecture/runtime-internals.md)：CLI、REPL、查询循环、工具和 Agent 的入口索引。
+5. 根据目标继续阅读对应的架构、研究或设计文档。
 
 ## 目录说明
 
 | 目录 | 内容 | 维护方式 |
 | --- | --- | --- |
+| [`features/`](features/README.md) | 每项功能的作用、配置、可选值与终端效果 | 功能行为变化时同步更新 |
 | [`guides/`](guides/) | 面向使用者和开发者的操作指南 | 随当前实现持续更新 |
 | [`architecture/`](architecture/) | 已实现系统的结构、调用链和源码索引 | 代码结构变化时同步更新 |
 | [`research/`](research/) | 二进制分析、兼容性对比和实验结论 | 保留证据边界与分析日期 |
