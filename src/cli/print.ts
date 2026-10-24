@@ -2118,6 +2118,7 @@ function runHeadlessStreaming(
     running = true
     runPhase = undefined
     notifySessionStateChanged('running')
+    udsMessagingModule?.setPeerSessionIdle(false)
     idleTimeout.stop()
 
     headlessProfilerCheckpoint('run_entry')
@@ -2737,6 +2738,7 @@ function runHeadlessStreaming(
       runPhase = 'finally_post_flush'
       if (!isShuttingDown()) {
         notifySessionStateChanged('idle')
+        udsMessagingModule?.setPeerSessionIdle(true)
         // Drain so the idle session_state_changed SDK event (plus any
         // terminal task_notification bookends emitted during bg-agent
         // teardown) reach the output stream before we block on the next

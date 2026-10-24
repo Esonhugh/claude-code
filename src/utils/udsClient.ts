@@ -14,11 +14,14 @@ import {
   formatPeerMessage,
   peerKeyFilename,
   peerRef,
+  PEER_FEATURE_NOTIFY_IDLE,
+  PEER_IDLE_SUBSCRIPTION_CAP,
   PEER_MAX_FRAME_BYTES,
   PEER_TIMEOUT_MS,
   type PeerPermissionClass,
   type PeerMessageStatus,
 } from './peerProtocol.js'
+import { PEER_IDLE_SUBSCRIPTION_MS, type PeerSent } from './peerNotices.js'
 
 export type LiveSessionInfo = {
   pid: number
@@ -170,7 +173,10 @@ export async function sendPeerFrame(path: string, frame: Record<string, unknown>
   })
 }
 
-const pending = new Map<string, { endpoint: string; time: number; status?: PeerMessageStatus }>()
+const pending = new Map<string, { endpoint: string; name?: string; time: number; status?: PeerMessageStatus }>()
+let onStatus: ((status: PeerMessageStatus, sent: PeerSent) => void) | null = null
+
+export function setOnPeerMessageStatus(callback: typeof onStatus): void { onStatus = callback }
 
 export function receivePeerMessageStatus(id: string, from: string, status: PeerMessageStatus): boolean {
   const sent = pending.get(id)
@@ -178,13 +184,86 @@ export function receivePeerMessageStatus(id: string, from: string, status: PeerM
   sent.status = status
   logForDebugging(`[peer-status] msg_id=${id} status=${status}`)
   if (status !== 'held') pending.delete(id)
+  onStatus?.(status, { endpoint: sent.endpoint, name: sent.name, msgId: id })
   return true
+}
+
+type IdleSubscription = { msgId: string; label: string; endpoint: string; sessionId: string; expiry: ReturnType<typeof setTimeout> }
+const idleSubscriptions: IdleSubscription[] = []
+let onIdleExpired: ((label: string) => void) | null = null
+
+export function setOnPeerIdleExpired(callback: typeof onIdleExpired): void { onIdleExpired = callback }
+
+export type PeerIdleSubscribeResult =
+  | { ok: true; peerKnownCapable: boolean }
+  | { ok: false; reason: 'requester-refuses-inbound' | 'no-inbox' | 'self-target' | 'peer-unsupported' | 'cap' | 'peer-gone' | 'send-failed' }
+
+/** Ask a local session for one peer_idle_notice when it next goes idle or exits. */
+export async function subscribePeerIdle(
+  socketPath: string,
+  label: string,
+  fromMode?: PeerPermissionClass,
+): Promise<PeerIdleSubscribeResult> {
+  const { getUdsMessagingSocketPath, getPeerInboundSetting } = await import('./udsMessaging.js')
+  const ownPath = getUdsMessagingSocketPath()
+  if (!ownPath) return { ok: false, reason: 'no-inbox' }
+  if (getPeerInboundSetting() === 'refuse') return { ok: false, reason: 'requester-refuses-inbound' }
+  const endpoint = canonicalPeerEndpoint(socketPath)
+  if (endpoint === canonicalPeerEndpoint(ownPath)) return { ok: false, reason: 'self-target' }
+  const record = (await listAllLiveSessions()).find(peer => peer.messagingSocketPath === endpoint)
+  if (record && !record.peerFeatures?.includes(PEER_FEATURE_NOTIFY_IDLE)) return { ok: false, reason: 'peer-unsupported' }
+  for (let index = idleSubscriptions.length - 1; index >= 0; index--) {
+    if (idleSubscriptions[index]!.sessionId !== getSessionId()) clearTimeout(idleSubscriptions.splice(index, 1)[0]!.expiry)
+  }
+  if (idleSubscriptions.filter(sub => sub.endpoint !== endpoint).length >= PEER_IDLE_SUBSCRIPTION_CAP) return { ok: false, reason: 'cap' }
+  const msgId = randomUUID()
+  const expiry = setTimeout(() => {
+    const index = idleSubscriptions.findIndex(sub => sub.msgId === msgId)
+    if (index === -1) return
+    const [sub] = idleSubscriptions.splice(index, 1)
+    if (sub!.sessionId === getSessionId()) onIdleExpired?.(sub!.label)
+  }, PEER_IDLE_SUBSCRIPTION_MS)
+  expiry.unref?.()
+  idleSubscriptions.push({ msgId, label, endpoint, sessionId: getSessionId(), expiry })
+  try {
+    await sendPeerFrame(endpoint, {
+      msgV: 1, msg_id: msgId, type: 'control', action: 'notify_when_idle',
+      from: formatPeerAddress(ownPath), ...(fromMode ? { from_mode: fromMode } : {}),
+    })
+  } catch (error) {
+    clearTimeout(expiry)
+    idleSubscriptions.splice(idleSubscriptions.findIndex(sub => sub.msgId === msgId), 1)
+    return { ok: false, reason: (error as NodeJS.ErrnoException).code === 'ENOENT' || (error as NodeJS.ErrnoException).code === 'ECONNREFUSED' ? 'peer-gone' : 'send-failed' }
+  }
+  // The receiver keeps one subscription per requester; drop our older ones.
+  for (let index = idleSubscriptions.length - 1; index >= 0; index--) {
+    const sub = idleSubscriptions[index]!
+    if (sub.endpoint === endpoint && sub.msgId !== msgId) clearTimeout(idleSubscriptions.splice(index, 1)[0]!.expiry)
+  }
+  logForDebugging(`[peer-idle] subscribed msg_id=${msgId}`)
+  return { ok: true, peerKnownCapable: record !== undefined }
+}
+
+/** Correlates a peer_idle_notice with an outstanding subscription and consumes it. */
+export function receivePeerIdleNotice(origMsgId: string, from: string | undefined): { label: string } | undefined {
+  const index = idleSubscriptions.findIndex(sub => sub.msgId === origMsgId)
+  if (index === -1) return
+  const sub = idleSubscriptions[index]!
+  if (from !== undefined && formatPeerAddress(sub.endpoint) !== from) return
+  idleSubscriptions.splice(index, 1)
+  clearTimeout(sub.expiry)
+  if (sub.sessionId !== getSessionId()) return
+  return { label: sub.label }
+}
+
+export function clearPeerIdleSubscriptions(): void {
+  for (const sub of idleSubscriptions.splice(0)) clearTimeout(sub.expiry)
 }
 
 export async function sendToUdsSocket(
   socketPath: string,
   message: string,
-  options: { fromMode?: PeerPermissionClass; fromName?: string; fromPlugin?: string; signal?: AbortSignal } = {},
+  options: { fromMode?: PeerPermissionClass; fromName?: string; fromPlugin?: string; toName?: string; signal?: AbortSignal } = {},
 ): Promise<{ msg_id: string }> {
   const { getUdsMessagingSocketPath, getPeerPermissionClass } = await import('./udsMessaging.js')
   const ownPath = getUdsMessagingSocketPath()
@@ -201,7 +280,7 @@ export async function sendToUdsSocket(
   })
   for (const [key, sent] of pending) if (Date.now() - sent.time > 600000) pending.delete(key)
   if (pending.size >= 100) pending.delete(pending.keys().next().value!)
-  pending.set(id, { endpoint, time: Date.now() })
+  pending.set(id, { endpoint, ...(options.toName ? { name: options.toName } : {}), time: Date.now() })
   try {
     await sendPeerFrame(endpoint, { msgV: 1, msg_id: id, type: 'user', message: { role: 'user', content }, priority: 'next', from, ...(options.fromPlugin ? {from_plugin:options.fromPlugin} : {}) }, options.signal)
     logForDebugging(`[uds-client] Sent msg_id=${id} session=${getSessionId()}`)
