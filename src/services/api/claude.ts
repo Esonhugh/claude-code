@@ -1879,6 +1879,13 @@ async function* queryModel(
           type: 'enabled',
         } satisfies BetaMessageStreamParams['thinking']
       }
+      if (thinkingConfig.type !== 'disabled' && thinkingConfig.display) {
+        // 'highlights' is newer than the SDK's display union.
+        thinking = {
+          ...thinking,
+          display: thinkingConfig.display,
+        } as BetaMessageStreamParams['thinking']
+      }
     }
 
     // Get API context management strategies if enabled

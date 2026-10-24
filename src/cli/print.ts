@@ -1597,7 +1597,17 @@ function runHeadlessStreaming(
     }
   }
 
-  async function updateSdkMcp() {
+  // Coalesce concurrent callers (run(), mcp_status, mcp_set_servers) onto one
+  // in-flight setup so the SDK servers are not handshaken twice.
+  let sdkMcpUpdateInFlight: Promise<void> | null = null
+  function updateSdkMcp(): Promise<void> {
+    sdkMcpUpdateInFlight ??= applySdkMcpUpdate().finally(() => {
+      sdkMcpUpdateInFlight = null
+    })
+    return sdkMcpUpdateInFlight
+  }
+
+  async function applySdkMcpUpdate() {
     // Check if SDK MCP servers need to be updated (new servers added or removed)
     const currentServerNames = new Set(Object.keys(sdkMcpConfigs))
     const connectedServerNames = new Set(sdkClients.map(c => c.name))
@@ -3621,9 +3631,17 @@ function runHeadlessStreaming(
           }
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'mcp_status') {
-          sendControlResponseSuccess(message, {
-            mcpServers: buildMcpServerStatuses(),
-          })
+          // Not awaited inline: the SDK server handshake is answered over this
+          // same input loop, so blocking here would deadlock.
+          void updateSdkMcp()
+            .catch(error =>
+              logForDebugging(`mcp_status SDK MCP update failed: ${errorMessage(error)}`),
+            )
+            .then(() =>
+              sendControlResponseSuccess(message, {
+                mcpServers: buildMcpServerStatuses(),
+              }),
+            )
         } else if (message.request.subtype === 'get_context_usage') {
           try {
             const appState = getAppState()
