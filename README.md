@@ -103,7 +103,7 @@ bun ./dist/cli.js --help
 | 插件与扩展 | [插件与 Marketplace](docs/features/plugins-marketplace.md) | `--plugin-dir`/`--plugin-url`、manifest `defaultEnabled`、Esonhugh-Marketplace、热加载与回滚 |
 |  | [MCP 配置与认证](docs/features/mcp.md) | 接入外部工具服务器（数据库、浏览器、内部 API 等）；配置错一条只跳过那一条，`/mcp` 查看状态、重连、登录 |
 |  | [Skills](docs/features/skills.md) | 把一套做事步骤写进 SKILL.md，用 `/名字` 调用，或让 Claude 在合适时自动使用；`/skill-doctor` 找出从没用过却占提示的 skill |
-|  | [Channels](docs/features/channels.md) | `--channels` 让批准的频道插件 / MCP server 把消息推入会话，支持远程工具审批 |
+|  | [Channels](docs/features/channels.md) | 让 Telegram、Discord 或你自己写的 MCP server 把消息推进正在运行的会话，还能在手机上远程批准工具调用 |
 |  | [Mods / Function Hooks](docs/features/mods.md) | 用一个 JS/TS 文件改造 Claude 本身：加命令、拦截或改写工具调用、在界面上加状态条和侧边面板（基线官方 2.1.303） |
 |  | [Mods 远程客户端（stream-json）](docs/features/mods-sdk-client.md) | 给桌面 / IDE 等外部界面用的协议：通过 stream-json 让 Mod 把界面画到你自己的前端上，并把点击、输入传回来 |
 |  | [Agent SDK 与 stream-json 控制协议](docs/features/agent-sdk.md) | 在自己的程序里调用 Claude：官方 Agent SDK（TS / Python）可以直接驱动本 fork 的 CLI；补齐了 SDK 0.3 会用到的控制请求 |
