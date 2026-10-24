@@ -12,6 +12,18 @@
 - `## 2.1.88 base` 是唯一基线条目，固定放在文件末尾，不作为 release note。
 - `bun run check:changelog` 是格式规范的可执行门禁；发布时还会校验 tag 版本与最新发布条目一致。
 
+## 2026-10-24 - VS Code 插件 / Agent SDK：支持 --thinking-display，mcp_status 列出 SDK MCP 服务器
+
+### 变更内容
+
+- 新增隐藏参数 `--thinking-display <summarized|omitted|highlights>`，与官方 2.1.303 一致写入 API 的 `thinking.display`。此前 SDK 设置 `thinking.display` 时 CLI 报 `unknown option` 并以 code 1 退出，VS Code 插件面板无法启动会话（#152）。
+- `mcp_status` 在回应前先完成 SDK MCP 服务器连接，`initialize` 之后、首轮开始前或握手进行中查询时不再返回空列表；并发的 SDK MCP 更新合并为同一次连接，避免重复握手（#152）。
+
+### 测试覆盖
+
+- `src/services/api/claude-model-contract.test.ts` 新增：显式 thinking display 出现在实际请求的 `thinking` 字段，未设置时不出现。
+- `src/cli/print.mcpControl.test.ts` 新增：`initialize` 后立即连续两次 `mcp_status` 都返回已连接的 SDK 服务器，且只建立一次连接。
+
 ## 2026-10-23 - 内建 Mods 扫描结果缓存：第一轮不再重新扫描 agents-md
 
 ### 变更内容
