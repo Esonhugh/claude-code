@@ -24,7 +24,9 @@ const rewriteLink = target => {
   if (!file.includes('/') && files.includes(file)) return pageName(file) + suffix;
   const repoPath = path.posix.normalize(path.posix.join('docs/features', file));
   if (repoPath.startsWith('../')) return target;
-  return `${blobBase}/${repoPath}${suffix}`;
+  // Wiki pages embed images, so those need the raw file rather than the blob page.
+  const base = /\.(png|jpe?g|gif|svg|webp)$/i.test(file) ? blobBase.replace('/blob/', '/raw/') : blobBase;
+  return `${base}/${repoPath}${suffix}`;
 };
 
 fs.mkdirSync(outDir, { recursive: true });

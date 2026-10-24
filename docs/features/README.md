@@ -31,7 +31,7 @@
 |  | [自主 Goal](goal.md) | `/goal` / `SetGoal` 设定目标，Stop hook 检查完成度，可跨 resume 恢复 |
 |  | [快捷键与 Vim 模式](keybindings-vim.md) | `keybindings.json` 热重载、send-now / queue-submit、`Ctrl+J`、Vim `%` 与 VISUAL 模式 |
 |  | [自定义 UI / Branding 与 Status line](branding.md) | `uiName` 改名、`clawd.txt` 自定义 Logo、statusLine 输入含 `goal.active` |
-|  | [/diff 视图](diff-view.md) | 原生 Git diff 与官方内置 diff Mod 接管、语法高亮、面板背景 |
+|  | [/diff 视图](diff-view.md) | 全屏右侧 diff 面板：会话 / 未提交 / 分支三种基准、按轮次回看、把单个文件 diff 附到下一条提示 |
 |  | [调试日志](debugging.md) | `--debug [filter]`、`--debug-file`，全屏 footer 的 Debug 标记 |
 |  | [遥测与反馈](telemetry.md) | Anthropic 一方遥测默认关闭；`/feedback` 与问卷跟随开关；OTel `tool_decision` 带权限模式 |
 | 远程执行 | [Direct Connect](direct-connect.md) | `claude server` 在执行端起 session server，本地用 `cc://host:port/token` 连接 |

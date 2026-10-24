@@ -4,38 +4,186 @@
 
 ## 作用与效果
 
-`/diff` 查看未提交变更。启动时校验并加载内嵌的官方 `cc-plugin-diff` 2.1.295 Worker 接管该命令；未接管时用原生视图（终端 ≥ 110 列且没有可见 Mods dock 时用右侧 sidebar，否则 dialog）。新增代码保留语法颜色与词级差异背景。
+`/diff` 查看代码变更。启动时校验并加载内嵌的官方 `cc-plugin-diff` 2.1.295 Mod 接管该命令，它在全屏模式下把变更显示在聊天右侧的常驻面板里，Claude 每次编辑后自动刷新；再次执行 `/diff` 隐藏面板（`Diff panel shown` / `Diff panel hidden`）。
+
+两种呈现方式：
+
+| 条件 | 呈现 |
+| --- | --- |
+| 全屏（`CLAUDE_CODE_NO_FLICKER=1`）且终端 ≥ 110 列 | 右侧 dock 面板，下文所有进阶功能都在这里 |
+| 全屏但终端 < 110 列 | 面板位置显示 `Resize your terminal to at least 110 columns to show the diff panel` |
+| 非全屏，或停用了 diff Mod | 原生对话框 `Uncommitted changes (git diff HEAD)`，↑/↓ 选文件、Enter 看详情、Esc 关闭 |
+
+新增代码保留语法颜色与词级差异背景。
 
 ## 配置
 
 | 配置项 | 位置 | 可选值 | 说明 |
 | --- | --- | --- | --- |
-| `enabledPlugins["cc-plugin-diff@builtin"]` | settings | `false` | 停用官方 diff Mod（旧键 `diff@builtin` 仍可用） |
+| `CLAUDE_CODE_NO_FLICKER` | 环境变量 | `1` | 全屏渲染；diff 面板只在全屏下出现 |
+| `enabledPlugins["cc-plugin-diff@builtin"]` | settings | `false` | 停用官方 diff Mod，回到原生对话框（旧键 `diff@builtin` 仍可用） |
 | `syntaxHighlightingDisabled` / `CLAUDE_CODE_SYNTAX_HIGHLIGHT` | settings / 环境变量 | `true` / `0` | 关闭语法高亮 |
+| `app:cycleDiffBase` | `~/.claude/keybindings.json`（Global） | 默认 `ctrl+x b` | 切换比较基准 |
+| `app:diffFileListUp` / `app:diffFileListDown` | 同上 | 默认 `ctrl+up` / `ctrl+down`，`meta+up` / `meta+down` | 在面板文件列表中移动 |
+| `pane:close` | 同上（Pane 上下文） | 默认 `ctrl+x x` | 焦点在面板内时关闭面板 |
+
+## 操作方式
+
+| 操作 | 效果 |
+| --- | --- |
+| `/diff` | 显示 / 隐藏面板 |
+| `ctrl+x b` | 在「本会话」→「未提交（vs HEAD）」→「分支 vs 默认分支」之间循环 |
+| `ctrl+x Tab` | 焦点从输入框依次进入 Mods 面板；面板内 Tab / Shift+Tab 在按钮间移动，Enter 触发 |
+| 鼠标点击 | `(show)` / `(hide)`、`[ ask ]`、`source:` 下拉框、右上角 `✕` 都可直接点击 |
+| `/clear`、`/resume` | 面板随会话切换重新计算 |
 
 ## 效果
 
+以下画面均为 160×42 tmux 中实拍：仓库默认分支 `master`，当前在 `feature/health`（比 master 多一个提交改了 `src/util.ts`）；会话开始前已手动改了 `README.md`；第 1 轮 Claude 编辑 `server.ts` 并新建 `tests/server.test.ts`、`dist/app.min.js`，第 2 轮再改 `server.ts`。左侧对话里的 `DO<<…>>` 是测试用假 API 的脚本指令；文本画面中的临时目录已替换为 `/home/user/demo1`。
+
+### 默认：本会话的变更
+
+只统计本会话里改过的文件。测试与生成文件（`/tests/`、`.test.`、`.min.`、`.bundle.`、`.generated.`、`/__snapshots__/`、lock 文件等）默认折叠为 `2 tests/generated (show)`；会话开始前就存在的改动折叠为 `+1 file edited before this session (show)`。
+
+![本会话 diff 面板](images/diff-view-session.png)
+
 ```text
- ▐▛███▜▌     EsonClaw v2.1.292
-▝▜█████▛▘    Opus 5.5 · API Usage Billing
-  ▘▘ ▝▝      ~/work
-╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────✕─╮
-│ Uncommitted changes (git diff HEAD)                                                                                                                │
-│                                                                                                                                                    │
-│ 4 files changed +1                                                                                                                                 │
-│                                                                                                                                                    │
-│ ❯ .claude/scheduled_tasks.lock                                                                                                           untracked │
-│   .claude/skills/deploy-notes/SKILL.md                                                                                                   untracked │
-│   .claude/skills/lint-fixer/SKILL.md                                                                                                     untracked │
-│   app.js                                                                                                                                        +1 │
-│                                                                                                                                                    │
-│ ↑/↓ to select · Enter to view · Esc to close                                                                                                       │
-╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-❯ 
-──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-  ? for shortcuts
+                                                                     ✕
+3 files changed +5 -1                                source: Current ▾
+
+server.ts                                                        +5 -1
+2 tests/generated (show)
+
+──────────────────────────────────────────────────────────────────────
+server.ts                                                      [ ask ]
+──────────────────────────────────────────────────────────────────────
+  1  import { createServer } from 'node:http'
+  2
+  3 -const port = 3000
+  3 +const port = Number(process.env.PORT ?? 3000)
+  4
+  5  createServer((req, res) => {
+  6 +  if (req.url === '/health') {
+  7 +    res.writeHead(200, { 'content-type': 'application/json' })
+  8 +    return res.end(JSON.stringify({ status: 'up' }))
+  9 +  }
+ 10    res.end('ok')
+ 11  }).listen(port)
+
++1 file edited before this session (show)
 ```
+
+点 `2 tests/generated (show)` 展开被折叠的文件；未暂存的新文件只给提示，不计行数：
+
+```text
+                                                                     ✕
+3 files changed +5 -1                                source: Current ▾
+
+dist/app.min.js
+server.ts                                                        +5 -1
+tests/server.test.ts
+2 tests/generated (hide)
+
+──────────────────────────────────────────────────────────────────────
+dist/app.min.js (untracked)
+──────────────────────────────────────────────────────────────────────
+New file not yet staged.
+Run `git add :/dist/app.min.js` to see line counts.
+```
+
+点 `+1 file edited before this session (show)`，会话前的改动接在下方：
+
+```text
++1 file edited before this session (hide)
+
+README.md                                                        +1 -1
+──────────────────────────────────────────────────────────────────────
+README.md                                                      [ ask ]
+──────────────────────────────────────────────────────────────────────
+ 1  # demo
+ 2
+ 3 -A tiny server.
+ 3 +A tiny server with a health check.
+ 4
+```
+
+### 切换比较基准（`ctrl+x b`）
+
+第一行下方显示当前基准。`uncommitted (vs HEAD)` 把会话前的 `README.md` 一并算入（4 files changed +6 -2）；`branch vs master` 再加上分支提交里的 `src/util.ts`（与 `master` 的 merge-base 比较）：
+
+![分支基准](images/diff-view-branch.png)
+
+```text
+                                                                     ✕
+5 files changed +7 -2                                source: Current ▾
+branch vs master
+
+README.md                                                        +1 -1
+server.ts                                                        +5 -1
+src/util.ts                                                         +1
+2 tests/generated (show)
+```
+
+默认分支按 `origin/HEAD` 识别，没有时依次尝试常见名称（需存在对应的 `origin/<name>`）。当前就在默认分支或没有远端时显示 `vs HEAD (no base branch)`；仓库还没有提交时标题变为 `Staged and new files (no commits yet)`。
+
+### 按轮次回看（`source:`）
+
+`source: Current ▾` 下拉框列出每一轮的快照 `T1`、`T2`…，选中后只看那一轮 Claude 改了什么，标题下显示该轮提示的开头：
+
+![按轮次查看](images/diff-view-turn.png)
+
+```text
+                                                                     ✕
+3 files changed +10                                       source: T1 ▾
+Turn 1 "add a health endpoint DO<<Rea…"
+
+/home/user/demo1/server.ts                                          +4
+/home/user/demo1/tests/server.test.ts                               +4
+/home/user/demo1/dist/app.min.js                                    +2
+
+──────────────────────────────────────────────────────────────────────
+/home/user/demo1/server.ts                                     [ ask ]
+──────────────────────────────────────────────────────────────────────
+  3  const port = 3000
+  4
+  5  createServer((req, res) => {
+  6 +  if (req.url === '/health') {
+  7 +    res.writeHead(200, { 'content-type': 'application/json' })
+  8 +    return res.end(JSON.stringify({ status: 'up' }))
+  9 +  }
+ 10    res.end('ok')
+ 11  }).listen(port)
+```
+
+### 把单个文件的 diff 附到下一条提示（`[ ask ]`）
+
+每个文件标题右侧的 `[ ask ]` 变成 `[ asked ✓ ]` 后，该文件的 diff 会随下一条提示一起发给模型，底部提示 `server.ts rides your next prompt (press asked ✓ to drop it)`；再点一次取消。发送后按钮恢复为 `[ ask ]`。diff 过长时截断并注明 `(The rest of this diff was cut: it did not fit in the prompt.)`。
+
+![ask 按钮](images/diff-view-ask.png)
+
+### 窄终端
+
+```text
+╭────────────────────────────────────────────────────────────────────────────────────────────────✕─╮
+│ Resize your terminal to at least 110 columns to show the diff panel                              │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+### 大变更与特殊仓库状态
+
+以下行为来自 Mod 源码，没有单独实拍：
+
+- 变更超过 20 个文件时只列文件，不展开 diff（`diffs hidden above 20 files`）。
+- 超过 500 个文件时不再逐文件计算（`Per-file diff is skipped above 500 files`）。
+- rebase / merge / cherry-pick / revert 进行中时按对应的 HEAD 计算基准。
+
+## 已知问题
+
+实拍时观察到、尚未修复：
+
+- 展开 `source:` 下拉框时，各选项被画在同一行上互相覆盖（例如显示为 `T1rrent2 ▴`），仍可用 ↑/↓ + Enter 选择。
+- 按轮次查看时文件显示为绝对路径，且以换行结尾的新文件多出一行空的 `+` 行（3 行文件显示 `+4`）。
+- 按轮次查看时不折叠测试与生成文件。
 
 ## 详细说明
 
