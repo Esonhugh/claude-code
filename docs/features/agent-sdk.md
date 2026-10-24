@@ -66,7 +66,8 @@ result success FAKE_DONE
 - 补齐 SDK 0.3 会调用的控制请求：`reload_skills`、`reload_output_styles`、`read_file`（按 Read 工具的权限判断）、`update_settings`（只接受官方白名单内的设置）、`mcp_read_resource`（只读 `ui://`）。
 - 接受 `string[]` 形式的 `systemPrompt`（TS SDK 默认发送 `[""]`）。
 - `set_model`、`set_permission_mode` 对非法值返回错误码，而不是静默接受。
-- 尚未实现：`background_tasks`、`set_mcp_permission_mode_override`、后台子代理消息的 `parent_tool_use_id` 流式转发。
+- VS Code 插件面板用到的控制请求（`get_status`、`get_usage`、`background_tasks` 等）见 [vscode-extension.md](vscode-extension.md)。
+- 尚未实现：`set_mcp_permission_mode_override`、后台子代理消息的 `parent_tool_use_id` 流式转发。
 
 想把 [Mods](mods.md) 的界面画到自己的前端，见 [mods-sdk-client.md](mods-sdk-client.md)。
 
