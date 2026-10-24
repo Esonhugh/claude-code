@@ -20,6 +20,7 @@ import {
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
+import { checkLinuxDependencies } from '@anthropic-ai/sandbox-runtime/dist/sandbox/linux-sandbox-utils.js'
 import { existsSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
@@ -161,6 +162,32 @@ export function shouldAllowManagedSandboxDomainsOnly(): boolean {
   )
 }
 
+// Sources the repo cannot write: settings that loosen the sandbox or hand it
+// credentials are only honored from these. Highest priority first.
+const TRUSTED_SANDBOX_SOURCES = [
+  'policySettings',
+  'flagSettings',
+  'userSettings',
+] as const
+
+function trustedSandboxValue<T>(
+  pick: (sandbox: NonNullable<SettingsJson['sandbox']>) => T | undefined,
+): T | undefined {
+  for (const source of TRUSTED_SANDBOX_SOURCES) {
+    const sandbox = getSettingsForSource(source)?.sandbox
+    const value = sandbox ? pick(sandbox) : undefined
+    if (value !== undefined) return value
+  }
+  return undefined
+}
+
+function isUnsandboxedFallbackLocked(): boolean {
+  return (['policySettings', 'flagSettings'] as const).some(
+    source =>
+      getSettingsForSource(source)?.sandbox?.allowUnsandboxedCommands === false,
+  )
+}
+
 function shouldAllowManagedReadPathsOnly(): boolean {
   return (
     getSettingsForSource('policySettings')?.sandbox?.filesystem
@@ -200,8 +227,15 @@ export function convertToSandboxRuntimeConfig(
       }
     }
   } else {
-    for (const domain of settings.sandbox?.network?.allowedDomains || []) {
-      allowedDomains.push(domain)
+    // Under a strict allowlist the repo's own settings cannot extend it.
+    const strict = trustedSandboxValue(sb => sb.network?.strictAllowlist)
+    for (const source of SETTING_SOURCES) {
+      if (strict && (source === 'projectSettings' || source === 'localSettings')) {
+        continue
+      }
+      allowedDomains.push(
+        ...(getSettingsForSource(source)?.sandbox?.network?.allowedDomains ?? []),
+      )
     }
     for (const ruleString of permissions.allow || []) {
       const rule = permissionRuleValueFromString(ruleString)
@@ -223,6 +257,7 @@ export function convertToSandboxRuntimeConfig(
       deniedDomains.push(rule.ruleContent.substring('domain:'.length))
     }
   }
+  deniedDomains.push(...(settings.sandbox?.network?.deniedDomains ?? []))
 
   // Extract filesystem paths from Edit and Read rules
   // Always include current directory and Claude temp directory as writable
@@ -376,12 +411,50 @@ export function convertToSandboxRuntimeConfig(
   }
   // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
+  // Project settings cannot swap the binary the sandbox runs.
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
-  const ripgrepConfig = settings.sandbox?.ripgrep ?? {
+  const ripgrepConfig = trustedSandboxValue(sb => sb.ripgrep) ?? {
     command: rgPath,
     args: rgArgs,
     argv0,
   }
+
+  // An admin who deployed filesystem restrictions must not have them switched
+  // off by a user-writable file.
+  const policySandbox = getSettingsForSource('policySettings')?.sandbox
+  const filesystemDisabled =
+    policySandbox?.filesystem !== undefined ||
+    policySandbox?.credentials?.files?.some(f => f.mode === 'deny')
+      ? policySandbox?.filesystem?.disabled
+      : trustedSandboxValue(sb => sb.filesystem?.disabled)
+
+  const credentialFiles: NonNullable<
+    NonNullable<SandboxRuntimeConfig['credentials']>['files']
+  > = []
+  const credentialEnvVars: NonNullable<
+    NonNullable<SandboxRuntimeConfig['credentials']>['envVars']
+  > = []
+  // The repo may add deny entries; mask entries (real values injected at the
+  // proxy) only come from trusted sources.
+  for (const source of SETTING_SOURCES) {
+    const trusted = (TRUSTED_SANDBOX_SOURCES as readonly string[]).includes(
+      source,
+    )
+    const credentials = getSettingsForSource(source)?.sandbox?.credentials
+    for (const file of credentials?.files ?? []) {
+      if (trusted || file.mode === 'deny') {
+        credentialFiles.push({
+          ...file,
+          path: resolveSandboxFilesystemPath(file.path, source),
+        })
+      }
+    }
+    credentialEnvVars.push(
+      ...(credentials?.envVars ?? []).filter(v => trusted || v.mode === 'deny'),
+    )
+  }
+  const hasCredentials =
+    credentialFiles.length > 0 || credentialEnvVars.length > 0
 
   return {
     network: {
@@ -390,20 +463,49 @@ export function convertToSandboxRuntimeConfig(
       allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
       allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
       allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
-      httpProxyPort: settings.sandbox?.network?.httpProxyPort,
-      socksProxyPort: settings.sandbox?.network?.socksProxyPort,
+      // The repo cannot route traffic around a managed deny list or a locked sandbox.
+      ...(policySandbox?.network?.deniedDomains?.length ||
+      isUnsandboxedFallbackLocked()
+        ? {
+            httpProxyPort: trustedSandboxValue(sb => sb.network?.httpProxyPort),
+            socksProxyPort: trustedSandboxValue(
+              sb => sb.network?.socksProxyPort,
+            ),
+          }
+        : {
+            httpProxyPort: settings.sandbox?.network?.httpProxyPort,
+            socksProxyPort: settings.sandbox?.network?.socksProxyPort,
+          }),
+      allowMachLookup: settings.sandbox?.network?.allowMachLookup,
+      strictAllowlist: trustedSandboxValue(sb => sb.network?.strictAllowlist),
+      tlsTerminate: trustedSandboxValue(sb => sb.network?.tlsTerminate),
     },
     filesystem: {
       denyRead,
       allowRead,
       allowWrite,
       denyWrite,
+      disabled: filesystemDisabled,
     },
+    ...(hasCredentials && {
+      credentials: {
+        files: credentialFiles,
+        envVars: credentialEnvVars,
+        allowPlaintextInject: trustedSandboxValue(
+          sb => sb.credentials?.allowPlaintextInject,
+        ),
+        awsPairs: trustedSandboxValue(sb => sb.credentials?.awsPairs),
+        sigv4: trustedSandboxValue(sb => sb.credentials?.sigv4),
+      },
+    }),
     ignoreViolations: settings.sandbox?.ignoreViolations,
     enableWeakerNestedSandbox: settings.sandbox?.enableWeakerNestedSandbox,
     enableWeakerNetworkIsolation:
       settings.sandbox?.enableWeakerNetworkIsolation,
+    allowAppleEvents: settings.sandbox?.allowAppleEvents,
     ripgrep: ripgrepConfig,
+    bwrapPath: policySandbox?.bwrapPath,
+    socatPath: policySandbox?.socatPath,
   }
 }
 
@@ -488,10 +590,26 @@ async function detectWorktreeMainRepoPath(cwd: string): Promise<string | null> {
  */
 const checkDependencies = memoize((): SandboxDependencyCheck => {
   const { rgPath, rgArgs } = ripgrepCommand()
-  return BaseSandboxManager.checkDependencies({
+  const result = BaseSandboxManager.checkDependencies({
     command: rgPath,
     args: rgArgs,
   })
+  const { bwrapPath, socatPath } =
+    getSettingsForSource('policySettings')?.sandbox ?? {}
+  const platform = getPlatform()
+  if ((!bwrapPath && !socatPath) || (platform !== 'linux' && platform !== 'wsl')) {
+    return result
+  }
+  // The runtime only reads binary overrides from an initialized config, so
+  // swap its PATH-based bwrap/socat findings for ones against the overrides.
+  const onPath = checkLinuxDependencies({})
+  return {
+    errors: [
+      ...result.errors.filter(e => !onPath.errors.includes(e)),
+      ...checkLinuxDependencies({ bwrapPath, socatPath }).errors,
+    ],
+    warnings: result.warnings,
+  }
 })
 
 function getSandboxEnabledSetting(): boolean {
@@ -742,12 +860,7 @@ function getExcludedCommands(): string[] {
   const excluded = settings?.sandbox?.excludedCommands ?? []
   // Under an admin-locked sandbox the repo's own settings cannot exempt commands.
   const locked =
-    shouldAllowManagedSandboxDomainsOnly() ||
-    (['policySettings', 'flagSettings'] as const).some(
-      source =>
-        getSettingsForSource(source)?.sandbox?.allowUnsandboxedCommands ===
-        false,
-    )
+    shouldAllowManagedSandboxDomainsOnly() || isUnsandboxedFallbackLocked()
   if (!locked) {
     return excluded
   }

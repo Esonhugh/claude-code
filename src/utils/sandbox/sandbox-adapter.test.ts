@@ -163,4 +163,95 @@ if (process.env[childFlag] !== '1') {
     }
     expect(seen).toBe(`/tmp/claude-${process.getuid!()}`)
   })
+
+  test('new sandbox settings reach the runtime only from trusted sources', () => {
+    const all = [
+      'userSettings',
+      'projectSettings',
+      'localSettings',
+      'flagSettings',
+      'policySettings',
+    ] as const
+    const set = (m: Partial<Record<(typeof all)[number], object>>) => {
+      for (const source of all) {
+        setCachedSettingsForSource(
+          source,
+          m[source] ? { sandbox: m[source] } : null,
+        )
+      }
+    }
+    try {
+      set({
+        userSettings: {
+          network: { allowedDomains: ['user.example'] },
+          credentials: {
+            envVars: [{ name: 'GH_TOKEN', mode: 'deny' }],
+            files: [{ path: '~/.netrc', mode: 'deny' }],
+          },
+        },
+        projectSettings: {
+          network: {
+            allowedDomains: ['repo.example'],
+            strictAllowlist: false,
+            deniedDomains: ['bad.example'],
+          },
+          ripgrep: { command: '/repo/rg' },
+          filesystem: { disabled: true },
+          credentials: {
+            envVars: [
+              { name: 'REPO_DENY', mode: 'deny' },
+              { name: 'REPO_MASK', mode: 'mask' },
+            ],
+          },
+        },
+        flagSettings: { network: { strictAllowlist: true } },
+        policySettings: { bwrapPath: '/opt/bwrap', socatPath: '/opt/socat' },
+      })
+      const config = convertToSandboxRuntimeConfig({
+        sandbox: { network: { deniedDomains: ['bad.example'] } },
+      })
+      expect(config.network.strictAllowlist).toBe(true)
+      expect(config.network.allowedDomains).toEqual(['user.example'])
+      expect(config.network.deniedDomains).toContain('bad.example')
+      expect(config.ripgrep?.command).not.toBe('/repo/rg')
+      expect(config.filesystem.disabled).toBeUndefined()
+      expect(config.credentials?.envVars).toEqual([
+        { name: 'GH_TOKEN', mode: 'deny' },
+        { name: 'REPO_DENY', mode: 'deny' },
+      ])
+      expect(config.credentials?.files?.[0]?.path).toBe(
+        join(process.env.HOME!, '.netrc'),
+      )
+      expect(config.bwrapPath).toBe('/opt/bwrap')
+      expect(config.socatPath).toBe('/opt/socat')
+
+      set({
+        userSettings: { filesystem: { disabled: true } },
+        projectSettings: { network: { allowedDomains: ['repo.example'] } },
+      })
+      const loose = convertToSandboxRuntimeConfig({})
+      expect(loose.filesystem.disabled).toBe(true)
+      expect(loose.network.allowedDomains).toEqual(['repo.example'])
+      expect(loose.credentials).toBeUndefined()
+      expect(loose.bwrapPath).toBeUndefined()
+
+      set({
+        userSettings: { filesystem: { disabled: true } },
+        policySettings: { filesystem: { denyRead: ['/secret'] } },
+      })
+      expect(convertToSandboxRuntimeConfig({}).filesystem.disabled).toBeUndefined()
+
+      set({
+        projectSettings: { network: { httpProxyPort: 9999 } },
+        flagSettings: { allowUnsandboxedCommands: false },
+      })
+      expect(
+        convertToSandboxRuntimeConfig({
+          sandbox: { network: { httpProxyPort: 9999 } },
+        }).network.httpProxyPort,
+      ).toBeUndefined()
+    } finally {
+      set({})
+    }
+  })
 }
