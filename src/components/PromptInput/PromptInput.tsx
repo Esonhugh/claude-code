@@ -214,7 +214,7 @@ import {
   resolveCoordinatorSelection,
   useCoordinatorTaskCount,
 } from '../CoordinatorAgentStatus.js'
-import { getEffortNotificationText } from '../EffortIndicator.js'
+import { effortNotification, getEffortNotificationText } from '../EffortIndicator.js'
 import { getFastIconString } from '../FastIcon.js'
 import { GlobalSearchDialog } from '../GlobalSearchDialog.js'
 import { HistorySearchDialog } from '../HistorySearchDialog.js'
@@ -2793,12 +2793,7 @@ function PromptInput({
       removeNotification('effort-level')
       return
     }
-    addNotification({
-      key: 'effort-level',
-      text: effortNotificationText,
-      priority: 'high',
-      timeoutMs: 12_000,
-    })
+    addNotification(effortNotification(effortNotificationText))
   }, [effortNotificationText, addNotification, removeNotification])
 
   useBuddyNotification()
