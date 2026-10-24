@@ -38,7 +38,7 @@
 |  | [SSH Remote](ssh-remote.md) | `claude ssh <host> [dir]` 在远端 Linux 跑 child 与工具，本地渲染 TUI，凭据只在本地 proxy 注入 |
 | 插件与扩展 | [插件与 Marketplace](plugins-marketplace.md) | `--plugin-dir`/`--plugin-url`、manifest `defaultEnabled`、Esonhugh-Marketplace、热加载与回滚 |
 |  | [MCP 配置与认证](mcp.md) | 逐 server 校验、`timeout`/`alwaysLoad`/`oauth.scopes`、`claude mcp login/logout`、`/mcp reconnect all` |
-|  | [Skills](skills.md) | bundled / user / project / plugin skills、`/reload-skills`、`context: fork` 指定 agent、`/skill-doctor` |
+|  | [Skills](skills.md) | 把一套做事步骤写进 SKILL.md，用 `/名字` 调用，或让 Claude 在合适时自动使用；`/skill-doctor` 找出从没用过却占提示的 skill |
 |  | [Channels](channels.md) | `--channels` 让批准的频道插件 / MCP server 把消息推入会话，支持远程工具审批 |
 |  | [Mods / Function Hooks](mods.md) | 可信插件经 `hooks/modules` 接入生命周期、tool/prompt/turn middleware、动态命令与终端 Pane（基线官方 2.1.303） |
 |  | [Mods 远程客户端（stream-json）](mods-sdk-client.md) | SDK 父进程启动时传入插件、远程绘制 / 焦点 / 滚动 / 草稿编辑协议 |
