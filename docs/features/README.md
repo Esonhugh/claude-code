@@ -1,6 +1,6 @@
 # 功能文档索引
 
-每个功能一个文件，内容依次为：名称、作用与效果、配置（位置、可选值、默认值）、效果（终端画面），以及从原 README 迁入的详细说明。
+每个功能一个文件：先用白话说明它是什么、什么时候用，再分步演示怎么用（附终端截图或实际输出），最后是配置、按键和已知问题。部分文件末尾保留了从原 README 迁入的详细参考。
 
 效果画面来自 dev 分支重新构建的 `./built-claude`（`make build`），在 110×36 的 tmux pane 中实际运行后用 `tmux capture-pane` 截取。模型请求打到本地脚本化的假 Messages API（回复固定为 `FAKE_DONE`，提示词里的 `DO<<Tool|{json}>>` 让它发出对应工具调用），因此画面中的模型回复不代表真实模型输出；临时目录路径已缩写为 `~/work` 与 `~`，并去掉了与功能无关的安装提示行。
 
@@ -12,8 +12,8 @@
 |  | [Effort 档位](effort.md) | `none`…`ultracode` 九档 effort，会话、settings、环境变量与 SubAgent 按次指定 |
 |  | [Codex Apps](codex-apps.md) | ChatGPT OAuth 下把 Codex Apps 接成 host-owned MCP 工具与 hosted skills，支持 `@codex-app:` mention |
 | Agent 与编排 | [Agent 与后台任务](agents.md) | 前台/后台 Agent、续跑、`Explore`/`Plan`、按次 `model`/`effort`、worktree 隔离、子代理权限跟随、`SubagentHandback` |
-|  | [Agent Teams](agent-teams.md) | Team / teammate / 共享任务，需 `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` 或 `--agent-teams` |
-|  | [Dynamic Workflow](workflows.md) | official-compatible Workflow 工具：script/plan/saved workflow、parallel/pipeline、journal、暂停恢复 |
+|  | [Agent Teams](agent-teams.md) | 让 Claude 组一个小团队：一个负责人带几个队友并行干活，互相发消息、共享任务清单 |
+|  | [Dynamic Workflow](workflows.md) | 让 Claude 写一段编排脚本，一次调度多个子 Agent 分阶段、并行地干活；`/workflows` 看进度、保存成可复用的流程 |
 |  | [背景会话、daemon 与 agents 视图](background-sessions.md) | 把任务交给后台跑、终端立刻空出来；`claude agents` 一屏看谁在等你、谁在干活、谁做完了 |
 |  | [独立会话通信](peer-messaging.md) | 同机独立 CLI 会话经 UDS / named pipe 互发纯文本，`ListAgents` / `SendMessage` / `/peers` |
 | 权限与安全 | [权限规则、权限模式与 Safe mode](permissions.md) | `Tool(param:value)` 规则、通配、受保护路径、Manual/Plan/bypass 闸门、`--safe-mode`、`--permission-prompts none` |
