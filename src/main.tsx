@@ -471,6 +471,7 @@ import {
 } from './utils/teleport.js'
 import {
   shouldEnableThinkingByDefault,
+  THINKING_DISPLAYS,
   type ThinkingConfig,
 } from './utils/thinking.js'
 import { initUser, resetUserCache } from './utils/user.js'
@@ -1426,6 +1427,14 @@ async function run(): Promise<CommanderCommand> {
         'Thinking mode: enabled (equivalent to adaptive), disabled',
       )
         .choices(['enabled', 'adaptive', 'disabled'])
+        .hideHelp(),
+    )
+    .addOption(
+      new Option(
+        '--thinking-display <display>',
+        'How thinking content appears in the response',
+      )
+        .choices(THINKING_DISPLAYS)
         .hideHelp(),
     )
     .addOption(
@@ -3607,6 +3616,9 @@ async function run(): Promise<CommanderCommand> {
             thinkingConfig = { type: 'disabled' }
           }
         }
+      }
+      if (options.thinkingDisplay && thinkingConfig.type !== 'disabled') {
+        thinkingConfig = { ...thinkingConfig, display: options.thinkingDisplay }
       }
 
       logForDiagnosticsNoPII('info', 'started', {

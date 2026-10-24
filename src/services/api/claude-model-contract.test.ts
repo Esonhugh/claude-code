@@ -2106,6 +2106,18 @@ test.each([
   },
 )
 
+test.each([
+  ['claude-opus-4-8', { type: 'adaptive', display: 'summarized' }, { type: 'adaptive', display: 'summarized' }],
+  ['claude-opus-4-8', { type: 'adaptive', display: 'omitted' }, { type: 'adaptive', display: 'omitted' }],
+  ['claude-opus-4-8', { type: 'adaptive' }, { type: 'adaptive' }],
+  ['claude-sonnet-4-5', { type: 'enabled', budgetTokens: 2048, display: 'summarized' }, { type: 'enabled', budget_tokens: 2048, display: 'summarized' }],
+] as const)(
+  '%s sends an explicit thinking display (--thinking-display) on the wire: %j',
+  async (model, thinkingConfig, expected) => {
+    expect((await query(model, thinkingConfig)).thinking).toEqual(expected)
+  },
+)
+
 test('Sonnet 5.5 uses between-tools reasoning when thinking is disabled', async () => {
   const request = await query('claude-sonnet-5-5', { type: 'disabled' })
   expect(request.thinking as unknown).toEqual({ type: 'between_tools' })
