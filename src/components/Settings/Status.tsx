@@ -72,16 +72,16 @@ export function buildPrimarySection(openAIUtilization?: Utilization | null): Pro
   ]
 }
 
-function buildSecondarySection({
+export function buildSecondarySection({
   mainLoopModel,
   mcp,
   theme,
-  context,
+  ideInstallationStatus,
 }: {
   mainLoopModel: AppState['mainLoopModel']
   mcp: AppState['mcp']
   theme: ThemeName
-  context: LocalJSXCommandContext
+  ideInstallationStatus: LocalJSXCommandContext['options']['ideInstallationStatus']
 }): Property[] {
   const modelLabel = getModelDisplayLabel(mainLoopModel)
 
@@ -89,7 +89,7 @@ function buildSecondarySection({
     { label: 'Model', value: modelLabel },
     ...buildIDEProperties(
       mcp.clients,
-      context.options.ideInstallationStatus,
+      ideInstallationStatus,
       theme,
     ),
     ...buildMcpProperties(mcp.clients, theme),
@@ -168,7 +168,12 @@ export function Status({
   const sections = React.useMemo(
     () => [
       buildPrimarySection(statusUsage),
-      buildSecondarySection({ mainLoopModel, mcp, theme, context }),
+      buildSecondarySection({
+        mainLoopModel,
+        mcp,
+        theme,
+        ideInstallationStatus: context.options.ideInstallationStatus,
+      }),
     ],
     [mainLoopModel, mcp, theme, context, statusUsage],
   )
