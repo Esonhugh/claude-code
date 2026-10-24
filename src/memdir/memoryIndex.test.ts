@@ -14,6 +14,7 @@ import { getSessionId, setOriginalCwd } from '../bootstrap/state.js'
 import { getProjectDir, getProjectsDir } from '../utils/sessionStorage.js'
 import {
   buildMemoryIndex,
+  findMemoryFilesForPrompt,
   getMemoryIndexStatus,
   resetMemoryIndexForTesting,
   searchMemory,
@@ -175,5 +176,16 @@ describe('searchMemory', () => {
     expect(await search('walrus', { scopes: ['project'] })).toEqual([])
     expect(getMemoryIndexStatus().chunks).toBe(status.chunks)
     resetMemoryIndexForTesting(':memory:')
+  })
+
+  test('finds memory files for a prompt by its distinctive words only', async () => {
+    writeFileSync(join(memDir, 'MEMORY.md'), '- [build](build.md): how to build the binary')
+    const find = (prompt: string) =>
+      findMemoryFilesForPrompt({ prompt, scopes: ['project', 'user', 'session'], exclude: new Set(), limit: 3 })
+    expect((await find('How should I build the binary for this project?')).map(h => h.path)).toEqual([
+      join(memDir, 'build.md'),
+    ])
+    expect(await find('What does this project do?')).toEqual([])
+    rmSync(join(memDir, 'MEMORY.md'))
   })
 })

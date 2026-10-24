@@ -242,7 +242,13 @@ import {
 } from '../services/apps/pluginProjection.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
 import { neutralizeMemoryContent } from '../memdir/neutralizeMemoryContent.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from '../memdir/paths.js'
+import { findMemoryFilesForPrompt } from '../memdir/memoryIndex.js'
+import {
+  getAutoMemPath,
+  getSqliteMemoryScopes,
+  isAutoMemoryEnabled,
+  isSqliteMemoryEnabled,
+} from '../memdir/paths.js'
 import { getAgentMemoryDir } from '../tools/AgentTool/agentMemory.js'
 import {
   readUnreadMessages,
@@ -2447,17 +2453,28 @@ async function getRelevantMemoryAttachments(
   })
   const dirs = memoryDirs.length > 0 ? memoryDirs : [getAutoMemPath()]
 
-  const allResults = await Promise.all(
-    dirs.map(dir =>
-      findRelevantMemories(
-        input,
-        dir,
-        signal,
-        recentTools,
-        alreadySurfaced,
-      ).catch(() => []),
-    ),
-  )
+  // SQLite memory: rank with the local FTS index instead of a model call.
+  const allResults =
+    isSqliteMemoryEnabled() && memoryDirs.length === 0
+      ? [
+          await findMemoryFilesForPrompt({
+            prompt: input,
+            scopes: getSqliteMemoryScopes(),
+            exclude: alreadySurfaced,
+            limit: 5,
+          }).catch(() => []),
+        ]
+      : await Promise.all(
+          dirs.map(dir =>
+            findRelevantMemories(
+              input,
+              dir,
+              signal,
+              recentTools,
+              alreadySurfaced,
+            ).catch(() => []),
+          ),
+        )
   // alreadySurfaced is filtered inside the selector so Sonnet spends its
   // 5-slot budget on fresh candidates; readFileState catches files the
   // model read via FileReadTool. The redundant alreadySurfaced check here
@@ -2602,7 +2619,8 @@ export function startRelevantMemoryPrefetch(
 ): MemoryPrefetch | undefined {
   if (
     !isAutoMemoryEnabled() ||
-    !getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false)
+    (!isSqliteMemoryEnabled() &&
+      !getFeatureValue_CACHED_MAY_BE_STALE('tengu_moth_copse', false))
   ) {
     return undefined
   }

@@ -129,7 +129,7 @@ export const USER_CLAUDE_MD_RULE =
 
 /** Replaces the MEMORY.md index when memory.sqlite.enabled is on. */
 export const SEARCH_MEMORY_GUIDELINE =
-  '`MEMORY.md` is not loaded into context, so memories are not visible until you search. Before work that saved preferences or project facts may affect, or when the user refers to earlier sessions, search with the SearchMemory tool (it covers saved memories and past session messages), then Read the matching files.'
+  '`MEMORY.md` is not loaded into context. Memories matching the user\'s message may be attached automatically; when none are and saved preferences or project facts could matter, or the user refers to earlier sessions, search with the SearchMemory tool (it covers saved memories and past session messages), then Read the matching files.'
 
 /**
  * `## What NOT to save in memory` section. Identical across both modes.

@@ -279,6 +279,56 @@ export async function searchMemory(params: {
     .all(...args) as MemorySearchHit[]
 }
 
+// Words too common in prompts or memory frontmatter to signal relevance.
+const RECALL_STOPWORDS = new Set(
+  (
+    'the and for are but not you your yours was were has have had what when where which who whom why how ' +
+    'this that these those with from into onto about over under then than them they their there here ' +
+    'can could should would will shall may might must does did doing done just also only very more most ' +
+    'some any all each every our ours its let get got use using used make made want need please ' +
+    'tell show give know think say said like one two new now out off again still been being ' +
+    'name description metadata type project user feedback reference memory memories answer short sentence'
+  ).split(' '),
+)
+
+/**
+ * Memory files that match a user prompt, best first, for automatic recall:
+ * no model call, only distinctive prompt words, memory files only.
+ */
+export async function findMemoryFilesForPrompt(params: {
+  prompt: string
+  scopes: readonly MemoryScope[]
+  exclude: ReadonlySet<string>
+  limit: number
+}): Promise<{ path: string; mtimeMs: number }[]> {
+  const words = [
+    ...new Set(
+      params.prompt
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}_-]+/u)
+        .filter(w => [...w].length >= MIN_TRIGRAM_CHARS && !RECALL_STOPWORDS.has(w)),
+    ),
+  ]
+  if (words.length === 0) return []
+  const index = openIndex()
+  const listing = await listSources(params.scopes.filter(s => s !== 'session'))
+  await refresh(index, listing.files)
+  prune(index, listing)
+  const paths = listing.files
+    .map(f => f.path)
+    .filter(p => basename(p) !== 'MEMORY.md' && !params.exclude.has(p))
+  if (paths.length === 0) return []
+  const rows = index
+    .query(
+      `SELECT path FROM chunks WHERE path IN (${paths.map(() => '?').join(',')}) AND chunks MATCH ? ORDER BY bm25(chunks) LIMIT ?`,
+    )
+    .all(...paths, words.map(w => `"${w.replaceAll('"', '""')}"`).join(' OR '), params.limit) as { path: string }[]
+  const known = new Map(
+    (index.query('SELECT path, mtime FROM files').all() as { path: string; mtime: number }[]).map(r => [r.path, r.mtime]),
+  )
+  return rows.map(r => ({ path: r.path, mtimeMs: known.get(r.path) ?? 0 }))
+}
+
 /**
  * Rebuild the index from scratch: rows for deleted or out-of-scope files
  * (transcripts may hold sensitive text) and any stale or polluted rows are
