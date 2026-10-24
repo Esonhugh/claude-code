@@ -3,6 +3,7 @@ name: Sync feature docs to Wiki
 on:
   push:
     branches:
+      - master
       - dev
     paths:
       - 'docs/features/**'
