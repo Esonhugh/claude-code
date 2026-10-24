@@ -1,15 +1,17 @@
 /**
  * Cost command - minimal metadata only.
  * Implementation is lazy-loaded from cost.ts to reduce startup time.
- * Interactive sessions resolve /cost to the /usage alias instead.
+ * Non-interactive /usage (aliases /cost, /stats); interactive sessions use the
+ * /usage dialog instead.
  */
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 
 const cost = {
   type: 'local',
-  name: 'cost',
-  description: 'Show the total cost and duration of the current session',
+  name: 'usage',
+  aliases: ['cost', 'stats'],
+  description: 'Show session cost and plan usage',
   get isHidden() {
     return !getIsNonInteractiveSession()
   },
