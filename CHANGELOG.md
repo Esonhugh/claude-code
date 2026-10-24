@@ -24,7 +24,31 @@
 
 - `src/tools/WorkflowTool/workflowUsageLimitWait.test.ts`：官方常数、日志文字、多个 Agent 加入同一等待、过期重置上限、过远重置、设置关闭撤销与中止。
 - `src/tools/WorkflowTool/workflowScriptRuntime.test.ts`：等待后以 `(after usage limit)` 重跑并完成；不能等待时只调用一次并在 `<failures>` 报告。
-- `src/services/api/errors-quota-limits.test.ts`、`src/components/CoordinatorAgentStatus.test.ts`、`src/utils/settings/compactSettings.test.ts`。
+- `src/services/api/errors-quota-limits.test.ts`、`src/components/CoordinatorAgentStatus.test.ts`、`src/utils/settings/compactSettings.test.ts`、`src/tools/WorkflowTool/workerBackgroundLifecycle.test.ts`（背景子 Agent 失败时保留配额信息）。
+
+## 2026-10-24 - VS Code 插件：支持 /memory、/skills、/hooks、/permissions、/diff 与背景任务控制请求
+
+### 变更内容
+
+- 新增控制请求 `get_memory_dialog`、`get_skills_dialog`、`get_hooks_listing`、`list_permission_rules`、`get_workspace_diff`、`get_task_output`、`background_tasks`（含 `tool_use_id` 单个任务）、`message_rated`、`submit_feedback`，VS Code 插件的对应对话框不再报 `Unsupported control request subtype`（#158）。
+- `get_task_output` 在任务结束、已从会话状态移除后，仍可按 shell 任务 id 读取输出末尾 8 KiB。
+- `submit_feedback` 回报 `unavailable_reason`，不从宿主上传反馈。
+
+### 测试覆盖
+
+- `src/cli/print.sdkControlRequests.test.ts` 新增：上述请求的成功与拒绝路径（未知任务、已结束任务、错误的评分参数）。
+
+## 2026-10-24 - VS Code 插件：支持 /status、/usage 等宿主控制请求
+
+### 变更内容
+
+- 新增 VS Code 插件（2.1.303）自绘界面所需的控制请求：`get_status`、`get_usage`、`get_session_cost`、`list_models`、`get_binary_version`、`file_suggestions`、`get_plan`、`export_conversation`、`rename_session`、`set_prompt_suggestions_paused`。此前插件的 /status 等界面报 `Unsupported control request subtype`（#158）。
+- `get_usage` 在 ChatGPT 登录的 OpenAI 模式下按窗口长度回报 5 小时与 7 天额度，并把各额度行列在 `model_scoped`；API key 与第三方 provider 回报 `rate_limits_available: false`。
+- `initialize` 与 `list_models` 的模型项新增 `resolvedModel`。
+
+### 测试覆盖
+
+- `src/cli/print.sdkControlRequests.test.ts` 新增：上述请求均返回成功且格式与官方一致（status 行均为纯文本、cost 去除 ANSI、`rename_session` 拒绝已切换的 session_id）；ChatGPT 额度窗口映射。
 
 ## 2026-10-24 - VS Code 插件 / Agent SDK：支持 --thinking-display，mcp_status 列出 SDK MCP 服务器
 

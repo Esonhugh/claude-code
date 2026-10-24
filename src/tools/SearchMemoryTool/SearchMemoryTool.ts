@@ -1,6 +1,7 @@
 import { createElement } from 'react'
 import { z } from 'zod/v4'
 
+import { MessageResponse } from '../../components/MessageResponse.js'
 import { Text } from '../../ink.js'
 import { searchMemory, type MemorySearchHit } from '../../memdir/memoryIndex.js'
 import { neutralizeMemoryContent } from '../../memdir/neutralizeMemoryContent.js'
@@ -67,7 +68,11 @@ Use it before relying on memory: when the user refers to earlier work, asks you 
     return scopes ? `"${query}" (${scopes.join(', ')})` : `"${query}"`
   },
   renderToolResultMessage({ hits }) {
-    return createElement(Text, null, `Found ${hits.length} ${hits.length === 1 ? 'match' : 'matches'}`)
+    return createElement(
+      MessageResponse,
+      { height: 1 },
+      createElement(Text, null, `Found ${hits.length} ${hits.length === 1 ? 'match' : 'matches'}`),
+    )
   },
   isEnabled() {
     return isSqliteMemoryEnabled()

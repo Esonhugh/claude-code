@@ -2,24 +2,20 @@ import { afterAll, expect, spyOn, test } from 'bun:test'
 ;(globalThis as typeof globalThis & { MACRO: MacroGlobals }).MACRO = {
   VERSION: 'test',
 }
-const { setSessionSettingsCache } =
-  await import('../../utils/settings/settingsCache.js')
 const { SandboxManager } = await import('../../utils/sandbox/sandbox-adapter.js')
 const { shouldUseSandbox } = await import('./shouldUseSandbox.js')
 
 const enabled = spyOn(SandboxManager, 'isSandboxingEnabled').mockReturnValue(
   true,
 )
+const excluded = spyOn(SandboxManager, 'getExcludedCommands')
 afterAll(() => {
   enabled.mockRestore()
-  setSessionSettingsCache({ settings: {}, errors: [] })
+  excluded.mockRestore()
 })
 
 test('excludedCommands exempts a compound command only when every part matches', () => {
-  setSessionSettingsCache({
-    settings: { sandbox: { excludedCommands: ['bazel:*', 'docker ps'] } },
-    errors: [],
-  })
+  excluded.mockReturnValue(['bazel:*', 'docker ps'])
   for (const command of [
     'bazel build //x',
     'timeout 30 bazel test //x',

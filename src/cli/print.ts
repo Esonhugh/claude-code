@@ -264,10 +264,17 @@ import {
   saveMode,
   savePermissionMode,
   saveAiGeneratedTitle,
+  saveCustomTitle,
+  getTranscriptPath,
   restoreSessionMetadata,
   recordTranscript,
 } from 'src/utils/sessionStorage.js'
 import { incrementPromptCount } from 'src/utils/commitAttribution.js'
+import feedbackCommand from '../commands/feedback/index.js'
+import {
+  backgroundAll,
+  backgroundTaskForToolUse,
+} from '../tasks/LocalShellTask/LocalShellTask.js'
 import {
   setupSdkMcpClients,
   connectToServer,
@@ -1397,6 +1404,7 @@ function runHeadlessStreaming(
     const hasAutoMode = modelSupportsAutoMode(resolvedModel)
     return {
       value: modelId,
+      resolvedModel,
       displayName: option.label,
       description: option.description,
       ...(hasEffort && {
@@ -1411,6 +1419,8 @@ function runHeadlessStreaming(
     }
   })
   let activeUserSpecifiedModel = options.userSpecifiedModel
+  // set_prompt_suggestions_paused: a host whose composer is hidden pauses them.
+  let promptSuggestionsPaused = false
   let pendingModelSwitches = Promise.resolve()
 
   const streamState = createSdkStreamState({
@@ -2565,6 +2575,7 @@ function runHeadlessStreaming(
           // Generate and emit prompt suggestion for SDK consumers
           if (
             options.promptSuggestions &&
+            !promptSuggestionsPaused &&
             !isEnvDefinedFalsy(process.env.CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION)
           ) {
             // TS narrows suggestionState to never in the while loop body;
@@ -4619,6 +4630,148 @@ function runHeadlessStreaming(
           }
 
           sendControlResponseSuccess(message)
+        } else if (
+          message.request.subtype === 'get_status' ||
+          message.request.subtype === 'get_usage' ||
+          message.request.subtype === 'get_session_cost' ||
+          message.request.subtype === 'get_binary_version' ||
+          message.request.subtype === 'file_suggestions' ||
+          message.request.subtype === 'get_plan' ||
+          message.request.subtype === 'export_conversation' ||
+          message.request.subtype === 'get_memory_dialog' ||
+          message.request.subtype === 'get_skills_dialog' ||
+          message.request.subtype === 'get_hooks_listing' ||
+          message.request.subtype === 'list_permission_rules' ||
+          message.request.subtype === 'get_workspace_diff' ||
+          message.request.subtype === 'get_task_output'
+        ) {
+          // Answered off the input loop: /usage and /status fetch from the
+          // network, git and the file index may be slow.
+          const request = message.request as {
+            subtype: string
+            query?: unknown
+            task_id?: unknown
+          }
+          void import('./hostControlRequests.js')
+            .then((host): Promise<object> | object => {
+              switch (request.subtype) {
+                case 'get_status':
+                  return host.buildStatusResponse(getAppState())
+                case 'get_usage':
+                  return host.buildUsageResponse()
+                case 'get_session_cost':
+                  return host.buildSessionCostResponse()
+                case 'get_binary_version':
+                  return host.buildBinaryVersionResponse()
+                case 'file_suggestions':
+                  if (typeof request.query !== 'string') {
+                    throw new Error('file_suggestions: query must be a string')
+                  }
+                  return host.buildFileSuggestionsResponse(request.query)
+                case 'get_plan':
+                  return host.buildPlanResponse()
+                case 'get_memory_dialog':
+                  return host.buildMemoryDialogResponse(getAppState())
+                case 'get_skills_dialog':
+                  return host.buildSkillsDialogResponse(currentCommands)
+                case 'get_hooks_listing':
+                  return host.buildHooksListingResponse(
+                    getAppState(),
+                    buildAllTools(getAppState()).map(tool => tool.name),
+                  )
+                case 'list_permission_rules':
+                  return host.buildPermissionRulesResponse(getAppState())
+                case 'get_workspace_diff':
+                  return host.buildWorkspaceDiffResponse()
+                case 'get_task_output':
+                  if (typeof request.task_id !== 'string') {
+                    throw new Error('get_task_output: task_id must be a string')
+                  }
+                  return host.buildTaskOutputResponse(getAppState(), request.task_id)
+                default:
+                  return host.buildExportConversationResponse(
+                    mutableMessages,
+                    buildAllTools(getAppState()),
+                  )
+              }
+            })
+            .then(
+              response =>
+                sendControlResponseSuccess(message, response as Record<string, unknown>),
+              error => sendControlResponseError(message, errorMessage(error)),
+            )
+        } else if (message.request.subtype === 'background_tasks') {
+          const toolUseId = (message.request as { tool_use_id?: unknown }).tool_use_id
+          if (typeof toolUseId === 'string') {
+            sendControlResponseSuccess(message, {
+              backgrounded: backgroundTaskForToolUse(toolUseId, getAppState, setAppState),
+            })
+          } else {
+            backgroundAll(getAppState, setAppState)
+            sendControlResponseSuccess(message, {})
+          }
+        } else if (message.request.subtype === 'message_rated') {
+          const request = message.request as {
+            messageUuid?: unknown
+            sentiment?: unknown
+            surface?: unknown
+            cleared?: unknown
+          }
+          if (
+            typeof request.messageUuid !== 'string' ||
+            (request.sentiment !== 'positive' && request.sentiment !== 'negative') ||
+            (request.surface !== undefined &&
+              request.surface !== 'tool_use' &&
+              request.surface !== 'assistant_text')
+          ) {
+            sendControlResponseError(
+              message,
+              'message_rated: messageUuid must be a string, sentiment "positive" or "negative", surface "tool_use" or "assistant_text"',
+            )
+          } else {
+            logEvent('tengu_message_rated', {
+              sentiment: request.sentiment as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              surface: (request.surface ?? 'tool_use') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              cleared: request.cleared === true,
+            })
+            sendControlResponseSuccess(message, {})
+          }
+        } else if (message.request.subtype === 'submit_feedback') {
+          // A host-side /feedback upload is not built here; say why instead
+          // of Unsupported so the host can show it.
+          sendControlResponseSuccess(message, {
+            feedback_id: null,
+            unavailable_reason: feedbackCommand.isEnabled?.() === false
+              ? '/feedback is disabled in this session'
+              : '/feedback from a host app is not supported by this build; run /feedback in the terminal',
+          })
+        } else if (message.request.subtype === 'list_models') {
+          sendControlResponseSuccess(message, { models: modelInfos })
+        } else if (message.request.subtype === 'set_prompt_suggestions_paused') {
+          promptSuggestionsPaused =
+            (message.request as { paused?: unknown }).paused === true
+          sendControlResponseSuccess(message)
+        } else if (message.request.subtype === 'rename_session') {
+          const request = message.request as { title?: unknown; session_id?: unknown }
+          const title = typeof request.title === 'string' ? request.title.trim() : ''
+          if (!title) {
+            sendControlResponseError(message, 'rename_session: title must be a non-empty string')
+          } else if (
+            typeof request.session_id === 'string' &&
+            request.session_id !== getSessionId()
+          ) {
+            sendControlResponseError(
+              message,
+              'rename_session: this process has moved to another session',
+            )
+          } else {
+            try {
+              await saveCustomTitle(getSessionId() as UUID, title, getTranscriptPath())
+              sendControlResponseSuccess(message)
+            } catch (error) {
+              sendControlResponseError(message, errorMessage(error))
+            }
+          }
         } else if (message.request.subtype === 'get_settings') {
           const currentAppState = getAppState()
           const model = getMainLoopModel()

@@ -81,6 +81,7 @@ import {
   commandHasAnyCd,
   matchWildcardPattern,
   permissionRuleExtractPrefix,
+  requireApprovalOutsideSandbox,
 } from './bashPermissions.js'
 import { interpretCommandResult } from './commandSemantics.js'
 import {
@@ -745,7 +746,10 @@ export const BashTool = buildTool({
     return { result: true }
   },
   async checkPermissions(input, context): Promise<PermissionResult> {
-    return bashToolHasPermission(input, context)
+    return requireApprovalOutsideSandbox(
+      input,
+      await bashToolHasPermission(input, context),
+    )
   },
   renderToolUseMessage,
   renderToolUseProgressMessage,
@@ -881,6 +885,7 @@ export const BashTool = buildTool({
         isMainThread,
         toolUseId: toolUseContext.toolUseId,
         agentId: toolUseContext.agentId,
+        userShellCommand: toolUseContext.userShellCommand,
       })
 
       // Consume the generator and capture the return value
@@ -1102,6 +1107,7 @@ async function* runShellCommand({
   isMainThread,
   toolUseId,
   agentId,
+  userShellCommand,
 }: {
   input: BashToolInput
   abortController: AbortController
@@ -1111,6 +1117,7 @@ async function* runShellCommand({
   isMainThread?: boolean
   toolUseId?: string
   agentId?: AgentId
+  userShellCommand?: boolean
 }): AsyncGenerator<
   {
     type: 'progress'
@@ -1165,7 +1172,7 @@ async function* runShellCommand({
       }
     },
     preventCwdChanges,
-    shouldUseSandbox: shouldUseSandbox(input),
+    shouldUseSandbox: !userShellCommand && shouldUseSandbox(input),
     shouldAutoBackground,
   })
 

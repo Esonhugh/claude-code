@@ -1862,6 +1862,47 @@ function checkRemovalPermission(
   }
 }
 
+function isAllowedByRule(result: PermissionResult): boolean {
+  const reason = result.decisionReason
+  if (reason?.type === 'rule') return true
+  return (
+    reason?.type === 'subcommandResults' &&
+    [...reason.reasons.values()].every(
+      r => r.behavior === 'allow' && isAllowedByRule(r),
+    )
+  )
+}
+
+/**
+ * A command that leaves the sandbox via dangerouslyDisableSandbox loses the
+ * sandbox's read/write/network limits, so read-only and mode auto-allows no
+ * longer apply to it; only an explicit allow rule lets it run unprompted.
+ */
+export function requireApprovalOutsideSandbox(
+  input: z.infer<typeof BashTool.inputSchema>,
+  result: PermissionResult,
+): PermissionResult {
+  if (
+    result.behavior !== 'allow' ||
+    !input.dangerouslyDisableSandbox ||
+    !SandboxManager.isSandboxingEnabled() ||
+    !SandboxManager.areUnsandboxedCommandsAllowed() ||
+    isAllowedByRule(result)
+  ) {
+    return result
+  }
+  const decisionReason = {
+    type: 'other' as const,
+    reason: 'Run outside of the sandbox',
+  }
+  return {
+    behavior: 'ask',
+    message: createPermissionRequestMessage(BashTool.name, decisionReason),
+    decisionReason,
+    suggestions: suggestionForExactCommand(input.command.trim()),
+  }
+}
+
 /**
  * The main implementation to check if we need to ask for user permission to call BashTool with a given input
  */

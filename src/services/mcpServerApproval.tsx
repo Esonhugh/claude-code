@@ -6,6 +6,12 @@ import { KeybindingSetup } from '../keybindings/KeybindingProviderSetup.js'
 import { AppStateProvider } from '../state/AppState.js'
 import { getMcpConfigsByScope } from './mcp/config.js'
 import { getProjectMcpServerStatus } from './mcp/utils.js'
+import type { ValidationError } from '../utils/settings/validation.js'
+
+/** Skipped .mcp.json entries are warnings; only real errors hold back approval. */
+export function settingsErrorsBlockMcpApproval(errors: ValidationError[]): boolean {
+  return errors.some(error => error.mcpErrorMetadata?.severity !== 'warning')
+}
 
 /**
  * Show MCP server approval dialogs for pending project servers.

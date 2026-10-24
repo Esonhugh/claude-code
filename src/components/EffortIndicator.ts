@@ -5,6 +5,7 @@ import {
   EFFORT_MEDIUM,
   EFFORT_XHIGH,
 } from '../constants/figures.js'
+import type { Notification } from '../context/notifications.js'
 import {
   type EffortLevel,
   type EffortValue,
@@ -25,6 +26,11 @@ export function getEffortNotificationText(
   const applied = resolveAppliedEffort(model, effortValue)
   const level = convertEffortValueToLevel(applied ?? 'high')
   return `${effortLevelToSymbol(applied === 'xhigh' ? 'xhigh' : level)} ${applied ?? level} · /effort`
+}
+
+/** The effort notice; a newer one replaces the one still on screen instead of being dropped as a duplicate. */
+export function effortNotification(text: string): Notification {
+  return { key: 'effort-level', text, priority: 'high', timeoutMs: 12_000, fold: (_shown, incoming) => incoming }
 }
 
 export function effortLevelToSymbol(level: EffortLevel): string {

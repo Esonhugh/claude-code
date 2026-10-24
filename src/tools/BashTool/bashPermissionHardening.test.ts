@@ -1,4 +1,4 @@
-import { expect, test } from 'bun:test'
+import { expect, spyOn, test } from 'bun:test'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -314,6 +314,57 @@ if (process.env[childFlag] !== '1') {
     ).toContain(
       "Output redirection to '" + join(project, 'out.txt') + "' needs approval. The path is inside the working directories",
     )
+  })
+
+  test('dangerouslyDisableSandbox asks unless an allow rule covers the command', async () => {
+    const { SandboxManager } =
+      await import('../../utils/sandbox/sandbox-adapter.js')
+    const enabled = spyOn(SandboxManager, 'isSandboxingEnabled')
+    const unsandboxedAllowed = spyOn(
+      SandboxManager,
+      'areUnsandboxedCommandsAllowed',
+    )
+    const run = (
+      command: string,
+      mode: ToolPermissionContext['mode'],
+      rules: Rules = {},
+    ) =>
+      hasPermissionsToUseTool(
+        BashTool,
+        { command, dangerouslyDisableSandbox: true },
+        context(mode, rules),
+        undefined as never,
+        'bash-hardening',
+      )
+    try {
+      enabled.mockReturnValue(true)
+      unsandboxedAllowed.mockReturnValue(true)
+      for (const [command, mode, rules, behavior] of [
+        ['echo outside', 'default', {}, 'ask'],
+        ['cat .env', 'default', {}, 'ask'],
+        ['echo a && ls src', 'default', {}, 'ask'],
+        ['echo outside', 'acceptEdits', {}, 'ask'],
+        ['echo outside', 'default', { allow: ['Bash(echo:*)'] }, 'allow'],
+        ['echo a && ls src', 'default', { allow: ['Bash(echo:*)', 'Bash(ls:*)'] }, 'allow'],
+        ['echo outside', 'bypassPermissions', {}, 'allow'],
+      ] as const) {
+        const result = await run(command, mode, rules)
+        expect({ command, mode, behavior: result.behavior }).toEqual({
+          command,
+          mode,
+          behavior,
+        })
+      }
+      // The flag has no effect when the command runs sandboxed anyway.
+      unsandboxedAllowed.mockReturnValue(false)
+      expect((await run('echo outside', 'default')).behavior).toBe('allow')
+      enabled.mockReturnValue(false)
+      unsandboxedAllowed.mockReturnValue(true)
+      expect((await run('echo outside', 'default')).behavior).toBe('allow')
+    } finally {
+      enabled.mockRestore()
+      unsandboxedAllowed.mockRestore()
+    }
   })
 
   test('cleanup', () => {
