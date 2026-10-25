@@ -1,5 +1,9 @@
 # Unofficial Claude Code
 
+
+[User Animated](https://github.com/user-attachments/assets/7299b965-da57-45c4-899a-0a1685ae4bdf)
+
+
 基于 Claude Code 分发产物恢复的非官方 TypeScript/TSX 源码工作区，并持续维护本地 CLI、Agent、Workflow、OpenAI/Codex 兼容和调试能力。
 
 > 本项目不是 Anthropic 官方产品、官方源码分发或官方 Claude Code release，也未获得 Anthropic 背书。公开包只分发 launcher 与对应平台二进制，不包含本仓库源码。
